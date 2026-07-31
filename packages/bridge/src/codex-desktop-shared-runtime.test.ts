@@ -173,7 +173,7 @@ describe.runIf(process.platform === "darwin")(
       await snapshotDesktopEnvironment(root, deps);
 
       await expect(restoreDesktopPrivateRuntime(root, deps)).rejects.toThrow(
-        "must be shared before restore",
+        "must be shared or interrupted before restore",
       );
       await enableDesktopSharedRuntime(root, deps);
       await expect(enableDesktopSharedRuntime(root, deps)).rejects.toThrow(
@@ -184,7 +184,7 @@ describe.runIf(process.platform === "darwin")(
       );
       await restoreDesktopPrivateRuntime(root, deps);
       await expect(restoreDesktopPrivateRuntime(root, deps)).rejects.toThrow(
-        "must be shared before restore",
+        "must be shared or interrupted before restore",
       );
     });
 
@@ -239,9 +239,46 @@ describe.runIf(process.platform === "darwin")(
       );
       expect(environment.get("CODEX_HOME")).toBe("/Users/test/.codex-original");
       expect(environment.has("CODEX_APP_SERVER_USE_LOCAL_DAEMON")).toBe(false);
-      expect((await readTransaction(root)).state).toBe("captured");
+      expect((await readTransaction(root)).state).toBe("restored");
       expect(deps.printGuiDomain).toHaveBeenCalledTimes(3);
     });
+
+    it.each(["enabling", "restoring"] as const)(
+      "recovers an interrupted %s transaction through restore-private",
+      async (interruptedState) => {
+        const root = freshRoot();
+        await preparePilotIsolation(root);
+        const environment = new Map<string, string>([
+          ["CODEX_HOME", "/Users/test/.codex-original"],
+        ]);
+        const deps = fakeDependencies(environment);
+        await snapshotDesktopEnvironment(root, deps);
+        const transaction = await readTransaction(root);
+        await writeFile(
+          join(root, "desktop-environment-snapshot.json"),
+          `${JSON.stringify({
+            ...transaction,
+            state: interruptedState,
+          })}\n`,
+          { mode: 0o600 },
+        );
+        environment.set(
+          "CODEX_HOME",
+          resolvePilotPaths(root).codexHome,
+        );
+        environment.set("CODEX_APP_SERVER_USE_LOCAL_DAEMON", "1");
+
+        await restoreDesktopPrivateRuntime(root, deps);
+
+        expect(environment.get("CODEX_HOME")).toBe(
+          "/Users/test/.codex-original",
+        );
+        expect(environment.has("CODEX_APP_SERVER_USE_LOCAL_DAEMON")).toBe(
+          false,
+        );
+        expect((await readTransaction(root)).state).toBe("restored");
+      },
+    );
 
     it("verifies one Desktop tree on the pilot socket without a private stdio server", async () => {
       const root = freshRoot();

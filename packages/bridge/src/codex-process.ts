@@ -616,6 +616,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private _attachmentReady = false;
   private _attachmentFailure: Error | null = null;
   private readonly attachmentWaiters = new Set<CodexAttachmentWaiter>();
+  /** Turns whose successful turn/start response came from this attachment. */
+  private readonly sharedRuntimeOwnedTurnIds = new Set<string>();
   private _activeTurnHydration: Promise<void> | null = null;
   private _lastStopWasSharedRuntime = false;
   private _agentNickname: string | null = null;
@@ -2202,6 +2204,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this._sharedRuntimeAttachMode = null;
     this._authoritativeThreadStatus = { type: "unknown" };
     this._activeTurnHydration = null;
+    this.sharedRuntimeOwnedTurnIds.clear();
     this._lastStopWasSharedRuntime = wasSharedRuntime;
 
     const resolvedPermissionIds = new Set<string>();
@@ -2294,6 +2297,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this._attachmentReady = false;
     this._attachmentFailure = null;
     this._activeTurnHydration = null;
+    this.sharedRuntimeOwnedTurnIds.clear();
     this._lastStopWasSharedRuntime = false;
     if (options?.sharedRuntimeAttach && options.threadId) {
       this._sharedRuntimeAttachmentKey = claimSharedRuntimePilotAttachment(
@@ -2595,6 +2599,14 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   ): Promise<void> {
     if (!this._threadId || !expectedTurnId) {
       throw new Error("No Codex thread or expected turn to steer");
+    }
+    if (
+      this.isSharedRuntimeTopology() &&
+      !this.sharedRuntimeOwnedTurnIds.has(expectedTurnId)
+    ) {
+      throw new Error(
+        "Cannot steer a shared Codex turn owned by another subscriber",
+      );
     }
 
     const { input, tempPaths } = await this.toRpcInput({
@@ -4675,7 +4687,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (this._attachmentRuntimeGeneration !== this._runtimeGeneration) {
       return false;
     }
-    return stringOrNull(params.threadId) === this._threadId;
+    if (stringOrNull(params.threadId) !== this._threadId) return false;
+    const turnId = stringOrNull(params.turnId);
+    return turnId !== null && this.sharedRuntimeOwnedTurnIds.has(turnId);
   }
 
   private queueGuardianReviewWarning(
@@ -5314,7 +5328,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (status === "completed") {
       this.prepareTurnCompletionAgentSummary(turn, turnId);
     }
-    if (turnId) this.lastCompletedTurn = { turnId, status };
+    if (turnId) {
+      this.lastCompletedTurn = { turnId, status };
+      this.sharedRuntimeOwnedTurnIds.delete(turnId);
+    }
     this.finalizePendingAgentText(turnId);
 
     const usage = this.lastTokenUsage;
@@ -5397,6 +5414,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (this.pendingTurnCompletion !== expected) return;
     expected.turnId = turnId;
     this.pendingTurnId = turnId;
+    if (
+      this.isSharedRuntimeTopology() &&
+      this._sharedRuntimeAttachMode !== "observer"
+    ) {
+      this.sharedRuntimeOwnedTurnIds.add(turnId);
+    }
     const earlyCompletion = expected.earlyCompletions.get(turnId);
     expected.earlyCompletions.clear();
     if (earlyCompletion) this.handleTurnCompleted(earlyCompletion);

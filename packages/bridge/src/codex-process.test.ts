@@ -894,16 +894,6 @@ describe("CodexProcess (app-server)", () => {
         result: { turn: { id: "turn-shared-adoption" } },
       })}\n`,
     );
-    child.stdout.emit(
-      "data",
-      `${JSON.stringify({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-shared-adoption",
-          turn: { id: "turn-shared-adoption", status: "completed" },
-        },
-      })}\n`,
-    );
     await tick();
 
     child.stdout.emit(
@@ -930,11 +920,31 @@ describe("CodexProcess (app-server)", () => {
     child.stdout.emit(
       "data",
       `${JSON.stringify({
+        id: "desktop-turn-request",
+        method: "item/fileChange/requestApproval",
+        params: {
+          threadId: "thread-shared-adoption",
+          turnId: "turn-owned-by-desktop",
+          itemId: "item-desktop",
+        },
+      })}\n`,
+    );
+    await tick();
+    expect(messages).not.toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "item-desktop",
+      }),
+    );
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
         id: "owned-request",
         method: "item/fileChange/requestApproval",
         params: {
           threadId: "thread-shared-adoption",
-          turnId: "turn-owned",
+          turnId: "turn-shared-adoption",
           itemId: "item-owned",
         },
       })}\n`,
@@ -947,7 +957,30 @@ describe("CodexProcess (app-server)", () => {
       }),
     );
 
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-shared-adoption",
+          turn: { id: "turn-shared-adoption", status: "completed" },
+        },
+      })}\n`,
+    );
+    await tick();
+    const messageCountAfterCompletion = messages.length;
     const internal = proc as any;
+    internal.handleServerRequest(
+      "late-completed-request",
+      "item/fileChange/requestApproval",
+      {
+        threadId: "thread-shared-adoption",
+        turnId: "turn-shared-adoption",
+        itemId: "item-late",
+      },
+    );
+    expect(messages).toHaveLength(messageCountAfterCompletion);
+
     internal._runtimeGeneration += 1;
     internal.handleServerRequest(
       "stale-generation-request",
@@ -994,14 +1027,17 @@ describe("CodexProcess (app-server)", () => {
 
     internal._threadId = "thread-daemon-owned";
     internal._attachmentRuntimeGeneration = 11;
+    internal.sharedRuntimeOwnedTurnIds.add("turn-daemon-owned");
     expect(
       internal.canHandleServerRequest({
         threadId: "thread-daemon-owned",
+        turnId: "turn-daemon-owned",
       }),
     ).toBe(true);
     expect(
       internal.canHandleServerRequest({
         threadId: "thread-foreign",
+        turnId: "turn-daemon-owned",
       }),
     ).toBe(false);
     expect(internal.canHandleServerRequest({})).toBe(false);
@@ -1010,6 +1046,28 @@ describe("CodexProcess (app-server)", () => {
       status: { type: "active", activeFlags: [] },
     });
     expect(proc.authoritativeThreadStatus).toEqual({ type: "unknown" });
+
+    proc.stop();
+  });
+
+  it("refuses to steer an adopted shared turn that this attachment did not start", async () => {
+    const proc = new CodexProcess("linux");
+    const internal = proc as any;
+    internal.stopped = false;
+    internal._runtimeGeneration = 5;
+    internal._attachmentRuntimeGeneration = 5;
+    internal._sharedRuntimePilotGates = {
+      enabled: true,
+      codexSourceId: "source-one",
+      allowThreadStart: true,
+      allowTurnStart: true,
+    };
+    internal._sharedRuntimeAttachMode = "adoption";
+    internal._threadId = "thread-shared-adopted";
+
+    await expect(
+      proc.steerTurnStructured("turn-owned-by-desktop", "continue"),
+    ).rejects.toThrow("owned by another subscriber");
 
     proc.stop();
   });

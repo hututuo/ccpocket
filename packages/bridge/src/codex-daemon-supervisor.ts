@@ -11,6 +11,7 @@ import type { CodexDaemonConfig } from "./codex-app-server-config.js";
 
 interface CodexDaemonVersionResponse {
   status?: unknown;
+  backend?: unknown;
   cliVersion?: unknown;
   appServerVersion?: unknown;
   managedCodexPath?: unknown;
@@ -292,6 +293,9 @@ export function verifyCodexDaemon(
   const version = runVersion(canonicalCli, canonicalHome);
   if (version.status !== "running") {
     throw new Error("Codex daemon is not running");
+  }
+  if (version.backend !== "pid") {
+    throw new Error("Codex daemon must use the audited pid backend");
   }
   if (
     version.cliVersion !== config.expectedVersion ||

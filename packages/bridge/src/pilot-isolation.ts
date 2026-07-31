@@ -946,6 +946,7 @@ export async function preparePilotDaemon(
 
 interface DaemonVersionResponse {
   status?: unknown;
+  backend?: unknown;
   cliVersion?: unknown;
   appServerVersion?: unknown;
   managedCodexPath?: unknown;
@@ -975,6 +976,9 @@ async function verifyRunningPilotDaemon(
   const expectedVersion = assets.manifest.expectedVersion;
   if (version.status !== "running") {
     throw new Error("Pilot Codex daemon is not running");
+  }
+  if (version.backend !== "pid") {
+    throw new Error("Pilot Codex daemon must use the audited pid backend");
   }
   if (
     version.cliVersion !== expectedVersion ||

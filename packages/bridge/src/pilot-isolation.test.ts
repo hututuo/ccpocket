@@ -340,6 +340,7 @@ describe.runIf(process.platform === "darwin")(
               exitCode: 0,
               stdout: JSON.stringify({
                 status: "running",
+                backend: "pid",
                 cliVersion: CODEX_VERSION,
                 appServerVersion: CODEX_VERSION,
                 managedCodexPath: paths.managedCodexCli,

@@ -70,6 +70,7 @@ async function createFixture(): Promise<DaemonFixture> {
   const dependencies: CodexDaemonSupervisorDependencies = {
     runVersion: () => ({
       status: "running",
+      backend: "pid",
       cliVersion: VERSION,
       appServerVersion: VERSION,
       managedCodexPath: cliPath,
@@ -136,6 +137,7 @@ describe.runIf(process.platform !== "win32")("CodexDaemonSupervisor", () => {
       verifyCodexDaemon(fixture.config, {
         runVersion: () => ({
           status: "running",
+          backend: "pid",
           cliVersion: VERSION,
           appServerVersion: "0.145.0",
           managedCodexPath: fixture.cliPath,
@@ -175,6 +177,7 @@ describe.runIf(process.platform !== "win32")("CodexDaemonSupervisor", () => {
         {
           runVersion: () => ({
             status: "running",
+            backend: "pid",
             cliVersion: VERSION,
             appServerVersion: VERSION,
             managedCodexPath: fixture.cliPath,
@@ -232,6 +235,7 @@ describe.runIf(process.platform !== "win32")("CodexDaemonSupervisor", () => {
       verifyCodexDaemon(fixture.config, {
         runVersion: () => ({
           status: "running",
+          backend: "pid",
           cliVersion: VERSION,
           appServerVersion: VERSION,
           managedCodexPath: fixture.cliPath,
@@ -280,6 +284,7 @@ describe.runIf(process.platform !== "win32")("CodexDaemonSupervisor", () => {
       verifyCodexDaemon(fixture.config, {
         runVersion: () => ({
           status: "running",
+          backend: "pid",
           cliVersion: VERSION,
           appServerVersion: VERSION,
           managedCodexPath: fixture.home,
@@ -288,6 +293,23 @@ describe.runIf(process.platform !== "win32")("CodexDaemonSupervisor", () => {
         }),
       }),
     ).toThrow("different managed Codex CLI");
+  });
+
+  it("rejects an unaudited daemon lifecycle backend", async () => {
+    const fixture = await createFixture();
+    expect(() =>
+      verifyCodexDaemon(fixture.config, {
+        runVersion: () => ({
+          status: "running",
+          backend: "launchd",
+          cliVersion: VERSION,
+          appServerVersion: VERSION,
+          managedCodexPath: fixture.cliPath,
+          managedCodexVersion: VERSION,
+          socketPath: fixture.socketPath,
+        }),
+      }),
+    ).toThrow("audited pid backend");
   });
 
   it("uses only a short burst cache and invalidates it on in-place CLI changes", async () => {

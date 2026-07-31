@@ -36,7 +36,7 @@ export interface DesktopEnvironmentSnapshot {
   transactionId: string;
   createdAt: string;
   updatedAt: string;
-  state: "captured" | "shared" | "restored";
+  state: "captured" | "enabling" | "shared" | "restoring" | "restored";
   values: Record<DesktopSharedRuntimeEnvKey, DesktopEnvironmentValue>;
 }
 
@@ -136,7 +136,9 @@ function validateSnapshot(
     typeof record.createdAt !== "string" ||
     typeof record.updatedAt !== "string" ||
     (record.state !== "captured" &&
+      record.state !== "enabling" &&
       record.state !== "shared" &&
+      record.state !== "restoring" &&
       record.state !== "restored") ||
     !record.values
   ) {
@@ -310,6 +312,11 @@ export async function snapshotDesktopEnvironment(
       "Desktop environment transaction is already in shared mode",
     );
   }
+  if (existing?.state === "enabling" || existing?.state === "restoring") {
+    throw new Error(
+      "Desktop environment transaction was interrupted; run restore-private before taking a new snapshot",
+    );
+  }
   if (existing?.state === "captured") {
     assertEnvironmentMatches(environment, existing.values);
     return { path, snapshot: existing, reused: true };
@@ -389,13 +396,19 @@ export async function enableDesktopSharedRuntime(
     snapshot.values,
   );
   const shared = sharedEnvironmentForRoot(root);
+  const enabling = await transitionSnapshot(
+    root,
+    deps,
+    snapshot,
+    "enabling",
+  );
   try {
     await applyEnvironment(shared, deps);
     assertEnvironmentMatches(
       parseLaunchctlEnvironment(await deps.printGuiDomain()),
       shared,
     );
-    await transitionSnapshot(root, deps, snapshot, "shared");
+    await transitionSnapshot(root, deps, enabling, "shared");
   } catch (error) {
     try {
       await applyEnvironment(snapshot.values, deps);
@@ -403,6 +416,7 @@ export async function enableDesktopSharedRuntime(
         parseLaunchctlEnvironment(await deps.printGuiDomain()),
         snapshot.values,
       );
+      await transitionSnapshot(root, deps, enabling, "restored");
     } catch (rollbackError) {
       throw new Error(
         `Failed to enable shared Desktop environment and verified rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
@@ -420,17 +434,25 @@ export async function restoreDesktopPrivateRuntime(
   await preflightPilotIsolation(root, { checkPort: false });
   const deps = dependencies(overrides);
   const snapshot = await readSnapshot(root, deps);
-  if (snapshot.state !== "shared") {
+  if (
+    snapshot.state !== "shared" &&
+    snapshot.state !== "enabling" &&
+    snapshot.state !== "restoring"
+  ) {
     throw new Error(
-      `Desktop environment transaction must be shared before restore (found ${snapshot.state})`,
+      `Desktop environment transaction must be shared or interrupted before restore (found ${snapshot.state})`,
     );
   }
+  const restoring =
+    snapshot.state === "restoring"
+      ? snapshot
+      : await transitionSnapshot(root, deps, snapshot, "restoring");
   await applyEnvironment(snapshot.values, deps);
   assertEnvironmentMatches(
     parseLaunchctlEnvironment(await deps.printGuiDomain()),
     snapshot.values,
   );
-  await transitionSnapshot(root, deps, snapshot, "restored");
+  await transitionSnapshot(root, deps, restoring, "restored");
 }
 
 function descendantPids(
