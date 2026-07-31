@@ -93,9 +93,7 @@ describe("parseCliArgs", () => {
     expect(parsed.command).toBe("share");
     expect(parsed.positionals[1]).toBe("/Users/test/My Report.pdf");
     expect(parseFlag(parsed, "ttl")).toBe("7200");
-    expect(parseFlag(parsed, "base-url")).toBe(
-      "http://192.168.1.20:8765",
-    );
+    expect(parseFlag(parsed, "base-url")).toBe("http://192.168.1.20:8765");
     expect(hasFlag(parsed, "json")).toBe(true);
   });
 
@@ -109,5 +107,27 @@ describe("parseCliArgs", () => {
     expect(parsed.command).toBe("file-access");
     expect(parsed.positionals).toEqual(["file-access", "set-password"]);
     expect(hasFlag(parsed, "password-stdin")).toBe(true);
+  });
+
+  it("parses strict Codex daemon connection flags", () => {
+    const parsed = parseCliArgs([
+      "--codex-app-server-mode=daemon",
+      "--codex-home=/Users/test/.codex-pilot",
+      "--codex-daemon-cli=/Applications/ChatGPT.app/Contents/Resources/codex",
+      "--codex-daemon-socket=/Users/test/.codex-pilot/app-server-control/app-server-control.sock",
+      "--codex-daemon-expected-version=0.146.0-alpha.9.2",
+    ]);
+
+    expect(parseFlag(parsed, "codex-app-server-mode")).toBe("daemon");
+    expect(parseFlag(parsed, "codex-home")).toBe("/Users/test/.codex-pilot");
+    expect(parseFlag(parsed, "codex-daemon-cli")).toBe(
+      "/Applications/ChatGPT.app/Contents/Resources/codex",
+    );
+    expect(parseFlag(parsed, "codex-daemon-socket")).toContain(
+      "app-server-control.sock",
+    );
+    expect(parseFlag(parsed, "codex-daemon-expected-version")).toBe(
+      "0.146.0-alpha.9.2",
+    );
   });
 });

@@ -9,6 +9,10 @@ const VALUE_FLAGS = new Set([
   "codex-source-id",
   "codex-app-server-port",
   "codex-app-server-url",
+  "codex-daemon-cli",
+  "codex-daemon-socket",
+  "codex-daemon-expected-version",
+  "codex-home",
   "base-url",
   "ttl",
 ]);
@@ -62,11 +66,7 @@ export function parseCliArgs(args: string[]): ParsedCliArgs {
         continue;
       }
 
-      if (
-        BOOLEAN_FLAGS.has(name) ||
-        name === "help" ||
-        name === "version"
-      ) {
+      if (BOOLEAN_FLAGS.has(name) || name === "help" || name === "version") {
         flags.set(name, true);
         continue;
       }

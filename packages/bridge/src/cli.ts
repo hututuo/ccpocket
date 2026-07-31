@@ -5,6 +5,10 @@ import { startServer } from "./index.js";
 import { getPackageVersion } from "./version.js";
 import { hasFlag, parseCliArgs, parseFlag } from "./cli-args.js";
 import { parseBridgePort } from "./bridge-port.js";
+import {
+  readCodexAppServerMode,
+  readCodexDaemonConfig,
+} from "./codex-app-server-config.js";
 
 function startupErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -45,11 +49,21 @@ Options:
                          Mobile-reachable HTTP(S) origin for artifact links
       --no-mdns         Disable mDNS auto-discovery advertisement
       --codex-app-server-mode <mode>
-                         Codex app-server mode: private, managed, or external
+                         Codex app-server mode: private, managed, external, or daemon
       --codex-shared-app-server-url <url>
                          Shared Codex app-server ws:// URL
       --codex-source-id <id>
                          Shared Codex authority ID from Cockpit
+
+Daemon pilot options (not persisted by setup):
+      --codex-home <path>
+                         Explicit CODEX_HOME used by the daemon
+      --codex-daemon-cli <path>
+                         Absolute Codex CLI path used only for daemon verification
+      --codex-daemon-socket <path>
+                         Unix socket path (defaults inside CODEX_HOME)
+      --codex-daemon-expected-version <version>
+                         Exact CLI, managed Codex, and app-server version
 
 Share options:
       --ttl <seconds>    Link lifetime from 60 to 86400 seconds (default: 3600)
@@ -82,6 +96,9 @@ BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR, BRIDGE_FILE_TRANSFER_PARTIAL_DIR,
 and BRIDGE_FILE_TRANSFER_STATE_FILE.
 Codex app-server configuration can be provided with
 BRIDGE_CODEX_APP_SERVER_MODE and BRIDGE_CODEX_SHARED_APP_SERVER_URL.
+Daemon mode additionally requires explicit CODEX_HOME,
+BRIDGE_CODEX_DAEMON_CLI, and BRIDGE_CODEX_DAEMON_EXPECTED_VERSION;
+BRIDGE_CODEX_DAEMON_SOCKET defaults inside CODEX_HOME.
 Shared Codex authority identity can be provided with
 BRIDGE_CODEX_SOURCE_ID.
 Codex assist calls can be configured with BRIDGE_CODEX_ASSIST_MODEL and
@@ -113,6 +130,31 @@ if (parsed.helpRequested) {
       process.exit(1);
     });
 } else if (parsed.command === "setup") {
+  // The reversible pilot deliberately does not persist daemon ownership into
+  // the production Bridge service. Accepting only the mode here would write a
+  // LaunchAgent/systemd unit without its required CODEX_HOME, CLI, socket and
+  // exact-version contract, leaving a service that can never start safely.
+  const requestedSetupMode = parseFlag(parsed, "codex-app-server-mode");
+  let effectiveSetupMode: ReturnType<typeof readCodexAppServerMode>;
+  try {
+    effectiveSetupMode = readCodexAppServerMode(
+      requestedSetupMode === undefined
+        ? process.env
+        : {
+            ...process.env,
+            BRIDGE_CODEX_APP_SERVER_MODE: requestedSetupMode,
+          },
+    );
+  } catch (error) {
+    console.error(`Setup failed: ${startupErrorMessage(error)}`);
+    process.exit(1);
+  }
+  if (effectiveSetupMode === "daemon") {
+    console.error(
+      "Setup failed: daemon mode is pilot-only and cannot be persisted by setup",
+    );
+    process.exit(1);
+  }
   // Service setup subcommand (platform-specific)
   const opts = {
     port: parseFlag(parsed, "port"),
@@ -121,7 +163,7 @@ if (parsed.helpRequested) {
     publicWsUrl: parseFlag(parsed, "public-ws-url"),
     artifactBaseUrl: parseFlag(parsed, "artifact-base-url"),
     disableMdns: hasFlag(parsed, "no-mdns"),
-    codexAppServerMode: parseFlag(parsed, "codex-app-server-mode"),
+    codexAppServerMode: requestedSetupMode,
     codexSharedAppServerUrl: parseFlag(parsed, "codex-shared-app-server-url"),
     codexSourceId: parseFlag(parsed, "codex-source-id"),
     codexAppServerPort: parseFlag(parsed, "codex-app-server-port"),
@@ -131,9 +173,7 @@ if (parsed.helpRequested) {
   if (platform() === "darwin") {
     import("./setup-launchd.js")
       .then(({ setupLaunchd, uninstallLaunchd }) => {
-        hasFlag(parsed, "uninstall")
-          ? uninstallLaunchd()
-          : setupLaunchd(opts);
+        hasFlag(parsed, "uninstall") ? uninstallLaunchd() : setupLaunchd(opts);
       })
       .catch((err) => {
         console.error("Setup failed:", err);
@@ -142,9 +182,7 @@ if (parsed.helpRequested) {
   } else if (platform() === "linux") {
     import("./setup-systemd.js")
       .then(({ setupSystemd, uninstallSystemd }) => {
-        hasFlag(parsed, "uninstall")
-          ? uninstallSystemd()
-          : setupSystemd(opts);
+        hasFlag(parsed, "uninstall") ? uninstallSystemd() : setupSystemd(opts);
       })
       .catch((err) => {
         console.error("Setup failed:", err);
@@ -163,20 +201,23 @@ if (parsed.helpRequested) {
     process.exitCode = 1;
   } else {
     import("./file-transfer-lock-command.js")
-      .then(async ({
-        formatFileTransferLockInspection,
-        inspectFileTransferForCli,
-        unlockFileTransferForCli,
-      }) => {
-        const inspection = action === "unlock"
-          ? await unlockFileTransferForCli(parseFlag(parsed, "port"))
-          : await inspectFileTransferForCli(parseFlag(parsed, "port"));
-        console.log(
-          hasFlag(parsed, "json")
-            ? JSON.stringify(inspection)
-            : formatFileTransferLockInspection(inspection),
-        );
-      })
+      .then(
+        async ({
+          formatFileTransferLockInspection,
+          inspectFileTransferForCli,
+          unlockFileTransferForCli,
+        }) => {
+          const inspection =
+            action === "unlock"
+              ? await unlockFileTransferForCli(parseFlag(parsed, "port"))
+              : await inspectFileTransferForCli(parseFlag(parsed, "port"));
+          console.log(
+            hasFlag(parsed, "json")
+              ? JSON.stringify(inspection)
+              : formatFileTransferLockInspection(inspection),
+          );
+        },
+      )
       .catch((err) => {
         console.error(
           `File transfer ${action} failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -191,32 +232,34 @@ if (parsed.helpRequested) {
     process.exitCode = 1;
   } else {
     import("./file-access-command.js")
-      .then(async ({
-        readFileAccessStatus,
-        readPasswordFromStdin,
-        setFileAccessPassword,
-      }) => {
-        if (action === "status") {
-          const status = await readFileAccessStatus();
-          if (hasFlag(parsed, "json")) {
-            console.log(JSON.stringify(status));
-          } else {
-            console.log(
-              status.passwordConfigured
-                ? `File mutation password configured; ${status.biometricDeviceCount} biometric device(s) enrolled.`
-                : "File mutation password is not configured.",
-            );
+      .then(
+        async ({
+          readFileAccessStatus,
+          readPasswordFromStdin,
+          setFileAccessPassword,
+        }) => {
+          if (action === "status") {
+            const status = await readFileAccessStatus();
+            if (hasFlag(parsed, "json")) {
+              console.log(JSON.stringify(status));
+            } else {
+              console.log(
+                status.passwordConfigured
+                  ? `File mutation password configured; ${status.biometricDeviceCount} biometric device(s) enrolled.`
+                  : "File mutation password is not configured.",
+              );
+            }
+            return;
           }
-          return;
-        }
-        const password = hasFlag(parsed, "password-stdin")
-          ? await readPasswordFromStdin()
-          : undefined;
-        await setFileAccessPassword({ password });
-        console.log(
-          "File mutation password configured. Existing biometric enrollments were revoked.",
-        );
-      })
+          const password = hasFlag(parsed, "password-stdin")
+            ? await readPasswordFromStdin()
+            : undefined;
+          await setFileAccessPassword({ password });
+          console.log(
+            "File mutation password configured. Existing biometric enrollments were revoked.",
+          );
+        },
+      )
       .catch((err) => {
         console.error(
           `File access ${action} failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -302,6 +345,13 @@ if (parsed.helpRequested) {
   const codexSourceId = parseFlag(parsed, "codex-source-id");
   const codexAppServerPort = parseFlag(parsed, "codex-app-server-port");
   const codexAppServerUrl = parseFlag(parsed, "codex-app-server-url");
+  const codexDaemonCli = parseFlag(parsed, "codex-daemon-cli");
+  const codexDaemonSocket = parseFlag(parsed, "codex-daemon-socket");
+  const codexDaemonExpectedVersion = parseFlag(
+    parsed,
+    "codex-daemon-expected-version",
+  );
+  const codexHome = parseFlag(parsed, "codex-home");
 
   if (port !== undefined) process.env.BRIDGE_PORT = port;
   if (host) process.env.BRIDGE_HOST = host;
@@ -324,7 +374,30 @@ if (parsed.helpRequested) {
   if (codexSourceId !== undefined) {
     process.env.BRIDGE_CODEX_SOURCE_ID = codexSourceId;
   }
+  if (codexDaemonCli !== undefined) {
+    process.env.BRIDGE_CODEX_DAEMON_CLI = codexDaemonCli;
+  }
+  if (codexDaemonSocket !== undefined) {
+    process.env.BRIDGE_CODEX_DAEMON_SOCKET = codexDaemonSocket;
+  }
+  if (codexDaemonExpectedVersion !== undefined) {
+    process.env.BRIDGE_CODEX_DAEMON_EXPECTED_VERSION =
+      codexDaemonExpectedVersion;
+  }
+  if (codexHome !== undefined) {
+    process.env.CODEX_HOME = codexHome;
+  }
   if (hasFlag(parsed, "no-mdns")) process.env.BRIDGE_DISABLE_MDNS = "1";
+
+  try {
+    const mode = readCodexAppServerMode();
+    if (mode === "daemon") {
+      readCodexDaemonConfig();
+    }
+  } catch (error) {
+    console.error(`[bridge] Failed to start: ${startupErrorMessage(error)}`);
+    process.exit(1);
+  }
 
   startServer().catch((err) => {
     console.error(`[bridge] Failed to start: ${startupErrorMessage(err)}`);
