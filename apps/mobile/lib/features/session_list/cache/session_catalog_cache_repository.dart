@@ -149,11 +149,16 @@ class ConversationTimelinePageCommit {
     required this.pageStored,
     required this.windowCommitted,
     required this.baseRevisionMatched,
+    this.lastAssistantOutputAt,
   });
 
   final bool pageStored;
   final bool windowCommitted;
   final bool baseRevisionMatched;
+
+  /// Newest discrete assistant text timestamp introduced by this committed
+  /// snapshot/patch, or null when the commit only changed tools/status.
+  final String? lastAssistantOutputAt;
 }
 
 class SessionCatalogCacheStats {
@@ -237,8 +242,11 @@ class SessionCatalogCacheRepository {
   static const maxEntriesPerPartition = 10_000;
   static const maxHotWindowEntries = 2_000;
   static const _maxIdentityLookupsPerQuery = 300;
-  static const _maxKnownRevisionValidationWindows = 64;
-  static const _maxKnownRevisionValidationEntries = 8_000;
+  // Revision advertisement is only a reconnect optimization. Keep the initial
+  // subscribe path deliberately small; omitted windows are safely replayed by
+  // the Bridge after the socket is ready.
+  static const _maxKnownRevisionValidationWindows = 16;
+  static const _maxKnownRevisionValidationEntries = 1_000;
 
   final SessionCatalogCacheDatabase database;
   Future<void> _mutationTail = Future<void>.value();
@@ -318,6 +326,12 @@ class SessionCatalogCacheRepository {
         final partitionId = await _ensureWritablePartition(transaction, target);
         final now = DateTime.now().toUtc().millisecondsSinceEpoch;
         final authoritativeReplacement = _isAuthoritativeReplacement(response);
+        final assistantOutputByIdentity =
+            await _cachedAssistantOutputByIdentity(
+              transaction,
+              partitionId,
+              response.sessions,
+            );
         if (authoritativeReplacement) {
           await transaction.delete(
             SessionCatalogCacheDatabase.entriesTable,
@@ -325,12 +339,34 @@ class SessionCatalogCacheRepository {
             whereArgs: [partitionId],
           );
         }
-        for (final session in response.sessions) {
+        for (final incoming in response.sessions) {
+          final provider = incoming.provider ?? Provider.claude.value;
+          final preserved =
+              assistantOutputByIdentity[_conversationIdentity(
+                provider,
+                incoming.sessionId,
+              )];
+          final latestAssistantOutputAt = _latestIsoTimestamp(
+            incoming.lastAssistantOutputAt,
+            preserved,
+          );
+          final session =
+              latestAssistantOutputAt == null ||
+                  latestAssistantOutputAt == incoming.lastAssistantOutputAt
+              ? incoming
+              : incoming.copyWithLastAssistantOutputAt(latestAssistantOutputAt);
+          if (!authoritativeReplacement) {
+            await transaction.delete(
+              SessionCatalogCacheDatabase.entriesTable,
+              where: 'partition_id = ? AND provider = ? AND session_id = ?',
+              whereArgs: [partitionId, provider, session.sessionId],
+            );
+          }
           await transaction.insert(
             SessionCatalogCacheDatabase.entriesTable,
             {
               'partition_id': partitionId,
-              'provider': session.provider ?? Provider.claude.value,
+              'provider': provider,
               'project_path': session.projectPath,
               'session_id': session.sessionId,
               'session_json': jsonEncode(session.toJson()),
@@ -829,23 +865,26 @@ class SessionCatalogCacheRepository {
     );
   }
 
-  Future<void> storeReadWatermark({
+  Future<ConversationSyncV2ReadWatermark?> storeReadWatermark({
     required SessionCatalogCacheTarget target,
     required ConversationSyncV2ReadWatermark watermark,
+    bool allowUnanchoredLegacySeed = false,
   }) {
-    if (!target.isValid) return Future<void>.value();
-    return _enqueueMutation(() async {
+    if (!target.isValid) return Future.value();
+    return _enqueueMutationResult(() async {
       final db = await database.database;
-      await db.transaction((transaction) async {
+      return db.transaction((transaction) async {
         final partitionId = await _ensureWritablePartition(transaction, target);
-        final readSort =
+        var effectiveReadAt = watermark.readAt;
+        var readSort =
             DateTime.tryParse(
-              watermark.readAt,
+              effectiveReadAt,
             )?.toUtc().millisecondsSinceEpoch ??
             0;
-        final rows = await transaction.query(
-          SessionCatalogCacheDatabase.readWatermarksTable,
-          columns: ['read_sort'],
+        var statusBound = false;
+        final statusRows = await transaction.query(
+          SessionCatalogCacheDatabase.statusesTable,
+          columns: ['status_json', 'observed_sort'],
           where:
               'partition_id = ? AND provider = ? '
               'AND provider_session_id = ?',
@@ -856,8 +895,64 @@ class SessionCatalogCacheRepository {
           ],
           limit: 1,
         );
-        if (rows.isNotEmpty && (rows.single['read_sort']! as int) > readSort) {
-          return;
+        if (statusRows.isNotEmpty) {
+          var observedAt = DateTime.fromMillisecondsSinceEpoch(
+            statusRows.single['observed_sort']! as int,
+            isUtc: true,
+          ).toIso8601String();
+          try {
+            final status = jsonDecode(
+              statusRows.single['status_json']! as String,
+            );
+            if (status is Map && status['observedAt'] is String) {
+              observedAt = status['observedAt']! as String;
+            }
+          } catch (_) {
+            // observed_sort remains an adequate conservative fallback.
+          }
+          final observed = DateTime.tryParse(observedAt)?.toUtc();
+          if (observed != null) {
+            effectiveReadAt = observed.toIso8601String();
+            readSort = observed.millisecondsSinceEpoch;
+            statusBound = true;
+          }
+        }
+        if (!statusBound && !allowUnanchoredLegacySeed) return null;
+        final rows = await transaction.query(
+          SessionCatalogCacheDatabase.readWatermarksTable,
+          columns: ['read_at', 'read_sort'],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [
+            partitionId,
+            watermark.provider,
+            watermark.providerSessionId,
+          ],
+          limit: 1,
+        );
+        if (rows.isNotEmpty) {
+          final storedReadAt = rows.single['read_at']! as String;
+          if (statusBound && storedReadAt == effectiveReadAt) {
+            return ConversationSyncV2ReadWatermark(
+              provider: watermark.provider,
+              providerSessionId: watermark.providerSessionId,
+              readAt: storedReadAt,
+            );
+          }
+          final stored = DateTime.tryParse(storedReadAt)?.toUtc();
+          final effective = DateTime.tryParse(effectiveReadAt)?.toUtc();
+          if (!statusBound &&
+              ((stored != null &&
+                      (effective == null || !effective.isAfter(stored))) ||
+                  (stored == null &&
+                      (rows.single['read_sort']! as int) >= readSort))) {
+            return ConversationSyncV2ReadWatermark(
+              provider: watermark.provider,
+              providerSessionId: watermark.providerSessionId,
+              readAt: storedReadAt,
+            );
+          }
         }
         await transaction.insert(
           SessionCatalogCacheDatabase.readWatermarksTable,
@@ -865,11 +960,16 @@ class SessionCatalogCacheRepository {
             'partition_id': partitionId,
             'provider': watermark.provider,
             'provider_session_id': watermark.providerSessionId,
-            'read_at': watermark.readAt,
+            'read_at': effectiveReadAt,
             'read_sort': readSort,
             'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
           },
           conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        return ConversationSyncV2ReadWatermark(
+          provider: watermark.provider,
+          providerSessionId: watermark.providerSessionId,
+          readAt: effectiveReadAt,
         );
       });
     });
@@ -921,13 +1021,34 @@ class SessionCatalogCacheRepository {
       await db.transaction((transaction) async {
         final partitionId = await _ensureWritablePartition(transaction, target);
         final now = DateTime.now().toUtc().millisecondsSinceEpoch;
-        for (final entry in [...created, ...updated]) {
+        final incomingEntries = [...created, ...updated];
+        final decodedSessions = incomingEntries
+            .map((entry) => entry.toRecentSession(codexSourceId: codexSourceId))
+            .toList(growable: false);
+        final assistantOutputByIdentity =
+            await _cachedAssistantOutputByIdentity(
+              transaction,
+              partitionId,
+              decodedSessions,
+            );
+        for (var index = 0; index < incomingEntries.length; index++) {
+          final entry = incomingEntries[index];
+          final decodedSession = decodedSessions[index];
+          final preservedAssistantOutputAt =
+              assistantOutputByIdentity[_conversationIdentity(
+                entry.provider,
+                entry.providerSessionId,
+              )];
           await transaction.delete(
             SessionCatalogCacheDatabase.entriesTable,
             where: 'partition_id = ? AND provider = ? AND session_id = ?',
             whereArgs: [partitionId, entry.provider, entry.providerSessionId],
           );
-          final session = entry.toRecentSession(codexSourceId: codexSourceId);
+          final session = preservedAssistantOutputAt == null
+              ? decodedSession
+              : decodedSession.copyWithLastAssistantOutputAt(
+                  preservedAssistantOutputAt,
+                );
           await transaction.insert(
             SessionCatalogCacheDatabase.entriesTable,
             {
@@ -1431,15 +1552,30 @@ class SessionCatalogCacheRepository {
               'AND provider_session_id = ?',
           whereArgs: [partitionId, provider, providerSessionId],
         );
+        final lastAssistantOutputAt = await _latestStagedAssistantOutputAt(
+          transaction,
+          keyWhere: keyWhere,
+          keyArgs: keyArgs,
+        );
+        final advancedAssistantOutputAt = lastAssistantOutputAt == null
+            ? null
+            : await _advanceCachedAssistantOutputAt(
+                transaction,
+                partitionId: partitionId,
+                provider: provider,
+                providerSessionId: providerSessionId,
+                candidate: lastAssistantOutputAt,
+              );
         await transaction.delete(
           SessionCatalogCacheDatabase.timelineStagesTable,
           where: keyWhere,
           whereArgs: keyArgs,
         );
-        return const ConversationTimelinePageCommit(
+        return ConversationTimelinePageCommit(
           pageStored: true,
           windowCommitted: true,
           baseRevisionMatched: true,
+          lastAssistantOutputAt: advancedAssistantOutputAt,
         );
       });
     });
@@ -2349,6 +2485,161 @@ class SessionCatalogCacheRepository {
       {'partition_id': partitionId, 'priority_ready': 0, 'updated_at': now},
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
+  }
+
+  static Future<String?> _latestStagedAssistantOutputAt(
+    DatabaseExecutor database, {
+    required String keyWhere,
+    required List<Object?> keyArgs,
+  }) async {
+    final rows = await database.query(
+      SessionCatalogCacheDatabase.timelineStageEntriesTable,
+      columns: ['message_json'],
+      where: keyWhere,
+      whereArgs: keyArgs,
+      orderBy: 'entry_index DESC',
+      limit: maxHotWindowEntries,
+    );
+    for (final row in rows) {
+      try {
+        final decoded = jsonDecode(row['message_json']! as String);
+        if (decoded is! Map) continue;
+        final message = ServerMessage.fromJson(
+          Map<String, dynamic>.from(decoded),
+        );
+        if (message is! AssistantServerMessage ||
+            !message.message.content.any(isVisibleAssistantTextContent)) {
+          continue;
+        }
+        final timestamp = serverMessageTimestamp(message);
+        if (timestamp == null) continue;
+        return timestamp.value.toUtc().toIso8601String();
+      } catch (_) {
+        // The enclosing timeline validation owns malformed-entry recovery.
+        // A missing optional ordering checkpoint must not reject a valid page.
+      }
+    }
+    return null;
+  }
+
+  static Future<String?> _advanceCachedAssistantOutputAt(
+    DatabaseExecutor database, {
+    required String partitionId,
+    required String provider,
+    required String providerSessionId,
+    required String candidate,
+  }) async {
+    final candidateTime = DateTime.tryParse(candidate)?.toUtc();
+    if (candidateTime == null) return null;
+    final rows = await database.query(
+      SessionCatalogCacheDatabase.entriesTable,
+      columns: ['project_path', 'session_json'],
+      where: 'partition_id = ? AND provider = ? AND session_id = ?',
+      whereArgs: [partitionId, provider, providerSessionId],
+    );
+    if (rows.isEmpty) return candidateTime.toIso8601String();
+    var advanced = false;
+    for (final row in rows) {
+      try {
+        final decoded = jsonDecode(row['session_json']! as String);
+        if (decoded is! Map) continue;
+        final session = RecentSession.fromJson(
+          Map<String, dynamic>.from(decoded),
+        );
+        final current = DateTime.tryParse(
+          session.lastAssistantOutputAt ?? '',
+        )?.toUtc();
+        if (current != null && !candidateTime.isAfter(current)) continue;
+        final updated = session.copyWithLastAssistantOutputAt(
+          candidateTime.toIso8601String(),
+        );
+        await database.update(
+          SessionCatalogCacheDatabase.entriesTable,
+          {'session_json': jsonEncode(updated.toJson())},
+          where:
+              'partition_id = ? AND provider = ? AND project_path = ? '
+              'AND session_id = ?',
+          whereArgs: [
+            partitionId,
+            provider,
+            row['project_path'],
+            providerSessionId,
+          ],
+        );
+        advanced = true;
+      } catch (_) {
+        // Catalog cache rows are rebuildable; leave a damaged row untouched.
+      }
+    }
+    return advanced ? candidateTime.toIso8601String() : null;
+  }
+
+  static Future<Map<String, String>> _cachedAssistantOutputByIdentity(
+    DatabaseExecutor database,
+    String partitionId,
+    Iterable<RecentSession> incoming,
+  ) async {
+    final identities = <String, (String, String)>{};
+    for (final session in incoming) {
+      final provider = session.provider ?? Provider.claude.value;
+      identities[_conversationIdentity(provider, session.sessionId)] = (
+        provider,
+        session.sessionId,
+      );
+    }
+    if (identities.isEmpty) return const {};
+
+    final checkpoints = <String, String>{};
+    final values = identities.values.toList(growable: false);
+    const identitiesPerQuery = 200;
+    for (var start = 0; start < values.length; start += identitiesPerQuery) {
+      final candidateEnd = start + identitiesPerQuery;
+      final end = candidateEnd < values.length ? candidateEnd : values.length;
+      final chunk = values.sublist(start, end);
+      final identityPredicate = List.filled(
+        chunk.length,
+        '(provider = ? AND session_id = ?)',
+      ).join(' OR ');
+      final rows = await database.query(
+        SessionCatalogCacheDatabase.entriesTable,
+        columns: ['provider', 'session_id', 'session_json'],
+        where: 'partition_id = ? AND ($identityPredicate)',
+        whereArgs: [
+          partitionId,
+          for (final (provider, sessionId) in chunk) ...[provider, sessionId],
+        ],
+      );
+      for (final row in rows) {
+        try {
+          final decoded = jsonDecode(row['session_json']! as String);
+          if (decoded is! Map) continue;
+          final candidate = RecentSession.fromJson(
+            Map<String, dynamic>.from(decoded),
+          ).lastAssistantOutputAt;
+          final key = _conversationIdentity(
+            row['provider']! as String,
+            row['session_id']! as String,
+          );
+          final latest = _latestIsoTimestamp(checkpoints[key], candidate);
+          if (latest != null) checkpoints[key] = latest;
+        } catch (_) {
+          // Catalog cache rows are rebuildable; skip only the damaged row.
+        }
+      }
+    }
+    return checkpoints;
+  }
+
+  static String _conversationIdentity(String provider, String sessionId) =>
+      '$provider\u0000$sessionId';
+
+  static String? _latestIsoTimestamp(String? first, String? second) {
+    final firstTime = DateTime.tryParse(first ?? '')?.toUtc();
+    final secondTime = DateTime.tryParse(second ?? '')?.toUtc();
+    if (firstTime == null) return secondTime?.toIso8601String();
+    if (secondTime == null) return firstTime.toIso8601String();
+    return (firstTime.isAfter(secondTime) ? firstTime : secondTime)
+        .toIso8601String();
   }
 
   static bool _isAuthoritativeReplacement(RecentSessionsMessage response) {

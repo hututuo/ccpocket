@@ -2112,12 +2112,42 @@ class BridgeService implements BridgeServiceBase {
                   for (final session in _sessions)
                     if (session.externalDesktopTurnActive) session.id: true,
                 };
+                final assistantOutputBySession = <String, String>{
+                  for (final session in _sessions)
+                    if (session.lastAssistantOutputAt != null)
+                      _assistantOutputIdentity(session):
+                          session.lastAssistantOutputAt!,
+                };
+                final assistantOutputByRuntimeId = <String, String>{
+                  for (final session in _sessions)
+                    if (session.lastAssistantOutputAt != null &&
+                        (session.claudeSessionId?.trim().isEmpty ?? true))
+                      _runtimeAssistantOutputIdentity(session):
+                          session.lastAssistantOutputAt!,
+                };
                 _sessions = sessions
-                    .map(
-                      (session) => externalBySession[session.id] == true
+                    .map((session) {
+                      var merged = externalBySession[session.id] == true
                           ? session.copyWith(externalDesktopTurnActive: true)
-                          : session,
-                    )
+                          : session;
+                      final preservedAssistantOutputAt =
+                          assistantOutputBySession[_assistantOutputIdentity(
+                            session,
+                          )] ??
+                          assistantOutputByRuntimeId[_runtimeAssistantOutputIdentity(
+                            session,
+                          )];
+                      final assistantOutputAt = _latestAssistantOutputAt(
+                        session.lastAssistantOutputAt,
+                        preservedAssistantOutputAt,
+                      );
+                      if (assistantOutputAt != null) {
+                        merged = merged.copyWith(
+                          lastAssistantOutputAt: assistantOutputAt,
+                        );
+                      }
+                      return merged;
+                    })
                     .toList(growable: false);
                 _allowedDirs = allowedDirs;
                 _claudeModels = claudeModels;
@@ -2361,9 +2391,13 @@ class BridgeService implements BridgeServiceBase {
                   _taggedMessageController.add((msg, sessionId));
                 }
                 _messageController.add(msg);
-              case AssistantServerMessage(:final message):
+              case AssistantServerMessage():
                 if (sessionId != null) {
-                  _patchSessionLastMessage(sessionId, message);
+                  _patchSessionLastMessage(
+                    sessionId,
+                    msg,
+                    activityAt: json['activityAt'] as String?,
+                  );
                 }
                 _taggedMessageController.add((msg, sessionId));
                 _messageController.add(msg);
@@ -6287,6 +6321,36 @@ class BridgeService implements BridgeServiceBase {
     return next.toUtc().toIso8601String();
   }
 
+  String _assistantOutputIdentity(SessionInfo session) {
+    final provider = session.provider ?? Provider.claude.value;
+    final durableId = session.claudeSessionId?.trim();
+    return durableId == null || durableId.isEmpty
+        ? '$provider\u0000runtime\u0000${session.id}'
+        : '$provider\u0000$durableId';
+  }
+
+  String _runtimeAssistantOutputIdentity(SessionInfo session) {
+    final provider = session.provider ?? Provider.claude.value;
+    return '$provider\u0000${session.id}';
+  }
+
+  String? _latestAssistantOutputAt(String? first, String? second) {
+    final firstTime = DateTime.tryParse(first ?? '')?.toUtc();
+    final secondTime = DateTime.tryParse(second ?? '')?.toUtc();
+    if (firstTime == null) return secondTime?.toIso8601String();
+    if (secondTime == null) return firstTime.toIso8601String();
+    return (firstTime.isAfter(secondTime) ? firstTime : secondTime)
+        .toIso8601String();
+  }
+
+  String? _newerAssistantOutputAt(String? current, String? candidate) {
+    final next = DateTime.tryParse(candidate ?? '')?.toUtc();
+    if (next == null) return null;
+    final previous = DateTime.tryParse(current ?? '')?.toUtc();
+    if (previous != null && !next.isAfter(previous)) return null;
+    return next.toIso8601String();
+  }
+
   void _patchExternalDesktopTurn(CodexDesktopContinuityEventMessage message) {
     if (!message.usesSupportedSemantics) return;
     _patchSessionActivity(message.sessionId, message.timestamp);
@@ -6470,10 +6534,15 @@ class BridgeService implements BridgeServiceBase {
 
   /// Update the cached lastMessage when an [AssistantMessage] arrives so the
   /// session list card shows the latest response in real-time.
-  void _patchSessionLastMessage(String sessionId, AssistantMessage message) {
+  void _patchSessionLastMessage(
+    String sessionId,
+    AssistantServerMessage serverMessage, {
+    String? activityAt,
+  }) {
     final idx = _sessions.indexWhere((s) => s.id == sessionId);
     if (idx < 0) return;
     final current = _sessions[idx];
+    final message = serverMessage.message;
     final messageModel = sanitizeCodexModelName(message.model) ?? '';
     final text = message.content
         .map(_assistantContentPreviewText)
@@ -6485,11 +6554,24 @@ class BridgeService implements BridgeServiceBase {
         current.provider == Provider.codex.value &&
         messageModel.isNotEmpty &&
         messageModel != current.codexModel;
-    if (text.isEmpty && !shouldPatchModel) return;
+    final hasVisibleAssistantText = message.content.any(
+      isVisibleAssistantTextContent,
+    );
+    final nextAssistantOutputAt = hasVisibleAssistantText
+        ? _newerAssistantOutputAt(
+            current.lastAssistantOutputAt,
+            serverMessageTimestamp(serverMessage)?.value.toIso8601String() ??
+                activityAt,
+          )
+        : null;
+    if (text.isEmpty && !shouldPatchModel && nextAssistantOutputAt == null) {
+      return;
+    }
     final preview = text.length > 100 ? text.substring(0, 100) : text;
     _sessions = List.of(_sessions)
       ..[idx] = current.copyWith(
         lastMessage: text.isNotEmpty ? preview : null,
+        lastAssistantOutputAt: nextAssistantOutputAt,
         codexModel: shouldPatchModel ? messageModel : null,
       );
     _sessionListController.add(_sessions);

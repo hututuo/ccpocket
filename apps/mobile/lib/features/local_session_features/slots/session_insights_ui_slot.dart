@@ -12,8 +12,12 @@ class _SessionInsightsUiSlot extends LocalSessionFeatureSlot {
 
   @override
   List<Widget> modeBarWidgets(CodexSessionFeatureContext context) {
-    final insightsSessionId =
-        context.sessionInsightsSessionId ?? context.sessionId;
+    final durableSessionId = context.sessionInsightsSessionId?.trim();
+    final durableCacheIdentityConfirmed =
+        durableSessionId != null && durableSessionId.isNotEmpty;
+    final insightsSessionId = durableCacheIdentityConfirmed
+        ? durableSessionId
+        : context.sessionId;
     return [
       SessionInsightsBar(
         key: ValueKey('session_insights_$insightsSessionId'),
@@ -23,6 +27,7 @@ class _SessionInsightsUiSlot extends LocalSessionFeatureSlot {
         selectedModel: context.codexModel,
         compact: true,
         showLeadingDivider: true,
+        durableCacheIdentityConfirmed: durableCacheIdentityConfirmed,
         onCompact: context.requestCompact,
       ),
     ];
@@ -33,17 +38,25 @@ class _SessionInsightsUiSlot extends LocalSessionFeatureSlot {
       WorkspaceFeaturePaneDescriptor(
         featureId: featureId,
         title: (context) => SessionInsightsStrings.of(context).title,
-        builder: (context) => SessionInsightsPanel(
-          sessionId: _sessionInsightsPaneSessionId(context),
-          runtimeSessionId: context.sessionId,
-          bridgeService: context.bridge,
-        ),
+        builder: (context) {
+          final identity = _sessionInsightsPaneIdentity(context);
+          return SessionInsightsPanel(
+            sessionId: identity.sessionId,
+            runtimeSessionId: context.sessionId,
+            bridgeService: context.bridge,
+            durableCacheIdentityConfirmed:
+                identity.durableCacheIdentityConfirmed,
+          );
+        },
         rememberPerSession: false,
       );
 }
 
-String _sessionInsightsPaneSessionId(WorkspaceFeaturePaneContext context) {
+({String sessionId, bool durableCacheIdentityConfirmed})
+_sessionInsightsPaneIdentity(WorkspaceFeaturePaneContext context) {
   final value = context.arguments['sessionInsightsSessionId'];
-  if (value is String && value.trim().isNotEmpty) return value;
-  return context.sessionId;
+  if (value is String && value.trim().isNotEmpty) {
+    return (sessionId: value.trim(), durableCacheIdentityConfirmed: true);
+  }
+  return (sessionId: context.sessionId, durableCacheIdentityConfirmed: false);
 }

@@ -20,6 +20,7 @@ import '../../../models/messages.dart'
         requestContextUsage,
         requestSessionUsage;
 import '../../../services/bridge_service.dart';
+import 'session_insights_quota_cache.dart';
 
 /// Standalone source of truth for one Codex session's context and quota data.
 ///
@@ -30,6 +31,7 @@ class SessionInsightsController extends ChangeNotifier {
   static const _uuid = Uuid();
   static final Expando<_SessionInsightsSnapshotCache> _snapshotCaches =
       Expando<_SessionInsightsSnapshotCache>('sessionInsightsSnapshots');
+  static final _persistentQuotaCache = SessionInsightsQuotaCache();
 
   SessionInsightsController({
     required this.sessionId,
@@ -38,6 +40,7 @@ class SessionInsightsController extends ChangeNotifier {
     this.requestTimeout = const Duration(seconds: 12),
     this.contextCacheTimeToLive = const Duration(minutes: 10),
     this.quotaCacheTimeToLive = const Duration(minutes: 10),
+    this.durableCacheIdentityConfirmed = false,
     DateTime Function()? clock,
   }) {
     _clock = clock ?? DateTime.now;
@@ -45,6 +48,7 @@ class SessionInsightsController extends ChangeNotifier {
     _connectionEpoch = bridge.currentConnectionBootstrap.connectionEpoch;
     _durableCapabilityAdvertised = _supportsDurableSessionInsights;
     _restoreSnapshot();
+    _queuePersistentQuotaRestore();
   }
 
   /// Stable provider thread identity. Cache entries are always keyed by this.
@@ -56,6 +60,12 @@ class SessionInsightsController extends ChangeNotifier {
   final Duration requestTimeout;
   final Duration contextCacheTimeToLive;
   final Duration quotaCacheTimeToLive;
+
+  /// Whether [sessionId] is a confirmed durable provider thread identity.
+  ///
+  /// Legacy runtime aliases can still be used for requests, but must never
+  /// partition phone-local storage.
+  final bool durableCacheIdentityConfirmed;
   late final DateTime Function() _clock;
 
   final List<StreamSubscription<LocalFeatureServerMessage>>
@@ -73,6 +83,7 @@ class SessionInsightsController extends ChangeNotifier {
   bool _disposed = false;
   int _contextGeneration = 0;
   int _quotaGeneration = 0;
+  int _quotaCacheRestoreGeneration = 0;
   String? _contextRequestId;
   String? _contextRequestSessionId;
   String? _contextRequestSourceKey;
@@ -86,6 +97,7 @@ class SessionInsightsController extends ChangeNotifier {
   late bool _durableCapabilityAdvertised;
   bool _waitingForAuthoritativeSessionList = false;
   String? _lastContextFingerprint;
+  Future<void> _quotaCacheOperation = Future<void>.value();
 
   ContextUsage? get contextUsage => _contextUsage;
   SessionUsageResultMessage? get usage => _usage;
@@ -98,6 +110,9 @@ class SessionInsightsController extends ChangeNotifier {
 
   @visibleForTesting
   String? get debugPendingContextRequestId => _contextRequestId;
+
+  @visibleForTesting
+  Future<void> get debugQuotaCacheIdle => _quotaCacheOperation;
 
   @visibleForTesting
   String? get debugContextRequestSessionId => _contextRequestSessionId;
@@ -319,8 +334,15 @@ class SessionInsightsController extends ChangeNotifier {
         usage.requestId != expectedRequestId) {
       return;
     }
-    _usage = usage;
-    if (usage.error == null) _rememberQuotaSnapshot();
+    if (_quotaWithWindows(usage) case final quota?) {
+      _usage = usage;
+      _rememberQuotaSnapshot(quota);
+    } else if (_quotaWithWindows(_usage) == null) {
+      // Preserve the last useful rings across transient top-level failures and
+      // provider error-only compatibility fallbacks. With no prior snapshot,
+      // keep the response so first-load diagnostics retain their old behavior.
+      _usage = usage;
+    }
     _quotaRequestId = null;
     _quotaRequestSessionId = null;
     _quotaLoading = false;
@@ -408,6 +430,7 @@ class SessionInsightsController extends ChangeNotifier {
       _usage = null;
       _lastContextFingerprint = null;
       _restoreSnapshot();
+      _queuePersistentQuotaRestore();
     }
     return true;
   }
@@ -434,11 +457,78 @@ class SessionInsightsController extends ChangeNotifier {
     _cacheForBridge.writeContext(snapshotKey, contextUsage, cachedAt: _clock());
   }
 
-  void _rememberQuotaSnapshot() {
+  void _rememberQuotaSnapshot(
+    SessionUsageInfo quota, {
+    DateTime? cachedAt,
+    bool persist = true,
+  }) {
     final snapshotKey = _snapshotKey;
     final usage = _usage;
-    if (snapshotKey == null || usage == null || usage.error != null) return;
-    _cacheForBridge.writeQuota(snapshotKey, usage, cachedAt: _clock());
+    if (snapshotKey == null || usage == null) return;
+    final effectiveCachedAt = cachedAt ?? _clock();
+    _cacheForBridge.writeQuota(snapshotKey, usage, cachedAt: effectiveCachedAt);
+    final sourceKey = _sourceKey;
+    if (!persist || !durableCacheIdentityConfirmed || sourceKey == null) {
+      return;
+    }
+    _enqueueQuotaCacheOperation(
+      () => _persistentQuotaCache.write(
+        sourceKey: sourceKey,
+        sessionId: sessionId,
+        quota: quota,
+        cachedAt: effectiveCachedAt,
+      ),
+    );
+  }
+
+  void _queuePersistentQuotaRestore() {
+    final sourceKey = _sourceKey;
+    final restoreGeneration = ++_quotaCacheRestoreGeneration;
+    if (!durableCacheIdentityConfirmed || sourceKey == null) return;
+    _enqueueQuotaCacheOperation(() async {
+      final snapshot = await _persistentQuotaCache.read(
+        sourceKey: sourceKey,
+        sessionId: sessionId,
+        now: _clock(),
+        timeToLive: quotaCacheTimeToLive,
+      );
+      if (_disposed ||
+          restoreGeneration != _quotaCacheRestoreGeneration ||
+          sourceKey != _sourceKey ||
+          sourceKey != _stableSourceKey(bridge) ||
+          snapshot == null ||
+          _quotaWithWindows(_usage) != null) {
+        return;
+      }
+      _usage = SessionUsageResultMessage(
+        sessionId: sessionId,
+        requestId: 'phone-local-cache',
+        providers: [snapshot.quota],
+      );
+      _rememberQuotaSnapshot(
+        snapshot.quota,
+        cachedAt: snapshot.cachedAt,
+        persist: false,
+      );
+      notifyListeners();
+    });
+  }
+
+  void _enqueueQuotaCacheOperation(Future<void> Function() operation) {
+    final next = _quotaCacheOperation.then((_) => operation());
+    _quotaCacheOperation = next.catchError((Object _) {});
+    unawaited(_quotaCacheOperation);
+  }
+
+  static SessionUsageInfo? _quotaWithWindows(SessionUsageResultMessage? usage) {
+    if (usage == null || usage.error != null) return null;
+    for (final provider in usage.providers) {
+      if (provider.provider == 'codex' &&
+          SessionInsightsQuotaCache.hasQuotaWindows(provider)) {
+        return provider;
+      }
+    }
+    return null;
   }
 
   _SessionInsightsSnapshotCache get _cacheForBridge =>
@@ -571,6 +661,7 @@ class SessionInsightsController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _quotaCacheRestoreGeneration++;
     _abandonPendingContext(quarantineLegacy: bridge.isConnected);
     for (final subscription in _sessionSubscriptions) {
       subscription.cancel();

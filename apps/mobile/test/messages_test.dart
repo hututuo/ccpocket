@@ -66,6 +66,17 @@ void main() {
     expect(delta.rawStatus, isNull);
   });
 
+  test('unknown assistant content stays visible but is not protocol text', () {
+    final content = AssistantContent.fromJson({
+      'type': 'future_tool_action',
+      'payload': const {'value': 1},
+    });
+
+    expect(content, isA<UnknownAssistantContent>());
+    expect((content as TextContent).text, contains('future_tool_action'));
+    expect(isVisibleAssistantTextContent(content), isFalse);
+  });
+
   test('preserves exact Bridge receipt time and approximate source time', () {
     final exact = ServerMessage.fromJson({
       'type': 'assistant',
@@ -1300,6 +1311,7 @@ void main() {
         'lastPrompt': 'continue',
         'created': '2026-02-13T00:00:00Z',
         'modified': '2026-02-13T00:01:00Z',
+        'lastAssistantOutputAt': '2026-02-13T00:00:30Z',
         'gitBranch': 'feature/cache',
         'projectPath': '/tmp/project',
         'resumeCwd': '/tmp/worktree',
@@ -1328,10 +1340,12 @@ void main() {
       expect(restored.codexSourceId, 'codex-home-source-a');
       expect(restored.codexPermissionsMode, 'autoReview');
       expect(restored.codexAdditionalWritableRoots, ['/tmp/shared']);
+      expect(restored.lastAssistantOutputAt, '2026-02-13T00:00:30Z');
       expect(renamed.name, 'After rename');
       expect(renamed.forkedFromThreadId, 'parent-thread');
       expect(renamed.codexSourceId, 'codex-home-source-a');
       expect(renamed.codexPermissionsMode, 'autoReview');
+      expect(renamed.lastAssistantOutputAt, '2026-02-13T00:00:30Z');
     });
 
     test('SessionListMessage parses model metadata', () {

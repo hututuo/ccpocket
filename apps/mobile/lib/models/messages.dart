@@ -40,7 +40,7 @@ sealed class AssistantContent {
       'thinking' => ThinkingContent(
         thinking: json['thinking'] as String? ?? '',
       ),
-      _ => TextContent(text: '[Unknown content type: ${json['type']}]'),
+      _ => UnknownAssistantContent(rawType: '${json['type']}'),
     };
   }
 }
@@ -49,6 +49,22 @@ class TextContent implements AssistantContent {
   final String text;
   const TextContent({required this.text});
 }
+
+/// Display-compatible fallback for additive content types unknown to this app.
+///
+/// It remains a [TextContent] subtype so existing renderers keep showing the
+/// diagnostic placeholder, but ordering logic can exclude synthetic text.
+class UnknownAssistantContent extends TextContent {
+  final String rawType;
+
+  UnknownAssistantContent({required this.rawType})
+    : super(text: '[Unknown content type: $rawType]');
+}
+
+bool isVisibleAssistantTextContent(AssistantContent content) =>
+    content is TextContent &&
+    content is! UnknownAssistantContent &&
+    content.text.trim().isNotEmpty;
 
 class ToolUseContent implements AssistantContent {
   final String id;
@@ -4914,6 +4930,12 @@ class RecentSession {
   final String? lastPrompt;
   final String created;
   final String modified;
+
+  /// Mobile-local checkpoint for the newest discrete assistant text output.
+  ///
+  /// This is derived from the committed bounded timeline and deliberately
+  /// stays separate from [modified], which may advance for tool traffic.
+  final String? lastAssistantOutputAt;
   final String gitBranch;
   final String projectPath;
   final String? resumeCwd;
@@ -4946,6 +4968,7 @@ class RecentSession {
     this.lastPrompt,
     required this.created,
     required this.modified,
+    this.lastAssistantOutputAt,
     required this.gitBranch,
     required this.projectPath,
     this.resumeCwd,
@@ -5000,6 +5023,7 @@ class RecentSession {
       lastPrompt: json['lastPrompt'] as String?,
       created: json['created'] as String? ?? '',
       modified: json['modified'] as String? ?? '',
+      lastAssistantOutputAt: json['lastAssistantOutputAt'] as String?,
       gitBranch: json['gitBranch'] as String? ?? '',
       projectPath: json['projectPath'] as String? ?? '',
       resumeCwd: json['resumeCwd'] as String?,
@@ -5050,6 +5074,7 @@ class RecentSession {
     'lastPrompt': lastPrompt,
     'created': created,
     'modified': modified,
+    'lastAssistantOutputAt': lastAssistantOutputAt,
     'gitBranch': gitBranch,
     'projectPath': projectPath,
     'resumeCwd': resumeCwd,
@@ -5084,6 +5109,42 @@ class RecentSession {
     return projectName;
   }
 
+  RecentSession copyWithLastAssistantOutputAt(String value) {
+    return RecentSession(
+      sessionId: sessionId,
+      provider: provider,
+      codexSourceId: codexSourceId,
+      rawPermissionMode: rawPermissionMode,
+      forkedFromThreadId: forkedFromThreadId,
+      name: name,
+      agentNickname: agentNickname,
+      agentRole: agentRole,
+      summary: summary,
+      firstPrompt: firstPrompt,
+      lastPrompt: lastPrompt,
+      created: created,
+      modified: modified,
+      lastAssistantOutputAt: value,
+      gitBranch: gitBranch,
+      projectPath: projectPath,
+      resumeCwd: resumeCwd,
+      isSidechain: isSidechain,
+      codexApprovalPolicy: codexApprovalPolicy,
+      codexApprovalsReviewer: codexApprovalsReviewer,
+      codexPermissionsMode: codexPermissionsMode,
+      executionMode: executionMode,
+      planMode: planMode,
+      codexSandboxMode: codexSandboxMode,
+      codexModel: codexModel,
+      codexProfile: codexProfile,
+      codexModelReasoningEffort: codexModelReasoningEffort,
+      codexServiceTier: codexServiceTier,
+      codexNetworkAccessEnabled: codexNetworkAccessEnabled,
+      codexWebSearchMode: codexWebSearchMode,
+      codexAdditionalWritableRoots: codexAdditionalWritableRoots,
+    );
+  }
+
   /// Create a copy with an updated name. Use [clearName] to set name to null.
   RecentSession copyWithName({String? name, bool clearName = false}) {
     return RecentSession(
@@ -5100,6 +5161,7 @@ class RecentSession {
       lastPrompt: lastPrompt,
       created: created,
       modified: modified,
+      lastAssistantOutputAt: lastAssistantOutputAt,
       gitBranch: gitBranch,
       projectPath: projectPath,
       resumeCwd: resumeCwd,
@@ -5139,6 +5201,7 @@ class RecentSession {
       lastPrompt: lastPrompt,
       created: created,
       modified: modified,
+      lastAssistantOutputAt: lastAssistantOutputAt,
       gitBranch: gitBranch,
       projectPath: projectPath,
       resumeCwd: resumeCwd,
@@ -5177,6 +5240,7 @@ class SessionInfo {
   final String status;
   final String createdAt;
   final String lastActivityAt;
+  final String? lastAssistantOutputAt;
   final String gitBranch;
   final String lastMessage;
   final String? worktreePath;
@@ -5218,6 +5282,7 @@ class SessionInfo {
     required this.status,
     required this.createdAt,
     required this.lastActivityAt,
+    this.lastAssistantOutputAt,
     this.gitBranch = '',
     this.lastMessage = '',
     this.worktreePath,
@@ -5269,6 +5334,7 @@ class SessionInfo {
     bool clearName = false,
     String? lastMessage,
     String? lastActivityAt,
+    String? lastAssistantOutputAt,
     String? permissionMode,
     String? executionMode,
     bool? planMode,
@@ -5311,6 +5377,8 @@ class SessionInfo {
       status: status ?? this.status,
       createdAt: createdAt,
       lastActivityAt: lastActivityAt ?? this.lastActivityAt,
+      lastAssistantOutputAt:
+          lastAssistantOutputAt ?? this.lastAssistantOutputAt,
       gitBranch: gitBranch,
       lastMessage: lastMessage ?? this.lastMessage,
       worktreePath: worktreePath,
@@ -5372,6 +5440,7 @@ class SessionInfo {
       status: json['status'] as String? ?? 'idle',
       createdAt: json['createdAt'] as String? ?? '',
       lastActivityAt: json['lastActivityAt'] as String? ?? '',
+      lastAssistantOutputAt: json['lastAssistantOutputAt'] as String?,
       gitBranch: json['gitBranch'] as String? ?? '',
       lastMessage: json['lastMessage'] as String? ?? '',
       worktreePath: json['worktreePath'] as String?,

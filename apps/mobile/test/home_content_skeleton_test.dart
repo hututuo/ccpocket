@@ -253,7 +253,7 @@ void main() {
 
   group('HomeContent skeleton', () {
     testWidgets(
-      'running conversation forwards its durable provider identity on open',
+      'merged unread conversation opens with runtime and durable identities',
       (tester) async {
         String? openedRuntimeId;
         String? openedDurableId;
@@ -262,6 +262,14 @@ void main() {
             sessions: [
               _runningSession(id: 'runtime-1', providerSessionId: 'thread-1'),
             ],
+            recentSessions: [_session(id: 'thread-1')],
+            conversationStatuses: {
+              providerSessionIdentityKey('claude', 'thread-1'):
+                  _conversationStatus('thread-1', result: 'completed'),
+            },
+            unreadConversationKeys: {
+              providerSessionIdentityKey('claude', 'thread-1'),
+            },
             onTapRunning:
                 (
                   sessionId, {
@@ -546,10 +554,12 @@ void main() {
       await tester.scrollUntilVisible(
         find.text('test prompt for lazy-80'),
         500,
-        scrollable: find.descendant(
-          of: find.byKey(const ValueKey('session_list')),
-          matching: find.byType(Scrollable),
-        ).first,
+        scrollable: find
+            .descendant(
+              of: find.byKey(const ValueKey('session_list')),
+              matching: find.byType(Scrollable),
+            )
+            .first,
       );
       expect(find.text('test prompt for lazy-80'), findsOneWidget);
     });
@@ -639,8 +649,8 @@ void main() {
         );
         await tester.pump();
 
+        expect(rowTop('s3'), lessThan(rowTop('s1')));
         expect(rowTop('s1'), lessThan(rowTop('s2')));
-        expect(rowTop('s2'), lessThan(rowTop('s3')));
         for (final id in const ['s1', 's2', 's3']) {
           expect(tester.element(rowFor(id)), same(rowElementsBefore[id]));
           expect(tester.state(slidableFor(id)), same(slidableStatesBefore[id]));

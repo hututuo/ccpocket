@@ -2371,18 +2371,6 @@ async function getAllRecentCodexSessions(
   return entries;
 }
 
-function matchingCodexThreadIdFromFilePath(
-  filePath: string,
-  wantedThreadIds: ReadonlySet<string>,
-): string | null {
-  const fallbackSessionId = basename(filePath, ".jsonl");
-  if (wantedThreadIds.has(fallbackSessionId)) return fallbackSessionId;
-  for (const threadId of wantedThreadIds) {
-    if (fallbackSessionId.endsWith(`-${threadId}`)) return threadId;
-  }
-  return null;
-}
-
 export async function getCodexSessionIndexMetadata(
   threadIds: readonly string[],
   options: { authoritativeCodexSettings?: boolean } = {},
@@ -2391,19 +2379,21 @@ export async function getCodexSessionIndexMetadata(
   const result = new Map<string, CodexSessionIndexMetadata>();
   if (wantedThreadIds.size === 0) return result;
 
-  const files = await listCodexSessionFiles();
-  const targets: Array<{ filePath: string; expectedThreadId: string }> = [];
-  const matchedThreadIds = new Set<string>();
-  for (const filePath of files) {
-    const threadId = matchingCodexThreadIdFromFilePath(
-      filePath,
-      wantedThreadIds,
-    );
-    if (!threadId || matchedThreadIds.has(threadId)) continue;
-    targets.push({ filePath, expectedThreadId: threadId });
-    matchedThreadIds.add(threadId);
-    if (matchedThreadIds.size === wantedThreadIds.size) break;
-  }
+  // Resolve all requested ids through the shared source-scoped path index.
+  // The first lookup performs one directory walk; concurrent and later ids
+  // then become O(1) map lookups instead of files x threadIds suffix scans.
+  const resolvedTargets = await parallelMap(
+    [...wantedThreadIds],
+    PARALLEL_FILE_READ_LIMIT,
+    async (expectedThreadId) => ({
+      expectedThreadId,
+      filePath: await findCodexSessionJsonlPath(expectedThreadId),
+    }),
+  );
+  const targets = resolvedTargets.filter(
+    (target): target is { expectedThreadId: string; filePath: string } =>
+      target.filePath != null,
+  );
 
   const parsedResults = await parallelMap(
     targets,
@@ -3223,9 +3213,7 @@ function supplementCodexTurnItems(
         : use.imagePaths && use.imagePaths.length > 0
           ? { imagePaths: use.imagePaths }
           : {}),
-      ...(use.timestamp
-        ? { __ccPocketEventStartedAt: use.timestamp }
-        : {}),
+      ...(use.timestamp ? { __ccPocketEventStartedAt: use.timestamp } : {}),
       ...(result?.timestamp
         ? { __ccPocketEventCompletedAt: result.timestamp }
         : {}),

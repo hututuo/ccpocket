@@ -1048,11 +1048,12 @@
   for ordinary sessions. A session that needs user action, is actively
   starting/running/compacting, or is unread must remain visible even when that
   makes the project section longer than five rows.
-- In the flat recent-chat view, ordering is explicit session pin, needs-you,
-  working, unread, then ordinary. In the grouped view, explicit session and
+- In the flat recent-chat view, ordering is explicit session pin, unread,
+  needs-you, working, error, then ordinary. In the grouped view, explicit session and
   project pins determine project-section priority separately; a project pin
   never clusters all of that project's rows at the top of the flat view.
-  Activity time continues to order sessions within the same urgency.
+  Stable ordering activity continues to order sessions within the same
+  urgency; Working uses its discrete assistant-output checkpoint when present.
 - `Show more` remains available for ordinary rows after the last important
   session. This automatic-limit exception does not undo an explicit manual
   collapse of the entire project section.
@@ -1284,3 +1285,36 @@
 - Detached Desktop 详情从已经提交的 source-scoped v2 cache 读取状态和设置，
   不得为了显示 Working 或 effort 而 resume 会话。缺失 effort 保持 unknown；
   独立 Desktop owner 活跃时，Mobile 与 Bridge 均拒绝 model/speed 写回。
+
+## Unread and discrete assistant output define stable conversation ordering
+
+- Explicit user pins remain the outermost tier. Within each pin tier, unread
+  conversations sort before Need You, Working, error and ordinary rows. The
+  grouped view keeps project sections independent from unread priority; unread
+  changes only the order and visibility of rows inside their project.
+- A Working conversation advances its row clock and its project's activity
+  clock only when a committed discrete assistant message contains non-empty
+  visible text. Stream/thinking deltas, tool-only assistant messages, tool
+  results, status/result frames and history wrappers may update content and
+  runtime state but must not make Working rows repeatedly trade positions.
+- Mobile persists this assistant-output checkpoint inside rebuildable catalog
+  JSON and derives it from committed bounded timeline pages. This adds no wire
+  field or SQLite schema and works with an older Bridge; direct runtime
+  assistant frames provide the compatibility fallback before timeline commit.
+  If no checkpoint exists yet, ordering falls back to the existing durable
+  activity timestamp.
+- Bridge may keep a process-local assistant-only live catalog overlay to reduce
+  churn for older Mobile versions, but provider catalog recency remains
+  canonical across refresh and restart. Mobile's persisted checkpoint is the
+  ordering authority; Bridge must not clamp provider seeds or invent a new
+  provider timestamp contract.
+- Opening a durable conversation marks it read when focus is acquired and
+  marks it again before focus is cleared or switched. The persisted watermark
+  is anchored to the latest committed authoritative `status.observedAt` when
+  one exists; without an authoritative status clock, v2 read persistence is
+  deferred instead of trusting the phone clock. A completion seen while the
+  page is open therefore cannot reappear as unread, and a fast phone clock
+  cannot swallow a truly newer Bridge completion after focus is cleared.
+  Because WebSocket frames and Mobile cache writes are ordered, Bridge accepts
+  a lower read-watermark correction so an older fast-phone timestamp can be
+  repaired without waiting for reconnect.

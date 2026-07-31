@@ -113,10 +113,12 @@ class ConversationSyncCacheUpdate {
     this.provider,
     this.providerSessionId,
     this.revision,
+    this.lastAssistantOutputAt,
     this.catalogUpserts = const [],
     this.catalogDestroyed = const [],
     this.statusChanges = const [],
     this.readWatermark,
+    this.replaceExistingReadWatermark = false,
     this.sequence,
     this.pageIndex,
     this.pageCount,
@@ -131,10 +133,12 @@ class ConversationSyncCacheUpdate {
   final String? provider;
   final String? providerSessionId;
   final String? revision;
+  final String? lastAssistantOutputAt;
   final List<ConversationSyncV2CatalogEntry> catalogUpserts;
   final List<ConversationSyncV2Target> catalogDestroyed;
   final List<ConversationSyncV2Status> statusChanges;
   final ConversationSyncV2ReadWatermark? readWatermark;
+  final bool replaceExistingReadWatermark;
   final int? sequence;
   final int? pageIndex;
   final int? pageCount;
@@ -270,7 +274,14 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             providerSessionId: providerSessionId,
           );
     if (_sameTarget(_focused, next)) return;
+    final previous = _focused;
+    if (previous != null) {
+      _markConversationReadBestEffort(previous);
+    }
     _focused = next;
+    if (next != null) {
+      _markConversationReadBestEffort(next);
+    }
     final subscriptionId = _activeSubscriptionId;
     if (subscriptionId == null) {
       if (_canProcessContent) {
@@ -316,15 +327,38 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     setFocusedConversation();
   }
 
+  void _markConversationReadBestEffort(ConversationContentTarget target) {
+    unawaited(
+      markConversationRead(
+        provider: target.provider,
+        providerSessionId: target.providerSessionId,
+      ).catchError((Object error, StackTrace stackTrace) {
+        logger.warning(
+          '[conversation_sync_v2] Failed to persist focused read watermark',
+          error,
+          stackTrace,
+        );
+      }),
+    );
+  }
+
   Future<ConversationHotWindowSnapshot?> loadCachedWindow({
     required String provider,
     required String providerSessionId,
-  }) {
-    return cache.loadConversationWindow(
-      target: _cacheTarget,
+  }) async {
+    final target = _cacheTarget;
+    final snapshot = await cache.loadConversationWindow(
+      target: target,
       provider: provider,
       providerSessionId: providerSessionId,
     );
+    // Both Codex and Claude screens use this durable preview path. Never hand
+    // a provisional route or previous Codex-source result to a screen after
+    // authentication changed the canonical cache partition mid-read.
+    if (_disposed || target.fingerprint != _cacheTarget.fingerprint) {
+      return null;
+    }
+    return snapshot;
   }
 
   Future<void> markConversationRead({
@@ -335,12 +369,16 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     if (!bridge.supportsConversationSyncV2 || _disposed) return;
     final target = _cacheTarget;
     if (!target.isValid) return;
-    final watermark = ConversationSyncV2ReadWatermark(
+    final requestedWatermark = ConversationSyncV2ReadWatermark(
       provider: provider,
       providerSessionId: providerSessionId,
       readAt: (readAt ?? DateTime.now()).toUtc().toIso8601String(),
     );
-    await cache.storeReadWatermark(target: target, watermark: watermark);
+    final watermark = await cache.storeReadWatermark(
+      target: target,
+      watermark: requestedWatermark,
+    );
+    if (watermark == null) return;
     if (_disposed || target.fingerprint != _cacheTarget.fingerprint) return;
     _syncUpdatesController.add(
       ConversationSyncCacheUpdate(
@@ -349,6 +387,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         provider: provider,
         providerSessionId: providerSessionId,
         readWatermark: watermark,
+        replaceExistingReadWatermark: true,
       ),
     );
     final subscriptionId = _activeSubscriptionId;
@@ -1119,6 +1158,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             provider: event.provider,
             providerSessionId: event.providerSessionId,
             revision: event.revision,
+            lastAssistantOutputAt: committed.lastAssistantOutputAt,
           );
         }
       case ConversationSyncV2EventKind.syncCheckpoint:
@@ -1446,6 +1486,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           provider: progressUpdate.provider,
           providerSessionId: progressUpdate.providerSessionId,
           revision: progressUpdate.revision,
+          lastAssistantOutputAt: progressUpdate.lastAssistantOutputAt,
           catalogUpserts: progressUpdate.catalogUpserts,
           catalogDestroyed: progressUpdate.catalogDestroyed,
           statusChanges: progressUpdate.statusChanges,

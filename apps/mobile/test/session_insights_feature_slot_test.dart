@@ -68,6 +68,22 @@ void main() {
       expect(modeBars.single.onCompact, isNotNull);
       expect(modeBars.single.sessionId, 'durable-thread');
       expect(modeBars.single.runtimeSessionId, 'runtime-before-attach');
+      expect(modeBars.single.durableCacheIdentityConfirmed, isTrue);
+
+      final runtimeOnlyContext = CodexSessionFeatureContext(
+        context: featureContext.context,
+        sessionId: 'runtime-only',
+        bridge: bridge,
+        inputController: input,
+        draftService: drafts,
+        requestCompact: () {},
+        openPane: (featureId, {arguments = const {}}) async {},
+      );
+      final runtimeOnlyBar = LocalSessionFeatureHost.modeBarWidgets(
+        runtimeOnlyContext,
+      ).whereType<SessionInsightsBar>().single;
+      expect(runtimeOnlyBar.sessionId, 'runtime-only');
+      expect(runtimeOnlyBar.durableCacheIdentityConfirmed, isFalse);
 
       final attachedContext = CodexSessionFeatureContext(
         context: featureContext.context,
@@ -85,6 +101,35 @@ void main() {
       expect(attachedBar.sessionId, 'durable-thread');
       expect(attachedBar.runtimeSessionId, 'runtime-after-attach');
       expect(attachedBar.key, modeBars.single.key);
+
+      final pane = LocalSessionFeatureHost.paneDescriptor('session_insights')!;
+      final runtimeOnlyPanel =
+          pane.builder(
+                WorkspaceFeaturePaneContext(
+                  context: featureContext.context,
+                  sessionId: 'runtime-only',
+                  bridge: bridge,
+                  onClose: () {},
+                ),
+              )
+              as SessionInsightsPanel;
+      expect(runtimeOnlyPanel.sessionId, 'runtime-only');
+      expect(runtimeOnlyPanel.durableCacheIdentityConfirmed, isFalse);
+      final durablePanel =
+          pane.builder(
+                WorkspaceFeaturePaneContext(
+                  context: featureContext.context,
+                  sessionId: 'runtime-only',
+                  bridge: bridge,
+                  arguments: const {
+                    'sessionInsightsSessionId': 'durable-thread',
+                  },
+                  onClose: () {},
+                ),
+              )
+              as SessionInsightsPanel;
+      expect(durablePanel.sessionId, 'durable-thread');
+      expect(durablePanel.durableCacheIdentityConfirmed, isTrue);
 
       modeBars.single.onCompact!();
       expect(compactRequests, 1);

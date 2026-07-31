@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   CodexProcess,
   CodexRpcError,
+  type CodexThreadSourceKind,
   type CodexThreadSummary,
 } from "../codex-process.js";
 import {
@@ -63,11 +64,15 @@ const MAX_CATALOG_LINEAGE_ID_LENGTH = 256;
 const MAX_CATALOG_MODEL_LENGTH = 256;
 const MAX_CATALOG_SETTING_LENGTH = 64;
 const CODEX_PAGE_SIZE = 500;
-// Rollout metadata is safe for previews, but parsing every rollout in a large
-// catalog would delay the entire subscription. Recent cards get safe display
-// text; older cards retain identity/name metadata and hydrate when requested
-// through the paged recent-session API.
-const CODEX_CATALOG_PREVIEW_METADATA_LIMIT = 64;
+// Subagents are attached to their owning conversation and surface through the
+// per-session process UI. Including their internal threads in the main catalog
+// both leaks implementation detail and crowds out real user conversations.
+export const CONVERSATION_SYNC_PRIMARY_CODEX_SOURCE_KINDS = [
+  "cli",
+  "vscode",
+  "exec",
+  "appServer",
+] as const satisfies readonly CodexThreadSourceKind[];
 const PRIORITY_RECENT_COUNT = 5;
 const MIN_RECENT_COUNT = 10;
 const RECENT_WINDOW_MS = 3 * 24 * 60 * 60_000;
@@ -280,7 +285,10 @@ interface CachedTurnDetails {
 
 interface LiveContentRevision {
   target: ConversationSyncTarget;
+  /** Latest timeline event, including streaming, thinking, and tool traffic. */
   observedAt: string;
+  /** Latest discrete assistant text allowed to advance catalog ordering. */
+  catalogObservedAt?: string;
   revision: string;
 }
 
@@ -358,10 +366,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     ConversationKey,
     ConversationSyncCatalogEntry
   >();
-  private statusProjection = new Map<
-    ConversationKey,
-    ConversationSyncStatus
-  >();
+  private statusProjection = new Map<ConversationKey, ConversationSyncStatus>();
   private readonly catalogHistory = new Map<
     string,
     Map<ConversationKey, ConversationSyncCatalogEntry>
@@ -601,7 +606,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       return;
     }
     if (isConversationTimelineMessage(message)) {
-      this.publishLiveContent(target, observedAt);
+      this.publishLiveContent(
+        target,
+        observedAt,
+        assistantTextCatalogActivity(message, observedAt),
+      );
       return;
     }
 
@@ -751,10 +760,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (!subscription || subscription.id !== message.subscriptionId) return;
     const key = targetKey(message);
     const nextReadAt = new Date(message.readAt).toISOString();
-    const currentReadAt = subscription.readWatermarks.get(key);
-    if (currentReadAt && Date.parse(currentReadAt) > Date.parse(nextReadAt)) {
-      return;
-    }
+    // WebSocket frames are ordered and Mobile serializes its SQLite writes.
+    // Accept a lower value so a status-clock-bound watermark can repair a
+    // previously persisted fast-phone timestamp without reconnecting.
     subscription.readWatermarks.set(key, nextReadAt);
     this.scheduleSync(client, subscription);
   }
@@ -1235,9 +1243,21 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         const catalogHasVisibleContent = Boolean(
           record.entry.firstPrompt?.trim() || record.entry.summary?.trim(),
         );
+        const providerHistoryIndicatesContent =
+          window.nextTurnCursor != null ||
+          (window.turnDetails?.length ?? 0) > 0 ||
+          (externalMessages?.size ?? 0) > 0;
+        const catalogIndicatesPriorActivity =
+          record.status.activity === "working" ||
+          record.status.activity === "compacting" ||
+          record.status.activity === "systemError" ||
+          record.status.attention !== "none" ||
+          record.status.result !== "none";
         const catalogContentMissing =
           built.entries.length === 0 &&
-          (record.entry.provider === "codex" || catalogHasVisibleContent);
+          (catalogHasVisibleContent ||
+            providerHistoryIndicatesContent ||
+            catalogIndicatesPriorActivity);
         const latestTurnGap = mergeLatestTurnGaps(
           mergeLatestTurnGaps(window.latestTurnGap, built.latestTurnGap),
           catalogContentMissing
@@ -1266,10 +1286,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         // history can materialize later without advancing app-server recency.
         // A reconnect must reread the provider instead of pinning a blank or
         // live-only projection under that same revision.
-        if (
-          !catalogContentMissing &&
-          canonicalHistoryCoversExternalMessages
-        ) {
+        if (!catalogContentMissing && canonicalHistoryCoversExternalMessages) {
           this.rememberSnapshot(key, snapshot);
         }
         if (
@@ -1653,8 +1670,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             Date.parse(entry.recencyAt) >= Date.parse(live.observedAt)
           ) {
             this.liveContentRevisions.delete(key);
-          } else if (live) {
-            entry = withLiveCatalogMetadata(entry, live.observedAt);
+          } else if (live?.catalogObservedAt) {
+            entry = withLiveCatalogMetadata(entry, live.catalogObservedAt);
           }
           const previous = previousStatuses.get(key);
           next.set(key, {
@@ -2215,7 +2232,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (isStreamingConversationDelta(event.message)) {
       this.queueLiveContent(target, observedAt);
     } else if (isConversationTimelineMessage(event.message)) {
-      this.publishLiveContent(target, observedAt);
+      this.publishLiveContent(
+        target,
+        observedAt,
+        assistantTextCatalogActivity(event.message, observedAt),
+      );
     }
   }
 
@@ -2301,7 +2322,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   ): void {
     const key = targetKey(target);
     const providerTimestamp =
-      event.timestamp && validIso(event.timestamp) ? event.timestamp : undefined;
+      event.timestamp && validIso(event.timestamp)
+        ? event.timestamp
+        : undefined;
     const message = withSourceTimestamp(
       event.message,
       providerTimestamp ?? observedAt,
@@ -2704,6 +2727,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private publishLiveContent(
     target: ConversationSyncTarget,
     observedAt: string,
+    catalogObservedAt?: string,
   ): void {
     const key = targetKey(target);
     this.pendingLiveContent.delete(key);
@@ -2712,7 +2736,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       this.liveContentTimer = undefined;
       this.liveContentBatchStartedAt = undefined;
     }
-    this.rememberLiveContent(target, observedAt);
+    this.rememberLiveContent(target, observedAt, catalogObservedAt);
     const changedKeys = new Set([key]);
     this.applyRuntimeOverlay(changedKeys);
     this.recomputeStates(changedKeys);
@@ -2737,15 +2761,28 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private rememberLiveContent(
     target: ConversationSyncTarget,
     observedAt: string,
+    catalogObservedAt?: string,
   ): void {
     const key = targetKey(target);
+    const previous = this.liveContentRevisions.get(key);
+    const latestCatalogObservedAt = catalogObservedAt
+      ? previous?.catalogObservedAt
+        ? laterIso(previous.catalogObservedAt, catalogObservedAt)
+        : catalogObservedAt
+      : previous?.catalogObservedAt;
     const record = this.catalog.get(key);
-    if (record) {
-      record.entry = withLiveCatalogMetadata(record.entry, observedAt);
+    if (record && latestCatalogObservedAt) {
+      record.entry = withLiveCatalogMetadata(
+        record.entry,
+        latestCatalogObservedAt,
+      );
     }
     this.liveContentRevisions.set(key, {
       target,
       observedAt,
+      ...(latestCatalogObservedAt
+        ? { catalogObservedAt: latestCatalogObservedAt }
+        : {}),
       revision: providerRevision(
         target,
         `${observedAt}:${++this.liveRevision}`,
@@ -3271,6 +3308,7 @@ async function readCodexCatalog(
           sortDirection: "desc",
           archived: false,
           useStateDbOnly: true,
+          sourceKinds: [...CONVERSATION_SYNC_PRIMARY_CODEX_SOURCE_KINDS],
         });
         for (const thread of page.data) {
           if (!thread.id || thread.ephemeral) continue;
@@ -3291,19 +3329,19 @@ async function readCodexCatalog(
       // or service tier. Resolve those three facts in one bounded rollout
       // metadata pass; a failure only leaves the optional settings unknown.
       const metadata = await getCodexSessionIndexMetadata(
-        threads
-          .slice(0, CODEX_CATALOG_PREVIEW_METADATA_LIMIT)
-          .map((thread) => thread.id),
+        threads.map((thread) => thread.id),
       ).catch(() => new Map<string, CodexSessionIndexMetadata>());
       return threads.map((thread) =>
-        buildConversationSyncCodexCatalogSeed(
-          thread,
-          metadata.get(thread.id),
-        ),
+        buildConversationSyncCodexCatalogSeed(thread, metadata.get(thread.id)),
       );
     });
   } catch (error) {
-    if (!isUnsupportedAppServerRead(error)) throw error;
+    if (
+      !isUnsupportedAppServerRead(error) &&
+      !isUnsupportedCodexSourceKindFilter(error)
+    ) {
+      throw error;
+    }
     const fallback = await getAllRecentSessions({
       provider: "codex",
       limit: MAX_CATALOG_ENTRIES,
@@ -4632,7 +4670,7 @@ export function buildConversationSyncCodexCatalogSeed(
       modifiedAt,
       recencyAt,
       availability: thread.ephemeral ? "ephemeral" : "durable",
-      ...(metadata?.forkedFromThreadId ?? thread.forkedFromThreadId
+      ...((metadata?.forkedFromThreadId ?? thread.forkedFromThreadId)
         ? {
             forkedFromThreadId:
               metadata?.forkedFromThreadId ?? thread.forkedFromThreadId!,
@@ -4945,6 +4983,18 @@ function isConversationTimelineMessage(message: ServerMessage): boolean {
   );
 }
 
+function assistantTextCatalogActivity(
+  message: ServerMessage,
+  observedAt: string,
+): string | undefined {
+  if (message.type !== "assistant") return undefined;
+  return message.message.content.some(
+    (content) => content.type === "text" && content.text.trim().length > 0,
+  )
+    ? observedAt
+    : undefined;
+}
+
 function targetKey(target: ConversationSyncTarget): ConversationKey {
   return `${target.provider}\0${target.providerSessionId}`;
 }
@@ -5084,10 +5134,7 @@ function withLiveCatalogMetadata(
 ): ConversationSyncCatalogEntry {
   const modifiedAt = laterIso(entry.modifiedAt, observedAt);
   const recencyAt = laterIso(entry.recencyAt, observedAt);
-  if (
-    modifiedAt === entry.modifiedAt &&
-    recencyAt === entry.recencyAt
-  ) {
+  if (modifiedAt === entry.modifiedAt && recencyAt === entry.recencyAt) {
     return entry;
   }
   return {
@@ -5117,6 +5164,15 @@ function isUnsupportedAppServerRead(error: unknown): boolean {
     (error instanceof CodexRpcError && error.code === -32601) ||
     /method not found|unknown method|not supported/i.test(errorMessage(error))
   );
+}
+
+function isUnsupportedCodexSourceKindFilter(error: unknown): boolean {
+  if (!(error instanceof CodexRpcError) || error.method !== "thread/list") {
+    return false;
+  }
+  if (error.code !== -32602) return false;
+  const details = `${error.message} ${JSON.stringify(error.data ?? "")}`;
+  return /sourceKinds/i.test(details);
 }
 
 function errorMessage(error: unknown): string {

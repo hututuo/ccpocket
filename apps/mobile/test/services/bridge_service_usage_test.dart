@@ -791,7 +791,7 @@ void main() {
     );
 
     test(
-      'computer activity timestamps reorder cached sessions without delta spam',
+      'tool activity stays separate from assistant ordering checkpoints',
       () async {
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
         final socketReady = Completer<WebSocket>();
@@ -813,6 +813,7 @@ void main() {
               {
                 'id': 's1',
                 'provider': 'codex',
+                'claudeSessionId': 'thread-1',
                 'projectPath': '/tmp/project',
                 'status': 'running',
                 'createdAt': '2026-07-25T00:00:00Z',
@@ -884,6 +885,159 @@ void main() {
         expect(
           bridge.sessions.single.lastActivityAt,
           '2026-07-25T00:00:07.000Z',
+        );
+        expect(bridge.sessions.single.lastAssistantOutputAt, isNull);
+
+        socket.add(
+          jsonEncode({
+            'type': 'assistant',
+            'sessionId': 's1',
+            'activityAt': '2026-07-25T00:00:09Z',
+            'receivedAt': '2026-07-25T00:00:09Z',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {
+                  'type': 'tool_use',
+                  'id': 'tool-1',
+                  'name': 'Read',
+                  'input': {'path': '/tmp/example'},
+                },
+              ],
+            },
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(bridge.sessions.single.lastAssistantOutputAt, isNull);
+
+        socket.add(
+          jsonEncode({
+            'type': 'assistant',
+            'sessionId': 's1',
+            'activityAt': '2026-07-25T00:00:10Z',
+            'receivedAt': '2026-07-25T00:00:10Z',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'Visible intermediate update'},
+              ],
+            },
+          }),
+        );
+        for (
+          var i = 0;
+          i < 30 &&
+              bridge.sessions.single.lastAssistantOutputAt !=
+                  '2026-07-25T00:00:10.000Z';
+          i++
+        ) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        expect(
+          bridge.sessions.single.lastAssistantOutputAt,
+          '2026-07-25T00:00:10.000Z',
+        );
+
+        socket.add(
+          jsonEncode({
+            'type': 'assistant',
+            'sessionId': 's1',
+            'activityAt': '2026-07-25T00:00:11Z',
+            'receivedAt': '2026-07-25T00:00:11Z',
+            'message': {
+              'role': 'assistant',
+              'content': [
+                {'type': 'future_tool_action', 'payload': 'ignored'},
+              ],
+            },
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(
+          bridge.sessions.single.lastAssistantOutputAt,
+          '2026-07-25T00:00:10.000Z',
+        );
+
+        socket.add(
+          jsonEncode({
+            'type': 'thinking_delta',
+            'sessionId': 's1',
+            'text': 'tool-era activity',
+            'activityAt': '2026-07-25T00:00:12Z',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(
+          bridge.sessions.single.lastAssistantOutputAt,
+          '2026-07-25T00:00:10.000Z',
+        );
+
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [
+              {
+                'id': 's1',
+                'provider': 'codex',
+                'claudeSessionId': 'thread-1',
+                'projectPath': '/tmp/project',
+                'status': 'running',
+                'createdAt': '2026-07-25T00:00:00Z',
+                'lastActivityAt': '2026-07-25T00:00:21Z',
+                'lastAssistantOutputAt': '2026-07-25T00:00:15Z',
+              },
+            ],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(
+          bridge.sessions.single.lastAssistantOutputAt,
+          '2026-07-25T00:00:15.000Z',
+        );
+
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [
+              {
+                'id': 's1',
+                'provider': 'codex',
+                'claudeSessionId': 'thread-1',
+                'projectPath': '/tmp/project',
+                'status': 'running',
+                'createdAt': '2026-07-25T00:00:00Z',
+                'lastActivityAt': '2026-07-25T00:00:22Z',
+                'lastAssistantOutputAt': '2026-07-25T00:00:08Z',
+              },
+            ],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(
+          bridge.sessions.single.lastAssistantOutputAt,
+          '2026-07-25T00:00:15.000Z',
+        );
+
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [
+              {
+                'id': 's1',
+                'provider': 'codex',
+                'claudeSessionId': 'thread-1',
+                'projectPath': '/tmp/project',
+                'status': 'running',
+                'createdAt': '2026-07-25T00:00:00Z',
+                'lastActivityAt': '2026-07-25T00:00:20Z',
+              },
+            ],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(
+          bridge.sessions.single.lastAssistantOutputAt,
+          '2026-07-25T00:00:15.000Z',
         );
 
         socket.add(

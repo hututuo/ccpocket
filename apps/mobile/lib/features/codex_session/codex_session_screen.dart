@@ -1461,12 +1461,14 @@ class _CodexChatBody extends HookWidget {
           case CodexSessionUiIntent.model:
             showCodexModelMenu(context, chatSessionCubit);
           case CodexSessionUiIntent.context:
+            final durableInsightsSessionId = sessionInsightsSessionId?.trim();
             unawaited(
               localFeatureContext.openPane(
                 'session_insights',
                 arguments: {
-                  'sessionInsightsSessionId':
-                      sessionInsightsSessionId ?? sessionId,
+                  if (durableInsightsSessionId != null &&
+                      durableInsightsSessionId.isNotEmpty)
+                    'sessionInsightsSessionId': durableInsightsSessionId,
                 },
               ),
             );

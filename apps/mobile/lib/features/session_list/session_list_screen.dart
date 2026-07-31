@@ -2530,8 +2530,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     String? approvalsReviewer,
     ValueNotifier<SystemMessage?>? pendingSessionCreated,
   }) {
-    final seenSessionId =
-        durableProviderSessionId ?? (!isPending ? sessionId : null);
+    final seenSessionId = !isPending ? sessionId : durableProviderSessionId;
     final bridge = context.read<BridgeService>();
     if (seenSessionId != null) {
       _unseenCubit.markSeen(

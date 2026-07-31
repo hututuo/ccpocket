@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:ccpocket/features/session_list/session_list_screen.dart';
 import 'package:ccpocket/features/session_list/state/session_list_cubit.dart';
 import 'package:ccpocket/features/session_list/workspace_shell_screen.dart';
 import 'package:ccpocket/features/settings/state/settings_cubit.dart';
@@ -443,6 +444,8 @@ Widget _buildWorkspaceApp({
   GlobalKey<WorkspaceShellScreenState>? shellKey,
   TargetPlatform platform = TargetPlatform.macOS,
   MachineManagerCubit? machineManagerCubit,
+  bool sessionListOnly = false,
+  ValueChanged<WorkspaceSessionSelection>? onSelectWorkspaceSession,
 }) {
   final sessionListCubit = SessionListCubit(bridge: bridge);
   final connectionCubit = ConnectionCubit(
@@ -496,10 +499,16 @@ Widget _buildWorkspaceApp({
           body: SizedBox(
             width: 1400,
             height: 900,
-            child: WorkspaceShellScreen(
-              key: shellKey,
-              debugRecentSessions: debugRecentSessions,
-            ),
+            child: sessionListOnly
+                ? SessionListScreen(
+                    debugRecentSessions: debugRecentSessions,
+                    embedded: true,
+                    onSelectWorkspaceSession: onSelectWorkspaceSession,
+                  )
+                : WorkspaceShellScreen(
+                    key: shellKey,
+                    debugRecentSessions: debugRecentSessions,
+                  ),
           ),
         ),
       ),
@@ -562,6 +571,62 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     NotificationService.instance.clearActiveSession();
   });
+
+  testWidgets(
+    'merged legacy unread clears by runtime id and stays clear after return',
+    (tester) async {
+      final bridge = _MockBridgeService();
+      final settingsCubit = await _createSettingsCubit(bridge);
+      final draftService = DraftService(await SharedPreferences.getInstance());
+      final revenueCatService = _FakeRevenueCatService();
+      final supportBannerService = await _createSupportBannerService();
+      WorkspaceSessionSelection? selected;
+      final recent = _recentSession('durable-thread');
+      final runtime = SessionInfo(
+        id: 'runtime-live',
+        provider: Provider.claude.value,
+        projectPath: recent.projectPath,
+        claudeSessionId: recent.sessionId,
+        status: 'idle',
+        createdAt: '2026-07-30T00:00:00.000Z',
+        lastActivityAt: '2026-07-30T00:01:00.000Z',
+      );
+
+      await tester.pumpWidget(
+        _buildWorkspaceApp(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          debugRecentSessions: [recent],
+          sessionListOnly: true,
+          onSelectWorkspaceSession: (selection) => selected = selection,
+        ),
+      );
+      await _pumpUi(tester);
+      bridge.emitSessions([runtime]);
+      await _pumpUi(tester);
+
+      expect(find.text('Unread'), findsOneWidget);
+      await tester.tap(
+        find.byKey(
+          const ValueKey('conversation_card_claude\u0000durable-thread'),
+        ),
+      );
+      await _pumpUi(tester);
+
+      expect(selected?.sessionId, 'runtime-live');
+      expect(selected?.durableProviderSessionId, 'durable-thread');
+      expect(find.text('Unread'), findsNothing);
+
+      selected = null;
+      bridge.emitSessions([runtime]);
+      await _pumpUi(tester);
+      expect(selected, isNull);
+      expect(find.text('Unread'), findsNothing);
+    },
+  );
 
   testWidgets('settings overlay back restores selected session root', (
     tester,

@@ -162,7 +162,13 @@ void main() {
         mode: 'snapshot',
         pageIndex: 1,
         pageCount: 2,
-        entries: [_wireEntry('entry-2', 1)],
+        entries: [
+          _assistantWireEntry(
+            'entry-2',
+            1,
+            receivedAt: '2026-07-30T00:03:00.000Z',
+          ),
+        ],
         hasEarlier: true,
         turnsNextCursor: 'older-turns-1',
         sourceEntryCount: 50,
@@ -181,6 +187,18 @@ void main() {
       'entry-2',
     ]);
     expect(cached?.turnsNextCursor, 'older-turns-1');
+    await pumpEventQueue();
+    expect(
+      syncUpdates
+          .where(
+            (update) =>
+                update.kind == ConversationSyncCacheUpdateKind.timeline &&
+                update.providerSessionId == 'thread-v2',
+          )
+          .last
+          .lastAssistantOutputAt,
+      '2026-07-30T00:03:00.000Z',
+    );
 
     final priorityReady = service.syncUpdates.firstWhere(
       (update) => update.kind == ConversationSyncCacheUpdateKind.priorityReady,
@@ -264,12 +282,6 @@ void main() {
         2,
       );
 
-      await service.markConversationRead(
-        provider: 'codex',
-        providerSessionId: 'thread-active',
-        readAt: DateTime.utc(2026, 7, 30, 2),
-      );
-      await gateway.nextOutgoing('conversation_sync_read');
       gateway.addEvent(
         ConversationSyncV2EventMessage(
           event: ConversationSyncV2EventKind.syncBegin,
@@ -340,6 +352,12 @@ void main() {
         (await repository.loadConversationStatuses(target)).single.activity,
         'working',
       );
+      await service.markConversationRead(
+        provider: 'codex',
+        providerSessionId: 'thread-active',
+        readAt: DateTime.utc(2026, 7, 30, 2),
+      );
+      await gateway.nextOutgoing('conversation_sync_read');
       expect(
         gateway.sentTypes.where(
           (type) => type == 'conversation_sync_unsubscribe',
@@ -559,6 +577,7 @@ void main() {
           providerSessionId: 'thread-recovery',
           readAt: '2026-07-30T00:00:00.000Z',
         ),
+        allowUnanchoredLegacySeed: true,
       );
       failingRepository.catalogFailuresRemaining = 2;
       service = ConversationContentSyncService(
@@ -1787,7 +1806,40 @@ void main() {
       );
       await gateway.nextOutgoing('conversation_sync_ack');
 
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.statusChanges,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-read',
+          sequence: 2,
+          statusState: 'status-2',
+          pageIndex: 0,
+          pageCount: 1,
+          statusChanges: const [
+            ConversationSyncV2Status(
+              provider: 'codex',
+              providerSessionId: 'thread-read',
+              activity: 'idle',
+              attention: 'none',
+              result: 'completed',
+              runtimeAttachment: 'notLoaded',
+              source: 'appServer',
+              confidence: 'authoritative',
+              observedAt: '2026-07-30T01:02:03.000Z',
+            ),
+          ],
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
       final readAt = DateTime.utc(2026, 7, 30, 1, 2, 3);
+      final committedUpdates = <ConversationSyncCacheUpdate>[];
+      final updatesSubscription = service.syncUpdates.listen(
+        committedUpdates.add,
+      );
+      addTearDown(updatesSubscription.cancel);
       await service.markConversationRead(
         provider: 'codex',
         providerSessionId: 'thread-read',
@@ -1805,6 +1857,211 @@ void main() {
       );
       expect(stored.single.providerSessionId, 'thread-read');
       expect(stored.single.readAt, readAt.toIso8601String());
+      expect(committedUpdates, hasLength(1));
+      expect(committedUpdates.single.replaceExistingReadWatermark, isTrue);
+    },
+  );
+
+  test(
+    'defers a read watermark until an authoritative status clock exists',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-read-clock',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-1',
+          statusState: 'status-1',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      await service.markConversationRead(
+        provider: 'codex',
+        providerSessionId: 'thread-read-clock',
+        readAt: DateTime.utc(2099, 7, 30),
+      );
+      expect(
+        gateway.sentTypes.where((type) => type == 'conversation_sync_read'),
+        isEmpty,
+      );
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+      );
+      expect(await repository.loadReadWatermarks(target), isEmpty);
+
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.statusChanges,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-read-clock',
+          sequence: 2,
+          statusState: 'status-2',
+          pageIndex: 0,
+          pageCount: 1,
+          statusChanges: const [
+            ConversationSyncV2Status(
+              provider: 'codex',
+              providerSessionId: 'thread-read-clock',
+              activity: 'idle',
+              attention: 'none',
+              result: 'completed',
+              runtimeAttachment: 'notLoaded',
+              source: 'appServer',
+              confidence: 'authoritative',
+              observedAt: '2026-07-30T00:02:00.000Z',
+            ),
+          ],
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await service.markConversationRead(
+        provider: 'codex',
+        providerSessionId: 'thread-read-clock',
+        readAt: DateTime.utc(2099, 7, 30),
+      );
+
+      final outgoing = await gateway.nextOutgoing('conversation_sync_read');
+      expect(outgoing['readAt'], '2026-07-30T00:02:00.000Z');
+      expect(
+        (await repository.loadReadWatermarks(target)).single.readAt,
+        '2026-07-30T00:02:00.000Z',
+      );
+    },
+  );
+
+  test(
+    'durable focus marks read on entry and again on exit after a newer status',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-focus-read',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-1',
+          statusState: 'status-1',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.statusChanges,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-focus-read',
+          sequence: 2,
+          statusState: 'status-2',
+          pageIndex: 0,
+          pageCount: 1,
+          statusChanges: const [
+            ConversationSyncV2Status(
+              provider: 'codex',
+              providerSessionId: 'thread-focus-read',
+              activity: 'idle',
+              attention: 'none',
+              result: 'completed',
+              runtimeAttachment: 'notLoaded',
+              source: 'appServer',
+              confidence: 'authoritative',
+              observedAt: '2026-07-30T01:02:03.000Z',
+            ),
+          ],
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'thread-focus-read',
+      );
+      final focusEntry = await gateway.nextOutgoing('conversation_sync_focus');
+      expect(focusEntry['focused'], {
+        'provider': 'codex',
+        'providerSessionId': 'thread-focus-read',
+      });
+      final entryRead = await gateway.nextOutgoing('conversation_sync_read');
+      expect(entryRead['providerSessionId'], 'thread-focus-read');
+
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.statusChanges,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-focus-read',
+          sequence: 3,
+          statusState: 'status-3',
+          pageIndex: 0,
+          pageCount: 1,
+          statusChanges: const [
+            ConversationSyncV2Status(
+              provider: 'codex',
+              providerSessionId: 'thread-focus-read',
+              activity: 'idle',
+              attention: 'none',
+              result: 'completed',
+              runtimeAttachment: 'notLoaded',
+              source: 'appServer',
+              confidence: 'authoritative',
+              observedAt: '2099-07-30T01:02:03.000Z',
+            ),
+          ],
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      service.clearFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'thread-focus-read',
+      );
+      final focusExit = await gateway.nextOutgoing('conversation_sync_focus');
+      expect(focusExit['focused'], isNull);
+      final exitRead = await gateway.nextOutgoing('conversation_sync_read');
+      expect(exitRead['providerSessionId'], 'thread-focus-read');
+      expect(exitRead['readAt'], '2099-07-30T01:02:03.000Z');
+
+      final stored = await repository.loadReadWatermarks(
+        SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+        ),
+      );
+      expect(stored.single.readAt, '2099-07-30T01:02:03.000Z');
     },
   );
 
@@ -2157,6 +2414,27 @@ ConversationContentWireEntry _wireEntry(String id, int index) {
     rawMessage: const {'type': 'status', 'status': 'idle'},
   );
 }
+
+ConversationContentWireEntry _assistantWireEntry(
+  String id,
+  int index, {
+  required String receivedAt,
+}) => ConversationContentWireEntry(
+  entryId: id,
+  index: index,
+  contentHash: 'hash-$id-assistant',
+  rawMessage: {
+    'type': 'assistant',
+    'receivedAt': receivedAt,
+    'message': {
+      'id': id,
+      'role': 'assistant',
+      'content': [
+        {'type': 'text', 'text': 'Visible update'},
+      ],
+    },
+  },
+);
 
 ConversationSyncV2EventMessage _catalogRecoveryEvent({
   required String subscriptionId,

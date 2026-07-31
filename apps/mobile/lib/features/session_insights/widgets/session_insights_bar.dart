@@ -25,6 +25,7 @@ class SessionInsightsBar extends StatefulWidget {
     this.onCompact,
     this.compact = false,
     this.showLeadingDivider = false,
+    this.durableCacheIdentityConfirmed = false,
   });
 
   final String sessionId;
@@ -35,6 +36,7 @@ class SessionInsightsBar extends StatefulWidget {
   final VoidCallback? onCompact;
   final bool compact;
   final bool showLeadingDivider;
+  final bool durableCacheIdentityConfirmed;
 
   @override
   State<SessionInsightsBar> createState() => _SessionInsightsBarState();
@@ -56,7 +58,9 @@ class _SessionInsightsBarState extends State<SessionInsightsBar> {
     if (oldWidget.sessionId == widget.sessionId &&
         oldWidget.runtimeSessionId == widget.runtimeSessionId &&
         oldWidget.bridgeService == widget.bridgeService &&
-        oldWidget.controller == widget.controller) {
+        oldWidget.controller == widget.controller &&
+        oldWidget.durableCacheIdentityConfirmed ==
+            widget.durableCacheIdentityConfirmed) {
       return;
     }
     _removeController();
@@ -71,6 +75,7 @@ class _SessionInsightsBarState extends State<SessionInsightsBar> {
           sessionId: widget.sessionId,
           runtimeSessionId: widget.runtimeSessionId,
           bridge: widget.bridgeService,
+          durableCacheIdentityConfirmed: widget.durableCacheIdentityConfirmed,
         );
     _controller.addListener(_changed);
     _controller.start();
@@ -308,6 +313,7 @@ class SessionInsightsPanel extends StatefulWidget {
     required this.bridgeService,
     this.controller,
     this.requestTimeout = const Duration(seconds: 12),
+    this.durableCacheIdentityConfirmed = false,
   });
 
   final String sessionId;
@@ -315,6 +321,7 @@ class SessionInsightsPanel extends StatefulWidget {
   final BridgeService bridgeService;
   final SessionInsightsController? controller;
   final Duration requestTimeout;
+  final bool durableCacheIdentityConfirmed;
 
   @override
   State<SessionInsightsPanel> createState() => _SessionInsightsPanelState();
@@ -337,7 +344,9 @@ class _SessionInsightsPanelState extends State<SessionInsightsPanel> {
         oldWidget.runtimeSessionId == widget.runtimeSessionId &&
         oldWidget.bridgeService == widget.bridgeService &&
         oldWidget.controller == widget.controller &&
-        oldWidget.requestTimeout == widget.requestTimeout) {
+        oldWidget.requestTimeout == widget.requestTimeout &&
+        oldWidget.durableCacheIdentityConfirmed ==
+            widget.durableCacheIdentityConfirmed) {
       return;
     }
     _removeController();
@@ -353,6 +362,7 @@ class _SessionInsightsPanelState extends State<SessionInsightsPanel> {
           runtimeSessionId: widget.runtimeSessionId,
           bridge: widget.bridgeService,
           requestTimeout: widget.requestTimeout,
+          durableCacheIdentityConfirmed: widget.durableCacheIdentityConfirmed,
         );
     _controller.addListener(_changed);
     _controller.start();
