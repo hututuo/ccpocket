@@ -214,6 +214,38 @@ Never restore an entire snapshot over a dirty or active development worktree.
 The private evidence namespace is local-only and must not be included in a
 mirror push.
 
+## Parallel A/B convergence and Mobile build 211
+
+On 2026-07-31 the two user-directed lanes were consolidated into
+`integration/mobile-session-sync-v2-20260730`:
+
+- lane A `3b8612ce`: unread clearing/order stability and quota-ring retention;
+- lane B `1f1e29a0`: durable preview recovery and canonical Desktop history;
+- convergence merge `441f11af`: preserved ordinary-message ACK semantics,
+  removed catalog SQLite N+1 reads, excluded internal subagent threads from
+  the primary catalog, removed the 64-thread safe-metadata cutoff, bounded
+  reconnect validation, and fenced source-changing cache reads;
+- release-number commit `494f41f2`: Mobile `1.111.1+211`.
+
+The targeted merged Mobile suite passed 226 tests, the affected cache suite
+passed 24 tests, the v2 content-sync suite passed 21 tests, and Bridge passed
+416 targeted tests plus TypeScript/native-helper builds. The previously run
+full merged Mobile suite passed 2783 tests with four expected skips. Flutter
+analyze reported no errors or warnings and 52 existing info diagnostics.
+
+The unsigned arm64 AltStore input IPA is
+`/Users/huyiyang/Documents/Downloads/CC-Pocket-1.111.1-build211-session-sync-converged-494f41f2-AltStore.ipa`.
+It has SHA-256
+`84cb862e4224f3da12267f36b577124b5163aabc0c526897aa02d018863a7f12`,
+contains no embedded provisioning profile, and still uses placeholder Firebase
+configuration. It was offered to one connected phone; a phone-side save or
+install is a separate acceptance gate.
+
+The production Bridge was not rebuilt, replaced, or restarted. Bridge source
+changes in this convergence remain pending explicit user deployment command.
+Both original worker worktrees remain clean and their sessions acknowledged
+that this batch is closed and they should wait for later commands.
+
 ## New task worktree rule
 
 Create every new code task from the authoritative branch with an absolute

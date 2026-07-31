@@ -1318,3 +1318,24 @@
   Because WebSocket frames and Mobile cache writes are ordered, Bridge accepts
   a lower read-watermark correction so an older fast-phone timestamp can be
   repaired without waiting for reconnect.
+
+## The primary Codex catalog excludes internal subagent threads
+
+- Main-session discovery asks app-server only for `cli`, `vscode`, `exec`, and
+  `appServer` source kinds. Subagent threads remain attached to their owning
+  conversation and belong in the per-session process surface, not the home
+  conversation catalog.
+- Safe rollout metadata is resolved for every returned primary thread. The old
+  64-thread cutoff is removed, while opaque app-server `thread.preview` remains
+  forbidden because it may contain private agent-to-agent content.
+- An older app-server that explicitly rejects the `sourceKinds` parameter with
+  `thread/list -32602` falls back to the existing bounded sessions index. Other
+  invalid-parameter failures are not swallowed.
+- Empty Codex history is marked incomplete only with positive evidence of
+  content or activity: safe first prompt/summary, provider turn evidence,
+  live-buffer content, Working/Compacting/error, attention, or result. Timestamp
+  movement alone is not proof that an otherwise empty new thread has history.
+- Initial reconnect revision validation is bounded to 16 hot windows and 1000
+  entries. Omitted revisions are replayed by Bridge; they are never treated as
+  proof that cached content is current. This is a safe startup bound, not
+  permission to skip later incremental reconciliation.
