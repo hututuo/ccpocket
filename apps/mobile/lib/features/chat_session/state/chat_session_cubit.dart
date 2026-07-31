@@ -246,6 +246,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   String? get detachedLiveRuntimeSessionId =>
       _detachedLiveRuntimeSessionId;
 
+  /// Exact provider turn fence exposed to the Mobile Action Broker UI.
+  ///
+  /// These values are observations only. The broker still independently
+  /// checks authenticated source identity, its writer lease and request
+  /// liveness before allowing a response.
+  String? get detachedActionBrokerTurnId => _detachedActiveTurnId;
+  String? get detachedActionBrokerAuthorityGeneration =>
+      _detachedAuthorityGeneration;
+  String? get detachedActionBrokerExecutionHost => _detachedExecutionHost;
+
   bool get canMutateAttachedRuntime =>
       _runtimeSessionIdForMutation() != null;
 

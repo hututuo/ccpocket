@@ -116,6 +116,7 @@ class LocalFeatureProtocolHost {
     ephemeralSideChatProtocolSlot,
     conversationMirrorProtocolSlot,
     codexCoreActionsProtocolSlot,
+    codexActionBrokerProtocolSlot,
     codexDesktopContinuityProtocolSlot,
     fileTransferProtocolSlot,
     fileBrowserProtocolSlot,

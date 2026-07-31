@@ -38,6 +38,8 @@ class MockBridgeService extends BridgeService {
   final _recentSessionsController =
       StreamController<List<RecentSession>>.broadcast();
   final _stoppedSessionsController = StreamController<String>.broadcast();
+  final _localFeatureController =
+      StreamController<LocalFeatureServerMessage>.broadcast();
   final sentMessages = <ClientMessage>[];
   List<SessionInfo> currentSessions = const [];
   List<RecentSession> currentRecentSessions = const [];
@@ -80,6 +82,10 @@ class MockBridgeService extends BridgeService {
     _stoppedSessionsController.add(sessionId);
   }
 
+  void emitLocalFeatureMessage(LocalFeatureServerMessage message) {
+    _localFeatureController.add(message);
+  }
+
   @override
   Stream<ServerMessage> get messages => _messageController.stream;
 
@@ -99,6 +105,10 @@ class MockBridgeService extends BridgeService {
 
   @override
   Stream<String> get stoppedSessions => _stoppedSessionsController.stream;
+
+  @override
+  Stream<LocalFeatureServerMessage> get localFeatureMessages =>
+      _localFeatureController.stream;
 
   @override
   List<SessionInfo> get sessions => currentSessions;
@@ -145,6 +155,10 @@ class MockBridgeService extends BridgeService {
   Set<String> get bridgeCapabilities => advertisedBridgeCapabilities;
 
   @override
+  bool get supportsCodexActionBroker =>
+      advertisedBridgeCapabilities.contains(codexActionBrokerBridgeCapability);
+
+  @override
   Stream<ServerMessage> messagesForSession(String sessionId) {
     return _taggedController.stream
         .where((pair) => pair.$2 == null || pair.$2 == sessionId)
@@ -186,6 +200,7 @@ class MockBridgeService extends BridgeService {
     _sessionListController.close();
     _recentSessionsController.close();
     _stoppedSessionsController.close();
+    _localFeatureController.close();
     super.dispose();
   }
 }

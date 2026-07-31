@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:ccpocket/features/claude_session/claude_session_screen.dart';
 import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
 import 'package:ccpocket/features/chat_session/state/streaming_state_cubit.dart';
 import 'package:ccpocket/features/chat_session/widgets/durable_session_preview.dart';
+import 'package:ccpocket/features/codex_action_broker/codex_action_broker_interaction_frame.dart';
+import 'package:ccpocket/features/codex_action_broker/codex_action_broker_service.dart';
 import 'package:ccpocket/features/codex_session/codex_session_screen.dart';
 import 'package:ccpocket/features/conversation_content_sync/conversation_content_sync_service.dart';
 import 'package:ccpocket/features/session_list/cache/session_catalog_cache_database.dart';
@@ -12,6 +15,7 @@ import 'package:ccpocket/features/session_list/state/session_list_cubit.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/models/messages.dart';
+import 'package:ccpocket/widgets/bubbles/ask_user_question_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -243,6 +247,194 @@ void main() {
       expect(cubit.state.codexModel, 'model-source-a');
       expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
       expect(cubit.canMutateAttachedRuntime, isTrue);
+    },
+  );
+
+  testWidgets(
+    'detached Desktop approval and guarded question stay on the exact broker wire',
+    (tester) async {
+      final harness = _BrokerScreenHarness(
+        status: _brokerScreenStatus(activeTurnId: 'turn-1'),
+      );
+      try {
+        await tester.pumpWidget(await harness.build());
+        await tester.pump();
+        await tester.pump();
+        final cubit = BlocProvider.of<ChatSessionCubit>(
+          tester.element(find.byKey(const ValueKey('message_input'))),
+        );
+        final sourceFingerprint = harness.sync
+            .cacheTargetFingerprintForDataSource(harness.identity);
+        cubit.updateDetachedProviderStatus(
+          harness.initialStatus,
+          sourceFingerprint: sourceFingerprint,
+        );
+        await tester.pump();
+
+        harness.bridge.emitLocalFeatureMessage(
+          CodexActionBrokerEventMessage(
+            event: CodexActionBrokerEventKind.snapshot,
+            health: _brokerScreenHealth(),
+            requests: [
+              _brokerScreenRequest(
+                opaqueRequestId: 'approval-screen-1',
+                turnId: 'turn-1',
+              ),
+            ],
+          ),
+        );
+        await tester.pump();
+
+        expect(find.text('Command Approval'), findsOneWidget);
+        final approveButton = tester.widget<FilledButton>(
+          find.byKey(const ValueKey('approve_button')),
+        );
+        expect(approveButton.onPressed, isNotNull);
+        approveButton.onPressed!.call();
+        await tester.pump();
+        for (var attempt = 0; attempt < 20; attempt++) {
+          if (_sentWireMessages(
+            harness.bridge,
+          ).any((message) => message['type'] == 'respond_codex_action')) {
+            break;
+          }
+          await tester.pump(const Duration(milliseconds: 10));
+        }
+
+        final approvalWire = _sentWireMessages(harness.bridge);
+        final approvalResponses = approvalWire
+            .where((message) => message['type'] == 'respond_codex_action')
+            .toList(growable: false);
+        expect(approvalResponses, hasLength(1));
+        expect(
+          approvalResponses.single['opaqueRequestId'],
+          'approval-screen-1',
+        );
+        expect(
+          approvalResponses.single['codexSourceId'],
+          'source-broker-screen',
+        );
+        expect(approvalResponses.single['threadId'], 'thread-1');
+        expect(approvalResponses.single['turnId'], 'turn-1');
+        expect(
+          approvalResponses.single['authorityGeneration'],
+          'cab:generation-1',
+        );
+        expect(approvalResponses.single['action'], 'approve');
+        expect(
+          approvalWire.where((message) => message['type'] == 'approve'),
+          isEmpty,
+        );
+
+        harness.bridge.emitLocalFeatureMessage(
+          CodexActionBrokerEventMessage(
+            event: CodexActionBrokerEventKind.snapshot,
+            health: _brokerScreenHealth(),
+            requests: [
+              _brokerScreenRequest(
+                opaqueRequestId: 'question-screen-1',
+                turnId: 'old-turn',
+                kind: CodexActionBrokerRequestKind.userInput,
+              ),
+            ],
+          ),
+        );
+        await tester.pump();
+
+        final question = find.text('Continue?');
+        expect(question, findsOneWidget);
+        expect(
+          tester
+              .widget<CodexActionBrokerInteractionFrame>(
+                find.byType(CodexActionBrokerInteractionFrame),
+              )
+              .phase,
+          CodexActionBrokerInteractionPhase.stale,
+        );
+        expect(
+          find.textContaining(
+            'The turn or data source changed. Refreshing the request',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          tester
+              .widget<IgnorePointer>(
+                find.byKey(
+                  const ValueKey('codex_action_broker_interaction_guard'),
+                ),
+              )
+              .ignoring,
+          isTrue,
+        );
+        expect(
+          _sentWireMessages(
+            harness.bridge,
+          ).where((message) => message['type'] == 'respond_codex_action'),
+          hasLength(1),
+        );
+
+        cubit.updateDetachedProviderStatus(
+          _brokerScreenStatus(
+            activeTurnId: 'old-turn',
+            observedAt: '2026-08-01T00:02:00.000Z',
+          ),
+          sourceFingerprint: sourceFingerprint,
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          tester
+              .widget<CodexActionBrokerInteractionFrame>(
+                find.byType(CodexActionBrokerInteractionFrame),
+              )
+              .phase,
+          CodexActionBrokerInteractionPhase.actionable,
+        );
+
+        expect(
+          tester
+              .widget<IgnorePointer>(
+                find.byKey(
+                  const ValueKey('codex_action_broker_interaction_guard'),
+                ),
+              )
+              .ignoring,
+          isFalse,
+        );
+        final questionWidget = tester.widget<AskUserQuestionWidget>(
+          find.byType(AskUserQuestionWidget),
+        );
+        expect(questionWidget.toolUseId, 'question-screen-1');
+        questionWidget.onAnswer(questionWidget.toolUseId, 'continue');
+        await tester.pump();
+        for (var attempt = 0; attempt < 20; attempt++) {
+          if (_sentWireMessages(harness.bridge)
+                  .where((message) => message['type'] == 'respond_codex_action')
+                  .length >=
+              2) {
+            break;
+          }
+          await tester.pump(const Duration(milliseconds: 10));
+        }
+
+        final wire = _sentWireMessages(harness.bridge);
+        final responses = wire
+            .where((message) => message['type'] == 'respond_codex_action')
+            .toList(growable: false);
+        expect(responses, hasLength(2));
+        expect(responses.last['opaqueRequestId'], 'question-screen-1');
+        expect(responses.last['codexSourceId'], 'source-broker-screen');
+        expect(responses.last['threadId'], 'thread-1');
+        expect(responses.last['turnId'], 'old-turn');
+        expect(responses.last['authorityGeneration'], 'cab:generation-1');
+        expect(responses.last['action'], 'answer');
+        expect(responses.last['answer'], 'continue');
+        expect(wire.where((message) => message['type'] == 'answer'), isEmpty);
+      } finally {
+        await harness.dispose(tester);
+      }
     },
   );
 
@@ -1183,3 +1375,129 @@ class _ProjectionSessionListCubit extends SessionListCubit {
     await super.close();
   }
 }
+
+class _BrokerScreenHarness {
+  _BrokerScreenHarness({required ConversationSyncV2Status status}) {
+    bridge = MockBridgeService()
+      ..authenticatedBridgeInstanceId = 'bridge-broker-screen'
+      ..authenticatedCodexSourceId = 'source-broker-screen'
+      ..mockLogicalConnectionIdentity = 'machine:broker-screen'
+      ..mockLastUrl = 'wss://broker-screen.test/socket'
+      ..advertisedBridgeCapabilities = const {
+        codexActionBrokerBridgeCapability,
+      };
+    identity = bridge.dataSourceIdentity;
+    repository = _CountingSessionCatalogCacheRepository(
+      SessionCatalogCacheDatabase(
+        databasePath: 'unused-broker-screen-cache.db',
+      ),
+      snapshots: const {},
+    );
+    sync = ConversationContentSyncService(
+      bridge: BridgeServiceConversationContentSyncGateway(bridge),
+      cache: repository,
+    );
+    initialStatus = status;
+  }
+
+  late final MockBridgeService bridge;
+  late final BridgeDataSourceIdentity identity;
+  late final _CountingSessionCatalogCacheRepository repository;
+  late final ConversationContentSyncService sync;
+  late final ConversationSyncV2Status initialStatus;
+
+  Future<Widget> build() => buildTestCodexSessionScreen(
+    bridge: bridge,
+    sessionId: 'runtime-thread-1',
+    durableProviderSessionId: 'thread-1',
+    dataSourceIdentity: identity,
+    conversationContentSync: sync,
+  );
+
+  Future<void> dispose(WidgetTester tester) async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    await sync.dispose();
+    await repository.close();
+    bridge.dispose();
+  }
+}
+
+ConversationSyncV2Status _brokerScreenStatus({
+  required String activeTurnId,
+  String attention = 'approval',
+  String observedAt = '2026-08-01T00:01:00.000Z',
+}) => ConversationSyncV2Status(
+  provider: 'codex',
+  providerSessionId: 'thread-1',
+  activity: 'working',
+  attention: attention,
+  result: 'none',
+  runtimeAttachment: 'loaded',
+  source: 'appServer',
+  confidence: 'authoritative',
+  observedAt: observedAt,
+  executionHost: 'desktopAppServer',
+  activeTurnId: activeTurnId,
+  controlState: 'writable',
+  authorityGeneration: 'daemon:runtime-uuid-1',
+);
+
+CodexActionBrokerHealth _brokerScreenHealth() => const CodexActionBrokerHealth(
+  ready: true,
+  controlReady: true,
+  degraded: false,
+  writerLeaseHeld: true,
+  authorityGeneration: 'cab:generation-1',
+);
+
+CodexActionBrokerRequest _brokerScreenRequest({
+  required String opaqueRequestId,
+  required String turnId,
+  CodexActionBrokerRequestKind kind =
+      CodexActionBrokerRequestKind.commandApproval,
+}) => CodexActionBrokerRequest(
+  opaqueRequestId: opaqueRequestId,
+  codexSourceId: 'source-broker-screen',
+  threadId: 'thread-1',
+  turnId: turnId,
+  kind: kind,
+  state: CodexActionBrokerRequestState.pending,
+  observedAt: DateTime.utc(2026, 8, 1),
+  expiresAt: DateTime.utc(2026, 8, 1, 0, 5),
+  updatedAt: DateTime.utc(2026, 8, 1, 0, 0, 1),
+  authorityGeneration: 'cab:generation-1',
+  live: true,
+  toolName: kind == CodexActionBrokerRequestKind.commandApproval
+      ? 'Bash'
+      : null,
+  input: kind == CodexActionBrokerRequestKind.userInput
+      ? const {
+          'questions': [
+            {
+              'id': 'question-1',
+              'question': 'Continue?',
+              'header': 'Choice',
+              'options': [
+                {'label': 'Continue', 'value': 'continue'},
+              ],
+              'multiSelect': false,
+            },
+          ],
+        }
+      : const {'command': 'echo broker-screen'},
+  allowedActions: kind == CodexActionBrokerRequestKind.userInput
+      ? const {
+          CodexActionBrokerDecision.answer,
+          CodexActionBrokerDecision.reject,
+        }
+      : const {
+          CodexActionBrokerDecision.approve,
+          CodexActionBrokerDecision.reject,
+        },
+);
+
+List<Map<String, dynamic>> _sentWireMessages(MockBridgeService bridge) => bridge
+    .sentMessages
+    .map((message) => jsonDecode(message.toJson()) as Map<String, dynamic>)
+    .toList(growable: false);

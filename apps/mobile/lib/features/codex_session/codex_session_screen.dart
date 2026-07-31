@@ -41,6 +41,8 @@ import '../conversation_mirror/conversation_mirror_service.dart';
 import '../conversation_mirror/conversation_mirror_session_actions.dart';
 import '../conversation_content_sync/conversation_content_sync_service.dart';
 import '../conversation_content_sync/conversation_route_focus_restorer.dart';
+import '../codex_action_broker/codex_action_broker_interaction_frame.dart';
+import '../codex_action_broker/codex_action_broker_service.dart';
 import '../codex_core_actions/codex_core_actions_controller.dart';
 import '../codex_core_actions/codex_core_actions_strings.dart';
 import '../session_list/cache/session_catalog_cache_repository.dart';
@@ -1448,6 +1450,34 @@ class _CodexChatBody extends HookWidget {
     useValueListenable(chatSessionCubit.detachedLiveRuntimeRevision);
     final sessionState = context.watch<ChatSessionCubit>().state;
     final bridgeState = context.watch<ConnectionCubit>().state;
+    final actionBroker = useMemoized(
+      () => CodexActionBrokerService(
+        bridge: bridge,
+        threadId: sessionId,
+        expectedBridgeInstanceId: dataSourceIdentity.bridgeInstanceId,
+        expectedCodexSourceId: dataSourceIdentity.codexSourceId,
+        enabled: detachedPreview,
+        runtimeFence: () => CodexActionBrokerRuntimeFence(
+          turnId: chatSessionCubit.detachedActionBrokerTurnId,
+          authorityGeneration:
+              chatSessionCubit.detachedActionBrokerAuthorityGeneration,
+          executionHost: chatSessionCubit.detachedActionBrokerExecutionHost,
+        ),
+      ),
+      [
+        bridge,
+        chatSessionCubit,
+        sessionId,
+        detachedPreview,
+        dataSourceIdentity.bridgeInstanceId,
+        dataSourceIdentity.codexSourceId,
+      ],
+    );
+    useListenable(actionBroker);
+    useEffect(() {
+      actionBroker.start();
+      return actionBroker.dispose;
+    }, [actionBroker]);
     final runtimeMutationSessionId = chatSessionCubit
         .runtimeSessionIdForMutation(allowSteerable: false);
     final coreActionSessionId = detachedPreview
@@ -1966,8 +1996,33 @@ class _CodexChatBody extends HookWidget {
         askInput = null;
     }
 
+    final brokerRequest = actionBroker.visibleRequest;
+    final brokerPresentation = actionBroker.presentation;
+    final brokerOwnsApprovalSurface =
+        detachedPreview &&
+        actionBroker.capabilityNegotiated &&
+        actionBroker.ownsDetachedInteraction(
+          waitingApproval:
+              sessionState.status == ProcessStatus.waitingApproval,
+        );
+    if (brokerOwnsApprovalSurface) {
+      if (brokerPresentation?.usesAskUserUi == true) {
+        pendingToolUseId = null;
+        pendingPermission = null;
+        askToolUseId = brokerRequest?.opaqueRequestId;
+        askInput = brokerPresentation?.permission.input;
+      } else {
+        pendingToolUseId = brokerRequest?.opaqueRequestId;
+        pendingPermission = brokerPresentation?.permission;
+        askToolUseId = null;
+        askInput = null;
+      }
+    }
+
     final isPlanApproval = pendingPermission?.toolName == 'ExitPlanMode';
-    final isToolSuggestion = pendingPermission?.isToolSuggestion ?? false;
+    final isToolSuggestion =
+        !brokerOwnsApprovalSurface &&
+        (pendingPermission?.isToolSuggestion ?? false);
 
     Future<void> openToolSuggestionUrl(String rawUrl) async {
       final uri = Uri.tryParse(rawUrl);
@@ -1984,7 +2039,11 @@ class _CodexChatBody extends HookWidget {
     }
 
     void installSuggestedTool() {
-      if (pendingToolUseId == null || pendingPermission == null) return;
+      if (brokerOwnsApprovalSurface ||
+          pendingToolUseId == null ||
+          pendingPermission == null) {
+        return;
+      }
       context.read<ChatSessionCubit>().installToolSuggestion(pendingToolUseId);
       final installUrl = pendingPermission.toolSuggestionInstallUrl;
       if (pendingPermission.toolSuggestionType == 'connector' &&
@@ -1996,7 +2055,16 @@ class _CodexChatBody extends HookWidget {
 
     void approveToolUse() {
       if (pendingToolUseId == null) return;
-      context.read<ChatSessionCubit>().approve(pendingToolUseId);
+      if (brokerOwnsApprovalSurface) {
+        unawaited(
+          actionBroker.respond(
+            CodexActionBrokerDecision.approve,
+            opaqueRequestId: pendingToolUseId,
+          ),
+        );
+      } else {
+        context.read<ChatSessionCubit>().approve(pendingToolUseId);
+      }
       planFeedbackController.clear();
     }
 
@@ -2005,15 +2073,24 @@ class _CodexChatBody extends HookWidget {
       final feedback = isPlanApproval
           ? planFeedbackController.text.trim()
           : null;
-      context.read<ChatSessionCubit>().reject(
-        pendingToolUseId,
-        message: feedback != null && feedback.isNotEmpty ? feedback : null,
-      );
+      if (brokerOwnsApprovalSurface) {
+        unawaited(
+          actionBroker.respond(
+            CodexActionBrokerDecision.reject,
+            opaqueRequestId: pendingToolUseId,
+          ),
+        );
+      } else {
+        context.read<ChatSessionCubit>().reject(
+          pendingToolUseId,
+          message: feedback != null && feedback.isNotEmpty ? feedback : null,
+        );
+      }
       planFeedbackController.clear();
     }
 
     void approveWithClearContext() {
-      if (pendingToolUseId == null) return;
+      if (brokerOwnsApprovalSurface || pendingToolUseId == null) return;
       context.read<ChatSessionCubit>().approve(
         pendingToolUseId,
         clearContext: true,
@@ -2024,12 +2101,113 @@ class _CodexChatBody extends HookWidget {
     void approveAlwaysToolUse() {
       if (pendingToolUseId == null) return;
       HapticFeedback.mediumImpact();
-      context.read<ChatSessionCubit>().approveAlways(pendingToolUseId);
+      if (brokerOwnsApprovalSurface) {
+        unawaited(
+          actionBroker.respond(
+            CodexActionBrokerDecision.approveAlways,
+            opaqueRequestId: pendingToolUseId,
+          ),
+        );
+      } else {
+        context.read<ChatSessionCubit>().approveAlways(pendingToolUseId);
+      }
     }
 
     void answerQuestion(String toolUseId, String result) {
+      if (brokerOwnsApprovalSurface) {
+        if (brokerRequest?.opaqueRequestId != toolUseId) return;
+        unawaited(
+          actionBroker.respond(
+            CodexActionBrokerDecision.answer,
+            opaqueRequestId: toolUseId,
+            answer: result,
+          ),
+        );
+        return;
+      }
       context.read<ChatSessionCubit>().answer(toolUseId, result);
     }
+
+    Widget buildApprovalSurface() => Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (askToolUseId case final askId? when askInput != null)
+          AskUserQuestionWidget(
+            key: ValueKey(
+              brokerOwnsApprovalSurface
+                  ? 'broker_question_${askId}_${actionBroker.viewEpoch}'
+                  : 'question_$askId',
+            ),
+            toolUseId: askId,
+            input: askInput,
+            agentName: 'Codex',
+            onAnswer: answerQuestion,
+            scrollable: false,
+          ),
+        if (pendingToolUseId != null &&
+            isToolSuggestion &&
+            pendingPermission != null)
+          ToolSuggestionCard(
+            key: ValueKey('tool_suggestion_$pendingToolUseId'),
+            appColors: appColors,
+            permission: pendingPermission,
+            onInstall: installSuggestedTool,
+            onComplete: approveToolUse,
+            onReject: rejectToolUse,
+            onOpenUrl: (url) => unawaited(openToolSuggestionUrl(url)),
+          ),
+        if (pendingToolUseId != null && !isToolSuggestion)
+          ApprovalBar(
+            key: ValueKey('approval_$pendingToolUseId'),
+            appColors: appColors,
+            pendingPermission: pendingPermission,
+            isPlanApproval: isPlanApproval,
+            planApprovalUiMode: PlanApprovalUiMode.codex,
+            planFeedbackController: planFeedbackController,
+            onApprove: approveToolUse,
+            onReject: rejectToolUse,
+            onApproveAlways: approveAlwaysToolUse,
+            onApproveClearContext: !brokerOwnsApprovalSurface && isPlanApproval
+                ? approveWithClearContext
+                : null,
+            onViewPlan: isPlanApproval
+                ? () {
+                    final originalText = _extractPlanText(
+                      pendingPermission,
+                      sessionState.entries,
+                    );
+                    if (originalText == null) return;
+                    showPlanDetailSheet(context, originalText);
+                  }
+                : null,
+          ),
+      ],
+    );
+
+    final hasProjectedApproval =
+        (askToolUseId != null && askInput != null) || pendingToolUseId != null;
+    final Widget? interactionOverlay = brokerOwnsApprovalSurface
+        ? CodexActionBrokerInteractionFrame(
+            phase: actionBroker.phase,
+            onRefresh: actionBroker.refresh,
+            onReject:
+                brokerPresentation?.usesAskUserUi == true &&
+                    brokerRequest?.allowedActions.contains(
+                          CodexActionBrokerDecision.reject,
+                        ) ==
+                        true
+                ? () => unawaited(
+                    actionBroker.respond(
+                      CodexActionBrokerDecision.reject,
+                      opaqueRequestId: brokerRequest!.opaqueRequestId,
+                    ),
+                  )
+                : null,
+            child: hasProjectedApproval ? buildApprovalSurface() : null,
+          )
+        : hasProjectedApproval
+        ? buildApprovalSurface()
+        : null;
 
     // --- Build ---
     return BlocListener<ConnectionCubit, BridgeConnectionState>(
@@ -2460,10 +2638,7 @@ class _CodexChatBody extends HookWidget {
                         ),
                       Expanded(
                         child: BottomOverlayLayout(
-                          overlay:
-                              askToolUseId == null &&
-                                  askInput == null &&
-                                  pendingToolUseId == null
+                          overlay: interactionOverlay == null
                               ? null
                               : NotificationListener<ScrollNotification>(
                                   onNotification: (notification) {
@@ -2475,74 +2650,7 @@ class _CodexChatBody extends HookWidget {
                                   },
                                   child: SingleChildScrollView(
                                     reverse: true,
-                                    child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        if (askToolUseId case final askId?
-                                            when askInput != null)
-                                          AskUserQuestionWidget(
-                                            toolUseId: askId,
-                                            input: askInput,
-                                            agentName: 'Codex',
-                                            onAnswer: answerQuestion,
-                                            scrollable: false,
-                                          ),
-                                        if (pendingToolUseId != null &&
-                                            isToolSuggestion &&
-                                            pendingPermission != null)
-                                          ToolSuggestionCard(
-                                            key: ValueKey(
-                                              'tool_suggestion_$pendingToolUseId',
-                                            ),
-                                            appColors: appColors,
-                                            permission: pendingPermission,
-                                            onInstall: installSuggestedTool,
-                                            onComplete: approveToolUse,
-                                            onReject: rejectToolUse,
-                                            onOpenUrl: (url) => unawaited(
-                                              openToolSuggestionUrl(url),
-                                            ),
-                                          ),
-                                        if (pendingToolUseId != null &&
-                                            !isToolSuggestion)
-                                          ApprovalBar(
-                                            key: ValueKey(
-                                              'approval_$pendingToolUseId',
-                                            ),
-                                            appColors: appColors,
-                                            pendingPermission:
-                                                pendingPermission,
-                                            isPlanApproval: isPlanApproval,
-                                            planApprovalUiMode:
-                                                PlanApprovalUiMode.codex,
-                                            planFeedbackController:
-                                                planFeedbackController,
-                                            onApprove: approveToolUse,
-                                            onReject: rejectToolUse,
-                                            onApproveAlways:
-                                                approveAlwaysToolUse,
-                                            onApproveClearContext:
-                                                isPlanApproval
-                                                ? approveWithClearContext
-                                                : null,
-                                            onViewPlan: isPlanApproval
-                                                ? () {
-                                                    final originalText =
-                                                        _extractPlanText(
-                                                          pendingPermission,
-                                                          sessionState.entries,
-                                                        );
-                                                    if (originalText == null)
-                                                      return;
-                                                    showPlanDetailSheet(
-                                                      context,
-                                                      originalText,
-                                                    );
-                                                  }
-                                                : null,
-                                          ),
-                                      ],
-                                    ),
+                                    child: interactionOverlay,
                                   ),
                                 ),
                           topOverlay: Positioned(

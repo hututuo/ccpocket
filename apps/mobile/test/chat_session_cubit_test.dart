@@ -545,6 +545,12 @@ void main() {
         expect(cubit.state.externalDesktopTurnActive, isFalse);
         expect(cubit.state.externalDesktopTurnId, isNull);
         expect(cubit.externalDesktopTurnSteerable.value, isFalse);
+        expect(cubit.detachedActionBrokerTurnId, 'turn-bridge');
+        expect(
+          cubit.detachedActionBrokerAuthorityGeneration,
+          'authority-1',
+        );
+        expect(cubit.detachedActionBrokerExecutionHost, 'bridge');
 
         cubit.updateDetachedProviderStatus(
           const ConversationSyncV2Status(
@@ -567,6 +573,15 @@ void main() {
         expect(cubit.state.externalDesktopTurnActive, isTrue);
         expect(cubit.state.externalDesktopTurnId, 'turn-desktop');
         expect(cubit.externalDesktopTurnSteerable.value, isFalse);
+        expect(cubit.detachedActionBrokerTurnId, 'turn-desktop');
+        expect(
+          cubit.detachedActionBrokerAuthorityGeneration,
+          'authority-2',
+        );
+        expect(
+          cubit.detachedActionBrokerExecutionHost,
+          'desktopAppServer',
+        );
 
         // A same-timestamp authority update must still apply. The opaque
         // generation is part of the semantic status signature, not a clock.

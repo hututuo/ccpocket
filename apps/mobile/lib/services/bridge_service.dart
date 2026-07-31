@@ -875,6 +875,8 @@ class BridgeService implements BridgeServiceBase {
       _bridgeCapabilities.contains(inputDeliveryAckBridgeCapability);
   bool get supportsBridgeIdentityV2 =>
       _bridgeCapabilities.contains(bridgeIdentityV2Capability);
+  bool get supportsCodexActionBroker =>
+      _bridgeCapabilities.contains(codexActionBrokerBridgeCapability);
   bool get supportsPromptHistoryRequestCorrelation =>
       _bridgeCapabilities.contains(promptHistoryRequestCorrelationCapability);
   BridgeClientDeliveryMode get desiredClientDeliveryMode =>

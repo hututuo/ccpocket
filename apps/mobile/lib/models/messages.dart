@@ -16,6 +16,7 @@ part 'local_features/slots/persisted_side_chat_protocol_slot.dart';
 part 'local_features/slots/ephemeral_side_chat_protocol_slot.dart';
 part 'local_features/slots/conversation_mirror_protocol_slot.dart';
 part 'local_features/slots/codex_core_actions_protocol_slot.dart';
+part 'local_features/slots/codex_action_broker_protocol_slot.dart';
 part 'local_features/slots/codex_desktop_continuity_protocol_slot.dart';
 part 'local_features/slots/file_transfer_protocol_slot.dart';
 part 'local_features/slots/file_browser_protocol_slot.dart';
