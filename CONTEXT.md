@@ -2,6 +2,20 @@
 
 ## Active shared Codex runtime implementation
 
+On 2026-08-01 the user authorized a new full-chain audit followed directly by
+source remediation. The audit is recorded in
+`notes/codex-dual-path-full-chain-audit_v01_20260801-022457.md` and supersedes
+any broad interpretation that the Stage 0–2 Pilot proved dual-path product
+completion. It found `0 P0 / 12 P1 / 6 P2 / 1 P3`, centred on the disconnected
+app-server status plane, daemon/JSONL double delivery, source/turn-origin
+conflation, runtime-vs-durable route splitting, missing Action Broker request
+ledger, unsafe foreign-turn operations, unbounded resume history and Mobile
+source fencing gaps.
+
+Source fixes and automatic validation may now continue on the isolated feature
+branch. This does not authorize production 8765 replacement, Desktop shared
+mode activation, OTA, IPA installation, phone mutation or stable publication.
+
 The current proposed implementation plan is:
 
 - Plan: `plans/codex-shared-runtime-warm-switch_v01_20260731-230240.md`
