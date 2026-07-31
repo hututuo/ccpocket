@@ -11,6 +11,8 @@ class CodexSessionFeatureContext {
   final BuildContext context;
   final String sessionId;
   final String? sessionInsightsSessionId;
+  final String? runtimeMutationSessionId;
+  final bool durableCacheIdentityConfirmed;
   final BridgeService bridge;
   final TextEditingController inputController;
   final DraftService draftService;
@@ -22,6 +24,8 @@ class CodexSessionFeatureContext {
     required this.context,
     required this.sessionId,
     this.sessionInsightsSessionId,
+    this.runtimeMutationSessionId,
+    this.durableCacheIdentityConfirmed = false,
     required this.bridge,
     required this.inputController,
     required this.draftService,

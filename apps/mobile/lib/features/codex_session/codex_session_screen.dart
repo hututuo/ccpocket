@@ -6,6 +6,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:auto_route/auto_route.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../constants/feature_flags.dart';
 import '../../hooks/use_app_resume_callback.dart';
@@ -34,6 +35,7 @@ import '../settings/state/settings_cubit.dart';
 import '../../widgets/new_session_sheet.dart'
     show permissionModeFromRaw, sandboxModeFromRaw;
 import '../session_list/pending_session_binding.dart';
+import '../session_list/services/session_resume_coordinator.dart';
 import '../session_list/workspace_shell_screen.dart';
 import '../conversation_mirror/conversation_mirror_service.dart';
 import '../conversation_mirror/conversation_mirror_session_actions.dart';
@@ -82,6 +84,8 @@ const _fileListRefreshToolNames = {
   'NotebookEdit',
   'Bash',
 };
+
+const _durableAttachmentRequestUuid = Uuid();
 
 class _NoopListenable implements Listenable {
   const _NoopListenable();
@@ -219,10 +223,12 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   ConversationHotWindowSnapshot? _cachedPreview;
   bool _loadingCachedPreview = false;
   bool _cachedPreviewDirty = false;
+  String? _expectedCacheTargetFingerprint;
   String? _cachedPreviewTargetFingerprint;
   String? _loadingCachedPreviewTargetFingerprint;
   ChatComposerSubmission? _deferredSubmission;
   PendingSessionBinding? _retainedPendingBinding;
+  PendingSessionBinding? _localAttachmentBinding;
   final Object _sessionRouteOwner = Object();
   Object? _sessionRouteIdentity;
   late BridgeDataSourceIdentity _dataSourceIdentity;
@@ -269,8 +275,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   }
 
   void _reconcileAuthoritativeDataSourceIdentity(BridgeService bridge) {
-    if (!mounted ||
-        !bridge.hasAuthoritativeSessionListForCurrentConnection) {
+    if (!mounted || !bridge.hasAuthoritativeSessionListForCurrentConnection) {
       return;
     }
     final durableId = widget.durableProviderSessionId?.trim();
@@ -296,6 +301,15 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       bridge.dataSourceIdentity,
       provider: Provider.codex.value,
     );
+    if (!next.isSatisfiedBy(
+      bridge.dataSourceIdentity,
+      provider: Provider.codex.value,
+    )) {
+      // Keep the already-rendered offline snapshot, but never reload it from
+      // a different authenticated Bridge/Codex source that happens to contain
+      // the same durable thread id.
+      return;
+    }
     if (next != _dataSourceIdentity) {
       setState(() => _dataSourceIdentity = next);
       _syncSessionRouteIdentity();
@@ -311,13 +325,21 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     if (durableId == null || durableId.isEmpty) return;
     try {
       final sync = context.read<ConversationContentSyncService>();
-      sync.setFocusedConversation(
+      _expectedCacheTargetFingerprint = sync
+          .cacheTargetFingerprintForDataSource(_dataSourceIdentity);
+      if (sync.matchesCurrentDataSource(
+        _dataSourceIdentity,
         provider: Provider.codex.value,
-        providerSessionId: durableId,
-      );
+      )) {
+        sync.setFocusedConversation(
+          provider: Provider.codex.value,
+          providerSessionId: durableId,
+        );
+      }
       _cachedPreviewSub = sync.updates
           .where(
             (update) =>
+                update.targetFingerprint == _expectedCacheTargetFingerprint &&
                 update.provider == Provider.codex.value &&
                 update.providerSessionId == durableId,
           )
@@ -330,14 +352,32 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
 
   void _reloadDurablePreviewForCurrentTarget() {
     final durableId = widget.durableProviderSessionId;
-    if (durableId == null || durableId.isEmpty || !_isPending) return;
+    if (durableId == null || durableId.isEmpty) return;
     ConversationContentSyncService sync;
     try {
       sync = context.read<ConversationContentSyncService>();
     } catch (_) {
       return;
     }
-    final targetFingerprint = sync.currentCacheTargetFingerprint;
+    if (sync.hasAuthoritativeDataSourceConflict(
+      _dataSourceIdentity,
+      provider: Provider.codex.value,
+    )) {
+      return;
+    }
+    final targetFingerprint = sync.cacheTargetFingerprintForDataSource(
+      _dataSourceIdentity,
+    );
+    _expectedCacheTargetFingerprint = targetFingerprint;
+    if (sync.matchesCurrentDataSource(
+      _dataSourceIdentity,
+      provider: Provider.codex.value,
+    )) {
+      sync.setFocusedConversation(
+        provider: Provider.codex.value,
+        providerSessionId: durableId,
+      );
+    }
     if (_cachedPreviewTargetFingerprint == targetFingerprint &&
         (!_loadingCachedPreview ||
             _loadingCachedPreviewTargetFingerprint == targetFingerprint)) {
@@ -359,7 +399,20 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     } catch (_) {
       return;
     }
-    final targetFingerprint = sync.currentCacheTargetFingerprint;
+    if (sync.hasAuthoritativeDataSourceConflict(
+      _dataSourceIdentity,
+      provider: Provider.codex.value,
+    )) {
+      return;
+    }
+    final targetFingerprint = sync.cacheTargetFingerprintForDataSource(
+      _dataSourceIdentity,
+    );
+    if (_expectedCacheTargetFingerprint != null &&
+        _expectedCacheTargetFingerprint != targetFingerprint) {
+      return;
+    }
+    _expectedCacheTargetFingerprint ??= targetFingerprint;
     if (_loadingCachedPreview) {
       // A same-target timeline commit can land while the previous SQLite read
       // is still in flight. Coalesce it into one follow-up read instead of
@@ -375,15 +428,17 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
           .loadCachedWindow(
             provider: Provider.codex.value,
             providerSessionId: durableId,
+            expectedDataSourceIdentity: _dataSourceIdentity,
           )
           .then((snapshot) {
             if (!mounted ||
                 widget.durableProviderSessionId != durableId ||
-                !_isPending ||
-                sync.currentCacheTargetFingerprint != targetFingerprint) {
+                sync.hasAuthoritativeDataSourceConflict(
+                  _dataSourceIdentity,
+                  provider: Provider.codex.value,
+                )) {
               if (mounted &&
-                  widget.durableProviderSessionId == durableId &&
-                  _isPending) {
+                  widget.durableProviderSessionId == durableId) {
                 _cachedPreviewDirty = true;
               }
               return;
@@ -400,7 +455,10 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
             if (mounted && widget.durableProviderSessionId == durableId) {
               _loadingCachedPreview = false;
               _loadingCachedPreviewTargetFingerprint = null;
-              if (sync.currentCacheTargetFingerprint != targetFingerprint) {
+              if (sync.hasAuthoritativeDataSourceConflict(
+                _dataSourceIdentity,
+                provider: Provider.codex.value,
+              )) {
                 _cachedPreviewDirty = true;
               }
               if (_cachedPreviewDirty) {
@@ -422,17 +480,92 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
         .loadOlderTurns(
           provider: Provider.codex.value,
           providerSessionId: durableId,
+          expectedDataSourceIdentity: _dataSourceIdentity,
         );
     return (loaded: result.loaded, hasMore: result.hasMore);
   }
 
+  ValueNotifier<SystemMessage?>? get _effectivePendingSessionCreated =>
+      _localAttachmentBinding ?? widget.pendingSessionCreated;
+
+  PendingSessionBinding? _ensureDurableAttachmentBinding() {
+    final existingLocal = _localAttachmentBinding;
+    if (existingLocal != null && !existingLocal.isDisposed) {
+      return existingLocal;
+    }
+    final external = widget.pendingSessionCreated;
+    if (external is PendingSessionBinding &&
+        !external.isDisposed &&
+        external.value == null &&
+        external.failure.value == null) {
+      return external;
+    }
+    final durableId = widget.durableProviderSessionId?.trim();
+    if (durableId == null || durableId.isEmpty) return null;
+    final bridge = context.read<BridgeService>();
+    if (!_dataSourceIdentity.isSatisfiedBy(
+      bridge.dataSourceIdentity,
+      provider: Provider.codex.value,
+    )) {
+      return null;
+    }
+    final projectPath = _projectPath?.trim();
+    if (projectPath == null || projectPath.isEmpty) return null;
+
+    late final PendingSessionBinding binding;
+    binding = PendingSessionBinding(
+      kind: PendingSessionRequestKind.resume,
+      requestId: _durableAttachmentRequestUuid.v4(),
+      provider: Provider.codex.value,
+      projectPath: projectPath,
+      providerSessionId: durableId,
+      allowLegacyFallback: !bridge.bridgeCapabilities.contains(
+        sessionRequestCorrelationCapability,
+      ),
+      onAttachmentRequested: () async {
+        if (!_dataSourceIdentity.isSatisfiedBy(
+          bridge.dataSourceIdentity,
+          provider: Provider.codex.value,
+        )) {
+          throw StateError(
+            'The connected Bridge/Codex source no longer matches this page.',
+          );
+        }
+        RecentSession? recent;
+        for (final candidate in bridge.recentSessions) {
+          if (candidate.provider == Provider.codex.value &&
+              candidate.sessionId == durableId) {
+            recent = candidate;
+            break;
+          }
+        }
+        if (recent == null) {
+          throw StateError(
+            'The durable Codex catalog entry is unavailable; refresh the '
+            'conversation list before attaching.',
+          );
+        }
+        await SessionResumeCoordinator(
+          bridge: bridge,
+        ).resume(recent, resumeRequestId: binding.requestId);
+      },
+      onDisposed: () {
+        if (identical(_localAttachmentBinding, binding)) {
+          _localAttachmentBinding = null;
+        }
+      },
+    );
+    _localAttachmentBinding = binding;
+    return binding;
+  }
+
   bool _queueDeferredSubmission(ChatComposerSubmission submission) {
     if (!_isPending || _deferredSubmission != null) return false;
+    final binding = _ensureDurableAttachmentBinding();
+    if (binding == null) return false;
+    _listenForSessionCreated();
     setState(() => _deferredSubmission = submission);
-    final binding = widget.pendingSessionCreated;
-    if (binding is PendingSessionBinding) {
-      unawaited(binding.requestAttachment());
-    }
+    unawaited(binding.requestAttachment());
     return true;
   }
 
@@ -456,9 +589,9 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     if (!_isPending) return;
     final durableId = widget.durableProviderSessionId;
     if (durableId == null || durableId.isEmpty) return;
-    final submission = context
-        .read<DraftService>()
-        .getPendingSubmission(durableId);
+    final submission = context.read<DraftService>().getPendingSubmission(
+      durableId,
+    );
     if (submission == null) return;
     _deferredSubmission = (
       clientMessageId: submission.clientMessageId,
@@ -517,13 +650,13 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     SessionRouteRegistry.instance.update(
       routeIdentity: routeIdentity,
       owner: _sessionRouteOwner,
-      sessionId: _sessionId,
+      sessionId: widget.durableProviderSessionId ?? _sessionId,
       provider: 'codex',
       dataSourceIdentity: _dataSourceIdentity,
     );
     if (ModalRoute.of(context)?.isCurrent ?? false) {
       NotificationService.instance.setActiveSession(
-        sessionId: _sessionId,
+        sessionId: widget.durableProviderSessionId ?? _sessionId,
         provider: 'codex',
         dataSourceIdentity: _dataSourceIdentity,
       );
@@ -531,8 +664,10 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   }
 
   void _listenForSessionCreated() {
-    final pendingBinding = widget.pendingSessionCreated;
+    final pendingBinding =
+        _effectivePendingSessionCreated ?? _ensureDurableAttachmentBinding();
     if (pendingBinding is PendingSessionBinding) {
+      if (identical(_retainedPendingBinding, pendingBinding)) return;
       _retainPendingBinding(pendingBinding);
       final buffered = pendingBinding.value;
       if (buffered != null && buffered.sessionId != null) {
@@ -580,14 +715,14 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   }
 
   void _onPendingSessionCreated() {
-    final msg = widget.pendingSessionCreated?.value;
+    final msg = _effectivePendingSessionCreated?.value;
     if (msg != null && msg.sessionId != null && mounted && _isPending) {
       _resolveSession(msg);
     }
   }
 
   void _onPendingSessionFailed() {
-    final binding = widget.pendingSessionCreated;
+    final binding = _effectivePendingSessionCreated;
     if (binding is! PendingSessionBinding ||
         binding.failure.value == null ||
         !mounted ||
@@ -633,6 +768,12 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   void _listenForSandboxRestart() {
     final bridge = context.read<BridgeService>();
     _sandboxRestartSub = bridge.messages.listen((msg) {
+      final localBinding = _localAttachmentBinding;
+      if (msg is SystemMessage &&
+          localBinding != null &&
+          !localBinding.isDisposed) {
+        dispatchPendingSessionMessage([localBinding], msg);
+      }
       if (msg is SystemMessage &&
           msg.subtype == 'session_created' &&
           msg.sourceSessionId == _sessionId &&
@@ -678,8 +819,8 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   }
 
   void _resolveSession(SystemMessage msg) {
-    widget.pendingSessionCreated?.removeListener(_onPendingSessionCreated);
-    final binding = widget.pendingSessionCreated;
+    final binding = _effectivePendingSessionCreated;
+    binding?.removeListener(_onPendingSessionCreated);
     if (binding is PendingSessionBinding) {
       binding.failure.removeListener(_onPendingSessionFailed);
     }
@@ -719,10 +860,23 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     final bridge = context.read<BridgeService>();
     _sessionStoppedSub = bridge.stoppedSessions.listen((stoppedSessionId) {
       if (!mounted || stoppedSessionId != _sessionId) return;
+      final previousLocalBinding = _localAttachmentBinding;
+      if (previousLocalBinding != null) {
+        _detachPendingBinding(previousLocalBinding);
+      } else {
+        _detachPendingBinding(widget.pendingSessionCreated);
+      }
       setState(() {
         _explorerCurrentPath = '';
         _recentPeekedFiles = const [];
+        if (widget.durableProviderSessionId?.trim().isNotEmpty == true) {
+          _isPending = true;
+        }
       });
+      if (_isPending) {
+        _ensureDurableAttachmentBinding();
+        _listenForSessionCreated();
+      }
     });
   }
 
@@ -760,19 +914,22 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
         oldWidget.worktreePath == widget.worktreePath &&
         oldWidget.gitBranch == widget.gitBranch &&
         oldWidget.isPending == widget.isPending &&
-        oldWidget.durableProviderSessionId ==
-            widget.durableProviderSessionId &&
+        oldWidget.durableProviderSessionId == widget.durableProviderSessionId &&
         oldWidget.pendingSessionCreated == widget.pendingSessionCreated &&
         oldWidget.initialPermissionMode == widget.initialPermissionMode &&
         oldWidget.initialSandboxMode == widget.initialSandboxMode &&
         oldWidget.initialApprovalPolicy == widget.initialApprovalPolicy &&
-        oldWidget.initialApprovalsReviewer ==
-            widget.initialApprovalsReviewer &&
+        oldWidget.initialApprovalsReviewer == widget.initialApprovalsReviewer &&
         !identityChanged) {
       return;
     }
 
     if (pendingLifecycleChanged) {
+      final localBinding = _localAttachmentBinding;
+      if (localBinding != null &&
+          oldWidget.pendingSessionCreated != widget.pendingSessionCreated) {
+        _detachPendingBinding(localBinding);
+      }
       _detachPendingBinding(oldWidget.pendingSessionCreated);
     }
     final explorerHistory = bridge.getExplorerHistory(widget.sessionId);
@@ -813,7 +970,9 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     if (_isPending) {
       _preserveDeferredSubmissionAsDraft();
     }
-    _detachPendingBinding(widget.pendingSessionCreated);
+    _detachPendingBinding(
+      _localAttachmentBinding ?? widget.pendingSessionCreated,
+    );
     _sandboxRestartSub?.cancel();
     _sessionStoppedSub?.cancel();
     _cachedPreviewSub?.cancel();
@@ -835,7 +994,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   Widget build(BuildContext context) {
     final durableId = widget.durableProviderSessionId;
     final cachedPreview = _cachedPreview;
-    if (_isPending && durableId != null) {
+    if (durableId != null && durableId.isNotEmpty) {
       return _CodexProviders(
         key: ValueKey(
           'durable-codex-$durableId-'
@@ -865,8 +1024,12 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
             const [],
         initialHistoryHasEarlier: cachedPreview?.hasEarlier ?? false,
         detachedHistoryPageLoader: _loadOlderDurableHistory,
+        expectedSourceFingerprint: _expectedCacheTargetFingerprint,
+        liveRuntimeSessionId: _isPending ? null : _sessionId,
         deferredSubmissionPending: _deferredSubmission != null,
         onDeferredSubmit: _queueDeferredSubmission,
+        initialSubmission: _deferredSubmission,
+        onInitialSubmissionConsumed: _consumeDeferredSubmission,
         onBackToSessions: widget.onBackToSessions,
         hideSessionBackButton: widget.hideSessionBackButton,
         allowMessageFork: false,
@@ -969,6 +1132,8 @@ class _CodexProviders extends StatelessWidget {
   final List<ServerMessage> initialHistoryMessages;
   final bool initialHistoryHasEarlier;
   final DetachedHistoryPageLoader? detachedHistoryPageLoader;
+  final String? expectedSourceFingerprint;
+  final String? liveRuntimeSessionId;
   final bool deferredSubmissionPending;
   final ChatComposerSubmitCallback? onDeferredSubmit;
   final ChatComposerSubmission? initialSubmission;
@@ -998,6 +1163,8 @@ class _CodexProviders extends StatelessWidget {
     this.initialHistoryMessages = const [],
     this.initialHistoryHasEarlier = false,
     this.detachedHistoryPageLoader,
+    this.expectedSourceFingerprint,
+    this.liveRuntimeSessionId,
     this.deferredSubmissionPending = false,
     this.onDeferredSubmit,
     this.initialSubmission,
@@ -1028,6 +1195,7 @@ class _CodexProviders extends StatelessWidget {
               initialProjectPath: projectPath,
               detachedPreview: detachedPreview,
               initialHistoryMessages: initialHistoryMessages,
+              initialLiveRuntimeSessionId: liveRuntimeSessionId,
               detachedHistoryPageLoader: detachedHistoryPageLoader,
               detachedHistoryToolDetailLoader: detachedPreview
                   ? (gap, toolUseIds) => context
@@ -1037,6 +1205,7 @@ class _CodexProviders extends StatelessWidget {
                           providerSessionId: sessionId,
                           gap: gap,
                           toolUseIds: toolUseIds,
+                          expectedDataSourceIdentity: dataSourceIdentity,
                         )
                   : null,
               initialHistoryHasEarlier: initialHistoryHasEarlier,
@@ -1067,8 +1236,31 @@ class _CodexProviders extends StatelessWidget {
         hasEarlier: initialHistoryHasEarlier,
         statusProvider: detachedPreview ? Provider.codex.value : null,
         statusProviderSessionId: detachedPreview ? sessionId : null,
+        expectedSourceFingerprint: detachedPreview
+            ? expectedSourceFingerprint
+            : null,
+        liveRuntimeSessionId: detachedPreview ? liveRuntimeSessionId : null,
+        onLiveRuntimeReady: !detachedPreview || initialSubmission == null
+            ? null
+            : (cubit) {
+                final submission = initialSubmission!;
+                final accepted = cubit.sendMessage(
+                  submission.text,
+                  clientMessageId: submission.clientMessageId,
+                  images: submission.images,
+                  mentionablePaths: submission.mentionablePaths,
+                  additionalMentions: submission.additionalMentions,
+                );
+                if (accepted) {
+                  onInitialSubmissionConsumed?.call(submission);
+                }
+                return accepted;
+              },
         child: _CodexChatBody(
           sessionId: sessionId,
+          liveRuntimeSessionId: detachedPreview
+              ? liveRuntimeSessionId
+              : sessionId,
           sessionInsightsSessionId: sessionInsightsSessionId,
           projectPath: projectPath,
           gitBranch: gitBranch,
@@ -1093,6 +1285,7 @@ class _CodexProviders extends StatelessWidget {
 
 class _CodexChatBody extends HookWidget {
   final String sessionId;
+  final String? liveRuntimeSessionId;
   final String? sessionInsightsSessionId;
   final String? projectPath;
   final String? gitBranch;
@@ -1108,6 +1301,7 @@ class _CodexChatBody extends HookWidget {
 
   const _CodexChatBody({
     required this.sessionId,
+    this.liveRuntimeSessionId,
     this.sessionInsightsSessionId,
     this.projectPath,
     this.gitBranch,
@@ -1152,6 +1346,14 @@ class _CodexChatBody extends HookWidget {
     useEffect(() => chatInputController.dispose, [chatInputController]);
     final planFeedbackController = useTextEditingController();
     final draftService = context.read<DraftService>();
+    final bridgeRuntimeSessionId = detachedPreview
+        ? liveRuntimeSessionId
+        : sessionId;
+    final workspaceStateKey = workspaceSessionStateKey(
+      provider: Provider.codex.value,
+      durableSessionId: sessionId,
+      dataSourceIdentity: dataSourceIdentity,
+    );
     EphemeralSideChatRegistryService? ephemeralSideChatRegistry;
     try {
       ephemeralSideChatRegistry = context
@@ -1197,16 +1399,29 @@ class _CodexChatBody extends HookWidget {
     // Diff selection from GitScreen navigation
     final diffSelectionFromNav = useState<DiffSelection?>(null);
     final codexCliJoinCommand = useState(
-      _latestCodexCliJoinCommand(bridge.cachedSessionMessages(sessionId)),
+      bridgeRuntimeSessionId == null
+          ? null
+          : _latestCodexCliJoinCommand(
+              bridge.cachedSessionMessages(bridgeRuntimeSessionId),
+            ),
     );
 
     // --- Bloc state ---
     final chatSessionCubit = context.read<ChatSessionCubit>();
+    useValueListenable(chatSessionCubit.detachedLiveRuntimeRevision);
     final sessionState = context.watch<ChatSessionCubit>().state;
     final bridgeState = context.watch<ConnectionCubit>().state;
+    final runtimeMutationSessionId = chatSessionCubit
+        .runtimeSessionIdForMutation(allowSteerable: false);
+    final coreActionSessionId = detachedPreview
+        ? liveRuntimeSessionId ?? sessionId
+        : sessionId;
     final compactActionController = useMemoized(
-      () => CodexCoreActionsController(sessionId: sessionId, bridge: bridge),
-      [sessionId, bridge],
+      () => CodexCoreActionsController(
+        sessionId: coreActionSessionId,
+        bridge: bridge,
+      ),
+      [coreActionSessionId, bridge],
     );
     void showCompactFeedback(String message) {
       if (!context.mounted) return;
@@ -1256,6 +1471,11 @@ class _CodexChatBody extends HookWidget {
 
     void requestCompactImmediately() {
       final strings = CodexCoreActionsStrings.of(context);
+      if (runtimeMutationSessionId == null ||
+          runtimeMutationSessionId != compactActionController.sessionId) {
+        showCompactFeedback(strings.failed);
+        return;
+      }
       if (!compactActionController.connected) {
         showCompactFeedback(strings.disconnected);
         return;
@@ -1272,6 +1492,8 @@ class _CodexChatBody extends HookWidget {
       context: context,
       sessionId: sessionId,
       sessionInsightsSessionId: sessionInsightsSessionId,
+      runtimeMutationSessionId: runtimeMutationSessionId,
+      durableCacheIdentityConfirmed: detachedPreview,
       bridge: bridge,
       inputController: chatInputController,
       draftService: draftService,
@@ -1292,9 +1514,14 @@ class _CodexChatBody extends HookWidget {
                 : featureId == 'subagents' && detachedPreview
                 ? {
                     ...arguments,
-                    'providerThreadId':
-                        sessionInsightsSessionId ?? sessionId,
+                    'providerThreadId': sessionInsightsSessionId ?? sessionId,
                     'codexSourceId': dataSourceIdentity.codexSourceId,
+                  }
+                : featureId == 'codex_core_actions' && detachedPreview
+                ? {
+                    ...arguments,
+                    'durableRoute': true,
+                    'runtimeSessionId': runtimeMutationSessionId,
                   }
                 : arguments,
           ),
@@ -1317,21 +1544,37 @@ class _CodexChatBody extends HookWidget {
     final parentState = context
         .findAncestorStateOfType<_CodexSessionScreenState>();
     bool submitWhileAttaching(ChatComposerSubmission submission) {
-      final accepted = onDeferredSubmit?.call(submission) ?? false;
-      if (!accepted) return false;
-      final queuedLocally = !context.read<BridgeService>().isConnected;
-      chatSessionCubit.showDeferredSubmission(
-        submission.text,
-        images: submission.images,
-        queuedLocally: queuedLocally,
-      );
-      if (queuedLocally) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(l.queuedLocally)));
+      final waitsForAttachment = onDeferredSubmit?.call(submission) ?? false;
+      if (waitsForAttachment) {
+        final queuedLocally = !context.read<BridgeService>().isConnected;
+        chatSessionCubit.showDeferredSubmission(
+          submission.text,
+          images: submission.images,
+          queuedLocally: queuedLocally,
+        );
+        if (queuedLocally) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(l.queuedLocally)));
+        }
+        return true;
       }
-      return true;
+      final sent = chatSessionCubit.sendMessage(
+        submission.text,
+        clientMessageId: submission.clientMessageId,
+        images: submission.images,
+        mentionablePaths: submission.mentionablePaths,
+        additionalMentions: submission.additionalMentions,
+      );
+      if (sent) {
+        draftService.deletePendingSubmission(
+          sessionId,
+          clientMessageId: submission.clientMessageId,
+        );
+      }
+      return sent;
     }
+
     final canCopyCodexCliJoinCommand =
         codexCliJoinCommand.value != null &&
         _hasSentUserMessage(sessionState.entries);
@@ -1365,19 +1608,35 @@ class _CodexChatBody extends HookWidget {
       final shell = WorkspaceShellScreen.maybeOf(context);
       shell?.registerSessionToolPaneBindings(
         sessionId: sessionId,
+        workspaceStateKey: workspaceStateKey,
         diffSelectionNotifier: diffSelectionFromNav,
         onExploreResultChanged: handleExploreResult,
         onFilePeekOpened: handleFilePeekOpened,
       );
-      return () => shell?.unregisterSessionToolPaneBindings(sessionId);
-    }, [sessionId]);
+      return () => shell?.unregisterSessionToolPaneBindings(
+        sessionId,
+        workspaceStateKey: workspaceStateKey,
+      );
+    }, [sessionId, workspaceStateKey]);
 
     useEffect(() {
-      final sub = bridge.messagesForSession(sessionId).listen((msg) {
+      final runtimeSessionId = bridgeRuntimeSessionId;
+      codexCliJoinCommand.value = runtimeSessionId == null
+          ? null
+          : _latestCodexCliJoinCommand(
+              bridge.cachedSessionMessages(runtimeSessionId),
+            );
+      return null;
+    }, [bridgeRuntimeSessionId]);
+
+    useEffect(() {
+      final runtimeSessionId = bridgeRuntimeSessionId;
+      if (runtimeSessionId == null) return null;
+      final sub = bridge.messagesForSession(runtimeSessionId).listen((msg) {
         if (msg case SystemMessage(
           sessionId: final messageSessionId?,
           :final codexCliJoin,
-        ) when messageSessionId == sessionId) {
+        ) when messageSessionId == runtimeSessionId) {
           final command = codexCliJoin?.command.trim();
           if (codexCliJoin?.isValid == true &&
               command != null &&
@@ -1387,7 +1646,7 @@ class _CodexChatBody extends HookWidget {
         }
       });
       return sub.cancel;
-    }, [sessionId]);
+    }, [bridgeRuntimeSessionId]);
 
     // --- Side effects subscription ---
     useEffect(() {
@@ -1429,10 +1688,7 @@ class _CodexChatBody extends HookWidget {
                 context,
                 chatSessionCubit,
                 onBeforeRestart: () async {
-                  draftService.saveDraft(
-                    sessionId,
-                    chatInputController.text,
-                  );
+                  draftService.saveDraft(sessionId, chatInputController.text);
                 },
               ),
             );
@@ -1475,7 +1731,7 @@ class _CodexChatBody extends HookWidget {
         }
       });
       return sub.cancel;
-    }, [sessionId]);
+    }, [sessionId, compactActionController, runtimeMutationSessionId]);
 
     useEffect(() {
       if (isBackground || bridgeState != BridgeConnectionState.connected) {
@@ -1551,44 +1807,43 @@ class _CodexChatBody extends HookWidget {
       ],
     );
 
-    useEffect(
-      () {
-        if (chatFileRoot == null) return null;
+    useEffect(() {
+      if (chatFileRoot == null) return null;
+      final runtimeSessionId = bridgeRuntimeSessionId;
+      if (runtimeSessionId == null) return null;
 
-        final bridge = context.read<BridgeService>();
-        GitStatusCubit? gitStatusCubit;
-        GitViewCacheService? gitViewCache;
-        try {
-          gitStatusCubit = context.read<GitStatusCubit>();
-          gitViewCache = context.read<GitViewCacheService>();
-        } catch (_) {}
-        final sub = bridge.messagesForSession(sessionId).listen((msg) {
-          if (isBackgroundRef.value) return;
-          if (msg case ToolResultMessage(
-            :final toolName,
-          ) when _fileListRefreshToolNames.contains(toolName)) {
+      final bridge = context.read<BridgeService>();
+      GitStatusCubit? gitStatusCubit;
+      GitViewCacheService? gitViewCache;
+      try {
+        gitStatusCubit = context.read<GitStatusCubit>();
+        gitViewCache = context.read<GitViewCacheService>();
+      } catch (_) {}
+      final sub = bridge.messagesForSession(runtimeSessionId).listen((msg) {
+        if (isBackgroundRef.value) return;
+        if (msg case ToolResultMessage(
+          :final toolName,
+        ) when _fileListRefreshToolNames.contains(toolName)) {
+          bridge.requestFileList(chatFileRoot);
+        } else if (msg case ResultMessage(:final fileEdits)) {
+          if ((fileEdits ?? 0) > 0) {
             bridge.requestFileList(chatFileRoot);
-          } else if (msg case ResultMessage(:final fileEdits)) {
-            if ((fileEdits ?? 0) > 0) {
-              bridge.requestFileList(chatFileRoot);
-            }
-            gitStatusCubit?.refresh(
-              sessionId: sessionId,
-              projectPath: gitProjectPath!,
-              includeRemote: showRemoteGitStatusBadge,
-            );
-            gitViewCache?.refreshIfPresent(sessionId);
           }
-        });
-        return sub.cancel;
-      },
-      [
-        sessionId,
-        chatFileRoot,
-        gitProjectPath,
-        showRemoteGitStatusBadge,
-      ],
-    );
+          gitStatusCubit?.refresh(
+            sessionId: sessionId,
+            projectPath: gitProjectPath!,
+            includeRemote: showRemoteGitStatusBadge,
+          );
+          gitViewCache?.refreshIfPresent(sessionId);
+        }
+      });
+      return sub.cancel;
+    }, [
+      bridgeRuntimeSessionId,
+      chatFileRoot,
+      gitProjectPath,
+      showRemoteGitStatusBadge,
+    ]);
 
     // --- Listen for branch updates ---
     useEffect(() {
@@ -2139,257 +2394,277 @@ class _CodexChatBody extends HookWidget {
                 Positioned.fill(
                   child: Column(
                     children: [
-                if (bridgeState == BridgeConnectionState.reconnecting ||
-                    bridgeState == BridgeConnectionState.disconnected)
-                  ReconnectBanner(bridgeState: bridgeState),
-                if (detachedPreview && deferredSubmissionPending)
-                  DurableSessionBindingBanner(
-                    queuedLocally:
-                        bridgeState != BridgeConnectionState.connected,
-                  ),
-                if (!isBackground)
-                  ...LocalSessionFeatureHost.statusWidgets(localFeatureContext),
-                Expanded(
-                  child: BottomOverlayLayout(
-                    overlay:
-                        askToolUseId == null &&
-                            askInput == null &&
-                            pendingToolUseId == null
-                        ? null
-                        : NotificationListener<ScrollNotification>(
-                            onNotification: (notification) {
-                              if (notification is UserScrollNotification) {
-                                FocusScope.of(context).unfocus();
-                              }
-                              return false;
-                            },
-                            child: SingleChildScrollView(
-                              reverse: true,
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  if (askToolUseId case final askId?
-                                      when askInput != null)
-                                    AskUserQuestionWidget(
-                                      toolUseId: askId,
-                                      input: askInput,
-                                      agentName: 'Codex',
-                                      onAnswer: answerQuestion,
-                                      scrollable: false,
+                      if (bridgeState == BridgeConnectionState.reconnecting ||
+                          bridgeState == BridgeConnectionState.disconnected)
+                        ReconnectBanner(bridgeState: bridgeState),
+                      if (detachedPreview && deferredSubmissionPending)
+                        DurableSessionBindingBanner(
+                          queuedLocally:
+                              bridgeState != BridgeConnectionState.connected,
+                        ),
+                      if (!isBackground)
+                        ...LocalSessionFeatureHost.statusWidgets(
+                          localFeatureContext,
+                        ),
+                      Expanded(
+                        child: BottomOverlayLayout(
+                          overlay:
+                              askToolUseId == null &&
+                                  askInput == null &&
+                                  pendingToolUseId == null
+                              ? null
+                              : NotificationListener<ScrollNotification>(
+                                  onNotification: (notification) {
+                                    if (notification
+                                        is UserScrollNotification) {
+                                      FocusScope.of(context).unfocus();
+                                    }
+                                    return false;
+                                  },
+                                  child: SingleChildScrollView(
+                                    reverse: true,
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        if (askToolUseId case final askId?
+                                            when askInput != null)
+                                          AskUserQuestionWidget(
+                                            toolUseId: askId,
+                                            input: askInput,
+                                            agentName: 'Codex',
+                                            onAnswer: answerQuestion,
+                                            scrollable: false,
+                                          ),
+                                        if (pendingToolUseId != null &&
+                                            isToolSuggestion &&
+                                            pendingPermission != null)
+                                          ToolSuggestionCard(
+                                            key: ValueKey(
+                                              'tool_suggestion_$pendingToolUseId',
+                                            ),
+                                            appColors: appColors,
+                                            permission: pendingPermission,
+                                            onInstall: installSuggestedTool,
+                                            onComplete: approveToolUse,
+                                            onReject: rejectToolUse,
+                                            onOpenUrl: (url) => unawaited(
+                                              openToolSuggestionUrl(url),
+                                            ),
+                                          ),
+                                        if (pendingToolUseId != null &&
+                                            !isToolSuggestion)
+                                          ApprovalBar(
+                                            key: ValueKey(
+                                              'approval_$pendingToolUseId',
+                                            ),
+                                            appColors: appColors,
+                                            pendingPermission:
+                                                pendingPermission,
+                                            isPlanApproval: isPlanApproval,
+                                            planApprovalUiMode:
+                                                PlanApprovalUiMode.codex,
+                                            planFeedbackController:
+                                                planFeedbackController,
+                                            onApprove: approveToolUse,
+                                            onReject: rejectToolUse,
+                                            onApproveAlways:
+                                                approveAlwaysToolUse,
+                                            onApproveClearContext:
+                                                isPlanApproval
+                                                ? approveWithClearContext
+                                                : null,
+                                            onViewPlan: isPlanApproval
+                                                ? () {
+                                                    final originalText =
+                                                        _extractPlanText(
+                                                          pendingPermission,
+                                                          sessionState.entries,
+                                                        );
+                                                    if (originalText == null)
+                                                      return;
+                                                    showPlanDetailSheet(
+                                                      context,
+                                                      originalText,
+                                                    );
+                                                  }
+                                                : null,
+                                          ),
+                                      ],
                                     ),
-                                  if (pendingToolUseId != null &&
-                                      isToolSuggestion &&
-                                      pendingPermission != null)
-                                    ToolSuggestionCard(
-                                      key: ValueKey(
-                                        'tool_suggestion_$pendingToolUseId',
-                                      ),
-                                      appColors: appColors,
-                                      permission: pendingPermission,
-                                      onInstall: installSuggestedTool,
-                                      onComplete: approveToolUse,
-                                      onReject: rejectToolUse,
-                                      onOpenUrl: (url) =>
-                                          unawaited(openToolSuggestionUrl(url)),
+                                  ),
+                                ),
+                          topOverlay: Positioned(
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            child: Center(
+                              child: SessionModeBar(
+                                trailingWidgets:
+                                    LocalSessionFeatureHost.modeBarWidgets(
+                                      localFeatureContext,
                                     ),
-                                  if (pendingToolUseId != null &&
-                                      !isToolSuggestion)
-                                    ApprovalBar(
-                                      key: ValueKey(
-                                        'approval_$pendingToolUseId',
-                                      ),
-                                      appColors: appColors,
-                                      pendingPermission: pendingPermission,
-                                      isPlanApproval: isPlanApproval,
-                                      planApprovalUiMode:
-                                          PlanApprovalUiMode.codex,
-                                      planFeedbackController:
-                                          planFeedbackController,
-                                      onApprove: approveToolUse,
-                                      onReject: rejectToolUse,
-                                      onApproveAlways: approveAlwaysToolUse,
-                                      onApproveClearContext: isPlanApproval
-                                          ? approveWithClearContext
-                                          : null,
-                                      onViewPlan: isPlanApproval
-                                          ? () {
-                                              final originalText =
-                                                  _extractPlanText(
-                                                    pendingPermission,
-                                                    sessionState.entries,
-                                                  );
-                                              if (originalText == null) return;
-                                              showPlanDetailSheet(
-                                                context,
-                                                originalText,
-                                              );
-                                            }
-                                          : null,
-                                    ),
-                                ],
+                                showExtendedCodexEfforts: context
+                                    .watch<SettingsCubit>()
+                                    .state
+                                    .showExtendedCodexEfforts,
+                                onBeforeRestart: () async {
+                                  draftService.saveDraft(
+                                    sessionId,
+                                    chatInputController.text,
+                                  );
+                                },
                               ),
                             ),
                           ),
-                    topOverlay: Positioned(
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      child: Center(
-                        child: SessionModeBar(
-                          trailingWidgets:
-                              LocalSessionFeatureHost.modeBarWidgets(
-                                localFeatureContext,
+                          floatingButtonBuilder: (overlayHeight) {
+                            if (!scroll.isScrolledUp)
+                              return const SizedBox.shrink();
+                            return Positioned(
+                              right: 12,
+                              bottom: overlayHeight + 12,
+                              child: ScrollToBottomButton(
+                                onPressed: () {
+                                  if (scroll.controller.hasClients) {
+                                    scroll.controller.animateTo(
+                                      0.0,
+                                      duration: const Duration(
+                                        milliseconds: 200,
+                                      ),
+                                      curve: Curves.easeOut,
+                                    );
+                                  }
+                                },
                               ),
-                          showExtendedCodexEfforts: context
-                              .watch<SettingsCubit>()
-                              .state
-                              .showExtendedCodexEfforts,
-                          onBeforeRestart: () async {
-                            draftService.saveDraft(
-                              sessionId,
-                              chatInputController.text,
                             );
                           },
-                        ),
-                      ),
-                    ),
-                    floatingButtonBuilder: (overlayHeight) {
-                      if (!scroll.isScrolledUp) return const SizedBox.shrink();
-                      return Positioned(
-                        right: 12,
-                        bottom: overlayHeight + 12,
-                        child: ScrollToBottomButton(
-                          onPressed: () {
-                            if (scroll.controller.hasClients) {
-                              scroll.controller.animateTo(
-                                0.0,
-                                duration: const Duration(milliseconds: 200),
-                                curve: Curves.easeOut,
+                          contentBuilder: (overlayHeight) => ChatMessageList(
+                            sessionId: sessionId,
+                            scrollController: scroll.controller,
+                            httpBaseUrl: context
+                                .read<BridgeService>()
+                                .httpBaseUrl,
+                            projectPath: chatFileRoot,
+                            onRetryMessage: null,
+                            onRewindMessage: (entry) {
+                              _showCodexRewindDialog(
+                                context,
+                                entry,
+                                sessionId: sessionId,
+                                inputController: chatInputController,
+                                draftService: draftService,
                               );
-                            }
-                          },
-                        ),
-                      );
-                    },
-                    contentBuilder: (overlayHeight) => ChatMessageList(
-                      sessionId: sessionId,
-                      scrollController: scroll.controller,
-                      httpBaseUrl: context.read<BridgeService>().httpBaseUrl,
-                      projectPath: chatFileRoot,
-                      onRetryMessage: null,
-                      onRewindMessage: (entry) {
-                        _showCodexRewindDialog(
-                          context,
-                          entry,
-                          sessionId: sessionId,
-                          inputController: chatInputController,
-                          draftService: draftService,
-                        );
-                      },
-                      onForkMessage: allowMessageFork
-                          ? (message) {
-                              unawaited(
-                                _forkCodexFromAssistant(context, message),
-                              );
-                            }
-                          : null,
-                      selectionActions:
-                          LocalSessionFeatureHost.selectionActions(
-                            localFeatureContext,
+                            },
+                            onForkMessage: allowMessageFork
+                                ? (message) {
+                                    unawaited(
+                                      _forkCodexFromAssistant(context, message),
+                                    );
+                                  }
+                                : null,
+                            selectionActions:
+                                LocalSessionFeatureHost.selectionActions(
+                                  localFeatureContext,
+                                ),
+                            scrollToUserEntry: scrollToUserEntry,
+                            collapseToolResults: collapseToolResults,
+                            bottomPadding: 8,
+                            isCodex: true,
+                            onFilePeekOpened: context
+                                .read<ChatSessionCubit>()
+                                .recordPeekedFile,
                           ),
-                      scrollToUserEntry: scrollToUserEntry,
-                      collapseToolResults: collapseToolResults,
-                      bottomPadding: 8,
-                      isCodex: true,
-                      onFilePeekOpened: context
-                          .read<ChatSessionCubit>()
-                          .recordPeekedFile,
-                    ),
-                  ),
-                ),
-                if (approval is ApprovalNone)
-                  if (currentGoal != null)
-                    CodexGoalCard(
-                      goal: currentGoal,
-                      busy: sessionState.goalMutation != null,
-                      busyLabel: CodexGoalManagement.mutationLabel(
-                        sessionState.goalMutation?.kind,
-                        l,
-                      ),
-                      controlsEnabled:
-                          bridgeState == BridgeConnectionState.connected &&
-                          sessionState.goalStateLoaded &&
-                          sessionState.goalSupport ==
-                              CodexGoalSupport.supported &&
-                          sessionState.goal?.hasUnknownStatus != true,
-                      disabledLabel: CodexGoalManagement.controlsDisabledLabel(
-                        sessionState,
-                        sessionState.goal!,
-                        l,
-                      ),
-                      onEdit: () => unawaited(
-                        CodexGoalManagement.showEditor(
-                          context,
-                          sessionState.goal,
                         ),
                       ),
-                      onTogglePaused: () {
-                        final goal = sessionState.goal;
-                        if (goal == null) return;
-                        if (goal.status == CodexThreadGoalStatus.blocked ||
-                            goal.status == CodexThreadGoalStatus.usageLimited) {
-                          context.read<ChatSessionCubit>().resumeGoal();
-                          return;
-                        }
-                        context.read<ChatSessionCubit>().toggleGoalPaused();
-                      },
-                      onResolveBudget:
-                          chatSessionCubit.supportsAdvancedGoalControl
-                          ? () => unawaited(
+                      if (approval is ApprovalNone)
+                        if (currentGoal != null)
+                          CodexGoalCard(
+                            goal: currentGoal,
+                            busy: sessionState.goalMutation != null,
+                            busyLabel: CodexGoalManagement.mutationLabel(
+                              sessionState.goalMutation?.kind,
+                              l,
+                            ),
+                            controlsEnabled:
+                                bridgeState ==
+                                    BridgeConnectionState.connected &&
+                                sessionState.goalStateLoaded &&
+                                sessionState.goalSupport ==
+                                    CodexGoalSupport.supported &&
+                                sessionState.goal?.hasUnknownStatus != true,
+                            disabledLabel:
+                                CodexGoalManagement.controlsDisabledLabel(
+                                  sessionState,
+                                  sessionState.goal!,
+                                  l,
+                                ),
+                            onEdit: () => unawaited(
                               CodexGoalManagement.showEditor(
                                 context,
                                 sessionState.goal,
-                                resumeAfterSave: true,
                               ),
-                            )
-                          : null,
-                      onClear: () => unawaited(
-                        CodexGoalManagement.confirmClear(
-                          context,
-                          sessionState.goal!,
-                        ),
-                      ),
-                    ),
-                if (approval is ApprovalNone)
-                  if (queuedInput != null)
-                    ValueListenableBuilder<bool>(
-                      valueListenable: context
-                          .read<ChatSessionCubit>()
-                          .externalDesktopTurnSteerable,
-                      builder: (context, turnSteerable, _) =>
-                          CodexQueuedInputPanel(
-                            item: queuedInput,
-                            isOfflinePending:
-                                ChatSessionCubit.isOfflineQueuedInput(
-                                  queuedInput,
-                                ),
-                            isDeliveryPending:
-                                ChatSessionCubit.isDeliveryPendingQueuedInput(
-                                  queuedInput,
-                                ),
-                            onSteer:
-                                ChatSessionCubit.isOfflineQueuedInput(
-                                      queuedInput,
-                                    ) ||
-                                    ChatSessionCubit.isDeliveryPendingQueuedInput(
-                                      queuedInput,
-                                    ) ||
-                                    (sessionState.externalDesktopTurnActive &&
-                                        !turnSteerable)
-                                ? null
-                                : () => context
-                                      .read<ChatSessionCubit>()
-                                      .steerQueuedInput(queuedInput),
+                            ),
+                            onTogglePaused: () {
+                              final goal = sessionState.goal;
+                              if (goal == null) return;
+                              if (goal.status ==
+                                      CodexThreadGoalStatus.blocked ||
+                                  goal.status ==
+                                      CodexThreadGoalStatus.usageLimited) {
+                                context.read<ChatSessionCubit>().resumeGoal();
+                                return;
+                              }
+                              context
+                                  .read<ChatSessionCubit>()
+                                  .toggleGoalPaused();
+                            },
+                            onResolveBudget:
+                                chatSessionCubit.supportsAdvancedGoalControl
+                                ? () => unawaited(
+                                    CodexGoalManagement.showEditor(
+                                      context,
+                                      sessionState.goal,
+                                      resumeAfterSave: true,
+                                    ),
+                                  )
+                                : null,
+                            onClear: () => unawaited(
+                              CodexGoalManagement.confirmClear(
+                                context,
+                                sessionState.goal!,
+                              ),
+                            ),
+                          ),
+                      if (approval is ApprovalNone)
+                        if (queuedInput != null)
+                          ValueListenableBuilder<bool>(
+                            valueListenable: context
+                                .read<ChatSessionCubit>()
+                                .externalDesktopTurnSteerable,
+                            builder: (context, turnSteerable, _) =>
+                                CodexQueuedInputPanel(
+                                  item: queuedInput,
+                                  isOfflinePending:
+                                      ChatSessionCubit.isOfflineQueuedInput(
+                                        queuedInput,
+                                      ),
+                                  isDeliveryPending:
+                                      ChatSessionCubit.isDeliveryPendingQueuedInput(
+                                        queuedInput,
+                                      ),
+                                  onSteer:
+                                      ChatSessionCubit.isOfflineQueuedInput(
+                                            queuedInput,
+                                          ) ||
+                                          ChatSessionCubit.isDeliveryPendingQueuedInput(
+                                            queuedInput,
+                                          ) ||
+                                          (sessionState
+                                                  .externalDesktopTurnActive &&
+                                              !turnSteerable)
+                                      ? null
+                                      : () => context
+                                            .read<ChatSessionCubit>()
+                                            .steerQueuedInput(queuedInput),
                                   onEdit: () => unawaited(
                                     moveQueuedInputToComposer(
                                       inputController: chatInputController,
@@ -2401,42 +2676,43 @@ class _CodexChatBody extends HookWidget {
                                   ),
                                   onCancel: () => unawaited(
                                     context
-                                  .read<ChatSessionCubit>()
-                                  .cancelQueuedInput(queuedInput),
-                            ),
+                                        .read<ChatSessionCubit>()
+                                        .cancelQueuedInput(queuedInput),
+                                  ),
+                                ),
                           ),
-                    ),
-                if (approval is ApprovalNone)
-                  ChatInputWithOverlays(
-                    sessionId: sessionId,
-                    status: status,
-                    onScrollToBottom: scroll.scrollToBottom,
-                    inputController: chatInputController,
-                    hintText: l.codexMessagePlaceholder,
-                    inputBlocked:
-                        (detachedPreview && deferredSubmissionPending) ||
-                        queuedInput != null,
-                    onSubmit: detachedPreview ? submitWhileAttaching : null,
-                    initialDiffSelection: diffSelectionFromNav.value,
-                    onDiffSelectionConsumed: () {},
-                    onDiffSelectionCleared: () =>
-                        diffSelectionFromNav.value = null,
-                    onOpenGitScreen: effectiveProjectPath != null
-                        ? (_) => _openGitScreen(
-                            context,
-                            worktreePath ?? effectiveProjectPath,
-                            diffSelectionFromNav,
-                            sessionId: sessionId,
-                            worktreePath: worktreePath,
-                            onFilePeekOpened: handleFilePeekOpened,
-                          )
-                        : null,
-                  ),
+                      if (approval is ApprovalNone)
+                        ChatInputWithOverlays(
+                          sessionId: sessionId,
+                          status: status,
+                          onScrollToBottom: scroll.scrollToBottom,
+                          inputController: chatInputController,
+                          hintText: l.codexMessagePlaceholder,
+                          inputBlocked:
+                              (detachedPreview && deferredSubmissionPending) ||
+                              queuedInput != null,
+                          onSubmit: detachedPreview
+                              ? submitWhileAttaching
+                              : null,
+                          initialDiffSelection: diffSelectionFromNav.value,
+                          onDiffSelectionConsumed: () {},
+                          onDiffSelectionCleared: () =>
+                              diffSelectionFromNav.value = null,
+                          onOpenGitScreen: effectiveProjectPath != null
+                              ? (_) => _openGitScreen(
+                                  context,
+                                  worktreePath ?? effectiveProjectPath,
+                                  diffSelectionFromNav,
+                                  sessionId: sessionId,
+                                  worktreePath: worktreePath,
+                                  onFilePeekOpened: handleFilePeekOpened,
+                                )
+                              : null,
+                        ),
                     ],
                   ),
                 ),
-                if (!hideAuxiliaryDock &&
-                    ephemeralSideChatRegistry != null)
+                if (!hideAuxiliaryDock && ephemeralSideChatRegistry != null)
                   Positioned.fill(
                     child: AuxiliaryFloatingDock(
                       key: ValueKey(
@@ -2455,27 +2731,23 @@ class _CodexChatBody extends HookWidget {
                       bridgeService: bridge,
                       registryService: ephemeralSideChatRegistry,
                       onOpenSideChat:
-                          (
-                            parentSessionId,
-                            parentProviderSessionId,
-                            entry,
-                          ) =>
-                          _openLocalFeaturePaneOrSheet(
-                            context,
-                            featureId: 'side_chat',
-                            sessionId: parentSessionId,
-                            arguments: entry == null
-                                ? {
-                                    'forceNew': true,
-                                    'parentProviderSessionId':
-                                        parentProviderSessionId,
-                                  }
-                                : {
-                                    'childSessionId': entry.childSessionId,
-                                    'parentProviderSessionId':
-                                        parentProviderSessionId,
-                                  },
-                          ),
+                          (parentSessionId, parentProviderSessionId, entry) =>
+                              _openLocalFeaturePaneOrSheet(
+                                context,
+                                featureId: 'side_chat',
+                                sessionId: parentSessionId,
+                                arguments: entry == null
+                                    ? {
+                                        'forceNew': true,
+                                        'parentProviderSessionId':
+                                            parentProviderSessionId,
+                                      }
+                                    : {
+                                        'childSessionId': entry.childSessionId,
+                                        'parentProviderSessionId':
+                                            parentProviderSessionId,
+                                      },
+                              ),
                     ),
                   ),
               ],
@@ -3166,9 +3438,9 @@ Future<void> _copyCodexCliJoinCommand(
   await Clipboard.setData(ClipboardData(text: command));
   if (!context.mounted) return;
   final l = AppLocalizations.of(context);
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(l.codexCliJoinCommandCopied)),
-  );
+  ScaffoldMessenger.of(
+    context,
+  ).showSnackBar(SnackBar(content: Text(l.codexCliJoinCommandCopied)));
 }
 
 String? _extractPlanText(

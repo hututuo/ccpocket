@@ -185,6 +185,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   ConversationHotWindowSnapshot? _cachedPreview;
   bool _loadingCachedPreview = false;
   bool _cachedPreviewDirty = false;
+  String? _expectedCacheTargetFingerprint;
   ChatComposerSubmission? _deferredSubmission;
   PendingSessionBinding? _retainedPendingBinding;
   final Object _sessionRouteOwner = Object();
@@ -222,13 +223,22 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     if (durableId == null || durableId.isEmpty) return;
     try {
       final sync = context.read<ConversationContentSyncService>();
-      sync.setFocusedConversation(
+      _expectedCacheTargetFingerprint = sync
+          .cacheTargetFingerprintForDataSource(_dataSourceIdentity);
+      if (sync.matchesCurrentDataSource(
+        _dataSourceIdentity,
         provider: Provider.claude.value,
-        providerSessionId: durableId,
-      );
+      )) {
+        sync.setFocusedConversation(
+          provider: Provider.claude.value,
+          providerSessionId: durableId,
+        );
+      }
       _cachedPreviewSub = sync.updates
           .where(
             (update) =>
+                update.targetFingerprint ==
+                    _expectedCacheTargetFingerprint &&
                 update.provider == Provider.claude.value &&
                 update.providerSessionId == durableId,
           )
@@ -254,6 +264,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
           .loadCachedWindow(
             provider: Provider.claude.value,
             providerSessionId: durableId,
+            expectedDataSourceIdentity: _dataSourceIdentity,
           )
           .then((snapshot) {
             if (!mounted ||
@@ -288,6 +299,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
         .loadOlderTurns(
           provider: Provider.claude.value,
           providerSessionId: durableId,
+          expectedDataSourceIdentity: _dataSourceIdentity,
         );
     return (loaded: result.loaded, hasMore: result.hasMore);
   }
@@ -687,6 +699,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
             const [],
         initialHistoryHasEarlier: cachedPreview?.hasEarlier ?? false,
         detachedHistoryPageLoader: _loadOlderDurableHistory,
+        expectedSourceFingerprint: _expectedCacheTargetFingerprint,
         deferredSubmissionPending: _deferredSubmission != null,
         onDeferredSubmit: _queueDeferredSubmission,
         onBackToSessions: widget.onBackToSessions,
@@ -773,6 +786,7 @@ class _ChatScreenProviders extends StatelessWidget {
   final List<ServerMessage> initialHistoryMessages;
   final bool initialHistoryHasEarlier;
   final DetachedHistoryPageLoader? detachedHistoryPageLoader;
+  final String? expectedSourceFingerprint;
   final bool deferredSubmissionPending;
   final ChatComposerSubmitCallback? onDeferredSubmit;
   final ChatComposerSubmission? initialSubmission;
@@ -796,6 +810,7 @@ class _ChatScreenProviders extends StatelessWidget {
     this.initialHistoryMessages = const [],
     this.initialHistoryHasEarlier = false,
     this.detachedHistoryPageLoader,
+    this.expectedSourceFingerprint,
     this.deferredSubmissionPending = false,
     this.onDeferredSubmit,
     this.initialSubmission,
@@ -862,6 +877,9 @@ class _ChatScreenProviders extends StatelessWidget {
         hasEarlier: initialHistoryHasEarlier,
         statusProvider: detachedPreview ? Provider.claude.value : null,
         statusProviderSessionId: detachedPreview ? sessionId : null,
+        expectedSourceFingerprint: detachedPreview
+            ? expectedSourceFingerprint
+            : null,
         child: _ChatScreenBody(
           sessionId: sessionId,
           projectPath: projectPath,
@@ -910,6 +928,11 @@ class _ChatScreenBody extends HookWidget {
     final appColors = Theme.of(context).extension<AppColors>()!;
     final shell = WorkspaceShellScreen.maybeOf(context);
     final presentationListenable = shell?.presentationListenable;
+    final workspaceStateKey = workspaceSessionStateKey(
+      provider: Provider.claude.value,
+      durableSessionId: sessionId,
+      dataSourceIdentity: dataSourceIdentity,
+    );
 
     // Mutable branch state (refreshed from Bridge)
     final currentBranch = useState(gitBranch);
@@ -1042,12 +1065,16 @@ class _ChatScreenBody extends HookWidget {
       final shell = WorkspaceShellScreen.maybeOf(context);
       shell?.registerSessionToolPaneBindings(
         sessionId: sessionId,
+        workspaceStateKey: workspaceStateKey,
         diffSelectionNotifier: diffSelectionFromNav,
         onExploreResultChanged: handleExploreResult,
         onFilePeekOpened: handleFilePeekOpened,
       );
-      return () => shell?.unregisterSessionToolPaneBindings(sessionId);
-    }, [sessionId]);
+      return () => shell?.unregisterSessionToolPaneBindings(
+        sessionId,
+        workspaceStateKey: workspaceStateKey,
+      );
+    }, [sessionId, workspaceStateKey]);
 
     final tokenUsage = _collectTokenUsage(sessionState.entries);
     final toolUsage = _collectToolUsage(sessionState.entries);

@@ -41,6 +41,86 @@ void main() {
     expect(decoded.event, ConversationSyncV2EventKind.statusChanges);
     expect(decoded.statusChanges.single.activity, 'unknown');
     expect(decoded.statusChanges.single.runtimeAttachment, 'notLoaded');
+    expect(decoded.statusChanges.single.executionHost, isNull);
+    expect(decoded.statusChanges.single.activeTurnId, isNull);
+    expect(decoded.statusChanges.single.controlState, isNull);
+    expect(decoded.statusChanges.single.authorityGeneration, isNull);
+  });
+
+  test('decodes and persists additive turn authority fields', () {
+    final decoded =
+        ServerMessage.fromJson(<String, dynamic>{
+              ..._baseFrame,
+              'event': 'status_changes',
+              'statusState': 'status-authority',
+              'pageIndex': 0,
+              'pageCount': 1,
+              'changes': [
+                {
+                  'provider': 'codex',
+                  'providerSessionId': 'thread-authority',
+                  'activity': 'working',
+                  'attention': 'none',
+                  'result': 'none',
+                  'runtimeAttachment': 'loaded',
+                  'source': 'appServer',
+                  'confidence': 'authoritative',
+                  'observedAt': '2026-08-01T00:00:00.000Z',
+                  'executionHost': 'bridge',
+                  'activeTurnId': 'turn-1',
+                  'controlState': 'writable',
+                  'authorityGeneration': 'authority-7',
+                },
+              ],
+            })
+            as ConversationSyncV2EventMessage;
+
+    final status = decoded.statusChanges.single;
+    expect(status.executionHost, 'bridge');
+    expect(status.activeTurnId, 'turn-1');
+    expect(status.controlState, 'writable');
+    expect(status.authorityGeneration, 'authority-7');
+    expect(status.toJson(), containsPair('executionHost', 'bridge'));
+    expect(status.toJson(), containsPair('activeTurnId', 'turn-1'));
+    expect(status.toJson(), containsPair('controlState', 'writable'));
+    expect(status.toJson(), containsPair('authorityGeneration', 'authority-7'));
+  });
+
+  test('rejects unsupported execution host and control state values', () {
+    Map<String, dynamic> frameWithStatus(Map<String, dynamic> additions) => {
+      ..._baseFrame,
+      'event': 'status_changes',
+      'statusState': 'status-invalid',
+      'pageIndex': 0,
+      'pageCount': 1,
+      'changes': [
+        {
+          'provider': 'codex',
+          'providerSessionId': 'thread-invalid',
+          'activity': 'working',
+          'attention': 'none',
+          'result': 'none',
+          'runtimeAttachment': 'loaded',
+          'source': 'appServer',
+          'confidence': 'authoritative',
+          'observedAt': '2026-08-01T00:00:00.000Z',
+          ...additions,
+        },
+      ],
+    };
+
+    expect(
+      () => ServerMessage.fromJson(
+        frameWithStatus({'executionHost': 'anotherHost'}),
+      ),
+      throwsFormatException,
+    );
+    expect(
+      () => ServerMessage.fromJson(
+        frameWithStatus({'controlState': 'implicitlyWritable'}),
+      ),
+      throwsFormatException,
+    );
   });
 
   test(

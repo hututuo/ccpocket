@@ -589,6 +589,93 @@ void main() {
       expect(presentation.executionHost, SessionExecutionHost.desktopAppServer);
     });
 
+    test('uses explicit execution host before app-server evidence source', () {
+      final bridgeOrigin = sessionCardPresentationFor(
+        syncStatus: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'thread-shared-bridge',
+          activity: 'working',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-08-01T00:00:00Z',
+          executionHost: 'bridge',
+          activeTurnId: 'turn-bridge',
+          controlState: 'writable',
+          authorityGeneration: 'generation-1',
+        ),
+      );
+      final desktopOrigin = sessionCardPresentationFor(
+        syncStatus: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'thread-shared-desktop',
+          activity: 'working',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-08-01T00:00:00Z',
+          executionHost: 'desktopAppServer',
+          activeTurnId: 'turn-desktop',
+          controlState: 'readOnly',
+          authorityGeneration: 'generation-1',
+        ),
+      );
+
+      expect(bridgeOrigin.executionHost, SessionExecutionHost.bridge);
+      expect(
+        desktopOrigin.executionHost,
+        SessionExecutionHost.desktopAppServer,
+      );
+    });
+
+    test('does not fall back from explicit unknown execution host', () {
+      final presentation = sessionCardPresentationFor(
+        syncStatus: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'thread-unknown-origin',
+          activity: 'working',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-08-01T00:00:00Z',
+          executionHost: 'unknown',
+          controlState: 'unavailable',
+          authorityGeneration: 'generation-1',
+        ),
+      );
+
+      expect(presentation.visualStatus.primary, SessionPrimaryStatus.working);
+      expect(presentation.executionHost, SessionExecutionHost.unknown);
+    });
+
+    test('hides an explicit execution host when the session is idle', () {
+      final presentation = sessionCardPresentationFor(
+        syncStatus: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'thread-idle-host',
+          activity: 'idle',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-08-01T00:00:00Z',
+          executionHost: 'bridge',
+          controlState: 'writable',
+          authorityGeneration: 'generation-1',
+        ),
+      );
+
+      expect(presentation.visualStatus.primary, SessionPrimaryStatus.idle);
+      expect(presentation.executionHost, SessionExecutionHost.unknown);
+    });
+
     testWidgets('does not render Ready for an idle session', (tester) async {
       final session = SessionInfo(
         id: 'idle-without-ready',

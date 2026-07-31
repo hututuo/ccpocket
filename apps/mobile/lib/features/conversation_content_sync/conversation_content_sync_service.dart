@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/widgets.dart';
 
 import '../../core/logger.dart';
+import '../../models/bridge_data_source_identity.dart';
 import '../../models/messages.dart';
 import '../../services/bridge_service.dart';
 import '../session_list/cache/session_catalog_cache_repository.dart';
@@ -84,11 +85,13 @@ class BridgeServiceConversationContentSyncGateway
 
 class ConversationContentCacheUpdate {
   const ConversationContentCacheUpdate({
+    required this.targetFingerprint,
     required this.provider,
     required this.providerSessionId,
     required this.revision,
   });
 
+  final String targetFingerprint;
   final String provider;
   final String providerSessionId;
   final String revision;
@@ -226,6 +229,48 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   /// on the wire.
   String get currentCacheTargetFingerprint => _cacheTarget.fingerprint;
 
+  BridgeDataSourceIdentity get currentDataSourceIdentity =>
+      BridgeDataSourceIdentity.fromConnection(
+        bridgeInstanceId: bridge.bridgeInstanceId,
+        codexSourceId: bridge.codexSourceId,
+        logicalConnectionIdentity: bridge.logicalConnectionIdentity,
+        websocketUrl: bridge.lastUrl,
+      );
+
+  bool matchesCurrentDataSource(
+    BridgeDataSourceIdentity expected, {
+    required String provider,
+  }) => expected.isSatisfiedBy(currentDataSourceIdentity, provider: provider);
+
+  /// Returns true only after the current connection has enough authoritative
+  /// identity to prove that it is a different source.
+  ///
+  /// A route can open while the Bridge is offline or still authenticating. In
+  /// that interval a scoped route identity must remain able to read its own
+  /// SQLite partition instead of being rejected by an unscoped live socket.
+  bool hasAuthoritativeDataSourceConflict(
+    BridgeDataSourceIdentity expected, {
+    required String provider,
+  }) {
+    final current = currentDataSourceIdentity;
+    final expectedBridge = expected.bridgeInstanceId?.trim();
+    final currentBridge = current.bridgeInstanceId?.trim();
+    if (expectedBridge != null && expectedBridge.isNotEmpty) {
+      if (currentBridge == null || currentBridge.isEmpty) return false;
+      return !expected.isSatisfiedBy(current, provider: provider);
+    }
+
+    final expectedRoute = expected.legacyRouteIdentity?.trim();
+    if (expectedRoute == null || expectedRoute.isEmpty) return false;
+    final currentRoute = current.legacyRouteIdentity?.trim();
+    if (currentRoute == null || currentRoute.isEmpty) return false;
+    return expectedRoute != currentRoute;
+  }
+
+  String cacheTargetFingerprintForDataSource(
+    BridgeDataSourceIdentity identity,
+  ) => _cacheTargetForDataSource(identity).fingerprint;
+
   void start({AppLifecycleState? initialLifecycleState}) {
     if (_started || _disposed) return;
     _started = true;
@@ -345,20 +390,57 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   Future<ConversationHotWindowSnapshot?> loadCachedWindow({
     required String provider,
     required String providerSessionId,
+    BridgeDataSourceIdentity? expectedDataSourceIdentity,
   }) async {
-    final target = _cacheTarget;
+    if (expectedDataSourceIdentity != null &&
+        hasAuthoritativeDataSourceConflict(
+          expectedDataSourceIdentity,
+          provider: provider,
+        )) {
+      return null;
+    }
+    final target = expectedDataSourceIdentity == null
+        ? _cacheTarget
+        : _cacheTargetForDataSource(expectedDataSourceIdentity);
     final snapshot = await cache.loadConversationWindow(
       target: target,
       provider: provider,
       providerSessionId: providerSessionId,
     );
+    if (expectedDataSourceIdentity != null &&
+        hasAuthoritativeDataSourceConflict(
+          expectedDataSourceIdentity,
+          provider: provider,
+        )) {
+      return null;
+    }
     // Both Codex and Claude screens use this durable preview path. Never hand
     // a provisional route or previous Codex-source result to a screen after
     // authentication changed the canonical cache partition mid-read.
-    if (_disposed || target.fingerprint != _cacheTarget.fingerprint) {
+    if (_disposed ||
+        (expectedDataSourceIdentity == null &&
+            target.fingerprint != _cacheTarget.fingerprint)) {
       return null;
     }
     return snapshot;
+  }
+
+  SessionCatalogCacheTarget _cacheTargetForDataSource(
+    BridgeDataSourceIdentity identity,
+  ) {
+    final route = identity.legacyRouteIdentity?.trim();
+    final logicalIdentity = route?.startsWith('logical:') == true
+        ? route!.substring('logical:'.length)
+        : null;
+    final websocketUrl = route?.startsWith('url:') == true
+        ? route!.substring('url:'.length)
+        : null;
+    return SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: identity.bridgeInstanceId,
+      codexSourceId: identity.codexSourceId,
+      logicalConnectionIdentity: logicalIdentity,
+      websocketUrl: websocketUrl,
+    );
   }
 
   Future<void> markConversationRead({
@@ -407,9 +489,20 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   Future<ConversationTurnsPageLoadResult> loadOlderTurns({
     required String provider,
     required String providerSessionId,
+    BridgeDataSourceIdentity? expectedDataSourceIdentity,
     int limit = 5,
   }) {
-    final flightKey = '$provider\u0000$providerSessionId';
+    if (expectedDataSourceIdentity != null &&
+        !matchesCurrentDataSource(
+          expectedDataSourceIdentity,
+          provider: provider,
+        )) {
+      return Future.value(
+        const ConversationTurnsPageLoadResult(loaded: false, hasMore: false),
+      );
+    }
+    final flightKey =
+        '${_cacheTarget.fingerprint}\u0000$provider\u0000$providerSessionId';
     final existing = _historyPageFlights[flightKey];
     if (existing != null) return existing;
     late final Future<ConversationTurnsPageLoadResult> flight;
@@ -417,6 +510,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         _loadOlderTurnsWithRetry(
           provider: provider,
           providerSessionId: providerSessionId,
+          expectedDataSourceIdentity: expectedDataSourceIdentity,
           limit: limit,
         ).whenComplete(() {
           if (identical(_historyPageFlights[flightKey], flight)) {
@@ -430,6 +524,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   Future<ConversationTurnsPageLoadResult> _loadOlderTurnsWithRetry({
     required String provider,
     required String providerSessionId,
+    required BridgeDataSourceIdentity? expectedDataSourceIdentity,
     required int limit,
   }) async {
     for (var attempt = 0; attempt < 2; attempt++) {
@@ -437,6 +532,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         return await _loadOlderTurnsOnce(
           provider: provider,
           providerSessionId: providerSessionId,
+          expectedDataSourceIdentity: expectedDataSourceIdentity,
           limit: limit,
         );
       } on _ConversationPagingInterrupted {
@@ -458,8 +554,19 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   Future<ConversationTurnsPageLoadResult> _loadOlderTurnsOnce({
     required String provider,
     required String providerSessionId,
+    required BridgeDataSourceIdentity? expectedDataSourceIdentity,
     required int limit,
   }) async {
+    if (expectedDataSourceIdentity != null &&
+        !matchesCurrentDataSource(
+          expectedDataSourceIdentity,
+          provider: provider,
+        )) {
+      return const ConversationTurnsPageLoadResult(
+        loaded: false,
+        hasMore: false,
+      );
+    }
     if (!bridge.supportsConversationSyncV2 || !_canProcessContent) {
       return const ConversationTurnsPageLoadResult(
         loaded: false,
@@ -703,7 +810,15 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     required String providerSessionId,
     required HistoryToolDetailGap gap,
     required List<String> toolUseIds,
+    BridgeDataSourceIdentity? expectedDataSourceIdentity,
   }) async {
+    if (expectedDataSourceIdentity != null &&
+        !matchesCurrentDataSource(
+          expectedDataSourceIdentity,
+          provider: provider,
+        )) {
+      return null;
+    }
     final turnId = gap.turnId;
     final normalizedIds = toolUseIds
         .map((value) => value.trim())
@@ -1147,6 +1262,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         if (committed.windowCommitted) {
           _updatesController.add(
             ConversationContentCacheUpdate(
+              targetFingerprint: target.fingerprint,
               provider: event.provider!,
               providerSessionId: event.providerSessionId!,
               revision: event.revision!,
@@ -1247,6 +1363,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               }
               _updatesController.add(
                 ConversationContentCacheUpdate(
+                  targetFingerprint: target.fingerprint,
                   provider: event.provider!,
                   providerSessionId: event.providerSessionId!,
                   revision:
@@ -1291,6 +1408,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             if (snapshot != null) {
               _updatesController.add(
                 ConversationContentCacheUpdate(
+                  targetFingerprint: target.fingerprint,
                   provider: event.provider!,
                   providerSessionId: event.providerSessionId!,
                   revision:
@@ -1366,6 +1484,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               }
               _updatesController.add(
                 ConversationContentCacheUpdate(
+                  targetFingerprint: target.fingerprint,
                   provider: event.provider!,
                   providerSessionId: event.providerSessionId!,
                   revision:
@@ -1655,6 +1774,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
     if (!_isCurrent(generation, subscriptionId, target)) return;
     _publishCommit(
+      targetFingerprint: target.fingerprint,
       provider: stage.provider,
       providerSessionId: stage.providerSessionId,
       revision: stage.revision,
@@ -1699,6 +1819,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       return;
     }
     _publishCommit(
+      targetFingerprint: target.fingerprint,
       provider: provider,
       providerSessionId: providerSessionId,
       revision: event.revision!,
@@ -1706,6 +1827,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   }
 
   void _publishCommit({
+    required String targetFingerprint,
     required String provider,
     required String providerSessionId,
     required String revision,
@@ -1729,6 +1851,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
     _updatesController.add(
       ConversationContentCacheUpdate(
+        targetFingerprint: targetFingerprint,
         provider: provider,
         providerSessionId: providerSessionId,
         revision: revision,

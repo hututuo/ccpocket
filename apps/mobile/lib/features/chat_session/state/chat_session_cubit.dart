@@ -173,6 +173,29 @@ class _CanonicalAliasBucket {
   }
 }
 
+class _RuntimeMutationLease {
+  const _RuntimeMutationLease({
+    required this.sessionId,
+    required this.detached,
+    required this.liveRuntimeGeneration,
+    required this.sourceFingerprint,
+    required this.authorityGeneration,
+  });
+
+  final String sessionId;
+  final bool detached;
+  final int liveRuntimeGeneration;
+  final String? sourceFingerprint;
+  final String? authorityGeneration;
+}
+
+class _ExpiredRuntimeMutationLease implements Exception {
+  const _ExpiredRuntimeMutationLease();
+
+  @override
+  String toString() => 'The live runtime authority changed before dispatch.';
+}
+
 /// Manages the state of a single chat session.
 ///
 /// Subscribes to [BridgeService.messagesForSession] and delegates message
@@ -202,6 +225,128 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   final ChatMessageHandler _handler = ChatMessageHandler();
   final bool detachedPreview;
   final List<ServerMessage> initialHistoryMessages;
+
+  String? _detachedLiveRuntimeSessionId;
+  int _detachedLiveRuntimeGeneration = 0;
+  bool _detachedAuthorityObserved = false;
+  String? _detachedExecutionHost;
+  String? _detachedControlState;
+  String? _detachedAuthorityGeneration;
+  int? _detachedAuthorityLiveRuntimeGeneration;
+  String? _detachedAuthoritySourceFingerprint;
+  String? _detachedActiveTurnId;
+  String? _detachedRejectedAuthorityGeneration;
+  final ValueNotifier<int> detachedLiveRuntimeRevision = ValueNotifier(0);
+
+  /// Transient Bridge attachment used by a durable, cache-first page.
+  ///
+  /// The public [sessionId] remains the durable provider identity so cache,
+  /// drafts, disclosure state, and auxiliary panes never change identity when
+  /// a runtime appears or is replaced.
+  String? get detachedLiveRuntimeSessionId =>
+      _detachedLiveRuntimeSessionId;
+
+  bool get canMutateAttachedRuntime =>
+      _runtimeSessionIdForMutation() != null;
+
+  String? get runtimeSessionIdForRead => detachedPreview
+      ? _detachedLiveRuntimeSessionId
+      : sessionId;
+
+  String? runtimeSessionIdForMutation({bool allowSteerable = true}) =>
+      _runtimeSessionIdForMutation(allowSteerable: allowSteerable);
+
+  String? _runtimeSessionIdForMutation({bool allowSteerable = true}) {
+    if (!detachedPreview) return sessionId;
+    final runtimeSessionId = _detachedLiveRuntimeSessionId;
+    if (runtimeSessionId == null) return null;
+    final supportsExactAuthority = _bridge.bridgeCapabilities.contains(
+      conversationSyncV2Capability,
+    );
+    if (!_detachedAuthorityObserved) {
+      return supportsExactAuthority ? null : runtimeSessionId;
+    }
+    if (supportsExactAuthority) {
+      if (!_hasCurrentDetachedAuthorityLease) return null;
+      if (_detachedControlState == 'writable') return runtimeSessionId;
+      final executionHost = _detachedExecutionHost;
+      final hostIsProven =
+          executionHost == 'bridge' || executionHost == 'desktopAppServer';
+      if (allowSteerable &&
+          _detachedControlState == 'steerable' &&
+          hostIsProven &&
+          _detachedActiveTurnId?.isNotEmpty == true) {
+        return runtimeSessionId;
+      }
+      return null;
+    }
+    if (_detachedExecutionHost == 'unknown') return null;
+    return switch (_detachedControlState) {
+      null
+          when _detachedExecutionHost == null &&
+              !state.externalDesktopTurnActive =>
+        runtimeSessionId,
+      'writable' => runtimeSessionId,
+      'steerable' when allowSteerable => runtimeSessionId,
+      _ => null,
+    };
+  }
+
+  bool get _hasCurrentDetachedAuthorityLease {
+    final authorityGeneration = _detachedAuthorityGeneration;
+    final authoritySource = _detachedAuthoritySourceFingerprint;
+    return _detachedAuthorityObserved &&
+        _detachedLiveRuntimeSessionId != null &&
+        authorityGeneration != null &&
+        authorityGeneration.isNotEmpty &&
+        authoritySource != null &&
+        authoritySource.isNotEmpty &&
+        _detachedAuthorityLiveRuntimeGeneration ==
+            _detachedLiveRuntimeGeneration &&
+        authoritySource == _detachedProviderSourceFingerprint;
+  }
+
+  _RuntimeMutationLease? _captureRuntimeMutationLease({
+    bool allowSteerable = true,
+  }) {
+    final runtimeSessionId = _runtimeSessionIdForMutation(
+      allowSteerable: allowSteerable,
+    );
+    if (runtimeSessionId == null) return null;
+    return _RuntimeMutationLease(
+      sessionId: runtimeSessionId,
+      detached: detachedPreview,
+      liveRuntimeGeneration: _detachedLiveRuntimeGeneration,
+      sourceFingerprint: _detachedProviderSourceFingerprint,
+      authorityGeneration: _detachedAuthorityGeneration,
+    );
+  }
+
+  bool _isRuntimeMutationLeaseCurrent(
+    _RuntimeMutationLease lease, {
+    bool allowSteerable = true,
+  }) {
+    if (lease.sessionId !=
+        _runtimeSessionIdForMutation(allowSteerable: allowSteerable)) {
+      return false;
+    }
+    if (!lease.detached) return true;
+    return lease.liveRuntimeGeneration == _detachedLiveRuntimeGeneration &&
+        lease.sourceFingerprint == _detachedProviderSourceFingerprint &&
+        lease.authorityGeneration == _detachedAuthorityGeneration;
+  }
+
+  void _requireCurrentRuntimeMutationLease(_RuntimeMutationLease lease) {
+    if (!_isRuntimeMutationLeaseCurrent(lease)) {
+      throw const _ExpiredRuntimeMutationLease();
+    }
+  }
+
+  bool _matchesBoundSessionId(String? candidate) {
+    if (candidate == null) return true;
+    return candidate == sessionId ||
+        candidate == _detachedLiveRuntimeSessionId;
+  }
 
   StreamSubscription<ServerMessage>? _subscription;
   StreamSubscription<BridgeConnectionState>? _goalConnectionSubscription;
@@ -318,7 +463,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   final Map<String, PermissionRequestMessage> _pendingPermissionRequests = {};
 
   void _markToolUseResponded(String toolUseId) {
-    _bridge.markToolUseResponded(sessionId, toolUseId);
+    _bridge.markToolUseResponded(
+      runtimeSessionIdForRead ?? sessionId,
+      toolUseId,
+    );
     _respondedToolUseIds.add(toolUseId);
     if (_respondedToolUseIds.length > _maxRespondedToolUseIds) {
       _respondedToolUseIds.remove(_respondedToolUseIds.first);
@@ -445,6 +593,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     ChatImagePayloadEncoder? imagePayloadEncoder,
     this.detachedPreview = false,
     this.initialHistoryMessages = const [],
+    String? initialLiveRuntimeSessionId,
     DetachedHistoryPageLoader? detachedHistoryPageLoader,
     this.detachedHistoryToolDetailLoader,
     bool initialHistoryHasEarlier = false,
@@ -519,6 +668,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         hasMore: initialHistoryHasEarlier,
       );
       _restoreInitialHistoryMessages();
+      updateDetachedLiveRuntime(initialLiveRuntimeSessionId);
       return;
     }
     _respondedToolUseIds.addAll(_bridge.respondedToolUseIds(sessionId));
@@ -605,6 +755,96 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     updateDetachedPreviewHistory(initialHistoryMessages);
   }
 
+  /// Rebinds only the live transport overlay of a durable conversation.
+  ///
+  /// Canonical history continues to arrive through the durable SQLite cache.
+  /// Full history/snapshot frames from the runtime are therefore rejected here
+  /// so a transient attachment cannot replace, duplicate, or reorder the
+  /// cache-owned timeline.
+  void updateDetachedLiveRuntime(String? runtimeSessionId) {
+    if (!detachedPreview || isClosed) return;
+    final normalized = runtimeSessionId?.trim();
+    final next = normalized == null || normalized.isEmpty ? null : normalized;
+    if (next == _detachedLiveRuntimeSessionId) return;
+
+    final previousRuntimeSessionId = _detachedLiveRuntimeSessionId;
+    final generation = ++_detachedLiveRuntimeGeneration;
+    unawaited(_subscription?.cancel());
+    _subscription = null;
+    _detachedLiveRuntimeSessionId = next;
+    if (previousRuntimeSessionId != null &&
+        previousRuntimeSessionId != next &&
+        _detachedAuthorityGeneration != null) {
+      _detachedRejectedAuthorityGeneration = _detachedAuthorityGeneration;
+    }
+    _clearDetachedRuntimeTransients(previousRuntimeSessionId);
+    _detachedAuthorityObserved = false;
+    _detachedExecutionHost = null;
+    _detachedControlState = null;
+    _detachedAuthorityGeneration = null;
+    _detachedAuthorityLiveRuntimeGeneration = null;
+    _detachedAuthoritySourceFingerprint = null;
+    _detachedActiveTurnId = null;
+    _detachedProviderStatusObservedAt = null;
+    _detachedProviderStatusSignature = null;
+    externalDesktopTurnSteerable.value = false;
+    detachedLiveRuntimeRevision.value += 1;
+    if (next == null) return;
+
+    _respondedToolUseIds.addAll(_bridge.respondedToolUseIds(next));
+    _subscription = _bridge.messagesForSession(next).listen((message) {
+      if (isClosed ||
+          generation != _detachedLiveRuntimeGeneration ||
+          _detachedLiveRuntimeSessionId != next) {
+        return;
+      }
+      if (message is HistoryMessage ||
+          message is PastHistoryMessage ||
+          message is HistorySnapshotMessage ||
+          message is HistoryDeltaMessage ||
+          message is HistoryPageMessage ||
+          message is HistoryToolDetailsMessage) {
+        return;
+      }
+      _onMessage(message);
+    });
+  }
+
+  void _clearDetachedRuntimeTransients(String? previousRuntimeSessionId) {
+    if (previousRuntimeSessionId != null) {
+      for (final item in _deliveryPendingInputs.values) {
+        _bridge.clearDeliveryPendingInput(
+          previousRuntimeSessionId,
+          itemId: item.itemId,
+        );
+      }
+    }
+    _deliveryPendingInputs.clear();
+    _pendingPermissionRequests.clear();
+    _clearPendingPermissionModeRollback(_pendingPermissionChangeId);
+    _clearPendingCodexModelRollback();
+    _clearPendingCodexSpeedRollback();
+    _handler.currentStreaming = null;
+    _streamingCubit.reset();
+    _desktopContinuityHandlers.clear();
+    _desktopContinuityItemKeys.clear();
+    _restoredDesktopContinuityItemKeys.clear();
+    _desktopContinuityStreamingTurnKey = null;
+    final durableEntries = state.entries
+        .where((entry) => entry is! StreamingChatEntry)
+        .toList(growable: false);
+    emit(
+      state.copyWith(
+        entries: durableEntries,
+        status: ProcessStatus.unknown,
+        approval: const ApprovalState.none(),
+        queuedInput: null,
+        externalDesktopTurnActive: false,
+        externalDesktopTurnId: null,
+      ),
+    );
+  }
+
   /// Reconciles a newer durable cache snapshot without recreating the screen
   /// or its disclosure/scroll state.
   void updateDetachedPreviewHistory(
@@ -653,6 +893,24 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (!detachedPreview || isClosed) return;
     final sourceChanged = _adoptDetachedProviderSource(sourceFingerprint);
     if (status == null) {
+      final authorityChanged =
+          _detachedAuthorityObserved ||
+          _detachedExecutionHost != null ||
+          _detachedControlState != null ||
+          _detachedAuthorityGeneration != null ||
+          _detachedAuthorityLiveRuntimeGeneration != null ||
+          _detachedAuthoritySourceFingerprint != null ||
+          _detachedActiveTurnId != null;
+      _detachedAuthorityObserved = false;
+      _detachedExecutionHost = null;
+      _detachedControlState = null;
+      _detachedAuthorityGeneration = null;
+      _detachedAuthorityLiveRuntimeGeneration = null;
+      _detachedAuthoritySourceFingerprint = null;
+      _detachedActiveTurnId = null;
+      if (authorityChanged && !sourceChanged) {
+        detachedLiveRuntimeRevision.value += 1;
+      }
       if (sourceChanged || _detachedProviderStatusObservedAt != null) {
         _detachedProviderStatusObservedAt = null;
         _detachedProviderStatusSignature = null;
@@ -685,10 +943,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final signature = [
       status.activity,
       status.attention,
+      status.result,
       status.runtimeAttachment,
       status.source,
       status.confidence,
       status.observedAt,
+      status.attentionRequestId ?? '',
+      status.executionHost ?? '',
+      status.activeTurnId ?? '',
+      status.controlState ?? '',
+      status.authorityGeneration ?? '',
     ].join('\u0000');
     if (previousObservedAt == observedAt &&
         signature == _detachedProviderStatusSignature) {
@@ -703,18 +967,63 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             'idle' => ProcessStatus.idle,
             _ => ProcessStatus.unknown,
           };
+    final active =
+        status.activity == 'working' || status.activity == 'compacting';
+    final executionHost = status.executionHost;
+    final authorityGeneration = status.authorityGeneration?.trim();
+    final replaysRejectedAuthority =
+        authorityGeneration?.isNotEmpty == true &&
+        authorityGeneration == _detachedRejectedAuthorityGeneration;
+    _detachedAuthorityObserved = !replaysRejectedAuthority;
+    _detachedExecutionHost = replaysRejectedAuthority ? null : executionHost;
+    _detachedControlState = replaysRejectedAuthority
+        ? null
+        : status.controlState;
+    _detachedAuthorityGeneration = replaysRejectedAuthority
+        ? null
+        : authorityGeneration;
+    _detachedAuthorityLiveRuntimeGeneration = replaysRejectedAuthority
+        ? null
+        : _detachedLiveRuntimeGeneration;
+    _detachedAuthoritySourceFingerprint = replaysRejectedAuthority
+        ? null
+        : _detachedProviderSourceFingerprint;
+    if (!replaysRejectedAuthority && authorityGeneration?.isNotEmpty == true) {
+      _detachedRejectedAuthorityGeneration = null;
+    }
+    final usesLegacyHostFallback = executionHost == null;
     final externallyOwnedCodexTurn =
         isCodex &&
-        status.source != 'bridgeRuntime' &&
-        (status.activity == 'working' || status.activity == 'compacting');
+        active &&
+        (usesLegacyHostFallback
+            ? status.source != 'bridgeRuntime'
+            : executionHost == 'desktopAppServer');
+    final activeTurnId = status.activeTurnId?.trim();
+    final hasActiveTurnId = activeTurnId?.isNotEmpty == true;
+    _detachedActiveTurnId = replaysRejectedAuthority || !hasActiveTurnId
+        ? null
+        : activeTurnId;
+    final exactAuthority = _hasCurrentDetachedAuthorityLease;
+    final hostIsProven =
+        executionHost == 'bridge' || executionHost == 'desktopAppServer';
+    final controllable =
+        !replaysRejectedAuthority &&
+        exactAuthority &&
+        hostIsProven &&
+        hasActiveTurnId &&
+        status.controlState == 'steerable';
     _detachedProviderStatusObservedAt = observedAt;
     _detachedProviderStatusSignature = signature;
-    externalDesktopTurnSteerable.value = false;
+    externalDesktopTurnSteerable.value =
+        externallyOwnedCodexTurn && controllable;
+    detachedLiveRuntimeRevision.value += 1;
     emit(
       state.copyWith(
         status: nextStatus,
         externalDesktopTurnActive: externallyOwnedCodexTurn,
-        externalDesktopTurnId: null,
+        externalDesktopTurnId: externallyOwnedCodexTurn && hasActiveTurnId
+            ? activeTurnId
+            : null,
         codexModel: sourceChanged ? null : state.codexModel,
         codexModelReasoningEffort: sourceChanged
             ? null
@@ -792,15 +1101,25 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final normalized = sourceFingerprint?.trim();
     if (normalized == null || normalized.isEmpty) return false;
     if (_detachedProviderSourceFingerprint == normalized) return false;
+    _clearDetachedRuntimeTransients(_detachedLiveRuntimeSessionId);
     _detachedProviderSourceFingerprint = normalized;
     _detachedProviderStatusObservedAt = null;
     _detachedProviderStatusSignature = null;
+    _detachedAuthorityObserved = false;
+    _detachedExecutionHost = null;
+    _detachedControlState = null;
+    _detachedAuthorityGeneration = null;
+    _detachedAuthorityLiveRuntimeGeneration = null;
+    _detachedAuthoritySourceFingerprint = null;
+    _detachedActiveTurnId = null;
+    _detachedRejectedAuthorityGeneration = null;
     _detachedProviderSettingsObservedAt = null;
     _detachedProviderSettingsSignature = null;
     _detachedProviderOwnsModel = false;
     _detachedProviderOwnsEffort = false;
     _detachedProviderOwnsSpeed = false;
     codexServiceTierRaw.value = null;
+    detachedLiveRuntimeRevision.value += 1;
     return true;
   }
 
@@ -2243,7 +2562,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       };
       if (incomingSandbox != null && incomingSandbox != state.sandboxMode) {
         emit(state.copyWith(sandboxMode: incomingSandbox));
-        _bridge.patchSessionSandboxMode(sessionId, incomingSandbox.value);
+        final runtimeSessionId = runtimeSessionIdForRead;
+        if (runtimeSessionId != null) {
+          _bridge.patchSessionSandboxMode(
+            runtimeSessionId,
+            incomingSandbox.value,
+          );
+        }
       }
     }
     if (msg is SystemMessage && msg.provider == Provider.codex.value) {
@@ -2379,7 +2704,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         !isPreGoalBridgeRejection) {
       return false;
     }
-    if (error.sessionId != null && error.sessionId != sessionId) return true;
+    if (!_matchesBoundSessionId(error.sessionId)) return true;
 
     final isUnsupported =
         isPreGoalBridgeRejection ||
@@ -2464,7 +2789,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _applyGoalState(GoalStateMessage message) {
-    if (message.sessionId != null && message.sessionId != sessionId) return;
+    if (!_matchesBoundSessionId(message.sessionId)) return;
     _completeGoalRead();
     final incoming = message.goal;
     final current = state.goal;
@@ -3407,7 +3732,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               existingNonPast[lastUserIndex],
             ),
           );
-    final minimumCanonicalIndex = lastUserIndex == -1
+    // A durable page can receive a live assistant item before SQLite has
+    // committed the optimistic user envelope that preceded it. In that case
+    // the last local user has no canonical match yet, but a stable assistant
+    // id may already exist earlier in the freshly committed cache window.
+    // Let strong/scoped aliases reconcile across the whole durable window;
+    // runtime-only pages retain the stricter current-turn boundary.
+    final minimumCanonicalIndex = detachedPreview
+        ? 0
+        : lastUserIndex == -1
         ? 0
         : historyCurrentUserIndex == -1
         ? historyEntries.length
@@ -4541,7 +4874,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     Iterable<String>? mentionablePaths,
     Iterable<Map<String, String>>? additionalMentions,
   }) {
-    if (detachedPreview) return false;
+    final runtimeLease = _captureRuntimeMutationLease();
+    if (runtimeLease == null) return false;
+    final bridgeSessionId = runtimeLease.sessionId;
     final explicitMentions =
         additionalMentions?.toList(growable: false) ??
         const <Map<String, String>>[];
@@ -4584,7 +4919,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         : _uuid.v4();
     final isOffline = !_bridge.isConnected;
     final baseSeq = isOffline
-        ? _bridge.cachedSessionHistorySeq(sessionId)
+        ? _bridge.cachedSessionHistorySeq(bridgeSessionId)
         : null;
     final structuredMentions = isCodex
         ? _extractCodexStructuredInputs(
@@ -4642,6 +4977,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         : null;
 
     _dispatchInputInOrder(
+      runtimeLease: runtimeLease,
       text: text,
       clientMessageId: effectiveClientMessageId,
       baseSeq: baseSeq,
@@ -4654,6 +4990,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _dispatchInputInOrder({
+    required _RuntimeMutationLease runtimeLease,
     required String text,
     required String clientMessageId,
     required int? baseSeq,
@@ -4664,6 +5001,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }) {
     if (images.isEmpty && _pendingInputDispatchCount == 0) {
       _dispatchPreparedInput(
+        runtimeLease: runtimeLease,
         text: text,
         clientMessageId: clientMessageId,
         baseSeq: baseSeq,
@@ -4681,11 +5019,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       try {
         await predecessor;
         if (_canceledInputDispatchIds.remove(clientMessageId)) return;
+        _requireCurrentRuntimeMutationLease(runtimeLease);
         final imagePayloads = images.isEmpty
             ? null
             : await _imagePayloadEncoder(images);
         if (_canceledInputDispatchIds.remove(clientMessageId)) return;
+        _requireCurrentRuntimeMutationLease(runtimeLease);
         _dispatchPreparedInput(
+          runtimeLease: runtimeLease,
           text: text,
           clientMessageId: clientMessageId,
           baseSeq: baseSeq,
@@ -4696,6 +5037,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         );
       } catch (error, stackTrace) {
         _handleInputDispatchFailure(
+          bridgeSessionId: runtimeLease.sessionId,
           text: text,
           clientMessageId: clientMessageId,
           images: images,
@@ -4712,6 +5054,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _dispatchPreparedInput({
+    required _RuntimeMutationLease runtimeLease,
     required String text,
     required String clientMessageId,
     required int? baseSeq,
@@ -4720,16 +5063,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     required List<Map<String, String>> mentions,
     required QueuedInputItem? deliveryPendingItem,
   }) {
+    _requireCurrentRuntimeMutationLease(runtimeLease);
+    final bridgeSessionId = runtimeLease.sessionId;
     if (deliveryPendingItem != null) {
       if (!isClosed) {
         _deliveryPendingInputs[clientMessageId] = deliveryPendingItem;
       }
-      _bridge.setDeliveryPendingInput(sessionId, deliveryPendingItem);
+      _bridge.setDeliveryPendingInput(bridgeSessionId, deliveryPendingItem);
     }
     _bridge.send(
       ClientMessage.input(
         text,
-        sessionId: sessionId,
+        sessionId: bridgeSessionId,
         clientMessageId: clientMessageId,
         baseSeq: baseSeq,
         images: imagePayloads,
@@ -4741,6 +5086,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _handleInputDispatchFailure({
+    required String bridgeSessionId,
     required String text,
     required String clientMessageId,
     required List<ChatImageAttachment> images,
@@ -4755,7 +5101,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     );
     _deliveryPendingInputs.remove(clientMessageId);
     _bridge.clearDeliveryPendingInput(
-      sessionId,
+      bridgeSessionId,
       itemId: '$deliveryPendingQueuedInputPrefix$clientMessageId',
     );
     if (isClosed) return;
@@ -4807,7 +5153,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void requestGoal({bool userInitiated = false}) {
-    if (detachedPreview) return;
+    final runtimeSessionId = runtimeSessionIdForRead;
+    if (runtimeSessionId == null) return;
     if (!isCodex || state.goalMutation != null) return;
     final effectiveUserInitiated =
         userInitiated ||
@@ -4882,7 +5229,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           ),
         );
       }
-      _bridge.send(ClientMessage.getGoal(sessionId));
+      _bridge.send(ClientMessage.getGoal(runtimeSessionId));
     } catch (error) {
       _completeGoalRead();
       emit(
@@ -4916,8 +5263,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         tokenBudget: tokenBudget,
         expectedOperationSequence: state.goalOperationSequence,
       ),
-      (changeId) => ClientMessage.setGoal(
-        sessionId: sessionId,
+      (changeId, runtimeSessionId) => ClientMessage.setGoal(
+        sessionId: runtimeSessionId,
         objective: normalized,
         status: CodexThreadGoalStatus.active,
         tokenBudget: tokenBudget,
@@ -4955,8 +5302,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         tokenBudget: tokenBudget,
         expectedOperationSequence: state.goalOperationSequence,
       ),
-      (changeId) => ClientMessage.setGoal(
-        sessionId: sessionId,
+      (changeId, runtimeSessionId) => ClientMessage.setGoal(
+        sessionId: runtimeSessionId,
         objective: includeObjective ? normalized : null,
         tokenBudget: tokenBudget,
         includeTokenBudget: includeTokenBudget,
@@ -5007,8 +5354,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         tokenBudget: tokenBudget,
         expectedOperationSequence: state.goalOperationSequence,
       ),
-      (changeId) => ClientMessage.setGoal(
-        sessionId: sessionId,
+      (changeId, runtimeSessionId) => ClientMessage.setGoal(
+        sessionId: runtimeSessionId,
         objective: normalizedObjective,
         status: CodexThreadGoalStatus.active,
         tokenBudget: tokenBudget,
@@ -5033,8 +5380,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         status: status,
         expectedOperationSequence: state.goalOperationSequence,
       ),
-      (changeId) => ClientMessage.setGoal(
-        sessionId: sessionId,
+      (changeId, runtimeSessionId) => ClientMessage.setGoal(
+        sessionId: runtimeSessionId,
         status: status,
         goalChangeId: changeId,
         expectedGoalOperationSequence: state.goalOperationSequence,
@@ -5050,8 +5397,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         kind: CodexGoalMutationKind.clear,
         expectedOperationSequence: state.goalOperationSequence,
       ),
-      (changeId) => ClientMessage.clearGoal(
-        sessionId,
+      (changeId, runtimeSessionId) => ClientMessage.clearGoal(
+        runtimeSessionId,
         goalChangeId: changeId,
         expectedGoalOperationSequence: state.goalOperationSequence,
       ),
@@ -5060,9 +5407,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   bool _beginGoalMutation(
     CodexGoalMutation mutation,
-    ClientMessage Function(String changeId) buildMessage,
+    ClientMessage Function(String changeId, String runtimeSessionId)
+    buildMessage,
   ) {
     if (!isCodex || state.goalMutation != null) return false;
+    final runtimeSessionId = _runtimeSessionIdForMutation(
+      allowSteerable: false,
+    );
+    if (runtimeSessionId == null) return false;
     if (state.goalSupport == CodexGoalSupport.unsupported) {
       _setGoalOperationError(
         'This Codex runtime does not support Goal controls.',
@@ -5119,7 +5471,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       requestGoal();
     });
     try {
-      _bridge.send(buildMessage(mutation.id));
+      _bridge.send(buildMessage(mutation.id, runtimeSessionId));
       return true;
     } catch (error) {
       if (state.goalMutation?.id == mutation.id) {
@@ -5153,7 +5505,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   Future<bool> updateQueuedInput(QueuedInputItem item, String text) async {
-    if (detachedPreview) return false;
+    final runtimeSessionId = _runtimeSessionIdForMutation();
+    if (runtimeSessionId == null) return false;
     if (!isCodex || text.trim().isEmpty) return false;
     if (isDeliveryPendingQueuedInput(item)) return false;
     final structuredMentions = _extractCodexStructuredInputs(text);
@@ -5172,7 +5525,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         mentions: structuredMentions.mentions,
       );
       final updatedInOutbox = await _bridge.updateOfflinePendingInput(
-        sessionId: sessionId,
+        sessionId: runtimeSessionId,
         clientMessageId: offlineClientMessageId,
         text: text,
         skills: structuredMentions.skills,
@@ -5187,7 +5540,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     try {
       _bridge.send(
         ClientMessage.updateQueuedInput(
-          sessionId: sessionId,
+          sessionId: runtimeSessionId,
           itemId: item.itemId,
           text: text,
           skills: structuredMentions.skills,
@@ -5201,7 +5554,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void steerQueuedInput(QueuedInputItem item) {
-    if (detachedPreview) return;
+    final runtimeSessionId = _runtimeSessionIdForMutation();
+    if (runtimeSessionId == null) return;
     if (!isCodex ||
         isOfflineQueuedInput(item) ||
         isDeliveryPendingQueuedInput(item)) {
@@ -5216,7 +5570,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     _bridge.send(
       ClientMessage.steerQueuedInput(
-        sessionId: sessionId,
+        sessionId: runtimeSessionId,
         itemId: item.itemId,
         expectedTurnId: state.externalDesktopTurnId,
       ),
@@ -5224,14 +5578,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   Future<bool> cancelQueuedInput(QueuedInputItem item) async {
-    if (detachedPreview) return false;
+    final runtimeSessionId = _runtimeSessionIdForMutation();
+    if (runtimeSessionId == null) return false;
     if (!isCodex) return false;
     if (isDeliveryPendingQueuedInput(item)) {
       final clientMessageId = deliveryPendingClientMessageId(item);
       if (clientMessageId != null) {
         _deliveryPendingInputs.remove(clientMessageId);
       }
-      _bridge.clearDeliveryPendingInput(sessionId, itemId: item.itemId);
+      _bridge.clearDeliveryPendingInput(
+        runtimeSessionId,
+        itemId: item.itemId,
+      );
       if (state.queuedInput?.itemId == item.itemId) {
         emit(state.copyWith(queuedInput: null));
       }
@@ -5247,7 +5605,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         return true;
       }
       final canceledInOutbox = await _bridge.cancelOfflinePendingInput(
-        sessionId: sessionId,
+        sessionId: runtimeSessionId,
         clientMessageId: offlineClientMessageId,
       );
       if (!canceledInOutbox || isClosed) return false;
@@ -5259,7 +5617,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     try {
       _bridge.send(
         ClientMessage.cancelQueuedInput(
-          sessionId: sessionId,
+          sessionId: runtimeSessionId,
           itemId: item.itemId,
         ),
       );
@@ -5271,7 +5629,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Approve a pending tool execution.
   void approve(String toolUseId, {bool clearContext = false}) {
-    if (detachedPreview) return;
+    final runtimeSessionId = _runtimeSessionIdForMutation();
+    if (runtimeSessionId == null) return;
     final isExitPlanApproval = _isExitPlanApproval(toolUseId);
     logger.info(
       '[session:$sessionId] approve toolUseId=$toolUseId'
@@ -5281,7 +5640,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       ClientMessage.approve(
         toolUseId,
         clearContext: clearContext,
-        sessionId: sessionId,
+        sessionId: runtimeSessionId,
       ),
     )) {
       return;
@@ -5295,10 +5654,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Approve a tool and always allow it in the future.
   void approveAlways(String toolUseId) {
-    if (detachedPreview) return;
+    final runtimeSessionId = _runtimeSessionIdForMutation();
+    if (runtimeSessionId == null) return;
     final isExitPlanApproval = _isExitPlanApproval(toolUseId);
     if (!_sendInteractiveResponse(
-      ClientMessage.approveAlways(toolUseId, sessionId: sessionId),
+      ClientMessage.approveAlways(toolUseId, sessionId: runtimeSessionId),
     )) {
       return;
     }
@@ -5314,11 +5674,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// Unlike a normal approval, the request remains visible while Bridge
   /// installs the plugin or waits for external connector authentication.
   void installToolSuggestion(String toolUseId) {
+    final runtimeSessionId = _runtimeSessionIdForMutation();
+    if (runtimeSessionId == null) return;
     logger.info(
       '[session:$sessionId] install tool suggestion toolUseId=$toolUseId',
     );
     _sendInteractiveResponse(
-      ClientMessage.installToolSuggestion(toolUseId, sessionId: sessionId),
+      ClientMessage.installToolSuggestion(
+        toolUseId,
+        sessionId: runtimeSessionId,
+      ),
     );
   }
 
@@ -5434,7 +5799,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Reject a pending tool execution.
   void reject(String toolUseId, {String? message}) {
-    if (detachedPreview) return;
+    final runtimeSessionId = _runtimeSessionIdForMutation();
+    if (runtimeSessionId == null) return;
     logger.info(
       '[session:$sessionId] reject toolUseId=$toolUseId'
       '${message != null ? ' msg=$message' : ''}',
@@ -5443,7 +5809,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       ClientMessage.reject(
         toolUseId,
         message: message,
-        sessionId: sessionId,
+        sessionId: runtimeSessionId,
       ),
     )) {
       return;
@@ -5457,9 +5823,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Answer an AskUserQuestion.
   void answer(String toolUseId, String result) {
-    if (detachedPreview) return;
+    final runtimeSessionId = _runtimeSessionIdForMutation();
+    if (runtimeSessionId == null) return;
     if (!_sendInteractiveResponse(
-      ClientMessage.answer(toolUseId, result, sessionId: sessionId),
+      ClientMessage.answer(toolUseId, result, sessionId: runtimeSessionId),
     )) {
       return;
     }
@@ -5469,13 +5836,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Interrupt the current operation.
   void interrupt() {
-    if (detachedPreview) return;
-    _bridge.interrupt(sessionId);
+    final runtimeSessionId = _runtimeSessionIdForMutation();
+    if (runtimeSessionId == null) return;
+    _bridge.interrupt(runtimeSessionId);
   }
 
   /// Change permission mode for Claude sessions.
   void setPermissionMode(PermissionMode mode) {
-    if (detachedPreview) return;
+    final runtimeSessionId = _runtimeSessionIdForMutation(
+      allowSteerable: false,
+    );
+    if (runtimeSessionId == null) return;
     logger.info('[session:$sessionId] setPermissionMode=${mode.value}');
     _pendingPermissionRollback = state.permissionMode;
     emit(
@@ -5484,9 +5855,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         inPlanMode: mode == PermissionMode.plan,
       ),
     );
-    _bridge.patchSessionPermissionMode(sessionId, mode.value);
+    _bridge.patchSessionPermissionMode(runtimeSessionId, mode.value);
     _bridge.send(
-      ClientMessage.setPermissionMode(mode.value, sessionId: sessionId),
+      ClientMessage.setPermissionMode(
+        mode.value,
+        sessionId: runtimeSessionId,
+      ),
     );
 
     // Persist per-session so that future resumes use this mode.
@@ -5497,7 +5871,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void setSessionModes({ExecutionMode? executionMode, bool? planMode}) {
-    if (detachedPreview) return;
+    final runtimeSessionId = _runtimeSessionIdForMutation(
+      allowSteerable: false,
+    );
+    if (runtimeSessionId == null) return;
     if (isCodex && isPermissionChangePending) {
       logger.warning(
         '[session:$sessionId] Permission change pending; ignoring mode update',
@@ -5552,7 +5929,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       ),
     );
     _bridge.patchSessionModes(
-      sessionId,
+      runtimeSessionId,
       permissionMode: legacyMode.value,
       executionMode: nextExecution.value,
       planMode: nextPlanMode,
@@ -5568,7 +5945,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         approvalsReviewer: codexApprovalsReviewer,
         codexPermissionsMode: codexPermissionsMode?.value,
         planMode: nextPlanMode,
-        sessionId: sessionId,
+        sessionId: runtimeSessionId,
       ),
     );
 
@@ -5586,7 +5963,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     CodexApprovalPolicy policy, {
     String approvalsReviewer = 'user',
   }) {
-    if (detachedPreview) return;
+    final runtimeSessionId = _runtimeSessionIdForMutation(
+      allowSteerable: false,
+    );
+    if (runtimeSessionId == null) return;
     if (isPermissionChangePending) {
       logger.warning(
         '[session:$sessionId] Permission change pending; ignoring approval update',
@@ -5623,7 +6003,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       ),
     );
     _bridge.patchSessionModes(
-      sessionId,
+      runtimeSessionId,
       permissionMode: legacyMode.value,
       executionMode: derivedExecution.value,
       planMode: false,
@@ -5637,7 +6017,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         approvalPolicy: policy.value,
         approvalsReviewer: normalizedReviewer,
         planMode: false,
-        sessionId: sessionId,
+        sessionId: runtimeSessionId,
       ),
     );
   }
@@ -5646,7 +6026,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     CodexPermissionsMode mode, {
     CodexPermissionApplyStrategy? applyStrategy,
   }) {
-    if (detachedPreview) return;
+    final runtimeSessionId = _runtimeSessionIdForMutation(
+      allowSteerable: false,
+    );
+    if (runtimeSessionId == null) return;
     if (applyStrategy != null && _pendingPermissionChangeId != null) {
       logger.warning(
         '[session:$sessionId] Permission change already pending; ignoring duplicate request',
@@ -5701,7 +6084,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       ),
     );
     _bridge.patchSessionModes(
-      sessionId,
+      runtimeSessionId,
       permissionMode: legacyMode.value,
       executionMode: derivedExecution.value,
       planMode: state.planMode,
@@ -5712,7 +6095,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       codexPermissionsMode: mode.value,
     );
     if (sandboxMode != null) {
-      _bridge.patchSessionSandboxMode(sessionId, sandboxMode.value);
+      _bridge.patchSessionSandboxMode(runtimeSessionId, sandboxMode.value);
     }
     try {
       _bridge.send(
@@ -5729,7 +6112,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           planMode: state.planMode,
           applyStrategy: applyStrategy,
           permissionChangeId: permissionChangeId,
-          sessionId: sessionId,
+          sessionId: runtimeSessionId,
         ),
       );
     } catch (_) {
@@ -5737,7 +6120,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         ErrorMessage(
           message: 'Bridge is not connected; permission change was not sent.',
           errorCode: 'set_permission_mode_rejected',
-          sessionId: sessionId,
+          sessionId: runtimeSessionId,
           permissionChangeId: permissionChangeId,
         ),
       );
@@ -5745,7 +6128,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void setCodexModel(String model, {ReasoningEffort? reasoningEffort}) {
-    if (detachedPreview) return;
+    final runtimeSessionId = _runtimeSessionIdForMutation(
+      allowSteerable: false,
+    );
+    if (runtimeSessionId == null) return;
     if (!isCodex) return;
     // A turn owned by an independent Codex Desktop app-server is read-only
     // from this Bridge connection. Do not let stale Mobile settings overwrite
@@ -5773,7 +6159,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       ),
     );
     _bridge.patchSessionCodexModel(
-      sessionId,
+      runtimeSessionId,
       normalizedModel,
       modelReasoningEffort: nextReasoningEffort?.value,
     );
@@ -5781,13 +6167,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       ClientMessage.setCodexModel(
         normalizedModel,
         modelReasoningEffort: nextReasoningEffort?.value,
-        sessionId: sessionId,
+        sessionId: runtimeSessionId,
       ),
     );
   }
 
   void setCodexSpeed(CodexSpeed speed) {
-    if (detachedPreview) return;
+    final runtimeSessionId = _runtimeSessionIdForMutation(
+      allowSteerable: false,
+    );
+    if (runtimeSessionId == null) return;
     if (state.externalDesktopTurnActive) return;
     if (!isCodex || speed == CodexSpeed.unknown || speed == state.codexSpeed) {
       return;
@@ -5798,23 +6187,29 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _pendingCodexServiceTierRollback = codexServiceTierRaw.value;
     _updateCodexServiceTierRaw(speed.value);
     emit(state.copyWith(codexSpeed: speed));
-    _bridge.patchSessionCodexSpeed(sessionId, speed.value);
+    _bridge.patchSessionCodexSpeed(runtimeSessionId, speed.value);
     _bridge.send(
-      ClientMessage.setCodexSpeed(speed.value, sessionId: sessionId),
+      ClientMessage.setCodexSpeed(
+        speed.value,
+        sessionId: runtimeSessionId,
+      ),
     );
   }
 
   /// Change sandbox mode (Claude & Codex).
   /// Bridge destroys and resumes the session with new sandbox settings.
   void setSandboxMode(SandboxMode mode) {
-    if (detachedPreview) return;
+    final runtimeSessionId = _runtimeSessionIdForMutation(
+      allowSteerable: false,
+    );
+    if (runtimeSessionId == null) return;
     _pendingSandboxRollback = state.sandboxMode;
     emit(state.copyWith(sandboxMode: mode));
     if (isCodex) {
-      _bridge.patchSessionSandboxMode(sessionId, mode.value);
+      _bridge.patchSessionSandboxMode(runtimeSessionId, mode.value);
     }
     _bridge.send(
-      ClientMessage.setSandboxMode(mode.value, sessionId: sessionId),
+      ClientMessage.setSandboxMode(mode.value, sessionId: runtimeSessionId),
     );
     // Persist per-session so that future resumes use this mode.
     final claudeSid = state.claudeSessionId;
@@ -5868,29 +6263,36 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         );
         final restoreCanonicalCodexPermissions =
             isCodex && previousCodexPermissionStateKnown;
-        _bridge.patchSessionModes(
-          sessionId,
-          permissionMode: previous.value,
-          executionMode:
-              (_pendingExecutionRollback ?? state.executionMode).value,
-          planMode: _pendingPlanRollback ?? (previous == PermissionMode.plan),
-          approvalPolicy: restoreCanonicalCodexPermissions
-              ? (_pendingCodexApprovalRollback ?? state.codexApprovalPolicy)
-                    .value
-              : null,
-          approvalsReviewer: restoreCanonicalCodexPermissions
-              ? (_pendingCodexApprovalsReviewerRollback ??
-                    state.codexApprovalsReviewer)
-              : null,
-          codexPermissionsMode: restoreCanonicalCodexPermissions
-              ? (_pendingCodexPermissionsModeRollback ??
-                        state.codexPermissionsMode)
-                    .value
-              : null,
-        );
+        final runtimeSessionId = runtimeSessionIdForRead;
+        if (runtimeSessionId != null) {
+          _bridge.patchSessionModes(
+            runtimeSessionId,
+            permissionMode: previous.value,
+            executionMode:
+                (_pendingExecutionRollback ?? state.executionMode).value,
+            planMode:
+                _pendingPlanRollback ?? (previous == PermissionMode.plan),
+            approvalPolicy: restoreCanonicalCodexPermissions
+                ? (_pendingCodexApprovalRollback ?? state.codexApprovalPolicy)
+                      .value
+                : null,
+            approvalsReviewer: restoreCanonicalCodexPermissions
+                ? (_pendingCodexApprovalsReviewerRollback ??
+                      state.codexApprovalsReviewer)
+                : null,
+            codexPermissionsMode: restoreCanonicalCodexPermissions
+                ? (_pendingCodexPermissionsModeRollback ??
+                          state.codexPermissionsMode)
+                      .value
+                : null,
+          );
+        }
         final previousSandbox = _pendingSandboxRollback;
-        if (isCodex && previousSandbox != null) {
-          _bridge.patchSessionSandboxMode(sessionId, previousSandbox.value);
+        if (isCodex && previousSandbox != null && runtimeSessionId != null) {
+          _bridge.patchSessionSandboxMode(
+            runtimeSessionId,
+            previousSandbox.value,
+          );
         }
         final claudeSid = state.claudeSessionId;
         if (claudeSid != null && claudeSid.isNotEmpty) {
@@ -5925,7 +6327,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (previous != null) {
         emit(state.copyWith(sandboxMode: previous));
         if (isCodex) {
-          _bridge.patchSessionSandboxMode(sessionId, previous.value);
+          final runtimeSessionId = runtimeSessionIdForRead;
+          if (runtimeSessionId != null) {
+            _bridge.patchSessionSandboxMode(runtimeSessionId, previous.value);
+          }
         }
         final claudeSid = state.claudeSessionId;
         if (claudeSid != null && claudeSid.isNotEmpty) {
@@ -5954,17 +6359,22 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         codexSpeed: rollbackSpeed ? previousSpeed : state.codexSpeed,
       ),
     );
+    final runtimeSessionId = runtimeSessionIdForRead;
     if (rollbackModel) {
-      _bridge.restoreSessionCodexModel(
-        sessionId,
-        model: previousModel,
-        modelReasoningEffort: previousEffort?.value,
-      );
+      if (runtimeSessionId != null) {
+        _bridge.restoreSessionCodexModel(
+          runtimeSessionId,
+          model: previousModel,
+          modelReasoningEffort: previousEffort?.value,
+        );
+      }
       _clearPendingCodexModelRollback();
     }
     if (rollbackSpeed) {
       _updateCodexServiceTierRaw(previousTier);
-      _bridge.restoreSessionCodexSpeed(sessionId, previousTier);
+      if (runtimeSessionId != null) {
+        _bridge.restoreSessionCodexSpeed(runtimeSessionId, previousTier);
+      }
       _clearPendingCodexSpeedRollback();
     }
   }
@@ -6007,21 +6417,24 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       );
     }
     if (!needsModeReset) return;
-    _bridge.patchSessionModes(
-      sessionId,
-      permissionMode: rollbackPermissionMode.value,
-      executionMode: state.executionMode.value,
-      planMode: false,
-      approvalPolicy: state.codexPermissionStateKnown
-          ? state.codexApprovalPolicy.value
-          : null,
-      approvalsReviewer: state.codexPermissionStateKnown
-          ? state.codexApprovalsReviewer
-          : null,
-      codexPermissionsMode: state.codexPermissionStateKnown
-          ? state.codexPermissionsMode.value
-          : null,
-    );
+    final runtimeSessionId = runtimeSessionIdForRead;
+    if (runtimeSessionId != null) {
+      _bridge.patchSessionModes(
+        runtimeSessionId,
+        permissionMode: rollbackPermissionMode.value,
+        executionMode: state.executionMode.value,
+        planMode: false,
+        approvalPolicy: state.codexPermissionStateKnown
+            ? state.codexApprovalPolicy.value
+            : null,
+        approvalsReviewer: state.codexPermissionStateKnown
+            ? state.codexApprovalsReviewer
+            : null,
+        codexPermissionsMode: state.codexPermissionStateKnown
+            ? state.codexPermissionsMode.value
+            : null,
+      );
+    }
     final providerSessionId = state.claudeSessionId;
     if (providerSessionId != null && providerSessionId.isNotEmpty) {
       _SessionSettingsHelper.save(providerSessionId, {
@@ -6110,10 +6523,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   bool _isSessionNotFound(ErrorMessage msg) {
     if (msg.errorCode == 'session_not_found') {
-      return msg.sessionId == sessionId;
+      return msg.sessionId != null && _matchesBoundSessionId(msg.sessionId);
     }
     // Compatibility with Bridges released before structured error codes.
-    return msg.message == 'Session $sessionId not found';
+    final runtimeSessionId = runtimeSessionIdForRead;
+    return msg.message == 'Session $sessionId not found' ||
+        (runtimeSessionId != null &&
+            msg.message == 'Session $runtimeSessionId not found');
   }
 
   bool _isPermissionModeFailure(ErrorMessage msg) {
@@ -6137,24 +6553,37 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Stop the session.
   void stop() {
-    if (detachedPreview) return;
-    _bridge.stopSession(sessionId);
+    final runtimeSessionId = _runtimeSessionIdForMutation();
+    if (runtimeSessionId == null) return;
+    _bridge.stopSession(runtimeSessionId);
   }
 
   /// Request a dry-run preview of file rewind.
   void rewindDryRun(String targetUuid) {
+    final runtimeSessionId = _runtimeSessionIdForMutation(
+      allowSteerable: false,
+    );
+    if (runtimeSessionId == null) return;
     emit(state.copyWith(rewindPreview: null));
-    _bridge.send(ClientMessage.rewindDryRun(sessionId, targetUuid));
+    _bridge.send(ClientMessage.rewindDryRun(runtimeSessionId, targetUuid));
   }
 
   /// Execute a rewind operation.
   /// [mode] is one of: "conversation", "code", "both".
   void rewind(String targetUuid, String mode) {
-    _bridge.send(ClientMessage.rewind(sessionId, targetUuid, mode));
+    final runtimeSessionId = _runtimeSessionIdForMutation(
+      allowSteerable: false,
+    );
+    if (runtimeSessionId == null) return;
+    _bridge.send(ClientMessage.rewind(runtimeSessionId, targetUuid, mode));
   }
 
   void forkSession(String targetUuid) {
-    _bridge.send(ClientMessage.forkSession(sessionId, targetUuid));
+    final runtimeSessionId = _runtimeSessionIdForMutation(
+      allowSteerable: false,
+    );
+    if (runtimeSessionId == null) return;
+    _bridge.send(ClientMessage.forkSession(runtimeSessionId, targetUuid));
   }
 
   /// Hides one warning text for the lifetime of this open session screen.
@@ -6511,7 +6940,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// Retry a failed user message.
   void retryMessage(UserChatEntry entry) {
     final clientMessageId = _uuid.v4();
-    final retrySessionId = entry.sessionId ?? sessionId;
+    final retrySessionId = detachedPreview
+        ? _runtimeSessionIdForMutation()
+        : (entry.sessionId ?? sessionId);
+    if (retrySessionId == null) return;
     final isOffline = !_bridge.isConnected;
     emit(
       state.copyWith(
@@ -6678,6 +7110,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     codexModelCatalogRevision.dispose();
     codexServiceTierRaw.dispose();
     externalDesktopTurnSteerable.dispose();
+    detachedLiveRuntimeRevision.dispose();
     _desktopContinuitySubscription?.cancel();
     _desktopContinuityConnectionSubscription?.cancel();
     _deliveryPendingInputs.clear();

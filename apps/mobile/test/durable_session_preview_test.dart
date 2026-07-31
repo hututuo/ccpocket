@@ -6,17 +6,21 @@ import 'package:ccpocket/features/chat_session/widgets/durable_session_preview.d
 import 'package:ccpocket/features/conversation_content_sync/conversation_content_sync_service.dart';
 import 'package:ccpocket/features/session_list/cache/session_catalog_cache_database.dart';
 import 'package:ccpocket/features/session_list/cache/session_catalog_cache_repository.dart';
+import 'package:ccpocket/features/session_list/state/session_list_cubit.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'chat_screen/helpers/chat_test_helpers.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUp(() => SharedPreferences.setMockInitialValues({}));
 
   testWidgets('online attachment is not presented as a local queue', (
     tester,
@@ -127,6 +131,121 @@ void main() {
     },
   );
 
+  testWidgets(
+    'detached projection rejects status and settings from another source',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+      final streaming = StreamingStateCubit();
+      final cubit = ChatSessionCubit(
+        sessionId: 'same-thread',
+        provider: Provider.codex,
+        bridge: bridge,
+        streamingCubit: streaming,
+        detachedPreview: true,
+        initialLiveRuntimeSessionId: 'runtime-source-a',
+      );
+      final sessionList = _ProjectionSessionListCubit(
+        bridge: bridge,
+        sourceFingerprint: 'source-b',
+        status: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'same-thread',
+          activity: 'idle',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-08-01T06:00:00.000Z',
+          executionHost: 'bridge',
+          controlState: 'writable',
+          authorityGeneration: 'authority-source-b',
+        ),
+        metadata: const RecentSession(
+          sessionId: 'same-thread',
+          provider: 'codex',
+          firstPrompt: 'Source B',
+          created: '2026-08-01T05:00:00.000Z',
+          modified: '2026-08-01T06:00:00.000Z',
+          gitBranch: 'main',
+          projectPath: '/source-b',
+          isSidechain: false,
+          codexModel: 'model-source-b',
+          codexModelReasoningEffort: 'high',
+        ),
+      );
+      addTearDown(cubit.close);
+      addTearDown(streaming.close);
+      addTearDown(sessionList.close);
+      addTearDown(bridge.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MultiBlocProvider(
+            providers: [
+              BlocProvider<ChatSessionCubit>.value(value: cubit),
+              BlocProvider<SessionListCubit>.value(value: sessionList),
+            ],
+            child: const DurableSessionPreviewUpdater(
+              revision: 'source-fence',
+              messages: [],
+              hasEarlier: false,
+              statusProvider: 'codex',
+              statusProviderSessionId: 'same-thread',
+              expectedSourceFingerprint: 'source-a',
+              liveRuntimeSessionId: 'runtime-source-a',
+              child: SizedBox.shrink(),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(cubit.state.status, ProcessStatus.unknown);
+      expect(cubit.state.codexModel, isNull);
+      expect(cubit.canMutateAttachedRuntime, isFalse);
+
+      sessionList.replace(
+        sourceFingerprint: 'source-a',
+        status: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'same-thread',
+          activity: 'idle',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-08-01T06:01:00.000Z',
+          executionHost: 'unknown',
+          controlState: 'writable',
+          authorityGeneration: 'authority-source-a',
+        ),
+        metadata: const RecentSession(
+          sessionId: 'same-thread',
+          provider: 'codex',
+          firstPrompt: 'Source A',
+          created: '2026-08-01T05:00:00.000Z',
+          modified: '2026-08-01T06:01:00.000Z',
+          gitBranch: 'main',
+          projectPath: '/source-a',
+          isSidechain: false,
+          codexModel: 'model-source-a',
+          codexModelReasoningEffort: 'ultra',
+        ),
+      );
+      await tester.pump();
+
+      expect(cubit.state.status, ProcessStatus.idle);
+      expect(cubit.state.codexModel, 'model-source-a');
+      expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
+      expect(cubit.canMutateAttachedRuntime, isTrue);
+    },
+  );
+
   test(
     'detached history paging keeps the cubit and advances hasMore',
     () async {
@@ -160,7 +279,7 @@ void main() {
   );
 
   testWidgets(
-    'authenticated cache target reloads a durable Codex preview without input',
+    'a scoped durable route renders its cache before the socket is authoritative',
     (tester) async {
       final bridge = MockBridgeService()
         ..mockLogicalConnectionIdentity = 'machine:durable-preview'
@@ -224,7 +343,7 @@ void main() {
         await tester.pump();
         await tester.pump();
 
-        expect(find.text('Recovered cached turn'), findsNothing);
+        expect(find.text('Recovered cached turn'), findsOneWidget);
         expect(repository.loadConversationWindowCalls, 1);
 
         bridge
@@ -246,12 +365,12 @@ void main() {
         await tester.pump();
 
         expect(find.text('Recovered cached turn'), findsOneWidget);
-        expect(repository.loadConversationWindowCalls, 2);
+        expect(repository.loadConversationWindowCalls, 1);
 
         bridge.emitSessionList(bridge.currentSessions);
         await tester.pump();
         await tester.pump();
-        expect(repository.loadConversationWindowCalls, 2);
+        expect(repository.loadConversationWindowCalls, 1);
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
@@ -339,6 +458,195 @@ void main() {
       }
     },
   );
+
+  testWidgets(
+    'an open durable route rejects the same thread id from another Codex source',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-source-fence'
+        ..authenticatedCodexSourceId = 'codex-source-a'
+        ..mockLogicalConnectionIdentity = 'machine:source-fence'
+        ..mockLastUrl = 'wss://source-fence.test/socket';
+      final targetA = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-source-fence',
+        codexSourceId: 'codex-source-a',
+      );
+      final targetB = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-source-fence',
+        codexSourceId: 'codex-source-b',
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(databasePath: 'unused-source-fence.db'),
+        snapshots: {
+          targetA.fingerprint: _previewSnapshot(
+            partitionId: targetA.fingerprint,
+            providerSessionId: 'same-thread-id',
+            revision: 'source-a-revision',
+            entryId: 'source-a-entry',
+            text: 'Source A cached turn',
+          ),
+          targetB.fingerprint: _previewSnapshot(
+            partitionId: targetB.fingerprint,
+            providerSessionId: 'same-thread-id',
+            revision: 'source-b-revision',
+            entryId: 'source-b-entry',
+            text: 'Source B must stay hidden',
+          ),
+        },
+      );
+      final sync = _ControllableConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+
+      try {
+        await tester.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-source-a',
+            isPending: true,
+            durableProviderSessionId: 'same-thread-id',
+            dataSourceIdentity: bridge.dataSourceIdentity,
+            conversationContentSync: sync,
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+        expect(find.text('Source A cached turn'), findsOneWidget);
+        expect(repository.loadConversationWindowCalls, 1);
+
+        bridge.authenticatedCodexSourceId = 'codex-source-b';
+        bridge.emitSessionList([
+          const SessionInfo(
+            id: 'runtime-source-b',
+            provider: 'codex',
+            projectPath: '/workspace/source-b',
+            claudeSessionId: 'same-thread-id',
+            status: 'idle',
+            createdAt: '2026-08-01T00:00:00.000Z',
+            lastActivityAt: '2026-08-01T00:00:00.000Z',
+          ),
+        ]);
+        sync.emitTimelineCommit(
+          provider: Provider.codex.value,
+          providerSessionId: 'same-thread-id',
+          revision: 'source-b-revision',
+          targetFingerprint: targetB.fingerprint,
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(repository.loadConversationWindowCalls, 1);
+        expect(find.text('Source A cached turn'), findsOneWidget);
+        expect(find.text('Source B must stay hidden'), findsNothing);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'a route opened on another source recovers when its own source authenticates',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-source-recovery'
+        ..authenticatedCodexSourceId = 'codex-source-b'
+        ..mockLogicalConnectionIdentity = 'machine:source-recovery'
+        ..mockLastUrl = 'wss://source-recovery.test/socket';
+      final targetA = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-source-recovery',
+        codexSourceId: 'codex-source-a',
+      );
+      final snapshots = <String, ConversationHotWindowSnapshot?>{
+        targetA.fingerprint: _previewSnapshot(
+          partitionId: targetA.fingerprint,
+          providerSessionId: 'recovering-thread',
+          revision: 'source-a-before-commit',
+          entryId: 'source-a-before-entry',
+          text: 'Source A after authentication',
+        ),
+      };
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(databasePath: 'unused-recovery.db'),
+        snapshots: snapshots,
+      );
+      final sync = _ControllableConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+      final routeA = const BridgeDataSourceIdentity(
+        bridgeInstanceId: 'bridge-source-recovery',
+        codexSourceId: 'codex-source-a',
+        legacyRouteIdentity: 'logical:machine:source-recovery',
+      );
+
+      try {
+        await tester.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-source-a',
+            isPending: true,
+            durableProviderSessionId: 'recovering-thread',
+            dataSourceIdentity: routeA,
+            conversationContentSync: sync,
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('Source A after authentication'), findsNothing);
+        expect(repository.loadConversationWindowCalls, 0);
+
+        bridge.authenticatedCodexSourceId = 'codex-source-a';
+        bridge.emitSessionList([
+          const SessionInfo(
+            id: 'runtime-source-a',
+            provider: 'codex',
+            projectPath: '/workspace/source-a',
+            claudeSessionId: 'recovering-thread',
+            status: 'idle',
+            createdAt: '2026-08-01T00:00:00.000Z',
+            lastActivityAt: '2026-08-01T00:00:00.000Z',
+          ),
+        ]);
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+        expect(find.text('Source A after authentication'), findsOneWidget);
+        expect(repository.loadConversationWindowCalls, 1);
+
+        snapshots[targetA.fingerprint] = _previewSnapshot(
+          partitionId: targetA.fingerprint,
+          providerSessionId: 'recovering-thread',
+          revision: 'source-a-after-commit',
+          entryId: 'source-a-before-entry',
+          text: 'Source A committed update',
+        );
+        sync.emitTimelineCommit(
+          provider: Provider.codex.value,
+          providerSessionId: 'recovering-thread',
+          revision: 'source-a-after-commit',
+          targetFingerprint: targetA.fingerprint,
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('Source A committed update'), findsOneWidget);
+        expect(find.text('Source A after authentication'), findsNothing);
+        expect(repository.loadConversationWindowCalls, 2);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+      }
+    },
+  );
 }
 
 ConversationHotWindowSnapshot _previewSnapshot({
@@ -416,9 +724,11 @@ class _ControllableConversationContentSyncService
     required String provider,
     required String providerSessionId,
     required String revision,
+    String? targetFingerprint,
   }) {
     _testUpdates.add(
       ConversationContentCacheUpdate(
+        targetFingerprint: targetFingerprint ?? currentCacheTargetFingerprint,
         provider: provider,
         providerSessionId: providerSessionId,
         revision: revision,
@@ -430,5 +740,56 @@ class _ControllableConversationContentSyncService
   Future<void> dispose() async {
     await _testUpdates.close();
     await super.dispose();
+  }
+}
+
+class _ProjectionSessionListCubit extends SessionListCubit {
+  _ProjectionSessionListCubit({
+    required super.bridge,
+    required this.sourceFingerprint,
+    required this.status,
+    required this.metadata,
+  });
+
+  final StreamController<void> _changes = StreamController<void>.broadcast();
+  String sourceFingerprint;
+  ConversationSyncV2Status status;
+  RecentSession metadata;
+
+  @override
+  Stream<void> get catalogSnapshotChanges => _changes.stream;
+
+  @override
+  String? get conversationSourceFingerprint => sourceFingerprint;
+
+  @override
+  Map<String, ConversationSyncV2Status> get conversationStatuses => {
+    '${status.provider}\u0000${status.providerSessionId}': status,
+  };
+
+  @override
+  RecentSession? conversationMetadataFor(
+    String provider,
+    String providerSessionId,
+  ) => provider == metadata.provider &&
+      providerSessionId == metadata.sessionId
+      ? metadata
+      : null;
+
+  void replace({
+    required String sourceFingerprint,
+    required ConversationSyncV2Status status,
+    required RecentSession metadata,
+  }) {
+    this.sourceFingerprint = sourceFingerprint;
+    this.status = status;
+    this.metadata = metadata;
+    _changes.add(null);
+  }
+
+  @override
+  Future<void> close() async {
+    await _changes.close();
+    await super.close();
   }
 }

@@ -257,6 +257,10 @@ class ConversationSyncV2Status extends ConversationSyncV2Target {
     required this.confidence,
     required this.observedAt,
     this.attentionRequestId,
+    this.executionHost,
+    this.activeTurnId,
+    this.controlState,
+    this.authorityGeneration,
   });
 
   final String activity;
@@ -267,6 +271,25 @@ class ConversationSyncV2Status extends ConversationSyncV2Target {
   final String confidence;
   final String observedAt;
   final String? attentionRequestId;
+
+  /// Confirmed origin of the currently active turn.
+  ///
+  /// This is deliberately independent from [source], which only describes
+  /// where the status evidence came from. Older Bridges omit this additive
+  /// field and continue through the legacy source fallback in presentation.
+  final String? executionHost;
+
+  /// Provider-owned active turn identity used to fence control operations.
+  final String? activeTurnId;
+
+  /// Authoritative mutation capability for the active turn.
+  ///
+  /// Missing means an older Bridge, not writable. Callers must fail closed for
+  /// unknown/read-only states instead of inferring control from [source].
+  final String? controlState;
+
+  /// Opaque authority epoch paired with [activeTurnId] and [controlState].
+  final String? authorityGeneration;
 
   factory ConversationSyncV2Status.fromJson(Map<String, dynamic> json) {
     final status = ConversationSyncV2Status(
@@ -294,6 +317,26 @@ class ConversationSyncV2Status extends ConversationSyncV2Target {
       attentionRequestId: _conversationSyncOptionalString(
         json,
         'attentionRequestId',
+        maximumLength: 256,
+      ),
+      executionHost: _conversationSyncOptionalString(
+        json,
+        'executionHost',
+        maximumLength: 32,
+      ),
+      activeTurnId: _conversationSyncOptionalString(
+        json,
+        'activeTurnId',
+        maximumLength: 256,
+      ),
+      controlState: _conversationSyncOptionalString(
+        json,
+        'controlState',
+        maximumLength: 32,
+      ),
+      authorityGeneration: _conversationSyncOptionalString(
+        json,
+        'authorityGeneration',
         maximumLength: 256,
       ),
     );
@@ -327,7 +370,22 @@ class ConversationSyncV2Status extends ConversationSyncV2Target {
           'observed',
           'inferred',
           'unknown',
-        }.contains(status.confidence)) {
+        }.contains(status.confidence) ||
+        (status.executionHost != null &&
+            !const {
+              'bridge',
+              'desktopAppServer',
+              'unknown',
+            }.contains(status.executionHost)) ||
+        (status.controlState != null &&
+            !const {
+              'readOnly',
+              'steerable',
+              'writable',
+              'reconciling',
+              'blocked',
+              'unavailable',
+            }.contains(status.controlState))) {
       throw const FormatException('Conversation sync status is unsupported.');
     }
     return status;
@@ -344,6 +402,10 @@ class ConversationSyncV2Status extends ConversationSyncV2Target {
     'confidence': confidence,
     'observedAt': observedAt,
     'attentionRequestId': ?attentionRequestId,
+    'executionHost': ?executionHost,
+    'activeTurnId': ?activeTurnId,
+    'controlState': ?controlState,
+    'authorityGeneration': ?authorityGeneration,
   };
 }
 

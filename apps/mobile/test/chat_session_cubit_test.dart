@@ -25,6 +25,8 @@ class MockBridgeService extends BridgeService {
   final canceledOfflineInputs = <Map<String, dynamic>>[];
   final restoredCodexModels = <Map<String, dynamic>>[];
   final restoredCodexSpeeds = <Map<String, dynamic>>[];
+  final interruptedSessionIds = <String>[];
+  final stoppedSessionIds = <String>[];
   final cachedMessagesBySession = <String, List<ServerMessage>>{};
   final historySeqBySession = <String, int>{};
   bool connected = true;
@@ -165,12 +167,12 @@ class MockBridgeService extends BridgeService {
 
   @override
   void interrupt(String sessionId) {
-    // no-op for tests
+    interruptedSessionIds.add(sessionId);
   }
 
   @override
   void stopSession(String sessionId) {
-    // no-op for tests
+    stoppedSessionIds.add(sessionId);
   }
 
   @override
@@ -504,6 +506,838 @@ void main() {
         expect(cubit.state.codexModelReasoningEffort, isNull);
         expect(cubit.state.codexSpeed, CodexSpeed.unknown);
         expect(cubit.codexServiceTierRaw.value, isNull);
+      },
+    );
+
+    test(
+      'detached provider status separates evidence source from turn authority',
+      () async {
+        final cubit = ChatSessionCubit(
+          sessionId: 'shared-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'shared-runtime',
+        );
+        addTearDown(cubit.close);
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'shared-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T00:00:00.000Z',
+            executionHost: 'bridge',
+            activeTurnId: 'turn-bridge',
+            controlState: 'writable',
+            authorityGeneration: 'authority-1',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+
+        expect(cubit.state.status, ProcessStatus.running);
+        expect(cubit.state.externalDesktopTurnActive, isFalse);
+        expect(cubit.state.externalDesktopTurnId, isNull);
+        expect(cubit.externalDesktopTurnSteerable.value, isFalse);
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'shared-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T00:01:00.000Z',
+            executionHost: 'desktopAppServer',
+            activeTurnId: 'turn-desktop',
+            controlState: 'readOnly',
+            authorityGeneration: 'authority-2',
+          ),
+        );
+
+        expect(cubit.state.externalDesktopTurnActive, isTrue);
+        expect(cubit.state.externalDesktopTurnId, 'turn-desktop');
+        expect(cubit.externalDesktopTurnSteerable.value, isFalse);
+
+        // A same-timestamp authority update must still apply. The opaque
+        // generation is part of the semantic status signature, not a clock.
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'shared-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T00:01:00.000Z',
+            executionHost: 'desktopAppServer',
+            activeTurnId: 'turn-desktop',
+            controlState: 'steerable',
+            authorityGeneration: 'authority-3',
+          ),
+        );
+        expect(cubit.externalDesktopTurnSteerable.value, isTrue);
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'shared-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T00:02:00.000Z',
+            executionHost: 'unknown',
+            activeTurnId: 'turn-unknown',
+            controlState: 'unavailable',
+            authorityGeneration: 'authority-4',
+          ),
+        );
+        expect(cubit.state.externalDesktopTurnActive, isFalse);
+        expect(cubit.state.externalDesktopTurnId, isNull);
+        expect(cubit.externalDesktopTurnSteerable.value, isFalse);
+
+        // Old Bridges omit all authority fields. Preserve the legacy source
+        // fallback without claiming that the turn is controllable.
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'shared-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'ownedElsewhere',
+            source: 'legacyRollout',
+            confidence: 'observed',
+            observedAt: '2026-08-01T00:03:00.000Z',
+          ),
+        );
+        expect(cubit.state.externalDesktopTurnActive, isTrue);
+        expect(cubit.state.externalDesktopTurnId, isNull);
+        expect(cubit.externalDesktopTurnSteerable.value, isFalse);
+      },
+    );
+
+    test(
+      'durable preview overlays one live runtime without replacing cache identity',
+      () async {
+        const cachedUser = UserInputMessage(
+          text: 'Cached request',
+          userMessageUuid: 'cached-user-1',
+        );
+        const liveAssistant = AssistantServerMessage(
+          message: AssistantMessage(
+            id: 'assistant-live-1',
+            role: 'assistant',
+            content: [TextContent(text: 'Live answer')],
+            model: 'gpt-test',
+          ),
+        );
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialHistoryMessages: const [cachedUser],
+        );
+        addTearDown(cubit.close);
+
+        expect(cubit.sendMessage('Must attach first'), isFalse);
+        expect(mockBridge.sentMessages, isEmpty);
+
+        cubit.updateDetachedLiveRuntime('runtime-a');
+        expect(cubit.detachedLiveRuntimeSessionId, 'runtime-a');
+        expect(
+          cubit.sendMessage(
+            'Continue from cache',
+            clientMessageId: 'client-message-1',
+          ),
+          isTrue,
+        );
+        final sent = jsonDecode(mockBridge.sentMessages.single.toJson());
+        expect(sent['sessionId'], 'runtime-a');
+
+        mockBridge.emitMessage(liveAssistant, sessionId: 'runtime-a');
+        await Future<void>.delayed(Duration.zero);
+        expect(
+          cubit.state.entries.whereType<ServerChatEntry>().where(
+            (entry) =>
+                entry.message is AssistantServerMessage &&
+                (entry.message as AssistantServerMessage).message.id ==
+                    'assistant-live-1',
+          ),
+          hasLength(1),
+        );
+
+        // A runtime history snapshot is not another timeline authority.
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              UserInputMessage(
+                text: 'Runtime snapshot must not replace the cache',
+                userMessageUuid: 'runtime-history-user',
+              ),
+            ],
+          ),
+          sessionId: 'runtime-a',
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().where(
+            (entry) => entry.text == 'Runtime snapshot must not replace the cache',
+          ),
+          isEmpty,
+        );
+
+        // When SQLite catches up with the live item, stable IDs reconcile it
+        // rather than appending a second copy or moving the page identity.
+        cubit.updateDetachedPreviewHistory(const [cachedUser, liveAssistant]);
+        expect(
+          cubit.state.entries.whereType<ServerChatEntry>().where(
+            (entry) =>
+                entry.message is AssistantServerMessage &&
+                (entry.message as AssistantServerMessage).message.id ==
+                    'assistant-live-1',
+          ),
+          hasLength(1),
+        );
+        expect(cubit.sessionId, 'durable-thread');
+      },
+    );
+
+    test(
+      'durable runtime authority is cleared when the authenticated source changes',
+      () {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-a',
+        );
+        addTearDown(cubit.close);
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-thread',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T01:00:00.000Z',
+            executionHost: 'bridge',
+            controlState: 'writable',
+            authorityGeneration: 'source-a-generation',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        expect(cubit.sendMessage('Source A write'), isTrue);
+        mockBridge.sentMessages.clear();
+
+        cubit.updateDetachedProviderStatus(
+          null,
+          sourceFingerprint: 'bridge-b/source-b',
+        );
+        expect(cubit.canMutateAttachedRuntime, isFalse);
+        expect(cubit.sendMessage('Must wait for source B authority'), isFalse);
+        expect(mockBridge.sentMessages, isEmpty);
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-thread',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T01:01:00.000Z',
+            executionHost: 'bridge',
+            controlState: 'writable',
+            authorityGeneration: 'source-b-generation',
+          ),
+          sourceFingerprint: 'bridge-b/source-b',
+        );
+        expect(cubit.sendMessage('Source B write'), isTrue);
+        expect(
+          jsonDecode(mockBridge.sentMessages.single.toJson())['sessionId'],
+          'runtime-a',
+        );
+      },
+    );
+
+    test(
+      'unknown host can start a turn only with an exact writable authority lease',
+      () {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-unknown-host',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-unknown-host',
+        );
+        addTearDown(cubit.close);
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-unknown-host',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T01:10:00.000Z',
+            executionHost: 'unknown',
+            controlState: 'writable',
+            authorityGeneration: 'authority-writable',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+
+        expect(cubit.sendMessage('Start on exact writable lease'), isTrue);
+        expect(
+          jsonDecode(mockBridge.sentMessages.single.toJson())['sessionId'],
+          'runtime-unknown-host',
+        );
+        mockBridge.sentMessages.clear();
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-unknown-host',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T01:11:00.000Z',
+            executionHost: 'unknown',
+            activeTurnId: 'turn-unproven',
+            controlState: 'steerable',
+            authorityGeneration: 'authority-steerable',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+
+        expect(cubit.sendMessage('Do not steer an unproven host'), isFalse);
+        expect(mockBridge.sentMessages, isEmpty);
+      },
+    );
+
+    test(
+      'runtime replacement clears transient approval and rejects its old action',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-transient-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-transient-old',
+        );
+        addTearDown(cubit.close);
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-transient-thread',
+            activity: 'working',
+            attention: 'approval',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T01:20:00.000Z',
+            executionHost: 'bridge',
+            activeTurnId: 'turn-old',
+            controlState: 'steerable',
+            authorityGeneration: 'authority-old',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        mockBridge.emitMessage(
+          const PermissionRequestMessage(
+            toolUseId: 'approval-old',
+            toolName: 'Bash',
+            input: {'command': 'old'},
+          ),
+          sessionId: 'runtime-transient-old',
+        );
+        await pumpEventQueue();
+        expect(cubit.state.approval, isA<ApprovalPermission>());
+
+        cubit.updateDetachedLiveRuntime('runtime-transient-new');
+
+        expect(cubit.state.approval, isA<ApprovalNone>());
+        expect(cubit.state.queuedInput, isNull);
+        expect(cubit.state.status, ProcessStatus.unknown);
+        cubit.approve('approval-old');
+        expect(mockBridge.sentMessages, isEmpty);
+      },
+    );
+
+    test(
+      'source replacement clears transient approval and rejects its old action',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-source-transient',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-source-transient',
+        );
+        addTearDown(cubit.close);
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-source-transient',
+            activity: 'working',
+            attention: 'approval',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T01:25:00.000Z',
+            executionHost: 'bridge',
+            activeTurnId: 'turn-source-a',
+            controlState: 'steerable',
+            authorityGeneration: 'authority-source-a',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        mockBridge.emitMessage(
+          const PermissionRequestMessage(
+            toolUseId: 'approval-source-a',
+            toolName: 'Bash',
+            input: {'command': 'source-a'},
+          ),
+          sessionId: 'runtime-source-transient',
+        );
+        await pumpEventQueue();
+        expect(cubit.state.approval, isA<ApprovalPermission>());
+
+        cubit.updateDetachedProviderStatus(
+          null,
+          sourceFingerprint: 'bridge-b/source-b',
+        );
+
+        expect(cubit.state.approval, isA<ApprovalNone>());
+        cubit.approve('approval-source-a');
+        expect(mockBridge.sentMessages, isEmpty);
+      },
+    );
+
+    test(
+      'image dispatch keeps its runtime source and authority lease',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final encoded = Completer<List<Map<String, String>>>();
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-image-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-image-old',
+          imagePayloadEncoder: (_) => encoded.future,
+        );
+        addTearDown(cubit.close);
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-image-thread',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T01:40:00.000Z',
+            executionHost: 'bridge',
+            controlState: 'writable',
+            authorityGeneration: 'authority-image-old',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+
+        expect(
+          cubit.sendMessage(
+            'Image must stay on its lease',
+            images: [
+              (bytes: Uint8List.fromList([1, 2, 3]), mimeType: 'image/png'),
+            ],
+          ),
+          isTrue,
+        );
+        expect(
+          cubit.sendMessage('Serialized text must stay on the same lease'),
+          isTrue,
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        cubit.updateDetachedLiveRuntime('runtime-image-new');
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-image-thread',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T01:41:00.000Z',
+            executionHost: 'bridge',
+            controlState: 'writable',
+            authorityGeneration: 'authority-image-new',
+          ),
+          sourceFingerprint: 'bridge-b/source-b',
+        );
+        encoded.complete(const [
+          {'base64': 'AQID', 'mimeType': 'image/png'},
+        ]);
+        await pumpEventQueue();
+
+        expect(mockBridge.sentMessages, isEmpty);
+        expect(
+          cubit.state.entries
+              .whereType<UserChatEntry>()
+              .map((entry) => entry.status),
+          everyElement(MessageStatus.failed),
+        );
+      },
+    );
+
+    test(
+      'a replacement runtime cannot inherit writable authority from the old handle',
+      () {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-runtime-generation',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-old',
+        );
+        addTearDown(cubit.close);
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-runtime-generation',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T01:30:00.000Z',
+            executionHost: 'bridge',
+            activeTurnId: 'turn-old',
+            controlState: 'writable',
+            authorityGeneration: 'authority-old',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        expect(cubit.sendMessage('Old handle write'), isTrue);
+        mockBridge.sentMessages.clear();
+
+        cubit.updateDetachedLiveRuntime('runtime-new');
+        expect(cubit.canMutateAttachedRuntime, isFalse);
+        expect(cubit.sendMessage('Must not inherit authority'), isFalse);
+        expect(mockBridge.sentMessages, isEmpty);
+
+        // The updater immediately replays the current catalog row after a
+        // handle replacement. Its old authority generation may refresh
+        // read-only presentation, but it cannot unlock the new runtime.
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-runtime-generation',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T01:30:30.000Z',
+            executionHost: 'bridge',
+            activeTurnId: 'turn-old',
+            controlState: 'writable',
+            authorityGeneration: 'authority-old',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        expect(cubit.state.status, ProcessStatus.running);
+        expect(cubit.canMutateAttachedRuntime, isFalse);
+        expect(cubit.sendMessage('Rejected generation stays read-only'), isFalse);
+        expect(mockBridge.sentMessages, isEmpty);
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-runtime-generation',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T01:31:00.000Z',
+            executionHost: 'bridge',
+            activeTurnId: 'turn-new',
+            controlState: 'writable',
+            authorityGeneration: 'authority-new',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        expect(cubit.sendMessage('New handle write'), isTrue);
+        expect(
+          jsonDecode(mockBridge.sentMessages.single.toJson())['sessionId'],
+          'runtime-new',
+        );
+      },
+    );
+
+    test(
+      'legacy detached authority blocks an active external turn but keeps idle compatibility',
+      () {
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-legacy-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'legacy-runtime',
+        );
+        addTearDown(cubit.close);
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-legacy-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'ownedElsewhere',
+            source: 'appServer',
+            confidence: 'observed',
+            observedAt: '2026-08-01T02:00:00.000Z',
+          ),
+          sourceFingerprint: 'legacy-bridge/source',
+        );
+        expect(cubit.state.externalDesktopTurnActive, isTrue);
+        expect(cubit.sendMessage('Do not write foreign legacy turn'), isFalse);
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-legacy-thread',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'observed',
+            observedAt: '2026-08-01T02:01:00.000Z',
+          ),
+          sourceFingerprint: 'legacy-bridge/source',
+        );
+        expect(cubit.state.externalDesktopTurnActive, isFalse);
+        expect(cubit.sendMessage('Legacy idle write'), isTrue);
+        expect(
+          jsonDecode(mockBridge.sentMessages.single.toJson())['sessionId'],
+          'legacy-runtime',
+        );
+      },
+    );
+
+    test(
+      'durable runtime operations fail closed until writable and target only the live handle',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-operations-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-operations',
+        );
+        addTearDown(cubit.close);
+        final queued = QueuedInputItem(
+          itemId: 'queued-1',
+          text: 'Queued text',
+          createdAt: DateTime.utc(2026, 8, 1).toIso8601String(),
+        );
+        final failedEntry = UserChatEntry(
+          'Retry text',
+          sessionId: 'durable-operations-thread',
+          status: MessageStatus.failed,
+        );
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-operations-thread',
+            activity: 'working',
+            attention: 'approval',
+            result: 'none',
+            runtimeAttachment: 'ownedElsewhere',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T03:00:00.000Z',
+            executionHost: 'desktopAppServer',
+            activeTurnId: 'foreign-turn',
+            controlState: 'readOnly',
+            authorityGeneration: 'read-only-generation',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        expect(cubit.sendMessage('Blocked input'), isFalse);
+        expect(await cubit.updateQueuedInput(queued, 'Blocked queue'), isFalse);
+        expect(await cubit.cancelQueuedInput(queued), isFalse);
+        cubit.approve('approval-blocked');
+        cubit.reject('rejection-blocked');
+        cubit.answer('answer-blocked', 'No');
+        cubit.interrupt();
+        cubit.retryMessage(failedEntry);
+        cubit.setPermissionMode(PermissionMode.auto);
+        cubit.setCodexModel('gpt-5.6-sol', reasoningEffort: ReasoningEffort.ultra);
+        cubit.setCodexSpeed(CodexSpeed.fast);
+        cubit.setSandboxMode(SandboxMode.off);
+        expect(mockBridge.sentMessages, isEmpty);
+        expect(mockBridge.interruptedSessionIds, isEmpty);
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-operations-thread',
+            activity: 'working',
+            attention: 'approval',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T03:01:00.000Z',
+            executionHost: 'bridge',
+            activeTurnId: 'bridge-turn',
+            controlState: 'writable',
+            authorityGeneration: 'writable-generation',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        expect(cubit.canMutateAttachedRuntime, isTrue);
+        expect(await cubit.updateQueuedInput(queued, 'Updated queue'), isTrue);
+        cubit.steerQueuedInput(queued);
+        expect(await cubit.cancelQueuedInput(queued), isTrue);
+        cubit.approve('approval-1');
+        cubit.reject('rejection-1');
+        cubit.answer('answer-1', 'Yes');
+        cubit.interrupt();
+        cubit.stop();
+        cubit.setPermissionMode(PermissionMode.auto);
+        cubit.setCodexModel(
+          'gpt-5.6-sol',
+          reasoningEffort: ReasoningEffort.ultra,
+        );
+        cubit.setCodexSpeed(CodexSpeed.fast);
+        cubit.setSandboxMode(SandboxMode.off);
+
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'init',
+            sessionId: 'runtime-operations',
+            claudeSessionId: 'durable-operations-thread',
+            provider: 'codex',
+          ),
+          sessionId: 'runtime-operations',
+        );
+        await pumpEventQueue();
+        mockBridge.emitMessage(
+          const GoalStateMessage(
+            sessionId: 'runtime-operations',
+            goal: null,
+            goalOperationSequence: 1,
+          ),
+          sessionId: 'runtime-operations',
+        );
+        await pumpEventQueue();
+        expect(cubit.startGoal('Keep durable identity'), isTrue);
+
+        final payloads = mockBridge.sentMessages
+            .map(
+              (message) =>
+                  jsonDecode(message.toJson()) as Map<String, dynamic>,
+            )
+            .toList(growable: false);
+        expect(payloads, isNotEmpty);
+        expect(
+          payloads.where((payload) => payload.containsKey('sessionId')),
+          everyElement(containsPair('sessionId', 'runtime-operations')),
+        );
+        expect(
+          payloads.map((payload) => payload['type']),
+          containsAll(<String>[
+            'update_queued_input',
+            'steer_queued_input',
+            'cancel_queued_input',
+            'approve',
+            'reject',
+            'answer',
+            'set_permission_mode',
+            'set_codex_model',
+            'set_codex_speed',
+            'set_sandbox_mode',
+            'get_goal',
+            'set_goal',
+          ]),
+        );
+        expect(mockBridge.interruptedSessionIds, ['runtime-operations']);
+        expect(mockBridge.stoppedSessionIds, ['runtime-operations']);
+        expect(cubit.sessionId, 'durable-operations-thread');
       },
     );
 

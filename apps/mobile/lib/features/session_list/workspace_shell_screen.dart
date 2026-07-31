@@ -274,6 +274,16 @@ class _WorkspaceToolPaneBindings {
   });
 }
 
+String workspaceSessionStateKey({
+  required String provider,
+  required String durableSessionId,
+  required BridgeDataSourceIdentity dataSourceIdentity,
+}) => [
+  provider,
+  durableSessionId,
+  dataSourceIdentity.scopeKeyForProvider(provider),
+].join('\u0000');
+
 class WorkspaceSessionSelection {
   final String sessionId;
   final String? durableProviderSessionId;
@@ -304,6 +314,34 @@ class WorkspaceSessionSelection {
     this.pendingSessionCreated,
     this.dataSourceIdentity = BridgeDataSourceIdentity.unscoped,
   });
+
+  /// Stable pane identity for a durable Codex thread.
+  ///
+  /// [sessionId] may be replaced whenever Bridge attaches a new runtime; it
+  /// must not replace the workspace page, draft, or auxiliary pane state.
+  String get routeIdentitySessionId {
+    final durableId = durableProviderSessionId?.trim();
+    if (provider == Provider.codex &&
+        durableId != null &&
+        durableId.isNotEmpty) {
+      return durableId;
+    }
+    return sessionId;
+  }
+
+  /// Per-source workspace state identity.
+  ///
+  /// Notifications deliberately keep using [routeIdentitySessionId], while
+  /// panes and callbacks must not cross an authenticated provider source that
+  /// happens to expose the same durable thread id.
+  String get workspaceStateKey {
+    final providerValue = provider?.value ?? 'unknown';
+    return workspaceSessionStateKey(
+      provider: providerValue,
+      durableSessionId: routeIdentitySessionId,
+      dataSourceIdentity: dataSourceIdentity,
+    );
+  }
 }
 
 class WorkspaceShellScreen extends StatefulWidget {
@@ -364,19 +402,35 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
 
   void registerSessionToolPaneBindings({
     required String sessionId,
+    String? workspaceStateKey,
     ValueNotifier<DiffSelection?>? diffSelectionNotifier,
     ValueChanged<ExploreScreenResult>? onExploreResultChanged,
     ValueChanged<String>? onFilePeekOpened,
   }) {
-    _toolPaneBindings[sessionId] = _WorkspaceToolPaneBindings(
+    final key = workspaceStateKey ?? _workspaceStateKeyForSessionId(sessionId);
+    _toolPaneBindings[key] = _WorkspaceToolPaneBindings(
       diffSelectionNotifier: diffSelectionNotifier,
       onExploreResultChanged: onExploreResultChanged,
       onFilePeekOpened: onFilePeekOpened,
     );
   }
 
-  void unregisterSessionToolPaneBindings(String sessionId) {
-    _toolPaneBindings.remove(sessionId);
+  void unregisterSessionToolPaneBindings(
+    String sessionId, {
+    String? workspaceStateKey,
+  }) {
+    final key = workspaceStateKey ?? _workspaceStateKeyForSessionId(sessionId);
+    _toolPaneBindings.remove(key);
+  }
+
+  String _workspaceStateKeyForSessionId(String? sessionId) {
+    final selection = _selectedSession;
+    if (selection != null &&
+        (selection.sessionId == sessionId ||
+            selection.routeIdentitySessionId == sessionId)) {
+      return selection.workspaceStateKey;
+    }
+    return ['unknown', sessionId ?? '', 'unknown-bridge'].join('\u0000');
   }
 
   void openGitPane({
@@ -388,8 +442,9 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
   }) {
     if (sessionId != null &&
         (diffSelectionNotifier != null || onFilePeekOpened != null)) {
-      final current = _toolPaneBindings[sessionId];
-      _toolPaneBindings[sessionId] = _WorkspaceToolPaneBindings(
+      final key = _workspaceStateKeyForSessionId(sessionId);
+      final current = _toolPaneBindings[key];
+      _toolPaneBindings[key] = _WorkspaceToolPaneBindings(
         diffSelectionNotifier:
             diffSelectionNotifier ?? current?.diffSelectionNotifier,
         onExploreResultChanged: current?.onExploreResultChanged,
@@ -414,8 +469,9 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
     ValueChanged<ExploreScreenResult>? onResultChanged,
   }) {
     if (onResultChanged != null) {
-      final current = _toolPaneBindings[sessionId];
-      _toolPaneBindings[sessionId] = _WorkspaceToolPaneBindings(
+      final key = _workspaceStateKeyForSessionId(sessionId);
+      final current = _toolPaneBindings[key];
+      _toolPaneBindings[key] = _WorkspaceToolPaneBindings(
         diffSelectionNotifier: current?.diffSelectionNotifier,
         onExploreResultChanged: onResultChanged,
         onFilePeekOpened: current?.onFilePeekOpened,
@@ -570,30 +626,38 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
     };
   }
 
-  void _rememberToolPaneForSession(String? sessionId) {
+  void _rememberToolPaneForSession(String? workspaceStateKey) {
     final pane = _toolPane;
-    if (pane == null || sessionId == null) return;
-    final snapshot = _snapshotForPane(pane, fallbackSessionId: sessionId);
+    if (pane == null || workspaceStateKey == null) return;
+    final snapshot = _snapshotForPane(
+      pane,
+      fallbackSessionId: _selectedSession?.routeIdentitySessionId,
+    );
     if (snapshot == null) return;
-    _toolPaneSnapshots[sessionId] = snapshot;
+    _toolPaneSnapshots[workspaceStateKey] = snapshot;
   }
 
   void _rememberVisibleToolPane() {
     _rememberToolPaneForSession(
-      _selectedSession?.sessionId ?? _toolPane?.sessionId,
+      _selectedSession?.workspaceStateKey ??
+          (_toolPane == null
+              ? null
+              : _workspaceStateKeyForSessionId(_toolPane!.sessionId)),
     );
   }
 
-  void _forgetToolPaneForSession(String? sessionId) {
-    if (sessionId == null) return;
-    _toolPaneSnapshots.remove(sessionId);
+  void _forgetToolPaneForSession(String? workspaceStateKey) {
+    if (workspaceStateKey == null) return;
+    _toolPaneSnapshots.remove(workspaceStateKey);
   }
 
-  _WorkspaceToolPaneData? _restoreToolPaneForSession(String sessionId) {
-    final restored = _toolPaneSnapshots[sessionId]?.restore();
+  _WorkspaceToolPaneData? _restoreToolPaneForSession(
+    String workspaceStateKey,
+  ) {
+    final restored = _toolPaneSnapshots[workspaceStateKey]?.restore();
     if (restored case _LocalFeatureToolPaneData(:final featureId)) {
       if (LocalSessionFeatureHost.paneDescriptor(featureId) == null) {
-        _toolPaneSnapshots.remove(sessionId);
+        _toolPaneSnapshots.remove(workspaceStateKey);
         return null;
       }
     }
@@ -638,7 +702,10 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
     if (_toolPane == null) return;
     setState(() {
       _forgetToolPaneForSession(
-        _selectedSession?.sessionId ?? _toolPane?.sessionId,
+        _selectedSession?.workspaceStateKey ??
+            (_toolPane == null
+                ? null
+                : _workspaceStateKeyForSessionId(_toolPane!.sessionId)),
       );
       _toolPane = null;
       if (_shouldRestoreLeftPaneOnToolClose) {
@@ -679,7 +746,10 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
     setState(() {
       if (_layoutMode == _WorkspaceLayoutMode.doublePane && _toolPane != null) {
         _forgetToolPaneForSession(
-          _selectedSession?.sessionId ?? _toolPane?.sessionId,
+          _selectedSession?.workspaceStateKey ??
+              (_toolPane == null
+                  ? null
+                  : _workspaceStateKeyForSessionId(_toolPane!.sessionId)),
         );
         _toolPane = null;
         _showLeftPane = true;
@@ -702,15 +772,18 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
       initialPath: result.currentPath,
       recentPeekedFiles: result.recentPeekedFiles,
     );
-    _rememberToolPaneForSession(pane.sessionId);
-    _toolPaneBindings[pane.sessionId]?.onExploreResultChanged?.call(result);
+    final key = _selectedSession?.workspaceStateKey ??
+        _workspaceStateKeyForSessionId(pane.sessionId);
+    _rememberToolPaneForSession(key);
+    _toolPaneBindings[key]?.onExploreResultChanged?.call(result);
   }
 
   void _handleDiffSelection(DiffSelection selection) {
     final pane = _toolPane;
     if (pane is! _GitToolPaneData) return;
-    final sessionId = _selectedSession?.sessionId ?? pane.sessionId;
-    _toolPaneBindings[sessionId]?.diffSelectionNotifier?.value =
+    final key = _selectedSession?.workspaceStateKey ??
+        _workspaceStateKeyForSessionId(pane.sessionId);
+    _toolPaneBindings[key]?.diffSelectionNotifier?.value =
         selection.isEmpty ? null : selection;
     closeToolPane();
   }
@@ -718,9 +791,11 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
   void _handleFilePeekOpened(String filePath) {
     final pane = _toolPane;
     if (pane is! _GitToolPaneData) return;
-    final sessionId = _selectedSession?.sessionId ?? pane.sessionId;
-    if (sessionId == null) return;
-    _toolPaneBindings[sessionId]?.onFilePeekOpened?.call(filePath);
+    final sessionId = pane.sessionId;
+    if (_selectedSession == null && sessionId == null) return;
+    final key = _selectedSession?.workspaceStateKey ??
+        _workspaceStateKeyForSessionId(sessionId!);
+    _toolPaneBindings[key]?.onFilePeekOpened?.call(filePath);
   }
 
   void selectSession(WorkspaceSessionSelection selection) {
@@ -730,7 +805,9 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
           _toolPane != null &&
           _shouldRestoreLeftPaneOnToolClose;
       _rememberVisibleToolPane();
-      final restoredToolPane = _restoreToolPaneForSession(selection.sessionId);
+      final restoredToolPane = _restoreToolPaneForSession(
+        selection.workspaceStateKey,
+      );
       _selectedSession = selection;
       _toolPane = restoredToolPane;
       _centerRoot = _WorkspaceCenterRoot.session;
@@ -746,7 +823,7 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
       }
     });
     NotificationService.instance.setActiveSession(
-      sessionId: selection.sessionId,
+      sessionId: selection.routeIdentitySessionId,
       provider: selection.provider == Provider.codex ? 'codex' : 'claude',
       dataSourceIdentity: selection.dataSourceIdentity,
     );
@@ -771,6 +848,10 @@ class WorkspaceShellScreenState extends State<WorkspaceShellScreen> {
 
   void _clearSelectedSessionIfStopped(String sessionId) {
     if (_selectedSession?.sessionId != sessionId) return;
+    if (_selectedSession?.provider == Provider.codex &&
+        _selectedSession?.durableProviderSessionId?.trim().isNotEmpty == true) {
+      return;
+    }
     clearSelectedSession();
   }
 
@@ -1188,7 +1269,7 @@ class _WorkspaceContentHost extends StatelessWidget {
     return switch (selection.provider) {
       Provider.codex => CodexSessionScreen(
         key: ValueKey(
-          'workspace_codex_${selection.sessionId}_'
+          'workspace_codex_${selection.routeIdentitySessionId}_'
           '${selection.dataSourceIdentity.notificationDiscriminatorForProvider('codex')}',
         ),
         sessionId: selection.sessionId,

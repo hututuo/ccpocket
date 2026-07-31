@@ -51,6 +51,7 @@ class CodexSessionCubit extends ChatSessionCubit {
     super.detachedHistoryPageLoader,
     super.detachedHistoryToolDetailLoader,
     super.initialHistoryHasEarlier,
+    super.initialLiveRuntimeSessionId,
   }) : super(provider: Provider.codex);
 
   @override

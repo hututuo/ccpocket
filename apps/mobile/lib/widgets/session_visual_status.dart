@@ -71,24 +71,41 @@ SessionCardPresentation sessionCardPresentationFor({
   final visualStatus = syncStatus == null
       ? runtimeVisual ?? _idleVisualStatus()
       : _syncVisualStatus(syncStatus, runtimeVisual: runtimeVisual);
-  final executionHost = syncStatus == null
+  final executionHost = visualStatus.primary == SessionPrimaryStatus.idle
+      ? SessionExecutionHost.unknown
+      : syncStatus == null
       ? runtimeSession == null
             ? SessionExecutionHost.unknown
             : runtimeSession.externalDesktopTurnActive
             ? SessionExecutionHost.desktopAppServer
             : SessionExecutionHost.bridge
-      : switch (syncStatus.source) {
-          'appServer' ||
-          'legacyRollout' => SessionExecutionHost.desktopAppServer,
-          'bridgeRuntime' => SessionExecutionHost.bridge,
-          _ => SessionExecutionHost.unknown,
-        };
+      : _syncExecutionHost(syncStatus);
 
   return SessionCardPresentation(
     visualStatus: visualStatus,
     executionHost: executionHost,
     isUnread: visualStatus.primary == SessionPrimaryStatus.idle && isUnseen,
   );
+}
+
+SessionExecutionHost _syncExecutionHost(ConversationSyncV2Status status) {
+  final explicit = status.executionHost;
+  if (explicit != null) {
+    return switch (explicit) {
+      'bridge' => SessionExecutionHost.bridge,
+      'desktopAppServer' => SessionExecutionHost.desktopAppServer,
+      _ => SessionExecutionHost.unknown,
+    };
+  }
+
+  // Compatibility fallback for old Bridges. A modern Bridge must send an
+  // explicit `unknown` rather than relying on evidence provenance to guess the
+  // turn origin.
+  return switch (status.source) {
+    'appServer' || 'legacyRollout' => SessionExecutionHost.desktopAppServer,
+    'bridgeRuntime' => SessionExecutionHost.bridge,
+    _ => SessionExecutionHost.unknown,
+  };
 }
 
 SessionVisualStatus _syncVisualStatus(

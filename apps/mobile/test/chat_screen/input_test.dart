@@ -1,8 +1,11 @@
 import 'package:ccpocket/features/chat_session/widgets/chat_input_with_overlays.dart';
 import 'package:ccpocket/features/chat_session/widgets/durable_session_preview.dart';
+import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
 import 'package:ccpocket/features/session_list/pending_session_binding.dart';
+import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:patrol_finders/patrol_finders.dart';
@@ -132,6 +135,9 @@ void main() {
     patrolWidgetTest(
       'H2c: durable Codex preview sends the queued input to the bound runtime',
       ($) async {
+        bridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
         var attachmentRequests = 0;
         final binding = PendingSessionBinding(
           kind: PendingSessionRequestKind.resume,
@@ -157,6 +163,9 @@ void main() {
         await pumpN($.tester);
 
         expect(find.byType(DurableSessionBindingBanner), findsNothing);
+        final durableElementBefore = $.tester.element(
+          durableCodexPreview('durable-codex-thread'),
+        );
         await $.tester.enterText(
           find.byKey(const ValueKey('message_input')),
           'Continue the Codex task',
@@ -177,11 +186,68 @@ void main() {
         );
         await pumpN($.tester);
 
-        final input = findSentMessage(bridge, 'input');
+        expect(
+          findSentMessage(bridge, 'input'),
+          isNull,
+          reason: 'session_created alone does not prove writer authority',
+        );
+        expect(find.byType(DurableSessionBindingBanner), findsOneWidget);
+        final attachedCubit = BlocProvider.of<ChatSessionCubit>(
+          $.tester.element(find.byKey(const ValueKey('message_input'))),
+        );
+        attachedCubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-codex-thread',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T05:00:00.000Z',
+            executionHost: 'unknown',
+            controlState: 'writable',
+            authorityGeneration: 'authority-after-create',
+          ),
+          sourceFingerprint: 'bridge-test/source-test',
+        );
+        await pumpN($.tester);
+
+        final inputs = findAllSentMessages(bridge, 'input');
+        expect(inputs, hasLength(1));
+        final input = inputs.single;
         expect(input, isNotNull);
-        expect(input!['sessionId'], 'live-codex-runtime');
+        expect(input['sessionId'], 'live-codex-runtime');
         expect(input['text'], 'Continue the Codex task');
         expect(find.byType(DurableSessionBindingBanner), findsNothing);
+        expect(durableCodexPreview('durable-codex-thread'), findsOneWidget);
+        expect(
+          $.tester.element(durableCodexPreview('durable-codex-thread')),
+          same(durableElementBefore),
+        );
+        expect(
+          attachedCubit.detachedLiveRuntimeSessionId,
+          'live-codex-runtime',
+        );
+        await pumpN($.tester);
+        expect(findAllSentMessages(bridge, 'input'), hasLength(1));
+        expect(
+          attachedCubit.runtimeSessionIdForMutation(allowSteerable: false),
+          'live-codex-runtime',
+        );
+
+        bridge.sentMessages.clear();
+        await $.tester.enterText(
+          find.byKey(const ValueKey('message_input')),
+          '/compact',
+        );
+        await pumpN($.tester);
+        await $(#send_button).tap();
+        await pumpN($.tester);
+        final compact = findSentMessage(bridge, 'codex_compact_request');
+        expect(compact, isNotNull);
+        expect(compact!['sessionId'], 'live-codex-runtime');
         await $.tester.pump(const Duration(milliseconds: 700));
       },
     );
@@ -218,6 +284,129 @@ void main() {
 
         expect(durableCodexPreview('durable-codex-a'), findsOneWidget);
         expect(bridge.lastRequestedSessionId, isNot('runtime-for-thread-b'));
+      },
+    );
+
+    patrolWidgetTest(
+      'H2c4: a stopped durable runtime reattaches once before sending',
+      ($) async {
+        bridge.emitRecentSessions(const [
+          RecentSession(
+            sessionId: 'durable-stopped-thread',
+            provider: 'codex',
+            firstPrompt: 'Durable stopped thread',
+            created: '2026-08-01T00:00:00.000Z',
+            modified: '2026-08-01T00:01:00.000Z',
+            gitBranch: 'main',
+            projectPath: '/tmp/stopped-project',
+            isSidechain: false,
+          ),
+        ]);
+        await $.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'runtime-before-stop',
+            projectPath: '/tmp/stopped-project',
+            durableProviderSessionId: 'durable-stopped-thread',
+          ),
+        );
+        await pumpN($.tester);
+
+        bridge.emitStoppedSession('runtime-before-stop');
+        await pumpN($.tester);
+        final stoppedCubit = BlocProvider.of<ChatSessionCubit>(
+          $.tester.element(find.byKey(const ValueKey('message_input'))),
+        );
+        expect(stoppedCubit.detachedLiveRuntimeSessionId, isNull);
+        expect(stoppedCubit.state.status, ProcessStatus.unknown);
+        await $.tester.enterText(
+          find.byKey(const ValueKey('message_input')),
+          'Continue after runtime replacement',
+        );
+        await pumpN($.tester);
+        await $(#send_button).tap();
+        await pumpN($.tester);
+        expect(find.byType(DurableSessionBindingBanner), findsOneWidget);
+
+        final resumeMessages = findAllSentMessages(bridge, 'resume_session');
+        expect(
+          resumeMessages,
+          hasLength(1),
+          reason:
+              'sent types: ${bridge.sentMessages.map((message) => message.type)}',
+        );
+        expect(resumeMessages.single['sessionId'], 'durable-stopped-thread');
+        expect(findSentMessage(bridge, 'input'), isNull);
+        final resumeRequestId =
+            resumeMessages.single['resumeRequestId'] as String;
+
+        bridge.emitMessage(
+          SystemMessage(
+            subtype: 'session_created',
+            sessionId: 'runtime-after-stop',
+            claudeSessionId: 'durable-stopped-thread',
+            sourceSessionId: 'durable-stopped-thread',
+            resumeRequestId: resumeRequestId,
+            provider: 'codex',
+            projectPath: '/tmp/stopped-project',
+          ),
+        );
+        await pumpN($.tester);
+
+        final input = findSentMessage(bridge, 'input');
+        expect(input, isNotNull);
+        expect(input!['sessionId'], 'runtime-after-stop');
+        expect(input['sessionId'], isNot('runtime-before-stop'));
+        expect(input['text'], 'Continue after runtime replacement');
+        expect(findAllSentMessages(bridge, 'resume_session'), hasLength(1));
+      },
+    );
+
+    patrolWidgetTest(
+      'H2c5: a source A page cannot reattach the same thread id on source B',
+      ($) async {
+        bridge
+          ..authenticatedBridgeInstanceId = 'shared-bridge'
+          ..authenticatedCodexSourceId = 'codex-source-b';
+        bridge.emitRecentSessions(const [
+          RecentSession(
+            sessionId: 'same-durable-thread',
+            provider: 'codex',
+            firstPrompt: 'Source B thread with the same id',
+            created: '2026-08-01T00:00:00.000Z',
+            modified: '2026-08-01T00:01:00.000Z',
+            gitBranch: 'main',
+            projectPath: '/tmp/source-b-project',
+            isSidechain: false,
+          ),
+        ]);
+        await $.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'runtime-source-a-before-stop',
+            projectPath: '/tmp/source-a-project',
+            durableProviderSessionId: 'same-durable-thread',
+            dataSourceIdentity: const BridgeDataSourceIdentity(
+              bridgeInstanceId: 'shared-bridge',
+              codexSourceId: 'codex-source-a',
+            ),
+          ),
+        );
+        await pumpN($.tester);
+
+        bridge.emitStoppedSession('runtime-source-a-before-stop');
+        await pumpN($.tester);
+        await $.tester.enterText(
+          find.byKey(const ValueKey('message_input')),
+          'Must not attach source B',
+        );
+        await pumpN($.tester);
+        await $(#send_button).tap();
+        await pumpN($.tester);
+
+        expect(findAllSentMessages(bridge, 'resume_session'), isEmpty);
+        expect(findSentMessage(bridge, 'input'), isNull);
+        expect(find.byType(DurableSessionBindingBanner), findsNothing);
       },
     );
 

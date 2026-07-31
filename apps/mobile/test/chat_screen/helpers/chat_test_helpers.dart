@@ -37,6 +37,7 @@ class MockBridgeService extends BridgeService {
       StreamController<List<SessionInfo>>.broadcast();
   final _recentSessionsController =
       StreamController<List<RecentSession>>.broadcast();
+  final _stoppedSessionsController = StreamController<String>.broadcast();
   final sentMessages = <ClientMessage>[];
   List<SessionInfo> currentSessions = const [];
   List<RecentSession> currentRecentSessions = const [];
@@ -46,6 +47,7 @@ class MockBridgeService extends BridgeService {
   String? authenticatedCodexSourceId;
   String? mockLogicalConnectionIdentity = 'machine:test';
   String? mockLastUrl = 'wss://bridge.test/socket';
+  Set<String> advertisedBridgeCapabilities = const {};
 
   void emitMessage(ServerMessage msg, {String? sessionId}) {
     _taggedController.add((msg, sessionId));
@@ -74,6 +76,10 @@ class MockBridgeService extends BridgeService {
     _recentSessionsController.add(sessions);
   }
 
+  void emitStoppedSession(String sessionId) {
+    _stoppedSessionsController.add(sessionId);
+  }
+
   @override
   Stream<ServerMessage> get messages => _messageController.stream;
 
@@ -90,6 +96,9 @@ class MockBridgeService extends BridgeService {
   @override
   Stream<List<RecentSession>> get recentSessionsStream =>
       _recentSessionsController.stream;
+
+  @override
+  Stream<String> get stoppedSessions => _stoppedSessionsController.stream;
 
   @override
   List<SessionInfo> get sessions => currentSessions;
@@ -133,6 +142,9 @@ class MockBridgeService extends BridgeService {
   bool get isConnected => true;
 
   @override
+  Set<String> get bridgeCapabilities => advertisedBridgeCapabilities;
+
+  @override
   Stream<ServerMessage> messagesForSession(String sessionId) {
     return _taggedController.stream
         .where((pair) => pair.$2 == null || pair.$2 == sessionId)
@@ -173,6 +185,7 @@ class MockBridgeService extends BridgeService {
     _fileListController.close();
     _sessionListController.close();
     _recentSessionsController.close();
+    _stoppedSessionsController.close();
     super.dispose();
   }
 }

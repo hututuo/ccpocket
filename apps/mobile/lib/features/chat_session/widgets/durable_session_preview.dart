@@ -8,6 +8,8 @@ import '../../../models/messages.dart';
 import '../../session_list/state/session_list_cubit.dart';
 import '../state/chat_session_cubit.dart';
 
+typedef LiveRuntimeReadyCallback = bool Function(ChatSessionCubit cubit);
+
 /// Applies durable-cache revisions to an existing detached chat cubit.
 ///
 /// Keeping the provider and message widgets mounted preserves scroll position
@@ -18,6 +20,9 @@ class DurableSessionPreviewUpdater extends StatefulWidget {
   final bool hasEarlier;
   final String? statusProvider;
   final String? statusProviderSessionId;
+  final String? expectedSourceFingerprint;
+  final String? liveRuntimeSessionId;
+  final LiveRuntimeReadyCallback? onLiveRuntimeReady;
   final Widget child;
 
   const DurableSessionPreviewUpdater({
@@ -27,6 +32,9 @@ class DurableSessionPreviewUpdater extends StatefulWidget {
     required this.hasEarlier,
     this.statusProvider,
     this.statusProviderSessionId,
+    this.expectedSourceFingerprint,
+    this.liveRuntimeSessionId,
+    this.onLiveRuntimeReady,
     required this.child,
   });
 
@@ -41,11 +49,71 @@ class _DurableSessionPreviewUpdaterState
   SessionListCubit? _boundSessionList;
   String? _boundProvider;
   String? _boundProviderSessionId;
+  ChatSessionCubit? _boundRuntimeCubit;
+  String? _consumedLiveRuntimeSessionId;
+  bool _liveRuntimeCallbackScheduled = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _bindLiveRuntime();
     _bindStatusProjection();
+  }
+
+  void _bindLiveRuntime() {
+    final runtimeSessionId = widget.liveRuntimeSessionId?.trim();
+    final normalized = runtimeSessionId == null || runtimeSessionId.isEmpty
+        ? null
+        : runtimeSessionId;
+    final cubit = context.read<ChatSessionCubit>();
+    if (!identical(_boundRuntimeCubit, cubit)) {
+      _boundRuntimeCubit?.detachedLiveRuntimeRevision.removeListener(
+        _handleLiveRuntimeRevision,
+      );
+      _boundRuntimeCubit = cubit;
+      cubit.detachedLiveRuntimeRevision.addListener(
+        _handleLiveRuntimeRevision,
+      );
+      _consumedLiveRuntimeSessionId = null;
+    }
+    cubit.updateDetachedLiveRuntime(normalized);
+    if (normalized == null) {
+      _consumedLiveRuntimeSessionId = null;
+      return;
+    }
+    _scheduleLiveRuntimeCallback();
+  }
+
+  void _handleLiveRuntimeRevision() {
+    if (!mounted) return;
+    _scheduleLiveRuntimeCallback();
+  }
+
+  void _scheduleLiveRuntimeCallback() {
+    final callback = widget.onLiveRuntimeReady;
+    final cubit = _boundRuntimeCubit;
+    final normalized = widget.liveRuntimeSessionId?.trim();
+    if (callback == null ||
+        cubit == null ||
+        normalized == null ||
+        normalized.isEmpty ||
+        _consumedLiveRuntimeSessionId == normalized ||
+        _liveRuntimeCallbackScheduled) {
+      return;
+    }
+    _liveRuntimeCallbackScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _liveRuntimeCallbackScheduled = false;
+      if (!mounted ||
+          !identical(_boundRuntimeCubit, cubit) ||
+          widget.liveRuntimeSessionId?.trim() != normalized ||
+          _consumedLiveRuntimeSessionId == normalized) {
+        return;
+      }
+      if (widget.onLiveRuntimeReady?.call(cubit) == true) {
+        _consumedLiveRuntimeSessionId = normalized;
+      }
+    });
   }
 
   void _bindStatusProjection() {
@@ -97,6 +165,20 @@ class _DurableSessionPreviewUpdaterState
         sessionList.conversationStatuses['$provider\u0000$providerSessionId'];
     final cubit = context.read<ChatSessionCubit>();
     final sourceFingerprint = sessionList.conversationSourceFingerprint;
+    final expectedSourceFingerprint = widget.expectedSourceFingerprint?.trim();
+    if (expectedSourceFingerprint != null &&
+        expectedSourceFingerprint.isNotEmpty &&
+        sourceFingerprint != expectedSourceFingerprint) {
+      cubit.updateDetachedProviderStatus(
+        null,
+        sourceFingerprint: expectedSourceFingerprint,
+      );
+      cubit.updateDetachedProviderSettings(
+        null,
+        sourceFingerprint: expectedSourceFingerprint,
+      );
+      return;
+    }
     cubit.updateDetachedProviderStatus(
       status,
       sourceFingerprint: sourceFingerprint,
@@ -110,8 +192,19 @@ class _DurableSessionPreviewUpdaterState
   @override
   void didUpdateWidget(covariant DurableSessionPreviewUpdater oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.statusProvider != widget.statusProvider ||
-        oldWidget.statusProviderSessionId != widget.statusProviderSessionId) {
+    final liveRuntimeChanged =
+        oldWidget.liveRuntimeSessionId != widget.liveRuntimeSessionId;
+    if (liveRuntimeChanged) {
+      _bindLiveRuntime();
+    }
+    if (liveRuntimeChanged ||
+        oldWidget.statusProvider != widget.statusProvider ||
+        oldWidget.statusProviderSessionId != widget.statusProviderSessionId ||
+        oldWidget.expectedSourceFingerprint !=
+            widget.expectedSourceFingerprint) {
+      // A replacement runtime clears the previous handle's authority. Reapply
+      // only the current source-scoped catalog status after the new handle is
+      // bound; never carry writable/steerable across runtime generations.
       _bindStatusProjection();
     }
     if (oldWidget.revision == widget.revision &&
@@ -133,6 +226,9 @@ class _DurableSessionPreviewUpdaterState
   @override
   void dispose() {
     _statusSub?.cancel();
+    _boundRuntimeCubit?.detachedLiveRuntimeRevision.removeListener(
+      _handleLiveRuntimeRevision,
+    );
     super.dispose();
   }
 

@@ -5,6 +5,7 @@ import 'package:ccpocket/features/session_list/state/session_list_cubit.dart';
 import 'package:ccpocket/features/session_list/workspace_shell_screen.dart';
 import 'package:ccpocket/features/settings/state/settings_cubit.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
+import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/models/machine.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/providers/bridge_cubits.dart';
@@ -571,6 +572,57 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     NotificationService.instance.clearActiveSession();
   });
+
+  test(
+    'durable Codex workspace identity does not follow runtime replacement',
+    () {
+      const first = WorkspaceSessionSelection(
+        sessionId: 'runtime-a',
+        durableProviderSessionId: 'durable-thread',
+        provider: Provider.codex,
+      );
+      const replacement = WorkspaceSessionSelection(
+        sessionId: 'runtime-b',
+        durableProviderSessionId: 'durable-thread',
+        provider: Provider.codex,
+      );
+      const runtimeOnly = WorkspaceSessionSelection(
+        sessionId: 'runtime-only',
+        provider: Provider.codex,
+      );
+
+      expect(first.routeIdentitySessionId, 'durable-thread');
+      expect(replacement.routeIdentitySessionId, first.routeIdentitySessionId);
+      expect(runtimeOnly.routeIdentitySessionId, 'runtime-only');
+    },
+  );
+
+  test(
+    'workspace pane identity includes provider durable thread and source',
+    () {
+      const sourceA = WorkspaceSessionSelection(
+        sessionId: 'runtime-a',
+        durableProviderSessionId: 'shared-thread',
+        provider: Provider.codex,
+        dataSourceIdentity: BridgeDataSourceIdentity(
+          bridgeInstanceId: 'bridge-shared',
+          codexSourceId: 'source-a',
+        ),
+      );
+      const sourceB = WorkspaceSessionSelection(
+        sessionId: 'runtime-b',
+        durableProviderSessionId: 'shared-thread',
+        provider: Provider.codex,
+        dataSourceIdentity: BridgeDataSourceIdentity(
+          bridgeInstanceId: 'bridge-shared',
+          codexSourceId: 'source-b',
+        ),
+      );
+
+      expect(sourceA.routeIdentitySessionId, sourceB.routeIdentitySessionId);
+      expect(sourceA.workspaceStateKey, isNot(sourceB.workspaceStateKey));
+    },
+  );
 
   testWidgets(
     'merged legacy unread clears by runtime id and stays clear after return',
@@ -1181,6 +1233,77 @@ void main() {
       );
       await _pumpUi(tester);
 
+      expect(
+        find.byKey(const ValueKey('close_explore_pane_button')),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'right pane does not cross sources with the same durable thread id',
+    (tester) async {
+      final bridge = _MockBridgeService();
+      final settingsCubit = await _createSettingsCubit(bridge);
+      final draftService = DraftService(await SharedPreferences.getInstance());
+      final revenueCatService = _FakeRevenueCatService();
+      final supportBannerService = await _createSupportBannerService();
+      final shellKey = GlobalKey<WorkspaceShellScreenState>();
+      const sourceA = WorkspaceSessionSelection(
+        sessionId: 'same-thread',
+        durableProviderSessionId: 'same-thread',
+        projectPath: '/Users/demo/source-a',
+        provider: Provider.codex,
+        isPending: true,
+        dataSourceIdentity: BridgeDataSourceIdentity(
+          bridgeInstanceId: 'bridge-shared',
+          codexSourceId: 'source-a',
+        ),
+      );
+      const sourceB = WorkspaceSessionSelection(
+        sessionId: 'same-thread',
+        durableProviderSessionId: 'same-thread',
+        projectPath: '/Users/demo/source-b',
+        provider: Provider.codex,
+        isPending: true,
+        dataSourceIdentity: BridgeDataSourceIdentity(
+          bridgeInstanceId: 'bridge-shared',
+          codexSourceId: 'source-b',
+        ),
+      );
+
+      await tester.pumpWidget(
+        _buildWorkspaceApp(
+          bridge: bridge,
+          settingsCubit: settingsCubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          shellKey: shellKey,
+        ),
+      );
+      await _pumpUi(tester);
+
+      shellKey.currentState!.selectSession(sourceA);
+      shellKey.currentState!.openExplorePane(
+        sessionId: sourceA.routeIdentitySessionId,
+        projectPath: sourceA.projectPath!,
+      );
+      await _pumpUi(tester);
+      expect(
+        find.byKey(const ValueKey('close_explore_pane_button')),
+        findsOneWidget,
+      );
+
+      shellKey.currentState!.selectSession(sourceB);
+      await _pumpUi(tester);
+      expect(
+        find.byKey(const ValueKey('close_explore_pane_button')),
+        findsNothing,
+      );
+
+      shellKey.currentState!.selectSession(sourceA);
+      await _pumpUi(tester);
       expect(
         find.byKey(const ValueKey('close_explore_pane_button')),
         findsOneWidget,
