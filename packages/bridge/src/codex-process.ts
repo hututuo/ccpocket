@@ -16,7 +16,16 @@ import {
   buildCodexSpawnSpec,
   type CodexTransport,
 } from "./codex-transport.js";
+import {
+  assertSharedRuntimePilotRpcAllowed,
+  claimSharedRuntimePilotAttachment,
+  releaseSharedRuntimePilotAttachment,
+  snapshotSharedRuntimePilotGates,
+  type SharedRuntimeAttachMode,
+  type SharedRuntimePilotGates,
+} from "./codex-shared-runtime-pilot.js";
 import { codexCliJoinTarget } from "./codex-app-server-config.js";
+import { recordSharedRuntimeAttachmentLifecycle } from "./codex-shared-runtime-control.js";
 import { resolvePlatformPath } from "./path-utils.js";
 import { parseSessionInsightsNotification } from "./local-features/slots/session-insights.js";
 import { CodexAgentTurnTracker } from "./local-features/codex-agent-turn-tracker.js";
@@ -41,6 +50,16 @@ const CODEX_CLI_NOT_FOUND_MESSAGE =
 
 export interface CodexStartOptions {
   threadId?: string;
+  /**
+   * Attach to an existing thread on a shared app-server without replaying
+   * Bridge's cached launch settings into that thread.
+   *
+   * `observer` is strictly read-only at the runtime boundary: it listens for
+   * thread events but never enters the input loop or answers server requests.
+   * `adoption` may accept later Bridge input, but the initial resume is still
+   * settings-neutral and server requests remain scoped to this attachment.
+   */
+  sharedRuntimeAttach?: SharedRuntimeAttachMode;
   /** Start this process by forking a persisted thread into another persisted thread. */
   forkFromThreadId?: string;
   /** Start this process by forking a persisted thread into memory only. */
@@ -179,9 +198,7 @@ export interface CodexProcessEvents {
   input_delivery: [CodexInputDeliveryEvent];
 }
 
-export type CodexInputDeliveryStage =
-  | "provider_accepted"
-  | "provider_rejected";
+export type CodexInputDeliveryStage = "provider_accepted" | "provider_rejected";
 
 /**
  * Authoritative acknowledgement from the Codex app-server RPC boundary.
@@ -202,6 +219,12 @@ export interface CodexInputDeliveryEvent {
 interface CodexInputRpcReceipt {
   result: unknown;
   clientUserMessageIdAccepted: boolean;
+}
+
+interface CodexAttachmentWaiter {
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timer?: NodeJS.Timeout;
 }
 
 interface PendingInput {
@@ -585,6 +608,16 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private transport: CodexTransport | null = null;
   private _status: ProcessStatus = "starting";
   private _threadId: string | null = null;
+  private _sharedRuntimeAttachMode: "observer" | "adoption" | null = null;
+  private _attachmentRuntimeGeneration: number | null = null;
+  private _sharedRuntimeAttachmentKey: string | null = null;
+  private _sharedRuntimePilotGates: SharedRuntimePilotGates | null = null;
+  private _authoritativeThreadStatus: CodexThreadStatus = { type: "unknown" };
+  private _attachmentReady = false;
+  private _attachmentFailure: Error | null = null;
+  private readonly attachmentWaiters = new Set<CodexAttachmentWaiter>();
+  private _activeTurnHydration: Promise<void> | null = null;
+  private _lastStopWasSharedRuntime = false;
   private _agentNickname: string | null = null;
   private _agentRole: string | null = null;
   private stopped = false;
@@ -770,6 +803,16 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     return this._threadId;
   }
 
+  /** Raw app-server thread status for the currently attached generation. */
+  get authoritativeThreadStatus(): CodexThreadStatus {
+    return this._authoritativeThreadStatus.type === "active"
+      ? {
+          type: "active",
+          activeFlags: [...this._authoritativeThreadStatus.activeFlags],
+        }
+      : { type: this._authoritativeThreadStatus.type };
+  }
+
   /** Sequence of the latest completed Goal RPC on this process. */
   get lastGoalRpcSequence(): number | undefined {
     return this._lastGoalRpcSequence;
@@ -792,6 +835,46 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
   get isRunning(): boolean {
     return this.transport?.isRunning ?? false;
+  }
+
+  /**
+   * True only after initialize plus thread/start|resume has completed for the
+   * current runtime generation. A connecting WebSocket is not an attachment.
+   */
+  get isAttachmentReady(): boolean {
+    return (
+      this._attachmentReady &&
+      !this.stopped &&
+      this._attachmentRuntimeGeneration === this._runtimeGeneration
+    );
+  }
+
+  /** Used by SessionManager to keep a shared-runtime disconnect non-idle. */
+  get lastStopWasSharedRuntime(): boolean {
+    return this._lastStopWasSharedRuntime;
+  }
+
+  waitUntilAttached(timeoutMs = 30_000): Promise<void> {
+    if (this.isAttachmentReady) return Promise.resolve();
+    if (this._attachmentFailure) {
+      return Promise.reject(this._attachmentFailure);
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const waiter: CodexAttachmentWaiter = { resolve, reject };
+      if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+        waiter.timer = setTimeout(() => {
+          this.attachmentWaiters.delete(waiter);
+          reject(
+            new Error(
+              `Codex thread attachment did not become ready within ${Math.floor(timeoutMs)}ms`,
+            ),
+          );
+        }, Math.floor(timeoutMs));
+        waiter.timer.unref?.();
+      }
+      this.attachmentWaiters.add(waiter);
+    });
   }
 
   /**
@@ -2048,15 +2131,33 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   start(projectPath: string, options?: CodexStartOptions): void {
+    if (options?.sharedRuntimeAttach && !options.threadId) {
+      throw new Error("Shared runtime attach requires an existing thread id");
+    }
+    if (
+      options?.sharedRuntimeAttach &&
+      (options.forkFromThreadId || options.ephemeralForkFromThreadId)
+    ) {
+      throw new Error("Shared runtime attach cannot fork a thread");
+    }
+
     if (this.transport) {
       this.stop();
     }
 
-    this.prepareLaunch(projectPath, options);
-    const runtimeGeneration = this._runtimeGeneration;
-    this.launchAppServer(projectPath, options, runtimeGeneration);
-
-    void this.bootstrap(projectPath, options, runtimeGeneration);
+    try {
+      this.prepareLaunch(projectPath, options);
+      const runtimeGeneration = this._runtimeGeneration;
+      this.launchAppServer(projectPath, options, runtimeGeneration);
+      void this.bootstrap(projectPath, options, runtimeGeneration);
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      const failedTransport = this.transport;
+      this.transport = null;
+      this.finalizeStoppedState(failure);
+      failedTransport?.stop();
+      throw failure;
+    }
   }
 
   async initializeOnly(
@@ -2066,17 +2167,15 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (this.transport) {
       this.stop();
     }
-    this.prepareLaunch(projectPath);
-    const runtimeGeneration = this._runtimeGeneration;
-    this.launchAppServer(projectPath, undefined, runtimeGeneration);
     try {
+      this.prepareLaunch(projectPath);
+      const runtimeGeneration = this._runtimeGeneration;
+      this.launchAppServer(projectPath, undefined, runtimeGeneration);
       await this.initializeRpcConnection(requestTimeoutMs);
       if (!this.isRuntimeActive(runtimeGeneration)) return;
       this.setStatus("idle");
     } catch (error) {
-      if (this.isRuntimeGenerationCurrent(runtimeGeneration)) {
-        this.stop();
-      }
+      this.stop();
       throw error;
     }
   }
@@ -2093,7 +2192,17 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   private finalizeStoppedState(error: Error): void {
+    const wasSharedRuntime = this.isSharedRuntimeTopology();
     this.stopped = true;
+    this.failAttachment(error);
+    releaseSharedRuntimePilotAttachment(this, this._sharedRuntimeAttachmentKey);
+    this._sharedRuntimeAttachmentKey = null;
+    this._sharedRuntimePilotGates = null;
+    this._attachmentRuntimeGeneration = null;
+    this._sharedRuntimeAttachMode = null;
+    this._authoritativeThreadStatus = { type: "unknown" };
+    this._activeTurnHydration = null;
+    this._lastStopWasSharedRuntime = wasSharedRuntime;
 
     const resolvedPermissionIds = new Set<string>();
     if (this.pendingPlanCompletion) {
@@ -2128,7 +2237,35 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this.emitMessage({ type: "permission_resolved", toolUseId });
     }
 
-    this.setStatus("idle");
+    this.setStatus(wasSharedRuntime ? "starting" : "idle");
+  }
+
+  private markAttachmentReady(): void {
+    if (this._attachmentReady || this.stopped) return;
+    this._attachmentReady = true;
+    this._attachmentFailure = null;
+    for (const waiter of this.attachmentWaiters) {
+      if (waiter.timer) clearTimeout(waiter.timer);
+      waiter.resolve();
+    }
+    this.attachmentWaiters.clear();
+  }
+
+  private failAttachment(error: Error): void {
+    this._attachmentReady = false;
+    this._attachmentFailure = error;
+    for (const waiter of this.attachmentWaiters) {
+      if (waiter.timer) clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+    this.attachmentWaiters.clear();
+  }
+
+  private isSharedRuntimeTopology(): boolean {
+    return (
+      this._sharedRuntimePilotGates !== null ||
+      this._sharedRuntimeAttachMode !== null
+    );
   }
 
   private isRuntimeGenerationCurrent(runtimeGeneration: number): boolean {
@@ -2148,7 +2285,23 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.activeCoreActionMethod = null;
     this.stopped = false;
     this._runtimeGeneration += 1;
+    this._sharedRuntimePilotGates = snapshotSharedRuntimePilotGates();
+    this.setStatus("starting");
     this._threadId = null;
+    this._sharedRuntimeAttachMode = options?.sharedRuntimeAttach ?? null;
+    this._attachmentRuntimeGeneration = null;
+    this._authoritativeThreadStatus = { type: "unknown" };
+    this._attachmentReady = false;
+    this._attachmentFailure = null;
+    this._activeTurnHydration = null;
+    this._lastStopWasSharedRuntime = false;
+    if (options?.sharedRuntimeAttach && options.threadId) {
+      this._sharedRuntimeAttachmentKey = claimSharedRuntimePilotAttachment(
+        this,
+        options.threadId,
+        this._sharedRuntimePilotGates,
+      );
+    }
     this._agentNickname = null;
     this._agentRole = null;
     this.pendingTurnId = null;
@@ -2160,25 +2313,41 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.emittedGuardianReviewIdOrder = [];
     this.cleanupSteerTempPaths();
     this.lastTokenUsage = null;
-    this.startModel = sanitizeCodexModel(options?.model);
+    const preserveExistingThreadSettings =
+      this._sharedRuntimeAttachMode !== null;
+    this.startModel = preserveExistingThreadSettings
+      ? undefined
+      : sanitizeCodexModel(options?.model);
     this._runtimeModel = undefined;
-    this._runtimeModelReasoningEffort = options?.modelReasoningEffort;
+    this._runtimeModelReasoningEffort = preserveExistingThreadSettings
+      ? undefined
+      : options?.modelReasoningEffort;
     this._runtimeServiceTier =
-      options?.serviceTier === undefined
+      preserveExistingThreadSettings || options?.serviceTier === undefined
         ? undefined
         : normalizeServiceTier(options.serviceTier);
-    this._approvalPolicy = options?.approvalPolicy;
+    this._approvalPolicy = preserveExistingThreadSettings
+      ? undefined
+      : options?.approvalPolicy;
     this._approvalsReviewer =
-      options?.approvalsReviewer === undefined
+      preserveExistingThreadSettings || options?.approvalsReviewer === undefined
         ? undefined
         : normalizeApprovalsReviewerForAppServer(options.approvalsReviewer);
-    this._codexPermissionsMode = options?.codexPermissionsMode;
-    this._runtimeSandboxMode = options?.sandboxMode;
+    this._codexPermissionsMode = preserveExistingThreadSettings
+      ? undefined
+      : options?.codexPermissionsMode;
+    this._runtimeSandboxMode = preserveExistingThreadSettings
+      ? undefined
+      : options?.sandboxMode;
     this._runtimeSandboxPolicy = undefined;
     this._workspaceWriteSandboxPolicy = undefined;
-    this._networkAccessEnabled = options?.networkAccessEnabled ?? false;
+    this._networkAccessEnabled = preserveExistingThreadSettings
+      ? false
+      : (options?.networkAccessEnabled ?? false);
     this._additionalWritableRoots = normalizeWritableRoots(
-      options?.additionalWritableRoots ?? [],
+      preserveExistingThreadSettings
+        ? []
+        : (options?.additionalWritableRoots ?? []),
       this.platform,
     );
     this._pendingThreadSettingsUpdate = null;
@@ -2186,9 +2355,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this._threadSettingsUpdateTail = Promise.resolve();
     this._supportsNextTurnPermissionUpdates = false;
     this._threadSettingsUpdateMethodSupport = "unknown";
-    this._autoReviewDisabledByPolicy =
-      options?.autoReviewDisabledByPolicy === true;
-    this._collaborationMode = options?.collaborationMode ?? "default";
+    this._autoReviewDisabledByPolicy = preserveExistingThreadSettings
+      ? false
+      : options?.autoReviewDisabledByPolicy === true;
+    this._collaborationMode = preserveExistingThreadSettings
+      ? "default"
+      : (options?.collaborationMode ?? "default");
     this._nativePlanModeSupport = "unknown";
     this._nativePlanModeProbe = null;
     this.lastPlanItemText = null;
@@ -2273,7 +2445,6 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           message: `codex app-server exited with code ${exitCode}`,
         });
       }
-      this.setStatus("idle");
       this.emit("exit", code);
     });
 
@@ -2907,8 +3078,14 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       await this.initializeRpcConnection();
       if (!this.isRuntimeActive(runtimeGeneration)) return;
 
-      let autoReviewDisabled = options?.autoReviewDisabledByPolicy === true;
-      if (options?.autoReviewDisabledByPolicy === null) {
+      const sharedRuntimeAttach = options?.sharedRuntimeAttach ?? null;
+      let autoReviewDisabled =
+        sharedRuntimeAttach === null &&
+        options?.autoReviewDisabledByPolicy === true;
+      if (
+        sharedRuntimeAttach === null &&
+        options?.autoReviewDisabledByPolicy === null
+      ) {
         autoReviewDisabled = (await this.readConfigRequirements())
           .autoReviewDisabled;
         if (!this.isRuntimeActive(runtimeGeneration)) return;
@@ -2916,11 +3093,15 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this._autoReviewDisabledByPolicy = autoReviewDisabled;
       const effectiveApprovalsReviewer = autoReviewDisabled
         ? "user"
-        : options?.approvalsReviewer;
+        : sharedRuntimeAttach === null
+          ? options?.approvalsReviewer
+          : undefined;
       const effectiveCodexPermissionsMode =
         autoReviewDisabled && options?.codexPermissionsMode === "autoReview"
           ? "default"
-          : options?.codexPermissionsMode;
+          : sharedRuntimeAttach === null
+            ? options?.codexPermissionsMode
+            : undefined;
       if (autoReviewDisabled) {
         console.warn(
           "[codex-process] Auto-review disabled by managed Browser Use policy",
@@ -2935,7 +3116,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       // A requested Plan session must never silently run as an ordinary turn.
       // Block only that path on the experimental capability probe; default
       // sessions continue immediately and probe in the background below.
-      if (this._collaborationMode === "plan") {
+      if (sharedRuntimeAttach === null && this._collaborationMode === "plan") {
         const supportsNativePlanMode = await this.probeNativePlanModeSupport(
           NATIVE_PLAN_MODE_EXPLICIT_PROBE_TIMEOUT_MS,
         );
@@ -2948,24 +3129,31 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         }
       }
 
-      const requestedApprovalPolicy = options?.approvalPolicy
-        ? normalizeApprovalPolicy(options.approvalPolicy)
-        : undefined;
+      const requestedApprovalPolicy =
+        sharedRuntimeAttach === null && options?.approvalPolicy
+          ? normalizeApprovalPolicy(options.approvalPolicy)
+          : undefined;
       const requestedApprovalsReviewer =
         effectiveApprovalsReviewer === undefined
           ? undefined
           : normalizeApprovalsReviewerForAppServer(effectiveApprovalsReviewer);
       const requestedClientApprovalsReviewer =
         normalizeApprovalsReviewerForClient(effectiveApprovalsReviewer);
-      const requestedSandboxMode = options?.sandboxMode
-        ? normalizeSandboxMode(options.sandboxMode)
-        : undefined;
+      const requestedSandboxMode =
+        sharedRuntimeAttach === null && options?.sandboxMode
+          ? normalizeSandboxMode(options.sandboxMode)
+          : undefined;
 
-      const threadParams: Record<string, unknown> = {
-        cwd: projectPath,
-        experimentalRawEvents: false,
-        persistExtendedHistory: true,
-      };
+      const threadParams: Record<string, unknown> = sharedRuntimeAttach
+        ? {
+            threadId: options!.threadId!,
+            excludeTurns: true,
+          }
+        : {
+            cwd: projectPath,
+            experimentalRawEvents: false,
+            persistExtendedHistory: true,
+          };
       if (requestedApprovalPolicy) {
         threadParams.approvalPolicy = requestedApprovalPolicy;
       }
@@ -2976,12 +3164,16 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         threadParams.sandbox = requestedSandboxMode;
       }
       const threadConfig: Record<string, unknown> = {};
-      const requestedModel = sanitizeCodexModel(options?.model);
-      const requestedReasoningEffort = options?.modelReasoningEffort
-        ? normalizeReasoningEffort(options.modelReasoningEffort)
-        : undefined;
+      const requestedModel =
+        sharedRuntimeAttach === null
+          ? sanitizeCodexModel(options?.model)
+          : undefined;
+      const requestedReasoningEffort =
+        sharedRuntimeAttach === null && options?.modelReasoningEffort
+          ? normalizeReasoningEffort(options.modelReasoningEffort)
+          : undefined;
       if (requestedModel) threadParams.model = requestedModel;
-      if (options?.serviceTier !== undefined) {
+      if (sharedRuntimeAttach === null && options?.serviceTier !== undefined) {
         threadParams.serviceTier = normalizeServiceTier(options.serviceTier);
       }
       if (requestedReasoningEffort) {
@@ -2989,13 +3181,16 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         // not the top-level thread/start payload.
         threadConfig.model_reasoning_effort = requestedReasoningEffort;
       }
-      if (options?.networkAccessEnabled !== undefined) {
+      if (
+        sharedRuntimeAttach === null &&
+        options?.networkAccessEnabled !== undefined
+      ) {
         threadParams.sandboxPolicy = {
           type: normalizeSandboxMode(options?.sandboxMode ?? "workspace-write"),
           networkAccess: options.networkAccessEnabled,
         };
       }
-      if (options?.webSearchMode) {
+      if (sharedRuntimeAttach === null && options?.webSearchMode) {
         threadParams.webSearchMode = options.webSearchMode;
       }
 
@@ -3016,7 +3211,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         : options?.threadId
           ? "thread/resume"
           : "thread/start";
-      if (forkFromThreadId) {
+      if (sharedRuntimeAttach) {
+        // The exact two-field shape is the safety boundary: attaching must not
+        // overwrite settings selected by the Desktop client that owns the
+        // existing thread.
+      } else if (forkFromThreadId) {
         threadParams.threadId = forkFromThreadId;
         threadParams.ephemeral = options?.ephemeralForkFromThreadId != null;
       } else if (options?.threadId) {
@@ -3024,18 +3223,28 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       } else {
         threadParams.experimentalRawEvents = false;
       }
-      if (options?.excludeTurnsOnOpen) threadParams.excludeTurns = true;
-      if (options?.threadSource && method !== "thread/resume") {
+      if (sharedRuntimeAttach === null && options?.excludeTurnsOnOpen) {
+        threadParams.excludeTurns = true;
+      }
+      if (
+        sharedRuntimeAttach === null &&
+        options?.threadSource &&
+        method !== "thread/resume"
+      ) {
         threadParams.threadSource = options.threadSource;
       }
-      threadParams.persistExtendedHistory = true;
-      if (options?.profile) {
+      if (sharedRuntimeAttach === null) {
+        threadParams.persistExtendedHistory = true;
+      }
+      if (sharedRuntimeAttach === null && options?.profile) {
         threadConfig.profile = options.profile;
       }
-      const writableRoots = await this.resolveWritableRootsConfig(
-        projectPath,
-        options?.additionalWritableRoots,
-      );
+      const writableRoots = sharedRuntimeAttach
+        ? undefined
+        : await this.resolveWritableRootsConfig(
+            projectPath,
+            options?.additionalWritableRoots,
+          );
       if (!this.isRuntimeActive(runtimeGeneration)) return;
       if (writableRoots) {
         threadConfig.sandbox_workspace_write = {
@@ -3059,6 +3268,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         typeof thread?.id === "string" ? thread.id : options?.threadId;
       if (!threadId) {
         throw new Error(`${method} returned no thread id`);
+      }
+      if (sharedRuntimeAttach !== null && threadId !== options?.threadId) {
+        throw new Error(
+          "Shared runtime resume returned a different Codex thread id",
+        );
       }
       if (
         options?.ephemeralForkFromThreadId &&
@@ -3133,7 +3347,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         );
       }
 
-      this._threadId = threadId;
+      this.bindThreadAttachment(threadId);
       this._agentNickname = stringOrNull(thread?.agentNickname);
       this._agentRole = stringOrNull(thread?.agentRole);
       const cliJoin = codexCliJoinTarget(threadId);
@@ -3148,7 +3362,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         ...(sanitizeCodexModel(this.startModel)
           ? { model: sanitizeCodexModel(this.startModel) }
           : {}),
-        ...((resolvedSettings.approvalPolicy ?? options?.approvalPolicy)
+        ...((resolvedSettings.approvalPolicy ?? requestedApprovalPolicy)
           ? {
               approvalPolicy:
                 resolvedSettings.approvalPolicy ?? requestedApprovalPolicy,
@@ -3163,7 +3377,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
                 : requestedClientApprovalsReviewer,
             }
           : {}),
-        ...((resolvedSettings.sandboxMode ?? options?.sandboxMode)
+        ...((resolvedSettings.sandboxMode ?? requestedSandboxMode)
           ? {
               sandboxMode: resolvedSettings.sandboxMode ?? requestedSandboxMode,
             }
@@ -3177,7 +3391,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
             ? { modelReasoningEffort: requestedReasoningEffort }
             : {}),
         serviceTier: normalizeServiceTierForClient(
-          resolvedSettings.serviceTier ?? options?.serviceTier,
+          resolvedSettings.serviceTier ??
+            (sharedRuntimeAttach === null ? options?.serviceTier : undefined),
         ),
         ...(resolvedSettings.networkAccessEnabled !== undefined
           ? { networkAccessEnabled: resolvedSettings.networkAccessEnabled }
@@ -3185,12 +3400,37 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         ...(resolvedSettings.webSearchMode
           ? { webSearchMode: resolvedSettings.webSearchMode }
           : {}),
-        ...(options?.additionalWritableRoots?.length
+        ...(sharedRuntimeAttach === null &&
+        options?.additionalWritableRoots?.length
           ? { additionalWritableRoots: options.additionalWritableRoots }
           : {}),
         ...(cliJoin ? { codexCliJoin: cliJoin } : {}),
       });
-      this.setStatus("idle");
+      this.applyAuthoritativeThreadState(
+        thread?.status,
+        activeTurnFromThreadResponse(response, thread),
+        // A newly created daemon thread has no explicit attach mode, but it
+        // still shares the same authority boundary.  Missing/unknown status
+        // must therefore fail closed instead of inheriting the legacy private
+        // app-server fallback to idle.
+        sharedRuntimeAttach !== null || this.isSharedRuntimeTopology(),
+      );
+
+      if (
+        this.isSharedRuntimeTopology() &&
+        this._authoritativeThreadStatus.type === "active" &&
+        !this.pendingTurnId
+      ) {
+        await this.hydrateSharedActiveTurn(threadId, runtimeGeneration, true);
+        if (!this.isRuntimeActive(runtimeGeneration)) return;
+      }
+      this.markAttachmentReady();
+
+      if (sharedRuntimeAttach !== null) {
+        if (sharedRuntimeAttach === "observer") return;
+        await this.runInputLoop(options, runtimeGeneration);
+        return;
+      }
 
       await this.resumeGoalAfterBootstrap(options);
       if (!this.isRuntimeActive(runtimeGeneration)) return;
@@ -3825,7 +4065,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           threadId: this._threadId,
           input,
         };
-        if (this._approvalPolicy !== undefined) {
+        const preserveSharedThreadSettings =
+          this._sharedRuntimeAttachMode !== null;
+        if (
+          !preserveSharedThreadSettings &&
+          this._approvalPolicy !== undefined
+        ) {
           params.approvalPolicy =
             this._approvalPolicy === null
               ? null
@@ -3833,7 +4078,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
                   this._approvalPolicy as CodexStartOptions["approvalPolicy"],
                 );
         }
-        if (this._approvalsReviewer !== undefined) {
+        if (
+          !preserveSharedThreadSettings &&
+          this._approvalsReviewer !== undefined
+        ) {
           params.approvalsReviewer =
             this._approvalsReviewer === null
               ? null
@@ -3842,29 +4090,37 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
                     ._approvalsReviewer as CodexStartOptions["approvalsReviewer"],
                 );
         }
-        if (this._runtimeSandboxPolicy !== undefined) {
+        if (
+          !preserveSharedThreadSettings &&
+          this._runtimeSandboxPolicy !== undefined
+        ) {
           params.sandboxPolicy = this._runtimeSandboxPolicy;
         }
-        const requestedModel =
-          sanitizeCodexModel(this._runtimeModel) ??
-          sanitizeCodexModel(options?.model);
-        const requestedReasoningEffort =
-          this._runtimeModelReasoningEffort ??
-          (options?.modelReasoningEffort
-            ? normalizeReasoningEffort(options.modelReasoningEffort)
-            : undefined);
+        const requestedModel = preserveSharedThreadSettings
+          ? undefined
+          : (sanitizeCodexModel(this._runtimeModel) ??
+            sanitizeCodexModel(options?.model));
+        const requestedReasoningEffort = preserveSharedThreadSettings
+          ? undefined
+          : (this._runtimeModelReasoningEffort ??
+            (options?.modelReasoningEffort
+              ? normalizeReasoningEffort(options.modelReasoningEffort)
+              : undefined));
         if (requestedModel) params.model = requestedModel;
         if (requestedReasoningEffort) {
           params.effort = requestedReasoningEffort;
         }
-        if (this._runtimeServiceTier !== undefined) {
+        if (
+          !preserveSharedThreadSettings &&
+          this._runtimeServiceTier !== undefined
+        ) {
           params.serviceTier = this._runtimeServiceTier;
         }
 
         // collaborationMode is experimental. Send it only after this exact
         // app-server process advertises a native Plan preset; stable/older
         // servers receive the ordinary stable turn/start shape.
-        if (this.supportsNativePlanMode) {
+        if (!preserveSharedThreadSettings && this.supportsNativePlanMode) {
           const modeSettings: Record<string, unknown> = {
             model:
               requestedModel ||
@@ -4087,7 +4343,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     const thread = asRecord(resultRecord?.thread);
     const returnedThreadId = stringOrNull(thread?.id);
     if (pending.method === "thread/start") {
-      if (returnedThreadId) this._threadId = returnedThreadId;
+      if (returnedThreadId) this.bindThreadAttachment(returnedThreadId);
       return;
     }
 
@@ -4095,7 +4351,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!sourceThreadId) return;
     if (pending.method === "thread/resume") {
       if (returnedThreadId == null || returnedThreadId === sourceThreadId) {
-        this._threadId = sourceThreadId;
+        this.bindThreadAttachment(sourceThreadId);
       }
       return;
     }
@@ -4112,7 +4368,27 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     } else if (thread?.ephemeral === true) {
       return;
     }
-    this._threadId = returnedThreadId;
+    this.bindThreadAttachment(returnedThreadId);
+  }
+
+  private bindThreadAttachment(threadId: string): void {
+    const claimedKey = claimSharedRuntimePilotAttachment(
+      this,
+      threadId,
+      this._sharedRuntimePilotGates,
+    );
+    if (
+      this._sharedRuntimeAttachmentKey !== null &&
+      this._sharedRuntimeAttachmentKey !== claimedKey
+    ) {
+      releaseSharedRuntimePilotAttachment(
+        this,
+        this._sharedRuntimeAttachmentKey,
+      );
+    }
+    this._sharedRuntimeAttachmentKey = claimedKey;
+    this._threadId = threadId;
+    this._attachmentRuntimeGeneration = this._runtimeGeneration;
   }
 
   private handleGoalRpcSuccess(pending: PendingRpc, result: unknown): void {
@@ -4191,6 +4467,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     method: string,
     params: Record<string, unknown>,
   ): void {
+    if (!this.canHandleServerRequest(params)) {
+      console.warn(`[codex-process] ignored unowned server request: ${method}`);
+      return;
+    }
+
     switch (method) {
       case "item/commandExecution/requestApproval": {
         const toolUseId = this.extractToolUseId(params, id);
@@ -4384,6 +4665,19 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     }
   }
 
+  private canHandleServerRequest(params: Record<string, unknown>): boolean {
+    // Preserve legacy/private app-server request handling. Shared mode is the
+    // only topology where another client can receive the same request and
+    // therefore requires explicit attachment ownership proof.
+    if (!this.isSharedRuntimeTopology()) return true;
+    if (this._sharedRuntimeAttachMode === "observer") return false;
+    if (this.stopped || !this._threadId) return false;
+    if (this._attachmentRuntimeGeneration !== this._runtimeGeneration) {
+      return false;
+    }
+    return stringOrNull(params.threadId) === this._threadId;
+  }
+
   private queueGuardianReviewWarning(
     review: GuardianReviewDetails,
     message: string,
@@ -4505,11 +4799,190 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (expired) this.emittedGuardianReviewIds.delete(expired);
   }
 
+  private applyAuthoritativeThreadState(
+    value: unknown,
+    activeTurn: Record<string, unknown> | null,
+    strictUnknown: boolean,
+  ): void {
+    const status = toCodexThreadStatus(value);
+    this._authoritativeThreadStatus = status;
+
+    const activeTurnId = stringOrNull(activeTurn?.id);
+    if (activeTurnId) {
+      this.pendingTurnId = activeTurnId;
+      this.lastCompletedTurn = null;
+      this.agentTurnTracker.startTurn(activeTurnId);
+    }
+
+    if (status.type === "active" || activeTurnId) {
+      const waitingForUser =
+        status.type === "active" && status.activeFlags.length > 0;
+      this.setStatus(waitingForUser ? "waiting_approval" : "running");
+      return;
+    }
+
+    if (status.type === "idle") {
+      this.pendingTurnId = null;
+      this.setStatus("idle");
+      return;
+    }
+
+    if (status.type === "unknown" && !strictUnknown) {
+      // Preserve the existing behavior for older private app-servers that do
+      // not return Thread.status. Shared attachments never take this fallback.
+      this.setStatus("idle");
+      return;
+    }
+
+    this.pendingTurnId = null;
+    this.setStatus("starting");
+    const diagnostic =
+      status.type === "systemError"
+        ? {
+            errorCode: "codex_thread_system_error",
+            message: "Codex app-server reports a system error for this thread.",
+          }
+        : status.type === "notLoaded"
+          ? {
+              errorCode: "codex_thread_not_loaded_after_attach",
+              message:
+                "Codex app-server did not load the requested shared thread.",
+            }
+          : {
+              errorCode: "codex_thread_status_unknown",
+              message:
+                "Codex app-server returned an unknown status for this thread.",
+            };
+    this.emitMessage({ type: "error", ...diagnostic });
+  }
+
+  /**
+   * `thread/resume(excludeTurns:true)` intentionally omits `thread.turns`.
+   * When the authoritative status is active, recover the exact live turn from
+   * the read-only pagination API instead of inventing one in the resume
+   * response. A still-active thread without a turn id is unsafe to adopt.
+   */
+  private async hydrateSharedActiveTurn(
+    threadId: string,
+    runtimeGeneration: number,
+    failIfUnresolved: boolean,
+  ): Promise<void> {
+    if (
+      !this.isSharedRuntimeTopology() ||
+      !this.isRuntimeActive(runtimeGeneration) ||
+      this._threadId !== threadId ||
+      this.pendingTurnId ||
+      this._authoritativeThreadStatus.type !== "active"
+    ) {
+      return;
+    }
+
+    if (this._activeTurnHydration) {
+      await this._activeTurnHydration;
+      if (
+        failIfUnresolved &&
+        this.isRuntimeActive(runtimeGeneration) &&
+        this._authoritativeThreadStatus.type === "active" &&
+        !this.pendingTurnId
+      ) {
+        throw new Error(
+          "Shared runtime active thread has no authoritative turn id",
+        );
+      }
+      return;
+    }
+
+    const hydration = (async (): Promise<void> => {
+      const page = (await this.request("thread/turns/list", {
+        threadId,
+        limit: 10,
+        sortDirection: "desc",
+        itemsView: "summary",
+      })) as { data?: unknown[] };
+      if (
+        !this.isRuntimeActive(runtimeGeneration) ||
+        this._threadId !== threadId
+      ) {
+        return;
+      }
+
+      const activeTurn = activeTurnFromCollection(page.data);
+      if (activeTurn) {
+        this.applyAuthoritativeThreadState(
+          this._authoritativeThreadStatus,
+          activeTurn,
+          true,
+        );
+        return;
+      }
+
+      // The turn may have completed between the status notification and the
+      // page read. Refresh only the summary before deciding the state is
+      // inconsistent.
+      const refreshed = (await this.request("thread/read", {
+        threadId,
+        includeTurns: false,
+      })) as Record<string, unknown>;
+      if (
+        !this.isRuntimeActive(runtimeGeneration) ||
+        this._threadId !== threadId
+      ) {
+        return;
+      }
+      const refreshedThread = asRecord(refreshed.thread);
+      this.applyAuthoritativeThreadState(refreshedThread?.status, null, true);
+    })();
+    this._activeTurnHydration = hydration;
+
+    try {
+      await hydration;
+      if (
+        this.isRuntimeActive(runtimeGeneration) &&
+        this._authoritativeThreadStatus.type === "active" &&
+        !this.pendingTurnId
+      ) {
+        throw new Error(
+          "Shared runtime active thread has no authoritative turn id",
+        );
+      }
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      if (failIfUnresolved) throw failure;
+      if (this.isRuntimeActive(runtimeGeneration)) {
+        console.warn(
+          `[codex-process] failed to hydrate shared active turn: ${failure.message}`,
+        );
+        this.emitMessage({
+          type: "error",
+          errorCode: "codex_active_turn_unresolved",
+          message: failure.message,
+        });
+      }
+    } finally {
+      if (this._activeTurnHydration === hydration) {
+        this._activeTurnHydration = null;
+      }
+    }
+  }
+
   private handleNotification(
     method: string,
     params: Record<string, unknown>,
   ): void {
+    if (
+      this.isSharedRuntimeTopology() &&
+      this._attachmentRuntimeGeneration !== this._runtimeGeneration
+    ) {
+      return;
+    }
     if (this.isForeignThreadNotification(method, params)) return;
+
+    if (
+      this.isSharedRuntimeTopology() &&
+      (method === "turn/started" || method === "turn/completed")
+    ) {
+      recordSharedRuntimeAttachmentLifecycle(method, params);
+    }
 
     switch (method) {
       case "thread/started": {
@@ -4522,6 +4995,23 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         break;
       }
 
+      case "thread/status/changed": {
+        this.applyAuthoritativeThreadState(params.status, null, true);
+        if (
+          this.isSharedRuntimeTopology() &&
+          this._authoritativeThreadStatus.type === "active" &&
+          !this.pendingTurnId &&
+          this._threadId
+        ) {
+          void this.hydrateSharedActiveTurn(
+            this._threadId,
+            this._runtimeGeneration,
+            false,
+          );
+        }
+        break;
+      }
+
       case "turn/started": {
         const turn = params.turn as Record<string, unknown> | undefined;
         const turnId = stringOrNull(turn?.id);
@@ -4531,6 +5021,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           this.observeCoreActionTurnStarted(turnId);
           this.agentTurnTracker.startTurn(turnId);
         }
+        this._authoritativeThreadStatus = {
+          type: "active",
+          activeFlags: [],
+        };
         this.lastResultText = null;
         this.setStatus(this.isCompactingCoreAction ? "compacting" : "running");
         break;
@@ -4540,6 +5034,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         this.handleTurnCompleted(
           params.turn as Record<string, unknown> | undefined,
         );
+        this._authoritativeThreadStatus = { type: "idle" };
         break;
       }
 
@@ -4782,7 +5277,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   ): boolean {
     if (!isThreadScopedNotification(method)) return false;
     const threadId = notificationThreadId(params);
-    if (!threadId) return false;
+    if (!threadId) return this.isSharedRuntimeTopology();
 
     // Thread binding comes from the thread/start or thread/resume response.
     // In shared app-server modes, early notifications can belong to another
@@ -5387,10 +5882,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       ...(error === undefined
         ? {}
         : {
-            error:
-              error instanceof Error
-                ? error.message
-                : String(error),
+            error: error instanceof Error ? error.message : String(error),
           }),
     });
   }
@@ -5400,6 +5892,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     params?: Record<string, unknown>,
     options: CodexRpcRequestOptions = {},
   ): Promise<unknown> {
+    assertSharedRuntimePilotRpcAllowed(
+      method,
+      this._sharedRuntimeAttachMode,
+      this._sharedRuntimePilotGates,
+    );
     const id = this.rpcSeq++;
     const envelope =
       params === undefined ? { id, method } : { id, method, params };
@@ -6592,6 +7089,30 @@ function toCodexThreadSummary(entry: unknown): CodexThreadSummary {
     gitBranch: stringOrNull(gitInfo.branch),
     name: stringOrNull(record.name),
   };
+}
+
+function activeTurnFromThreadResponse(
+  response: Record<string, unknown>,
+  thread: Record<string, unknown> | undefined,
+): Record<string, unknown> | null {
+  const initialTurnsPage = asRecord(response.initialTurnsPage);
+  const turnCollections = [thread?.turns, initialTurnsPage?.data];
+  for (const collection of turnCollections) {
+    const active = activeTurnFromCollection(collection);
+    if (active) return active;
+  }
+  return null;
+}
+
+function activeTurnFromCollection(
+  collection: unknown,
+): Record<string, unknown> | null {
+  if (!Array.isArray(collection)) return null;
+  const active = collection.find((entry) => {
+    const turn = asRecord(entry);
+    return turn?.status === "inProgress" && stringOrNull(turn.id) !== null;
+  });
+  return asRecord(active) ?? null;
 }
 
 function toCodexThreadStatus(value: unknown): CodexThreadStatus {

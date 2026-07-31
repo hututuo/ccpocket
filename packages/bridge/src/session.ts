@@ -205,9 +205,7 @@ export interface QueuedCodexInput extends QueuedInputItem {
 }
 
 export type InputDeliveryStage =
-  | "bridge_accepted"
-  | "provider_accepted"
-  | "provider_rejected";
+  "bridge_accepted" | "provider_accepted" | "provider_rejected";
 
 export interface InputDeliveryReceipt {
   clientMessageId: string;
@@ -382,8 +380,7 @@ export function publicQueuedInput(
 ): QueuedInputItem | undefined {
   if (!item) return undefined;
   const matchingReceipt =
-    item.clientMessageId &&
-    receipt?.clientMessageId === item.clientMessageId
+    item.clientMessageId && receipt?.clientMessageId === item.clientMessageId
       ? receipt
       : undefined;
   return {
@@ -391,15 +388,9 @@ export function publicQueuedInput(
     text: item.text,
     createdAt: item.createdAt,
     ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}),
-    ...(item.clientMessageId
-      ? { clientMessageId: item.clientMessageId }
-      : {}),
-    ...(matchingReceipt
-      ? { deliveryStage: matchingReceipt.stage }
-      : {}),
-    ...(matchingReceipt?.error
-      ? { deliveryError: matchingReceipt.error }
-      : {}),
+    ...(item.clientMessageId ? { clientMessageId: item.clientMessageId } : {}),
+    ...(matchingReceipt ? { deliveryStage: matchingReceipt.stage } : {}),
+    ...(matchingReceipt?.error ? { deliveryError: matchingReceipt.error } : {}),
     ...(item.imageCount ? { imageCount: item.imageCount } : {}),
     ...(item.skills?.length ? { skills: item.skills } : {}),
     ...(item.mentions?.length ? { mentions: item.mentions } : {}),
@@ -740,8 +731,10 @@ export class SessionManager {
         // rollout has not flushed yet. Merge, letting the live mapping win:
         // its uuids are the ones clients have already rendered.
         const merged = new Map(session.codexUserTurnUuidByRawId ?? []);
-        for (const [rawId, uuid] of replacementSession
-          .codexUserTurnUuidByRawId) {
+        for (const [
+          rawId,
+          uuid,
+        ] of replacementSession.codexUserTurnUuidByRawId) {
           merged.set(rawId, uuid);
         }
         session.codexUserTurnUuidByRawId = merged;
@@ -1306,12 +1299,16 @@ export class SessionManager {
           this.onSessionUpdated?.(id);
           return;
         }
-        session.status = "idle";
-        session.codexQueuedInput = undefined;
+        const sharedRuntimeDisconnected =
+          proc instanceof CodexProcess && proc.lastStopWasSharedRuntime;
+        session.status = sharedRuntimeDisconnected ? "starting" : "idle";
+        if (!sharedRuntimeDisconnected) {
+          session.codexQueuedInput = undefined;
+        }
         // Add status after every already-emitted provider message.
         this.appendHistoryToSession(session, {
           type: "status",
-          status: "idle",
+          status: session.status,
         } as ServerMessage);
         if (session.provider === "codex") {
           this.broadcastCodexQueue(session);
@@ -1623,9 +1620,7 @@ export class SessionManager {
 
   listEphemeralSideChats(): SessionInfo[] {
     return Array.from(this.sessions.values())
-      .filter(
-        (session) => session.auxiliary?.kind === "ephemeral_side_chat",
-      )
+      .filter((session) => session.auxiliary?.kind === "ephemeral_side_chat")
       .sort(
         (left, right) =>
           right.lastActivityAt.getTime() - left.lastActivityAt.getTime(),
@@ -2096,7 +2091,10 @@ export class SessionManager {
       occurredAt: existing?.occurredAt ?? new Date().toISOString(),
     };
     this.storeInputDeliveryReceipt(session, receipt);
-    if (queued && session.codexQueuedInput?.clientMessageId === clientMessageId) {
+    if (
+      queued &&
+      session.codexQueuedInput?.clientMessageId === clientMessageId
+    ) {
       this.broadcastCodexQueue(session);
     }
     return receipt;
@@ -2327,15 +2325,12 @@ export class SessionManager {
       ...(event.clientUserMessageIdAccepted === undefined
         ? {}
         : {
-            clientUserMessageIdAccepted:
-              event.clientUserMessageIdAccepted,
+            clientUserMessageIdAccepted: event.clientUserMessageIdAccepted,
           }),
       ...(event.error ? { error: event.error } : {}),
     };
     this.storeInputDeliveryReceipt(session, receipt);
-    if (
-      session.codexQueuedInput?.clientMessageId === event.clientMessageId
-    ) {
+    if (session.codexQueuedInput?.clientMessageId === event.clientMessageId) {
       this.broadcastCodexQueue(session);
     }
     return receipt;

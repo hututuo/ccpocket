@@ -55,7 +55,14 @@ export function requiresPrivateHttpAuthorization(
   rawUrl: string | undefined,
 ): boolean {
   const path = (rawUrl ?? "").split("?", 1)[0];
-  if (path === "/usage" || path === "/doctor") return true;
+  if (
+    path === "/usage" ||
+    path === "/doctor" ||
+    path === "/readyz" ||
+    path === "/pilot/diagnostics"
+  ) {
+    return true;
+  }
   if (path === "/api/gallery" || path === "/api/gallery/upload") return true;
   return method === "DELETE" && GALLERY_IMAGE_PATH.test(path);
 }

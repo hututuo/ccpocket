@@ -13,6 +13,7 @@ const { codexInstances, sdkInstances, fakeDirs, fakeFiles } = vi.hoisted(
       supportsNextTurnPermissionUpdates: boolean;
       supportsNativePlanMode: boolean;
       nativePlanModeCapabilityKnown: boolean;
+      lastStopWasSharedRuntime: boolean;
       start: ReturnType<typeof vi.fn>;
       stop: ReturnType<typeof vi.fn>;
       sendInputStructured: ReturnType<typeof vi.fn>;
@@ -101,6 +102,7 @@ vi.mock("./codex-process.js", () => ({
     public supportsNextTurnPermissionUpdates = false;
     public supportsNativePlanMode = false;
     public nativePlanModeCapabilityKnown = false;
+    public lastStopWasSharedRuntime = false;
     public start = vi.fn((_: string, __?: unknown) => {});
     public stop = vi.fn(() => {});
     public sendInputStructured = vi.fn();
@@ -484,9 +486,7 @@ describe("SessionManager codex path", () => {
     expect(replacement.id).toBe(sessionId);
     expect(replacement.name).toBe("Stable session");
     expect(replacement.status).toBe("idle");
-    expect(replacement.codexQueuedInput?.text).toBe(
-      "edited during bootstrap",
-    );
+    expect(replacement.codexQueuedInput?.text).toBe("edited during bootstrap");
     expect(codexInstances[0].stop).toHaveBeenCalledOnce();
   });
 
@@ -603,9 +603,7 @@ describe("SessionManager codex path", () => {
     expect(replacement.codexHistoryResetRevision).toBe(second.seq);
     expect(replacement.codexOrderedHistoryRevision).toBe(second.seq);
     expect(replacement.codexOrderedHistoryEntries).toEqual([first, second]);
-    expect(replacement.codexLiveHistoryUserKey).toBe(
-      "uuid:codex:user-turn:1",
-    );
+    expect(replacement.codexLiveHistoryUserKey).toBe("uuid:codex:user-turn:1");
     expect(
       replacement.codexLiveAssistantUserKeyByIdentity?.get("assistant:item-1"),
     ).toBe("uuid:codex:user-turn:1");
@@ -821,8 +819,7 @@ describe("SessionManager codex path", () => {
       manager.getCachedCommands("codex", "/tmp/shared-project")?.skills,
     ).toEqual(["codex-skill"]);
     expect(
-      manager.getCachedCommands("claude", "/tmp/shared-project")
-        ?.slashCommands,
+      manager.getCachedCommands("claude", "/tmp/shared-project")?.slashCommands,
     ).toEqual(["claude-command"]);
   });
 
@@ -1040,8 +1037,9 @@ describe("SessionManager codex path", () => {
 
     const session = manager.get(sessionId);
     expect(session?.history).toHaveLength(100);
-    expect(session?.history.some((message) => message.type === "user_input"))
-      .toBe(false);
+    expect(
+      session?.history.some((message) => message.type === "user_input"),
+    ).toBe(false);
     expect(session?.codexLatestUserInput).toMatchObject({
       type: "user_input",
       text: "delegate this task",
@@ -1609,6 +1607,52 @@ describe("SessionManager codex path", () => {
     ).toBe(true);
   });
 
+  it("keeps a shared-runtime queue and non-idle status after transport loss", () => {
+    const forwarded: ServerMessage[] = [];
+    const manager = new SessionManager((_sessionId, message) => {
+      forwarded.push(message);
+    });
+    const sessionId = manager.create(
+      "/tmp/project-codex",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      { threadId: "thread-shared-disconnect" },
+    );
+    expect(
+      manager.queueCodexInput(sessionId, {
+        itemId: "queued-shared-disconnect",
+        text: "keep me queued",
+        createdAt: "2026-08-01T00:00:00.000Z",
+      }),
+    ).toBe(true);
+
+    const proc = codexInstances[0];
+    proc.lastStopWasSharedRuntime = true;
+    proc.emit("exit", 1);
+
+    expect(manager.get(sessionId)?.status).toBe("starting");
+    expect(manager.get(sessionId)?.codexQueuedInput?.text).toBe(
+      "keep me queued",
+    );
+    expect(forwarded).toContainEqual(
+      expect.objectContaining({
+        type: "conversation_queue",
+        sessionId,
+        items: [
+          expect.objectContaining({
+            itemId: "queued-shared-disconnect",
+          }),
+        ],
+      }),
+    );
+    expect(forwarded).not.toContainEqual({
+      type: "status",
+      status: "idle",
+    });
+  });
+
   it("keeps staged input receipts monotonic across delayed and duplicate acknowledgements", () => {
     const forwarded: Array<{ sessionId: string; msg: ServerMessage }> = [];
     const manager = new SessionManager((sessionId, msg) => {
@@ -1679,10 +1723,10 @@ describe("SessionManager codex path", () => {
     ).toHaveLength(1);
     const queueUpdates = forwarded
       .filter((entry) => entry.msg.type === "conversation_queue")
-      .map((entry) => entry.msg as Extract<
-        ServerMessage,
-        { type: "conversation_queue" }
-      >);
+      .map(
+        (entry) =>
+          entry.msg as Extract<ServerMessage, { type: "conversation_queue" }>,
+      );
     expect(queueUpdates.at(-1)?.items[0]).toMatchObject({
       clientMessageId: "mobile-receipt-1",
       deliveryStage: "provider_accepted",
@@ -2346,8 +2390,7 @@ describe("SessionManager codex path", () => {
   it("uses structured ImageGeneration paths with spaces and Unicode for images and gallery", async () => {
     const generatedPath =
       "/tmp/codex/generated_images/生成 的 image result.png";
-    const stagedPath =
-      "/tmp/managed-artifacts/hash/生成 的 image result.png";
+    const stagedPath = "/tmp/managed-artifacts/hash/生成 的 image result.png";
     const imageRef = {
       id: "img-generated-1",
       url: "/images/img-generated-1",
@@ -2438,8 +2481,7 @@ describe("SessionManager codex path", () => {
   });
 
   it("keeps legacy raw image extraction when automatic artifacts are disabled", async () => {
-    const generatedPath =
-      "/tmp/codex/generated_images/legacy-generated.png";
+    const generatedPath = "/tmp/codex/generated_images/legacy-generated.png";
     const imageRef = {
       id: "img-legacy-1",
       url: "/images/img-legacy-1",
@@ -2454,12 +2496,9 @@ describe("SessionManager codex path", () => {
     const forwarded = new Promise<ServerMessage>((resolve) => {
       resolveForwarded = resolve;
     });
-    const manager = new SessionManager(
-      (_sessionId, msg) => {
-        if (msg.type === "tool_result") resolveForwarded(msg);
-      },
-      imageStore as any,
-    );
+    const manager = new SessionManager((_sessionId, msg) => {
+      if (msg.type === "tool_result") resolveForwarded(msg);
+    }, imageStore as any);
     manager.create(
       "/tmp/project-codex-images",
       undefined,

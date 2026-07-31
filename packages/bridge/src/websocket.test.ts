@@ -230,6 +230,8 @@ vi.mock("./session.js", async () => {
       const process = {
         status: "idle",
         isRunning: true,
+        isAttachmentReady: true,
+        waitUntilAttached: vi.fn(async () => {}),
         activeTurnId: undefined as string | undefined,
         hasPendingCoreAction: false,
         sessionId:
@@ -647,9 +649,7 @@ vi.mock("./session.js", async () => {
           queuedInput: publicQueuedInput(
             s.codexQueuedInput,
             s.codexQueuedInput?.clientMessageId
-              ? s.inputDeliveryReceipts?.get(
-                  s.codexQueuedInput.clientMessageId,
-                )
+              ? s.inputDeliveryReceipts?.get(s.codexQueuedInput.clientMessageId)
               : undefined,
           ),
         }));
@@ -2655,9 +2655,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       .find((msg: any) => msg.type === "session_list");
 
     expect(sessionList.bridgeInstanceId).toBe((bridge as any).bridgeInstanceId);
-    expect(sessionList.codexSourceId).toMatch(
-      /^codex-home-[0-9a-f]{24}$/,
-    );
+    expect(sessionList.codexSourceId).toMatch(/^codex-home-[0-9a-f]{24}$/);
     expect(sessionList.bridgeCapabilities).toContain(
       "session_catalog_request_correlation_v1",
     );
@@ -4698,6 +4696,42 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("does not reuse a completed daemon resume after attachment readiness is lost", async () => {
+    vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const manager = (bridge as any).sessionManager;
+    const create = vi.spyOn(manager, "create");
+    const request = {
+      type: "resume_session",
+      sessionId: "thr_restart_unattached",
+      projectPath: "/tmp/project-a",
+      provider: "codex",
+    };
+
+    await (bridge as any).handleClientMessage(request, ws);
+    manager.get("s-1").process.isAttachmentReady = false;
+    await (bridge as any).handleClientMessage(request, ws);
+
+    expect(create).toHaveBeenCalledTimes(2);
+    // The provider transcript cache may be reused; only the runtime
+    // attachment must be rebuilt.
+    expect(getCodexSessionHistoryMock).toHaveBeenCalledTimes(1);
+    const createdSessionIds = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .filter(
+        (message: any) =>
+          message.type === "system" && message.subtype === "session_created",
+      )
+      .map((message: any) => message.sessionId);
+    expect(createdSessionIds).toEqual(["s-1", "s-2"]);
+
+    bridge.close();
+  });
+
   it("coalesces concurrent Codex resumes for one provider thread", async () => {
     let resolveHistory:
       ((messages: Array<Record<string, unknown>>) => void) | undefined;
@@ -5066,24 +5100,20 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
             message.type === "system" && message.subtype === "session_created",
         );
       expect(reconnectCreated?.sessionId).toBe("s-1");
-      expect(reconnectCreated?.resumeRequestId).toBe(
-        "resume-after-reconnect",
-      );
+      expect(reconnectCreated?.resumeRequestId).toBe("resume-after-reconnect");
       expect(reconnectCreated?.sessionLinkGeneration).toBe(32);
     });
 
     const firstCreated = firstWs.send.mock.calls
       .map((call: unknown[]) => JSON.parse(call[0] as string))
       .find(
-          (message: any) =>
-            message.type === "system" && message.subtype === "session_created",
-        );
+        (message: any) =>
+          message.type === "system" && message.subtype === "session_created",
+      );
     expect(firstCreated).toBeUndefined();
     const reconnectProgress = reconnectWs.send.mock.calls
       .map((call: unknown[]) => JSON.parse(call[0] as string))
-      .filter(
-        (message: any) => message.type === "session_link_progress_v1",
-      );
+      .filter((message: any) => message.type === "session_link_progress_v1");
     expect(reconnectProgress.length).toBeGreaterThan(1);
     expect(
       reconnectProgress.every(
@@ -5171,9 +5201,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     ] as const) {
       const progress = ws.send.mock.calls
         .map((call: unknown[]) => JSON.parse(call[0] as string))
-        .filter(
-          (message: any) => message.type === "session_link_progress_v1",
-        );
+        .filter((message: any) => message.type === "session_link_progress_v1");
       expect(progress.length).toBeGreaterThan(1);
       expect(
         progress.every(
@@ -5324,8 +5352,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     vi.useFakeTimers();
     try {
       let reportHistoryProgress:
-        | ((progress: { completedUnits: number }) => void)
-        | undefined;
+        ((progress: { completedUnits: number }) => void) | undefined;
       getSessionHistoryMock.mockImplementation(
         (
           _sessionId: string,
@@ -9507,6 +9534,131 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("waits for a settings-neutral daemon adoption before reporting resume ready", async () => {
+    vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
+    getCodexSessionHistoryMock.mockResolvedValue([]);
+
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      platform: "darwin",
+    });
+    const manager = (bridge as any).sessionManager;
+    const originalCreate = manager.create.bind(manager);
+    let resolveAttachment!: () => void;
+    const attachmentReady = new Promise<void>((resolve) => {
+      resolveAttachment = resolve;
+    });
+    vi.spyOn(manager, "create").mockImplementation((...args: unknown[]) => {
+      const id = originalCreate(...args);
+      manager.get(id).process.waitUntilAttached = vi.fn(() => attachmentReady);
+      manager.get(id).process.isAttachmentReady = false;
+      return id;
+    });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    const resume = (bridge as any).handleClientMessage(
+      {
+        type: "resume_session",
+        sessionId: "codex-daemon-thread",
+        projectPath: "/tmp/project-codex",
+        provider: "codex",
+        model: "must-not-be-replayed",
+        modelReasoningEffort: "high",
+        sandboxMode: "danger-full-access",
+        approvalPolicy: "never",
+      },
+      ws,
+    );
+
+    await vi.waitFor(() => expect(manager.get("s-1")).toBeDefined());
+    const pendingSession = manager.get("s-1");
+    expect(pendingSession.codexOptions).toEqual({
+      threadId: "codex-daemon-thread",
+      sharedRuntimeAttach: "adoption",
+    });
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .some(
+          (message: any) =>
+            message.type === "system" && message.subtype === "session_created",
+        ),
+    ).toBe(false);
+
+    resolveAttachment();
+    await resume;
+    expect(pendingSession.process.waitUntilAttached).toHaveBeenCalledWith(
+      30_000,
+    );
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .some(
+          (message: any) =>
+            message.type === "system" && message.subtype === "session_created",
+        ),
+    ).toBe(true);
+
+    bridge.close();
+  });
+
+  it("waits for authoritative daemon thread/start before reporting a new session", async () => {
+    vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      platform: "darwin",
+    });
+    const manager = (bridge as any).sessionManager;
+    const originalCreate = manager.create.bind(manager);
+    let resolveAttachment!: () => void;
+    const attachmentReady = new Promise<void>((resolve) => {
+      resolveAttachment = resolve;
+    });
+    vi.spyOn(manager, "create").mockImplementation((...args: unknown[]) => {
+      const id = originalCreate(...args);
+      manager.get(id).process.waitUntilAttached = vi.fn(() => attachmentReady);
+      manager.get(id).process.isAttachmentReady = false;
+      return id;
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+
+    const start = (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        provider: "codex",
+        projectPath: "/tmp/project-codex",
+        startRequestId: "daemon-start-request",
+      },
+      ws,
+    );
+    await vi.waitFor(() => expect(manager.get("s-1")).toBeDefined());
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .some((message: any) => message.subtype === "session_created"),
+    ).toBe(false);
+
+    resolveAttachment();
+    await start;
+    expect(manager.get("s-1").process.waitUntilAttached).toHaveBeenCalledWith(
+      30_000,
+    );
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .some(
+          (message: any) =>
+            message.subtype === "session_created" &&
+            message.startRequestId === "daemon-start-request",
+        ),
+    ).toBe(true);
+
+    bridge.close();
+  });
+
   it("reuses the Codex history loaded by resume for the first get_history", async () => {
     getCodexSessionHistoryMock.mockResolvedValue([
       {
@@ -10675,10 +10827,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         ),
     ).toMatchObject({ sessionId, serviceTier: "fast" });
 
-    const ownerCheck = vi.spyOn(
-      (bridge as any).localFeatures,
-      "hasExternalCodexActivityVerified",
-    ).mockResolvedValue(true);
+    const ownerCheck = vi
+      .spyOn((bridge as any).localFeatures, "hasExternalCodexActivityVerified")
+      .mockResolvedValue(true);
     ws.send.mockClear();
     await (bridge as any).handleClientMessage(
       {
@@ -12911,8 +13062,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       );
       const created = sends.find(
         (message: any) =>
-          message.type === "system" &&
-          message.subtype === "session_created",
+          message.type === "system" && message.subtype === "session_created",
       );
       const sessionId = created.sessionId as string;
       const session = (bridge as any).sessionManager.get(sessionId);

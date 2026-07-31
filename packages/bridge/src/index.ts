@@ -15,6 +15,7 @@ import { runDoctor } from "./doctor.js";
 import { DebugTraceStore } from "./debug-trace-store.js";
 import { RecordingStore } from "./recording-store.js";
 import { FirebaseAuthClient } from "./firebase-auth.js";
+import { initializePushRuntime } from "./push-runtime.js";
 import { PromptHistoryBackupStore } from "./prompt-history-backup.js";
 import {
   promptHistoryStoreFileForPort,
@@ -39,6 +40,9 @@ import {
   BridgeApiKeyAuthenticator,
   requiresPrivateHttpAuthorization,
 } from "./bridge-http-auth.js";
+import { readCodexAppServerMode } from "./codex-app-server-config.js";
+import { CodexSharedRuntimeControl } from "./codex-shared-runtime-control.js";
+import { sharedRuntimePilotAttachmentCount } from "./codex-shared-runtime-pilot.js";
 
 function startupErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -66,6 +70,27 @@ export async function startServer() {
   );
 
   console.log("[bridge] Starting ccpocket bridge server...");
+
+  const codexAppServerMode = readCodexAppServerMode();
+  let sharedRuntimeControl: CodexSharedRuntimeControl | undefined;
+  if (codexAppServerMode === "daemon") {
+    sharedRuntimeControl = new CodexSharedRuntimeControl({
+      projectPath: ALLOWED_DIRS[0] ?? homedir(),
+    });
+    sharedRuntimeControl.on("diagnostic", (diagnostic) => {
+      console.warn(`[bridge] Shared Codex runtime: ${diagnostic}`);
+    });
+    sharedRuntimeControl.start();
+    try {
+      await sharedRuntimeControl.waitUntilReady(20_000);
+    } catch (error) {
+      sharedRuntimeControl.stop();
+      throw new Error(
+        `Shared Codex runtime is not ready: ${startupErrorMessage(error)}`,
+      );
+    }
+    console.log("[bridge] Shared Codex runtime control observer ready");
+  }
 
   if (API_KEY) {
     console.log("[bridge] API key authentication enabled");
@@ -155,16 +180,12 @@ export async function startServer() {
     );
   }
 
-  // Initialize Firebase Anonymous Auth for push notifications
-  let firebaseAuth: FirebaseAuthClient | undefined;
-  try {
-    firebaseAuth = new FirebaseAuthClient();
-    await firebaseAuth.initialize();
-    console.log("[bridge] Push relay enabled (Firebase Anonymous Auth)");
-  } catch (err) {
-    console.warn("[bridge] Push relay disabled: Firebase auth failed:", err);
-    firebaseAuth = undefined;
-  }
+  // Initialize Firebase Anonymous Auth for push notifications. The explicit
+  // kill switch is evaluated before constructing the client so isolated
+  // candidates cannot read Firebase credentials or contact Cloud services.
+  const firebaseAuth = await initializePushRuntime({
+    createClient: () => new FirebaseAuthClient(),
+  });
 
   const imageStore = new ImageStore();
   const galleryStore = new GalleryStore();
@@ -265,10 +286,8 @@ export async function startServer() {
     allowedDirs: ALLOWED_DIRS,
     baseUrl: artifactBaseUrl,
     stateFilePath: process.env.BRIDGE_FILE_TRANSFER_STATE_FILE?.trim(),
-    downloadDirectory:
-      process.env.BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR?.trim(),
-    partialDirectory:
-      process.env.BRIDGE_FILE_TRANSFER_PARTIAL_DIR?.trim(),
+    downloadDirectory: process.env.BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR?.trim(),
+    partialDirectory: process.env.BRIDGE_FILE_TRANSFER_PARTIAL_DIR?.trim(),
     fileMutationAuthorizer,
     warn: (message) => console.warn(`[bridge] ${message}`),
   });
@@ -355,9 +374,68 @@ export async function startServer() {
         uptime: Math.floor((Date.now() - startedAt) / 1000),
         sessions: wsServer?.sessionCount ?? 0,
         clients: wsServer?.clientCount ?? 0,
+        ...(sharedRuntimeControl
+          ? {
+              codexRuntime: {
+                mode: "daemon",
+                ready: sharedRuntimeControl.ready,
+                connectionGeneration: sharedRuntimeControl.connectionGeneration,
+              },
+            }
+          : {}),
       });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(body);
+      return;
+    }
+
+    if (req.url === "/livez" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "live" }));
+      return;
+    }
+
+    if (req.url === "/readyz" && req.method === "GET") {
+      const ready = sharedRuntimeControl?.ready ?? true;
+      res.writeHead(ready ? 200 : 503, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      res.end(
+        JSON.stringify({
+          status: ready ? "ready" : "not_ready",
+          codexRuntimeMode: codexAppServerMode,
+        }),
+      );
+      return;
+    }
+
+    if (req.url === "/pilot/diagnostics" && req.method === "GET") {
+      if (!sharedRuntimeControl) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({ error: "Shared runtime pilot is not active" }),
+        );
+        return;
+      }
+      const gates = sharedRuntimeControl.pilotGates;
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      res.end(
+        JSON.stringify({
+          ready: sharedRuntimeControl.ready,
+          connectionGeneration: sharedRuntimeControl.connectionGeneration,
+          daemon: sharedRuntimeControl.daemonIdentity,
+          attachments: sharedRuntimePilotAttachmentCount(),
+          gates: {
+            allowThreadStart: gates.allowThreadStart,
+            allowTurnStart: gates.allowTurnStart,
+          },
+          events: sharedRuntimeControl.events,
+        }),
+      );
       return;
     }
 
@@ -439,6 +517,7 @@ export async function startServer() {
       fileMutationAuthorizer,
     });
   } catch (error) {
+    sharedRuntimeControl?.stop();
     await fileBrowser?.close();
     artifactStore.close();
     await fileTransferHttp?.close();
@@ -452,6 +531,7 @@ export async function startServer() {
     if (shutdownStarted) return;
     shutdownStarted = true;
     console.log("\n[bridge] Shutting down gracefully...");
+    sharedRuntimeControl?.stop();
     mdns?.stop();
     artifactStore.close();
     await fileTransferHttp?.close();
@@ -463,6 +543,7 @@ export async function startServer() {
   try {
     await listenForStartup(httpServer, PORT, HOST);
   } catch (err) {
+    sharedRuntimeControl?.stop();
     artifactStore.close();
     await fileTransferHttp?.close();
     if (wsServer) await wsServer.close();

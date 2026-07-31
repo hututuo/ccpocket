@@ -51,6 +51,7 @@ import {
   type CodexThreadSummary,
 } from "./codex-process.js";
 import { codexSourceIdentity } from "./codex-home.js";
+import { readCodexAppServerMode } from "./codex-app-server-config.js";
 import { stopManagedCodexAppServers } from "./codex-transport.js";
 import {
   parseClientMessage,
@@ -3011,7 +3012,13 @@ export class BridgeWebSocketServer {
     for (const summary of this.sessionManager.list()) {
       if (summary.provider !== "codex") continue;
       const session = this.sessionManager.get(summary.id);
-      if ((session?.process as { isRunning?: boolean })?.isRunning !== true) {
+      const process = session?.process as
+        { isRunning?: boolean; isAttachmentReady?: boolean } | undefined;
+      if (
+        process?.isRunning !== true ||
+        (readCodexAppServerMode() === "daemon" &&
+          process.isAttachmentReady !== true)
+      ) {
         continue;
       }
       if (session && this.providerSessionIdForSession(session) === threadId) {
@@ -4711,77 +4718,94 @@ export class BridgeWebSocketServer {
             createdSession?.worktreePath ?? projectPath,
           );
 
+          if (provider === "codex" && readCodexAppServerMode() === "daemon") {
+            const waitUntilAttached = (
+              createdSession?.process as {
+                waitUntilAttached?: (timeoutMs?: number) => Promise<void>;
+              }
+            )?.waitUntilAttached;
+            if (typeof waitUntilAttached !== "function" || !createdSession) {
+              if (createdSession) this.sessionManager.destroy(sessionId);
+              throw new Error(
+                "Shared Codex runtime did not expose an attachment readiness contract",
+              );
+            }
+            try {
+              await waitUntilAttached.call(createdSession.process, 30_000);
+            } catch (error) {
+              this.sessionManager.destroy(sessionId);
+              throw error;
+            }
+          }
+
           // Load saved session name from CLI storage (for resumed sessions)
-          void this.loadAndSetSessionName(
+          await this.loadAndSetSessionName(
             createdSession,
             provider,
             projectPath,
             msg.sessionId,
-          ).then(() => {
-            this.send(
+          );
+          this.send(
+            ws,
+            this.buildSessionCreatedMessage({
+              sessionId,
+              provider,
+              projectPath,
+              session: createdSession,
+              permissionMode:
+                provider === "claude"
+                  ? effectivePermissionMode
+                  : claudePermissionMode,
+              executionMode:
+                provider === "claude" ? effectiveExecutionMode : executionMode,
+              planMode: provider === "claude" ? effectivePlanMode : planMode,
+              sandboxMode: createdSession?.codexSettings?.sandboxMode
+                ? sandboxModeToExternal(
+                    createdSession.codexSettings.sandboxMode,
+                  )
+                : msg.sandboxMode,
+              codexPermissionsMode:
+                createdSession?.codexSettings?.codexPermissionsMode,
+              approvalsReviewer:
+                createdSession?.codexSettings?.approvalsReviewer,
+              startRequestId: msg.startRequestId,
+              ...(cached
+                ? {
+                    slashCommands: cached.slashCommands,
+                    skills: cached.skills,
+                    ...(cached.skillMetadata
+                      ? { skillMetadata: cached.skillMetadata }
+                      : {}),
+                    apps: cached.apps,
+                    ...(cached.appMetadata
+                      ? { appMetadata: cached.appMetadata }
+                      : {}),
+                    plugins: cached.plugins,
+                    ...(cached.pluginMetadata
+                      ? { pluginMetadata: cached.pluginMetadata }
+                      : {}),
+                  }
+                : {}),
+            }),
+          );
+          this.broadcastSessionList();
+          if (provider === "codex") {
+            void this.refreshCodexMetadata(projectPath);
+          } else {
+            void this.refreshClaudeModels(projectPath);
+          }
+          if (autoFallbackUsed) {
+            this.sendTip(
               ws,
-              this.buildSessionCreatedMessage({
-                sessionId,
-                provider,
-                projectPath,
-                session: createdSession,
-                permissionMode:
-                  provider === "claude"
-                    ? effectivePermissionMode
-                    : claudePermissionMode,
-                executionMode:
-                  provider === "claude"
-                    ? effectiveExecutionMode
-                    : executionMode,
-                planMode: provider === "claude" ? effectivePlanMode : planMode,
-                sandboxMode: createdSession?.codexSettings?.sandboxMode
-                  ? sandboxModeToExternal(
-                      createdSession.codexSettings.sandboxMode,
-                    )
-                  : msg.sandboxMode,
-                codexPermissionsMode:
-                  createdSession?.codexSettings?.codexPermissionsMode,
-                approvalsReviewer:
-                  createdSession?.codexSettings?.approvalsReviewer,
-                startRequestId: msg.startRequestId,
-                ...(cached
-                  ? {
-                      slashCommands: cached.slashCommands,
-                      skills: cached.skills,
-                      ...(cached.skillMetadata
-                        ? { skillMetadata: cached.skillMetadata }
-                        : {}),
-                      apps: cached.apps,
-                      ...(cached.appMetadata
-                        ? { appMetadata: cached.appMetadata }
-                        : {}),
-                      plugins: cached.plugins,
-                      ...(cached.pluginMetadata
-                        ? { pluginMetadata: cached.pluginMetadata }
-                        : {}),
-                    }
-                  : {}),
-              }),
+              sessionId,
+              "auto_mode_fallback_default",
+              createdSession,
             );
-            this.broadcastSessionList();
-            if (provider === "codex") {
-              void this.refreshCodexMetadata(projectPath);
-            } else {
-              void this.refreshClaudeModels(projectPath);
-            }
-            if (autoFallbackUsed) {
-              this.sendTip(
-                ws,
-                sessionId,
-                "auto_mode_fallback_default",
-                createdSession,
-              );
-            }
-            // Send a gentle tip when the project is not a git repository
-            if (createdSession && !createdSession.gitBranch) {
-              this.sendTip(ws, sessionId, "git_not_available", createdSession);
-            }
-          });
+          }
+          // Send a gentle tip when the project is not a git repository
+          if (createdSession && !createdSession.gitBranch) {
+            this.sendTip(ws, sessionId, "git_not_available", createdSession);
+          }
           this.debugEvents.set(sessionId, []);
           this.recordDebugEvent(sessionId, {
             direction: "internal",
@@ -7829,8 +7853,7 @@ export class BridgeWebSocketServer {
         const provider = msg.provider ?? "claude";
         let resumeProgressSequence = 0;
         let sharedResumeOperation:
-          | { key: string; operationId: string }
-          | undefined;
+          { key: string; operationId: string } | undefined;
         const sendResumeProgress = (
           stage: SessionLinkProgressStage,
           counts: { completedUnits?: number; totalUnits?: number } = {},
@@ -8094,46 +8117,53 @@ export class BridgeWebSocketServer {
               : undefined;
             const createStartedAt = Date.now();
             sendResumeProgress("runtime_starting");
+            const daemonPilot = readCodexAppServerMode() === "daemon";
             const sessionId = this.sessionManager.create(
               effectiveProjectPath,
               undefined,
               pastMessages,
               worktreeOpts,
               "codex",
-              this.withCodexAutoReviewPolicy({
-                threadId: sessionRefId,
-                profile: effectiveProfile,
-                approvalPolicy: codexPermissionSettings
-                  ? codexPermissionSettings.approvalPolicy
-                  : (codexApprovalPolicy ?? savedApprovalPolicy),
-                approvalsReviewer: codexPermissionSettings
-                  ? codexPermissionSettings.approvalsReviewer
-                  : ((msg.approvalsReviewer ??
-                      savedApprovalsReviewer) as CodexStartOptions["approvalsReviewer"]),
-                codexPermissionsMode:
-                  codexPermissionSettings?.codexPermissionsMode,
-                sandboxMode: codexPermissionSettings
-                  ? codexPermissionSettings.sandboxMode
-                  : msg.sandboxMode !== undefined
-                    ? sandboxModeToInternal(msg.sandboxMode)
-                    : savedSandboxMode,
-                model: msg.model ?? indexedSettings?.model,
-                modelReasoningEffort:
-                  (msg.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"]) ??
-                  (indexedSettings?.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"]),
-                serviceTier: msg.serviceTier ?? indexedSettings?.serviceTier,
-                networkAccessEnabled:
-                  msg.networkAccessEnabled ??
-                  indexedSettings?.networkAccessEnabled,
-                webSearchMode:
-                  (msg.webSearchMode as "disabled" | "cached" | "live") ??
-                  (indexedSettings?.webSearchMode as
-                    "disabled" | "cached" | "live" | undefined),
-                additionalWritableRoots: additionalWritableRoots.roots,
-                collaborationMode: planMode
-                  ? ("plan" as const)
-                  : ("default" as const),
-              }),
+              daemonPilot
+                ? {
+                    threadId: sessionRefId,
+                    sharedRuntimeAttach: "adoption" as const,
+                  }
+                : this.withCodexAutoReviewPolicy({
+                    threadId: sessionRefId,
+                    profile: effectiveProfile,
+                    approvalPolicy: codexPermissionSettings
+                      ? codexPermissionSettings.approvalPolicy
+                      : (codexApprovalPolicy ?? savedApprovalPolicy),
+                    approvalsReviewer: codexPermissionSettings
+                      ? codexPermissionSettings.approvalsReviewer
+                      : ((msg.approvalsReviewer ??
+                          savedApprovalsReviewer) as CodexStartOptions["approvalsReviewer"]),
+                    codexPermissionsMode:
+                      codexPermissionSettings?.codexPermissionsMode,
+                    sandboxMode: codexPermissionSettings
+                      ? codexPermissionSettings.sandboxMode
+                      : msg.sandboxMode !== undefined
+                        ? sandboxModeToInternal(msg.sandboxMode)
+                        : savedSandboxMode,
+                    model: msg.model ?? indexedSettings?.model,
+                    modelReasoningEffort:
+                      (msg.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"]) ??
+                      (indexedSettings?.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"]),
+                    serviceTier:
+                      msg.serviceTier ?? indexedSettings?.serviceTier,
+                    networkAccessEnabled:
+                      msg.networkAccessEnabled ??
+                      indexedSettings?.networkAccessEnabled,
+                    webSearchMode:
+                      (msg.webSearchMode as "disabled" | "cached" | "live") ??
+                      (indexedSettings?.webSearchMode as
+                        "disabled" | "cached" | "live" | undefined),
+                    additionalWritableRoots: additionalWritableRoots.roots,
+                    collaborationMode: planMode
+                      ? ("plan" as const)
+                      : ("default" as const),
+                  }),
             );
             sessionCreateMs = Date.now() - createStartedAt;
             const createdSession = this.sessionManager.get(sessionId);
@@ -8141,6 +8171,25 @@ export class BridgeWebSocketServer {
               throw new Error(
                 `Bridge session was not registered: ${sessionId}`,
               );
+            }
+            if (daemonPilot) {
+              const waitUntilAttached = (
+                createdSession.process as {
+                  waitUntilAttached?: (timeoutMs?: number) => Promise<void>;
+                }
+              ).waitUntilAttached;
+              if (typeof waitUntilAttached !== "function") {
+                this.sessionManager.destroy(sessionId);
+                throw new Error(
+                  "Shared Codex runtime did not expose an attachment readiness contract",
+                );
+              }
+              try {
+                await waitUntilAttached.call(createdSession.process, 30_000);
+              } catch (error) {
+                this.sessionManager.destroy(sessionId);
+                throw error;
+              }
             }
             createdSession.codexInitialHistoryPending = true;
             createdSession.forkedFromThreadId =
@@ -10223,10 +10272,17 @@ export class BridgeWebSocketServer {
       operation?.provider === "codex" &&
       completedSession !== undefined &&
       (completedSession.process as { isRunning?: boolean }).isRunning !== true;
+    const completedDaemonAttachmentNotReady =
+      operation?.provider === "codex" &&
+      readCodexAppServerMode() === "daemon" &&
+      completedSession !== undefined &&
+      (completedSession.process as { isAttachmentReady?: boolean })
+        .isAttachmentReady !== true;
     if (
       operation?.completed &&
       (!completedSession ||
         completedCodexSessionStopped ||
+        completedDaemonAttachmentNotReady ||
         Date.now() - operation.completed.completedAt >
           RESUME_COMPLETED_TTL_MS ||
         operation.fingerprint !== fingerprint ||
@@ -12894,8 +12950,7 @@ export class BridgeWebSocketServer {
       ...(receipt.clientUserMessageIdAccepted === undefined
         ? {}
         : {
-            clientUserMessageIdAccepted:
-              receipt.clientUserMessageIdAccepted,
+            clientUserMessageIdAccepted: receipt.clientUserMessageIdAccepted,
           }),
       ...(receipt.error ? { error: receipt.error } : {}),
     });
@@ -12918,11 +12973,7 @@ export class BridgeWebSocketServer {
       type: "conversation_queue",
       sessionId,
       limit: 1,
-      items: item
-        ? [
-            item,
-          ]
-        : [],
+      items: item ? [item] : [],
     } as Record<string, unknown>);
   }
 

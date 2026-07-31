@@ -142,6 +142,8 @@ describe("Bridge private HTTP route classification", () => {
   it.each([
     ["GET", "/usage"],
     ["GET", "/doctor"],
+    ["GET", "/readyz"],
+    ["GET", "/pilot/diagnostics"],
     ["GET", "/api/gallery?project=/tmp"],
     ["POST", "/api/gallery/upload"],
     ["DELETE", "/api/gallery/123e4567-e89b-12d3-a456-426614174000"],
@@ -151,6 +153,7 @@ describe("Bridge private HTTP route classification", () => {
 
   it.each([
     ["GET", "/health"],
+    ["GET", "/livez"],
     ["GET", "/version"],
     ["GET", "/images/opaque-id"],
     ["GET", "/api/gallery/123e4567-e89b-12d3-a456-426614174000"],

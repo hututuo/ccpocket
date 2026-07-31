@@ -97,7 +97,8 @@ describe("CodexProcess (app-server)", () => {
 
   it("persists client message identity on start and steer RPCs", async () => {
     const proc = new CodexProcess("linux");
-    const request = vi.spyOn(proc as any, "request")
+    const request = vi
+      .spyOn(proc as any, "request")
       .mockResolvedValue({ turn: { id: "turn-1" } });
 
     await (proc as any).requestWithClientUserMessageIdFallback(
@@ -670,6 +671,414 @@ describe("CodexProcess (app-server)", () => {
     expect(oldTransportStop).toHaveBeenCalledOnce();
     expect(newTransportStop).not.toHaveBeenCalled();
     expect((proc as any).transport).toBe(newTransport);
+
+    proc.stop();
+  });
+
+  it("attaches an observer without replaying settings or entering the input loop", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    let inputReadyCount = 0;
+    proc.on("message", (message) => {
+      messages.push(message as unknown as Record<string, unknown>);
+    });
+    proc.on("input_ready", () => {
+      inputReadyCount += 1;
+    });
+
+    proc.start("/tmp/must-not-be-sent", {
+      threadId: "thread-shared-observer",
+      sharedRuntimeAttach: "observer",
+      excludeTurnsOnOpen: false,
+      profile: "must-not-be-sent",
+      additionalWritableRoots: ["/tmp/must-not-be-sent-root"],
+      approvalPolicy: "never",
+      approvalsReviewer: "auto_review",
+      codexPermissionsMode: "fullAccess",
+      sandboxMode: "danger-full-access",
+      model: "must-not-be-sent",
+      modelReasoningEffort: "high",
+      serviceTier: "priority",
+      networkAccessEnabled: true,
+      webSearchMode: "live",
+      collaborationMode: "plan",
+      autoReviewDisabledByPolicy: null,
+      resumeGoalAfterStart: true,
+      continueInterruptedTurnAfterStart: true,
+    });
+    const attached = proc.waitUntilAttached(5_000);
+
+    const child = fakeChildren[0];
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+
+    const resumeReq = nextOutgoingRequest(child);
+    expect(resumeReq).toMatchObject({
+      method: "thread/resume",
+      params: {
+        threadId: "thread-shared-observer",
+        excludeTurns: true,
+      },
+    });
+    expect(resumeReq.params).toEqual({
+      threadId: "thread-shared-observer",
+      excludeTurns: true,
+    });
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: resumeReq.id,
+        result: {
+          thread: {
+            id: "thread-shared-observer",
+            status: {
+              type: "active",
+              activeFlags: ["waitingOnApproval"],
+            },
+          },
+        },
+      })}\n`,
+    );
+    await tick();
+    expect(proc.isAttachmentReady).toBe(false);
+
+    const turnsReq = nextOutgoingRequest(child);
+    expect(turnsReq).toMatchObject({
+      method: "thread/turns/list",
+      params: {
+        threadId: "thread-shared-observer",
+        limit: 10,
+        sortDirection: "desc",
+        itemsView: "summary",
+      },
+    });
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: turnsReq.id,
+        result: {
+          data: [{ id: "turn-shared-active", status: "inProgress" }],
+          nextCursor: null,
+        },
+      })}\n`,
+    );
+    await tick();
+    await attached;
+
+    expect(proc.authoritativeThreadStatus).toEqual({
+      type: "active",
+      activeFlags: ["waitingOnApproval"],
+    });
+    expect(proc.activeTurnId).toBe("turn-shared-active");
+    expect(proc.status).toBe("waiting_approval");
+    expect(proc.isAttachmentReady).toBe(true);
+    expect(inputReadyCount).toBe(0);
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: "observer-request",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          threadId: "thread-shared-observer",
+          turnId: "turn-shared-active",
+          itemId: "item-observer",
+          command: "pwd",
+        },
+      })}\n`,
+    );
+    await tick();
+    expect(messages).not.toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "item-observer",
+      }),
+    );
+    expect(outgoingResponses(child)).toEqual([]);
+
+    proc.stop();
+  });
+
+  it("rejects shared attach without one existing thread binding", () => {
+    const proc = new CodexProcess("linux");
+    expect(() =>
+      proc.start("/tmp/shared-invalid", {
+        sharedRuntimeAttach: "observer",
+      }),
+    ).toThrow("Shared runtime attach requires an existing thread id");
+    expect(() =>
+      proc.start("/tmp/shared-invalid", {
+        threadId: "thread-existing",
+        forkFromThreadId: "thread-parent",
+        sharedRuntimeAttach: "adoption",
+      }),
+    ).toThrow("Shared runtime attach cannot fork a thread");
+    expect(fakeChildren).toHaveLength(0);
+  });
+
+  it("lets an adoption attach accept input but drops foreign server requests", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    let inputReadyCount = 0;
+    proc.on("message", (message) => {
+      messages.push(message as unknown as Record<string, unknown>);
+    });
+    proc.on("input_ready", () => {
+      inputReadyCount += 1;
+    });
+
+    proc.start("/tmp/shared-adoption", {
+      threadId: "thread-shared-adoption",
+      sharedRuntimeAttach: "adoption",
+      sandboxMode: "danger-full-access",
+      model: "must-not-be-sent",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const resumeReq = nextOutgoingRequest(child);
+    expect(resumeReq.params).toEqual({
+      threadId: "thread-shared-adoption",
+      excludeTurns: true,
+    });
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: resumeReq.id,
+        result: {
+          thread: {
+            id: "thread-shared-adoption",
+            status: { type: "idle" },
+            turns: [],
+          },
+        },
+      })}\n`,
+    );
+    await tick();
+
+    expect(proc.status).toBe("idle");
+    expect(inputReadyCount).toBe(1);
+
+    proc.sendInput("continue without changing Desktop settings");
+    await tick();
+    const turnStart = nextOutgoingRequest(child);
+    expect(turnStart.method).toBe("turn/start");
+    expect(turnStart.params).toMatchObject({
+      threadId: "thread-shared-adoption",
+    });
+    expect(turnStart.params).not.toHaveProperty("model");
+    expect(turnStart.params).not.toHaveProperty("effort");
+    expect(turnStart.params).not.toHaveProperty("serviceTier");
+    expect(turnStart.params).not.toHaveProperty("approvalPolicy");
+    expect(turnStart.params).not.toHaveProperty("approvalsReviewer");
+    expect(turnStart.params).not.toHaveProperty("sandboxPolicy");
+    expect(turnStart.params).not.toHaveProperty("collaborationMode");
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: turnStart.id,
+        result: { turn: { id: "turn-shared-adoption" } },
+      })}\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-shared-adoption",
+          turn: { id: "turn-shared-adoption", status: "completed" },
+        },
+      })}\n`,
+    );
+    await tick();
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: "foreign-request",
+        method: "item/fileChange/requestApproval",
+        params: {
+          threadId: "thread-foreign",
+          turnId: "turn-foreign",
+          itemId: "item-foreign",
+        },
+      })}\n`,
+    );
+    await tick();
+    expect(messages).not.toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "item-foreign",
+      }),
+    );
+    expect(outgoingResponses(child)).toEqual([]);
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: "owned-request",
+        method: "item/fileChange/requestApproval",
+        params: {
+          threadId: "thread-shared-adoption",
+          turnId: "turn-owned",
+          itemId: "item-owned",
+        },
+      })}\n`,
+    );
+    await tick();
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "item-owned",
+      }),
+    );
+
+    const internal = proc as any;
+    internal._runtimeGeneration += 1;
+    internal.handleServerRequest(
+      "stale-generation-request",
+      "item/fileChange/requestApproval",
+      {
+        threadId: "thread-shared-adoption",
+        turnId: "turn-stale",
+        itemId: "item-stale",
+      },
+    );
+    expect(messages).not.toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "item-stale",
+      }),
+    );
+    internal.handleNotification("thread/status/changed", {
+      threadId: "thread-shared-adoption",
+      status: { type: "active", activeFlags: [] },
+    });
+    expect(proc.authoritativeThreadStatus).toEqual({ type: "idle" });
+
+    proc.stop();
+  });
+
+  it("treats a daemon-created writer as shared for request ownership", () => {
+    const proc = new CodexProcess("linux");
+    const internal = proc as any;
+    internal.stopped = false;
+    internal._runtimeGeneration = 11;
+    internal._sharedRuntimePilotGates = {
+      enabled: true,
+      codexSourceId: "source-one",
+      allowThreadStart: true,
+      allowTurnStart: true,
+    };
+    internal._sharedRuntimeAttachMode = null;
+
+    expect(
+      internal.canHandleServerRequest({
+        threadId: "thread-daemon-owned",
+      }),
+    ).toBe(false);
+
+    internal._threadId = "thread-daemon-owned";
+    internal._attachmentRuntimeGeneration = 11;
+    expect(
+      internal.canHandleServerRequest({
+        threadId: "thread-daemon-owned",
+      }),
+    ).toBe(true);
+    expect(
+      internal.canHandleServerRequest({
+        threadId: "thread-foreign",
+      }),
+    ).toBe(false);
+    expect(internal.canHandleServerRequest({})).toBe(false);
+
+    internal.handleNotification("thread/status/changed", {
+      status: { type: "active", activeFlags: [] },
+    });
+    expect(proc.authoritativeThreadStatus).toEqual({ type: "unknown" });
+
+    proc.stop();
+  });
+
+  it("preserves authoritative shared thread status without fabricating idle", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    let inputReadyCount = 0;
+    proc.on("message", (message) => {
+      messages.push(message as unknown as Record<string, unknown>);
+    });
+    proc.on("input_ready", () => {
+      inputReadyCount += 1;
+    });
+    const internal = proc as any;
+    internal.stopped = false;
+    internal._runtimeGeneration = 7;
+    internal._attachmentRuntimeGeneration = 7;
+    internal._sharedRuntimeAttachMode = "observer";
+    internal._threadId = "thread-status";
+
+    internal.handleNotification("thread/status/changed", {
+      threadId: "thread-status",
+      status: { type: "active", activeFlags: [] },
+    });
+    expect(proc.status).toBe("running");
+    expect(proc.authoritativeThreadStatus).toEqual({
+      type: "active",
+      activeFlags: [],
+    });
+
+    internal.handleNotification("thread/status/changed", {
+      threadId: "thread-status",
+      status: { type: "systemError" },
+    });
+    expect(proc.status).toBe("starting");
+    expect(proc.authoritativeThreadStatus).toEqual({ type: "systemError" });
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        errorCode: "codex_thread_system_error",
+      }),
+    );
+
+    internal.handleNotification("thread/status/changed", {
+      threadId: "thread-status",
+      status: { type: "futureStatus" },
+    });
+    expect(proc.status).toBe("starting");
+    expect(proc.authoritativeThreadStatus).toEqual({ type: "unknown" });
+    expect(inputReadyCount).toBe(0);
+
+    internal.handleNotification("thread/status/changed", {
+      threadId: "thread-status",
+      status: { type: "idle" },
+    });
+    expect(proc.status).toBe("idle");
+    expect(proc.authoritativeThreadStatus).toEqual({ type: "idle" });
+    expect(inputReadyCount).toBe(0);
+
+    internal.handleNotification("thread/status/changed", {
+      threadId: "thread-foreign",
+      status: { type: "active", activeFlags: [] },
+    });
+    expect(proc.authoritativeThreadStatus).toEqual({ type: "idle" });
+    internal.handleNotification("thread/status/changed", {
+      status: { type: "active", activeFlags: [] },
+    });
+    expect(proc.authoritativeThreadStatus).toEqual({ type: "idle" });
 
     proc.stop();
   });
@@ -7164,6 +7573,20 @@ function nextOutgoingRequest(child: FakeChildProcess): Record<string, unknown> {
     child,
     (value) => typeof value.method === "string" && value.id !== undefined,
   );
+}
+
+function outgoingResponses(child: FakeChildProcess): Record<string, unknown>[] {
+  return child.stdin.writes
+    .flatMap((chunk) => chunk.split("\n"))
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter(
+      (value) =>
+        value.id !== undefined &&
+        value.method === undefined &&
+        (value.result !== undefined || value.error !== undefined),
+    );
 }
 
 /** Consume and reply to the background skills/list request that fires after thread/start. */
