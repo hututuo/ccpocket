@@ -580,7 +580,8 @@ class HomeContentState extends State<HomeContent> {
     );
   }
 
-  void _openRunningSession(SessionInfo session) {
+  void _openRunningSession(UnifiedSessionListItem item) {
+    final session = item.running!;
     widget.onTapRunning(
       session.id,
       projectPath: session.projectPath,
@@ -588,8 +589,8 @@ class HomeContentState extends State<HomeContent> {
           ? session.worktreeBranch
           : session.gitBranch,
       worktreePath: session.worktreePath,
-      provider: session.provider,
-      durableProviderSessionId: session.claudeSessionId,
+      provider: item.provider,
+      durableProviderSessionId: item.providerSessionId,
       permissionMode: session.permissionMode,
       sandboxMode: session.codexSandboxMode,
       approvalPolicy: session.codexApprovalPolicy,
@@ -823,7 +824,7 @@ class HomeContentState extends State<HomeContent> {
                 ? () => widget.onStopSession(running.id)
                 : null,
             onTap: running != null
-                ? () => _openRunningSession(running)
+                ? () => _openRunningSession(item)
                 : () => widget.onResumeSession(recent!),
             onApprove: running == null
                 ? null
