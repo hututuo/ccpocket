@@ -44,11 +44,17 @@ Map<String, dynamic> _healthJson({
 
 void main() {
   test('builds exact ephemeral broker requests without a legacy sessionId', () {
-    final snapshot = requestCodexActions(requestId: 'snapshot-1');
+    final snapshot = requestCodexActions(
+      requestId: 'snapshot-1',
+      codexSourceId: 'source-1',
+      threadId: 'thread-1',
+    );
     expect(snapshot.delivery, ClientMessageDelivery.ephemeral);
     expect(_json(snapshot), {
       'type': 'get_codex_actions',
       'requestId': 'snapshot-1',
+      'codexSourceId': 'source-1',
+      'threadId': 'thread-1',
     });
 
     final request = CodexActionBrokerRequest.fromJson(_requestJson());
@@ -88,11 +94,19 @@ void main() {
               'requestId': 'snapshot-1',
               'health': _healthJson(),
               'requests': [_requestJson()],
+              'scope': {
+                'codexSourceId': 'source-1',
+                'threadId': 'thread-1',
+              },
+              'truncated': true,
             })
             as CodexActionBrokerEventMessage;
 
     expect(message.health?.writerLeaseHeld, isTrue);
     expect(message.health?.authorityGeneration, 'generation-1');
+    expect(message.scope?.codexSourceId, 'source-1');
+    expect(message.scope?.threadId, 'thread-1');
+    expect(message.truncated, isTrue);
     expect(
       message.requests.single,
       isA<CodexActionBrokerRequest>()

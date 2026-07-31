@@ -255,6 +255,18 @@ void main() {
     'catalog emissions do not repeatedly request broker snapshots',
     () async {
       expect(
+        bridge.sent.firstWhere(
+          (message) => message['type'] == 'get_codex_actions',
+        ),
+        containsPair('codexSourceId', 'source-1'),
+      );
+      expect(
+        bridge.sent.firstWhere(
+          (message) => message['type'] == 'get_codex_actions',
+        ),
+        containsPair('threadId', 'thread-1'),
+      );
+      expect(
         bridge.sent.where((message) => message['type'] == 'get_codex_actions'),
         hasLength(1),
       );
@@ -269,6 +281,25 @@ void main() {
       );
     },
   );
+
+  test('ignores a scoped snapshot for another source or thread', () async {
+    bridge.emit(
+      CodexActionBrokerEventMessage(
+        event: CodexActionBrokerEventKind.snapshot,
+        health: _health(),
+        requests: [_request()],
+        scope: const CodexActionBrokerSnapshotScope(
+          codexSourceId: 'source-1',
+          threadId: 'thread-other',
+        ),
+      ),
+    );
+    await _flush();
+
+    expect(service.health, isNull);
+    expect(service.visibleRequest, isNull);
+    expect(service.phase, CodexActionBrokerInteractionPhase.loading);
+  });
 
   test('only an exact live writer-leased request is actionable', () async {
     bridge.emit(

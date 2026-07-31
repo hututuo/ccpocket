@@ -324,7 +324,13 @@ class CodexActionBrokerService extends ChangeNotifier {
   bool refresh() {
     if (_disposed || !authenticatedSourceMatches) return false;
     try {
-      bridge.send(requestCodexActions(requestId: _createId()));
+      bridge.send(
+        requestCodexActions(
+          requestId: _createId(),
+          codexSourceId: expectedCodexSourceId!.trim(),
+          threadId: threadId,
+        ),
+      );
       return true;
     } catch (_) {
       _lastError = 'disconnected';
@@ -412,6 +418,12 @@ class CodexActionBrokerService extends ChangeNotifier {
     if (message is! CodexActionBrokerEventMessage) return;
     switch (message.event) {
       case CodexActionBrokerEventKind.snapshot:
+        final scope = message.scope;
+        if (scope != null &&
+            (scope.codexSourceId != expectedCodexSourceId?.trim() ||
+                scope.threadId != threadId)) {
+          return;
+        }
         _applyHealth(message.health);
         _snapshotObserved = true;
         _lastOutcome = null;

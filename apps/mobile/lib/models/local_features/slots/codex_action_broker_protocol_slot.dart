@@ -338,6 +338,8 @@ class CodexActionBrokerEventMessage implements LocalFeatureTransientMessage {
     this.outcome,
     this.opaqueRequestId,
     this.error,
+    this.scope,
+    this.truncated = false,
   });
 
   @override
@@ -351,6 +353,8 @@ class CodexActionBrokerEventMessage implements LocalFeatureTransientMessage {
   final CodexActionBrokerResponseOutcome? outcome;
   final String? opaqueRequestId;
   final String? error;
+  final CodexActionBrokerSnapshotScope? scope;
+  final bool truncated;
 
   @override
   String? get sessionId => switch (event) {
@@ -370,9 +374,13 @@ class CodexActionBrokerEventMessage implements LocalFeatureTransientMessage {
       case CodexActionBrokerEventKind.snapshot:
         final rawHealth = json['health'];
         final rawRequests = json['requests'];
+        final rawScope = json['scope'];
+        final rawTruncated = json['truncated'];
         if (rawHealth is! Map ||
             rawRequests is! List ||
-            rawRequests.length > 1024) {
+            rawRequests.length > 1024 ||
+            (rawScope != null && rawScope is! Map) ||
+            (rawTruncated != null && rawTruncated is! bool)) {
           throw const FormatException('Invalid Codex action broker snapshot.');
         }
         final inputBudget = _CodexActionBrokerInputBudget(
@@ -385,6 +393,12 @@ class CodexActionBrokerEventMessage implements LocalFeatureTransientMessage {
           health: CodexActionBrokerHealth.fromJson(
             Map<String, dynamic>.from(rawHealth),
           ),
+          scope: rawScope == null
+              ? null
+              : CodexActionBrokerSnapshotScope.fromJson(
+                  Map<String, dynamic>.from(rawScope),
+                ),
+          truncated: rawTruncated == true,
           requests: List<CodexActionBrokerRequest>.unmodifiable(
             rawRequests.map((raw) {
               if (raw is! Map) {
@@ -455,7 +469,35 @@ class CodexActionBrokerEventMessage implements LocalFeatureTransientMessage {
   }
 }
 
-ClientMessage requestCodexActions({required String requestId}) {
+class CodexActionBrokerSnapshotScope {
+  const CodexActionBrokerSnapshotScope({
+    required this.codexSourceId,
+    required this.threadId,
+  });
+
+  final String codexSourceId;
+  final String threadId;
+
+  factory CodexActionBrokerSnapshotScope.fromJson(Map<String, dynamic> json) =>
+      CodexActionBrokerSnapshotScope(
+        codexSourceId: _codexActionBrokerRequiredString(
+          json['codexSourceId'],
+          128,
+          'scope.codexSourceId',
+        ),
+        threadId: _codexActionBrokerRequiredString(
+          json['threadId'],
+          256,
+          'scope.threadId',
+        ),
+      );
+}
+
+ClientMessage requestCodexActions({
+  required String requestId,
+  required String codexSourceId,
+  required String threadId,
+}) {
   final normalizedRequestId = _codexActionBrokerCheckedId(
     requestId,
     'requestId',
@@ -464,6 +506,12 @@ ClientMessage requestCodexActions({required String requestId}) {
   return ClientMessage._(<String, dynamic>{
     'type': 'get_codex_actions',
     'requestId': normalizedRequestId,
+    'codexSourceId': _codexActionBrokerCheckedId(
+      codexSourceId,
+      'codexSourceId',
+      128,
+    ),
+    'threadId': _codexActionBrokerCheckedId(threadId, 'threadId', 256),
   }, delivery: ClientMessageDelivery.ephemeral);
 }
 
