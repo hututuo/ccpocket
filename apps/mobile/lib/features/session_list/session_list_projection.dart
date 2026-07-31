@@ -3,7 +3,7 @@ import '../../widgets/session_visual_status.dart';
 import 'state/session_list_cubit.dart';
 import 'state/session_list_state.dart';
 
-enum SessionListUrgency { needsYou, working, error, unread, ordinary }
+enum SessionListUrgency { unread, needsYou, working, error, ordinary }
 
 /// One durable conversation row assembled from the Bridge runtime list and the
 /// provider's recent-session catalog.
@@ -139,6 +139,13 @@ List<UnifiedSessionListItem> buildUnifiedSessionList({
         unseenSessionIds: unseenSessionIds,
       ),
   };
+  final orderingActivityByIdentity = {
+    for (final item in items)
+      item.identityKey: sessionListOrderingActivityFor(
+        item,
+        unseenSessionIds: unseenSessionIds,
+      ),
+  };
   items.sort((left, right) {
     final pinCompare = _pinTier(
       left,
@@ -151,8 +158,10 @@ List<UnifiedSessionListItem> buildUnifiedSessionList({
     );
     if (urgencyCompare != 0) return urgencyCompare;
 
-    final activityCompare = (right.activityAt?.millisecondsSinceEpoch ?? -1)
-        .compareTo(left.activityAt?.millisecondsSinceEpoch ?? -1);
+    final leftActivity = orderingActivityByIdentity[left.identityKey];
+    final rightActivity = orderingActivityByIdentity[right.identityKey];
+    final activityCompare = (rightActivity?.millisecondsSinceEpoch ?? -1)
+        .compareTo(leftActivity?.millisecondsSinceEpoch ?? -1);
     if (activityCompare != 0) return activityCompare;
     return left.identityKey.compareTo(right.identityKey);
   });
@@ -164,6 +173,30 @@ SessionListUrgency sessionListUrgencyFor(
   required Set<String> unseenSessionIds,
 }) {
   final running = item.running;
+  if (item.syncUnread) return SessionListUrgency.unread;
+  final presentation = sessionCardPresentationFor(
+    syncStatus: item.syncStatus,
+    runtimeSession: running,
+    isUnseen: running != null && unseenSessionIds.contains(running.id),
+  );
+  if (presentation.isUnread) return SessionListUrgency.unread;
+  return switch (presentation.visualStatus.primary) {
+    SessionPrimaryStatus.needsYou => SessionListUrgency.needsYou,
+    SessionPrimaryStatus.working => SessionListUrgency.working,
+    SessionPrimaryStatus.error => SessionListUrgency.error,
+    SessionPrimaryStatus.idle ||
+    SessionPrimaryStatus.unknown => SessionListUrgency.ordinary,
+  };
+}
+
+/// Returns the timestamp that is allowed to move a row within its urgency
+/// tier. Working conversations advance only for discrete visible assistant
+/// text, never for stream deltas, thinking, tools, or status traffic.
+DateTime? sessionListOrderingActivityFor(
+  UnifiedSessionListItem item, {
+  required Set<String> unseenSessionIds,
+}) {
+  final running = item.running;
   final presentation = sessionCardPresentationFor(
     syncStatus: item.syncStatus,
     runtimeSession: running,
@@ -171,15 +204,17 @@ SessionListUrgency sessionListUrgencyFor(
         item.syncUnread ||
         (running != null && unseenSessionIds.contains(running.id)),
   );
-  return switch (presentation.visualStatus.primary) {
-    SessionPrimaryStatus.needsYou => SessionListUrgency.needsYou,
-    SessionPrimaryStatus.working => SessionListUrgency.working,
-    SessionPrimaryStatus.error => SessionListUrgency.error,
-    SessionPrimaryStatus.idle when presentation.isUnread =>
-      SessionListUrgency.unread,
-    SessionPrimaryStatus.idle ||
-    SessionPrimaryStatus.unknown => SessionListUrgency.ordinary,
-  };
+  if (presentation.visualStatus.primary != SessionPrimaryStatus.working) {
+    return item.activityAt;
+  }
+  final checkpoints = <DateTime>[
+    ?_parseDate(item.recent?.lastAssistantOutputAt),
+    ?_parseDate(running?.lastAssistantOutputAt),
+  ];
+  if (checkpoints.isEmpty) return item.activityAt;
+  return checkpoints.reduce(
+    (latest, candidate) => candidate.isAfter(latest) ? candidate : latest,
+  );
 }
 
 bool sessionListItemBypassesDisplayLimit(
@@ -200,6 +235,7 @@ List<String> orderProjectPathsForGroupedView({
   required List<UnifiedSessionListItem> sessions,
   Set<String> pinnedSessionKeys = const {},
   Set<String> pinnedProjectPaths = const {},
+  Set<String> unseenSessionIds = const {},
 }) {
   final paths = <String>[];
   final firstSeenIndex = <String, int>{};
@@ -219,7 +255,10 @@ List<String> orderProjectPathsForGroupedView({
     if (pinKey != null && pinnedSessionKeys.contains(pinKey)) {
       projectsWithPinnedSessions.add(path);
     }
-    final activityAt = item.activityAt;
+    final activityAt = sessionListOrderingActivityFor(
+      item,
+      unseenSessionIds: unseenSessionIds,
+    );
     final currentLatest = latestActivityByProject[path];
     if (activityAt != null &&
         (currentLatest == null || activityAt.isAfter(currentLatest))) {
@@ -248,7 +287,9 @@ List<String> orderProjectPathsForGroupedView({
       final activityCompare = rightActivity.compareTo(leftActivity);
       if (activityCompare != 0) return activityCompare;
     }
-    return firstSeenIndex[left]!.compareTo(firstSeenIndex[right]!);
+    // Session rows arrive urgency-sorted. A lexical tie-break keeps project
+    // sections stable when unread changes between equal-activity projects.
+    return left.compareTo(right);
   });
   return List.unmodifiable(paths);
 }

@@ -97,11 +97,18 @@ String _recentSessionCardText(
 
 SessionInfo _sessionInfoForUnifiedCard(
   UnifiedSessionListItem item,
-  SessionDisplayMode displayMode,
-) {
+  SessionDisplayMode displayMode, {
+  DateTime? orderingActivityAt,
+}) {
   final runtime = item.running;
   final catalog = item.recent;
-  if (catalog == null) return runtime!;
+  if (catalog == null) {
+    return orderingActivityAt == null
+        ? runtime!
+        : runtime!.copyWith(
+            lastActivityAt: orderingActivityAt.toIso8601String(),
+          );
+  }
 
   String preferRuntime(String? runtimeValue, String catalogValue) {
     final value = runtimeValue?.trim();
@@ -135,9 +142,13 @@ SessionInfo _sessionInfoForUnifiedCard(
     // The durable catalog timestamp is the stable list/card timestamp. Runtime
     // attachment is transient and must not make a row jump or show a different
     // clock merely because an app-server watcher attached.
-    lastActivityAt: catalog.modified.isNotEmpty
-        ? catalog.modified
-        : (runtime?.lastActivityAt ?? catalog.created),
+    lastActivityAt:
+        orderingActivityAt?.toIso8601String() ??
+        (catalog.modified.isNotEmpty
+            ? catalog.modified
+            : (runtime?.lastActivityAt ?? catalog.created)),
+    lastAssistantOutputAt:
+        runtime?.lastAssistantOutputAt ?? catalog.lastAssistantOutputAt,
     gitBranch: preferRuntime(runtime?.gitBranch, catalog.gitBranch),
     lastMessage: preferRuntime(
       runtime?.lastMessage,
@@ -707,6 +718,7 @@ class HomeContentState extends State<HomeContent> {
       sessions: unifiedSessions,
       pinnedSessionKeys: widget.pinnedSessionKeys,
       pinnedProjectPaths: widget.pinnedProjectPaths,
+      unseenSessionIds: widget.unseenSessionIds,
     );
     final groupedSessions = _groupSessionsByProject(
       projectPaths: allProjectPaths,
@@ -722,7 +734,15 @@ class HomeContentState extends State<HomeContent> {
     Widget buildUnifiedSessionRow(UnifiedSessionListItem item) {
       final running = item.running;
       final recent = item.recent;
-      final cardSession = _sessionInfoForUnifiedCard(item, _displayMode);
+      final orderingActivityAt = sessionListOrderingActivityFor(
+        item,
+        unseenSessionIds: widget.unseenSessionIds,
+      );
+      final cardSession = _sessionInfoForUnifiedCard(
+        item,
+        _displayMode,
+        orderingActivityAt: orderingActivityAt,
+      );
       final pendingResumeAction =
           pendingResumeActionsByIdentity[item.identityKey];
       final isProcessing =

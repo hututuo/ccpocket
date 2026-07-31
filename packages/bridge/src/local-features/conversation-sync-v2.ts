@@ -271,7 +271,10 @@ interface CachedTurnDetails {
 
 interface LiveContentRevision {
   target: ConversationSyncTarget;
+  /** Latest timeline event, including streaming, thinking, and tool traffic. */
   observedAt: string;
+  /** Latest discrete assistant text allowed to advance catalog ordering. */
+  catalogObservedAt?: string;
   revision: string;
 }
 
@@ -592,7 +595,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       return;
     }
     if (isConversationTimelineMessage(message)) {
-      this.publishLiveContent(target, observedAt);
+      this.publishLiveContent(
+        target,
+        observedAt,
+        assistantTextCatalogActivity(message, observedAt),
+      );
       return;
     }
 
@@ -742,10 +749,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (!subscription || subscription.id !== message.subscriptionId) return;
     const key = targetKey(message);
     const nextReadAt = new Date(message.readAt).toISOString();
-    const currentReadAt = subscription.readWatermarks.get(key);
-    if (currentReadAt && Date.parse(currentReadAt) > Date.parse(nextReadAt)) {
-      return;
-    }
+    // WebSocket frames are ordered and Mobile serializes its SQLite writes.
+    // Accept a lower value so a status-clock-bound watermark can repair a
+    // previously persisted fast-phone timestamp without reconnecting.
     subscription.readWatermarks.set(key, nextReadAt);
     this.scheduleSync(client, subscription);
   }
@@ -1599,8 +1605,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           ) {
             this.liveContentRevisions.delete(key);
             this.deleteExternalCodexLiveMessages(key);
-          } else if (live) {
-            entry = withLiveCatalogMetadata(entry, live.observedAt);
+          } else if (live?.catalogObservedAt) {
+            entry = withLiveCatalogMetadata(entry, live.catalogObservedAt);
           }
           const previous = previousStatuses.get(key);
           next.set(key, {
@@ -2161,7 +2167,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (isStreamingConversationDelta(event.message)) {
       this.queueLiveContent(target, observedAt);
     } else if (isConversationTimelineMessage(event.message)) {
-      this.publishLiveContent(target, observedAt);
+      this.publishLiveContent(
+        target,
+        observedAt,
+        assistantTextCatalogActivity(event.message, observedAt),
+      );
     }
   }
 
@@ -2650,6 +2660,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private publishLiveContent(
     target: ConversationSyncTarget,
     observedAt: string,
+    catalogObservedAt?: string,
   ): void {
     const key = targetKey(target);
     this.pendingLiveContent.delete(key);
@@ -2658,7 +2669,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       this.liveContentTimer = undefined;
       this.liveContentBatchStartedAt = undefined;
     }
-    this.rememberLiveContent(target, observedAt);
+    this.rememberLiveContent(target, observedAt, catalogObservedAt);
     const changedKeys = new Set([key]);
     this.applyRuntimeOverlay(changedKeys);
     this.recomputeStates(changedKeys);
@@ -2683,15 +2694,28 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private rememberLiveContent(
     target: ConversationSyncTarget,
     observedAt: string,
+    catalogObservedAt?: string,
   ): void {
     const key = targetKey(target);
+    const previous = this.liveContentRevisions.get(key);
+    const latestCatalogObservedAt = catalogObservedAt
+      ? previous?.catalogObservedAt
+        ? laterIso(previous.catalogObservedAt, catalogObservedAt)
+        : catalogObservedAt
+      : previous?.catalogObservedAt;
     const record = this.catalog.get(key);
-    if (record) {
-      record.entry = withLiveCatalogMetadata(record.entry, observedAt);
+    if (record && latestCatalogObservedAt) {
+      record.entry = withLiveCatalogMetadata(
+        record.entry,
+        latestCatalogObservedAt,
+      );
     }
     this.liveContentRevisions.set(key, {
       target,
       observedAt,
+      ...(latestCatalogObservedAt
+        ? { catalogObservedAt: latestCatalogObservedAt }
+        : {}),
       revision: providerRevision(
         target,
         `${observedAt}:${++this.liveRevision}`,
@@ -4793,6 +4817,18 @@ function isConversationTimelineMessage(message: ServerMessage): boolean {
     message.type === "tool_use_summary" ||
     message.type === "user_input"
   );
+}
+
+function assistantTextCatalogActivity(
+  message: ServerMessage,
+  observedAt: string,
+): string | undefined {
+  if (message.type !== "assistant") return undefined;
+  return message.message.content.some(
+    (content) => content.type === "text" && content.text.trim().length > 0,
+  )
+    ? observedAt
+    : undefined;
 }
 
 function targetKey(target: ConversationSyncTarget): ConversationKey {

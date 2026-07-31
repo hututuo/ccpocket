@@ -311,11 +311,20 @@ class SessionListCubit extends Cubit<SessionListState> {
         }
       case ConversationSyncCacheUpdateKind.readWatermark:
         if (canApplyCommittedDelta && update.readWatermark != null) {
-          _applyCommittedReadWatermark(update.readWatermark!);
+          _applyCommittedReadWatermark(
+            update.readWatermark!,
+            replaceExisting: update.replaceExistingReadWatermark,
+          );
         } else {
           reloadCache = true;
         }
       case ConversationSyncCacheUpdateKind.timeline:
+        if (canApplyCommittedDelta &&
+            update.provider != null &&
+            update.providerSessionId != null &&
+            update.lastAssistantOutputAt != null) {
+          _applyCommittedAssistantOutputCheckpoint(update);
+        }
       case ConversationSyncCacheUpdateKind.completed:
         break;
     }
@@ -326,6 +335,13 @@ class SessionListCubit extends Cubit<SessionListState> {
 
   void _applyCommittedCatalogDelta(ConversationSyncCacheUpdate update) {
     final codexSourceId = update.codexSourceId!;
+    final existingByKey = {
+      for (final session in _cachedSessions)
+        _conversationKey(
+          session.provider ?? Provider.claude.value,
+          session.sessionId,
+        ): session,
+    };
     final replacedKeys = {for (final entry in update.catalogUpserts) entry.key};
     final destroyedKeys = {
       for (final entry in update.catalogDestroyed) entry.key,
@@ -337,9 +353,16 @@ class SessionListCubit extends Cubit<SessionListState> {
       );
       return !replacedKeys.contains(key) && !destroyedKeys.contains(key);
     });
-    final upserts = update.catalogUpserts.map(
-      (entry) => entry.toRecentSession(codexSourceId: codexSourceId),
-    );
+    final upserts = update.catalogUpserts.map((entry) {
+      final session = entry.toRecentSession(codexSourceId: codexSourceId);
+      return _preserveAssistantOutputCheckpoint(
+        session,
+        existingByKey[_conversationKey(
+          session.provider ?? Provider.claude.value,
+          session.sessionId,
+        )],
+      );
+    });
     _cachedSessions = _mergeCachedSessions(retained, upserts);
     if (destroyedKeys.isNotEmpty) {
       _conversationStatuses = Map.unmodifiable(
@@ -352,6 +375,57 @@ class SessionListCubit extends Cubit<SessionListState> {
       );
     }
     _emitCommittedCatalogProjection();
+  }
+
+  void _applyCommittedAssistantOutputCheckpoint(
+    ConversationSyncCacheUpdate update,
+  ) {
+    final candidate = DateTime.tryParse(update.lastAssistantOutputAt!)?.toUtc();
+    if (candidate == null) return;
+    final key = _conversationKey(update.provider!, update.providerSessionId!);
+    RecentSession advance(RecentSession session) {
+      final sessionKey = _conversationKey(
+        session.provider ?? Provider.claude.value,
+        session.sessionId,
+      );
+      if (sessionKey != key) return session;
+      final current = DateTime.tryParse(
+        session.lastAssistantOutputAt ?? '',
+      )?.toUtc();
+      if (current != null && !candidate.isAfter(current)) return session;
+      return session.copyWithLastAssistantOutputAt(candidate.toIso8601String());
+    }
+
+    var changed = false;
+    _cachedSessions = List<RecentSession>.unmodifiable(
+      _cachedSessions.map((session) {
+        final next = advance(session);
+        changed = changed || !identical(next, session);
+        return next;
+      }),
+    );
+    if (changed) {
+      _emitCommittedCatalogProjection();
+      return;
+    }
+    final visible = state.sessions.map(advance).toList(growable: false);
+    if (visible.indexed.any(
+      (entry) => !identical(entry.$2, state.sessions[entry.$1]),
+    )) {
+      _cachedSessions = _mergeCachedSessions(
+        _cachedSessions,
+        visible.where(
+          (session) =>
+              _conversationKey(
+                session.provider ?? Provider.claude.value,
+                session.sessionId,
+              ) ==
+              key,
+        ),
+      );
+      emit(state.copyWith(sessions: visible));
+      _catalogSnapshotChanges.add(null);
+    }
   }
 
   void _applyCommittedStatusDelta(List<ConversationSyncV2Status> changes) {
@@ -374,10 +448,15 @@ class SessionListCubit extends Cubit<SessionListState> {
     _catalogSnapshotChanges.add(null);
   }
 
-  void _applyCommittedReadWatermark(ConversationSyncV2ReadWatermark watermark) {
+  void _applyCommittedReadWatermark(
+    ConversationSyncV2ReadWatermark watermark, {
+    required bool replaceExisting,
+  }) {
     final existing = _conversationReadWatermarks[watermark.key];
-    if (existing != null &&
-        _compareIsoTimestamps(watermark.readAt, existing) <= 0) {
+    if (existing == watermark.readAt ||
+        (!replaceExisting &&
+            existing != null &&
+            _compareIsoTimestamps(watermark.readAt, existing) <= 0)) {
       return;
     }
     _conversationReadWatermarks = Map.unmodifiable({
@@ -459,7 +538,10 @@ class SessionListCubit extends Cubit<SessionListState> {
       );
     }
 
-    var sessions = response.sessions;
+    var sessions = _preserveAssistantOutputCheckpoints(
+      response.sessions,
+      _cachedSessions,
+    );
     var hasMore = response.hasMore;
     final projectPath = response.projectPath;
     final isProjectPage =
@@ -475,10 +557,7 @@ class SessionListCubit extends Cubit<SessionListState> {
         response.catalogRevision == _loadedCacheCatalogRevision &&
         _loadedCacheFingerprint == _currentCacheTarget()?.fingerprint;
     if (canReuseCompleteCache) {
-      _cachedSessions = _mergeCachedSessions(
-        _cachedSessions,
-        response.sessions,
-      );
+      _cachedSessions = _mergeCachedSessions(_cachedSessions, sessions);
       sessions = _filterCachedSessions(_cachedSessions);
       hasMore = false;
     } else if (response.catalogRevision != null &&
@@ -495,7 +574,7 @@ class SessionListCubit extends Cubit<SessionListState> {
         (response.searchQuery == null || response.searchQuery!.isEmpty) &&
         !response.hasMore;
     if (isCompleteCatalogResponse) {
-      _cachedSessions = response.sessions;
+      _cachedSessions = sessions;
       _loadedCacheFingerprint = _currentCacheTarget()?.fingerprint;
       _loadedCacheCatalogRevision = response.catalogRevision;
       _loadedCacheComplete = true;
@@ -1038,10 +1117,24 @@ class SessionListCubit extends Cubit<SessionListState> {
     Iterable<RecentSession> cached,
     Iterable<RecentSession> live,
   ) {
-    final merged = <String, RecentSession>{
-      for (final session in cached) recentSessionPinKey(session): session,
-      for (final session in live) recentSessionPinKey(session): session,
-    }.values.toList();
+    final mergedByKey = <String, RecentSession>{
+      for (final session in cached)
+        _conversationKey(
+          session.provider ?? Provider.claude.value,
+          session.sessionId,
+        ): session,
+    };
+    for (final session in live) {
+      final key = _conversationKey(
+        session.provider ?? Provider.claude.value,
+        session.sessionId,
+      );
+      mergedByKey[key] = _preserveAssistantOutputCheckpoint(
+        session,
+        mergedByKey[key],
+      );
+    }
+    final merged = mergedByKey.values.toList();
     merged.sort((left, right) {
       final modifiedOrder = _compareIsoTimestamps(
         right.modified,
@@ -1051,6 +1144,52 @@ class SessionListCubit extends Cubit<SessionListState> {
       return _compareIsoTimestamps(right.created, left.created);
     });
     return List<RecentSession>.unmodifiable(merged);
+  }
+
+  static List<RecentSession> _preserveAssistantOutputCheckpoints(
+    Iterable<RecentSession> incoming,
+    Iterable<RecentSession> existing,
+  ) {
+    final existingByKey = <String, RecentSession>{};
+    for (final session in existing) {
+      final key = _conversationKey(
+        session.provider ?? Provider.claude.value,
+        session.sessionId,
+      );
+      existingByKey[key] = _preserveAssistantOutputCheckpoint(
+        session,
+        existingByKey[key],
+      );
+    }
+    return List<RecentSession>.unmodifiable(
+      incoming.map((session) {
+        final key = _conversationKey(
+          session.provider ?? Provider.claude.value,
+          session.sessionId,
+        );
+        return _preserveAssistantOutputCheckpoint(session, existingByKey[key]);
+      }),
+    );
+  }
+
+  static RecentSession _preserveAssistantOutputCheckpoint(
+    RecentSession incoming,
+    RecentSession? existing,
+  ) {
+    if (existing == null) return incoming;
+    final existingTime = DateTime.tryParse(
+      existing.lastAssistantOutputAt ?? '',
+    )?.toUtc();
+    if (existingTime == null) return incoming;
+    final incomingTime = DateTime.tryParse(
+      incoming.lastAssistantOutputAt ?? '',
+    )?.toUtc();
+    if (incomingTime != null && !existingTime.isAfter(incomingTime)) {
+      return incoming;
+    }
+    return incoming.copyWithLastAssistantOutputAt(
+      existingTime.toIso8601String(),
+    );
   }
 
   static int _compareIsoTimestamps(String left, String right) {

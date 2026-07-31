@@ -180,6 +180,47 @@ void main() {
       );
     });
 
+    test('unread does not break equal-activity project ordering ties', () {
+      List<UnifiedSessionListItem> build(Set<String> unread) =>
+          buildUnifiedSessionList(
+            runningSessions: [
+              _running(
+                runtimeId: 'runtime-a',
+                threadId: 'thread-a',
+                lastActivityAt: '2026-07-25T01:00:00Z',
+                projectPath: '/project-a',
+              ),
+              _running(
+                runtimeId: 'runtime-b',
+                threadId: 'thread-b',
+                lastActivityAt: '2026-07-25T01:00:00Z',
+                projectPath: '/project-b',
+              ),
+            ],
+            recentSessions: const [],
+            unseenSessionIds: unread,
+          );
+
+      final before = build(const {});
+      final after = build(const {'runtime-b'});
+      expect(after.first.running!.id, 'runtime-b');
+      expect(
+        orderProjectPathsForGroupedView(
+          knownProjectPaths: const [],
+          sessions: before,
+        ),
+        ['/project-a', '/project-b'],
+      );
+      expect(
+        orderProjectPathsForGroupedView(
+          knownProjectPaths: const [],
+          sessions: after,
+          unseenSessionIds: const {'runtime-b'},
+        ),
+        ['/project-a', '/project-b'],
+      );
+    });
+
     test('grouped project order preserves explicit pin tiers', () {
       final pinnedSession = _recent(
         id: 'pinned-session',
@@ -235,7 +276,7 @@ void main() {
       expect(items.map((item) => item.running!.id), ['pinned-read', 'unread']);
     });
 
-    test('orders actionable, working, unread, then ordinary sessions', () {
+    test('orders unread before actionable and working sessions', () {
       final pinned = _running(
         runtimeId: 'pinned-ordinary',
         threadId: 'pinned-ordinary-thread',
@@ -280,14 +321,14 @@ void main() {
 
       expect(items.map((item) => item.running!.id), [
         'pinned-ordinary',
+        'unread',
         'needs-you',
         'working',
         'desktop-working',
-        'unread',
         'ordinary',
       ]);
       expect(
-        sessionListUrgencyFor(items[1], unseenSessionIds: const {'unread'}),
+        sessionListUrgencyFor(items[2], unseenSessionIds: const {'unread'}),
         SessionListUrgency.needsYou,
       );
       expect(
@@ -333,10 +374,10 @@ void main() {
       );
 
       expect(items.map((item) => item.providerSessionId), [
+        'unread',
         'needs-you',
         'working',
         'error',
-        'unread',
         'ordinary',
       ]);
       expect(
@@ -344,6 +385,94 @@ void main() {
         SessionListUrgency.ordinary,
       );
       expect(items.last.syncStatus?.activity, 'idle');
+    });
+
+    test(
+      'working order advances only for discrete assistant text checkpoints',
+      () {
+        final statuses = {
+          for (final id in ['thread-a', 'thread-b'])
+            _status(id, activity: 'working').key: _status(
+              id,
+              activity: 'working',
+            ),
+        };
+        final beforeAssistantUpdate = buildUnifiedSessionList(
+          runningSessions: const [],
+          recentSessions: [
+            _recent(
+              id: 'thread-a',
+              modified: '2026-07-25T06:00:00Z',
+              lastAssistantOutputAt: '2026-07-25T02:00:00Z',
+            ),
+            _recent(
+              id: 'thread-b',
+              modified: '2026-07-25T05:00:00Z',
+              lastAssistantOutputAt: '2026-07-25T03:00:00Z',
+            ),
+          ],
+          conversationStatuses: statuses,
+        );
+
+        expect(beforeAssistantUpdate.map((item) => item.providerSessionId), [
+          'thread-b',
+          'thread-a',
+        ]);
+
+        final afterAssistantUpdate = buildUnifiedSessionList(
+          runningSessions: const [],
+          recentSessions: [
+            _recent(
+              id: 'thread-a',
+              modified: '2026-07-25T07:00:00Z',
+              lastAssistantOutputAt: '2026-07-25T04:00:00Z',
+            ),
+            beforeAssistantUpdate.first.recent!,
+          ],
+          conversationStatuses: statuses,
+        );
+
+        expect(afterAssistantUpdate.map((item) => item.providerSessionId), [
+          'thread-a',
+          'thread-b',
+        ]);
+      },
+    );
+
+    test('grouped project order ignores tool-only working activity', () {
+      final statuses = {
+        for (final id in ['thread-a', 'thread-b'])
+          _status(id, activity: 'working').key: _status(
+            id,
+            activity: 'working',
+          ),
+      };
+      final items = buildUnifiedSessionList(
+        runningSessions: const [],
+        recentSessions: [
+          _recent(
+            id: 'thread-a',
+            modified: '2026-07-25T07:00:00Z',
+            lastAssistantOutputAt: '2026-07-25T02:00:00Z',
+            projectPath: '/project-a',
+          ),
+          _recent(
+            id: 'thread-b',
+            modified: '2026-07-25T05:00:00Z',
+            lastAssistantOutputAt: '2026-07-25T03:00:00Z',
+            projectPath: '/project-b',
+          ),
+        ],
+        conversationStatuses: statuses,
+      );
+
+      expect(
+        orderProjectPathsForGroupedView(
+          knownProjectPaths: const [],
+          sessions: items,
+        ),
+        ['/project-b', '/project-a'],
+      );
     });
 
     test(
@@ -545,12 +674,14 @@ RecentSession _recent({
   required String id,
   required String modified,
   String projectPath = '/repo',
+  String? lastAssistantOutputAt,
 }) => RecentSession(
   sessionId: id,
   provider: Provider.codex.value,
   firstPrompt: id,
   created: '2026-07-25T00:00:00Z',
   modified: modified,
+  lastAssistantOutputAt: lastAssistantOutputAt,
   gitBranch: 'main',
   projectPath: projectPath,
   isSidechain: false,
@@ -565,6 +696,7 @@ SessionInfo _running({
   String lastMessage = '',
   String status = 'idle',
   bool externalDesktopTurnActive = false,
+  String? lastAssistantOutputAt,
 }) => SessionInfo(
   id: runtimeId,
   provider: Provider.codex.value,
@@ -574,6 +706,7 @@ SessionInfo _running({
   status: status,
   createdAt: '2026-07-25T00:00:00Z',
   lastActivityAt: lastActivityAt,
+  lastAssistantOutputAt: lastAssistantOutputAt,
   lastMessage: lastMessage,
   externalDesktopTurnActive: externalDesktopTurnActive,
 );

@@ -958,6 +958,56 @@ void main() {
 
         sync.emit(
           ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.timeline,
+            targetFingerprint: target.fingerprint,
+            provider: 'codex',
+            providerSessionId: 'thread-old',
+            revision: 'timeline-2',
+            lastAssistantOutputAt: '2026-07-30T00:05:30.000Z',
+          ),
+        );
+        await pumpEventQueue();
+
+        expect(cache.loadCalls, loadsBeforeDeltas);
+        expect(
+          cubit.state.sessions
+              .singleWhere((session) => session.sessionId == 'thread-old')
+              .lastAssistantOutputAt,
+          '2026-07-30T00:05:30.000Z',
+        );
+
+        sync.emit(
+          ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.catalog,
+            targetFingerprint: target.fingerprint,
+            codexSourceId: 'source-v2',
+            catalogUpserts: const [
+              ConversationSyncV2CatalogEntry(
+                provider: 'codex',
+                providerSessionId: 'thread-old',
+                revision: 'revision-3',
+                projectPath: '/home/user/project-b',
+                createdAt: '2026-07-30T00:00:00.000Z',
+                modifiedAt: '2026-07-30T00:07:00.000Z',
+                recencyAt: '2026-07-30T00:07:00.000Z',
+                availability: 'durable',
+                name: 'Updated again',
+              ),
+            ],
+          ),
+        );
+        await pumpEventQueue();
+
+        expect(cache.loadCalls, loadsBeforeDeltas);
+        expect(
+          cubit.state.sessions
+              .singleWhere((session) => session.sessionId == 'thread-old')
+              .lastAssistantOutputAt,
+          '2026-07-30T00:05:30.000Z',
+        );
+
+        sync.emit(
+          ConversationSyncCacheUpdate(
             kind: ConversationSyncCacheUpdateKind.readWatermark,
             targetFingerprint: target.fingerprint,
             readWatermark: const ConversationSyncV2ReadWatermark(
@@ -973,6 +1023,143 @@ void main() {
         expect(
           cubit.unreadConversationKeys,
           isNot(contains('codex\u0000thread-old')),
+        );
+
+        sync.emit(
+          ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.status,
+            targetFingerprint: target.fingerprint,
+            statusChanges: const [
+              ConversationSyncV2Status(
+                provider: 'codex',
+                providerSessionId: 'thread-old',
+                activity: 'idle',
+                attention: 'none',
+                result: 'completed',
+                runtimeAttachment: 'notLoaded',
+                source: 'appServer',
+                confidence: 'authoritative',
+                observedAt: '2026-07-30T00:07:00.000Z',
+              ),
+            ],
+          ),
+        );
+        await pumpEventQueue();
+        expect(cubit.unreadConversationKeys, contains('codex\u0000thread-old'));
+
+        sync.emit(
+          ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.readWatermark,
+            targetFingerprint: target.fingerprint,
+            readWatermark: const ConversationSyncV2ReadWatermark(
+              provider: 'codex',
+              providerSessionId: 'thread-old',
+              readAt: '2026-07-30T00:08:00.000Z',
+            ),
+          ),
+        );
+        await pumpEventQueue();
+        expect(
+          cubit.unreadConversationKeys,
+          isNot(contains('codex\u0000thread-old')),
+        );
+
+        sync.emit(
+          ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.readWatermark,
+            targetFingerprint: target.fingerprint,
+            readWatermark: const ConversationSyncV2ReadWatermark(
+              provider: 'codex',
+              providerSessionId: 'thread-old',
+              readAt: '2099-07-30T00:00:00.000Z',
+            ),
+          ),
+        );
+        sync.emit(
+          ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.readWatermark,
+            targetFingerprint: target.fingerprint,
+            readWatermark: const ConversationSyncV2ReadWatermark(
+              provider: 'codex',
+              providerSessionId: 'thread-old',
+              readAt: '2026-07-30T00:07:00.000Z',
+            ),
+            replaceExistingReadWatermark: true,
+          ),
+        );
+        sync.emit(
+          ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.status,
+            targetFingerprint: target.fingerprint,
+            statusChanges: const [
+              ConversationSyncV2Status(
+                provider: 'codex',
+                providerSessionId: 'thread-old',
+                activity: 'idle',
+                attention: 'none',
+                result: 'completed',
+                runtimeAttachment: 'notLoaded',
+                source: 'appServer',
+                confidence: 'authoritative',
+                observedAt: '2027-07-30T00:00:00.000Z',
+              ),
+            ],
+          ),
+        );
+        await pumpEventQueue();
+        expect(cubit.unreadConversationKeys, contains('codex\u0000thread-old'));
+
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            sessions: [
+              _session(
+                id: 'thread-old',
+                provider: 'codex',
+                codexSourceId: 'source-v2',
+                projectPath: '/home/user/project-moved',
+              ),
+            ],
+            requestScope: 'catalog',
+            offset: 0,
+            hasMore: false,
+            catalogRevision: 77,
+          ),
+        );
+        await pumpEventQueue();
+        expect(
+          cubit.state.sessions.single.lastAssistantOutputAt,
+          '2026-07-30T00:05:30.000Z',
+        );
+        expect(
+          cubit.state.sessions.single.projectPath,
+          '/home/user/project-moved',
+        );
+
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            sessions: [
+              _session(
+                id: 'thread-old',
+                provider: 'codex',
+                codexSourceId: 'source-v2',
+                projectPath: '/home/user/project-moved-again',
+              ),
+            ],
+            requestScope: 'list',
+            offset: 0,
+            hasMore: false,
+            catalogRevision: 77,
+          ),
+        );
+        await pumpEventQueue();
+        expect(cubit.state.sessions, hasLength(1));
+        expect(
+          cubit.state.sessions.single.lastAssistantOutputAt,
+          '2026-07-30T00:05:30.000Z',
+        );
+        expect(
+          cubit.state.sessions.single.projectPath,
+          '/home/user/project-moved-again',
         );
       },
     );

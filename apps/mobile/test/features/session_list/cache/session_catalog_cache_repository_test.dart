@@ -237,7 +237,7 @@ void main() {
         isA<ConversationSyncV2ReadWatermark>().having(
           (watermark) => watermark.readAt,
           'readAt',
-          '2026-07-30T00:04:00.000Z',
+          '2026-07-30T00:03:00.000Z',
         ),
       ]);
       final db = await database.database;
@@ -501,6 +501,7 @@ void main() {
           providerSessionId: 'thread-first',
           readAt: '2026-07-30T01:02:03.000Z',
         ),
+        allowUnanchoredLegacySeed: true,
       );
 
       await repository.clearTarget(first);
@@ -744,6 +745,89 @@ void main() {
   });
 
   test(
+    'read watermark anchors to the latest authoritative status clock',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-read-clamp',
+        codexSourceId: 'source-read-clamp',
+      );
+      await repository.applyConversationStatusPage(
+        target: target,
+        statusState: 'status-read-clamp',
+        pageIndex: 0,
+        pageCount: 1,
+        changes: const [
+          ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'thread-read-clamp',
+            activity: 'idle',
+            attention: 'none',
+            result: 'completed',
+            runtimeAttachment: 'notLoaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-07-30T00:02:00.000Z',
+          ),
+        ],
+      );
+
+      final clamped = await repository.storeReadWatermark(
+        target: target,
+        watermark: const ConversationSyncV2ReadWatermark(
+          provider: 'codex',
+          providerSessionId: 'thread-read-clamp',
+          readAt: '2026-07-30T00:01:00.000Z',
+        ),
+      );
+      expect(clamped?.readAt, '2026-07-30T00:02:00.000Z');
+
+      final phoneClockAhead = await repository.storeReadWatermark(
+        target: target,
+        watermark: const ConversationSyncV2ReadWatermark(
+          provider: 'codex',
+          providerSessionId: 'thread-read-clamp',
+          readAt: '2099-07-30T00:03:00.000Z',
+        ),
+      );
+      expect(phoneClockAhead?.readAt, '2026-07-30T00:02:00.000Z');
+
+      await repository.applyConversationStatusPage(
+        target: target,
+        statusState: 'status-read-clamp-2',
+        pageIndex: 0,
+        pageCount: 1,
+        changes: const [
+          ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'thread-read-clamp',
+            activity: 'idle',
+            attention: 'none',
+            result: 'completed',
+            runtimeAttachment: 'notLoaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-07-30T00:03:00.000Z',
+          ),
+        ],
+      );
+
+      final stale = await repository.storeReadWatermark(
+        target: target,
+        watermark: const ConversationSyncV2ReadWatermark(
+          provider: 'codex',
+          providerSessionId: 'thread-read-clamp',
+          readAt: '2026-07-30T00:01:30.000Z',
+        ),
+      );
+      expect(stale?.readAt, '2026-07-30T00:03:00.000Z');
+      expect(
+        (await repository.loadReadWatermarks(target)).single.readAt,
+        '2026-07-30T00:03:00.000Z',
+      );
+    },
+  );
+
+  test(
     'stages v2 pages on disk and preserves untouched patch entries',
     () async {
       final target = SessionCatalogCacheTarget.fromBridge(
@@ -840,6 +924,205 @@ void main() {
         ),
         0,
       );
+    },
+  );
+
+  test(
+    'persists assistant text ordering checkpoints across tool patches and catalog refreshes',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-assistant-order',
+        codexSourceId: 'source-assistant-order',
+      );
+      const catalogEntry = ConversationSyncV2CatalogEntry(
+        provider: 'codex',
+        providerSessionId: 'thread-assistant-order',
+        revision: 'catalog-1',
+        projectPath: '/workspace/assistant-order',
+        firstPrompt: 'Order this thread',
+        createdAt: '2026-07-30T00:00:00.000Z',
+        modifiedAt: '2026-07-30T00:01:00.000Z',
+        recencyAt: '2026-07-30T00:01:00.000Z',
+        availability: 'durable',
+      );
+      await repository.applyConversationCatalogPage(
+        target: target,
+        codexSourceId: 'source-assistant-order',
+        catalogState: 'catalog-1',
+        pageIndex: 0,
+        pageCount: 1,
+        created: const [catalogEntry],
+        updated: const [],
+        destroyed: const [],
+      );
+
+      final first = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-assistant-order',
+        provider: 'codex',
+        providerSessionId: 'thread-assistant-order',
+        revision: 'timeline-1',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [
+          _assistantEntry(
+            'assistant-1',
+            0,
+            text: 'First visible update',
+            receivedAt: '2026-07-30T00:02:00.000Z',
+          ),
+          _assistantEntry(
+            'assistant-untimestamped',
+            1,
+            text: 'Visible legacy update without a timestamp',
+          ),
+        ],
+        deletes: const [],
+        hasEarlier: false,
+        sourceEntryCount: 2,
+      );
+      expect(first.lastAssistantOutputAt, '2026-07-30T00:02:00.000Z');
+      expect(
+        (await repository.load(target))?.sessions.single.lastAssistantOutputAt,
+        '2026-07-30T00:02:00.000Z',
+      );
+
+      final toolOnly = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-assistant-order',
+        provider: 'codex',
+        providerSessionId: 'thread-assistant-order',
+        revision: 'timeline-2',
+        baseRevision: 'timeline-1',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [
+          _assistantToolEntry(
+            'assistant-tool',
+            2,
+            receivedAt: '2026-07-30T00:03:00.000Z',
+          ),
+        ],
+        deletes: const [],
+        hasEarlier: false,
+        sourceEntryCount: 3,
+      );
+      expect(toolOnly.lastAssistantOutputAt, isNull);
+
+      final unknownOnly = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-assistant-order',
+        provider: 'codex',
+        providerSessionId: 'thread-assistant-order',
+        revision: 'timeline-3',
+        baseRevision: 'timeline-2',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [
+          _assistantUnknownEntry(
+            'assistant-unknown',
+            3,
+            receivedAt: '2026-07-30T00:03:30.000Z',
+          ),
+        ],
+        deletes: const [],
+        hasEarlier: false,
+        sourceEntryCount: 4,
+      );
+      expect(unknownOnly.lastAssistantOutputAt, isNull);
+
+      await repository.upsertResponse(
+        target: target,
+        response: RecentSessionsMessage(
+          sessions: [_session(id: 'thread-assistant-order')],
+          requestScope: 'catalog',
+          offset: 0,
+          hasMore: false,
+        ),
+      );
+      expect(
+        (await repository.load(target))?.sessions.single.lastAssistantOutputAt,
+        '2026-07-30T00:02:00.000Z',
+      );
+
+      final movedSession = RecentSession.fromJson({
+        ..._session(id: 'thread-assistant-order').toJson(),
+        'projectPath': '/workspace/assistant-order-moved',
+      });
+      await repository.upsertResponse(
+        target: target,
+        response: RecentSessionsMessage(
+          sessions: [movedSession],
+          requestScope: 'list',
+          offset: 20,
+          hasMore: true,
+        ),
+      );
+      final movedSnapshot = await repository.load(target);
+      expect(movedSnapshot?.sessions, hasLength(1));
+      expect(
+        movedSnapshot?.sessions.single.projectPath,
+        '/workspace/assistant-order-moved',
+      );
+      expect(
+        movedSnapshot?.sessions.single.lastAssistantOutputAt,
+        '2026-07-30T00:02:00.000Z',
+      );
+
+      await repository.applyConversationCatalogPage(
+        target: target,
+        codexSourceId: 'source-assistant-order',
+        catalogState: 'catalog-2',
+        pageIndex: 0,
+        pageCount: 1,
+        created: const [],
+        updated: const [
+          ConversationSyncV2CatalogEntry(
+            provider: 'codex',
+            providerSessionId: 'thread-assistant-order',
+            revision: 'catalog-2',
+            projectPath: '/workspace/assistant-order',
+            firstPrompt: 'Order this thread',
+            createdAt: '2026-07-30T00:00:00.000Z',
+            modifiedAt: '2026-07-30T00:03:00.000Z',
+            recencyAt: '2026-07-30T00:03:00.000Z',
+            availability: 'durable',
+          ),
+        ],
+        destroyed: const [],
+      );
+      expect(
+        (await repository.load(target))?.sessions.single.lastAssistantOutputAt,
+        '2026-07-30T00:02:00.000Z',
+      );
+
+      final second = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-assistant-order',
+        provider: 'codex',
+        providerSessionId: 'thread-assistant-order',
+        revision: 'timeline-4',
+        baseRevision: 'timeline-3',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [
+          _assistantEntry(
+            'assistant-2',
+            4,
+            text: 'Second visible update',
+            receivedAt: '2026-07-30T00:04:00.000Z',
+          ),
+        ],
+        deletes: const [],
+        hasEarlier: false,
+        sourceEntryCount: 5,
+      );
+      expect(second.lastAssistantOutputAt, '2026-07-30T00:04:00.000Z');
     },
   );
 
@@ -1157,6 +1440,75 @@ ConversationContentWireEntry _entry(String id, int index, String status) {
     rawMessage: {'type': 'status', 'status': status},
   );
 }
+
+ConversationContentWireEntry _assistantEntry(
+  String id,
+  int index, {
+  required String text,
+  String? receivedAt,
+}) => ConversationContentWireEntry(
+  entryId: id,
+  index: index,
+  contentHash: 'hash-$id-$text',
+  rawMessage: {
+    'type': 'assistant',
+    'receivedAt': ?receivedAt,
+    'message': {
+      'id': id,
+      'role': 'assistant',
+      'content': [
+        {'type': 'text', 'text': text},
+      ],
+    },
+  },
+);
+
+ConversationContentWireEntry _assistantToolEntry(
+  String id,
+  int index, {
+  required String receivedAt,
+}) => ConversationContentWireEntry(
+  entryId: id,
+  index: index,
+  contentHash: 'hash-$id-tool',
+  rawMessage: {
+    'type': 'assistant',
+    'receivedAt': receivedAt,
+    'message': {
+      'id': id,
+      'role': 'assistant',
+      'content': [
+        {
+          'type': 'tool_use',
+          'id': 'tool-$id',
+          'name': 'Read',
+          'input': {'path': '/tmp/example'},
+        },
+      ],
+    },
+  },
+);
+
+ConversationContentWireEntry _assistantUnknownEntry(
+  String id,
+  int index, {
+  required String receivedAt,
+}) => ConversationContentWireEntry(
+  entryId: id,
+  index: index,
+  contentHash: 'hash-$id-unknown',
+  rawMessage: {
+    'type': 'assistant',
+    'receivedAt': receivedAt,
+    'message': {
+      'id': id,
+      'role': 'assistant',
+      'content': [
+        {'type': 'future_tool_action', 'payload': 'ignored'},
+      ],
+    },
+  },
+);
 
 RecentSession _session({
   required String id,

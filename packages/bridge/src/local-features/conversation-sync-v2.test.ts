@@ -229,6 +229,48 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("accepts an ordered lower watermark that repairs phone clock skew", async () => {
+    const fixture = createFixture([seed(0)], async (target) =>
+      history(target.providerSessionId),
+    );
+    const client = {};
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+
+    for (const readAt of [
+      "2099-07-30T00:00:00.000Z",
+      "2026-07-30T00:02:00.000Z",
+    ]) {
+      await fixture.handler.handle(
+        {
+          type: "conversation_sync_read",
+          protocolVersion: 2,
+          subscriptionId: subscription.requestId,
+          provider: "claude",
+          providerSessionId: "session-0",
+          readAt,
+        },
+        context(client, fixture.runtime),
+      );
+    }
+
+    const internal = fixture.handler as unknown as {
+      subscriptions: Map<
+        object,
+        { readWatermarks: Map<string, string> }
+      >;
+    };
+    expect(
+      internal.subscriptions
+        .get(client)!
+        .readWatermarks.get("claude\0session-0"),
+    ).toBe("2026-07-30T00:02:00.000Z");
+    fixture.handler.close();
+  });
+
   it("preserves an older-turn cursor and returns legacy pages chronologically", async () => {
     const historyReader = vi.fn(async (target) => ({
       messages: history(target.providerSessionId),
@@ -1847,18 +1889,14 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
-  it("coalesces live deltas into one history read without rescanning the catalog", async () => {
+  it("coalesces live deltas without advancing catalog recency or rescanning the catalog", async () => {
     const historyReader = vi.fn(async (target) =>
       history(target.providerSessionId),
     );
     const liveSeed = seed(0);
     liveSeed.entry.modifiedAt = "2026-07-01T00:00:00.000Z";
     liveSeed.entry.recencyAt = "2026-07-01T00:00:00.000Z";
-    const previousRecentSeed = seed(1);
-    const fixture = createFixture(
-      [liveSeed, previousRecentSeed],
-      historyReader,
-    );
+    const fixture = createFixture([liveSeed], historyReader);
     const client = {};
     fixture.runtime.getProviderSessionId = () => "session-0";
     const session: LocalFeatureSession = {
@@ -1905,22 +1943,14 @@ describe("ConversationSyncV2FeatureHandler", () => {
     );
     expect(historyReader).toHaveBeenCalledTimes(initialHistoryReads + 1);
     expect(fixture.catalogReader).toHaveBeenCalledTimes(1);
-    const liveCatalogUpdate = events(
-      fixture.sent,
-      client,
-      "catalog_changes",
-    )
-      .flatMap((event) => event.updated)
-      .find((entry) => entry.providerSessionId === "session-0");
-    expect(liveCatalogUpdate).toMatchObject({
-      revision: "revision-0",
-    });
     expect(
-      Date.parse(liveCatalogUpdate!.recencyAt),
-    ).toBeGreaterThan(Date.parse(previousRecentSeed.entry.recencyAt));
+      events(fixture.sent, client, "catalog_changes")
+        .flatMap((event) => event.updated)
+        .find((entry) => entry.providerSessionId === "session-0"),
+    ).toBeUndefined();
     const liveTimeline = events(fixture.sent, client, "timeline_page").at(-1);
     expect(liveTimeline?.providerSessionId).toBe("session-0");
-    expect(liveTimeline?.revision).not.toBe(liveCatalogUpdate!.revision);
+    expect(liveTimeline?.revision).not.toBe(liveSeed.entry.revision);
 
     fixture.handler.sessionCatalogChanged();
     await vi.waitFor(() =>
@@ -1943,8 +1973,232 @@ describe("ConversationSyncV2FeatureHandler", () => {
     )
       .flatMap((event) => event.created)
       .find((entry) => entry.providerSessionId === "session-0");
-    expect(reconnectEntry?.recencyAt).toBe(liveCatalogUpdate!.recencyAt);
+    expect(reconnectEntry?.modifiedAt).toBe(liveSeed.entry.modifiedAt);
+    expect(reconnectEntry?.recencyAt).toBe(liveSeed.entry.recencyAt);
     expect(historyReader).toHaveBeenCalledTimes(initialHistoryReads + 1);
+    fixture.handler.close();
+  });
+
+  it("advances catalog activity only for discrete assistant text output", async () => {
+    const historyReader = vi.fn(async (target) =>
+      history(target.providerSessionId),
+    );
+    const liveSeed = seed(0);
+    liveSeed.entry.modifiedAt = "2026-07-01T00:00:00.000Z";
+    liveSeed.entry.recencyAt = "2026-07-01T00:00:00.000Z";
+    const fixture = createFixture([liveSeed], historyReader);
+    const client = {};
+    fixture.runtime.getProviderSessionId = () => "session-0";
+    const session: LocalFeatureSession = {
+      id: "runtime-0",
+      provider: "claude",
+      process: {},
+      projectPath: "/project/0",
+    };
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const initialComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    )[0]!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: initialComplete.subscriptionId,
+        sequence: initialComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+
+    fixture.handler.sessionMessage(session, {
+      type: "assistant",
+      messageUuid: "assistant-tool-only",
+      message: {
+        id: "assistant-tool-only",
+        role: "assistant",
+        model: "test",
+        content: [
+          { type: "text", text: " \n\t " },
+          {
+            type: "tool_use",
+            id: "tool-1",
+            name: "Read",
+            input: { path: "/tmp/example.txt" },
+          },
+        ],
+      },
+    });
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(2),
+    );
+    expect(
+      events(fixture.sent, client, "catalog_changes").flatMap(
+        (event) => event.updated,
+      ),
+    ).toHaveLength(0);
+    const toolOnlyRevision = events(
+      fixture.sent,
+      client,
+      "timeline_page",
+    ).at(-1)?.revision;
+    expect(toolOnlyRevision).toBeDefined();
+    expect(toolOnlyRevision).not.toBe(liveSeed.entry.revision);
+
+    const toolOnlyComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    )[1]!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: toolOnlyComplete.subscriptionId,
+        sequence: toolOnlyComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+    fixture.handler.sessionMessage(session, {
+      type: "assistant",
+      messageUuid: "assistant-text",
+      message: {
+        id: "assistant-text",
+        role: "assistant",
+        model: "test",
+        content: [
+          { type: "tool_use", id: "tool-2", name: "Bash", input: {} },
+          { type: "text", text: "中间进度输出" },
+        ],
+      },
+    });
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(3),
+    );
+    const textUpdate = events(fixture.sent, client, "catalog_changes")
+      .flatMap((event) => event.updated)
+      .find((entry) => entry.providerSessionId === "session-0");
+    expect(textUpdate).toBeDefined();
+    expect(textUpdate?.modifiedAt).toBe(textUpdate?.recencyAt);
+    expect(Date.parse(textUpdate!.recencyAt)).toBeGreaterThan(
+      Date.parse(liveSeed.entry.recencyAt),
+    );
+    const textActivityAt = textUpdate!.recencyAt;
+    const textRevision = events(
+      fixture.sent,
+      client,
+      "timeline_page",
+    ).at(-1)?.revision;
+
+    const textComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    )[2]!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: textComplete.subscriptionId,
+        sequence: textComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const nonCatalogMessages: ServerMessage[] = [
+      {
+        type: "assistant",
+        messageUuid: "assistant-later-tool",
+        message: {
+          id: "assistant-later-tool",
+          role: "assistant",
+          model: "test",
+          content: [
+            { type: "tool_use", id: "tool-3", name: "Grep", input: {} },
+          ],
+        },
+      },
+      {
+        type: "tool_result",
+        toolUseId: "tool-3",
+        toolName: "Grep",
+        content: "tool output",
+      },
+      { type: "stream_delta", text: "streaming" },
+      { type: "thinking_delta", text: "thinking" },
+      {
+        type: "history_delta",
+        sessionId: "runtime-0",
+        fromSeq: 1,
+        toSeq: 1,
+        messages: [
+          {
+            seq: 1,
+            message: {
+              type: "assistant",
+              message: {
+                id: "historical-assistant",
+                role: "assistant",
+                model: "test",
+                content: [{ type: "text", text: "historical output" }],
+              },
+            },
+          },
+        ],
+      },
+      { type: "result", subtype: "success", result: "done" },
+    ];
+    for (const message of nonCatalogMessages) {
+      fixture.handler.sessionMessage(session, message);
+    }
+
+    await vi.waitFor(
+      () =>
+        expect(
+          events(fixture.sent, client, "sync_complete").length,
+        ).toBeGreaterThanOrEqual(4),
+      { timeout: 3_000 },
+    );
+    const catalogUpdates = events(fixture.sent, client, "catalog_changes")
+      .flatMap((event) => event.updated)
+      .filter((entry) => entry.providerSessionId === "session-0");
+    expect(catalogUpdates).toHaveLength(1);
+    expect(catalogUpdates[0]?.modifiedAt).toBe(textActivityAt);
+    expect(catalogUpdates[0]?.recencyAt).toBe(textActivityAt);
+    expect(
+      events(fixture.sent, client, "timeline_page").at(-1)?.revision,
+    ).not.toBe(textRevision);
+
+    fixture.handler.sessionCatalogChanged();
+    await vi.waitFor(() =>
+      expect(fixture.catalogReader).toHaveBeenCalledTimes(2),
+    );
+    const reconnectClient = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(reconnectClient, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, reconnectClient, "sync_complete"),
+      ).not.toHaveLength(0),
+    );
+    const reconnectEntry = events(
+      fixture.sent,
+      reconnectClient,
+      "catalog_changes",
+    )
+      .flatMap((event) => event.created)
+      .find((entry) => entry.providerSessionId === "session-0");
+    expect(reconnectEntry?.modifiedAt).toBe(textActivityAt);
+    expect(reconnectEntry?.recencyAt).toBe(textActivityAt);
     fixture.handler.close();
   });
 
