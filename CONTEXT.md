@@ -1,5 +1,24 @@
 # CC Pocket Compatibility Fork Context
 
+## Draft shared Codex runtime implementation plan
+
+The current proposed implementation plan is:
+
+- Plan: `plans/codex-shared-runtime-warm-switch_v01_20260731-230240.md`
+- Worktree:
+  `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/codex-shared-runtime-20260731`
+- Branch: `feature/codex-shared-runtime-20260731`
+- Base: `a007dc712543c1410a26be980f2d838637c95c60`
+- Status: `draft`; no shared-runtime source implementation has started.
+
+The plan preserves the full daemon/coordinator/action-broker/Mobile/compatibility
+design, but changes the execution order. The first deliverable is a minimal,
+reversible Bridge + Codex Desktop shared-daemon pilot. After automated checks,
+the task must stop for a user-observed Desktop sidebar and same-thread test,
+restore the private production baseline, and wait for explicit confirmation
+before full implementation, integration, release work, or contacting the
+persistent release task.
+
 ## Active isolated lanes on 2026-07-31
 
 - Coordinator fix lane:
