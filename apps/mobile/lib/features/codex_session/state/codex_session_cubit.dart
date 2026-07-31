@@ -54,7 +54,7 @@ class CodexSessionCubit extends ChatSessionCubit {
   }) : super(provider: Provider.codex);
 
   @override
-  void sendMessage(
+  bool sendMessage(
     String text, {
     String? clientMessageId,
     List<({Uint8List bytes, String mimeType})>? images,
@@ -67,14 +67,14 @@ class CodexSessionCubit extends ChatSessionCubit {
         case '/goal':
           requestGoal(userInitiated: true);
           _uiIntentController.add(CodexSessionUiIntent.manage);
-          return;
+          return true;
         case '/goal edit':
           requestGoal(userInitiated: true);
           _uiIntentController.add(CodexSessionUiIntent.edit);
-          return;
+          return true;
         case '/permissions':
           _uiIntentController.add(CodexSessionUiIntent.permissions);
-          return;
+          return true;
         case '/plan':
           _uiIntentController.add(
             state.codexNativePlanModeSupport ==
@@ -83,28 +83,28 @@ class CodexSessionCubit extends ChatSessionCubit {
                 ? CodexSessionUiIntent.planUnavailable
                 : CodexSessionUiIntent.plan,
           );
-          return;
+          return true;
         case '/skills':
           _uiIntentController.add(CodexSessionUiIntent.skills);
-          return;
+          return true;
         case '/compact':
           _uiIntentController.add(CodexSessionUiIntent.compactImmediately);
-          return;
+          return true;
         case '/review':
           _uiIntentController.add(CodexSessionUiIntent.review);
-          return;
+          return true;
         case '/mcp':
           _uiIntentController.add(CodexSessionUiIntent.mcp);
-          return;
+          return true;
         case '/model':
           _uiIntentController.add(CodexSessionUiIntent.model);
-          return;
+          return true;
         case '/context':
           _uiIntentController.add(CodexSessionUiIntent.context);
-          return;
+          return true;
       }
     }
-    super.sendMessage(
+    return super.sendMessage(
       text,
       clientMessageId: clientMessageId,
       images: images,

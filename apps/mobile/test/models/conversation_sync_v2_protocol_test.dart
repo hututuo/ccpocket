@@ -82,6 +82,43 @@ void main() {
     },
   );
 
+  test('decodes detached Codex model settings into cached metadata', () {
+    final decoded =
+        ServerMessage.fromJson(<String, dynamic>{
+              ..._baseFrame,
+              'event': 'catalog_changes',
+              'catalogState': 'catalog-settings',
+              'pageIndex': 0,
+              'pageCount': 1,
+              'created': [
+                {
+                  'provider': 'codex',
+                  'providerSessionId': 'thread-settings',
+                  'revision': 'revision-settings',
+                  'projectPath': '/workspace',
+                  'firstPrompt': 'Prompt',
+                  'model': 'gpt-5.6-sol',
+                  'modelReasoningEffort': 'ultra',
+                  'serviceTier': 'fast',
+                  'createdAt': '2026-07-30T00:00:00.000Z',
+                  'modifiedAt': '2026-07-30T00:01:00.000Z',
+                  'recencyAt': '2026-07-30T00:02:00.000Z',
+                  'availability': 'durable',
+                },
+              ],
+              'updated': const [],
+              'destroyed': const [],
+            })
+            as ConversationSyncV2EventMessage;
+
+    final session = decoded.created.single.toRecentSession(
+      codexSourceId: 'source-1',
+    );
+    expect(session.codexModel, 'gpt-5.6-sol');
+    expect(session.codexModelReasoningEffort, 'ultra');
+    expect(session.codexServiceTier, 'fast');
+  });
+
   test('builds a bounded subscription without endpoint identity', () {
     final message = conversationSyncV2Subscribe(
       requestId: 'request-1',

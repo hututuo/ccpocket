@@ -347,10 +347,16 @@ class ChatMessageHandler {
           markUserMessagesQueued: queued,
           userStatusClientMessageId: clientMessageId,
         );
-      case InputDeliveryStatusMessage(:final stage, :final clientMessageId):
+      case InputDeliveryStatusMessage(
+        :final stage,
+        :final clientMessageId,
+        :final queued,
+      ):
         return ChatStateUpdate(
           userMessageStatus: stage == InputDeliveryStage.providerAccepted
-              ? MessageStatus.providerAccepted
+              ? queued
+                    ? MessageStatus.providerAccepted
+                    : MessageStatus.bridgeAccepted
               : MessageStatus.providerRejected,
           userStatusClientMessageId: clientMessageId,
         );

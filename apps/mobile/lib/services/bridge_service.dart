@@ -524,8 +524,8 @@ class BridgeService implements BridgeServiceBase {
   final Map<String, _OfflineMessageTarget?> _inFlightInputTargets = {};
   final Map<String, Timer> _inFlightPendingVisibilityTimers = {};
   final Set<String> _visibleInFlightPendingKeys = {};
-  final Map<String, _DeliveryPendingInputState> _deliveryPendingInputs = {};
-  final Map<String, Timer> _deliveryPendingVisibilityTimers = {};
+  final Map<String, Map<String, _DeliveryPendingInputState>>
+  _deliveryPendingInputs = {};
   final Map<String, _PendingSessionLinkResolution>
   _pendingSessionLinkResolutions = {};
   int _nextSessionLinkRequestId = 0;
@@ -1583,49 +1583,42 @@ class BridgeService implements BridgeServiceBase {
     }
   }
 
-  QueuedInputItem? deliveryPendingInputForSession(
-    String sessionId, {
-    bool includeHidden = false,
-  }) {
+  QueuedInputItem? deliveryPendingInputForSession(String sessionId) {
     final pending = _deliveryPendingInputs[sessionId];
-    if (pending == null || (!includeHidden && !pending.visible)) return null;
-    return pending.item;
+    if (pending == null || pending.isEmpty) return null;
+    return pending.values.last.item;
   }
 
-  void setDeliveryPendingInput(
-    String sessionId,
-    QueuedInputItem item, {
-    Duration visibleAfter = Duration.zero,
-  }) {
-    _deliveryPendingVisibilityTimers.remove(sessionId)?.cancel();
-    _deliveryPendingInputs[sessionId] = _DeliveryPendingInputState(item);
-    if (visibleAfter == Duration.zero || visibleAfter.isNegative) {
-      showDeliveryPendingInput(sessionId, itemId: item.itemId);
-      return;
-    }
-    _deliveryPendingVisibilityTimers[sessionId] = Timer(visibleAfter, () {
-      _deliveryPendingVisibilityTimers.remove(sessionId);
-      showDeliveryPendingInput(sessionId, itemId: item.itemId);
-    });
+  List<QueuedInputItem> deliveryPendingInputsForSession(String sessionId) {
+    final pending = _deliveryPendingInputs[sessionId];
+    if (pending == null || pending.isEmpty) return const [];
+    return pending.values.map((state) => state.item).toList(growable: false);
   }
 
-  void showDeliveryPendingInput(String sessionId, {required String itemId}) {
-    final pending = _deliveryPendingInputs[sessionId];
-    if (pending == null || pending.item.itemId != itemId) return;
-    if (pending.visible) return;
-    pending.visible = true;
-    _patchSessionQueuedInput(sessionId, pending.item);
+  /// Tracks an online input until Bridge/provider acknowledgement arrives.
+  ///
+  /// This is recovery metadata, not a conversation queue. It must never be
+  /// projected into [SessionInfo.queuedInput] or shown with queue controls.
+  void setDeliveryPendingInput(String sessionId, QueuedInputItem item) {
+    (_deliveryPendingInputs[sessionId] ??= {})[item.itemId] =
+        _DeliveryPendingInputState(item);
   }
 
   void clearDeliveryPendingInput(String sessionId, {String? itemId}) {
-    final pending = _deliveryPendingInputs[sessionId];
-    if (pending == null) return;
-    if (itemId != null && pending.item.itemId != itemId) return;
-    _deliveryPendingVisibilityTimers.remove(sessionId)?.cancel();
-    _deliveryPendingInputs.remove(sessionId);
+    final pendingById = _deliveryPendingInputs[sessionId];
+    if (pendingById == null || pendingById.isEmpty) return;
+    final removedIds = <String>{};
+    if (itemId == null) {
+      removedIds.addAll(pendingById.keys);
+      _deliveryPendingInputs.remove(sessionId);
+    } else if (pendingById.remove(itemId) != null) {
+      removedIds.add(itemId);
+      if (pendingById.isEmpty) _deliveryPendingInputs.remove(sessionId);
+    }
+    if (removedIds.isEmpty) return;
     final idx = _sessions.indexWhere((session) => session.id == sessionId);
     if (idx < 0) return;
-    if (_sessions[idx].queuedInput?.itemId == pending.item.itemId) {
+    if (removedIds.contains(_sessions[idx].queuedInput?.itemId)) {
       _patchSessionQueuedInput(sessionId, null);
     }
   }
@@ -2119,15 +2112,13 @@ class BridgeService implements BridgeServiceBase {
                   for (final session in _sessions)
                     if (session.externalDesktopTurnActive) session.id: true,
                 };
-                _sessions = _applyLocalDeliveryPendingInputs(
-                  sessions
-                      .map(
-                        (session) => externalBySession[session.id] == true
-                            ? session.copyWith(externalDesktopTurnActive: true)
-                            : session,
-                      )
-                      .toList(growable: false),
-                );
+                _sessions = sessions
+                    .map(
+                      (session) => externalBySession[session.id] == true
+                          ? session.copyWith(externalDesktopTurnActive: true)
+                          : session,
+                    )
+                    .toList(growable: false);
                 _allowedDirs = allowedDirs;
                 _claudeModels = claudeModels;
                 _claudeModelEfforts = claudeModelEfforts;
@@ -2822,10 +2813,6 @@ class BridgeService implements BridgeServiceBase {
     _providerSessionBindingByRuntime.clear();
     _respondedToolUseIds.clear();
     _deliveryPendingInputs.clear();
-    for (final timer in _deliveryPendingVisibilityTimers.values) {
-      timer.cancel();
-    }
-    _deliveryPendingVisibilityTimers.clear();
     _runtimeStore.clearAll();
     _desktopContinuityBacklog.clear();
     clearDiffImageCache();
@@ -3841,7 +3828,8 @@ class BridgeService implements BridgeServiceBase {
           sessionId,
           itemId: 'pending:$clientMessageId',
         );
-      case InputDeliveryStatusMessage(:final clientMessageId):
+      case InputDeliveryStatusMessage(:final clientMessageId, :final queued):
+        if (queued) return;
         clearDeliveryPendingInput(
           sessionId,
           itemId: 'pending:$clientMessageId',
@@ -3852,8 +3840,48 @@ class BridgeService implements BridgeServiceBase {
           sessionId,
           itemId: 'pending:$clientMessageId',
         );
+      case ConversationQueueMessage(:final items):
+        if (items.isEmpty) return;
+        final pendingItems = deliveryPendingInputsForSession(sessionId);
+        final legacyPendingCounts = <String, int>{};
+        final legacyQueueCounts = <String, int>{};
+        for (final pending in pendingItems) {
+          legacyPendingCounts.update(
+            pending.text,
+            (count) => count + 1,
+            ifAbsent: () => 1,
+          );
+        }
+        for (final item in items) {
+          if (item.clientMessageId?.trim().isNotEmpty == true) continue;
+          legacyQueueCounts.update(
+            item.text,
+            (count) => count + 1,
+            ifAbsent: () => 1,
+          );
+        }
+        for (final pending in pendingItems) {
+          final pendingClientId = pending.itemId.startsWith('pending:')
+              ? pending.itemId.substring('pending:'.length)
+              : pending.clientMessageId;
+          final matched = items.any((item) {
+            final clientMessageId = item.clientMessageId?.trim();
+            if (clientMessageId != null && clientMessageId.isNotEmpty) {
+              return clientMessageId == pendingClientId;
+            }
+            return item.text == pending.text &&
+                legacyPendingCounts[pending.text] == 1 &&
+                legacyQueueCounts[pending.text] == 1;
+          });
+          if (matched) {
+            clearDeliveryPendingInput(sessionId, itemId: pending.itemId);
+          }
+        }
       case AssistantServerMessage():
-        clearDeliveryPendingInput(sessionId);
+        final pending = deliveryPendingInputsForSession(sessionId);
+        if (pending.isNotEmpty) {
+          clearDeliveryPendingInput(sessionId, itemId: pending.first.itemId);
+        }
       default:
         return;
     }
@@ -6520,6 +6548,36 @@ class BridgeService implements BridgeServiceBase {
     _sessionListController.add(_sessions);
   }
 
+  void restoreSessionCodexModel(
+    String sessionId, {
+    required String? model,
+    required String? modelReasoningEffort,
+  }) {
+    final idx = _sessions.indexWhere((s) => s.id == sessionId);
+    if (idx < 0) return;
+    final current = _sessions[idx];
+    _sessions = List.of(_sessions)
+      ..[idx] = current.copyWith(
+        codexModel: model,
+        clearCodexModel: model == null,
+        codexModelReasoningEffort: modelReasoningEffort,
+        clearCodexModelReasoningEffort: modelReasoningEffort == null,
+      );
+    _sessionListController.add(_sessions);
+  }
+
+  void restoreSessionCodexSpeed(String sessionId, String? serviceTier) {
+    final idx = _sessions.indexWhere((s) => s.id == sessionId);
+    if (idx < 0) return;
+    final current = _sessions[idx];
+    _sessions = List.of(_sessions)
+      ..[idx] = current.copyWith(
+        codexServiceTier: serviceTier,
+        clearCodexServiceTier: serviceTier == null,
+      );
+    _sessionListController.add(_sessions);
+  }
+
   void _patchSessionQueuedInput(String sessionId, QueuedInputItem? item) {
     final idx = _sessions.indexWhere((s) => s.id == sessionId);
     if (idx < 0) return;
@@ -6536,16 +6594,6 @@ class BridgeService implements BridgeServiceBase {
         clearQueuedInput: merged == null,
       );
     _sessionListController.add(_sessions);
-  }
-
-  List<SessionInfo> _applyLocalDeliveryPendingInputs(
-    List<SessionInfo> sessions,
-  ) {
-    return sessions.map((session) {
-      final pending = deliveryPendingInputForSession(session.id);
-      if (pending == null) return session;
-      return session.copyWith(queuedInput: pending);
-    }).toList();
   }
 
   List<RecentSession> _mergeRecentSessions(
@@ -6888,10 +6936,6 @@ class BridgeService implements BridgeServiceBase {
       timer.cancel();
     }
     _inFlightPendingVisibilityTimers.clear();
-    for (final timer in _deliveryPendingVisibilityTimers.values) {
-      timer.cancel();
-    }
-    _deliveryPendingVisibilityTimers.clear();
     _deliveryPendingInputs.clear();
     _failPendingArtifactResolutions(
       const ArtifactResolveException(
@@ -7048,7 +7092,6 @@ class _DeliveryPendingInputState {
   _DeliveryPendingInputState(this.item);
 
   final QueuedInputItem item;
-  bool visible = false;
 }
 
 class ResolvedArtifact {

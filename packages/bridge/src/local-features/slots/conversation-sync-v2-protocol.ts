@@ -89,6 +89,10 @@ export interface ConversationSyncCatalogEntry extends ConversationSyncTarget {
   name?: string;
   summary?: string;
   firstPrompt?: string;
+  /** Exact provider settings observed from the durable Codex rollout. */
+  model?: string;
+  modelReasoningEffort?: string;
+  serviceTier?: string;
   createdAt: string;
   modifiedAt: string;
   recencyAt: string;

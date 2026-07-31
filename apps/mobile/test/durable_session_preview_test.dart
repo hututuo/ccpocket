@@ -1,6 +1,7 @@
 import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
 import 'package:ccpocket/features/chat_session/state/streaming_state_cubit.dart';
 import 'package:ccpocket/features/chat_session/widgets/durable_session_preview.dart';
+import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -9,6 +10,38 @@ import 'package:flutter_test/flutter_test.dart';
 import 'chat_screen/helpers/chat_test_helpers.dart';
 
 void main() {
+  testWidgets('online attachment is not presented as a local queue', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Scaffold(body: DurableSessionBindingBanner(queuedLocally: false)),
+      ),
+    );
+
+    expect(
+      find.text('Connected. Loading live session status…'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Queued locally'), findsNothing);
+  });
+
+  testWidgets('disconnected attachment identifies the local outbox', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Scaffold(body: DurableSessionBindingBanner(queuedLocally: true)),
+      ),
+    );
+
+    expect(find.textContaining('Queued locally'), findsOneWidget);
+  });
+
   testWidgets(
     'cache revisions update the detached cubit without rebuilding child state',
     (tester) async {

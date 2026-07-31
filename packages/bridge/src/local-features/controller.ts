@@ -103,6 +103,28 @@ export class LocalFeaturesController {
     return false;
   }
 
+  async hasExternalCodexActivityVerified(
+    session: LocalFeatureSession,
+  ): Promise<boolean> {
+    for (const handler of new Set(this.handlers.values())) {
+      try {
+        if (handler.hasExternalCodexActivityVerified) {
+          if (await handler.hasExternalCodexActivityVerified(session)) {
+            return true;
+          }
+        } else if (handler.hasExternalCodexActivity?.(session) === true) {
+          return true;
+        }
+      } catch {
+        // A settings write must not proceed when the ownership check itself
+        // failed. Ordinary input admission retains its separate compatibility
+        // fallback, but model/speed mutation is intentionally fail-closed.
+        return true;
+      }
+    }
+    return false;
+  }
+
   // These fan-outs run synchronously from timer callbacks (e.g. the catalog
   // monitor's debounce), where a handler throw would surface as an
   // uncaughtException. Isolate handlers so one failure cannot crash the

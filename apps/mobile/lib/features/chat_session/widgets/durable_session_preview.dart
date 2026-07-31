@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../l10n/app_localizations.dart';
 import '../../../models/messages.dart';
+import '../../session_list/state/session_list_cubit.dart';
 import '../state/chat_session_cubit.dart';
 
 /// Applies durable-cache revisions to an existing detached chat cubit.
@@ -13,6 +16,8 @@ class DurableSessionPreviewUpdater extends StatefulWidget {
   final String revision;
   final List<ServerMessage> messages;
   final bool hasEarlier;
+  final String? statusProvider;
+  final String? statusProviderSessionId;
   final Widget child;
 
   const DurableSessionPreviewUpdater({
@@ -20,6 +25,8 @@ class DurableSessionPreviewUpdater extends StatefulWidget {
     required this.revision,
     required this.messages,
     required this.hasEarlier,
+    this.statusProvider,
+    this.statusProviderSessionId,
     required this.child,
   });
 
@@ -30,9 +37,83 @@ class DurableSessionPreviewUpdater extends StatefulWidget {
 
 class _DurableSessionPreviewUpdaterState
     extends State<DurableSessionPreviewUpdater> {
+  StreamSubscription<void>? _statusSub;
+  SessionListCubit? _boundSessionList;
+  String? _boundProvider;
+  String? _boundProviderSessionId;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _bindStatusProjection();
+  }
+
+  void _bindStatusProjection() {
+    final provider = widget.statusProvider;
+    final providerSessionId = widget.statusProviderSessionId;
+    SessionListCubit? sessionList;
+    try {
+      sessionList = context.read<SessionListCubit>();
+    } catch (_) {
+      // Isolated official/widget hosts may omit the optional catalog service.
+    }
+    if (provider == null || providerSessionId == null || sessionList == null) {
+      _statusSub?.cancel();
+      _statusSub = null;
+      _boundSessionList = null;
+      _boundProvider = null;
+      _boundProviderSessionId = null;
+      return;
+    }
+    final boundSessionList = sessionList;
+    if (identical(_boundSessionList, boundSessionList) &&
+        _boundProvider == provider &&
+        _boundProviderSessionId == providerSessionId) {
+      _applyStatusProjection(boundSessionList, provider, providerSessionId);
+      return;
+    }
+    _statusSub?.cancel();
+    _boundSessionList = boundSessionList;
+    _boundProvider = provider;
+    _boundProviderSessionId = providerSessionId;
+    _applyStatusProjection(boundSessionList, provider, providerSessionId);
+    _statusSub = boundSessionList.catalogSnapshotChanges.listen((_) {
+      if (!mounted ||
+          !identical(_boundSessionList, boundSessionList) ||
+          widget.statusProvider != provider ||
+          widget.statusProviderSessionId != providerSessionId) {
+        return;
+      }
+      _applyStatusProjection(boundSessionList, provider, providerSessionId);
+    });
+  }
+
+  void _applyStatusProjection(
+    SessionListCubit sessionList,
+    String provider,
+    String providerSessionId,
+  ) {
+    final status =
+        sessionList.conversationStatuses['$provider\u0000$providerSessionId'];
+    final cubit = context.read<ChatSessionCubit>();
+    final sourceFingerprint = sessionList.conversationSourceFingerprint;
+    cubit.updateDetachedProviderStatus(
+      status,
+      sourceFingerprint: sourceFingerprint,
+    );
+    cubit.updateDetachedProviderSettings(
+      sessionList.conversationMetadataFor(provider, providerSessionId),
+      sourceFingerprint: sourceFingerprint,
+    );
+  }
+
   @override
   void didUpdateWidget(covariant DurableSessionPreviewUpdater oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.statusProvider != widget.statusProvider ||
+        oldWidget.statusProviderSessionId != widget.statusProviderSessionId) {
+      _bindStatusProjection();
+    }
     if (oldWidget.revision == widget.revision &&
         oldWidget.hasEarlier == widget.hasEarlier) {
       return;
@@ -50,15 +131,21 @@ class _DurableSessionPreviewUpdaterState
   }
 
   @override
+  void dispose() {
+    _statusSub?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) => widget.child;
 }
 
 /// Compact non-blocking status shown while a durable conversation is already
 /// readable/composable but its live runtime is still attaching.
 class DurableSessionBindingBanner extends StatelessWidget {
-  final bool messageQueued;
+  final bool queuedLocally;
 
-  const DurableSessionBindingBanner({super.key, required this.messageQueued});
+  const DurableSessionBindingBanner({super.key, required this.queuedLocally});
 
   @override
   Widget build(BuildContext context) {
@@ -75,14 +162,14 @@ class DurableSessionBindingBanner extends StatelessWidget {
             child: Row(
               children: [
                 Icon(
-                  messageQueued ? Icons.schedule_send_outlined : Icons.sync,
+                  queuedLocally ? Icons.schedule_send_outlined : Icons.sync,
                   size: 16,
                   color: colors.onSurfaceVariant,
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    messageQueued
+                    queuedLocally
                         ? '${l.queuedLocally} · ${l.loadingSessionStatus}'
                         : l.loadingSessionStatus,
                     maxLines: 2,

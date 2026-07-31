@@ -5278,9 +5278,12 @@ class SessionInfo {
     String? codexPermissionsMode,
     String? codexSandboxMode,
     String? codexModel,
+    bool clearCodexModel = false,
     String? codexProfile,
     String? codexModelReasoningEffort,
+    bool clearCodexModelReasoningEffort = false,
     String? codexServiceTier,
+    bool clearCodexServiceTier = false,
     bool? codexNetworkAccessEnabled,
     String? codexWebSearchMode,
     List<String>? codexAdditionalWritableRoots,
@@ -5321,11 +5324,14 @@ class SessionInfo {
           codexApprovalsReviewer ?? this.codexApprovalsReviewer,
       codexPermissionsMode: codexPermissionsMode ?? this.codexPermissionsMode,
       codexSandboxMode: codexSandboxMode ?? this.codexSandboxMode,
-      codexModel: codexModel ?? this.codexModel,
+      codexModel: clearCodexModel ? null : (codexModel ?? this.codexModel),
       codexProfile: codexProfile ?? this.codexProfile,
-      codexModelReasoningEffort:
-          codexModelReasoningEffort ?? this.codexModelReasoningEffort,
-      codexServiceTier: codexServiceTier ?? this.codexServiceTier,
+      codexModelReasoningEffort: clearCodexModelReasoningEffort
+          ? null
+          : (codexModelReasoningEffort ?? this.codexModelReasoningEffort),
+      codexServiceTier: clearCodexServiceTier
+          ? null
+          : (codexServiceTier ?? this.codexServiceTier),
       codexNetworkAccessEnabled:
           codexNetworkAccessEnabled ?? this.codexNetworkAccessEnabled,
       codexWebSearchMode: codexWebSearchMode ?? this.codexWebSearchMode,

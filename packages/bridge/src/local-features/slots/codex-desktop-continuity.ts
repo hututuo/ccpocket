@@ -183,6 +183,10 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
   /** Runtime sessions whose model-visible history trails the durable rollout. */
   private readonly staleRuntimeSessionIds = new Set<string>();
   private readonly blockedDrainSessionIds = new Set<string>();
+  private readonly verifiedActivityFlights = new Map<
+    string,
+    Promise<boolean>
+  >();
   private closed = false;
 
   constructor(
@@ -467,6 +471,44 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
     return this.monitors.get(threadId)?.hasBlockingExternalActivity ?? false;
   }
 
+  async hasExternalCodexActivityVerified(
+    session: LocalFeatureSession,
+  ): Promise<boolean> {
+    if (session.provider !== "codex") return false;
+    const threadId = this.runtime.getCodexThreadId(session);
+    if (!threadId) return false;
+    const existing = this.verifiedActivityFlights.get(threadId);
+    if (existing) return existing;
+    const flight = this.verifyExternalCodexActivity(threadId);
+    this.verifiedActivityFlights.set(threadId, flight);
+    try {
+      return await flight;
+    } finally {
+      if (this.verifiedActivityFlights.get(threadId) === flight) {
+        this.verifiedActivityFlights.delete(threadId);
+      }
+    }
+  }
+
+  private async verifyExternalCodexActivity(
+    threadId: string,
+  ): Promise<boolean> {
+    let monitor: CodexRolloutMonitor | undefined;
+    try {
+      monitor = await this.monitorFor(threadId);
+      await monitor.refreshNow();
+      return monitor.hasBlockingExternalActivity;
+    } catch {
+      // The caller uses this method only before mutating model/speed. Unknown
+      // durable ownership is therefore read-only until a later refresh proves
+      // the turn local or idle. A currently running Bridge-owned turn remains
+      // a proven local owner even when its synthetic/test rollout is absent.
+      return !this.isLocalRuntimeActive(threadId);
+    } finally {
+      if (monitor) this.disposeMonitorIfUnused(threadId, monitor);
+    }
+  }
+
   disconnect(client: object): void {
     this.watchIntentsByClient.delete(client);
     const registrations = this.watchersByClient.get(client);
@@ -493,6 +535,7 @@ export class CodexDesktopContinuityHandler implements LocalFeatureHandler {
     this.localClientMessageIds.clear();
     this.staleRuntimeSessionIds.clear();
     this.blockedDrainSessionIds.clear();
+    this.verifiedActivityFlights.clear();
     this.rehydrateFailureCounts.clear();
     this.rehydrateInFlight.clear();
   }

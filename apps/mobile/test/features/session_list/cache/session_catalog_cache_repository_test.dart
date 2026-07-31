@@ -678,6 +678,9 @@ void main() {
       projectPath: '/workspace/v2',
       name: 'Synced thread',
       firstPrompt: 'Hello',
+      model: 'gpt-5.6-sol',
+      modelReasoningEffort: 'ultra',
+      serviceTier: 'fast',
       createdAt: '2026-07-30T00:00:00.000Z',
       modifiedAt: '2026-07-30T00:01:00.000Z',
       recencyAt: '2026-07-30T00:02:00.000Z',
@@ -735,6 +738,9 @@ void main() {
     final catalog = await repository.load(target);
     expect(catalog?.sessions.single.name, 'Synced thread');
     expect(catalog?.sessions.single.codexSourceId, 'source-v2');
+    expect(catalog?.sessions.single.codexModel, 'gpt-5.6-sol');
+    expect(catalog?.sessions.single.codexModelReasoningEffort, 'ultra');
+    expect(catalog?.sessions.single.codexServiceTier, 'fast');
     final statuses = await repository.loadConversationStatuses(target);
     expect(statuses.single.activity, 'working');
     expect(statuses.single.attention, 'approval');

@@ -23,9 +23,13 @@ class MockBridgeService extends BridgeService {
   final sentMessages = <ClientMessage>[];
   final updatedOfflineInputs = <Map<String, dynamic>>[];
   final canceledOfflineInputs = <Map<String, dynamic>>[];
+  final restoredCodexModels = <Map<String, dynamic>>[];
+  final restoredCodexSpeeds = <Map<String, dynamic>>[];
   final cachedMessagesBySession = <String, List<ServerMessage>>{};
   final historySeqBySession = <String, int>{};
   bool connected = true;
+  bool offlineUpdateSucceeds = true;
+  bool offlineCancelSucceeds = true;
   int authoritativeGeneration = 0;
   bool authoritativeForCurrentConnection = true;
   List<SessionInfo> sessionSnapshot = const [];
@@ -123,7 +127,7 @@ class MockBridgeService extends BridgeService {
       'skills': skills,
       'mentions': mentions,
     });
-    return true;
+    return offlineUpdateSucceeds;
   }
 
   @override
@@ -135,7 +139,28 @@ class MockBridgeService extends BridgeService {
       'sessionId': sessionId,
       'clientMessageId': clientMessageId,
     });
-    return true;
+    return offlineCancelSucceeds;
+  }
+
+  @override
+  void restoreSessionCodexModel(
+    String sessionId, {
+    required String? model,
+    required String? modelReasoningEffort,
+  }) {
+    restoredCodexModels.add({
+      'sessionId': sessionId,
+      'model': model,
+      'modelReasoningEffort': modelReasoningEffort,
+    });
+  }
+
+  @override
+  void restoreSessionCodexSpeed(String sessionId, String? serviceTier) {
+    restoredCodexSpeeds.add({
+      'sessionId': sessionId,
+      'serviceTier': serviceTier,
+    });
   }
 
   @override
@@ -304,12 +329,11 @@ void main() {
         expect(mockBridge.sentMessages, isEmpty);
         expect(mockBridge.requestSessionHistoryCallCount, 0);
 
-        expect(cubit.showDeferredSubmission('Queued while attaching'), isTrue);
+        expect(cubit.showDeferredSubmission('Send while attaching'), isTrue);
         expect(
           cubit.state.entries.whereType<UserChatEntry>().last.status,
-          MessageStatus.queued,
+          MessageStatus.sending,
         );
-
         cubit.updateDetachedPreviewHistory(const [
           UserInputMessage(text: 'Cached question'),
           AssistantServerMessage(
@@ -334,7 +358,18 @@ void main() {
           cubit.state.entries
               .whereType<UserChatEntry>()
               .map((entry) => entry.text),
-          contains('Queued while attaching'),
+          contains('Send while attaching'),
+        );
+        expect(
+          cubit.showDeferredSubmission(
+            'Queued while offline',
+            queuedLocally: true,
+          ),
+          isTrue,
+        );
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().last.status,
+          MessageStatus.queued,
         );
         expect(
           cubit.state.entries
@@ -347,6 +382,128 @@ void main() {
               ),
           hasLength(1),
         );
+      },
+    );
+
+    test(
+      'detached provider status stays source-scoped and rejects late history',
+      () async {
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+        );
+        addTearDown(cubit.close);
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'ownedElsewhere',
+            source: 'legacyRollout',
+            confidence: 'observed',
+            observedAt: '2026-07-31T04:00:00.000Z',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        expect(cubit.state.status, ProcessStatus.running);
+        expect(cubit.state.externalDesktopTurnActive, isTrue);
+        expect(cubit.externalDesktopTurnSteerable.value, isFalse);
+        cubit.updateDetachedProviderSettings(
+          const RecentSession(
+            sessionId: 'durable-thread',
+            provider: 'codex',
+            firstPrompt: 'Task',
+            created: '2026-07-31T03:00:00.000Z',
+            modified: '2026-07-31T04:00:00.000Z',
+            gitBranch: 'main',
+            projectPath: '/tmp/project',
+            isSidechain: false,
+            codexModel: 'gpt-5.6-sol',
+            codexModelReasoningEffort: 'ultra',
+            codexServiceTier: 'default',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        expect(cubit.state.codexModel, 'gpt-5.6-sol');
+        expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
+
+        cubit.updateDetachedPreviewHistory(const [
+          StatusMessage(status: ProcessStatus.idle),
+          SystemMessage(
+            subtype: 'init',
+            provider: 'codex',
+            model: 'gpt-5.6-sol',
+            modelReasoningEffort: 'high',
+            serviceTier: 'fast',
+          ),
+          UserInputMessage(text: 'Cached update'),
+        ]);
+        expect(cubit.state.status, ProcessStatus.running);
+        expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
+        expect(cubit.state.codexSpeed, CodexSpeed.standard);
+        expect(cubit.codexServiceTierRaw.value, 'default');
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'another-thread',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'notLoaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-07-31T04:01:00.000Z',
+          ),
+        );
+        expect(cubit.state.status, ProcessStatus.running);
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-thread',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'notLoaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-07-31T03:59:00.000Z',
+          ),
+        );
+        expect(cubit.state.status, ProcessStatus.running);
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-thread',
+            activity: 'idle',
+            attention: 'none',
+            result: 'completed',
+            runtimeAttachment: 'notLoaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-07-31T04:02:00.000Z',
+          ),
+        );
+        expect(cubit.state.status, ProcessStatus.idle);
+        expect(cubit.state.externalDesktopTurnActive, isFalse);
+
+        cubit.updateDetachedProviderStatus(
+          null,
+          sourceFingerprint: 'bridge-b/source-b',
+        );
+        expect(cubit.state.status, ProcessStatus.unknown);
+        expect(cubit.state.codexModel, isNull);
+        expect(cubit.state.codexModelReasoningEffort, isNull);
+        expect(cubit.state.codexSpeed, CodexSpeed.unknown);
+        expect(cubit.codexServiceTierRaw.value, isNull);
       },
     );
 
@@ -745,6 +902,18 @@ void main() {
         expect(cubit.state.status, ProcessStatus.running);
         expect(cubit.state.externalDesktopTurnActive, isTrue);
         expect(cubit.externalDesktopTurnSteerable.value, isTrue);
+
+        final messageCountBeforeExternalSettings =
+            mockBridge.sentMessages.length;
+        cubit.setCodexModel(
+          'gpt-5.6-sol',
+          reasoningEffort: ReasoningEffort.ultra,
+        );
+        cubit.setCodexSpeed(CodexSpeed.fast);
+        expect(
+          mockBridge.sentMessages.length,
+          messageCountBeforeExternalSettings,
+        );
 
         cubit.sendMessage('follow up');
         expect(mockBridge.sentMessages.last.type, 'input');
@@ -3245,7 +3414,7 @@ void main() {
       final queued = cubit.state.queuedInput;
       expect(ChatSessionCubit.isOfflineQueuedInput(queued), isTrue);
 
-      cubit.cancelQueuedInput(queued!);
+        await cubit.cancelQueuedInput(queued!);
       encoded.complete(const [
         {'base64': 'AQID', 'mimeType': 'image/png'},
       ]);
@@ -3318,11 +3487,43 @@ void main() {
         );
         await Future.microtask(() {});
         expect(cubit.state.queuedInput, isNull);
+        final delivered = cubit.state.entries
+            .whereType<UserChatEntry>()
+            .toList();
+        expect(delivered, hasLength(1));
+        expect(delivered.single.text, 'Offline Codex input');
+        expect(delivered.single.status, MessageStatus.sent);
       },
     );
 
     test(
-      'codex online input moves to queue panel when delivery ack is slow',
+      'legacy offline ack without client id preserves the queued message',
+      () async {
+        mockBridge.connected = false;
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        cubit.sendMessage('Legacy offline Codex input');
+        expect(cubit.state.queuedInput, isNotNull);
+        expect(cubit.state.entries.whereType<UserChatEntry>(), isEmpty);
+
+        mockBridge.emitMessage(
+          const InputAckMessage(sessionId: 's1', acceptedSeq: 1),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.queuedInput, isNull);
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(1));
+        expect(users.single.text, 'Legacy offline Codex input');
+        expect(users.single.status, MessageStatus.sent);
+      },
+    );
+
+    test(
+      'codex online input stays in its bubble when delivery ack is slow',
       () async {
         final cubit = createCubit('s1', provider: Provider.codex);
         addTearDown(cubit.close);
@@ -3342,14 +3543,9 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 650));
 
         users = cubit.state.entries.whereType<UserChatEntry>().toList();
-        expect(users, isEmpty);
-        expect(cubit.state.queuedInput?.text, 'Slow online Codex input');
-        expect(
-          ChatSessionCubit.isDeliveryPendingQueuedInput(
-            cubit.state.queuedInput,
-          ),
-          isTrue,
-        );
+        expect(users, hasLength(1));
+        expect(users.single.status, MessageStatus.sending);
+        expect(cubit.state.queuedInput, isNull);
 
         final payload =
             jsonDecode(mockBridge.sentMessages.single.toJson())
@@ -3414,7 +3610,11 @@ void main() {
 
         cubit.sendMessage('First Codex input while starting');
 
-        expect(cubit.state.entries.whereType<UserChatEntry>(), isEmpty);
+        final pendingUsers = cubit.state.entries
+            .whereType<UserChatEntry>()
+            .toList();
+        expect(pendingUsers, hasLength(1));
+        expect(pendingUsers.single.status, MessageStatus.sending);
         expect(cubit.state.queuedInput, isNull);
 
         final payload =
@@ -4482,11 +4682,10 @@ void main() {
         cubit.sendMessage('Ack-less online Codex input');
 
         await Future<void>.delayed(const Duration(milliseconds: 650));
+        expect(cubit.state.queuedInput, isNull);
         expect(
-          ChatSessionCubit.isDeliveryPendingQueuedInput(
-            cubit.state.queuedInput,
-          ),
-          isTrue,
+          cubit.state.entries.whereType<UserChatEntry>().single.status,
+          MessageStatus.sending,
         );
 
         mockBridge.emitMessage(
@@ -4510,7 +4709,7 @@ void main() {
       },
     );
 
-    test('codex delivery pending input can be locally dismissed', () async {
+    test('codex delivery pending input never exposes queue controls', () async {
       final cubit = createCubit('s1', provider: Provider.codex);
       addTearDown(cubit.close);
       mockBridge.emitMessage(
@@ -4522,12 +4721,11 @@ void main() {
       cubit.sendMessage('Dismiss delivery pending');
       await Future<void>.delayed(const Duration(milliseconds: 650));
 
-      final item = cubit.state.queuedInput!;
-      expect(ChatSessionCubit.isDeliveryPendingQueuedInput(item), isTrue);
-
-      cubit.cancelQueuedInput(item);
-
       expect(cubit.state.queuedInput, isNull);
+      expect(
+        cubit.state.entries.whereType<UserChatEntry>().single.status,
+        MessageStatus.sending,
+      );
       expect(mockBridge.sentMessages, hasLength(1));
     });
 
@@ -4550,13 +4748,13 @@ void main() {
         addTearDown(restored.close);
         await Future.microtask(() {});
 
-        expect(restored.state.queuedInput?.text, 'Recreate delivery pending');
-        expect(
-          ChatSessionCubit.isDeliveryPendingQueuedInput(
-            restored.state.queuedInput,
-          ),
-          isTrue,
-        );
+        expect(restored.state.queuedInput, isNull);
+        final restoredPendingUsers = restored.state.entries
+            .whereType<UserChatEntry>()
+            .toList();
+        expect(restoredPendingUsers, hasLength(1));
+        expect(restoredPendingUsers.single.text, 'Recreate delivery pending');
+        expect(restoredPendingUsers.single.status, MessageStatus.sending);
 
         final payload =
             jsonDecode(mockBridge.sentMessages.single.toJson())
@@ -4581,6 +4779,95 @@ void main() {
     );
 
     test(
+      'all online pending inputs survive a session cubit recreation',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        cubit.sendMessage('Pending A');
+        cubit.sendMessage('Pending B');
+        final sent = mockBridge.sentMessages
+            .map(
+              (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
+            )
+            .toList(growable: false);
+        await cubit.close();
+
+        final restored = createCubit('s1', provider: Provider.codex);
+        addTearDown(restored.close);
+        await Future.microtask(() {});
+
+        var users = restored.state.entries.whereType<UserChatEntry>().toList();
+        expect(users.map((entry) => entry.text), ['Pending A', 'Pending B']);
+        expect(
+          users.map((entry) => entry.status),
+          everyElement(MessageStatus.sending),
+        );
+
+        for (final payload in sent) {
+          mockBridge.emitMessage(
+            InputAckMessage(
+              sessionId: 's1',
+              clientMessageId: payload['clientMessageId'] as String,
+            ),
+            sessionId: 's1',
+          );
+        }
+        await pumpEventQueue();
+
+        users = restored.state.entries.whereType<UserChatEntry>().toList();
+        expect(users.map((entry) => entry.text), ['Pending A', 'Pending B']);
+        expect(
+          users.map((entry) => entry.status),
+          everyElement(MessageStatus.sent),
+        );
+      },
+    );
+
+    test(
+      'one assistant response settles only one of several pending inputs',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        cubit.sendMessage('Pending A');
+        cubit.sendMessage('Pending B');
+
+        mockBridge.emitMessage(
+          AssistantServerMessage(
+            message: AssistantMessage(
+              id: 'assistant-a',
+              role: 'assistant',
+              content: const [TextContent(text: 'Answer A')],
+              model: 'codex',
+            ),
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users.map((entry) => entry.status), [
+          MessageStatus.sent,
+          MessageStatus.sending,
+        ]);
+        expect(
+          mockBridge
+              .deliveryPendingInputsForSession('s1')
+              .map((item) => item.text),
+          ['Pending B'],
+        );
+        await cubit.close();
+
+        final restored = createCubit('s1', provider: Provider.codex);
+        addTearDown(restored.close);
+        await Future.microtask(() {});
+        expect(
+          restored.state.entries.whereType<UserChatEntry>().map(
+            (entry) => entry.text,
+          ),
+          ['Pending B'],
+        );
+      },
+    );
+
+    test(
       'codex hidden delivery pending input survives fast recreation and ack',
       () async {
         final cubit = createCubit('s1', provider: Provider.codex);
@@ -4601,6 +4888,11 @@ void main() {
         await Future.microtask(() {});
 
         expect(restored.state.queuedInput, isNull);
+        final restoredPendingUsers = restored.state.entries
+            .whereType<UserChatEntry>()
+            .toList();
+        expect(restoredPendingUsers, hasLength(1));
+        expect(restoredPendingUsers.single.status, MessageStatus.sending);
 
         mockBridge.emitMessage(
           InputAckMessage(
@@ -4622,29 +4914,36 @@ void main() {
       },
     );
 
-    test(
-      'canceling delivery pending input clears restored pending state',
-      () async {
-        final cubit = createCubit('s1', provider: Provider.codex);
-        mockBridge.emitMessage(
-          const StatusMessage(status: ProcessStatus.idle),
+    test('input rejection clears restored delivery pending state', () async {
+      final cubit = createCubit('s1', provider: Provider.codex);
+      mockBridge.emitMessage(
+        const StatusMessage(status: ProcessStatus.idle),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+
+      cubit.sendMessage('Reject restored delivery pending');
+      final payload =
+          jsonDecode(mockBridge.sentMessages.single.toJson())
+              as Map<String, dynamic>;
+      mockBridge.emitMessage(
+        InputRejectedMessage(
           sessionId: 's1',
-        );
-        await Future.microtask(() {});
+          clientMessageId: payload['clientMessageId'] as String,
+          reason: 'rejected',
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+      await cubit.close();
 
-        cubit.sendMessage('Cancel restored delivery pending');
-        await Future<void>.delayed(const Duration(milliseconds: 650));
+      final restored = createCubit('s1', provider: Provider.codex);
+      addTearDown(restored.close);
+      await Future.microtask(() {});
 
-        cubit.cancelQueuedInput(cubit.state.queuedInput!);
-        await cubit.close();
-
-        final restored = createCubit('s1', provider: Provider.codex);
-        addTearDown(restored.close);
-        await Future.microtask(() {});
-
-        expect(restored.state.queuedInput, isNull);
-      },
-    );
+      expect(restored.state.queuedInput, isNull);
+      expect(restored.state.entries.whereType<UserChatEntry>(), isEmpty);
+    });
 
     test(
       'codex sendMessage includes structured skills and app mentions',
@@ -5223,6 +5522,31 @@ void main() {
       expect(mockBridge.sentMessages, isEmpty);
     });
 
+    test('setCodexModel ignores an unchanged model and effort', () async {
+      mockBridge.sessionSnapshot = const [
+        SessionInfo(
+          id: 's1',
+          provider: 'codex',
+          projectPath: '/project',
+          status: 'idle',
+          createdAt: '',
+          lastActivityAt: '',
+          codexModel: 'gpt-5.6-sol',
+          codexModelReasoningEffort: 'ultra',
+        ),
+      ];
+      final cubit = createCubit('s1', provider: Provider.codex);
+      addTearDown(cubit.close);
+
+      cubit.setCodexModel(
+        'gpt-5.6-sol',
+        reasoningEffort: ReasoningEffort.ultra,
+      );
+
+      expect(mockBridge.sentMessages, isEmpty);
+      expect(mockBridge.restoredCodexModels, isEmpty);
+    });
+
     test('setCodexSpeed updates state and sends bridge message', () async {
       final cubit = createCubit('s1', provider: Provider.codex);
       addTearDown(cubit.close);
@@ -5236,6 +5560,59 @@ void main() {
         'sessionId': 's1',
       });
     });
+
+    test(
+      'external owner rejection rolls model and speed back to provider facts',
+      () async {
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/project',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+            codexModel: 'gpt-5.6-sol',
+            codexModelReasoningEffort: 'ultra',
+            codexServiceTier: 'fast',
+          ),
+        ];
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+
+        cubit.setCodexModel(
+          'gpt-5.4-mini',
+          reasoningEffort: ReasoningEffort.high,
+        );
+        cubit.setCodexSpeed(CodexSpeed.standard);
+        expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.high);
+        expect(cubit.state.codexSpeed, CodexSpeed.standard);
+
+        mockBridge.emitMessage(
+          const ErrorMessage(
+            sessionId: 's1',
+            message: 'Codex Desktop owns the active turn.',
+            errorCode: 'codex_settings_owned_elsewhere',
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.codexModel, 'gpt-5.6-sol');
+        expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
+        expect(cubit.state.codexSpeed, CodexSpeed.fast);
+        expect(cubit.codexServiceTierRaw.value, 'fast');
+        expect(mockBridge.restoredCodexModels.single, {
+          'sessionId': 's1',
+          'model': 'gpt-5.6-sol',
+          'modelReasoningEffort': 'ultra',
+        });
+        expect(mockBridge.restoredCodexSpeeds.single, {
+          'sessionId': 's1',
+          'serviceTier': 'fast',
+        });
+      },
+    );
 
     test('permission mode rolls back on mode-change error', () async {
       final cubit = createCubit('s1');
@@ -6253,7 +6630,7 @@ void main() {
     );
 
     test(
-      'staged input acknowledgement advances monotonically from one check to two',
+      'ordinary staged input remains one check after provider acceptance',
       () async {
         final cubit = createCubit('s1');
         addTearDown(cubit.close);
@@ -6267,7 +6644,7 @@ void main() {
           InputAckMessage(
             sessionId: 's1',
             clientMessageId: clientMessageId,
-            queued: true,
+            queued: false,
             stage: InputAckStage.bridgeAccepted,
           ),
           sessionId: 's1',
@@ -6292,16 +6669,16 @@ void main() {
         await Future.microtask(() {});
         expect(
           cubit.state.entries.whereType<UserChatEntry>().single.status,
-          MessageStatus.providerAccepted,
+          MessageStatus.bridgeAccepted,
         );
 
-        // A duplicate first-stage ack after reconnect must not remove the
-        // authoritative provider receipt.
+        // A duplicate first-stage ack after reconnect keeps the same single
+        // receipt; two-stage checks belong only to the next-turn queue panel.
         mockBridge.emitMessage(
           InputAckMessage(
             sessionId: 's1',
             clientMessageId: clientMessageId,
-            queued: true,
+            queued: false,
             stage: InputAckStage.bridgeAccepted,
           ),
           sessionId: 's1',
@@ -6309,7 +6686,7 @@ void main() {
         await Future.microtask(() {});
         expect(
           cubit.state.entries.whereType<UserChatEntry>().single.status,
-          MessageStatus.providerAccepted,
+          MessageStatus.bridgeAccepted,
         );
       },
     );
@@ -6401,7 +6778,11 @@ void main() {
 
       cubit.sendMessage('Follow up');
 
-      expect(cubit.state.entries.whereType<UserChatEntry>(), isEmpty);
+      final optimistic = cubit.state.entries
+          .whereType<UserChatEntry>()
+          .toList();
+      expect(optimistic, hasLength(1));
+      expect(optimistic.single.status, MessageStatus.sending);
       expect(mockBridge.sentMessages.last.type, 'input');
       final inputPayload =
           jsonDecode(mockBridge.sentMessages.last.toJson())
@@ -6425,8 +6806,13 @@ void main() {
       );
       await Future.microtask(() {});
 
+      expect(cubit.state.entries.whereType<UserChatEntry>(), isEmpty);
       expect(cubit.state.queuedInput?.itemId, 'q1');
       expect(cubit.state.queuedInput?.text, 'Follow up');
+      expect(
+        cubit.state.queuedInput?.deliveryStage,
+        QueuedInputDeliveryStage.bridgeAccepted,
+      );
 
       mockBridge.emitMessage(
         InputAckMessage(
@@ -6486,6 +6872,92 @@ void main() {
     });
 
     test(
+      'queued ack before a legacy queue snapshot migrates the matching bubble',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        cubit.sendMessage('Legacy queued follow up');
+        final clientMessageId = cubit.state.entries
+            .whereType<UserChatEntry>()
+            .single
+            .clientMessageId!;
+
+        mockBridge.emitMessage(
+          InputAckMessage(
+            sessionId: 's1',
+            clientMessageId: clientMessageId,
+            queued: true,
+            stage: InputAckStage.bridgeAccepted,
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.queuedInput, isNull);
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().single.status,
+          MessageStatus.bridgeAccepted,
+        );
+
+        mockBridge.emitMessage(
+          const ConversationQueueMessage(
+            sessionId: 's1',
+            limit: 1,
+            items: [
+              QueuedInputItem(
+                itemId: 'legacy-q1',
+                text: 'Legacy queued follow up',
+                createdAt: '2026-04-25T00:00:00.000Z',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.entries.whereType<UserChatEntry>(), isEmpty);
+        expect(cubit.state.queuedInput?.itemId, 'legacy-q1');
+        expect(cubit.state.queuedInput?.clientMessageId, clientMessageId);
+        expect(
+          cubit.state.queuedInput?.deliveryStage,
+          QueuedInputDeliveryStage.bridgeAccepted,
+        );
+      },
+    );
+
+    test('ambiguous legacy queue text keeps every fact visible', () async {
+      final cubit = createCubit('s1', provider: Provider.codex);
+      addTearDown(cubit.close);
+      await Future.microtask(() {});
+
+      cubit.sendMessage('Same follow up');
+      cubit.sendMessage('Same follow up');
+      expect(cubit.state.entries.whereType<UserChatEntry>(), hasLength(2));
+
+      mockBridge.emitMessage(
+        const ConversationQueueMessage(
+          sessionId: 's1',
+          limit: 1,
+          items: [
+            QueuedInputItem(
+              itemId: 'legacy-q1',
+              text: 'Same follow up',
+              createdAt: '2026-04-25T00:00:00.000Z',
+            ),
+          ],
+        ),
+        sessionId: 's1',
+      );
+      await Future.microtask(() {});
+
+      expect(cubit.state.entries.whereType<UserChatEntry>(), hasLength(2));
+      expect(cubit.state.queuedInput?.itemId, 'legacy-q1');
+      expect(cubit.state.queuedInput?.clientMessageId, isNull);
+    });
+
+    test(
       'codex queued input update steer and cancel send client messages',
       () async {
         final cubit = createCubit('s1', provider: Provider.codex);
@@ -6498,7 +6970,7 @@ void main() {
           createdAt: '2026-04-25T00:00:00.000Z',
         );
 
-        cubit.updateQueuedInput(item, 'Edited');
+        await cubit.updateQueuedInput(item, 'Edited');
         var payload =
             jsonDecode(mockBridge.sentMessages.last.toJson())
                 as Map<String, dynamic>;
@@ -6513,7 +6985,7 @@ void main() {
         expect(payload['type'], 'steer_queued_input');
         expect(payload['itemId'], 'q1');
 
-        cubit.cancelQueuedInput(item);
+        await cubit.cancelQueuedInput(item);
         payload =
             jsonDecode(mockBridge.sentMessages.last.toJson())
                 as Map<String, dynamic>;
@@ -6536,7 +7008,7 @@ void main() {
           item,
         );
 
-        cubit.updateQueuedInput(item, 'Edited offline');
+        await cubit.updateQueuedInput(item, 'Edited offline');
         expect(cubit.state.queuedInput?.text, 'Edited offline');
         expect(mockBridge.updatedOfflineInputs.single, {
           'sessionId': 's1',
@@ -6556,12 +7028,33 @@ void main() {
           isNot(contains('steer_queued_input')),
         );
 
-        cubit.cancelQueuedInput(cubit.state.queuedInput!);
+        await cubit.cancelQueuedInput(cubit.state.queuedInput!);
         expect(cubit.state.queuedInput, isNull);
         expect(mockBridge.canceledOfflineInputs.single, {
           'sessionId': 's1',
           'clientMessageId': clientMessageId,
         });
+      },
+    );
+
+    test(
+      'offline queue edit and cancel stay visible when reconnect won the race',
+      () async {
+        mockBridge.connected = false;
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+
+        cubit.sendMessage('Original offline');
+        final item = cubit.state.queuedInput!;
+
+        mockBridge.offlineUpdateSucceeds = false;
+        expect(await cubit.updateQueuedInput(item, 'Too late edit'), isFalse);
+        expect(cubit.state.queuedInput?.text, 'Original offline');
+
+        mockBridge.offlineCancelSucceeds = false;
+        expect(await cubit.cancelQueuedInput(item), isFalse);
+        expect(cubit.state.queuedInput?.itemId, item.itemId);
       },
     );
   });

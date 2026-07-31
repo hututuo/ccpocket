@@ -2302,7 +2302,7 @@ void main() {
       },
     );
 
-    test('session list preserves visible delivery pending input', () async {
+    test('session list does not expose delivery pending as a queue', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final socketReady = Completer<WebSocket>();
 
@@ -2337,8 +2337,11 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      expect(bridge.sessions.single.queuedInput?.itemId, 'pending:cm-1');
-      expect(bridge.sessions.single.queuedInput?.text, 'Pending delivery');
+      expect(bridge.sessions.single.queuedInput, isNull);
+      expect(
+        bridge.deliveryPendingInputForSession('s1')?.itemId,
+        'pending:cm-1',
+      );
 
       socket.add(
         jsonEncode({
@@ -2350,6 +2353,7 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
       expect(bridge.sessions.single.queuedInput, isNull);
+      expect(bridge.deliveryPendingInputForSession('s1'), isNull);
 
       bridge.disconnect();
       await socket.close();
@@ -2384,6 +2388,16 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
+      bridge.setDeliveryPendingInput(
+        's1',
+        const QueuedInputItem(
+          itemId: 'pending:cm-queued',
+          text: 'Queued while busy',
+          createdAt: '2026-04-28T00:00:00.000Z',
+        ),
+      );
+      expect(bridge.deliveryPendingInputForSession('s1'), isNotNull);
+
       socket.add(
         jsonEncode({
           'type': 'conversation_queue',
@@ -2402,6 +2416,7 @@ void main() {
 
       expect(bridge.sessions.single.queuedInput?.itemId, 'q1');
       expect(bridge.sessions.single.queuedInput?.text, 'Queued while busy');
+      expect(bridge.deliveryPendingInputForSession('s1'), isNull);
 
       socket.add(
         jsonEncode({
@@ -2420,6 +2435,84 @@ void main() {
       await server.close(force: true);
       bridge.dispose();
     });
+
+    test(
+      'legacy same-text queue does not discard ambiguous delivery recovery',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+        });
+
+        final bridge = BridgeService();
+        bridge.setDeliveryPendingInput(
+          's1',
+          const QueuedInputItem(
+            itemId: 'pending:cm-1',
+            text: 'Same follow up',
+            createdAt: '2026-04-28T00:00:00.000Z',
+          ),
+        );
+        bridge.setDeliveryPendingInput(
+          's1',
+          const QueuedInputItem(
+            itemId: 'pending:cm-2',
+            text: 'Same follow up',
+            createdAt: '2026-04-28T00:00:01.000Z',
+          ),
+        );
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+
+        socket.add(
+          jsonEncode({
+            'type': 'conversation_queue',
+            'sessionId': 's1',
+            'limit': 1,
+            'items': [
+              {
+                'itemId': 'legacy-q1',
+                'text': 'Same follow up',
+                'createdAt': '2026-04-28T00:00:02.000Z',
+              },
+            ],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        expect(bridge.deliveryPendingInputsForSession('s1'), hasLength(2));
+
+        socket.add(
+          jsonEncode({
+            'type': 'conversation_queue',
+            'sessionId': 's1',
+            'limit': 1,
+            'items': [
+              {
+                'itemId': 'q1',
+                'text': 'Same follow up',
+                'createdAt': '2026-04-28T00:00:03.000Z',
+                'clientMessageId': 'cm-1',
+              },
+            ],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        expect(
+          bridge
+              .deliveryPendingInputsForSession('s1')
+              .map((item) => item.itemId),
+          ['pending:cm-2'],
+        );
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
 
     test('input_ack alone does not advance cached history sequence', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

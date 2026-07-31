@@ -6316,7 +6316,6 @@ export class BridgeWebSocketServer {
           });
           break;
         }
-
         const model = sanitizeCodexModel(msg.model);
         if (!model) {
           this.send(ws, {
@@ -6332,6 +6331,18 @@ export class BridgeWebSocketServer {
         const currentModel = sanitizeCodexModel(session.codexSettings?.model);
         const currentEffort = session.codexSettings?.modelReasoningEffort;
         if (model === currentModel && modelReasoningEffort === currentEffort) {
+          break;
+        }
+        if (
+          await this.localFeatures.hasExternalCodexActivityVerified(session)
+        ) {
+          this.send(ws, {
+            type: "error",
+            sessionId: session.id,
+            message:
+              "Codex Desktop owns the active turn. Model settings remain read-only until that turn finishes.",
+            errorCode: "codex_settings_owned_elsewhere",
+          });
           break;
         }
 
@@ -6379,9 +6390,20 @@ export class BridgeWebSocketServer {
           });
           return;
         }
-
         const serviceTier = msg.serviceTier === "fast" ? "fast" : "standard";
         if (session.codexSettings?.serviceTier === serviceTier) break;
+        if (
+          await this.localFeatures.hasExternalCodexActivityVerified(session)
+        ) {
+          this.send(ws, {
+            type: "error",
+            sessionId: session.id,
+            message:
+              "Codex Desktop owns the active turn. Speed remains read-only until that turn finishes.",
+            errorCode: "codex_settings_owned_elsewhere",
+          });
+          return;
+        }
 
         const process = session.process as CodexProcess;
         process.setServiceTier(serviceTier);

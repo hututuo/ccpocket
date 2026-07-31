@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { CodexProcess } from "../codex-process.js";
 import type { ServerMessage } from "../parser.js";
 import { buildConversationContentSnapshot } from "./conversation-content-sync.js";
-import { ConversationSyncV2FeatureHandler } from "./conversation-sync-v2.js";
+import {
+  buildConversationSyncCodexCatalogSeed,
+  ConversationSyncV2FeatureHandler,
+} from "./conversation-sync-v2.js";
 import {
   APP_SERVER_STATUS_CAPABILITY,
   CONVERSATION_SYNC_V2_CAPABILITY,
@@ -16,6 +19,45 @@ import {
 import type { LocalFeatureRuntime, LocalFeatureSession } from "./runtime.js";
 
 describe("conversation_sync_v2 protocol", () => {
+  it("projects durable Codex model settings into the catalog producer", () => {
+    const seed = buildConversationSyncCodexCatalogSeed(
+      {
+        id: "thread-settings",
+        sessionId: "thread-settings",
+        parentThreadId: null,
+        preview: "Preview",
+        ephemeral: false,
+        createdAt: 1,
+        updatedAt: 2,
+        recencyAt: 3,
+        cwd: "/workspace",
+        modelProvider: "openai",
+        status: { type: "active", activeFlags: [] },
+        canAcceptDirectInput: false,
+        agentNickname: null,
+        agentRole: null,
+        gitBranch: null,
+        name: "Settings thread",
+      },
+      {
+        firstPrompt: "Real first prompt",
+        codexSettings: {
+          model: "gpt-5.6-sol",
+          modelReasoningEffort: "ultra",
+          serviceTier: "fast",
+        },
+      },
+    );
+
+    expect(seed.entry).toMatchObject({
+      providerSessionId: "thread-settings",
+      firstPrompt: "Real first prompt",
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
+      serviceTier: "fast",
+    });
+  });
+
   it("accepts bounded state cursors and rejects duplicate thread identities", () => {
     expect(
       conversationSyncV2ProtocolContribution.parseClient(

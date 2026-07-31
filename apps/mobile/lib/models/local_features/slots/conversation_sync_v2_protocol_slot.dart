@@ -132,6 +132,9 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
     this.name,
     this.summary,
     this.firstPrompt,
+    this.model,
+    this.modelReasoningEffort,
+    this.serviceTier,
     this.forkedFromThreadId,
     this.parentThreadId,
   });
@@ -145,6 +148,9 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
   final String? name;
   final String? summary;
   final String? firstPrompt;
+  final String? model;
+  final String? modelReasoningEffort;
+  final String? serviceTier;
   final String? forkedFromThreadId;
   final String? parentThreadId;
 
@@ -194,6 +200,17 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
         'firstPrompt',
         maximumLength: 4096,
       ),
+      model: _conversationSyncOptionalString(json, 'model', maximumLength: 256),
+      modelReasoningEffort: _conversationSyncOptionalString(
+        json,
+        'modelReasoningEffort',
+        maximumLength: 64,
+      ),
+      serviceTier: _conversationSyncOptionalString(
+        json,
+        'serviceTier',
+        maximumLength: 64,
+      ),
       forkedFromThreadId: _conversationSyncOptionalString(
         json,
         'forkedFromThreadId',
@@ -222,6 +239,9 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
         projectPath: projectPath,
         resumeCwd: projectPath,
         isSidechain: false,
+        codexModel: model,
+        codexModelReasoningEffort: modelReasoningEffort,
+        codexServiceTier: serviceTier,
       );
 }
 

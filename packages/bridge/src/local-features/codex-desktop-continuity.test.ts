@@ -2508,6 +2508,47 @@ describe("CodexDesktopContinuityHandler", () => {
     handler.close();
   });
 
+  it("verifies external ownership before any Mobile watcher exists", async () => {
+    const path = await rollout([
+      event("event_msg", {
+        type: "task_started",
+        turn_id: "turn-before-watch",
+      }),
+      event("event_msg", {
+        type: "user_message",
+        turn_id: "turn-before-watch",
+        client_id: "desktop-owner",
+        message: "Desktop-owned request",
+      }),
+    ]);
+    const session = {
+      id: "runtime-before-watch",
+      provider: "codex",
+      projectPath: "/project",
+      process: { isWaitingForInput: true },
+    };
+    const runtime: LocalFeatureRuntime = {
+      getSession: () => session,
+      getCodexThreadId: () => "thread-before-watch",
+      getActiveCodexProcess: () => null,
+      createStandaloneCodexProcess: async () => {
+        throw new Error("not used");
+      },
+      send: () => {},
+      supports: () => true,
+    };
+    const handler = new CodexDesktopContinuityHandler(runtime, {
+      resolveRolloutPath: async () => path,
+    });
+
+    expect(handler.hasExternalCodexActivity(session)).toBe(false);
+    await expect(
+      handler.hasExternalCodexActivityVerified(session),
+    ).resolves.toBe(true);
+    expect((handler as any).monitors.size).toBe(0);
+    handler.close();
+  });
+
   it("negotiates a watch, queues during Desktop activity, and rehydrates after completion", async () => {
     const path = await rollout();
     const client = {};

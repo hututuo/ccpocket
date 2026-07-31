@@ -10605,7 +10605,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(session).toBeDefined();
     ws.send.mockClear();
 
-    (bridge as any).handleClientMessage(
+    await (bridge as any).handleClientMessage(
       {
         type: "set_codex_model",
         sessionId,
@@ -10653,7 +10653,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     });
 
     ws.send.mockClear();
-    (bridge as any).handleClientMessage(
+    await (bridge as any).handleClientMessage(
       {
         type: "set_codex_speed",
         sessionId,
@@ -10674,6 +10674,65 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
           (m: any) => m.type === "system" && m.subtype === "set_codex_speed",
         ),
     ).toMatchObject({ sessionId, serviceTier: "fast" });
+
+    const ownerCheck = vi.spyOn(
+      (bridge as any).localFeatures,
+      "hasExternalCodexActivityVerified",
+    ).mockResolvedValue(true);
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_codex_model",
+        sessionId,
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_codex_speed",
+        sessionId,
+        serviceTier: "fast",
+      },
+      ws,
+    );
+    expect(ownerCheck).not.toHaveBeenCalled();
+    expect(ws.send).not.toHaveBeenCalled();
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_codex_model",
+        sessionId,
+        model: "gpt-5.5",
+        modelReasoningEffort: "high",
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_codex_speed",
+        sessionId,
+        serviceTier: "standard",
+      },
+      ws,
+    );
+
+    expect(session.process.setModel).toHaveBeenCalledTimes(1);
+    expect(session.process.setServiceTier).toHaveBeenCalledTimes(1);
+    expect(ownerCheck).toHaveBeenCalledTimes(2);
+    const ownerErrors = ws.send.mock.calls
+      .map((c: unknown[]) => JSON.parse(c[0] as string))
+      .filter((message: any) => message.type === "error");
+    expect(ownerErrors).toHaveLength(2);
+    expect(ownerErrors[0]).toMatchObject({
+      sessionId,
+      errorCode: "codex_settings_owned_elsewhere",
+    });
+    expect(ownerErrors[1]).toMatchObject({
+      sessionId,
+      errorCode: "codex_settings_owned_elsewhere",
+    });
 
     bridge.close();
   });

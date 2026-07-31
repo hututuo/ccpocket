@@ -13,8 +13,10 @@ import type { HistoryToolDetailPayload, ServerMessage } from "../parser.js";
 import {
   codexThreadToSessionHistory,
   getAllRecentSessions,
+  getCodexSessionIndexMetadata,
   getCodexDesktopToolTimeline,
   resolveCodexSessionJsonlPath,
+  type CodexSessionIndexMetadata,
   type SessionIndexEntry,
 } from "../sessions-index.js";
 import type { SessionCatalogChange } from "../session-catalog-monitor.js";
@@ -58,6 +60,8 @@ const MAX_CATALOG_NAME_LENGTH = 512;
 const MAX_CATALOG_TEXT_LENGTH = 4_096;
 const MAX_CATALOG_PATH_LENGTH = 4_096;
 const MAX_CATALOG_LINEAGE_ID_LENGTH = 256;
+const MAX_CATALOG_MODEL_LENGTH = 256;
+const MAX_CATALOG_SETTING_LENGTH = 64;
 const CODEX_PAGE_SIZE = 500;
 const PRIORITY_RECENT_COUNT = 5;
 const MIN_RECENT_COUNT = 10;
@@ -3182,15 +3186,19 @@ async function readUnifiedCatalog(
 
 async function readCodexCatalog(
   runtime: LocalFeatureRuntime,
+  options: { includeDurableMetadata?: boolean } = {},
 ): Promise<ConversationSyncCatalogSeed[]> {
   try {
     return await withCodexProcess(runtime, undefined, async (process) => {
-      const seeds: ConversationSyncCatalogSeed[] = [];
+      const threads: CodexThreadSummary[] = [];
       let cursor: string | null = null;
       do {
         const page = await process.listThreads({
           cursor,
-          limit: Math.min(CODEX_PAGE_SIZE, MAX_CATALOG_ENTRIES - seeds.length),
+          limit: Math.min(
+            CODEX_PAGE_SIZE,
+            MAX_CATALOG_ENTRIES - threads.length,
+          ),
           sortKey: "recency_at",
           sortDirection: "desc",
           archived: false,
@@ -3198,12 +3206,31 @@ async function readCodexCatalog(
         });
         for (const thread of page.data) {
           if (!thread.id || thread.ephemeral) continue;
-          seeds.push(codexThreadSeed(thread));
-          if (seeds.length >= MAX_CATALOG_ENTRIES) break;
+          threads.push(thread);
+          if (threads.length >= MAX_CATALOG_ENTRIES) break;
         }
         cursor = page.nextCursor;
-      } while (cursor && seeds.length < MAX_CATALOG_ENTRIES);
-      return seeds;
+      } while (cursor && threads.length < MAX_CATALOG_ENTRIES);
+
+      if (options.includeDurableMetadata === false) {
+        return threads.map((thread) =>
+          buildConversationSyncCodexCatalogSeed(thread),
+        );
+      }
+
+      // thread/list is the fast authority for identity, recency and runtime
+      // status, but it does not currently expose the selected model, effort
+      // or service tier. Resolve those three facts in one bounded rollout
+      // metadata pass; a failure only leaves the optional settings unknown.
+      const metadata = await getCodexSessionIndexMetadata(
+        threads.map((thread) => thread.id),
+      ).catch(() => new Map<string, CodexSessionIndexMetadata>());
+      return threads.map((thread) =>
+        buildConversationSyncCodexCatalogSeed(
+          thread,
+          metadata.get(thread.id),
+        ),
+      );
     });
   } catch (error) {
     if (!isUnsupportedAppServerRead(error)) throw error;
@@ -3223,7 +3250,9 @@ async function readCurrentStatuses(
 ): Promise<Map<ConversationKey, ConversationSyncStatus>> {
   const statuses = new Map<ConversationKey, ConversationSyncStatus>();
   try {
-    const codex = await readCodexCatalog(runtime);
+    const codex = await readCodexCatalog(runtime, {
+      includeDurableMetadata: false,
+    });
     for (const seed of codex) statuses.set(targetKey(seed.entry), seed.status);
   } catch {
     for (const [key, record] of current) {
@@ -4389,6 +4418,7 @@ function sessionSeed(session: SessionIndexEntry): ConversationSyncCatalogSeed {
       ...(session.name ? { name: session.name } : {}),
       ...(session.summary ? { summary: session.summary } : {}),
       ...(session.firstPrompt ? { firstPrompt: session.firstPrompt } : {}),
+      ...catalogSettings(session.codexSettings),
       createdAt: normalizedIso(session.created),
       modifiedAt,
       recencyAt: modifiedAt,
@@ -4412,6 +4442,15 @@ function normalizeCatalogEntry(
   );
   const forkedFromThreadId = validCatalogLineageId(entry.forkedFromThreadId);
   const parentThreadId = validCatalogLineageId(entry.parentThreadId);
+  const model = validCatalogSetting(entry.model, MAX_CATALOG_MODEL_LENGTH);
+  const modelReasoningEffort = validCatalogSetting(
+    entry.modelReasoningEffort,
+    MAX_CATALOG_SETTING_LENGTH,
+  );
+  const serviceTier = validCatalogSetting(
+    entry.serviceTier,
+    MAX_CATALOG_SETTING_LENGTH,
+  );
   return {
     provider: entry.provider,
     providerSessionId: entry.providerSessionId,
@@ -4421,6 +4460,9 @@ function normalizeCatalogEntry(
     ...(name ? { name } : {}),
     ...(summary ? { summary } : {}),
     ...(firstPrompt ? { firstPrompt } : {}),
+    ...(model ? { model } : {}),
+    ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
+    ...(serviceTier ? { serviceTier } : {}),
     createdAt: entry.createdAt,
     modifiedAt: entry.modifiedAt,
     recencyAt: entry.recencyAt,
@@ -4453,6 +4495,38 @@ function validCatalogLineageId(value: string | undefined): string | undefined {
     : undefined;
 }
 
+function validCatalogSetting(
+  value: string | undefined,
+  maximumLength: number,
+): string | undefined {
+  const normalized = value?.trim();
+  return normalized && normalized.length <= maximumLength
+    ? normalized
+    : undefined;
+}
+
+function catalogSettings(
+  settings: SessionIndexEntry["codexSettings"] | undefined,
+): Pick<
+  ConversationSyncCatalogEntry,
+  "model" | "modelReasoningEffort" | "serviceTier"
+> {
+  const model = validCatalogSetting(settings?.model, MAX_CATALOG_MODEL_LENGTH);
+  const modelReasoningEffort = validCatalogSetting(
+    settings?.modelReasoningEffort,
+    MAX_CATALOG_SETTING_LENGTH,
+  );
+  const serviceTier = validCatalogSetting(
+    settings?.serviceTier,
+    MAX_CATALOG_SETTING_LENGTH,
+  );
+  return {
+    ...(model ? { model } : {}),
+    ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
+    ...(serviceTier ? { serviceTier } : {}),
+  };
+}
+
 function isHighSurrogate(value: number): boolean {
   return value >= 0xd800 && value <= 0xdbff;
 }
@@ -4461,8 +4535,9 @@ function isLowSurrogate(value: number): boolean {
   return value >= 0xdc00 && value <= 0xdfff;
 }
 
-function codexThreadSeed(
+export function buildConversationSyncCodexCatalogSeed(
   thread: CodexThreadSummary,
+  metadata?: CodexSessionIndexMetadata,
 ): ConversationSyncCatalogSeed {
   const target = {
     provider: "codex" as const,
@@ -4480,13 +4555,20 @@ function codexThreadSeed(
       ),
       projectPath: thread.cwd,
       ...(thread.name ? { name: thread.name } : {}),
-      ...(thread.preview ? { firstPrompt: thread.preview } : {}),
+      ...(metadata?.summary ? { summary: metadata.summary } : {}),
+      ...(metadata?.firstPrompt || thread.preview
+        ? { firstPrompt: metadata?.firstPrompt ?? thread.preview }
+        : {}),
+      ...catalogSettings(metadata?.codexSettings),
       createdAt,
       modifiedAt,
       recencyAt,
       availability: thread.ephemeral ? "ephemeral" : "durable",
-      ...(thread.forkedFromThreadId
-        ? { forkedFromThreadId: thread.forkedFromThreadId }
+      ...(metadata?.forkedFromThreadId ?? thread.forkedFromThreadId
+        ? {
+            forkedFromThreadId:
+              metadata?.forkedFromThreadId ?? thread.forkedFromThreadId!,
+          }
         : {}),
       ...(thread.parentThreadId
         ? { parentThreadId: thread.parentThreadId }

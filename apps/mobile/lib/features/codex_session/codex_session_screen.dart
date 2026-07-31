@@ -990,14 +990,16 @@ class _CodexProviders extends StatelessWidget {
             if (!detachedPreview && submission != null) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (cubit.isClosed) return;
-                cubit.sendMessage(
+                final accepted = cubit.sendMessage(
                   submission.text,
                   clientMessageId: submission.clientMessageId,
                   images: submission.images,
                   mentionablePaths: submission.mentionablePaths,
                   additionalMentions: submission.additionalMentions,
                 );
-                onInitialSubmissionConsumed?.call(submission);
+                if (accepted) {
+                  onInitialSubmissionConsumed?.call(submission);
+                }
               });
             }
             return cubit;
@@ -1008,6 +1010,8 @@ class _CodexProviders extends StatelessWidget {
         revision: previewRevision,
         messages: initialHistoryMessages,
         hasEarlier: initialHistoryHasEarlier,
+        statusProvider: detachedPreview ? Provider.codex.value : null,
+        statusProviderSessionId: detachedPreview ? sessionId : null,
         child: _CodexChatBody(
           sessionId: sessionId,
           sessionInsightsSessionId: sessionInsightsSessionId,
@@ -1260,13 +1264,17 @@ class _CodexChatBody extends HookWidget {
     bool submitWhileAttaching(ChatComposerSubmission submission) {
       final accepted = onDeferredSubmit?.call(submission) ?? false;
       if (!accepted) return false;
+      final queuedLocally = !context.read<BridgeService>().isConnected;
       chatSessionCubit.showDeferredSubmission(
         submission.text,
         images: submission.images,
+        queuedLocally: queuedLocally,
       );
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(l.queuedLocally)));
+      if (queuedLocally) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(l.queuedLocally)));
+      }
       return true;
     }
     final canCopyCodexCliJoinCommand =
@@ -2079,7 +2087,8 @@ class _CodexChatBody extends HookWidget {
                   ReconnectBanner(bridgeState: bridgeState),
                 if (detachedPreview && deferredSubmissionPending)
                   DurableSessionBindingBanner(
-                    messageQueued: deferredSubmissionPending,
+                    queuedLocally:
+                        bridgeState != BridgeConnectionState.connected,
                   ),
                 if (!isBackground)
                   ...LocalSessionFeatureHost.statusWidgets(localFeatureContext),
@@ -2324,16 +2333,20 @@ class _CodexChatBody extends HookWidget {
                                 : () => context
                                       .read<ChatSessionCubit>()
                                       .steerQueuedInput(queuedInput),
-                            onEdit: () => moveQueuedInputToComposer(
-                              inputController: chatInputController,
-                              item: queuedInput,
-                              cancelQueuedInput: () => context
+                                  onEdit: () => unawaited(
+                                    moveQueuedInputToComposer(
+                                      inputController: chatInputController,
+                                      item: queuedInput,
+                                      cancelQueuedInput: () => context
+                                          .read<ChatSessionCubit>()
+                                          .cancelQueuedInput(queuedInput),
+                                    ),
+                                  ),
+                                  onCancel: () => unawaited(
+                                    context
                                   .read<ChatSessionCubit>()
                                   .cancelQueuedInput(queuedInput),
                             ),
-                            onCancel: () => context
-                                .read<ChatSessionCubit>()
-                                .cancelQueuedInput(queuedInput),
                           ),
                     ),
                 if (approval is ApprovalNone)
@@ -2911,16 +2924,17 @@ void _restoreRewindMessageToComposer({
 }
 
 @visibleForTesting
-void moveQueuedInputToComposer({
+Future<bool> moveQueuedInputToComposer({
   required TextEditingController inputController,
   required QueuedInputItem item,
-  required VoidCallback cancelQueuedInput,
-}) {
-  cancelQueuedInput();
+  required Future<bool> Function() cancelQueuedInput,
+}) async {
+  if (!await cancelQueuedInput()) return false;
   inputController.value = TextEditingValue(
     text: item.text,
     selection: TextSelection.collapsed(offset: item.text.length),
   );
+  return true;
 }
 
 class CodexQueuedInputPanel extends StatelessWidget {
@@ -3040,18 +3054,20 @@ class CodexQueuedInputPanel extends StatelessWidget {
                   icon: const Icon(Icons.subdirectory_arrow_left, size: 20),
                   onPressed: onSteer,
                 ),
-              IconButton(
-                key: const ValueKey('codex_queue_edit_button'),
-                tooltip: l.tooltipMoveQueuedMessageToInput,
-                icon: const Icon(Icons.edit_outlined, size: 20),
-                onPressed: onEdit,
-              ),
-              IconButton(
-                key: const ValueKey('codex_queue_cancel_button'),
-                tooltip: l.tooltipCancelQueuedMessage,
-                icon: const Icon(Icons.close, size: 20),
-                onPressed: onCancel,
-              ),
+              if (!isDeliveryPending) ...[
+                IconButton(
+                  key: const ValueKey('codex_queue_edit_button'),
+                  tooltip: l.tooltipMoveQueuedMessageToInput,
+                  icon: const Icon(Icons.edit_outlined, size: 20),
+                  onPressed: onEdit,
+                ),
+                IconButton(
+                  key: const ValueKey('codex_queue_cancel_button'),
+                  tooltip: l.tooltipCancelQueuedMessage,
+                  icon: const Icon(Icons.close, size: 20),
+                  onPressed: onCancel,
+                ),
+              ],
             ],
           ),
         ),

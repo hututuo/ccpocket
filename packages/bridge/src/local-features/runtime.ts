@@ -200,6 +200,13 @@ export interface LocalFeatureHandler {
   codexQueuedInputDrainBlocked?(session: LocalFeatureSession): void;
   /** True when a Desktop-owned turn exists, even if no unique turn id exists. */
   hasExternalCodexActivity?(session: LocalFeatureSession): boolean;
+  /**
+   * Refreshes durable ownership evidence before a destructive settings write.
+   * Implementations fail closed when ownership cannot be verified.
+   */
+  hasExternalCodexActivityVerified?(
+    session: LocalFeatureSession,
+  ): boolean | Promise<boolean>;
   externalCodexTurnId?(session: LocalFeatureSession): string | undefined;
   /** Observe one already-published session event without owning its transport. */
   sessionMessage?(session: LocalFeatureSession, message: ServerMessage): void;
