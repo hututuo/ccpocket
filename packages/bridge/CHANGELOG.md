@@ -2,6 +2,24 @@
 
 All notable changes to `@ccpocket/bridge` will be documented in this file.
 
+## [1.69.6-compat.12] - 2026-07-31
+
+### Changed
+
+- Semantically integrate official Bridge 1.69.6 Luna assist and session naming
+  improvements while retaining the local compatibility, provider-state and
+  conversation-sync stack.
+
+## [1.69.6] - 2026-07-31
+
+### Changed
+
+- Use GPT-5.6 Luna with no reasoning effort for Codex auto-rename and
+  commit-message assistance, reducing credit usage while preserving output
+  quality.
+- Generate more natural and concise session names by preserving the user's
+  language and favoring specific noun phrases.
+
 ## [1.69.5-compat.8] - 2026-07-30
 
 ### Changed

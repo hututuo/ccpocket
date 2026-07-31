@@ -90,13 +90,12 @@ describe("auto rename", () => {
       userText: "未プッシュ差分をレビューして",
       assistantText: "差分を確認してレビューします。",
     });
-    expect(buildAutoRenamePrompt(transcript!)).not.toContain(
-      "secret tool output",
-    );
-    expect(buildAutoRenamePrompt(transcript!)).not.toContain("tool_use");
-    expect(buildAutoRenamePrompt(transcript!)).not.toContain(
-      "second turn should be ignored",
-    );
+    const prompt = buildAutoRenamePrompt(transcript!);
+    expect(prompt).toContain("Never translate it");
+    expect(prompt).toContain("natural, specific noun phrase");
+    expect(prompt).not.toContain("secret tool output");
+    expect(prompt).not.toContain("tool_use");
+    expect(prompt).not.toContain("second turn should be ignored");
   });
 
   it("returns null when no user input exists", () => {
@@ -146,7 +145,7 @@ describe("auto rename", () => {
     expect(readFileSyncMock).not.toHaveBeenCalled();
   });
 
-  it("uses the Codex mini model for Codex sessions", () => {
+  it("uses the Codex Luna model for Codex sessions", () => {
     readFileSyncMock.mockReturnValue("`Claude SDK最新版更新`\n");
 
     const name = generateAutoRenameName({
@@ -165,7 +164,7 @@ describe("auto rename", () => {
       [
         "exec",
         "-m",
-        "gpt-5.4-mini",
+        "gpt-5.6-luna",
         "-c",
         'model_reasoning_effort="none"',
         "-o",

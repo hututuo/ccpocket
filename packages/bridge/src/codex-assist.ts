@@ -1,4 +1,4 @@
-export const DEFAULT_CODEX_ASSIST_MODEL = "gpt-5.4-mini";
+export const DEFAULT_CODEX_ASSIST_MODEL = "gpt-5.6-luna";
 export const DEFAULT_CODEX_ASSIST_REASONING_EFFORT = "none";
 
 function readNonEmptyEnv(name: string): string | undefined {

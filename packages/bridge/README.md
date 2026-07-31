@@ -48,7 +48,7 @@ ccpocket-bridge --version
 | `BRIDGE_FILE_TRANSFER_STATE_FILE` | `$HOME/.ccpocket/file-transfers-v2-<bridge-id>.json` | Advanced override for private resumable transfer metadata and completion tombstones |
 | `BRIDGE_CODEX_APP_SERVER_MODE` | `private` | Experimental Codex app-server mode: `private`, `managed`, or `external` |
 | `BRIDGE_CODEX_SHARED_APP_SERVER_URL` | `ws://127.0.0.1:8767` in `managed` mode | Experimental shared Codex app-server URL for Codex CLI co-presence |
-| `BRIDGE_CODEX_ASSIST_MODEL` | `gpt-5.4-mini` | Codex model used for auto-rename and commit-message assist calls |
+| `BRIDGE_CODEX_ASSIST_MODEL` | `gpt-5.6-luna` | Codex model used for auto-rename and commit-message assist calls |
 | `BRIDGE_CODEX_ASSIST_REASONING_EFFORT` | `none` | Reasoning effort used for Codex assist calls |
 | `BRIDGE_DEMO_MODE` | (none) | Demo mode: hide Tailscale IPs and API key from QR code / logs |
 | `BRIDGE_RECORDING` | (none) | Enable session recording for debugging (enabled when set) |

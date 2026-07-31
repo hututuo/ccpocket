@@ -15,11 +15,14 @@ const AUTO_RENAME_PROMPT = `${AUTO_RENAME_PROMPT_PREFIX}
 
 Rules:
 - Output only the name. No quotes, JSON, markdown, or explanation.
-- Use the same language as the user's request when natural.
-- Prefer the user's actual goal over implementation details.
+- Match the primary language of the USER text. Never translate it. If USER is Japanese, the name must be Japanese.
+- Write a natural, specific noun phrase rather than a sentence or a list of keywords.
+- Prefer the user's intended outcome over implementation details.
 - Use assistant text only to disambiguate the goal or target area.
-- Keep it short: 2-8 English words or about 8-24 Japanese/Chinese/Korean characters.
-- Avoid generic words such as Session, Chat, Task, Discussion.
+- Keep it short: 2-8 English words or about 6-20 Japanese/Chinese/Korean characters when practical.
+- For Japanese, use particles such as の when they improve readability; avoid unnatural keyword concatenation.
+- Preserve meaningful product, library, and feature names.
+- Avoid generic words such as Session, Chat, Task, Discussion, 作業, タスク, or 対応.
 - Avoid trailing punctuation.`;
 
 const AUTO_RENAME_PROMPT_SIGNATURE = `${AUTO_RENAME_PROMPT_PREFIX}

@@ -1,6 +1,6 @@
 {
   "name": "@ccpocket/bridge",
-  "version": "1.69.5-compat.10",
+  "version": "1.69.6-compat.12",
   "description": "Bridge server that connects Claude Agent SDK and Codex CLI sessions to mobile devices via WebSocket",
   "private": false,
   "type": "module",
