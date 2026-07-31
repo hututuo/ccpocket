@@ -13,8 +13,8 @@ import type { HistoryToolDetailPayload, ServerMessage } from "../parser.js";
 import {
   codexThreadToSessionHistory,
   getAllRecentSessions,
-  getCodexDesktopToolTimeline,
   getCodexSessionIndexMetadata,
+  getCodexDesktopToolTimeline,
   resolveCodexSessionJsonlPath,
   type CodexSessionIndexMetadata,
   type SessionIndexEntry,
@@ -60,6 +60,8 @@ const MAX_CATALOG_NAME_LENGTH = 512;
 const MAX_CATALOG_TEXT_LENGTH = 4_096;
 const MAX_CATALOG_PATH_LENGTH = 4_096;
 const MAX_CATALOG_LINEAGE_ID_LENGTH = 256;
+const MAX_CATALOG_MODEL_LENGTH = 256;
+const MAX_CATALOG_SETTING_LENGTH = 64;
 const CODEX_PAGE_SIZE = 500;
 // Rollout metadata is safe for previews, but parsing every rollout in a large
 // catalog would delay the entire subscription. Recent cards get safe display
@@ -3252,6 +3254,7 @@ async function readUnifiedCatalog(
 
 async function readCodexCatalog(
   runtime: LocalFeatureRuntime,
+  options: { includeDurableMetadata?: boolean } = {},
 ): Promise<ConversationSyncCatalogSeed[]> {
   try {
     return await withCodexProcess(runtime, undefined, async (process) => {
@@ -3276,20 +3279,27 @@ async function readCodexCatalog(
         }
         cursor = page.nextCursor;
       } while (cursor && threads.length < MAX_CATALOG_ENTRIES);
-      let indexedById = new Map<string, CodexSessionIndexMetadata>();
-      try {
-        indexedById = await getCodexSessionIndexMetadata(
-          threads
-            .slice(0, CODEX_CATALOG_PREVIEW_METADATA_LIMIT)
-            .map((thread) => thread.id),
+
+      if (options.includeDurableMetadata === false) {
+        return threads.map((thread) =>
+          buildConversationSyncCodexCatalogSeed(thread),
         );
-      } catch {
-        // Catalog identity/status remain usable. Omit display previews rather
-        // than falling back to the opaque app-server preview, which may be a
-        // private agent-to-agent response item.
       }
+
+      // thread/list is the fast authority for identity, recency and runtime
+      // status, but it does not currently expose the selected model, effort
+      // or service tier. Resolve those three facts in one bounded rollout
+      // metadata pass; a failure only leaves the optional settings unknown.
+      const metadata = await getCodexSessionIndexMetadata(
+        threads
+          .slice(0, CODEX_CATALOG_PREVIEW_METADATA_LIMIT)
+          .map((thread) => thread.id),
+      ).catch(() => new Map<string, CodexSessionIndexMetadata>());
       return threads.map((thread) =>
-        codexThreadSeed(thread, indexedById.get(thread.id)),
+        buildConversationSyncCodexCatalogSeed(
+          thread,
+          metadata.get(thread.id),
+        ),
       );
     });
   } catch (error) {
@@ -3310,7 +3320,9 @@ async function readCurrentStatuses(
 ): Promise<Map<ConversationKey, ConversationSyncStatus>> {
   const statuses = new Map<ConversationKey, ConversationSyncStatus>();
   try {
-    const codex = await readCodexCatalog(runtime);
+    const codex = await readCodexCatalog(runtime, {
+      includeDurableMetadata: false,
+    });
     for (const seed of codex) statuses.set(targetKey(seed.entry), seed.status);
   } catch {
     for (const [key, record] of current) {
@@ -4476,6 +4488,7 @@ function sessionSeed(session: SessionIndexEntry): ConversationSyncCatalogSeed {
       ...(session.name ? { name: session.name } : {}),
       ...(session.summary ? { summary: session.summary } : {}),
       ...(session.firstPrompt ? { firstPrompt: session.firstPrompt } : {}),
+      ...catalogSettings(session.codexSettings),
       createdAt: normalizedIso(session.created),
       modifiedAt,
       recencyAt: modifiedAt,
@@ -4499,6 +4512,15 @@ function normalizeCatalogEntry(
   );
   const forkedFromThreadId = validCatalogLineageId(entry.forkedFromThreadId);
   const parentThreadId = validCatalogLineageId(entry.parentThreadId);
+  const model = validCatalogSetting(entry.model, MAX_CATALOG_MODEL_LENGTH);
+  const modelReasoningEffort = validCatalogSetting(
+    entry.modelReasoningEffort,
+    MAX_CATALOG_SETTING_LENGTH,
+  );
+  const serviceTier = validCatalogSetting(
+    entry.serviceTier,
+    MAX_CATALOG_SETTING_LENGTH,
+  );
   return {
     provider: entry.provider,
     providerSessionId: entry.providerSessionId,
@@ -4508,6 +4530,9 @@ function normalizeCatalogEntry(
     ...(name ? { name } : {}),
     ...(summary ? { summary } : {}),
     ...(firstPrompt ? { firstPrompt } : {}),
+    ...(model ? { model } : {}),
+    ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
+    ...(serviceTier ? { serviceTier } : {}),
     createdAt: entry.createdAt,
     modifiedAt: entry.modifiedAt,
     recencyAt: entry.recencyAt,
@@ -4540,6 +4565,38 @@ function validCatalogLineageId(value: string | undefined): string | undefined {
     : undefined;
 }
 
+function validCatalogSetting(
+  value: string | undefined,
+  maximumLength: number,
+): string | undefined {
+  const normalized = value?.trim();
+  return normalized && normalized.length <= maximumLength
+    ? normalized
+    : undefined;
+}
+
+function catalogSettings(
+  settings: SessionIndexEntry["codexSettings"] | undefined,
+): Pick<
+  ConversationSyncCatalogEntry,
+  "model" | "modelReasoningEffort" | "serviceTier"
+> {
+  const model = validCatalogSetting(settings?.model, MAX_CATALOG_MODEL_LENGTH);
+  const modelReasoningEffort = validCatalogSetting(
+    settings?.modelReasoningEffort,
+    MAX_CATALOG_SETTING_LENGTH,
+  );
+  const serviceTier = validCatalogSetting(
+    settings?.serviceTier,
+    MAX_CATALOG_SETTING_LENGTH,
+  );
+  return {
+    ...(model ? { model } : {}),
+    ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
+    ...(serviceTier ? { serviceTier } : {}),
+  };
+}
+
 function isHighSurrogate(value: number): boolean {
   return value >= 0xd800 && value <= 0xdbff;
 }
@@ -4548,9 +4605,9 @@ function isLowSurrogate(value: number): boolean {
   return value >= 0xdc00 && value <= 0xdfff;
 }
 
-export function codexThreadSeed(
+export function buildConversationSyncCodexCatalogSeed(
   thread: CodexThreadSummary,
-  indexed?: CodexSessionIndexMetadata,
+  metadata?: CodexSessionIndexMetadata,
 ): ConversationSyncCatalogSeed {
   const target = {
     provider: "codex" as const,
@@ -4568,14 +4625,18 @@ export function codexThreadSeed(
       ),
       projectPath: thread.cwd,
       ...(thread.name ? { name: thread.name } : {}),
-      ...(indexed?.summary ? { summary: indexed.summary } : {}),
-      ...(indexed?.firstPrompt ? { firstPrompt: indexed.firstPrompt } : {}),
+      ...(metadata?.summary ? { summary: metadata.summary } : {}),
+      ...(metadata?.firstPrompt ? { firstPrompt: metadata.firstPrompt } : {}),
+      ...catalogSettings(metadata?.codexSettings),
       createdAt,
       modifiedAt,
       recencyAt,
       availability: thread.ephemeral ? "ephemeral" : "durable",
-      ...(thread.forkedFromThreadId
-        ? { forkedFromThreadId: thread.forkedFromThreadId }
+      ...(metadata?.forkedFromThreadId ?? thread.forkedFromThreadId
+        ? {
+            forkedFromThreadId:
+              metadata?.forkedFromThreadId ?? thread.forkedFromThreadId!,
+          }
         : {}),
       ...(thread.parentThreadId
         ? { parentThreadId: thread.parentThreadId }

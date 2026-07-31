@@ -2155,7 +2155,7 @@ void main() {
       expect(update.markUserMessagesQueued, isFalse);
     });
 
-    test('staged ack and provider receipt expose separate delivery states', () {
+    test('ordinary provider receipt keeps the single delivery check', () {
       final bridgeUpdate = handler.handle(
         const InputAckMessage(
           sessionId: 's1',
@@ -2178,7 +2178,24 @@ void main() {
       );
 
       expect(bridgeUpdate.userMessageStatus, MessageStatus.bridgeAccepted);
-      expect(providerUpdate.userMessageStatus, MessageStatus.providerAccepted);
+      expect(providerUpdate.userMessageStatus, MessageStatus.bridgeAccepted);
+    });
+
+    test('queued provider receipt exposes the second queue-stage check', () {
+      final update = handler.handle(
+        const InputDeliveryStatusMessage(
+          sessionId: 's1',
+          clientMessageId: 'cm-1',
+          stage: InputDeliveryStage.providerAccepted,
+          provider: 'codex',
+          method: 'turn/start',
+          occurredAt: '2026-07-31T00:00:00.000Z',
+          queued: true,
+        ),
+        isBackground: false,
+      );
+
+      expect(update.userMessageStatus, MessageStatus.providerAccepted);
     });
   });
 

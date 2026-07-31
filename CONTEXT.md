@@ -1,5 +1,45 @@
 # CC Pocket Compatibility Fork Context
 
+## Active isolated lanes on 2026-07-31
+
+- Coordinator fix lane:
+  `fix/mobile-desktop-runtime-queue-20260731` in
+  `ccpocket-worktrees/mobile-desktop-runtime-queue-fix-20260731`.
+- User-directed conversation A:
+  thread `019fb6c0-73c3-72e0-aaad-811126f41ca9`, branch
+  `fix/parallel-bugfix-a-20260731`, worktree
+  `ccpocket-worktrees/parallel-bugfix-a-20260731`.
+- User-directed conversation B:
+  thread `019fb6c1-6891-7050-be72-ab495e14940a`, branch
+  `fix/parallel-bugfix-b-20260731`, worktree
+  `ccpocket-worktrees/parallel-bugfix-b-20260731`.
+
+All three lanes started from clean
+`4fcdcd25ef96658a9137ddc4bb85a13c1b84f0a0`. Conversations A and B are
+independent Codex threads, not coordinator subagents; they wait for direct user
+assignment and must not edit the integration or another lane's worktree.
+
+## Integrated source: delivery queue and Desktop detail facts
+
+The verified source lane is in:
+
+- Worktree:
+  `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/mobile-desktop-runtime-queue-fix-20260731`
+- Branch: `fix/mobile-desktop-runtime-queue-20260731`
+- Base: `4fcdcd25ef96658a9137ddc4bb85a13c1b84f0a0`
+- Verified code commit: `9cde3249`
+- Evidence note:
+  `notes/mobile-desktop-runtime-queue-fix_v01_20260731-140949.md`
+
+This change separates ordinary online delivery, true local outbox, and the
+Bridge-owned next-turn queue. It also projects source-scoped Desktop activity
+and factual model/effort into detached details without provider resume, and
+protects externally owned turns from stale Mobile model/speed writes. Mobile
+full tests passed 2765 with 4 environment skips; Bridge single-worker full tests
+passed 96 files / 1949 tests. It was fast-forwarded into
+`integration/mobile-session-sync-v2-20260730` at source node `5bd82e7c`; it has
+not yet been deployed, OTA-published, or accepted on a physical device.
+
 ## Verified provider-state implementation after repository convergence
 
 The post-convergence provider-state task has passed its source, compatibility,

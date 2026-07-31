@@ -207,6 +207,12 @@ class SessionListCubit extends Cubit<SessionListState> {
 
   Stream<void> get catalogSnapshotChanges => _catalogSnapshotChanges.stream;
 
+  /// Opaque authenticated Bridge/source partition for detached projections.
+  /// A route/IP change that resolves to the same Bridge/source keeps the same
+  /// fingerprint, while a different Codex Home cannot reuse stale facts.
+  String? get conversationSourceFingerprint =>
+      _currentCacheTarget()?.fingerprint;
+
   bool get hasUsableCatalogForCurrentTarget {
     final currentTarget = _currentCacheTarget();
     if (_bridge.supportsConversationSyncV2) {
@@ -248,6 +254,32 @@ class SessionListCubit extends Cubit<SessionListState> {
 
   Map<String, ConversationSyncV2Status> get conversationStatuses =>
       _conversationStatuses;
+
+  RecentSession? conversationMetadataFor(
+    String provider,
+    String providerSessionId,
+  ) {
+    final key = _conversationKey(provider, providerSessionId);
+    for (final session in _cachedSessions) {
+      if (_conversationKey(
+            session.provider ?? Provider.claude.value,
+            session.sessionId,
+          ) ==
+          key) {
+        return session;
+      }
+    }
+    for (final session in state.sessions) {
+      if (_conversationKey(
+            session.provider ?? Provider.claude.value,
+            session.sessionId,
+          ) ==
+          key) {
+        return session;
+      }
+    }
+    return null;
+  }
 
   Set<String> get unreadConversationKeys => Set.unmodifiable(
     _conversationStatuses.entries

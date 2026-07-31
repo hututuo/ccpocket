@@ -112,40 +112,46 @@ void main() {
     expect(canceled, isTrue);
   });
 
-  testWidgets('CodexQueuedInputPanel hides steer for delivery pending', (
-    tester,
-  ) async {
-    var edited = false;
-    var canceled = false;
+  testWidgets(
+    'CodexQueuedInputPanel has no fake controls for delivery pending',
+    (tester) async {
+      var edited = false;
+      var canceled = false;
 
-    await tester.pumpWidget(
-      _wrap(
-        CodexQueuedInputPanel(
-          item: const QueuedInputItem(
-            itemId: 'pending:cm1',
-            text: 'Slow delivery message',
-            createdAt: '2026-04-25T00:00:00.000Z',
+      await tester.pumpWidget(
+        _wrap(
+          CodexQueuedInputPanel(
+            item: const QueuedInputItem(
+              itemId: 'pending:cm1',
+              text: 'Slow delivery message',
+              createdAt: '2026-04-25T00:00:00.000Z',
+            ),
+            isDeliveryPending: true,
+            onSteer: null,
+            onEdit: () => edited = true,
+            onCancel: () => canceled = true,
           ),
-          isDeliveryPending: true,
-          onSteer: null,
-          onEdit: () => edited = true,
-          onCancel: () => canceled = true,
         ),
-      ),
-    );
+      );
 
-    expect(find.text('Pending delivery'), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('codex_queue_steer_button')),
-      findsNothing,
-    );
+      expect(find.text('Pending delivery'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('codex_queue_steer_button')),
+        findsNothing,
+      );
 
-    await tester.tap(find.byKey(const ValueKey('codex_queue_edit_button')));
-    expect(edited, isTrue);
-
-    await tester.tap(find.byKey(const ValueKey('codex_queue_cancel_button')));
-    expect(canceled, isTrue);
-  });
+      expect(
+        find.byKey(const ValueKey('codex_queue_edit_button')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('codex_queue_cancel_button')),
+        findsNothing,
+      );
+      expect(edited, isFalse);
+      expect(canceled, isFalse);
+    },
+  );
 
   testWidgets('CodexQueuedInputPanel shows one then two delivery checks', (
     tester,
@@ -229,23 +235,54 @@ void main() {
     expect(find.text('provider unavailable'), findsOneWidget);
   });
 
-  test('moveQueuedInputToComposer cancels queue and overwrites input text', () {
-    var canceled = false;
-    final controller = TextEditingController(text: 'existing draft');
-    addTearDown(controller.dispose);
+  test(
+    'moveQueuedInputToComposer cancels queue and overwrites input text',
+    () async {
+      var canceled = false;
+      final controller = TextEditingController(text: 'existing draft');
+      addTearDown(controller.dispose);
 
-    moveQueuedInputToComposer(
-      inputController: controller,
-      item: const QueuedInputItem(
-        itemId: 'q1',
-        text: 'Queued replacement',
-        createdAt: '2026-04-25T00:00:00.000Z',
-      ),
-      cancelQueuedInput: () => canceled = true,
-    );
+      expect(
+        await moveQueuedInputToComposer(
+          inputController: controller,
+          item: const QueuedInputItem(
+            itemId: 'q1',
+            text: 'Queued replacement',
+            createdAt: '2026-04-25T00:00:00.000Z',
+          ),
+          cancelQueuedInput: () async {
+            canceled = true;
+            return true;
+          },
+        ),
+        isTrue,
+      );
 
-    expect(canceled, isTrue);
-    expect(controller.text, 'Queued replacement');
-    expect(controller.selection.baseOffset, 'Queued replacement'.length);
-  });
+      expect(canceled, isTrue);
+      expect(controller.text, 'Queued replacement');
+      expect(controller.selection.baseOffset, 'Queued replacement'.length);
+    },
+  );
+
+  test(
+    'moveQueuedInputToComposer keeps draft when cancellation loses race',
+    () async {
+      final controller = TextEditingController(text: 'existing draft');
+      addTearDown(controller.dispose);
+
+      expect(
+        await moveQueuedInputToComposer(
+          inputController: controller,
+          item: const QueuedInputItem(
+            itemId: 'offline:cm1',
+            text: 'Queued replacement',
+            createdAt: '2026-04-25T00:00:00.000Z',
+          ),
+          cancelQueuedInput: () async => false,
+        ),
+        isFalse,
+      );
+      expect(controller.text, 'existing draft');
+    },
+  );
 }

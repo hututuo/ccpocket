@@ -1266,3 +1266,21 @@
   cross-client live steer requires a shared app-server or a future official,
   verifiable owner-control API; UI and the second ACK must not claim that
   capability before it exists.
+
+## 2026-07-31 ordinary delivery is not a conversation queue
+
+- 普通在线消息的 ACK 等待只属于消息气泡的 delivery 状态：发送中，Bridge 接收后
+  显示一个勾。Provider 后续接收仍是内部交付事实，但普通消息气泡不显示双勾；
+  双勾只属于 Bridge 权威下一轮队列中的第二阶段。不得再用固定延迟把普通在途
+  消息投影为下一轮队列。
+- “已在本地排队”只表示真正尚未进入 Bridge 的断线 outbox；输入框上方的队列面板
+  只表示 Bridge 权威确认的下一轮队列。两者不能复用同一个文案或卡片 badge。
+- `clientMessageId` 是 optimistic 气泡与 Bridge 队列的首选关联。旧 Bridge 缺少
+  该字段时，只允许关联唯一且同文本的在途消息；有歧义时保留两个可见事实，不能
+  猜测并删除用户消息。
+- Delivery recovery metadata 可以在 Mobile 内部保留以支持页面重建，但不得写入
+  `SessionInfo.queuedInput`、不得触发后台工作 badge，也不得暴露不能真正撤回的
+  编辑/取消操作。
+- Detached Desktop 详情从已经提交的 source-scoped v2 cache 读取状态和设置，
+  不得为了显示 Working 或 effort 而 resume 会话。缺失 effort 保持 unknown；
+  独立 Desktop owner 活跃时，Mobile 与 Bridge 均拒绝 model/speed 写回。

@@ -61,11 +61,11 @@ class SessionModeBar extends StatelessWidget {
                     valueListenable: chatCubit.codexModelCatalogRevision,
                     builder: (context, _, _) {
                       final codexModel = _currentCodexModel(chatCubit);
+                      // The chip reports the current thread fact. Candidate
+                      // defaults belong only inside the settings sheet and
+                      // must not make an unknown Desktop effort look like high.
                       final codexReasoningEffort =
-                          _effectiveCodexReasoningEffort(
-                            chatCubit.state.codexModelReasoningEffort,
-                            _codexReasoningEffortsForModel(context, codexModel),
-                          );
+                          chatCubit.state.codexModelReasoningEffort;
                       return ValueListenableBuilder<String?>(
                         valueListenable: chatCubit.codexServiceTierRaw,
                         builder: (context, serviceTierRaw, _) => CodexModelChip(

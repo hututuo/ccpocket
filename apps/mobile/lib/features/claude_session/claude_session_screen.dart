@@ -840,14 +840,16 @@ class _ChatScreenProviders extends StatelessWidget {
             if (!detachedPreview && submission != null) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (cubit.isClosed) return;
-                cubit.sendMessage(
+                final accepted = cubit.sendMessage(
                   submission.text,
                   clientMessageId: submission.clientMessageId,
                   images: submission.images,
                   mentionablePaths: submission.mentionablePaths,
                   additionalMentions: submission.additionalMentions,
                 );
-                onInitialSubmissionConsumed?.call(submission);
+                if (accepted) {
+                  onInitialSubmissionConsumed?.call(submission);
+                }
               });
             }
             return cubit;
@@ -858,6 +860,8 @@ class _ChatScreenProviders extends StatelessWidget {
         revision: previewRevision,
         messages: initialHistoryMessages,
         hasEarlier: initialHistoryHasEarlier,
+        statusProvider: detachedPreview ? Provider.claude.value : null,
+        statusProviderSessionId: detachedPreview ? sessionId : null,
         child: _ChatScreenBody(
           sessionId: sessionId,
           projectPath: projectPath,
@@ -994,13 +998,17 @@ class _ChatScreenBody extends HookWidget {
     bool submitWhileAttaching(ChatComposerSubmission submission) {
       final accepted = onDeferredSubmit?.call(submission) ?? false;
       if (!accepted) return false;
+      final queuedLocally = !context.read<BridgeService>().isConnected;
       chatSessionCubit.showDeferredSubmission(
         submission.text,
         images: submission.images,
+        queuedLocally: queuedLocally,
       );
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(l.queuedLocally)));
+      if (queuedLocally) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(l.queuedLocally)));
+      }
       return true;
     }
 
@@ -1600,7 +1608,8 @@ class _ChatScreenBody extends HookWidget {
                   ReconnectBanner(bridgeState: bridgeState),
                 if (detachedPreview && deferredSubmissionPending)
                   DurableSessionBindingBanner(
-                    messageQueued: deferredSubmissionPending,
+                    queuedLocally:
+                        bridgeState != BridgeConnectionState.connected,
                   ),
                 Expanded(
                   child: BottomOverlayLayout(

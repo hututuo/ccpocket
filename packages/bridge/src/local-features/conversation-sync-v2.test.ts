@@ -4,7 +4,7 @@ import type { CodexProcess, CodexThreadSummary } from "../codex-process.js";
 import type { ServerMessage } from "../parser.js";
 import { buildConversationContentSnapshot } from "./conversation-content-sync.js";
 import {
-  codexThreadSeed,
+  buildConversationSyncCodexCatalogSeed,
   ConversationSyncV2FeatureHandler,
 } from "./conversation-sync-v2.js";
 import {
@@ -39,17 +39,58 @@ describe("conversation_sync_v2 protocol", () => {
       name: null,
     };
 
-    expect(codexThreadSeed(thread).entry).not.toMatchObject({
+    expect(
+      buildConversationSyncCodexCatalogSeed(thread).entry,
+    ).not.toMatchObject({
       firstPrompt: "private agent message",
     });
     expect(
-      codexThreadSeed(thread, {
+      buildConversationSyncCodexCatalogSeed(thread, {
         firstPrompt: "visible user prompt",
         summary: "visible assistant answer",
       }).entry,
     ).toMatchObject({
       firstPrompt: "visible user prompt",
       summary: "visible assistant answer",
+    });
+  });
+
+  it("projects durable Codex model settings into the catalog producer", () => {
+    const seed = buildConversationSyncCodexCatalogSeed(
+      {
+        id: "thread-settings",
+        sessionId: "thread-settings",
+        parentThreadId: null,
+        preview: "Preview",
+        ephemeral: false,
+        createdAt: 1,
+        updatedAt: 2,
+        recencyAt: 3,
+        cwd: "/workspace",
+        modelProvider: "openai",
+        status: { type: "active", activeFlags: [] },
+        canAcceptDirectInput: false,
+        agentNickname: null,
+        agentRole: null,
+        gitBranch: null,
+        name: "Settings thread",
+      },
+      {
+        firstPrompt: "Real first prompt",
+        codexSettings: {
+          model: "gpt-5.6-sol",
+          modelReasoningEffort: "ultra",
+          serviceTier: "fast",
+        },
+      },
+    );
+
+    expect(seed.entry).toMatchObject({
+      providerSessionId: "thread-settings",
+      firstPrompt: "Real first prompt",
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
+      serviceTier: "fast",
     });
   });
 

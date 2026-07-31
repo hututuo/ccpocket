@@ -177,6 +177,23 @@ describe("LocalFeaturesController", () => {
     expect(controller.externalCodexTurnId(session)).toBeUndefined();
   });
 
+  it("awaits a verified external-activity guard for settings writes", async () => {
+    const session = runtime().getSession("session-1")!;
+    const verified = vi.fn(async () => true);
+    const handler: LocalFeatureHandler = {
+      messageTypes: ["get_context_usage"],
+      handle: async () => {},
+      hasExternalCodexActivity: () => false,
+      hasExternalCodexActivityVerified: verified,
+    };
+    const controller = new LocalFeaturesController(runtime(), [handler]);
+
+    await expect(
+      controller.hasExternalCodexActivityVerified(session),
+    ).resolves.toBe(true);
+    expect(verified).toHaveBeenCalledWith(session);
+  });
+
   it("forwards published session messages once per registered handler", () => {
     const session = runtime().getSession("session-1")!;
     const sessionMessage = vi.fn();

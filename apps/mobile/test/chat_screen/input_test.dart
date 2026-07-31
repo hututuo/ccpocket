@@ -110,6 +110,7 @@ void main() {
 
         expect(findSentMessage(bridge, 'input'), isNull);
         expect(find.text('Send after attaching'), findsOneWidget);
+        expect(find.textContaining('Queued locally'), findsNothing);
         expect(attachmentRequests, 1);
         expect(find.byType(DurableSessionBindingBanner), findsOneWidget);
 
@@ -164,6 +165,7 @@ void main() {
         await $(#send_button).tap();
         await pumpN($.tester);
         expect(findSentMessage(bridge, 'input'), isNull);
+        expect(find.textContaining('Queued locally'), findsNothing);
         expect(attachmentRequests, 1);
         expect(find.byType(DurableSessionBindingBanner), findsOneWidget);
 

@@ -352,7 +352,7 @@ void main() {
 
     await tester.pumpWidget(_wrap(cubit, showExtendedCodexEfforts: true));
     await tester.pump(const Duration(milliseconds: 100));
-    await tester.tap(find.text('5.6 Sol high'));
+    await tester.tap(find.text('5.6 Sol'));
     await tester.pumpAndSettle();
 
     final slider = find.byKey(const ValueKey('codex_effort_slider'));
@@ -483,20 +483,21 @@ void main() {
     expect(find.text('Sandbox'), findsNothing);
   });
 
-  testWidgets('codex model chip shows effective reasoning effort', (
+  testWidgets('codex model chip does not fabricate an unknown effort', (
     tester,
   ) async {
     await tester.pumpWidget(_wrap(cubit));
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(cubit.state.codexModelReasoningEffort, isNull);
-    expect(find.text('5.5 high'), findsOneWidget);
+    expect(find.text('5.5'), findsOneWidget);
+    expect(find.text('5.5 high'), findsNothing);
   });
 
   testWidgets('open chat adopts a later Bridge model catalog', (tester) async {
     await tester.pumpWidget(_wrap(cubit));
     await tester.pump(const Duration(milliseconds: 100));
-    expect(find.text('5.5 high'), findsOneWidget);
+    expect(find.text('5.5'), findsOneWidget);
 
     bridge.availableCodexModels = const ['gpt-5.5', 'gpt-5.7-sol'];
     bridge.availableCodexReasoningEfforts = const {
@@ -514,7 +515,7 @@ void main() {
       find.byType(CodexModelChip),
     );
     expect(updatedChip.model, 'gpt-5.5');
-    expect(updatedChip.reasoningEffort?.value, 'ultra');
+    expect(updatedChip.reasoningEffort, isNull);
     expect(find.text('5.5 high'), findsNothing);
   });
 
@@ -529,8 +530,8 @@ void main() {
     await tester.pumpWidget(_wrap(cubit, showExtendedCodexEfforts: true));
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.text('5.6 Sol high'), findsOneWidget);
-    await tester.tap(find.text('5.6 Sol high'));
+    expect(find.text('5.6 Sol'), findsOneWidget);
+    await tester.tap(find.text('5.6 Sol'));
     await tester.pumpAndSettle();
     expect(
       tester
@@ -701,7 +702,7 @@ void main() {
 
     await tester.pumpWidget(_wrap(cubit));
     await tester.pump(const Duration(milliseconds: 100));
-    await tester.tap(find.text('5.6 Sol high'));
+    await tester.tap(find.text('5.6 Sol'));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('codex_speed_button')));
     await tester.pumpAndSettle();
@@ -725,7 +726,7 @@ void main() {
 
     await tester.pumpWidget(_wrap(cubit));
     await tester.pump(const Duration(milliseconds: 100));
-    await tester.tap(find.text('5.6 Sol high'));
+    await tester.tap(find.text('5.6 Sol'));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('codex_settings_advanced')));
     await tester.pumpAndSettle();
@@ -805,7 +806,7 @@ void main() {
 
     await tester.pumpWidget(_wrap(cubit));
     await tester.pump(const Duration(milliseconds: 100));
-    await tester.tap(find.text('5.6 Sol x-high'));
+    await tester.tap(find.text('5.6 Sol'));
     // The selected high tier intentionally keeps its pixel-ion ticker alive.
     // Pump only through the panel transition instead of waiting for quiescence.
     await _pumpWhileEffortIonsRun(tester);
