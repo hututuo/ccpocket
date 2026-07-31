@@ -306,3 +306,32 @@ daemon control 不 ready 时 `/health` 仍返回顶层 `status:ok`，只有 `/re
 - Desktop 已恢复 private 模式；
 - 未重启生产服务、未切 Desktop、未发布 OTA/IPA、未修改手机数据；
 - 审查前工作树干净。
+
+## 九、修复阶段独立复审补充（2026-08-01）
+
+首轮报告完成后，又对当前实现做了一轮不改代码的独立跨层复审。该轮确认 Mobile 曾把 `conversation_sync` 的 `daemon:*` generation 与 Action Broker 的 `cab:*` generation 当成同一命名空间；此问题已在修复阶段改为只跨 feature 校验 exact turn，CAB generation 只与 CAB health 比较，并经独立 Mobile 复审确认不再阻断。
+
+独立复审另发现以下未包含在首轮 12 个 P1 计数中的问题；它们进入同一 remediation 门禁，不能因首轮报告已完成而遗漏：
+
+### 新增 P1
+
+1. **备用 Bridge 的旧客户端写入口绕过 writer lease**：daemon adoption、旧 `input` 和旧 `approve/reject/answer` 直接进入 attachment transport；`/readyz=503` 只反映诊断状态，并不阻止既有 WebSocket mutation。备用 Bridge 因此仍可能启动 turn 或成为第二个审批响应者。
+2. **content observer 与正式 adoption 共用不可抢占 attachment lease**：聚焦或活跃线程的只读 observer 可能先占位，使用户随后正式恢复该线程同步失败；control reconnect 后旧 observer interest 还可能持续抢在 replacement recovery 前面。
+3. **同 operation 并发响应可能写两次**：两个并发 `respond` 都可能通过 claim/refresh，第二个 `markSubmitting=idempotent` 仍继续 transport write，破坏 exactly-once。
+4. **scoped reconnect recovery 可永久卡住**：最多 64 个目标完全串行读取；任一 `thread/turns/list` 无响应且没有 timeout/abort 时，其余线程会长期停在 reconciling/unavailable。
+
+### 新增 P2 / P3
+
+- Action Broker snapshot 原先没有 thread scope、条目上限或总字节预算，理论上可把其他线程的 live request payload 聚成巨帧。
+- terminal-result ledger 原先没有 terminal turn identity；Bridge 停机期间新 turn 已开始时，旧 completed/failed 仍可能覆盖成 `working + completed` 并产生错误未读。
+- capable/legacy 状态投影共用同一 `statusState` token；旧 build 缓存原地升级后可能永远收不到 truthful unknown 状态。
+- terminal ledger 初始化或写入降级尚未进入 health/readiness 诊断字段。
+
+### 修复阶段新增验收
+
+- leader/standby 双 Bridge + 旧 Mobile：standby 不能 resume 后启动 turn，也不能通过旧审批帧写 app-server；leader 对同 request 严格一次响应。
+- focused observer → formal resume，以及 control reconnect → formal recovery：正式 attachment 必须确定性获胜，observer 不得反抢。
+- 并发同 operation barrier 测试：transport response 数必须严格为 1。
+- recovery 第一个 reader 永不 resolve：超时后其他目标仍可恢复；generation 切换必须 abort 旧 workers。
+- 旧 build status token → 新 capable build：必须触发 scoped status reset/full projection。
+- terminal turn A completed → Bridge 离线期间 turn B active：最终只能是 `working + result:none`，旧 A 终态不得制造未读。
