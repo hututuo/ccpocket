@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { CodexProcess } from "../codex-process.js";
+import type { CodexProcess, CodexThreadSummary } from "../codex-process.js";
 import type { ServerMessage } from "../parser.js";
 import { buildConversationContentSnapshot } from "./conversation-content-sync.js";
-import { ConversationSyncV2FeatureHandler } from "./conversation-sync-v2.js";
+import {
+  codexThreadSeed,
+  ConversationSyncV2FeatureHandler,
+} from "./conversation-sync-v2.js";
 import {
   APP_SERVER_STATUS_CAPABILITY,
   CONVERSATION_SYNC_V2_CAPABILITY,
@@ -16,6 +19,40 @@ import {
 import type { LocalFeatureRuntime, LocalFeatureSession } from "./runtime.js";
 
 describe("conversation_sync_v2 protocol", () => {
+  it("omits opaque Codex previews and uses rollout-visible metadata", () => {
+    const thread: CodexThreadSummary = {
+      id: "thread-private-preview",
+      sessionId: null,
+      parentThreadId: null,
+      preview: "private agent message",
+      ephemeral: false,
+      createdAt: 1,
+      updatedAt: 2,
+      recencyAt: 2,
+      cwd: "/workspace/private-preview",
+      modelProvider: null,
+      status: { type: "idle" },
+      canAcceptDirectInput: null,
+      agentNickname: null,
+      agentRole: null,
+      gitBranch: null,
+      name: null,
+    };
+
+    expect(codexThreadSeed(thread).entry).not.toMatchObject({
+      firstPrompt: "private agent message",
+    });
+    expect(
+      codexThreadSeed(thread, {
+        firstPrompt: "visible user prompt",
+        summary: "visible assistant answer",
+      }).entry,
+    ).toMatchObject({
+      firstPrompt: "visible user prompt",
+      summary: "visible assistant answer",
+    });
+  });
+
   it("accepts bounded state cursors and rejects duplicate thread identities", () => {
     expect(
       conversationSyncV2ProtocolContribution.parseClient(
@@ -1733,6 +1770,84 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("keeps catalog-backed empty history incomplete for bounded repair", async () => {
+    const codex = codexSeed(0, "thread-empty-history");
+    codex.entry.firstPrompt = "visible user prompt";
+    const fixture = createFixture([codex], vi.fn(async () => []));
+    const client = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    expect(events(fixture.sent, client, "timeline_page")).toEqual([
+      expect.objectContaining({
+        providerSessionId: "thread-empty-history",
+        entries: [],
+        hasEarlier: true,
+        latestTurnComplete: false,
+        latestTurnGap: {
+          missingEntryCount: 1,
+          payloadOmitted: false,
+          repair: "turns_page",
+        },
+      }),
+    ]);
+    fixture.handler.close();
+  });
+
+  it("rereads catalog-backed incomplete history at the same revision", async () => {
+    const codex = codexSeed(0, "thread-delayed-history");
+    delete codex.entry.firstPrompt;
+    delete codex.entry.summary;
+    let readCount = 0;
+    const historyReader = vi.fn(async () => {
+      readCount += 1;
+      return readCount === 1 ? [] : history("thread-delayed-history");
+    });
+    const fixture = createFixture([codex], historyReader);
+    const firstClient = {};
+    const secondClient = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(firstClient, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, firstClient, "sync_complete")).toHaveLength(
+        1,
+      ),
+    );
+    expect(events(fixture.sent, firstClient, "timeline_page")).toEqual([
+      expect.objectContaining({
+        providerSessionId: "thread-delayed-history",
+        entries: [],
+        latestTurnComplete: false,
+      }),
+    ]);
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(secondClient, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, secondClient, "sync_complete")).toHaveLength(
+        1,
+      ),
+    );
+    expect(historyReader).toHaveBeenCalledTimes(2);
+    expect(
+      events(fixture.sent, secondClient, "timeline_page").flatMap(
+        (event) => event.entries,
+      ),
+    ).not.toHaveLength(0);
+    fixture.handler.close();
+  });
+
   it("returns bounded detached tool details without a runtime session", async () => {
     const historyReader = vi.fn(async () => [
       {
@@ -2120,6 +2235,162 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(historyReader.mock.calls.length).toBeGreaterThanOrEqual(2);
     fixture.handler.close();
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps external live messages until canonical history covers them", async () => {
+    type HandlerOptions = NonNullable<
+      ConstructorParameters<typeof ConversationSyncV2FeatureHandler>[1]
+    >;
+    type ObserverCallback = Parameters<
+      NonNullable<HandlerOptions["observeCodexThread"]>
+    >[1];
+    let callback: ObserverCallback | undefined;
+    const codex = codexSeed(0, "thread-catalog-race");
+    let canonicalHistory: ServerMessage[] = [];
+    const historyReader = vi.fn(async () => canonicalHistory);
+    const fixture = createFixture([codex], historyReader, {
+      initialExternalCodexMonitors: 1,
+      observeCodexThread: async (_threadId, onEvent) => {
+        callback = onEvent;
+        return {
+          snapshot: { state: "running" as const },
+          refreshNow: async () => {},
+          close: () => {},
+        };
+      },
+    });
+    const client = {};
+    const internal = fixture.handler as unknown as {
+      externalCodexLiveMessages: Map<
+        string,
+        Map<string, { message: ServerMessage }>
+      >;
+      liveContentRevisions: Map<string, unknown>;
+      pendingLiveContent: Map<string, unknown>;
+    };
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() => expect(callback).toBeDefined());
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    const liveAt = new Date().toISOString();
+    const liveMessage: ServerMessage = {
+      type: "assistant",
+      messageUuid: "catalog-race",
+      message: {
+        id: "catalog-race",
+        role: "assistant",
+        model: "codex",
+        content: [{ type: "text", text: "live before canonical history" }],
+      },
+    };
+    callback!({
+      kind: "message",
+      itemKey: "assistant:catalog-race",
+      timestamp: liveAt,
+      message: liveMessage,
+    });
+    callback!({
+      kind: "message",
+      itemKey: "reasoning:catalog-race",
+      timestamp: liveAt,
+      message: {
+        type: "thinking_delta",
+        text: "transient reasoning before canonical history\n",
+      },
+    });
+    await vi.waitFor(() =>
+      expect(
+        JSON.stringify(events(fixture.sent, client, "timeline_page")),
+      ).toContain("live before canonical history"),
+    );
+    await vi.waitFor(
+      () =>
+        expect(
+          JSON.stringify(events(fixture.sent, client, "timeline_page")),
+        ).toContain("transient reasoning before canonical history"),
+      { timeout: 3_000 },
+    );
+    await vi.waitFor(() =>
+      expect(internal.pendingLiveContent.has("codex\0thread-catalog-race")).toBe(
+        false,
+      ),
+    );
+    const completedBeforeCatalog = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    ).length;
+
+    const caughtUpAt = new Date(Date.parse(liveAt) + 1_000).toISOString();
+    codex.entry.modifiedAt = caughtUpAt;
+    codex.entry.recencyAt = caughtUpAt;
+    codex.entry.revision = "revision-catalog-caught-up";
+    fixture.handler.sessionCatalogChanged();
+
+    await vi.waitFor(() =>
+      expect(fixture.catalogReader.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
+    await vi.waitFor(() =>
+      expect(
+        internal.liveContentRevisions.has("codex\0thread-catalog-race"),
+      ).toBe(false),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete").length).toBeGreaterThan(
+        completedBeforeCatalog,
+      ),
+    );
+    const latestComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    ).at(-1)!;
+    const latestTimeline = events(
+      fixture.sent,
+      client,
+      "timeline_page",
+    ).filter((event) => event.batchId === latestComplete.batchId);
+    expect(JSON.stringify(latestTimeline)).toContain(
+      "live before canonical history",
+    );
+    expect(internal.externalCodexLiveMessages.has("codex\0thread-catalog-race")).toBe(
+      true,
+    );
+
+    canonicalHistory = [liveMessage];
+    const readsBeforeCanonical = historyReader.mock.calls.length;
+    const secondClient = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(secondClient, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, secondClient, "sync_complete")).toHaveLength(
+        1,
+      ),
+    );
+    expect(
+      JSON.stringify(events(fixture.sent, secondClient, "timeline_page")),
+    ).toContain("live before canonical history");
+    expect(
+      JSON.stringify(events(fixture.sent, secondClient, "timeline_page")),
+    ).not.toContain("transient reasoning before canonical history");
+    expect(historyReader.mock.calls.length).toBeGreaterThan(
+      readsBeforeCanonical,
+    );
+    expect(internal.liveContentRevisions.has("codex\0thread-catalog-race")).toBe(
+      false,
+    );
+    expect(internal.externalCodexLiveMessages.has("codex\0thread-catalog-race")).toBe(
+      false,
+    );
+    fixture.handler.close();
   });
 
   it("matches canonical and live users one-to-one while preserving equal delta chunks", async () => {

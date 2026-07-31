@@ -16550,7 +16550,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       sessionId: "thr_codex_all",
       provider: "codex",
       name: "Codex thread",
-      firstPrompt: "Codex canonical result",
+      // Opaque app-server previews may contain private agent-to-agent items.
+      // Without rollout metadata the safe legacy display is empty.
+      firstPrompt: "",
     });
 
     bridge.close();

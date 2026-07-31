@@ -2124,6 +2124,14 @@ describe("codex sessions integration", () => {
           payload: { type: "agent_message", message: "done: fixed the bug" },
         }),
         JSON.stringify({
+          timestamp: "2026-02-13T12:00:02.500Z",
+          type: "response_item",
+          payload: {
+            type: "agent_message",
+            message: "private agent-to-agent handoff",
+          },
+        }),
+        JSON.stringify({
           timestamp: "2026-02-13T12:00:03.000Z",
           type: "event_msg",
           payload: { type: "user_message", message: "thanks, now add a test" },

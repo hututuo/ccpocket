@@ -14,7 +14,9 @@ import {
   codexThreadToSessionHistory,
   getAllRecentSessions,
   getCodexDesktopToolTimeline,
+  getCodexSessionIndexMetadata,
   resolveCodexSessionJsonlPath,
+  type CodexSessionIndexMetadata,
   type SessionIndexEntry,
 } from "../sessions-index.js";
 import type { SessionCatalogChange } from "../session-catalog-monitor.js";
@@ -59,6 +61,11 @@ const MAX_CATALOG_TEXT_LENGTH = 4_096;
 const MAX_CATALOG_PATH_LENGTH = 4_096;
 const MAX_CATALOG_LINEAGE_ID_LENGTH = 256;
 const CODEX_PAGE_SIZE = 500;
+// Rollout metadata is safe for previews, but parsing every rollout in a large
+// catalog would delay the entire subscription. Recent cards get safe display
+// text; older cards retain identity/name metadata and hydrate when requested
+// through the paged recent-session API.
+const CODEX_CATALOG_PREVIEW_METADATA_LIMIT = 64;
 const PRIORITY_RECENT_COUNT = 5;
 const MIN_RECENT_COUNT = 10;
 const RECENT_WINDOW_MS = 3 * 24 * 60 * 60_000;
@@ -125,7 +132,7 @@ const STATUS_STATE_SCHEMA_VERSION = 2;
 // turn without declaring that gap. Advance the semantic generation so upgraded
 // clients refresh the bounded hot window once and receive the completeness
 // metadata instead of trusting those stale revisions.
-const CONTENT_STATE_SCHEMA_VERSION = 3;
+const CONTENT_STATE_SCHEMA_VERSION = 4;
 
 type ConversationKey = string;
 type ConversationSyncEventPayload =
@@ -1200,10 +1207,21 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const flight = this.historyReader(target)
       .then((history) => {
         const window = normalizeHistoryWindow(history);
-        const messages = mergeExternalCodexMessages(
+        const externalMessages = this.externalCodexLiveMessages.get(key);
+        const mergedMessages = mergeExternalCodexMessages(
           window.messages,
-          this.externalCodexLiveMessages.get(key)?.values() ?? [],
+          externalMessages?.values() ?? [],
         );
+        const canonicalHistoryCoversExternalMessages =
+          externalMessages === undefined ||
+          (!this.liveContentRevisions.has(key) &&
+            canonicalHistoryCoversDurableExternalMessages(
+              window.messages,
+              externalMessages.values(),
+            ));
+        const messages = canonicalHistoryCoversExternalMessages
+          ? window.messages
+          : mergedMessages;
         for (const turn of window.turnDetails ?? []) {
           this.rememberTurnDetails(target, turn);
         }
@@ -1212,14 +1230,29 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           maxSnapshotBytes: MAX_TIMELINE_BYTES,
           preserveLatestRootTurnTools,
         });
+        const catalogHasVisibleContent = Boolean(
+          record.entry.firstPrompt?.trim() || record.entry.summary?.trim(),
+        );
+        const catalogContentMissing =
+          built.entries.length === 0 &&
+          (record.entry.provider === "codex" || catalogHasVisibleContent);
         const latestTurnGap = mergeLatestTurnGaps(
-          window.latestTurnGap,
-          built.latestTurnGap,
+          mergeLatestTurnGaps(window.latestTurnGap, built.latestTurnGap),
+          catalogContentMissing
+            ? {
+                missingEntryCount: 1,
+                payloadOmitted: false,
+                repair: "turns_page",
+              }
+            : undefined,
         );
         const snapshot = {
           ...built,
           revision: requestedRevision,
-          hasEarlier: built.hasEarlier || window.nextTurnCursor != null,
+          hasEarlier:
+            built.hasEarlier ||
+            window.nextTurnCursor != null ||
+            catalogContentMissing,
           turnsNextCursor: window.nextTurnCursor,
           latestTurnComplete:
             window.latestTurnComplete !== false &&
@@ -1227,7 +1260,27 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             latestTurnGap === undefined,
           ...(latestTurnGap ? { latestTurnGap } : {}),
         };
-        this.rememberSnapshot(key, snapshot);
+        // Both cases are provisional under the catalog revision: canonical
+        // history can materialize later without advancing app-server recency.
+        // A reconnect must reread the provider instead of pinning a blank or
+        // live-only projection under that same revision.
+        if (
+          !catalogContentMissing &&
+          canonicalHistoryCoversExternalMessages
+        ) {
+          this.rememberSnapshot(key, snapshot);
+        }
+        if (
+          externalMessages &&
+          canonicalHistoryCoversExternalMessages &&
+          this.externalCodexLiveMessages.get(key) === externalMessages &&
+          !this.liveContentRevisions.has(key)
+        ) {
+          // Catalog recency can advance before turns/list catches up. Only
+          // canonical provider history covering every buffered item proves it
+          // is safe to drop the Desktop continuity buffer.
+          this.deleteExternalCodexLiveMessages(key);
+        }
         return snapshot;
       })
       .finally(() => {
@@ -1598,7 +1651,6 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             Date.parse(entry.recencyAt) >= Date.parse(live.observedAt)
           ) {
             this.liveContentRevisions.delete(key);
-            this.deleteExternalCodexLiveMessages(key);
           } else if (live) {
             entry = withLiveCatalogMetadata(entry, live.observedAt);
           }
@@ -3109,6 +3161,24 @@ function mergeExternalCodexMessages(
   return merged;
 }
 
+function canonicalHistoryCoversDurableExternalMessages(
+  history: readonly ServerMessage[],
+  observed: Iterable<ExternalCodexLiveMessage>,
+): boolean {
+  const entries = [...observed];
+  const durable = entries.filter(
+    (entry) =>
+      entry.message.type !== "thinking_delta" &&
+      entry.message.type !== "stream_delta",
+  );
+  const hasTransient = durable.length !== entries.length;
+  // Reasoning/stream chunks are transient projections rather than durable
+  // provider items. Keep them while canonical history is wholly empty, then
+  // require only stable user/assistant/tool identities to be represented.
+  if (hasTransient && history.length === 0) return false;
+  return mergeExternalCodexMessages(history, durable).length === history.length;
+}
+
 function observedMessageIdentity(message: ServerMessage): string | null {
   if (message.type === "user_input") {
     const clientMessageId =
@@ -3185,12 +3255,15 @@ async function readCodexCatalog(
 ): Promise<ConversationSyncCatalogSeed[]> {
   try {
     return await withCodexProcess(runtime, undefined, async (process) => {
-      const seeds: ConversationSyncCatalogSeed[] = [];
+      const threads: CodexThreadSummary[] = [];
       let cursor: string | null = null;
       do {
         const page = await process.listThreads({
           cursor,
-          limit: Math.min(CODEX_PAGE_SIZE, MAX_CATALOG_ENTRIES - seeds.length),
+          limit: Math.min(
+            CODEX_PAGE_SIZE,
+            MAX_CATALOG_ENTRIES - threads.length,
+          ),
           sortKey: "recency_at",
           sortDirection: "desc",
           archived: false,
@@ -3198,12 +3271,26 @@ async function readCodexCatalog(
         });
         for (const thread of page.data) {
           if (!thread.id || thread.ephemeral) continue;
-          seeds.push(codexThreadSeed(thread));
-          if (seeds.length >= MAX_CATALOG_ENTRIES) break;
+          threads.push(thread);
+          if (threads.length >= MAX_CATALOG_ENTRIES) break;
         }
         cursor = page.nextCursor;
-      } while (cursor && seeds.length < MAX_CATALOG_ENTRIES);
-      return seeds;
+      } while (cursor && threads.length < MAX_CATALOG_ENTRIES);
+      let indexedById = new Map<string, CodexSessionIndexMetadata>();
+      try {
+        indexedById = await getCodexSessionIndexMetadata(
+          threads
+            .slice(0, CODEX_CATALOG_PREVIEW_METADATA_LIMIT)
+            .map((thread) => thread.id),
+        );
+      } catch {
+        // Catalog identity/status remain usable. Omit display previews rather
+        // than falling back to the opaque app-server preview, which may be a
+        // private agent-to-agent response item.
+      }
+      return threads.map((thread) =>
+        codexThreadSeed(thread, indexedById.get(thread.id)),
+      );
     });
   } catch (error) {
     if (!isUnsupportedAppServerRead(error)) throw error;
@@ -4461,8 +4548,9 @@ function isLowSurrogate(value: number): boolean {
   return value >= 0xdc00 && value <= 0xdfff;
 }
 
-function codexThreadSeed(
+export function codexThreadSeed(
   thread: CodexThreadSummary,
+  indexed?: CodexSessionIndexMetadata,
 ): ConversationSyncCatalogSeed {
   const target = {
     provider: "codex" as const,
@@ -4480,7 +4568,8 @@ function codexThreadSeed(
       ),
       projectPath: thread.cwd,
       ...(thread.name ? { name: thread.name } : {}),
-      ...(thread.preview ? { firstPrompt: thread.preview } : {}),
+      ...(indexed?.summary ? { summary: indexed.summary } : {}),
+      ...(indexed?.firstPrompt ? { firstPrompt: indexed.firstPrompt } : {}),
       createdAt,
       modifiedAt,
       recencyAt,
