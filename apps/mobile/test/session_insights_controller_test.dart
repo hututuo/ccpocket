@@ -62,7 +62,7 @@ class _Bridge extends BridgeService {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  SharedPreferences.setMockInitialValues({});
+  setUp(() => SharedPreferences.setMockInitialValues({}));
 
   test(
     'new Bridge uses durable requests and safely consumes the runtime live alias',
@@ -590,6 +590,264 @@ void main() {
       expect(controller.codexUsage, isNull);
     },
   );
+
+  test('failed refreshes preserve the last quota windows', () async {
+    final bridge = _Bridge();
+    final controller = SessionInsightsController(
+      sessionId: 'stale-while-refresh-thread',
+      bridge: bridge,
+    )..start();
+    addTearDown(controller.dispose);
+    addTearDown(bridge.dispose);
+
+    bridge.emit(
+      SessionUsageResultMessage(
+        sessionId: 'stale-while-refresh-thread',
+        requestId: controller.debugPendingQuotaRequestId!,
+        providers: const [
+          SessionUsageInfo(
+            provider: 'codex',
+            fiveHour: SessionUsageWindow(utilization: 21),
+            sevenDay: SessionUsageWindow(utilization: 62),
+          ),
+        ],
+      ),
+      tag: 'stale-while-refresh-thread',
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    controller.refresh(force: true);
+    expect(controller.quotaLoading, isTrue);
+    expect(controller.codexUsage?.fiveHour?.utilization, 21);
+    bridge.emit(
+      SessionUsageResultMessage(
+        sessionId: 'stale-while-refresh-thread',
+        requestId: controller.debugPendingQuotaRequestId!,
+        providers: const [],
+        error: 'account temporarily unavailable',
+      ),
+      tag: 'stale-while-refresh-thread',
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(controller.quotaLoading, isFalse);
+    expect(controller.codexUsage?.fiveHour?.utilization, 21);
+    expect(controller.codexUsage?.sevenDay?.utilization, 62);
+
+    controller.refresh(force: true);
+    bridge.emit(
+      SessionUsageResultMessage(
+        sessionId: 'stale-while-refresh-thread',
+        requestId: controller.debugPendingQuotaRequestId!,
+        providers: const [
+          SessionUsageInfo(
+            provider: 'codex',
+            error: 'No rate limit data found in bounded rollout tails',
+          ),
+        ],
+      ),
+      tag: 'stale-while-refresh-thread',
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(controller.quotaLoading, isFalse);
+    expect(controller.codexUsage?.fiveHour?.utilization, 21);
+    expect(controller.codexUsage?.sevenDay?.utilization, 62);
+
+    controller.refresh(force: true);
+    bridge.emit(
+      SessionUsageResultMessage(
+        sessionId: 'stale-while-refresh-thread',
+        requestId: controller.debugPendingQuotaRequestId!,
+        providers: const [
+          SessionUsageInfo(
+            provider: 'codex',
+            sevenDay: SessionUsageWindow(utilization: 77),
+          ),
+        ],
+      ),
+      tag: 'stale-while-refresh-thread',
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(controller.codexUsage?.fiveHour, isNull);
+    expect(controller.codexUsage?.sevenDay?.utilization, 77);
+  });
+
+  test('fresh Bridge restores phone-local quota while refreshing', () async {
+    final firstBridge = _Bridge()
+      ..stableBridgeInstanceId = 'persistent-bridge'
+      ..stableCodexSourceId = 'persistent-source';
+    final first = SessionInsightsController(
+      sessionId: 'persistent-thread',
+      bridge: firstBridge,
+      durableCacheIdentityConfirmed: true,
+    )..start();
+    addTearDown(first.dispose);
+    addTearDown(firstBridge.dispose);
+
+    firstBridge.emit(
+      SessionUsageResultMessage(
+        sessionId: 'persistent-thread',
+        requestId: first.debugPendingQuotaRequestId!,
+        providers: const [
+          SessionUsageInfo(
+            provider: 'codex',
+            fiveHour: SessionUsageWindow(utilization: 33),
+            sevenDay: SessionUsageWindow(utilization: 61),
+            limitCards: [
+              SessionUsageLimitCard(
+                id: 'gpt-5.3-codex-spark',
+                limitName: 'Spark',
+                fiveHour: SessionUsageWindow(utilization: 44),
+                sevenDay: SessionUsageWindow(utilization: 72),
+              ),
+            ],
+            resetCredits: SessionUsageResetCredits(
+              availableCount: 1,
+              credits: [
+                SessionUsageResetCredit(
+                  id: 'private-credit',
+                  status: 'available',
+                  profileUserId: 'must-not-persist',
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      tag: 'persistent-thread',
+    );
+    await Future<void>.delayed(Duration.zero);
+    await first.debugQuotaCacheIdle;
+
+    final freshBridge = _Bridge()
+      ..stableBridgeInstanceId = 'persistent-bridge'
+      ..stableCodexSourceId = 'persistent-source';
+    final restored = SessionInsightsController(
+      sessionId: 'persistent-thread',
+      bridge: freshBridge,
+      durableCacheIdentityConfirmed: true,
+    );
+    addTearDown(restored.dispose);
+    addTearDown(freshBridge.dispose);
+    await restored.debugQuotaCacheIdle;
+
+    expect(restored.codexUsage?.fiveHour?.utilization, 33);
+    expect(restored.codexUsage?.sevenDay?.utilization, 61);
+    expect(restored.codexUsage?.limitCards.single.fiveHour?.utilization, 44);
+    expect(restored.codexUsage?.limitCards.single.limitName, isNull);
+    expect(restored.codexUsage?.resetCredits, isNull);
+
+    restored.start();
+    expect(restored.quotaLoading, isTrue);
+    expect(restored.codexUsage?.fiveHour?.utilization, 33);
+
+    final runtimeOnlyBridge = _Bridge()
+      ..stableBridgeInstanceId = 'persistent-bridge'
+      ..stableCodexSourceId = 'persistent-source';
+    final runtimeOnly = SessionInsightsController(
+      sessionId: 'persistent-thread',
+      bridge: runtimeOnlyBridge,
+      durableCacheIdentityConfirmed: false,
+    );
+    addTearDown(runtimeOnly.dispose);
+    addTearDown(runtimeOnlyBridge.dispose);
+    await runtimeOnly.debugQuotaCacheIdle;
+    expect(runtimeOnly.codexUsage, isNull);
+
+    final switchingBridge = _Bridge()
+      ..stableBridgeInstanceId = 'persistent-bridge'
+      ..stableCodexSourceId = 'persistent-source';
+    final switching = SessionInsightsController(
+      sessionId: 'persistent-thread',
+      bridge: switchingBridge,
+      durableCacheIdentityConfirmed: true,
+    );
+    addTearDown(switching.dispose);
+    addTearDown(switchingBridge.dispose);
+    switchingBridge.stableCodexSourceId = 'source-switched-before-restore';
+    await switching.debugQuotaCacheIdle;
+    expect(switching.codexUsage, isNull);
+
+    final disposedBridge = _Bridge()
+      ..stableBridgeInstanceId = 'persistent-bridge'
+      ..stableCodexSourceId = 'persistent-source';
+    final disposed = SessionInsightsController(
+      sessionId: 'persistent-thread',
+      bridge: disposedBridge,
+      durableCacheIdentityConfirmed: true,
+    );
+    final disposedRestore = disposed.debugQuotaCacheIdle;
+    disposed.dispose();
+    addTearDown(disposedBridge.dispose);
+    await disposedRestore;
+    expect(disposed.codexUsage, isNull);
+
+    final otherThread = SessionInsightsController(
+      sessionId: 'different-thread',
+      bridge: freshBridge,
+      durableCacheIdentityConfirmed: true,
+    );
+    addTearDown(otherThread.dispose);
+    await otherThread.debugQuotaCacheIdle;
+    expect(otherThread.codexUsage, isNull);
+
+    final otherSourceBridge = _Bridge()
+      ..stableBridgeInstanceId = 'persistent-bridge'
+      ..stableCodexSourceId = 'different-source';
+    final otherSource = SessionInsightsController(
+      sessionId: 'persistent-thread',
+      bridge: otherSourceBridge,
+      durableCacheIdentityConfirmed: true,
+    );
+    addTearDown(otherSource.dispose);
+    addTearDown(otherSourceBridge.dispose);
+    await otherSource.debugQuotaCacheIdle;
+    expect(otherSource.codexUsage, isNull);
+  });
+
+  test('runtime-only identities never write phone-local quota', () async {
+    final runtimeBridge = _Bridge()
+      ..stableBridgeInstanceId = 'runtime-only-bridge'
+      ..stableCodexSourceId = 'runtime-only-source';
+    final runtimeOnly = SessionInsightsController(
+      sessionId: 'runtime-alias',
+      bridge: runtimeBridge,
+      durableCacheIdentityConfirmed: false,
+    )..start();
+    addTearDown(runtimeOnly.dispose);
+    addTearDown(runtimeBridge.dispose);
+
+    runtimeBridge.emit(
+      SessionUsageResultMessage(
+        sessionId: 'runtime-alias',
+        requestId: runtimeOnly.debugPendingQuotaRequestId!,
+        providers: const [
+          SessionUsageInfo(
+            provider: 'codex',
+            fiveHour: SessionUsageWindow(utilization: 48),
+          ),
+        ],
+      ),
+      tag: 'runtime-alias',
+    );
+    await Future<void>.delayed(Duration.zero);
+    await runtimeOnly.debugQuotaCacheIdle;
+
+    final freshBridge = _Bridge()
+      ..stableBridgeInstanceId = 'runtime-only-bridge'
+      ..stableCodexSourceId = 'runtime-only-source';
+    final durableReader = SessionInsightsController(
+      sessionId: 'runtime-alias',
+      bridge: freshBridge,
+      durableCacheIdentityConfirmed: true,
+    );
+    addTearDown(durableReader.dispose);
+    addTearDown(freshBridge.dispose);
+    await durableReader.debugQuotaCacheIdle;
+    expect(durableReader.codexUsage, isNull);
+  });
 
   test(
     'successful durable insights survive a controller rebuild for one source',

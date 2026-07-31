@@ -8,6 +8,7 @@ import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class _Bridge extends BridgeService {
   final tagged =
@@ -66,6 +67,8 @@ String _latestUsageRequestId(_Bridge bridge) {
 }
 
 void main() {
+  setUp(() => SharedPreferences.setMockInitialValues({}));
+
   test('reset credits sort available first and then by expiry', () {
     const credits = [
       SessionUsageResetCredit(
@@ -589,6 +592,98 @@ void main() {
           .value,
       0.88,
     );
+  });
+
+  testWidgets('compact quota rings stay mounted through a failed refresh', (
+    tester,
+  ) async {
+    final bridge = _Bridge();
+    addTearDown(bridge.dispose);
+    final controller = SessionInsightsController(
+      sessionId: 'refresh-thread',
+      bridge: bridge,
+    );
+
+    await tester.pumpWidget(
+      _app(
+        Center(
+          child: SessionInsightsBar(
+            sessionId: 'refresh-thread',
+            bridgeService: bridge,
+            controller: controller,
+            compact: true,
+          ),
+        ),
+      ),
+    );
+    bridge.emit(
+      SessionUsageResultMessage(
+        sessionId: 'refresh-thread',
+        requestId: _latestUsageRequestId(bridge),
+        providers: const [
+          SessionUsageInfo(
+            provider: 'codex',
+            fiveHour: SessionUsageWindow(utilization: 25),
+            sevenDay: SessionUsageWindow(utilization: 61),
+          ),
+        ],
+      ),
+      'refresh-thread',
+    );
+    await tester.pump();
+
+    controller.refresh(force: true);
+    await tester.pump();
+    expect(controller.quotaLoading, isTrue);
+    final fiveHourRing = find.byKey(
+      const ValueKey('session_insights_five_hour_ring'),
+    );
+    final sevenDayRing = find.byKey(
+      const ValueKey('session_insights_seven_day_ring'),
+    );
+    expect(fiveHourRing, findsOneWidget);
+    expect(sevenDayRing, findsOneWidget);
+    expect(
+      tester
+          .widget<CircularProgressIndicator>(
+            find.descendant(
+              of: fiveHourRing,
+              matching: find.byType(CircularProgressIndicator),
+            ),
+          )
+          .value,
+      0.25,
+    );
+
+    bridge.emit(
+      SessionUsageResultMessage(
+        sessionId: 'refresh-thread',
+        requestId: controller.debugPendingQuotaRequestId!,
+        providers: const [
+          SessionUsageInfo(provider: 'codex', error: 'temporary failure'),
+        ],
+      ),
+      'refresh-thread',
+    );
+    await tester.pump();
+
+    expect(controller.quotaLoading, isFalse);
+    expect(fiveHourRing, findsOneWidget);
+    expect(sevenDayRing, findsOneWidget);
+    expect(
+      tester
+          .widget<CircularProgressIndicator>(
+            find.descendant(
+              of: sevenDayRing,
+              matching: find.byType(CircularProgressIndicator),
+            ),
+          )
+          .value,
+      0.61,
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
   });
 
   testWidgets('compact quota rings omit windows the Bridge does not report', (
