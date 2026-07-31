@@ -215,6 +215,13 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   Stream<ConversationSyncCacheUpdate> get syncUpdates =>
       _syncUpdatesController.stream;
 
+  /// Identifies the cache partition used by a read started right now.
+  ///
+  /// Screens use this to distinguish a provisional route-scoped read from a
+  /// later authenticated Bridge/Codex-source read without exposing cache keys
+  /// on the wire.
+  String get currentCacheTargetFingerprint => _cacheTarget.fingerprint;
+
   void start({AppLifecycleState? initialLifecycleState}) {
     if (_started || _disposed) return;
     _started = true;

@@ -219,6 +219,8 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   ConversationHotWindowSnapshot? _cachedPreview;
   bool _loadingCachedPreview = false;
   bool _cachedPreviewDirty = false;
+  String? _cachedPreviewTargetFingerprint;
+  String? _loadingCachedPreviewTargetFingerprint;
   ChatComposerSubmission? _deferredSubmission;
   PendingSessionBinding? _retainedPendingBinding;
   final Object _sessionRouteOwner = Object();
@@ -294,9 +296,14 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       bridge.dataSourceIdentity,
       provider: Provider.codex.value,
     );
-    if (next == _dataSourceIdentity) return;
-    setState(() => _dataSourceIdentity = next);
-    _syncSessionRouteIdentity();
+    if (next != _dataSourceIdentity) {
+      setState(() => _dataSourceIdentity = next);
+      _syncSessionRouteIdentity();
+    }
+    // The route may already carry the same canonical identity as a cache
+    // hint. The service itself still used a provisional route target before
+    // authentication, so identity equality alone cannot suppress this check.
+    _reloadDurablePreviewForCurrentTarget();
   }
 
   void _startDurablePreview() {
@@ -321,16 +328,48 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     }
   }
 
+  void _reloadDurablePreviewForCurrentTarget() {
+    final durableId = widget.durableProviderSessionId;
+    if (durableId == null || durableId.isEmpty || !_isPending) return;
+    ConversationContentSyncService sync;
+    try {
+      sync = context.read<ConversationContentSyncService>();
+    } catch (_) {
+      return;
+    }
+    final targetFingerprint = sync.currentCacheTargetFingerprint;
+    if (_cachedPreviewTargetFingerprint == targetFingerprint &&
+        (!_loadingCachedPreview ||
+            _loadingCachedPreviewTargetFingerprint == targetFingerprint)) {
+      return;
+    }
+    if (_cachedPreview != null &&
+        _cachedPreviewTargetFingerprint != targetFingerprint) {
+      setState(() => _cachedPreview = null);
+    }
+    _loadDurablePreview();
+  }
+
   void _loadDurablePreview() {
     final durableId = widget.durableProviderSessionId;
     if (durableId == null) return;
+    ConversationContentSyncService sync;
+    try {
+      sync = context.read<ConversationContentSyncService>();
+    } catch (_) {
+      return;
+    }
+    final targetFingerprint = sync.currentCacheTargetFingerprint;
     if (_loadingCachedPreview) {
+      // A same-target timeline commit can land while the previous SQLite read
+      // is still in flight. Coalesce it into one follow-up read instead of
+      // dropping the new revision.
       _cachedPreviewDirty = true;
       return;
     }
     _loadingCachedPreview = true;
+    _loadingCachedPreviewTargetFingerprint = targetFingerprint;
     _cachedPreviewDirty = false;
-    final sync = context.read<ConversationContentSyncService>();
     unawaited(
       sync
           .loadCachedWindow(
@@ -340,10 +379,19 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
           .then((snapshot) {
             if (!mounted ||
                 widget.durableProviderSessionId != durableId ||
-                !_isPending) {
+                !_isPending ||
+                sync.currentCacheTargetFingerprint != targetFingerprint) {
+              if (mounted &&
+                  widget.durableProviderSessionId == durableId &&
+                  _isPending) {
+                _cachedPreviewDirty = true;
+              }
               return;
             }
-            setState(() => _cachedPreview = snapshot);
+            setState(() {
+              _cachedPreview = snapshot;
+              _cachedPreviewTargetFingerprint = targetFingerprint;
+            });
           })
           .catchError((Object error) {
             debugPrint('Failed to load cached Codex preview: $error');
@@ -351,6 +399,10 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
           .whenComplete(() {
             if (mounted && widget.durableProviderSessionId == durableId) {
               _loadingCachedPreview = false;
+              _loadingCachedPreviewTargetFingerprint = null;
+              if (sync.currentCacheTargetFingerprint != targetFingerprint) {
+                _cachedPreviewDirty = true;
+              }
               if (_cachedPreviewDirty) {
                 _cachedPreviewDirty = false;
                 _loadDurablePreview();
@@ -741,6 +793,9 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       _recentPeekedFiles = explorerHistory.recentPeekedFiles;
     });
     _syncSessionRouteIdentity();
+    if (identityChanged) {
+      _reloadDurablePreviewForCurrentTarget();
+    }
     if (_isPending && pendingLifecycleChanged) {
       _listenForSessionCreated();
     }

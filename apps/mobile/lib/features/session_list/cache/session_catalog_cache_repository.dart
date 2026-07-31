@@ -237,6 +237,8 @@ class SessionCatalogCacheRepository {
   static const maxEntriesPerPartition = 10_000;
   static const maxHotWindowEntries = 2_000;
   static const _maxIdentityLookupsPerQuery = 300;
+  static const _maxKnownRevisionValidationWindows = 64;
+  static const _maxKnownRevisionValidationEntries = 8_000;
 
   final SessionCatalogCacheDatabase database;
   Future<void> _mutationTail = Future<void>.value();
@@ -665,23 +667,75 @@ class SessionCatalogCacheRepository {
     final db = await database.database;
     final partitionId = await _resolveReadablePartition(db, target);
     if (partitionId == null) return const [];
-    final rows = await db.query(
-      SessionCatalogCacheDatabase.hotWindowsTable,
-      columns: ['provider', 'provider_session_id', 'revision'],
-      where: 'partition_id = ?',
-      whereArgs: [partitionId],
-      orderBy: 'updated_at DESC',
-      limit: limit.clamp(1, 512),
+    final rows = await db.rawQuery(
+      '''
+      SELECT windows.*
+      FROM ${SessionCatalogCacheDatabase.hotWindowsTable} AS windows
+      WHERE windows.partition_id = ?
+        AND windows.entry_count BETWEEN 0 AND ?
+        AND NOT (
+          windows.entry_count = 0
+          AND windows.latest_turn_complete = 0
+        )
+        AND windows.entry_count = (
+          SELECT COUNT(*)
+          FROM ${SessionCatalogCacheDatabase.hotEntriesTable} AS entries
+          WHERE entries.partition_id = windows.partition_id
+            AND entries.provider = windows.provider
+            AND entries.provider_session_id = windows.provider_session_id
+        )
+        AND windows.entry_count = (
+          SELECT COUNT(DISTINCT entries.entry_index)
+          FROM ${SessionCatalogCacheDatabase.hotEntriesTable} AS entries
+          WHERE entries.partition_id = windows.partition_id
+            AND entries.provider = windows.provider
+            AND entries.provider_session_id = windows.provider_session_id
+        )
+      ORDER BY windows.updated_at DESC
+      LIMIT ?
+      ''',
+      [
+        partitionId,
+        maxHotWindowEntries,
+        limit.clamp(1, _maxKnownRevisionValidationWindows),
+      ],
     );
-    return List<ConversationContentCursor>.unmodifiable(
-      rows.map(
-        (row) => ConversationContentCursor(
-          provider: row['provider']! as String,
-          providerSessionId: row['provider_session_id']! as String,
-          revision: row['revision']! as String,
+    final revisions = <ConversationContentCursor>[];
+    var decodedEntryCount = 0;
+    for (final row in rows) {
+      final provider = row['provider'];
+      final providerSessionId = row['provider_session_id'];
+      final entryCount = row['entry_count'];
+      if (provider is! String ||
+          providerSessionId is! String ||
+          entryCount is! int ||
+          decodedEntryCount + entryCount > _maxKnownRevisionValidationEntries) {
+        continue;
+      }
+      // Advertising a revision is optional; omitting older/heavier windows
+      // asks the Bridge to replay them. Bound semantic validation so a large
+      // local cache cannot block the initial subscription.
+      decodedEntryCount += entryCount;
+      final snapshot = await _decodeConversationWindow(
+        db: db,
+        partitionId: partitionId,
+        provider: provider,
+        providerSessionId: providerSessionId,
+        window: row,
+      );
+      if (snapshot == null ||
+          (snapshot.entries.isEmpty && !snapshot.latestTurnComplete)) {
+        continue;
+      }
+      revisions.add(
+        ConversationContentCursor(
+          provider: provider,
+          providerSessionId: providerSessionId,
+          revision: snapshot.revision,
         ),
-      ),
-    );
+      );
+    }
+    return List<ConversationContentCursor>.unmodifiable(revisions);
   }
 
   Future<ConversationSyncCacheState> loadConversationSyncState(
@@ -1429,61 +1483,124 @@ class SessionCatalogCacheRepository {
       limit: 1,
     );
     if (windows.isEmpty) return null;
-    final window = windows.single;
+    return _decodeConversationWindow(
+      db: db,
+      partitionId: partitionId,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      window: windows.single,
+    );
+  }
+
+  Future<ConversationHotWindowSnapshot?> _decodeConversationWindow({
+    required Database db,
+    required String partitionId,
+    required String provider,
+    required String providerSessionId,
+    required Map<String, Object?> window,
+  }) async {
+    if ((provider != 'claude' && provider != 'codex') ||
+        providerSessionId.trim().isEmpty ||
+        providerSessionId.length > 256) {
+      return null;
+    }
+    final entryCount = window['entry_count'];
+    if (entryCount is! int ||
+        entryCount < 0 ||
+        entryCount > maxHotWindowEntries) {
+      return null;
+    }
     final rows = await db.query(
       SessionCatalogCacheDatabase.hotEntriesTable,
       columns: ['entry_id', 'entry_index', 'content_hash', 'message_json'],
       where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
       whereArgs: [partitionId, provider, providerSessionId],
       orderBy: 'entry_index ASC',
-      limit: maxHotWindowEntries,
+      limit: maxHotWindowEntries + 1,
     );
+    if (rows.length != entryCount) return null;
     final entries = <ConversationContentWireEntry>[];
+    final entryIndexes = <int>{};
     for (final row in rows) {
       try {
-        final decoded = jsonDecode(row['message_json']! as String);
+        final entryId = row['entry_id'];
+        final entryIndex = row['entry_index'];
+        final contentHash = row['content_hash'];
+        final encodedMessage = row['message_json'];
+        if (entryId is! String ||
+            entryIndex is! int ||
+            entryIndex < -maxHotWindowEntries ||
+            contentHash is! String ||
+            encodedMessage is! String ||
+            !entryIndexes.add(entryIndex)) {
+          return null;
+        }
+        final decoded = jsonDecode(encodedMessage);
         if (decoded is! Map) return null;
-        final entry = ConversationContentWireEntry(
-          entryId: row['entry_id']! as String,
-          index: row['entry_index']! as int,
-          contentHash: row['content_hash']! as String,
-          rawMessage: Map<String, dynamic>.unmodifiable(
-            Map<String, dynamic>.from(decoded),
+        final entry = ConversationContentWireEntry.fromJson(<String, dynamic>{
+          'entryId': entryId,
+          // Older turn pages intentionally prepend bounded negative local
+          // indexes. Validate the remaining wire fields with the protocol
+          // parser, then restore that local ordering value below.
+          'index': entryIndex < 0 ? 0 : entryIndex,
+          'contentHash': contentHash,
+          'message': Map<String, dynamic>.from(decoded),
+        });
+        entry.decodeMessage();
+        entries.add(
+          ConversationContentWireEntry(
+            entryId: entry.entryId,
+            index: entryIndex,
+            contentHash: entry.contentHash,
+            rawMessage: entry.rawMessage,
           ),
         );
-        entry.decodeMessage();
-        entries.add(entry);
       } catch (_) {
         // A single malformed row invalidates only this rebuildable window.
         return null;
       }
     }
-    if (entries.length != window['entry_count']) return null;
-    final latestTurnComplete =
-        (window['latest_turn_complete'] as int? ?? 1) != 0;
-    final latestTurnGap = _decodeLatestTurnGap(
-      latestTurnComplete: latestTurnComplete,
-      encoded: window['latest_turn_gap_json'] as String?,
-    );
-    return ConversationHotWindowSnapshot(
-      partitionId: partitionId,
-      provider: provider,
-      providerSessionId: providerSessionId,
-      revision: window['revision']! as String,
-      entries: List<ConversationContentWireEntry>.unmodifiable(entries),
-      hasEarlier: (window['has_earlier']! as int) != 0,
-      turnsNextCursor: window['turns_next_cursor'] as String?,
-      latestTurnComplete: latestTurnComplete,
-      latestTurnGap: latestTurnGap,
-      latestTurnGapCursor: latestTurnComplete
-          ? null
-          : window['latest_turn_gap_cursor'] as String?,
-      sourceEntryCount: window['source_entry_count']! as int,
-      cachedAt: DateTime.fromMillisecondsSinceEpoch(
-        window['updated_at']! as int,
-        isUtc: true,
-      ),
-    );
+    try {
+      final revision = window['revision'];
+      final hasEarlier = window['has_earlier'];
+      final latestTurnCompleteValue = window['latest_turn_complete'];
+      final sourceEntryCount = window['source_entry_count'];
+      final updatedAt = window['updated_at'];
+      if (revision is! String ||
+          revision.trim().isEmpty ||
+          revision.length > 128 ||
+          hasEarlier is! int ||
+          (latestTurnCompleteValue != null &&
+              latestTurnCompleteValue is! int) ||
+          sourceEntryCount is! int ||
+          sourceEntryCount < 0 ||
+          updatedAt is! int) {
+        return null;
+      }
+      final latestTurnComplete = (latestTurnCompleteValue as int? ?? 1) != 0;
+      final latestTurnGap = _decodeLatestTurnGap(
+        latestTurnComplete: latestTurnComplete,
+        encoded: window['latest_turn_gap_json'] as String?,
+      );
+      return ConversationHotWindowSnapshot(
+        partitionId: partitionId,
+        provider: provider,
+        providerSessionId: providerSessionId,
+        revision: revision,
+        entries: List<ConversationContentWireEntry>.unmodifiable(entries),
+        hasEarlier: hasEarlier != 0,
+        turnsNextCursor: window['turns_next_cursor'] as String?,
+        latestTurnComplete: latestTurnComplete,
+        latestTurnGap: latestTurnGap,
+        latestTurnGapCursor: latestTurnComplete
+            ? null
+            : window['latest_turn_gap_cursor'] as String?,
+        sourceEntryCount: sourceEntryCount,
+        cachedAt: DateTime.fromMillisecondsSinceEpoch(updatedAt, isUtc: true),
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> replaceConversationWindow({

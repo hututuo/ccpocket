@@ -4,8 +4,10 @@ import 'dart:convert';
 import 'package:ccpocket/features/claude_session/claude_session_screen.dart';
 import 'package:ccpocket/features/chat_session/widgets/chat_process_disclosure.dart';
 import 'package:ccpocket/features/codex_session/codex_session_screen.dart';
+import 'package:ccpocket/features/conversation_content_sync/conversation_content_sync_service.dart';
 import 'package:ccpocket/features/settings/state/settings_cubit.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
+import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/providers/bridge_cubits.dart';
 import 'package:ccpocket/services/bridge_service.dart';
@@ -33,7 +35,17 @@ class MockBridgeService extends BridgeService {
   final _fileListController = StreamController<List<String>>.broadcast();
   final _sessionListController =
       StreamController<List<SessionInfo>>.broadcast();
+  final _recentSessionsController =
+      StreamController<List<RecentSession>>.broadcast();
   final sentMessages = <ClientMessage>[];
+  List<SessionInfo> currentSessions = const [];
+  List<RecentSession> currentRecentSessions = const [];
+  bool authoritativeSessionList = false;
+  bool authoritativeRecentSessions = false;
+  String? authenticatedBridgeInstanceId;
+  String? authenticatedCodexSourceId;
+  String? mockLogicalConnectionIdentity = 'machine:test';
+  String? mockLastUrl = 'wss://bridge.test/socket';
 
   void emitMessage(ServerMessage msg, {String? sessionId}) {
     _taggedController.add((msg, sessionId));
@@ -42,6 +54,24 @@ class MockBridgeService extends BridgeService {
 
   void emitFileList(List<String> files) {
     _fileListController.add(files);
+  }
+
+  void emitSessionList(
+    List<SessionInfo> sessions, {
+    bool authoritative = true,
+  }) {
+    currentSessions = sessions;
+    authoritativeSessionList = authoritative;
+    _sessionListController.add(sessions);
+  }
+
+  void emitRecentSessions(
+    List<RecentSession> sessions, {
+    bool authoritative = true,
+  }) {
+    currentRecentSessions = sessions;
+    authoritativeRecentSessions = authoritative;
+    _recentSessionsController.add(sessions);
   }
 
   @override
@@ -56,6 +86,45 @@ class MockBridgeService extends BridgeService {
 
   @override
   Stream<List<SessionInfo>> get sessionList => _sessionListController.stream;
+
+  @override
+  Stream<List<RecentSession>> get recentSessionsStream =>
+      _recentSessionsController.stream;
+
+  @override
+  List<SessionInfo> get sessions => currentSessions;
+
+  @override
+  List<RecentSession> get recentSessions => currentRecentSessions;
+
+  @override
+  bool get hasAuthoritativeSessionListForCurrentConnection =>
+      isConnected && authoritativeSessionList;
+
+  @override
+  bool get hasAuthoritativeRecentSessionsForCurrentConnection =>
+      isConnected && authoritativeRecentSessions;
+
+  @override
+  String? get bridgeInstanceId => authenticatedBridgeInstanceId;
+
+  @override
+  String? get codexSourceId => authenticatedCodexSourceId;
+
+  @override
+  String? get logicalConnectionIdentity => mockLogicalConnectionIdentity;
+
+  @override
+  String? get lastUrl => mockLastUrl;
+
+  @override
+  BridgeDataSourceIdentity get dataSourceIdentity =>
+      BridgeDataSourceIdentity.fromConnection(
+        bridgeInstanceId: bridgeInstanceId,
+        codexSourceId: codexSourceId,
+        logicalConnectionIdentity: logicalConnectionIdentity,
+        websocketUrl: lastUrl,
+      );
 
   @override
   String? get httpBaseUrl => 'http://localhost:8765';
@@ -103,6 +172,7 @@ class MockBridgeService extends BridgeService {
     _connectionController.close();
     _fileListController.close();
     _sessionListController.close();
+    _recentSessionsController.close();
     super.dispose();
   }
 }
@@ -134,6 +204,7 @@ Future<Widget> buildTestClaudeSessionScreen({
 Future<Widget> _buildTestSessionScreen({
   required MockBridgeService bridge,
   required Widget child,
+  ConversationContentSyncService? conversationContentSync,
 }) async {
   SharedPreferences.setMockInitialValues({});
   final prefs = await SharedPreferences.getInstance();
@@ -149,6 +220,10 @@ Future<Widget> _buildTestSessionScreen({
         RepositoryProvider<PromptHistoryService>.value(
           value: PromptHistoryService(DatabaseService()),
         ),
+        if (conversationContentSync != null)
+          RepositoryProvider<ConversationContentSyncService>.value(
+            value: conversationContentSync,
+          ),
       ],
       child: MultiBlocProvider(
         providers: [
@@ -187,14 +262,18 @@ Future<Widget> buildTestCodexSessionScreen({
   bool isPending = false,
   String? durableProviderSessionId,
   ValueNotifier<SystemMessage?>? pendingSessionCreated,
+  BridgeDataSourceIdentity? dataSourceIdentity,
+  ConversationContentSyncService? conversationContentSync,
 }) => _buildTestSessionScreen(
   bridge: bridge,
+  conversationContentSync: conversationContentSync,
   child: CodexSessionScreen(
     sessionId: sessionId,
     projectPath: projectPath,
     isPending: isPending,
     durableProviderSessionId: durableProviderSessionId,
     pendingSessionCreated: pendingSessionCreated,
+    dataSourceIdentity: dataSourceIdentity,
   ),
 );
 

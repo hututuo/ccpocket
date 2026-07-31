@@ -637,6 +637,171 @@ void main() {
     expect(patched?.entries.single.entryId, 'entry-2');
   });
 
+  test('advertises only readable complete hot-window revisions', () async {
+    final target = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-readable-revisions',
+      codexSourceId: 'source-readable-revisions',
+    );
+    for (final thread in const [
+      'valid',
+      'malformed-json',
+      'invalid-message',
+      'count-mismatch',
+      'out-of-range-index',
+      'empty-entry-id',
+    ]) {
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: thread,
+        revision: 'revision-$thread',
+        entries: [_entry('entry-$thread', 0, 'idle')],
+        hasEarlier: false,
+        sourceEntryCount: 1,
+      );
+    }
+    await repository.replaceConversationWindow(
+      target: target,
+      provider: 'codex',
+      providerSessionId: 'incomplete-empty',
+      revision: 'revision-incomplete-empty',
+      entries: const [],
+      hasEarlier: true,
+      latestTurnComplete: false,
+      latestTurnGap: const ConversationSyncV2LatestTurnGap(
+        missingEntryCount: 1,
+        payloadOmitted: false,
+        repair: 'turns_page',
+      ),
+      sourceEntryCount: 0,
+    );
+    await repository.replaceConversationWindow(
+      target: target,
+      provider: 'other',
+      providerSessionId: 'invalid-provider',
+      revision: 'revision-invalid-provider',
+      entries: [_entry('entry-invalid-provider', 0, 'idle')],
+      hasEarlier: false,
+      sourceEntryCount: 1,
+    );
+    await repository.replaceConversationWindow(
+      target: target,
+      provider: 'codex',
+      providerSessionId: '',
+      revision: 'revision-empty-session',
+      entries: [_entry('entry-empty-session', 0, 'idle')],
+      hasEarlier: false,
+      sourceEntryCount: 1,
+    );
+    await repository.replaceConversationWindow(
+      target: target,
+      provider: 'codex',
+      providerSessionId: List.filled(257, 's').join(),
+      revision: 'revision-long-session',
+      entries: [_entry('entry-long-session', 0, 'idle')],
+      hasEarlier: false,
+      sourceEntryCount: 1,
+    );
+    await repository.replaceConversationWindow(
+      target: target,
+      provider: 'codex',
+      providerSessionId: 'empty-revision',
+      revision: '',
+      entries: [_entry('entry-empty-revision', 0, 'idle')],
+      hasEarlier: false,
+      sourceEntryCount: 1,
+    );
+    await repository.replaceConversationWindow(
+      target: target,
+      provider: 'codex',
+      providerSessionId: 'long-revision',
+      revision: List.filled(129, 'r').join(),
+      entries: [_entry('entry-long-revision', 0, 'idle')],
+      hasEarlier: false,
+      sourceEntryCount: 1,
+    );
+
+    final valid = await repository.loadConversationWindow(
+      target: target,
+      provider: 'codex',
+      providerSessionId: 'valid',
+    );
+    final partitionId = valid!.partitionId;
+    final db = await database.database;
+    await db.update(
+      SessionCatalogCacheDatabase.hotEntriesTable,
+      {'message_json': '{not-json'},
+      where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+      whereArgs: [partitionId, 'codex', 'malformed-json'],
+    );
+    await db.update(
+      SessionCatalogCacheDatabase.hotEntriesTable,
+      {'message_json': '{"type":7}'},
+      where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+      whereArgs: [partitionId, 'codex', 'invalid-message'],
+    );
+    await db.update(
+      SessionCatalogCacheDatabase.hotWindowsTable,
+      {'entry_count': 2},
+      where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+      whereArgs: [partitionId, 'codex', 'count-mismatch'],
+    );
+    await db.update(
+      SessionCatalogCacheDatabase.hotEntriesTable,
+      {'entry_index': -SessionCatalogCacheRepository.maxHotWindowEntries - 1},
+      where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+      whereArgs: [partitionId, 'codex', 'out-of-range-index'],
+    );
+    await db.update(
+      SessionCatalogCacheDatabase.hotEntriesTable,
+      {'entry_id': ''},
+      where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+      whereArgs: [partitionId, 'codex', 'empty-entry-id'],
+    );
+
+    expect(
+      await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'malformed-json',
+      ),
+      isNull,
+    );
+    expect(
+      await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'invalid-message',
+      ),
+      isNull,
+    );
+    expect(
+      await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'count-mismatch',
+      ),
+      isNull,
+    );
+    expect(
+      (await repository.knownConversationRevisions(
+        target,
+      )).map((cursor) => cursor.providerSessionId),
+      ['valid'],
+    );
+    expect(
+      Sqflite.firstIntValue(
+        await db.rawQuery(
+          'SELECT COUNT(*) FROM '
+          '${SessionCatalogCacheDatabase.hotWindowsTable} '
+          'WHERE partition_id = ?',
+          [partitionId],
+        ),
+      ),
+      12,
+    );
+  });
+
   test('keeps hot windows isolated by canonical Bridge identity', () async {
     final oldTarget = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-old',
