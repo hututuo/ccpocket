@@ -38,10 +38,12 @@ describe("SessionCatalogMonitor", () => {
     });
     await monitor.start();
 
-    await Promise.all([
-      appendFile(sessionFile, '{"type":"assistant"}\n'),
-      appendFile(sessionFile, '{"type":"result"}\n'),
-    ]);
+    // A provider is the single writer for one rollout. Keep the two writes
+    // inside the debounce window without racing two appendFile handles against
+    // the same file, which is not a supported Node filesystem contract and
+    // can suppress the macOS watch event entirely.
+    await appendFile(sessionFile, '{"type":"assistant"}\n');
+    await appendFile(sessionFile, '{"type":"result"}\n');
     await vi.waitFor(() => expect(changes).toHaveLength(1), {
       timeout: 2_000,
     });
