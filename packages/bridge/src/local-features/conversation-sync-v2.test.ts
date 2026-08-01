@@ -4198,6 +4198,117 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("publishes replacement runtime authority immediately without waiting for a provider message", async () => {
+    let runtimeStates: LocalFeatureRuntimeConversationState[] = [
+      {
+        bridgeSessionId: "runtime-reconciling",
+        provider: "codex",
+        providerSessionId: "thread-runtime-lifecycle",
+        projectPath: "/project/0",
+        processStatus: "starting",
+        executionHost: "unknown",
+        controlState: "reconciling",
+        authorityGeneration: "authority-old",
+        observedAt: "2026-08-02T00:00:00.000Z",
+      },
+    ];
+    const fixture = createFixture(
+      [codexSeed(0, "thread-runtime-lifecycle")],
+      async () => history("thread-runtime-lifecycle"),
+      {
+        daemonMode: true,
+        initialExternalCodexMonitors: 0,
+      },
+      {
+        getProviderSessionId: () => "thread-runtime-lifecycle",
+        listRuntimeConversationStates: () => runtimeStates,
+      },
+    );
+    const client = {};
+    const session: LocalFeatureSession = {
+      id: "runtime-current",
+      provider: "codex",
+      process: {},
+      projectPath: "/project/0",
+    };
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const initialCatalogReads = fixture.catalogReader.mock.calls.length;
+
+    runtimeStates = [
+      {
+        bridgeSessionId: "runtime-current",
+        provider: "codex",
+        providerSessionId: "thread-runtime-lifecycle",
+        projectPath: "/project/0",
+        processStatus: "running",
+        executionHost: "desktopAppServer",
+        activeTurnId: "turn-desktop",
+        controlState: "steerable",
+        authorityGeneration: "authority-current",
+        observedAt: "2026-08-02T00:00:01.000Z",
+      },
+    ];
+    fixture.handler.runtimeSessionChanged(session);
+
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "status_changes")
+          .flatMap((event) => event.changes)
+          .find(
+            (status) =>
+              status.providerSessionId === "thread-runtime-lifecycle" &&
+              status.authorityGeneration === "authority-current",
+          ),
+      ).toMatchObject({
+        activity: "working",
+        executionHost: "desktopAppServer",
+        activeTurnId: "turn-desktop",
+        controlState: "steerable",
+        authorityGeneration: "authority-current",
+      }),
+    );
+    expect(fixture.catalogReader).toHaveBeenCalledTimes(initialCatalogReads);
+
+    runtimeStates = [
+      {
+        bridgeSessionId: "runtime-reopened",
+        provider: "codex",
+        providerSessionId: "thread-runtime-lifecycle",
+        projectPath: "/project/0",
+        processStatus: "idle",
+        executionHost: "unknown",
+        controlState: "writable",
+        authorityGeneration: "authority-reopened",
+        observedAt: "2026-08-02T00:00:02.000Z",
+      },
+    ];
+    fixture.handler.runtimeSessionChanged(session);
+
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "status_changes")
+          .flatMap((event) => event.changes)
+          .find(
+            (status) =>
+              status.providerSessionId === "thread-runtime-lifecycle" &&
+              status.authorityGeneration === "authority-reopened",
+          ),
+      ).toMatchObject({
+        activity: "idle",
+        controlState: "writable",
+        authorityGeneration: "authority-reopened",
+      }),
+    );
+    expect(fixture.catalogReader).toHaveBeenCalledTimes(initialCatalogReads);
+    fixture.handler.close();
+  });
+
   it("marks a failed app-server watchdog read unavailable without inventing ownership", async () => {
     const initial = codexSeed(0, "thread-status-failure");
     initial.status = {

@@ -295,6 +295,14 @@ export interface LocalFeatureHandler {
     session: LocalFeatureSession,
   ): boolean | Promise<boolean>;
   externalCodexTurnId?(session: LocalFeatureSession): string | undefined;
+  /**
+   * Observe a content-free runtime lifecycle/authority invalidation.
+   *
+   * Session attachment can change without emitting a provider transcript
+   * message. Handlers that project runtime authority must refresh from the
+   * host snapshot here rather than waiting for unrelated conversation output.
+   */
+  runtimeSessionChanged?(session: LocalFeatureSession): void;
   /** Observe one already-published session event without owning its transport. */
   sessionMessage?(session: LocalFeatureSession, message: ServerMessage): void;
   /** Observe one provider catalog/content invalidation without owning its watcher. */

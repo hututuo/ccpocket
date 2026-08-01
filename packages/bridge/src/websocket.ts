@@ -1774,9 +1774,11 @@ export class BridgeWebSocketServer {
         }
       },
       this.worktreeStore,
-      () => {
+      (sessionId) => {
         this.broadcastSessionList();
         this.broadcastEphemeralSideChatRegistry();
+        const session = this.sessionManager.get(sessionId);
+        if (session) this.localFeatures?.runtimeSessionChanged(session);
       },
       artifactManager,
       {

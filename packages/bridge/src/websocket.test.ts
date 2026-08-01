@@ -130,6 +130,7 @@ vi.mock("./session.js", async () => {
     private sessions = new Map<string, any>();
     private seq = 0;
     private onMessage: (sessionId: string, msg: any) => void;
+    private onSessionUpdated: (sessionId: string) => void;
     private artifactManager: any;
     public codexQueueDrainHooks: any;
 
@@ -139,11 +140,12 @@ vi.mock("./session.js", async () => {
       _galleryStore?: unknown,
       _onGalleryImage?: unknown,
       _worktreeStore?: unknown,
-      _onSessionUpdated?: unknown,
+      onSessionUpdated?: (sessionId: string) => void,
       artifactManager?: unknown,
       codexQueueDrainHooks?: unknown,
     ) {
       this.onMessage = onMessage ?? (() => {});
+      this.onSessionUpdated = onSessionUpdated ?? (() => {});
       this.artifactManager = artifactManager;
       this.codexQueueDrainHooks = codexQueueDrainHooks ?? {};
     }
@@ -431,6 +433,10 @@ vi.mock("./session.js", async () => {
 
     get(id: string) {
       return this.sessions.get(id);
+    }
+
+    notifySessionUpdated(id: string) {
+      this.onSessionUpdated(id);
     }
 
     queueCodexInput(id: string, input: any) {
@@ -875,6 +881,28 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     vi.unstubAllEnvs();
     vi.useRealTimers();
     httpServer.close();
+  });
+
+  it("forwards SessionManager lifecycle updates to runtime authority projections", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const manager = (bridge as any).sessionManager;
+    const sessionId = manager.create(
+      "/tmp/project-runtime-lifecycle",
+      { sessionId: "thread-runtime-lifecycle" },
+      undefined,
+      undefined,
+      "codex",
+    );
+    const runtimeSessionChanged = vi.spyOn(
+      (bridge as any).localFeatures,
+      "runtimeSessionChanged",
+    );
+
+    manager.notifySessionUpdated(sessionId);
+
+    expect(runtimeSessionChanged).toHaveBeenCalledOnce();
+    expect(runtimeSessionChanged).toHaveBeenCalledWith(manager.get(sessionId));
+    await bridge.close();
   });
 
   it("advertises, gates, routes, disconnects, and closes the optional v2 file-transfer module", async () => {

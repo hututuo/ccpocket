@@ -163,6 +163,19 @@ export class LocalFeaturesController {
   // monitor's debounce), where a handler throw would surface as an
   // uncaughtException. Isolate handlers so one failure cannot crash the
   // process or starve the remaining handlers.
+  runtimeSessionChanged(session: LocalFeatureSession): void {
+    for (const handler of new Set(this.handlers.values())) {
+      try {
+        handler.runtimeSessionChanged?.(session);
+      } catch (err) {
+        console.error(
+          "[local-features] runtimeSessionChanged handler failed:",
+          err,
+        );
+      }
+    }
+  }
+
   sessionMessage(session: LocalFeatureSession, message: ServerMessage): void {
     for (const handler of new Set(this.handlers.values())) {
       try {

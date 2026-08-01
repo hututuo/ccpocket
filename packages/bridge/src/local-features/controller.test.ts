@@ -216,12 +216,29 @@ describe("LocalFeaturesController", () => {
     expect(sessionMessage).toHaveBeenCalledWith(session, message);
   });
 
+  it("forwards runtime lifecycle changes once per registered handler", () => {
+    const session = runtime().getSession("session-1")!;
+    const runtimeSessionChanged = vi.fn();
+    const handler: LocalFeatureHandler = {
+      messageTypes: ["get_context_usage", "get_session_usage"],
+      handle: async () => {},
+      runtimeSessionChanged,
+    };
+    const controller = new LocalFeaturesController(runtime(), [handler]);
+
+    controller.runtimeSessionChanged(session);
+
+    expect(runtimeSessionChanged).toHaveBeenCalledOnce();
+    expect(runtimeSessionChanged).toHaveBeenCalledWith(session);
+  });
+
   it("isolates a throwing handler from the remaining fan-out handlers (B-18)", () => {
     const session = runtime().getSession("session-1")!;
     const errorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => {});
     const survivorSessionMessage = vi.fn();
+    const survivorRuntimeSessionChanged = vi.fn();
     const survivorCatalogChanged = vi.fn();
     const survivorDeliveryModeChanged = vi.fn();
     const throwing: LocalFeatureHandler = {
@@ -229,6 +246,9 @@ describe("LocalFeaturesController", () => {
       handle: async () => {},
       sessionMessage: () => {
         throw new Error("session message handler blew up");
+      },
+      runtimeSessionChanged: () => {
+        throw new Error("runtime session handler blew up");
       },
       sessionCatalogChanged: () => {
         throw new Error("catalog handler blew up");
@@ -241,6 +261,7 @@ describe("LocalFeaturesController", () => {
       messageTypes: ["get_session_usage"],
       handle: async () => {},
       sessionMessage: survivorSessionMessage,
+      runtimeSessionChanged: survivorRuntimeSessionChanged,
       sessionCatalogChanged: survivorCatalogChanged,
       clientDeliveryModeChanged: survivorDeliveryModeChanged,
     };
@@ -256,6 +277,7 @@ describe("LocalFeaturesController", () => {
           status: "idle",
         }),
       ).not.toThrow();
+      expect(() => controller.runtimeSessionChanged(session)).not.toThrow();
       expect(() =>
         controller.sessionCatalogChanged({
           revision: 1,
@@ -268,9 +290,10 @@ describe("LocalFeaturesController", () => {
       ).not.toThrow();
 
       expect(survivorSessionMessage).toHaveBeenCalledOnce();
+      expect(survivorRuntimeSessionChanged).toHaveBeenCalledOnce();
       expect(survivorCatalogChanged).toHaveBeenCalledOnce();
       expect(survivorDeliveryModeChanged).toHaveBeenCalledOnce();
-      expect(errorSpy).toHaveBeenCalledTimes(3);
+      expect(errorSpy).toHaveBeenCalledTimes(4);
     } finally {
       errorSpy.mockRestore();
     }

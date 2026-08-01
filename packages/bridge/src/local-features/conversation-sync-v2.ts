@@ -839,6 +839,24 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       });
   }
 
+  runtimeSessionChanged(session: LocalFeatureSession): void {
+    const target = this.targetForSession(session);
+    if (!target) return;
+
+    const changedKeys = new Set([targetKey(target)]);
+    const previousCatalogState = this.catalogState;
+    const previousStatusState = this.statusState;
+    this.applyRuntimeOverlay(changedKeys);
+    this.recomputeStates(changedKeys);
+    this.reconcileSharedContentObservers();
+    if (
+      this.catalogState !== previousCatalogState ||
+      this.statusState !== previousStatusState
+    ) {
+      this.scheduleInteractiveClients({ dirtyKeys: changedKeys });
+    }
+  }
+
   sessionMessage(session: LocalFeatureSession, message: ServerMessage): void {
     const target = this.targetForSession(session);
     if (!target) return;
