@@ -1,14 +1,22 @@
 # CC Pocket Codex 双路径全链路审查
 
-- 状态：`audit-complete / remediation-active`
+- 状态：`source-remediation-verified / runtime-device-gates-pending`
 - 审查分支：`feature/codex-shared-runtime-20260731`
 - 审查基线：`93c21f6d1145667f8eb93b296133b855a497e445`
 - 审查日期：2026-08-01
 - 范围：Codex Desktop 发起/托管线程、Bridge 发起/附着线程，经 app-server、Bridge、协议、Mobile SQLite、Cubit/Reducer 到 UI 和操作回路的完整链路
 
-## 一、结论
+## 当前结论（修复与复验后）
 
-当前实现不能判定为“共享 Codex 运行时产品功能完成”。准确边界是：
+本分支已经把 Codex Desktop 发起和 Bridge 发起两条路径收束到同一套 durable thread、权威状态、Action Broker、增量内容和 Mobile 本地缓存模型。原始审计的 12 个 P1 与独立复审新增的 4 个 P1 均已有源码修复和自动回归证据；冻结源码上的 Bridge、Functions、Mobile、iOS Simulator 和既有同源 RunnerTests 门禁均通过。
+
+当前源码门禁为 `0 P0 / 0 P1 / 2 个非阻断 P2 / 1 个兼容性 P3`。剩余 P2 是极端超长单行 Claude JSONL 的有界读取取舍，以及低频输入台账在约 1.4 MiB 时仍整文件重写；P3 是兼容保留的 `/health` 与 `/readyz` 双语义。它们不伪装成已消失，详见第十一节。
+
+这仍不等于生产和设备验收。生产 8765、Codex Desktop 运行模式、Cloud Function、OTA、IPA 和物理 iPhone 均未因本轮审查而改变；真实 Desktop 双客户端、Bridge 切换、通知动作和物理设备视觉/功耗仍属于后续独立门禁。
+
+## 一、初始审计结论（修复前快照）
+
+初始审计时的实现不能判定为“共享 Codex 运行时产品功能完成”。当时的准确边界是：
 
 - Stage 0–2 的严格 daemon 配置、UDS 传输、settings-neutral attach、Bridge 发起的无工具 canary 和部分 attachment 级连续性已通过自动验证；
 - Codex Desktop 发起的线程尚未完整接入 Mobile 的实时状态、增量内容、审批/问题、操作权和持久恢复；
@@ -335,3 +343,83 @@ daemon control 不 ready 时 `/health` 仍返回顶层 `status:ok`，只有 `/re
 - recovery 第一个 reader 永不 resolve：超时后其他目标仍可恢复；generation 切换必须 abort 旧 workers。
 - 旧 build status token → 新 capable build：必须触发 scoped status reset/full projection。
 - terminal turn A completed → Bridge 离线期间 turn B active：最终只能是 `working + result:none`，旧 A 终态不得制造未读。
+
+## 十、P1 修复台账
+
+| 初始问题 | 当前处置 | 自动验证证据 |
+|---|---|---|
+| P1-1 app-server 状态未进入产品链 | shared control/status 进入统一状态引擎；目录 watchdog 只作防漏；状态携带 source epoch、authority generation 和 confidence | control、v2 status、迟到 generation、watchdog 回归 |
+| P1-2 daemon 与 JSONL 双实时平面 | daemon/capable 模式停用 legacy continuity 实时双写；private/legacy 保留受能力门控的 fallback | registry、websocket、conversation sync 兼容回归 |
+| P1-3 source/发起方/写入权混用 | 协议和 Mobile 独立使用 `executionHost`、`activeTurnId`、`controlState`、`authorityGeneration`；unknown 不降级为 Ready | protocol、Cubit、mode bar、detached detail 回归 |
+| P1-4 durable/runtime 两套页面 | durable provider ID 始终进入同一 durable route；runtime 仅作可替换 attachment | durable preview、home/session route、重连回归 |
+| P1-5 live item 更新导致排序跳动 | 稳定 item 原位更新；使用结构 ordinal/revision，时间戳只作最终 tie-breaker | conversation sync 与 chat ordering 回归 |
+| P1-6 Desktop Need You 不可操作 | 持久 Action Broker 以 source/thread/turn/request/generation 精确标识；聊天页、通知和自动批准共用 opaque request identity | broker、Mobile approval coordinator、notification 回归 |
+| P1-7 foreign turn 可被误中断 | active 与 ownership 分离；steer/interrupt/approval/goal/compact/review/rewind/fork 等 mutation 全部经过 exact lease/generation 门禁 | writer lease、core actions、websocket 回归 |
+| P1-8 断线不重附且伪装 Working | 增加 reconciling/unavailable、有限并发恢复、单目标超时、旧代 abort 和 scoped reconcile | readiness、runtime recovery、hung-reader 回归 |
+| P1-9 settings 假成功 | settings 只在 canonical ACK 后提交 UI；完整/部分 snapshot 有明确语义，旧客户端继续加法兼容 | settings protocol、Mobile settings、shared runtime 回归 |
+| P1-10 daemon attach 先读全历史 | daemon attach 不再调用全量 `includeTurns`；Codex 使用分页，Claude 使用有界尾读 | session/websocket、Claude paging、长历史基准 |
+| P1-11 页面未绑定原始 source | 页面和分页动态绑定唯一认证 runtime/source fingerprint；歧义、换源和迟到回包 fail closed | durable preview、source mismatch、generation 回归 |
+| P1-12 自动批准依赖 transient runtime | 配置、监督和执行改为 durable target + Action Broker；standby/authority generation 下拒绝 mutation | auto approval 与 broker runtime 回归 |
+| 新 P1-13 standby 绕过 writer lease | 旧 input、审批、answer、daemon adoption 与新协议共用 writer lease/readiness gate | leader/standby、旧 Mobile 写入口回归 |
+| 新 P1-14 observer 抢占正式 attachment | observer 使用可让位租约；正式 resume/recovery 确定性替换，旧 generation 不得反抢 | content observer、control reconnect 回归 |
+| 新 P1-15 同 operation 并发双写 | claim/submitting/terminal 使用原子状态转换和 exact removal；并发响应 transport 写入严格一次 | Action Broker barrier 回归 |
+| 新 P1-16 单个挂起 reader 卡死全恢复 | 每个 scoped reader 有 timeout/abort；恢复有界并发，单线程失败不阻塞其他线程 | recovery timeout、generation abort 回归 |
+
+对应源码提交：
+
+- `4e66fbcb`：Bridge 权威运行时、Action Broker、writer lease、恢复、v2 增量、Claude 有界历史和安全/性能门禁；
+- `93ad516b`：Mobile durable route、source fence、Action Broker UI、原子逻辑分页和本地优先缓存；
+- `e54b8eca`：iOS 审批动作宿主与 Cloud 通知隐私投影。
+
+## 十一、P2/P3 处置
+
+原始六个 P2 已分别通过持久 terminal ledger、settings 可操作性、受限 fork/ephemeral parent、detach/interrupt 区分、权威时间与协作设置、认证后 Dock scope/subagent badge 处理。独立复审补充的 snapshot 体积、terminal turn identity、capable/legacy token 隔离和 ledger health 也已加入边界与测试。
+
+仍保留并明确登记：
+
+1. **P2：极端超长 Claude JSONL 单行。** 新 reader 默认只读最多 512 KiB 尾部，游标绑定 inode/设备/快照长度，可接受后续 append 并拒绝截断或跨文件。若单条合法 JSONL 自身超过预算，该条可能以缺口形式跳过，而不是突破内存上限；正常分页、追加和损坏游标均有测试。旧 Codex app-server 不支持分页时同样 scoped fail closed，不回退无界全量扫描。
+2. **P2：输入投递台账整文件重写。** 在 4,095 个终态记录、约 1,413,351 字节文件上，10 次 admission + provider-accepted 的最小值 25.0 ms、中位数 26.0 ms、p90/最大值 37.81 ms。它位于低频用户 mutation 路径且有上限，目前不阻断；后续若台账规模或发送频率上升，应改为 append/compaction 或 SQLite。
+3. **P3：`/health` 与 `/readyz`。** 为兼容旧探针，进程存活仍可返回 health；可写运行时必须以 readiness、writer lease 和协议阶段为准。Mobile 已使用细分阶段，Bridge 生成的 LaunchAgent/systemd 配置默认仅绑定 `127.0.0.1`，非 loopback 且无 API key 时拒绝启动，除非显式 legacy opt-in。
+
+Mobile 的 catalog 与 status 各自按逻辑 batch 原子落 SQLite；两者不是同一个跨表总事务，因此一次 sync 最多产生两次列表投影，但不会暴露缺页或混代页面。这个边界是刻意的可恢复性取舍，不计为阻断项。
+
+## 十二、性能结果
+
+冻结源码执行 `benchmark:session-sync`：
+
+| 场景 | 结果 |
+|---|---|
+| 真实目录 312 项 | median 23.915 ms；p95 27.855 ms；max 37.992 ms |
+| 合成目录 1,500 项 | priority p95 26.750 ms；complete p95 39.712 ms |
+| 合成目录 10,000 项 | priority p95 61.890 ms；complete p95 74.089 ms |
+| 1,000 个 live delta | 1,500 项场景 p95 2.181 ms；10,000 项场景 p95 0.787 ms |
+| 历史读取 | 首次 14；无变化重连 0；单一 live 变化 1 |
+| provider 并发 | 最大 2 |
+| WebSocket | 最大帧 57,603 字节；未 ACK/排队合计 2 MiB 时施加 backpressure |
+
+Claude 1 GiB 稀疏历史尾读基准只读取 65,536 字节，20 次暖运行中位数 0.103 ms，p95/最大值 1.111 ms。测试夹具第一次生成稀疏文件时未显式指定 EOF 写入位置，导致尾部事实错误；已删除该临时目录并用明确 offset 重跑。后续稀疏/截断型基准必须同时断言文件尾内容、实际读取字节和结果语义，不能只看文件逻辑大小。
+
+旧性能分支 `917afcf9` 的流式 delta 合并、路径后缀缓存、有界预览扫描、Mirror 尾分页/清理、首帧后初始化、精确 selector 和 Prompt History single-flight 均在当前线保留了等价或增强实现；本轮没有把旧分支整枝回放。
+
+## 十三、冻结验证
+
+- Bridge：113 个测试文件、2,264 项全部通过；TypeScript build 和 native file-browser helper 通过。
+- Functions：typecheck、build 通过；1 个测试文件、26 项通过；未部署。
+- Mobile：2,876 项通过，4 个环境 smoke 跳过；全量 analyze 为 0 error / 0 warning，52 个仓库既有 info。
+- iOS：当前冻结源码 `flutter build ios --simulator --debug --no-pub` 通过，Xcode 317.9 秒；本轮原生改动后的同源 RunnerTests 29/29 通过。
+- 格式与差异：Prettier 全部匹配；62 个变更 Dart 文件 0 changed；`git diff --check` 通过。
+- 安全：parser 限制消息/token/app version，WebSocket 关闭 per-message deflate 且限制 32 MiB；debug disk trace 默认关闭并具有 no-follow、0700/0600、TTL/大小约束；push 日志只记录哈希身份，不输出响应正文。
+
+## 十四、尚未执行的真实环境门禁
+
+本轮没有：
+
+- 替换或重启生产 Bridge；
+- 把 Codex Desktop 从 private 切到 shared daemon；
+- 部署 Cloud Function；
+- 发布 Shorebird OTA、构建/发送 IPA、安装或修改物理 iPhone；
+- 合并 stable、push 或改写其他分支历史。
+
+后续仍需单独授权并观察：Desktop-origin turn 在手机的状态/内容/Need You/审批，Bridge-origin turn 在 Desktop 侧栏的实时出现，同一 active turn 的温和 Bridge 切换，物理通知长按动作、后台行为、视觉连续性和真机功耗。自动测试通过不能替代这些门禁。
+
+本轮一次非安静的 Xcode 诊断曾把当前 shell 继承环境写入工具日志。代码与交付物没有保存这些值，但应把该日志视为可能暴露凭据，并轮换当时 shell 中的可用凭据；后续 Xcode 只使用安静输出或经过清洗的环境。

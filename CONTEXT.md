@@ -2,67 +2,49 @@
 
 ## Active shared Codex runtime implementation
 
-On 2026-08-01 the user authorized a new full-chain audit followed directly by
-source remediation. The audit is recorded in
-`notes/codex-dual-path-full-chain-audit_v01_20260801-022457.md` and supersedes
-any broad interpretation that the Stage 0–2 Pilot proved dual-path product
-completion. It found `0 P0 / 12 P1 / 6 P2 / 1 P3`, centred on the disconnected
-app-server status plane, daemon/JSONL double delivery, source/turn-origin
-conflation, runtime-vs-durable route splitting, missing Action Broker request
-ledger, unsafe foreign-turn operations, unbounded resume history and Mobile
-source fencing gaps.
+On 2026-08-01 the user authorized a full-chain audit followed directly by
+source remediation. The authoritative audit and remediation ledger is
+`notes/codex-dual-path-full-chain-audit_v01_20260801-022457.md`. It preserves
+the original `0 P0 / 12 P1 / 6 P2 / 1 P3` pre-fix findings and the independent
+review's four additional P1s, then records the current disposition.
 
-Source fixes and automatic validation may now continue on the isolated feature
-branch. This does not authorize production 8765 replacement, Desktop shared
-mode activation, OTA, IPA installation, phone mutation or stable publication.
-
-The current proposed implementation plan is:
+The isolated source lane is now `source-remediation-verified`:
 
 - Plan: `plans/codex-shared-runtime-warm-switch_v01_20260731-230240.md`
 - Worktree:
   `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/codex-shared-runtime-20260731`
 - Branch: `feature/codex-shared-runtime-20260731`
 - Base: `a007dc712543c1410a26be980f2d838637c95c60`
-- Status: `active`; Stage 0–2 source implementation and isolated automated
-  Pilot have passed. The task is now at the mandatory user-observed Desktop
-  gate; Stage 3 and production work remain forbidden until that experiment is
-  restored to private mode and the user explicitly confirms continuation.
-- Stage 0 evidence:
+- Bridge implementation: `4e66fbcb`
+- Mobile implementation: `93ad516b`
+- Native/Cloud notification hardening: `e54b8eca`
+- Current source gate: `0 P0 / 0 P1 / 2 non-blocking P2 / 1 compatibility P3`
+
+The two Codex origins now share durable identity, app-server status, exact
+turn ownership, Action Broker requests, bounded incremental content, Mobile
+SQLite staging and a single durable route. Bridge full tests passed 113 files /
+2,264 tests; Mobile passed 2,876 tests with four environment smoke skips;
+Functions passed 26 tests; the iOS Simulator build passed. Exact compatibility,
+performance and caveat evidence is in the audit ledger.
+
+This source result does not authorize or claim production 8765 replacement,
+Desktop shared mode activation, Cloud deployment, OTA, IPA installation, phone
+mutation or stable publication. Those remain explicit runtime/device/release
+gates. Production and Desktop private mode were not changed by this task.
+
+The earlier Stage 0–2 pilot documents remain useful historical evidence:
+
+- Stage 0:
   `notes/codex-shared-runtime-stage0-deviation-ledger_v01_20260731-234929.md`
-- Stage 2 automated evidence:
+- Stage 2:
   `notes/codex-shared-runtime-stage2-pilot-evidence_v01_20260801-014302.md`
 
-The plan preserves the full daemon/coordinator/action-broker/Mobile/compatibility
-design, but changes the execution order. The first deliverable is a minimal,
-reversible Bridge + Codex Desktop shared-daemon pilot. After automated checks,
-the task must stop for a user-observed Desktop sidebar and same-thread test,
-restore the private production baseline, and wait for explicit confirmation
-before full implementation, integration, release work, or contacting the
-persistent release task.
-
-The first live probes confirmed that the exact Desktop Codex daemon requires a
-managed CLI path inside its explicit `CODEX_HOME`, UDS WebSocket compression
-must be disabled, and a newly started thread cannot be resumed by another
-connection before its first durable rollout exists. These facts override the
-corresponding plan assumptions without reducing the product goal.
-
-The isolated `1.69.6-compat.12` candidate has now passed a real Codex canary,
-two authenticated Bridge clients, settings-neutral resume without transcript
-replay, Bridge-only restart continuity, and active-turn re-attachment while
-preserving one daemon socket identity. Final hardening binds server requests
-and steering to turns started by the exact Bridge attachment, makes Desktop
-environment switching recoverable from interrupted enabling/restoring states,
-and locks the Pilot daemon to its audited `pid` lifecycle backend. Bridge full
-tests passed 2039/2039, and a post-hardening real resume/turn completed in
-1681 ms without changing the daemon socket identity. The
-candidate remains isolated on `127.0.0.1:18765`; production compat.11 on 8765
-and the current Desktop private runtime remain unchanged.
-
-The remaining Stage 2 P2 is asymmetric first-responder behavior: Desktop has
-not yet been converted to the future Action Broker, so a Bridge-originated turn
-request can still be visible to Desktop. The user-observed Pilot is therefore
-restricted to strictly serial no-tool prompts with no approvals, questions or
-external current-time. Normal dual-client request arbitration remains Stage 3.
+They established that the Desktop daemon needs a managed CLI under its exact
+`CODEX_HOME`, UDS WebSocket compression must be disabled, and a newly created
+thread needs a durable rollout before another connection can resume it. Their
+older hard-stop and asymmetric first-responder statements are superseded for
+source implementation by the Action Broker and writer-lease work above; they
+remain relevant when planning the still-unperformed live Desktop/device gate.
 
 ## Active isolated lanes on 2026-07-31
 
