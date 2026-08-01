@@ -1425,3 +1425,24 @@
 - 官方安装包可能出现 CLI 版本 `0.146.0-alpha.9.2`、managed/app-server 版本
   `0.146.0` 的合法双标签。Bridge 分别精确固定两者，不再错误要求字符串相同；socket、
   CLI 文件、所有权、路径和版本仍全部 fail closed。
+
+## 2026-08-02 runtime attachment changes invalidate v2 authority immediately
+
+- Shared Codex `input_ready`, attachment recovery, replacement, settings and
+  capability lifecycle changes can occur without a provider transcript
+  message. `SessionManager` must therefore invalidate the affected durable
+  runtime projection explicitly; a later assistant/tool/status message is not
+  an acceptable trigger for control readiness.
+- `conversation_sync_v2` recomputes only the affected
+  `provider + providerSessionId` key from the host's content-free runtime
+  snapshot. It publishes the current execution host, control state, active
+  turn and authority generation without rereading catalog or history.
+- The ordinary `session_list` runtime handle and the v2 authority projection
+  remain separate facts but are emitted from the same lifecycle boundary. A
+  Mobile client may mutate settings, stop, steer or send only after both form
+  one exact current target.
+- Reopening or replacing a runtime creates a new authority generation. Mobile
+  continues to reject the old generation; Bridge must actively publish the new
+  generation even when Desktop produces no subsequent message. Missing
+  authority remains fail-closed and must never be bypassed to hide a loading
+  symptom.

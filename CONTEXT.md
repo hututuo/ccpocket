@@ -1,5 +1,31 @@
 # CC Pocket Compatibility Fork Context
 
+## 2026-08-02 runtime authority lifecycle correction
+
+The active source correction is in:
+
+- Worktree:
+  `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/codex-dual-mode-compat-20260801`
+- Branch: `fix/codex-dual-mode-compat-20260801`
+- Code commit: `0848fd91`
+
+Physical-phone evidence showed that a shared Codex attachment could become
+ready while `conversation_sync_v2` still exposed the previous or empty
+authority generation. A later Desktop transcript event accidentally refreshed
+the projection, which made the conversation suddenly finish opening and made
+model/effort controls reappear. Leaving and reopening reproduced the gap, and
+settings then failed with `Shared Codex settings require an exact current
+runtime target.`
+
+`SessionManager` lifecycle updates now invalidate the content-free runtime
+projection directly. The Bridge recomputes only the affected durable thread,
+publishes the current execution host/control state/authority generation, and
+does not reread catalog or history. The exact Mobile mutation fence remains
+unchanged. Bridge passed 113 files / 2,271 tests in single-worker mode; Mobile
+authority/preview regression files passed 201 tests. Source is committed;
+production Bridge deployment and physical-phone acceptance remain separate
+gates.
+
 ## Active shared Codex runtime implementation
 
 On 2026-08-01 the user authorized a full-chain audit followed directly by
