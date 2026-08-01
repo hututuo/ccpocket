@@ -17,6 +17,7 @@ class CodexSessionFeatureContext {
   final TextEditingController inputController;
   final DraftService draftService;
   final String? codexModel;
+  final String? Function()? authorityGenerationProvider;
   final VoidCallback requestCompact;
   final OpenLocalFeaturePane openPane;
 
@@ -30,6 +31,7 @@ class CodexSessionFeatureContext {
     required this.inputController,
     required this.draftService,
     this.codexModel,
+    this.authorityGenerationProvider,
     required this.requestCompact,
     required this.openPane,
   });

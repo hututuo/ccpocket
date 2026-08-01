@@ -852,21 +852,17 @@ void main() {
       recencyAt: '2026-07-30T00:02:00.000Z',
       availability: 'durable',
     );
-    await repository.applyConversationCatalogPage(
+    await repository.applyConversationCatalogBatch(
       target: target,
       codexSourceId: 'source-v2',
       catalogState: 'catalog-state-1',
-      pageIndex: 0,
-      pageCount: 1,
       created: const [catalogEntry],
       updated: const [],
       destroyed: const [],
     );
-    await repository.applyConversationStatusPage(
+    await repository.applyConversationStatusBatch(
       target: target,
       statusState: 'status-state-1',
-      pageIndex: 0,
-      pageCount: 1,
       changes: const [
         ConversationSyncV2Status(
           provider: 'codex',
@@ -881,11 +877,9 @@ void main() {
         ),
       ],
     );
-    await repository.applyConversationStatusPage(
+    await repository.applyConversationStatusBatch(
       target: target,
       statusState: 'status-state-2',
-      pageIndex: 0,
-      pageCount: 1,
       changes: const [
         ConversationSyncV2Status(
           provider: 'codex',
@@ -913,6 +907,82 @@ void main() {
     final state = await repository.loadConversationSyncState(target);
     expect(state.catalogState, 'catalog-state-1');
     expect(state.statusState, 'status-state-2');
+  });
+
+  test('rejects direct partial catalog and status page mutations', () async {
+    final target = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-partial-pages',
+      codexSourceId: 'source-partial-pages',
+    );
+    await expectLater(
+      repository.applyConversationCatalogPage(
+        target: target,
+        codexSourceId: 'source-partial-pages',
+        catalogState: 'catalog-partial',
+        pageIndex: 0,
+        pageCount: 2,
+        created: const [
+          ConversationSyncV2CatalogEntry(
+            provider: 'codex',
+            providerSessionId: 'thread-partial',
+            revision: 'revision-partial',
+            projectPath: '/workspace/partial',
+            createdAt: '2026-07-30T00:00:00.000Z',
+            modifiedAt: '2026-07-30T00:01:00.000Z',
+            recencyAt: '2026-07-30T00:01:00.000Z',
+            availability: 'durable',
+          ),
+        ],
+        updated: const [],
+        destroyed: const [],
+      ),
+      throwsStateError,
+    );
+    await expectLater(
+      repository.applyConversationStatusPage(
+        target: target,
+        statusState: 'status-partial',
+        pageIndex: 0,
+        pageCount: 2,
+        changes: const [
+          ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'thread-partial',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-07-30T00:02:00.000Z',
+          ),
+        ],
+      ),
+      throwsStateError,
+    );
+    await repository.applyConversationCatalogBatch(
+      target: target,
+      codexSourceId: 'source-partial-pages',
+      catalogState: 'catalog-superseded',
+      created: const [
+        ConversationSyncV2CatalogEntry(
+          provider: 'codex',
+          providerSessionId: 'thread-superseded',
+          revision: 'revision-superseded',
+          projectPath: '/workspace/superseded',
+          createdAt: '2026-07-30T00:00:00.000Z',
+          modifiedAt: '2026-07-30T00:03:00.000Z',
+          recencyAt: '2026-07-30T00:03:00.000Z',
+          availability: 'durable',
+        ),
+      ],
+      updated: const [],
+      destroyed: const [],
+      isCurrent: () => false,
+    );
+
+    expect(await repository.load(target), isNull);
+    expect(await repository.loadConversationStatuses(target), isEmpty);
   });
 
   test(

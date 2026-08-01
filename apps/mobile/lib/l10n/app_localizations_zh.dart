@@ -128,6 +128,14 @@ class AppLocalizationsZh extends AppLocalizations {
   String get renameSession => '重命名会话';
 
   @override
+  String get renameFailed => '无法重命名此会话';
+
+  @override
+  String renameFailedWithError(String error) {
+    return '无法重命名此会话：$error';
+  }
+
+  @override
   String get pin => '置顶会话';
 
   @override
@@ -579,6 +587,16 @@ class AppLocalizationsZh extends AppLocalizations {
   @override
   String get bridgeConnectionTakingLonger =>
       'Bridge 已连接，但绘画目录准备时间超过预期。你可以继续等待，也可以重试或取消。';
+
+  @override
+  String get authenticatingWithBridge => '正在通过 Bridge 认证...';
+
+  @override
+  String get preparingCodexRuntime => 'Bridge 已在线，正在准备共享 Codex 运行时...';
+
+  @override
+  String get codexRuntimeTakingLonger =>
+      'Bridge 进程已在线，但共享 Codex 运行时仍在准备。你可以继续等待、重试或取消。';
 
   @override
   String get useCachedConversations => '使用缓存进入';
@@ -1382,6 +1400,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get tapInterruptHoldStop => '点按：中断，长按：停止';
+
+  @override
+  String get tapDetachDesktopTurn => '点按或长按：从手机断开；Desktop 任务继续运行';
 
   @override
   String get rewind => '回退';
@@ -3684,6 +3705,21 @@ class AppLocalizationsZh extends AppLocalizations {
   String currentServiceTierReadOnly(Object value) {
     return '当前服务层级：$value（只读）';
   }
+
+  @override
+  String get codexSettingsUnknown => '未知 · 等待同步';
+
+  @override
+  String get codexSettingsWaitingForRuntime =>
+      '正在等待 Bridge 同步此会话的运行时设置；当前没有修改任何设置。';
+
+  @override
+  String get codexSettingsReadOnlyDesktop =>
+      '当前轮次由 Codex Desktop 托管，这里的设置为只读。请在 Desktop 中修改，或等待当前轮次结束。';
+
+  @override
+  String get codexSettingsUnavailable =>
+      'Bridge 尚未确认此会话的设置写入权，因此 CC Pocket 不会发送或预览修改。';
 
   @override
   String get codexPermissionsOnRequest => '按需请求';

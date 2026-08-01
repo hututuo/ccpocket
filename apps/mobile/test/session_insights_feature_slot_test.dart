@@ -24,6 +24,7 @@ void main() {
       final input = TextEditingController();
       final opened = <({String featureId, Map<String, Object?> arguments})>[];
       var compactRequests = 0;
+      String? authorityGeneration() => 'daemon:7:3';
       late CodexSessionFeatureContext featureContext;
       addTearDown(bridge.dispose);
       addTearDown(input.dispose);
@@ -36,6 +37,7 @@ void main() {
                 context: context,
                 sessionId: 'runtime-before-attach',
                 sessionInsightsSessionId: 'durable-thread',
+                authorityGenerationProvider: authorityGeneration,
                 bridge: bridge,
                 inputController: input,
                 draftService: drafts,
@@ -69,6 +71,7 @@ void main() {
       expect(modeBars.single.sessionId, 'durable-thread');
       expect(modeBars.single.runtimeSessionId, 'runtime-before-attach');
       expect(modeBars.single.durableCacheIdentityConfirmed, isTrue);
+      expect(modeBars.single.authorityGenerationProvider?.call(), 'daemon:7:3');
 
       final runtimeOnlyContext = CodexSessionFeatureContext(
         context: featureContext.context,
@@ -130,6 +133,22 @@ void main() {
               as SessionInsightsPanel;
       expect(durablePanel.sessionId, 'durable-thread');
       expect(durablePanel.durableCacheIdentityConfirmed, isTrue);
+
+      final fencedPanel =
+          pane.builder(
+                WorkspaceFeaturePaneContext(
+                  context: featureContext.context,
+                  sessionId: 'runtime-only',
+                  bridge: bridge,
+                  arguments: {
+                    'sessionInsightsSessionId': 'durable-thread',
+                    'authorityGenerationProvider': authorityGeneration,
+                  },
+                  onClose: () {},
+                ),
+              )
+              as SessionInsightsPanel;
+      expect(fencedPanel.authorityGenerationProvider?.call(), 'daemon:7:3');
 
       modeBars.single.onCompact!();
       expect(compactRequests, 1);

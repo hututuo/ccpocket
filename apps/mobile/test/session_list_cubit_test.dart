@@ -872,6 +872,66 @@ void main() {
               kind: ConversationSyncCacheUpdateKind.catalog,
               targetFingerprint: target.fingerprint,
               codexSourceId: 'source-v2',
+              pageIndex: 0,
+              pageCount: 2,
+              catalogUpserts: const [
+                ConversationSyncV2CatalogEntry(
+                  provider: 'codex',
+                  providerSessionId: 'thread-partial',
+                  revision: 'revision-partial',
+                  projectPath: '/home/user/project-partial',
+                  createdAt: '2026-07-30T00:00:00.000Z',
+                  modifiedAt: '2026-07-30T00:10:00.000Z',
+                  recencyAt: '2026-07-30T00:10:00.000Z',
+                  availability: 'durable',
+                  name: 'Must not be visible yet',
+                ),
+              ],
+            ),
+          )
+          ..emit(
+            ConversationSyncCacheUpdate(
+              kind: ConversationSyncCacheUpdateKind.status,
+              targetFingerprint: target.fingerprint,
+              pageIndex: 0,
+              pageCount: 2,
+              statusChanges: const [
+                ConversationSyncV2Status(
+                  provider: 'codex',
+                  providerSessionId: 'thread-old',
+                  activity: 'working',
+                  attention: 'none',
+                  result: 'none',
+                  runtimeAttachment: 'loaded',
+                  source: 'appServer',
+                  confidence: 'authoritative',
+                  observedAt: '2026-07-30T00:09:00.000Z',
+                ),
+              ],
+            ),
+          );
+        await pumpEventQueue();
+
+        expect(cache.loadCalls, loadsBeforeDeltas);
+        expect(
+          cubit.state.sessions.map((session) => session.sessionId),
+          isNot(contains('thread-partial')),
+        );
+        expect(
+          cubit.conversationStatusFor(
+            cubit.state.sessions.firstWhere(
+              (session) => session.sessionId == 'thread-old',
+            ),
+          ),
+          isNull,
+        );
+
+        sync
+          ..emit(
+            ConversationSyncCacheUpdate(
+              kind: ConversationSyncCacheUpdateKind.catalog,
+              targetFingerprint: target.fingerprint,
+              codexSourceId: 'source-v2',
               catalogUpserts: const [
                 ConversationSyncV2CatalogEntry(
                   provider: 'codex',

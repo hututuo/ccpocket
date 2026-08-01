@@ -26,6 +26,7 @@ class SessionInsightsBar extends StatefulWidget {
     this.compact = false,
     this.showLeadingDivider = false,
     this.durableCacheIdentityConfirmed = false,
+    this.authorityGenerationProvider,
   });
 
   final String sessionId;
@@ -37,6 +38,7 @@ class SessionInsightsBar extends StatefulWidget {
   final bool compact;
   final bool showLeadingDivider;
   final bool durableCacheIdentityConfirmed;
+  final String? Function()? authorityGenerationProvider;
 
   @override
   State<SessionInsightsBar> createState() => _SessionInsightsBarState();
@@ -59,6 +61,8 @@ class _SessionInsightsBarState extends State<SessionInsightsBar> {
         oldWidget.runtimeSessionId == widget.runtimeSessionId &&
         oldWidget.bridgeService == widget.bridgeService &&
         oldWidget.controller == widget.controller &&
+        oldWidget.authorityGenerationProvider ==
+            widget.authorityGenerationProvider &&
         oldWidget.durableCacheIdentityConfirmed ==
             widget.durableCacheIdentityConfirmed) {
       return;
@@ -76,6 +80,7 @@ class _SessionInsightsBarState extends State<SessionInsightsBar> {
           runtimeSessionId: widget.runtimeSessionId,
           bridge: widget.bridgeService,
           durableCacheIdentityConfirmed: widget.durableCacheIdentityConfirmed,
+          authorityGenerationProvider: widget.authorityGenerationProvider,
         );
     _controller.addListener(_changed);
     _controller.start();
@@ -314,6 +319,7 @@ class SessionInsightsPanel extends StatefulWidget {
     this.controller,
     this.requestTimeout = const Duration(seconds: 12),
     this.durableCacheIdentityConfirmed = false,
+    this.authorityGenerationProvider,
   });
 
   final String sessionId;
@@ -322,6 +328,7 @@ class SessionInsightsPanel extends StatefulWidget {
   final SessionInsightsController? controller;
   final Duration requestTimeout;
   final bool durableCacheIdentityConfirmed;
+  final String? Function()? authorityGenerationProvider;
 
   @override
   State<SessionInsightsPanel> createState() => _SessionInsightsPanelState();
@@ -345,6 +352,8 @@ class _SessionInsightsPanelState extends State<SessionInsightsPanel> {
         oldWidget.bridgeService == widget.bridgeService &&
         oldWidget.controller == widget.controller &&
         oldWidget.requestTimeout == widget.requestTimeout &&
+        oldWidget.authorityGenerationProvider ==
+            widget.authorityGenerationProvider &&
         oldWidget.durableCacheIdentityConfirmed ==
             widget.durableCacheIdentityConfirmed) {
       return;
@@ -363,6 +372,7 @@ class _SessionInsightsPanelState extends State<SessionInsightsPanel> {
           bridge: widget.bridgeService,
           requestTimeout: widget.requestTimeout,
           durableCacheIdentityConfirmed: widget.durableCacheIdentityConfirmed,
+          authorityGenerationProvider: widget.authorityGenerationProvider,
         );
     _controller.addListener(_changed);
     _controller.start();

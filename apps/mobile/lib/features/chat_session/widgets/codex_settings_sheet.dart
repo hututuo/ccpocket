@@ -14,6 +14,7 @@ class CodexSettingsSheet extends StatefulWidget {
   final CodexSpeed initialSpeed;
   final String? initialServiceTierRaw;
   final bool showExtendedEfforts;
+  final bool optimisticUpdates;
   final void Function(String model, ReasoningEffort effort) onModelChanged;
   final void Function(String model, ReasoningEffort effort) onEffortChanged;
   final ValueChanged<CodexSpeed> onSpeedChanged;
@@ -28,6 +29,7 @@ class CodexSettingsSheet extends StatefulWidget {
     required this.initialSpeed,
     this.initialServiceTierRaw,
     this.showExtendedEfforts = false,
+    this.optimisticUpdates = true,
     required this.onModelChanged,
     required this.onEffortChanged,
     required this.onSpeedChanged,
@@ -57,6 +59,11 @@ class _CodexSettingsSheetState extends State<CodexSettingsSheet> {
 
   void _selectEffort(ReasoningEffort effort) {
     if (effort == _effort) return;
+    if (!widget.optimisticUpdates) {
+      widget.onEffortChanged(_model, effort);
+      Navigator.maybePop(context);
+      return;
+    }
     setState(() => _effort = effort);
     widget.onEffortChanged(_model, effort);
   }
@@ -65,6 +72,11 @@ class _CodexSettingsSheetState extends State<CodexSettingsSheet> {
     if (speed == CodexSpeed.unknown ||
         speed == _speed ||
         (speed == CodexSpeed.fast && !_supportsFast)) {
+      return;
+    }
+    if (!widget.optimisticUpdates) {
+      widget.onSpeedChanged(speed);
+      Navigator.maybePop(context);
       return;
     }
     setState(() => _speed = speed);
@@ -80,6 +92,12 @@ class _CodexSettingsSheetState extends State<CodexSettingsSheet> {
     final nextSpeed = _speed == CodexSpeed.unknown
         ? CodexSpeed.unknown
         : (supportsFast ? _speed : CodexSpeed.standard);
+    if (!widget.optimisticUpdates) {
+      widget.onModelChanged(model, nextEffort);
+      if (nextSpeed != previousSpeed) widget.onSpeedChanged(nextSpeed);
+      Navigator.maybePop(context);
+      return;
+    }
     setState(() {
       _model = model;
       _effort = nextEffort;

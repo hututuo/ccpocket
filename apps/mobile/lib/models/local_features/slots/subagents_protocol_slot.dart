@@ -17,6 +17,7 @@ class _SubagentsProtocolSlot
     'subagent_history',
     'detached_subagent_list',
     'detached_subagent_history',
+    'subagent_activity_summary_v1',
   ];
 
   @override
@@ -25,6 +26,9 @@ class _SubagentsProtocolSlot
     'subagent_history' => SubagentHistoryMessage.fromJson(json),
     'detached_subagent_list' => DetachedSubagentListMessage.fromJson(json),
     'detached_subagent_history' => DetachedSubagentHistoryMessage.fromJson(
+      json,
+    ),
+    'subagent_activity_summary_v1' => SubagentActivitySummaryMessage.fromJson(
       json,
     ),
     _ => null,
@@ -36,15 +40,22 @@ class _SubagentsProtocolSlot
     if (type != 'get_subagents' &&
         type != 'get_subagent_history' &&
         type != 'get_detached_subagents' &&
-        type != 'get_detached_subagent_history') {
+        type != 'get_detached_subagent_history' &&
+        type != 'watch_subagent_activity_v1' &&
+        type != 'watch_detached_subagent_activity_v1') {
       return null;
     }
     final ownerSessionId =
         type == 'get_detached_subagents' ||
-            type == 'get_detached_subagent_history'
+            type == 'get_detached_subagent_history' ||
+            type == 'watch_detached_subagent_activity_v1'
         ? request['ownerSessionId']
         : request['sessionId'];
-    final requestId = request['requestId'];
+    final requestId =
+        type == 'watch_subagent_activity_v1' ||
+            type == 'watch_detached_subagent_activity_v1'
+        ? request['subscriptionId']
+        : request['requestId'];
     if (ownerSessionId is! String || requestId is! String) return null;
     return LocalFeatureRequestDescriptor(
       featureId: featureId,
@@ -78,6 +89,11 @@ class _SubagentsProtocolSlot
         response is DetachedSubagentHistoryMessage &&
             response.ownerSessionId == request.ownerSessionId &&
             response.requestId == request.requestId,
+      'watch_subagent_activity_v1' || 'watch_detached_subagent_activity_v1' =>
+        response is SubagentActivitySummaryMessage &&
+            response.ownerSessionId == request.ownerSessionId &&
+            response.subscribed &&
+            response.subscriptionId == request.requestId,
       _ => false,
     };
   }
@@ -156,6 +172,51 @@ ClientMessage requestDetachedSubagentHistory({
     'codexSourceId': codexSourceId,
     'threadId': threadId,
     'requestId': requestId,
+  }, delivery: ClientMessageDelivery.ephemeral);
+}
+
+ClientMessage watchSubagentActivity({
+  required String sessionId,
+  required String listRequestId,
+  required String subscriptionId,
+}) {
+  _requireSubagentId(sessionId, 'sessionId', 256);
+  _requireSubagentId(listRequestId, 'listRequestId', 128);
+  _requireSubagentId(subscriptionId, 'subscriptionId', 128);
+  return LocalFeatureProtocolHost.ephemeralRequest(
+    type: 'watch_subagent_activity_v1',
+    sessionId: sessionId,
+    fields: {'listRequestId': listRequestId, 'subscriptionId': subscriptionId},
+  );
+}
+
+ClientMessage watchDetachedSubagentActivity({
+  required String ownerSessionId,
+  required String providerThreadId,
+  required String codexSourceId,
+  required String listRequestId,
+  required String subscriptionId,
+}) {
+  _requireSubagentId(ownerSessionId, 'ownerSessionId', 256);
+  _requireSubagentId(providerThreadId, 'providerThreadId', 256);
+  _requireSubagentId(codexSourceId, 'codexSourceId', 256);
+  _requireSubagentId(listRequestId, 'listRequestId', 128);
+  _requireSubagentId(subscriptionId, 'subscriptionId', 128);
+  return ClientMessage._(<String, dynamic>{
+    'type': 'watch_detached_subagent_activity_v1',
+    'ownerSessionId': ownerSessionId,
+    'providerThreadId': providerThreadId,
+    'codexSourceId': codexSourceId,
+    'listRequestId': listRequestId,
+    'subscriptionId': subscriptionId,
+  }, delivery: ClientMessageDelivery.ephemeral);
+}
+
+ClientMessage unwatchSubagentActivity(String subscriptionId) {
+  _requireSubagentId(subscriptionId, 'subscriptionId', 128);
+  return ClientMessage._(<String, dynamic>{
+    'type': 'unwatch_subagent_activity_v1',
+    'subscriptionId': subscriptionId,
   }, delivery: ClientMessageDelivery.ephemeral);
 }
 
@@ -399,6 +460,86 @@ class DetachedSubagentHistoryMessage extends SubagentHistoryMessage {
       truncated: json['truncated'] == true,
       error: error,
       errorCode: _subagentNonEmptyString(json['errorCode']),
+    );
+  }
+}
+
+class SubagentActivitySummaryMessage implements LocalFeatureTransientMessage {
+  const SubagentActivitySummaryMessage({
+    required this.scope,
+    required this.ownerSessionId,
+    required this.providerThreadId,
+    this.codexSourceId,
+    required this.revision,
+    required this.activeCount,
+    required this.totalCount,
+    required this.truncated,
+    required this.subscribed,
+    this.listRequestId,
+    this.subscriptionId,
+  });
+
+  final String scope;
+  final String ownerSessionId;
+  final String providerThreadId;
+  final String? codexSourceId;
+  final String revision;
+  final int activeCount;
+  final int totalCount;
+  final bool truncated;
+  final bool subscribed;
+  final String? listRequestId;
+  final String? subscriptionId;
+
+  @override
+  String get featureId => 'subagents';
+
+  @override
+  String get sessionId => ownerSessionId;
+
+  factory SubagentActivitySummaryMessage.fromJson(Map<String, dynamic> json) {
+    final scope = _subagentBoundedWireId(json['scope'], 16);
+    final ownerSessionId = _subagentBoundedWireId(json['ownerSessionId'], 256);
+    final providerThreadId = _subagentBoundedWireId(
+      json['providerThreadId'],
+      256,
+    );
+    final codexSourceId = _subagentBoundedWireId(json['codexSourceId'], 256);
+    final revision = _subagentBoundedWireId(json['revision'], 64);
+    final activeCount = json['activeCount'];
+    final totalCount = json['totalCount'];
+    final subscribed = json['subscribed'];
+    final listRequestId = _subagentBoundedWireId(json['listRequestId'], 128);
+    final subscriptionId = _subagentBoundedWireId(json['subscriptionId'], 128);
+    if (scope == null ||
+        (scope != 'runtime' && scope != 'provider') ||
+        ownerSessionId == null ||
+        providerThreadId == null ||
+        revision == null ||
+        activeCount is! int ||
+        totalCount is! int ||
+        activeCount < 0 ||
+        totalCount < 0 ||
+        activeCount > totalCount ||
+        totalCount > 10000 ||
+        subscribed is! bool ||
+        (scope == 'provider' && codexSourceId == null) ||
+        (subscribed && subscriptionId == null) ||
+        (!subscribed && listRequestId == null)) {
+      throw const FormatException('Invalid subagent activity summary');
+    }
+    return SubagentActivitySummaryMessage(
+      scope: scope,
+      ownerSessionId: ownerSessionId,
+      providerThreadId: providerThreadId,
+      codexSourceId: codexSourceId,
+      revision: revision,
+      activeCount: activeCount,
+      totalCount: totalCount,
+      truncated: json['truncated'] == true,
+      subscribed: subscribed,
+      listRequestId: listRequestId,
+      subscriptionId: subscriptionId,
     );
   }
 }

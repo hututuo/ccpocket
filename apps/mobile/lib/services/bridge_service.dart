@@ -35,6 +35,7 @@ const backgroundNotificationDeliveryBridgeCapability =
 const backgroundNotificationDeliveryAckBridgeCapability =
     'background_notification_delivery_ack_v1';
 const pushRegistrationStatusBridgeCapability = 'push_registration_status_v1';
+const bridgeApplicationReadinessCapability = 'bridge_application_readiness_v1';
 
 /// Fine-grained, event-backed milestones for the interactive Bridge bootstrap.
 ///
@@ -71,6 +72,48 @@ class BridgeConnectionBootstrapSnapshot {
   final int connectionEpoch;
 
   double get fraction => phase.percent / 100;
+}
+
+/// Application readiness reported by the Bridge HTTP readiness endpoint.
+///
+/// Transport reachability and a WebSocket upgrade do not prove that a shared
+/// Codex app-server is ready to serve the authenticated catalog. Older Bridges
+/// do not expose `/readyz`; only an explicit 404 enters that compatibility
+/// lane.
+enum BridgeApplicationReadiness {
+  unknown,
+  ready,
+  preparing,
+  legacyUnsupported,
+  unreachable;
+
+  bool get permitsApplicationEntry =>
+      this == ready || this == legacyUnsupported;
+}
+
+@visibleForTesting
+BridgeApplicationReadiness parseBridgeApplicationReadiness({
+  required int statusCode,
+  required String body,
+}) {
+  if (statusCode == 404) {
+    return BridgeApplicationReadiness.legacyUnsupported;
+  }
+  if (statusCode != 200 && statusCode != 503) {
+    return BridgeApplicationReadiness.unreachable;
+  }
+  try {
+    final json = jsonDecode(body);
+    if (json is! Map<String, dynamic>) {
+      return BridgeApplicationReadiness.unreachable;
+    }
+    if (statusCode == 200 && json['status'] == 'ready') {
+      return BridgeApplicationReadiness.ready;
+    }
+    return BridgeApplicationReadiness.preparing;
+  } catch (_) {
+    return BridgeApplicationReadiness.unreachable;
+  }
 }
 
 @visibleForTesting
@@ -463,6 +506,7 @@ class BridgeService implements BridgeServiceBase {
   bool _codexAutoReviewDisabled = false;
   String? _bridgeVersion;
   Set<String> _bridgeCapabilities = const {};
+  int _backgroundActiveWorkCount = 0;
   BridgeClientDeliveryMode _desiredClientDeliveryMode =
       BridgeClientDeliveryMode.interactive;
   String _deliveryLocale = 'en';
@@ -684,6 +728,7 @@ class BridgeService implements BridgeServiceBase {
       _backgroundNotificationController.stream;
   Stream<BackgroundActivityStateMessage> get backgroundActivityStates =>
       _backgroundActivityStateController.stream;
+  int get backgroundActiveWorkCount => _backgroundActiveWorkCount;
   Stream<PushRegistrationStateMessage> get pushRegistrationStates =>
       _pushRegistrationStateController.stream;
   // Git Operations
@@ -1937,6 +1982,7 @@ class BridgeService implements BridgeServiceBase {
               return;
             }
             if (msg is BackgroundActivityStateMessage) {
+              _backgroundActiveWorkCount = msg.activeWorkCount;
               _backgroundActivityStateController.add(msg);
               return;
             }
@@ -2834,6 +2880,7 @@ class BridgeService implements BridgeServiceBase {
     _codexAutoReviewDisabled = false;
     _bridgeVersion = null;
     _bridgeCapabilities = const {};
+    _backgroundActiveWorkCount = 0;
     _promptHistoryBridgeId = null;
     _lastPromptHistoryStatus = null;
     _clearPendingPromptHistoryOperation();
@@ -3636,6 +3683,7 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void _completeDeliveryModeRequest(ClientDeliveryModeStateMessage message) {
+    _backgroundActiveWorkCount = message.activeWorkCount;
     _clientDeliveryModeStateController.add(message);
     _backgroundActivityStateController.add(
       BackgroundActivityStateMessage(
@@ -6241,6 +6289,7 @@ class BridgeService implements BridgeServiceBase {
     bool? privacyMode,
     List<String>? enabledEventTypes,
     bool? approvalActionsSupported,
+    int? approvalActionsVersion,
   }) {
     final requestId = 'push-register-${++_pushRegistrationRequestSequence}';
     send(
@@ -6252,6 +6301,7 @@ class BridgeService implements BridgeServiceBase {
         privacyMode: privacyMode,
         enabledEventTypes: enabledEventTypes,
         approvalActionsSupported: approvalActionsSupported,
+        approvalActionsVersion: approvalActionsVersion,
       ),
     );
     return requestId;
@@ -6863,6 +6913,34 @@ class BridgeService implements BridgeServiceBase {
       return null;
     } catch (_) {
       return null;
+    }
+  }
+
+  /// Checks whether the Bridge application layer (including a shared Codex
+  /// runtime when configured) is ready. A legacy Bridge is recognized only by
+  /// an explicit 404 so transient HTTP failures cannot masquerade as support
+  /// for the old readiness contract.
+  static Future<BridgeApplicationReadiness> checkApplicationReadiness(
+    String wsUrl,
+  ) async {
+    try {
+      final uri = Uri.tryParse(wsUrl);
+      if (uri == null) return BridgeApplicationReadiness.unreachable;
+      final scheme = uri.scheme == 'wss' ? 'https' : 'http';
+      final readinessUrl =
+          '${formatUriOrigin(scheme: scheme, host: uri.host, port: uri.hasPort ? uri.port : null)}/readyz';
+      final response = await http
+          .get(
+            Uri.parse(readinessUrl),
+            headers: bridgePrivateHttpHeaders(wsUrl),
+          )
+          .timeout(const Duration(seconds: 3));
+      return parseBridgeApplicationReadiness(
+        statusCode: response.statusCode,
+        body: response.body,
+      );
+    } catch (_) {
+      return BridgeApplicationReadiness.unreachable;
     }
   }
 

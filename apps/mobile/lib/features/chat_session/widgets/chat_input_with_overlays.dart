@@ -641,9 +641,7 @@ class ChatInputWithOverlays extends HookWidget {
         }
         updateDroppedFile(attachmentId, ChatFileAttachmentStatus.failed);
         if (result.status == FileTransferStatus.succeeded) {
-          showDropMessage(
-            dropCopy.sentWithoutPath(filename),
-          );
+          showDropMessage(dropCopy.sentWithoutPath(filename));
         } else if (result.status == FileTransferStatus.paused) {
           showDropMessage(dropCopy.paused(filename));
         } else {
@@ -661,16 +659,12 @@ class ChatInputWithOverlays extends HookWidget {
         await consumeDroppedFiles(event, (payload) async {
           if (canInlineDroppedImage(payload)) {
             final bytes = await _readInlineDroppedImage(payload);
-            addImageBytes(
-              bytes,
-              payload.isPng ? 'image/png' : 'image/jpeg',
-            );
+            addImageBytes(bytes, payload.isPng ? 'image/png' : 'image/jpeg');
             return;
           }
 
           fileDropSequence.value += 1;
-          final attachmentId =
-              '$sessionId-drop-${fileDropSequence.value}';
+          final attachmentId = '$sessionId-drop-${fileDropSequence.value}';
           attachedFiles.value = [
             ...attachedFiles.value,
             ChatFileAttachment(
@@ -693,10 +687,7 @@ class ChatInputWithOverlays extends HookWidget {
               awaitDroppedUpload(ticket, attachmentId, payload.filename),
             );
           } catch (error) {
-            updateDroppedFile(
-              attachmentId,
-              ChatFileAttachmentStatus.failed,
-            );
+            updateDroppedFile(attachmentId, ChatFileAttachmentStatus.failed);
             showDropMessage(dropCopy.unableToQueue(payload.filename, error));
           }
         });
@@ -754,9 +745,7 @@ class ChatInputWithOverlays extends HookWidget {
 
       if (!isCodex && readyFiles.isNotEmpty) {
         final filePaths = readyFiles.map((file) => '@${file.path}').join('\n');
-        finalText = finalText.isEmpty
-            ? filePaths
-            : '$filePaths\n\n$finalText';
+        finalText = finalText.isEmpty ? filePaths : '$filePaths\n\n$finalText';
       }
 
       final messageToSend = finalText.isNotEmpty
@@ -775,9 +764,7 @@ class ChatInputWithOverlays extends HookWidget {
         images: images,
         mentionablePaths: List<String>.unmodifiable(referencedProjectFiles),
         additionalMentions: List<Map<String, String>>.unmodifiable(
-          readyFiles.map(
-            (file) => {'name': file.filename, 'path': file.path!},
-          ),
+          readyFiles.map((file) => {'name': file.filename, 'path': file.path!}),
         ),
       );
       final draftService = context.read<DraftService>();
@@ -1247,6 +1234,9 @@ class ChatInputWithOverlays extends HookWidget {
                 onSend: sendMessage,
                 onStop: stopSession,
                 onInterrupt: interruptSession,
+                stopActionDetachesDesktopTurn: context
+                    .read<ChatSessionCubit>()
+                    .stopActionDetachesDesktopTurn,
                 onToggleVoice: voice.toggle,
                 onIndent: indent,
                 onDedent: dedent,
@@ -1350,9 +1340,7 @@ Widget _wrapWithDropRegion({
 class _ComposerFileDropCopy extends FileTransferStrings {
   _ComposerFileDropCopy(super.languageTag);
   factory _ComposerFileDropCopy.of(BuildContext context) =>
-      _ComposerFileDropCopy(
-        Localizations.localeOf(context).toLanguageTag(),
-      );
+      _ComposerFileDropCopy(Localizations.localeOf(context).toLanguageTag());
 
   String get unableToRead => droppedFileUnreadable;
   String sentWithoutPath(String filename) =>

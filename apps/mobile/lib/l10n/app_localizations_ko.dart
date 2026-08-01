@@ -128,6 +128,14 @@ class AppLocalizationsKo extends AppLocalizations {
   String get renameSession => '세션 이름 변경';
 
   @override
+  String get renameFailed => '이 대화의 이름을 변경할 수 없습니다';
+
+  @override
+  String renameFailedWithError(String error) {
+    return '이 대화의 이름을 변경할 수 없습니다: $error';
+  }
+
+  @override
   String get pin => '세션 고정';
 
   @override
@@ -585,6 +593,16 @@ class AppLocalizationsKo extends AppLocalizations {
   @override
   String get bridgeConnectionTakingLonger =>
       'Bridge에는 연결되었지만 대화 목록 준비가 예상보다 오래 걸리고 있습니다. 계속 기다리거나 재시도 또는 취소할 수 있습니다.';
+
+  @override
+  String get authenticatingWithBridge => 'Bridge에서 인증하는 중...';
+
+  @override
+  String get preparingCodexRuntime => 'Bridge가 온라인입니다. 공유 Codex 런타임을 준비하는 중...';
+
+  @override
+  String get codexRuntimeTakingLonger =>
+      'Bridge 프로세스는 온라인이지만 공유 Codex 런타임은 아직 준비 중입니다. 계속 기다리거나 다시 시도하거나 취소할 수 있습니다.';
 
   @override
   String get useCachedConversations => '캐시된 대화로 열기';
@@ -1421,6 +1439,9 @@ class AppLocalizationsKo extends AppLocalizations {
 
   @override
   String get tapInterruptHoldStop => '탭: 중단, 길게 누르기: 정지';
+
+  @override
+  String get tapDetachDesktopTurn => '탭 또는 길게 누르기: 휴대폰에서 분리(Desktop 작업은 계속 실행)';
 
   @override
   String get rewind => '되돌리기';
@@ -3758,6 +3779,21 @@ class AppLocalizationsKo extends AppLocalizations {
   String currentServiceTierReadOnly(Object value) {
     return '현재 서비스 등급: $value(읽기 전용)';
   }
+
+  @override
+  String get codexSettingsUnknown => '알 수 없음 · 동기화 대기 중';
+
+  @override
+  String get codexSettingsWaitingForRuntime =>
+      'Bridge가 이 대화의 런타임 설정을 동기화하기를 기다리고 있습니다. 설정은 변경되지 않았습니다.';
+
+  @override
+  String get codexSettingsReadOnlyDesktop =>
+      '이 턴은 Codex Desktop이 소유하고 있습니다. 여기서는 설정이 읽기 전용입니다. Desktop에서 변경하거나 턴이 끝날 때까지 기다리세요.';
+
+  @override
+  String get codexSettingsUnavailable =>
+      'Bridge가 이 대화의 설정 쓰기 권한을 확인하지 않았으므로 CC Pocket은 변경을 보내거나 미리 표시하지 않습니다.';
 
   @override
   String get codexPermissionsOnRequest => '요청 시';

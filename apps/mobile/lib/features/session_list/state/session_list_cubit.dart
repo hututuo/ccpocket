@@ -296,6 +296,14 @@ class SessionListCubit extends Cubit<SessionListState> {
     return readAt == null || observedAt == null || readAt.isBefore(observedAt);
   }
 
+  bool _isCompleteLogicalPageBatch(ConversationSyncCacheUpdate update) {
+    final pageCount = update.pageCount;
+    final pageIndex = update.pageIndex;
+    if (pageCount == null) return true;
+    if (pageCount <= 0 || pageIndex == null) return false;
+    return pageIndex == pageCount - 1;
+  }
+
   void _onConversationSyncUpdate(ConversationSyncCacheUpdate update) {
     var reloadCache = false;
     final target = _currentCacheTarget();
@@ -330,12 +338,14 @@ class SessionListCubit extends Cubit<SessionListState> {
         }
         _catalogSnapshotChanges.add(null);
       case ConversationSyncCacheUpdateKind.catalog:
+        if (!_isCompleteLogicalPageBatch(update)) return;
         if (canApplyCommittedDelta && update.codexSourceId != null) {
           _applyCommittedCatalogDelta(update);
         } else {
           reloadCache = true;
         }
       case ConversationSyncCacheUpdateKind.status:
+        if (!_isCompleteLogicalPageBatch(update)) return;
         if (canApplyCommittedDelta) {
           _applyCommittedStatusDelta(update.statusChanges);
         } else {

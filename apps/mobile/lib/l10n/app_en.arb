@@ -44,6 +44,13 @@
   },
   "rename": "Rename",
   "renameSession": "Rename Session",
+  "renameFailed": "Unable to rename this conversation",
+  "renameFailedWithError": "Unable to rename this conversation: {error}",
+  "@renameFailedWithError": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
   "pin": "Pin session",
   "unpin": "Unpin session",
   "pinProject": "Pin project",
@@ -215,6 +222,9 @@
   "loadingSessionStatus": "Connected. Loading live session status…",
   "loadingConversationCatalog": "Session status is ready. Loading your conversation catalog…",
   "bridgeConnectionTakingLonger": "The Bridge is connected, but the conversation catalog is taking longer than expected. You can keep waiting, retry, or cancel.",
+  "authenticatingWithBridge": "Authenticating with Bridge...",
+  "preparingCodexRuntime": "Bridge is online. Preparing the shared Codex runtime...",
+  "codexRuntimeTakingLonger": "The Bridge process is online, but the shared Codex runtime is still preparing. You can keep waiting, retry, or cancel.",
   "useCachedConversations": "Use cached conversations",
   "bridgeConnectionAttemptFailed": "The Bridge connection did not become ready. Check the address and credentials, then retry.",
   "externalBridgeConnectionTitle": "Connect to this Bridge?",
@@ -563,6 +573,7 @@
     }
   },
   "tapInterruptHoldStop": "Tap: interrupt, Hold: stop",
+  "tapDetachDesktopTurn": "Tap or hold: detach from phone; Desktop keeps running",
 
   "rewind": "Rewind",
   "rewindToHere": "Rewind to here",
@@ -1398,6 +1409,10 @@
   "speedFastOn": "Fast mode on",
   "speedFastOff": "Fast mode off",
   "currentServiceTierReadOnly": "Current service tier: {value} (read-only)",
+  "codexSettingsUnknown": "Unknown · waiting for sync",
+  "codexSettingsWaitingForRuntime": "Waiting for Bridge to synchronize this conversation's runtime settings. Nothing has been changed.",
+  "codexSettingsReadOnlyDesktop": "This turn is owned by Codex Desktop. Its settings are read-only here; change them in Desktop or wait for the turn to finish.",
+  "codexSettingsUnavailable": "Bridge has not confirmed settings write access for this conversation, so CC Pocket will not send or preview a change.",
   "codexPermissionsOnRequest": "On Request",
   "codexPermissionsFullAccess": "Full access",
   "codexPermissionsCustom": "Custom (config.toml)",

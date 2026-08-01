@@ -44,6 +44,13 @@
   },
   "rename": "重命名",
   "renameSession": "重命名会话",
+  "renameFailed": "无法重命名此会话",
+  "renameFailedWithError": "无法重命名此会话：{error}",
+  "@renameFailedWithError": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
   "pin": "置顶会话",
   "unpin": "取消置顶会话",
   "pinProject": "置顶项目",
@@ -191,6 +198,9 @@
   "loadingSessionStatus": "已连接，正在载入会话运行状态…",
   "loadingConversationCatalog": "运行状态已就绪，正在载入绘画目录…",
   "bridgeConnectionTakingLonger": "Bridge 已连接，但绘画目录准备时间超过预期。你可以继续等待，也可以重试或取消。",
+  "authenticatingWithBridge": "正在通过 Bridge 认证...",
+  "preparingCodexRuntime": "Bridge 已在线，正在准备共享 Codex 运行时...",
+  "codexRuntimeTakingLonger": "Bridge 进程已在线，但共享 Codex 运行时仍在准备。你可以继续等待、重试或取消。",
   "useCachedConversations": "使用缓存进入",
   "bridgeConnectionAttemptFailed": "Bridge 连接没有进入可用状态。请检查地址和凭据后重试。",
   "externalBridgeConnectionTitle": "连接到这个 Bridge？",
@@ -539,6 +549,7 @@
     }
   },
   "tapInterruptHoldStop": "点按：中断，长按：停止",
+  "tapDetachDesktopTurn": "点按或长按：从手机断开；Desktop 任务继续运行",
 
   "rewind": "回退",
   "rewindToHere": "回退到这里",
@@ -1385,6 +1396,10 @@
   "speedFastOn": "快速模式已开启",
   "speedFastOff": "快速模式已关闭",
   "currentServiceTierReadOnly": "当前服务层级：{value}（只读）",
+  "codexSettingsUnknown": "未知 · 等待同步",
+  "codexSettingsWaitingForRuntime": "正在等待 Bridge 同步此会话的运行时设置；当前没有修改任何设置。",
+  "codexSettingsReadOnlyDesktop": "当前轮次由 Codex Desktop 托管，这里的设置为只读。请在 Desktop 中修改，或等待当前轮次结束。",
+  "codexSettingsUnavailable": "Bridge 尚未确认此会话的设置写入权，因此 CC Pocket 不会发送或预览修改。",
   "codexPermissionsOnRequest": "按需请求",
   "codexPermissionsFullAccess": "完全访问",
   "codexPermissionsCustom": "自定义（config.toml）",

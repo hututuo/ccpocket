@@ -25,6 +25,7 @@ class _SessionInsightsUiSlot extends LocalSessionFeatureSlot {
         runtimeSessionId: context.sessionId,
         bridgeService: context.bridge,
         selectedModel: context.codexModel,
+        authorityGenerationProvider: context.authorityGenerationProvider,
         compact: true,
         showLeadingDivider: true,
         durableCacheIdentityConfirmed: durableCacheIdentityConfirmed,
@@ -46,10 +47,19 @@ class _SessionInsightsUiSlot extends LocalSessionFeatureSlot {
             bridgeService: context.bridge,
             durableCacheIdentityConfirmed:
                 identity.durableCacheIdentityConfirmed,
+            authorityGenerationProvider:
+                _sessionInsightsAuthorityGenerationProvider(context.arguments),
           );
         },
         rememberPerSession: false,
       );
+}
+
+String? Function()? _sessionInsightsAuthorityGenerationProvider(
+  Map<String, Object?> arguments,
+) {
+  final value = arguments['authorityGenerationProvider'];
+  return value is String? Function() ? value : null;
 }
 
 ({String sessionId, bool durableCacheIdentityConfirmed})

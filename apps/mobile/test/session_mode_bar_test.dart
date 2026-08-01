@@ -262,6 +262,63 @@ void main() {
     expect(find.text('On Request'), findsNothing);
   });
 
+  testWidgets('unknown Codex settings stay bounded on a narrow workspace', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(449, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final unknownCubit = ChatSessionCubit(
+      sessionId: 'codex-session',
+      provider: Provider.codex,
+      bridge: bridge,
+      streamingCubit: streamingCubit,
+    );
+    addTearDown(unknownCubit.close);
+    await Future<void>.microtask(() {});
+
+    await tester.pumpWidget(_wrap(unknownCubit));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(tester.takeException(), isNull);
+    expect(find.byType(SingleChildScrollView), findsOneWidget);
+    expect(find.text('Unknown'), findsOneWidget);
+  });
+
+  testWidgets(
+    'detached Codex settings stay unknown and explain runtime readiness',
+    (tester) async {
+      final detachedCubit = ChatSessionCubit(
+        sessionId: 'durable-thread',
+        provider: Provider.codex,
+        bridge: bridge,
+        streamingCubit: streamingCubit,
+        detachedPreview: true,
+      );
+      addTearDown(detachedCubit.close);
+      await Future<void>.microtask(() {});
+
+      await tester.pumpWidget(_wrap(detachedCubit));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('Unknown · waiting for sync'), findsNWidgets(2));
+      expect(find.text('Unknown'), findsOneWidget);
+      expect(find.text('Plan Off'), findsNothing);
+      expect(find.text('On Request'), findsNothing);
+
+      await tester.tap(find.text('Unknown · waiting for sync').first);
+      await tester.pump();
+
+      expect(
+        find.text(
+          'Waiting for Bridge to synchronize this conversation\'s runtime '
+          'settings. Nothing has been changed.',
+        ),
+        findsOneWidget,
+      );
+      expect(bridge.sentMessages, isEmpty);
+    },
+  );
+
   testWidgets('mode bar glow tracks history sync instead of active Plan mode', (
     tester,
   ) async {
@@ -936,8 +993,14 @@ void main() {
       expect(message['applyStrategy'], 'next_turn');
 
       final sentCount = bridge.sentMessages.length;
-      await tester.tap(find.text('Plan Off'));
-      await tester.pump(const Duration(milliseconds: 100));
+      final planGuard = tester.widget<IgnorePointer>(
+        find.byKey(const ValueKey('plan_mode_pending_guard')),
+      );
+      final permissionGuard = tester.widget<IgnorePointer>(
+        find.byKey(const ValueKey('permission_mode_pending_guard')),
+      );
+      expect(planGuard.ignoring, isTrue);
+      expect(permissionGuard.ignoring, isTrue);
       expect(bridge.sentMessages, hasLength(sentCount));
     },
   );

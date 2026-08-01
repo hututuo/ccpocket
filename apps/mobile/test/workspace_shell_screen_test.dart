@@ -1742,6 +1742,7 @@ void main() {
           draftService: draftService,
           revenueCatService: revenueCatService,
           supportBannerService: supportBannerService,
+          debugRecentSessions: const [],
           shellKey: shellKey,
         ),
       );
@@ -1807,6 +1808,7 @@ void main() {
           draftService: draftService,
           revenueCatService: revenueCatService,
           supportBannerService: supportBannerService,
+          debugRecentSessions: const [],
           shellKey: shellKey,
         ),
       );
@@ -1864,6 +1866,7 @@ void main() {
           draftService: draftService,
           revenueCatService: revenueCatService,
           supportBannerService: supportBannerService,
+          debugRecentSessions: const [],
           shellKey: shellKey,
         ),
       );

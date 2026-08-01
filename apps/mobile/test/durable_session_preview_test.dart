@@ -667,6 +667,123 @@ void main() {
   );
 
   testWidgets(
+    'open durable Codex page follows one current runtime and rejects ambiguity',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-runtime-rebind'
+        ..authenticatedCodexSourceId = 'source-runtime-rebind'
+        ..advertisedBridgeCapabilities = const {conversationSyncV2Capability};
+      const durableThreadId = 'durable-runtime-rebind';
+
+      const runtimeA = SessionInfo(
+        id: 'runtime-rebind-a',
+        provider: 'codex',
+        projectPath: '/workspace/runtime-rebind',
+        claudeSessionId: durableThreadId,
+        status: 'idle',
+        createdAt: '2026-08-01T00:00:00.000Z',
+        lastActivityAt: '2026-08-01T00:00:00.000Z',
+      );
+      const runtimeB = SessionInfo(
+        id: 'runtime-rebind-b',
+        provider: 'codex',
+        projectPath: '/workspace/runtime-rebind',
+        claudeSessionId: durableThreadId,
+        status: 'working',
+        createdAt: '2026-08-01T00:01:00.000Z',
+        lastActivityAt: '2026-08-01T00:01:00.000Z',
+      );
+      const runtimeC = SessionInfo(
+        id: 'runtime-rebind-c',
+        provider: 'codex',
+        projectPath: '/workspace/runtime-rebind',
+        claudeSessionId: durableThreadId,
+        status: 'working',
+        createdAt: '2026-08-01T00:02:00.000Z',
+        lastActivityAt: '2026-08-01T00:02:00.000Z',
+      );
+
+      try {
+        await tester.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-runtime-rebind',
+            projectPath: '/workspace/runtime-rebind',
+            isPending: true,
+            durableProviderSessionId: durableThreadId,
+            dataSourceIdentity: bridge.dataSourceIdentity,
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        final inputFinder = find.byKey(const ValueKey('message_input'));
+        final cubit = BlocProvider.of<ChatSessionCubit>(
+          tester.element(inputFinder),
+        );
+        expect(cubit.detachedLiveRuntimeSessionId, isNull);
+
+        bridge.emitSessionList(const [runtimeA]);
+        await tester.pump();
+        await tester.pump();
+        expect(cubit.detachedLiveRuntimeSessionId, runtimeA.id);
+
+        bridge.emitMessage(
+          const UserInputMessage(
+            text: 'Runtime A live message',
+            userMessageUuid: 'runtime-a-live-message',
+          ),
+          sessionId: runtimeA.id,
+        );
+        await tester.pump();
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().map(
+            (entry) => entry.text,
+          ),
+          contains('Runtime A live message'),
+        );
+
+        bridge.emitSessionList(const [runtimeB]);
+        await tester.pump();
+        await tester.pump();
+        expect(cubit.detachedLiveRuntimeSessionId, runtimeB.id);
+
+        bridge.emitMessage(
+          const UserInputMessage(
+            text: 'Stale runtime A message',
+            userMessageUuid: 'runtime-a-stale-message',
+          ),
+          sessionId: runtimeA.id,
+        );
+        bridge.emitMessage(
+          const UserInputMessage(
+            text: 'Runtime B live message',
+            userMessageUuid: 'runtime-b-live-message',
+          ),
+          sessionId: runtimeB.id,
+        );
+        await tester.pump();
+        final userTexts = cubit.state.entries
+            .whereType<UserChatEntry>()
+            .map((entry) => entry.text)
+            .toList(growable: false);
+        expect(userTexts, isNot(contains('Stale runtime A message')));
+        expect(userTexts, contains('Runtime B live message'));
+
+        bridge.emitSessionList(const [runtimeB, runtimeC]);
+        await tester.pump();
+        await tester.pump();
+        expect(cubit.detachedLiveRuntimeSessionId, isNull);
+        expect(cubit.canMutateAttachedRuntime, isFalse);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        bridge.dispose();
+      }
+    },
+  );
+
+  testWidgets(
     'Claude authentication rebinds cache without replacing chat state',
     (tester) async {
       final bridge = MockBridgeService()

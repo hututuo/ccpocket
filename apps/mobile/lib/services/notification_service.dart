@@ -15,6 +15,7 @@ import '../models/notification_preferences.dart';
 enum NotificationPermissionStatus { unavailable, enabled, disabled }
 
 const approvalNotificationCategoryId = 'ccpocket_approval_v1';
+const codexActionBrokerApprovalNotificationCategoryId = 'ccpocket_approval_v2';
 const approveNotificationActionId = 'ccpocket_approve_once_v1';
 const rejectNotificationActionId = 'ccpocket_reject_v1';
 
@@ -24,6 +25,13 @@ String encodeSessionNotificationPayload({
   String? providerSessionId,
   String? eventType,
   String? permissionId,
+  String? actionPayloadVersion,
+  String? opaqueRequestId,
+  String? codexSourceId,
+  String? threadId,
+  String? turnId,
+  String? authorityGeneration,
+  String? allowedActions,
   DateTime? occurredAt,
   BridgeDataSourceIdentity? dataSourceIdentity,
 }) {
@@ -34,10 +42,53 @@ String encodeSessionNotificationPayload({
     if (providerSessionId?.isNotEmpty == true)
       'providerSessionId': providerSessionId!,
     if (eventType?.isNotEmpty == true) 'eventType': eventType!,
-    if (permissionId?.isNotEmpty == true) 'permissionId': permissionId!,
+    if (actionPayloadVersion == '2') ...<String, String>{
+      'actionPayloadVersion': '2',
+      if (opaqueRequestId?.isNotEmpty == true)
+        'opaqueRequestId': opaqueRequestId!,
+      if (codexSourceId?.isNotEmpty == true) 'codexSourceId': codexSourceId!,
+      if (threadId?.isNotEmpty == true) 'threadId': threadId!,
+      if (turnId?.isNotEmpty == true) 'turnId': turnId!,
+      if (authorityGeneration?.isNotEmpty == true)
+        'authorityGeneration': authorityGeneration!,
+      if (allowedActions?.isNotEmpty == true) 'allowedActions': allowedActions!,
+    } else if (permissionId?.isNotEmpty == true)
+      'permissionId': permissionId!,
     if (dataSourceIdentity != null)
       ...dataSourceIdentity.toNotificationFields(),
   });
+}
+
+bool hasCodexActionBrokerApprovalPayload(Map<String, dynamic> data) {
+  if (data['actionPayloadVersion']?.toString() != '2' ||
+      data['provider']?.toString() != 'codex' ||
+      data['eventType']?.toString() !=
+          NotificationPreferences.approvalRequiredEvent) {
+    return false;
+  }
+  for (final (key, maximumLength) in const <(String, int)>[
+    ('opaqueRequestId', 256),
+    ('codexSourceId', 128),
+    ('threadId', 256),
+    ('turnId', 256),
+    ('authorityGeneration', 64),
+    ('allowedActions', 128),
+  ]) {
+    final value = data[key]?.toString().trim() ?? '';
+    if (value.isEmpty || value.length > maximumLength) return false;
+  }
+  final actions = data['allowedActions']
+      .toString()
+      .split(',')
+      .map((action) => action.trim())
+      .where((action) => action.isNotEmpty)
+      .toSet();
+  return actions.isNotEmpty &&
+      actions.length <= 4 &&
+      actions.every(
+        const {'approve', 'approve_always', 'reject', 'answer'}.contains,
+      ) &&
+      (actions.contains('approve') || actions.contains('reject'));
 }
 
 class NotificationService extends ChangeNotifier {
@@ -123,6 +174,10 @@ class NotificationService extends ChangeNotifier {
         ),
       ],
     );
+    final codexActionBrokerApprovalCategory = DarwinNotificationCategory(
+      codexActionBrokerApprovalNotificationCategoryId,
+      actions: approvalCategory.actions,
+    );
     final iosSettings = DarwinInitializationSettings(
       // Initializing the notification channel must not prompt on launch.
       // Permission is requested only when the user enables notifications or
@@ -130,13 +185,19 @@ class NotificationService extends ChangeNotifier {
       requestAlertPermission: false,
       requestBadgePermission: false,
       requestSoundPermission: false,
-      notificationCategories: <DarwinNotificationCategory>[approvalCategory],
+      notificationCategories: <DarwinNotificationCategory>[
+        approvalCategory,
+        codexActionBrokerApprovalCategory,
+      ],
     );
     final macosSettings = DarwinInitializationSettings(
       requestAlertPermission: true,
       requestBadgePermission: true,
       requestSoundPermission: true,
-      notificationCategories: <DarwinNotificationCategory>[approvalCategory],
+      notificationCategories: <DarwinNotificationCategory>[
+        approvalCategory,
+        codexActionBrokerApprovalCategory,
+      ],
     );
     const linuxSettings = LinuxInitializationSettings(
       defaultActionName: 'Open CC Pocket',

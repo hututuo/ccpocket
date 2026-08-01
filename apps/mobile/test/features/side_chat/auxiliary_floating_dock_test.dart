@@ -22,9 +22,7 @@ class _Bridge extends BridgeService {
   bool get hasAuthoritativeSessionListForCurrentConnection => true;
 
   @override
-  Set<String> get bridgeCapabilities => const {
-    detachedSubagentsReadCapability,
-  };
+  Set<String> get bridgeCapabilities => const {detachedSubagentsReadCapability};
 
   @override
   String? get codexSourceId => 'source-1';
@@ -98,9 +96,7 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
 
-  testWidgets('expands inline and opens a retained side chat', (
-    tester,
-  ) async {
+  testWidgets('expands inline and opens a retained side chat', (tester) async {
     final bridge = _Bridge();
     final gateway = _Gateway();
     final registry = EphemeralSideChatRegistryService(bridge: gateway);
@@ -159,6 +155,89 @@ void main() {
     expect(openedParent, 'parent-1');
     expect(openedProviderParent, 'parent-1');
     expect(openedChild, 'child-1');
+  });
+
+  testWidgets('collapsed badge includes active subagents for this parent', (
+    tester,
+  ) async {
+    final bridge = _Bridge();
+    final gateway = _Gateway()
+      ..isConnected = true
+      ..capabilities = {};
+    final registry = EphemeralSideChatRegistryService(bridge: gateway);
+    addTearDown(registry.dispose);
+    addTearDown(gateway.dispose);
+    addTearDown(bridge.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AuxiliaryFloatingDock(
+            sessionId: 'parent-with-agent',
+            bridgeService: bridge,
+            registryService: registry,
+            onOpenSideChat: (_, _, _) async {},
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    final request =
+        jsonDecode(bridge.sent.last.toJson()) as Map<String, dynamic>;
+    expect(request['type'], 'get_subagents');
+    bridge.tagged.add((
+      SubagentListMessage(
+        sessionId: 'parent-with-agent',
+        requestId: request['requestId'] as String,
+        subagents: const [
+          SubagentInfo(threadId: 'agent-running', status: 'running'),
+          SubagentInfo(threadId: 'agent-done', status: 'done'),
+        ],
+      ),
+      'parent-with-agent',
+    ));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('1'), findsOneWidget);
+
+    bridge.tagged.add((
+      SubagentActivitySummaryMessage(
+        scope: 'runtime',
+        ownerSessionId: 'parent-with-agent',
+        providerThreadId: 'provider-parent',
+        codexSourceId: 'source-1',
+        revision: 'revision-1',
+        activeCount: 1,
+        totalCount: 2,
+        truncated: false,
+        subscribed: false,
+        listRequestId: request['requestId'] as String,
+      ),
+      'parent-with-agent',
+    ));
+    await tester.pump();
+    final watch = jsonDecode(bridge.sent.last.toJson()) as Map<String, dynamic>;
+    expect(watch['type'], 'watch_subagent_activity_v1');
+    bridge.tagged.add((
+      SubagentActivitySummaryMessage(
+        scope: 'runtime',
+        ownerSessionId: 'parent-with-agent',
+        providerThreadId: 'provider-parent',
+        codexSourceId: 'source-1',
+        revision: 'revision-2',
+        activeCount: 2,
+        totalCount: 2,
+        truncated: false,
+        subscribed: true,
+        subscriptionId: watch['subscriptionId'] as String,
+      ),
+      'parent-with-agent',
+    ));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('2'), findsOneWidget);
   });
 
   testWidgets(
@@ -463,61 +542,64 @@ void main() {
     expect(tester.getTopLeft(dock).dy, closeTo(savedPosition.dy, 1));
   });
 
-  testWidgets('expanded panel does not block the conversation outside its bounds', (
-    tester,
-  ) async {
-    final bridge = _Bridge();
-    final gateway = _Gateway();
-    final registry = EphemeralSideChatRegistryService(bridge: gateway);
-    gateway.isConnected = true;
-    addTearDown(registry.dispose);
-    addTearDown(gateway.dispose);
-    addTearDown(bridge.dispose);
-    var backgroundTaps = 0;
+  testWidgets(
+    'expanded panel does not block the conversation outside its bounds',
+    (tester) async {
+      final bridge = _Bridge();
+      final gateway = _Gateway();
+      final registry = EphemeralSideChatRegistryService(bridge: gateway);
+      gateway.isConnected = true;
+      addTearDown(registry.dispose);
+      addTearDown(gateway.dispose);
+      addTearDown(bridge.dispose);
+      var backgroundTaps = 0;
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: Stack(
-            children: [
-              Positioned(
-                left: 8,
-                top: 8,
-                child: TextButton(
-                  key: const ValueKey('conversation_background_action'),
-                  onPressed: () => backgroundTaps += 1,
-                  child: const Text('Conversation action'),
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Stack(
+              children: [
+                Positioned(
+                  left: 8,
+                  top: 8,
+                  child: TextButton(
+                    key: const ValueKey('conversation_background_action'),
+                    onPressed: () => backgroundTaps += 1,
+                    child: const Text('Conversation action'),
+                  ),
                 ),
-              ),
-              Positioned.fill(
-                child: AuxiliaryFloatingDock(
-                  sessionId: 'parent-1',
-                  bridgeService: bridge,
-                  registryService: registry,
-                  onOpenSideChat: (_, _, _) async {},
+                Positioned.fill(
+                  child: AuxiliaryFloatingDock(
+                    sessionId: 'parent-1',
+                    bridgeService: bridge,
+                    registryService: registry,
+                    onOpenSideChat: (_, _, _) async {},
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
-      ),
-    );
+      );
 
-    await tester.tap(find.byKey(const ValueKey('auxiliary_floating_dock_tap')));
-    await tester.pump();
-    expect(
-      find.byKey(const ValueKey('auxiliary_floating_panel')),
-      findsOneWidget,
-    );
+      await tester.tap(
+        find.byKey(const ValueKey('auxiliary_floating_dock_tap')),
+      );
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('auxiliary_floating_panel')),
+        findsOneWidget,
+      );
 
-    await tester.tap(
-      find.byKey(const ValueKey('conversation_background_action')),
-    );
-    await tester.pump();
-    expect(backgroundTaps, 1);
-    expect(
-      find.byKey(const ValueKey('auxiliary_floating_panel')),
-      findsOneWidget,
-    );
-  });
+      await tester.tap(
+        find.byKey(const ValueKey('conversation_background_action')),
+      );
+      await tester.pump();
+      expect(backgroundTaps, 1);
+      expect(
+        find.byKey(const ValueKey('auxiliary_floating_panel')),
+        findsOneWidget,
+      );
+    },
+  );
 }

@@ -192,6 +192,7 @@ class CodexActionBrokerHealth {
           'unsafe_state',
           'generation_unavailable',
           'writer_lease_unavailable',
+          'runtime_draining',
           'unsupported_server_request',
           'unsupported_topology',
         }.contains(degradedReason)) {

@@ -128,6 +128,14 @@ class AppLocalizationsJa extends AppLocalizations {
   String get renameSession => 'セッション名を変更';
 
   @override
+  String get renameFailed => 'この会話の名前を変更できません';
+
+  @override
+  String renameFailedWithError(String error) {
+    return 'この会話の名前を変更できません：$error';
+  }
+
+  @override
   String get pin => 'セッションをピン留め';
 
   @override
@@ -585,6 +593,17 @@ class AppLocalizationsJa extends AppLocalizations {
   @override
   String get bridgeConnectionTakingLonger =>
       'Bridge には接続しましたが、会話一覧の準備に時間がかかっています。このまま待つか、再試行またはキャンセルできます。';
+
+  @override
+  String get authenticatingWithBridge => 'Bridge で認証しています...';
+
+  @override
+  String get preparingCodexRuntime =>
+      'Bridge はオンラインです。共有 Codex ランタイムを準備しています...';
+
+  @override
+  String get codexRuntimeTakingLonger =>
+      'Bridge プロセスはオンラインですが、共有 Codex ランタイムはまだ準備中です。待機、再試行、またはキャンセルできます。';
 
   @override
   String get useCachedConversations => 'キャッシュを使用して開く';
@@ -1403,6 +1422,9 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get tapInterruptHoldStop => 'タップ: 中断, 長押し: 停止';
+
+  @override
+  String get tapDetachDesktopTurn => 'タップまたは長押し: スマートフォンから切断（Desktop の処理は継続）';
 
   @override
   String get rewind => '巻き戻す';
@@ -3729,6 +3751,21 @@ class AppLocalizationsJa extends AppLocalizations {
   String currentServiceTierReadOnly(Object value) {
     return '現在のサービス階層：$value（読み取り専用）';
   }
+
+  @override
+  String get codexSettingsUnknown => '不明 · 同期を待機中';
+
+  @override
+  String get codexSettingsWaitingForRuntime =>
+      'Bridge がこの会話のランタイム設定を同期するのを待っています。設定は変更されていません。';
+
+  @override
+  String get codexSettingsReadOnlyDesktop =>
+      'このターンは Codex Desktop が所有しています。ここでは設定は読み取り専用です。Desktop で変更するか、ターンの終了を待ってください。';
+
+  @override
+  String get codexSettingsUnavailable =>
+      'Bridge がこの会話の設定書き込み権限を確認していないため、CC Pocket は変更を送信またはプレビューしません。';
 
   @override
   String get codexPermissionsOnRequest => '必要時に確認';

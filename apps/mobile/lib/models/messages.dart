@@ -4947,6 +4947,7 @@ class RecentSession {
   final String? executionMode;
   final bool planMode;
   final String? codexSandboxMode;
+  final String? codexCollaborationMode;
   final String? codexModel;
   final String? codexProfile;
   final String? codexModelReasoningEffort;
@@ -4954,6 +4955,11 @@ class RecentSession {
   final bool? codexNetworkAccessEnabled;
   final String? codexWebSearchMode;
   final List<String> codexAdditionalWritableRoots;
+
+  /// True only when the row came from a v2 catalog upsert whose optional
+  /// settings fields form a complete snapshot. Legacy recent-session rows are
+  /// sparse updates and must retain their historical merge semantics.
+  final bool codexSettingsSnapshotComplete;
 
   const RecentSession({
     required this.sessionId,
@@ -4980,6 +4986,7 @@ class RecentSession {
     this.executionMode,
     this.planMode = false,
     this.codexSandboxMode,
+    this.codexCollaborationMode,
     this.codexModel,
     this.codexProfile,
     this.codexModelReasoningEffort,
@@ -4987,6 +4994,7 @@ class RecentSession {
     this.codexNetworkAccessEnabled,
     this.codexWebSearchMode,
     this.codexAdditionalWritableRoots = const [],
+    this.codexSettingsSnapshotComplete = false,
   });
 
   ExecutionMode get resolvedExecutionMode => deriveExecutionMode(
@@ -5047,6 +5055,7 @@ class RecentSession {
         permissionMode: json['permissionMode'] as String?,
       ),
       codexSandboxMode: codexSettings?['sandboxMode'] as String?,
+      codexCollaborationMode: codexSettings?['collaborationMode'] as String?,
       codexModel: sanitizeCodexModelName(codexSettings?['model'] as String?),
       codexProfile: codexSettings?['profile'] as String?,
       codexModelReasoningEffort:
@@ -5058,6 +5067,8 @@ class RecentSession {
       codexAdditionalWritableRoots: _stringList(
         codexSettings?['additionalWritableRoots'],
       ),
+      codexSettingsSnapshotComplete:
+          json['codexSettingsSnapshotComplete'] as bool? ?? false,
     );
   }
 
@@ -5087,6 +5098,7 @@ class RecentSession {
       'approvalsReviewer': codexApprovalsReviewer,
       'codexPermissionsMode': codexPermissionsMode,
       'sandboxMode': codexSandboxMode,
+      'collaborationMode': codexCollaborationMode,
       'model': codexModel,
       'profile': codexProfile,
       'modelReasoningEffort': codexModelReasoningEffort,
@@ -5095,6 +5107,7 @@ class RecentSession {
       'webSearchMode': codexWebSearchMode,
       'additionalWritableRoots': codexAdditionalWritableRoots,
     },
+    'codexSettingsSnapshotComplete': codexSettingsSnapshotComplete,
   };
 
   /// Extract project name from path (last segment)
@@ -5136,6 +5149,7 @@ class RecentSession {
       executionMode: executionMode,
       planMode: planMode,
       codexSandboxMode: codexSandboxMode,
+      codexCollaborationMode: codexCollaborationMode,
       codexModel: codexModel,
       codexProfile: codexProfile,
       codexModelReasoningEffort: codexModelReasoningEffort,
@@ -5143,6 +5157,7 @@ class RecentSession {
       codexNetworkAccessEnabled: codexNetworkAccessEnabled,
       codexWebSearchMode: codexWebSearchMode,
       codexAdditionalWritableRoots: codexAdditionalWritableRoots,
+      codexSettingsSnapshotComplete: codexSettingsSnapshotComplete,
     );
   }
 
@@ -5173,6 +5188,7 @@ class RecentSession {
       executionMode: executionMode,
       planMode: planMode,
       codexSandboxMode: codexSandboxMode,
+      codexCollaborationMode: codexCollaborationMode,
       codexModel: codexModel,
       codexProfile: codexProfile,
       codexModelReasoningEffort: codexModelReasoningEffort,
@@ -5180,6 +5196,7 @@ class RecentSession {
       codexNetworkAccessEnabled: codexNetworkAccessEnabled,
       codexWebSearchMode: codexWebSearchMode,
       codexAdditionalWritableRoots: codexAdditionalWritableRoots,
+      codexSettingsSnapshotComplete: codexSettingsSnapshotComplete,
     );
   }
 
@@ -5213,6 +5230,7 @@ class RecentSession {
       executionMode: executionMode,
       planMode: planMode,
       codexSandboxMode: codexSandboxMode,
+      codexCollaborationMode: codexCollaborationMode,
       codexModel: codexModel,
       codexProfile: codexProfile,
       codexModelReasoningEffort: codexModelReasoningEffort,
@@ -5220,6 +5238,7 @@ class RecentSession {
       codexNetworkAccessEnabled: codexNetworkAccessEnabled,
       codexWebSearchMode: codexWebSearchMode,
       codexAdditionalWritableRoots: codexAdditionalWritableRoots,
+      codexSettingsSnapshotComplete: codexSettingsSnapshotComplete,
     );
   }
 }
@@ -5513,7 +5532,41 @@ class SessionInfo {
 
 enum ClientMessageDelivery { queued, ephemeral }
 
+/// Exact authority envelope for one shared-runtime settings mutation.
+///
+/// Detached durable views use [threadId] for cache identity and
+/// [runtimeSessionId] only for the current live attachment. Keeping all five
+/// fields in one value prevents a partial request from entering the ordinary
+/// offline queue or being replayed against a replacement attachment.
+class CodexSettingsMutationTarget {
+  const CodexSettingsMutationTarget({
+    required this.codexSourceId,
+    required this.threadId,
+    required this.runtimeSessionId,
+    required this.authorityGeneration,
+    required this.operationId,
+  });
+
+  final String codexSourceId;
+  final String threadId;
+  final String runtimeSessionId;
+  final String authorityGeneration;
+  final String operationId;
+
+  Map<String, dynamic> get wireFields => <String, dynamic>{
+    // Retain the legacy routing field while adding the exact shared-runtime
+    // authority fields understood by a capable Bridge.
+    'sessionId': runtimeSessionId,
+    'codexSourceId': codexSourceId,
+    'threadId': threadId,
+    'runtimeSessionId': runtimeSessionId,
+    'authorityGeneration': authorityGeneration,
+    'operationId': operationId,
+  };
+}
+
 const turnAwareHistoryWindowCapability = 'turn_aware_history_window_v1';
+const codexRuntimeDetachCapability = 'codex_runtime_detach_v1';
 const historyPageCapability = 'history_page_v1';
 const historyToolDetailCapability = 'history_tool_detail_v1';
 const sessionActivityAtCapability = 'session_activity_at_v1';
@@ -5746,12 +5799,18 @@ class ClientMessage {
     required String sessionId,
     required String itemId,
     String? expectedTurnId,
+    String? codexSourceId,
+    String? threadId,
+    String? authorityGeneration,
   }) {
     return ClientMessage._(<String, dynamic>{
       'type': 'steer_queued_input',
       'sessionId': sessionId,
       'itemId': itemId,
       'expectedTurnId': ?expectedTurnId,
+      'codexSourceId': ?codexSourceId,
+      'threadId': ?threadId,
+      'authorityGeneration': ?authorityGeneration,
     }, delivery: ClientMessageDelivery.ephemeral);
   }
 
@@ -5774,6 +5833,7 @@ class ClientMessage {
     bool? privacyMode,
     List<String>? enabledEventTypes,
     bool? approvalActionsSupported,
+    int? approvalActionsVersion,
   }) => ClientMessage._(<String, dynamic>{
     'type': 'push_register',
     'token': token,
@@ -5783,6 +5843,7 @@ class ClientMessage {
     'privacyMode': ?privacyMode,
     'enabledEventTypes': ?enabledEventTypes,
     'approvalActionsSupported': ?approvalActionsSupported,
+    'approvalActionsVersion': ?approvalActionsVersion,
   });
 
   factory ClientMessage.pushUnregister(String token, {String? requestId}) =>
@@ -5792,12 +5853,22 @@ class ClientMessage {
         'requestId': ?requestId,
       });
 
-  factory ClientMessage.setPermissionMode(String mode, {String? sessionId}) {
-    return ClientMessage._(<String, dynamic>{
-      'type': 'set_permission_mode',
-      'mode': mode,
-      'sessionId': ?sessionId,
-    });
+  factory ClientMessage.setPermissionMode(
+    String mode, {
+    String? sessionId,
+    CodexSettingsMutationTarget? detachedTarget,
+  }) {
+    return ClientMessage._(
+      <String, dynamic>{
+        'type': 'set_permission_mode',
+        'mode': mode,
+        if (detachedTarget == null) 'sessionId': ?sessionId,
+        ...?detachedTarget?.wireFields,
+      },
+      delivery: detachedTarget == null
+          ? ClientMessageDelivery.queued
+          : ClientMessageDelivery.ephemeral,
+    );
   }
 
   factory ClientMessage.setSessionMode({
@@ -5810,6 +5881,7 @@ class ClientMessage {
     CodexPermissionApplyStrategy? applyStrategy,
     String? permissionChangeId,
     String? sessionId,
+    CodexSettingsMutationTarget? detachedTarget,
   }) {
     return ClientMessage._(
       <String, dynamic>{
@@ -5822,9 +5894,10 @@ class ClientMessage {
         'planMode': ?planMode,
         'applyStrategy': ?applyStrategy?.value,
         'permissionChangeId': ?permissionChangeId,
-        'sessionId': ?sessionId,
+        if (detachedTarget == null) 'sessionId': ?sessionId,
+        ...?detachedTarget?.wireFields,
       },
-      delivery: applyStrategy == null
+      delivery: applyStrategy == null && detachedTarget == null
           ? ClientMessageDelivery.queued
           : ClientMessageDelivery.ephemeral,
     );
@@ -5834,21 +5907,38 @@ class ClientMessage {
     String model, {
     String? modelReasoningEffort,
     String? sessionId,
+    CodexSettingsMutationTarget? detachedTarget,
   }) {
-    return ClientMessage._(<String, dynamic>{
-      'type': 'set_codex_model',
-      'model': model,
-      'modelReasoningEffort': ?modelReasoningEffort,
-      'sessionId': ?sessionId,
-    });
+    return ClientMessage._(
+      <String, dynamic>{
+        'type': 'set_codex_model',
+        'model': model,
+        'modelReasoningEffort': ?modelReasoningEffort,
+        if (detachedTarget == null) 'sessionId': ?sessionId,
+        ...?detachedTarget?.wireFields,
+      },
+      delivery: detachedTarget == null
+          ? ClientMessageDelivery.queued
+          : ClientMessageDelivery.ephemeral,
+    );
   }
 
-  factory ClientMessage.setCodexSpeed(String serviceTier, {String? sessionId}) {
-    return ClientMessage._(<String, dynamic>{
-      'type': 'set_codex_speed',
-      'serviceTier': serviceTier,
-      'sessionId': ?sessionId,
-    });
+  factory ClientMessage.setCodexSpeed(
+    String serviceTier, {
+    String? sessionId,
+    CodexSettingsMutationTarget? detachedTarget,
+  }) {
+    return ClientMessage._(
+      <String, dynamic>{
+        'type': 'set_codex_speed',
+        'serviceTier': serviceTier,
+        if (detachedTarget == null) 'sessionId': ?sessionId,
+        ...?detachedTarget?.wireFields,
+      },
+      delivery: detachedTarget == null
+          ? ClientMessageDelivery.queued
+          : ClientMessageDelivery.ephemeral,
+    );
   }
 
   factory ClientMessage.getGoal(String sessionId) => ClientMessage._({
@@ -5888,12 +5978,19 @@ class ClientMessage {
   factory ClientMessage.setSandboxMode(
     String sandboxMode, {
     String? sessionId,
+    CodexSettingsMutationTarget? detachedTarget,
   }) {
-    return ClientMessage._(<String, dynamic>{
-      'type': 'set_sandbox_mode',
-      'sandboxMode': sandboxMode,
-      'sessionId': ?sessionId,
-    });
+    return ClientMessage._(
+      <String, dynamic>{
+        'type': 'set_sandbox_mode',
+        'sandboxMode': sandboxMode,
+        if (detachedTarget == null) 'sessionId': ?sessionId,
+        ...?detachedTarget?.wireFields,
+      },
+      delivery: detachedTarget == null
+          ? ClientMessageDelivery.queued
+          : ClientMessageDelivery.ephemeral,
+    );
   }
 
   factory ClientMessage.approve(
@@ -6043,6 +6140,19 @@ class ClientMessage {
 
   factory ClientMessage.stopSession(String sessionId) =>
       ClientMessage._({'type': 'stop_session', 'sessionId': sessionId});
+
+  factory ClientMessage.detachCodexRuntime({
+    required String sessionId,
+    required String codexSourceId,
+    required String threadId,
+    required String authorityGeneration,
+  }) => ClientMessage._(<String, dynamic>{
+    'type': 'detach_session',
+    'sessionId': sessionId,
+    'codexSourceId': codexSourceId,
+    'threadId': threadId,
+    'authorityGeneration': authorityGeneration,
+  }, delivery: ClientMessageDelivery.ephemeral);
 
   /// Rename a session. For running sessions, sessionId is the bridge session id.
   /// For recent sessions, include provider, providerSessionId, and projectPath.

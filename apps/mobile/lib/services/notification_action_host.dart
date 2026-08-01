@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 const notificationActionHostChannelName = 'ccpocket/notification_actions';
 const notificationActionHostNativeApiVersion = 1;
+const notificationActionHostCodexBrokerApiVersion = 2;
 
 class NotificationApprovalActionEvent {
   const NotificationApprovalActionEvent({
@@ -12,10 +13,15 @@ class NotificationApprovalActionEvent {
     required this.provider,
     required this.permissionId,
     required this.occurredAt,
+    this.actionPayloadVersion = 1,
     this.providerSessionId,
     this.bridgeInstanceId,
     this.codexSourceId,
     this.bridgeRouteIdentity,
+    this.threadId,
+    this.turnId,
+    this.authorityGeneration,
+    this.allowedActions = const {},
   });
 
   final String actionId;
@@ -27,6 +33,13 @@ class NotificationApprovalActionEvent {
   final String? bridgeRouteIdentity;
   final String permissionId;
   final DateTime occurredAt;
+  final int actionPayloadVersion;
+  final String? threadId;
+  final String? turnId;
+  final String? authorityGeneration;
+  final Set<String> allowedActions;
+
+  bool get usesCodexActionBroker => actionPayloadVersion == 2;
 
   static NotificationApprovalActionEvent? fromChannelValue(Object? value) {
     if (value is! Map) return null;
@@ -42,16 +55,44 @@ class NotificationApprovalActionEvent {
     final bridgeRouteIdentity = bridgeInstanceId == null
         ? _boundedString(data['bridgeRouteIdentity'], 1024)
         : null;
-    final permissionId = _boundedString(data['permissionId'], 256);
+    final rawActionPayloadVersion = data['actionPayloadVersion'];
+    final actionPayloadVersion = switch (rawActionPayloadVersion) {
+      2 || '2' => 2,
+      _ => 1,
+    };
+    final permissionId = actionPayloadVersion == 2
+        ? _boundedString(data['opaqueRequestId'], 256)
+        : _boundedString(data['permissionId'], 256);
     final occurredAt = DateTime.tryParse(
       _boundedString(data['occurredAt'], 64) ?? '',
     )?.toUtc();
+    final allowedActions = actionPayloadVersion == 2
+        ? _boundedActionSet(data['allowedActions'])
+        : const <String>{};
+    final threadId = _boundedString(data['threadId'], 256);
+    final turnId = _boundedString(data['turnId'], 256);
+    final authorityGeneration = _boundedString(data['authorityGeneration'], 64);
     if ((actionId != 'ccpocket_approve_once_v1' &&
             actionId != 'ccpocket_reject_v1') ||
         sessionId == null ||
         (provider != 'claude' && provider != 'codex') ||
         permissionId == null ||
-        occurredAt == null) {
+        occurredAt == null ||
+        (rawActionPayloadVersion != null &&
+            rawActionPayloadVersion != 1 &&
+            rawActionPayloadVersion != '1' &&
+            rawActionPayloadVersion != 2 &&
+            rawActionPayloadVersion != '2') ||
+        (actionPayloadVersion == 2 &&
+            (provider != 'codex' ||
+                bridgeInstanceId == null ||
+                codexSourceId == null ||
+                threadId == null ||
+                turnId == null ||
+                authorityGeneration == null ||
+                allowedActions == null ||
+                !(allowedActions.contains('approve') ||
+                    allowedActions.contains('reject'))))) {
       return null;
     }
     return NotificationApprovalActionEvent(
@@ -64,8 +105,37 @@ class NotificationApprovalActionEvent {
       bridgeRouteIdentity: bridgeRouteIdentity,
       permissionId: permissionId,
       occurredAt: occurredAt,
+      actionPayloadVersion: actionPayloadVersion,
+      threadId: threadId,
+      turnId: turnId,
+      authorityGeneration: authorityGeneration,
+      allowedActions: allowedActions ?? const <String>{},
     );
   }
+}
+
+Set<String>? _boundedActionSet(Object? value) {
+  final raw = switch (value) {
+    String text => text.split(','),
+    List values => values,
+    _ => null,
+  };
+  if (raw == null || raw.length > 4) return null;
+  final actions = <String>{};
+  for (final item in raw) {
+    if (item is! String) return null;
+    final action = item.trim();
+    if (!const {
+      'approve',
+      'approve_always',
+      'reject',
+      'answer',
+    }.contains(action)) {
+      return null;
+    }
+    actions.add(action);
+  }
+  return actions.isEmpty ? null : Set.unmodifiable(actions);
 }
 
 abstract interface class NotificationActionHost {

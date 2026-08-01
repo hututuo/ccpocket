@@ -163,11 +163,11 @@ class ConversationTurnsPageLoadResult {
 /// Maintains one foreground subscription to the Bridge-owned conversation
 /// scheduler.
 ///
-/// The phone never polls individual conversations. Snapshot pages are staged
-/// directly in SQLite and atomically committed before cumulative ACK when v2 is
-/// available. The bounded v1 in-memory stage remains only for old Bridges.
-/// Background lifecycle states reject body events and unsubscribe, preserving
-/// notification-only behavior.
+/// The phone never polls individual conversations. Timeline pages are staged
+/// directly in SQLite, while catalog/status pages from one logical v2 batch are
+/// aggregated before one atomic live-cache transaction. The bounded v1
+/// in-memory stage remains only for old Bridges. Background lifecycle states
+/// reject body events and unsubscribe, preserving notification-only behavior.
 class ConversationContentSyncService with WidgetsBindingObserver {
   ConversationContentSyncService({
     required this.bridge,
@@ -186,6 +186,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   final StreamController<ConversationSyncCacheUpdate> _syncUpdatesController =
       StreamController<ConversationSyncCacheUpdate>.broadcast();
   final Map<String, _SnapshotStage> _stages = {};
+  final Map<String, _ConversationCatalogBatchStage> _v2CatalogStages = {};
+  final Map<String, _ConversationStatusBatchStage> _v2StatusStages = {};
   final Map<String, _PendingTurnsPage> _pendingTurnsPages = {};
   final Map<String, _PendingItemsPage> _pendingItemsPages = {};
   final Map<String, _PendingLatestTurnRepairPage>
@@ -920,6 +922,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     );
     _failPendingLatestTurnRepairPages(const _ConversationPagingInterrupted());
     _stages.clear();
+    _v2CatalogStages.clear();
+    _v2StatusStages.clear();
     _retryTimer?.cancel();
     _retryTimer = null;
     _retryAttempt = 0;
@@ -1125,7 +1129,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         error is _ConversationTimelineBaseRevisionMismatch;
     final streamContinuityFailure =
         error is _ConversationSyncSequenceGap ||
-        error is _ConversationSyncBeginMismatch;
+        error is _ConversationSyncBeginMismatch ||
+        error is _ConversationSyncPageBatchMismatch;
     var recovery = threadRevisionMismatch
         ? 'thread_reset'
         : streamContinuityFailure
@@ -1159,6 +1164,148 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
   }
 
+  String _v2PageBatchKey(ConversationSyncV2EventMessage event) =>
+      '${event.subscriptionId}\u0000${event.batchId}';
+
+  void _ensureNoIncompleteV2PageBatch() {
+    if (_v2CatalogStages.isNotEmpty || _v2StatusStages.isNotEmpty) {
+      throw const _ConversationSyncPageBatchMismatch();
+    }
+  }
+
+  void _discardV2PageBatchForReset(String scope) {
+    switch (scope) {
+      case 'catalog':
+        _v2CatalogStages.clear();
+      case 'status':
+        _v2StatusStages.clear();
+      case 'thread':
+        break;
+    }
+  }
+
+  Future<ConversationSyncCacheUpdate?> _stageConversationCatalogPage(
+    ConversationSyncV2EventMessage event,
+    int generation,
+    SessionCatalogCacheTarget target,
+  ) async {
+    final key = _v2PageBatchKey(event);
+    final existing = _v2CatalogStages[key];
+    if (existing != null &&
+        !existing.matches(event, generation, target.fingerprint)) {
+      throw const _ConversationSyncPageBatchMismatch();
+    }
+    final stage =
+        existing ??
+        _ConversationCatalogBatchStage(
+          subscriptionId: event.subscriptionId,
+          batchId: event.batchId,
+          generation: generation,
+          targetFingerprint: target.fingerprint,
+          codexSourceId: event.codexSourceId,
+          catalogState: event.catalogState!,
+          pageCount: event.pageCount!,
+        );
+    _v2CatalogStages.putIfAbsent(key, () => stage);
+    if (stage.pages.containsKey(event.pageIndex)) {
+      throw const _ConversationSyncPageBatchMismatch();
+    }
+    stage.pages[event.pageIndex!] = _ConversationCatalogPage(
+      created: List.unmodifiable(event.created),
+      updated: List.unmodifiable(event.updated),
+      destroyed: List.unmodifiable(event.destroyed),
+    );
+    if (stage.pages.length < stage.pageCount) return null;
+
+    final created = <ConversationSyncV2CatalogEntry>[];
+    final updated = <ConversationSyncV2CatalogEntry>[];
+    final destroyed = <ConversationSyncV2Target>[];
+    for (var pageIndex = 0; pageIndex < stage.pageCount; pageIndex++) {
+      final page = stage.pages[pageIndex];
+      if (page == null) {
+        throw const _ConversationSyncPageBatchMismatch();
+      }
+      created.addAll(page.created);
+      updated.addAll(page.updated);
+      destroyed.addAll(page.destroyed);
+    }
+    if (!_isV2Current(event, generation, target)) return null;
+    await cache.applyConversationCatalogBatch(
+      target: target,
+      codexSourceId: stage.codexSourceId,
+      catalogState: stage.catalogState,
+      created: created,
+      updated: updated,
+      destroyed: destroyed,
+      isCurrent: () => _isV2Current(event, generation, target),
+    );
+    _v2CatalogStages.remove(key);
+    if (!_isV2Current(event, generation, target)) return null;
+    return ConversationSyncCacheUpdate(
+      kind: ConversationSyncCacheUpdateKind.catalog,
+      targetFingerprint: target.fingerprint,
+      codexSourceId: stage.codexSourceId,
+      catalogUpserts: List.unmodifiable([...created, ...updated]),
+      catalogDestroyed: List.unmodifiable(destroyed),
+      pageIndex: stage.pageCount - 1,
+      pageCount: stage.pageCount,
+    );
+  }
+
+  Future<ConversationSyncCacheUpdate?> _stageConversationStatusPage(
+    ConversationSyncV2EventMessage event,
+    int generation,
+    SessionCatalogCacheTarget target,
+  ) async {
+    final key = _v2PageBatchKey(event);
+    final existing = _v2StatusStages[key];
+    if (existing != null &&
+        !existing.matches(event, generation, target.fingerprint)) {
+      throw const _ConversationSyncPageBatchMismatch();
+    }
+    final stage =
+        existing ??
+        _ConversationStatusBatchStage(
+          subscriptionId: event.subscriptionId,
+          batchId: event.batchId,
+          generation: generation,
+          targetFingerprint: target.fingerprint,
+          statusState: event.statusState!,
+          pageCount: event.pageCount!,
+        );
+    _v2StatusStages.putIfAbsent(key, () => stage);
+    if (stage.pages.containsKey(event.pageIndex)) {
+      throw const _ConversationSyncPageBatchMismatch();
+    }
+    stage.pages[event.pageIndex!] = List.unmodifiable(event.statusChanges);
+    if (stage.pages.length < stage.pageCount) return null;
+
+    final changes = <ConversationSyncV2Status>[];
+    for (var pageIndex = 0; pageIndex < stage.pageCount; pageIndex++) {
+      final page = stage.pages[pageIndex];
+      if (page == null) {
+        throw const _ConversationSyncPageBatchMismatch();
+      }
+      changes.addAll(page);
+    }
+    if (!_isV2Current(event, generation, target)) return null;
+    await cache.applyConversationStatusBatch(
+      target: target,
+      statusState: stage.statusState,
+      changes: changes,
+      isCurrent: () => _isV2Current(event, generation, target),
+    );
+    _v2StatusStages.remove(key);
+    if (!_isV2Current(event, generation, target)) return null;
+    return ConversationSyncCacheUpdate(
+      kind: ConversationSyncCacheUpdateKind.status,
+      targetFingerprint: target.fingerprint,
+      statusChanges: List.unmodifiable(changes),
+      pageIndex: stage.pageCount - 1,
+      pageCount: stage.pageCount,
+    );
+  }
+
   Future<void> _commitV2Event(
     ConversationSyncV2EventMessage event,
     int generation,
@@ -1178,6 +1325,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     ConversationSyncCacheUpdate? publish;
     switch (event.event) {
       case ConversationSyncV2EventKind.syncBegin:
+        _ensureNoIncompleteV2PageBatch();
         final pendingRequestId = _pendingSubscriptionId;
         if (pendingRequestId != null) {
           if (event.requestId != pendingRequestId) {
@@ -1199,39 +1347,13 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           throw const _ConversationSyncBeginMismatch();
         }
       case ConversationSyncV2EventKind.catalogChanges:
-        await cache.applyConversationCatalogPage(
-          target: target,
-          codexSourceId: event.codexSourceId,
-          catalogState: event.catalogState!,
-          pageIndex: event.pageIndex!,
-          pageCount: event.pageCount!,
-          created: event.created,
-          updated: event.updated,
-          destroyed: event.destroyed,
-        );
-        publish = ConversationSyncCacheUpdate(
-          kind: ConversationSyncCacheUpdateKind.catalog,
-          targetFingerprint: target.fingerprint,
-          codexSourceId: event.codexSourceId,
-          catalogUpserts: List.unmodifiable([
-            ...event.created,
-            ...event.updated,
-          ]),
-          catalogDestroyed: event.destroyed,
+        publish = await _stageConversationCatalogPage(
+          event,
+          generation,
+          target,
         );
       case ConversationSyncV2EventKind.statusChanges:
-        await cache.applyConversationStatusPage(
-          target: target,
-          statusState: event.statusState!,
-          pageIndex: event.pageIndex!,
-          pageCount: event.pageCount!,
-          changes: event.statusChanges,
-        );
-        publish = ConversationSyncCacheUpdate(
-          kind: ConversationSyncCacheUpdateKind.status,
-          targetFingerprint: target.fingerprint,
-          statusChanges: event.statusChanges,
-        );
+        publish = await _stageConversationStatusPage(event, generation, target);
       case ConversationSyncV2EventKind.timelinePage:
         final committed = await cache.stageConversationTimelinePage(
           target: target,
@@ -1278,6 +1400,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           );
         }
       case ConversationSyncV2EventKind.syncCheckpoint:
+        _ensureNoIncompleteV2PageBatch();
         if (event.phase == 'priority') {
           await cache.markConversationPriorityReady(target);
           publish = ConversationSyncCacheUpdate(
@@ -1286,6 +1409,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           );
         }
       case ConversationSyncV2EventKind.syncComplete:
+        _ensureNoIncompleteV2PageBatch();
         await cache.completeConversationSync(
           target: target,
           nextState: event.nextState!,
@@ -1295,6 +1419,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           targetFingerprint: target.fingerprint,
         );
       case ConversationSyncV2EventKind.syncReset:
+        _discardV2PageBatchForReset(event.scope!);
         await cache.resetConversationSyncScope(
           target: target,
           scope: event.scope!,
@@ -1611,8 +1736,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           statusChanges: progressUpdate.statusChanges,
           readWatermark: progressUpdate.readWatermark,
           sequence: event.sequence,
-          pageIndex: event.pageIndex,
-          pageCount: event.pageCount,
+          pageIndex: progressUpdate.pageIndex ?? event.pageIndex,
+          pageCount: progressUpdate.pageCount ?? event.pageCount,
           timelineIndex: event.timelineIndex,
           timelineCount: event.timelineCount,
           phase: event.phase,
@@ -1896,6 +2021,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     );
     _failPendingLatestTurnRepairPages(const _ConversationPagingInterrupted());
     _stages.clear();
+    _v2CatalogStages.clear();
+    _v2StatusStages.clear();
     _retryTimer?.cancel();
     _retryTimer = null;
     if (!sendUnsubscribe ||
@@ -2068,6 +2195,10 @@ class _ConversationSyncBeginMismatch implements Exception {
   const _ConversationSyncBeginMismatch();
 }
 
+class _ConversationSyncPageBatchMismatch implements Exception {
+  const _ConversationSyncPageBatchMismatch();
+}
+
 class _ConversationPagingInterrupted implements Exception {
   const _ConversationPagingInterrupted();
 
@@ -2094,6 +2225,83 @@ class _SnapshotStage {
   final bool hasEarlier;
   final int sourceEntryCount;
   final Map<int, List<ConversationContentWireEntry>> pages = {};
+}
+
+class _ConversationCatalogPage {
+  const _ConversationCatalogPage({
+    required this.created,
+    required this.updated,
+    required this.destroyed,
+  });
+
+  final List<ConversationSyncV2CatalogEntry> created;
+  final List<ConversationSyncV2CatalogEntry> updated;
+  final List<ConversationSyncV2Target> destroyed;
+}
+
+class _ConversationCatalogBatchStage {
+  _ConversationCatalogBatchStage({
+    required this.subscriptionId,
+    required this.batchId,
+    required this.generation,
+    required this.targetFingerprint,
+    required this.codexSourceId,
+    required this.catalogState,
+    required this.pageCount,
+  });
+
+  final String subscriptionId;
+  final String batchId;
+  final int generation;
+  final String targetFingerprint;
+  final String codexSourceId;
+  final String catalogState;
+  final int pageCount;
+  final Map<int, _ConversationCatalogPage> pages = {};
+
+  bool matches(
+    ConversationSyncV2EventMessage event,
+    int candidateGeneration,
+    String candidateTargetFingerprint,
+  ) =>
+      subscriptionId == event.subscriptionId &&
+      batchId == event.batchId &&
+      generation == candidateGeneration &&
+      targetFingerprint == candidateTargetFingerprint &&
+      codexSourceId == event.codexSourceId &&
+      catalogState == event.catalogState &&
+      pageCount == event.pageCount;
+}
+
+class _ConversationStatusBatchStage {
+  _ConversationStatusBatchStage({
+    required this.subscriptionId,
+    required this.batchId,
+    required this.generation,
+    required this.targetFingerprint,
+    required this.statusState,
+    required this.pageCount,
+  });
+
+  final String subscriptionId;
+  final String batchId;
+  final int generation;
+  final String targetFingerprint;
+  final String statusState;
+  final int pageCount;
+  final Map<int, List<ConversationSyncV2Status>> pages = {};
+
+  bool matches(
+    ConversationSyncV2EventMessage event,
+    int candidateGeneration,
+    String candidateTargetFingerprint,
+  ) =>
+      subscriptionId == event.subscriptionId &&
+      batchId == event.batchId &&
+      generation == candidateGeneration &&
+      targetFingerprint == candidateTargetFingerprint &&
+      statusState == event.statusState &&
+      pageCount == event.pageCount;
 }
 
 class _PendingTurnsPage {

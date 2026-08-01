@@ -34,6 +34,7 @@ class MockBridgeService extends BridgeService {
   bool offlineCancelSucceeds = true;
   int authoritativeGeneration = 0;
   bool authoritativeForCurrentConnection = true;
+  String? sourceId = 'source-a';
   List<SessionInfo> sessionSnapshot = const [];
   Set<String> advertisedBridgeCapabilities = const {
     ChatSessionCubit.codexDesktopContinuityCapability,
@@ -89,6 +90,9 @@ class MockBridgeService extends BridgeService {
 
   @override
   Set<String> get bridgeCapabilities => advertisedBridgeCapabilities;
+
+  @override
+  String? get codexSourceId => sourceId;
 
   @override
   Stream<ServerMessage> messagesForSession(String sessionId) {
@@ -357,9 +361,9 @@ void main() {
         ]);
 
         expect(
-          cubit.state.entries
-              .whereType<UserChatEntry>()
-              .map((entry) => entry.text),
+          cubit.state.entries.whereType<UserChatEntry>().map(
+            (entry) => entry.text,
+          ),
           contains('Send while attaching'),
         );
         expect(
@@ -374,14 +378,12 @@ void main() {
           MessageStatus.queued,
         );
         expect(
-          cubit.state.entries
-              .whereType<ServerChatEntry>()
-              .where(
-                (entry) =>
-                    entry.message is AssistantServerMessage &&
-                    (entry.message as AssistantServerMessage).message.id ==
-                        'assistant-2',
-              ),
+          cubit.state.entries.whereType<ServerChatEntry>().where(
+            (entry) =>
+                entry.message is AssistantServerMessage &&
+                (entry.message as AssistantServerMessage).message.id ==
+                    'assistant-2',
+          ),
           hasLength(1),
         );
       },
@@ -546,10 +548,7 @@ void main() {
         expect(cubit.state.externalDesktopTurnId, isNull);
         expect(cubit.externalDesktopTurnSteerable.value, isFalse);
         expect(cubit.detachedActionBrokerTurnId, 'turn-bridge');
-        expect(
-          cubit.detachedActionBrokerAuthorityGeneration,
-          'authority-1',
-        );
+        expect(cubit.detachedActionBrokerAuthorityGeneration, 'authority-1');
         expect(cubit.detachedActionBrokerExecutionHost, 'bridge');
 
         cubit.updateDetachedProviderStatus(
@@ -574,14 +573,8 @@ void main() {
         expect(cubit.state.externalDesktopTurnId, 'turn-desktop');
         expect(cubit.externalDesktopTurnSteerable.value, isFalse);
         expect(cubit.detachedActionBrokerTurnId, 'turn-desktop');
-        expect(
-          cubit.detachedActionBrokerAuthorityGeneration,
-          'authority-2',
-        );
-        expect(
-          cubit.detachedActionBrokerExecutionHost,
-          'desktopAppServer',
-        );
+        expect(cubit.detachedActionBrokerAuthorityGeneration, 'authority-2');
+        expect(cubit.detachedActionBrokerExecutionHost, 'desktopAppServer');
 
         // A same-timestamp authority update must still apply. The opaque
         // generation is part of the semantic status signature, not a clock.
@@ -643,6 +636,341 @@ void main() {
         expect(cubit.state.externalDesktopTurnActive, isTrue);
         expect(cubit.state.externalDesktopTurnId, isNull);
         expect(cubit.externalDesktopTurnSteerable.value, isFalse);
+      },
+    );
+
+    test(
+      'detached settings wait for exact authority and never update optimistically',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'settings-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'settings-runtime',
+        );
+        addTearDown(cubit.close);
+
+        cubit.updateDetachedProviderSettings(
+          const RecentSession(
+            sessionId: 'settings-thread',
+            provider: 'codex',
+            rawPermissionMode: 'bypassPermissions',
+            firstPrompt: 'Settings test',
+            created: '2026-08-01T01:00:00.000Z',
+            modified: '2026-08-01T01:01:00.000Z',
+            gitBranch: 'main',
+            projectPath: '/tmp/project',
+            isSidechain: false,
+            codexApprovalPolicy: 'never',
+            codexApprovalsReviewer: 'user',
+            codexPermissionsMode: 'fullAccess',
+            codexSandboxMode: 'danger-full-access',
+            codexCollaborationMode: 'default',
+            codexModel: 'gpt-5.6-sol',
+            codexModelReasoningEffort: 'ultra',
+            codexServiceTier: 'fast',
+            codexSettingsSnapshotComplete: true,
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+
+        expect(
+          cubit.codexSettingsActionability,
+          CodexSettingsActionability.waitingForRuntime,
+        );
+        expect(cubit.codexModelSettingsKnown, isTrue);
+        expect(cubit.state.permissionMode, PermissionMode.bypassPermissions);
+        expect(
+          cubit.state.codexPermissionsMode,
+          CodexPermissionsMode.fullAccess,
+        );
+        expect(cubit.state.sandboxMode, SandboxMode.off);
+
+        cubit.setCodexModel(
+          'gpt-5.4-mini',
+          reasoningEffort: ReasoningEffort.low,
+        );
+        expect(mockBridge.sentMessages, isEmpty);
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'settings-thread',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T01:02:00.000Z',
+            executionHost: 'bridge',
+            controlState: 'writable',
+            authorityGeneration: 'settings-authority-1',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        expect(
+          cubit.codexSettingsActionability,
+          CodexSettingsActionability.editable,
+        );
+
+        cubit.setCodexModel(
+          'gpt-5.4-mini',
+          reasoningEffort: ReasoningEffort.low,
+        );
+
+        expect(cubit.state.codexModel, 'gpt-5.6-sol');
+        expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
+        final settingsMessage = mockBridge.sentMessages.single;
+        final settingsPayload =
+            jsonDecode(settingsMessage.toJson()) as Map<String, dynamic>;
+        expect(settingsMessage.delivery, ClientMessageDelivery.ephemeral);
+        expect(settingsPayload['type'], 'set_codex_model');
+        expect(settingsPayload['sessionId'], 'settings-runtime');
+        expect(settingsPayload['codexSourceId'], 'source-a');
+        expect(settingsPayload['threadId'], 'settings-thread');
+        expect(settingsPayload['runtimeSessionId'], 'settings-runtime');
+        expect(settingsPayload['authorityGeneration'], 'settings-authority-1');
+        expect(settingsPayload['operationId'], isNotEmpty);
+
+        mockBridge.sentMessages.clear();
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'settings-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T01:03:00.000Z',
+            executionHost: 'desktopAppServer',
+            controlState: 'readOnly',
+            authorityGeneration: 'settings-authority-2',
+          ),
+        );
+        expect(
+          cubit.codexSettingsActionability,
+          CodexSettingsActionability.readOnlyDesktopOwner,
+        );
+
+        cubit.setCodexSpeed(CodexSpeed.standard);
+        expect(cubit.state.codexSpeed, CodexSpeed.fast);
+        expect(mockBridge.sentMessages, isEmpty);
+
+        cubit.updateDetachedProviderStatus(
+          null,
+          sourceFingerprint: 'bridge-b/source-b',
+        );
+        expect(cubit.state.codexPermissionStateKnown, isFalse);
+        expect(cubit.state.codexModel, isNull);
+        expect(cubit.state.codexModelReasoningEffort, isNull);
+        expect(cubit.state.codexSpeed, CodexSpeed.unknown);
+      },
+    );
+
+    test(
+      'detached settings factories share one exact ephemeral authority envelope',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-settings',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-settings',
+        );
+        addTearDown(cubit.close);
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-settings',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T01:10:00.000Z',
+            executionHost: 'bridge',
+            controlState: 'writable',
+            authorityGeneration: 'authority-settings',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+
+        cubit.setSessionModes(planMode: true);
+        cubit.setCodexApprovalPolicy(CodexApprovalPolicy.never);
+        cubit.setCodexPermissionsMode(CodexPermissionsMode.fullAccess);
+        cubit.setCodexModel(
+          'gpt-5.6-sol',
+          reasoningEffort: ReasoningEffort.high,
+        );
+        cubit.setCodexSpeed(CodexSpeed.fast);
+        cubit.setSandboxMode(SandboxMode.off);
+
+        expect(mockBridge.sentMessages, hasLength(6));
+        final operationIds = <String>{};
+        for (final message in mockBridge.sentMessages) {
+          final payload = jsonDecode(message.toJson()) as Map<String, dynamic>;
+          expect(message.delivery, ClientMessageDelivery.ephemeral);
+          expect(payload['sessionId'], 'runtime-settings');
+          expect(payload['codexSourceId'], 'source-a');
+          expect(payload['threadId'], 'durable-settings');
+          expect(payload['runtimeSessionId'], 'runtime-settings');
+          expect(payload['authorityGeneration'], 'authority-settings');
+          expect(payload['operationId'], isA<String>());
+          operationIds.add(payload['operationId'] as String);
+        }
+        expect(operationIds, hasLength(6));
+
+        mockBridge.sentMessages.clear();
+        mockBridge.emitConnection(BridgeConnectionState.disconnected);
+        cubit.setCodexModel(
+          'gpt-5.4-mini',
+          reasoningEffort: ReasoningEffort.low,
+        );
+        expect(mockBridge.sentMessages, isEmpty);
+      },
+    );
+
+    test(
+      'v2 complete settings clear missing facts while legacy sparse rows retain them',
+      () async {
+        final cubit = ChatSessionCubit(
+          sessionId: 'settings-snapshot-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+        );
+        addTearDown(cubit.close);
+
+        cubit.updateDetachedProviderSettings(
+          const RecentSession(
+            sessionId: 'settings-snapshot-thread',
+            provider: 'codex',
+            firstPrompt: '',
+            created: '2026-08-01T02:00:00.000Z',
+            modified: '2026-08-01T02:01:00.000Z',
+            gitBranch: '',
+            projectPath: '/tmp/project',
+            isSidechain: false,
+            codexApprovalPolicy: 'never',
+            codexApprovalsReviewer: 'user',
+            codexSandboxMode: 'danger-full-access',
+            codexCollaborationMode: 'plan',
+            planMode: true,
+            codexModel: 'gpt-5.6-sol',
+            codexModelReasoningEffort: 'ultra',
+            codexServiceTier: 'fast',
+            codexSettingsSnapshotComplete: true,
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        expect(cubit.state.codexPermissionStateKnown, isTrue);
+        expect(cubit.state.planMode, isTrue);
+        expect(cubit.state.codexModel, 'gpt-5.6-sol');
+
+        cubit.updateDetachedProviderSettings(
+          const RecentSession(
+            sessionId: 'settings-snapshot-thread',
+            provider: 'codex',
+            firstPrompt: '',
+            created: '2026-08-01T02:00:00.000Z',
+            modified: '2026-08-01T02:02:00.000Z',
+            gitBranch: '',
+            projectPath: '/tmp/project',
+            isSidechain: false,
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        expect(cubit.state.codexPermissionStateKnown, isTrue);
+        expect(cubit.state.planMode, isTrue);
+        expect(cubit.state.codexModel, 'gpt-5.6-sol');
+
+        cubit.updateDetachedProviderSettings(
+          const RecentSession(
+            sessionId: 'settings-snapshot-thread',
+            provider: 'codex',
+            firstPrompt: '',
+            created: '2026-08-01T02:00:00.000Z',
+            modified: '2026-08-01T02:03:00.000Z',
+            gitBranch: '',
+            projectPath: '/tmp/project',
+            isSidechain: false,
+            codexSettingsSnapshotComplete: true,
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        expect(cubit.state.codexPermissionStateKnown, isFalse);
+        expect(cubit.state.planMode, isFalse);
+        expect(cubit.state.sandboxMode, SandboxMode.on);
+        expect(cubit.state.codexModel, isNull);
+        expect(cubit.state.codexModelReasoningEffort, isNull);
+        expect(cubit.state.codexSpeed, CodexSpeed.unknown);
+      },
+    );
+
+    test(
+      'detached runtime capability queries use the live runtime id',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+          ChatSessionCubit.codexPermissionApplyStrategyCapability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-capability-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'live-capability-runtime',
+        );
+        addTearDown(cubit.close);
+
+        mockBridge.emitSessions(const [
+          SessionInfo(
+            id: 'durable-capability-thread',
+            provider: 'codex',
+            projectPath: '/durable',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+            codexPermissionApplyStrategySupported: true,
+            codexNativePlanModeSupported: false,
+            codexGoalControlSupported: false,
+          ),
+          SessionInfo(
+            id: 'live-capability-runtime',
+            provider: 'codex',
+            projectPath: '/runtime',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+            codexPermissionApplyStrategySupported: false,
+            codexNativePlanModeSupported: true,
+            codexGoalControlSupported: true,
+          ),
+        ]);
+        await pumpEventQueue();
+
+        expect(cubit.supportsCodexPermissionApplyStrategy, isFalse);
+        expect(
+          cubit.state.codexNativePlanModeSupport,
+          CodexNativePlanModeSupport.supported,
+        );
+        expect(cubit.state.goalSupport, CodexGoalSupport.supported);
+        expect(cubit.state.advancedGoalControlSupported, isTrue);
       },
     );
 
@@ -713,7 +1041,8 @@ void main() {
         await Future<void>.delayed(Duration.zero);
         expect(
           cubit.state.entries.whereType<UserChatEntry>().where(
-            (entry) => entry.text == 'Runtime snapshot must not replace the cache',
+            (entry) =>
+                entry.text == 'Runtime snapshot must not replace the cache',
           ),
           isEmpty,
         );
@@ -1052,9 +1381,9 @@ void main() {
 
         expect(mockBridge.sentMessages, isEmpty);
         expect(
-          cubit.state.entries
-              .whereType<UserChatEntry>()
-              .map((entry) => entry.status),
+          cubit.state.entries.whereType<UserChatEntry>().map(
+            (entry) => entry.status,
+          ),
           everyElement(MessageStatus.failed),
         );
       },
@@ -1125,7 +1454,10 @@ void main() {
         );
         expect(cubit.state.status, ProcessStatus.running);
         expect(cubit.canMutateAttachedRuntime, isFalse);
-        expect(cubit.sendMessage('Rejected generation stays read-only'), isFalse);
+        expect(
+          cubit.sendMessage('Rejected generation stays read-only'),
+          isFalse,
+        );
         expect(mockBridge.sentMessages, isEmpty);
 
         cubit.updateDetachedProviderStatus(
@@ -1212,6 +1544,7 @@ void main() {
       () async {
         mockBridge.advertisedBridgeCapabilities = const {
           conversationSyncV2Capability,
+          codexRuntimeDetachCapability,
         };
         final cubit = ChatSessionCubit(
           sessionId: 'durable-operations-thread',
@@ -1257,14 +1590,60 @@ void main() {
         cubit.approve('approval-blocked');
         cubit.reject('rejection-blocked');
         cubit.answer('answer-blocked', 'No');
-        cubit.interrupt();
         cubit.retryMessage(failedEntry);
         cubit.setPermissionMode(PermissionMode.auto);
-        cubit.setCodexModel('gpt-5.6-sol', reasoningEffort: ReasoningEffort.ultra);
+        cubit.setCodexModel(
+          'gpt-5.6-sol',
+          reasoningEffort: ReasoningEffort.ultra,
+        );
         cubit.setCodexSpeed(CodexSpeed.fast);
         cubit.setSandboxMode(SandboxMode.off);
         expect(mockBridge.sentMessages, isEmpty);
         expect(mockBridge.interruptedSessionIds, isEmpty);
+        expect(cubit.stopActionDetachesDesktopTurn, isTrue);
+        cubit.interrupt();
+        expect(jsonDecode(mockBridge.sentMessages.single.toJson()), {
+          'type': 'detach_session',
+          'sessionId': 'runtime-operations',
+          'codexSourceId': 'source-a',
+          'threadId': 'durable-operations-thread',
+          'authorityGeneration': 'read-only-generation',
+        });
+        expect(mockBridge.interruptedSessionIds, isEmpty);
+        mockBridge.sentMessages.clear();
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-operations-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-01T03:00:30.000Z',
+            executionHost: 'desktopAppServer',
+            activeTurnId: 'desktop-turn',
+            controlState: 'steerable',
+            authorityGeneration: 'desktop-steer-generation',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        cubit.steerQueuedInput(queued);
+        final desktopSteer =
+            jsonDecode(mockBridge.sentMessages.single.toJson())
+                as Map<String, dynamic>;
+        expect(desktopSteer, {
+          'type': 'steer_queued_input',
+          'sessionId': 'runtime-operations',
+          'itemId': queued.itemId,
+          'expectedTurnId': 'desktop-turn',
+          'codexSourceId': 'source-a',
+          'threadId': 'durable-operations-thread',
+          'authorityGeneration': 'desktop-steer-generation',
+        });
+        mockBridge.sentMessages.clear();
 
         cubit.updateDetachedProviderStatus(
           const ConversationSyncV2Status(
@@ -1324,8 +1703,7 @@ void main() {
 
         final payloads = mockBridge.sentMessages
             .map(
-              (message) =>
-                  jsonDecode(message.toJson()) as Map<String, dynamic>,
+              (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
             )
             .toList(growable: false);
         expect(payloads, isNotEmpty);
@@ -1461,10 +1839,10 @@ void main() {
       final cubit = createCubit('s1', provider: Provider.codex);
       addTearDown(cubit.close);
 
-        expect(cubit.state.permissionMode, PermissionMode.bypassPermissions);
-        expect(cubit.state.executionMode, ExecutionMode.fullAccess);
-        expect(cubit.state.codexPermissionStateKnown, isTrue);
-        expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
+      expect(cubit.state.permissionMode, PermissionMode.bypassPermissions);
+      expect(cubit.state.executionMode, ExecutionMode.fullAccess);
+      expect(cubit.state.codexPermissionStateKnown, isTrue);
+      expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
       expect(cubit.state.codexPermissionsMode, CodexPermissionsMode.fullAccess);
       expect(cubit.state.sandboxMode, SandboxMode.off);
       expect(cubit.state.codexModel, 'gpt-5.6-sol');
@@ -1822,8 +2200,7 @@ void main() {
         );
         await Future.microtask(() {});
         expect(cubit.externalDesktopTurnSteerable.value, isFalse);
-        final messageCountBeforeAmbiguousSteer =
-            mockBridge.sentMessages.length;
+        final messageCountBeforeAmbiguousSteer = mockBridge.sentMessages.length;
         cubit.steerQueuedInput(queued);
         expect(
           mockBridge.sentMessages.length,
@@ -1845,13 +2222,9 @@ void main() {
         );
         await Future.microtask(() {});
         expect(cubit.externalDesktopTurnSteerable.value, isFalse);
-        final messageCountBeforeUnownedSteer =
-            mockBridge.sentMessages.length;
+        final messageCountBeforeUnownedSteer = mockBridge.sentMessages.length;
         cubit.steerQueuedInput(queued);
-        expect(
-          mockBridge.sentMessages.length,
-          messageCountBeforeUnownedSteer,
-        );
+        expect(mockBridge.sentMessages.length, messageCountBeforeUnownedSteer);
 
         mockBridge.emitLocalFeature(
           CodexDesktopContinuityEventMessage(
@@ -2084,10 +2457,7 @@ void main() {
           sessionId: 's1',
         );
         await Future.microtask(() {});
-        expect(
-          streamingCubit.state.thinking,
-          'Background reasoning tail',
-        );
+        expect(streamingCubit.state.thinking, 'Background reasoning tail');
 
         mockBridge.emitLocalFeature(
           CodexDesktopContinuityEventMessage(
@@ -2178,35 +2548,38 @@ void main() {
       expect(cubit.state.externalDesktopTurnId, 'desktop-turn');
     });
 
-    test('Codex Desktop continuity stays disabled on an older Bridge', () async {
-      mockBridge.advertisedBridgeCapabilities = const {};
-      final cubit = createCubit(
-        's1',
-        provider: Provider.codex,
-        initialProjectPath: '/project',
-      );
-      addTearDown(cubit.close);
+    test(
+      'Codex Desktop continuity stays disabled on an older Bridge',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {};
+        final cubit = createCubit(
+          's1',
+          provider: Provider.codex,
+          initialProjectPath: '/project',
+        );
+        addTearDown(cubit.close);
 
-      mockBridge.emitMessage(
-        const SystemMessage(
-          subtype: 'init',
-          sessionId: 'thread-1',
-          provider: 'codex',
-          projectPath: '/project',
-        ),
-        sessionId: 's1',
-      );
-      mockBridge.emitSessions(const []);
-      await Future.microtask(() {});
-      await Future.microtask(() {});
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'init',
+            sessionId: 'thread-1',
+            provider: 'codex',
+            projectPath: '/project',
+          ),
+          sessionId: 's1',
+        );
+        mockBridge.emitSessions(const []);
+        await Future.microtask(() {});
+        await Future.microtask(() {});
 
-      expect(
-        mockBridge.sentMessages.where(
-          (message) => message.type == 'codex_desktop_continuity_watch',
-        ),
-        isEmpty,
-      );
-    });
+        expect(
+          mockBridge.sentMessages.where(
+            (message) => message.type == 'codex_desktop_continuity_watch',
+          ),
+          isEmpty,
+        );
+      },
+    );
 
     test(
       'Codex Desktop continuity binds from session_list before history and stays stable',
@@ -2359,8 +2732,7 @@ void main() {
           (message) => message.type == 'codex_desktop_continuity_watch',
         );
         final requestId =
-            (jsonDecode(watch.toJson())
-                    as Map<String, dynamic>)['requestId']
+            (jsonDecode(watch.toJson()) as Map<String, dynamic>)['requestId']
                 as String;
         mockBridge.emitLocalFeature(
           CodexDesktopContinuityEventMessage(
@@ -2739,7 +3111,7 @@ void main() {
         addTearDown(cubit.close);
         await Future.microtask(() {});
 
-      expect(cubit.state.permissionMode, PermissionMode.bypassPermissions);
+        expect(cubit.state.permissionMode, PermissionMode.bypassPermissions);
         expect(cubit.state.executionMode, ExecutionMode.fullAccess);
         expect(cubit.state.codexPermissionStateKnown, isTrue);
         expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
@@ -2882,9 +3254,9 @@ void main() {
         await Future.microtask(() {});
 
         expect(cubit.state.permissionMode, PermissionMode.bypassPermissions);
-      expect(cubit.state.executionMode, ExecutionMode.fullAccess);
-      expect(cubit.state.codexPermissionStateKnown, isTrue);
-      expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
+        expect(cubit.state.executionMode, ExecutionMode.fullAccess);
+        expect(cubit.state.codexPermissionStateKnown, isTrue);
+        expect(cubit.state.codexApprovalPolicy, CodexApprovalPolicy.never);
         expect(
           cubit.state.codexPermissionsMode,
           CodexPermissionsMode.fullAccess,
@@ -3086,70 +3458,74 @@ void main() {
       },
     );
 
-    test('path rejection stays suppressed until the connection changes', () async {
-      mockBridge.sessionSnapshot = const [
-        SessionInfo(
-          id: 's1',
-          provider: 'codex',
-          projectPath: '/blocked',
-          claudeSessionId: 'thread-1',
-          status: 'running',
-          createdAt: '',
-          lastActivityAt: '',
-        ),
-      ];
-      final cubit = createCubit('s1', provider: Provider.codex);
-      addTearDown(cubit.close);
-      await Future.microtask(() {});
-      final firstWatch = mockBridge.sentMessages.singleWhere(
-        (message) => message.type == 'codex_desktop_continuity_watch',
-      );
-      final requestId =
-          (jsonDecode(firstWatch.toJson()) as Map<String, dynamic>)['requestId']
-              as String;
+    test(
+      'path rejection stays suppressed until the connection changes',
+      () async {
+        mockBridge.sessionSnapshot = const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/blocked',
+            claudeSessionId: 'thread-1',
+            status: 'running',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ];
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+        final firstWatch = mockBridge.sentMessages.singleWhere(
+          (message) => message.type == 'codex_desktop_continuity_watch',
+        );
+        final requestId =
+            (jsonDecode(firstWatch.toJson())
+                    as Map<String, dynamic>)['requestId']
+                as String;
 
-      mockBridge.emitLocalFeature(
-        CodexDesktopContinuityEventMessage(
-          event: CodexDesktopContinuityEventKind.error,
-          requestId: requestId,
-          bridgeInstanceId: 'bridge-1',
+        mockBridge.emitLocalFeature(
+          CodexDesktopContinuityEventMessage(
+            event: CodexDesktopContinuityEventKind.error,
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-1',
+            sessionId: 's1',
+            threadId: 'thread-1',
+            origin: 'desktop_rollout',
+            errorCode: 'path_not_allowed',
+            error: 'blocked path',
+          ),
           sessionId: 's1',
-          threadId: 'thread-1',
-          origin: 'desktop_rollout',
-          errorCode: 'path_not_allowed',
-          error: 'blocked path',
-        ),
-        sessionId: 's1',
-      );
-      mockBridge.emitSessions(const [
-        SessionInfo(
-          id: 's1',
-          provider: 'codex',
-          projectPath: '/blocked',
-          claudeSessionId: 'thread-1',
-          status: 'idle',
-          createdAt: '',
-          lastActivityAt: '',
-        ),
-      ]);
-      await Future.microtask(() {});
-      await Future.microtask(() {});
+        );
+        mockBridge.emitSessions(const [
+          SessionInfo(
+            id: 's1',
+            provider: 'codex',
+            projectPath: '/blocked',
+            claudeSessionId: 'thread-1',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ]);
+        await Future.microtask(() {});
+        await Future.microtask(() {});
 
-      int watchCount() => mockBridge.sentMessages
-          .where(
-            (message) => message.type == 'codex_desktop_continuity_watch',
-          )
-          .length;
-      expect(watchCount(), 1);
-      expect(cubit.state.status, ProcessStatus.idle);
+        int watchCount() => mockBridge.sentMessages
+            .where(
+              (message) => message.type == 'codex_desktop_continuity_watch',
+            )
+            .length;
+        expect(watchCount(), 1);
+        expect(cubit.state.status, ProcessStatus.idle);
 
-      mockBridge.emitConnection(BridgeConnectionState.disconnected);
-      mockBridge.emitConnection(BridgeConnectionState.connected);
-      mockBridge.emitSessions(mockBridge.sessionSnapshot);
-      await Future.microtask(() {});
-      await Future.microtask(() {});
-      expect(watchCount(), 2);
-    });
+        mockBridge.emitConnection(BridgeConnectionState.disconnected);
+        mockBridge.emitConnection(BridgeConnectionState.connected);
+        mockBridge.emitSessions(mockBridge.sessionSnapshot);
+        await Future.microtask(() {});
+        await Future.microtask(() {});
+        expect(watchCount(), 2);
+      },
+    );
 
     test('watching idle settles a stale running session snapshot', () async {
       mockBridge.sessionSnapshot = const [
@@ -3479,13 +3855,18 @@ void main() {
         await Future.microtask(() {});
 
         AssistantServerMessage assistant(String id) =>
-            (cubit.state.entries.whereType<ServerChatEntry>().firstWhere(
+            (cubit.state.entries
+                    .whereType<ServerChatEntry>()
+                    .firstWhere(
                       (entry) =>
                           entry.message is AssistantServerMessage &&
-                          (entry.message as AssistantServerMessage).message.id ==
+                          (entry.message as AssistantServerMessage)
+                                  .message
+                                  .id ==
                               id,
-                    ).message
-                    as AssistantServerMessage);
+                    )
+                    .message
+                as AssistantServerMessage);
         final assistantA = assistant('assistant-a').message;
         final assistantB = assistant('assistant-b').message;
         expect(
@@ -4082,10 +4463,7 @@ void main() {
       await Future.microtask(() {});
 
       mockBridge.emitMessage(
-        const ToolResultMessage(
-          toolUseId: 'ordinary-tool',
-          content: 'done',
-        ),
+        const ToolResultMessage(toolUseId: 'ordinary-tool', content: 'done'),
         sessionId: 's1',
       );
       await Future.microtask(() {});
@@ -4178,40 +4556,45 @@ void main() {
       );
     });
 
-    test('an image send cannot be overtaken by a following text send', () async {
-      final encoded = Completer<List<Map<String, String>>>();
-      final cubit = createCubit(
-        's1',
-        imagePayloadEncoder: (_) => encoded.future,
-      );
-      addTearDown(cubit.close);
+    test(
+      'an image send cannot be overtaken by a following text send',
+      () async {
+        final encoded = Completer<List<Map<String, String>>>();
+        final cubit = createCubit(
+          's1',
+          imagePayloadEncoder: (_) => encoded.future,
+        );
+        addTearDown(cubit.close);
 
-      cubit.sendMessage(
-        'Image first',
-        images: [
-          (bytes: Uint8List.fromList([1, 2, 3]), mimeType: 'image/png'),
-        ],
-      );
-      cubit.sendMessage('Text second');
+        cubit.sendMessage(
+          'Image first',
+          images: [
+            (bytes: Uint8List.fromList([1, 2, 3]), mimeType: 'image/png'),
+          ],
+        );
+        cubit.sendMessage('Text second');
 
-      expect(mockBridge.sentMessages, isEmpty);
+        expect(mockBridge.sentMessages, isEmpty);
 
-      encoded.complete(const [
-        {'base64': 'AQID', 'mimeType': 'image/png'},
-      ]);
-      await pumpEventQueue();
+        encoded.complete(const [
+          {'base64': 'AQID', 'mimeType': 'image/png'},
+        ]);
+        await pumpEventQueue();
 
-      final payloads = mockBridge.sentMessages
-          .map((message) => jsonDecode(message.toJson()) as Map<String, dynamic>)
-          .toList();
-      expect(payloads.map((payload) => payload['text']), [
-        'Image first',
-        'Text second',
-      ]);
-      expect(payloads.first['images'], [
-        {'base64': 'AQID', 'mimeType': 'image/png'},
-      ]);
-    });
+        final payloads = mockBridge.sentMessages
+            .map(
+              (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
+            )
+            .toList();
+        expect(payloads.map((payload) => payload['text']), [
+          'Image first',
+          'Text second',
+        ]);
+        expect(payloads.first['images'], [
+          {'base64': 'AQID', 'mimeType': 'image/png'},
+        ]);
+      },
+    );
 
     test(
       'image encoding failure marks the input failed without poisoning the queue',
@@ -4244,34 +4627,37 @@ void main() {
       },
     );
 
-    test('canceling an offline image input prevents its delayed send', () async {
-      mockBridge.connected = false;
-      final encoded = Completer<List<Map<String, String>>>();
-      final cubit = createCubit(
-        's1',
-        provider: Provider.codex,
-        imagePayloadEncoder: (_) => encoded.future,
-      );
-      addTearDown(cubit.close);
+    test(
+      'canceling an offline image input prevents its delayed send',
+      () async {
+        mockBridge.connected = false;
+        final encoded = Completer<List<Map<String, String>>>();
+        final cubit = createCubit(
+          's1',
+          provider: Provider.codex,
+          imagePayloadEncoder: (_) => encoded.future,
+        );
+        addTearDown(cubit.close);
 
-      cubit.sendMessage(
-        'Canceled image',
-        images: [
-          (bytes: Uint8List.fromList([1, 2, 3]), mimeType: 'image/png'),
-        ],
-      );
-      final queued = cubit.state.queuedInput;
-      expect(ChatSessionCubit.isOfflineQueuedInput(queued), isTrue);
+        cubit.sendMessage(
+          'Canceled image',
+          images: [
+            (bytes: Uint8List.fromList([1, 2, 3]), mimeType: 'image/png'),
+          ],
+        );
+        final queued = cubit.state.queuedInput;
+        expect(ChatSessionCubit.isOfflineQueuedInput(queued), isTrue);
 
         await cubit.cancelQueuedInput(queued!);
-      encoded.complete(const [
-        {'base64': 'AQID', 'mimeType': 'image/png'},
-      ]);
-      await pumpEventQueue();
+        encoded.complete(const [
+          {'base64': 'AQID', 'mimeType': 'image/png'},
+        ]);
+        await pumpEventQueue();
 
-      expect(cubit.state.queuedInput, isNull);
-      expect(mockBridge.sentMessages, isEmpty);
-    });
+        expect(cubit.state.queuedInput, isNull);
+        expect(mockBridge.sentMessages, isEmpty);
+      },
+    );
 
     test('sendMessage while disconnected queues entry with baseSeq', () async {
       mockBridge.connected = false;
@@ -5126,6 +5512,7 @@ void main() {
                 : const [],
           );
         }
+
         const canonical = AssistantServerMessage(
           messageUuid: 'canonical-item',
           message: AssistantMessage(
@@ -5155,7 +5542,9 @@ void main() {
             .toList();
         expect(assistants, hasLength(2));
         expect(
-          assistants.expand((message) => message.artifacts).map((ref) => ref.id),
+          assistants
+              .expand((message) => message.artifacts)
+              .map((ref) => ref.id),
           contains('artifact-provisional'),
         );
       },
@@ -5397,10 +5786,7 @@ void main() {
           sessionId: 's1',
         );
         await pumpEventQueue();
-        cubit.sendMessage(
-          'Repeated prompt',
-          clientMessageId: 'local-client-2',
-        );
+        cubit.sendMessage('Repeated prompt', clientMessageId: 'local-client-2');
         await pumpEventQueue();
 
         mockBridge.emitMessage(
@@ -5937,27 +6323,30 @@ void main() {
       );
     });
 
-    test('codex command-like text with a dropped file remains a message', () async {
-      final cubit = createCubit('s1', provider: Provider.codex);
-      addTearDown(cubit.close);
-      await Future.microtask(() {});
+    test(
+      'codex command-like text with a dropped file remains a message',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
 
-      cubit.sendMessage(
-        '/goal',
-        additionalMentions: const [
+        cubit.sendMessage(
+          '/goal',
+          additionalMentions: const [
+            {'name': 'goal.md', 'path': '/Users/test/Downloads/goal.md'},
+          ],
+        );
+
+        expect(mockBridge.sentMessages, hasLength(1));
+        final json =
+            jsonDecode(mockBridge.sentMessages.single.toJson())
+                as Map<String, dynamic>;
+        expect(json['text'], '/goal');
+        expect(json['mentions'], [
           {'name': 'goal.md', 'path': '/Users/test/Downloads/goal.md'},
-        ],
-      );
-
-      expect(mockBridge.sentMessages, hasLength(1));
-      final json =
-          jsonDecode(mockBridge.sentMessages.single.toJson())
-              as Map<String, dynamic>;
-      expect(json['text'], '/goal');
-      expect(json['mentions'], [
-        {'name': 'goal.md', 'path': '/Users/test/Downloads/goal.md'},
-      ]);
-    });
+        ]);
+      },
+    );
 
     test('approve clears approval state and sends message', () async {
       final cubit = createCubit('s1');
@@ -6844,102 +7233,102 @@ void main() {
     test(
       'canonical history enriches a cached assistant with artifacts',
       () async {
-      final cubit = createCubit('s1', provider: Provider.codex);
-      addTearDown(cubit.close);
-      mockBridge.emitMessage(
-        const AssistantServerMessage(
-          messageUuid: 'uuid-a1',
-          message: AssistantMessage(
-            id: 'a1',
-            role: 'assistant',
-            content: [TextContent(text: 'Report ready')],
-            model: 'codex',
-          ),
-        ),
-        sessionId: 's1',
-      );
-      await Future<void>.delayed(Duration.zero);
-
-      mockBridge.emitMessage(
-        const HistoryMessage(
-          messages: [
-            AssistantServerMessage(
-              messageUuid: 'uuid-a1',
-              message: AssistantMessage(
-                id: 'a1',
-                role: 'assistant',
-                content: [TextContent(text: 'Report ready')],
-                model: 'codex',
-              ),
-              artifacts: [
-                ArtifactRef(
-                  id: 'artifact-1',
-                  filename: 'report.pdf',
-                  mimeType: 'application/pdf',
-                  sizeBytes: 10,
-                  kind: 'preview',
-                  source: 'assistant_markdown',
-                ),
-              ],
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const AssistantServerMessage(
+            messageUuid: 'uuid-a1',
+            message: AssistantMessage(
+              id: 'a1',
+              role: 'assistant',
+              content: [TextContent(text: 'Report ready')],
+              model: 'codex',
             ),
-          ],
-        ),
-        sessionId: 's1',
-      );
-      await Future.microtask(() {});
+          ),
+          sessionId: 's1',
+        );
+        await Future<void>.delayed(Duration.zero);
 
-      final assistants = cubit.state.entries
-          .whereType<ServerChatEntry>()
-          .map((entry) => entry.message)
-          .whereType<AssistantServerMessage>()
-          .toList();
-      expect(assistants, hasLength(1));
-      expect(assistants.single.artifacts.single.id, 'artifact-1');
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              AssistantServerMessage(
+                messageUuid: 'uuid-a1',
+                message: AssistantMessage(
+                  id: 'a1',
+                  role: 'assistant',
+                  content: [TextContent(text: 'Report ready')],
+                  model: 'codex',
+                ),
+                artifacts: [
+                  ArtifactRef(
+                    id: 'artifact-1',
+                    filename: 'report.pdf',
+                    mimeType: 'application/pdf',
+                    sizeBytes: 10,
+                    kind: 'preview',
+                    source: 'assistant_markdown',
+                  ),
+                ],
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        final assistants = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .whereType<AssistantServerMessage>()
+            .toList();
+        expect(assistants, hasLength(1));
+        expect(assistants.single.artifacts.single.id, 'artifact-1');
       },
     );
 
     test(
       'enriched duplicate assistant merges artifacts without duplication',
       () async {
-      final cubit = createCubit('s1', provider: Provider.codex);
-      addTearDown(cubit.close);
-      const baseMessage = AssistantMessage(
-        id: 'a-merge',
-        role: 'assistant',
-        content: [TextContent(text: 'Bundle ready')],
-        model: 'codex',
-      );
-      mockBridge.emitMessage(
-        const AssistantServerMessage(message: baseMessage),
-        sessionId: 's1',
-      );
-      mockBridge.emitMessage(
-        const AssistantServerMessage(
-          messageUuid: 'uuid-a-merge',
-          message: baseMessage,
-          artifacts: [
-            ArtifactRef(
-              id: 'artifact-merge',
-              filename: 'bundle.zip',
-              mimeType: 'application/zip',
-              sizeBytes: 20,
-              kind: 'preview',
-              source: 'structured_tool',
-            ),
-          ],
-        ),
-        sessionId: 's1',
-      );
-      await Future<void>.delayed(Duration.zero);
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        const baseMessage = AssistantMessage(
+          id: 'a-merge',
+          role: 'assistant',
+          content: [TextContent(text: 'Bundle ready')],
+          model: 'codex',
+        );
+        mockBridge.emitMessage(
+          const AssistantServerMessage(message: baseMessage),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const AssistantServerMessage(
+            messageUuid: 'uuid-a-merge',
+            message: baseMessage,
+            artifacts: [
+              ArtifactRef(
+                id: 'artifact-merge',
+                filename: 'bundle.zip',
+                mimeType: 'application/zip',
+                sizeBytes: 20,
+                kind: 'preview',
+                source: 'structured_tool',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await Future<void>.delayed(Duration.zero);
 
-      final assistants = cubit.state.entries
-          .whereType<ServerChatEntry>()
-          .map((entry) => entry.message)
-          .whereType<AssistantServerMessage>()
-          .toList();
-      expect(assistants, hasLength(1));
-      expect(assistants.single.messageUuid, 'uuid-a-merge');
-      expect(assistants.single.artifacts.single.id, 'artifact-merge');
+        final assistants = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .whereType<AssistantServerMessage>()
+            .toList();
+        expect(assistants, hasLength(1));
+        expect(assistants.single.messageUuid, 'uuid-a-merge');
+        expect(assistants.single.artifacts.single.id, 'artifact-merge');
       },
     );
 
@@ -6996,10 +7385,9 @@ void main() {
             .map((entry) => entry.message)
             .whereType<AssistantServerMessage>()
             .single;
-        expect(
-          assistant.artifacts.map((artifact) => artifact.id),
-          ['artifact-after-registry-recovery'],
-        );
+        expect(assistant.artifacts.map((artifact) => artifact.id), [
+          'artifact-after-registry-recovery',
+        ]);
       },
     );
 
@@ -7062,10 +7450,9 @@ void main() {
             .map((entry) => entry.message)
             .whereType<AssistantServerMessage>()
             .single;
-        expect(
-          assistant.artifacts.map((artifact) => artifact.id),
-          ['artifact-new-preview-kind'],
-        );
+        expect(assistant.artifacts.map((artifact) => artifact.id), [
+          'artifact-new-preview-kind',
+        ]);
       },
     );
 
@@ -7127,10 +7514,9 @@ void main() {
             .toList();
         expect(assistants, hasLength(1));
         expect(assistants.single.artifactMessageId, 'owner-new');
-        expect(
-          assistants.single.artifacts.map((artifact) => artifact.id),
-          ['artifact-new'],
-        );
+        expect(assistants.single.artifacts.map((artifact) => artifact.id), [
+          'artifact-new',
+        ]);
       },
     );
 
@@ -7249,19 +7635,18 @@ void main() {
       },
     );
 
-    testWidgets(
-      'starting history refresh has a bounded retry budget',
-      (tester) async {
-        final cubit = createCubit('s1');
-        addTearDown(cubit.close);
+    testWidgets('starting history refresh has a bounded retry budget', (
+      tester,
+    ) async {
+      final cubit = createCubit('s1');
+      addTearDown(cubit.close);
 
-        expect(mockBridge.requestSessionHistoryCallCount, 1);
-        await tester.pump(const Duration(minutes: 5));
+      expect(mockBridge.requestSessionHistoryCallCount, 1);
+      await tester.pump(const Duration(minutes: 5));
 
-        expect(cubit.state.status, ProcessStatus.starting);
-        expect(mockBridge.requestSessionHistoryCallCount, 5);
-      },
-    );
+      expect(cubit.state.status, ProcessStatus.starting);
+      expect(mockBridge.requestSessionHistoryCallCount, 5);
+    });
 
     testWidgets(
       'starting history refresh pauses offline and restarts after reconnect',

@@ -312,6 +312,18 @@ abstract class AppLocalizations {
   /// **'セッション名を変更'**
   String get renameSession;
 
+  /// No description provided for @renameFailed.
+  ///
+  /// In ja, this message translates to:
+  /// **'この会話の名前を変更できません'**
+  String get renameFailed;
+
+  /// No description provided for @renameFailedWithError.
+  ///
+  /// In ja, this message translates to:
+  /// **'この会話の名前を変更できません：{error}'**
+  String renameFailedWithError(String error);
+
   /// No description provided for @pin.
   ///
   /// In ja, this message translates to:
@@ -1169,6 +1181,24 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'Bridge には接続しましたが、会話一覧の準備に時間がかかっています。このまま待つか、再試行またはキャンセルできます。'**
   String get bridgeConnectionTakingLonger;
+
+  /// No description provided for @authenticatingWithBridge.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge で認証しています...'**
+  String get authenticatingWithBridge;
+
+  /// No description provided for @preparingCodexRuntime.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge はオンラインです。共有 Codex ランタイムを準備しています...'**
+  String get preparingCodexRuntime;
+
+  /// No description provided for @codexRuntimeTakingLonger.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge プロセスはオンラインですが、共有 Codex ランタイムはまだ準備中です。待機、再試行、またはキャンセルできます。'**
+  String get codexRuntimeTakingLonger;
 
   /// No description provided for @useCachedConversations.
   ///
@@ -2663,6 +2693,12 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'タップ: 中断, 長押し: 停止'**
   String get tapInterruptHoldStop;
+
+  /// No description provided for @tapDetachDesktopTurn.
+  ///
+  /// In ja, this message translates to:
+  /// **'タップまたは長押し: スマートフォンから切断（Desktop の処理は継続）'**
+  String get tapDetachDesktopTurn;
 
   /// No description provided for @rewind.
   ///
@@ -6647,6 +6683,30 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'現在のサービス階層：{value}（読み取り専用）'**
   String currentServiceTierReadOnly(Object value);
+
+  /// No description provided for @codexSettingsUnknown.
+  ///
+  /// In ja, this message translates to:
+  /// **'不明 · 同期を待機中'**
+  String get codexSettingsUnknown;
+
+  /// No description provided for @codexSettingsWaitingForRuntime.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge がこの会話のランタイム設定を同期するのを待っています。設定は変更されていません。'**
+  String get codexSettingsWaitingForRuntime;
+
+  /// No description provided for @codexSettingsReadOnlyDesktop.
+  ///
+  /// In ja, this message translates to:
+  /// **'このターンは Codex Desktop が所有しています。ここでは設定は読み取り専用です。Desktop で変更するか、ターンの終了を待ってください。'**
+  String get codexSettingsReadOnlyDesktop;
+
+  /// No description provided for @codexSettingsUnavailable.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge がこの会話の設定書き込み権限を確認していないため、CC Pocket は変更を送信またはプレビューしません。'**
+  String get codexSettingsUnavailable;
 
   /// No description provided for @codexPermissionsOnRequest.
   ///

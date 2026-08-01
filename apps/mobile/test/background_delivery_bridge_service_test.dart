@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:ccpocket/features/background_sync/background_sync_coordinator.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -106,6 +107,7 @@ void main() {
         (await notificationsOnly)?.mode,
         BridgeClientDeliveryMode.notificationsOnly,
       );
+      expect(bridge.backgroundActiveWorkCount, 1);
 
       socket
         ..add(
@@ -161,6 +163,19 @@ void main() {
         }),
       );
       expect((await interactive)?.mode, BridgeClientDeliveryMode.interactive);
+
+      socket.add(
+        jsonEncode({
+          'type': 'background_activity_state_v1',
+          'activeWorkCount': 2,
+          'occurredAt': '2026-07-24T00:00:01.000Z',
+        }),
+      );
+      await _waitUntil(() => bridge.backgroundActiveWorkCount == 2);
+      expect(
+        BridgeServiceBackgroundSyncGateway(bridge).hasBackgroundWork,
+        isTrue,
+      );
 
       socket.add(
         jsonEncode({

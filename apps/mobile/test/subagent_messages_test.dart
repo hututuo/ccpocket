@@ -71,6 +71,10 @@ void main() {
       capabilities['supportedServerMessages'],
       contains('detached_subagent_history'),
     );
+    expect(
+      capabilities['supportedServerMessages'],
+      contains('subagent_activity_summary_v1'),
+    );
   });
 
   test('detached provider reads never serialize a runtime session id', () {
@@ -184,5 +188,62 @@ void main() {
 
     expect(list.subagents.single.activeFlags, ['turn']);
     expect(list.subagents.single.isActive, isTrue);
+  });
+
+  test('activity summary watch is exact, scoped, and transient', () {
+    final offer =
+        ServerMessage.fromJson({
+              'type': 'subagent_activity_summary_v1',
+              'scope': 'provider',
+              'ownerSessionId': 'pane-1',
+              'providerThreadId': 'parent-1',
+              'codexSourceId': 'source-1',
+              'revision': 'revision-1',
+              'activeCount': 2,
+              'totalCount': 3,
+              'subscribed': false,
+              'listRequestId': 'list-1',
+            })
+            as SubagentActivitySummaryMessage;
+    expect(offer.sessionId, 'pane-1');
+    expect(offer.activeCount, 2);
+
+    final watch = watchDetachedSubagentActivity(
+      ownerSessionId: 'pane-1',
+      providerThreadId: 'parent-1',
+      codexSourceId: 'source-1',
+      listRequestId: 'list-1',
+      subscriptionId: 'watch-1',
+    );
+    expect(jsonDecode(watch.toJson()), {
+      'type': 'watch_detached_subagent_activity_v1',
+      'ownerSessionId': 'pane-1',
+      'providerThreadId': 'parent-1',
+      'codexSourceId': 'source-1',
+      'listRequestId': 'list-1',
+      'subscriptionId': 'watch-1',
+    });
+    final descriptor = LocalFeatureProtocolHost.describeRequest(watch)!;
+    expect(descriptor.requestId, 'watch-1');
+    final subscribed = SubagentActivitySummaryMessage(
+      scope: 'provider',
+      ownerSessionId: 'pane-1',
+      providerThreadId: 'parent-1',
+      codexSourceId: 'source-1',
+      revision: 'revision-1',
+      activeCount: 2,
+      totalCount: 3,
+      truncated: false,
+      subscribed: true,
+      subscriptionId: 'watch-1',
+    );
+    expect(
+      LocalFeatureProtocolHost.matchesTerminalResponse(descriptor, subscribed),
+      isTrue,
+    );
+    expect(jsonDecode(unwatchSubagentActivity('watch-1').toJson()), {
+      'type': 'unwatch_subagent_activity_v1',
+      'subscriptionId': 'watch-1',
+    });
   });
 }

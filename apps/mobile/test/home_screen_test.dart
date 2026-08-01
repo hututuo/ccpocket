@@ -136,6 +136,139 @@ void main() {
       );
     });
 
+    test('new Bridge runtime readiness is an independent entry gate', () {
+      final gate = SessionHomeConnectionGate();
+
+      gate.update(
+        state: BridgeConnectionState.connected,
+        targetKey: 'machine:a',
+        hasAuthoritativeSessionList: true,
+        hasAuthoritativeRecentSessions: true,
+        applicationReadiness: BridgeApplicationReadiness.preparing,
+      );
+
+      expect(gate.hasReadyTarget, isFalse);
+      expect(
+        gate.presentationState(
+          transportState: BridgeConnectionState.connected,
+          hasAuthoritativeSessionList: true,
+          hasAuthoritativeRecentSessions: true,
+          applicationReadiness: BridgeApplicationReadiness.preparing,
+        ),
+        BridgeConnectionState.connecting,
+      );
+
+      gate.update(
+        state: BridgeConnectionState.connected,
+        targetKey: 'machine:a',
+        hasAuthoritativeSessionList: true,
+        hasAuthoritativeRecentSessions: true,
+        applicationReadiness: BridgeApplicationReadiness.ready,
+      );
+      expect(gate.hasReadyTarget, isTrue);
+    });
+
+    test('readiness 404 requires an authenticated legacy contract', () {
+      expect(
+        parseBridgeApplicationReadiness(statusCode: 404, body: ''),
+        BridgeApplicationReadiness.legacyUnsupported,
+      );
+      expect(
+        resolveBridgeApplicationReadinessContract(
+          observed: BridgeApplicationReadiness.legacyUnsupported,
+          hasAuthenticatedSessionList: false,
+          bridgeVersion: '1.69.5-compat.11',
+          bridgeCapabilities: const {},
+        ),
+        BridgeApplicationReadiness.unreachable,
+      );
+      expect(
+        resolveBridgeApplicationReadinessContract(
+          observed: BridgeApplicationReadiness.legacyUnsupported,
+          hasAuthenticatedSessionList: true,
+          bridgeVersion: '1.69.6-compat.12',
+          bridgeCapabilities: const {},
+        ),
+        BridgeApplicationReadiness.unreachable,
+      );
+      expect(
+        resolveBridgeApplicationReadinessContract(
+          observed: BridgeApplicationReadiness.legacyUnsupported,
+          hasAuthenticatedSessionList: true,
+          bridgeVersion: '1.69.5-compat.11',
+          bridgeCapabilities: const {bridgeApplicationReadinessCapability},
+        ),
+        BridgeApplicationReadiness.unreachable,
+      );
+      expect(
+        resolveBridgeApplicationReadinessContract(
+          observed: BridgeApplicationReadiness.legacyUnsupported,
+          hasAuthenticatedSessionList: true,
+          bridgeVersion: '1.69.5-compat.11',
+          bridgeCapabilities: const {},
+        ),
+        BridgeApplicationReadiness.legacyUnsupported,
+      );
+      expect(
+        parseBridgeApplicationReadiness(
+          statusCode: 503,
+          body: '{"status":"not_ready"}',
+        ),
+        BridgeApplicationReadiness.preparing,
+      );
+      expect(
+        parseBridgeApplicationReadiness(statusCode: 502, body: ''),
+        BridgeApplicationReadiness.unreachable,
+      );
+      expect(
+        parseBridgeApplicationReadiness(
+          statusCode: 200,
+          body: '{"status":"ready"}',
+        ),
+        BridgeApplicationReadiness.ready,
+      );
+    });
+
+    test(
+      'readiness probe fence lets a replacement epoch supersede a late probe',
+      () {
+        final fence = BridgeApplicationReadinessProbeFence();
+        const firstKey = BridgeApplicationReadinessProbeKey(
+          url: 'ws://bridge-a:8765',
+          connectionEpoch: 1,
+        );
+        const replacementKey = BridgeApplicationReadinessProbeKey(
+          url: 'ws://bridge-b:8765',
+          connectionEpoch: 2,
+        );
+
+        final first = fence.begin(firstKey)!;
+        final replacement = fence.begin(replacementKey)!;
+
+        expect(fence.begin(replacementKey), isNull);
+        expect(fence.complete(first), isFalse);
+        expect(fence.hasActiveProbe, isTrue);
+        expect(fence.complete(replacement), isTrue);
+        expect(fence.hasActiveProbe, isFalse);
+
+        final beforePause = fence.begin(replacementKey)!;
+        fence.invalidate();
+        final afterResume = fence.begin(replacementKey)!;
+        expect(fence.complete(beforePause), isFalse);
+        expect(fence.complete(afterResume), isTrue);
+      },
+    );
+
+    test('readiness retry backoff is bounded', () {
+      expect(
+        List.generate(
+          7,
+          (attempt) => bridgeApplicationReadinessRetryDelay(attempt).inSeconds,
+        ),
+        [1, 2, 4, 8, 16, 16, 16],
+      );
+    });
+
     test('keeps a ready same-target reconnect in the existing home', () {
       final gate = SessionHomeConnectionGate()
         ..update(
@@ -249,6 +382,8 @@ void main() {
       bool hasSessionList = false,
       bool hasRecentSessions = false,
       bool autoConnecting = false,
+      BridgeApplicationReadiness applicationReadiness =
+          BridgeApplicationReadiness.legacyUnsupported,
       BridgeConnectionBootstrapPhase bootstrapPhase =
           BridgeConnectionBootstrapPhase.idle,
       ConversationSyncCacheUpdate? conversationSyncUpdate,
@@ -258,6 +393,7 @@ void main() {
       hasAuthoritativeSessionList: hasSessionList,
       hasAuthoritativeRecentSessions: hasRecentSessions,
       autoConnecting: autoConnecting,
+      applicationReadiness: applicationReadiness,
       bootstrapPhase: bootstrapPhase,
       conversationSyncUpdate: conversationSyncUpdate,
     );
@@ -417,6 +553,18 @@ void main() {
         ),
         isNull,
       );
+    });
+
+    test('shows shared runtime preparation after Bridge authentication', () {
+      final current = progress(
+        state: BridgeConnectionState.connected,
+        hasSessionList: true,
+        hasRecentSessions: true,
+        applicationReadiness: BridgeApplicationReadiness.preparing,
+      );
+
+      expect(current?.stage, BridgeConnectionEntryStage.preparingCodexRuntime);
+      expect(current?.percent, 79);
     });
   });
 

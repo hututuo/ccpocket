@@ -47,6 +47,7 @@ class ChatInputBar extends StatelessWidget {
   final VoidCallback onSend;
   final VoidCallback onStop;
   final VoidCallback onInterrupt;
+  final bool stopActionDetachesDesktopTurn;
   final VoidCallback onToggleVoice;
   final VoidCallback onIndent;
   final VoidCallback onDedent;
@@ -89,6 +90,7 @@ class ChatInputBar extends StatelessWidget {
     required this.onSend,
     required this.onStop,
     required this.onInterrupt,
+    this.stopActionDetachesDesktopTurn = false,
     required this.onToggleVoice,
     required this.onIndent,
     required this.onDedent,
@@ -205,6 +207,7 @@ class ChatInputBar extends StatelessWidget {
                 onSend: onSend,
                 onStop: onStop,
                 onInterrupt: onInterrupt,
+                stopActionDetachesDesktopTurn: stopActionDetachesDesktopTurn,
               ),
             ],
           ),
@@ -395,10 +398,7 @@ class _DollarButton extends StatelessWidget {
 }
 
 class _AttachButton extends StatelessWidget {
-  const _AttachButton({
-    required this.attachmentCount,
-    required this.onTap,
-  });
+  const _AttachButton({required this.attachmentCount, required this.onTap});
   final int attachmentCount;
   final VoidCallback? onTap;
 
@@ -1129,12 +1129,14 @@ class _ActionButton extends StatelessWidget {
     required this.onSend,
     required this.onStop,
     required this.onInterrupt,
+    required this.stopActionDetachesDesktopTurn,
   });
   final ProcessStatus status;
   final bool hasInputText;
   final VoidCallback onSend;
   final VoidCallback onStop;
   final VoidCallback onInterrupt;
+  final bool stopActionDetachesDesktopTurn;
 
   @override
   Widget build(BuildContext context) {
@@ -1142,23 +1144,34 @@ class _ActionButton extends StatelessWidget {
       return _SendButton(onSend: onSend, enabled: false);
     }
     if (status != ProcessStatus.idle && !hasInputText) {
-      return _StopButton(onInterrupt: onInterrupt, onStop: onStop);
+      return _StopButton(
+        onInterrupt: onInterrupt,
+        onStop: onStop,
+        detachesDesktopTurn: stopActionDetachesDesktopTurn,
+      );
     }
     return _SendButton(onSend: onSend, enabled: hasInputText);
   }
 }
 
 class _StopButton extends StatelessWidget {
-  const _StopButton({required this.onInterrupt, required this.onStop});
+  const _StopButton({
+    required this.onInterrupt,
+    required this.onStop,
+    required this.detachesDesktopTurn,
+  });
   final VoidCallback onInterrupt;
   final VoidCallback onStop;
+  final bool detachesDesktopTurn;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final l = AppLocalizations.of(context);
     return Tooltip(
-      message: l.tapInterruptHoldStop,
+      message: detachesDesktopTurn
+          ? l.tapDetachDesktopTurn
+          : l.tapInterruptHoldStop,
       child: Material(
         color: cs.error,
         borderRadius: BorderRadius.circular(20),

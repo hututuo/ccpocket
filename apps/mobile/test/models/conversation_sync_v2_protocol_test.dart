@@ -180,6 +180,13 @@ void main() {
                   'model': 'gpt-5.6-sol',
                   'modelReasoningEffort': 'ultra',
                   'serviceTier': 'fast',
+                  'approvalPolicy': 'on-request',
+                  'approvalsReviewer': 'user',
+                  'sandboxMode': 'workspace-write',
+                  'collaborationMode': 'plan',
+                  'networkAccessEnabled': true,
+                  'webSearchMode': 'live',
+                  'codexSettingsSnapshotComplete': true,
                   'createdAt': '2026-07-30T00:00:00.000Z',
                   'modifiedAt': '2026-07-30T00:01:00.000Z',
                   'recencyAt': '2026-07-30T00:02:00.000Z',
@@ -197,6 +204,36 @@ void main() {
     expect(session.codexModel, 'gpt-5.6-sol');
     expect(session.codexModelReasoningEffort, 'ultra');
     expect(session.codexServiceTier, 'fast');
+    expect(session.codexApprovalPolicy, 'on-request');
+    expect(session.codexApprovalsReviewer, 'user');
+    expect(session.codexSandboxMode, 'workspace-write');
+    expect(session.codexCollaborationMode, 'plan');
+    expect(session.planMode, isTrue);
+    expect(session.codexNetworkAccessEnabled, isTrue);
+    expect(session.codexWebSearchMode, 'live');
+    expect(session.codexSettingsSnapshotComplete, isTrue);
+
+    final restored = RecentSession.fromJson(session.toJson());
+    expect(restored.codexCollaborationMode, 'plan');
+    expect(restored.codexSettingsSnapshotComplete, isTrue);
+  });
+
+  test('old v2 catalog settings remain incremental without completeness', () {
+    final entry = ConversationSyncV2CatalogEntry.fromJson(<String, dynamic>{
+      'provider': 'codex',
+      'providerSessionId': 'thread-partial-settings',
+      'revision': 'revision-partial-settings',
+      'projectPath': '/workspace',
+      'model': 'gpt-5.6-sol',
+      'createdAt': '2026-07-30T00:00:00.000Z',
+      'modifiedAt': '2026-07-30T00:01:00.000Z',
+      'recencyAt': '2026-07-30T00:02:00.000Z',
+      'availability': 'durable',
+    });
+
+    final session = entry.toRecentSession(codexSourceId: 'source-1');
+    expect(session.codexModel, 'gpt-5.6-sol');
+    expect(session.codexSettingsSnapshotComplete, isFalse);
   });
 
   test('builds a bounded subscription without endpoint identity', () {

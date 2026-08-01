@@ -9,7 +9,11 @@ void main() {
         ServerMessage.fromJson({
               'type': 'context_usage',
               'sessionId': 's1',
+              'threadId': 's1',
               'turnId': 't1',
+              'bridgeInstanceId': 'bridge-1',
+              'codexSourceId': 'source-1',
+              'authorityGeneration': 'daemon:3:1',
               'last': {'totalTokens': 296753, 'inputTokens': 290000},
               'total': {'totalTokens': 500000},
               'modelContextWindow': 353400,
@@ -17,6 +21,10 @@ void main() {
             as ContextUsageMessage;
 
     expect(canonical.sessionId, 's1');
+    expect(canonical.threadId, 's1');
+    expect(canonical.usage.bridgeInstanceId, 'bridge-1');
+    expect(canonical.usage.codexSourceId, 'source-1');
+    expect(canonical.usage.authorityGeneration, 'daemon:3:1');
     expect(canonical.last.totalTokens, 296753);
     expect(canonical.modelContextWindow, 353400);
     expect(canonical.usage.utilization, closeTo(0.8397, 0.001));

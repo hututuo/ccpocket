@@ -11,6 +11,7 @@ import '../../../models/messages.dart'
         LocalFeatureRequestErrorMessage,
         LocalFeatureServerMessage,
         SessionInfo,
+        SubagentActivitySummaryMessage,
         SubagentHistoryMessage,
         SubagentInfo,
         SubagentListMessage,
@@ -18,7 +19,10 @@ import '../../../models/messages.dart'
         requestDetachedSubagentHistory,
         requestDetachedSubagents,
         requestSubagentHistory,
-        requestSubagents;
+        requestSubagents,
+        unwatchSubagentActivity,
+        watchDetachedSubagentActivity,
+        watchSubagentActivity;
 import '../../../services/bridge_service.dart';
 
 /// Standalone SSOT for the read-only subagent browser.
@@ -59,10 +63,17 @@ class SubagentsController extends ChangeNotifier {
   String? _listRequestId;
   final Map<String, String> _historyRequestIds = {};
   Timer? _listTimeout;
+  Timer? _detailsRefreshTimer;
   final Map<String, Timer> _historyTimeouts = {};
   bool _disposed = false;
   bool _pendingRefresh = false;
   String? _pendingHistoryThreadId;
+  String? _lastCompletedListRequestId;
+  String? _pendingActivitySubscriptionId;
+  String? _activitySubscriptionId;
+  String? _activityRevision;
+  int? _activityActiveCount;
+  bool _detailsVisible = false;
 
   List<SubagentInfo> subagents = const [];
   bool listTruncated = false;
@@ -72,6 +83,10 @@ class SubagentsController extends ChangeNotifier {
   final Set<String> historyLoadingIds = {};
   final Map<String, String> historyErrors = {};
 
+  int get activeCount =>
+      _activityActiveCount ??
+      subagents.where((subagent) => subagent.isActive).length;
+
   bool get _hasInFlight =>
       _listRequestId != null || _historyRequestIds.isNotEmpty;
   bool get _isDetachedProviderRead => detachedProviderThreadId != null;
@@ -79,6 +94,12 @@ class SubagentsController extends ChangeNotifier {
       _normalizedBoundedIdentity(detachedProviderThreadId);
   String? get _normalizedExpectedCodexSourceId =>
       _normalizedBoundedIdentity(detachedCodexSourceId);
+
+  void setDetailsVisible(bool visible) {
+    if (_disposed || _detailsVisible == visible) return;
+    _detailsVisible = visible;
+    if (!visible) _detailsRefreshTimer?.cancel();
+  }
 
   void refresh() {
     if (_disposed) return;
@@ -204,7 +225,56 @@ class SubagentsController extends ChangeNotifier {
   }
 
   void _onMessage(LocalFeatureServerMessage message) {
+    if (_disposed) return;
     switch (message) {
+      case SubagentActivitySummaryMessage():
+        if (!_matchesActivityScope(message)) return;
+        if (!message.subscribed) {
+          final listRequestId = message.listRequestId;
+          if (listRequestId == null ||
+              (listRequestId != _listRequestId &&
+                  listRequestId != _lastCompletedListRequestId) ||
+              _activitySubscriptionId != null ||
+              _pendingActivitySubscriptionId != null) {
+            return;
+          }
+          _applyActivitySummary(message);
+          final subscriptionId = _uuid.v4();
+          _pendingActivitySubscriptionId = subscriptionId;
+          try {
+            bridge.send(
+              _isDetachedProviderRead
+                  ? watchDetachedSubagentActivity(
+                      ownerSessionId: sessionId,
+                      providerThreadId: _normalizedProviderThreadId!,
+                      codexSourceId: _normalizedExpectedCodexSourceId!,
+                      listRequestId: listRequestId,
+                      subscriptionId: subscriptionId,
+                    )
+                  : watchSubagentActivity(
+                      sessionId: sessionId,
+                      listRequestId: listRequestId,
+                      subscriptionId: subscriptionId,
+                    ),
+            );
+          } catch (_) {
+            _pendingActivitySubscriptionId = null;
+          }
+          notifyListeners();
+          return;
+        }
+        final subscriptionId = message.subscriptionId;
+        if (subscriptionId == null ||
+            (subscriptionId != _activitySubscriptionId &&
+                subscriptionId != _pendingActivitySubscriptionId)) {
+          return;
+        }
+        _pendingActivitySubscriptionId = null;
+        _activitySubscriptionId = subscriptionId;
+        final changed = message.revision != _activityRevision;
+        _applyActivitySummary(message);
+        notifyListeners();
+        if (changed && _detailsVisible) _scheduleDetailsRefresh();
       case LocalFeatureRequestErrorMessage():
         if (message.featureId != 'subagents') return;
         final requestId = message.requestId;
@@ -214,6 +284,15 @@ class SubagentsController extends ChangeNotifier {
         final expectedHistoryRequestType = _isDetachedProviderRead
             ? 'get_detached_subagent_history'
             : 'get_subagent_history';
+        final expectedActivityRequestType = _isDetachedProviderRead
+            ? 'watch_detached_subagent_activity_v1'
+            : 'watch_subagent_activity_v1';
+        if (message.requestType == expectedActivityRequestType &&
+            requestId != null &&
+            requestId == _pendingActivitySubscriptionId) {
+          _pendingActivitySubscriptionId = null;
+          return;
+        }
         if (message.requestType == expectedListRequestType &&
             requestId != null &&
             requestId == _listRequestId) {
@@ -257,6 +336,7 @@ class SubagentsController extends ChangeNotifier {
           return;
         }
         _listRequestId = null;
+        _lastCompletedListRequestId = expectedRequestId;
         _listTimeout?.cancel();
         listLoading = false;
         if (message.error == null &&
@@ -323,6 +403,7 @@ class SubagentsController extends ChangeNotifier {
           return;
         }
         _listRequestId = null;
+        _lastCompletedListRequestId = expectedRequestId;
         _listTimeout?.cancel();
         listLoading = false;
         listError = _normalizedError(message.error);
@@ -374,10 +455,56 @@ class SubagentsController extends ChangeNotifier {
     subagents = List.unmodifiable(next);
   }
 
+  bool _matchesActivityScope(SubagentActivitySummaryMessage message) {
+    if (message.ownerSessionId != sessionId) return false;
+    if (_isDetachedProviderRead) {
+      return message.scope == 'provider' &&
+          message.providerThreadId == _normalizedProviderThreadId &&
+          message.codexSourceId == _normalizedExpectedCodexSourceId &&
+          message.codexSourceId ==
+              _normalizedBoundedIdentity(bridge.codexSourceId);
+    }
+    return message.scope == 'runtime';
+  }
+
+  void _applyActivitySummary(SubagentActivitySummaryMessage message) {
+    _activityRevision = message.revision;
+    _activityActiveCount = message.activeCount;
+  }
+
+  void _scheduleDetailsRefresh() {
+    if (_disposed || !_detailsVisible) return;
+    _detailsRefreshTimer?.cancel();
+    _detailsRefreshTimer = Timer(const Duration(milliseconds: 100), () {
+      _detailsRefreshTimer = null;
+      if (!_disposed && _detailsVisible) refresh();
+    });
+  }
+
+  void _stopActivityWatch({required bool sendUnwatch}) {
+    _detailsRefreshTimer?.cancel();
+    _detailsRefreshTimer = null;
+    final subscriptionId =
+        _activitySubscriptionId ?? _pendingActivitySubscriptionId;
+    _activitySubscriptionId = null;
+    _pendingActivitySubscriptionId = null;
+    _activityRevision = null;
+    _activityActiveCount = null;
+    if (sendUnwatch && subscriptionId != null && bridge.isConnected) {
+      try {
+        bridge.send(unwatchSubagentActivity(subscriptionId));
+      } catch (_) {
+        // The socket can disappear between the connection check and send.
+      }
+    }
+  }
+
   void _clearDetachedProviderData() {
     if (!_isDetachedProviderRead) return;
+    _stopActivityWatch(sendUnwatch: true);
     _listTimeout?.cancel();
     _listRequestId = null;
+    _lastCompletedListRequestId = null;
     listLoading = false;
     for (final timer in _historyTimeouts.values) {
       timer.cancel();
@@ -424,7 +551,19 @@ class SubagentsController extends ChangeNotifier {
         _hasInFlight) {
       return;
     }
-    if (listError == 'source_unavailable') refresh();
+    final gate = _detachedReadGate();
+    if (gate != null) {
+      _clearDetachedProviderData();
+      listError = gate;
+      notifyListeners();
+      return;
+    }
+    if (listError == 'source_unavailable' ||
+        listError == 'codex_source_unavailable' ||
+        listError == 'codex_source_mismatch' ||
+        listError == 'unsupported') {
+      refresh();
+    }
   }
 
   void _onConnectionState(BridgeConnectionState state) {
@@ -436,6 +575,8 @@ class SubagentsController extends ChangeNotifier {
 
     _listTimeout?.cancel();
     _listRequestId = null;
+    _lastCompletedListRequestId = null;
+    _stopActivityWatch(sendUnwatch: false);
     listLoading = false;
     listError = 'bridge_disconnected';
     for (final timer in _historyTimeouts.values) {
@@ -469,6 +610,7 @@ class SubagentsController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _stopActivityWatch(sendUnwatch: true);
     _subscription?.cancel();
     _connectionSubscription?.cancel();
     _sessionListSubscription?.cancel();

@@ -232,6 +232,338 @@ void main() {
   });
 
   test(
+    'publishes catalog and status only after the complete logical batch commits',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        logicalConnectionIdentity: 'machine:1',
+        websocketUrl: 'wss://bridge.example/socket?token=secret',
+      );
+      await repository.applyConversationCatalogPage(
+        target: target,
+        codexSourceId: 'codex-home-a',
+        catalogState: 'catalog-old',
+        pageIndex: 0,
+        pageCount: 1,
+        created: const [
+          ConversationSyncV2CatalogEntry(
+            provider: 'codex',
+            providerSessionId: 'thread-existing',
+            revision: 'revision-old',
+            projectPath: '/workspace/existing',
+            name: 'Existing thread',
+            createdAt: '2026-07-30T00:00:00.000Z',
+            modifiedAt: '2026-07-30T00:01:00.000Z',
+            recencyAt: '2026-07-30T00:01:00.000Z',
+            availability: 'durable',
+          ),
+        ],
+        updated: const [],
+        destroyed: const [],
+      );
+
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      final updates = <ConversationSyncCacheUpdate>[];
+      final updatesSubscription = service.syncUpdates.listen(updates.add);
+      addTearDown(updatesSubscription.cancel);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-atomic',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-new',
+          statusState: 'status-new',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.catalogChanges,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-atomic',
+          sequence: 2,
+          catalogState: 'catalog-new',
+          pageIndex: 0,
+          pageCount: 2,
+          updated: const [
+            ConversationSyncV2CatalogEntry(
+              provider: 'codex',
+              providerSessionId: 'thread-existing',
+              revision: 'revision-new',
+              projectPath: '/workspace/existing',
+              name: 'Updated thread',
+              createdAt: '2026-07-30T00:00:00.000Z',
+              modifiedAt: '2026-07-30T00:02:00.000Z',
+              recencyAt: '2026-07-30T00:02:00.000Z',
+              availability: 'durable',
+            ),
+          ],
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      expect(
+        (await repository.load(target))?.sessions.single.name,
+        'Existing thread',
+      );
+      expect(
+        updates.where(
+          (update) => update.kind == ConversationSyncCacheUpdateKind.catalog,
+        ),
+        isEmpty,
+      );
+
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.catalogChanges,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-atomic',
+          sequence: 3,
+          catalogState: 'catalog-new',
+          pageIndex: 1,
+          pageCount: 2,
+          created: const [
+            ConversationSyncV2CatalogEntry(
+              provider: 'codex',
+              providerSessionId: 'thread-created',
+              revision: 'revision-created',
+              projectPath: '/workspace/created',
+              name: 'Created thread',
+              createdAt: '2026-07-30T00:00:00.000Z',
+              modifiedAt: '2026-07-30T00:03:00.000Z',
+              recencyAt: '2026-07-30T00:03:00.000Z',
+              availability: 'durable',
+            ),
+          ],
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      final catalog = await repository.load(target);
+      expect(catalog?.sessions.map((session) => session.name), [
+        'Created thread',
+        'Updated thread',
+      ]);
+      final catalogUpdates = updates
+          .where(
+            (update) => update.kind == ConversationSyncCacheUpdateKind.catalog,
+          )
+          .toList(growable: false);
+      expect(catalogUpdates, hasLength(1));
+      expect(catalogUpdates.single.catalogUpserts, hasLength(2));
+      expect(catalogUpdates.single.pageIndex, 1);
+      expect(catalogUpdates.single.pageCount, 2);
+
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.statusChanges,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-atomic',
+          sequence: 4,
+          statusState: 'status-new',
+          pageIndex: 0,
+          pageCount: 2,
+          statusChanges: const [
+            ConversationSyncV2Status(
+              provider: 'codex',
+              providerSessionId: 'thread-existing',
+              activity: 'working',
+              attention: 'none',
+              result: 'none',
+              runtimeAttachment: 'loaded',
+              source: 'appServer',
+              confidence: 'authoritative',
+              observedAt: '2026-07-30T00:04:00.000Z',
+            ),
+          ],
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      expect(await repository.loadConversationStatuses(target), isEmpty);
+      expect(
+        updates.where(
+          (update) => update.kind == ConversationSyncCacheUpdateKind.status,
+        ),
+        isEmpty,
+      );
+
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.statusChanges,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-atomic',
+          sequence: 5,
+          statusState: 'status-new',
+          pageIndex: 1,
+          pageCount: 2,
+          statusChanges: const [
+            ConversationSyncV2Status(
+              provider: 'codex',
+              providerSessionId: 'thread-created',
+              activity: 'idle',
+              attention: 'question',
+              result: 'none',
+              runtimeAttachment: 'notLoaded',
+              source: 'appServer',
+              confidence: 'authoritative',
+              observedAt: '2026-07-30T00:04:01.000Z',
+            ),
+          ],
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      expect(await repository.loadConversationStatuses(target), hasLength(2));
+      final statusUpdates = updates
+          .where(
+            (update) => update.kind == ConversationSyncCacheUpdateKind.status,
+          )
+          .toList(growable: false);
+      expect(statusUpdates, hasLength(1));
+      expect(statusUpdates.single.statusChanges, hasLength(2));
+      expect(statusUpdates.single.pageIndex, 1);
+      expect(statusUpdates.single.pageCount, 2);
+    },
+  );
+
+  test(
+    'missing logical pages restart without exposing a mixed catalog snapshot',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        logicalConnectionIdentity: 'machine:1',
+        websocketUrl: 'wss://bridge.example/socket?token=secret',
+      );
+      await repository.applyConversationCatalogPage(
+        target: target,
+        codexSourceId: 'codex-home-a',
+        catalogState: 'catalog-old',
+        pageIndex: 0,
+        pageCount: 1,
+        created: const [
+          ConversationSyncV2CatalogEntry(
+            provider: 'codex',
+            providerSessionId: 'thread-stable',
+            revision: 'revision-stable',
+            projectPath: '/workspace/stable',
+            name: 'Stable thread',
+            createdAt: '2026-07-30T00:00:00.000Z',
+            modifiedAt: '2026-07-30T00:01:00.000Z',
+            recencyAt: '2026-07-30T00:01:00.000Z',
+            availability: 'durable',
+          ),
+        ],
+        updated: const [],
+        destroyed: const [],
+      );
+
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+        retryBaseDelay: const Duration(milliseconds: 40),
+        retryMaxDelay: const Duration(milliseconds: 80),
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      final updates = <ConversationSyncCacheUpdate>[];
+      final updatesSubscription = service.syncUpdates.listen(updates.add);
+      addTearDown(updatesSubscription.cancel);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-incomplete',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-new',
+          statusState: 'status-new',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.catalogChanges,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-incomplete',
+          sequence: 2,
+          catalogState: 'catalog-new',
+          pageIndex: 0,
+          pageCount: 2,
+          updated: const [
+            ConversationSyncV2CatalogEntry(
+              provider: 'codex',
+              providerSessionId: 'thread-stable',
+              revision: 'revision-uncommitted',
+              projectPath: '/workspace/stable',
+              name: 'Uncommitted thread',
+              createdAt: '2026-07-30T00:00:00.000Z',
+              modifiedAt: '2026-07-30T00:02:00.000Z',
+              recencyAt: '2026-07-30T00:02:00.000Z',
+              availability: 'durable',
+            ),
+          ],
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncCheckpoint,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-incomplete',
+          sequence: 3,
+          phase: 'priority',
+          hasMore: true,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_unsubscribe');
+
+      expect(
+        (await repository.load(target))?.sessions.single.name,
+        'Stable thread',
+      );
+      expect(
+        updates.where(
+          (update) => update.kind == ConversationSyncCacheUpdateKind.catalog,
+        ),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
     'accepts later batches on one v2 subscription without resetting readiness',
     () async {
       await service.dispose();
@@ -2475,29 +2807,27 @@ class _FailingCatalogRepository extends SessionCatalogCacheRepository {
   int clearTargetCalls = 0;
 
   @override
-  Future<void> applyConversationCatalogPage({
+  Future<void> applyConversationCatalogBatch({
     required SessionCatalogCacheTarget target,
     required String codexSourceId,
     required String catalogState,
-    required int pageIndex,
-    required int pageCount,
     required List<ConversationSyncV2CatalogEntry> created,
     required List<ConversationSyncV2CatalogEntry> updated,
     required List<ConversationSyncV2Target> destroyed,
+    bool Function()? isCurrent,
   }) {
     if (catalogFailuresRemaining > 0) {
       catalogFailuresRemaining -= 1;
       return Future<void>.error(StateError('injected catalog failure'));
     }
-    return super.applyConversationCatalogPage(
+    return super.applyConversationCatalogBatch(
       target: target,
       codexSourceId: codexSourceId,
       catalogState: catalogState,
-      pageIndex: pageIndex,
-      pageCount: pageCount,
       created: created,
       updated: updated,
       destroyed: destroyed,
+      isCurrent: isCurrent,
     );
   }
 

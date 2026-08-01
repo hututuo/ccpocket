@@ -33,6 +33,9 @@ class SessionModeBar extends StatelessWidget {
     final permissionMode = chatCubit.state.permissionMode;
     final isCodex = chatCubit.provider == Provider.codex;
     final permissionChangePending = chatCubit.isPermissionChangePending;
+    final codexSettingsActionability = chatCubit.codexSettingsActionability;
+    final codexSettingsEditable =
+        codexSettingsActionability == CodexSettingsActionability.editable;
     final cs = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final bar = ClipRRect(
@@ -52,121 +55,158 @@ class SessionModeBar extends StatelessWidget {
                   : Colors.white.withValues(alpha: 0.6),
             ),
           ),
-          child: IntrinsicHeight(
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (isCodex) ...[
-                  ValueListenableBuilder<int>(
-                    valueListenable: chatCubit.codexModelCatalogRevision,
-                    builder: (context, _, _) {
-                      final codexModel = _currentCodexModel(chatCubit);
-                      // The chip reports the current thread fact. Candidate
-                      // defaults belong only inside the settings sheet and
-                      // must not make an unknown Desktop effort look like high.
-                      final codexReasoningEffort =
-                          chatCubit.state.codexModelReasoningEffort;
-                      return ValueListenableBuilder<String?>(
-                        valueListenable: chatCubit.codexServiceTierRaw,
-                        builder: (context, serviceTierRaw, _) => CodexModelChip(
-                          model: codexModel,
-                          reasoningEffort: codexReasoningEffort,
-                          speed: chatCubit.state.codexSpeed,
-                          serviceTierRaw: serviceTierRaw,
-                          onTap: () => showCodexModelMenu(
-                            context,
-                            chatCubit,
-                            showExtendedEfforts: showExtendedCodexEfforts,
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: VerticalDivider(
-                      width: 1,
-                      thickness: 1,
-                      color: cs.outlineVariant.withValues(alpha: 0.4),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            physics: const ClampingScrollPhysics(),
+            child: IntrinsicHeight(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (isCodex) ...[
+                    ValueListenableBuilder<int>(
+                      valueListenable: chatCubit.codexModelCatalogRevision,
+                      builder: (context, _, _) {
+                        final codexModel = chatCubit.codexModelSettingsKnown
+                            ? _currentCodexModel(chatCubit)
+                            : null;
+                        // The chip reports the current thread fact. Candidate
+                        // defaults belong only inside the settings sheet and
+                        // must not make an unknown Desktop effort look like high.
+                        final codexReasoningEffort =
+                            chatCubit.state.codexModelReasoningEffort;
+                        return ValueListenableBuilder<String?>(
+                          valueListenable: chatCubit.codexServiceTierRaw,
+                          builder: (context, serviceTierRaw, _) =>
+                              CodexModelChip(
+                                model: codexModel,
+                                reasoningEffort: codexReasoningEffort,
+                                speed: chatCubit.state.codexSpeed,
+                                serviceTierRaw: serviceTierRaw,
+                                settingsKnown:
+                                    chatCubit.codexModelSettingsKnown,
+                                onTap: () {
+                                  if (!codexSettingsEditable ||
+                                      !chatCubit.codexModelSettingsKnown) {
+                                    showCodexSettingsUnavailable(
+                                      context,
+                                      chatCubit,
+                                    );
+                                    return;
+                                  }
+                                  showCodexModelMenu(
+                                    context,
+                                    chatCubit,
+                                    showExtendedEfforts:
+                                        showExtendedCodexEfforts,
+                                  );
+                                },
+                              ),
+                        );
+                      },
                     ),
-                  ),
-                  IgnorePointer(
-                    ignoring: permissionChangePending,
-                    child: Opacity(
-                      opacity: permissionChangePending ? 0.5 : 1,
-                      child: PlanModeChip(
-                        enabled: planMode,
-                        activeGlow: false,
-                        onTap: () => togglePlanMode(
-                          context,
-                          chatCubit,
-                          onBeforeRestart: onBeforeRestart,
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: VerticalDivider(
+                        width: 1,
+                        thickness: 1,
+                        color: cs.outlineVariant.withValues(alpha: 0.4),
+                      ),
+                    ),
+                    IgnorePointer(
+                      key: const ValueKey('plan_mode_pending_guard'),
+                      ignoring: permissionChangePending,
+                      child: Opacity(
+                        opacity: permissionChangePending ? 0.5 : 1,
+                        child: PlanModeChip(
+                          enabled: planMode,
+                          known: chatCubit.codexPlanModeKnown,
+                          activeGlow: false,
+                          onTap: () {
+                            if (!codexSettingsEditable ||
+                                !chatCubit.codexPlanModeKnown) {
+                              showCodexSettingsUnavailable(context, chatCubit);
+                              return;
+                            }
+                            togglePlanMode(
+                              context,
+                              chatCubit,
+                              onBeforeRestart: onBeforeRestart,
+                            );
+                          },
                         ),
                       ),
                     ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: VerticalDivider(
-                      width: 1,
-                      thickness: 1,
-                      color: cs.outlineVariant.withValues(alpha: 0.4),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: VerticalDivider(
+                        width: 1,
+                        thickness: 1,
+                        color: cs.outlineVariant.withValues(alpha: 0.4),
+                      ),
                     ),
-                  ),
-                  IgnorePointer(
-                    ignoring: permissionChangePending,
-                    child: Opacity(
-                      opacity: permissionChangePending ? 0.5 : 1,
-                      child: ExecutionModeChip(
-                        currentMode: executionMode,
-                        codexApprovalPolicy:
-                            chatCubit.state.codexApprovalPolicy,
-                        codexApprovalsReviewer:
-                            chatCubit.state.codexApprovalsReviewer,
-                        codexPermissionsMode:
-                            chatCubit.state.codexPermissionsMode,
-                        codexPermissionStateKnown:
-                            chatCubit.state.codexPermissionStateKnown,
-                        provider: chatCubit.provider,
-                        onTap: () => showCodexPermissionsMenu(
-                          context,
-                          chatCubit,
-                          onBeforeRestart: onBeforeRestart,
+                    IgnorePointer(
+                      key: const ValueKey('permission_mode_pending_guard'),
+                      ignoring: permissionChangePending,
+                      child: Opacity(
+                        opacity: permissionChangePending ? 0.5 : 1,
+                        child: ExecutionModeChip(
+                          currentMode: executionMode,
+                          codexApprovalPolicy:
+                              chatCubit.state.codexApprovalPolicy,
+                          codexApprovalsReviewer:
+                              chatCubit.state.codexApprovalsReviewer,
+                          codexPermissionsMode:
+                              chatCubit.state.codexPermissionsMode,
+                          codexPermissionStateKnown:
+                              chatCubit.state.codexPermissionStateKnown,
+                          provider: chatCubit.provider,
+                          onTap: () {
+                            if (!codexSettingsEditable ||
+                                !chatCubit.state.codexPermissionStateKnown) {
+                              showCodexSettingsUnavailable(context, chatCubit);
+                              return;
+                            }
+                            showCodexPermissionsMenu(
+                              context,
+                              chatCubit,
+                              onBeforeRestart: onBeforeRestart,
+                            );
+                          },
                         ),
                       ),
                     ),
-                  ),
-                ] else ...[
-                  PermissionModeChip(
-                    currentMode: permissionMode,
-                    onTap: () => showPermissionModeMenu(
-                      context,
-                      chatCubit,
-                      onBeforeRestart: onBeforeRestart,
+                  ] else ...[
+                    PermissionModeChip(
+                      currentMode: permissionMode,
+                      onTap: () => showPermissionModeMenu(
+                        context,
+                        chatCubit,
+                        onBeforeRestart: onBeforeRestart,
+                      ),
                     ),
-                  ),
+                  ],
+                  if (!isCodex) ...[
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: VerticalDivider(
+                        width: 1,
+                        thickness: 1,
+                        color: cs.outlineVariant.withValues(alpha: 0.4),
+                      ),
+                    ),
+                    SandboxModeChip(
+                      currentMode: sandboxMode,
+                      provider: chatCubit.provider,
+                      onTap: () => showSandboxModeMenu(
+                        context,
+                        chatCubit,
+                        onBeforeRestart: onBeforeRestart,
+                      ),
+                    ),
+                  ],
+                  ...trailingWidgets,
                 ],
-                if (!isCodex) ...[
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: VerticalDivider(
-                      width: 1,
-                      thickness: 1,
-                      color: cs.outlineVariant.withValues(alpha: 0.4),
-                    ),
-                  ),
-                  SandboxModeChip(
-                    currentMode: sandboxMode,
-                    provider: chatCubit.provider,
-                    onTap: () => showSandboxModeMenu(
-                      context,
-                      chatCubit,
-                      onBeforeRestart: onBeforeRestart,
-                    ),
-                  ),
-                ],
-                ...trailingWidgets,
-              ],
+              ),
             ),
           ),
         ),
@@ -383,7 +423,7 @@ class _RotatingBorderPainter extends CustomPainter {
       oldDelegate.isDark != isDark;
 }
 
-String _currentCodexModel(ChatSessionCubit chatCubit) {
+String? _currentCodexModel(ChatSessionCubit chatCubit) {
   final models = chatCubit.codexModels.isNotEmpty
       ? chatCubit.codexModels
       : defaultCodexModels;
@@ -391,8 +431,8 @@ String _currentCodexModel(ChatSessionCubit chatCubit) {
     chatCubit.state.codexModel,
     models,
   );
-  return current ??
-      (models.isNotEmpty ? models.first : defaultCodexModels.first);
+  if (current != null || chatCubit.detachedPreview) return current;
+  return models.isNotEmpty ? models.first : defaultCodexModels.first;
 }
 
 List<ReasoningEffort> _codexReasoningEffortsForModel(
@@ -434,6 +474,10 @@ void showCodexModelMenu(
       ? chatCubit.codexModels
       : defaultCodexModels;
   final currentModel = _currentCodexModel(chatCubit);
+  if (currentModel == null || !chatCubit.codexModelSettingsKnown) {
+    showCodexSettingsUnavailable(context, chatCubit);
+    return;
+  }
   final currentEfforts = _codexReasoningEffortsForModel(context, currentModel);
   final currentEffort = _effectiveCodexReasoningEffort(
     chatCubit.state.codexModelReasoningEffort,
@@ -456,6 +500,7 @@ void showCodexModelMenu(
       initialSpeed: chatCubit.state.codexSpeed,
       initialServiceTierRaw: chatCubit.codexServiceTierRaw.value,
       showExtendedEfforts: showExtendedEfforts,
+      optimisticUpdates: !chatCubit.detachedPreview,
       onModelChanged: (model, effort) =>
           chatCubit.setCodexModel(model, reasoningEffort: effort),
       onEffortChanged: (model, effort) =>
@@ -463,6 +508,24 @@ void showCodexModelMenu(
       onSpeedChanged: chatCubit.setCodexSpeed,
     ),
   );
+}
+
+void showCodexSettingsUnavailable(
+  BuildContext context,
+  ChatSessionCubit chatCubit,
+) {
+  final l = AppLocalizations.of(context);
+  final message = switch (chatCubit.codexSettingsActionability) {
+    CodexSettingsActionability.waitingForRuntime =>
+      l.codexSettingsWaitingForRuntime,
+    CodexSettingsActionability.readOnlyDesktopOwner =>
+      l.codexSettingsReadOnlyDesktop,
+    CodexSettingsActionability.unavailable => l.codexSettingsUnavailable,
+    CodexSettingsActionability.editable => l.codexSettingsUnknown,
+  };
+  ScaffoldMessenger.of(context)
+    ..hideCurrentSnackBar()
+    ..showSnackBar(SnackBar(content: Text(message)));
 }
 
 void showCodexPermissionsMenu(
@@ -557,6 +620,17 @@ Future<void> _chooseCodexPermissionsModeApplication(
   CodexPermissionsMode mode, {
   Future<void> Function()? onBeforeRestart,
 }) async {
+  if (chatCubit.detachedPreview) {
+    if (!chatCubit.supportsCodexPermissionApplyStrategy) {
+      showCodexSettingsUnavailable(context, chatCubit);
+      return;
+    }
+    chatCubit.setCodexPermissionsMode(
+      mode,
+      applyStrategy: CodexPermissionApplyStrategy.nextTurn,
+    );
+    return;
+  }
   if (!chatCubit.supportsCodexPermissionApplyStrategy) {
     await _confirmCodexPermissionsRestart(
       context,
@@ -704,6 +778,11 @@ Future<void> togglePlanMode(
     return;
   }
 
+  if (chatCubit.detachedPreview) {
+    showCodexSettingsUnavailable(context, chatCubit);
+    return;
+  }
+
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (dialogContext) {
@@ -835,11 +914,7 @@ Color _sandboxMenuIconColor(SandboxMode mode, bool isClaude, ColorScheme cs) {
   return cs.onSurfaceVariant;
 }
 
-String _sandboxMenuTitle(
-  SandboxMode mode,
-  bool isClaude,
-  AppLocalizations l,
-) {
+String _sandboxMenuTitle(SandboxMode mode, bool isClaude, AppLocalizations l) {
   if (isClaude) {
     return mode == SandboxMode.on ? l.sandboxSafeMode : l.sandboxStandard;
   }
@@ -1227,10 +1302,11 @@ class ExecutionModeChip extends StatelessWidget {
 }
 
 class CodexModelChip extends StatelessWidget {
-  final String model;
+  final String? model;
   final ReasoningEffort? reasoningEffort;
   final CodexSpeed speed;
   final String? serviceTierRaw;
+  final bool settingsKnown;
   final VoidCallback onTap;
 
   const CodexModelChip({
@@ -1239,14 +1315,18 @@ class CodexModelChip extends StatelessWidget {
     this.reasoningEffort,
     required this.speed,
     this.serviceTierRaw,
+    this.settingsKnown = true,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final l = AppLocalizations.of(context);
     final fg = cs.onSurfaceVariant;
-    final label = codexModelDisplayName(model);
+    final label = settingsKnown && model != null
+        ? codexModelDisplayName(model!)
+        : l.codexSettingsUnknown;
     final suffix = reasoningEffort == null ? '' : ' ${reasoningEffort!.label}';
     final normalizedTier = serviceTierRaw?.trim();
     final unknownTier =
@@ -1272,7 +1352,7 @@ class CodexModelChip extends StatelessWidget {
               ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 130),
                 child: Text(
-                  '$label$suffix${unknownTier == null ? '' : ' · $unknownTier'}',
+                  '$label${settingsKnown ? suffix : ''}${unknownTier == null ? '' : ' · $unknownTier'}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
@@ -1312,15 +1392,13 @@ String _codexPermissionsSubtitle(
   CodexPermissionsMode.custom => l.codexPermissionsFromConfig,
 };
 
-String _codexPermissionsLabel(
-  CodexPermissionsMode mode,
-  AppLocalizations l,
-) => switch (mode) {
-  CodexPermissionsMode.defaultPermissions => l.codexPermissionsOnRequest,
-  CodexPermissionsMode.autoReview => l.codexAutoReview,
-  CodexPermissionsMode.fullAccess => l.codexPermissionsFullAccess,
-  CodexPermissionsMode.custom => l.codexPermissionsCustom,
-};
+String _codexPermissionsLabel(CodexPermissionsMode mode, AppLocalizations l) =>
+    switch (mode) {
+      CodexPermissionsMode.defaultPermissions => l.codexPermissionsOnRequest,
+      CodexPermissionsMode.autoReview => l.codexAutoReview,
+      CodexPermissionsMode.fullAccess => l.codexPermissionsFullAccess,
+      CodexPermissionsMode.custom => l.codexPermissionsCustom,
+    };
 
 (IconData, String, Color) _codexPermissionsChipStyle(
   CodexPermissionsMode mode,
@@ -1351,12 +1429,14 @@ String _codexPermissionsLabel(
 
 class PlanModeChip extends StatelessWidget {
   final bool enabled;
+  final bool known;
   final bool activeGlow;
   final VoidCallback onTap;
 
   const PlanModeChip({
     super.key,
     required this.enabled,
+    this.known = true,
     this.activeGlow = false,
     required this.onTap,
   });
@@ -1366,7 +1446,7 @@ class PlanModeChip extends StatelessWidget {
     final appColors = Theme.of(context).extension<AppColors>()!;
     final cs = Theme.of(context).colorScheme;
     final l = AppLocalizations.of(context);
-    final fg = enabled ? appColors.statusPlan : cs.onSurfaceVariant;
+    final fg = known && enabled ? appColors.statusPlan : cs.onSurfaceVariant;
 
     final chip = Material(
       color: Colors.transparent,
@@ -1380,7 +1460,9 @@ class PlanModeChip extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                enabled ? l.planOnShort : l.planOffShort,
+                known
+                    ? (enabled ? l.planOnShort : l.planOffShort)
+                    : l.codexSettingsUnknown,
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,

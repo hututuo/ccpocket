@@ -45,6 +45,7 @@ void main() {
     VoidCallback? onSend,
     VoidCallback? onStop,
     VoidCallback? onInterrupt,
+    bool stopActionDetachesDesktopTurn = false,
     VoidCallback? onToggleVoice,
     VoidCallback? onIndent,
     VoidCallback? onDedent,
@@ -76,6 +77,7 @@ void main() {
           onSend: onSend ?? () {},
           onStop: onStop ?? () {},
           onInterrupt: onInterrupt ?? () {},
+          stopActionDetachesDesktopTurn: stopActionDetachesDesktopTurn,
           onToggleVoice: onToggleVoice ?? () {},
           onIndent: onIndent ?? () {},
           onDedent: onDedent ?? () {},
@@ -110,6 +112,28 @@ void main() {
 
       expect(find.byKey(const ValueKey('stop_button')), findsOneWidget);
       expect(find.byKey(const ValueKey('send_button')), findsNothing);
+    });
+
+    testWidgets('labels a Desktop-owned stop control as detach', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        buildSubject(
+          status: ProcessStatus.running,
+          stopActionDetachesDesktopTurn: true,
+        ),
+      );
+
+      final tooltip = tester.widget<Tooltip>(
+        find.ancestor(
+          of: find.byKey(const ValueKey('stop_button')),
+          matching: find.byType(Tooltip),
+        ),
+      );
+      expect(
+        tooltip.message,
+        'Tap or hold: detach from phone; Desktop keeps running',
+      );
     });
 
     testWidgets('shows voice button when idle, no text, and voice available', (

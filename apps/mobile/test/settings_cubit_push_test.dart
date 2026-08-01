@@ -24,6 +24,7 @@ class FakeBridgeService extends BridgeService {
           bool? privacyMode,
           List<String>? enabledEventTypes,
           bool? approvalActionsSupported,
+          int? approvalActionsVersion,
           String requestId,
         })
       >[];
@@ -66,6 +67,7 @@ class FakeBridgeService extends BridgeService {
     bool? privacyMode,
     List<String>? enabledEventTypes,
     bool? approvalActionsSupported,
+    int? approvalActionsVersion,
   }) {
     final requestId = 'request-${++_requestSequence}';
     registerCalls.add((
@@ -75,6 +77,7 @@ class FakeBridgeService extends BridgeService {
       privacyMode: privacyMode,
       enabledEventTypes: enabledEventTypes,
       approvalActionsSupported: approvalActionsSupported,
+      approvalActionsVersion: approvalActionsVersion,
       requestId: requestId,
     ));
     return requestId;
@@ -206,6 +209,7 @@ void main() {
         machineManager: manager,
         fcmService: fcm,
         notificationApprovalActionsSupported: true,
+        notificationApprovalActionsVersion: 2,
       );
 
       await _flushAsync();
@@ -215,6 +219,7 @@ void main() {
       expect(bridge.registerCalls.first.platform, 'ios');
       expect(bridge.registerCalls.first.locale, isNotNull);
       expect(bridge.registerCalls.first.approvalActionsSupported, isTrue);
+      expect(bridge.registerCalls.first.approvalActionsVersion, 2);
       expect(bridge.registerCalls.first.enabledEventTypes, [
         NotificationPreferences.approvalRequiredEvent,
         NotificationPreferences.askUserQuestionEvent,

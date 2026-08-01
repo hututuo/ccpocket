@@ -70,6 +70,13 @@
   "removeProjectConfirm": "「{name}」を最近のプロジェクトから削除しますか？",
   "rename": "名前を変更",
   "renameSession": "セッション名を変更",
+  "renameFailed": "この会話の名前を変更できません",
+  "renameFailedWithError": "この会話の名前を変更できません：{error}",
+  "@renameFailedWithError": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
   "pin": "セッションをピン留め",
   "unpin": "セッションのピン留めを解除",
   "pinProject": "プロジェクトをピン留め",
@@ -240,6 +247,9 @@
   "loadingSessionStatus": "接続しました。セッション状態を読み込んでいます…",
   "loadingConversationCatalog": "セッション状態の準備が完了しました。会話一覧を読み込んでいます…",
   "bridgeConnectionTakingLonger": "Bridge には接続しましたが、会話一覧の準備に時間がかかっています。このまま待つか、再試行またはキャンセルできます。",
+  "authenticatingWithBridge": "Bridge で認証しています...",
+  "preparingCodexRuntime": "Bridge はオンラインです。共有 Codex ランタイムを準備しています...",
+  "codexRuntimeTakingLonger": "Bridge プロセスはオンラインですが、共有 Codex ランタイムはまだ準備中です。待機、再試行、またはキャンセルできます。",
   "useCachedConversations": "キャッシュを使用して開く",
   "bridgeConnectionAttemptFailed": "Bridge 接続を利用可能な状態にできませんでした。アドレスと認証情報を確認して再試行してください。",
   "externalBridgeConnectionTitle": "この Bridge に接続しますか？",
@@ -606,6 +616,7 @@
     }
   },
   "tapInterruptHoldStop": "タップ: 中断, 長押し: 停止",
+  "tapDetachDesktopTurn": "タップまたは長押し: スマートフォンから切断（Desktop の処理は継続）",
 
   "rewind": "巻き戻す",
   "rewindToHere": "ここまで巻き戻す",
@@ -1543,6 +1554,10 @@
   "speedFastOn": "高速モードはオンです",
   "speedFastOff": "高速モードはオフです",
   "currentServiceTierReadOnly": "現在のサービス階層：{value}（読み取り専用）",
+  "codexSettingsUnknown": "不明 · 同期を待機中",
+  "codexSettingsWaitingForRuntime": "Bridge がこの会話のランタイム設定を同期するのを待っています。設定は変更されていません。",
+  "codexSettingsReadOnlyDesktop": "このターンは Codex Desktop が所有しています。ここでは設定は読み取り専用です。Desktop で変更するか、ターンの終了を待ってください。",
+  "codexSettingsUnavailable": "Bridge がこの会話の設定書き込み権限を確認していないため、CC Pocket は変更を送信またはプレビューしません。",
   "codexPermissionsOnRequest": "必要時に確認",
   "codexPermissionsFullAccess": "フルアクセス",
   "codexPermissionsCustom": "カスタム（config.toml）",

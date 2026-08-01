@@ -1015,89 +1015,136 @@ class SessionCatalogCacheRepository {
     required List<ConversationSyncV2CatalogEntry> updated,
     required List<ConversationSyncV2Target> destroyed,
   }) {
+    if (pageIndex != 0 || pageCount != 1) {
+      return Future<void>.error(
+        StateError(
+          'Paged catalog changes must be committed as one logical batch.',
+        ),
+      );
+    }
+    return applyConversationCatalogBatch(
+      target: target,
+      codexSourceId: codexSourceId,
+      catalogState: catalogState,
+      created: created,
+      updated: updated,
+      destroyed: destroyed,
+    );
+  }
+
+  /// Atomically applies every page from one logical catalog change batch.
+  ///
+  /// Callers must aggregate wire pages before entering this method. Keeping
+  /// the transaction boundary at the logical batch prevents readers from
+  /// observing a mixture of the old catalog and only some of the new pages.
+  Future<void> applyConversationCatalogBatch({
+    required SessionCatalogCacheTarget target,
+    required String codexSourceId,
+    required String catalogState,
+    required List<ConversationSyncV2CatalogEntry> created,
+    required List<ConversationSyncV2CatalogEntry> updated,
+    required List<ConversationSyncV2Target> destroyed,
+    bool Function()? isCurrent,
+  }) {
     if (!target.isValid) return Future<void>.value();
     return _enqueueMutation(() async {
+      void ensureCurrent() {
+        if (isCurrent != null && !isCurrent()) {
+          throw const _ConversationCacheBatchSuperseded();
+        }
+      }
+
+      if (isCurrent != null && !isCurrent()) return;
       final db = await database.database;
-      await db.transaction((transaction) async {
-        final partitionId = await _ensureWritablePartition(transaction, target);
-        final now = DateTime.now().toUtc().millisecondsSinceEpoch;
-        final incomingEntries = [...created, ...updated];
-        final decodedSessions = incomingEntries
-            .map((entry) => entry.toRecentSession(codexSourceId: codexSourceId))
-            .toList(growable: false);
-        final assistantOutputByIdentity =
-            await _cachedAssistantOutputByIdentity(
-              transaction,
-              partitionId,
-              decodedSessions,
+      await _ignoreSupersededConversationBatch(
+        db.transaction((transaction) async {
+          ensureCurrent();
+          final partitionId = await _ensureWritablePartition(
+            transaction,
+            target,
+          );
+          ensureCurrent();
+          final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+          final incomingEntries = [...created, ...updated];
+          final decodedSessions = incomingEntries
+              .map(
+                (entry) => entry.toRecentSession(codexSourceId: codexSourceId),
+              )
+              .toList(growable: false);
+          final assistantOutputByIdentity =
+              await _cachedAssistantOutputByIdentity(
+                transaction,
+                partitionId,
+                decodedSessions,
+              );
+          for (var index = 0; index < incomingEntries.length; index++) {
+            final entry = incomingEntries[index];
+            final decodedSession = decodedSessions[index];
+            final preservedAssistantOutputAt =
+                assistantOutputByIdentity[_conversationIdentity(
+                  entry.provider,
+                  entry.providerSessionId,
+                )];
+            await transaction.delete(
+              SessionCatalogCacheDatabase.entriesTable,
+              where: 'partition_id = ? AND provider = ? AND session_id = ?',
+              whereArgs: [partitionId, entry.provider, entry.providerSessionId],
             );
-        for (var index = 0; index < incomingEntries.length; index++) {
-          final entry = incomingEntries[index];
-          final decodedSession = decodedSessions[index];
-          final preservedAssistantOutputAt =
-              assistantOutputByIdentity[_conversationIdentity(
-                entry.provider,
-                entry.providerSessionId,
-              )];
-          await transaction.delete(
-            SessionCatalogCacheDatabase.entriesTable,
-            where: 'partition_id = ? AND provider = ? AND session_id = ?',
-            whereArgs: [partitionId, entry.provider, entry.providerSessionId],
-          );
-          final session = preservedAssistantOutputAt == null
-              ? decodedSession
-              : decodedSession.copyWithLastAssistantOutputAt(
-                  preservedAssistantOutputAt,
-                );
-          await transaction.insert(
-            SessionCatalogCacheDatabase.entriesTable,
-            {
-              'partition_id': partitionId,
-              'provider': entry.provider,
-              'project_path': entry.projectPath,
-              'session_id': entry.providerSessionId,
-              'session_json': jsonEncode(session.toJson()),
-              'modified_sort':
-                  DateTime.tryParse(
-                    entry.recencyAt,
-                  )?.toUtc().millisecondsSinceEpoch ??
-                  0,
-              'cached_at': now,
-            },
-            conflictAlgorithm: ConflictAlgorithm.replace,
-          );
-        }
-        for (final entry in destroyed) {
-          await transaction.delete(
-            SessionCatalogCacheDatabase.entriesTable,
-            where: 'partition_id = ? AND provider = ? AND session_id = ?',
-            whereArgs: [partitionId, entry.provider, entry.providerSessionId],
-          );
-          await transaction.delete(
-            SessionCatalogCacheDatabase.statusesTable,
-            where:
-                'partition_id = ? AND provider = ? '
-                'AND provider_session_id = ?',
-            whereArgs: [partitionId, entry.provider, entry.providerSessionId],
-          );
-        }
-        await _ensureSyncState(transaction, partitionId, now);
-        if (pageIndex == pageCount - 1) {
+            final session = preservedAssistantOutputAt == null
+                ? decodedSession
+                : decodedSession.copyWithLastAssistantOutputAt(
+                    preservedAssistantOutputAt,
+                  );
+            await transaction.insert(
+              SessionCatalogCacheDatabase.entriesTable,
+              {
+                'partition_id': partitionId,
+                'provider': entry.provider,
+                'project_path': entry.projectPath,
+                'session_id': entry.providerSessionId,
+                'session_json': jsonEncode(session.toJson()),
+                'modified_sort':
+                    DateTime.tryParse(
+                      entry.recencyAt,
+                    )?.toUtc().millisecondsSinceEpoch ??
+                    0,
+                'cached_at': now,
+              },
+              conflictAlgorithm: ConflictAlgorithm.replace,
+            );
+          }
+          for (final entry in destroyed) {
+            await transaction.delete(
+              SessionCatalogCacheDatabase.entriesTable,
+              where: 'partition_id = ? AND provider = ? AND session_id = ?',
+              whereArgs: [partitionId, entry.provider, entry.providerSessionId],
+            );
+            await transaction.delete(
+              SessionCatalogCacheDatabase.statusesTable,
+              where:
+                  'partition_id = ? AND provider = ? '
+                  'AND provider_session_id = ?',
+              whereArgs: [partitionId, entry.provider, entry.providerSessionId],
+            );
+          }
+          ensureCurrent();
+          await _ensureSyncState(transaction, partitionId, now);
           await transaction.update(
             SessionCatalogCacheDatabase.syncStatesTable,
             {'catalog_state': catalogState, 'updated_at': now},
             where: 'partition_id = ?',
             whereArgs: [partitionId],
           );
-        }
-        await transaction.update(
-          SessionCatalogCacheDatabase.partitionsTable,
-          {'updated_at': now},
-          where: 'partition_id = ?',
-          whereArgs: [partitionId],
-        );
-        await _prunePartition(transaction, partitionId);
-      });
+          await transaction.update(
+            SessionCatalogCacheDatabase.partitionsTable,
+            {'updated_at': now},
+            where: 'partition_id = ?',
+            whereArgs: [partitionId],
+          );
+          await _prunePartition(transaction, partitionId);
+          ensureCurrent();
+        }),
+      );
     });
   }
 
@@ -1108,54 +1155,93 @@ class SessionCatalogCacheRepository {
     required int pageCount,
     required List<ConversationSyncV2Status> changes,
   }) {
+    if (pageIndex != 0 || pageCount != 1) {
+      return Future<void>.error(
+        StateError(
+          'Paged status changes must be committed as one logical batch.',
+        ),
+      );
+    }
+    return applyConversationStatusBatch(
+      target: target,
+      statusState: statusState,
+      changes: changes,
+    );
+  }
+
+  /// Atomically applies every page from one logical status change batch.
+  Future<void> applyConversationStatusBatch({
+    required SessionCatalogCacheTarget target,
+    required String statusState,
+    required List<ConversationSyncV2Status> changes,
+    bool Function()? isCurrent,
+  }) {
     if (!target.isValid) return Future<void>.value();
     return _enqueueMutation(() async {
-      final db = await database.database;
-      await db.transaction((transaction) async {
-        final partitionId = await _ensureWritablePartition(transaction, target);
-        final now = DateTime.now().toUtc().millisecondsSinceEpoch;
-        for (final status in changes) {
-          final observed =
-              DateTime.tryParse(
-                status.observedAt,
-              )?.toUtc().millisecondsSinceEpoch ??
-              0;
-          final prior = await transaction.query(
-            SessionCatalogCacheDatabase.statusesTable,
-            columns: ['observed_sort'],
-            where:
-                'partition_id = ? AND provider = ? '
-                'AND provider_session_id = ?',
-            whereArgs: [partitionId, status.provider, status.providerSessionId],
-            limit: 1,
-          );
-          if (prior.isNotEmpty &&
-              (prior.single['observed_sort']! as int) > observed) {
-            continue;
-          }
-          await transaction.insert(
-            SessionCatalogCacheDatabase.statusesTable,
-            {
-              'partition_id': partitionId,
-              'provider': status.provider,
-              'provider_session_id': status.providerSessionId,
-              'status_json': jsonEncode(status.toJson()),
-              'observed_sort': observed,
-              'updated_at': now,
-            },
-            conflictAlgorithm: ConflictAlgorithm.replace,
-          );
+      void ensureCurrent() {
+        if (isCurrent != null && !isCurrent()) {
+          throw const _ConversationCacheBatchSuperseded();
         }
-        await _ensureSyncState(transaction, partitionId, now);
-        if (pageIndex == pageCount - 1) {
+      }
+
+      if (isCurrent != null && !isCurrent()) return;
+      final db = await database.database;
+      await _ignoreSupersededConversationBatch(
+        db.transaction((transaction) async {
+          ensureCurrent();
+          final partitionId = await _ensureWritablePartition(
+            transaction,
+            target,
+          );
+          ensureCurrent();
+          final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+          for (final status in changes) {
+            final observed =
+                DateTime.tryParse(
+                  status.observedAt,
+                )?.toUtc().millisecondsSinceEpoch ??
+                0;
+            final prior = await transaction.query(
+              SessionCatalogCacheDatabase.statusesTable,
+              columns: ['observed_sort'],
+              where:
+                  'partition_id = ? AND provider = ? '
+                  'AND provider_session_id = ?',
+              whereArgs: [
+                partitionId,
+                status.provider,
+                status.providerSessionId,
+              ],
+              limit: 1,
+            );
+            if (prior.isNotEmpty &&
+                (prior.single['observed_sort']! as int) > observed) {
+              continue;
+            }
+            await transaction.insert(
+              SessionCatalogCacheDatabase.statusesTable,
+              {
+                'partition_id': partitionId,
+                'provider': status.provider,
+                'provider_session_id': status.providerSessionId,
+                'status_json': jsonEncode(status.toJson()),
+                'observed_sort': observed,
+                'updated_at': now,
+              },
+              conflictAlgorithm: ConflictAlgorithm.replace,
+            );
+          }
+          ensureCurrent();
+          await _ensureSyncState(transaction, partitionId, now);
           await transaction.update(
             SessionCatalogCacheDatabase.syncStatesTable,
             {'status_state': statusState, 'updated_at': now},
             where: 'partition_id = ?',
             whereArgs: [partitionId],
           );
-        }
-      });
+          ensureCurrent();
+        }),
+      );
     });
   }
 
@@ -2351,6 +2437,17 @@ class SessionCatalogCacheRepository {
     return next;
   }
 
+  static Future<void> _ignoreSupersededConversationBatch(
+    Future<void> operation,
+  ) async {
+    try {
+      await operation;
+    } on _ConversationCacheBatchSuperseded {
+      // The SQLite transaction has rolled back. A newer connection/source
+      // generation owns the live cache now.
+    }
+  }
+
   static Future<void> _insertHotEntry(
     DatabaseExecutor database, {
     required String partitionId,
@@ -3085,4 +3182,8 @@ class SessionCatalogCacheRepository {
     if (right == null) return left;
     return left > right ? left : right;
   }
+}
+
+class _ConversationCacheBatchSuperseded implements Exception {
+  const _ConversationCacheBatchSuperseded();
 }

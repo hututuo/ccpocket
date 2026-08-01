@@ -110,6 +110,7 @@ class CodexActionBrokerService extends ChangeNotifier {
   String? _submittingOpaqueRequestId;
   String? _observedAuthorityKey;
   bool _snapshotObserved = false;
+  int _snapshotEpoch = 0;
   bool _started = false;
   bool _disposed = false;
   int _viewEpoch = 0;
@@ -118,6 +119,19 @@ class CodexActionBrokerService extends ChangeNotifier {
   CodexActionBrokerResponseOutcome? get lastOutcome => _lastOutcome;
   String? get lastError => _lastError;
   int get viewEpoch => _viewEpoch;
+  int get snapshotEpoch => _snapshotEpoch;
+  bool get snapshotObserved => _snapshotObserved;
+
+  CodexActionBrokerRequest? requestByOpaqueId(String opaqueRequestId) {
+    if (!authenticatedSourceMatches) return null;
+    final request = _requests[opaqueRequestId];
+    return request != null && _matchesStaticTarget(request) && !request.terminal
+        ? request
+        : null;
+  }
+
+  bool isAwaitingCanonical(String opaqueRequestId) =>
+      _awaitingCanonical.contains(opaqueRequestId);
 
   bool get capabilityNegotiated => enabled && bridge.supportsCodexActionBroker;
 
@@ -346,6 +360,7 @@ class CodexActionBrokerService extends ChangeNotifier {
     CodexActionBrokerDecision decision, {
     required String opaqueRequestId,
     String? answer,
+    String? operationId,
   }) async {
     final request = visibleRequest;
     if (!actionable ||
@@ -360,7 +375,14 @@ class CodexActionBrokerService extends ChangeNotifier {
       decision.wireValue,
       answer ?? '',
     ].join('\u0000');
-    final operationId = _operationIds.putIfAbsent(intentKey, _createId);
+    final suppliedOperationId = _normalized(operationId);
+    if (suppliedOperationId != null && suppliedOperationId.length > 256) {
+      return false;
+    }
+    final stableOperationId = _operationIds.putIfAbsent(
+      intentKey,
+      () => suppliedOperationId ?? _createId(),
+    );
     while (_operationIds.length > 128) {
       _operationIds.remove(_operationIds.keys.first);
     }
@@ -391,7 +413,7 @@ class CodexActionBrokerService extends ChangeNotifier {
           requestId: requestId,
           request: request,
           claimantId: claimantId,
-          operationId: operationId,
+          operationId: stableOperationId,
           action: decision,
           answer: answer,
         ),
@@ -426,6 +448,7 @@ class CodexActionBrokerService extends ChangeNotifier {
         }
         _applyHealth(message.health);
         _snapshotObserved = true;
+        _snapshotEpoch += 1;
         _lastOutcome = null;
         _lastError = null;
         _requests.clear();

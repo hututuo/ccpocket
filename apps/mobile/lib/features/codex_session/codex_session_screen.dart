@@ -232,6 +232,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   ChatComposerSubmission? _deferredSubmission;
   PendingSessionBinding? _retainedPendingBinding;
   PendingSessionBinding? _localAttachmentBinding;
+  bool _durableRuntimeBindingAmbiguous = false;
   final Object _sessionRouteOwner = Object();
   Object? _sessionRouteIdentity;
   late BridgeDataSourceIdentity _dataSourceIdentity;
@@ -268,13 +269,105 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   }
 
   void _listenForAuthoritativeDataSourceIdentity(BridgeService bridge) {
-    _identitySessionListSub = bridge.sessionList.listen((_) {
+    _identitySessionListSub = bridge.sessionList.listen((sessions) {
       _reconcileAuthoritativeDataSourceIdentity(bridge);
+      _reconcileDurableLiveRuntime(bridge, sessions);
     });
     _identityRecentSessionsSub = bridge.recentSessionsStream.listen((_) {
       _reconcileAuthoritativeDataSourceIdentity(bridge);
+      _reconcileDurableLiveRuntime(bridge, bridge.sessions);
     });
     _reconcileAuthoritativeDataSourceIdentity(bridge);
+    _reconcileDurableLiveRuntime(bridge, bridge.sessions);
+  }
+
+  /// Keeps the transient runtime handle of a durable Codex page aligned with
+  /// the current authoritative session snapshot.
+  ///
+  /// A v2 status can arrive before the matching runtime row (or Desktop can
+  /// start/replace the runtime while this page is already open). The durable
+  /// provider thread remains the page identity, while this handle is rebound
+  /// only when exactly one current-source runtime proves that identity.
+  void _reconcileDurableLiveRuntime(
+    BridgeService bridge,
+    List<SessionInfo> sessions,
+  ) {
+    if (!mounted || !bridge.hasAuthoritativeSessionListForCurrentConnection) {
+      return;
+    }
+    final durableId = widget.durableProviderSessionId?.trim();
+    if (durableId == null || durableId.isEmpty) return;
+
+    final authenticatedIdentity = bridge.dataSourceIdentity;
+    if (!_dataSourceIdentity.isSatisfiedBy(
+      authenticatedIdentity,
+      provider: Provider.codex.value,
+    )) {
+      _applyDurableLiveRuntimeBinding(
+        bridge,
+        runtimeSessionId: null,
+        ambiguous: false,
+      );
+      return;
+    }
+
+    final candidatesById = <String, SessionInfo>{};
+    for (final session in sessions) {
+      if (session.provider != Provider.codex.value) continue;
+      final providerThreadId = session.claudeSessionId?.trim();
+      final provesDurableIdentity =
+          providerThreadId == durableId ||
+          ((providerThreadId == null || providerThreadId.isEmpty) &&
+              session.id == durableId);
+      if (provesDurableIdentity) {
+        candidatesById[session.id] = session;
+      }
+    }
+
+    final candidates = candidatesById.values.toList(growable: false);
+    _applyDurableLiveRuntimeBinding(
+      bridge,
+      runtimeSessionId: candidates.length == 1 ? candidates.single.id : null,
+      ambiguous: candidates.length > 1,
+    );
+  }
+
+  void _applyDurableLiveRuntimeBinding(
+    BridgeService bridge, {
+    required String? runtimeSessionId,
+    required bool ambiguous,
+  }) {
+    final normalized = runtimeSessionId?.trim();
+    final nextRuntimeId = normalized == null || normalized.isEmpty
+        ? null
+        : normalized;
+    final currentRuntimeId = _isPending ? null : _sessionId;
+    if (currentRuntimeId == nextRuntimeId &&
+        _durableRuntimeBindingAmbiguous == ambiguous) {
+      return;
+    }
+
+    if (nextRuntimeId == null) {
+      setState(() {
+        _durableRuntimeBindingAmbiguous = ambiguous;
+        _isPending = true;
+      });
+      _syncSessionRouteIdentity();
+      return;
+    }
+
+    if (currentRuntimeId != null && currentRuntimeId != nextRuntimeId) {
+      bridge.migrateExplorerHistory(currentRuntimeId, nextRuntimeId);
+    }
+    final explorerHistory = bridge.getExplorerHistory(nextRuntimeId);
+    setState(() {
+      _durableRuntimeBindingAmbiguous = false;
+      _sessionId = nextRuntimeId;
+      _isPending = false;
+      _explorerCurrentPath = explorerHistory.currentPath;
+      _recentPeekedFiles = explorerHistory.recentPeekedFiles;
+    });
+    _syncSessionRouteIdentity();
   }
 
   void _reconcileAuthoritativeDataSourceIdentity(BridgeService bridge) {
@@ -479,8 +572,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
                   _dataSourceIdentity,
                   provider: Provider.codex.value,
                 )) {
-              if (mounted &&
-                  widget.durableProviderSessionId == durableId) {
+              if (mounted && widget.durableProviderSessionId == durableId) {
                 _cachedPreviewDirty = true;
               }
               return;
@@ -531,6 +623,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       _localAttachmentBinding ?? widget.pendingSessionCreated;
 
   PendingSessionBinding? _ensureDurableAttachmentBinding() {
+    if (_durableRuntimeBindingAmbiguous) return null;
     final existingLocal = _localAttachmentBinding;
     if (existingLocal != null && !existingLocal.isDisposed) {
       return existingLocal;
@@ -839,6 +932,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     draftService.migrateDraft(oldId, newId);
     draftService.migrateImageDraft(oldId, newId);
     setState(() {
+      _durableRuntimeBindingAmbiguous = false;
       _sessionId = newId;
       _projectPath = msg.projectPath ?? _projectPath;
       _worktreePath = msg.worktreePath ?? _worktreePath;
@@ -878,6 +972,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       draftService.migrateImageDraft(durableId, newId);
     }
     setState(() {
+      _durableRuntimeBindingAmbiguous = false;
       _sessionId = newId;
       _projectPath = msg.projectPath ?? _projectPath;
       _gitBranch = msg.worktreeBranch ?? _gitBranch;
@@ -909,6 +1004,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
         _detachPendingBinding(widget.pendingSessionCreated);
       }
       setState(() {
+        _durableRuntimeBindingAmbiguous = false;
         _explorerCurrentPath = '';
         _recentPeekedFiles = const [];
         if (widget.durableProviderSessionId?.trim().isNotEmpty == true) {
@@ -1447,6 +1543,12 @@ class _CodexChatBody extends HookWidget {
 
     // --- Bloc state ---
     final chatSessionCubit = context.read<ChatSessionCubit>();
+    final sessionInsightsAuthorityGenerationProvider =
+        useMemoized<String? Function()>(
+          () =>
+              () => chatSessionCubit.detachedActionBrokerAuthorityGeneration,
+          [chatSessionCubit],
+        );
     useValueListenable(chatSessionCubit.detachedLiveRuntimeRevision);
     final sessionState = context.watch<ChatSessionCubit>().state;
     final bridgeState = context.watch<ConnectionCubit>().state;
@@ -1573,15 +1675,21 @@ class _CodexChatBody extends HookWidget {
       inputController: chatInputController,
       draftService: draftService,
       codexModel: sessionState.codexModel,
+      authorityGenerationProvider: sessionInsightsAuthorityGenerationProvider,
       requestCompact: requestCompactImmediately,
       openPane: (featureId, {arguments = const {}}) =>
           _openLocalFeaturePaneOrSheet(
             context,
             featureId: featureId,
             sessionId: sessionId,
-            arguments:
-                featureId == 'side_chat' &&
-                    sessionInsightsSessionId?.isNotEmpty == true
+            arguments: featureId == 'session_insights'
+                ? {
+                    ...arguments,
+                    'authorityGenerationProvider':
+                        sessionInsightsAuthorityGenerationProvider,
+                  }
+                : featureId == 'side_chat' &&
+                      sessionInsightsSessionId?.isNotEmpty == true
                 ? {
                     ...arguments,
                     'parentProviderSessionId': sessionInsightsSessionId,
@@ -1889,43 +1997,46 @@ class _CodexChatBody extends HookWidget {
       ],
     );
 
-    useEffect(() {
-      if (chatFileRoot == null) return null;
-      final runtimeSessionId = bridgeRuntimeSessionId;
-      if (runtimeSessionId == null) return null;
+    useEffect(
+      () {
+        if (chatFileRoot == null) return null;
+        final runtimeSessionId = bridgeRuntimeSessionId;
+        if (runtimeSessionId == null) return null;
 
-      final bridge = context.read<BridgeService>();
-      GitStatusCubit? gitStatusCubit;
-      GitViewCacheService? gitViewCache;
-      try {
-        gitStatusCubit = context.read<GitStatusCubit>();
-        gitViewCache = context.read<GitViewCacheService>();
-      } catch (_) {}
-      final sub = bridge.messagesForSession(runtimeSessionId).listen((msg) {
-        if (isBackgroundRef.value) return;
-        if (msg case ToolResultMessage(
-          :final toolName,
-        ) when _fileListRefreshToolNames.contains(toolName)) {
-          bridge.requestFileList(chatFileRoot);
-        } else if (msg case ResultMessage(:final fileEdits)) {
-          if ((fileEdits ?? 0) > 0) {
+        final bridge = context.read<BridgeService>();
+        GitStatusCubit? gitStatusCubit;
+        GitViewCacheService? gitViewCache;
+        try {
+          gitStatusCubit = context.read<GitStatusCubit>();
+          gitViewCache = context.read<GitViewCacheService>();
+        } catch (_) {}
+        final sub = bridge.messagesForSession(runtimeSessionId).listen((msg) {
+          if (isBackgroundRef.value) return;
+          if (msg case ToolResultMessage(
+            :final toolName,
+          ) when _fileListRefreshToolNames.contains(toolName)) {
             bridge.requestFileList(chatFileRoot);
+          } else if (msg case ResultMessage(:final fileEdits)) {
+            if ((fileEdits ?? 0) > 0) {
+              bridge.requestFileList(chatFileRoot);
+            }
+            gitStatusCubit?.refresh(
+              sessionId: sessionId,
+              projectPath: gitProjectPath!,
+              includeRemote: showRemoteGitStatusBadge,
+            );
+            gitViewCache?.refreshIfPresent(sessionId);
           }
-          gitStatusCubit?.refresh(
-            sessionId: sessionId,
-            projectPath: gitProjectPath!,
-            includeRemote: showRemoteGitStatusBadge,
-          );
-          gitViewCache?.refreshIfPresent(sessionId);
-        }
-      });
-      return sub.cancel;
-    }, [
-      bridgeRuntimeSessionId,
-      chatFileRoot,
-      gitProjectPath,
-      showRemoteGitStatusBadge,
-    ]);
+        });
+        return sub.cancel;
+      },
+      [
+        bridgeRuntimeSessionId,
+        chatFileRoot,
+        gitProjectPath,
+        showRemoteGitStatusBadge,
+      ],
+    );
 
     // --- Listen for branch updates ---
     useEffect(() {
@@ -2002,8 +2113,7 @@ class _CodexChatBody extends HookWidget {
         detachedPreview &&
         actionBroker.capabilityNegotiated &&
         actionBroker.ownsDetachedInteraction(
-          waitingApproval:
-              sessionState.status == ProcessStatus.waitingApproval,
+          waitingApproval: sessionState.status == ProcessStatus.waitingApproval,
         );
     if (brokerOwnsApprovalSurface) {
       if (brokerPresentation?.usesAskUserUi == true) {
@@ -2677,8 +2787,9 @@ class _CodexChatBody extends HookWidget {
                             ),
                           ),
                           floatingButtonBuilder: (overlayHeight) {
-                            if (!scroll.isScrolledUp)
+                            if (!scroll.isScrolledUp) {
                               return const SizedBox.shrink();
+                            }
                             return Positioned(
                               right: 12,
                               bottom: overlayHeight + 12,
@@ -2890,6 +3001,9 @@ class _CodexChatBody extends HookWidget {
                           : null,
                       bridgeService: bridge,
                       registryService: ephemeralSideChatRegistry,
+                      legacyRuntimeParentSessionId: detachedPreview
+                          ? liveRuntimeSessionId
+                          : sessionId,
                       onOpenSideChat:
                           (parentSessionId, parentProviderSessionId, entry) =>
                               _openLocalFeaturePaneOrSheet(

@@ -17,8 +17,19 @@ abstract interface class EphemeralSideChatBridgeGateway {
   void send(ClientMessage message);
 }
 
+/// Optional exact scope for gateways backed by an authenticated Bridge.
+///
+/// Keeping this separate preserves source compatibility for legacy/test
+/// gateways while preventing one LAN/Tailscale route or reconnect generation
+/// from reusing another source's ephemeral registry.
+abstract interface class EphemeralSideChatAuthenticatedScopeGateway {
+  String? get authenticatedScopeIdentity;
+}
+
 class BridgeServiceEphemeralSideChatGateway
-    implements EphemeralSideChatBridgeGateway {
+    implements
+        EphemeralSideChatBridgeGateway,
+        EphemeralSideChatAuthenticatedScopeGateway {
   const BridgeServiceEphemeralSideChatGateway(this._bridge);
 
   final BridgeService _bridge;
@@ -28,6 +39,20 @@ class BridgeServiceEphemeralSideChatGateway
 
   @override
   String? get logicalConnectionIdentity => _bridge.logicalConnectionIdentity;
+
+  @override
+  String? get authenticatedScopeIdentity {
+    final bridgeInstanceId = _bridge.bridgeInstanceId?.trim();
+    final codexSourceId = _bridge.codexSourceId?.trim();
+    if (bridgeInstanceId == null ||
+        bridgeInstanceId.isEmpty ||
+        codexSourceId == null ||
+        codexSourceId.isEmpty) {
+      return null;
+    }
+    return 'bridge:${Uri.encodeComponent(bridgeInstanceId)}'
+        '|codex:${Uri.encodeComponent(codexSourceId)}';
+  }
 
   @override
   Set<String> get capabilities => _bridge.bridgeCapabilities;
@@ -347,7 +372,14 @@ class EphemeralSideChatRegistryService extends ChangeNotifier {
 
   void _synchronizeBridgeScope() {
     if (_disposed) return;
-    final rawIdentity = _bridge.logicalConnectionIdentity?.trim();
+    final authenticatedIdentity =
+        _bridge is EphemeralSideChatAuthenticatedScopeGateway
+        ? (_bridge as EphemeralSideChatAuthenticatedScopeGateway)
+              .authenticatedScopeIdentity
+        : null;
+    final rawIdentity = authenticatedIdentity?.trim().isNotEmpty == true
+        ? authenticatedIdentity!.trim()
+        : _bridge.logicalConnectionIdentity?.trim();
     final nextIdentity = rawIdentity?.isNotEmpty == true ? rawIdentity : null;
     if (!_bridgeScopeInitialized) {
       _bridgeScopeInitialized = true;

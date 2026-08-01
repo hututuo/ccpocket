@@ -135,6 +135,13 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
     this.model,
     this.modelReasoningEffort,
     this.serviceTier,
+    this.approvalPolicy,
+    this.approvalsReviewer,
+    this.sandboxMode,
+    this.collaborationMode,
+    this.networkAccessEnabled,
+    this.webSearchMode,
+    this.codexSettingsSnapshotComplete = false,
     this.forkedFromThreadId,
     this.parentThreadId,
   });
@@ -151,6 +158,13 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
   final String? model;
   final String? modelReasoningEffort;
   final String? serviceTier;
+  final String? approvalPolicy;
+  final String? approvalsReviewer;
+  final String? sandboxMode;
+  final String? collaborationMode;
+  final bool? networkAccessEnabled;
+  final String? webSearchMode;
+  final bool codexSettingsSnapshotComplete;
   final String? forkedFromThreadId;
   final String? parentThreadId;
 
@@ -211,6 +225,36 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
         'serviceTier',
         maximumLength: 64,
       ),
+      approvalPolicy: _conversationSyncOptionalString(
+        json,
+        'approvalPolicy',
+        maximumLength: 64,
+      ),
+      approvalsReviewer: _conversationSyncOptionalString(
+        json,
+        'approvalsReviewer',
+        maximumLength: 64,
+      ),
+      sandboxMode: _conversationSyncOptionalString(
+        json,
+        'sandboxMode',
+        maximumLength: 64,
+      ),
+      collaborationMode: _conversationSyncCollaborationMode(
+        json['collaborationMode'],
+      ),
+      networkAccessEnabled: json['networkAccessEnabled'] is bool
+          ? json['networkAccessEnabled'] as bool
+          : null,
+      webSearchMode: _conversationSyncOptionalString(
+        json,
+        'webSearchMode',
+        maximumLength: 64,
+      ),
+      codexSettingsSnapshotComplete:
+          json['codexSettingsSnapshotComplete'] is bool
+          ? json['codexSettingsSnapshotComplete'] as bool
+          : false,
       forkedFromThreadId: _conversationSyncOptionalString(
         json,
         'forkedFromThreadId',
@@ -242,8 +286,19 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
         codexModel: model,
         codexModelReasoningEffort: modelReasoningEffort,
         codexServiceTier: serviceTier,
+        codexApprovalPolicy: approvalPolicy,
+        codexApprovalsReviewer: approvalsReviewer,
+        codexSandboxMode: sandboxMode,
+        codexCollaborationMode: collaborationMode,
+        planMode: collaborationMode == 'plan',
+        codexNetworkAccessEnabled: networkAccessEnabled,
+        codexWebSearchMode: webSearchMode,
+        codexSettingsSnapshotComplete: codexSettingsSnapshotComplete,
       );
 }
+
+String? _conversationSyncCollaborationMode(Object? value) =>
+    value == 'plan' || value == 'default' ? value as String : null;
 
 class ConversationSyncV2Status extends ConversationSyncV2Target {
   const ConversationSyncV2Status({

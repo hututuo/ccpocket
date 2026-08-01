@@ -9,6 +9,18 @@ enum CodexGoalSupport { unknown, supported, unsupported }
 
 enum CodexNativePlanModeSupport { unknown, supported, unsupported }
 
+/// Whether the current Codex settings surface may issue a mutation.
+///
+/// Detached durable pages deliberately fail closed until the Bridge proves an
+/// exact writable runtime lease. This is independent of whether individual
+/// setting values have already been synchronized.
+enum CodexSettingsActionability {
+  editable,
+  waitingForRuntime,
+  readOnlyDesktopOwner,
+  unavailable,
+}
+
 enum CodexGoalMutationKind { create, edit, pause, resume, updateBudget, clear }
 
 enum CodexGoalErrorKind {

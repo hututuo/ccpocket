@@ -60,6 +60,9 @@ class ContextUsage {
   final String? sessionId;
   final String? threadId;
   final String? turnId;
+  final String? bridgeInstanceId;
+  final String? codexSourceId;
+  final String? authorityGeneration;
   final ContextTokenUsage last;
   final ContextTokenUsage total;
   final int modelContextWindow;
@@ -68,6 +71,9 @@ class ContextUsage {
     this.sessionId,
     this.threadId,
     this.turnId,
+    this.bridgeInstanceId,
+    this.codexSourceId,
+    this.authorityGeneration,
     required this.last,
     required this.total,
     required this.modelContextWindow,
@@ -89,6 +95,13 @@ class ContextUsage {
       sessionId: _sessionInsightsNonEmptyString(json['sessionId']),
       threadId: _sessionInsightsNonEmptyString(json['threadId']),
       turnId: _sessionInsightsNonEmptyString(json['turnId']),
+      bridgeInstanceId: _sessionInsightsNonEmptyString(
+        json['bridgeInstanceId'],
+      ),
+      codexSourceId: _sessionInsightsNonEmptyString(json['codexSourceId']),
+      authorityGeneration: _sessionInsightsNonEmptyString(
+        json['authorityGeneration'],
+      ),
       last: ContextTokenUsage.fromJson(lastJson),
       total: ContextTokenUsage.fromJson(totalJson),
       modelContextWindow:

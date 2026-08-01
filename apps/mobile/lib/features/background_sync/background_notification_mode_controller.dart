@@ -135,6 +135,12 @@ class NotificationServiceBackgroundPresenter
     }
     final permissionId =
         notification.data['permissionId'] ?? notification.data['toolUseId'];
+    final usesCodexActionBroker =
+        hasCodexActionBrokerApprovalPayload(<String, dynamic>{
+          ...notification.data,
+          'provider': notification.provider,
+          'eventType': notification.eventType,
+        });
     final dataSourceIdentity = BridgeDataSourceIdentity.fromMap(
       notification.data,
     );
@@ -144,6 +150,13 @@ class NotificationServiceBackgroundPresenter
       providerSessionId: notification.data['providerSessionId'],
       eventType: notification.eventType,
       permissionId: permissionId,
+      actionPayloadVersion: notification.data['actionPayloadVersion'],
+      opaqueRequestId: notification.data['opaqueRequestId'],
+      codexSourceId: notification.data['codexSourceId'],
+      threadId: notification.data['threadId'],
+      turnId: notification.data['turnId'],
+      authorityGeneration: notification.data['authorityGeneration'],
+      allowedActions: notification.data['allowedActions'],
       occurredAt: notification.occurredAt,
       dataSourceIdentity: dataSourceIdentity,
     );
@@ -162,8 +175,10 @@ class NotificationServiceBackgroundPresenter
       categoryIdentifier:
           notification.eventType ==
                   NotificationPreferences.approvalRequiredEvent &&
-              permissionId?.isNotEmpty == true
-          ? approvalNotificationCategoryId
+              (usesCodexActionBroker || permissionId?.isNotEmpty == true)
+          ? usesCodexActionBroker
+                ? codexActionBrokerApprovalNotificationCategoryId
+                : approvalNotificationCategoryId
           : null,
     );
   }

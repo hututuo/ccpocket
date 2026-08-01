@@ -129,6 +129,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get renameSession => 'Rename Session';
 
   @override
+  String get renameFailed => 'Unable to rename this conversation';
+
+  @override
+  String renameFailedWithError(String error) {
+    return 'Unable to rename this conversation: $error';
+  }
+
+  @override
   String get pin => 'Pin session';
 
   @override
@@ -594,6 +602,17 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get bridgeConnectionTakingLonger =>
       'The Bridge is connected, but the conversation catalog is taking longer than expected. You can keep waiting, retry, or cancel.';
+
+  @override
+  String get authenticatingWithBridge => 'Authenticating with Bridge...';
+
+  @override
+  String get preparingCodexRuntime =>
+      'Bridge is online. Preparing the shared Codex runtime...';
+
+  @override
+  String get codexRuntimeTakingLonger =>
+      'The Bridge process is online, but the shared Codex runtime is still preparing. You can keep waiting, retry, or cancel.';
 
   @override
   String get useCachedConversations => 'Use cached conversations';
@@ -1465,6 +1484,10 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get tapInterruptHoldStop => 'Tap: interrupt, Hold: stop';
+
+  @override
+  String get tapDetachDesktopTurn =>
+      'Tap or hold: detach from phone; Desktop keeps running';
 
   @override
   String get rewind => 'Rewind';
@@ -3845,6 +3868,21 @@ class AppLocalizationsEn extends AppLocalizations {
   String currentServiceTierReadOnly(Object value) {
     return 'Current service tier: $value (read-only)';
   }
+
+  @override
+  String get codexSettingsUnknown => 'Unknown · waiting for sync';
+
+  @override
+  String get codexSettingsWaitingForRuntime =>
+      'Waiting for Bridge to synchronize this conversation\'s runtime settings. Nothing has been changed.';
+
+  @override
+  String get codexSettingsReadOnlyDesktop =>
+      'This turn is owned by Codex Desktop. Its settings are read-only here; change them in Desktop or wait for the turn to finish.';
+
+  @override
+  String get codexSettingsUnavailable =>
+      'Bridge has not confirmed settings write access for this conversation, so CC Pocket will not send or preview a change.';
 
   @override
   String get codexPermissionsOnRequest => 'On Request';

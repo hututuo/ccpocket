@@ -32,6 +32,7 @@ class SettingsCubit extends Cubit<SettingsState> {
   final RevenueCatService? _revenueCat;
   final AppIconService _appIconService;
   final bool _notificationApprovalActionsSupported;
+  final int _notificationApprovalActionsVersion;
   StreamSubscription<BridgeConnectionState>? _bridgeSub;
   StreamSubscription<PushRegistrationStateMessage>? _pushRegistrationSub;
   StreamSubscription<String>? _tokenRefreshSub;
@@ -89,6 +90,7 @@ class SettingsCubit extends Cubit<SettingsState> {
     RevenueCatService? revenueCatService,
     AppIconService? appIconService,
     bool notificationApprovalActionsSupported = false,
+    int? notificationApprovalActionsVersion,
   }) : _bridge = bridgeService,
        _machineManager = machineManager,
        _fcmService = fcmService ?? FcmService(),
@@ -98,7 +100,11 @@ class SettingsCubit extends Cubit<SettingsState> {
        // private field name, so an initializing formal cannot preserve the API.
        // ignore: prefer_initializing_formals
        _notificationApprovalActionsSupported =
-           notificationApprovalActionsSupported,
+           notificationApprovalActionsSupported ||
+           (notificationApprovalActionsVersion ?? 0) > 0,
+       _notificationApprovalActionsVersion =
+           notificationApprovalActionsVersion ??
+           (notificationApprovalActionsSupported ? 1 : 0),
        super(
          _load(_prefs).copyWith(
            appIconSupported:
@@ -619,6 +625,9 @@ class SettingsCubit extends Cubit<SettingsState> {
       privacyMode: state.fcmPrivacy ? true : null,
       enabledEventTypes: state.notificationPreferences.enabledRemoteEventTypes,
       approvalActionsSupported: _notificationApprovalActionsSupported,
+      approvalActionsVersion: _notificationApprovalActionsVersion > 0
+          ? _notificationApprovalActionsVersion
+          : null,
     );
     if (bridge.isConnected && bridge.supportsPushRegistrationStatus) {
       _pendingPushRegistrationRequestId = requestId;

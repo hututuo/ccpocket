@@ -352,6 +352,11 @@ void main() async {
     notificationApprovalActionsSupported: mobileHostSnapshot.supports(
       MobileHostCapability.notificationApprovalActions,
     ),
+    notificationApprovalActionsVersion:
+        mobileHostSnapshot.capabilities[MobileHostCapability
+            .notificationApprovalActions
+            .id] ??
+        0,
   );
   backgroundNotificationModeController.updatePolicy(
     preferences: settingsCubit.state.notificationPreferences,
@@ -710,12 +715,20 @@ class _CcpocketAppState extends State<CcpocketApp> {
     }
     final permissionId =
         data['permissionId']?.toString() ?? data['toolUseId']?.toString();
+    final usesCodexActionBroker = hasCodexActionBrokerApprovalPayload(data);
     final payload = encodeSessionNotificationPayload(
       sessionId: sessionId,
       provider: provider,
       providerSessionId: data['providerSessionId']?.toString(),
       eventType: eventType,
       permissionId: permissionId,
+      actionPayloadVersion: data['actionPayloadVersion']?.toString(),
+      opaqueRequestId: data['opaqueRequestId']?.toString(),
+      codexSourceId: data['codexSourceId']?.toString(),
+      threadId: data['threadId']?.toString(),
+      turnId: data['turnId']?.toString(),
+      authorityGeneration: data['authorityGeneration']?.toString(),
+      allowedActions: data['allowedActions']?.toString(),
       occurredAt: DateTime.tryParse(data['occurredAt']?.toString() ?? ''),
       dataSourceIdentity: dataSourceIdentity,
     );
@@ -727,8 +740,10 @@ class _CcpocketAppState extends State<CcpocketApp> {
       id: _notificationId(sessionId, provider, eventType, dataSourceIdentity),
       categoryIdentifier:
           eventType == NotificationPreferences.approvalRequiredEvent &&
-              permissionId?.isNotEmpty == true
-          ? approvalNotificationCategoryId
+              (usesCodexActionBroker || permissionId?.isNotEmpty == true)
+          ? usesCodexActionBroker
+                ? codexActionBrokerApprovalNotificationCategoryId
+                : approvalNotificationCategoryId
           : null,
     );
   }
@@ -775,7 +790,10 @@ class _CcpocketAppState extends State<CcpocketApp> {
     final sessionId = data['sessionId']?.toString().trim() ?? '';
     final provider = _normalizeProvider(data['provider']?.toString());
     final providerSessionId = data['providerSessionId']?.toString().trim();
-    final permissionId = data['permissionId']?.toString().trim() ?? '';
+    final usesCodexActionBroker = hasCodexActionBrokerApprovalPayload(data);
+    final permissionId = usesCodexActionBroker
+        ? data['opaqueRequestId']?.toString().trim() ?? ''
+        : data['permissionId']?.toString().trim() ?? '';
     final dataSourceIdentity = BridgeDataSourceIdentity.fromMap(data);
     final occurredAt = DateTime.tryParse(
       data['occurredAt']?.toString() ?? '',
@@ -794,6 +812,13 @@ class _CcpocketAppState extends State<CcpocketApp> {
       provider: provider,
       providerSessionId: providerSessionId,
       permissionId: permissionId,
+      actionPayloadVersion: usesCodexActionBroker ? 2 : 1,
+      bridgeInstanceId: data['bridgeInstanceId']?.toString().trim(),
+      codexSourceId: data['codexSourceId']?.toString().trim(),
+      threadId: data['threadId']?.toString().trim(),
+      turnId: data['turnId']?.toString().trim(),
+      authorityGeneration: data['authorityGeneration']?.toString().trim(),
+      allowedActions: _parseCodexNotificationActions(data['allowedActions']),
       decision: decision,
       occurredAt: occurredAt,
       navigationData: data,
@@ -819,6 +844,16 @@ class _CcpocketAppState extends State<CcpocketApp> {
       provider: event.provider,
       providerSessionId: event.providerSessionId,
       permissionId: event.permissionId,
+      actionPayloadVersion: event.actionPayloadVersion,
+      bridgeInstanceId: event.bridgeInstanceId,
+      codexSourceId: event.codexSourceId,
+      threadId: event.threadId,
+      turnId: event.turnId,
+      authorityGeneration: event.authorityGeneration,
+      allowedActions: event.allowedActions
+          .map(CodexActionBrokerDecision.tryParse)
+          .whereType<CodexActionBrokerDecision>()
+          .toSet(),
       decision: decision,
       occurredAt: event.occurredAt,
       navigationData: <String, dynamic>{
@@ -837,17 +872,29 @@ class _CcpocketAppState extends State<CcpocketApp> {
     required String provider,
     required String? providerSessionId,
     required String permissionId,
+    int actionPayloadVersion = 1,
+    String? bridgeInstanceId,
+    String? codexSourceId,
+    String? threadId,
+    String? turnId,
+    String? authorityGeneration,
+    Set<CodexActionBrokerDecision> allowedActions = const {},
     required NotificationApprovalDecision decision,
     required DateTime occurredAt,
     required Map<String, dynamic> navigationData,
     required BridgeDataSourceIdentity expectedDataSourceIdentity,
   }) {
-    final currentDataSourceIdentity = context
-        .read<BridgeService>()
-        .dataSourceIdentity;
-    if (!expectedDataSourceIdentity.isSatisfiedBy(
-      currentDataSourceIdentity,
+    final bridge = context.read<BridgeService>();
+    final currentDataSourceIdentity = bridge.dataSourceIdentity;
+    final currentIdentityAuthoritative =
+        bridge.hasAuthoritativeSessionListForCurrentConnection &&
+        bridge.bridgeInstanceId?.isNotEmpty == true;
+    if (!shouldQueueNotificationApprovalAction(
+      actionPayloadVersion: actionPayloadVersion,
       provider: provider,
+      expected: expectedDataSourceIdentity,
+      current: currentDataSourceIdentity,
+      currentIdentityAuthoritative: currentIdentityAuthoritative,
     )) {
       logger.warning(
         '[notifications] Ignoring approval action for a different '
@@ -864,6 +911,13 @@ class _CcpocketAppState extends State<CcpocketApp> {
               ? providerSessionId
               : null,
           permissionId: permissionId,
+          actionPayloadVersion: actionPayloadVersion,
+          bridgeInstanceId: bridgeInstanceId,
+          codexSourceId: codexSourceId,
+          threadId: threadId,
+          turnId: turnId,
+          authorityGeneration: authorityGeneration,
+          allowedActions: allowedActions,
           decision: decision,
           createdAt: occurredAt,
         ),
@@ -928,6 +982,16 @@ class _CcpocketAppState extends State<CcpocketApp> {
 
   String _normalizeProvider(String? provider) {
     return provider == 'codex' ? 'codex' : 'claude';
+  }
+
+  Set<CodexActionBrokerDecision> _parseCodexNotificationActions(Object? value) {
+    if (value == null) return const {};
+    final actions = <CodexActionBrokerDecision>{};
+    for (final raw in value.toString().split(',')) {
+      final action = CodexActionBrokerDecision.tryParse(raw.trim());
+      if (action != null) actions.add(action);
+    }
+    return Set.unmodifiable(actions);
   }
 
   int _notificationId(

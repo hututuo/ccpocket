@@ -123,6 +123,90 @@ void main() {
     expect(controller.subagents.single.threadId, 'current');
   });
 
+  test(
+    'activity summaries keep the collapsed badge live and refresh details only when visible',
+    () async {
+      final bridge = _Bridge();
+      final controller = SubagentsController(sessionId: 's1', bridge: bridge);
+      addTearDown(controller.dispose);
+      addTearDown(bridge.dispose);
+
+      controller.refresh();
+      final listRequestId = _requestId(bridge.sent.single);
+      bridge.emit(
+        SubagentListMessage(
+          sessionId: 's1',
+          requestId: listRequestId,
+          subagents: const [SubagentInfo(threadId: 'child', status: 'running')],
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+      bridge.emit(
+        SubagentActivitySummaryMessage(
+          scope: 'runtime',
+          ownerSessionId: 's1',
+          providerThreadId: 'provider-parent',
+          codexSourceId: 'source-1',
+          revision: 'revision-1',
+          activeCount: 1,
+          totalCount: 1,
+          truncated: false,
+          subscribed: false,
+          listRequestId: listRequestId,
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+      final watchPayload =
+          jsonDecode(bridge.sent.last.toJson()) as Map<String, dynamic>;
+      expect(watchPayload['type'], 'watch_subagent_activity_v1');
+      final subscriptionId = watchPayload['subscriptionId'] as String;
+
+      bridge.emit(
+        SubagentActivitySummaryMessage(
+          scope: 'runtime',
+          ownerSessionId: 's1',
+          providerThreadId: 'provider-parent',
+          codexSourceId: 'source-1',
+          revision: 'revision-2',
+          activeCount: 0,
+          totalCount: 1,
+          truncated: false,
+          subscribed: true,
+          subscriptionId: subscriptionId,
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(controller.activeCount, 0);
+      expect(bridge.sent, hasLength(2));
+
+      controller.setDetailsVisible(true);
+      bridge.emit(
+        SubagentActivitySummaryMessage(
+          scope: 'runtime',
+          ownerSessionId: 's1',
+          providerThreadId: 'provider-parent',
+          codexSourceId: 'source-1',
+          revision: 'revision-3',
+          activeCount: 1,
+          totalCount: 1,
+          truncated: false,
+          subscribed: true,
+          subscriptionId: subscriptionId,
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(controller.activeCount, 1);
+      expect(
+        (jsonDecode(bridge.sent.last.toJson()) as Map<String, dynamic>)['type'],
+        'get_subagents',
+      );
+    },
+  );
+
   test('history requires a pending exact request', () async {
     final bridge = _Bridge();
     final controller = SubagentsController(sessionId: 's1', bridge: bridge);

@@ -72,11 +72,18 @@ class BridgeServiceBackgroundSyncGateway
       _bridge.sessions.map((session) => session.id).toList(growable: false);
 
   @override
-  bool get hasBackgroundWork => _bridge.sessions.any((session) {
-    return session.externalDesktopTurnActive ||
-        session.queuedInput != null ||
-        const {'starting', 'running', 'compacting'}.contains(session.status);
-  });
+  bool get hasBackgroundWork =>
+      _bridge.backgroundActiveWorkCount > 0 ||
+      _bridge.sessions.any((session) {
+        return session.externalDesktopTurnActive ||
+            session.queuedInput != null ||
+            const {
+              'starting',
+              'running',
+              'waiting_approval',
+              'compacting',
+            }.contains(session.status);
+      });
 
   @override
   Stream<BridgeConnectionState> get connectionStates =>

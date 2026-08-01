@@ -18,7 +18,8 @@ import '../../../models/messages.dart'
         SessionUsageResultMessage,
         durableSessionInsightsCapability,
         requestContextUsage,
-        requestSessionUsage;
+        requestSessionUsage,
+        scopedContextUsageCapability;
 import '../../../services/bridge_service.dart';
 import 'session_insights_quota_cache.dart';
 
@@ -41,6 +42,7 @@ class SessionInsightsController extends ChangeNotifier {
     this.contextCacheTimeToLive = const Duration(minutes: 10),
     this.quotaCacheTimeToLive = const Duration(minutes: 10),
     this.durableCacheIdentityConfirmed = false,
+    this.authorityGenerationProvider,
     DateTime Function()? clock,
   }) {
     _clock = clock ?? DateTime.now;
@@ -66,6 +68,7 @@ class SessionInsightsController extends ChangeNotifier {
   /// Legacy runtime aliases can still be used for requests, but must never
   /// partition phone-local storage.
   final bool durableCacheIdentityConfirmed;
+  final String? Function()? authorityGenerationProvider;
   late final DateTime Function() _clock;
 
   final List<StreamSubscription<LocalFeatureServerMessage>>
@@ -280,6 +283,7 @@ class SessionInsightsController extends ChangeNotifier {
     }
     if (message case ContextUsageMessage()) {
       if (!_isContextAlias(message.sessionId)) return;
+      if (!_matchesContextUsageSource(message.usage)) return;
       if (!_supportsDurableSessionInsights &&
           bridge.isLegacySessionInsightsContextLaneQuarantined(
             message.sessionId,
@@ -557,6 +561,36 @@ class SessionInsightsController extends ChangeNotifier {
       (_normalizedRuntimeSessionId != null &&
           candidate == _normalizedRuntimeSessionId);
 
+  bool _matchesContextUsageSource(ContextUsage usage) {
+    final eventBridgeId = usage.bridgeInstanceId?.trim();
+    final eventSourceId = usage.codexSourceId?.trim();
+    final eventAuthorityGeneration = usage.authorityGeneration?.trim();
+    if (!_supportsScopedContextUsage) {
+      return eventBridgeId == null &&
+          eventSourceId == null &&
+          eventAuthorityGeneration == null;
+    }
+    final currentAuthorityGeneration = authorityGenerationProvider
+        ?.call()
+        ?.trim();
+    if (eventBridgeId == null ||
+        eventBridgeId.isEmpty ||
+        eventSourceId == null ||
+        eventSourceId.isEmpty ||
+        eventAuthorityGeneration == null ||
+        eventAuthorityGeneration.isEmpty ||
+        currentAuthorityGeneration == null ||
+        currentAuthorityGeneration.isEmpty) {
+      return false;
+    }
+    return eventBridgeId == bridge.bridgeInstanceId?.trim() &&
+        eventSourceId == bridge.codexSourceId?.trim() &&
+        eventAuthorityGeneration == currentAuthorityGeneration;
+  }
+
+  bool get _supportsScopedContextUsage =>
+      bridge.bridgeCapabilities.contains(scopedContextUsageCapability);
+
   bool _matchesPendingContextRequest({
     required String? sessionId,
     required String? requestId,
@@ -633,6 +667,9 @@ class SessionInsightsController extends ChangeNotifier {
     final last = usage.last;
     final total = usage.total;
     return [
+      usage.bridgeInstanceId ?? '',
+      usage.codexSourceId ?? '',
+      usage.authorityGeneration ?? '',
       usage.threadId ?? '',
       usage.turnId ?? '',
       last.totalTokens,

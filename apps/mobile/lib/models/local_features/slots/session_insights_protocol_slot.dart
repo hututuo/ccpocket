@@ -1,6 +1,7 @@
 part of '../../messages.dart';
 
 const durableSessionInsightsCapability = 'durable_session_insights_v1';
+const scopedContextUsageCapability = 'scoped_context_usage_v1';
 
 const LocalFeatureProtocolSlot sessionInsightsProtocolSlot =
     _SessionInsightsProtocolSlot();

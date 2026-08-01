@@ -220,6 +220,60 @@ Widget _buildHomeContent({
 }
 
 void main() {
+  group('conversationDestructiveActionBlocked', () {
+    ConversationSyncV2Status status({
+      required String activity,
+      String confidence = 'authoritative',
+      String? controlState,
+    }) => ConversationSyncV2Status(
+      provider: 'codex',
+      providerSessionId: 'thread-1',
+      activity: activity,
+      attention: 'none',
+      result: 'none',
+      runtimeAttachment: 'notLoaded',
+      source: 'appServer',
+      confidence: confidence,
+      observedAt: '2026-08-01T00:00:00.000Z',
+      controlState: controlState,
+    );
+
+    test('blocks Desktop-active and unresolved shared states', () {
+      expect(
+        conversationDestructiveActionBlocked(status(activity: 'working')),
+        isTrue,
+      );
+      expect(
+        conversationDestructiveActionBlocked(status(activity: 'compacting')),
+        isTrue,
+      );
+      expect(
+        conversationDestructiveActionBlocked(status(activity: 'unknown')),
+        isTrue,
+      );
+      expect(
+        conversationDestructiveActionBlocked(
+          status(activity: 'idle', confidence: 'unknown'),
+        ),
+        isTrue,
+      );
+      expect(
+        conversationDestructiveActionBlocked(
+          status(activity: 'idle', controlState: 'reconciling'),
+        ),
+        isTrue,
+      );
+    });
+
+    test('keeps legacy and authoritative idle archive behavior', () {
+      expect(conversationDestructiveActionBlocked(null), isFalse);
+      expect(
+        conversationDestructiveActionBlocked(status(activity: 'idle')),
+        isFalse,
+      );
+    });
+  });
+
   late _MockBridgeService mockBridge;
   late SessionListCubit cubit;
   late DraftService draftService;

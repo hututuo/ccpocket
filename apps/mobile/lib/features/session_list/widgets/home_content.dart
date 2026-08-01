@@ -95,6 +95,17 @@ String _recentSessionCardText(
   };
 }
 
+/// Destructive conversation actions must fail closed while the canonical
+/// app-server says a turn is active or while shared control is unresolved.
+/// A missing status remains the legacy compatibility path.
+bool conversationDestructiveActionBlocked(ConversationSyncV2Status? status) =>
+    status != null &&
+    (status.activity == 'working' ||
+        status.activity == 'compacting' ||
+        status.activity == 'unknown' ||
+        status.confidence == 'unknown' ||
+        status.controlState == 'reconciling');
+
 SessionInfo _sessionInfoForUnifiedCard(
   UnifiedSessionListItem item,
   SessionDisplayMode displayMode, {
@@ -102,12 +113,17 @@ SessionInfo _sessionInfoForUnifiedCard(
 }) {
   final runtime = item.running;
   final catalog = item.recent;
+  final syncStatus = item.syncStatus;
+  final desktopTurnActive =
+      syncStatus?.executionHost == 'desktopAppServer' &&
+      (syncStatus?.activity == 'working' ||
+          syncStatus?.activity == 'compacting');
   if (catalog == null) {
-    return orderingActivityAt == null
-        ? runtime!
-        : runtime!.copyWith(
-            lastActivityAt: orderingActivityAt.toIso8601String(),
-          );
+    return runtime!.copyWith(
+      lastActivityAt: orderingActivityAt?.toIso8601String(),
+      externalDesktopTurnActive:
+          runtime.externalDesktopTurnActive || desktopTurnActive,
+    );
   }
 
   String preferRuntime(String? runtimeValue, String catalogValue) {
@@ -181,7 +197,8 @@ SessionInfo _sessionInfoForUnifiedCard(
         catalog.codexAdditionalWritableRoots,
     codexPermissionApplyStrategySupported:
         runtime?.codexPermissionApplyStrategySupported ?? false,
-    externalDesktopTurnActive: runtime?.externalDesktopTurnActive ?? false,
+    externalDesktopTurnActive:
+        (runtime?.externalDesktopTurnActive ?? false) || desktopTurnActive,
     codexNativePlanModeSupported: runtime?.codexNativePlanModeSupported,
     codexGoalControlSupported: runtime?.codexGoalControlSupported,
     pendingPermission: runtime?.pendingPermission,
@@ -619,8 +636,7 @@ class HomeContentState extends State<HomeContent> {
               (action.sessionId?.trim().isEmpty ?? true),
         )
         .toList(growable: false);
-    final pendingResumeActionsByIdentity =
-        <String, OfflinePendingAction>{};
+    final pendingResumeActionsByIdentity = <String, OfflinePendingAction>{};
     for (final action in widget.offlinePendingActions) {
       if (action.kind != OfflinePendingActionKind.resume) continue;
       final durableId = action.sessionId?.trim();
@@ -743,6 +759,9 @@ class HomeContentState extends State<HomeContent> {
         _displayMode,
         orderingActivityAt: orderingActivityAt,
       );
+      final destructiveActionBlocked =
+          cardSession.externalDesktopTurnActive ||
+          conversationDestructiveActionBlocked(item.syncStatus);
       final pendingResumeAction =
           pendingResumeActionsByIdentity[item.identityKey];
       final isProcessing =
@@ -757,38 +776,40 @@ class HomeContentState extends State<HomeContent> {
       final slidableKey = ValueKey('conversation_slidable_${item.identityKey}');
       final row = Slidable(
         key: slidableKey,
-        endActionPane: ActionPane(
-          motion: const BehindMotion(),
-          extentRatio: 0.18,
-          children: [
-            CustomSlidableAction(
-              onPressed: (_) {
-                if (running != null) {
-                  widget.onStopSession(running.id);
-                } else if (recent != null) {
-                  widget.onArchiveSession(recent);
-                }
-              },
-              backgroundColor: Colors.transparent,
-              padding: EdgeInsets.zero,
-              child: Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.error,
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  running != null
-                      ? Icons.stop_circle_outlined
-                      : Icons.archive_outlined,
-                  color: Colors.white,
-                  size: 22,
-                ),
+        endActionPane: destructiveActionBlocked
+            ? null
+            : ActionPane(
+                motion: const BehindMotion(),
+                extentRatio: 0.18,
+                children: [
+                  CustomSlidableAction(
+                    onPressed: (_) {
+                      if (running != null) {
+                        widget.onStopSession(running.id);
+                      } else if (recent != null) {
+                        widget.onArchiveSession(recent);
+                      }
+                    },
+                    backgroundColor: Colors.transparent,
+                    padding: EdgeInsets.zero,
+                    child: Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.error,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        running != null
+                            ? Icons.stop_circle_outlined
+                            : Icons.archive_outlined,
+                        color: Colors.white,
+                        size: 22,
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            ),
-          ],
-        ),
         child: KeyedSubtree(
           key: ValueKey('conversation_card_${item.identityKey}'),
           child: RunningSessionCard(
@@ -840,7 +861,10 @@ class HomeContentState extends State<HomeContent> {
                 ? (position) =>
                       widget.onLongPressRecentSession(recent, position)
                 : null,
-            onStop: running != null && showInlineStopButton
+            onStop:
+                running != null &&
+                    !running.externalDesktopTurnActive &&
+                    showInlineStopButton
                 ? () => widget.onStopSession(running.id)
                 : null,
             onTap: running != null
@@ -918,159 +942,120 @@ class HomeContentState extends State<HomeContent> {
     }
 
     final contentEntries = <Object>[
-        if (isReconnecting) const SessionReconnectBanner(),
-        ?receivedFileBanner,
-        ?connectedBridgeBanner,
-        ?updateBanner,
-        ?supportBanner,
-        ?macOSNativeAppBanner,
-        if (widget.isInitialLoading ||
-            hasPendingActions ||
-            hasConversationSessions ||
-            hasKnownProjects ||
-            hasActiveFilter) ...[
-          SectionHeader(
-            icon: Icons.history,
-            label: l.recentSessions,
-            color: appColors.subtleText,
-            trailing: IconButton(
-              key: const ValueKey('search_button'),
-              icon: Icon(
-                _isSearching ? Icons.close : Icons.search,
+      if (isReconnecting) const SessionReconnectBanner(),
+      ?receivedFileBanner,
+      ?connectedBridgeBanner,
+      ?updateBanner,
+      ?supportBanner,
+      ?macOSNativeAppBanner,
+      if (widget.isInitialLoading ||
+          hasPendingActions ||
+          hasConversationSessions ||
+          hasKnownProjects ||
+          hasActiveFilter) ...[
+        SectionHeader(
+          icon: Icons.history,
+          label: l.recentSessions,
+          color: appColors.subtleText,
+          trailing: IconButton(
+            key: const ValueKey('search_button'),
+            icon: Icon(
+              _isSearching ? Icons.close : Icons.search,
+              size: 18,
+              color: appColors.subtleText,
+            ),
+            onPressed: _toggleSearch,
+            tooltip: l.search,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            visualDensity: VisualDensity.compact,
+          ),
+        ),
+        if (_isSearching) ...[
+          const SizedBox(height: 4),
+          TextField(
+            key: const ValueKey('search_field'),
+            controller: _searchController,
+            autofocus: true,
+            onTapOutside: (_) => FocusScope.of(context).unfocus(),
+            decoration: InputDecoration(
+              hintText: l.searchSessions,
+              prefixIcon: Icon(
+                Icons.search,
                 size: 18,
                 color: appColors.subtleText,
               ),
-              onPressed: _toggleSearch,
-              tooltip: l.search,
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-              visualDensity: VisualDensity.compact,
-            ),
-          ),
-          if (_isSearching) ...[
-            const SizedBox(height: 4),
-            TextField(
-              key: const ValueKey('search_field'),
-              controller: _searchController,
-              autofocus: true,
-              onTapOutside: (_) => FocusScope.of(context).unfocus(),
-              decoration: InputDecoration(
-                hintText: l.searchSessions,
-                prefixIcon: Icon(
-                  Icons.search,
-                  size: 18,
-                  color: appColors.subtleText,
-                ),
-                isDense: true,
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 8,
-                ),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(
-                    color: appColors.subtleText.withValues(alpha: 0.3),
-                  ),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(8),
-                  borderSide: BorderSide(
-                    color: appColors.subtleText.withValues(alpha: 0.3),
-                  ),
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 8,
+              ),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: appColors.subtleText.withValues(alpha: 0.3),
                 ),
               ),
-              style: const TextStyle(fontSize: 14),
-              onChanged: (v) =>
-                  context.read<SessionListCubit>().setSearchQuery(v),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: appColors.subtleText.withValues(alpha: 0.3),
+                ),
+              ),
             ),
-          ],
-          const SizedBox(height: 8),
-          SessionFilterBar(
-            displayMode: _displayMode,
-            onToggleDisplayMode: _toggleDisplayMode,
-            groupByProject: _groupByProject,
-            onToggleSessionListMode: _toggleSessionListMode,
-            providerFilter: widget.providerFilter,
-            onToggleProviderFilter: widget.onToggleProvider,
-            projects:
-                prioritizePinned(
-                  widget.accumulatedProjectPaths,
-                  isPinned: widget.pinnedProjectPaths.contains,
-                ).map((path) {
-                  return (path: path, name: pathBasename(path));
-                }).toList(),
-            currentProjectFilter: widget.currentProjectFilter,
-            onProjectFilterChanged: widget.onSelectProject,
-            namedOnly: widget.namedOnly,
-            onToggleNamed: widget.onToggleNamed,
+            style: const TextStyle(fontSize: 14),
+            onChanged: (v) =>
+                context.read<SessionListCubit>().setSearchQuery(v),
           ),
-          const SizedBox(height: 8),
-          for (final action in pendingStartActions)
-            OfflinePendingSessionCard(
-              key: ValueKey('pending_session_${action.id}'),
-              action: action,
-              onCancel:
-                  widget.onCancelOfflinePendingAction == null ||
-                      !action.canCancel
-                  ? null
-                  : () => widget.onCancelOfflinePendingAction!(action.id),
-            ),
-          if (widget.isInitialLoading) ...[
-            for (final item in unifiedSessions.where(
-              (item) => item.running != null,
-            ))
-              item,
-            const _SessionListSkeleton(),
-          ] else ...[
-            if ((!_groupByProject && unifiedSessions.isEmpty) ||
-                (_groupByProject && groupedSessions.isEmpty))
-              _RecentSessionsEmptyResult(
-                title: hasActiveFilter
-                    ? l.noSessionsMatchFilters
-                    : l.noRecentSessions,
-                subtitle: hasActiveFilter ? l.adjustFiltersAndSearch : null,
-              )
-            else if (!_groupByProject) ...[
-              ...unifiedSessions,
-              if (widget.hasMoreSessions) ...[
-                const SizedBox(height: 8),
-                _LoadMoreRecentSessionsButton(
-                  isLoadingMore: widget.isLoadingMore,
-                  onLoadMore: widget.onLoadMore,
-                ),
-                const SizedBox(height: 8),
-              ],
-            ] else
-              for (final group in groupedSessions)
-                _ProjectRecentSessionGroup(
-                  group: group,
-                  isCollapsed: widget.collapsedProjectPaths.contains(
-                    group.projectPath,
-                  ),
-                  isLoadingMore: widget.loadingProjectPaths.contains(
-                    group.projectPath,
-                  ),
-                  displayLimit:
-                      widget.projectSessionDisplayLimits[group.projectPath] ??
-                      5,
-                  alwaysVisibleSessionKeys: alwaysVisibleSessionKeys,
-                  canLoadFromBridge:
-                      widget.currentProjectFilter == null &&
-                      !widget.exhaustedProjectPaths.contains(group.projectPath),
-                  isPinned: widget.pinnedProjectPaths.contains(
-                    group.projectPath,
-                  ),
-                  onToggleCollapsed: () =>
-                      widget.onToggleProjectCollapsed?.call(group.projectPath),
-                  onTogglePinned: widget.onToggleProjectPinned == null
-                      ? null
-                      : () => widget.onToggleProjectPinned!(group.projectPath),
-                  onLoadMore: () =>
-                      widget.onLoadMoreProject?.call(group.projectPath),
-                  itemBuilder: buildUnifiedSessionRow,
-                ),
-            if (widget.currentProjectFilter != null &&
-                widget.hasMoreSessions) ...[
+        ],
+        const SizedBox(height: 8),
+        SessionFilterBar(
+          displayMode: _displayMode,
+          onToggleDisplayMode: _toggleDisplayMode,
+          groupByProject: _groupByProject,
+          onToggleSessionListMode: _toggleSessionListMode,
+          providerFilter: widget.providerFilter,
+          onToggleProviderFilter: widget.onToggleProvider,
+          projects:
+              prioritizePinned(
+                widget.accumulatedProjectPaths,
+                isPinned: widget.pinnedProjectPaths.contains,
+              ).map((path) {
+                return (path: path, name: pathBasename(path));
+              }).toList(),
+          currentProjectFilter: widget.currentProjectFilter,
+          onProjectFilterChanged: widget.onSelectProject,
+          namedOnly: widget.namedOnly,
+          onToggleNamed: widget.onToggleNamed,
+        ),
+        const SizedBox(height: 8),
+        for (final action in pendingStartActions)
+          OfflinePendingSessionCard(
+            key: ValueKey('pending_session_${action.id}'),
+            action: action,
+            onCancel:
+                widget.onCancelOfflinePendingAction == null || !action.canCancel
+                ? null
+                : () => widget.onCancelOfflinePendingAction!(action.id),
+          ),
+        if (widget.isInitialLoading) ...[
+          for (final item in unifiedSessions.where(
+            (item) => item.running != null,
+          ))
+            item,
+          const _SessionListSkeleton(),
+        ] else ...[
+          if ((!_groupByProject && unifiedSessions.isEmpty) ||
+              (_groupByProject && groupedSessions.isEmpty))
+            _RecentSessionsEmptyResult(
+              title: hasActiveFilter
+                  ? l.noSessionsMatchFilters
+                  : l.noRecentSessions,
+              subtitle: hasActiveFilter ? l.adjustFiltersAndSearch : null,
+            )
+          else if (!_groupByProject) ...[
+            ...unifiedSessions,
+            if (widget.hasMoreSessions) ...[
               const SizedBox(height: 8),
               _LoadMoreRecentSessionsButton(
                 isLoadingMore: widget.isLoadingMore,
@@ -1078,8 +1063,43 @@ class HomeContentState extends State<HomeContent> {
               ),
               const SizedBox(height: 8),
             ],
+          ] else
+            for (final group in groupedSessions)
+              _ProjectRecentSessionGroup(
+                group: group,
+                isCollapsed: widget.collapsedProjectPaths.contains(
+                  group.projectPath,
+                ),
+                isLoadingMore: widget.loadingProjectPaths.contains(
+                  group.projectPath,
+                ),
+                displayLimit:
+                    widget.projectSessionDisplayLimits[group.projectPath] ?? 5,
+                alwaysVisibleSessionKeys: alwaysVisibleSessionKeys,
+                canLoadFromBridge:
+                    widget.currentProjectFilter == null &&
+                    !widget.exhaustedProjectPaths.contains(group.projectPath),
+                isPinned: widget.pinnedProjectPaths.contains(group.projectPath),
+                onToggleCollapsed: () =>
+                    widget.onToggleProjectCollapsed?.call(group.projectPath),
+                onTogglePinned: widget.onToggleProjectPinned == null
+                    ? null
+                    : () => widget.onToggleProjectPinned!(group.projectPath),
+                onLoadMore: () =>
+                    widget.onLoadMoreProject?.call(group.projectPath),
+                itemBuilder: buildUnifiedSessionRow,
+              ),
+          if (widget.currentProjectFilter != null &&
+              widget.hasMoreSessions) ...[
+            const SizedBox(height: 8),
+            _LoadMoreRecentSessionsButton(
+              isLoadingMore: widget.isLoadingMore,
+              onLoadMore: widget.onLoadMore,
+            ),
+            const SizedBox(height: 8),
           ],
         ],
+      ],
     ];
 
     final childIndexByKey = <Key, int>{

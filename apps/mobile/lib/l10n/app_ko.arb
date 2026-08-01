@@ -42,6 +42,13 @@
   },
   "rename": "이름 변경",
   "renameSession": "세션 이름 변경",
+  "renameFailed": "이 대화의 이름을 변경할 수 없습니다",
+  "renameFailedWithError": "이 대화의 이름을 변경할 수 없습니다: {error}",
+  "@renameFailedWithError": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
   "pin": "세션 고정",
   "unpin": "세션 고정 해제",
   "pinProject": "프로젝트 고정",
@@ -185,6 +192,9 @@
   "loadingSessionStatus": "연결되었습니다. 세션 상태를 불러오는 중…",
   "loadingConversationCatalog": "세션 상태가 준비되었습니다. 대화 목록을 불러오는 중…",
   "bridgeConnectionTakingLonger": "Bridge에는 연결되었지만 대화 목록 준비가 예상보다 오래 걸리고 있습니다. 계속 기다리거나 재시도 또는 취소할 수 있습니다.",
+  "authenticatingWithBridge": "Bridge에서 인증하는 중...",
+  "preparingCodexRuntime": "Bridge가 온라인입니다. 공유 Codex 런타임을 준비하는 중...",
+  "codexRuntimeTakingLonger": "Bridge 프로세스는 온라인이지만 공유 Codex 런타임은 아직 준비 중입니다. 계속 기다리거나 다시 시도하거나 취소할 수 있습니다.",
   "useCachedConversations": "캐시된 대화로 열기",
   "bridgeConnectionAttemptFailed": "Bridge 연결이 사용 가능한 상태가 되지 않았습니다. 주소와 인증 정보를 확인한 후 다시 시도하세요.",
   "externalBridgeConnectionTitle": "이 Bridge에 연결할까요?",
@@ -522,6 +532,7 @@
     }
   },
   "tapInterruptHoldStop": "탭: 중단, 길게 누르기: 정지",
+  "tapDetachDesktopTurn": "탭 또는 길게 누르기: 휴대폰에서 분리(Desktop 작업은 계속 실행)",
   "rewind": "되돌리기",
   "rewindToHere": "여기로 되돌리기",
   "rewindModeConversationAndCode": "대화와 코드 복원",
@@ -1357,6 +1368,10 @@
   "speedFastOn": "빠른 모드 켜짐",
   "speedFastOff": "빠른 모드 꺼짐",
   "currentServiceTierReadOnly": "현재 서비스 등급: {value}(읽기 전용)",
+  "codexSettingsUnknown": "알 수 없음 · 동기화 대기 중",
+  "codexSettingsWaitingForRuntime": "Bridge가 이 대화의 런타임 설정을 동기화하기를 기다리고 있습니다. 설정은 변경되지 않았습니다.",
+  "codexSettingsReadOnlyDesktop": "이 턴은 Codex Desktop이 소유하고 있습니다. 여기서는 설정이 읽기 전용입니다. Desktop에서 변경하거나 턴이 끝날 때까지 기다리세요.",
+  "codexSettingsUnavailable": "Bridge가 이 대화의 설정 쓰기 권한을 확인하지 않았으므로 CC Pocket은 변경을 보내거나 미리 표시하지 않습니다.",
   "codexPermissionsOnRequest": "요청 시",
   "codexPermissionsFullAccess": "전체 접근",
   "codexPermissionsCustom": "사용자 지정(config.toml)",

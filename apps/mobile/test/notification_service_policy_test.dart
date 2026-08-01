@@ -106,4 +106,40 @@ void main() {
     expect(payload['bridgeInstanceId'], 'bridge-1');
     expect(payload['codexSourceId'], 'codex-source-a');
   });
+
+  test('Codex broker notification payload keeps the exact v2 fence', () {
+    final payload =
+        jsonDecode(
+              encodeSessionNotificationPayload(
+                sessionId: 'thread-1',
+                provider: 'codex',
+                eventType: 'approval_required',
+                permissionId: 'must-not-be-legacy',
+                actionPayloadVersion: '2',
+                opaqueRequestId: 'opaque-1',
+                codexSourceId: 'source-1',
+                threadId: 'thread-1',
+                turnId: 'turn-1',
+                authorityGeneration: 'cab:1:1',
+                allowedActions: 'approve,reject',
+                dataSourceIdentity: const BridgeDataSourceIdentity(
+                  bridgeInstanceId: 'bridge-1',
+                  codexSourceId: 'source-1',
+                ),
+              ),
+            )
+            as Map<String, dynamic>;
+
+    expect(payload['actionPayloadVersion'], '2');
+    expect(payload['opaqueRequestId'], 'opaque-1');
+    expect(payload['permissionId'], isNull);
+    expect(hasCodexActionBrokerApprovalPayload(payload), isTrue);
+    expect(
+      hasCodexActionBrokerApprovalPayload(<String, dynamic>{
+        ...payload,
+        'allowedActions': 'approve,delete',
+      }),
+      isFalse,
+    );
+  });
 }

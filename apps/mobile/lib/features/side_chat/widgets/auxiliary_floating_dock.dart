@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../../models/messages.dart';
 import '../../../../services/bridge_service.dart';
+import '../../subagents/state/subagents_controller.dart';
 import '../../subagents/widgets/subagents_panel.dart';
 import '../l10n/side_chat_strings.dart';
 import '../state/ephemeral_side_chat_registry_service.dart';
@@ -33,6 +34,7 @@ class AuxiliaryFloatingDock extends StatefulWidget {
     required this.bridgeService,
     required this.registryService,
     required this.onOpenSideChat,
+    this.legacyRuntimeParentSessionId,
     this.detachedSubagentsProviderThreadId,
     this.detachedSubagentsCodexSourceId,
   });
@@ -42,6 +44,11 @@ class AuxiliaryFloatingDock extends StatefulWidget {
   final BridgeService bridgeService;
   final EphemeralSideChatRegistryService registryService;
   final OpenAuxiliarySideChat onOpenSideChat;
+
+  /// Runtime parent identity required only by an older Bridge that cannot
+  /// resolve the durable provider thread identity. A detached durable page may
+  /// legitimately have no such attachment yet.
+  final String? legacyRuntimeParentSessionId;
   final String? detachedSubagentsProviderThreadId;
   final String? detachedSubagentsCodexSourceId;
 
@@ -82,11 +89,19 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
   bool _positionTouched = false;
   bool _expanded = false;
   bool _dragging = false;
+  late SubagentsController _subagentsController;
+  int _lastSubagentActiveCount = 0;
 
   @override
   void initState() {
     super.initState();
     widget.registryService.addListener(_registryChanged);
+    _subagentsController = _createSubagentsController()
+      ..addListener(_subagentsChanged);
+    _lastSubagentActiveCount = _subagentsController.activeCount;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _subagentsController.refresh();
+    });
     unawaited(_restorePlacement());
   }
 
@@ -97,15 +112,46 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
       oldWidget.registryService.removeListener(_registryChanged);
       widget.registryService.addListener(_registryChanged);
     }
+    if (oldWidget.sessionId != widget.sessionId ||
+        oldWidget.bridgeService != widget.bridgeService ||
+        oldWidget.detachedSubagentsProviderThreadId !=
+            widget.detachedSubagentsProviderThreadId ||
+        oldWidget.detachedSubagentsCodexSourceId !=
+            widget.detachedSubagentsCodexSourceId) {
+      _subagentsController.removeListener(_subagentsChanged);
+      _subagentsController.dispose();
+      _subagentsController = _createSubagentsController()
+        ..addListener(_subagentsChanged)
+        ..setDetailsVisible(_expanded)
+        ..refresh();
+      _lastSubagentActiveCount = _subagentsController.activeCount;
+    }
   }
 
+  SubagentsController _createSubagentsController() => SubagentsController(
+    sessionId: widget.sessionId,
+    bridge: widget.bridgeService,
+    detachedProviderThreadId: widget.detachedSubagentsProviderThreadId,
+    detachedCodexSourceId: widget.detachedSubagentsCodexSourceId,
+  );
+
   void _registryChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _subagentsChanged() {
+    final next = _subagentsController.activeCount;
+    if (next == _lastSubagentActiveCount) return;
+    _lastSubagentActiveCount = next;
     if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     widget.registryService.removeListener(_registryChanged);
+    _subagentsController.setDetailsVisible(false);
+    _subagentsController.removeListener(_subagentsChanged);
+    _subagentsController.dispose();
     super.dispose();
   }
 
@@ -342,6 +388,8 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
   void _expand() {
     final size = _lastSize;
     if (size.isEmpty) return;
+    _subagentsController.setDetailsVisible(true);
+    _subagentsController.refresh();
     final panelSize = _panelSize(size);
     final handleCenter = (_handleLeft ?? 0) + (_handleSize / 2);
     setState(() {
@@ -374,6 +422,7 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
   void _collapse() {
     final size = _lastSize;
     if (size.isEmpty) return;
+    _subagentsController.setDetailsVisible(false);
     setState(() {
       _expanded = false;
       _dragging = false;
@@ -465,7 +514,15 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
         final childEntry = widget.registryService.entryForChild(
           widget.sessionId,
         );
-        final parentSessionId = childEntry?.parentSessionId ?? widget.sessionId;
+        final legacyRuntimeParentSessionId =
+            widget.legacyRuntimeParentSessionId ??
+            (widget.detachedSubagentsProviderThreadId == null
+                ? widget.sessionId
+                : null);
+        final parentSessionId =
+            childEntry?.parentSessionId ??
+            legacyRuntimeParentSessionId ??
+            widget.sessionId;
         final parentProviderSessionId =
             childEntry?.canonicalParentSessionId ??
             widget.parentProviderSessionId ??
@@ -474,7 +531,7 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
           parentProviderSessionId,
           legacyParentSessionId: parentSessionId,
         );
-        final activeCount = entries
+        final activeSideChatCount = entries
             .where(
               (entry) => const {
                 'starting',
@@ -484,6 +541,8 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
               }.contains(entry.status),
             )
             .length;
+        final activeSubagentCount = _subagentsController.activeCount;
+        final activeCount = activeSideChatCount + activeSubagentCount;
         final badgeCount = activeCount > 0 ? activeCount : entries.length;
         final colorScheme = Theme.of(context).colorScheme;
         final panelSize = _panelSize(size);
@@ -512,10 +571,16 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
                     parentProviderSessionId: parentProviderSessionId,
                     bridgeService: widget.bridgeService,
                     registryService: widget.registryService,
+                    subagentsController: _subagentsController,
                     detachedSubagentsProviderThreadId:
                         widget.detachedSubagentsProviderThreadId,
                     detachedSubagentsCodexSourceId:
                         widget.detachedSubagentsCodexSourceId,
+                    canOpenNewSideChat:
+                        widget.bridgeService.bridgeCapabilities.contains(
+                          ephemeralSideChatParentIdentityCapability,
+                        ) ||
+                        legacyRuntimeParentSessionId != null,
                     onOpenSideChat: _openSideChat,
                     onCollapse: _collapse,
                     onHeaderPointerMove: _dragPanel,
@@ -611,8 +676,10 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
     required this.parentProviderSessionId,
     required this.bridgeService,
     required this.registryService,
+    required this.subagentsController,
     this.detachedSubagentsProviderThreadId,
     this.detachedSubagentsCodexSourceId,
+    required this.canOpenNewSideChat,
     required this.onOpenSideChat,
     required this.onCollapse,
     required this.onHeaderPointerMove,
@@ -624,8 +691,10 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
   final String parentProviderSessionId;
   final BridgeService bridgeService;
   final EphemeralSideChatRegistryService registryService;
+  final SubagentsController subagentsController;
   final String? detachedSubagentsProviderThreadId;
   final String? detachedSubagentsCodexSourceId;
+  final bool canOpenNewSideChat;
   final OpenAuxiliarySideChat onOpenSideChat;
   final VoidCallback onCollapse;
   final PointerMoveEventListener onHeaderPointerMove;
@@ -682,6 +751,7 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
                     parentSessionId: parentSessionId,
                     parentProviderSessionId: parentProviderSessionId,
                     registryService: registryService,
+                    canOpenNewSideChat: canOpenNewSideChat,
                     onOpen: onOpenSideChat,
                   ),
                   SubagentsPanel(
@@ -689,6 +759,7 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
                     bridgeService: bridgeService,
                     detachedProviderThreadId: detachedSubagentsProviderThreadId,
                     detachedCodexSourceId: detachedSubagentsCodexSourceId,
+                    controller: subagentsController,
                   ),
                 ],
               ),
@@ -705,12 +776,14 @@ class _EphemeralSideChatList extends StatefulWidget {
     required this.parentSessionId,
     required this.parentProviderSessionId,
     required this.registryService,
+    required this.canOpenNewSideChat,
     required this.onOpen,
   });
 
   final String parentSessionId;
   final String parentProviderSessionId;
   final EphemeralSideChatRegistryService registryService;
+  final bool canOpenNewSideChat;
   final OpenAuxiliarySideChat onOpen;
 
   @override
@@ -775,7 +848,9 @@ class _EphemeralSideChatListState extends State<_EphemeralSideChatList> {
             width: double.infinity,
             child: FilledButton.icon(
               key: const ValueKey('auxiliary_new_side_chat'),
-              onPressed: widget.registryService.isSupported
+              onPressed:
+                  widget.registryService.isSupported &&
+                      widget.canOpenNewSideChat
                   ? () => widget.onOpen(
                       widget.parentSessionId,
                       widget.parentProviderSessionId,

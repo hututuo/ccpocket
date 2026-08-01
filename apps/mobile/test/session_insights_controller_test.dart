@@ -247,6 +247,148 @@ void main() {
     expect(controller.contextLoading, isFalse);
   });
 
+  test(
+    'scoped live context requires exact Bridge source and current authority',
+    () async {
+      var authorityGeneration = 'daemon:1:2';
+      final bridge = _Bridge()
+        ..advertisedCapabilities = const {scopedContextUsageCapability};
+      final controller = SessionInsightsController(
+        sessionId: 's1',
+        bridge: bridge,
+        authorityGenerationProvider: () => authorityGeneration,
+      )..start();
+      addTearDown(controller.dispose);
+      addTearDown(bridge.dispose);
+
+      bridge.emit(
+        const ContextUsageMessage(
+          usage: ContextUsage(
+            sessionId: 's1',
+            threadId: 's1',
+            bridgeInstanceId: 'bridge-other',
+            codexSourceId: 'source-1',
+            authorityGeneration: 'daemon:1:1',
+            last: ContextTokenUsage(totalTokens: 70),
+            total: ContextTokenUsage(totalTokens: 70),
+            modelContextWindow: 100,
+          ),
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.contextUsage, isNull);
+
+      bridge.emit(
+        const ContextUsageMessage(
+          usage: ContextUsage(
+            sessionId: 's1',
+            threadId: 's1',
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'source-1',
+            authorityGeneration: 'daemon:1:1',
+            last: ContextTokenUsage(totalTokens: 70),
+            total: ContextTokenUsage(totalTokens: 70),
+            modelContextWindow: 100,
+          ),
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.contextUsage, isNull);
+
+      bridge.emit(
+        const ContextUsageMessage(
+          usage: ContextUsage(
+            sessionId: 's1',
+            threadId: 's1',
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'source-1',
+            authorityGeneration: 'daemon:1:2',
+            last: ContextTokenUsage(totalTokens: 71),
+            total: ContextTokenUsage(totalTokens: 71),
+            modelContextWindow: 100,
+          ),
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.contextUsage?.last.totalTokens, 71);
+
+      var notifications = 0;
+      controller.addListener(() => notifications += 1);
+      authorityGeneration = 'daemon:1:3';
+      bridge.emit(
+        const ContextUsageMessage(
+          usage: ContextUsage(
+            sessionId: 's1',
+            threadId: 's1',
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'source-1',
+            authorityGeneration: 'daemon:1:3',
+            last: ContextTokenUsage(totalTokens: 71),
+            total: ContextTokenUsage(totalTokens: 71),
+            modelContextWindow: 100,
+          ),
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(notifications, 1);
+      expect(controller.contextUsage?.authorityGeneration, 'daemon:1:3');
+    },
+  );
+
+  test(
+    'scoped capability rejects incomplete events while legacy accepts unscoped',
+    () async {
+      final scopedBridge = _Bridge()
+        ..advertisedCapabilities = const {scopedContextUsageCapability};
+      final scoped = SessionInsightsController(
+        sessionId: 's1',
+        bridge: scopedBridge,
+        authorityGenerationProvider: () => null,
+      )..start();
+      addTearDown(scoped.dispose);
+      addTearDown(scopedBridge.dispose);
+
+      scopedBridge.emit(
+        const ContextUsageMessage(
+          usage: ContextUsage(
+            sessionId: 's1',
+            last: ContextTokenUsage(totalTokens: 50),
+            total: ContextTokenUsage(totalTokens: 50),
+            modelContextWindow: 100,
+          ),
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(scoped.contextUsage, isNull);
+
+      final legacyBridge = _Bridge();
+      final legacy = SessionInsightsController(
+        sessionId: 's1',
+        bridge: legacyBridge,
+      )..start();
+      addTearDown(legacy.dispose);
+      addTearDown(legacyBridge.dispose);
+      legacyBridge.emit(
+        const ContextUsageMessage(
+          usage: ContextUsage(
+            sessionId: 's1',
+            last: ContextTokenUsage(totalTokens: 51),
+            total: ContextTokenUsage(totalTokens: 51),
+            modelContextWindow: 100,
+          ),
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(legacy.contextUsage?.last.totalTokens, 51);
+    },
+  );
+
   test('keeps quota data visible without a context response', () async {
     final bridge = _Bridge();
     final controller = SessionInsightsController(

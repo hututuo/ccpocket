@@ -5,7 +5,10 @@ import 'package:ccpocket/features/side_chat/state/ephemeral_side_chat_registry_s
 import 'package:ccpocket/models/messages.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-class _Gateway implements EphemeralSideChatBridgeGateway {
+class _Gateway
+    implements
+        EphemeralSideChatBridgeGateway,
+        EphemeralSideChatAuthenticatedScopeGateway {
   final connectionController =
       StreamController<BridgeConnectionState>.broadcast(sync: true);
   final capabilityController = StreamController<void>.broadcast(sync: true);
@@ -19,6 +22,9 @@ class _Gateway implements EphemeralSideChatBridgeGateway {
 
   @override
   String? logicalConnectionIdentity;
+
+  @override
+  String? authenticatedScopeIdentity;
 
   @override
   Set<String> capabilities = {};
@@ -70,6 +76,7 @@ void main() {
     'reconciles on connect and preserves the registry while disconnected',
     () async {
       final gateway = _Gateway();
+      gateway.authenticatedScopeIdentity = 'bridge-a|source-a';
       final service = EphemeralSideChatRegistryService(
         bridge: gateway,
         requestTimeout: const Duration(seconds: 1),
@@ -92,6 +99,13 @@ void main() {
 
       gateway.isConnected = false;
       gateway.connectionController.add(BridgeConnectionState.reconnecting);
+      expect(service.entries.single.childSessionId, 'child-1');
+
+      // A transport generation change for the same authenticated data source
+      // must not make the Dock forget its current registry while the fresh
+      // authoritative list is in flight.
+      gateway.isConnected = true;
+      gateway.connectionController.add(BridgeConnectionState.connected);
       expect(service.entries.single.childSessionId, 'child-1');
 
       service.dispose();
@@ -277,7 +291,8 @@ void main() {
     'clears old entries and rejects late responses when the Bridge changes',
     () async {
       final gateway = _Gateway()
-        ..logicalConnectionIdentity = 'bridge-a'
+        ..logicalConnectionIdentity = 'same-route'
+        ..authenticatedScopeIdentity = 'bridge-a|source-a|epoch:1'
         ..capabilities = {ephemeralSideChatCapability}
         ..isConnected = true;
       final service = EphemeralSideChatRegistryService(
@@ -299,7 +314,7 @@ void main() {
       final oldRefresh = service.refresh();
       final oldRefreshExpectation = expectLater(oldRefresh, throwsStateError);
       final oldRequestId = gateway.sentJson(1)['requestId'] as String;
-      gateway.logicalConnectionIdentity = 'bridge-b';
+      gateway.authenticatedScopeIdentity = 'bridge-a|source-b|epoch:2';
       gateway.connectionController.add(BridgeConnectionState.connecting);
       await oldRefreshExpectation;
       expect(service.entries, isEmpty);
