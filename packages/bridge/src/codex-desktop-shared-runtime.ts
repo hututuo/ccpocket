@@ -538,7 +538,11 @@ export async function verifyDesktopSharedRuntime(
 }
 
 interface ParsedArgs {
-  command: "snapshot" | "enable-shared" | "verify-shared" | "restore-private";
+  command:
+    | "snapshot"
+    | "enable-isolated-pilot"
+    | "verify-shared"
+    | "restore-private";
   root: string;
 }
 
@@ -546,12 +550,12 @@ function parseArgs(argv: string[]): ParsedArgs {
   const command = argv[0] as ParsedArgs["command"] | undefined;
   if (
     command !== "snapshot" &&
-    command !== "enable-shared" &&
+    command !== "enable-isolated-pilot" &&
     command !== "verify-shared" &&
     command !== "restore-private"
   ) {
     throw new Error(
-      "Usage: codex-desktop-shared-runtime <snapshot|enable-shared|verify-shared|restore-private> --root <pilot-root>",
+      "Usage: codex-desktop-shared-runtime <snapshot|enable-isolated-pilot|verify-shared|restore-private> --root <pilot-root>",
     );
   }
   if (argv[1] !== "--root" || !argv[2] || argv.length !== 3) {
@@ -572,9 +576,11 @@ async function main(argv: string[]): Promise<void> {
     );
     return;
   }
-  if (args.command === "enable-shared") {
+  if (args.command === "enable-isolated-pilot") {
     await enableDesktopSharedRuntime(args.root);
-    console.log(JSON.stringify({ status: "shared_environment_enabled" }));
+    console.log(
+      JSON.stringify({ status: "isolated_pilot_environment_enabled" }),
+    );
     return;
   }
   if (args.command === "restore-private") {

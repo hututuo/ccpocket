@@ -63,7 +63,7 @@ Daemon pilot options (not persisted by setup):
       --codex-daemon-socket <path>
                          Unix socket path (defaults inside CODEX_HOME)
       --codex-daemon-expected-version <version>
-                         Exact CLI, managed Codex, and app-server version
+                         Exact Codex CLI version
 
 Share options:
       --ttl <seconds>    Link lifetime from 60 to 86400 seconds (default: 3600)
@@ -98,6 +98,8 @@ Codex app-server configuration can be provided with
 BRIDGE_CODEX_APP_SERVER_MODE and BRIDGE_CODEX_SHARED_APP_SERVER_URL.
 Daemon mode additionally requires explicit CODEX_HOME,
 BRIDGE_CODEX_DAEMON_CLI, and BRIDGE_CODEX_DAEMON_EXPECTED_VERSION;
+official mixed-label packages may additionally set
+BRIDGE_CODEX_DAEMON_EXPECTED_APP_SERVER_VERSION.
 BRIDGE_CODEX_DAEMON_SOCKET defaults inside CODEX_HOME.
 Shared Codex authority identity can be provided with
 BRIDGE_CODEX_SOURCE_ID.

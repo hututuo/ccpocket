@@ -38,6 +38,7 @@ export type CodexSharedRuntimeControlMethod =
 
 export interface CodexSharedRuntimeSafeDaemonIdentity {
   expectedVersion: string;
+  expectedAppServerVersion?: string;
   cliVersion: string;
   appServerVersion: string;
   socketDevice: number;
@@ -193,6 +194,9 @@ export class CodexSharedRuntimeControl extends EventEmitter<CodexSharedRuntimeCo
         );
         return {
           expectedVersion: verified.config.expectedVersion,
+          expectedAppServerVersion:
+            verified.config.expectedAppServerVersion ??
+            verified.config.expectedVersion,
           cliVersion: verified.cliVersion,
           appServerVersion: verified.appServerVersion,
           socketDevice: verified.socketIdentity.device,
@@ -796,9 +800,17 @@ function validateSafeDaemonIdentity(
   identity: CodexSharedRuntimeSafeDaemonIdentity,
 ): CodexSharedRuntimeSafeDaemonIdentity {
   const expectedVersion = safeVersion(identity.expectedVersion);
+  const hasExplicitAppServerVersion =
+    identity.expectedAppServerVersion !== undefined;
+  const expectedAppServerVersion = safeVersion(
+    identity.expectedAppServerVersion ?? identity.expectedVersion,
+  );
   const cliVersion = safeVersion(identity.cliVersion);
   const appServerVersion = safeVersion(identity.appServerVersion);
-  if (cliVersion !== expectedVersion || appServerVersion !== expectedVersion) {
+  if (
+    cliVersion !== expectedVersion ||
+    appServerVersion !== expectedAppServerVersion
+  ) {
     throw new Error("Shared runtime control daemon version mismatch");
   }
   if (
@@ -811,6 +823,7 @@ function validateSafeDaemonIdentity(
   }
   return {
     expectedVersion,
+    ...(hasExplicitAppServerVersion ? { expectedAppServerVersion } : {}),
     cliVersion,
     appServerVersion,
     socketDevice: identity.socketDevice,

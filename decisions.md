@@ -1410,3 +1410,18 @@
   ID 出现在另一 Codex Home 时继续 fail closed。
 - 源码合入、运行 Bridge 切换、Desktop daemon 试验、OTA/IPA 和真机验收仍是独立
   门禁。本决定只保留两条产品路径，不授权自动修改当前生产模式或发布通道。
+
+### 2026-08-01：真实 Desktop 共享运行时不得使用隔离 Pilot Home
+
+- `codex-desktop-shared-runtime enable-shared --root <pilot>` 曾把 GUI launchd 的
+  `CODEX_HOME` 指向 `/private/tmp` 隔离目录，导致 Desktop 左栏只显示 pilot 中的
+  两个任务。真实 `~/.codex`、1498 个会话和数据库没有丢失，但该入口不能用于生产。
+- CLI 入口改名为 `enable-isolated-pilot`，名称必须明确表达会切换到隔离 Home；旧的
+  `enable-shared` 直接拒绝，防止发布流程再次误用。
+- 真实 Desktop 共享模式必须由官方 `codex app-server daemon bootstrap
+  --remote-control` 在真实 `~/.codex` 中管理。Desktop GUI 环境只设置
+  `CODEX_APP_SERVER_USE_LOCAL_DAEMON=1`，不得设置 `CODEX_HOME`；Bridge 也指向同一
+  真实 Home、同一用户私有 Unix socket。
+- 官方安装包可能出现 CLI 版本 `0.146.0-alpha.9.2`、managed/app-server 版本
+  `0.146.0` 的合法双标签。Bridge 分别精确固定两者，不再错误要求字符串相同；socket、
+  CLI 文件、所有权、路径和版本仍全部 fail closed。

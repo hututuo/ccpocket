@@ -67,6 +67,20 @@ describe("codex app-server config", () => {
     });
   });
 
+  it("allows the official managed app-server label to differ from the CLI", () => {
+    expect(
+      readCodexDaemonConfig(
+        {
+          CODEX_HOME: "/Users/test/.codex",
+          BRIDGE_CODEX_DAEMON_CLI: "/Users/test/.codex/codex",
+          BRIDGE_CODEX_DAEMON_EXPECTED_VERSION: "0.146.0-alpha.9.2",
+          BRIDGE_CODEX_DAEMON_EXPECTED_APP_SERVER_VERSION: "0.146.0",
+        },
+        "darwin",
+      ).expectedAppServerVersion,
+    ).toBe("0.146.0");
+  });
+
   it("rejects incomplete, relative, empty, and Windows daemon configuration", () => {
     const valid = {
       CODEX_HOME: "/Users/test/.codex-pilot",

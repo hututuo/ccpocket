@@ -16,8 +16,9 @@ const baseEnv: NodeJS.ProcessEnv = {
 
 const safeIdentity: CodexSharedRuntimeSafeDaemonIdentity = {
   expectedVersion: "0.146.0-alpha.9.2",
+  expectedAppServerVersion: "0.146.0",
   cliVersion: "0.146.0-alpha.9.2",
-  appServerVersion: "0.146.0-alpha.9.2",
+  appServerVersion: "0.146.0",
   socketDevice: 17,
   socketInode: 29,
 };

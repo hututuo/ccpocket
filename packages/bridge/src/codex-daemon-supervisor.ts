@@ -266,6 +266,7 @@ export function verifyCodexDaemon(
     canonicalCli,
     canonicalSocket,
     config.expectedVersion,
+    config.expectedAppServerVersion ?? config.expectedVersion,
     String(uid),
   ].join("\u0000");
   const now = dependencies.now ?? Date.now;
@@ -297,13 +298,16 @@ export function verifyCodexDaemon(
   if (version.backend !== "pid") {
     throw new Error("Codex daemon must use the audited pid backend");
   }
+  const expectedAppServerVersion =
+    config.expectedAppServerVersion ?? config.expectedVersion;
   if (
     version.cliVersion !== config.expectedVersion ||
-    version.appServerVersion !== config.expectedVersion ||
-    version.managedCodexVersion !== config.expectedVersion
+    version.appServerVersion !== expectedAppServerVersion ||
+    version.managedCodexVersion !== expectedAppServerVersion
   ) {
     throw new Error(
-      `Codex daemon version mismatch; expected ${config.expectedVersion}`,
+      "Codex daemon version mismatch; expected " +
+        `CLI ${config.expectedVersion} and app-server ${expectedAppServerVersion}`,
     );
   }
   if (typeof version.managedCodexPath !== "string") {

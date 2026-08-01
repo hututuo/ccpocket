@@ -116,6 +116,31 @@ describe.runIf(process.platform !== "win32")("CodexDaemonSupervisor", () => {
     ).not.toThrow();
   });
 
+  it("accepts separately pinned official CLI and app-server labels", async () => {
+    const fixture = await createFixture();
+    const appServerVersion = "0.146.0";
+    const verified = verifyCodexDaemon(
+      {
+        ...fixture.config,
+        expectedAppServerVersion: appServerVersion,
+      },
+      {
+        runVersion: () => ({
+          status: "running",
+          backend: "pid",
+          cliVersion: VERSION,
+          appServerVersion,
+          managedCodexPath: fixture.cliPath,
+          managedCodexVersion: appServerVersion,
+          socketPath: fixture.socketPath,
+        }),
+      },
+    );
+
+    expect(verified.cliVersion).toBe(VERSION);
+    expect(verified.appServerVersion).toBe(appServerVersion);
+  });
+
   it("requires an absolute executable CLI", async () => {
     const fixture = await createFixture();
     expect(() =>

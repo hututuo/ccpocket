@@ -10,6 +10,7 @@ export interface CodexDaemonConfig {
   cliPath: string;
   socketPath: string;
   expectedVersion: string;
+  expectedAppServerVersion?: string;
 }
 
 export function defaultCodexAppServerPort(bridgePort?: string): string {
@@ -89,6 +90,8 @@ export function readCodexDaemonConfig(
     env,
     "BRIDGE_CODEX_DAEMON_EXPECTED_VERSION",
   );
+  const expectedAppServerVersion =
+    env.BRIDGE_CODEX_DAEMON_EXPECTED_APP_SERVER_VERSION?.trim();
   const configuredSocket = env.BRIDGE_CODEX_DAEMON_SOCKET;
   if (configuredSocket !== undefined && configuredSocket.trim().length === 0) {
     throw new Error(
@@ -101,7 +104,13 @@ export function readCodexDaemonConfig(
     "BRIDGE_CODEX_DAEMON_SOCKET",
   );
 
-  return { codexHome, cliPath, socketPath, expectedVersion };
+  return {
+    codexHome,
+    cliPath,
+    socketPath,
+    expectedVersion,
+    ...(expectedAppServerVersion ? { expectedAppServerVersion } : {}),
+  };
 }
 
 export function resolveCodexSharedAppServerUrl(
