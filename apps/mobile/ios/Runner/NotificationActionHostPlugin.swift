@@ -3,6 +3,7 @@ import UserNotifications
 
 struct NotificationApprovalActionPayload: Equatable {
   static let categoryIdentifier = "ccpocket_approval_v1"
+  static let codexBrokerCategoryIdentifier = "ccpocket_approval_v2"
   static let approveActionIdentifier = "ccpocket_approve_once_v1"
   static let rejectActionIdentifier = "ccpocket_reject_v1"
 
@@ -15,6 +16,11 @@ struct NotificationApprovalActionPayload: Equatable {
   let bridgeRouteIdentity: String?
   let permissionId: String
   let occurredAt: String
+  let actionPayloadVersion: Int
+  let threadId: String?
+  let turnId: String?
+  let authorityGeneration: String?
+  let allowedActions: String?
 
   var dictionary: [String: String] {
     var value = [
@@ -36,6 +42,16 @@ struct NotificationApprovalActionPayload: Equatable {
     if let bridgeRouteIdentity {
       value["bridgeRouteIdentity"] = bridgeRouteIdentity
     }
+    if actionPayloadVersion == 2 {
+      value["actionPayloadVersion"] = "2"
+      value["opaqueRequestId"] = permissionId
+      if let threadId { value["threadId"] = threadId }
+      if let turnId { value["turnId"] = turnId }
+      if let authorityGeneration {
+        value["authorityGeneration"] = authorityGeneration
+      }
+      if let allowedActions { value["allowedActions"] = allowedActions }
+    }
     return value
   }
 
@@ -44,7 +60,10 @@ struct NotificationApprovalActionPayload: Equatable {
     actionIdentifier: String,
     userInfo: [AnyHashable: Any]
   ) -> NotificationApprovalActionPayload? {
-    guard categoryIdentifier == Self.categoryIdentifier else { return nil }
+    let isCodexBroker = categoryIdentifier == Self.codexBrokerCategoryIdentifier
+    guard categoryIdentifier == Self.categoryIdentifier || isCodexBroker else {
+      return nil
+    }
     guard
       actionIdentifier == approveActionIdentifier ||
         actionIdentifier == rejectActionIdentifier
@@ -59,7 +78,6 @@ struct NotificationApprovalActionPayload: Equatable {
       provider == "claude" || provider == "codex",
       let eventType = boundedString(fields["eventType"], maximumLength: 64),
       eventType == "approval_required",
-      let permissionId = boundedString(fields["permissionId"], maximumLength: 256),
       let occurredAt = boundedString(fields["occurredAt"], maximumLength: 64),
       parseIso8601Timestamp(occurredAt) != nil
     else {
@@ -79,6 +97,39 @@ struct NotificationApprovalActionPayload: Equatable {
     let bridgeRouteIdentity = bridgeInstanceId == nil
       ? boundedString(fields["bridgeRouteIdentity"], maximumLength: 1_024)
       : nil
+    let permissionId = boundedString(
+      fields[isCodexBroker ? "opaqueRequestId" : "permissionId"],
+      maximumLength: 256
+    )
+    guard let permissionId else { return nil }
+    var threadId: String?
+    var turnId: String?
+    var authorityGeneration: String?
+    var allowedActions: String?
+    if isCodexBroker {
+      guard
+        provider == "codex",
+        boundedString(fields["actionPayloadVersion"], maximumLength: 8) == "2",
+        bridgeInstanceId != nil,
+        codexSourceId != nil,
+        let parsedThreadId = boundedString(fields["threadId"], maximumLength: 256),
+        let parsedTurnId = boundedString(fields["turnId"], maximumLength: 256),
+        let parsedGeneration = boundedString(
+          fields["authorityGeneration"],
+          maximumLength: 64
+        ),
+        let parsedActions = canonicalAllowedActions(fields["allowedActions"]),
+        (actionIdentifier == rejectActionIdentifier
+          ? parsedActions.split(separator: ",").contains("reject")
+          : parsedActions.split(separator: ",").contains("approve"))
+      else {
+        return nil
+      }
+      threadId = parsedThreadId
+      turnId = parsedTurnId
+      authorityGeneration = parsedGeneration
+      allowedActions = parsedActions
+    }
     return NotificationApprovalActionPayload(
       actionIdentifier: actionIdentifier,
       sessionId: sessionId,
@@ -88,8 +139,29 @@ struct NotificationApprovalActionPayload: Equatable {
       codexSourceId: codexSourceId,
       bridgeRouteIdentity: bridgeRouteIdentity,
       permissionId: permissionId,
-      occurredAt: occurredAt
+      occurredAt: occurredAt,
+      actionPayloadVersion: isCodexBroker ? 2 : 1,
+      threadId: threadId,
+      turnId: turnId,
+      authorityGeneration: authorityGeneration,
+      allowedActions: allowedActions
     )
+  }
+
+  private static func canonicalAllowedActions(_ value: Any?) -> String? {
+    guard let raw = boundedString(value, maximumLength: 128) else { return nil }
+    let allowed = Set(["approve", "approve_always", "reject", "answer"])
+    let actions = raw
+      .split(separator: ",", omittingEmptySubsequences: false)
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    guard
+      !actions.isEmpty,
+      actions.count <= 4,
+      actions.allSatisfy({ !$0.isEmpty && allowed.contains($0) })
+    else {
+      return nil
+    }
+    return Array(Set(actions)).sorted().joined(separator: ",")
   }
 
   private static func notificationFields(
@@ -142,7 +214,7 @@ struct NotificationApprovalActionPayload: Equatable {
 /// the authoritative pending-permission check before any approval is sent.
 final class NotificationActionHostPlugin: NSObject, FlutterPlugin {
   static let channelName = "ccpocket/notification_actions"
-  static let nativeApiVersion = 1
+  static let nativeApiVersion = 2
   private static let maximumPendingActions = 8
 
   private static let lock = NSLock()
@@ -233,7 +305,11 @@ final class NotificationActionHostPlugin: NSObject, FlutterPlugin {
         $0.bridgeRouteIdentity == action.bridgeRouteIdentity &&
         ($0.providerSessionId ?? $0.sessionId) ==
           (action.providerSessionId ?? action.sessionId) &&
-        $0.permissionId == action.permissionId
+        $0.permissionId == action.permissionId &&
+        $0.actionPayloadVersion == action.actionPayloadVersion &&
+        $0.threadId == action.threadId &&
+        $0.turnId == action.turnId &&
+        $0.authorityGeneration == action.authorityGeneration
     }
     pending.append(action)
     if pending.count > maximumPendingActions {

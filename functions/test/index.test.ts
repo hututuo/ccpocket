@@ -107,10 +107,12 @@ beforeEach(() => {
   mocks.serverTimestamp.mockReturnValue("server-timestamp");
   mocks.deleteField.mockReturnValue("delete-field");
   mocks.transactionGet.mockResolvedValue({ data: () => ({ timestamps: [] }) });
-  mocks.runTransaction.mockImplementation(async (callback) => callback({
-    get: mocks.transactionGet,
-    set: mocks.transactionSet,
-  }));
+  mocks.runTransaction.mockImplementation(async (callback) =>
+    callback({
+      get: mocks.transactionGet,
+      set: mocks.transactionSet,
+    }),
+  );
   mocks.tokenGet.mockResolvedValue({ exists: false });
   mocks.tokenUpdate.mockResolvedValue(undefined);
   mocks.tokenSet.mockResolvedValue(undefined);
@@ -155,7 +157,11 @@ describe("relay", () => {
   });
 
   it("returns 400 for a malformed request body", async () => {
-    const res = await invoke({ op: "register", token: VALID_TOKEN, platform: "desktop" });
+    const res = await invoke({
+      op: "register",
+      token: VALID_TOKEN,
+      platform: "desktop",
+    });
 
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.json).toHaveBeenCalledWith({ error: "Invalid request body" });
@@ -205,17 +211,25 @@ describe("relay", () => {
 
   it("returns 429 when the token operation rate limit is exceeded", async () => {
     mocks.transactionGet.mockResolvedValue({
-      data: () => ({ timestamps: Array.from({ length: 20 }, () => Date.now()) }),
+      data: () => ({
+        timestamps: Array.from({ length: 20 }, () => Date.now()),
+      }),
     });
 
     const res = await invoke({ op: "unregister", token: VALID_TOKEN });
 
     expect(res.status).toHaveBeenCalledWith(429);
-    expect(res.json).toHaveBeenCalledWith({ error: "Rate limit exceeded. Try again later." });
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Rate limit exceeded. Try again later.",
+    });
   });
 
   it("returns a stable 400 error for an invalid FCM token", async () => {
-    const res = await invoke({ op: "register", token: INVALID_FCM_VALUE, platform: "ios" });
+    const res = await invoke({
+      op: "register",
+      token: INVALID_FCM_VALUE,
+      platform: "ios",
+    });
 
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.json).toHaveBeenCalledWith({ error: "invalid_fcm_token" });
@@ -229,7 +243,11 @@ describe("relay", () => {
   it("returns a stable 409 error for a new token above the bridge limit", async () => {
     mocks.countGet.mockResolvedValue({ data: () => ({ count: 20 }) });
 
-    const res = await invoke({ op: "register", token: VALID_TOKEN, platform: "ios" });
+    const res = await invoke({
+      op: "register",
+      token: VALID_TOKEN,
+      platform: "ios",
+    });
 
     expect(res.status).toHaveBeenCalledWith(409);
     expect(res.json).toHaveBeenCalledWith({ error: "token_limit_exceeded" });
@@ -254,6 +272,7 @@ describe("relay", () => {
       platform: "android",
       enabledEventTypes: "delete-field",
       approvalActionsSupported: "delete-field",
+      approvalActionsVersion: "delete-field",
       locale: "ja",
       updatedAt: "server-timestamp",
     });
@@ -261,13 +280,19 @@ describe("relay", () => {
   });
 
   it("registers a new valid token", async () => {
-    const res = await invoke({ op: "register", token: VALID_TOKEN, platform: "web" });
-
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect(mocks.tokenSet).toHaveBeenCalledWith(expect.objectContaining({
+    const res = await invoke({
+      op: "register",
       token: VALID_TOKEN,
       platform: "web",
-    }));
+    });
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(mocks.tokenSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        token: VALID_TOKEN,
+        platform: "web",
+      }),
+    );
   });
 
   it("stores explicit notification event filters", async () => {
@@ -291,10 +316,14 @@ describe("relay", () => {
       token: VALID_TOKEN,
       platform: "ios",
       approvalActionsSupported: true,
+      approvalActionsVersion: 2,
     });
 
     expect(mocks.tokenSet).toHaveBeenCalledWith(
-      expect.objectContaining({ approvalActionsSupported: true }),
+      expect.objectContaining({
+        approvalActionsSupported: true,
+        approvalActionsVersion: 2,
+      }),
     );
   });
 
@@ -329,8 +358,7 @@ describe("relay", () => {
     mocks.collectionGet.mockResolvedValue({
       docs: [
         {
-          get: (field: string) =>
-            field === "token" ? VALID_TOKEN : undefined,
+          get: (field: string) => (field === "token" ? VALID_TOKEN : undefined),
         },
         {
           get: (field: string) =>
@@ -356,8 +384,7 @@ describe("relay", () => {
     mocks.collectionGet.mockResolvedValue({
       docs: [
         {
-          get: (field: string) =>
-            field === "token" ? VALID_TOKEN : undefined,
+          get: (field: string) => (field === "token" ? VALID_TOKEN : undefined),
         },
       ],
     });
@@ -505,6 +532,109 @@ describe("relay", () => {
     );
   });
 
+  it("honors an explicit v1 approval action registration", async () => {
+    mocks.collectionGet.mockResolvedValue({
+      docs: [
+        {
+          get: (field: string) => {
+            if (field === "token") return VALID_TOKEN;
+            if (field === "approvalActionsVersion") return 1;
+            return undefined;
+          },
+        },
+      ],
+    });
+
+    await invoke({
+      op: "notify",
+      eventType: "approval_required",
+      title: "Approval needed",
+      body: "Review the request",
+      data: {
+        sessionId: "runtime-1",
+        provider: "claude",
+        permissionId: "permission-1",
+        occurredAt: "2026-07-25T00:00:00.000Z",
+      },
+    });
+
+    expect(mocks.sendEachForMulticast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apns: {
+          payload: {
+            aps: {
+              sound: "default",
+              category: "ccpocket_approval_v1",
+            },
+          },
+        },
+      }),
+    );
+  });
+
+  it("assigns CAB v2 actions only to a v2 native host", async () => {
+    const V1_TOKEN = `${"v".repeat(80)}:legacy`;
+    mocks.collectionGet.mockResolvedValue({
+      docs: [
+        {
+          get: (field: string) => {
+            if (field === "token") return VALID_TOKEN;
+            if (field === "approvalActionsVersion") return 2;
+            if (field === "approvalActionsSupported") return true;
+            return undefined;
+          },
+        },
+        {
+          get: (field: string) => {
+            if (field === "token") return V1_TOKEN;
+            if (field === "approvalActionsSupported") return true;
+            return undefined;
+          },
+        },
+      ],
+    });
+
+    await invoke({
+      op: "notify",
+      eventType: "approval_required",
+      title: "Approval needed",
+      body: "Review the request",
+      data: {
+        sessionId: "thread-1",
+        provider: "codex",
+        actionPayloadVersion: "2",
+        opaqueRequestId: "opaque-1",
+        codexSourceId: "source-1",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        authorityGeneration: "cab:1:1",
+        allowedActions: "approve,reject",
+        occurredAt: "2026-07-25T00:00:00.000Z",
+      },
+    });
+
+    expect(mocks.sendEachForMulticast).toHaveBeenCalledTimes(2);
+    expect(mocks.sendEachForMulticast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tokens: [VALID_TOKEN],
+        apns: {
+          payload: {
+            aps: {
+              sound: "default",
+              category: "ccpocket_approval_v2",
+            },
+          },
+        },
+      }),
+    );
+    expect(mocks.sendEachForMulticast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tokens: [V1_TOKEN],
+        apns: { payload: { aps: { sound: "default" } } },
+      }),
+    );
+  });
+
   it("omits approval actions when the opaque action identity is incomplete", async () => {
     mocks.collectionGet.mockResolvedValue({
       docs: [
@@ -562,13 +692,19 @@ describe("relay", () => {
     const firestoreError = new Error("sensitive Firestore details");
     mocks.tokenGet.mockRejectedValue(firestoreError);
 
-    const res = await invoke({ op: "register", token: VALID_TOKEN, platform: "ios" });
+    const res = await invoke({
+      op: "register",
+      token: VALID_TOKEN,
+      platform: "ios",
+    });
 
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.json).toHaveBeenCalledWith({ error: "internal_error" });
-    expect(res.json).not.toHaveBeenCalledWith(expect.objectContaining({
-      error: expect.stringContaining("Firestore"),
-    }));
+    expect(res.json).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: expect.stringContaining("Firestore"),
+      }),
+    );
     expect(mocks.loggerError).toHaveBeenCalledWith("Relay operation failed", {
       op: "register",
       message: firestoreError.message,
@@ -580,7 +716,9 @@ describe("relay", () => {
     mocks.collectionGet.mockResolvedValue({
       docs: [{ get: () => VALID_TOKEN }],
     });
-    mocks.sendEachForMulticast.mockRejectedValue(new Error("sensitive FCM details"));
+    mocks.sendEachForMulticast.mockRejectedValue(
+      new Error("sensitive FCM details"),
+    );
 
     const res = await invoke({
       op: "notify",

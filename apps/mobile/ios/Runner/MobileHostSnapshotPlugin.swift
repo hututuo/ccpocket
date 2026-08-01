@@ -36,7 +36,7 @@ final class MobileHostSnapshotPlugin: NSObject, FlutterPlugin {
     "backgroundLocationKeepAlive": 1,
     // Handles local and FCM approval actions before forwarding only opaque
     // permission identities to the Dart revalidation layer.
-    "notificationApprovalActions": 1,
+    "notificationApprovalActions": 2,
   ]
 
   static func register(with registrar: FlutterPluginRegistrar) {

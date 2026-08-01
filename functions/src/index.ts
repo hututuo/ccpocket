@@ -19,6 +19,7 @@ type RegisterBody = {
   locale?: string;
   enabledEventTypes?: string[];
   approvalActionsSupported?: boolean;
+  approvalActionsVersion?: 1 | 2;
 };
 
 type UnregisterBody = {
@@ -74,7 +75,9 @@ const appCheck = getAppCheck();
  * Returns true if valid or if App Check enforcement is not yet enabled
  * (controlled by the ENFORCE_APP_CHECK env var).
  */
-async function verifyAppCheck(req: { header: (name: string) => string | undefined }): Promise<boolean> {
+async function verifyAppCheck(req: {
+  header: (name: string) => string | undefined;
+}): Promise<boolean> {
   const appCheckToken = req.header("x-firebase-appcheck");
   if (!appCheckToken) {
     return false;
@@ -126,7 +129,11 @@ async function checkRateLimit(
     timestamps.push(now);
     // expireAt enables Firestore TTL policy to auto-delete stale rate limit docs
     const expireAt = new Date(now + RATE_LIMIT_WINDOW_MS * 2);
-    tx.set(ref, { timestamps, updatedAt: FieldValue.serverTimestamp(), expireAt });
+    tx.set(ref, {
+      timestamps,
+      updatedAt: FieldValue.serverTimestamp(),
+      expireAt,
+    });
     return true;
   });
 }
@@ -152,7 +159,9 @@ function readBearerToken(authHeader: string | undefined): string | null {
  * Verify Firebase ID token and return the UID.
  * Returns null if the token is invalid or expired.
  */
-async function verifyFirebaseToken(authHeader: string | undefined): Promise<string | null> {
+async function verifyFirebaseToken(
+  authHeader: string | undefined,
+): Promise<string | null> {
   const bearer = readBearerToken(authHeader);
   if (!bearer) return null;
   try {
@@ -223,7 +232,7 @@ function parseRelayBody(payload: unknown): RelayBody | null {
     const locale =
       body.locale === undefined
         ? undefined
-        : boundedString(body.locale, MAX_LOCALE_BYTES) ?? null;
+        : (boundedString(body.locale, MAX_LOCALE_BYTES) ?? null);
     if (locale === null) return null;
     let enabledEventTypes: string[] | undefined;
     if (body.enabledEventTypes !== undefined) {
@@ -249,6 +258,14 @@ function parseRelayBody(payload: unknown): RelayBody | null {
     ) {
       return null;
     }
+    const approvalActionsVersion = body.approvalActionsVersion;
+    if (
+      approvalActionsVersion !== undefined &&
+      approvalActionsVersion !== 1 &&
+      approvalActionsVersion !== 2
+    ) {
+      return null;
+    }
     return {
       op,
       bridgeId: "",
@@ -257,6 +274,7 @@ function parseRelayBody(payload: unknown): RelayBody | null {
       locale,
       enabledEventTypes,
       approvalActionsSupported,
+      approvalActionsVersion,
     };
   }
 
@@ -274,7 +292,7 @@ function parseRelayBody(payload: unknown): RelayBody | null {
     const locale =
       body.locale === undefined
         ? undefined
-        : boundedString(body.locale, MAX_LOCALE_BYTES) ?? null;
+        : (boundedString(body.locale, MAX_LOCALE_BYTES) ?? null);
     if (locale === null) return null;
     const data = parseNotificationData(body.data);
     if (data === null) return null;
@@ -343,10 +361,11 @@ async function handleRegister(body: RegisterBody): Promise<void> {
     const updateData: Record<string, unknown> = {
       token: body.token,
       platform: body.platform,
-      enabledEventTypes:
-        body.enabledEventTypes ?? FieldValue.delete(),
+      enabledEventTypes: body.enabledEventTypes ?? FieldValue.delete(),
       approvalActionsSupported:
         body.approvalActionsSupported ?? FieldValue.delete(),
+      approvalActionsVersion:
+        body.approvalActionsVersion ?? FieldValue.delete(),
       updatedAt: FieldValue.serverTimestamp(),
     };
     if (body.locale) updateData.locale = body.locale;
@@ -356,7 +375,10 @@ async function handleRegister(body: RegisterBody): Promise<void> {
 
   // Limit new tokens per bridge to prevent abuse. Existing tokens may still
   // refresh their platform or locale after the bridge reaches this limit.
-  const existingTokens = await db.collection(`bridges/${body.bridgeId}/tokens`).count().get();
+  const existingTokens = await db
+    .collection(`bridges/${body.bridgeId}/tokens`)
+    .count()
+    .get();
   if (existingTokens.data().count >= 20) {
     throw new RelayHttpError(409, "token_limit_exceeded");
   }
@@ -371,6 +393,9 @@ async function handleRegister(body: RegisterBody): Promise<void> {
     ...(body.approvalActionsSupported !== undefined
       ? { approvalActionsSupported: body.approvalActionsSupported }
       : {}),
+    ...(body.approvalActionsVersion !== undefined
+      ? { approvalActionsVersion: body.approvalActionsVersion }
+      : {}),
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
@@ -382,28 +407,59 @@ async function handleUnregister(body: UnregisterBody): Promise<void> {
 }
 
 function isDeleteTargetError(code: string | undefined): boolean {
-  return code === "messaging/registration-token-not-registered"
-    || code === "messaging/invalid-registration-token";
+  return (
+    code === "messaging/registration-token-not-registered" ||
+    code === "messaging/invalid-registration-token"
+  );
 }
 
-function hasValidApprovalActionData(
+function approvalActionPayloadVersion(
   data: Record<string, string> | undefined,
-): boolean {
-  if (!data) return false;
+): 1 | 2 | undefined {
+  if (!data) return undefined;
   const sessionId = asNonEmptyString(data.sessionId);
   const provider = asNonEmptyString(data.provider);
-  const permissionId = asNonEmptyString(data.permissionId);
   const occurredAt = asNonEmptyString(data.occurredAt);
-  return (
-    sessionId != null &&
-    sessionId.length <= 256 &&
-    (provider === "claude" || provider === "codex") &&
-    permissionId != null &&
-    permissionId.length <= 256 &&
-    occurredAt != null &&
-    occurredAt.length <= 64 &&
-    Number.isFinite(Date.parse(occurredAt))
-  );
+  if (
+    sessionId == null ||
+    sessionId.length > 256 ||
+    (provider !== "claude" && provider !== "codex") ||
+    occurredAt == null ||
+    occurredAt.length > 64 ||
+    !Number.isFinite(Date.parse(occurredAt))
+  ) {
+    return undefined;
+  }
+  if (data.actionPayloadVersion === "2") {
+    const opaqueRequestId = asNonEmptyString(data.opaqueRequestId);
+    const codexSourceId = asNonEmptyString(data.codexSourceId);
+    const threadId = asNonEmptyString(data.threadId);
+    const turnId = asNonEmptyString(data.turnId);
+    const authorityGeneration = asNonEmptyString(data.authorityGeneration);
+    const allowedActions = asNonEmptyString(data.allowedActions);
+    const actions = new Set(allowedActions?.split(",") ?? []);
+    return provider === "codex" &&
+      opaqueRequestId != null &&
+      opaqueRequestId.length <= 256 &&
+      codexSourceId != null &&
+      codexSourceId.length <= 128 &&
+      threadId != null &&
+      threadId.length <= 256 &&
+      turnId != null &&
+      turnId.length <= 256 &&
+      authorityGeneration != null &&
+      authorityGeneration.length <= 64 &&
+      allowedActions != null &&
+      allowedActions.length <= 128 &&
+      [...actions].every((action) =>
+        ["approve", "approve_always", "reject", "answer"].includes(action),
+      ) &&
+      (actions.has("approve") || actions.has("reject"))
+      ? 2
+      : undefined;
+  }
+  const permissionId = asNonEmptyString(data.permissionId);
+  return permissionId != null && permissionId.length <= 256 ? 1 : undefined;
 }
 
 async function handleNotify(body: NotifyBody): Promise<{
@@ -439,14 +495,20 @@ async function handleNotify(body: NotifyBody): Promise<{
     })
     .map((d) => ({
       token: asNonEmptyString(d.get("token")),
-      approvalActionsSupported: d.get("approvalActionsSupported") === true,
+      approvalActionsVersion:
+        d.get("approvalActionsVersion") === 2
+          ? (2 as const)
+          : d.get("approvalActionsVersion") === 1 ||
+              d.get("approvalActionsSupported") === true
+            ? (1 as const)
+            : (0 as const),
     }))
     .filter(
       (
         registration,
       ): registration is {
         token: string;
-        approvalActionsSupported: boolean;
+        approvalActionsVersion: 0 | 1 | 2;
       } => registration.token != null,
     );
   if (registrations.length === 0) {
@@ -462,26 +524,38 @@ async function handleNotify(body: NotifyBody): Promise<{
   let failureCount = 0;
   const invalidTokens = new Set<string>();
 
+  const requiredApprovalActionVersion =
+    body.eventType === "approval_required"
+      ? approvalActionPayloadVersion(body.data)
+      : undefined;
   const deliveryGroups =
     body.eventType === "approval_required" &&
-    hasValidApprovalActionData(body.data)
+    requiredApprovalActionVersion !== undefined
       ? [
           {
-            approvalActionsSupported: true,
+            approvalActionsVersion: requiredApprovalActionVersion,
             tokens: registrations
-              .filter((registration) => registration.approvalActionsSupported)
+              .filter(
+                (registration) =>
+                  registration.approvalActionsVersion >=
+                  requiredApprovalActionVersion,
+              )
               .map((registration) => registration.token),
           },
           {
-            approvalActionsSupported: false,
+            approvalActionsVersion: 0 as const,
             tokens: registrations
-              .filter((registration) => !registration.approvalActionsSupported)
+              .filter(
+                (registration) =>
+                  registration.approvalActionsVersion <
+                  requiredApprovalActionVersion,
+              )
               .map((registration) => registration.token),
           },
         ]
       : [
           {
-            approvalActionsSupported: false,
+            approvalActionsVersion: 0 as const,
             tokens: registrations.map((registration) => registration.token),
           },
         ];
@@ -506,8 +580,13 @@ async function handleNotify(body: NotifyBody): Promise<{
           payload: {
             aps: {
               sound: "default",
-              ...(group.approvalActionsSupported
-                ? { category: "ccpocket_approval_v1" }
+              ...(group.approvalActionsVersion > 0
+                ? {
+                    category:
+                      group.approvalActionsVersion === 2
+                        ? "ccpocket_approval_v2"
+                        : "ccpocket_approval_v1",
+                  }
                 : {}),
             },
           },
@@ -541,86 +620,99 @@ async function handleNotify(body: NotifyBody): Promise<{
   };
 }
 
-export const relay = onRequest({ cors: true, maxInstances: 10 }, async (req, res) => {
-  if (req.method !== "POST") {
-    res.status(405).json({ error: "Method Not Allowed" });
-    return;
-  }
-
-  // Verify Firebase ID token
-  const uid = await verifyFirebaseToken(req.header("authorization"));
-  if (!uid) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
-
-  // Verify App Check token (soft-enforce until ENFORCE_APP_CHECK=true)
-  const appCheckValid = await verifyAppCheck(req);
-  if (!appCheckValid) {
-    if (ENFORCE_APP_CHECK) {
-      res.status(401).json({ error: "App Check verification failed" });
-      return;
-    }
-    logger.warn("App Check token missing or invalid (not enforced yet)", { bridgeId: uid });
-  }
-
-  const parsed = parseRelayBody(req.body);
-  if (!parsed) {
-    res.status(400).json({ error: "Invalid request body" });
-    return;
-  }
-
-  // Override bridgeId with authenticated UID for security.
-  // This prevents a client from accessing another bridge's tokens.
-  parsed.bridgeId = uid;
-
-  try {
-    // Rate limit check
-    const rateLimitOp = parsed.op === "notify" ? "notify" as const : "token" as const;
-    const rateLimitMax = parsed.op === "notify" ? RATE_LIMIT_NOTIFY_MAX : RATE_LIMIT_TOKEN_MAX;
-    const allowed = await checkRateLimit(uid, rateLimitOp, rateLimitMax);
-    if (!allowed) {
-      logger.warn("Rate limit exceeded", { bridgeId: uid, op: parsed.op });
-      res.status(429).json({ error: "Rate limit exceeded. Try again later." });
+export const relay = onRequest(
+  { cors: true, maxInstances: 10 },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method Not Allowed" });
       return;
     }
 
-    switch (parsed.op) {
-      case "register":
-        await handleRegister(parsed);
-        res.status(200).json({ ok: true, op: parsed.op });
-        return;
-      case "unregister":
-        await handleUnregister(parsed);
-        res.status(200).json({ ok: true, op: parsed.op });
-        return;
-      case "notify": {
-        const result = await handleNotify(parsed);
-        logger.info("Push notification relay sent", {
-          bridgeId: uid,
-          eventType: parsed.eventType,
-          ...result,
-        });
-        res.status(200).json({ ok: true, op: parsed.op, ...result });
+    // Verify Firebase ID token
+    const uid = await verifyFirebaseToken(req.header("authorization"));
+    if (!uid) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const logBridgeId = sha256(uid).slice(0, 12);
+
+    // Verify App Check token (soft-enforce until ENFORCE_APP_CHECK=true)
+    const appCheckValid = await verifyAppCheck(req);
+    if (!appCheckValid) {
+      if (ENFORCE_APP_CHECK) {
+        res.status(401).json({ error: "App Check verification failed" });
         return;
       }
-    }
-  } catch (error) {
-    if (error instanceof RelayHttpError) {
-      logger.warn("Relay operation rejected", {
-        op: parsed.op,
-        status: error.status,
-        code: error.code,
+      logger.warn("App Check token missing or invalid (not enforced yet)", {
+        bridgeIdHash: logBridgeId,
       });
-      res.status(error.status).json({ error: error.code });
+    }
+
+    const parsed = parseRelayBody(req.body);
+    if (!parsed) {
+      res.status(400).json({ error: "Invalid request body" });
       return;
     }
 
-    logger.error("Relay operation failed", {
-      op: parsed.op,
-      message: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-    });
-    res.status(500).json({ error: "internal_error" });
-  }
-});
+    // Override bridgeId with authenticated UID for security.
+    // This prevents a client from accessing another bridge's tokens.
+    parsed.bridgeId = uid;
+
+    try {
+      // Rate limit check
+      const rateLimitOp =
+        parsed.op === "notify" ? ("notify" as const) : ("token" as const);
+      const rateLimitMax =
+        parsed.op === "notify" ? RATE_LIMIT_NOTIFY_MAX : RATE_LIMIT_TOKEN_MAX;
+      const allowed = await checkRateLimit(uid, rateLimitOp, rateLimitMax);
+      if (!allowed) {
+        logger.warn("Rate limit exceeded", {
+          bridgeIdHash: logBridgeId,
+          op: parsed.op,
+        });
+        res
+          .status(429)
+          .json({ error: "Rate limit exceeded. Try again later." });
+        return;
+      }
+
+      switch (parsed.op) {
+        case "register":
+          await handleRegister(parsed);
+          res.status(200).json({ ok: true, op: parsed.op });
+          return;
+        case "unregister":
+          await handleUnregister(parsed);
+          res.status(200).json({ ok: true, op: parsed.op });
+          return;
+        case "notify": {
+          const result = await handleNotify(parsed);
+          logger.info("Push notification relay sent", {
+            bridgeIdHash: logBridgeId,
+            eventType: parsed.eventType,
+            ...result,
+          });
+          res.status(200).json({ ok: true, op: parsed.op, ...result });
+          return;
+        }
+      }
+    } catch (error) {
+      if (error instanceof RelayHttpError) {
+        logger.warn("Relay operation rejected", {
+          op: parsed.op,
+          status: error.status,
+          code: error.code,
+        });
+        res.status(error.status).json({ error: error.code });
+        return;
+      }
+
+      logger.error("Relay operation failed", {
+        op: parsed.op,
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      res.status(500).json({ error: "internal_error" });
+    }
+  },
+);

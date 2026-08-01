@@ -314,7 +314,7 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(capabilities["backgroundContinuation"], 1)
     XCTAssertEqual(capabilities["backgroundRefreshWarmRuntime"], 1)
     XCTAssertEqual(capabilities["backgroundLocationKeepAlive"], 1)
-    XCTAssertEqual(capabilities["notificationApprovalActions"], 1)
+    XCTAssertEqual(capabilities["notificationApprovalActions"], 2)
     XCTAssertNil(capabilities["backgroundAppRefresh"])
   }
 
@@ -358,6 +358,61 @@ class RunnerTests: XCTestCase {
     )
     XCTAssertEqual(remote?.actionIdentifier, "ccpocket_reject_v1")
     XCTAssertNil(remote?.dictionary["toolName"])
+  }
+
+  func testNotificationApprovalActionParsesExactCodexBrokerFence() throws {
+    let fields: [AnyHashable: Any] = [
+      "actionPayloadVersion": "2",
+      "sessionId": "thread-1",
+      "provider": "codex",
+      "providerSessionId": "thread-1",
+      "bridgeInstanceId": "bridge-1",
+      "codexSourceId": "source-1",
+      "eventType": "approval_required",
+      "opaqueRequestId": "opaque-1",
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "authorityGeneration": "cab:1:7",
+      "allowedActions": "reject,approve",
+      "occurredAt": "2026-07-25T01:02:03Z",
+      "toolName": "must-not-be-forwarded",
+    ]
+    let parsed = NotificationApprovalActionPayload.parse(
+      categoryIdentifier: NotificationApprovalActionPayload.codexBrokerCategoryIdentifier,
+      actionIdentifier: NotificationApprovalActionPayload.approveActionIdentifier,
+      userInfo: fields
+    )
+
+    XCTAssertEqual(parsed?.actionPayloadVersion, 2)
+    XCTAssertEqual(parsed?.permissionId, "opaque-1")
+    XCTAssertEqual(parsed?.threadId, "thread-1")
+    XCTAssertEqual(parsed?.turnId, "turn-1")
+    XCTAssertEqual(parsed?.authorityGeneration, "cab:1:7")
+    XCTAssertEqual(parsed?.allowedActions, "approve,reject")
+    XCTAssertNil(parsed?.dictionary["toolName"])
+  }
+
+  func testNotificationApprovalActionRejectsIncompleteCodexBrokerFence() {
+    let fields: [AnyHashable: Any] = [
+      "actionPayloadVersion": "2",
+      "sessionId": "thread-1",
+      "provider": "codex",
+      "bridgeInstanceId": "bridge-1",
+      "codexSourceId": "source-1",
+      "eventType": "approval_required",
+      "opaqueRequestId": "opaque-1",
+      "threadId": "thread-1",
+      "authorityGeneration": "cab:1:7",
+      "allowedActions": "approve,reject",
+      "occurredAt": "2026-07-25T01:02:03Z",
+    ]
+    XCTAssertNil(
+      NotificationApprovalActionPayload.parse(
+        categoryIdentifier: NotificationApprovalActionPayload.codexBrokerCategoryIdentifier,
+        actionIdentifier: NotificationApprovalActionPayload.approveActionIdentifier,
+        userInfo: fields
+      )
+    )
   }
 
   func testNotificationApprovalActionRejectsWrongCategoryAndQuestionEvents() {
