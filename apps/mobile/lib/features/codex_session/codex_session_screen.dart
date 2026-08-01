@@ -36,6 +36,7 @@ import '../../widgets/new_session_sheet.dart'
     show permissionModeFromRaw, sandboxModeFromRaw;
 import '../session_list/pending_session_binding.dart';
 import '../session_list/services/session_resume_coordinator.dart';
+import '../session_list/state/session_list_cubit.dart';
 import '../session_list/workspace_shell_screen.dart';
 import '../conversation_mirror/conversation_mirror_service.dart';
 import '../conversation_mirror/conversation_mirror_session_actions.dart';
@@ -236,11 +237,13 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   final Object _sessionRouteOwner = Object();
   Object? _sessionRouteIdentity;
   late BridgeDataSourceIdentity _dataSourceIdentity;
+  late final DraftService _draftService;
 
   @override
   void initState() {
     super.initState();
     final bridge = context.read<BridgeService>();
+    _draftService = context.read<DraftService>();
     _dataSourceIdentity =
         widget.dataSourceIdentity ?? bridge.dataSourceIdentity;
     _sessionId = widget.sessionId;
@@ -391,7 +394,13 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
               session.provider == Provider.codex.value &&
               session.sessionId == providerSessionId,
         );
-    if (!runtimeConfirmsThread && !catalogConfirmsThread) return;
+    final projectedCatalogConfirmsThread =
+        _currentProjectedDurableSession(bridge, providerSessionId) != null;
+    if (!runtimeConfirmsThread &&
+        !catalogConfirmsThread &&
+        !projectedCatalogConfirmsThread) {
+      return;
+    }
 
     final authenticatedIdentity = bridge.dataSourceIdentity;
     final next = _dataSourceIdentity.reconciledWithAuthenticated(
@@ -433,6 +442,38 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     // hint. The service itself still used a provisional route target before
     // authentication, so identity equality alone cannot suppress this check.
     _reloadDurablePreviewForCurrentTarget();
+  }
+
+  /// Resolves the exact v2 catalog row for the authenticated Bridge/source.
+  ///
+  /// The legacy `recentSessions` list is intentionally bounded and may not
+  /// contain a durable conversation already rendered from the v2 SQLite
+  /// catalog. Falling back to that legacy list made first-send attachment fail
+  /// for otherwise valid cached conversations. The source fingerprint fence
+  /// keeps equal thread ids from another Codex Home from being resumed.
+  RecentSession? _currentProjectedDurableSession(
+    BridgeService bridge,
+    String providerSessionId,
+  ) {
+    try {
+      final sessionList = context.read<SessionListCubit>();
+      final projectionFingerprint = sessionList.conversationSourceFingerprint;
+      if (projectionFingerprint == null || projectionFingerprint.isEmpty) {
+        return null;
+      }
+      final sync = context.read<ConversationContentSyncService>();
+      final authenticatedFingerprint = sync.cacheTargetFingerprintForDataSource(
+        bridge.dataSourceIdentity,
+      );
+      if (projectionFingerprint != authenticatedFingerprint) return null;
+      return sessionList.conversationMetadataFor(
+        Provider.codex.value,
+        providerSessionId,
+      );
+    } catch (_) {
+      // Official/isolated widget hosts may omit the optional v2 projection.
+      return null;
+    }
   }
 
   void _startDurablePreview() {
@@ -666,8 +707,12 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
             'The connected Bridge/Codex source no longer matches this page.',
           );
         }
-        RecentSession? recent;
+        RecentSession? recent = _currentProjectedDurableSession(
+          bridge,
+          durableId,
+        );
         for (final candidate in bridge.recentSessions) {
+          if (recent != null) break;
           if (candidate.provider == Provider.codex.value &&
               candidate.sessionId == durableId) {
             recent = candidate;
@@ -708,7 +753,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     if (_deferredSubmission != submission) return;
     final durableId = widget.durableProviderSessionId;
     if (durableId != null && durableId.isNotEmpty) {
-      context.read<DraftService>().deletePendingSubmission(
+      _draftService.deletePendingSubmission(
         durableId,
         clientMessageId: submission.clientMessageId,
       );
@@ -724,9 +769,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     if (!_isPending) return;
     final durableId = widget.durableProviderSessionId;
     if (durableId == null || durableId.isEmpty) return;
-    final submission = context.read<DraftService>().getPendingSubmission(
-      durableId,
-    );
+    final submission = _draftService.getPendingSubmission(durableId);
     if (submission == null) return;
     _deferredSubmission = (
       clientMessageId: submission.clientMessageId,
@@ -743,9 +786,8 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     _deferredSubmission = null;
     final durableId = widget.durableProviderSessionId;
     if (durableId == null || durableId.isEmpty) return;
-    final draftService = context.read<DraftService>();
     unawaited(
-      draftService
+      _draftService
           .savePendingSubmission(
             durableId,
             PendingChatSubmissionDraft(
@@ -925,7 +967,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   void _switchSession(SystemMessage msg) {
     final oldId = _sessionId;
     final newId = msg.sessionId!;
-    final draftService = context.read<DraftService>();
+    final draftService = _draftService;
     final bridge = context.read<BridgeService>();
     bridge.migrateExplorerHistory(oldId, newId);
     final explorerHistory = bridge.getExplorerHistory(newId);
@@ -963,7 +1005,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     final oldId = _sessionId;
     final newId = msg.sessionId!;
     // Migrate draft from pending ID to real session ID
-    final draftService = context.read<DraftService>();
+    final draftService = _draftService;
     draftService.migrateDraft(oldId, newId);
     draftService.migrateImageDraft(oldId, newId);
     final durableId = widget.durableProviderSessionId;

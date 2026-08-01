@@ -5,6 +5,7 @@ import 'package:ccpocket/features/claude_session/claude_session_screen.dart';
 import 'package:ccpocket/features/chat_session/widgets/chat_process_disclosure.dart';
 import 'package:ccpocket/features/codex_session/codex_session_screen.dart';
 import 'package:ccpocket/features/conversation_content_sync/conversation_content_sync_service.dart';
+import 'package:ccpocket/features/session_list/state/session_list_cubit.dart';
 import 'package:ccpocket/features/settings/state/settings_cubit.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/bridge_data_source_identity.dart';
@@ -237,6 +238,7 @@ Future<Widget> _buildTestSessionScreen({
   required MockBridgeService bridge,
   required Widget child,
   ConversationContentSyncService? conversationContentSync,
+  SessionListCubit? sessionListCubit,
 }) async {
   SharedPreferences.setMockInitialValues({});
   final prefs = await SharedPreferences.getInstance();
@@ -269,6 +271,8 @@ Future<Widget> _buildTestSessionScreen({
             create: (_) => FileListCubit(const <String>[], bridge.fileList),
           ),
           BlocProvider<SettingsCubit>(create: (_) => SettingsCubit(prefs)),
+          if (sessionListCubit != null)
+            BlocProvider<SessionListCubit>.value(value: sessionListCubit),
         ],
         child: child,
       ),
@@ -296,9 +300,11 @@ Future<Widget> buildTestCodexSessionScreen({
   ValueNotifier<SystemMessage?>? pendingSessionCreated,
   BridgeDataSourceIdentity? dataSourceIdentity,
   ConversationContentSyncService? conversationContentSync,
+  SessionListCubit? sessionListCubit,
 }) => _buildTestSessionScreen(
   bridge: bridge,
   conversationContentSync: conversationContentSync,
+  sessionListCubit: sessionListCubit,
   child: CodexSessionScreen(
     sessionId: sessionId,
     projectPath: projectPath,

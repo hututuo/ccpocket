@@ -5,6 +5,7 @@ import 'package:ccpocket/features/claude_session/claude_session_screen.dart';
 import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
 import 'package:ccpocket/features/chat_session/state/streaming_state_cubit.dart';
 import 'package:ccpocket/features/chat_session/widgets/durable_session_preview.dart';
+import 'package:ccpocket/features/chat_session/widgets/chat_input_with_overlays.dart';
 import 'package:ccpocket/features/codex_action_broker/codex_action_broker_interaction_frame.dart';
 import 'package:ccpocket/features/codex_action_broker/codex_action_broker_service.dart';
 import 'package:ccpocket/features/codex_session/codex_session_screen.dart';
@@ -59,6 +60,128 @@ void main() {
 
     expect(find.textContaining('Queued locally'), findsOneWidget);
   });
+
+  testWidgets(
+    'first send attaches a v2-only durable conversation absent from the legacy recent list',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-v2-only-resume'
+        ..authenticatedCodexSourceId = 'source-v2-only-resume'
+        ..advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+          sessionRequestCorrelationCapability,
+        };
+      final identity = bridge.dataSourceIdentity;
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+        codexSourceId: bridge.authenticatedCodexSourceId,
+      );
+      final metadata = const RecentSession(
+        sessionId: 'thread-v2-only-resume',
+        provider: 'codex',
+        firstPrompt: 'Cached v2 conversation',
+        created: '2026-08-01T00:00:00.000Z',
+        modified: '2026-08-01T00:01:00.000Z',
+        gitBranch: 'main',
+        projectPath: '/workspace/v2-only',
+        isSidechain: false,
+        codexSourceId: 'source-v2-only-resume',
+        codexModel: 'gpt-5.6-sol',
+        codexModelReasoningEffort: 'ultra',
+      );
+      final sessionList = _ProjectionSessionListCubit(
+        bridge: bridge,
+        sourceFingerprint: target.fingerprint,
+        status: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'thread-v2-only-resume',
+          activity: 'idle',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'notLoaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-08-01T00:01:00.000Z',
+          executionHost: 'unknown',
+          controlState: 'writable',
+        ),
+        metadata: metadata,
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(
+          databasePath: 'unused-v2-only-resume-cache.db',
+        ),
+        snapshots: const {},
+      );
+      final sync = ConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+
+      try {
+        await tester.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-v2-only-runtime',
+            projectPath: metadata.projectPath,
+            isPending: true,
+            durableProviderSessionId: metadata.sessionId,
+            dataSourceIdentity: identity,
+            conversationContentSync: sync,
+            sessionListCubit: sessionList,
+          ),
+        );
+        await tester.pump();
+        final composer = tester.widget<ChatInputWithOverlays>(
+          find.byType(ChatInputWithOverlays),
+        );
+        final chatCubit = BlocProvider.of<ChatSessionCubit>(
+          tester.element(find.byKey(const ValueKey('message_input'))),
+        );
+        expect(chatCubit.state.codexModel, metadata.codexModel);
+        expect(
+          chatCubit.state.codexModelReasoningEffort,
+          ReasoningEffort.ultra,
+        );
+        expect(composer.onSubmit, isNotNull);
+        expect(
+          composer.onSubmit!.call((
+            clientMessageId: 'client-v2-only-resume',
+            text: 'Attach from the v2 projection',
+            images: null,
+            mentionablePaths: const [],
+            additionalMentions: const [],
+          )),
+          isTrue,
+        );
+        for (var attempt = 0; attempt < 50; attempt++) {
+          if (_sentWireMessages(
+            bridge,
+          ).any((message) => message['type'] == 'resume_session')) {
+            break;
+          }
+          await tester.pump(const Duration(milliseconds: 10));
+        }
+
+        final resumeMessages = _sentWireMessages(
+          bridge,
+        ).where((message) => message['type'] == 'resume_session').toList();
+        expect(resumeMessages, hasLength(1));
+        expect(resumeMessages.single['sessionId'], metadata.sessionId);
+        expect(
+          resumeMessages.single['resumeRequestId'],
+          isA<String>().having((value) => value.isNotEmpty, 'non-empty', true),
+        );
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+        unawaited(sessionList.close());
+      }
+    },
+  );
 
   testWidgets(
     'cache revisions update the detached cubit without rebuilding child state',
