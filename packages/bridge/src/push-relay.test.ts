@@ -2,7 +2,10 @@ import { describe, it, expect, vi } from "vitest";
 import { PushRelayClient } from "./push-relay.js";
 import type { FirebaseAuthClient } from "./firebase-auth.js";
 
-function createMockAuth(uid = "test-uid", idToken = "mock-id-token"): FirebaseAuthClient {
+function createMockAuth(
+  uid = "test-uid",
+  idToken = "mock-id-token",
+): FirebaseAuthClient {
   return {
     uid,
     getIdToken: vi.fn(async () => idToken),
@@ -40,7 +43,7 @@ describe("PushRelayClient", () => {
     expect(init?.method).toBe("POST");
     expect(init?.headers).toEqual({
       "Content-Type": "application/json",
-      "Authorization": "Bearer firebase-id-token-abc",
+      Authorization: "Bearer firebase-id-token-abc",
     });
 
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -52,7 +55,7 @@ describe("PushRelayClient", () => {
     });
   });
 
-  it("forwards optional event filters when registering", async () => {
+  it("forwards optional event filters and approval host version when registering", async () => {
     const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
     const client = new PushRelayClient({
       relayUrl: "https://relay.example.com/push",
@@ -60,10 +63,14 @@ describe("PushRelayClient", () => {
       fetchImpl: fetchMock as unknown as typeof fetch,
     });
 
-    await client.registerToken("token-1", "ios", "zh", [
-      "approval_required",
-      "session_progress",
-    ]);
+    await client.registerToken(
+      "token-1",
+      "ios",
+      "zh",
+      ["approval_required", "session_progress"],
+      true,
+      2,
+    );
 
     const [, init] = fetchMock.mock.calls[0];
     expect(JSON.parse(String(init?.body))).toMatchObject({
@@ -72,6 +79,8 @@ describe("PushRelayClient", () => {
       platform: "ios",
       locale: "zh",
       enabledEventTypes: ["approval_required", "session_progress"],
+      approvalActionsSupported: true,
+      approvalActionsVersion: 2,
     });
   });
 
@@ -108,11 +117,13 @@ describe("PushRelayClient", () => {
       fetchImpl: fetchMock as unknown as typeof fetch,
     });
 
-    await expect(client.notify({
-      eventType: "session_completed",
-      title: "done",
-      body: "ok",
-    })).rejects.toThrow("Push relay returned 500");
+    await expect(
+      client.notify({
+        eventType: "session_completed",
+        title: "done",
+        body: "ok",
+      }),
+    ).rejects.toThrow("Push relay returned 500");
   });
 
   it("uses default relay URL when not specified", async () => {
@@ -126,7 +137,9 @@ describe("PushRelayClient", () => {
     await client.registerToken("token-1", "android");
 
     const [url] = fetchMock.mock.calls[0];
-    expect(url).toBe("https://us-central1-ccpocket-ca33b.cloudfunctions.net/relay");
+    expect(url).toBe(
+      "https://us-central1-ccpocket-ca33b.cloudfunctions.net/relay",
+    );
   });
 
   it("fetches fresh ID token on each request", async () => {

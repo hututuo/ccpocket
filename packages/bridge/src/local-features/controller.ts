@@ -8,6 +8,7 @@ import type {
   LocalFeatureInputMessage,
   LocalFeatureRuntime,
   LocalFeatureSession,
+  LocalFeatureConversationActivity,
 } from "./runtime.js";
 
 /**
@@ -103,6 +104,39 @@ export class LocalFeaturesController {
     return false;
   }
 
+  /**
+   * Union the content-free active/attention targets exposed by feature
+   * handlers. The host combines these durable identities with transient
+   * SessionManager work, preventing a Desktop-owned turn from disappearing
+   * merely because Bridge has not formally attached it.
+   */
+  backgroundActiveConversationKeys(): Set<string> {
+    const keys = new Set<string>();
+    for (const handler of new Set(this.handlers.values())) {
+      for (const key of handler.backgroundActiveConversationKeys?.() ?? []) {
+        if (key) keys.add(key);
+      }
+    }
+    return keys;
+  }
+
+  conversationActivity(
+    provider: string,
+    providerSessionId: string,
+  ): LocalFeatureConversationActivity {
+    let observedInactive = false;
+    for (const handler of new Set(this.handlers.values())) {
+      const activity = handler.conversationActivity?.(
+        provider,
+        providerSessionId,
+      );
+      if (activity === "active") return "active";
+      if (activity === "unknown") return "unknown";
+      if (activity === "inactive") observedInactive = true;
+    }
+    return observedInactive ? "inactive" : "unknown";
+  }
+
   async hasExternalCodexActivityVerified(
     session: LocalFeatureSession,
   ): Promise<boolean> {
@@ -162,6 +196,19 @@ export class LocalFeaturesController {
       } catch (err) {
         console.error(
           "[local-features] clientDeliveryModeChanged handler failed:",
+          err,
+        );
+      }
+    }
+  }
+
+  backgroundNotificationDemandChanged(): void {
+    for (const handler of new Set(this.handlers.values())) {
+      try {
+        handler.backgroundNotificationDemandChanged?.();
+      } catch (err) {
+        console.error(
+          "[local-features] backgroundNotificationDemandChanged handler failed:",
           err,
         );
       }

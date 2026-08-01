@@ -1,8 +1,12 @@
 import type { ServerMessage } from "./parser.js";
 import { normalizePushLocale, t, type PushLocale } from "./push-i18n.js";
 import type { BackgroundNotificationMessage } from "./background-delivery-protocol.js";
+import type { CodexActionBrokerRuntimeRequest } from "./codex-action-broker-runtime.js";
 
 export const BACKGROUND_PROGRESS_MIN_INTERVAL_MS = 45_000;
+export const BACKGROUND_NOTIFICATION_MAX_TRACKED_SESSIONS = 256;
+export const BACKGROUND_NOTIFICATION_MAX_PERMISSION_IDS_PER_SESSION = 128;
+export const BACKGROUND_NOTIFICATION_MAX_CODEX_REQUEST_IDS = 2_048;
 
 const DEFAULT_ENABLED_EVENTS = new Set([
   "approval_required",
@@ -18,11 +22,9 @@ export interface BackgroundNotificationPolicy {
 }
 
 export interface BackgroundNotificationProjectionState {
-  progressBySession: Map<
-    string,
-    { lastSentAt: number; lastToolKey: string }
-  >;
+  progressBySession: Map<string, { lastSentAt: number; lastToolKey: string }>;
   permissionToolUsesBySession: Map<string, Set<string>>;
+  codexActionRequestIds: Set<string>;
 }
 
 export interface BackgroundNotificationContext {
@@ -54,6 +56,122 @@ export function createBackgroundNotificationProjectionState(): BackgroundNotific
   return {
     progressBySession: new Map(),
     permissionToolUsesBySession: new Map(),
+    codexActionRequestIds: new Set(),
+  };
+}
+
+function addBoundedSetValue(
+  values: Set<string>,
+  value: string,
+  maximum: number,
+): void {
+  // Refresh insertion order so frequently observed live entries survive
+  // bounded eviction. These sets are notification dedupe hints, not product
+  // state; eviction can at worst permit a later duplicate notification.
+  values.delete(value);
+  values.add(value);
+  while (values.size > maximum) {
+    const oldest = values.values().next().value as string | undefined;
+    if (oldest === undefined) break;
+    values.delete(oldest);
+  }
+}
+
+function setBoundedSessionValue<T>(
+  values: Map<string, T>,
+  sessionId: string,
+  value: T,
+): void {
+  values.delete(sessionId);
+  values.set(sessionId, value);
+  while (values.size > BACKGROUND_NOTIFICATION_MAX_TRACKED_SESSIONS) {
+    const oldest = values.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    values.delete(oldest);
+  }
+}
+
+/**
+ * Project one shared-runtime Codex request without exposing request bodies.
+ *
+ * The exact broker fence is data, not authority: Mobile must still fetch the
+ * canonical scoped snapshot and use the CAB responder before any mutation.
+ */
+export function projectCodexActionBackgroundNotification(
+  request: CodexActionBrokerRuntimeRequest,
+  context: BackgroundNotificationContext,
+  policy: BackgroundNotificationPolicy,
+  state: BackgroundNotificationProjectionState,
+): BackgroundNotificationMessage | null {
+  const dedupeKey = `${request.authorityGeneration}\u0000${request.opaqueRequestId}`;
+  if (request.state === "resolved" || request.state === "expired") {
+    state.codexActionRequestIds.delete(dedupeKey);
+    return null;
+  }
+  if (request.state !== "pending" || !request.live) return null;
+  if (state.codexActionRequestIds.has(dedupeKey)) return null;
+
+  const allowedActions = [...(request.allowedActions ?? [])].sort();
+  const supportsBinaryDecision =
+    allowedActions.includes("approve") || allowedActions.includes("reject");
+  const asksForInput =
+    request.kind === "user_input" || request.kind === "mcp_elicitation";
+  const eventType =
+    asksForInput && !supportsBinaryDecision
+      ? "ask_user_question"
+      : "approval_required";
+  if (!policy.enabledEventTypes.has(eventType)) return null;
+
+  addBoundedSetValue(
+    state.codexActionRequestIds,
+    dedupeKey,
+    BACKGROUND_NOTIFICATION_MAX_CODEX_REQUEST_IDS,
+  );
+  const privacy = policy.privacyMode;
+  const label = privacy ? "" : context.label;
+  const toolName = privacy ? undefined : request.toolName?.trim();
+  const titleBase = t(
+    policy.locale,
+    eventType === "ask_user_question" ? "ask_title" : "approval_title",
+  );
+  const title = label ? `${titleBase} - ${label}` : titleBase;
+  const body =
+    eventType === "ask_user_question"
+      ? privacy
+        ? t(policy.locale, "ask_body_private")
+        : t(policy.locale, "ask_default_body")
+      : privacy
+        ? t(policy.locale, "approval_body_private")
+        : t(policy.locale, "approval_body", {
+            toolName: toolName || "Codex",
+          });
+  const data: Record<string, string> = {
+    deliveryId: context.deliveryId,
+    sessionId: context.sessionId,
+    provider: "codex",
+    actionPayloadVersion: "2",
+    opaqueRequestId: request.opaqueRequestId,
+    codexSourceId: request.codexSourceId,
+    threadId: request.threadId,
+    turnId: request.turnId,
+    authorityGeneration: request.authorityGeneration,
+    allowedActions: allowedActions.join(","),
+    occurredAt: request.observedAt,
+    ...notificationDataSourceFields(context),
+  };
+  if (context.providerSessionId) {
+    data.providerSessionId = context.providerSessionId;
+  }
+  return {
+    type: "background_notification_v1",
+    deliveryId: context.deliveryId,
+    eventType,
+    sessionId: context.sessionId,
+    provider: "codex",
+    title,
+    body,
+    occurredAt: request.observedAt,
+    data,
   };
 }
 
@@ -85,7 +203,7 @@ export function projectBackgroundNotification(
     ) {
       return null;
     }
-    state.progressBySession.set(sessionId, {
+    setBoundedSessionValue(state.progressBySession, sessionId, {
       lastSentAt: now,
       lastToolKey: toolKey,
     });
@@ -122,8 +240,12 @@ export function projectBackgroundNotification(
     const seen =
       state.permissionToolUsesBySession.get(sessionId) ?? new Set<string>();
     if (seen.has(msg.toolUseId)) return null;
-    seen.add(msg.toolUseId);
-    state.permissionToolUsesBySession.set(sessionId, seen);
+    addBoundedSetValue(
+      seen,
+      msg.toolUseId,
+      BACKGROUND_NOTIFICATION_MAX_PERMISSION_IDS_PER_SESSION,
+    );
+    setBoundedSessionValue(state.permissionToolUsesBySession, sessionId, seen);
 
     const isAskUserQuestion = msg.toolName === "AskUserQuestion";
     const isExitPlanMode = msg.toolName === "ExitPlanMode";

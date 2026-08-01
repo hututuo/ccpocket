@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProcessStatus, ServerMessage } from "./parser.js";
 import { pathToSlug } from "./sessions-index.js";
@@ -14,6 +15,11 @@ const { codexInstances, sdkInstances, fakeDirs, fakeFiles } = vi.hoisted(
       supportsNativePlanMode: boolean;
       nativePlanModeCapabilityKnown: boolean;
       lastStopWasSharedRuntime: boolean;
+      usesSharedRuntimeTopology: boolean;
+      isAttachmentReady: boolean;
+      isRunning: boolean;
+      activeTurnId?: string;
+      activeTurnIsBridgeOwned: boolean;
       start: ReturnType<typeof vi.fn>;
       stop: ReturnType<typeof vi.fn>;
       sendInputStructured: ReturnType<typeof vi.fn>;
@@ -51,10 +57,12 @@ vi.mock("./artifact-candidates.js", async () => {
   };
 });
 
-vi.mock("node:fs", () => {
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
   const normalize = (value: unknown): string =>
     String(value).replaceAll("\\", "/");
   return {
+    ...actual,
     existsSync: vi.fn((path: unknown) => {
       const key = normalize(path);
       return fakeDirs.has(key) || fakeFiles.has(key);
@@ -103,8 +111,21 @@ vi.mock("./codex-process.js", () => ({
     public supportsNativePlanMode = false;
     public nativePlanModeCapabilityKnown = false;
     public lastStopWasSharedRuntime = false;
-    public start = vi.fn((_: string, __?: unknown) => {});
-    public stop = vi.fn(() => {});
+    public usesSharedRuntimeTopology = false;
+    public isAttachmentReady = false;
+    public isRunning = false;
+    public activeTurnId: string | undefined;
+    public activeTurnIsBridgeOwned = false;
+    public start = vi.fn(
+      (_: string, options?: { sharedRuntimeAttach?: string }) => {
+        this.usesSharedRuntimeTopology = options?.sharedRuntimeAttach != null;
+        this.isRunning = true;
+      },
+    );
+    public stop = vi.fn(() => {
+      this.isRunning = false;
+      this.isAttachmentReady = false;
+    });
     public sendInputStructured = vi.fn();
     public steerInputStructured = vi.fn(async () => {});
     public steerTurnStructured = vi.fn(async () => {});
@@ -131,6 +152,7 @@ vi.mock("./sdk-process.js", () => ({
 }));
 
 import { SessionManager } from "./session.js";
+import { InputDeliveryLedger } from "./input-delivery-ledger.js";
 
 describe("SessionManager codex path", () => {
   beforeEach(() => {
@@ -1653,6 +1675,294 @@ describe("SessionManager codex path", () => {
     });
   });
 
+  it("recovers an established shared attachment without history or repeated status churn", async () => {
+    vi.useFakeTimers();
+    try {
+      const forwarded: ServerMessage[] = [];
+      const onSessionUpdated = vi.fn();
+      const manager = new SessionManager(
+        (_sessionId, message) => forwarded.push(message),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        onSessionUpdated,
+      );
+      const sessionId = manager.create(
+        "/tmp/project-shared-recovery",
+        undefined,
+        undefined,
+        undefined,
+        "codex",
+        {
+          threadId: "thread-shared-recovery",
+          sharedRuntimeAttach: "adoption",
+        },
+      );
+      const originalSession = manager.get(sessionId)!;
+      originalSession.codexSettings = {
+        profile: "shared-profile",
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        codexPermissionsMode: "default",
+        sandboxMode: "workspace-write",
+        model: "gpt-5.3-codex",
+        modelReasoningEffort: "ultra",
+        serviceTier: "fast",
+        networkAccessEnabled: true,
+        webSearchMode: "live",
+        additionalWritableRoots: ["/tmp/shared-extra-root"],
+      };
+      const originalWritableRoots =
+        originalSession.codexSettings.additionalWritableRoots;
+      const originalProcess = codexInstances[0];
+      originalProcess.isAttachmentReady = true;
+      originalProcess.isWaitingForInput = true;
+      originalProcess.emit("input_ready");
+      originalProcess.emit("status", "running" satisfies ProcessStatus);
+      originalProcess.lastStopWasSharedRuntime = true;
+      originalProcess.isRunning = false;
+      originalProcess.isAttachmentReady = false;
+      originalProcess.emit("exit", 1);
+
+      expect(manager.get(sessionId)).toBe(originalSession);
+      expect(originalSession.status).toBe("starting");
+      expect(originalSession.codexAttachmentState).toBe("unavailable");
+      expect(
+        forwarded.filter(
+          (message) =>
+            message.type === "status" && message.status === "starting",
+        ),
+      ).toHaveLength(1);
+      expect(
+        manager.queueCodexInput(sessionId, {
+          itemId: "queued-during-shared-recovery",
+          text: "send after recovery",
+          createdAt: "2026-08-01T00:00:00.000Z",
+        }),
+      ).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(250);
+      expect(codexInstances).toHaveLength(2);
+      const firstReplacement = codexInstances[1];
+      expect(firstReplacement.start).toHaveBeenCalledWith(
+        "/tmp/project-shared-recovery",
+        {
+          threadId: "thread-shared-recovery",
+          sharedRuntimeAttach: "adoption",
+        },
+      );
+      expect(originalSession.codexAttachmentState).toBe("reconciling");
+
+      firstReplacement.emit("exit", 1);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(originalSession.codexAttachmentState).toBe("unavailable");
+      expect(manager.get(sessionId)).toBe(originalSession);
+
+      await vi.advanceTimersByTimeAsync(500);
+      expect(codexInstances).toHaveLength(3);
+      const recoveredProcess = codexInstances[2];
+      recoveredProcess.isAttachmentReady = true;
+      recoveredProcess.isWaitingForInput = true;
+      recoveredProcess.emit("input_ready");
+      await Promise.resolve();
+
+      const recoveredSession = manager.get(sessionId)!;
+      expect(recoveredSession).not.toBe(originalSession);
+      expect(recoveredSession.id).toBe(sessionId);
+      expect(recoveredSession.codexAttachmentState).toBe("connected");
+      expect(recoveredSession.status).toBe("idle");
+      expect(recoveredSession.pastMessages).toBeUndefined();
+      expect(recoveredSession.codexInitialHistoryPending).toBe(false);
+      expect(recoveredSession.codexSettings).toEqual({
+        profile: "shared-profile",
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        codexPermissionsMode: "default",
+        sandboxMode: "workspace-write",
+        model: "gpt-5.3-codex",
+        modelReasoningEffort: "ultra",
+        serviceTier: "fast",
+        networkAccessEnabled: true,
+        webSearchMode: "live",
+        additionalWritableRoots: ["/tmp/shared-extra-root"],
+      });
+      expect(recoveredSession.codexSettings?.additionalWritableRoots).not.toBe(
+        originalWritableRoots,
+      );
+      expect(originalProcess.stop).toHaveBeenCalledOnce();
+      expect(recoveredProcess.start).toHaveBeenCalledWith(
+        "/tmp/project-shared-recovery",
+        {
+          threadId: "thread-shared-recovery",
+          sharedRuntimeAttach: "adoption",
+        },
+      );
+      expect(recoveredProcess.sendInputStructured).toHaveBeenCalledWith(
+        "send after recovery",
+        expect.any(Object),
+      );
+      expect(recoveredSession.codexQueuedInput).toBeUndefined();
+      expect(
+        forwarded.filter(
+          (message) =>
+            message.type === "status" && message.status === "starting",
+        ),
+      ).toHaveLength(1);
+      expect(
+        forwarded.filter(
+          (message) => message.type === "status" && message.status === "idle",
+        ),
+      ).toHaveLength(1);
+      expect(
+        recoveredSession.history
+          .filter((message) => message.type === "status")
+          .map((message) => message.status),
+      ).toEqual(["starting", "idle"]);
+      expect(onSessionUpdated).toHaveBeenCalled();
+      manager.destroyAll();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts a fresh recovery generation when a replacement exits immediately after ready", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = new SessionManager(() => {});
+      const sessionId = manager.create(
+        "/tmp/project-shared-rerecovery",
+        undefined,
+        undefined,
+        undefined,
+        "codex",
+        {
+          threadId: "thread-shared-rerecovery",
+          sharedRuntimeAttach: "adoption",
+        },
+      );
+      const originalProcess = codexInstances[0];
+      originalProcess.isAttachmentReady = true;
+      originalProcess.emit("input_ready");
+      originalProcess.lastStopWasSharedRuntime = true;
+      originalProcess.isRunning = false;
+      originalProcess.isAttachmentReady = false;
+      originalProcess.emit("exit", 1);
+
+      await vi.advanceTimersByTimeAsync(250);
+      const firstReplacement = codexInstances[1];
+      firstReplacement.isAttachmentReady = true;
+      firstReplacement.emit("input_ready");
+      firstReplacement.lastStopWasSharedRuntime = true;
+      firstReplacement.isRunning = false;
+      firstReplacement.isAttachmentReady = false;
+      firstReplacement.emit("exit", 1);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(manager.get(sessionId)?.codexAttachmentState).toBe("unavailable");
+      await vi.advanceTimersByTimeAsync(250);
+      expect(codexInstances).toHaveLength(3);
+      expect(codexInstances[2].start).toHaveBeenCalledWith(
+        "/tmp/project-shared-rerecovery",
+        {
+          threadId: "thread-shared-rerecovery",
+          sharedRuntimeAttach: "adoption",
+        },
+      );
+      manager.destroyAll();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels an in-flight shared attachment replacement when destroyed", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = new SessionManager(() => {});
+      const sessionId = manager.create(
+        "/tmp/project-shared-destroy",
+        undefined,
+        undefined,
+        undefined,
+        "codex",
+        {
+          threadId: "thread-shared-destroy",
+          sharedRuntimeAttach: "adoption",
+        },
+      );
+      const originalProcess = codexInstances[0];
+      originalProcess.isAttachmentReady = true;
+      originalProcess.emit("input_ready");
+      originalProcess.lastStopWasSharedRuntime = true;
+      originalProcess.isRunning = false;
+      originalProcess.isAttachmentReady = false;
+      originalProcess.emit("exit", 1);
+
+      await vi.advanceTimersByTimeAsync(250);
+      expect(codexInstances).toHaveLength(2);
+      const stagedReplacement = codexInstances[1];
+      expect(manager.destroy(sessionId)).toBe(true);
+      expect(stagedReplacement.stop).toHaveBeenCalledOnce();
+      stagedReplacement.emit("input_ready");
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(manager.get(sessionId)).toBeUndefined();
+      expect(codexInstances).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps shared queued input while a foreign active turn owns the thread", () => {
+    const onBlocked = vi.fn();
+    const manager = new SessionManager(
+      () => {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { onBlocked },
+    );
+    const sessionId = manager.create(
+      "/tmp/project-shared-foreign",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      {
+        threadId: "thread-shared-foreign",
+        sharedRuntimeAttach: "adoption",
+      },
+    );
+    manager.queueCodexInput(sessionId, {
+      itemId: "queued-behind-desktop",
+      text: "do not steal this turn",
+      createdAt: "2026-08-01T00:00:00.000Z",
+    });
+    const process = codexInstances[0];
+    process.isRunning = true;
+    process.isAttachmentReady = true;
+    process.isWaitingForInput = true;
+    process.activeTurnId = "desktop-owned-turn";
+    process.activeTurnIsBridgeOwned = false;
+
+    process.emit("input_ready");
+
+    expect(manager.get(sessionId)?.codexAttachmentState).toBe("connected");
+    expect(manager.get(sessionId)?.codexQueuedInput?.itemId).toBe(
+      "queued-behind-desktop",
+    );
+    expect(process.sendInputStructured).not.toHaveBeenCalled();
+    expect(onBlocked).toHaveBeenCalledOnce();
+    manager.destroyAll();
+  });
+
   it("keeps staged input receipts monotonic across delayed and duplicate acknowledgements", () => {
     const forwarded: Array<{ sessionId: string; msg: ServerMessage }> = [];
     const manager = new SessionManager((sessionId, msg) => {
@@ -1731,6 +2041,173 @@ describe("SessionManager codex path", () => {
       clientMessageId: "mobile-receipt-1",
       deliveryStage: "provider_accepted",
     });
+  });
+
+  it("persists a queued input before publishing it and records provider acceptance before forwarding the receipt", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ccpocket-session-input-"));
+    try {
+      const ledger = new InputDeliveryLedger({
+        filePath: join(directory, "delivery.json"),
+      });
+      await ledger.init();
+      const forwarded: ServerMessage[] = [];
+      const scope = {
+        bridgeInstanceId: "bridge-session-test",
+        codexSourceId: "source-session-test",
+      };
+      const manager = new SessionManager(
+        (_sessionId, message) => forwarded.push(message),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { ledger, scope },
+      );
+      const sessionId = manager.create(
+        "/tmp/project-durable-input",
+        undefined,
+        undefined,
+        undefined,
+        "codex",
+        { threadId: "thread-durable-input" },
+      );
+      const identity = {
+        ...scope,
+        providerThreadId: "thread-durable-input",
+        clientMessageId: "mobile-durable-input",
+      };
+
+      await expect(
+        manager.queueCodexInputDurably(
+          sessionId,
+          {
+            itemId: "queued-durable-input",
+            text: "survive Bridge restart",
+            createdAt: "2026-08-01T02:00:00.000Z",
+            clientMessageId: identity.clientMessageId,
+          },
+          17,
+        ),
+      ).resolves.toBe(true);
+      expect(ledger.get(identity)).toMatchObject({
+        state: "queued",
+        acceptedSeq: 17,
+      });
+      expect(manager.get(sessionId)?.codexQueuedInput?.text).toBe(
+        "survive Bridge restart",
+      );
+
+      const process = codexInstances[0];
+      process.isWaitingForInput = true;
+      process.emit("input_ready");
+      await vi.waitFor(() => {
+        expect(process.sendInputStructured).toHaveBeenCalledOnce();
+      });
+      expect(ledger.get(identity)).toMatchObject({
+        state: "provider_dispatching",
+        method: "turn/start",
+      });
+
+      const receiptsBeforeProvider = forwarded.filter(
+        (message) => message.type === "input_delivery_status_v1",
+      ).length;
+      process.emit("input_delivery", {
+        clientMessageId: identity.clientMessageId,
+        stage: "provider_accepted",
+        method: "turn/start",
+        occurredAt: "2026-08-01T02:00:01.000Z",
+        clientUserMessageIdAccepted: true,
+      });
+      await vi.waitFor(() => {
+        expect(ledger.get(identity)).toMatchObject({
+          state: "provider_accepted",
+          clientUserMessageIdAccepted: true,
+        });
+        expect(
+          forwarded.filter(
+            (message) => message.type === "input_delivery_status_v1",
+          ),
+        ).toHaveLength(receiptsBeforeProvider + 1);
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("restores the exact durable queue on a new SessionManager", async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "ccpocket-session-restart-"),
+    );
+    try {
+      const filePath = join(directory, "delivery.json");
+      const scope = {
+        bridgeInstanceId: "bridge-restart-test",
+        codexSourceId: "source-restart-test",
+      };
+      const first = new InputDeliveryLedger({ filePath });
+      await first.init();
+      await first.admit({
+        identity: {
+          ...scope,
+          providerThreadId: "thread-restart-test",
+          clientMessageId: "mobile-restart-test",
+        },
+        acceptedSeq: 23,
+        queued: true,
+        payload: {
+          itemId: "queued-restart-test",
+          text: "restored exact payload",
+          createdAt: "2026-08-01T02:01:00.000Z",
+          userMessageUuid: "user-restart-test",
+        },
+      });
+
+      const restarted = new InputDeliveryLedger({ filePath });
+      await restarted.init();
+      const manager = new SessionManager(
+        () => {},
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { ledger: restarted, scope },
+      );
+      const sessionId = manager.create(
+        "/tmp/project-restart-input",
+        undefined,
+        undefined,
+        undefined,
+        "codex",
+        { threadId: "thread-restart-test" },
+      );
+      expect(manager.get(sessionId)?.codexQueuedInput).toMatchObject({
+        itemId: "queued-restart-test",
+        text: "restored exact payload",
+        clientMessageId: "mobile-restart-test",
+      });
+
+      const process = codexInstances[0];
+      process.isWaitingForInput = true;
+      process.emit("input_ready");
+      await vi.waitFor(() => {
+        expect(process.sendInputStructured).toHaveBeenCalledWith(
+          "restored exact payload",
+          expect.objectContaining({
+            clientMessageId: "mobile-restart-test",
+          }),
+        );
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("guards both input_ready and explicit Codex queue drains", () => {

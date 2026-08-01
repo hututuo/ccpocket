@@ -934,6 +934,99 @@ describe("SubagentsFeatureHandler", () => {
     expect(process.requestReadOnlyRpc).not.toHaveBeenCalled();
   });
 
+  it("keeps detached Desktop activity summaries fenced to source and parent", async () => {
+    let running = true;
+    const listThreads = vi.fn(async (params: { archived?: boolean }) => ({
+      data: params.archived
+        ? []
+        : [
+            {
+              ...thread("desktop-child", "desktop-parent"),
+              status: running ? "active" : "idle",
+              updatedAt: running ? 2 : 3,
+            },
+          ],
+      nextCursor: null,
+    }));
+    const process = handlerProcess({ listThreads });
+    const sent: unknown[] = [];
+    const client = {};
+    const runtime = {
+      codexSourceId: "source-1",
+      getSession: vi.fn(),
+      getCodexThreadId: vi.fn(),
+      getActiveCodexProcess: vi.fn(() => process),
+      createStandaloneCodexProcess: vi.fn(),
+      hasCodexQueuedInput: () => false,
+      isClientOpen: () => true,
+      send: (_client: object, message: unknown) => sent.push(message),
+      supports: (_client: object, type: string) =>
+        type === "detached_subagent_list" ||
+        type === "subagent_activity_summary_v1",
+    } as unknown as LocalFeatureRuntime;
+    const context: LocalFeatureHandleContext = {
+      client,
+      signal: new AbortController().signal,
+      runtime,
+    };
+    const handler = new SubagentsFeatureHandler();
+
+    await handler.handle(
+      {
+        type: "get_detached_subagents",
+        ownerSessionId: "pane-1",
+        providerThreadId: "desktop-parent",
+        codexSourceId: "source-1",
+        requestId: "list-1",
+      },
+      context,
+    );
+    expect(sent.at(-1)).toEqual(
+      expect.objectContaining({
+        type: "subagent_activity_summary_v1",
+        scope: "provider",
+        ownerSessionId: "pane-1",
+        providerThreadId: "desktop-parent",
+        codexSourceId: "source-1",
+        listRequestId: "list-1",
+        activeCount: 1,
+      }),
+    );
+    await handler.handle(
+      {
+        type: "watch_detached_subagent_activity_v1",
+        ownerSessionId: "pane-1",
+        providerThreadId: "desktop-parent",
+        codexSourceId: "source-1",
+        listRequestId: "list-1",
+        subscriptionId: "watch-1",
+      },
+      context,
+    );
+
+    running = false;
+    handler.sessionCatalogChanged({
+      revision: 2,
+      provider: "codex",
+      // A new descendant is not in the previous known-id set yet.
+      providerSessionId: "new-or-unrelated-thread",
+    });
+    await vi.waitFor(
+      () => {
+        expect(sent.at(-1)).toEqual(
+          expect.objectContaining({
+            type: "subagent_activity_summary_v1",
+            scope: "provider",
+            codexSourceId: "source-1",
+            subscriptionId: "watch-1",
+            activeCount: 0,
+          }),
+        );
+      },
+      { timeout: 2_000 },
+    );
+  });
+
   it("keeps the attached runtime-session read path unchanged", async () => {
     const listThreads = vi.fn(async (params: { archived?: boolean }) => ({
       data: params.archived ? [] : [thread("child", "runtime-parent")],
@@ -984,6 +1077,122 @@ describe("SubagentsFeatureHandler", () => {
     ]);
     expect(sent[0]).not.toHaveProperty("providerThreadId");
     expect(sent[0]).not.toHaveProperty("codexSourceId");
+  });
+
+  it("pushes a coalesced source-scoped activity summary and stops after unwatch", async () => {
+    let running = true;
+    const listThreads = vi.fn(async (params: { archived?: boolean }) => ({
+      data: params.archived
+        ? []
+        : [
+            {
+              ...thread("child", "runtime-parent"),
+              status: running ? "active" : "idle",
+              activeFlags: running ? ["waitingOnUserInput"] : [],
+              updatedAt: running ? 2 : 3,
+            },
+          ],
+      nextCursor: null,
+    }));
+    const process = handlerProcess({ listThreads });
+    const sent: unknown[] = [];
+    const client = {};
+    const runtime = {
+      codexSourceId: "source-1",
+      getSession: vi.fn(() => ({
+        id: "runtime-session",
+        provider: "codex",
+        process,
+      })),
+      getCodexThreadId: vi.fn(() => "runtime-parent"),
+      getActiveCodexProcess: vi.fn(() => null),
+      createStandaloneCodexProcess: vi.fn(),
+      hasCodexQueuedInput: () => false,
+      isClientOpen: () => true,
+      send: (_client: object, message: unknown) => sent.push(message),
+      supports: (_client: object, type: string) =>
+        type === "subagent_list" || type === "subagent_activity_summary_v1",
+    } as unknown as LocalFeatureRuntime;
+    const context: LocalFeatureHandleContext = {
+      client,
+      signal: new AbortController().signal,
+      runtime,
+    };
+    const handler = new SubagentsFeatureHandler();
+
+    await handler.handle(
+      {
+        type: "get_subagents",
+        sessionId: "runtime-session",
+        requestId: "list-1",
+      },
+      context,
+    );
+    expect(sent).toEqual([
+      expect.objectContaining({ type: "subagent_list" }),
+      expect.objectContaining({
+        type: "subagent_activity_summary_v1",
+        scope: "runtime",
+        ownerSessionId: "runtime-session",
+        providerThreadId: "runtime-parent",
+        listRequestId: "list-1",
+        subscribed: false,
+        activeCount: 1,
+      }),
+    ]);
+
+    await handler.handle(
+      {
+        type: "watch_subagent_activity_v1",
+        sessionId: "runtime-session",
+        listRequestId: "list-1",
+        subscriptionId: "watch-1",
+      },
+      context,
+    );
+    expect(sent.at(-1)).toEqual(
+      expect.objectContaining({
+        type: "subagent_activity_summary_v1",
+        subscriptionId: "watch-1",
+        subscribed: true,
+        activeCount: 1,
+      }),
+    );
+
+    const callsBeforeInvalidation = listThreads.mock.calls.length;
+    running = false;
+    handler.sessionCatalogChanged({
+      revision: 2,
+      provider: "codex",
+      providerSessionId: "child",
+    });
+    handler.sessionCatalogChanged({
+      revision: 3,
+      provider: "codex",
+      providerSessionId: "child",
+    });
+    await vi.waitFor(
+      () => {
+        expect(sent.at(-1)).toEqual(
+          expect.objectContaining({
+            type: "subagent_activity_summary_v1",
+            subscriptionId: "watch-1",
+            activeCount: 0,
+          }),
+        );
+      },
+      { timeout: 2_000 },
+    );
+    expect(listThreads.mock.calls.length - callsBeforeInvalidation).toBe(2);
+
+    await handler.handle(
+      { type: "unwatch_subagent_activity_v1", subscriptionId: "watch-1" },
+      context,
+    );
+    const callsAfterUnwatch = listThreads.mock.calls.length;
+    handler.sessionCatalogChanged({ revision: 4, provider: "codex" });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(listThreads).toHaveBeenCalledTimes(callsAfterUnwatch);
   });
 });
 

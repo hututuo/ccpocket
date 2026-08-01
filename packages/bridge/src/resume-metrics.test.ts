@@ -54,8 +54,29 @@ describe("formatResumePerformanceLog", () => {
       }),
     ).toBe(
       "[ws][resume-perf] provider=codex sourceSessionId=thread-1 " +
-        "outcome=success messages=42 images=4 inlineImages=4 imagePaths=0 " +
+        "outcome=success historyMode=provider_read messages=42 images=4 " +
+        "inlineImages=4 imagePaths=0 " +
         "inlineImageBytes=1024 historyMs=12 createMs=2 nameMs=2 totalMs=18",
     );
+  });
+
+  it("distinguishes deferred sync from a zero-message provider read", () => {
+    expect(
+      formatResumePerformanceLog({
+        provider: "codex",
+        sourceSessionId: "thread-shared",
+        outcome: "success",
+        historyMode: "deferred_sync",
+        messageCount: 0,
+        imageCount: 0,
+        inlineImageCount: 0,
+        imagePathCount: 0,
+        inlineImageBytes: 0,
+        historyLoadMs: 0,
+        sessionCreateMs: 3,
+        nameLoadMs: 1,
+        totalMs: 5,
+      }),
+    ).toContain("historyMode=deferred_sync messages=0");
   });
 });

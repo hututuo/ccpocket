@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { CodexRpcError, type CodexProcess } from "../codex-process.js";
 import type { AssistantContent, ServerMessage } from "../parser.js";
+import type { SessionCatalogChange } from "../session-catalog-monitor.js";
 import {
   getCodexSessionIndexMetadata,
   getCodexSessionIndexMetadataForFiles,
@@ -13,6 +15,9 @@ import type {
 import type {
   LocalFeatureHandler,
   LocalFeatureHandleContext,
+  LocalFeatureRuntime,
+  LocalFeatureSession,
+  LocalFeatureSharedRuntimeControlUpdate,
 } from "./runtime.js";
 
 const SUBAGENT_SOURCE_KINDS = [
@@ -32,6 +37,18 @@ const MAX_HISTORY_ENTRIES = HISTORY_PAGE_SIZE * MAX_HISTORY_PAGES;
 const DEFAULT_SUBAGENT_DEADLINE_MS = 12_000;
 const MAX_SUBAGENT_DEADLINE_MS = 15_000;
 const MAX_PREVIEW_CHARS_PER_SIDE = 140;
+const SUBAGENT_ACTIVITY_SUMMARY_MESSAGE = "subagent_activity_summary_v1";
+const SUBAGENT_ACTIVITY_DEBOUNCE_MS = 150;
+const MAX_ACTIVITY_WATCHES_PER_CLIENT = 8;
+const MAX_PENDING_ACTIVITY_OFFERS_PER_CLIENT = 8;
+const PENDING_ACTIVITY_OFFER_TTL_MS = 30_000;
+const ACTIVE_SUBAGENT_STATUSES = new Set([
+  "active",
+  "running",
+  "pending",
+  "starting",
+  "working",
+]);
 
 export const MAX_SUBAGENT_HISTORY_MESSAGES = 400;
 export const MAX_SUBAGENT_HISTORY_BYTES = 512 * 1024;
@@ -52,20 +69,91 @@ export interface CodexSubagentOperationOptions {
   timeoutMs?: number;
 }
 
+type SubagentActivityScope =
+  | {
+      kind: "runtime";
+      ownerSessionId: string;
+      providerThreadId: string;
+      codexSourceId?: string;
+    }
+  | {
+      kind: "provider";
+      ownerSessionId: string;
+      providerThreadId: string;
+      codexSourceId: string;
+    };
+
+interface SubagentActivitySummary {
+  revision: string;
+  activeCount: number;
+  totalCount: number;
+  truncated: boolean;
+  knownThreadIds: Set<string>;
+}
+
+interface PendingSubagentActivityOffer {
+  createdAt: number;
+  scope: SubagentActivityScope;
+  summary: SubagentActivitySummary;
+}
+
+interface SubagentActivityWatch {
+  client: object;
+  runtime: LocalFeatureRuntime;
+  subscriptionId: string;
+  scope: SubagentActivityScope;
+  summary: SubagentActivitySummary;
+  timer?: ReturnType<typeof setTimeout>;
+  abort?: AbortController;
+  refreshing: boolean;
+  pending: boolean;
+  generation: number;
+}
+
 export class SubagentsFeatureHandler implements LocalFeatureHandler {
   readonly messageTypes = [
     "get_subagents",
     "get_subagent_history",
     "get_detached_subagents",
     "get_detached_subagent_history",
+    "watch_subagent_activity_v1",
+    "watch_detached_subagent_activity_v1",
+    "unwatch_subagent_activity_v1",
   ] as const;
   private readonly activeClients = new WeakSet<object>();
   private readonly service = new CodexSubagentService();
+  private readonly activityWatches = new Map<
+    object,
+    Map<string, SubagentActivityWatch>
+  >();
+  private readonly pendingActivityOffers = new Map<
+    object,
+    Map<string, PendingSubagentActivityOffer>
+  >();
+  private readonly sharedRuntimeControlUnsubscribe?: () => void;
+
+  constructor(runtime?: LocalFeatureRuntime) {
+    this.sharedRuntimeControlUnsubscribe =
+      runtime?.subscribeSharedRuntimeControl?.((update) =>
+        this.sharedRuntimeControlChanged(update),
+      );
+  }
 
   async handle(
     message: LocalFeatureClientMessage,
     context: LocalFeatureHandleContext,
   ): Promise<void> {
+    if (message.type === "unwatch_subagent_activity_v1") {
+      this.removeActivityWatch(context.client, message.subscriptionId);
+      return;
+    }
+    if (
+      message.type === "watch_subagent_activity_v1" ||
+      message.type === "watch_detached_subagent_activity_v1"
+    ) {
+      this.activateActivityWatch(message, context);
+      return;
+    }
     if (
       message.type === "get_detached_subagents" ||
       message.type === "get_detached_subagent_history"
@@ -129,6 +217,19 @@ export class SubagentsFeatureHandler implements LocalFeatureHandler {
           subagents: result.subagents,
           ...(result.truncated ? { truncated: true } : {}),
         });
+        this.offerActivityWatch(
+          context,
+          {
+            kind: "runtime",
+            ownerSessionId: message.sessionId,
+            providerThreadId: parentThreadId,
+            ...(context.runtime.codexSourceId
+              ? { codexSourceId: context.runtime.codexSourceId }
+              : {}),
+          },
+          message.requestId,
+          result,
+        );
         return;
       }
 
@@ -157,6 +258,7 @@ export class SubagentsFeatureHandler implements LocalFeatureHandler {
       }
     } finally {
       this.activeClients.delete(context.client);
+      this.drainPendingActivityWatches(context.client);
     }
   }
 
@@ -219,6 +321,17 @@ export class SubagentsFeatureHandler implements LocalFeatureHandler {
             subagents: result.subagents,
             ...(result.truncated ? { truncated: true } : {}),
           });
+          this.offerActivityWatch(
+            context,
+            {
+              kind: "provider",
+              ownerSessionId: message.ownerSessionId,
+              providerThreadId: message.providerThreadId,
+              codexSourceId: message.codexSourceId,
+            },
+            message.requestId,
+            result,
+          );
           return;
         }
 
@@ -251,6 +364,7 @@ export class SubagentsFeatureHandler implements LocalFeatureHandler {
       }
     } finally {
       this.activeClients.delete(context.client);
+      this.drainPendingActivityWatches(context.client);
     }
   }
 
@@ -258,11 +372,18 @@ export class SubagentsFeatureHandler implements LocalFeatureHandler {
     context: LocalFeatureHandleContext,
     operation: (process: CodexProcess) => Promise<T>,
   ): Promise<T> {
-    const active = context.runtime.getActiveCodexProcess();
+    return this.withDetachedRuntimeReadProcess(context.runtime, operation);
+  }
+
+  private async withDetachedRuntimeReadProcess<T>(
+    runtime: LocalFeatureRuntime,
+    operation: (process: CodexProcess) => Promise<T>,
+  ): Promise<T> {
+    const active = runtime.getActiveCodexProcess();
     const canShareActive = active !== null && active.isRunning !== false;
     const process = canShareActive
       ? active
-      : await context.runtime.createStandaloneCodexProcess(15_000);
+      : await runtime.createStandaloneCodexProcess(15_000);
     try {
       return await operation(process);
     } finally {
@@ -270,8 +391,371 @@ export class SubagentsFeatureHandler implements LocalFeatureHandler {
     }
   }
 
+  private offerActivityWatch(
+    context: LocalFeatureHandleContext,
+    scope: SubagentActivityScope,
+    listRequestId: string,
+    result: CodexSubagentListResult,
+  ): void {
+    if (
+      !context.runtime.supports(
+        context.client,
+        SUBAGENT_ACTIVITY_SUMMARY_MESSAGE,
+      )
+    ) {
+      return;
+    }
+    const summary = summarizeSubagentActivity(result);
+    const existing = [
+      ...(this.activityWatches.get(context.client)?.values() ?? []),
+    ].find((watch) => activityScopesEqual(watch.scope, scope));
+    if (existing) {
+      const changed = summary.revision !== existing.summary.revision;
+      existing.summary = summary;
+      if (changed) {
+        this.sendActivitySummary(
+          context.runtime,
+          context.client,
+          scope,
+          summary,
+          { subscribed: true, subscriptionId: existing.subscriptionId },
+        );
+      }
+      return;
+    }
+    const now = Date.now();
+    const offers = this.pendingActivityOffers.get(context.client) ?? new Map();
+    for (const [requestId, offer] of offers) {
+      if (now - offer.createdAt > PENDING_ACTIVITY_OFFER_TTL_MS) {
+        offers.delete(requestId);
+      }
+    }
+    while (offers.size >= MAX_PENDING_ACTIVITY_OFFERS_PER_CLIENT) {
+      const oldest = offers.keys().next().value as string | undefined;
+      if (!oldest) break;
+      offers.delete(oldest);
+    }
+    offers.set(listRequestId, { createdAt: now, scope, summary });
+    this.pendingActivityOffers.set(context.client, offers);
+    this.sendActivitySummary(context.runtime, context.client, scope, summary, {
+      subscribed: false,
+      listRequestId,
+    });
+  }
+
+  private activateActivityWatch(
+    message: Extract<
+      LocalFeatureClientMessage,
+      {
+        type:
+          "watch_subagent_activity_v1" | "watch_detached_subagent_activity_v1";
+      }
+    >,
+    context: LocalFeatureHandleContext,
+  ): void {
+    if (
+      !context.runtime.supports(
+        context.client,
+        SUBAGENT_ACTIVITY_SUMMARY_MESSAGE,
+      )
+    ) {
+      return;
+    }
+    const offers = this.pendingActivityOffers.get(context.client);
+    const offer = offers?.get(message.listRequestId);
+    if (
+      !offer ||
+      Date.now() - offer.createdAt > PENDING_ACTIVITY_OFFER_TTL_MS
+    ) {
+      offers?.delete(message.listRequestId);
+      return;
+    }
+    if (!activityScopeMatchesWatchMessage(offer.scope, message)) return;
+    if (!this.activityScopeIsCurrent(context.runtime, offer.scope)) return;
+    offers!.delete(message.listRequestId);
+    if (offers!.size === 0) this.pendingActivityOffers.delete(context.client);
+
+    const watches = this.activityWatches.get(context.client) ?? new Map();
+    while (
+      watches.size >= MAX_ACTIVITY_WATCHES_PER_CLIENT &&
+      !watches.has(message.subscriptionId)
+    ) {
+      const oldest = watches.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.removeActivityWatch(context.client, oldest);
+    }
+    this.removeActivityWatch(context.client, message.subscriptionId);
+    const watch: SubagentActivityWatch = {
+      client: context.client,
+      runtime: context.runtime,
+      subscriptionId: message.subscriptionId,
+      scope: offer.scope,
+      summary: offer.summary,
+      refreshing: false,
+      pending: false,
+      generation: 0,
+    };
+    const current = this.activityWatches.get(context.client) ?? new Map();
+    current.set(message.subscriptionId, watch);
+    this.activityWatches.set(context.client, current);
+    this.sendActivitySummary(
+      context.runtime,
+      context.client,
+      offer.scope,
+      offer.summary,
+      { subscribed: true, subscriptionId: message.subscriptionId },
+    );
+  }
+
+  private activityScopeIsCurrent(
+    runtime: LocalFeatureRuntime,
+    scope: SubagentActivityScope,
+  ): boolean {
+    if (scope.kind === "provider") {
+      return runtime.codexSourceId === scope.codexSourceId;
+    }
+    const session = runtime.getSession(scope.ownerSessionId);
+    return (
+      session?.provider === "codex" &&
+      runtime.getCodexThreadId(session) === scope.providerThreadId &&
+      isCodexReadOnlyProcess(session.process)
+    );
+  }
+
+  private sendActivitySummary(
+    runtime: LocalFeatureRuntime,
+    client: object,
+    scope: SubagentActivityScope,
+    summary: SubagentActivitySummary,
+    correlation:
+      | { subscribed: false; listRequestId: string }
+      | { subscribed: true; subscriptionId: string },
+  ): void {
+    if (
+      runtime.isClientOpen?.(client) === false ||
+      !runtime.supports(client, SUBAGENT_ACTIVITY_SUMMARY_MESSAGE) ||
+      (scope.kind === "provider" &&
+        runtime.codexSourceId !== scope.codexSourceId)
+    ) {
+      return;
+    }
+    runtime.send(client, {
+      type: SUBAGENT_ACTIVITY_SUMMARY_MESSAGE,
+      scope: scope.kind,
+      ownerSessionId: scope.ownerSessionId,
+      providerThreadId: scope.providerThreadId,
+      ...(scope.codexSourceId ? { codexSourceId: scope.codexSourceId } : {}),
+      revision: summary.revision,
+      activeCount: summary.activeCount,
+      totalCount: summary.totalCount,
+      ...(summary.truncated ? { truncated: true } : {}),
+      ...correlation,
+    });
+  }
+
+  sessionCatalogChanged(change: SessionCatalogChange): void {
+    if (change.provider && change.provider !== "codex") return;
+    for (const watches of this.activityWatches.values()) {
+      for (const watch of watches.values()) {
+        // Unknown provider ids may be newly-created descendants. Known ids are
+        // exact fast-path evidence; otherwise the event still invalidates the
+        // bounded current-parent summary rather than scanning on a timer.
+        if (
+          !change.providerSessionId ||
+          change.providerSessionId === watch.scope.providerThreadId ||
+          watch.summary.knownThreadIds.has(change.providerSessionId) ||
+          // A detached Desktop parent has no Bridge-owned parent message from
+          // which to learn a newly-created child. Its scoped Codex catalog
+          // event is therefore the compatibility invalidation. Runtime-owned
+          // parents use their exact tool event and avoid unrelated rescans.
+          (watch.scope.kind === "provider" && change.provider === "codex")
+        ) {
+          this.queueActivityWatchRefresh(watch);
+        }
+      }
+    }
+  }
+
+  sessionMessage(session: LocalFeatureSession, message: ServerMessage): void {
+    if (!isSubagentActivityInvalidationMessage(message)) return;
+    for (const watches of this.activityWatches.values()) {
+      for (const watch of watches.values()) {
+        if (
+          (watch.scope.kind === "runtime" &&
+            watch.scope.ownerSessionId === session.id) ||
+          watch.summary.knownThreadIds.has(
+            watch.runtime.getCodexThreadId(session) ?? "",
+          )
+        ) {
+          this.queueActivityWatchRefresh(watch);
+        }
+      }
+    }
+  }
+
+  private sharedRuntimeControlChanged(
+    update: LocalFeatureSharedRuntimeControlUpdate,
+  ): void {
+    if (update.kind !== "event") return;
+    const event = update.event;
+    if (
+      event.method !== "thread/started" &&
+      event.method !== "thread/status/changed" &&
+      event.method !== "turn/started" &&
+      event.method !== "turn/completed"
+    ) {
+      return;
+    }
+    for (const watches of this.activityWatches.values()) {
+      for (const watch of watches.values()) {
+        if (
+          event.method === "thread/started" ||
+          !event.threadId ||
+          event.threadId === watch.scope.providerThreadId ||
+          watch.summary.knownThreadIds.has(event.threadId)
+        ) {
+          this.queueActivityWatchRefresh(watch);
+        }
+      }
+    }
+  }
+
+  private queueActivityWatchRefresh(watch: SubagentActivityWatch): void {
+    if (!this.activityWatchIsCurrent(watch)) return;
+    if (this.activeClients.has(watch.client) || watch.refreshing) {
+      watch.pending = true;
+      return;
+    }
+    if (watch.timer) return;
+    watch.timer = setTimeout(() => {
+      watch.timer = undefined;
+      void this.refreshActivityWatch(watch);
+    }, SUBAGENT_ACTIVITY_DEBOUNCE_MS);
+  }
+
+  private async refreshActivityWatch(
+    watch: SubagentActivityWatch,
+  ): Promise<void> {
+    if (!this.activityWatchIsCurrent(watch)) return;
+    if (this.activeClients.has(watch.client)) {
+      watch.pending = true;
+      return;
+    }
+    watch.refreshing = true;
+    watch.pending = false;
+    watch.generation += 1;
+    const generation = watch.generation;
+    const abort = new AbortController();
+    watch.abort = abort;
+    try {
+      let result: CodexSubagentListResult;
+      if (watch.scope.kind === "runtime") {
+        const session = watch.runtime.getSession(watch.scope.ownerSessionId);
+        const providerThreadId = session
+          ? watch.runtime.getCodexThreadId(session)
+          : undefined;
+        if (
+          !session ||
+          session.provider !== "codex" ||
+          providerThreadId !== watch.scope.providerThreadId ||
+          !isCodexReadOnlyProcess(session.process)
+        ) {
+          return;
+        }
+        result = await this.service.list(
+          session.process,
+          watch.scope.providerThreadId,
+          { signal: abort.signal },
+        );
+      } else {
+        if (watch.runtime.codexSourceId !== watch.scope.codexSourceId) return;
+        result = await this.withDetachedRuntimeReadProcess(
+          watch.runtime,
+          async (process) =>
+            this.service.list(process, watch.scope.providerThreadId, {
+              signal: abort.signal,
+            }),
+        );
+      }
+      if (
+        abort.signal.aborted ||
+        generation !== watch.generation ||
+        !this.activityWatchIsCurrent(watch)
+      ) {
+        return;
+      }
+      const summary = summarizeSubagentActivity(result);
+      const changed = summary.revision !== watch.summary.revision;
+      watch.summary = summary;
+      if (changed) {
+        this.sendActivitySummary(
+          watch.runtime,
+          watch.client,
+          watch.scope,
+          summary,
+          { subscribed: true, subscriptionId: watch.subscriptionId },
+        );
+      }
+    } catch (error) {
+      if (!abort.signal.aborted) {
+        console.warn(
+          `[subagents] activity summary refresh skipped: ${errorMessage(error)}`,
+        );
+      }
+    } finally {
+      if (watch.abort === abort) watch.abort = undefined;
+      watch.refreshing = false;
+      if (watch.pending && this.activityWatchIsCurrent(watch)) {
+        this.queueActivityWatchRefresh(watch);
+      }
+    }
+  }
+
+  private activityWatchIsCurrent(watch: SubagentActivityWatch): boolean {
+    return (
+      this.activityWatches.get(watch.client)?.get(watch.subscriptionId) ===
+      watch
+    );
+  }
+
+  private drainPendingActivityWatches(client: object): void {
+    const watches = this.activityWatches.get(client);
+    if (!watches) return;
+    for (const watch of watches.values()) {
+      if (watch.pending) this.queueActivityWatchRefresh(watch);
+    }
+  }
+
+  private removeActivityWatch(client: object, subscriptionId: string): void {
+    const watches = this.activityWatches.get(client);
+    const watch = watches?.get(subscriptionId);
+    if (!watch) return;
+    watch.generation += 1;
+    if (watch.timer) clearTimeout(watch.timer);
+    watch.abort?.abort(new Error("Subagent activity watch closed"));
+    watches!.delete(subscriptionId);
+    if (watches!.size === 0) this.activityWatches.delete(client);
+  }
+
   disconnect(client: object): void {
     this.activeClients.delete(client);
+    const watches = this.activityWatches.get(client);
+    if (watches) {
+      for (const subscriptionId of [...watches.keys()]) {
+        this.removeActivityWatch(client, subscriptionId);
+      }
+    }
+    this.pendingActivityOffers.delete(client);
+  }
+
+  close(): void {
+    this.sharedRuntimeControlUnsubscribe?.();
+    for (const [client, watches] of this.activityWatches) {
+      for (const subscriptionId of [...watches.keys()]) {
+        this.removeActivityWatch(client, subscriptionId);
+      }
+    }
+    this.pendingActivityOffers.clear();
   }
 
   private sendFailure(
@@ -339,6 +823,81 @@ export class SubagentsFeatureHandler implements LocalFeatureHandler {
       errorCode,
     });
   }
+}
+
+function activityScopeMatchesWatchMessage(
+  scope: SubagentActivityScope,
+  message: Extract<
+    LocalFeatureClientMessage,
+    {
+      type:
+        "watch_subagent_activity_v1" | "watch_detached_subagent_activity_v1";
+    }
+  >,
+): boolean {
+  if (scope.kind === "runtime") {
+    return (
+      message.type === "watch_subagent_activity_v1" &&
+      message.sessionId === scope.ownerSessionId
+    );
+  }
+  return (
+    message.type === "watch_detached_subagent_activity_v1" &&
+    message.ownerSessionId === scope.ownerSessionId &&
+    message.providerThreadId === scope.providerThreadId &&
+    message.codexSourceId === scope.codexSourceId
+  );
+}
+
+function activityScopesEqual(
+  left: SubagentActivityScope,
+  right: SubagentActivityScope,
+): boolean {
+  return (
+    left.kind === right.kind &&
+    left.ownerSessionId === right.ownerSessionId &&
+    left.providerThreadId === right.providerThreadId &&
+    left.codexSourceId === right.codexSourceId
+  );
+}
+
+function summarizeSubagentActivity(
+  result: CodexSubagentListResult,
+): SubagentActivitySummary {
+  const stableRows = result.subagents
+    .map((subagent) => ({
+      id: subagent.id,
+      status: subagent.status.toLowerCase(),
+      activeFlags: [...subagent.activeFlags].sort(),
+      updatedAt: subagent.updatedAt,
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const revision = createHash("sha256")
+    .update(JSON.stringify({ rows: stableRows, truncated: result.truncated }))
+    .digest("hex")
+    .slice(0, 32);
+  return {
+    revision,
+    activeCount: result.subagents.filter(isActiveSubagent).length,
+    totalCount: result.subagents.length,
+    truncated: result.truncated,
+    knownThreadIds: new Set(result.subagents.map((subagent) => subagent.id)),
+  };
+}
+
+function isActiveSubagent(subagent: CodexSubagentInfo): boolean {
+  return (
+    subagent.activeFlags.length > 0 ||
+    ACTIVE_SUBAGENT_STATUSES.has(subagent.status.toLowerCase())
+  );
+}
+
+function isSubagentActivityInvalidationMessage(
+  message: ServerMessage,
+): boolean {
+  if (message.type === "result") return true;
+  if (message.type !== "assistant") return false;
+  return message.message.content.some((content) => content.type === "tool_use");
 }
 
 interface CollectedPageEntries<T> {

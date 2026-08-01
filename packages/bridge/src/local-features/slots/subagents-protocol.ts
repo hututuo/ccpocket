@@ -28,6 +28,11 @@ export interface CodexSubagentInfo {
 
 export const DETACHED_SUBAGENTS_READ_CAPABILITY = "detached_subagents_read_v1";
 
+export const SUBAGENT_ACTIVITY_SUMMARY_MESSAGE =
+  "subagent_activity_summary_v1" as const;
+
+export type SubagentActivityScope = "runtime" | "provider";
+
 export type SubagentsClientMessage =
   | { type: "get_subagents"; sessionId: string; requestId: string }
   | {
@@ -50,6 +55,24 @@ export type SubagentsClientMessage =
       codexSourceId: string;
       threadId: string;
       requestId: string;
+    }
+  | {
+      type: "watch_subagent_activity_v1";
+      sessionId: string;
+      listRequestId: string;
+      subscriptionId: string;
+    }
+  | {
+      type: "watch_detached_subagent_activity_v1";
+      ownerSessionId: string;
+      providerThreadId: string;
+      codexSourceId: string;
+      listRequestId: string;
+      subscriptionId: string;
+    }
+  | {
+      type: "unwatch_subagent_activity_v1";
+      subscriptionId: string;
     };
 
 export type SubagentsServerMessage =
@@ -94,6 +117,20 @@ export type SubagentsServerMessage =
       truncated?: boolean;
       error?: string;
       errorCode?: string;
+    }
+  | {
+      type: typeof SUBAGENT_ACTIVITY_SUMMARY_MESSAGE;
+      scope: SubagentActivityScope;
+      ownerSessionId: string;
+      providerThreadId: string;
+      codexSourceId?: string;
+      revision: string;
+      activeCount: number;
+      totalCount: number;
+      truncated?: boolean;
+      subscribed: boolean;
+      listRequestId?: string;
+      subscriptionId?: string;
     };
 
 const CLIENT_TYPES = [
@@ -101,6 +138,9 @@ const CLIENT_TYPES = [
   "get_subagent_history",
   "get_detached_subagents",
   "get_detached_subagent_history",
+  "watch_subagent_activity_v1",
+  "watch_detached_subagent_activity_v1",
+  "unwatch_subagent_activity_v1",
 ] as const;
 
 export const subagentsProtocolContribution: LocalFeatureProtocolContribution<
@@ -113,6 +153,7 @@ export const subagentsProtocolContribution: LocalFeatureProtocolContribution<
     "subagent_history",
     "detached_subagent_list",
     "detached_subagent_history",
+    SUBAGENT_ACTIVITY_SUMMARY_MESSAGE,
   ],
   parseClient(message) {
     if (
@@ -195,6 +236,54 @@ export const subagentsProtocolContribution: LocalFeatureProtocolContribution<
               codexSourceId: message.codexSourceId,
               threadId: message.threadId,
               requestId: message.requestId,
+            }
+          : null;
+      case "watch_subagent_activity_v1":
+        return hasOnlyLocalFeatureKeys(message, [
+          "type",
+          "sessionId",
+          "listRequestId",
+          "subscriptionId",
+        ]) &&
+          validLocalFeatureId(message.sessionId, 256) &&
+          validLocalFeatureId(message.listRequestId, 128) &&
+          validLocalFeatureId(message.subscriptionId, 128)
+          ? {
+              type: message.type,
+              sessionId: message.sessionId,
+              listRequestId: message.listRequestId,
+              subscriptionId: message.subscriptionId,
+            }
+          : null;
+      case "watch_detached_subagent_activity_v1":
+        return hasOnlyLocalFeatureKeys(message, [
+          "type",
+          "ownerSessionId",
+          "providerThreadId",
+          "codexSourceId",
+          "listRequestId",
+          "subscriptionId",
+        ]) &&
+          validLocalFeatureId(message.ownerSessionId, 256) &&
+          validLocalFeatureId(message.providerThreadId, 256) &&
+          validLocalFeatureId(message.codexSourceId, 256) &&
+          validLocalFeatureId(message.listRequestId, 128) &&
+          validLocalFeatureId(message.subscriptionId, 128)
+          ? {
+              type: message.type,
+              ownerSessionId: message.ownerSessionId,
+              providerThreadId: message.providerThreadId,
+              codexSourceId: message.codexSourceId,
+              listRequestId: message.listRequestId,
+              subscriptionId: message.subscriptionId,
+            }
+          : null;
+      case "unwatch_subagent_activity_v1":
+        return hasOnlyLocalFeatureKeys(message, ["type", "subscriptionId"]) &&
+          validLocalFeatureId(message.subscriptionId, 128)
+          ? {
+              type: message.type,
+              subscriptionId: message.subscriptionId,
             }
           : null;
     }

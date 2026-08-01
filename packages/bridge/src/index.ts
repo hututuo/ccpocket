@@ -41,8 +41,28 @@ import {
   requiresPrivateHttpAuthorization,
 } from "./bridge-http-auth.js";
 import { readCodexAppServerMode } from "./codex-app-server-config.js";
+import { codexSourceIdentity } from "./codex-home.js";
+import {
+  actionBrokerFileForSource,
+  CodexActionBroker,
+} from "./codex-action-broker.js";
+import { CodexActionBrokerRuntime } from "./codex-action-broker-runtime.js";
+import { CodexActionBrokerWriterLease } from "./codex-action-broker-writer-lease.js";
 import { CodexSharedRuntimeControl } from "./codex-shared-runtime-control.js";
 import { sharedRuntimePilotAttachmentCount } from "./codex-shared-runtime-pilot.js";
+import {
+  TerminalResultLedger,
+  terminalResultLedgerFileForPort,
+} from "./local-features/terminal-result-ledger.js";
+import {
+  InputDeliveryLedger,
+  inputDeliveryLedgerFileForPort,
+} from "./input-delivery-ledger.js";
+import { bridgeReadinessSnapshot } from "./bridge-readiness.js";
+import {
+  assertSecureBridgeBinding,
+  DEFAULT_BRIDGE_HOST,
+} from "./bridge-bind-security.js";
 
 function startupErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -51,8 +71,14 @@ function startupErrorMessage(err: unknown): string {
 export async function startServer() {
   installProcessGuards();
   const PORT = parseBridgePort();
-  const HOST = process.env.BRIDGE_HOST ?? "0.0.0.0";
+  const HOST = process.env.BRIDGE_HOST ?? DEFAULT_BRIDGE_HOST;
   const API_KEY = process.env.BRIDGE_API_KEY;
+  assertSecureBridgeBinding({
+    host: HOST,
+    apiKey: API_KEY,
+    allowUnauthenticatedRemote:
+      process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE === "1",
+  });
   const bridgeAuthenticator = new BridgeApiKeyAuthenticator(API_KEY);
   const {
     fullDiskReadRequested: FULL_DISK_READ_REQUESTED,
@@ -73,10 +99,28 @@ export async function startServer() {
 
   const codexAppServerMode = readCodexAppServerMode();
   let sharedRuntimeControl: CodexSharedRuntimeControl | undefined;
+  let codexActionBrokerRuntime: CodexActionBrokerRuntime | undefined;
   if (codexAppServerMode === "daemon") {
+    const codexSourceId = codexSourceIdentity();
     sharedRuntimeControl = new CodexSharedRuntimeControl({
       projectPath: ALLOWED_DIRS[0] ?? homedir(),
     });
+    const actionBroker = new CodexActionBroker({
+      filePath: actionBrokerFileForSource(
+        codexSourceId,
+        process.env.CCPOCKET_CODEX_ACTION_BROKER_STATE_FILE,
+      ),
+    });
+    const actionBrokerWriterLease = new CodexActionBrokerWriterLease(
+      codexSourceId,
+    );
+    codexActionBrokerRuntime = new CodexActionBrokerRuntime(
+      actionBroker,
+      sharedRuntimeControl,
+      codexSourceId,
+      actionBrokerWriterLease,
+    );
+    await codexActionBrokerRuntime.start();
     sharedRuntimeControl.on("diagnostic", (diagnostic) => {
       console.warn(`[bridge] Shared Codex runtime: ${diagnostic}`);
     });
@@ -85,10 +129,12 @@ export async function startServer() {
       await sharedRuntimeControl.waitUntilReady(20_000);
     } catch (error) {
       sharedRuntimeControl.stop();
+      await codexActionBrokerRuntime.close();
       throw new Error(
         `Shared Codex runtime is not ready: ${startupErrorMessage(error)}`,
       );
     }
+    await codexActionBrokerRuntime.flush();
     console.log("[bridge] Shared Codex runtime control observer ready");
   }
 
@@ -197,6 +243,36 @@ export async function startServer() {
   const promptHistoryStore = new PromptHistoryStore(
     promptHistoryStoreFileForPort(PORT, process.env.BRIDGE_PROMPT_HISTORY_FILE),
   );
+  let terminalResultLedger: TerminalResultLedger | undefined;
+  let terminalResultLedgerStartupFailure:
+    { lastFailureAt: string; lastError: string } | undefined;
+  try {
+    const candidate = new TerminalResultLedger(
+      terminalResultLedgerFileForPort(
+        PORT,
+        process.env.BRIDGE_TERMINAL_RESULT_LEDGER_FILE,
+      ),
+    );
+    await candidate.init();
+    terminalResultLedger = candidate;
+  } catch (error) {
+    terminalResultLedgerStartupFailure = {
+      lastFailureAt: new Date().toISOString(),
+      lastError: error instanceof Error ? error.name : "UnknownError",
+    };
+    console.warn(
+      `[bridge] Terminal result persistence disabled: ${startupErrorMessage(error)}`,
+    );
+  }
+  const terminalResultPersistenceHealth = () =>
+    terminalResultLedger?.health ?? {
+      initialized: false,
+      ready: false,
+      degraded: true,
+      ...(terminalResultLedgerStartupFailure ?? {
+        lastError: "Unavailable",
+      }),
+    };
   const mdns = MDNS_ENABLED ? new MdnsAdvertiser() : undefined;
 
   // Gallery history repair depends on the persisted index being loaded before
@@ -251,13 +327,60 @@ export async function startServer() {
       );
     });
 
+  let promptHistoryStoreReady = false;
   await promptHistoryStore
     .init()
     .then(() => {
+      promptHistoryStoreReady = true;
       console.log("[bridge] Prompt history store initialized");
     })
     .catch((err) => {
       console.error("[bridge] Failed to initialize prompt history store:", err);
+    });
+
+  const inputDeliveryLedger = new InputDeliveryLedger({
+    filePath: inputDeliveryLedgerFileForPort(
+      PORT,
+      process.env.BRIDGE_INPUT_DELIVERY_LEDGER_FILE,
+    ),
+  });
+  let inputDeliveryIdentityFailure:
+    { lastFailureAt: string; lastError: string } | undefined;
+  if (promptHistoryStoreReady) {
+    try {
+      await inputDeliveryLedger.init();
+      console.log("[bridge] Durable Codex input delivery initialized");
+    } catch (error) {
+      console.warn(
+        `[bridge] Durable Codex input delivery unavailable: ${startupErrorMessage(error)}`,
+      );
+    }
+  } else {
+    inputDeliveryIdentityFailure = {
+      lastFailureAt: new Date().toISOString(),
+      lastError: "BridgeIdentityUnavailable",
+    };
+    console.warn(
+      "[bridge] Durable Codex input delivery unavailable because the stable Bridge identity could not be loaded",
+    );
+  }
+  const inputDeliveryPersistenceHealth = () =>
+    inputDeliveryIdentityFailure
+      ? {
+          ...inputDeliveryLedger.health,
+          initialized: false,
+          ready: false,
+          degraded: true,
+          ...inputDeliveryIdentityFailure,
+        }
+      : inputDeliveryLedger.health;
+  const currentReadiness = () =>
+    bridgeReadinessSnapshot({
+      codexRuntimeMode: codexAppServerMode,
+      sharedRuntimeControlReady: sharedRuntimeControl?.ready,
+      actionBroker: codexActionBrokerRuntime?.health,
+      terminalResults: terminalResultPersistenceHealth(),
+      inputDelivery: inputDeliveryPersistenceHealth(),
     });
 
   let fileMutationAuthorizer: FileMutationAuthorizer | undefined;
@@ -369,8 +492,12 @@ export async function startServer() {
 
     // Health check endpoint
     if (req.url === "/health" && req.method === "GET") {
+      const readiness = currentReadiness();
       const body = JSON.stringify({
         status: "ok",
+        applicationReady: readiness.ready,
+        degradedReasons: readiness.reasons,
+        degradedFeatures: readiness.degradedFeatures,
         uptime: Math.floor((Date.now() - startedAt) / 1000),
         sessions: wsServer?.sessionCount ?? 0,
         clients: wsServer?.clientCount ?? 0,
@@ -380,9 +507,15 @@ export async function startServer() {
                 mode: "daemon",
                 ready: sharedRuntimeControl.ready,
                 connectionGeneration: sharedRuntimeControl.connectionGeneration,
+                actionBroker: codexActionBrokerRuntime?.health,
+                terminalResults: terminalResultPersistenceHealth(),
+                inputDelivery: inputDeliveryPersistenceHealth(),
               },
             }
-          : {}),
+          : {
+              terminalResults: terminalResultPersistenceHealth(),
+              inputDelivery: inputDeliveryPersistenceHealth(),
+            }),
       });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(body);
@@ -396,7 +529,8 @@ export async function startServer() {
     }
 
     if (req.url === "/readyz" && req.method === "GET") {
-      const ready = sharedRuntimeControl?.ready ?? true;
+      const readiness = currentReadiness();
+      const ready = readiness.ready;
       res.writeHead(ready ? 200 : 503, {
         "Content-Type": "application/json",
         "Cache-Control": "no-store",
@@ -404,7 +538,14 @@ export async function startServer() {
       res.end(
         JSON.stringify({
           status: ready ? "ready" : "not_ready",
+          reasons: readiness.reasons,
+          degradedFeatures: readiness.degradedFeatures,
           codexRuntimeMode: codexAppServerMode,
+          ...(codexActionBrokerRuntime
+            ? { actionBroker: codexActionBrokerRuntime.health }
+            : {}),
+          terminalResults: terminalResultPersistenceHealth(),
+          inputDelivery: inputDeliveryPersistenceHealth(),
         }),
       );
       return;
@@ -419,6 +560,7 @@ export async function startServer() {
         return;
       }
       const gates = sharedRuntimeControl.pilotGates;
+      const readiness = currentReadiness();
       res.writeHead(200, {
         "Content-Type": "application/json",
         "Cache-Control": "no-store",
@@ -426,6 +568,8 @@ export async function startServer() {
       res.end(
         JSON.stringify({
           ready: sharedRuntimeControl.ready,
+          applicationReady: readiness.ready,
+          readinessReasons: readiness.reasons,
           connectionGeneration: sharedRuntimeControl.connectionGeneration,
           daemon: sharedRuntimeControl.daemonIdentity,
           attachments: sharedRuntimePilotAttachmentCount(),
@@ -434,6 +578,9 @@ export async function startServer() {
             allowTurnStart: gates.allowTurnStart,
           },
           events: sharedRuntimeControl.events,
+          actionBroker: codexActionBrokerRuntime?.health,
+          terminalResults: terminalResultPersistenceHealth(),
+          inputDelivery: inputDeliveryPersistenceHealth(),
         }),
       );
       return;
@@ -515,8 +662,13 @@ export async function startServer() {
       fileTransfer,
       fileBrowser,
       fileMutationAuthorizer,
+      sharedRuntimeControl,
+      codexActionBrokerRuntime,
+      terminalResultLedger,
+      inputDeliveryLedger,
     });
   } catch (error) {
+    await codexActionBrokerRuntime?.close();
     sharedRuntimeControl?.stop();
     await fileBrowser?.close();
     artifactStore.close();
@@ -531,11 +683,16 @@ export async function startServer() {
     if (shutdownStarted) return;
     shutdownStarted = true;
     console.log("\n[bridge] Shutting down gracefully...");
-    sharedRuntimeControl?.stop();
+    // Reject new provider writes immediately, but retain the source-global
+    // writer lease until WebSocket handlers and Codex processes have drained.
+    // Releasing the lease first would let a warm standby overlap this Bridge.
+    codexActionBrokerRuntime?.beginDraining();
     mdns?.stop();
     artifactStore.close();
     await fileTransferHttp?.close();
     await wsServer?.close();
+    await codexActionBrokerRuntime?.close();
+    sharedRuntimeControl?.stop();
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     process.exit(0);
   }
@@ -543,6 +700,7 @@ export async function startServer() {
   try {
     await listenForStartup(httpServer, PORT, HOST);
   } catch (err) {
+    await codexActionBrokerRuntime?.close();
     sharedRuntimeControl?.stop();
     artifactStore.close();
     await fileTransferHttp?.close();

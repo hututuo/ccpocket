@@ -2,7 +2,7 @@ import type { LocalFeatureHandler, LocalFeatureRuntime } from "../runtime.js";
 import { SubagentsFeatureHandler } from "../subagents.js";
 
 export function createSubagentsHandlers(
-  _runtime: LocalFeatureRuntime,
+  runtime: LocalFeatureRuntime,
 ): readonly LocalFeatureHandler[] {
-  return [new SubagentsFeatureHandler()];
+  return [new SubagentsFeatureHandler(runtime)];
 }

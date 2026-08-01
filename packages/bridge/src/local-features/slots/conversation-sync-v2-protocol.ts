@@ -93,6 +93,18 @@ export interface ConversationSyncCatalogEntry extends ConversationSyncTarget {
   model?: string;
   modelReasoningEffort?: string;
   serviceTier?: string;
+  approvalPolicy?: string;
+  approvalsReviewer?: string;
+  sandboxMode?: string;
+  collaborationMode?: "plan" | "default";
+  networkAccessEnabled?: boolean;
+  webSearchMode?: string;
+  /**
+   * True only when omitted Codex settings are authoritative absences rather
+   * than fields unavailable from a fast catalog/index read. Older producers
+   * omit this marker, which must be treated as an incremental snapshot.
+   */
+  codexSettingsSnapshotComplete?: boolean;
   createdAt: string;
   modifiedAt: string;
   recencyAt: string;
@@ -100,6 +112,17 @@ export interface ConversationSyncCatalogEntry extends ConversationSyncTarget {
   forkedFromThreadId?: string;
   parentThreadId?: string;
 }
+
+export type ConversationSyncExecutionHost =
+  "bridge" | "desktopAppServer" | "unknown";
+
+export type ConversationSyncControlState =
+  | "readOnly"
+  | "steerable"
+  | "writable"
+  | "reconciling"
+  | "blocked"
+  | "unavailable";
 
 export interface ConversationSyncStatus extends ConversationSyncTarget {
   activity: "idle" | "working" | "compacting" | "systemError" | "unknown";
@@ -110,6 +133,14 @@ export interface ConversationSyncStatus extends ConversationSyncTarget {
   confidence: "authoritative" | "observed" | "inferred" | "unknown";
   observedAt: string;
   attentionRequestId?: string;
+  /** Turn initiator projection; source remains the evidence transport. */
+  executionHost?: ConversationSyncExecutionHost;
+  /** Exact active provider turn when the current authority can prove it. */
+  activeTurnId?: string;
+  /** Whether this client may mutate the current authority binding. */
+  controlState?: ConversationSyncControlState;
+  /** Opaque generation fencing control-plane actions and late observations. */
+  authorityGeneration?: string;
 }
 
 export interface ConversationSyncNextState {
@@ -160,15 +191,15 @@ export type ConversationSyncServerMessage =
     })
   | (ConversationSyncEventBase &
       ConversationSyncTarget & {
-      event: "timeline_page";
-      revision: string;
-      baseRevision?: string;
-      mode: "snapshot" | "patch";
-      phase?: "priority" | "recent" | "cold";
-      timelineIndex?: number;
-      timelineCount?: number;
-      pageIndex: number;
-      pageCount: number;
+        event: "timeline_page";
+        revision: string;
+        baseRevision?: string;
+        mode: "snapshot" | "patch";
+        phase?: "priority" | "recent" | "cold";
+        timelineIndex?: number;
+        timelineCount?: number;
+        pageIndex: number;
+        pageCount: number;
         entries: ConversationContentEntry[];
         deletes: string[];
         hasEarlier: boolean;

@@ -151,15 +151,15 @@ describe("parseClientMessage", () => {
   it("parses bounded mobile host diagnostics", () => {
     const msg = parseClientMessage(
       JSON.stringify({
-      type: "client_capabilities",
-      appVersion: "1.107.2",
-      mobileRuntime: {
-        baseVersion: "1.107.2",
-        buildNumber: "198",
-        patchNumber: 7,
-        hostSchemaVersion: 1,
-        nativeCapabilities: { fileTransfer: 2, quickLook: 1 },
-      },
+        type: "client_capabilities",
+        appVersion: "1.107.2",
+        mobileRuntime: {
+          baseVersion: "1.107.2",
+          buildNumber: "198",
+          patchNumber: 7,
+          hostSchemaVersion: 1,
+          nativeCapabilities: { fileTransfer: 2, quickLook: 1 },
+        },
       }),
     );
 
@@ -177,23 +177,23 @@ describe("parseClientMessage", () => {
     expect(
       parseClientMessage(
         JSON.stringify({
-      type: "client_capabilities",
-      mobileRuntime: {
-        hostSchemaVersion: 1,
-        nativeCapabilities: { fileTransfer: 0 },
-      },
+          type: "client_capabilities",
+          mobileRuntime: {
+            hostSchemaVersion: 1,
+            nativeCapabilities: { fileTransfer: 0 },
+          },
         }),
       ),
     ).toBeNull();
     expect(
       parseClientMessage(
         JSON.stringify({
-      type: "client_capabilities",
-      mobileRuntime: {
-        hostSchemaVersion: 1,
-        nativeCapabilities: {},
-        unexpectedAuthority: true,
-      },
+          type: "client_capabilities",
+          mobileRuntime: {
+            hostSchemaVersion: 1,
+            nativeCapabilities: {},
+            unexpectedAuthority: true,
+          },
         }),
       ),
     ).toBeNull();
@@ -203,6 +203,25 @@ describe("parseClientMessage", () => {
     expect(
       parseClientMessage(
         '{"type":"client_capabilities","supportedServerMessages":[123]}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "client_capabilities",
+          supportedServerMessages: Array.from(
+            { length: 513 },
+            (_, index) => `feature-${index}`,
+          ),
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "client_capabilities",
+          supportedServerMessages: ["x".repeat(129)],
+        }),
       ),
     ).toBeNull();
   });
@@ -604,12 +623,13 @@ describe("parseClientMessage", () => {
   it("parses correlated push registration and rejects invalid request IDs", () => {
     expect(
       parseClientMessage(
-        '{"type":"push_register","token":"t1","platform":"ios","requestId":"push-1","approvalActionsSupported":true}',
+        '{"type":"push_register","token":"t1","platform":"ios","requestId":"push-1","approvalActionsSupported":true,"approvalActionsVersion":2}',
       ),
     ).toMatchObject({
       type: "push_register",
       requestId: "push-1",
       approvalActionsSupported: true,
+      approvalActionsVersion: 2,
     });
     expect(
       parseClientMessage(
@@ -619,6 +639,11 @@ describe("parseClientMessage", () => {
     expect(
       parseClientMessage(
         '{"type":"push_register","token":"t1","platform":"ios","approvalActionsSupported":"yes"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"push_register","token":"t1","platform":"ios","approvalActionsVersion":3}',
       ),
     ).toBeNull();
   });
@@ -652,6 +677,22 @@ describe("parseClientMessage", () => {
     expect(
       parseClientMessage(
         '{"type":"push_register","token":"t1","platform":"desktop"}',
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects empty or oversized push tokens", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"push_register","token":"","platform":"ios"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "push_unregister",
+          token: "x".repeat(4_097),
+        }),
       ),
     ).toBeNull();
   });
@@ -761,6 +802,66 @@ describe("parseClientMessage", () => {
     });
     expect(
       parseClientMessage('{"type":"set_codex_speed","serviceTier":""}'),
+    ).toBeNull();
+  });
+
+  it("parses exact detached Codex settings authority envelopes", () => {
+    const authority =
+      '"sessionId":"runtime-1","codexSourceId":"source-1","threadId":"thread-1","runtimeSessionId":"runtime-1","authorityGeneration":"authority-1","operationId":"operation-1"';
+    expect(
+      parseClientMessage(
+        `{"type":"set_permission_mode","mode":"auto",${authority}}`,
+      ),
+    ).toMatchObject({
+      type: "set_permission_mode",
+      sessionId: "runtime-1",
+      codexSourceId: "source-1",
+      threadId: "thread-1",
+      runtimeSessionId: "runtime-1",
+      authorityGeneration: "authority-1",
+      operationId: "operation-1",
+    });
+    expect(
+      parseClientMessage(
+        `{"type":"set_codex_model","model":"gpt-5.6-sol",${authority}}`,
+      ),
+    ).toMatchObject({ operationId: "operation-1" });
+    expect(
+      parseClientMessage(
+        `{"type":"set_codex_speed","serviceTier":"fast",${authority}}`,
+      ),
+    ).toMatchObject({ operationId: "operation-1" });
+    expect(
+      parseClientMessage(
+        `{"type":"set_sandbox_mode","sandboxMode":"off",${authority}}`,
+      ),
+    ).toMatchObject({ operationId: "operation-1" });
+  });
+
+  it("rejects partial, mismatched, and oversized Codex settings envelopes", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"set_codex_speed","serviceTier":"fast","sessionId":"runtime-1","codexSourceId":"source-1"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"set_codex_model","model":"gpt-5.6-sol","sessionId":"runtime-1","codexSourceId":"source-1","threadId":"thread-1","runtimeSessionId":"runtime-2","authorityGeneration":"authority-1","operationId":"operation-1"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "set_sandbox_mode",
+          sandboxMode: "off",
+          sessionId: "runtime-1",
+          codexSourceId: "source-1",
+          threadId: "thread-1",
+          runtimeSessionId: "runtime-1",
+          authorityGeneration: "authority-1",
+          operationId: "x".repeat(129),
+        }),
+      ),
     ).toBeNull();
   });
 
@@ -1348,6 +1449,44 @@ describe("parseClientMessage", () => {
     expect(
       parseClientMessage(
         '{"type":"steer_queued_input","sessionId":"s1","itemId":"q1","expectedTurnId":""}',
+      ),
+    ).toBeNull();
+
+    expect(
+      parseClientMessage(
+        '{"type":"steer_queued_input","sessionId":"runtime-1","itemId":"q1","expectedTurnId":"turn-1","codexSourceId":"source-1","threadId":"thread-1","authorityGeneration":"generation-1"}',
+      ),
+    ).toEqual({
+      type: "steer_queued_input",
+      sessionId: "runtime-1",
+      itemId: "q1",
+      expectedTurnId: "turn-1",
+      codexSourceId: "source-1",
+      threadId: "thread-1",
+      authorityGeneration: "generation-1",
+    });
+    expect(
+      parseClientMessage(
+        '{"type":"steer_queued_input","sessionId":"runtime-1","itemId":"q1","expectedTurnId":"turn-1","codexSourceId":"source-1"}',
+      ),
+    ).toBeNull();
+  });
+
+  it("parses only fully fenced detach_session messages", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"detach_session","sessionId":"runtime-1","codexSourceId":"source-1","threadId":"thread-1","authorityGeneration":"generation-1"}',
+      ),
+    ).toEqual({
+      type: "detach_session",
+      sessionId: "runtime-1",
+      codexSourceId: "source-1",
+      threadId: "thread-1",
+      authorityGeneration: "generation-1",
+    });
+    expect(
+      parseClientMessage(
+        '{"type":"detach_session","sessionId":"runtime-1","threadId":"thread-1","authorityGeneration":"generation-1"}',
       ),
     ).toBeNull();
   });

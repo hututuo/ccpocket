@@ -7,12 +7,13 @@ import {
   defaultCodexSharedAppServerUrl,
   readCodexSharedAppServerUrl,
 } from "./codex-app-server-config.js";
-import {
-  normalizeCodexSourceId,
-  resolveCodexHome,
-} from "./codex-home.js";
+import { normalizeCodexSourceId, resolveCodexHome } from "./codex-home.js";
 import { parseBridgePort } from "./bridge-port.js";
 import { validateArtifactBaseUrl } from "./artifact-url.js";
+import {
+  assertSecureBridgeBinding,
+  DEFAULT_BRIDGE_HOST,
+} from "./bridge-bind-security.js";
 
 const SERVICE_NAME = "ccpocket-bridge";
 
@@ -107,8 +108,11 @@ function escapeSystemdEnvironment(value: string): string {
 
 export function setupSystemd(opts: SetupOptions): void {
   const port = parseBridgePort(opts.port ?? process.env.BRIDGE_PORT);
-  const host = opts.host ?? process.env.BRIDGE_HOST ?? "0.0.0.0";
+  const host = opts.host ?? process.env.BRIDGE_HOST ?? DEFAULT_BRIDGE_HOST;
   const apiKey = opts.apiKey ?? process.env.BRIDGE_API_KEY ?? "";
+  const allowUnauthenticatedRemote =
+    process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE === "1";
+  assertSecureBridgeBinding({ host, apiKey, allowUnauthenticatedRemote });
   const allowedDirs = process.env.BRIDGE_ALLOWED_DIRS ?? "";
   const publicWsUrl =
     opts.publicWsUrl ?? process.env.BRIDGE_PUBLIC_WS_URL ?? "";
@@ -176,6 +180,9 @@ Environment="BRIDGE_CLI_ENTRY=${escapeSystemdEnvironment(bridgeCliEntry)}"`;
 
   if (apiKey) {
     envLines += `\nEnvironment=BRIDGE_API_KEY=${apiKey}`;
+  }
+  if (allowUnauthenticatedRemote) {
+    envLines += "\nEnvironment=BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE=1";
   }
   if (allowedDirs) {
     envLines += `\nEnvironment=BRIDGE_ALLOWED_DIRS=${allowedDirs}`;
@@ -268,11 +275,16 @@ WantedBy=default.target
   // Without this, systemd user services stop when the last session ends
   // (e.g. SSH disconnect), which defeats the purpose of a background service.
   try {
-    const lingerStatus = execSync("loginctl show-user $USER --property=Linger", {
-      encoding: "utf-8",
-    }).trim();
+    const lingerStatus = execSync(
+      "loginctl show-user $USER --property=Linger",
+      {
+        encoding: "utf-8",
+      },
+    ).trim();
     if (lingerStatus !== "Linger=yes") {
-      console.log("==> Enabling linger to keep service running after logout...");
+      console.log(
+        "==> Enabling linger to keep service running after logout...",
+      );
       execSync("loginctl enable-linger $USER");
       console.log("    Linger enabled.");
     }

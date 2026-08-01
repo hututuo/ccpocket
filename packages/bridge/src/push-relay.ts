@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { FirebaseAuthClient } from "./firebase-auth.js";
 
 export type PushPlatform = "ios" | "android" | "web";
@@ -28,6 +29,7 @@ type PushRelayOpPayload =
       locale?: string;
       enabledEventTypes?: string[];
       approvalActionsSupported?: boolean;
+      approvalActionsVersion?: 1 | 2;
     }
   | { op: "unregister"; token: string }
   | {
@@ -42,7 +44,8 @@ type PushRelayOpPayload =
 
 type PushRelayRequestPayload = PushRelayOpPayload & { bridgeId: string };
 
-const DEFAULT_RELAY_URL = "https://us-central1-ccpocket-ca33b.cloudfunctions.net/relay";
+const DEFAULT_RELAY_URL =
+  "https://us-central1-ccpocket-ca33b.cloudfunctions.net/relay";
 
 export class PushRelayClient {
   private readonly relayUrl: string;
@@ -71,6 +74,7 @@ export class PushRelayClient {
     locale?: string,
     enabledEventTypes?: string[],
     approvalActionsSupported?: boolean,
+    approvalActionsVersion?: 1 | 2,
   ): Promise<void> {
     if (!this.isConfigured) return;
     await this.post({
@@ -80,6 +84,7 @@ export class PushRelayClient {
       locale,
       enabledEventTypes,
       approvalActionsSupported,
+      approvalActionsVersion,
     });
   }
 
@@ -109,7 +114,13 @@ export class PushRelayClient {
       ...payload,
       bridgeId: this.bridgeId,
     };
-    console.log(`[push-relay] ${payload.op} → ${this.relayUrl} (bridgeId: ${requestPayload.bridgeId})`);
+    const logBridgeId = createHash("sha256")
+      .update(requestPayload.bridgeId, "utf8")
+      .digest("hex")
+      .slice(0, 12);
+    console.log(
+      `[push-relay] ${payload.op} → ${this.relayUrl} (bridge: ${logBridgeId})`,
+    );
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -117,17 +128,17 @@ export class PushRelayClient {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${idToken}`,
+          Authorization: `Bearer ${idToken}`,
         },
         body: JSON.stringify(requestPayload),
         signal: controller.signal,
       });
 
-      const responseText = (await response.text()).trim().slice(0, 200);
+      await response.text();
       if (!response.ok) {
-        throw new Error(`Push relay returned ${response.status}${responseText ? `: ${responseText}` : ""}`);
+        throw new Error(`Push relay returned ${response.status}`);
       }
-      console.log(`[push-relay] ${payload.op} OK: ${responseText}`);
+      console.log(`[push-relay] ${payload.op} OK`);
     } finally {
       clearTimeout(timer);
     }

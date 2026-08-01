@@ -1,6 +1,8 @@
 import { LocalFeaturesController } from "./controller.js";
 import type { LocalFeatureRuntime } from "./runtime.js";
+import { readCodexAppServerMode } from "../codex-app-server-config.js";
 import { createAutoApprovalHandlers } from "./slots/auto-approval.js";
+import { createCodexActionBrokerHandlers } from "./slots/codex-action-broker.js";
 import { createCodexCoreActionsHandlers } from "./slots/codex-core-actions.js";
 import { createCodexDesktopContinuityHandlers } from "./slots/codex-desktop-continuity.js";
 import { createConversationMirrorHandlers } from "./slots/conversation-mirror.js";
@@ -18,11 +20,20 @@ import { createSubagentsHandlers } from "./slots/subagents.js";
  */
 export function createLocalFeaturesController(
   runtime: LocalFeatureRuntime,
+  env: NodeJS.ProcessEnv = process.env,
 ): LocalFeaturesController {
+  const appServerMode = readCodexAppServerMode(env);
+  const desktopContinuityHandlers =
+    appServerMode === "daemon"
+      ? []
+      : createCodexDesktopContinuityHandlers(runtime);
   return new LocalFeaturesController(runtime, [
-    ...createAutoApprovalHandlers(runtime),
+    ...createCodexActionBrokerHandlers(runtime),
+    ...createAutoApprovalHandlers(runtime, {
+      topology: appServerMode === "daemon" ? "shared" : "private_legacy",
+    }),
     ...createCodexCoreActionsHandlers(runtime),
-    ...createCodexDesktopContinuityHandlers(runtime),
+    ...desktopContinuityHandlers,
     ...createConversationMirrorHandlers(runtime),
     ...createConversationContentHandlers(runtime),
     ...createConversationSyncV2Handlers(runtime),

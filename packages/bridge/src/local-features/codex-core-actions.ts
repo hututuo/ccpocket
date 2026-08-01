@@ -34,10 +34,7 @@ const MAX_AUTH_STATUS_LENGTH = 64;
 
 type CodexCoreActionProcess = Pick<
   CodexProcess,
-  | "status"
-  | "compactThread"
-  | "startInlineReview"
-  | "listMcpServerStatus"
+  "status" | "compactThread" | "startInlineReview" | "listMcpServerStatus"
 > & {
   readonly hasPendingCoreAction?: boolean;
 };
@@ -91,6 +88,24 @@ export class CodexCoreActionsFeatureHandler implements LocalFeatureHandler {
       await this.handleMcpStatus(message, session.process, context);
       return;
     }
+    const action =
+      message.type === "codex_compact_request" ? "compact" : "review";
+    const mutationBlock = await context.runtime.codexThreadMutationBlock?.(
+      session,
+      action,
+    );
+    if (mutationBlock) {
+      context.runtime.send(context.client, {
+        type: "codex_action_result",
+        sessionId: message.sessionId,
+        requestId: message.requestId,
+        action,
+        status: "rejected",
+        errorCode: mutationBlock.errorCode,
+        message: mutationBlock.message,
+      });
+      return;
+    }
     await this.handleAction(
       message,
       session.process,
@@ -141,10 +156,7 @@ export class CodexCoreActionsFeatureHandler implements LocalFeatureHandler {
       if (message.type === "codex_compact_request") {
         await process.compactThread(options);
       } else {
-        review = await process.startInlineReview(
-          message.target,
-          options,
-        );
+        review = await process.startInlineReview(message.target, options);
       }
       if (context.signal.aborted) return;
       context.runtime.send(context.client, {
@@ -239,11 +251,7 @@ export class CodexCoreActionsFeatureHandler implements LocalFeatureHandler {
       sessionId: message.sessionId,
       requestId: message.requestId,
       action,
-      status: unsupported
-        ? "unsupported"
-        : rejected
-          ? "rejected"
-          : "failed",
+      status: unsupported ? "unsupported" : rejected ? "rejected" : "failed",
       errorCode: unsupported ? "unsupported_backend" : errorCode(error),
       message: boundedErrorMessage(error),
     });
@@ -269,8 +277,7 @@ export class CodexCoreActionsFeatureHandler implements LocalFeatureHandler {
       type: "codex_action_result",
       sessionId: message.sessionId,
       requestId: message.requestId,
-      action:
-        message.type === "codex_compact_request" ? "compact" : "review",
+      action: message.type === "codex_compact_request" ? "compact" : "review",
       status: "rejected",
       errorCode: "session_not_found",
       message: "An active Codex session was not found.",
@@ -297,8 +304,7 @@ export class CodexCoreActionsFeatureHandler implements LocalFeatureHandler {
       type: "codex_action_result",
       sessionId: message.sessionId,
       requestId: message.requestId,
-      action:
-        message.type === "codex_compact_request" ? "compact" : "review",
+      action: message.type === "codex_compact_request" ? "compact" : "review",
       status: "unsupported",
       errorCode: "capability_not_negotiated",
       message: "Codex core actions capability was not negotiated.",

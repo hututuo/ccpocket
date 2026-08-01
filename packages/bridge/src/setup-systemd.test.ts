@@ -31,6 +31,7 @@ const SERVICE_PATH =
 const originalBridgeEnv = {
   port: process.env.BRIDGE_PORT,
   host: process.env.BRIDGE_HOST,
+  allowUnauthenticatedRemote: process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE,
   allowedDirs: process.env.BRIDGE_ALLOWED_DIRS,
   publicWsUrl: process.env.BRIDGE_PUBLIC_WS_URL,
   artifactBaseUrl: process.env.BRIDGE_ARTIFACT_BASE_URL,
@@ -41,8 +42,7 @@ const originalBridgeEnv = {
   fileTransferStateFile: process.env.BRIDGE_FILE_TRANSFER_STATE_FILE,
   disableMdns: process.env.BRIDGE_DISABLE_MDNS,
   codexAssistModel: process.env.BRIDGE_CODEX_ASSIST_MODEL,
-  codexAssistReasoningEffort:
-    process.env.BRIDGE_CODEX_ASSIST_REASONING_EFFORT,
+  codexAssistReasoningEffort: process.env.BRIDGE_CODEX_ASSIST_REASONING_EFFORT,
   codexHome: process.env.CODEX_HOME,
   codexSourceId: process.env.BRIDGE_CODEX_SOURCE_ID,
   codexAppServerMode: process.env.BRIDGE_CODEX_APP_SERVER_MODE,
@@ -89,10 +89,11 @@ describe("setup-systemd", () => {
       expect(content).toContain('Environment="BRIDGE_CLI_ENTRY=');
       expect(content).toContain('/src/cli.js"');
       expect(content).toContain("Environment=BRIDGE_PORT=8765");
-      expect(content).toContain("Environment=BRIDGE_HOST=0.0.0.0");
+      expect(content).toContain("Environment=BRIDGE_HOST=127.0.0.1");
       expect(content).toContain("Restart=on-failure");
       expect(content).toContain("WantedBy=default.target");
       expect(content).not.toContain("BRIDGE_API_KEY");
+      expect(content).not.toContain("BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE");
       expect(content).not.toContain("BRIDGE_ALLOWED_DIRS");
       expect(content).not.toContain("BRIDGE_ARTIFACT_BASE_URL");
       expect(content).not.toContain("BRIDGE_AUTO_ARTIFACTS");
@@ -105,6 +106,24 @@ describe("setup-systemd", () => {
       expect(content).not.toContain("BRIDGE_CODEX_SOURCE_ID");
       expect(content).not.toContain("BRIDGE_CODEX_APP_SERVER_MODE");
       expect(content).not.toContain("BRIDGE_CODEX_SHARED_APP_SERVER_URL");
+    });
+
+    it("rejects an unauthenticated remote host before writing the service", () => {
+      expect(() => setupSystemd({ host: "0.0.0.0" })).toThrow(/BRIDGE_API_KEY/);
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+      expect(mockExecSync).not.toHaveBeenCalled();
+    });
+
+    it("persists an explicit legacy unauthenticated remote opt-in", () => {
+      process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE = "1";
+
+      setupSystemd({ host: "0.0.0.0" });
+
+      const content = mockWriteFileSync.mock.calls[0]![1] as string;
+      expect(content).toContain("Environment=BRIDGE_HOST=0.0.0.0");
+      expect(content).toContain(
+        "Environment=BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE=1",
+      );
     });
 
     it("rejects an invalid environment port before writing or registering a service", () => {
@@ -187,7 +206,9 @@ describe("setup-systemd", () => {
         .find((line) => line.startsWith("Environment=PATH="));
       expect(pathLine).toBeDefined();
       expect(pathLine!.indexOf("/home/testuser/.local/bin")).toBeLessThan(
-        pathLine!.indexOf(process.execPath.slice(0, process.execPath.lastIndexOf("/"))),
+        pathLine!.indexOf(
+          process.execPath.slice(0, process.execPath.lastIndexOf("/")),
+        ),
       );
     });
 
@@ -231,9 +252,12 @@ describe("setup-systemd", () => {
     });
 
     it("persists file-transfer storage paths with systemd escaping", () => {
-      process.env.BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR = '/home/testuser/Phone "Files"';
-      process.env.BRIDGE_FILE_TRANSFER_PARTIAL_DIR = "/home/testuser/.ccpocket/parts";
-      process.env.BRIDGE_FILE_TRANSFER_STATE_FILE = "/home/testuser/.ccpocket/state.json";
+      process.env.BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR =
+        '/home/testuser/Phone "Files"';
+      process.env.BRIDGE_FILE_TRANSFER_PARTIAL_DIR =
+        "/home/testuser/.ccpocket/parts";
+      process.env.BRIDGE_FILE_TRANSFER_STATE_FILE =
+        "/home/testuser/.ccpocket/state.json";
       setupSystemd({});
       const content = mockWriteFileSync.mock.calls[0]![1] as string;
       expect(content).toContain(
@@ -410,12 +434,8 @@ describe("setup-systemd", () => {
       uninstallSystemd();
 
       const allCmds = mockExecSync.mock.calls.map((c) => c[0] as string);
-      expect(allCmds).toContain(
-        'systemctl --user stop "ccpocket-bridge"',
-      );
-      expect(allCmds).toContain(
-        'systemctl --user disable "ccpocket-bridge"',
-      );
+      expect(allCmds).toContain('systemctl --user stop "ccpocket-bridge"');
+      expect(allCmds).toContain('systemctl --user disable "ccpocket-bridge"');
       expect(allCmds).toContain("systemctl --user daemon-reload");
       expect(mockUnlinkSync).toHaveBeenCalledWith(SERVICE_PATH);
     });
@@ -445,6 +465,7 @@ describe("setup-systemd", () => {
 function clearBridgeEnv(): void {
   delete process.env.BRIDGE_PORT;
   delete process.env.BRIDGE_HOST;
+  delete process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE;
   delete process.env.BRIDGE_ALLOWED_DIRS;
   delete process.env.BRIDGE_PUBLIC_WS_URL;
   delete process.env.BRIDGE_ARTIFACT_BASE_URL;
@@ -467,20 +488,30 @@ function clearBridgeEnv(): void {
 function restoreBridgeEnv(): void {
   restoreEnvVar("BRIDGE_PORT", originalBridgeEnv.port);
   restoreEnvVar("BRIDGE_HOST", originalBridgeEnv.host);
+  restoreEnvVar(
+    "BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE",
+    originalBridgeEnv.allowUnauthenticatedRemote,
+  );
   restoreEnvVar("BRIDGE_ALLOWED_DIRS", originalBridgeEnv.allowedDirs);
   restoreEnvVar("BRIDGE_PUBLIC_WS_URL", originalBridgeEnv.publicWsUrl);
-  restoreEnvVar(
-    "BRIDGE_ARTIFACT_BASE_URL",
-    originalBridgeEnv.artifactBaseUrl,
-  );
+  restoreEnvVar("BRIDGE_ARTIFACT_BASE_URL", originalBridgeEnv.artifactBaseUrl);
   restoreEnvVar("BRIDGE_AUTO_ARTIFACTS", originalBridgeEnv.autoArtifacts);
   restoreEnvVar(
     "BRIDGE_ARTIFACT_REGISTRY_FILE",
     originalBridgeEnv.artifactRegistryFile,
   );
-  restoreEnvVar("BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR", originalBridgeEnv.fileTransferDownloadDir);
-  restoreEnvVar("BRIDGE_FILE_TRANSFER_PARTIAL_DIR", originalBridgeEnv.fileTransferPartialDir);
-  restoreEnvVar("BRIDGE_FILE_TRANSFER_STATE_FILE", originalBridgeEnv.fileTransferStateFile);
+  restoreEnvVar(
+    "BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR",
+    originalBridgeEnv.fileTransferDownloadDir,
+  );
+  restoreEnvVar(
+    "BRIDGE_FILE_TRANSFER_PARTIAL_DIR",
+    originalBridgeEnv.fileTransferPartialDir,
+  );
+  restoreEnvVar(
+    "BRIDGE_FILE_TRANSFER_STATE_FILE",
+    originalBridgeEnv.fileTransferStateFile,
+  );
   restoreEnvVar("BRIDGE_DISABLE_MDNS", originalBridgeEnv.disableMdns);
   restoreEnvVar(
     "BRIDGE_CODEX_ASSIST_MODEL",
@@ -491,10 +522,7 @@ function restoreBridgeEnv(): void {
     originalBridgeEnv.codexAssistReasoningEffort,
   );
   restoreEnvVar("CODEX_HOME", originalBridgeEnv.codexHome);
-  restoreEnvVar(
-    "BRIDGE_CODEX_SOURCE_ID",
-    originalBridgeEnv.codexSourceId,
-  );
+  restoreEnvVar("BRIDGE_CODEX_SOURCE_ID", originalBridgeEnv.codexSourceId);
   restoreEnvVar(
     "BRIDGE_CODEX_APP_SERVER_MODE",
     originalBridgeEnv.codexAppServerMode,

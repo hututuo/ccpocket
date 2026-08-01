@@ -104,6 +104,21 @@ export type CodexApprovalsReviewer =
 export type CodexPermissionsMode =
   "default" | "autoReview" | "fullAccess" | "custom";
 
+/**
+ * Exact, non-replayable target for a detached shared-runtime settings write.
+ *
+ * Every field is optional at the union level so old clients remain wire
+ * compatible. The parser accepts either none of them (the private/legacy
+ * path), or all five with `sessionId === runtimeSessionId`.
+ */
+export interface CodexSettingsMutationEnvelope {
+  codexSourceId?: string;
+  threadId?: string;
+  runtimeSessionId?: string;
+  authorityGeneration?: string;
+  operationId?: string;
+}
+
 export type Provider = "claude" | "codex";
 
 export type SessionLinkProgressOperation = "resolve" | "resume";
@@ -123,17 +138,10 @@ export type SessionLinkProgressStage =
   | "ready";
 
 export type GuardianReviewRisk =
-  | "unknown"
-  | "low"
-  | "medium"
-  | "high"
-  | "critical";
+  "unknown" | "low" | "medium" | "high" | "critical";
 
 export type GuardianReviewStatus =
-  | "approved"
-  | "denied"
-  | "timedOut"
-  | "aborted";
+  "approved" | "denied" | "timedOut" | "aborted";
 
 export interface GuardianReviewDetails {
   status: GuardianReviewStatus;
@@ -175,10 +183,7 @@ export interface QueuedInputItem {
   /** Additive id used to correlate the queue with staged input receipts. */
   clientMessageId?: string;
   /** Monotonic delivery fact; absent on legacy Bridges. */
-  deliveryStage?:
-    | "bridge_accepted"
-    | "provider_accepted"
-    | "provider_rejected";
+  deliveryStage?: "bridge_accepted" | "provider_accepted" | "provider_rejected";
   deliveryError?: string;
   imageCount?: number;
   skills?: Array<{ name: string; path: string }>;
@@ -280,6 +285,9 @@ export type ClientMessage =
       sessionId: string;
       itemId: string;
       expectedTurnId?: string;
+      codexSourceId?: string;
+      threadId?: string;
+      authorityGeneration?: string;
     }
   | { type: "cancel_queued_input"; sessionId: string; itemId: string }
   | {
@@ -291,9 +299,10 @@ export type ClientMessage =
       privacyMode?: boolean;
       enabledEventTypes?: string[];
       approvalActionsSupported?: boolean;
+      approvalActionsVersion?: 1 | 2;
     }
   | { type: "push_unregister"; token: string; requestId?: string }
-  | {
+  | ({
       type: "set_permission_mode";
       mode: PermissionMode;
       applyStrategy?: "next_turn" | "restart_now";
@@ -304,18 +313,18 @@ export type ClientMessage =
       codexPermissionsMode?: CodexPermissionsMode;
       planMode?: boolean;
       sessionId?: string;
-    }
-  | {
+    } & CodexSettingsMutationEnvelope)
+  | ({
       type: "set_codex_model";
       model: string;
       modelReasoningEffort?: string;
       sessionId?: string;
-    }
-  | {
+    } & CodexSettingsMutationEnvelope)
+  | ({
       type: "set_codex_speed";
       serviceTier: string;
       sessionId?: string;
-    }
+    } & CodexSettingsMutationEnvelope)
   | { type: "get_goal"; sessionId: string }
   | {
       type: "set_goal";
@@ -332,7 +341,11 @@ export type ClientMessage =
       goalChangeId?: string;
       expectedGoalOperationSequence?: number;
     }
-  | { type: "set_sandbox_mode"; sandboxMode: string; sessionId?: string }
+  | ({
+      type: "set_sandbox_mode";
+      sandboxMode: string;
+      sessionId?: string;
+    } & CodexSettingsMutationEnvelope)
   | {
       type: "approve";
       id: string;
@@ -345,6 +358,13 @@ export type ClientMessage =
   | { type: "install_tool_suggestion"; toolUseId: string; sessionId?: string }
   | { type: "list_sessions" }
   | { type: "stop_session"; sessionId: string }
+  | {
+      type: "detach_session";
+      sessionId: string;
+      codexSourceId: string;
+      threadId: string;
+      authorityGeneration: string;
+    }
   | {
       type: "rename_session";
       sessionId: string;
@@ -1312,12 +1332,34 @@ function isValidWireIdentifier(
   );
 }
 
+function hasValidCodexSettingsMutationEnvelope(
+  msg: Record<string, unknown>,
+): boolean {
+  const fields = [
+    msg.codexSourceId,
+    msg.threadId,
+    msg.runtimeSessionId,
+    msg.authorityGeneration,
+    msg.operationId,
+  ];
+  const present = fields.filter((value) => value !== undefined).length;
+  if (present === 0) return true;
+  if (present !== fields.length) return false;
+  return (
+    isValidWireIdentifier(msg.codexSourceId, 128) &&
+    isValidWireIdentifier(msg.threadId) &&
+    isValidWireIdentifier(msg.runtimeSessionId) &&
+    isValidWireIdentifier(msg.authorityGeneration) &&
+    isValidWireIdentifier(msg.operationId, 128) &&
+    msg.sessionId === msg.runtimeSessionId
+  );
+}
+
 export function parseClientMessage(data: string): ClientMessage | null {
   try {
     const msg = JSON.parse(data) as Record<string, unknown>;
     if (!msg.type || typeof msg.type !== "string") return null;
-    const backgroundDeliveryMessage =
-      parseBackgroundDeliveryClientMessage(msg);
+    const backgroundDeliveryMessage = parseBackgroundDeliveryClientMessage(msg);
     if (backgroundDeliveryMessage !== undefined) {
       return backgroundDeliveryMessage;
     }
@@ -1416,7 +1458,10 @@ export function parseClientMessage(data: string): ClientMessage | null {
 
     switch (msg.type) {
       case "client_capabilities":
-        if (msg.appVersion !== undefined && typeof msg.appVersion !== "string")
+        if (
+          msg.appVersion !== undefined &&
+          (typeof msg.appVersion !== "string" || msg.appVersion.length > 128)
+        )
           return null;
         if (
           msg.protocolVersion !== undefined &&
@@ -1425,9 +1470,18 @@ export function parseClientMessage(data: string): ClientMessage | null {
         )
           return null;
         if (msg.supportedServerMessages !== undefined) {
-          if (!Array.isArray(msg.supportedServerMessages)) return null;
           if (
-            msg.supportedServerMessages.some((type) => typeof type !== "string")
+            !Array.isArray(msg.supportedServerMessages) ||
+            msg.supportedServerMessages.length > 512
+          )
+            return null;
+          if (
+            msg.supportedServerMessages.some(
+              (type) =>
+                typeof type !== "string" ||
+                type.length === 0 ||
+                type.length > 128,
+            )
           )
             return null;
         }
@@ -1436,52 +1490,64 @@ export function parseClientMessage(data: string): ClientMessage | null {
             typeof msg.mobileRuntime !== "object" ||
             msg.mobileRuntime === null ||
             Array.isArray(msg.mobileRuntime)
-          ) return null;
+          )
+            return null;
           const runtime = msg.mobileRuntime as Record<string, unknown>;
           if (
-            !Object.keys(runtime).every((key) => [
-              "baseVersion",
-              "buildNumber",
-              "patchNumber",
-              "hostSchemaVersion",
-              "nativeCapabilities",
-            ].includes(key))
-          ) return null;
+            !Object.keys(runtime).every((key) =>
+              [
+                "baseVersion",
+                "buildNumber",
+                "patchNumber",
+                "hostSchemaVersion",
+                "nativeCapabilities",
+              ].includes(key),
+            )
+          )
+            return null;
           for (const key of ["baseVersion", "buildNumber"] as const) {
             const value = runtime[key];
             if (
               value !== undefined &&
-              (typeof value !== "string" || value.length < 1 || value.length > 64)
-            ) return null;
+              (typeof value !== "string" ||
+                value.length < 1 ||
+                value.length > 64)
+            )
+              return null;
           }
           if (
             runtime.patchNumber !== undefined &&
             (!Number.isInteger(runtime.patchNumber) ||
               Number(runtime.patchNumber) < 0 ||
               Number(runtime.patchNumber) > 1_000_000)
-          ) return null;
+          )
+            return null;
           if (
             !Number.isInteger(runtime.hostSchemaVersion) ||
             Number(runtime.hostSchemaVersion) < 0 ||
             Number(runtime.hostSchemaVersion) > 1_000
-          ) return null;
+          )
+            return null;
           if (
             typeof runtime.nativeCapabilities !== "object" ||
             runtime.nativeCapabilities === null ||
             Array.isArray(runtime.nativeCapabilities)
-          ) return null;
+          )
+            return null;
           const capabilities = Object.entries(
             runtime.nativeCapabilities as Record<string, unknown>,
           );
           if (capabilities.length > 64) return null;
           if (
-            capabilities.some(([key, value]) =>
-              !/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(key) ||
-              !Number.isInteger(value) ||
-              Number(value) < 1 ||
-              Number(value) > 1_000
+            capabilities.some(
+              ([key, value]) =>
+                !/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(key) ||
+                !Number.isInteger(value) ||
+                Number(value) < 1 ||
+                Number(value) > 1_000,
             )
-          ) return null;
+          )
+            return null;
         }
         break;
       case "start":
@@ -1693,6 +1759,28 @@ export function parseClientMessage(data: string): ClientMessage | null {
             msg.expectedTurnId.length > 256)
         )
           return null;
+        {
+          const authorityFields = [
+            msg.codexSourceId,
+            msg.threadId,
+            msg.authorityGeneration,
+          ];
+          const authorityFieldCount = authorityFields.filter(
+            (value) => value !== undefined,
+          ).length;
+          if (authorityFieldCount !== 0 && authorityFieldCount !== 3) {
+            return null;
+          }
+          if (
+            authorityFieldCount === 3 &&
+            (!isValidWireIdentifier(msg.codexSourceId, 128) ||
+              !isValidWireIdentifier(msg.threadId) ||
+              !isValidWireIdentifier(msg.authorityGeneration) ||
+              !isValidWireIdentifier(msg.expectedTurnId))
+          ) {
+            return null;
+          }
+        }
         break;
       case "cancel_queued_input":
         if (
@@ -1702,7 +1790,12 @@ export function parseClientMessage(data: string): ClientMessage | null {
           return null;
         break;
       case "push_register":
-        if (typeof msg.token !== "string") return null;
+        if (
+          typeof msg.token !== "string" ||
+          msg.token.length === 0 ||
+          msg.token.length > 4_096
+        )
+          return null;
         if (
           msg.platform !== "ios" &&
           msg.platform !== "android" &&
@@ -1734,9 +1827,20 @@ export function parseClientMessage(data: string): ClientMessage | null {
           typeof msg.approvalActionsSupported !== "boolean"
         )
           return null;
+        if (
+          msg.approvalActionsVersion !== undefined &&
+          msg.approvalActionsVersion !== 1 &&
+          msg.approvalActionsVersion !== 2
+        )
+          return null;
         break;
       case "push_unregister":
-        if (typeof msg.token !== "string") return null;
+        if (
+          typeof msg.token !== "string" ||
+          msg.token.length === 0 ||
+          msg.token.length > 4_096
+        )
+          return null;
         if (
           msg.requestId !== undefined &&
           (typeof msg.requestId !== "string" ||
@@ -1746,6 +1850,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
           return null;
         break;
       case "set_permission_mode":
+        if (!hasValidCodexSettingsMutationEnvelope(msg)) return null;
         if (
           typeof msg.mode !== "string" ||
           ![
@@ -1801,6 +1906,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
           return null;
         break;
       case "set_codex_model":
+        if (!hasValidCodexSettingsMutationEnvelope(msg)) return null;
         if (typeof msg.model !== "string" || msg.model.trim() === "")
           return null;
         if (
@@ -1813,6 +1919,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
           return null;
         break;
       case "set_codex_speed":
+        if (!hasValidCodexSettingsMutationEnvelope(msg)) return null;
         if (
           typeof msg.serviceTier !== "string" ||
           msg.serviceTier.trim().length === 0
@@ -1894,6 +2001,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
         break;
       }
       case "set_sandbox_mode":
+        if (!hasValidCodexSettingsMutationEnvelope(msg)) return null;
         if (typeof msg.sandboxMode !== "string") return null;
         break;
       case "approve":
@@ -1919,6 +2027,16 @@ export function parseClientMessage(data: string): ClientMessage | null {
         break;
       case "stop_session":
         if (typeof msg.sessionId !== "string") return null;
+        break;
+      case "detach_session":
+        if (
+          !isValidWireIdentifier(msg.sessionId) ||
+          !isValidWireIdentifier(msg.codexSourceId, 128) ||
+          !isValidWireIdentifier(msg.threadId) ||
+          !isValidWireIdentifier(msg.authorityGeneration)
+        ) {
+          return null;
+        }
         break;
       case "rename_session":
         if (typeof msg.sessionId !== "string") return null;
@@ -2092,15 +2210,11 @@ export function parseClientMessage(data: string): ClientMessage | null {
           msg.provider !== "codex"
         )
           return null;
-        if (
-          msg.namedOnly !== undefined &&
-          typeof msg.namedOnly !== "boolean"
-        )
+        if (msg.namedOnly !== undefined && typeof msg.namedOnly !== "boolean")
           return null;
         if (
           msg.searchQuery !== undefined &&
-          (typeof msg.searchQuery !== "string" ||
-            msg.searchQuery.length > 512)
+          (typeof msg.searchQuery !== "string" || msg.searchQuery.length > 512)
         )
           return null;
         break;
@@ -2374,8 +2488,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
         if (
           typeof msg.sessionId !== "string" ||
           typeof msg.targetUuid !== "string" ||
-          (msg.projectPath !== undefined &&
-            typeof msg.projectPath !== "string")
+          (msg.projectPath !== undefined && typeof msg.projectPath !== "string")
         )
           return null;
         if (

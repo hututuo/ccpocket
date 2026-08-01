@@ -4,6 +4,11 @@ import {
   type AutoApprovalStateMessage,
 } from "./slots/auto-approval-protocol.js";
 import {
+  codexActionBrokerProtocolContribution,
+  type CodexActionBrokerClientMessage,
+  type CodexActionBrokerServerMessage,
+} from "./slots/codex-action-broker-protocol.js";
+import {
   codexCoreActionsProtocolContribution,
   type CodexCoreActionsClientMessage,
   type CodexCoreActionsServerMessage,
@@ -70,7 +75,17 @@ import type {
 export type {
   AutoApprovalClientMessage,
   AutoApprovalStateMessage,
+  AutoApprovalTargetScope,
 } from "./slots/auto-approval-protocol.js";
+export type {
+  CodexActionBrokerClientMessage,
+  CodexActionBrokerSnapshotScope,
+  CodexActionBrokerServerMessage,
+  CodexActionWireDecision,
+  CodexActionWireHealth,
+  CodexActionWireRequest,
+} from "./slots/codex-action-broker-protocol.js";
+export { CODEX_ACTION_BROKER_CAPABILITY } from "./slots/codex-action-broker-protocol.js";
 export {
   AUTO_APPROVAL_STATE_CAPABILITY,
   AUTO_APPROVAL_SUPERVISION_CAPABILITY,
@@ -100,7 +115,10 @@ export type {
   SessionUsageResetCreditPayload,
   SessionUsageWindowPayload,
 } from "./slots/session-insights-protocol.js";
-export { DURABLE_SESSION_INSIGHTS_CAPABILITY } from "./slots/session-insights-protocol.js";
+export {
+  DURABLE_SESSION_INSIGHTS_CAPABILITY,
+  SCOPED_CONTEXT_USAGE_CAPABILITY,
+} from "./slots/session-insights-protocol.js";
 export type {
   SideChatEventMessage,
   SideChatMessagePayload,
@@ -120,8 +138,14 @@ export {
   EPHEMERAL_SIDE_CHAT_CAPABILITY,
   EPHEMERAL_SIDE_CHAT_PARENT_IDENTITY_CAPABILITY,
 } from "./slots/ephemeral-side-chat-protocol.js";
-export type { CodexSubagentInfo } from "./slots/subagents-protocol.js";
-export { DETACHED_SUBAGENTS_READ_CAPABILITY } from "./slots/subagents-protocol.js";
+export type {
+  CodexSubagentInfo,
+  SubagentActivityScope,
+} from "./slots/subagents-protocol.js";
+export {
+  DETACHED_SUBAGENTS_READ_CAPABILITY,
+  SUBAGENT_ACTIVITY_SUMMARY_MESSAGE,
+} from "./slots/subagents-protocol.js";
 export type {
   ConversationMirrorClientMessage,
   ConversationMirrorEntryChunkMessage,
@@ -205,6 +229,7 @@ export type {
 
 export type LocalFeatureClientMessage =
   | AutoApprovalClientMessage
+  | CodexActionBrokerClientMessage
   | CodexCoreActionsClientMessage
   | CodexDesktopContinuityClientMessage
   | ConversationMirrorClientMessage
@@ -219,6 +244,7 @@ export type LocalFeatureClientMessage =
 
 export type LocalFeatureServerMessage =
   | AutoApprovalStateMessage
+  | CodexActionBrokerServerMessage
   | CodexCoreActionsServerMessage
   | CodexDesktopContinuityEventMessage
   | ConversationMirrorServerMessage
@@ -233,6 +259,7 @@ export type LocalFeatureServerMessage =
 
 const CONTRIBUTIONS: readonly LocalFeatureProtocolContribution[] = [
   autoApprovalProtocolContribution,
+  codexActionBrokerProtocolContribution,
   codexCoreActionsProtocolContribution,
   codexDesktopContinuityProtocolContribution,
   conversationMirrorProtocolContribution,

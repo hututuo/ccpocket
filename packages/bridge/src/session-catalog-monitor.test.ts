@@ -5,6 +5,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionCatalogMonitor } from "./session-catalog-monitor.js";
 
 const temporaryDirectories: string[] = [];
+// The full Bridge suite deliberately stresses filesystem/process resources in
+// parallel. macOS can defer an fs.watch callback for more than two seconds
+// under that load even though the same contract completes immediately alone.
+const WATCH_EVENT_TIMEOUT_MS = 5_000;
 
 afterEach(async () => {
   await Promise.all(
@@ -45,7 +49,7 @@ describe("SessionCatalogMonitor", () => {
     await appendFile(sessionFile, '{"type":"assistant"}\n');
     await appendFile(sessionFile, '{"type":"result"}\n');
     await vi.waitFor(() => expect(changes).toHaveLength(1), {
-      timeout: 2_000,
+      timeout: WATCH_EVENT_TIMEOUT_MS,
     });
     expect(changes[0]).toMatchObject({ revision: 1 });
 
@@ -89,7 +93,7 @@ describe("SessionCatalogMonitor", () => {
             providerSessionId: threadId,
           },
         ]),
-      { timeout: 2_000 },
+      { timeout: WATCH_EVENT_TIMEOUT_MS },
     );
     monitor.close();
   });
@@ -123,7 +127,7 @@ describe("SessionCatalogMonitor", () => {
       appendFile(second, '{"type":"assistant"}\n'),
     ]);
     await vi.waitFor(() => expect(changes).toEqual([{ revision: 1 }]), {
-      timeout: 2_000,
+      timeout: WATCH_EVENT_TIMEOUT_MS,
     });
     monitor.close();
   });
@@ -146,7 +150,7 @@ describe("SessionCatalogMonitor", () => {
     await mkdir(project);
     await writeFile(join(project, "session-2.jsonl"), '{"type":"user"}\n');
     await vi.waitFor(() => expect(revisions.length).toBeGreaterThan(0), {
-      timeout: 2_000,
+      timeout: WATCH_EVENT_TIMEOUT_MS,
     });
     const firstRevision = revisions.at(-1)!;
 
@@ -157,7 +161,7 @@ describe("SessionCatalogMonitor", () => {
     );
     await vi.waitFor(
       () => expect(revisions.at(-1)).toBeGreaterThan(firstRevision),
-      { timeout: 2_000 },
+      { timeout: WATCH_EVENT_TIMEOUT_MS },
     );
     monitor.close();
   });
@@ -199,7 +203,7 @@ describe("SessionCatalogMonitor", () => {
           provider: "codex",
           providerSessionId: "thread-codex",
         }),
-      { timeout: 2_000 },
+      { timeout: WATCH_EVENT_TIMEOUT_MS },
     );
     monitor.close();
   });
@@ -244,7 +248,7 @@ describe("SessionCatalogMonitor", () => {
           provider: "codex",
           providerSessionId: "thread-late",
         }),
-      { timeout: 2_000 },
+      { timeout: WATCH_EVENT_TIMEOUT_MS },
     );
     monitor.close();
   });

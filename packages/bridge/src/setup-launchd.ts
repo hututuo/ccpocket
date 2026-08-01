@@ -7,12 +7,13 @@ import {
   defaultCodexSharedAppServerUrl,
   readCodexSharedAppServerUrl,
 } from "./codex-app-server-config.js";
-import {
-  normalizeCodexSourceId,
-  resolveCodexHome,
-} from "./codex-home.js";
+import { normalizeCodexSourceId, resolveCodexHome } from "./codex-home.js";
 import { parseBridgePort } from "./bridge-port.js";
 import { validateArtifactBaseUrl } from "./artifact-url.js";
+import {
+  assertSecureBridgeBinding,
+  DEFAULT_BRIDGE_HOST,
+} from "./bridge-bind-security.js";
 
 const PLIST_LABEL = "com.ccpocket.bridge";
 
@@ -33,8 +34,16 @@ export function uninstallLaunchd(): void {
   const plistPath = getPlistPath();
   console.log("==> Uninstalling Bridge Server service...");
 
-  try { execSync(`launchctl stop "${PLIST_LABEL}"`, { stdio: "ignore" }); } catch { /* ok */ }
-  try { execSync(`launchctl unload "${plistPath}"`, { stdio: "ignore" }); } catch { /* ok */ }
+  try {
+    execSync(`launchctl stop "${PLIST_LABEL}"`, { stdio: "ignore" });
+  } catch {
+    /* ok */
+  }
+  try {
+    execSync(`launchctl unload "${plistPath}"`, { stdio: "ignore" });
+  } catch {
+    /* ok */
+  }
 
   if (existsSync(plistPath)) {
     unlinkSync(plistPath);
@@ -61,8 +70,11 @@ interface SetupOptions {
 
 export function setupLaunchd(opts: SetupOptions): void {
   const port = parseBridgePort(opts.port ?? process.env.BRIDGE_PORT);
-  const host = opts.host ?? process.env.BRIDGE_HOST ?? "0.0.0.0";
+  const host = opts.host ?? process.env.BRIDGE_HOST ?? DEFAULT_BRIDGE_HOST;
   const apiKey = opts.apiKey ?? process.env.BRIDGE_API_KEY ?? "";
+  const allowUnauthenticatedRemote =
+    process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE === "1";
+  assertSecureBridgeBinding({ host, apiKey, allowUnauthenticatedRemote });
   const allowedDirs = process.env.BRIDGE_ALLOWED_DIRS ?? "";
   const publicWsUrl =
     opts.publicWsUrl ?? process.env.BRIDGE_PUBLIC_WS_URL ?? "";
@@ -130,6 +142,12 @@ export function setupLaunchd(opts: SetupOptions): void {
     envBlock += `
         <key>BRIDGE_API_KEY</key>
         <string>${apiKey}</string>`;
+  }
+
+  if (allowUnauthenticatedRemote) {
+    envBlock += `
+        <key>BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE</key>
+        <string>1</string>`;
   }
 
   if (allowedDirs) {
@@ -265,7 +283,11 @@ ${envBlock}
 
   // Register with launchctl
   console.log("==> Registering service...");
-  try { execSync(`launchctl unload "${plistPath}"`, { stdio: "ignore" }); } catch { /* ok */ }
+  try {
+    execSync(`launchctl unload "${plistPath}"`, { stdio: "ignore" });
+  } catch {
+    /* ok */
+  }
   execSync(`launchctl load "${plistPath}"`);
 
   // Start the service
@@ -278,7 +300,9 @@ ${envBlock}
       );
     }
   } catch {
-    console.log("==> Service registered (start may have failed — check logs at /tmp/ccpocket-bridge.log)");
+    console.log(
+      "==> Service registered (start may have failed — check logs at /tmp/ccpocket-bridge.log)",
+    );
   }
 
   console.log("    Done.");

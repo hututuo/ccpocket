@@ -22,9 +22,12 @@ vi.mock("node:os", () => ({
 
 const { setupLaunchd, uninstallLaunchd } = await import("./setup-launchd.js");
 
-const PLIST_PATH = "/Users/testuser/Library/LaunchAgents/com.ccpocket.bridge.plist";
+const PLIST_PATH =
+  "/Users/testuser/Library/LaunchAgents/com.ccpocket.bridge.plist";
 const originalBridgeEnv = {
   port: process.env.BRIDGE_PORT,
+  host: process.env.BRIDGE_HOST,
+  allowUnauthenticatedRemote: process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE,
   allowedDirs: process.env.BRIDGE_ALLOWED_DIRS,
   publicWsUrl: process.env.BRIDGE_PUBLIC_WS_URL,
   artifactBaseUrl: process.env.BRIDGE_ARTIFACT_BASE_URL,
@@ -35,8 +38,7 @@ const originalBridgeEnv = {
   fileTransferStateFile: process.env.BRIDGE_FILE_TRANSFER_STATE_FILE,
   disableMdns: process.env.BRIDGE_DISABLE_MDNS,
   codexAssistModel: process.env.BRIDGE_CODEX_ASSIST_MODEL,
-  codexAssistReasoningEffort:
-    process.env.BRIDGE_CODEX_ASSIST_REASONING_EFFORT,
+  codexAssistReasoningEffort: process.env.BRIDGE_CODEX_ASSIST_REASONING_EFFORT,
   codexHome: process.env.CODEX_HOME,
   codexSourceId: process.env.BRIDGE_CODEX_SOURCE_ID,
   codexAppServerMode: process.env.BRIDGE_CODEX_APP_SERVER_MODE,
@@ -62,17 +64,22 @@ describe("setup-launchd", () => {
       setupLaunchd({});
 
       expect(mockWriteFileSync).toHaveBeenCalledOnce();
-      const [path, content] = mockWriteFileSync.mock.calls[0] as [string, string];
+      const [path, content] = mockWriteFileSync.mock.calls[0] as [
+        string,
+        string,
+      ];
       expect(path).toBe(PLIST_PATH);
       expect(content).toContain("<key>BRIDGE_PORT</key>");
       expect(content).toContain("<string>8765</string>");
       expect(content).toContain("<key>BRIDGE_HOST</key>");
+      expect(content).toContain("<string>127.0.0.1</string>");
       expect(content).toContain(
         '<string>exec node "$BRIDGE_CLI_ENTRY"</string>',
       );
       expect(content).toContain("<key>BRIDGE_CLI_ENTRY</key>");
       expect(content).toContain("/src/cli.js</string>");
       expect(content).not.toContain("BRIDGE_API_KEY");
+      expect(content).not.toContain("BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE");
       expect(content).not.toContain("BRIDGE_ALLOWED_DIRS");
       expect(content).not.toContain("BRIDGE_PUBLIC_WS_URL");
       expect(content).not.toContain("BRIDGE_ARTIFACT_BASE_URL");
@@ -86,6 +93,25 @@ describe("setup-launchd", () => {
       expect(content).not.toContain("BRIDGE_CODEX_SOURCE_ID");
       expect(content).not.toContain("BRIDGE_CODEX_APP_SERVER_MODE");
       expect(content).not.toContain("BRIDGE_CODEX_SHARED_APP_SERVER_URL");
+    });
+
+    it("rejects an unauthenticated remote host before writing the service", () => {
+      expect(() => setupLaunchd({ host: "0.0.0.0" })).toThrow(/BRIDGE_API_KEY/);
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+      expect(mockExecSync).not.toHaveBeenCalled();
+    });
+
+    it("persists an explicit legacy unauthenticated remote opt-in", () => {
+      process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE = "1";
+
+      setupLaunchd({ host: "0.0.0.0" });
+
+      const content = mockWriteFileSync.mock.calls[0]![1] as string;
+      expect(content).toContain("<string>0.0.0.0</string>");
+      expect(content).toContain(
+        "<key>BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE</key>",
+      );
+      expect(content).toContain("<string>1</string>");
     });
 
     it.each(["", "123abc"])(
@@ -150,9 +176,9 @@ describe("setup-launchd", () => {
     });
 
     it("rejects an invalid Codex authority before replacing the service", () => {
-      expect(() =>
-        setupLaunchd({ codexSourceId: "shared-main" }),
-      ).toThrow("BRIDGE_CODEX_SOURCE_ID must be");
+      expect(() => setupLaunchd({ codexSourceId: "shared-main" })).toThrow(
+        "BRIDGE_CODEX_SOURCE_ID must be",
+      );
       expect(mockWriteFileSync).not.toHaveBeenCalled();
       expect(mockExecSync).not.toHaveBeenCalled();
     });
@@ -205,13 +231,18 @@ describe("setup-launchd", () => {
     });
 
     it("persists file-transfer storage paths with XML escaping", () => {
-      process.env.BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR = "/Users/testuser/Phone & Files";
-      process.env.BRIDGE_FILE_TRANSFER_PARTIAL_DIR = "/Users/testuser/.ccpocket/parts";
-      process.env.BRIDGE_FILE_TRANSFER_STATE_FILE = "/Users/testuser/.ccpocket/state.json";
+      process.env.BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR =
+        "/Users/testuser/Phone & Files";
+      process.env.BRIDGE_FILE_TRANSFER_PARTIAL_DIR =
+        "/Users/testuser/.ccpocket/parts";
+      process.env.BRIDGE_FILE_TRANSFER_STATE_FILE =
+        "/Users/testuser/.ccpocket/state.json";
       setupLaunchd({});
       const content = mockWriteFileSync.mock.calls[0]![1] as string;
       expect(content).toContain("<key>BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR</key>");
-      expect(content).toContain("<string>/Users/testuser/Phone &amp; Files</string>");
+      expect(content).toContain(
+        "<string>/Users/testuser/Phone &amp; Files</string>",
+      );
       expect(content).toContain("<key>BRIDGE_FILE_TRANSFER_PARTIAL_DIR</key>");
       expect(content).toContain("<key>BRIDGE_FILE_TRANSFER_STATE_FILE</key>");
     });
@@ -245,7 +276,9 @@ describe("setup-launchd", () => {
       const content = mockWriteFileSync.mock.calls[0]![1] as string;
       expect(content).toContain("<key>BRIDGE_CODEX_APP_SERVER_MODE</key>");
       expect(content).toContain("<string>external</string>");
-      expect(content).toContain("<key>BRIDGE_CODEX_SHARED_APP_SERVER_URL</key>");
+      expect(content).toContain(
+        "<key>BRIDGE_CODEX_SHARED_APP_SERVER_URL</key>",
+      );
       expect(content).toContain("<string>ws://127.0.0.1:18766</string>");
       expect(content).not.toContain("BRIDGE_CODEX_APP_SERVER_PORT");
       expect(content).not.toContain("BRIDGE_CODEX_APP_SERVER_URL");
@@ -265,7 +298,9 @@ describe("setup-launchd", () => {
       expect(content).toContain("<string>8765</string>");
       expect(content).toContain("<key>BRIDGE_CODEX_APP_SERVER_MODE</key>");
       expect(content).toContain("<string>managed</string>");
-      expect(content).toContain("<key>BRIDGE_CODEX_SHARED_APP_SERVER_URL</key>");
+      expect(content).toContain(
+        "<key>BRIDGE_CODEX_SHARED_APP_SERVER_URL</key>",
+      );
       expect(content).toContain("<string>ws://127.0.0.1:8767</string>");
     });
 
@@ -275,7 +310,9 @@ describe("setup-launchd", () => {
       const content = mockWriteFileSync.mock.calls[0]![1] as string;
       expect(content).toContain("<key>BRIDGE_PORT</key>");
       expect(content).toContain("<string>8767</string>");
-      expect(content).toContain("<key>BRIDGE_CODEX_SHARED_APP_SERVER_URL</key>");
+      expect(content).toContain(
+        "<key>BRIDGE_CODEX_SHARED_APP_SERVER_URL</key>",
+      );
       expect(content).toContain("<string>ws://127.0.0.1:8768</string>");
     });
   });
@@ -293,6 +330,8 @@ describe("setup-launchd", () => {
 
 function clearBridgeEnv(): void {
   delete process.env.BRIDGE_PORT;
+  delete process.env.BRIDGE_HOST;
+  delete process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE;
   delete process.env.BRIDGE_ALLOWED_DIRS;
   delete process.env.BRIDGE_PUBLIC_WS_URL;
   delete process.env.BRIDGE_ARTIFACT_BASE_URL;
@@ -314,20 +353,31 @@ function clearBridgeEnv(): void {
 
 function restoreBridgeEnv(): void {
   restoreEnvVar("BRIDGE_PORT", originalBridgeEnv.port);
+  restoreEnvVar("BRIDGE_HOST", originalBridgeEnv.host);
+  restoreEnvVar(
+    "BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE",
+    originalBridgeEnv.allowUnauthenticatedRemote,
+  );
   restoreEnvVar("BRIDGE_ALLOWED_DIRS", originalBridgeEnv.allowedDirs);
   restoreEnvVar("BRIDGE_PUBLIC_WS_URL", originalBridgeEnv.publicWsUrl);
-  restoreEnvVar(
-    "BRIDGE_ARTIFACT_BASE_URL",
-    originalBridgeEnv.artifactBaseUrl,
-  );
+  restoreEnvVar("BRIDGE_ARTIFACT_BASE_URL", originalBridgeEnv.artifactBaseUrl);
   restoreEnvVar("BRIDGE_AUTO_ARTIFACTS", originalBridgeEnv.autoArtifacts);
   restoreEnvVar(
     "BRIDGE_ARTIFACT_REGISTRY_FILE",
     originalBridgeEnv.artifactRegistryFile,
   );
-  restoreEnvVar("BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR", originalBridgeEnv.fileTransferDownloadDir);
-  restoreEnvVar("BRIDGE_FILE_TRANSFER_PARTIAL_DIR", originalBridgeEnv.fileTransferPartialDir);
-  restoreEnvVar("BRIDGE_FILE_TRANSFER_STATE_FILE", originalBridgeEnv.fileTransferStateFile);
+  restoreEnvVar(
+    "BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR",
+    originalBridgeEnv.fileTransferDownloadDir,
+  );
+  restoreEnvVar(
+    "BRIDGE_FILE_TRANSFER_PARTIAL_DIR",
+    originalBridgeEnv.fileTransferPartialDir,
+  );
+  restoreEnvVar(
+    "BRIDGE_FILE_TRANSFER_STATE_FILE",
+    originalBridgeEnv.fileTransferStateFile,
+  );
   restoreEnvVar("BRIDGE_DISABLE_MDNS", originalBridgeEnv.disableMdns);
   restoreEnvVar(
     "BRIDGE_CODEX_ASSIST_MODEL",
@@ -338,10 +388,7 @@ function restoreBridgeEnv(): void {
     originalBridgeEnv.codexAssistReasoningEffort,
   );
   restoreEnvVar("CODEX_HOME", originalBridgeEnv.codexHome);
-  restoreEnvVar(
-    "BRIDGE_CODEX_SOURCE_ID",
-    originalBridgeEnv.codexSourceId,
-  );
+  restoreEnvVar("BRIDGE_CODEX_SOURCE_ID", originalBridgeEnv.codexSourceId);
   restoreEnvVar(
     "BRIDGE_CODEX_APP_SERVER_MODE",
     originalBridgeEnv.codexAppServerMode,

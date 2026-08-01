@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  BACKGROUND_NOTIFICATION_MAX_CODEX_REQUEST_IDS,
+  BACKGROUND_NOTIFICATION_MAX_PERMISSION_IDS_PER_SESSION,
+  BACKGROUND_NOTIFICATION_MAX_TRACKED_SESSIONS,
   createBackgroundNotificationPolicy,
   createBackgroundNotificationProjectionState,
+  projectCodexActionBackgroundNotification,
   projectBackgroundNotification,
 } from "./background-notification-projector.js";
 
@@ -16,6 +20,105 @@ const context = {
 };
 
 describe("background notification projector", () => {
+  it("projects the exact Codex Action Broker fence without request input", () => {
+    const state = createBackgroundNotificationProjectionState();
+    const request = {
+      opaqueRequestId: "opaque-cab-1",
+      codexSourceId: "codex-source-1",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      kind: "command_approval" as const,
+      state: "pending" as const,
+      observedAt: "2026-07-24T01:00:00.000Z",
+      expiresAt: "2026-07-24T01:10:00.000Z",
+      updatedAt: "2026-07-24T01:00:01.000Z",
+      authorityGeneration: "cab:1:7",
+      live: true,
+      toolName: "Bash",
+      input: { command: "cat /private/secret" },
+      allowedActions: ["approve", "reject"] as ("approve" | "reject")[],
+    };
+    const message = projectCodexActionBackgroundNotification(
+      request,
+      { ...context, sessionId: "thread-1", providerSessionId: "thread-1" },
+      createBackgroundNotificationPolicy({
+        locale: "zh",
+        enabledEventTypes: ["approval_required"],
+      }),
+      state,
+    );
+
+    expect(message).toMatchObject({
+      eventType: "approval_required",
+      sessionId: "thread-1",
+      provider: "codex",
+      data: {
+        actionPayloadVersion: "2",
+        opaqueRequestId: "opaque-cab-1",
+        codexSourceId: "codex-source-1",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        authorityGeneration: "cab:1:7",
+        allowedActions: "approve,reject",
+      },
+    });
+    expect(message?.data.permissionId).toBeUndefined();
+    expect(JSON.stringify(message)).not.toContain("cat /private/secret");
+    expect(
+      projectCodexActionBackgroundNotification(
+        request,
+        context,
+        createBackgroundNotificationPolicy(),
+        state,
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps Codex broker notification bodies private and releases terminal dedup", () => {
+    const state = createBackgroundNotificationProjectionState();
+    const request = {
+      opaqueRequestId: "opaque-private",
+      codexSourceId: "codex-source-1",
+      threadId: "thread-private",
+      turnId: "turn-private",
+      kind: "file_approval" as const,
+      state: "pending" as const,
+      observedAt: "2026-07-24T01:00:00.000Z",
+      expiresAt: "2026-07-24T01:10:00.000Z",
+      updatedAt: "2026-07-24T01:00:01.000Z",
+      authorityGeneration: "cab:2:1",
+      live: true,
+      toolName: "SecretFileWriter",
+      input: { path: "/private/secret" },
+      allowedActions: ["approve", "reject"] as ("approve" | "reject")[],
+    };
+    const policy = createBackgroundNotificationPolicy({
+      locale: "zh",
+      privacyMode: true,
+      enabledEventTypes: ["approval_required"],
+    });
+    const message = projectCodexActionBackgroundNotification(
+      request,
+      context,
+      policy,
+      state,
+    );
+    expect(JSON.stringify(message)).not.toContain("SecretFileWriter");
+    expect(JSON.stringify(message)).not.toContain("/private/secret");
+
+    expect(
+      projectCodexActionBackgroundNotification(
+        { ...request, state: "resolved" as const, live: false },
+        context,
+        policy,
+        state,
+      ),
+    ).toBeNull();
+    expect(
+      projectCodexActionBackgroundNotification(request, context, policy, state),
+    ).not.toBeNull();
+  });
+
   it("projects only enabled lightweight events and never includes tool input", () => {
     const policy = createBackgroundNotificationPolicy({
       locale: "zh-CN",
@@ -231,5 +334,125 @@ describe("background notification projector", () => {
     ).toBeNull();
     expect(state.progressBySession.has("session-1")).toBe(false);
     expect(state.permissionToolUsesBySession.has("session-1")).toBe(false);
+  });
+
+  it("bounds all best-effort notification dedupe caches when terminal events are missed", () => {
+    const state = createBackgroundNotificationProjectionState();
+    const approvalPolicy = createBackgroundNotificationPolicy({
+      enabledEventTypes: ["approval_required"],
+    });
+    for (
+      let index = 0;
+      index <= BACKGROUND_NOTIFICATION_MAX_CODEX_REQUEST_IDS;
+      index += 1
+    ) {
+      expect(
+        projectCodexActionBackgroundNotification(
+          {
+            opaqueRequestId: `opaque-${index}`,
+            codexSourceId: "codex-source-1",
+            threadId: `thread-${index}`,
+            turnId: `turn-${index}`,
+            kind: "command_approval",
+            state: "pending",
+            observedAt: "2026-07-24T01:00:00.000Z",
+            expiresAt: "2026-07-24T01:10:00.000Z",
+            updatedAt: "2026-07-24T01:00:01.000Z",
+            authorityGeneration: "cab:bounded:1",
+            live: true,
+            toolName: "Bash",
+            input: { command: "pwd" },
+            allowedActions: ["approve", "reject"],
+          },
+          { ...context, sessionId: `thread-${index}` },
+          approvalPolicy,
+          state,
+        ),
+      ).not.toBeNull();
+    }
+    expect(state.codexActionRequestIds.size).toBe(
+      BACKGROUND_NOTIFICATION_MAX_CODEX_REQUEST_IDS,
+    );
+
+    for (
+      let index = 0;
+      index <= BACKGROUND_NOTIFICATION_MAX_TRACKED_SESSIONS;
+      index += 1
+    ) {
+      projectBackgroundNotification(
+        {
+          type: "permission_request",
+          toolUseId: `permission-${index}`,
+          toolName: "Bash",
+          input: {},
+        },
+        { ...context, sessionId: `permission-session-${index}` },
+        approvalPolicy,
+        state,
+      );
+    }
+    expect(state.permissionToolUsesBySession.size).toBe(
+      BACKGROUND_NOTIFICATION_MAX_TRACKED_SESSIONS,
+    );
+
+    const progressPolicy = createBackgroundNotificationPolicy({
+      enabledEventTypes: ["session_progress"],
+    });
+    for (
+      let index = 0;
+      index <= BACKGROUND_NOTIFICATION_MAX_TRACKED_SESSIONS;
+      index += 1
+    ) {
+      projectBackgroundNotification(
+        {
+          type: "assistant",
+          message: {
+            id: `progress-message-${index}`,
+            role: "assistant",
+            model: "gpt-5.6",
+            content: [
+              {
+                type: "tool_use",
+                id: `progress-tool-${index}`,
+                name: "Read",
+                input: {},
+              },
+            ],
+          },
+        },
+        {
+          ...context,
+          sessionId: `progress-session-${index}`,
+          now: context.now + index * 50_000,
+        },
+        progressPolicy,
+        state,
+      );
+    }
+    expect(state.progressBySession.size).toBe(
+      BACKGROUND_NOTIFICATION_MAX_TRACKED_SESSIONS,
+    );
+
+    const oneSession = "one-long-running-session";
+    for (
+      let index = 0;
+      index <= BACKGROUND_NOTIFICATION_MAX_PERMISSION_IDS_PER_SESSION;
+      index += 1
+    ) {
+      projectBackgroundNotification(
+        {
+          type: "permission_request",
+          toolUseId: `long-permission-${index}`,
+          toolName: "Bash",
+          input: {},
+        },
+        { ...context, sessionId: oneSession },
+        approvalPolicy,
+        state,
+      );
+    }
+    expect(state.permissionToolUsesBySession.get(oneSession)?.size).toBe(
+      BACKGROUND_NOTIFICATION_MAX_PERMISSION_IDS_PER_SESSION,
+    );
   });
 });

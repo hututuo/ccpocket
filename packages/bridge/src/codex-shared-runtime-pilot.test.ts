@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assertSharedRuntimePilotRpcAllowed,
   claimSharedRuntimePilotAttachment,
@@ -45,6 +45,21 @@ describe("shared runtime Stage 1 pilot gates", () => {
     ).toThrow("BRIDGE_CODEX_SOURCE_ID");
   });
 
+  it("leaves private runtime attachment behavior untouched", () => {
+    const yielded = vi.fn();
+    expect(
+      claimSharedRuntimePilotAttachment(
+        {},
+        "private-thread",
+        null,
+        "observer",
+        yielded,
+      ),
+    ).toBeNull();
+    expect(yielded).not.toHaveBeenCalled();
+    expect(sharedRuntimePilotAttachmentCount()).toBe(0);
+  });
+
   it("allows reads and strict resume while mutations remain closed", () => {
     expect(() =>
       assertSharedRuntimePilotRpcAllowed("thread/list", null, gates()),
@@ -64,9 +79,16 @@ describe("shared runtime Stage 1 pilot gates", () => {
     expect(() =>
       assertSharedRuntimePilotRpcAllowed("turn/steer", "adoption", gates()),
     ).toThrow("not allowed");
+    expect(() =>
+      assertSharedRuntimePilotRpcAllowed(
+        "thread/settings/update",
+        "adoption",
+        gates(),
+      ),
+    ).toThrow("turn-start pilot gate");
   });
 
-  it("opens only the two explicit canary mutations", () => {
+  it("opens only the explicit writer-gated canary mutations", () => {
     const env = {
       ...baseEnv,
       BRIDGE_CODEX_SHARED_PILOT_ALLOW_THREAD_START: "1",
@@ -79,13 +101,56 @@ describe("shared runtime Stage 1 pilot gates", () => {
       assertSharedRuntimePilotRpcAllowed("thread/name/set", null, gates(env)),
     ).not.toThrow();
     expect(() =>
+      assertSharedRuntimePilotRpcAllowed("thread/fork", "adoption", gates(env)),
+    ).not.toThrow();
+    expect(() =>
+      assertSharedRuntimePilotRpcAllowed("thread/fork", "observer", gates(env)),
+    ).toThrow("shared writer");
+    expect(() =>
       assertSharedRuntimePilotRpcAllowed("turn/start", "adoption", gates(env)),
     ).not.toThrow();
     expect(() =>
-      assertSharedRuntimePilotRpcAllowed("turn/interrupt", null, gates(env)),
+      assertSharedRuntimePilotRpcAllowed(
+        "thread/settings/update",
+        "adoption",
+        gates(env),
+      ),
     ).not.toThrow();
     expect(() =>
-      assertSharedRuntimePilotRpcAllowed("thread/delete", null, gates(env)),
+      assertSharedRuntimePilotRpcAllowed(
+        "thread/settings/update",
+        "observer",
+        gates(env),
+      ),
+    ).toThrow("formal shared writer");
+    expect(() =>
+      assertSharedRuntimePilotRpcAllowed("turn/interrupt", null, gates(env)),
+    ).not.toThrow();
+    for (const method of [
+      "thread/archive",
+      "thread/unarchive",
+      "thread/delete",
+    ]) {
+      expect(() =>
+        assertSharedRuntimePilotRpcAllowed(method, null, gates(env)),
+      ).not.toThrow();
+    }
+    for (const method of [
+      "thread/goal/set",
+      "thread/goal/clear",
+      "thread/compact/start",
+      "thread/rollback",
+      "review/start",
+    ]) {
+      expect(() =>
+        assertSharedRuntimePilotRpcAllowed(method, "adoption", gates(env)),
+      ).not.toThrow();
+      expect(() =>
+        assertSharedRuntimePilotRpcAllowed(method, "observer", gates(env)),
+      ).toThrow("formal shared writer");
+    }
+    expect(() =>
+      assertSharedRuntimePilotRpcAllowed("plugin/install", null, gates(env)),
     ).toThrow("not allowed");
   });
 
@@ -106,5 +171,47 @@ describe("shared runtime Stage 1 pilot gates", () => {
     );
     claimed.push({ owner: second, key: otherKey });
     expect(sharedRuntimePilotAttachmentCount()).toBe(2);
+  });
+
+  it("atomically yields a focused observer to formal resume and blocks observer reclaim", () => {
+    const observer = {};
+    const formalResume = {};
+    const competingWriter = {};
+    const frozen = gates();
+    const yielded = vi.fn();
+    const observerKey = claimSharedRuntimePilotAttachment(
+      observer,
+      "thread-focused",
+      frozen,
+      "observer",
+      yielded,
+    );
+    claimed.push({ owner: observer, key: observerKey });
+
+    const formalKey = claimSharedRuntimePilotAttachment(
+      formalResume,
+      "thread-focused",
+      frozen,
+      "adoption",
+    );
+    claimed.push({ owner: formalResume, key: formalKey });
+    expect(yielded).toHaveBeenCalledOnce();
+    expect(sharedRuntimePilotAttachmentCount()).toBe(1);
+    expect(() =>
+      claimSharedRuntimePilotAttachment(
+        observer,
+        "thread-focused",
+        frozen,
+        "observer",
+      ),
+    ).toThrow("formal shared-runtime attachment");
+    expect(() =>
+      claimSharedRuntimePilotAttachment(
+        competingWriter,
+        "thread-focused",
+        frozen,
+        "adoption",
+      ),
+    ).toThrow("formal shared-runtime attachment already exists");
   });
 });

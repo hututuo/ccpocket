@@ -1,6 +1,17 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { EventEmitter } from "node:events";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { CodexProcess, CodexThreadSummary } from "../codex-process.js";
+import type { SharedCodexContentObserverProcess } from "../codex-shared-runtime-content-observer.js";
+import type {
+  CodexActionBrokerRuntime,
+  CodexActionBrokerRuntimeRequest,
+  CodexActionBrokerRuntimeUpdate,
+} from "../codex-action-broker-runtime.js";
 import type { ServerMessage } from "../parser.js";
 import { buildConversationContentSnapshot } from "./conversation-content-sync.js";
 import {
@@ -17,7 +28,41 @@ import {
   type ConversationSyncServerMessage,
   type ConversationSyncStatus,
 } from "./slots/conversation-sync-v2-protocol.js";
-import type { LocalFeatureRuntime, LocalFeatureSession } from "./runtime.js";
+import type {
+  LocalFeatureRuntime,
+  LocalFeatureRuntimeConversationState,
+  LocalFeatureSharedRuntimeControlUpdate,
+  LocalFeatureSession,
+} from "./runtime.js";
+import { TerminalResultLedger } from "./terminal-result-ledger.js";
+
+class FakeSharedContentObserverProcess extends EventEmitter {
+  activeTurnId = "turn-shared-live";
+  isRunning = true;
+  readonly starts: Array<{
+    projectPath: string;
+    options: Record<string, unknown>;
+  }> = [];
+  readonly stop = vi.fn(() => {
+    this.isRunning = false;
+  });
+
+  start(projectPath: string, options: Record<string, unknown>): void {
+    this.starts.push({ projectPath, options });
+  }
+
+  waitUntilAttached(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  asObserver(): SharedCodexContentObserverProcess {
+    return this as unknown as SharedCodexContentObserverProcess;
+  }
+
+  message(message: ServerMessage): void {
+    this.emit("message", message);
+  }
+}
 
 describe("conversation_sync_v2 protocol", () => {
   it("keeps internal subagent source kinds out of the primary catalog", () => {
@@ -91,6 +136,12 @@ describe("conversation_sync_v2 protocol", () => {
           model: "gpt-5.6-sol",
           modelReasoningEffort: "ultra",
           serviceTier: "fast",
+          approvalPolicy: "on-request",
+          approvalsReviewer: "user",
+          sandboxMode: "workspace-write",
+          collaborationMode: "plan",
+          networkAccessEnabled: true,
+          webSearchMode: "live",
         },
       },
     );
@@ -101,6 +152,12 @@ describe("conversation_sync_v2 protocol", () => {
       model: "gpt-5.6-sol",
       modelReasoningEffort: "ultra",
       serviceTier: "fast",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandboxMode: "workspace-write",
+      collaborationMode: "plan",
+      networkAccessEnabled: true,
+      webSearchMode: "live",
     });
   });
 
@@ -236,7 +293,9 @@ describe("ConversationSyncV2FeatureHandler", () => {
       context(client, fixture.runtime),
     );
     await vi.waitFor(() =>
-      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+      expect(
+        events(fixture.sent, client, "sync_complete").length,
+      ).toBeGreaterThanOrEqual(1),
     );
     const firstComplete = events(fixture.sent, client, "sync_complete")[0]!;
     await fixture.handler.handle(
@@ -310,6 +369,40 @@ describe("ConversationSyncV2FeatureHandler", () => {
       timelinePages,
     );
     expect(fixture.catalogReader).toHaveBeenCalledTimes(1);
+    fixture.handler.close();
+  });
+
+  it("isolates one timeline reader failure without aborting the remaining sync batch", async () => {
+    const fixture = createFixture([seed(0), seed(1)], async (target) => {
+      if (target.providerSessionId === "session-0") {
+        throw new Error("one damaged legacy history");
+      }
+      return history(target.providerSessionId);
+    });
+    const client = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    expect(events(fixture.sent, client, "error")).toContainEqual(
+      expect.objectContaining({
+        errorCode: "timeline_failed",
+        target: {
+          provider: "claude",
+          providerSessionId: "session-0",
+        },
+      }),
+    );
+    expect(
+      events(fixture.sent, client, "timeline_page").some(
+        (event) => event.providerSessionId === "session-1",
+      ),
+    ).toBe(true);
     fixture.handler.close();
   });
 
@@ -1650,9 +1743,10 @@ describe("ConversationSyncV2FeatureHandler", () => {
     );
     const legacyClient = {};
     const capableClient = {};
+    const capableClients = new Set<object>([capableClient]);
     fixture.runtime.supports = (client: object, type: string) =>
       type === CONVERSATION_SYNC_V2_CAPABILITY ||
-      (client === capableClient && type === APP_SERVER_STATUS_CAPABILITY);
+      (capableClients.has(client) && type === APP_SERVER_STATUS_CAPABILITY);
 
     await fixture.handler.handle(
       subscribeMessage([], { statusState: "legacy-status-state" }),
@@ -1695,6 +1789,62 @@ describe("ConversationSyncV2FeatureHandler", () => {
       runtimeAttachment: "notLoaded",
       confidence: "unknown",
     });
+
+    const legacyState = events(fixture.sent, legacyClient, "sync_complete")[0]!
+      .nextState.statusState;
+    const capableState = events(
+      fixture.sent,
+      capableClient,
+      "sync_complete",
+    )[0]!.nextState.statusState;
+    expect(legacyState).toMatch(/^legacy-status-v1:/);
+    expect(capableState).toMatch(/^app-server-status-v1:/);
+    const oldRawState = capableState.slice("app-server-status-v1:".length);
+
+    const capableWithRaw = {};
+    const capableWithLegacy = {};
+    capableClients.add(capableWithRaw);
+    capableClients.add(capableWithLegacy);
+    const legacyWithCapable = {};
+    for (const [client, statusState] of [
+      [capableWithRaw, oldRawState],
+      [capableWithLegacy, legacyState],
+      [legacyWithCapable, capableState],
+    ] as const) {
+      await fixture.handler.handle(
+        subscribeMessage([], { statusState }),
+        context(client, fixture.runtime),
+      );
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+      );
+      expect(events(fixture.sent, client, "sync_reset")).toContainEqual(
+        expect.objectContaining({ scope: "status" }),
+      );
+      expect(
+        events(fixture.sent, client, "status_changes").flatMap(
+          (event) => event.changes,
+        ),
+      ).toHaveLength(1);
+    }
+
+    const capableMatching = {};
+    const legacyMatching = {};
+    capableClients.add(capableMatching);
+    for (const [client, statusState] of [
+      [capableMatching, capableState],
+      [legacyMatching, legacyState],
+    ] as const) {
+      await fixture.handler.handle(
+        subscribeMessage([], { statusState }),
+        context(client, fixture.runtime),
+      );
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+      );
+      expect(events(fixture.sent, client, "sync_reset")).toEqual([]);
+      expect(events(fixture.sent, client, "status_changes")).toEqual([]);
+    }
     fixture.handler.close();
   });
 
@@ -1742,6 +1892,52 @@ describe("ConversationSyncV2FeatureHandler", () => {
       ).toBeLessThanOrEqual(64 * 1024);
     }
     fixture.handler.close();
+  });
+
+  it("pauses a ten-thousand-entry catalog at the sync backpressure budget until ACK", async () => {
+    const seeds = Array.from({ length: 10_000 }, (_, index) => {
+      const value = seed(index);
+      value.entry.summary = `${index}:${"x".repeat(512)}`;
+      return value;
+    });
+    const fixture = createFixture(
+      seeds,
+      vi.fn(async () => []),
+    );
+    const client = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    const internal = fixture.handler as unknown as {
+      subscriptions: Map<
+        object,
+        {
+          outstandingBytes: number;
+          queuedBytes: number;
+          capacityWaiters: Set<() => void>;
+        }
+      >;
+    };
+    await vi.waitFor(
+      () => {
+        const state = internal.subscriptions.get(client)!;
+        expect(state.outstandingBytes + state.queuedBytes).toBeGreaterThan(
+          1024 * 1024,
+        );
+        expect(state.capacityWaiters.size).toBeGreaterThan(0);
+      },
+      { timeout: 5_000 },
+    );
+    const state = internal.subscriptions.get(client)!;
+    expect(state.outstandingBytes).toBeLessThanOrEqual(1024 * 1024);
+    expect(state.outstandingBytes + state.queuedBytes).toBeLessThanOrEqual(
+      2 * 1024 * 1024,
+    );
+    expect(events(fixture.sent, client, "sync_failed")).toEqual([]);
+
+    await fixture.handler.close();
   });
 
   it("retains an outbound frame until runtime.send succeeds", async () => {
@@ -1827,6 +2023,16 @@ describe("ConversationSyncV2FeatureHandler", () => {
     oversized.entry.name = "n".repeat(800);
     oversized.entry.summary = "s".repeat(8_000);
     oversized.entry.firstPrompt = `${"p".repeat(4_094)}😀${"x".repeat(24_000)}`;
+    oversized.entry.model = "gpt-5.6-sol";
+    oversized.entry.modelReasoningEffort = "ultra";
+    oversized.entry.serviceTier = "fast";
+    oversized.entry.approvalPolicy = "never";
+    oversized.entry.approvalsReviewer = "user";
+    oversized.entry.sandboxMode = "danger-full-access";
+    oversized.entry.collaborationMode = "plan";
+    oversized.entry.networkAccessEnabled = true;
+    oversized.entry.webSearchMode = "live";
+    oversized.entry.codexSettingsSnapshotComplete = true;
     const fixture = createFixture(
       [oversized],
       vi.fn(async (target) => history(target.providerSessionId)),
@@ -1848,6 +2054,18 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(entry.firstPrompt).toHaveLength(4_095);
     expect(entry.firstPrompt).toMatch(/…$/);
     expect(entry.firstPrompt).not.toContain("\ud83d");
+    expect(entry).toMatchObject({
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
+      serviceTier: "fast",
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxMode: "danger-full-access",
+      collaborationMode: "plan",
+      networkAccessEnabled: true,
+      webSearchMode: "live",
+      codexSettingsSnapshotComplete: true,
+    });
     for (const message of fixture.sent.get(client) ?? []) {
       expect(
         Buffer.byteLength(JSON.stringify(message), "utf8"),
@@ -3358,7 +3576,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
-  it("projects a starting Bridge runtime as working instead of unavailable", async () => {
+  it("keeps the private fallback's legacy starting runtime as Working", async () => {
     const codex = codexSeed(0, "thread-0");
     const fixture = createFixture([codex], async () => history("thread-0"), {
       initialExternalCodexMonitors: 0,
@@ -3395,6 +3613,57 @@ describe("ConversationSyncV2FeatureHandler", () => {
     );
     fixture.handler.close();
   });
+
+  it.each(["reconciling", "blocked", "unavailable"] as const)(
+    "does not project an explicit %s control state as Working",
+    async (controlState) => {
+      const codex = codexSeed(0, `thread-${controlState}`);
+      const fixture = createFixture(
+        [codex],
+        async () => history(`thread-${controlState}`),
+        {
+          daemonMode: true,
+          initialExternalCodexMonitors: 0,
+        },
+      );
+      fixture.runtime.listRuntimeConversationStates = () => [
+        {
+          bridgeSessionId: `runtime-${controlState}`,
+          provider: "codex",
+          providerSessionId: `thread-${controlState}`,
+          projectPath: "/project/0",
+          processStatus: "starting",
+          executionHost: "unknown",
+          controlState,
+          authorityGeneration: `authority-${controlState}`,
+          observedAt: "2026-07-30T00:00:02.000Z",
+        },
+      ];
+      const client = {};
+
+      await fixture.handler.handle(
+        subscribeMessage(),
+        context(client, fixture.runtime),
+      );
+
+      await vi.waitFor(() =>
+        expect(
+          events(fixture.sent, client, "status_changes")
+            .flatMap((event) => event.changes)
+            .find(
+              (status) => status.providerSessionId === `thread-${controlState}`,
+            ),
+        ).toMatchObject({
+          activity: "unknown",
+          source: "bridgeRuntime",
+          executionHost: "unknown",
+          controlState,
+          authorityGeneration: `authority-${controlState}`,
+        }),
+      );
+      fixture.handler.close();
+    },
+  );
 
   it("discovers a running thread outside the hot set and rewarms it without rescanning after reconnect", async () => {
     const seeds = Array.from({ length: 12 }, (_, index) =>
@@ -3840,6 +4109,357 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("uses the watchdog app-server snapshot before an explicit daemon runtime overlay", async () => {
+    const providerStatus: ConversationSyncStatus = {
+      provider: "codex",
+      providerSessionId: "thread-watchdog",
+      activity: "working",
+      attention: "question",
+      result: "none",
+      runtimeAttachment: "loaded",
+      source: "appServer",
+      confidence: "authoritative",
+      observedAt: "2026-07-30T03:00:02.000Z",
+      executionHost: "desktopAppServer",
+      activeTurnId: "turn-desktop",
+      controlState: "steerable",
+      authorityGeneration: "authority-desktop",
+    };
+    const statusReader = vi.fn(
+      async () => new Map([["codex\0thread-watchdog", providerStatus]]),
+    );
+    let runtimeStates: LocalFeatureRuntimeConversationState[] = [
+      {
+        bridgeSessionId: "adopted-without-authority",
+        provider: "codex",
+        providerSessionId: "thread-watchdog",
+        projectPath: "/project/0",
+        processStatus: "running",
+        observedAt: "2026-07-30T03:00:03.000Z",
+      },
+    ];
+    const fixture = createFixture(
+      [codexSeed(0, "thread-watchdog")],
+      async () => history("thread-watchdog"),
+      {
+        daemonMode: true,
+        statusReader,
+        statusWatchdogMs: 10,
+      },
+    );
+    fixture.runtime.listRuntimeConversationStates = () => runtimeStates;
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    const internal = fixture.handler as unknown as {
+      catalog: Map<string, { status: ConversationSyncStatus }>;
+      refreshStatuses(): Promise<void>;
+    };
+
+    await vi.waitFor(() => expect(statusReader).toHaveBeenCalled());
+    await vi.waitFor(() =>
+      expect(
+        internal.catalog.get("codex\0thread-watchdog")?.status,
+      ).toMatchObject({
+        source: "appServer",
+        executionHost: "desktopAppServer",
+        activeTurnId: "turn-desktop",
+        controlState: "steerable",
+        authorityGeneration: "authority-desktop",
+      }),
+    );
+
+    runtimeStates = [
+      {
+        bridgeSessionId: "bridge-owned",
+        provider: "codex",
+        providerSessionId: "thread-watchdog",
+        projectPath: "/project/0",
+        processStatus: "running",
+        executionHost: "bridge",
+        activeTurnId: "turn-bridge",
+        controlState: "writable",
+        authorityGeneration: "authority-bridge",
+        observedAt: "2026-07-30T03:00:04.000Z",
+      },
+    ];
+    await internal.refreshStatuses();
+    expect(
+      internal.catalog.get("codex\0thread-watchdog")?.status,
+    ).toMatchObject({
+      source: "bridgeRuntime",
+      executionHost: "bridge",
+      activeTurnId: "turn-bridge",
+      controlState: "writable",
+      authorityGeneration: "authority-bridge",
+    });
+    fixture.handler.close();
+  });
+
+  it("marks a failed app-server watchdog read unavailable without inventing ownership", async () => {
+    const initial = codexSeed(0, "thread-status-failure");
+    initial.status = {
+      ...initial.status,
+      activity: "working",
+      runtimeAttachment: "loaded",
+      confidence: "authoritative",
+      executionHost: "desktopAppServer",
+      activeTurnId: "turn-before-failure",
+      controlState: "steerable",
+      authorityGeneration: "authority-before-failure",
+    };
+    const failure = new Error("app-server status unavailable");
+    const fixture = createFixture(
+      [initial],
+      async () => history("thread-status-failure"),
+      {
+        daemonMode: true,
+        statusReader: vi.fn(async () => {
+          throw failure;
+        }),
+      },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const internal = fixture.handler as unknown as {
+      catalog: Map<string, { status: ConversationSyncStatus }>;
+      refreshStatuses(): Promise<void>;
+    };
+
+    await expect(internal.refreshStatuses()).rejects.toBe(failure);
+    expect(
+      internal.catalog.get("codex\0thread-status-failure")?.status,
+    ).toMatchObject({
+      activity: "working",
+      attention: "none",
+      source: "appServer",
+      confidence: "unknown",
+      executionHost: "desktopAppServer",
+      controlState: "unavailable",
+    });
+    expect(
+      internal.catalog.get("codex\0thread-status-failure")?.status.activeTurnId,
+    ).toBe("turn-before-failure");
+    expect(
+      internal.catalog.get("codex\0thread-status-failure")?.status
+        .authorityGeneration,
+    ).toBeUndefined();
+    fixture.handler.close();
+  });
+
+  it("rejects a late status snapshot from an older authority generation", async () => {
+    let resolveStatus:
+      ((value: Map<string, ConversationSyncStatus>) => void) | undefined;
+    const pendingStatus = new Promise<Map<string, ConversationSyncStatus>>(
+      (resolve) => {
+        resolveStatus = resolve;
+      },
+    );
+    const statusReader = vi.fn(() => pendingStatus);
+    const fixture = createFixture(
+      [codexSeed(0, "thread-late-status")],
+      async () => history("thread-late-status"),
+      { daemonMode: true, statusReader },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "sync_complete").length,
+      ).toBeGreaterThanOrEqual(1),
+    );
+    const internal = fixture.handler as unknown as {
+      catalog: Map<string, { status: ConversationSyncStatus }>;
+      refreshStatuses(): Promise<void>;
+    };
+    const refresh = internal.refreshStatuses();
+    await vi.waitFor(() => expect(statusReader).toHaveBeenCalledTimes(1));
+    internal.catalog.get("codex\0thread-late-status")!.status = {
+      provider: "codex",
+      providerSessionId: "thread-late-status",
+      activity: "working",
+      attention: "none",
+      result: "none",
+      runtimeAttachment: "loaded",
+      source: "appServer",
+      confidence: "authoritative",
+      observedAt: "2026-07-30T04:00:02.000Z",
+      executionHost: "desktopAppServer",
+      activeTurnId: "turn-new",
+      controlState: "steerable",
+      authorityGeneration: "authority-new",
+    };
+    resolveStatus!(
+      new Map([
+        [
+          "codex\0thread-late-status",
+          {
+            provider: "codex",
+            providerSessionId: "thread-late-status",
+            activity: "idle",
+            attention: "none",
+            result: "none",
+            runtimeAttachment: "loaded",
+            source: "appServer",
+            confidence: "authoritative",
+            observedAt: "2026-07-30T04:00:01.000Z",
+            executionHost: "desktopAppServer",
+            controlState: "steerable",
+            authorityGeneration: "authority-old",
+          },
+        ],
+      ]),
+    );
+    await refresh;
+    expect(
+      internal.catalog.get("codex\0thread-late-status")?.status,
+    ).toMatchObject({
+      activity: "working",
+      activeTurnId: "turn-new",
+      authorityGeneration: "authority-new",
+    });
+    fixture.handler.close();
+  });
+
+  it("never creates or scans legacy rollout monitors in daemon mode", async () => {
+    const inspectCodexThread = vi.fn(async () => ({
+      state: "running" as const,
+      observedAt: "2026-07-30T05:00:00.000Z",
+    }));
+    const observeCodexThread = vi.fn(async () => ({
+      snapshot: { state: "running" as const },
+      refreshNow: async () => {},
+      close: () => {},
+    }));
+    const fixture = createFixture(
+      [codexSeed(0, "thread-daemon-no-jsonl")],
+      async () => history("thread-daemon-no-jsonl"),
+      {
+        daemonMode: true,
+        initialExternalCodexMonitors: 1,
+        inspectCodexThread,
+        observeCodexThread,
+      },
+    );
+    const client = {};
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "focus-daemon-no-jsonl",
+        subscriptionId: subscription.requestId,
+        focused: {
+          provider: "codex",
+          providerSessionId: "thread-daemon-no-jsonl",
+        },
+      },
+      context(client, fixture.runtime),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(inspectCodexThread).not.toHaveBeenCalled();
+    expect(observeCodexThread).not.toHaveBeenCalled();
+    const internal = fixture.handler as unknown as {
+      externalCodexMonitors: Map<string, unknown>;
+      externalCodexMonitorFlights: Map<string, unknown>;
+    };
+    expect(internal.externalCodexMonitors.size).toBe(0);
+    expect(internal.externalCodexMonitorFlights.size).toBe(0);
+    fixture.handler.close();
+  });
+
+  it("keeps a live item in place when a later delta updates the same key", () => {
+    const fixture = createFixture(
+      [codexSeed(0, "thread-live-order")],
+      async () => history("thread-live-order"),
+    );
+    const internal = fixture.handler as unknown as {
+      rememberExternalCodexMessage(
+        target: { provider: "codex"; providerSessionId: string },
+        event: {
+          kind: "message";
+          itemKey: string;
+          timestamp: string;
+          message: ServerMessage;
+        },
+        observedAt: string,
+      ): void;
+      externalCodexLiveMessages: Map<
+        string,
+        Map<string, { message: ServerMessage }>
+      >;
+    };
+    const target = {
+      provider: "codex" as const,
+      providerSessionId: "thread-live-order",
+    };
+    const liveMessage = (id: string, text: string): ServerMessage => ({
+      type: "assistant",
+      messageUuid: id,
+      message: {
+        id,
+        role: "assistant",
+        model: "codex",
+        content: [{ type: "text", text }],
+      },
+    });
+    internal.rememberExternalCodexMessage(
+      target,
+      {
+        kind: "message",
+        itemKey: "item-a",
+        timestamp: "2026-07-30T06:00:00.000Z",
+        message: liveMessage("a", "a-1"),
+      },
+      "2026-07-30T06:00:00.000Z",
+    );
+    internal.rememberExternalCodexMessage(
+      target,
+      {
+        kind: "message",
+        itemKey: "item-b",
+        timestamp: "2026-07-30T06:00:01.000Z",
+        message: liveMessage("b", "b-1"),
+      },
+      "2026-07-30T06:00:01.000Z",
+    );
+    internal.rememberExternalCodexMessage(
+      target,
+      {
+        kind: "message",
+        itemKey: "item-a",
+        timestamp: "2026-07-30T06:00:02.000Z",
+        message: liveMessage("a", "a-2"),
+      },
+      "2026-07-30T06:00:02.000Z",
+    );
+
+    const messages = internal.externalCodexLiveMessages.get(
+      "codex\0thread-live-order",
+    );
+    expect([...messages!.keys()]).toEqual(["item-a", "item-b"]);
+    expect(JSON.stringify(messages!.get("item-a")?.message)).toContain("a-2");
+    fixture.handler.close();
+  });
+
   it("reuses one standalone app-server for concurrent hot-window reads", async () => {
     const sent: ConversationSyncServerMessage[] = [];
     const listThreadTurns = vi.fn(async () => ({
@@ -4223,7 +4843,2186 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(fixture.catalogReader).toHaveBeenCalledTimes(1);
     fixture.handler.close();
   });
+
+  it("projects Desktop events and lets cold reconciliation repair a missed terminal event", async () => {
+    const backgroundActivityChanged = vi.fn();
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 1,
+    });
+    let providerStatus: ConversationSyncStatus = {
+      ...codexSeed(0, "thread-control").status,
+      activity: "idle",
+      runtimeAttachment: "loaded",
+      confidence: "authoritative",
+      observedAt: "2026-08-01T00:00:00.000Z",
+    };
+    const statusReader = vi.fn(
+      async () => new Map([["codex\0thread-control", providerStatus]]),
+    );
+    const fixture = createFixture(
+      [codexSeed(0, "thread-control")],
+      async () => history("thread-control"),
+      {
+        daemonMode: true,
+        statusReader,
+        sharedControlReconcileMs: 60_000,
+      },
+      {
+        subscribeSharedRuntimeControl: control.subscribe,
+        notifyBackgroundActivityChanged: backgroundActivityChanged,
+      },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const internal = fixture.handler as unknown as {
+      catalog: Map<string, { status: ConversationSyncStatus }>;
+      runColdReconcile(): Promise<void>;
+    };
+    const current = () => internal.catalog.get("codex\0thread-control")!.status;
+
+    control.emit({
+      kind: "event",
+      event: {
+        sequence: 1,
+        observedAt: "2026-08-01T00:00:01.000Z",
+        connectionGeneration: 1,
+        method: "thread/status/changed",
+        threadId: "thread-control",
+        threadStatus: {
+          type: "active",
+          activeFlags: ["waitingOnApproval"],
+        },
+      },
+    });
+    expect(current()).toMatchObject({
+      activity: "working",
+      attention: "approval",
+      executionHost: "desktopAppServer",
+      controlState: "readOnly",
+      authorityGeneration: "daemon:1",
+    });
+    expect([...fixture.handler.backgroundActiveConversationKeys()]).toEqual([
+      "codex\0thread-control",
+    ]);
+    expect(backgroundActivityChanged).toHaveBeenCalledTimes(1);
+
+    control.emit({
+      kind: "event",
+      event: {
+        sequence: 2,
+        observedAt: "2026-08-01T00:00:02.000Z",
+        connectionGeneration: 1,
+        method: "thread/status/changed",
+        threadId: "thread-control",
+        threadStatus: {
+          type: "active",
+          activeFlags: ["waitingOnUserInput"],
+        },
+      },
+    });
+    expect(current().attention).toBe("question");
+    expect(backgroundActivityChanged).toHaveBeenCalledTimes(1);
+
+    control.emit({
+      kind: "event",
+      event: {
+        sequence: 3,
+        observedAt: "2026-08-01T00:00:03.000Z",
+        connectionGeneration: 1,
+        method: "turn/started",
+        threadId: "thread-control",
+        turnId: "turn-desktop",
+        turnStatus: "inProgress",
+      },
+    });
+    expect(current()).toMatchObject({
+      activity: "working",
+      activeTurnId: "turn-desktop",
+      executionHost: "desktopAppServer",
+      controlState: "readOnly",
+    });
+
+    control.emit({
+      kind: "event",
+      event: {
+        sequence: 4,
+        observedAt: "2026-08-01T00:00:04.000Z",
+        connectionGeneration: 1,
+        method: "turn/completed",
+        threadId: "thread-control",
+        turnId: "turn-desktop",
+        turnStatus: "completed",
+      },
+    });
+    expect(current()).toMatchObject({
+      activity: "idle",
+      result: "completed",
+      controlState: "readOnly",
+    });
+    expect(current().activeTurnId).toBeUndefined();
+    expect([...fixture.handler.backgroundActiveConversationKeys()]).toEqual([]);
+    expect(backgroundActivityChanged).toHaveBeenCalledTimes(2);
+
+    control.emit({
+      kind: "event",
+      event: {
+        sequence: 5,
+        observedAt: "2026-08-01T00:00:05.000Z",
+        connectionGeneration: 1,
+        method: "thread/status/changed",
+        threadId: "thread-control",
+        threadStatus: { type: "active", activeFlags: [] },
+      },
+    });
+    expect(current().activity).toBe("working");
+    expect(backgroundActivityChanged).toHaveBeenCalledTimes(3);
+
+    // Simulate a lost turn/completed notification. The long-cadence cold
+    // provider snapshot is the bounded repair path and must replace, rather
+    // than be hidden by, the old live control overlay.
+    providerStatus = {
+      ...providerStatus,
+      activity: "idle",
+      attention: "none",
+      observedAt: "2026-08-01T00:00:06.000Z",
+    };
+    await internal.runColdReconcile();
+    expect(current()).toMatchObject({
+      activity: "idle",
+      attention: "none",
+      executionHost: "unknown",
+      controlState: "readOnly",
+      authorityGeneration: "daemon:1",
+    });
+    expect(current().activeTurnId).toBeUndefined();
+    expect([...fixture.handler.backgroundActiveConversationKeys()]).toEqual([]);
+    expect(backgroundActivityChanged).toHaveBeenCalledTimes(4);
+    fixture.handler.close();
+  });
+
+  it.each<{
+    message: Extract<ServerMessage, { type: "result" }>;
+    expected: "completed" | "failed" | null;
+  }>([
+    { message: { type: "result", subtype: "success" }, expected: "completed" },
+    {
+      message: { type: "result", subtype: "completed" },
+      expected: "completed",
+    },
+    { message: { type: "result", subtype: "error" }, expected: "failed" },
+    { message: { type: "result", subtype: "failed" }, expected: "failed" },
+    {
+      message: {
+        type: "result",
+        subtype: "stopped",
+        stopReason: "provider error",
+      },
+      expected: "failed",
+    },
+    {
+      message: { type: "result", subtype: "future", error: "explicit error" },
+      expected: "failed",
+    },
+    { message: { type: "result", subtype: "stopped" }, expected: null },
+    { message: { type: "result", subtype: "interrupted" }, expected: null },
+    { message: { type: "result", subtype: "cancelled" }, expected: null },
+    { message: { type: "result", subtype: "future" }, expected: null },
+  ])(
+    "classifies session result subtype $message.subtype as $expected",
+    ({ message, expected }) => {
+      const fixture = createFixture([seed(0)], async () =>
+        history("session-0"),
+      );
+      fixture.runtime.getProviderSessionId = () => "session-0";
+      const session: LocalFeatureSession = {
+        id: "runtime-terminal-classifier",
+        provider: "claude",
+        process: {},
+        projectPath: "/project/terminal",
+      };
+      const internal = fixture.handler as unknown as {
+        resultLedger: Map<string, { result: "completed" | "failed" }>;
+      };
+
+      fixture.handler.sessionMessage(session, message);
+
+      expect(
+        internal.resultLedger.get("claude\0session-0")?.result ?? null,
+      ).toBe(expected);
+      fixture.handler.close();
+    },
+  );
+
+  it("uses the same terminal whitelist for external rollout messages", async () => {
+    const fixture = createFixture(
+      [codexSeed(0, "thread-external-terminal")],
+      async () => history("thread-external-terminal"),
+      { daemonMode: false },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const internal = fixture.handler as unknown as {
+      externalCodexMonitorGenerations: Map<string, number>;
+      resultLedger: Map<string, { result: "completed" | "failed" }>;
+      onExternalCodexEvent(
+        threadId: string,
+        generation: number,
+        event: {
+          kind: "message";
+          itemKey: string;
+          timestamp: string;
+          message: ServerMessage;
+        },
+      ): void;
+    };
+    internal.externalCodexMonitorGenerations.set("thread-external-terminal", 1);
+    const emit = (
+      itemKey: string,
+      timestamp: string,
+      message: Extract<ServerMessage, { type: "result" }>,
+    ) =>
+      internal.onExternalCodexEvent("thread-external-terminal", 1, {
+        kind: "message",
+        itemKey,
+        timestamp,
+        message,
+      });
+
+    emit("stopped", "2026-08-01T00:05:00.000Z", {
+      type: "result",
+      subtype: "stopped",
+    });
+    emit("future", "2026-08-01T00:05:01.000Z", {
+      type: "result",
+      subtype: "future",
+    });
+    expect(internal.resultLedger.has("codex\0thread-external-terminal")).toBe(
+      false,
+    );
+
+    emit("success", "2026-08-01T00:05:02.000Z", {
+      type: "result",
+      subtype: "success",
+    });
+    expect(
+      internal.resultLedger.get("codex\0thread-external-terminal")?.result,
+    ).toBe("completed");
+
+    emit("error", "2026-08-01T00:05:03.000Z", {
+      type: "result",
+      subtype: "error",
+    });
+    expect(
+      internal.resultLedger.get("codex\0thread-external-terminal")?.result,
+    ).toBe("failed");
+    fixture.handler.close();
+  });
+
+  it("keeps interrupted shared-control turns non-terminal", async () => {
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 1,
+    });
+    const fixture = createFixture(
+      [codexSeed(0, "thread-control-terminal")],
+      async () => history("thread-control-terminal"),
+      { daemonMode: true, sharedControlReconcileMs: 60_000 },
+      { subscribeSharedRuntimeControl: control.subscribe },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const internal = fixture.handler as unknown as {
+      resultLedger: Map<string, { result: "completed" | "failed" }>;
+    };
+    const event = (
+      sequence: number,
+      method: "turn/started" | "turn/completed",
+      turnStatus: "inProgress" | "completed" | "interrupted" | "failed",
+    ): LocalFeatureSharedRuntimeControlUpdate => ({
+      kind: "event",
+      event: {
+        sequence,
+        observedAt: `2026-08-01T00:06:0${sequence}.000Z`,
+        connectionGeneration: 1,
+        method,
+        threadId: "thread-control-terminal",
+        turnId: `turn-${sequence}`,
+        turnStatus,
+      },
+    });
+
+    control.emit(event(1, "turn/started", "inProgress"));
+    control.emit(event(2, "turn/completed", "interrupted"));
+    expect(internal.resultLedger.has("codex\0thread-control-terminal")).toBe(
+      false,
+    );
+
+    control.emit(event(3, "turn/started", "inProgress"));
+    control.emit(event(4, "turn/completed", "completed"));
+    expect(
+      internal.resultLedger.get("codex\0thread-control-terminal")?.result,
+    ).toBe("completed");
+
+    control.emit(event(5, "turn/started", "inProgress"));
+    control.emit(event(6, "turn/completed", "failed"));
+    expect(
+      internal.resultLedger.get("codex\0thread-control-terminal")?.result,
+    ).toBe("failed");
+    fixture.handler.close();
+  });
+
+  it("restores an offline Desktop completion after the Bridge handler restarts", async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "ccpocket-conversation-terminal-result-"),
+    );
+    const file = join(directory, "terminal-results.json");
+    try {
+      const firstLedger = new TerminalResultLedger(file);
+      await firstLedger.init();
+      const control = createSharedControlSource({
+        kind: "ready",
+        connectionGeneration: 1,
+      });
+      const offline = createFixture(
+        [codexSeed(0, "thread-offline-completion")],
+        async () => history("thread-offline-completion"),
+        {
+          daemonMode: true,
+          sharedControlReconcileMs: 60_000,
+        },
+        {
+          subscribeSharedRuntimeControl: control.subscribe,
+          terminalResultLedger: firstLedger,
+        },
+      );
+
+      control.emit({
+        kind: "event",
+        event: {
+          sequence: 1,
+          observedAt: "2026-08-01T00:10:00.000Z",
+          connectionGeneration: 1,
+          method: "turn/started",
+          threadId: "thread-offline-completion",
+          turnId: "turn-offline",
+          turnStatus: "inProgress",
+        },
+      });
+      control.emit({
+        kind: "event",
+        event: {
+          sequence: 2,
+          observedAt: "2026-08-01T00:10:01.000Z",
+          connectionGeneration: 1,
+          method: "turn/completed",
+          threadId: "thread-offline-completion",
+          turnId: "turn-offline",
+          turnStatus: "completed",
+        },
+      });
+      await offline.handler.close();
+
+      const restoredLedger = new TerminalResultLedger(file);
+      await restoredLedger.init();
+      const restored = createFixture(
+        [codexSeed(0, "thread-offline-completion")],
+        async () => history("thread-offline-completion"),
+        { daemonMode: false },
+        { terminalResultLedger: restoredLedger },
+      );
+      const client = {};
+      await restored.handler.handle(
+        subscribeMessage(),
+        context(client, restored.runtime),
+      );
+      await vi.waitFor(() =>
+        expect(events(restored.sent, client, "sync_complete")).toHaveLength(1),
+      );
+      const terminal = events(restored.sent, client, "status_changes")
+        .flatMap((event) => event.changes)
+        .filter(
+          (status) => status.providerSessionId === "thread-offline-completion",
+        )
+        .at(-1);
+      expect(terminal).toMatchObject({
+        result: "completed",
+        observedAt: "2026-08-01T00:10:01.000Z",
+      });
+      await restored.handler.close();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not restore an older terminal turn over a recovered active turn", async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "ccpocket-conversation-active-after-terminal-"),
+    );
+    const file = join(directory, "terminal-results.json");
+    try {
+      const ledger = new TerminalResultLedger(file);
+      await ledger.init();
+      await ledger.record({
+        ...terminalScopeForFixture(),
+        provider: "codex",
+        threadId: "thread-active-after-terminal",
+        turnId: "turn-completed-before-restart",
+        result: "completed",
+        observedAt: "2026-08-01T00:11:00.000Z",
+      });
+
+      const control = createSharedControlSource({
+        kind: "ready",
+        connectionGeneration: 1,
+      });
+      const seed = codexSeed(0, "thread-active-after-terminal");
+      const workingStatus: ConversationSyncStatus = {
+        ...seed.status,
+        activity: "working",
+        result: "none",
+        runtimeAttachment: "loaded",
+        source: "appServer",
+        confidence: "authoritative",
+        observedAt: "2026-08-01T00:11:01.000Z",
+        activeTurnId: "turn-active-after-restart",
+      };
+      const recoveryReader = vi.fn(async () => ({
+        turnId: "turn-active-after-restart",
+        status: "inProgress" as const,
+        observedAt: "2026-08-01T00:11:02.000Z",
+      }));
+      const fixture = createFixture(
+        [seed],
+        async () => history("thread-active-after-terminal"),
+        {
+          daemonMode: true,
+          statusReader: async () =>
+            new Map([["codex\0thread-active-after-terminal", workingStatus]]),
+          sharedControlRecoveryReader: recoveryReader,
+          sharedControlReconcileMs: 1,
+        },
+        {
+          subscribeSharedRuntimeControl: control.subscribe,
+          terminalResultLedger: ledger,
+        },
+      );
+      const client = {};
+      await fixture.handler.handle(
+        subscribeMessage(),
+        context(client, fixture.runtime),
+      );
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, client, "sync_complete")).not.toHaveLength(
+          0,
+        ),
+      );
+
+      control.emit({ kind: "not_ready", connectionGeneration: 1 });
+      control.emit({ kind: "ready", connectionGeneration: 2 });
+
+      const internal = fixture.handler as unknown as {
+        catalog: Map<string, { status: ConversationSyncStatus }>;
+      };
+      await vi.waitFor(() => expect(recoveryReader).toHaveBeenCalledOnce());
+      await vi.waitFor(() =>
+        expect(
+          internal.catalog.get("codex\0thread-active-after-terminal")?.status,
+        ).toMatchObject({
+          activity: "working",
+          result: "none",
+          activeTurnId: "turn-active-after-restart",
+          authorityGeneration: "daemon:2",
+        }),
+      );
+      await fixture.handler.close();
+
+      const reloaded = new TerminalResultLedger(file);
+      await reloaded.init();
+      expect(reloaded.list(terminalScopeForFixture())).toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps completion through late output and clears it on a proven new turn", async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "ccpocket-conversation-late-terminal-output-"),
+    );
+    const file = join(directory, "terminal-results.json");
+    const session: LocalFeatureSession = {
+      id: "runtime-terminal",
+      provider: "claude",
+      process: {},
+      projectPath: "/project/terminal",
+    };
+    try {
+      const ledger = new TerminalResultLedger(file);
+      await ledger.init();
+      const completed = createFixture(
+        [seed(0)],
+        async () => history("session-0"),
+        {},
+        { terminalResultLedger: ledger },
+      );
+      completed.runtime.getProviderSessionId = () => "session-0";
+      completed.handler.sessionMessage(session, {
+        type: "result",
+        subtype: "success",
+        result: "done",
+      });
+      completed.handler.sessionMessage(session, {
+        type: "tool_result",
+        toolUseId: "late-tool",
+        toolName: "Read",
+        content: "late tool output",
+      });
+      completed.handler.sessionMessage(session, {
+        type: "assistant",
+        message: {
+          id: "late-assistant",
+          role: "assistant",
+          model: "test",
+          content: [{ type: "text", text: "late assistant output" }],
+        },
+      });
+      await completed.handler.close();
+
+      const afterLateOutput = new TerminalResultLedger(file);
+      await afterLateOutput.init();
+      expect(afterLateOutput.list(terminalScopeForFixture())).toMatchObject([
+        {
+          provider: "claude",
+          threadId: "session-0",
+          result: "completed",
+        },
+      ]);
+
+      const nextTurn = createFixture(
+        [seed(0)],
+        async () => history("session-0"),
+        {},
+        { terminalResultLedger: afterLateOutput },
+      );
+      nextTurn.runtime.getProviderSessionId = () => "session-0";
+      nextTurn.handler.sessionMessage(session, {
+        type: "user_input",
+        text: "start the next turn",
+      });
+      await nextTurn.handler.close();
+
+      const cleared = new TerminalResultLedger(file);
+      await cleared.init();
+      expect(cleared.list(terminalScopeForFixture())).toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("streams shared-daemon Desktop content through one bounded observer per thread", async () => {
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 3,
+    });
+    const codex = codexSeed(0, "thread-shared-content");
+    codex.status = {
+      ...codex.status,
+      activity: "working",
+      attention: "none",
+      runtimeAttachment: "loaded",
+      confidence: "authoritative",
+      observedAt: "2026-08-01T05:00:00.000Z",
+    };
+    const observers: FakeSharedContentObserverProcess[] = [];
+    const legacyRolloutObserver = vi.fn(async () => {
+      throw new Error("daemon mode must not open a rollout monitor");
+    });
+    const historyReader = vi.fn(async () => history("initial-shared-content"));
+    let latestMessages: ServerMessage[] = [
+      {
+        type: "user_input",
+        text: "desktop prompt",
+        userMessageUuid: "desktop-user",
+      },
+      {
+        type: "assistant",
+        historyTurnId: "turn-shared-live",
+        messageUuid: "desktop-partial",
+        message: {
+          id: "desktop-partial",
+          role: "assistant",
+          model: "test",
+          content: [{ type: "text", text: "partial" }],
+        },
+      },
+    ];
+    const latestTurnHistoryReader = vi.fn(async () => ({
+      messages: latestMessages,
+      nextTurnCursor: "older-cursor",
+    }));
+    const registerInlineImages = vi.fn(() => [
+      {
+        id: "image-safe-ref",
+        url: "/images/image-safe-ref",
+        mimeType: "image/png",
+      },
+    ]);
+    const publishSharedContextUsage = vi.fn();
+    const fixture = createFixture(
+      [codex],
+      historyReader,
+      {
+        daemonMode: true,
+        latestTurnHistoryReader,
+        observeCodexThread: legacyRolloutObserver,
+        createSharedContentObserverProcess: () => {
+          const process = new FakeSharedContentObserverProcess();
+          observers.push(process);
+          return process.asObserver();
+        },
+        sharedContentObserverUnfocusGraceMs: 0,
+        publishSharedContextUsage,
+      },
+      {
+        subscribeSharedRuntimeControl: control.subscribe,
+        registerInlineImages,
+        supports: (_client: object, type: string) =>
+          type === CONVERSATION_SYNC_V2_CAPABILITY || type === "context_usage",
+      },
+    );
+    const firstClient = {};
+    const secondClient = {};
+    const firstSubscription = {
+      ...subscribeMessage(),
+      focused: {
+        provider: "codex" as const,
+        providerSessionId: "thread-shared-content",
+      },
+    };
+    const secondSubscription = subscribeMessage();
+    await fixture.handler.handle(
+      firstSubscription,
+      context(firstClient, fixture.runtime),
+    );
+    await fixture.handler.handle(
+      secondSubscription,
+      context(secondClient, fixture.runtime),
+    );
+    await vi.waitFor(() => {
+      expect(
+        events(fixture.sent, firstClient, "sync_complete").length,
+      ).toBeGreaterThan(0);
+      expect(
+        events(fixture.sent, secondClient, "sync_complete").length,
+      ).toBeGreaterThan(0);
+      expect(observers).toHaveLength(1);
+    });
+    expect(observers[0]!.starts).toMatchObject([
+      {
+        projectPath: codex.entry.projectPath,
+        options: {
+          threadId: "thread-shared-content",
+          sharedRuntimeAttach: "observer",
+        },
+      },
+    ]);
+
+    observers[0]!.message({
+      type: "context_usage",
+      turnId: "turn-shared-live",
+      last: {
+        totalTokens: 125,
+        inputTokens: 100,
+        cachedInputTokens: 20,
+        cacheWriteInputTokens: 0,
+        outputTokens: 25,
+        reasoningOutputTokens: 5,
+      },
+      total: {
+        totalTokens: 125,
+        inputTokens: 100,
+        cachedInputTokens: 20,
+        cacheWriteInputTokens: 0,
+        outputTokens: 25,
+        reasoningOutputTokens: 5,
+      },
+      modelContextWindow: 200_000,
+    });
+    expect(publishSharedContextUsage).toHaveBeenCalledTimes(1);
+    expect(publishSharedContextUsage).toHaveBeenCalledWith(
+      firstClient,
+      expect.objectContaining({
+        type: "context_usage",
+        sessionId: "thread-shared-content",
+        threadId: "thread-shared-content",
+        turnId: "turn-shared-live",
+        bridgeInstanceId: "bridge-1",
+        codexSourceId: "source-1",
+        authorityGeneration: expect.stringMatching(/^daemon:3:\d+$/),
+      }),
+    );
+
+    for (const [client, subscription] of [
+      [firstClient, firstSubscription],
+      [secondClient, secondSubscription],
+    ] as const) {
+      const complete = events(fixture.sent, client, "sync_complete").at(-1)!;
+      await fixture.handler.handle(
+        {
+          type: "conversation_sync_ack",
+          protocolVersion: 2,
+          subscriptionId: subscription.requestId,
+          sequence: complete.sequence,
+        },
+        context(client, fixture.runtime),
+      );
+    }
+
+    for (let index = 0; index < 100; index += 1) {
+      observers[0]!.message({ type: "stream_delta", text: `delta-${index}` });
+    }
+    observers[0]!.message({
+      type: "assistant",
+      message: {
+        id: "tool-coalesced-with-stream",
+        role: "assistant",
+        model: "test",
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-coalesced-with-stream",
+            name: "Search",
+            input: { query: "live" },
+          },
+        ],
+      },
+    });
+    await vi.waitFor(
+      () => expect(latestTurnHistoryReader).toHaveBeenCalledTimes(1),
+      { timeout: 3_000 },
+    );
+    expect(historyReader).toHaveBeenCalledTimes(1);
+
+    const toolUse: ServerMessage = {
+      type: "assistant",
+      message: {
+        id: "tool-shared",
+        role: "assistant",
+        model: "test",
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-shared",
+            name: "Read",
+            input: { path: "/tmp/example" },
+          },
+        ],
+      },
+    };
+    observers[0]!.message(toolUse);
+    observers[0]!.message({
+      type: "tool_result",
+      toolUseId: "tool-shared",
+      toolName: "Read",
+      content: "tool result",
+      rawContentBlocks: [
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            data: "aW1hZ2U=",
+            media_type: "image/png",
+          },
+        },
+      ],
+    });
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, firstClient, "timeline_page")
+          .flatMap((event) => event.entries)
+          .some(
+            (entry) =>
+              entry.message.type === "tool_result" &&
+              entry.message.toolUseId === "tool-shared",
+          ),
+      ).toBe(true),
+    );
+    expect(latestTurnHistoryReader).toHaveBeenCalledTimes(1);
+    expect(registerInlineImages).toHaveBeenCalledWith([
+      { data: "aW1hZ2U=", mimeType: "image/png" },
+    ]);
+    const safeToolResult = events(fixture.sent, firstClient, "timeline_page")
+      .flatMap((event) => event.entries)
+      .map((entry) => entry.message)
+      .find(
+        (message) =>
+          message.type === "tool_result" && message.toolUseId === "tool-shared",
+      );
+    expect(safeToolResult).toMatchObject({
+      images: [{ id: "image-safe-ref" }],
+    });
+    expect(safeToolResult).not.toHaveProperty("rawContentBlocks");
+
+    latestMessages = [
+      ...latestMessages,
+      toolUse,
+      {
+        type: "tool_result",
+        historyTurnId: "turn-shared-live",
+        toolUseId: "tool-shared",
+        toolName: "Read",
+        content: "tool result",
+      },
+      {
+        type: "assistant",
+        historyTurnId: "turn-shared-live",
+        messageUuid: "desktop-final",
+        message: {
+          id: "desktop-final",
+          role: "assistant",
+          model: "test",
+          content: [{ type: "text", text: "desktop final answer" }],
+        },
+      },
+    ];
+    const completesBefore = events(
+      fixture.sent,
+      firstClient,
+      "sync_complete",
+    ).length;
+    const lastComplete = events(fixture.sent, firstClient, "sync_complete").at(
+      -1,
+    )!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: firstSubscription.requestId,
+        sequence: lastComplete.sequence,
+      },
+      context(firstClient, fixture.runtime),
+    );
+    observers[0]!.message({
+      type: "result",
+      subtype: "success",
+      result: "desktop final answer",
+    });
+    await vi.waitFor(
+      () => {
+        expect(latestTurnHistoryReader).toHaveBeenCalledTimes(2);
+        expect(
+          events(fixture.sent, firstClient, "sync_complete").length,
+        ).toBeGreaterThan(completesBefore);
+      },
+      { timeout: 3_000 },
+    );
+    expect(
+      events(fixture.sent, firstClient, "timeline_page")
+        .flatMap((event) => event.entries)
+        .some(
+          (entry) =>
+            entry.message.type === "assistant" &&
+            entry.message.message.content.some(
+              (content) =>
+                content.type === "text" &&
+                content.text === "desktop final answer",
+            ),
+        ),
+    ).toBe(true);
+    expect(fixture.catalogReader).toHaveBeenCalledTimes(1);
+    expect(legacyRolloutObserver).not.toHaveBeenCalled();
+    await fixture.handler.close();
+    expect(observers[0]!.stop).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a narrow Desktop observer for notification-only progress and terminal events", async () => {
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 7,
+    });
+    const codex = codexSeed(0, "thread-background-content");
+    codex.entry.name = "Background task";
+    codex.status = {
+      ...codex.status,
+      activity: "working",
+      runtimeAttachment: "loaded",
+      confidence: "authoritative",
+      observedAt: "2026-08-01T05:10:00.000Z",
+    };
+    const observers: FakeSharedContentObserverProcess[] = [];
+    const publishExternalCodexNotificationCandidate = vi.fn();
+    const fixture = createFixture(
+      [codex],
+      async () => history("background-content"),
+      {
+        daemonMode: true,
+        sharedControlReconcileMs: 1,
+        createSharedContentObserverProcess: () => {
+          const process = new FakeSharedContentObserverProcess();
+          observers.push(process);
+          return process.asObserver();
+        },
+      },
+      {
+        subscribeSharedRuntimeControl: control.subscribe,
+        getClientDeliveryMode: () => "notifications_only",
+        publishExternalCodexNotificationCandidate,
+      },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() => expect(observers).toHaveLength(1));
+    expect(events(fixture.sent, client, "sync_begin")).toEqual([]);
+
+    observers[0]!.message({
+      type: "assistant",
+      message: {
+        id: "background-tool-message",
+        role: "assistant",
+        model: "secret-model",
+        content: [
+          {
+            type: "tool_use",
+            id: "background-tool",
+            name: "Read",
+            input: { path: "/private/secret" },
+          },
+        ],
+      },
+    });
+    expect(publishExternalCodexNotificationCandidate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        codexSourceId: "source-1",
+        threadId: "thread-background-content",
+        label: "Background task (0)",
+        message: {
+          type: "assistant",
+          message: {
+            id: "background-tool-message",
+            role: "assistant",
+            model: "",
+            content: [
+              {
+                type: "tool_use",
+                id: "background-tool",
+                name: "Read",
+                input: {},
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    control.emit({
+      kind: "event",
+      event: {
+        sequence: 1,
+        observedAt: "2026-08-01T05:10:05.000Z",
+        connectionGeneration: 7,
+        method: "turn/completed",
+        threadId: "thread-background-content",
+        turnId: "turn-background-content",
+        turnStatus: "failed",
+      },
+    });
+    expect(publishExternalCodexNotificationCandidate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread-background-content",
+        turnId: "turn-background-content",
+        observedAt: "2026-08-01T05:10:05.000Z",
+        message: expect.objectContaining({
+          type: "result",
+          subtype: "error",
+        }),
+      }),
+    );
+
+    fixture.handler.disconnect(client);
+    expect(observers[0]!.stop).toHaveBeenCalledOnce();
+    await fixture.handler.close();
+  });
+
+  it("keeps Bridge-owned shared turns on the existing session stream without a duplicate observer", async () => {
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 4,
+    });
+    const codex = codexSeed(0, "thread-bridge-owned-content");
+    codex.status = {
+      ...codex.status,
+      activity: "working",
+      runtimeAttachment: "loaded",
+      confidence: "authoritative",
+    };
+    const observers: FakeSharedContentObserverProcess[] = [];
+    let canonicalHistory = history("bridge-before-live");
+    const fixture = createFixture(
+      [codex],
+      async () => canonicalHistory,
+      {
+        daemonMode: true,
+        createSharedContentObserverProcess: () => {
+          const process = new FakeSharedContentObserverProcess();
+          observers.push(process);
+          return process.asObserver();
+        },
+      },
+      {
+        subscribeSharedRuntimeControl: control.subscribe,
+        listRuntimeConversationStates: () => [
+          {
+            bridgeSessionId: "runtime-bridge-owned",
+            provider: "codex",
+            providerSessionId: "thread-bridge-owned-content",
+            projectPath: "/project/0",
+            processStatus: "running",
+            executionHost: "bridge",
+            activeTurnId: "turn-bridge-owned",
+            controlState: "steerable",
+            authorityGeneration: "bridge-authority",
+            observedAt: "2026-08-01T05:30:00.000Z",
+          },
+        ],
+        getProviderSessionId: () => "thread-bridge-owned-content",
+      },
+    );
+    const client = {};
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "sync_complete").length,
+      ).toBeGreaterThan(0),
+    );
+    expect(observers).toHaveLength(0);
+    const complete = events(fixture.sent, client, "sync_complete").at(-1)!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: complete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+    canonicalHistory = [
+      ...canonicalHistory,
+      {
+        type: "assistant",
+        historyTurnId: "turn-bridge-owned",
+        messageUuid: "bridge-live-answer",
+        message: {
+          id: "bridge-live-answer",
+          role: "assistant",
+          model: "test",
+          content: [{ type: "text", text: "Bridge live answer" }],
+        },
+      },
+    ];
+    fixture.handler.sessionMessage(
+      {
+        id: "runtime-bridge-owned",
+        provider: "codex",
+        process: {},
+        projectPath: "/project/0",
+      },
+      canonicalHistory.at(-1)!,
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "timeline_page")
+          .flatMap((event) => event.entries)
+          .some(
+            (entry) =>
+              entry.message.type === "assistant" &&
+              entry.message.message.id === "bridge-live-answer",
+          ),
+      ).toBe(true),
+    );
+    expect(observers).toHaveLength(0);
+    await fixture.handler.close();
+  });
+
+  it("reconciles once on daemon ready and not after 128 known-thread events", async () => {
+    const control = createSharedControlSource({
+      kind: "not_ready",
+      connectionGeneration: 0,
+    });
+    const statusReader = vi.fn(
+      async () =>
+        new Map([
+          [
+            "codex\0thread-event-storm",
+            codexSeed(0, "thread-event-storm").status,
+          ],
+        ]),
+    );
+    const fixture = createFixture(
+      [codexSeed(0, "thread-event-storm")],
+      async () => history("thread-event-storm"),
+      {
+        daemonMode: true,
+        statusReader,
+        statusWatchdogMs: 5,
+        sharedControlReconcileMs: 5,
+      },
+      { subscribeSharedRuntimeControl: control.subscribe },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(statusReader).not.toHaveBeenCalled();
+
+    control.emit({ kind: "ready", connectionGeneration: 1 });
+    await vi.waitFor(() => expect(statusReader).toHaveBeenCalledTimes(1));
+    const catalogReadsAfterReady = fixture.catalogReader.mock.calls.length;
+
+    for (let sequence = 1; sequence <= 128; sequence += 1) {
+      control.emit({
+        kind: "event",
+        event: {
+          sequence,
+          observedAt: new Date(
+            Date.parse("2026-08-01T01:30:00.000Z") + sequence,
+          ).toISOString(),
+          connectionGeneration: 1,
+          method: "thread/status/changed",
+          threadId: "thread-event-storm",
+          threadStatus:
+            sequence % 2 === 0
+              ? { type: "idle" }
+              : { type: "active", activeFlags: [] },
+        },
+      });
+    }
+    control.emit({ kind: "ready", connectionGeneration: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(statusReader).toHaveBeenCalledTimes(1);
+    expect(fixture.catalogReader).toHaveBeenCalledTimes(catalogReadsAfterReady);
+    fixture.handler.close();
+  });
+
+  it("keeps the five-second status watchdog for private compatibility mode", async () => {
+    const statusReader = vi.fn(async () => new Map());
+    const fixture = createFixture(
+      [codexSeed(0, "thread-private-watchdog")],
+      async () => history("thread-private-watchdog"),
+      {
+        daemonMode: false,
+        statusReader,
+        statusWatchdogMs: 5,
+      },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+
+    await vi.waitFor(() => expect(statusReader).toHaveBeenCalled());
+    fixture.handler.close();
+  });
+
+  it("resolves a known-thread request without a full app-server reconciliation", async () => {
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 1,
+    });
+    let providerStatus: ConversationSyncStatus = {
+      ...codexSeed(0, "thread-request").status,
+      activity: "working",
+      attention: "question",
+      runtimeAttachment: "loaded",
+      confidence: "authoritative",
+      observedAt: "2026-08-01T01:00:00.000Z",
+    };
+    const statusReader = vi.fn(
+      async () => new Map([["codex\0thread-request", providerStatus]]),
+    );
+    const fixture = createFixture(
+      [codexSeed(0, "thread-request")],
+      async () => history("thread-request"),
+      {
+        daemonMode: true,
+        statusReader,
+        sharedControlReconcileMs: 5,
+      },
+      { subscribeSharedRuntimeControl: control.subscribe },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() => expect(statusReader).toHaveBeenCalled());
+    statusReader.mockClear();
+
+    control.emit({
+      kind: "event",
+      event: {
+        sequence: 1,
+        observedAt: "2026-08-01T01:00:01.000Z",
+        connectionGeneration: 1,
+        method: "thread/status/changed",
+        threadId: "thread-request",
+        threadStatus: {
+          type: "active",
+          activeFlags: ["waitingOnUserInput"],
+        },
+      },
+    });
+    providerStatus = {
+      ...providerStatus,
+      activity: "idle",
+      attention: "none",
+      observedAt: "2026-08-01T01:00:02.000Z",
+    };
+    control.emit({
+      kind: "event",
+      event: {
+        sequence: 2,
+        observedAt: "2026-08-01T01:00:02.000Z",
+        connectionGeneration: 1,
+        method: "serverRequest/resolved",
+        threadId: "thread-request",
+        requestId: "request-desktop",
+      },
+    });
+
+    expect(statusReader).not.toHaveBeenCalled();
+    const internal = fixture.handler as unknown as {
+      catalog: Map<string, { status: ConversationSyncStatus }>;
+    };
+    expect(internal.catalog.get("codex\0thread-request")?.status).toMatchObject(
+      {
+        activity: "working",
+        attention: "none",
+        authorityGeneration: "daemon:1",
+      },
+    );
+    fixture.handler.close();
+  });
+
+  it("fails daemon authority closed across reconnects and removes the control listener on close", async () => {
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 1,
+    });
+    let providerStatus: ConversationSyncStatus = {
+      ...codexSeed(0, "thread-reconnect").status,
+      activity: "working",
+      runtimeAttachment: "loaded",
+      confidence: "authoritative",
+      observedAt: "2026-08-01T02:00:00.000Z",
+    };
+    const statusReader = vi.fn(
+      async () => new Map([["codex\0thread-reconnect", providerStatus]]),
+    );
+    const fixture = createFixture(
+      [codexSeed(0, "thread-reconnect")],
+      async () => history("thread-reconnect"),
+      {
+        daemonMode: true,
+        statusReader,
+        sharedControlReconcileMs: 5,
+        sharedControlRecoveryReader: async () => ({
+          turnId: "turn-reconnect",
+          status: "interrupted",
+          observedAt: "2026-08-01T02:00:02.000Z",
+        }),
+      },
+      { subscribeSharedRuntimeControl: control.subscribe },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() => expect(statusReader).toHaveBeenCalled());
+    const internal = fixture.handler as unknown as {
+      catalog: Map<string, { status: ConversationSyncStatus }>;
+    };
+
+    control.emit({ kind: "not_ready", connectionGeneration: 1 });
+    expect(
+      internal.catalog.get("codex\0thread-reconnect")?.status,
+    ).toMatchObject({
+      activity: "working",
+      controlState: "unavailable",
+      confidence: "unknown",
+    });
+    expect(
+      internal.catalog.get("codex\0thread-reconnect")?.status
+        .authorityGeneration,
+    ).toBeUndefined();
+
+    control.emit({
+      kind: "event",
+      event: {
+        sequence: 999,
+        observedAt: "2026-08-01T02:00:01.000Z",
+        connectionGeneration: 1,
+        method: "thread/status/changed",
+        threadId: "thread-reconnect",
+        threadStatus: { type: "active", activeFlags: [] },
+      },
+    });
+    expect(
+      internal.catalog.get("codex\0thread-reconnect")?.status.activity,
+    ).toBe("working");
+
+    providerStatus = {
+      ...providerStatus,
+      activity: "idle",
+      attention: "none",
+      observedAt: "2026-08-01T02:00:02.000Z",
+    };
+    control.emit({ kind: "ready", connectionGeneration: 2 });
+    expect(
+      internal.catalog.get("codex\0thread-reconnect")?.status,
+    ).toMatchObject({
+      activity: "working",
+      controlState: "reconciling",
+      authorityGeneration: "daemon:2",
+    });
+    await vi.waitFor(() =>
+      expect(
+        internal.catalog.get("codex\0thread-reconnect")?.status,
+      ).toMatchObject({
+        activity: "idle",
+        controlState: "readOnly",
+        authorityGeneration: "daemon:2",
+      }),
+    );
+
+    control.emit({
+      kind: "event",
+      event: {
+        sequence: 1_000,
+        observedAt: "2026-08-01T02:00:03.000Z",
+        connectionGeneration: 1,
+        method: "thread/status/changed",
+        threadId: "thread-reconnect",
+        threadStatus: { type: "active", activeFlags: [] },
+      },
+    });
+    expect(
+      internal.catalog.get("codex\0thread-reconnect")?.status.activity,
+    ).toBe("idle");
+    expect(control.listenerCount).toBe(1);
+    fixture.handler.close();
+    expect(control.listenerCount).toBe(0);
+    control.emit({
+      kind: "event",
+      event: {
+        sequence: 2,
+        observedAt: "2026-08-01T02:00:04.000Z",
+        connectionGeneration: 2,
+        method: "thread/status/changed",
+        threadId: "thread-reconnect",
+        threadStatus: { type: "active", activeFlags: [] },
+      },
+    });
+    expect(
+      internal.catalog.get("codex\0thread-reconnect")?.status.activity,
+    ).toBe("idle");
+  });
+
+  it("refreshes the bounded catalog when control reports an unknown Desktop thread", async () => {
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 1,
+    });
+    const seeds = [codexSeed(0, "thread-known")];
+    const fixture = createFixture(
+      seeds,
+      async (target) => history(target.providerSessionId),
+      {
+        daemonMode: true,
+        statusReader: async () =>
+          new Map(
+            seeds.map((item) => [
+              `codex\0${item.entry.providerSessionId}`,
+              item.status,
+            ]),
+          ),
+        sharedControlReconcileMs: 5,
+      },
+      { subscribeSharedRuntimeControl: control.subscribe },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "sync_complete").length,
+      ).toBeGreaterThanOrEqual(1),
+    );
+    const readsBefore = fixture.catalogReader.mock.calls.length;
+    const newDesktop = codexSeed(1, "thread-new-desktop");
+    newDesktop.status = {
+      ...newDesktop.status,
+      activity: "working",
+      runtimeAttachment: "loaded",
+      confidence: "authoritative",
+    };
+    seeds.push(newDesktop);
+    control.emit({
+      kind: "event",
+      event: {
+        sequence: 1,
+        observedAt: "2026-08-01T03:00:00.000Z",
+        connectionGeneration: 1,
+        method: "thread/started",
+        threadId: "thread-new-desktop",
+        threadStatus: { type: "active", activeFlags: [] },
+      },
+    });
+
+    await vi.waitFor(() =>
+      expect(fixture.catalogReader.mock.calls.length).toBeGreaterThan(
+        readsBefore,
+      ),
+    );
+    const internal = fixture.handler as unknown as {
+      catalog: Map<string, { status: ConversationSyncStatus }>;
+    };
+    await vi.waitFor(() =>
+      expect(
+        internal.catalog.get("codex\0thread-new-desktop")?.status,
+      ).toMatchObject({
+        activity: "working",
+        executionHost: "desktopAppServer",
+        controlState: "readOnly",
+        authorityGeneration: "daemon:1",
+      }),
+    );
+    fixture.handler.close();
+  });
+
+  it("preserves special business state across control loss without churning idle rows", async () => {
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 1,
+    });
+    const working = codexSeed(0, "thread-special");
+    working.status = {
+      ...working.status,
+      activity: "working",
+      attention: "question",
+      runtimeAttachment: "loaded",
+      confidence: "authoritative",
+      observedAt: "2026-08-01T04:00:00.000Z",
+      activeTurnId: "turn-special",
+      attentionRequestId: "request-special",
+    };
+    const idle = codexSeed(1, "thread-idle");
+    const statusReader = vi.fn(
+      async () =>
+        new Map([
+          ["codex\0thread-special", working.status],
+          ["codex\0thread-idle", idle.status],
+        ]),
+    );
+    const fixture = createFixture(
+      [working, idle],
+      async (target) => history(target.providerSessionId),
+      {
+        daemonMode: true,
+        statusReader,
+        sharedControlReconcileMs: 5,
+      },
+      { subscribeSharedRuntimeControl: control.subscribe },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() => expect(statusReader).toHaveBeenCalled());
+    const internal = fixture.handler as unknown as {
+      catalog: Map<string, { status: ConversationSyncStatus }>;
+    };
+    const idleBefore = structuredClone(
+      internal.catalog.get("codex\0thread-idle")!.status,
+    );
+
+    control.emit({ kind: "not_ready", connectionGeneration: 1 });
+    expect(internal.catalog.get("codex\0thread-special")?.status).toMatchObject(
+      {
+        activity: "working",
+        attention: "question",
+        result: "none",
+        activeTurnId: "turn-special",
+        attentionRequestId: "request-special",
+        controlState: "unavailable",
+        confidence: "unknown",
+        observedAt: "2026-08-01T04:00:00.000Z",
+      },
+    );
+    expect(internal.catalog.get("codex\0thread-idle")?.status).toEqual(
+      idleBefore,
+    );
+    fixture.handler.close();
+  });
+
+  it("repairs a completion missed during disconnect with one bounded special-thread read", async () => {
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 1,
+    });
+    const seed = codexSeed(0, "thread-missed-completion");
+    let providerStatus: ConversationSyncStatus = {
+      ...seed.status,
+      activity: "working",
+      runtimeAttachment: "loaded",
+      confidence: "authoritative",
+      observedAt: "2026-08-01T05:00:00.000Z",
+      activeTurnId: "turn-missed",
+    };
+    const recoveryReader = vi.fn(async () => ({
+      turnId: "turn-missed",
+      status: "completed" as const,
+      observedAt: "2026-08-01T05:00:05.000Z",
+    }));
+    const fixture = createFixture(
+      [seed],
+      async (target) => history(target.providerSessionId),
+      {
+        daemonMode: true,
+        statusReader: async () =>
+          new Map([["codex\0thread-missed-completion", providerStatus]]),
+        sharedControlRecoveryReader: recoveryReader,
+        sharedControlReconcileMs: 5,
+      },
+      { subscribeSharedRuntimeControl: control.subscribe },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "sync_complete").length,
+      ).toBeGreaterThanOrEqual(1),
+    );
+    control.emit({ kind: "not_ready", connectionGeneration: 1 });
+    providerStatus = {
+      ...providerStatus,
+      activity: "idle",
+      observedAt: "2026-08-01T05:00:05.000Z",
+    };
+    control.emit({ kind: "ready", connectionGeneration: 2 });
+
+    const internal = fixture.handler as unknown as {
+      catalog: Map<string, { status: ConversationSyncStatus }>;
+      liveContentRevisions: Map<string, unknown>;
+    };
+    await vi.waitFor(() =>
+      expect(
+        internal.catalog.get("codex\0thread-missed-completion")?.status,
+      ).toMatchObject({
+        activity: "idle",
+        result: "completed",
+        controlState: "readOnly",
+        authorityGeneration: "daemon:2",
+      }),
+    );
+    expect(recoveryReader).toHaveBeenCalledTimes(1);
+    expect(recoveryReader).toHaveBeenCalledWith(
+      {
+        provider: "codex",
+        providerSessionId: "thread-missed-completion",
+      },
+      expect.any(AbortSignal),
+    );
+    expect(
+      internal.liveContentRevisions.has("codex\0thread-missed-completion"),
+    ).toBe(true);
+    fixture.handler.close();
+  });
+
+  it("passes the recovery deadline and generation signal to the app-server read", async () => {
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 1,
+    });
+    const value = codexSeed(0, "thread-default-recovery-reader");
+    const status = {
+      ...value.status,
+      activity: "working" as const,
+      runtimeAttachment: "loaded" as const,
+      confidence: "authoritative" as const,
+      observedAt: "2026-08-01T05:05:00.000Z",
+    };
+    const listThreadTurns = vi.fn(async () => ({
+      data: [
+        {
+          id: "turn-default-recovery",
+          status: "completed",
+          completedAt: "2026-08-01T05:05:05.000Z",
+        },
+      ],
+      nextCursor: null,
+    }));
+    const process = {
+      isRunning: true,
+      listThreadTurns,
+      stop: vi.fn(),
+    } as unknown as CodexProcess;
+    const fixture = createFixture(
+      [value],
+      async (target) => history(target.providerSessionId),
+      {
+        daemonMode: true,
+        statusReader: async () =>
+          new Map([["codex\0thread-default-recovery-reader", status]]),
+        sharedControlRecoveryTimeoutMs: 17,
+        sharedControlReconcileMs: 1,
+      },
+      {
+        subscribeSharedRuntimeControl: control.subscribe,
+        getActiveCodexProcess: () => process,
+      },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "sync_complete").length,
+      ).toBeGreaterThanOrEqual(1),
+    );
+    control.emit({ kind: "not_ready", connectionGeneration: 1 });
+    control.emit({ kind: "ready", connectionGeneration: 2 });
+
+    await vi.waitFor(() => expect(listThreadTurns).toHaveBeenCalledOnce());
+    expect(listThreadTurns).toHaveBeenCalledWith(
+      {
+        threadId: "thread-default-recovery-reader",
+        limit: 1,
+        sortDirection: "desc",
+        itemsView: "summary",
+      },
+      {
+        signal: expect.any(AbortSignal),
+        timeoutMs: 17,
+      },
+    );
+    fixture.handler.close();
+  });
+
+  it("times out one hung recovery read without blocking the next thread", async () => {
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 1,
+    });
+    const seeds = [
+      codexSeed(0, "thread-hung"),
+      codexSeed(1, "thread-recovers"),
+    ];
+    const statuses = new Map(
+      seeds.map((item) => [
+        `codex\0${item.entry.providerSessionId}`,
+        {
+          ...item.status,
+          activity: "working" as const,
+          runtimeAttachment: "loaded" as const,
+          confidence: "authoritative" as const,
+          observedAt: "2026-08-01T05:10:00.000Z",
+        },
+      ]),
+    );
+    const recoveryReader = vi.fn(
+      async (target: { providerSessionId: string }) => {
+        if (target.providerSessionId === "thread-hung") {
+          return new Promise<never>(() => undefined);
+        }
+        return {
+          turnId: "turn-recovers",
+          status: "completed" as const,
+          observedAt: "2026-08-01T05:10:05.000Z",
+        };
+      },
+    );
+    const fixture = createFixture(
+      seeds,
+      async (target) => history(target.providerSessionId),
+      {
+        daemonMode: true,
+        statusReader: async () => statuses,
+        sharedControlRecoveryReader: recoveryReader,
+        sharedControlRecoveryTimeoutMs: 25,
+        maxConcurrentSharedControlRecoveries: 2,
+        sharedControlReconcileMs: 1,
+      },
+      { subscribeSharedRuntimeControl: control.subscribe },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "sync_complete").length,
+      ).toBeGreaterThanOrEqual(1),
+    );
+    control.emit({ kind: "not_ready", connectionGeneration: 1 });
+    control.emit({ kind: "ready", connectionGeneration: 2 });
+
+    const internal = fixture.handler as unknown as {
+      catalog: Map<string, { status: ConversationSyncStatus }>;
+    };
+    await vi.waitFor(() =>
+      expect(
+        internal.catalog.get("codex\0thread-recovers")?.status,
+      ).toMatchObject({
+        activity: "idle",
+        result: "completed",
+        authorityGeneration: "daemon:2",
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(internal.catalog.get("codex\0thread-hung")?.status).toMatchObject({
+        activity: "working",
+        controlState: "unavailable",
+        confidence: "unknown",
+      }),
+    );
+    expect(recoveryReader).toHaveBeenCalledTimes(2);
+    fixture.handler.close();
+  });
+
+  it("aborts an old recovery generation before reconciling the replacement generation", async () => {
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 1,
+    });
+    const value = codexSeed(0, "thread-generation-recovery");
+    const status = {
+      ...value.status,
+      activity: "working" as const,
+      runtimeAttachment: "loaded" as const,
+      confidence: "authoritative" as const,
+      observedAt: "2026-08-01T05:20:00.000Z",
+    };
+    let firstSignal: AbortSignal | undefined;
+    const recoveryReader = vi.fn(
+      async (_target: unknown, signal: AbortSignal) => {
+        if (!firstSignal) {
+          firstSignal = signal;
+          return new Promise<never>((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), {
+              once: true,
+            });
+          });
+        }
+        return {
+          turnId: "turn-generation-recovery",
+          status: "interrupted" as const,
+          observedAt: "2026-08-01T05:20:05.000Z",
+        };
+      },
+    );
+    const fixture = createFixture(
+      [value],
+      async (target) => history(target.providerSessionId),
+      {
+        daemonMode: true,
+        statusReader: async () =>
+          new Map([["codex\0thread-generation-recovery", status]]),
+        sharedControlRecoveryReader: recoveryReader,
+        sharedControlRecoveryTimeoutMs: 1_000,
+        sharedControlReconcileMs: 1,
+      },
+      { subscribeSharedRuntimeControl: control.subscribe },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "sync_complete").length,
+      ).toBeGreaterThanOrEqual(1),
+    );
+    control.emit({ kind: "not_ready", connectionGeneration: 1 });
+    control.emit({ kind: "ready", connectionGeneration: 2 });
+    await vi.waitFor(() => expect(firstSignal).toBeDefined());
+
+    control.emit({ kind: "not_ready", connectionGeneration: 2 });
+    expect(firstSignal!.aborted).toBe(true);
+    control.emit({ kind: "ready", connectionGeneration: 3 });
+
+    const internal = fixture.handler as unknown as {
+      catalog: Map<string, { status: ConversationSyncStatus }>;
+    };
+    await vi.waitFor(() =>
+      expect(
+        internal.catalog.get("codex\0thread-generation-recovery")?.status,
+      ).toMatchObject({
+        activity: "idle",
+        controlState: "readOnly",
+        authorityGeneration: "daemon:3",
+      }),
+    );
+    expect(recoveryReader).toHaveBeenCalledTimes(2);
+    fixture.handler.close();
+  });
+
+  it("does not let a late same-generation recovery overwrite a live control event", async () => {
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 1,
+    });
+    const value = codexSeed(0, "thread-live-wins-recovery");
+    const status = {
+      ...value.status,
+      activity: "working" as const,
+      runtimeAttachment: "loaded" as const,
+      confidence: "authoritative" as const,
+      observedAt: "2026-08-01T05:25:00.000Z",
+      activeTurnId: "turn-live-wins-recovery",
+    };
+    let resolveRecovery:
+      | ((snapshot: {
+          turnId: string;
+          status: "inProgress";
+          observedAt: string;
+        }) => void)
+      | undefined;
+    const recoveryReader = vi.fn(
+      () =>
+        new Promise<{
+          turnId: string;
+          status: "inProgress";
+          observedAt: string;
+        }>((resolve) => {
+          resolveRecovery = resolve;
+        }),
+    );
+    const fixture = createFixture(
+      [value],
+      async (target) => history(target.providerSessionId),
+      {
+        daemonMode: true,
+        statusReader: async () =>
+          new Map([["codex\0thread-live-wins-recovery", status]]),
+        sharedControlRecoveryReader: recoveryReader,
+        sharedControlRecoveryTimeoutMs: 1_000,
+        sharedControlReconcileMs: 1,
+      },
+      { subscribeSharedRuntimeControl: control.subscribe },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "sync_complete").length,
+      ).toBeGreaterThanOrEqual(1),
+    );
+    control.emit({ kind: "not_ready", connectionGeneration: 1 });
+    control.emit({ kind: "ready", connectionGeneration: 2 });
+    await vi.waitFor(() => expect(recoveryReader).toHaveBeenCalledOnce());
+
+    control.emit({
+      kind: "event",
+      event: {
+        sequence: 1,
+        observedAt: "2026-08-01T05:25:05.000Z",
+        connectionGeneration: 2,
+        method: "turn/completed",
+        threadId: "thread-live-wins-recovery",
+        turnId: "turn-live-wins-recovery",
+        turnStatus: "completed",
+      },
+    });
+    resolveRecovery?.({
+      turnId: "turn-live-wins-recovery",
+      status: "inProgress",
+      observedAt: "2026-08-01T05:25:01.000Z",
+    });
+
+    const internal = fixture.handler as unknown as {
+      catalog: Map<string, { status: ConversationSyncStatus }>;
+    };
+    await vi.waitFor(() =>
+      expect(
+        internal.catalog.get("codex\0thread-live-wins-recovery")?.status,
+      ).toMatchObject({
+        activity: "idle",
+        result: "completed",
+        observedAt: "2026-08-01T05:25:05.000Z",
+        authorityGeneration: "daemon:2",
+      }),
+    );
+    expect(recoveryReader).toHaveBeenCalledOnce();
+    fixture.handler.close();
+  });
+
+  it("recovers sixty-four targets with at most four concurrent reads", async () => {
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 1,
+    });
+    const seeds = Array.from({ length: 64 }, (_, index) =>
+      codexSeed(index, `thread-bounded-${index}`),
+    );
+    const statuses = new Map(
+      seeds.map((item) => [
+        `codex\0${item.entry.providerSessionId}`,
+        {
+          ...item.status,
+          activity: "working" as const,
+          runtimeAttachment: "loaded" as const,
+          confidence: "authoritative" as const,
+          observedAt: "2026-08-01T05:30:00.000Z",
+        },
+      ]),
+    );
+    let activeReads = 0;
+    let maxActiveReads = 0;
+    const recoveryReader = vi.fn(
+      async (target: { providerSessionId: string }) => {
+        activeReads += 1;
+        maxActiveReads = Math.max(maxActiveReads, activeReads);
+        await new Promise<void>((resolve) => setTimeout(resolve, 2));
+        activeReads -= 1;
+        return {
+          turnId: `turn-${target.providerSessionId}`,
+          status: "interrupted" as const,
+          observedAt: "2026-08-01T05:30:05.000Z",
+        };
+      },
+    );
+    const fixture = createFixture(
+      seeds,
+      async (target) => history(target.providerSessionId),
+      {
+        daemonMode: true,
+        statusReader: async () => statuses,
+        sharedControlRecoveryReader: recoveryReader,
+        sharedControlRecoveryTimeoutMs: 1_000,
+        maxConcurrentSharedControlRecoveries: 4,
+        sharedControlReconcileMs: 1,
+      },
+      { subscribeSharedRuntimeControl: control.subscribe },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "sync_complete").length,
+      ).toBeGreaterThanOrEqual(1),
+    );
+    control.emit({ kind: "not_ready", connectionGeneration: 1 });
+    control.emit({ kind: "ready", connectionGeneration: 2 });
+
+    await vi.waitFor(() => expect(recoveryReader).toHaveBeenCalledTimes(64), {
+      timeout: 3_000,
+    });
+    expect(maxActiveReads).toBeGreaterThanOrEqual(2);
+    expect(maxActiveReads).toBeLessThanOrEqual(4);
+    const internal = fixture.handler as unknown as {
+      catalog: Map<string, { status: ConversationSyncStatus }>;
+    };
+    await vi.waitFor(
+      () =>
+        expect(
+          [...internal.catalog.values()].filter(
+            (record) =>
+              record.status.authorityGeneration === "daemon:2" &&
+              record.status.activity === "idle",
+          ),
+        ).toHaveLength(64),
+      { timeout: 3_000 },
+    );
+    fixture.handler.close();
+  });
+
+  it("reprojects an older pending action when the latest same-thread action resolves", async () => {
+    const first = actionRequest("action-a", "turn-a", "user_input");
+    const second = actionRequest("action-b", "turn-b", "command_approval");
+    const broker = createActionBrokerSource([first, second]);
+    const seed = codexSeed(0, "thread-actions");
+    const fixture = createFixture(
+      [seed],
+      async (target) => history(target.providerSessionId),
+      {},
+      { codexActionBroker: broker.runtime },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    const internal = fixture.handler as unknown as {
+      catalog: Map<string, { status: ConversationSyncStatus }>;
+    };
+    await vi.waitFor(() =>
+      expect(
+        internal.catalog.get("codex\0thread-actions")?.status,
+      ).toMatchObject({
+        attention: "approval",
+        attentionRequestId: "action-b",
+      }),
+    );
+
+    broker.setRequests([first]);
+    broker.emit({
+      kind: "request",
+      request: { ...second, state: "resolved", live: false },
+    });
+    expect(internal.catalog.get("codex\0thread-actions")?.status).toMatchObject(
+      {
+        attention: "question",
+        attentionRequestId: "action-a",
+        activeTurnId: "turn-a",
+      },
+    );
+    fixture.handler.close();
+  });
 });
+
+function createSharedControlSource(
+  initial: Extract<
+    LocalFeatureSharedRuntimeControlUpdate,
+    { kind: "ready" | "not_ready" }
+  >,
+) {
+  let current = initial;
+  const listeners = new Set<
+    (update: LocalFeatureSharedRuntimeControlUpdate) => void
+  >();
+  const subscribe: NonNullable<
+    LocalFeatureRuntime["subscribeSharedRuntimeControl"]
+  > = (listener) => {
+    listeners.add(listener);
+    listener(current);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      listeners.delete(listener);
+    };
+  };
+  return {
+    subscribe,
+    emit(update: LocalFeatureSharedRuntimeControlUpdate): void {
+      if (update.kind !== "event") current = update;
+      for (const listener of [...listeners]) listener(update);
+    },
+    get listenerCount(): number {
+      return listeners.size;
+    },
+  };
+}
+
+function actionRequest(
+  opaqueRequestId: string,
+  turnId: string,
+  kind: CodexActionBrokerRuntimeRequest["kind"],
+): CodexActionBrokerRuntimeRequest {
+  return {
+    opaqueRequestId,
+    codexSourceId: "source-1",
+    threadId: "thread-actions",
+    turnId,
+    kind,
+    state: "pending",
+    observedAt: "2026-08-01T06:00:00.000Z",
+    expiresAt: "2026-08-02T06:00:00.000Z",
+    updatedAt:
+      opaqueRequestId === "action-a"
+        ? "2026-08-01T06:00:00.000Z"
+        : "2026-08-01T06:00:01.000Z",
+    authorityGeneration: "cab:1:1",
+    live: true,
+    allowedActions:
+      kind === "user_input" ? ["answer", "reject"] : ["approve", "reject"],
+  };
+}
+
+function createActionBrokerSource(initial: CodexActionBrokerRuntimeRequest[]): {
+  runtime: CodexActionBrokerRuntime;
+  emit(update: CodexActionBrokerRuntimeUpdate): void;
+  setRequests(requests: CodexActionBrokerRuntimeRequest[]): void;
+} {
+  let requests = [...initial];
+  const listeners = new Set<(update: CodexActionBrokerRuntimeUpdate) => void>();
+  const runtime = {
+    health: {
+      ready: true,
+      controlReady: true,
+      degraded: false,
+      writerLeaseHeld: true,
+      authorityGeneration: "cab:1:1",
+    },
+    listRequests: (options?: { threadId?: string }) =>
+      requests.filter(
+        (request) =>
+          !options?.threadId || request.threadId === options.threadId,
+      ),
+    subscribe: (listener: (update: CodexActionBrokerRuntimeUpdate) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  } as unknown as CodexActionBrokerRuntime;
+  return {
+    runtime,
+    emit(update) {
+      for (const listener of [...listeners]) listener(update);
+    },
+    setRequests(next) {
+      requests = [...next];
+    },
+  };
+}
 
 function createFixture(
   seeds: Array<{
@@ -4240,6 +7039,7 @@ function createFixture(
   handlerOptions: NonNullable<
     ConstructorParameters<typeof ConversationSyncV2FeatureHandler>[1]
   > = {},
+  runtimeOverrides: Partial<LocalFeatureRuntime> = {},
 ) {
   const sent = new Map<object, ConversationSyncServerMessage[]>();
   const catalogReader = vi.fn(async () => seeds);
@@ -4261,6 +7061,7 @@ function createFixture(
     isClientOpen: () => true,
     supports: (_client: object, type: string) =>
       type === CONVERSATION_SYNC_V2_CAPABILITY,
+    ...runtimeOverrides,
   };
   return {
     runtime,
@@ -4272,6 +7073,7 @@ function createFixture(
       historyReader,
       statusWatchdogMs: 60_000,
       coldReconcileMs: 60_000,
+      daemonMode: false,
       ...handlerOptions,
     }),
   };
@@ -4334,6 +7136,7 @@ function createCodexPageFixture(
       inspectCodexThread: async () => null,
       statusWatchdogMs: 60_000,
       coldReconcileMs: 60_000,
+      daemonMode: false,
       ...handlerOptions,
     }),
   };
@@ -4355,6 +7158,10 @@ function context(client: object, runtime: LocalFeatureRuntime) {
     signal: new AbortController().signal,
     runtime,
   };
+}
+
+function terminalScopeForFixture() {
+  return { bridgeInstanceId: "bridge-1", codexSourceId: "source-1" };
 }
 
 function subscribeMessage(

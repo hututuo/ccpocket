@@ -20,6 +20,7 @@ import {
 import {
   CodexProcess,
   type CodexInputDeliveryEvent,
+  type CodexSharedRuntimeMutationGuard,
   type CodexStartOptions,
 } from "./codex-process.js";
 import { mergeCodexGoalState } from "./codex-goal-controller.js";
@@ -47,6 +48,14 @@ import {
   MAX_ARTIFACTS_PER_MESSAGE,
   type ArtifactCandidate,
 } from "./artifact-types.js";
+import {
+  InputDeliveryLedger,
+  InputDeliveryLedgerError,
+  type DurableInputDeliveryRecord,
+  type DurableInputPayload,
+  type InputDeliveryIdentity,
+  type InputDeliveryScope,
+} from "./input-delivery-ledger.js";
 
 export interface WorktreeOptions {
   useWorktree?: boolean;
@@ -133,6 +142,8 @@ export interface SessionInfo {
   codexGoalControlSupported?: boolean;
   /** Blocks input and approval actions during an explicit permission restart. */
   permissionRestartInProgress?: boolean;
+  /** Shared app-server attachment lifecycle; absent for private/legacy runs. */
+  codexAttachmentState?: "connected" | "reconciling" | "unavailable";
   /** Synthetic Codex user UUIDs waiting for their app-server echo. */
   pendingCodexUserEchoUuids?: Set<string>;
   /** Raw Codex app-server user item ids mapped to valid ccpocket turn UUIDs. */
@@ -202,6 +213,8 @@ export interface QueuedCodexInput extends QueuedInputItem {
     mimeType: string;
   }>;
   imageRefs?: ImageRef[];
+  /** Internal fence for a crash recovery replay; never projected to Mobile. */
+  recoveryRequiresClientUserMessageId?: boolean;
 }
 
 export type InputDeliveryStage =
@@ -275,6 +288,8 @@ interface SessionCreateInternalOptions {
   replaceSessionId?: string;
   replacementReadyTimeoutMs?: number;
   replacementStillValid?: () => boolean;
+  replacementSignal?: AbortSignal;
+  onReplacementCommitted?: (session: SessionInfo) => void;
   onReplacementReady?: () => void;
   onReplacementFailed?: (error: Error) => void;
   auxiliary?: SessionInfo["auxiliary"];
@@ -283,6 +298,17 @@ interface SessionCreateInternalOptions {
 export const MAX_HISTORY_PER_SESSION = 100;
 const MAX_IDLE_SESSIONS = 30;
 const MAX_INPUT_DELIVERY_RECEIPTS_PER_SESSION = 512;
+const SHARED_ATTACHMENT_RETRY_INITIAL_MS = 250;
+const SHARED_ATTACHMENT_RETRY_MAX_MS = 10_000;
+const SHARED_ATTACHMENT_READY_TIMEOUT_MS = 30_000;
+
+interface SharedCodexAttachmentRecovery {
+  generation: number;
+  attempt: number;
+  session: SessionInfo;
+  timer?: ReturnType<typeof setTimeout>;
+  replacementAbort?: AbortController;
+}
 
 export type GalleryImageCallback = (meta: GalleryImageMeta) => void;
 export type SessionUpdatedCallback = (sessionId: string) => void;
@@ -418,6 +444,27 @@ export class SessionManager {
   private onSessionUpdated: SessionUpdatedCallback | null;
   private artifactManager: ArtifactManager | null;
   private codexQueueDrainHooks: CodexQueueDrainHooks;
+  private codexSharedRuntimeMutationAllowed?: CodexSharedRuntimeMutationGuard;
+  private readonly inputDeliveryLedger?: InputDeliveryLedger;
+  private readonly inputDeliveryScope?: InputDeliveryScope;
+  private readonly inputDeliveryRestoredThreads = new WeakMap<
+    SessionInfo,
+    string
+  >();
+  private readonly recoveredReceiptEmission = new WeakSet<SessionInfo>();
+  private readonly recoveredReceiptsToEmit = new WeakMap<
+    SessionInfo,
+    InputDeliveryReceipt[]
+  >();
+  private readonly codexQueueDrainInFlight = new Map<
+    string,
+    QueuedCodexInput
+  >();
+  private sharedAttachmentGeneration = 0;
+  private sharedAttachmentRecoveries = new Map<
+    string,
+    SharedCodexAttachmentRecovery
+  >();
 
   /** Cache completion entities per provider and effective cwd. */
   private commandCache = new Map<
@@ -442,6 +489,11 @@ export class SessionManager {
     onSessionUpdated?: SessionUpdatedCallback,
     artifactManager?: ArtifactManager,
     codexQueueDrainHooks: CodexQueueDrainHooks = {},
+    codexSharedRuntimeMutationAllowed?: CodexSharedRuntimeMutationGuard,
+    inputDelivery?: {
+      ledger: InputDeliveryLedger;
+      scope: InputDeliveryScope;
+    },
   ) {
     this.onMessage = onMessage;
     this.imageStore = imageStore ?? null;
@@ -451,6 +503,9 @@ export class SessionManager {
     this.onSessionUpdated = onSessionUpdated ?? null;
     this.artifactManager = artifactManager ?? null;
     this.codexQueueDrainHooks = codexQueueDrainHooks;
+    this.codexSharedRuntimeMutationAllowed = codexSharedRuntimeMutationAllowed;
+    this.inputDeliveryLedger = inputDelivery?.ledger;
+    this.inputDeliveryScope = inputDelivery?.scope;
   }
 
   /**
@@ -547,6 +602,8 @@ export class SessionManager {
     codexOptions: CodexStartOptions,
     replacementReadyTimeoutMs?: number,
     replacementStillValid?: () => boolean,
+    replacementSignal?: AbortSignal,
+    onReplacementCommitted?: (session: SessionInfo) => void,
   ): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       try {
@@ -561,6 +618,8 @@ export class SessionManager {
             replaceSessionId: sessionId,
             replacementReadyTimeoutMs,
             replacementStillValid,
+            replacementSignal,
+            onReplacementCommitted,
             onReplacementReady: () => resolve(sessionId),
             onReplacementFailed: reject,
           },
@@ -594,7 +653,12 @@ export class SessionManager {
     const id = internal?.replaceSessionId ?? randomUUID().slice(0, 8);
     const effectiveProvider = provider ?? "claude";
     const proc =
-      effectiveProvider === "codex" ? new CodexProcess() : new SdkProcess();
+      effectiveProvider === "codex"
+        ? new CodexProcess(
+            process.platform,
+            this.codexSharedRuntimeMutationAllowed,
+          )
+        : new SdkProcess();
 
     // Handle worktree: reuse existing or create new
     let wtPath: string | undefined;
@@ -660,16 +724,30 @@ export class SessionManager {
       forkedFromSessionId: replacementSession?.forkedFromSessionId,
       forkedFromThreadId: replacementSession?.forkedFromThreadId,
       auxiliary: internal?.auxiliary,
+      ...(effectiveProvider === "codex" && codexOptions?.sharedRuntimeAttach
+        ? { codexAttachmentState: "reconciling" as const }
+        : {}),
     };
     const ownsRuntimeSlot = (): boolean =>
       !this.retiredSessions.has(session) &&
       (replacementSession === undefined || this.sessions.get(id) === session);
+    let sharedAttachmentEstablished = false;
     let replacementSettled = false;
     let replacementReadyTimer: ReturnType<typeof setTimeout> | undefined;
+    let replacementAbortListener: (() => void) | undefined;
+    const cleanupReplacementAbort = (): void => {
+      if (!replacementAbortListener) return;
+      internal?.replacementSignal?.removeEventListener(
+        "abort",
+        replacementAbortListener,
+      );
+      replacementAbortListener = undefined;
+    };
     const failReplacement = (error: Error): void => {
       if (!replacementSession || replacementSettled) return;
       replacementSettled = true;
       if (replacementReadyTimer) clearTimeout(replacementReadyTimer);
+      cleanupReplacementAbort();
       proc.removeAllListeners();
       proc.stop();
       internal?.onReplacementFailed?.(error);
@@ -690,6 +768,7 @@ export class SessionManager {
       }
       replacementSettled = true;
       if (replacementReadyTimer) clearTimeout(replacementReadyTimer);
+      cleanupReplacementAbort();
 
       // Recapture mutable phone-owned state at the atomic swap boundary. Queue
       // edits/cancels made while app-server bootstrapped must land on the fresh
@@ -718,7 +797,8 @@ export class SessionManager {
       session.historyLowWatermark = replacementSession.historyLowWatermark;
       session.historyMutationResetRevision =
         replacementSession.historyMutationResetRevision;
-      session.codexInitialHistoryPending = true;
+      session.codexInitialHistoryPending =
+        codexOptions?.sharedRuntimeAttach == null;
       // Carry the user-echo dedup state across the swap. Losing it made the
       // app-server echo of an already-published user turn look brand new on
       // the fresh runtime, re-inserting the same input into history.
@@ -745,6 +825,28 @@ export class SessionManager {
         replacementSession.codexGoalOperationSequence;
       session.codexGoalControlSupported =
         replacementSession.codexGoalControlSupported;
+      if (codexOptions?.sharedRuntimeAttach != null) {
+        // A shared-runtime replacement is deliberately settings-neutral: its
+        // thread/resume request must not replay Mobile's cached settings into
+        // the daemon. The staged system/init frame is also ignored until the
+        // atomic public-session swap. Preserve the last authoritative display
+        // facts from the stable SessionInfo so recovery does not erase model,
+        // effort, speed, or permission metadata while leaving app-server state
+        // untouched.
+        session.codexSettings = replacementSession.codexSettings
+          ? {
+              ...replacementSession.codexSettings,
+              ...(replacementSession.codexSettings.additionalWritableRoots
+                ? {
+                    additionalWritableRoots: [
+                      ...replacementSession.codexSettings
+                        .additionalWritableRoots,
+                    ],
+                  }
+                : {}),
+            }
+          : undefined;
+      }
       session.codexCanonicalHistoryRevision =
         replacementSession.codexCanonicalHistoryRevision;
       session.codexLiveHistoryUserKey =
@@ -765,17 +867,44 @@ export class SessionManager {
       // ignored while the old runtime owned the public session slot.
       // `input_ready` is the authoritative idle boundary; publish that state
       // as part of the same atomic swap before a queued handoff is drained.
-      session.status = "idle";
+      session.status =
+        (proc as CodexProcess & { status?: ProcessStatus }).status ?? "idle";
       session.lastActivityAt = replacementSession.lastActivityAt;
+      if ((proc as CodexProcess).usesSharedRuntimeTopology) {
+        // This listener itself is running for input_ready, so attachment is
+        // already established. Record that fact before publishing the fresh
+        // session: a synchronous follow-up exit must be eligible for another
+        // recovery generation rather than looking like a bootstrap failure.
+        sharedAttachmentEstablished = true;
+        session.codexAttachmentState = "connected";
+      }
 
       this.retiredSessions.add(replacementSession);
       this.sessions.set(id, session);
+      // Recovery coordination must hand off its generation synchronously at
+      // the atomic swap boundary. Waiting for the replacement Promise allows
+      // input_ready followed immediately by exit to be lost behind the old
+      // recovery record.
+      internal?.onReplacementCommitted?.(session);
       replacementSession.process.removeAllListeners();
       replacementSession.process.stop();
       internal?.onReplacementReady?.();
       this.onSessionUpdated?.(id);
       this.evictStaleIdleSessions();
     };
+    if (replacementSession && internal?.replacementSignal) {
+      if (internal.replacementSignal.aborted) {
+        proc.stop();
+        throw new Error("Codex replacement was cancelled");
+      }
+      replacementAbortListener = () =>
+        failReplacement(new Error("Codex replacement was cancelled"));
+      internal.replacementSignal.addEventListener(
+        "abort",
+        replacementAbortListener,
+        { once: true },
+      );
+    }
     if (effectiveProvider === "codex") {
       this.seedCodexPastUserTurnUuidMap(session);
     }
@@ -983,6 +1112,7 @@ export class SessionManager {
             // Codex: capture thread_id for session tracking and worktree restore.
             if (msg.type === "system" && "sessionId" in msg && msg.sessionId) {
               session.claudeSessionId = msg.sessionId;
+              this.restoreInputDeliveryState(session, msg.sessionId);
               if (!session.auxiliary) this.saveWorktreeMapping(session);
               if (!session.auxiliary && session.codexSettings?.profile) {
                 saveCodexSessionProfile(
@@ -1252,7 +1382,15 @@ export class SessionManager {
       }
       proc.on("input_ready", () => {
         if (!ownsRuntimeSlot()) return;
+        if (proc.usesSharedRuntimeTopology) {
+          sharedAttachmentEstablished = true;
+          const attachmentChanged =
+            session.codexAttachmentState !== "connected";
+          session.codexAttachmentState = "connected";
+          if (attachmentChanged) this.onSessionUpdated?.(id);
+        }
         const drain = (): void => {
+          this.emitRecoveredInputDeliveryReceipts(session);
           this.drainCodexQueue(session);
         };
         if (messageProcessing) {
@@ -1263,26 +1401,45 @@ export class SessionManager {
       });
       proc.on("input_delivery", (event) => {
         if (!ownsRuntimeSlot()) return;
+        const publish = (receipt: InputDeliveryReceipt | undefined): void => {
+          if (
+            !receipt ||
+            receipt.stage === "bridge_accepted" ||
+            !receipt.method ||
+            !ownsRuntimeSlot()
+          ) {
+            return;
+          }
+          this.onMessage(session.id, {
+            type: "input_delivery_status_v1",
+            sessionId: session.id,
+            clientMessageId: receipt.clientMessageId,
+            stage: receipt.stage,
+            provider: "codex",
+            method: receipt.method,
+            occurredAt: receipt.occurredAt,
+            acceptedSeq: receipt.acceptedSeq,
+            queued: receipt.queued,
+            ...(receipt.clientUserMessageIdAccepted === undefined
+              ? {}
+              : {
+                  clientUserMessageIdAccepted:
+                    receipt.clientUserMessageIdAccepted,
+                }),
+            ...(receipt.error ? { error: receipt.error } : {}),
+          });
+        };
         const receipt = this.recordProviderInputDelivery(session, event);
-        if (!receipt || !receipt.method) return;
-        this.onMessage(session.id, {
-          type: "input_delivery_status_v1",
-          sessionId: session.id,
-          clientMessageId: receipt.clientMessageId,
-          stage: event.stage,
-          provider: "codex",
-          method: receipt.method,
-          occurredAt: receipt.occurredAt,
-          acceptedSeq: receipt.acceptedSeq,
-          queued: receipt.queued,
-          ...(receipt.clientUserMessageIdAccepted === undefined
-            ? {}
-            : {
-                clientUserMessageIdAccepted:
-                  receipt.clientUserMessageIdAccepted,
-              }),
-          ...(receipt.error ? { error: receipt.error } : {}),
-        });
+        if (receipt instanceof Promise) {
+          void receipt.then(publish).catch((error) => {
+            console.error(
+              "[session] Failed to persist Codex input delivery receipt:",
+              error instanceof Error ? error.name : "UnknownError",
+            );
+          });
+        } else {
+          publish(receipt);
+        }
       });
     }
 
@@ -1301,19 +1458,44 @@ export class SessionManager {
         }
         const sharedRuntimeDisconnected =
           proc instanceof CodexProcess && proc.lastStopWasSharedRuntime;
+        const previousStatus = session.status;
         session.status = sharedRuntimeDisconnected ? "starting" : "idle";
-        if (!sharedRuntimeDisconnected) {
+        if (sharedRuntimeDisconnected) {
+          session.codexAttachmentState = "unavailable";
+        }
+        if (
+          !sharedRuntimeDisconnected &&
+          !(
+            session.codexQueuedInput?.clientMessageId &&
+            this.inputDeliveryLedger
+          )
+        ) {
           session.codexQueuedInput = undefined;
         }
-        // Add status after every already-emitted provider message.
-        this.appendHistoryToSession(session, {
-          type: "status",
-          status: session.status,
-        } as ServerMessage);
+        // Add the disconnect boundary after every already-emitted provider
+        // message, but only once. Retry phases change attachment authority,
+        // not the public process status, and must not duplicate `starting`.
+        if (!sharedRuntimeDisconnected || previousStatus !== session.status) {
+          this.appendHistoryToSession(session, {
+            type: "status",
+            status: session.status,
+          } as ServerMessage);
+        }
+        if (sharedRuntimeDisconnected && previousStatus !== session.status) {
+          this.onMessage(id, {
+            type: "status",
+            status: session.status,
+          } as ServerMessage);
+        }
         if (session.provider === "codex") {
           this.broadcastCodexQueue(session);
         }
-        if (session.auxiliary) this.onSessionUpdated?.(id);
+        if (sharedRuntimeDisconnected || session.auxiliary) {
+          this.onSessionUpdated?.(id);
+        }
+        if (sharedRuntimeDisconnected && sharedAttachmentEstablished) {
+          this.beginSharedCodexAttachmentRecovery(session);
+        }
         this.evictStaleIdleSessions();
       };
       if (messageProcessing) {
@@ -1371,6 +1553,7 @@ export class SessionManager {
       // Resume starts know the thread id up front.
       if (codexOptions.threadId) {
         session.claudeSessionId = codexOptions.threadId;
+        this.restoreInputDeliveryState(session, codexOptions.threadId);
         this.saveWorktreeMapping(session);
         if (codexOptions.profile) {
           saveCodexSessionProfile(
@@ -1406,6 +1589,7 @@ export class SessionManager {
     } catch (error) {
       // A replacement must fail atomically: the old session remains mapped
       // and usable if the new provider cannot even start.
+      cleanupReplacementAbort();
       proc.removeAllListeners();
       proc.stop();
       throw error;
@@ -2063,6 +2247,326 @@ export class SessionManager {
     return "";
   }
 
+  private inputDeliveryIdentity(
+    session: SessionInfo,
+    clientMessageId: string,
+  ): InputDeliveryIdentity | undefined {
+    if (
+      !this.inputDeliveryLedger ||
+      !this.inputDeliveryScope ||
+      session.provider !== "codex"
+    ) {
+      return undefined;
+    }
+    const providerThreadId =
+      session.claudeSessionId ?? session.process.sessionId ?? undefined;
+    if (!providerThreadId) return undefined;
+    return {
+      ...this.inputDeliveryScope,
+      providerThreadId,
+      clientMessageId,
+    };
+  }
+
+  private restoreInputDeliveryState(
+    session: SessionInfo,
+    providerThreadId: string,
+  ): void {
+    if (!this.inputDeliveryLedger || !this.inputDeliveryScope) return;
+    if (this.inputDeliveryRestoredThreads.get(session) === providerThreadId) {
+      return;
+    }
+    this.inputDeliveryRestoredThreads.set(session, providerThreadId);
+    const plan = this.inputDeliveryLedger.recoveryPlan(
+      this.inputDeliveryScope,
+      providerThreadId,
+    );
+    if (plan.records.length === 0) return;
+
+    const receipts = new Map<string, InputDeliveryReceipt>();
+    for (const record of plan.records) {
+      receipts.set(
+        record.clientMessageId,
+        this.receiptFromDurableInput(record),
+      );
+    }
+    session.inputDeliveryReceipts = receipts;
+
+    const replay = [...plan.replay].sort((left, right) =>
+      left.record.occurredAt.localeCompare(right.record.occurredAt),
+    );
+    const selected = replay.shift();
+    if (selected) {
+      const { record, payload, requireClientUserMessageId } = selected;
+      session.codexQueuedInput = {
+        ...payload,
+        clientMessageId: record.clientMessageId,
+        recoveryRequiresClientUserMessageId: requireClientUserMessageId,
+      };
+    }
+
+    const forcedUnknown = [
+      ...plan.outcomeUnknown,
+      ...replay.map(({ record }) => record),
+    ];
+    for (const record of forcedUnknown) {
+      const error = record.containsImages
+        ? "Bridge restarted during image delivery; the image input was not replayed."
+        : record.method === "turn/steer"
+          ? "Bridge restarted during turn guidance; the stale guidance was not replayed."
+          : "Bridge restarted after provider delivery may have begun; the input was not replayed.";
+      receipts.set(record.clientMessageId, {
+        clientMessageId: record.clientMessageId,
+        stage: "provider_rejected",
+        acceptedSeq: record.acceptedSeq,
+        queued: record.queued,
+        provider: "codex",
+        method: record.method ?? "turn/start",
+        occurredAt: new Date().toISOString(),
+        clientUserMessageIdAccepted: false,
+        error,
+      });
+      void this.inputDeliveryLedger
+        .markOutcomeUnknown(record, error)
+        .catch((failure) => {
+          console.error(
+            "[session] Failed to persist an unknown input delivery outcome:",
+            failure instanceof Error ? failure.name : "UnknownError",
+          );
+        });
+    }
+
+    const terminalReceipts = [...receipts.values()]
+      .filter((receipt) => receipt.stage !== "bridge_accepted")
+      .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
+      .slice(0, 16);
+    if (terminalReceipts.length > 0) {
+      this.recoveredReceiptsToEmit.set(session, terminalReceipts);
+    }
+  }
+
+  private receiptFromDurableInput(
+    record: DurableInputDeliveryRecord,
+  ): InputDeliveryReceipt {
+    const stage: InputDeliveryStage =
+      record.state === "provider_accepted"
+        ? "provider_accepted"
+        : record.state === "provider_rejected" ||
+            record.state === "outcome_unknown" ||
+            record.state === "cancelled"
+          ? "provider_rejected"
+          : "bridge_accepted";
+    return {
+      clientMessageId: record.clientMessageId,
+      stage,
+      acceptedSeq: record.acceptedSeq,
+      queued: record.queued,
+      ...(stage === "bridge_accepted"
+        ? {}
+        : {
+            provider: "codex" as const,
+            method: record.method ?? ("turn/start" as const),
+          }),
+      occurredAt: record.occurredAt,
+      ...(record.clientUserMessageIdAccepted === undefined
+        ? {}
+        : {
+            clientUserMessageIdAccepted: record.clientUserMessageIdAccepted,
+          }),
+      ...(record.error ? { error: record.error } : {}),
+    };
+  }
+
+  private emitRecoveredInputDeliveryReceipts(session: SessionInfo): void {
+    if (this.recoveredReceiptEmission.has(session)) return;
+    this.recoveredReceiptEmission.add(session);
+    for (const receipt of this.recoveredReceiptsToEmit.get(session) ?? []) {
+      if (!receipt.method || receipt.stage === "bridge_accepted") continue;
+      this.onMessage(session.id, {
+        type: "input_delivery_status_v1",
+        sessionId: session.id,
+        clientMessageId: receipt.clientMessageId,
+        stage: receipt.stage,
+        provider: "codex",
+        method: receipt.method,
+        occurredAt: receipt.occurredAt,
+        acceptedSeq: receipt.acceptedSeq,
+        queued: receipt.queued,
+        ...(receipt.clientUserMessageIdAccepted === undefined
+          ? {}
+          : {
+              clientUserMessageIdAccepted: receipt.clientUserMessageIdAccepted,
+            }),
+        ...(receipt.error ? { error: receipt.error } : {}),
+      });
+    }
+    this.recoveredReceiptsToEmit.delete(session);
+  }
+
+  async queueCodexInputDurably(
+    id: string,
+    input: QueuedCodexInput,
+    acceptedSeq: number,
+  ): Promise<boolean> {
+    const session = this.sessions.get(id);
+    if (!session || session.provider !== "codex") return false;
+    if (!input.clientMessageId || !this.inputDeliveryLedger) {
+      return this.queueCodexInput(id, input);
+    }
+    const identity = this.inputDeliveryIdentity(session, input.clientMessageId);
+    if (!identity) {
+      throw new InputDeliveryLedgerError(
+        "unavailable",
+        "The Codex thread identity is not ready for durable delivery.",
+      );
+    }
+    await this.inputDeliveryLedger.admit({
+      identity,
+      acceptedSeq,
+      queued: true,
+      payload: this.durablePayloadFromQueue(input),
+      containsImages: Boolean(
+        input.imageCount || input.images?.length || input.imageRefs?.length,
+      ),
+    });
+    const current = this.sessions.get(id);
+    if (current !== session || current.codexQueuedInput) {
+      await this.inputDeliveryLedger.markOutcomeUnknown(
+        identity,
+        "The runtime queue changed while durable admission was being committed; the input was not enqueued.",
+      );
+      return false;
+    }
+    return this.queueCodexInput(id, input);
+  }
+
+  async prepareImmediateCodexInputDelivery(
+    id: string,
+    input: QueuedCodexInput,
+    acceptedSeq: number,
+  ): Promise<InputDeliveryReceipt | undefined> {
+    const session = this.sessions.get(id);
+    if (!session || session.provider !== "codex" || !input.clientMessageId) {
+      return undefined;
+    }
+    if (!this.inputDeliveryLedger) {
+      return this.recordInputBridgeAcceptance(
+        id,
+        input.clientMessageId,
+        acceptedSeq,
+        false,
+      );
+    }
+    const identity = this.inputDeliveryIdentity(session, input.clientMessageId);
+    if (!identity) {
+      throw new InputDeliveryLedgerError(
+        "unavailable",
+        "The Codex thread identity is not ready for durable delivery.",
+      );
+    }
+    const admitted = await this.inputDeliveryLedger.admit({
+      identity,
+      acceptedSeq,
+      queued: false,
+      payload: this.durablePayloadFromQueue(input),
+      containsImages: Boolean(
+        input.imageCount || input.images?.length || input.imageRefs?.length,
+      ),
+    });
+    const receipt = this.receiptFromDurableInput(admitted.record);
+    this.storeInputDeliveryReceipt(session, receipt);
+    return receipt;
+  }
+
+  async updateCodexQueuedInputDurably(
+    id: string,
+    itemId: string,
+    text: string,
+    options?: {
+      skills?: Array<{ name: string; path: string }>;
+      mentions?: Array<{ name: string; path: string }>;
+    },
+  ): Promise<boolean> {
+    const session = this.sessions.get(id);
+    const current = session?.codexQueuedInput;
+    if (!session || session.provider !== "codex" || !current) return false;
+    if (!current.clientMessageId || !this.inputDeliveryLedger) {
+      return this.updateCodexQueuedInput(id, itemId, text, options);
+    }
+    if (current.itemId !== itemId) return false;
+    const identity = this.inputDeliveryIdentity(
+      session,
+      current.clientMessageId,
+    );
+    if (!identity) {
+      throw new InputDeliveryLedgerError(
+        "unavailable",
+        "The Codex thread identity is not ready for durable delivery.",
+      );
+    }
+    const next: QueuedCodexInput = {
+      ...current,
+      text,
+      updatedAt: new Date().toISOString(),
+      skills: options?.skills,
+      mentions: options?.mentions,
+    };
+    await this.inputDeliveryLedger.updateQueued(
+      identity,
+      this.durablePayloadFromQueue(next),
+    );
+    if (this.sessions.get(id)?.codexQueuedInput !== current) return false;
+    session.codexQueuedInput = next;
+    session.lastActivityAt = new Date();
+    this.broadcastCodexQueue(session);
+    return true;
+  }
+
+  async cancelCodexQueuedInputDurably(
+    id: string,
+    itemId: string,
+  ): Promise<boolean> {
+    const session = this.sessions.get(id);
+    const current = session?.codexQueuedInput;
+    if (!session || session.provider !== "codex" || !current) return false;
+    if (!current.clientMessageId || !this.inputDeliveryLedger) {
+      return this.cancelCodexQueuedInput(id, itemId);
+    }
+    if (current.itemId !== itemId) return false;
+    const identity = this.inputDeliveryIdentity(
+      session,
+      current.clientMessageId,
+    );
+    if (!identity) {
+      throw new InputDeliveryLedgerError(
+        "unavailable",
+        "The Codex thread identity is not ready for durable delivery.",
+      );
+    }
+    await this.inputDeliveryLedger.cancel(identity);
+    if (this.sessions.get(id)?.codexQueuedInput !== current) return false;
+    session.codexQueuedInput = undefined;
+    session.lastActivityAt = new Date();
+    this.broadcastCodexQueue(session);
+    return true;
+  }
+
+  private durablePayloadFromQueue(
+    input: QueuedCodexInput,
+  ): DurableInputPayload {
+    return {
+      itemId: input.itemId,
+      text: input.text,
+      createdAt: input.createdAt,
+      ...(input.updatedAt ? { updatedAt: input.updatedAt } : {}),
+      ...(input.userMessageUuid
+        ? { userMessageUuid: input.userMessageUuid }
+        : {}),
+      ...(input.skills ? { skills: input.skills } : {}),
+      ...(input.mentions ? { mentions: input.mentions } : {}),
+    };
+  }
+
   queueCodexInput(id: string, input: QueuedCodexInput): boolean {
     const session = this.sessions.get(id);
     if (!session || session.provider !== "codex") return false;
@@ -2105,6 +2609,25 @@ export class SessionManager {
     clientMessageId: string,
   ): InputDeliveryReceipt | undefined {
     return this.sessions.get(id)?.inputDeliveryReceipts?.get(clientMessageId);
+  }
+
+  recordCodexInputDispatchFailure(
+    id: string,
+    clientMessageId: string,
+    error: unknown,
+  ):
+    | InputDeliveryReceipt
+    | undefined
+    | Promise<InputDeliveryReceipt | undefined> {
+    const session = this.sessions.get(id);
+    if (!session || session.provider !== "codex") return undefined;
+    return this.recordProviderInputDelivery(session, {
+      clientMessageId,
+      stage: "provider_rejected",
+      method: "turn/start",
+      occurredAt: new Date().toISOString(),
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   updateCodexQueuedInput(
@@ -2152,6 +2675,7 @@ export class SessionManager {
     itemId: string,
     expectedTurnId: string,
     isExpectedTurnCurrent?: () => boolean,
+    allowExternalSharedRuntimeTurn = false,
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     const session = this.sessions.get(id);
     if (!session || session.provider !== "codex") {
@@ -2186,11 +2710,33 @@ export class SessionManager {
           error: "The target turn changed before guidance was applied.",
         };
       }
-      await session.process.steerTurnStructured(
-        expectedTurnId,
-        queued.text,
-        options,
-      );
+      if (queued.clientMessageId && this.inputDeliveryLedger) {
+        const identity = this.inputDeliveryIdentity(
+          session,
+          queued.clientMessageId,
+        );
+        if (!identity) {
+          return {
+            ok: false,
+            error:
+              "The Codex thread identity is not ready for durable delivery.",
+          };
+        }
+        await this.inputDeliveryLedger.markDispatching(identity, "turn/steer");
+      }
+      if (allowExternalSharedRuntimeTurn) {
+        await session.process.steerExternalTurnStructured(
+          expectedTurnId,
+          queued.text,
+          options,
+        );
+      } else {
+        await session.process.steerTurnStructured(
+          expectedTurnId,
+          queued.text,
+          options,
+        );
+      }
     } catch (err) {
       return {
         ok: false,
@@ -2258,14 +2804,89 @@ export class SessionManager {
     return this.drainCodexQueue(session);
   }
 
+  private sharedCodexQueueDrainIsSafe(session: SessionInfo): boolean {
+    if (!(session.process instanceof CodexProcess)) return false;
+    const process = session.process;
+    if (!process.usesSharedRuntimeTopology) return true;
+    if (
+      session.codexAttachmentState !== "connected" ||
+      !process.isAttachmentReady
+    ) {
+      return false;
+    }
+    return !process.activeTurnId || process.activeTurnIsBridgeOwned;
+  }
+
   private drainCodexQueue(session: SessionInfo): boolean {
     if (session.provider !== "codex") return false;
     const queued = session.codexQueuedInput;
     if (!queued || !(session.process instanceof CodexProcess)) return false;
     if (!session.process.isWaitingForInput) return false;
+    if (!this.sharedCodexQueueDrainIsSafe(session)) {
+      this.codexQueueDrainHooks.onBlocked?.(session);
+      return false;
+    }
     if (this.codexQueueDrainHooks.canDrain?.(session) === false) {
       this.codexQueueDrainHooks.onBlocked?.(session);
       return false;
+    }
+
+    if (queued.clientMessageId && this.inputDeliveryLedger) {
+      const identity = this.inputDeliveryIdentity(
+        session,
+        queued.clientMessageId,
+      );
+      if (!identity) {
+        this.codexQueueDrainHooks.onBlocked?.(session);
+        return false;
+      }
+      if (this.codexQueueDrainInFlight.has(session.id)) return true;
+      this.codexQueueDrainInFlight.set(session.id, queued);
+      void this.inputDeliveryLedger
+        .markDispatching(identity, "turn/start")
+        .then(() => {
+          const current = this.sessions.get(session.id);
+          if (
+            current !== session ||
+            current.codexQueuedInput !== queued ||
+            !(current.process instanceof CodexProcess) ||
+            !current.process.isWaitingForInput ||
+            !this.sharedCodexQueueDrainIsSafe(current) ||
+            this.codexQueueDrainHooks.canDrain?.(current) === false
+          ) {
+            return;
+          }
+          this.dispatchCodexQueueNow(current, queued);
+        })
+        .catch((error) => {
+          console.error(
+            "[session] Failed to persist Codex queue dispatch:",
+            error instanceof Error ? error.name : "UnknownError",
+          );
+          this.codexQueueDrainHooks.onBlocked?.(session);
+        })
+        .finally(() => {
+          if (this.codexQueueDrainInFlight.get(session.id) === queued) {
+            this.codexQueueDrainInFlight.delete(session.id);
+          }
+        });
+      return true;
+    }
+
+    this.dispatchCodexQueueNow(session, queued);
+    return true;
+  }
+
+  private dispatchCodexQueueNow(
+    session: SessionInfo,
+    queued: QueuedCodexInput,
+  ): void {
+    if (
+      this.sessions.get(session.id) !== session ||
+      session.codexQueuedInput !== queued ||
+      !(session.process instanceof CodexProcess)
+    ) {
+      return;
     }
 
     session.codexQueuedInput = undefined;
@@ -2276,15 +2897,221 @@ export class SessionManager {
     this.markPendingCodexUserEcho(session, userMsg);
     this.onMessage(session.id, userMsg);
 
-    session.process.sendInputStructured(queued.text, {
-      images: queued.images,
-      skills: queued.skills,
-      mentions: queued.mentions,
-      ...(queued.clientMessageId
-        ? { clientMessageId: queued.clientMessageId }
-        : {}),
-    });
-    return true;
+    try {
+      session.process.sendInputStructured(queued.text, {
+        images: queued.images,
+        skills: queued.skills,
+        mentions: queued.mentions,
+        ...(queued.clientMessageId
+          ? { clientMessageId: queued.clientMessageId }
+          : {}),
+        ...(queued.recoveryRequiresClientUserMessageId
+          ? { requireClientUserMessageId: true }
+          : {}),
+      });
+    } catch (error) {
+      if (!queued.clientMessageId) throw error;
+      const pendingReceipt = this.recordCodexInputDispatchFailure(
+        session.id,
+        queued.clientMessageId,
+        error,
+      );
+      const publish = (receipt: InputDeliveryReceipt | undefined): void => {
+        if (
+          !receipt ||
+          receipt.stage === "bridge_accepted" ||
+          !receipt.method ||
+          this.sessions.get(session.id) !== session
+        ) {
+          return;
+        }
+        this.onMessage(session.id, {
+          type: "input_delivery_status_v1",
+          sessionId: session.id,
+          clientMessageId: receipt.clientMessageId,
+          stage: receipt.stage,
+          provider: "codex",
+          method: receipt.method,
+          occurredAt: receipt.occurredAt,
+          acceptedSeq: receipt.acceptedSeq,
+          queued: receipt.queued,
+          ...(receipt.error ? { error: receipt.error } : {}),
+        });
+      };
+      if (pendingReceipt instanceof Promise) {
+        void pendingReceipt.then(publish).catch((failure) => {
+          console.error(
+            "[session] Failed to persist Codex queue dispatch rejection:",
+            failure instanceof Error ? failure.name : "UnknownError",
+          );
+        });
+      } else {
+        publish(pendingReceipt);
+      }
+    }
+  }
+
+  private notifySharedAttachmentState(
+    session: SessionInfo,
+    state: "connected" | "reconciling" | "unavailable",
+  ): void {
+    if (this.sessions.get(session.id) !== session) return;
+    const previousState = session.codexAttachmentState;
+    const previousStatus = session.status;
+    session.codexAttachmentState = state;
+    if (state !== "connected") session.status = "starting";
+    if (
+      previousState === session.codexAttachmentState &&
+      previousStatus === session.status
+    ) {
+      return;
+    }
+    // Attachment-state changes are projected through the runtime state engine
+    // and session-list update. Do not rebroadcast the same public `starting`
+    // status on every retry phase; that created duplicate status/history/UI
+    // churn without adding information.
+    if (previousStatus !== session.status) {
+      this.onMessage(session.id, {
+        type: "status",
+        status: session.status,
+      } as ServerMessage);
+    }
+    this.onSessionUpdated?.(session.id);
+  }
+
+  private beginSharedCodexAttachmentRecovery(session: SessionInfo): void {
+    if (
+      this.sessions.get(session.id) !== session ||
+      session.provider !== "codex" ||
+      !(session.process instanceof CodexProcess) ||
+      !session.claudeSessionId ||
+      this.sharedAttachmentRecoveries.has(session.id)
+    ) {
+      return;
+    }
+    const recovery: SharedCodexAttachmentRecovery = {
+      generation: ++this.sharedAttachmentGeneration,
+      attempt: 0,
+      session,
+    };
+    this.sharedAttachmentRecoveries.set(session.id, recovery);
+    this.scheduleSharedCodexAttachmentRecovery(recovery);
+  }
+
+  private scheduleSharedCodexAttachmentRecovery(
+    recovery: SharedCodexAttachmentRecovery,
+  ): void {
+    if (this.sharedAttachmentRecoveries.get(recovery.session.id) !== recovery) {
+      return;
+    }
+    const delayMs = Math.min(
+      SHARED_ATTACHMENT_RETRY_MAX_MS,
+      SHARED_ATTACHMENT_RETRY_INITIAL_MS * 2 ** Math.min(recovery.attempt, 8),
+    );
+    recovery.timer = setTimeout(() => {
+      recovery.timer = undefined;
+      void this.attemptSharedCodexAttachmentRecovery(recovery);
+    }, delayMs);
+    recovery.timer.unref?.();
+  }
+
+  private async attemptSharedCodexAttachmentRecovery(
+    recovery: SharedCodexAttachmentRecovery,
+  ): Promise<void> {
+    const sessionId = recovery.session.id;
+    if (
+      this.sharedAttachmentRecoveries.get(sessionId) !== recovery ||
+      this.sessions.get(sessionId) !== recovery.session
+    ) {
+      return;
+    }
+    const threadId = recovery.session.claudeSessionId;
+    if (!threadId) {
+      this.cancelSharedCodexAttachmentRecovery(sessionId);
+      return;
+    }
+
+    this.notifySharedAttachmentState(recovery.session, "reconciling");
+    const abortController = new AbortController();
+    recovery.replacementAbort = abortController;
+    const recoveryGeneration = recovery.generation;
+    let committed = false;
+    const recoveryStillCurrent = (): boolean =>
+      this.sharedAttachmentRecoveries.get(sessionId) === recovery &&
+      recovery.generation === recoveryGeneration;
+    const stillValid = (): boolean =>
+      recoveryStillCurrent() &&
+      this.sessions.get(sessionId) === recovery.session;
+    try {
+      await this.replaceCodexSession(
+        sessionId,
+        recovery.session.projectPath,
+        [],
+        recovery.session.worktreePath
+          ? {
+              existingWorktreePath: recovery.session.worktreePath,
+              worktreeBranch: recovery.session.worktreeBranch,
+            }
+          : undefined,
+        {
+          threadId,
+          sharedRuntimeAttach: "adoption",
+        },
+        SHARED_ATTACHMENT_READY_TIMEOUT_MS,
+        stillValid,
+        abortController.signal,
+        (attachedSession) => {
+          // `commitReplacement` has already atomically installed the fresh
+          // session, so the pre-commit identity predicate is expected to be
+          // false here. The recovery record/generation is the handoff fence.
+          if (!recoveryStillCurrent()) return;
+          committed = true;
+          recovery.replacementAbort = undefined;
+          // Delete the old recovery record before any callback or subsequent
+          // process event can run. A replacement that exits immediately after
+          // input_ready will then create a fresh recovery generation.
+          this.sharedAttachmentRecoveries.delete(sessionId);
+          attachedSession.codexAttachmentState = "connected";
+          if (attachedSession.status !== recovery.session.status) {
+            const statusMessage = {
+              type: "status",
+              status: attachedSession.status,
+            } as ServerMessage;
+            this.appendHistoryToSession(attachedSession, statusMessage);
+            this.onMessage(sessionId, statusMessage);
+          }
+        },
+      );
+    } catch {
+      if (this.sharedAttachmentRecoveries.get(sessionId) !== recovery) return;
+      recovery.replacementAbort = undefined;
+      recovery.attempt += 1;
+      this.notifySharedAttachmentState(recovery.session, "unavailable");
+      this.scheduleSharedCodexAttachmentRecovery(recovery);
+      return;
+    }
+
+    // A successful commit synchronously removed this recovery generation at
+    // the swap boundary. If it did not, treat the result as non-authoritative
+    // and retry against the still-current public session.
+    if (committed) return;
+    if (this.sharedAttachmentRecoveries.get(sessionId) !== recovery) return;
+    recovery.replacementAbort = undefined;
+    if (this.sessions.get(sessionId) !== recovery.session) {
+      this.sharedAttachmentRecoveries.delete(sessionId);
+      return;
+    }
+    recovery.attempt += 1;
+    this.notifySharedAttachmentState(recovery.session, "unavailable");
+    this.scheduleSharedCodexAttachmentRecovery(recovery);
+  }
+
+  private cancelSharedCodexAttachmentRecovery(sessionId: string): void {
+    const recovery = this.sharedAttachmentRecoveries.get(sessionId);
+    if (!recovery) return;
+    this.sharedAttachmentRecoveries.delete(sessionId);
+    if (recovery.timer) clearTimeout(recovery.timer);
+    recovery.replacementAbort?.abort();
   }
 
   private buildQueuedUserInputMessage(queued: QueuedCodexInput): ServerMessage {
@@ -2306,7 +3133,10 @@ export class SessionManager {
   private recordProviderInputDelivery(
     session: SessionInfo,
     event: CodexInputDeliveryEvent,
-  ): InputDeliveryReceipt | undefined {
+  ):
+    | InputDeliveryReceipt
+    | undefined
+    | Promise<InputDeliveryReceipt | undefined> {
     const existing = session.inputDeliveryReceipts?.get(event.clientMessageId);
     if (
       existing?.stage === "provider_accepted" ||
@@ -2314,26 +3144,51 @@ export class SessionManager {
     ) {
       return undefined;
     }
-    const receipt: InputDeliveryReceipt = {
-      clientMessageId: event.clientMessageId,
-      stage: event.stage,
-      acceptedSeq: existing?.acceptedSeq ?? session.historyRevision,
-      queued: existing?.queued ?? false,
-      provider: "codex",
-      method: event.method,
-      occurredAt: event.occurredAt,
-      ...(event.clientUserMessageIdAccepted === undefined
-        ? {}
+    const publish = (
+      durable?: DurableInputDeliveryRecord,
+    ): InputDeliveryReceipt => {
+      const receipt: InputDeliveryReceipt = durable
+        ? this.receiptFromDurableInput(durable)
         : {
-            clientUserMessageIdAccepted: event.clientUserMessageIdAccepted,
-          }),
-      ...(event.error ? { error: event.error } : {}),
+            clientMessageId: event.clientMessageId,
+            stage: event.stage,
+            acceptedSeq: existing?.acceptedSeq ?? session.historyRevision,
+            queued: existing?.queued ?? false,
+            provider: "codex",
+            method: event.method,
+            occurredAt: event.occurredAt,
+            ...(event.clientUserMessageIdAccepted === undefined
+              ? {}
+              : {
+                  clientUserMessageIdAccepted:
+                    event.clientUserMessageIdAccepted,
+                }),
+            ...(event.error ? { error: event.error } : {}),
+          };
+      this.storeInputDeliveryReceipt(session, receipt);
+      if (session.codexQueuedInput?.clientMessageId === event.clientMessageId) {
+        this.broadcastCodexQueue(session);
+      }
+      return receipt;
     };
-    this.storeInputDeliveryReceipt(session, receipt);
-    if (session.codexQueuedInput?.clientMessageId === event.clientMessageId) {
-      this.broadcastCodexQueue(session);
+    const identity = this.inputDeliveryIdentity(session, event.clientMessageId);
+    if (this.inputDeliveryLedger && identity) {
+      return this.inputDeliveryLedger
+        .recordProviderOutcome({
+          identity,
+          stage: event.stage,
+          method: event.method,
+          occurredAt: event.occurredAt,
+          ...(event.clientUserMessageIdAccepted === undefined
+            ? {}
+            : {
+                clientUserMessageIdAccepted: event.clientUserMessageIdAccepted,
+              }),
+          ...(event.error ? { error: event.error } : {}),
+        })
+        .then(publish);
     }
-    return receipt;
+    return publish();
   }
 
   private storeInputDeliveryReceipt(
@@ -2644,6 +3499,7 @@ export class SessionManager {
   destroy(id: string): boolean {
     const session = this.sessions.get(id);
     if (!session) return false;
+    this.cancelSharedCodexAttachmentRecovery(id);
     const childIds = Array.from(this.sessions.values())
       .filter(
         (candidate) =>

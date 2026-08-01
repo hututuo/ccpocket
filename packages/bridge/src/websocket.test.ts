@@ -233,6 +233,9 @@ vi.mock("./session.js", async () => {
         isAttachmentReady: true,
         waitUntilAttached: vi.fn(async () => {}),
         activeTurnId: undefined as string | undefined,
+        _authorityGeneration: "authority-test-1",
+        usesSharedRuntimeTopology: false,
+        authoritativeThreadStatus: { type: "idle" },
         hasPendingCoreAction: false,
         sessionId:
           codexOptions &&
@@ -255,6 +258,24 @@ vi.mock("./session.js", async () => {
           this: any,
           value: Record<string, unknown>,
         ) {
+          if (value.approvalPolicy !== undefined) {
+            this.approvalPolicy = value.approvalPolicy ?? "on-request";
+          }
+          if (value.approvalsReviewer !== undefined) {
+            this.approvalsReviewer = value.approvalsReviewer ?? "user";
+          }
+        }),
+        updateSharedRuntimeSettingsForNextTurn: vi.fn(async function (
+          this: any,
+          value: Record<string, unknown>,
+        ) {
+          if (value.model !== undefined) this.model = value.model;
+          if (value.modelReasoningEffort !== undefined) {
+            this.modelReasoningEffort = value.modelReasoningEffort;
+          }
+          if (value.serviceTier !== undefined) {
+            this.serviceTier = value.serviceTier;
+          }
           if (value.approvalPolicy !== undefined) {
             this.approvalPolicy = value.approvalPolicy ?? "on-request";
           }
@@ -328,6 +349,7 @@ vi.mock("./session.js", async () => {
         sendInputWithImages: vi.fn(() => false),
         steerInputStructured: vi.fn(async () => {}),
         steerTurnStructured: vi.fn(async () => {}),
+        steerExternalTurnStructured: vi.fn(async () => {}),
         approve: vi.fn(),
         approveAlways: vi.fn(),
         reject: vi.fn(),
@@ -494,6 +516,7 @@ vi.mock("./session.js", async () => {
       itemId: string,
       expectedTurnId: string,
       isExpectedTurnCurrent?: () => boolean,
+      allowExternalSharedRuntimeTurn = false,
     ) {
       const session = this.sessions.get(id);
       if (!session || session.provider !== "codex") {
@@ -516,11 +539,24 @@ vi.mock("./session.js", async () => {
             error: "The target turn changed before guidance was applied.",
           };
         }
-        await session.process.steerTurnStructured(expectedTurnId, queued.text, {
+        const options = {
           images: queued.images,
           skills: queued.skills,
           mentions: queued.mentions,
-        });
+        };
+        if (allowExternalSharedRuntimeTurn) {
+          await session.process.steerExternalTurnStructured(
+            expectedTurnId,
+            queued.text,
+            options,
+          );
+        } else {
+          await session.process.steerTurnStructured(
+            expectedTurnId,
+            queued.text,
+            options,
+          );
+        }
       } catch (err) {
         return {
           ok: false,
@@ -771,10 +807,35 @@ vi.mock("./session.js", async () => {
 });
 
 import { BridgeWebSocketServer, isPrivateOrigin } from "./websocket.js";
-import { CodexProcess, CodexRpcError } from "./codex-process.js";
+import {
+  CodexProcess,
+  CodexRpcError,
+  CodexSharedRuntimeTurnOwnershipError,
+} from "./codex-process.js";
 import { ArtifactResolveError } from "./artifact-manager.js";
 import { GalleryStore } from "./gallery-store.js";
 import { WebSocket as WsClient } from "ws";
+import type {
+  CodexActionBrokerRuntime,
+  CodexActionBrokerRuntimeHealth,
+  CodexActionBrokerRuntimeUpdate,
+} from "./codex-action-broker-runtime.js";
+
+function writableCodexActionBrokerRuntime(): CodexActionBrokerRuntime {
+  return {
+    health: {
+      ready: true,
+      controlReady: true,
+      degraded: false,
+      writerLeaseHeld: true,
+      authorityGeneration: "cab:test:1",
+    },
+    listRequests: vi.fn(() => []),
+    currentRequestForThread: vi.fn(),
+    respond: vi.fn(async () => ({ outcome: "submitted" as const })),
+    subscribe: vi.fn(() => () => undefined),
+  } as unknown as CodexActionBrokerRuntime;
+}
 
 describe("BridgeWebSocketServer resume/get_history flow", () => {
   const OPEN_STATE = 1;
@@ -866,6 +927,8 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
           "git_diff_request_correlation_v1",
           "git_project_result_correlation_v1",
           "durable_session_insights_v1",
+          "bridge_application_readiness_v1",
+          "codex_runtime_detach_v1",
         ]),
       }),
     );
@@ -877,6 +940,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     );
     expect(initialSessionList.bridgeCapabilities).not.toContain(
       "file_transfer_upload_auth_v1",
+    );
+    expect(initialSessionList.bridgeCapabilities).not.toContain(
+      "scoped_context_usage_v1",
     );
 
     const binding = fileTransfer.connect.mock.calls[0][1];
@@ -968,6 +1034,612 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(fileTransfer.disconnect).toHaveBeenCalledWith(ws);
     await bridge.close();
     expect(fileTransfer.close).toHaveBeenCalledOnce();
+  });
+
+  it("does not advertise JSONL desktop continuity in daemon mode", async () => {
+    vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    (bridge as any).bridgeInstanceId = "bridge-daemon-test";
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+      on: vi.fn(),
+    } as any;
+
+    (bridge as any).handleConnection(ws, {
+      headers: { host: "127.0.0.1:8765" },
+      socket: {},
+    });
+    const sessionList = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "session_list");
+    expect(sessionList.bridgeCapabilities).not.toContain(
+      "codex_desktop_continuity_v1",
+    );
+    expect(sessionList.bridgeCapabilities).toEqual(
+      expect.arrayContaining([
+        "bridge_application_readiness_v1",
+        "codex_runtime_detach_v1",
+        "scoped_context_usage_v1",
+      ]),
+    );
+
+    await bridge.close();
+  });
+
+  it("keeps the Action Broker capability advertised for standby, leader, and not-ready daemon states", async () => {
+    vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
+    const runtimeListeners: Array<
+      (update: CodexActionBrokerRuntimeUpdate) => void
+    > = [];
+    const health: CodexActionBrokerRuntimeHealth = {
+      ready: false,
+      controlReady: true,
+      degraded: false,
+      writerLeaseHeld: false,
+      degradedReason: "writer_lease_unavailable" as const,
+    };
+    const request = {
+      opaqueRequestId: "opaque-action",
+      codexSourceId: "source-action",
+      threadId: "thread-action",
+      turnId: "turn-action",
+      kind: "command_approval" as const,
+      state: "pending" as const,
+      observedAt: "2026-08-01T00:00:00.000Z",
+      expiresAt: "2026-08-02T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+      authorityGeneration: "cab:1:1",
+      live: true,
+      toolName: "Bash",
+      input: { command: "pwd" },
+      allowedActions: ["approve", "reject"] as const,
+    };
+    const respond = vi.fn(async () =>
+      health.ready
+        ? ({ outcome: "submitted", request } as const)
+        : ({ outcome: "unavailable" } as const),
+    );
+    const actionRuntime = {
+      get health() {
+        return health;
+      },
+      listRequests: vi.fn(() => [request]),
+      currentRequestForThread: vi.fn(() => request),
+      respond,
+      subscribe: vi.fn(
+        (next: (update: CodexActionBrokerRuntimeUpdate) => void) => {
+          runtimeListeners.push(next);
+          return () => {
+            const index = runtimeListeners.indexOf(next);
+            if (index >= 0) runtimeListeners.splice(index, 1);
+          };
+        },
+      ),
+    } as unknown as CodexActionBrokerRuntime;
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      codexActionBrokerRuntime: actionRuntime,
+    });
+    const listeners = new Map<string, (...args: any[]) => void>();
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+      on: vi.fn((event: string, callback: (...args: any[]) => void) => {
+        listeners.set(event, callback);
+      }),
+    } as any;
+    (bridge as any).handleConnection(ws, {
+      headers: { host: "127.0.0.1:8765" },
+      socket: {},
+    });
+    const messages = () =>
+      ws.send.mock.calls.map((call: unknown[]) =>
+        JSON.parse(call[0] as string),
+      );
+    expect(
+      messages().find((message: any) => message.type === "session_list")
+        .bridgeCapabilities,
+    ).toContain("codex_action_broker_v1");
+
+    listeners.get("message")?.(
+      Buffer.from(
+        JSON.stringify({
+          type: "client_capabilities",
+          supportedServerMessages: ["codex_action_broker_v1"],
+        }),
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(
+        messages().find(
+          (message: any) =>
+            message.type === "codex_action_broker_v1" &&
+            message.event === "snapshot",
+        ),
+      ).toMatchObject({ requests: [] }),
+    );
+    expect(actionRuntime.subscribe).toHaveBeenCalledTimes(4);
+    expect(runtimeListeners).toHaveLength(4);
+
+    const respondFromPhone = (requestId: string): void => {
+      listeners.get("message")?.(
+        Buffer.from(
+          JSON.stringify({
+            type: "respond_codex_action",
+            requestId,
+            opaqueRequestId: "opaque-action",
+            codexSourceId: "source-action",
+            threadId: "thread-action",
+            turnId: "turn-action",
+            authorityGeneration: "cab:1:1",
+            claimantId: "phone-a",
+            operationId: `operation-${requestId}`,
+            action: "approve",
+          }),
+        ),
+      );
+    };
+
+    respondFromPhone("wire-standby");
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+    expect(messages()).toContainEqual(
+      expect.objectContaining({
+        event: "response",
+        requestId: "wire-standby",
+        outcome: "unavailable",
+      }),
+    );
+
+    Object.assign(health, {
+      ready: true,
+      writerLeaseHeld: true,
+      authorityGeneration: "cab:1:1",
+    });
+    delete (health as { degradedReason?: string }).degradedReason;
+    for (const runtimeListener of [...runtimeListeners]) {
+      runtimeListener({ kind: "health", health });
+    }
+    await vi.waitFor(() =>
+      expect(messages()).toContainEqual(
+        expect.objectContaining({
+          event: "health",
+          health: expect.objectContaining({
+            ready: true,
+            writerLeaseHeld: true,
+          }),
+        }),
+      ),
+    );
+    (bridge as any).sendSessionList(ws);
+    expect(
+      messages()
+        .filter((message: any) => message.type === "session_list")
+        .at(-1).bridgeCapabilities,
+    ).toContain("codex_action_broker_v1");
+
+    respondFromPhone("wire-leader");
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(2));
+    expect(messages()).toContainEqual(
+      expect.objectContaining({
+        type: "codex_action_broker_v1",
+        event: "response",
+        requestId: "wire-leader",
+        outcome: "submitted",
+      }),
+    );
+
+    Object.assign(health, {
+      ready: false,
+      controlReady: false,
+      writerLeaseHeld: false,
+      degradedReason: "generation_unavailable" as const,
+    });
+    delete (health as { authorityGeneration?: string }).authorityGeneration;
+    for (const runtimeListener of [...runtimeListeners]) {
+      runtimeListener({ kind: "health", health });
+    }
+    await vi.waitFor(() =>
+      expect(messages()).toContainEqual(
+        expect.objectContaining({
+          event: "health",
+          health: expect.objectContaining({
+            ready: false,
+            writerLeaseHeld: false,
+          }),
+        }),
+      ),
+    );
+    (bridge as any).sendSessionList(ws);
+    expect(
+      messages()
+        .filter((message: any) => message.type === "session_list")
+        .at(-1).bridgeCapabilities,
+    ).toContain("codex_action_broker_v1");
+    respondFromPhone("wire-not-ready");
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(3));
+    expect(messages()).toContainEqual(
+      expect.objectContaining({
+        event: "response",
+        requestId: "wire-not-ready",
+        outcome: "unavailable",
+      }),
+    );
+    await bridge.close();
+  });
+
+  it("projects shared Codex broker actions to v2 notification clients only", async () => {
+    vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
+    const subscribers: Array<(update: CodexActionBrokerRuntimeUpdate) => void> =
+      [];
+    const request = (
+      opaqueRequestId: string,
+      threadId: string,
+      toolName: string,
+    ) => ({
+      opaqueRequestId,
+      codexSourceId: "source-1",
+      threadId,
+      turnId: `turn-${threadId}`,
+      kind: "command_approval" as const,
+      state: "pending" as const,
+      observedAt: "2026-08-01T00:00:00.000Z",
+      expiresAt: "2026-08-01T00:10:00.000Z",
+      updatedAt: "2026-08-01T00:00:01.000Z",
+      authorityGeneration: "cab:1:1",
+      live: true,
+      toolName,
+      input: { command: `secret-${threadId}` },
+      allowedActions: ["approve", "reject"] as ("approve" | "reject")[],
+    });
+    const desktopRequest = request(
+      "opaque-desktop",
+      "thread-desktop",
+      "DesktopSecretTool",
+    );
+    const bridgeRequest = request(
+      "opaque-bridge",
+      "thread-bridge",
+      "BridgeSecretTool",
+    );
+    const actionRuntime = {
+      health: {
+        ready: true,
+        controlReady: true,
+        degraded: false,
+        writerLeaseHeld: true,
+        authorityGeneration: "cab:1:1",
+      },
+      listRequests: vi.fn(() => [desktopRequest, bridgeRequest]),
+      currentRequestForThread: vi.fn(),
+      respond: vi.fn(),
+      subscribe: vi.fn(
+        (listener: (update: CodexActionBrokerRuntimeUpdate) => void) => {
+          subscribers.push(listener);
+          return () => {
+            const index = subscribers.indexOf(listener);
+            if (index >= 0) subscribers.splice(index, 1);
+          };
+        },
+      ),
+    } as unknown as CodexActionBrokerRuntime;
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      codexActionBrokerRuntime: actionRuntime,
+    });
+    (bridge as any).bridgeInstanceId = "bridge-1";
+    const capable = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const legacy = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).wss.clients.add(capable);
+    (bridge as any).wss.clients.add(legacy);
+    const backgroundCapabilities = [
+      "client_delivery_mode_state_v1",
+      "background_notification_v1",
+      "background_activity_state_v1",
+    ];
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: [
+          ...backgroundCapabilities,
+          "codex_action_broker_v1",
+        ],
+      },
+      capable,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: backgroundCapabilities,
+      },
+      legacy,
+    );
+    capable.send.mockClear();
+    legacy.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_client_delivery_mode",
+        mode: "notifications_only",
+        requestId: "mode-capable",
+        privacyMode: true,
+      },
+      capable,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_client_delivery_mode",
+        mode: "notifications_only",
+        requestId: "mode-legacy",
+        privacyMode: true,
+      },
+      legacy,
+    );
+
+    const notifications = capable.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .filter((message: any) => message.type === "background_notification_v1");
+    expect(notifications).toHaveLength(2);
+    expect(notifications).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: "thread-desktop",
+          data: expect.objectContaining({
+            actionPayloadVersion: "2",
+            opaqueRequestId: "opaque-desktop",
+            codexSourceId: "source-1",
+            threadId: "thread-desktop",
+            turnId: "turn-thread-desktop",
+            authorityGeneration: "cab:1:1",
+            allowedActions: "approve,reject",
+          }),
+        }),
+        expect.objectContaining({
+          sessionId: "thread-bridge",
+          data: expect.objectContaining({
+            opaqueRequestId: "opaque-bridge",
+          }),
+        }),
+      ]),
+    );
+    expect(JSON.stringify(notifications)).not.toContain("SecretTool");
+    expect(JSON.stringify(notifications)).not.toContain("secret-thread");
+    expect(JSON.stringify(notifications)).not.toContain("permissionId");
+    expect(
+      legacy.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .filter(
+          (message: any) => message.type === "background_notification_v1",
+        ),
+    ).toHaveLength(0);
+
+    await bridge.close();
+  });
+
+  it("keeps standby daemon writes read-only and rejects legacy approval frames even on the leader", async () => {
+    vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
+    vi.stubEnv("BRIDGE_CODEX_SHARED_PILOT", "1");
+    vi.stubEnv(
+      "BRIDGE_CODEX_SOURCE_ID",
+      "codex-source-11111111111111111111111111111111",
+    );
+    vi.stubEnv("BRIDGE_CODEX_SHARED_PILOT_ALLOW_THREAD_START", "1");
+    vi.stubEnv("BRIDGE_CODEX_SHARED_PILOT_ALLOW_TURN_START", "1");
+    const health: CodexActionBrokerRuntimeHealth = {
+      ready: false,
+      controlReady: true,
+      degraded: false,
+      writerLeaseHeld: false,
+      degradedReason: "writer_lease_unavailable",
+    };
+    const actionRuntime = {
+      get health() {
+        return health;
+      },
+      listRequests: vi.fn(() => []),
+      currentRequestForThread: vi.fn(),
+      respond: vi.fn(async () => ({ outcome: "unavailable" as const })),
+      subscribe: vi.fn(() => () => undefined),
+    } as unknown as CodexActionBrokerRuntime;
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      allowedDirs: ["/tmp"],
+      codexActionBrokerRuntime: actionRuntime,
+    });
+    const listeners = new Map<string, (...args: any[]) => void>();
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+      on: vi.fn((event: string, callback: (...args: any[]) => void) => {
+        listeners.set(event, callback);
+      }),
+    } as any;
+    (bridge as any).handleConnection(ws, {
+      headers: { host: "127.0.0.1:8765" },
+      socket: {},
+    });
+    const sendClient = (message: Record<string, unknown>): void => {
+      listeners.get("message")?.(Buffer.from(JSON.stringify(message)));
+    };
+    const messages = () =>
+      ws.send.mock.calls.map((call: unknown[]) =>
+        JSON.parse(call[0] as string),
+      );
+
+    sendClient({
+      type: "start",
+      provider: "codex",
+      projectPath: "/tmp/shared-standby",
+      startRequestId: "standby-start",
+    });
+    await vi.waitFor(() =>
+      expect(messages()).toContainEqual(
+        expect.objectContaining({
+          type: "error",
+          errorCode: "codex_shared_runtime_writer_unavailable",
+        }),
+      ),
+    );
+    expect(messages()).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "session_start_failed",
+        startRequestId: "standby-start",
+      }),
+    );
+
+    sendClient({
+      type: "resume_session",
+      provider: "codex",
+      sessionId: "thread-standby",
+      projectPath: "/tmp/shared-standby",
+      resumeRequestId: "standby-resume",
+    });
+    await vi.waitFor(() =>
+      expect(messages()).toContainEqual(
+        expect.objectContaining({
+          type: "system",
+          subtype: "session_resume_failed",
+          sourceSessionId: "thread-standby",
+          resumeRequestId: "standby-resume",
+        }),
+      ),
+    );
+
+    Object.assign(health, {
+      ready: true,
+      writerLeaseHeld: true,
+      authorityGeneration: "cab:1:1",
+    });
+    delete (health as { degradedReason?: string }).degradedReason;
+    sendClient({
+      type: "start",
+      provider: "codex",
+      projectPath: "/tmp",
+      startRequestId: "leader-start",
+    });
+    await vi.waitFor(() =>
+      expect(
+        messages().find(
+          (message: any) =>
+            message.type === "system" &&
+            message.subtype === "session_created" &&
+            message.startRequestId === "leader-start",
+        ),
+      ).toBeDefined(),
+    );
+    const created = messages().find(
+      (message: any) =>
+        message.type === "system" &&
+        message.subtype === "session_created" &&
+        message.startRequestId === "leader-start",
+    );
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+
+    sendClient({
+      type: "approve",
+      sessionId: created.sessionId,
+      id: "legacy-approval",
+    });
+    await vi.waitFor(() =>
+      expect(messages()).toContainEqual(
+        expect.objectContaining({
+          type: "error",
+          errorCode: "codex_action_broker_required",
+          sessionId: created.sessionId,
+        }),
+      ),
+    );
+    expect(session.process.approve).not.toHaveBeenCalled();
+
+    Object.assign(health, {
+      ready: false,
+      writerLeaseHeld: false,
+      degradedReason: "writer_lease_unavailable",
+    });
+    delete (health as { authorityGeneration?: string }).authorityGeneration;
+    sendClient({
+      type: "input",
+      sessionId: created.sessionId,
+      clientMessageId: "standby-input",
+      text: "must not start a turn",
+    });
+    await vi.waitFor(() =>
+      expect(messages()).toContainEqual(
+        expect.objectContaining({
+          type: "input_rejected",
+          sessionId: created.sessionId,
+          clientMessageId: "standby-input",
+        }),
+      ),
+    );
+    expect(session.process.sendInput).not.toHaveBeenCalled();
+
+    for (const message of [
+      {
+        type: "set_goal",
+        sessionId: created.sessionId,
+        objective: "must not mutate",
+        goalChangeId: "standby-goal",
+      },
+      { type: "interrupt", sessionId: created.sessionId },
+      {
+        type: "fork",
+        sessionId: created.sessionId,
+        targetUuid: "codex:user-turn:latest",
+      },
+    ]) {
+      sendClient(message);
+    }
+    await vi.waitFor(() =>
+      expect(
+        messages().filter(
+          (message: any) =>
+            message.errorCode === "codex_shared_runtime_writer_unavailable",
+        ).length,
+      ).toBeGreaterThanOrEqual(4),
+    );
+    expect(session.process.setGoal).not.toHaveBeenCalled();
+    expect(session.process.interruptCurrentTurn).not.toHaveBeenCalled();
+    expect(session.process.forkThread).not.toHaveBeenCalled();
+
+    await bridge.close();
+  });
+
+  it("does not advertise the Action Broker in private topology even if a runtime is injected", async () => {
+    const actionRuntime = {
+      health: {
+        ready: true,
+        controlReady: true,
+        degraded: false,
+        writerLeaseHeld: true,
+        authorityGeneration: "cab:1:1",
+      },
+      listRequests: vi.fn(() => []),
+      currentRequestForThread: vi.fn(),
+      respond: vi.fn(async () => ({ outcome: "submitted" })),
+      subscribe: vi.fn(() => () => undefined),
+    } as unknown as CodexActionBrokerRuntime;
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      codexActionBrokerRuntime: actionRuntime,
+    });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+      on: vi.fn(),
+    } as any;
+    (bridge as any).handleConnection(ws, {
+      headers: { host: "127.0.0.1:8765" },
+      socket: {},
+    });
+    const sessionList = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "session_list");
+    expect(sessionList.bridgeCapabilities).not.toContain(
+      "codex_action_broker_v1",
+    );
+    expect(actionRuntime.subscribe).not.toHaveBeenCalled();
+    await bridge.close();
   });
 
   it("advertises upload step-up only with both transfer and authorization surfaces", async () => {
@@ -2235,6 +2907,49 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("does not publish a running Codex rename when the provider rejects it", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-rename",
+        provider: "codex",
+      },
+      ws,
+    );
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    session.name = "original";
+    session.process.renameThread = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("provider rename rejected"));
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "rename_session",
+        sessionId: created.sessionId,
+        name: "optimistic-would-be-wrong",
+      },
+      ws,
+    );
+
+    expect(session.name).toBe("original");
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .find((message: any) => message.type === "rename_result"),
+    ).toMatchObject({
+      success: false,
+      errorCode: "provider_rpc_failed",
+      error: "provider rename rejected",
+    });
+    await bridge.close();
+  });
+
   it("scopes history not-found errors to the requested session", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
@@ -2333,6 +3048,45 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     });
 
     bridge.close();
+  });
+
+  it("refuses to archive a Desktop-active shared Codex thread", async () => {
+    vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      codexActionBrokerRuntime: writableCodexActionBrokerRuntime(),
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const reserveArchiveCapacity = vi.fn();
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = { reserveArchiveCapacity };
+    vi.spyOn(
+      (bridge as any).localFeatures,
+      "conversationActivity",
+    ).mockReturnValue("active");
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "archive_session",
+        sessionId: "desktop-active-thread",
+        provider: "codex",
+        projectPath: "/tmp/project-desktop-active",
+      },
+      ws,
+    );
+    await vi.waitFor(() =>
+      expect(
+        ws.send.mock.calls
+          .map((call: unknown[]) => JSON.parse(call[0] as string))
+          .find((message: any) => message.type === "archive_result"),
+      ).toMatchObject({
+        success: false,
+        errorCode: "session_active",
+      }),
+    );
+    expect(reserveArchiveCapacity).not.toHaveBeenCalled();
+    await bridge.close();
   });
 
   it("archives a Codex thread through a standalone process when none is active", async () => {
@@ -2963,6 +3717,12 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
 
   it("routes correlated Codex core actions through the local-feature websocket seam", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
+    // The synthetic process has no rollout file. Declare the ownership fact
+    // explicitly so the production fail-closed verifier is not mistaken for
+    // a Desktop-owned turn in this core-action routing test.
+    (bridge as any).localFeatures.hasExternalCodexActivityVerified = vi.fn(
+      async () => false,
+    );
     const ws = {
       readyState: OPEN_STATE,
       send: vi.fn(),
@@ -3055,6 +3815,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
 
   it("queues input and rejects a second action during the core-action ack window", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
+    (bridge as any).localFeatures.hasExternalCodexActivityVerified = vi.fn(
+      async () => false,
+    );
     const ws = {
       readyState: OPEN_STATE,
       send: vi.fn(),
@@ -4093,6 +4856,71 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     }
   });
 
+  it("keeps standalone and legacy side-chat Codex processes behind the live shared writer fence", async () => {
+    vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
+    const health: CodexActionBrokerRuntimeHealth = {
+      ready: true,
+      controlReady: true,
+      degraded: false,
+      writerLeaseHeld: true,
+      authorityGeneration: "cab:writer:1",
+    };
+    const actionRuntime = {
+      get health() {
+        return health;
+      },
+      listRequests: vi.fn(() => []),
+      currentRequestForThread: vi.fn(),
+      respond: vi.fn(async () => ({ outcome: "unavailable" as const })),
+      subscribe: vi.fn(() => () => undefined),
+    } as unknown as CodexActionBrokerRuntime;
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      codexActionBrokerRuntime: actionRuntime,
+    });
+    const initializeOnly = vi
+      .spyOn(CodexProcess.prototype, "initializeOnly")
+      .mockResolvedValue(undefined);
+    const stop = vi
+      .spyOn(CodexProcess.prototype, "stop")
+      .mockImplementation(() => {});
+    try {
+      const standalone = await (bridge as any).createStandaloneCodexProcess(
+        "/tmp/project-a",
+      );
+      const dedicated = (
+        bridge as any
+      ).localFeatures.runtime.createDedicatedCodexProcess() as CodexProcess;
+
+      expect((standalone as any).sharedRuntimeMutationAllowed()).toBe(true);
+      expect((dedicated as any).sharedRuntimeMutationAllowed()).toBe(true);
+
+      Object.assign(health, {
+        ready: false,
+        writerLeaseHeld: false,
+        degradedReason: "writer_lease_unavailable",
+      });
+      delete (health as { authorityGeneration?: string }).authorityGeneration;
+
+      await expect(
+        standalone.renameThreadById("thread-a", "renamed"),
+      ).rejects.toMatchObject({
+        name: "CodexSharedRuntimeWriterUnavailableError",
+        method: "thread/name/set",
+      });
+      await expect(
+        dedicated.renameThreadById("thread-side-chat", "renamed"),
+      ).rejects.toMatchObject({
+        name: "CodexSharedRuntimeWriterUnavailableError",
+        method: "thread/name/set",
+      });
+    } finally {
+      initializeOnly.mockRestore();
+      stop.mockRestore();
+      await bridge.close();
+    }
+  });
+
   it("rejects start when selected codex profile does not exist", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
@@ -4698,7 +5526,10 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
 
   it("does not reuse a completed daemon resume after attachment readiness is lost", async () => {
     vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
-    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      codexActionBrokerRuntime: writableCodexActionBrokerRuntime(),
+    });
     const ws = {
       readyState: OPEN_STATE,
       send: vi.fn(),
@@ -4717,9 +5548,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     await (bridge as any).handleClientMessage(request, ws);
 
     expect(create).toHaveBeenCalledTimes(2);
-    // The provider transcript cache may be reused; only the runtime
-    // attachment must be rebuilt.
-    expect(getCodexSessionHistoryMock).toHaveBeenCalledTimes(1);
+    // Shared adoption never rebuilds the provider transcript during resume;
+    // only the runtime attachment is rebuilt.
+    expect(getCodexSessionHistoryMock).not.toHaveBeenCalled();
     const createdSessionIds = ws.send.mock.calls
       .map((call: unknown[]) => JSON.parse(call[0] as string))
       .filter(
@@ -9482,11 +10313,16 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     const bridge = new BridgeWebSocketServer({
       server: httpServer,
       platform: "darwin",
+      codexActionBrokerRuntime: writableCodexActionBrokerRuntime(),
     });
     const ws = {
       readyState: OPEN_STATE,
       send: vi.fn(),
     } as any;
+    (bridge as any).clientSupportedServerMessages.set(
+      ws,
+      new Set(["session_link_progress_v1"]),
+    );
 
     await (bridge as any).handleClientMessage(
       {
@@ -9495,6 +10331,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         projectPath: "/tmp/project-codex",
         provider: "codex",
         resumeRequestId: "link-request-codex",
+        sessionLinkGeneration: 17,
       },
       ws,
     );
@@ -9530,17 +10367,47 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       projectPath: "/tmp/project-codex",
       resumeRequestId: "link-request-codex",
     });
+    expect(getCodexSessionHistoryMock).toHaveBeenCalledTimes(1);
+    expect(getCodexSessionHistoryMock).toHaveBeenCalledWith("codex-thread-1");
+    expect(
+      (bridge as any).sessionManager.get(created.sessionId).pastMessages,
+    ).toEqual([
+      {
+        role: "user",
+        content: [{ type: "text", text: "restored codex question" }],
+      },
+    ]);
+    expect(
+      sends
+        .filter((message: any) => message.type === "session_link_progress_v1")
+        .map((message: any) => message.stage),
+    ).toEqual([
+      "request_accepted",
+      "resume_lock_waiting",
+      "resume_lock_acquired",
+      "history_reading",
+      "history_read",
+      "runtime_starting",
+      "metadata_loading",
+      "ready",
+    ]);
 
     bridge.close();
   });
 
   it("waits for a settings-neutral daemon adoption before reporting resume ready", async () => {
     vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
-    getCodexSessionHistoryMock.mockResolvedValue([]);
+    getCodexSessionHistoryMock.mockResolvedValue([
+      {
+        role: "user",
+        content: [{ type: "text", text: "must stay deferred" }],
+      },
+    ]);
 
     const bridge = new BridgeWebSocketServer({
       server: httpServer,
       platform: "darwin",
+      codexActionBrokerRuntime: writableCodexActionBrokerRuntime(),
     });
     const manager = (bridge as any).sessionManager;
     const originalCreate = manager.create.bind(manager);
@@ -9558,6 +10425,10 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       readyState: OPEN_STATE,
       send: vi.fn(),
     } as any;
+    (bridge as any).clientSupportedServerMessages.set(
+      ws,
+      new Set(["session_link_progress_v1"]),
+    );
 
     const resume = (bridge as any).handleClientMessage(
       {
@@ -9569,6 +10440,8 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         modelReasoningEffort: "high",
         sandboxMode: "danger-full-access",
         approvalPolicy: "never",
+        resumeRequestId: "daemon-resume-request",
+        sessionLinkGeneration: 23,
       },
       ws,
     );
@@ -9579,6 +10452,10 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       threadId: "codex-daemon-thread",
       sharedRuntimeAttach: "adoption",
     });
+    expect(pendingSession.pastMessages).toEqual([]);
+    expect(getCodexSessionHistoryMock).not.toHaveBeenCalled();
+    expect(pendingSession.process.readThread).not.toHaveBeenCalled();
+    expect(manager.create.mock.calls[0]?.[2]).toEqual([]);
     expect(
       ws.send.mock.calls
         .map((call: unknown[]) => JSON.parse(call[0] as string))
@@ -9601,8 +10478,178 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
             message.type === "system" && message.subtype === "session_created",
         ),
     ).toBe(true);
+    const messages = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(
+      messages
+        .filter((message: any) => message.type === "session_link_progress_v1")
+        .map((message: any) => message.stage),
+    ).toEqual([
+      "request_accepted",
+      "resume_lock_waiting",
+      "resume_lock_acquired",
+      "runtime_starting",
+      "metadata_loading",
+      "ready",
+    ]);
+    expect(
+      messages.some(
+        (message: any) =>
+          message.stage === "history_reading" ||
+          message.stage === "history_read",
+      ),
+    ).toBe(false);
+    expect(pendingSession.codexInitialHistoryPending).toBe(false);
+
+    await (bridge as any).handleClientMessage(
+      { type: "get_history", sessionId: pendingSession.id },
+      ws,
+    );
+    expect(pendingSession.process.readThread).toHaveBeenCalledWith(
+      "codex-daemon-thread",
+      true,
+    );
 
     bridge.close();
+  });
+
+  it("projects private, shared-owned, foreign, and disconnected runtime authority", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-runtime-authority",
+        provider: "codex",
+      },
+      ws,
+    );
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find(
+        (message: any) =>
+          message.type === "system" && message.subtype === "session_created",
+      );
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    const process = session.process;
+    delete process.usesSharedRuntimeTopology;
+    Object.setPrototypeOf(process, CodexProcess.prototype);
+    process.sessionId = "thread-runtime-authority";
+    session.claudeSessionId = "thread-runtime-authority";
+    process._authorityGeneration = "authority-private";
+    process._sharedRuntimePilotGates = null;
+    process._sharedRuntimeAttachMode = null;
+    process._lastStopWasSharedRuntime = false;
+    process.sharedRuntimeOwnedTurnIds = new Set<string>();
+    process.stopped = false;
+    process.status = "running";
+    process.activeTurnId = "private-turn";
+    process.isRunning = true;
+    process.isAttachmentReady = true;
+
+    const runtime = (bridge as any).localFeatures.runtime;
+    const state = () =>
+      runtime
+        .listRuntimeConversationStates()
+        .find((item: any) => item.bridgeSessionId === session.id);
+
+    expect(state()).toMatchObject({
+      executionHost: "bridge",
+      activeTurnId: "private-turn",
+      controlState: "steerable",
+      authorityGeneration: "authority-private",
+    });
+    expect(runtime.isCodexThreadLocallyActive("thread-runtime-authority")).toBe(
+      true,
+    );
+    expect(
+      runtime.getLocallyActiveCodexTurnId("thread-runtime-authority"),
+    ).toBe("private-turn");
+    expect(runtime.getSessionCodexActiveTurnId(session.id)).toBe(
+      "private-turn",
+    );
+
+    process._sharedRuntimePilotGates = {
+      enabled: true,
+      codexSourceId: "source-one",
+      allowThreadStart: true,
+      allowTurnStart: true,
+    };
+    process._sharedRuntimeAttachMode = "adoption";
+    process._lastStopWasSharedRuntime = false;
+    process._authorityGeneration = "authority-shared";
+    process.activeTurnId = "desktop-turn";
+    process.sharedRuntimeOwnedTurnIds.clear();
+
+    expect(state()).toMatchObject({
+      executionHost: "desktopAppServer",
+      activeTurnId: "desktop-turn",
+      controlState: "readOnly",
+      authorityGeneration: "authority-shared",
+    });
+    expect(runtime.isCodexThreadLocallyActive("thread-runtime-authority")).toBe(
+      false,
+    );
+    expect(
+      runtime.getLocallyActiveCodexTurnId("thread-runtime-authority"),
+    ).toBeUndefined();
+    expect(runtime.getSessionCodexActiveTurnId(session.id)).toBeUndefined();
+
+    process.sharedRuntimeOwnedTurnIds.add("desktop-turn");
+    expect(state()).toMatchObject({
+      executionHost: "bridge",
+      activeTurnId: "desktop-turn",
+      controlState: "steerable",
+      authorityGeneration: "authority-shared",
+    });
+    expect(
+      runtime.getLocallyActiveCodexTurnId("thread-runtime-authority"),
+    ).toBe("desktop-turn");
+
+    // A lost shared attachment must fail closed even if the retired process
+    // still carries a stale running/owned turn snapshot. Recovery phases are
+    // authority state, not synthetic Working activity.
+    session.codexAttachmentState = "unavailable";
+    expect(state()).toMatchObject({
+      executionHost: "unknown",
+      controlState: "unavailable",
+      authorityGeneration: "authority-shared",
+    });
+    expect(state()).not.toHaveProperty("activeTurnId");
+
+    session.codexAttachmentState = "reconciling";
+    expect(state()).toMatchObject({
+      executionHost: "unknown",
+      controlState: "reconciling",
+      authorityGeneration: "authority-shared",
+    });
+    expect(state()).not.toHaveProperty("activeTurnId");
+    session.codexAttachmentState = "connected";
+
+    process.isRunning = false;
+    process.status = "starting";
+    process.isAttachmentReady = false;
+    expect(state()).toMatchObject({
+      executionHost: "unknown",
+      controlState: "unavailable",
+      authorityGeneration: "authority-shared",
+    });
+    expect(state()).not.toHaveProperty("activeTurnId");
+
+    process.isRunning = true;
+    expect(state()).toMatchObject({
+      executionHost: "unknown",
+      controlState: "reconciling",
+      authorityGeneration: "authority-shared",
+    });
+    expect(state()).not.toHaveProperty("activeTurnId");
+
+    await bridge.close();
   });
 
   it("waits for authoritative daemon thread/start before reporting a new session", async () => {
@@ -9610,6 +10657,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     const bridge = new BridgeWebSocketServer({
       server: httpServer,
       platform: "darwin",
+      codexActionBrokerRuntime: writableCodexActionBrokerRuntime(),
     });
     const manager = (bridge as any).sessionManager;
     const originalCreate = manager.create.bind(manager);
@@ -10888,6 +11936,426 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("rejects shared-runtime settings before mutation, broadcast, or restart", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-shared-settings",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelReasoningEffort: "high",
+      },
+      ws,
+    );
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find(
+        (message: any) =>
+          message.type === "system" && message.subtype === "session_created",
+      );
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    session.process.usesSharedRuntimeTopology = true;
+    session.codexSettings = {
+      ...(session.codexSettings ?? {}),
+      model: "gpt-5.5",
+      modelReasoningEffort: "high",
+      serviceTier: "standard",
+      sandboxMode: "workspace-write",
+    };
+    ws.send.mockClear();
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        sessionId: session.id,
+        mode: "plan",
+        planMode: true,
+        permissionChangeId: "shared-permission-change",
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_sandbox_mode",
+        sessionId: session.id,
+        sandboxMode: "off",
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_codex_model",
+        sessionId: session.id,
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_codex_speed",
+        sessionId: session.id,
+        serviceTier: "fast",
+      },
+      ws,
+    );
+
+    expect(session.process.setApprovalPolicy).not.toHaveBeenCalled();
+    expect(session.process.setApprovalsReviewer).not.toHaveBeenCalled();
+    expect(session.process.setCollaborationMode).not.toHaveBeenCalled();
+    expect(
+      session.process.updatePermissionSettingsForNextTurn,
+    ).not.toHaveBeenCalled();
+    expect(session.process.interruptCurrentTurnAndWait).not.toHaveBeenCalled();
+    expect(session.process.setModel).not.toHaveBeenCalled();
+    expect(session.process.setServiceTier).not.toHaveBeenCalled();
+    expect(session.process.stop).not.toHaveBeenCalled();
+    expect((bridge as any).sessionManager.get(session.id)).toBe(session);
+    expect(session.codexSettings).toMatchObject({
+      model: "gpt-5.5",
+      modelReasoningEffort: "high",
+      serviceTier: "standard",
+      sandboxMode: "workspace-write",
+    });
+
+    const messages = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    const errors = messages.filter((message: any) => message.type === "error");
+    expect(errors).toHaveLength(4);
+    expect(errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          errorCode: "codex_shared_runtime_settings_read_only",
+          sessionId: session.id,
+          permissionChangeId: "shared-permission-change",
+        }),
+        expect.objectContaining({
+          errorCode: "codex_shared_runtime_settings_read_only",
+          sessionId: session.id,
+        }),
+      ]),
+    );
+    expect(
+      messages.some(
+        (message: any) =>
+          message.type === "system" &&
+          (message.subtype === "set_permission_mode" ||
+            message.subtype === "set_codex_model" ||
+            message.subtype === "set_codex_speed"),
+      ),
+    ).toBe(false);
+
+    await bridge.close();
+  });
+
+  it("does not downgrade a detached settings envelope onto a private runtime", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-private-settings-envelope",
+        provider: "codex",
+      },
+      ws,
+    );
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    session.claudeSessionId = "thread-private-settings";
+    ws.send.mockClear();
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_codex_model",
+        sessionId: session.id,
+        model: "gpt-5.6-sol",
+        codexSourceId: (bridge as any).codexSourceId,
+        threadId: "thread-private-settings",
+        runtimeSessionId: session.id,
+        authorityGeneration: "authority-private-stale",
+        operationId: "private-must-not-downgrade",
+      },
+      ws,
+    );
+
+    expect(session.process.setModel).not.toHaveBeenCalled();
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      errorCode: "codex_shared_runtime_settings_stale_authority",
+      sessionId: session.id,
+    });
+    await bridge.close();
+  });
+
+  it("applies an exact idle shared-runtime setting once after the provider ACK", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).wss.clients.add(ws);
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-shared-settings-exact",
+        provider: "codex",
+      },
+      ws,
+    );
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    const process = session.process;
+    process.usesSharedRuntimeTopology = true;
+    process.authorityGeneration = "authority-settings-1";
+    process.authoritativeThreadStatus = { type: "idle" };
+    process.status = "idle";
+    process.activeTurnId = undefined;
+    session.status = "idle";
+    session.claudeSessionId = "thread-settings-1";
+    session.codexSettings = { model: "gpt-5.5" };
+    (bridge as any).codexActionBrokerRuntime =
+      writableCodexActionBrokerRuntime();
+    vi.spyOn(
+      (bridge as any).localFeatures,
+      "hasExternalCodexActivityVerified",
+    ).mockResolvedValue(false);
+
+    let acknowledge!: () => void;
+    const providerAck = new Promise<void>((resolve) => {
+      acknowledge = resolve;
+    });
+    process.updateSharedRuntimeSettingsForNextTurn.mockReturnValue(providerAck);
+    const request = {
+      type: "set_codex_model",
+      sessionId: session.id,
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
+      codexSourceId: (bridge as any).codexSourceId,
+      threadId: "thread-settings-1",
+      runtimeSessionId: session.id,
+      authorityGeneration: "authority-settings-1",
+      operationId: "settings-operation-1",
+    } as const;
+    ws.send.mockClear();
+    const first = (bridge as any).handleClientMessage(request, ws);
+    const replay = (bridge as any).handleClientMessage(request, ws);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(
+      process.updateSharedRuntimeSettingsForNextTurn,
+    ).toHaveBeenCalledOnce();
+    expect(session.codexSettings.model).toBe("gpt-5.5");
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .some((message: any) => message.subtype === "set_codex_model"),
+    ).toBe(false);
+
+    acknowledge();
+    await Promise.all([first, replay]);
+    expect(process.updateSharedRuntimeSettingsForNextTurn).toHaveBeenCalledWith(
+      {
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+      },
+    );
+    expect(session.codexSettings).toMatchObject({
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
+    });
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .filter((message: any) => message.subtype === "set_codex_model"),
+    ).toHaveLength(1);
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      { ...request, model: "gpt-5.5" },
+      ws,
+    );
+    expect(
+      process.updateSharedRuntimeSettingsForNextTurn,
+    ).toHaveBeenCalledOnce();
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      errorCode: "codex_shared_runtime_settings_operation_conflict",
+    });
+
+    await bridge.close();
+  });
+
+  it("rejects stale, foreign-active, and failed shared-runtime settings without optimistic state", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).wss.clients.add(ws);
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-shared-settings-guarded",
+        provider: "codex",
+      },
+      ws,
+    );
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    const process = session.process;
+    process.usesSharedRuntimeTopology = true;
+    process.authorityGeneration = "authority-settings-2";
+    process.authoritativeThreadStatus = { type: "idle" };
+    process.status = "idle";
+    process.activeTurnId = undefined;
+    session.status = "idle";
+    session.claudeSessionId = "thread-settings-2";
+    session.codexSettings = { serviceTier: "standard" };
+    (bridge as any).codexActionBrokerRuntime =
+      writableCodexActionBrokerRuntime();
+    const external = vi
+      .spyOn((bridge as any).localFeatures, "hasExternalCodexActivityVerified")
+      .mockResolvedValue(false);
+    const target = {
+      sessionId: session.id,
+      codexSourceId: (bridge as any).codexSourceId,
+      threadId: "thread-settings-2",
+      runtimeSessionId: session.id,
+      authorityGeneration: "authority-settings-2",
+    };
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_codex_speed",
+        serviceTier: "fast",
+        ...target,
+        authorityGeneration: "stale-authority",
+        operationId: "settings-stale",
+      },
+      ws,
+    );
+    expect(
+      process.updateSharedRuntimeSettingsForNextTurn,
+    ).not.toHaveBeenCalled();
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      errorCode: "codex_shared_runtime_settings_stale_authority",
+    });
+
+    ws.send.mockClear();
+    external.mockResolvedValueOnce(true);
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_codex_speed",
+        serviceTier: "fast",
+        ...target,
+        operationId: "settings-foreign-active",
+      },
+      ws,
+    );
+    expect(
+      process.updateSharedRuntimeSettingsForNextTurn,
+    ).not.toHaveBeenCalled();
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      errorCode: "codex_settings_owned_elsewhere",
+    });
+
+    ws.send.mockClear();
+    process.updateSharedRuntimeSettingsForNextTurn.mockRejectedValueOnce(
+      new CodexRpcError("thread/settings/update", "Method not found", -32601),
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_codex_speed",
+        serviceTier: "fast",
+        ...target,
+        operationId: "settings-unsupported",
+      },
+      ws,
+    );
+    expect(session.codexSettings.serviceTier).toBe("standard");
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      errorCode: "set_codex_speed_rejected",
+    });
+
+    ws.send.mockClear();
+    process.updateSharedRuntimeSettingsForNextTurn.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        mode: "default",
+        codexPermissionsMode: "default",
+        applyStrategy: "next_turn",
+        ...target,
+        operationId: "settings-permission",
+      },
+      ws,
+    );
+    expect(process.updateSharedRuntimeSettingsForNextTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        codexPermissionsMode: "default",
+        sandboxMode: "workspace-write",
+      }),
+    );
+    expect(session.codexSettings).toMatchObject({
+      approvalPolicy: "on-request",
+      sandboxMode: "workspace-write",
+    });
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .some((message: any) => message.subtype === "set_permission_mode"),
+    ).toBe(true);
+
+    ws.send.mockClear();
+    process.updateSharedRuntimeSettingsForNextTurn.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_sandbox_mode",
+        sandboxMode: "off",
+        ...target,
+        operationId: "settings-sandbox",
+      },
+      ws,
+    );
+    expect(process.updateSharedRuntimeSettingsForNextTurn).toHaveBeenCalledWith(
+      {
+        sandboxMode: "danger-full-access",
+      },
+    );
+    expect(session.codexSettings.sandboxMode).toBe("danger-full-access");
+
+    ws.send.mockClear();
+    process.updateSharedRuntimeSettingsForNextTurn.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_permission_mode",
+        mode: "plan",
+        planMode: true,
+        applyStrategy: "next_turn",
+        ...target,
+        operationId: "settings-plan-not-expanded",
+      },
+      ws,
+    );
+    expect(
+      process.updateSharedRuntimeSettingsForNextTurn,
+    ).not.toHaveBeenCalled();
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      errorCode: "codex_shared_runtime_collaboration_settings_read_only",
+    });
+
+    await bridge.close();
+  });
+
   it("gets, updates, and clears a Codex goal", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
@@ -10977,6 +12445,49 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     ).toBe(false);
 
     bridge.close();
+  });
+
+  it("keeps Goal mutations read-only while Desktop owns the turn", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-goal-desktop",
+        provider: "codex",
+      },
+      ws,
+    );
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    vi.spyOn(
+      (bridge as any).localFeatures,
+      "hasExternalCodexActivityVerified",
+    ).mockResolvedValue(true);
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_goal",
+        sessionId: created.sessionId,
+        objective: "must remain read-only",
+        goalChangeId: "desktop-owned-goal",
+      },
+      ws,
+    );
+
+    expect(session.process.setGoal).not.toHaveBeenCalled();
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .find((message: any) => message.goalChangeId === "desktop-owned-goal"),
+    ).toMatchObject({
+      type: "error",
+      errorCode: "codex_shared_runtime_turn_owned_elsewhere",
+    });
+    await bridge.close();
   });
 
   it("correlates every Goal failure to its session and mutation", async () => {
@@ -12954,6 +14465,131 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("keeps a shared session attached when interrupt or stop targets a foreign turn", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-foreign-turn",
+        provider: "codex",
+      },
+      ws,
+    );
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find(
+        (message: any) =>
+          message.type === "system" && message.subtype === "session_created",
+      );
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    session.process.usesSharedRuntimeTopology = true;
+    session.process.authoritativeThreadStatus = {
+      type: "active",
+      activeFlags: [],
+    };
+    session.process.activeTurnId = "desktop-owned-turn";
+    session.process.interruptCurrentTurn.mockRejectedValue(
+      new CodexSharedRuntimeTurnOwnershipError(
+        "interrupt",
+        "desktop-owned-turn",
+      ),
+    );
+    session.process.interruptCurrentTurnAndWait.mockResolvedValue(false);
+    ws.send.mockClear();
+
+    await (bridge as any).handleClientMessage(
+      { type: "interrupt", sessionId: session.id },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      { type: "stop_session", sessionId: session.id },
+      ws,
+    );
+
+    expect(session.process.interruptCurrentTurn).toHaveBeenCalledOnce();
+    expect(session.process.interruptCurrentTurnAndWait).toHaveBeenCalledOnce();
+    expect(session.process.stop).not.toHaveBeenCalled();
+    expect((bridge as any).sessionManager.get(session.id)).toBe(session);
+    const messages = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(
+      messages.filter(
+        (message: any) =>
+          message.errorCode === "codex_shared_runtime_turn_owned_elsewhere",
+      ),
+    ).toHaveLength(2);
+    expect(
+      messages.some(
+        (message: any) =>
+          message.type === "result" && message.subtype === "stopped",
+      ),
+    ).toBe(false);
+
+    await bridge.close();
+  });
+
+  it("interrupts an owned shared turn before detaching the session", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(ws);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-owned-turn",
+        provider: "codex",
+      },
+      ws,
+    );
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find(
+        (message: any) =>
+          message.type === "system" && message.subtype === "session_created",
+      );
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    session.process.usesSharedRuntimeTopology = true;
+    session.process.authoritativeThreadStatus = {
+      type: "active",
+      activeFlags: [],
+    };
+    session.process.activeTurnId = "bridge-owned-turn";
+    session.process.interruptCurrentTurnAndWait.mockImplementation(async () => {
+      session.process.activeTurnId = undefined;
+      session.process.authoritativeThreadStatus = { type: "idle" };
+      return true;
+    });
+    ws.send.mockClear();
+
+    await (bridge as any).handleClientMessage(
+      { type: "stop_session", sessionId: session.id },
+      ws,
+    );
+
+    expect(session.process.interruptCurrentTurnAndWait).toHaveBeenCalledOnce();
+    expect(session.process.stop).toHaveBeenCalledOnce();
+    expect((bridge as any).sessionManager.get(session.id)).toBeUndefined();
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .some(
+          (message: any) =>
+            message.type === "result" && message.subtype === "stopped",
+        ),
+    ).toBe(true);
+
+    await bridge.close();
+  });
+
   it("clearContext approve recreates session immediately with plan input", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
@@ -13486,6 +15122,48 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     disabledBridge.close();
   });
 
+  it("projects detached Desktop activity into the background work state", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).wss.clients.add(ws);
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: ["background_activity_state_v1"],
+      },
+      ws,
+    );
+    const activeKeys = new Set(["codex\0desktop-thread"]);
+    vi.spyOn(
+      (bridge as any).localFeatures,
+      "backgroundActiveConversationKeys",
+    ).mockImplementation(() => new Set(activeKeys));
+
+    ws.send.mockClear();
+    (bridge as any).scheduleBackgroundActivityBroadcast();
+    await vi.waitFor(() =>
+      expect(
+        ws.send.mock.calls
+          .map((call: unknown[]) => JSON.parse(call[0] as string))
+          .at(-1),
+      ).toMatchObject({
+        type: "background_activity_state_v1",
+        activeWorkCount: 1,
+      }),
+    );
+
+    activeKeys.clear();
+    (bridge as any).scheduleBackgroundActivityBroadcast();
+    await vi.waitFor(() =>
+      expect(
+        ws.send.mock.calls
+          .map((call: unknown[]) => JSON.parse(call[0] as string))
+          .at(-1),
+      ).toMatchObject({ activeWorkCount: 0 }),
+    );
+    await bridge.close();
+  });
+
   it("delivers only lightweight notifications while a client is backgrounded", async () => {
     const bridge = new BridgeWebSocketServer({
       server: httpServer,
@@ -13591,6 +15269,113 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       }),
     ]);
     bridge.close();
+  });
+
+  it("projects detached Desktop progress and terminal events without transcript leakage or replay", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    (bridge as any).bridgeInstanceId = "bridge-background-test";
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).wss.clients.add(ws);
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: [
+          "client_delivery_mode_state_v1",
+          "background_notification_v1",
+          "background_activity_state_v1",
+        ],
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_client_delivery_mode",
+        mode: "notifications_only",
+        requestId: "desktop-background",
+        privacyMode: true,
+        enabledEventTypes: [
+          "session_progress",
+          "session_completed",
+          "session_failed",
+        ],
+      },
+      ws,
+    );
+    ws.send.mockClear();
+
+    (bridge as any).dispatchExternalCodexBackgroundCandidate({
+      codexSourceId: (bridge as any).codexSourceId,
+      threadId: "desktop-thread",
+      turnId: "desktop-turn",
+      observedAt: "2026-08-01T05:20:00.000Z",
+      label: "Sensitive project",
+      message: {
+        type: "assistant",
+        message: {
+          id: "desktop-tool-message",
+          role: "assistant",
+          model: "",
+          content: [
+            {
+              type: "tool_use",
+              id: "desktop-tool",
+              name: "Read",
+              input: {},
+            },
+          ],
+        },
+      },
+    });
+    const progress = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.eventType === "session_progress");
+    expect(progress).toMatchObject({
+      type: "background_notification_v1",
+      sessionId: "desktop-thread",
+      provider: "codex",
+      data: {
+        providerSessionId: "desktop-thread",
+        codexSourceId: (bridge as any).codexSourceId,
+      },
+    });
+    expect(JSON.stringify(progress)).not.toContain("Sensitive project");
+    expect(JSON.stringify(progress)).not.toContain("Read");
+    expect(JSON.stringify(progress)).not.toContain("desktop-tool");
+
+    const terminal = {
+      codexSourceId: (bridge as any).codexSourceId,
+      threadId: "desktop-thread",
+      turnId: "desktop-turn",
+      observedAt: "2026-08-01T05:20:05.000Z",
+      message: {
+        type: "result",
+        subtype: "success",
+        sessionId: "desktop-thread",
+      },
+    } as const;
+    (bridge as any).dispatchExternalCodexBackgroundCandidate(terminal);
+    (bridge as any).dispatchExternalCodexBackgroundCandidate(terminal);
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .filter((message: any) => message.eventType === "session_completed"),
+    ).toHaveLength(1);
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_client_delivery_mode",
+        mode: "interactive",
+        requestId: "desktop-foreground",
+      },
+      ws,
+    );
+    ws.send.mockClear();
+    (bridge as any).dispatchExternalCodexBackgroundCandidate({
+      ...terminal,
+      turnId: "desktop-turn-2",
+    });
+    expect(ws.send).not.toHaveBeenCalled();
+    await bridge.close();
   });
 
   it("suppresses FCM only after the background client acknowledges local display", async () => {
@@ -13928,6 +15713,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         locale: "zh",
         enabledEventTypes: ["approval_required"],
         approvalActionsSupported: true,
+        approvalActionsVersion: 2,
       },
       ws,
     );
@@ -13948,6 +15734,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(JSON.parse(String(init.body))).toMatchObject({
       op: "register",
       approvalActionsSupported: true,
+      approvalActionsVersion: 2,
     });
     bridge.close();
   });
@@ -14160,6 +15947,43 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("fails private after restart until a phone re-registers its push policy", async () => {
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    const mockAuth = {
+      uid: "bridge-test",
+      getIdToken: vi.fn(async () => "mock-token"),
+      initialize: vi.fn(async () => {}),
+    };
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      firebaseAuth: mockAuth as any,
+    });
+
+    // Cloud may still hold a durable token even though this fresh Bridge has
+    // not yet reconstructed locale/privacy maps from Mobile registration.
+    expect((bridge as any).tokenPrivacyMode.size).toBe(0);
+    (bridge as any).broadcastSessionMessage("s-after-restart", {
+      type: "result",
+      subtype: "success",
+      result: "private completion result",
+      duration: 1.2,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      op: "notify",
+      eventType: "session_completed",
+      locale: "en",
+    });
+    expect(JSON.stringify(payload)).not.toContain("private completion result");
+    await bridge.close();
+  });
+
   it("sends push notification for successful result and skips stopped result", async () => {
     const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
     globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
@@ -14218,6 +16042,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       "token-progress",
       new Set(["session_progress"]),
     );
+    (bridge as any).tokenPrivacyMode.set("token-progress", false);
     const assistantTool = (id: string, name: string) => ({
       type: "assistant",
       message: {
@@ -14998,6 +16823,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
 
   it("rolls back codex conversation turns and recreates the bridge session", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
+    (bridge as any).localFeatures.hasExternalCodexActivityVerified = vi.fn(
+      async () => false,
+    );
     const ws = {
       readyState: OPEN_STATE,
       send: vi.fn(),
@@ -15060,13 +16888,20 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(rollbackThread).toHaveBeenCalledWith(2);
     expect(getCodexSessionHistoryMock).not.toHaveBeenCalled();
 
+    await vi.waitFor(() => {
+      const messages = ws.send.mock.calls.map((c: unknown[]) =>
+        JSON.parse(c[0] as string),
+      );
+      expect(
+        messages.find((m: any) => m.type === "rewind_result"),
+      ).toMatchObject({
+        success: true,
+        mode: "conversation",
+      });
+    });
     const sends = ws.send.mock.calls.map((c: unknown[]) =>
       JSON.parse(c[0] as string),
     );
-    expect(sends.find((m: any) => m.type === "rewind_result")).toMatchObject({
-      success: true,
-      mode: "conversation",
-    });
     const newCreated = sends.find(
       (m: any) => m.type === "system" && m.subtype === "session_created",
     );
@@ -15086,6 +16921,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
 
   it("forks codex conversation at a target turn and rolls back only the fork", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
+    (bridge as any).localFeatures.hasExternalCodexActivityVerified = vi.fn(
+      async () => false,
+    );
     const ws = {
       readyState: OPEN_STATE,
       send: vi.fn(),
@@ -15151,7 +16989,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(session.process.forkThread).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(session.process.forkThread).toHaveBeenCalledTimes(1);
+    });
     expect(session.process.rollbackThreadById).toHaveBeenCalledWith(
       "thread-forked",
       1,
@@ -15193,6 +17033,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
 
   it("forks the complete active Codex conversation at its latest turn", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
+    (bridge as any).localFeatures.hasExternalCodexActivityVerified = vi.fn(
+      async () => false,
+    );
     const ws = {
       readyState: OPEN_STATE,
       send: vi.fn(),
@@ -15241,7 +17084,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ws,
     );
 
-    expect(session.process.forkThread).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(session.process.forkThread).toHaveBeenCalledTimes(1);
+    });
     expect(session.process.rollbackThreadById).not.toHaveBeenCalled();
     const forkCreated = ws.send.mock.calls
       .map((call: unknown[]) => JSON.parse(call[0] as string))
@@ -16177,6 +18022,120 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       },
     );
     expect(session.codexQueuedInput).toBeUndefined();
+    bridge.close();
+  });
+
+  it("steers a shared Desktop turn only with the exact source and authority generation", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex",
+        provider: "codex",
+      },
+      ws,
+    );
+    await Promise.resolve();
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.subtype === "session_created");
+    const session = (bridge as any).sessionManager.get(created.sessionId);
+    Object.setPrototypeOf(session.process, CodexProcess.prototype);
+    delete session.process.usesSharedRuntimeTopology;
+    session.claudeSessionId = "thread-desktop-exact";
+    session.process._sharedRuntimePilotGates = {
+      enabled: true,
+      codexSourceId: "source-one",
+      allowThreadStart: true,
+      allowTurnStart: true,
+    };
+    session.process._sharedRuntimeAttachMode = "adoption";
+    session.process._runtimeGeneration = 4;
+    session.process._attachmentRuntimeGeneration = 4;
+    session.process._attachmentReady = true;
+    session.process._authoritativeThreadStatus = {
+      type: "active",
+      activeFlags: [],
+    };
+    session.process.sharedRuntimeOwnedTurnIds = new Set<string>();
+    session.process.stopped = false;
+    session.process.activeTurnId = "desktop-turn-exact";
+    session.process._authorityGeneration = "authority-exact";
+    session.codexQueuedInput = {
+      itemId: "queued-desktop-exact",
+      text: "guide the Desktop turn",
+      createdAt: new Date().toISOString(),
+    };
+    vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
+    (bridge as any).codexActionBrokerRuntime =
+      writableCodexActionBrokerRuntime();
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "steer_queued_input",
+        sessionId: created.sessionId,
+        itemId: "queued-desktop-exact",
+        expectedTurnId: "desktop-turn-exact",
+        codexSourceId: (bridge as any).codexSourceId,
+        threadId: "thread-desktop-exact",
+        authorityGeneration: "stale-authority",
+      },
+      ws,
+    );
+    expect(session.process.steerExternalTurnStructured).not.toHaveBeenCalled();
+    expect(session.codexQueuedInput?.itemId).toBe("queued-desktop-exact");
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "error",
+      errorCode: "queued_input_steer_stale_authority",
+    });
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "steer_queued_input",
+        sessionId: created.sessionId,
+        itemId: "queued-desktop-exact",
+        expectedTurnId: "desktop-turn-exact",
+        codexSourceId: (bridge as any).codexSourceId,
+        threadId: "thread-desktop-exact",
+        authorityGeneration: "authority-exact",
+      },
+      ws,
+    );
+
+    expect(session.process.steerExternalTurnStructured).toHaveBeenCalledWith(
+      "desktop-turn-exact",
+      "guide the Desktop turn",
+      { images: undefined, skills: undefined, mentions: undefined },
+    );
+    expect(session.process.steerTurnStructured).not.toHaveBeenCalled();
+    expect(session.codexQueuedInput).toBeUndefined();
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "detach_session",
+        sessionId: created.sessionId,
+        codexSourceId: (bridge as any).codexSourceId,
+        threadId: "thread-desktop-exact",
+        authorityGeneration: "authority-exact",
+      },
+      ws,
+    );
+    expect(session.process.stop).toHaveBeenCalledOnce();
+    expect(
+      (bridge as any).sessionManager.get(created.sessionId),
+    ).toBeUndefined();
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .some(
+          (message: any) =>
+            message.type === "result" && message.subtype === "stopped",
+        ),
+    ).toBe(false);
     bridge.close();
   });
 

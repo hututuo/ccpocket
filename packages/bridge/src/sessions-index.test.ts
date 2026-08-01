@@ -18,9 +18,12 @@ import {
   getCodexSessionIndexMetadata,
   getCodexSessionHistory,
   resolveCodexSessionJsonlPath,
+  readClaudeJsonlHistoryWindow,
+  readClaudeSessionHistoryWindow,
   extractMessageImages,
   codexThreadToSessionHistory,
   supplementCodexThreadWithDesktopTools,
+  type SessionHistoryMessage,
 } from "./sessions-index.js";
 import { buildAutoRenamePrompt } from "./auto-rename.js";
 
@@ -1695,6 +1698,7 @@ describe("codex sessions integration", () => {
     expect(result.sessions[0].codexSettings?.modelReasoningEffort).toBe(
       "xhigh",
     );
+    expect(result.sessions[0].codexSettings?.collaborationMode).toBe("default");
   });
 
   it("uses the latest turn_context when restoring Codex speed", async () => {
@@ -3742,5 +3746,272 @@ describe("claude namedOnly optimization", () => {
     expect(result.sessions).toHaveLength(1);
     expect(result.sessions[0].sessionId).toBe(sessionId);
     expect(result.sessions[0].name).toBe("SDK title");
+  });
+});
+
+describe("readClaudeJsonlHistoryWindow", () => {
+  function textOf(message: SessionHistoryMessage): string {
+    if (typeof message.content === "string") return message.content;
+    return message.content
+      .map((item) => item.text ?? item.thinking ?? "")
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  function userLine(id: string, text: string): string {
+    return JSON.stringify({
+      type: "user",
+      uuid: `user-${id}`,
+      timestamp: `2026-07-31T00:00:${id.padStart(2, "0")}.000Z`,
+      message: { role: "user", content: text },
+    });
+  }
+
+  function assistantLine(id: string, text: string): string {
+    return JSON.stringify({
+      type: "assistant",
+      uuid: `assistant-${id}`,
+      timestamp: `2026-07-31T00:01:${id.padStart(2, "0")}.000Z`,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text }],
+      },
+    });
+  }
+
+  it("resolves a durable Claude session id before reading its bounded page", async () => {
+    const oldHome = process.env.HOME;
+    const directory = mkdtempSync(join(tmpdir(), "claude-session-window-"));
+    const sessionId = "bounded-session-id";
+    const projectDirectory = join(
+      directory,
+      ".claude",
+      "projects",
+      "-bounded-project",
+    );
+    try {
+      process.env.HOME = directory;
+      mkdirSync(projectDirectory, { recursive: true });
+      writeFileSync(
+        join(projectDirectory, `${sessionId}.jsonl`),
+        [
+          userLine("1", "resolved question"),
+          assistantLine("1", "resolved answer"),
+        ].join("\n"),
+      );
+
+      const result = await readClaudeSessionHistoryWindow(sessionId, {
+        maxUserTurns: 1,
+        maxBytes: 64 * 1024,
+      });
+
+      expect(result.messages.map(textOf)).toEqual([
+        "resolved question",
+        "resolved answer",
+      ]);
+      expect(result.hasMore).toBe(false);
+    } finally {
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reads recent real user turns without scanning a huge prefix", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "claude-tail-window-"));
+    const jsonlPath = join(directory, "history.jsonl");
+    try {
+      const filler = JSON.stringify({
+        type: "progress",
+        payload: { ignored: "x".repeat(512) },
+      });
+      writeFileSync(
+        jsonlPath,
+        [
+          ...Array.from({ length: 10_000 }, () => filler),
+          userLine("1", "old question"),
+          assistantLine("1", "old answer"),
+          userLine("2", "recent question two"),
+          assistantLine("2", "recent answer two"),
+          JSON.stringify({
+            type: "user",
+            uuid: "meta-user",
+            isMeta: true,
+            message: { role: "user", content: "loaded skill context" },
+          }),
+          JSON.stringify({
+            type: "user",
+            uuid: "tool-result-only",
+            message: {
+              role: "user",
+              content: [
+                { type: "tool_result", tool_use_id: "tool-1", content: "ok" },
+              ],
+            },
+          }),
+          "{broken-json",
+          userLine("3", "recent question three"),
+          assistantLine("3", "recent answer three"),
+        ].join("\n"),
+      );
+
+      const result = await readClaudeJsonlHistoryWindow(jsonlPath, {
+        maxUserTurns: 2,
+        maxBytes: 16 * 1024,
+      });
+
+      expect(result.userTurnCount).toBe(2);
+      expect(result.bytesRead).toBeLessThanOrEqual(16 * 1024);
+      expect(result.bytesRead).toBeLessThan(statSync(jsonlPath).size / 100);
+      expect(result.messages.map(textOf)).toEqual([
+        "recent question two",
+        "recent answer two",
+        "loaded skill context",
+        "recent question three",
+        "recent answer three",
+      ]);
+      expect(result.messages[2].isMeta).toBe(true);
+      expect(result.hasMore).toBe(true);
+      expect(result.nextCursor).toEqual(expect.any(String));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("advances an opaque cursor through older pages without overlap", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "claude-tail-pages-"));
+    const jsonlPath = join(directory, "history.jsonl");
+    try {
+      writeFileSync(
+        jsonlPath,
+        [
+          userLine("1", "question one"),
+          assistantLine("1", "answer one"),
+          userLine("2", "question two"),
+          assistantLine("2", "answer two"),
+          userLine("3", "question three"),
+          assistantLine("3", "answer three"),
+          userLine("4", "question four"),
+          assistantLine("4", "answer four"),
+        ].join("\n"),
+      );
+
+      const newest = await readClaudeJsonlHistoryWindow(jsonlPath, {
+        maxUserTurns: 2,
+        maxBytes: 64 * 1024,
+      });
+      expect(newest.messages.map(textOf)).toEqual([
+        "question three",
+        "answer three",
+        "question four",
+        "answer four",
+      ]);
+      expect(newest.nextCursor).not.toBeNull();
+
+      const older = await readClaudeJsonlHistoryWindow(jsonlPath, {
+        cursor: newest.nextCursor!,
+        maxUserTurns: 2,
+        maxBytes: 64 * 1024,
+      });
+      expect(older.messages.map(textOf)).toEqual([
+        "question one",
+        "answer one",
+        "question two",
+        "answer two",
+      ]);
+      expect(older.userTurnCount).toBe(2);
+      expect(older.hasMore).toBe(false);
+      expect(older.nextCursor).toBeNull();
+
+      const uuids = [...newest.messages, ...older.messages]
+        .map((message) => message.uuid)
+        .filter(Boolean);
+      expect(new Set(uuids).size).toBe(uuids.length);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("skips an over-budget line while every cursor continues toward older data", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "claude-tail-oversized-"));
+    const jsonlPath = join(directory, "history.jsonl");
+    try {
+      writeFileSync(
+        jsonlPath,
+        [
+          userLine("1", "oldest question"),
+          assistantLine("1", "oldest answer"),
+          `{\"type\":\"progress\",\"payload\":\"${"x".repeat(4096)}\"}`,
+          userLine("2", "latest question"),
+          assistantLine("2", "latest answer"),
+        ].join("\n"),
+      );
+
+      let page = await readClaudeJsonlHistoryWindow(jsonlPath, {
+        maxUserTurns: 2,
+        maxBytes: 256,
+      });
+      const cursors = new Set<string>();
+      const observedTexts = page.messages.map(textOf);
+
+      for (let pageIndex = 0; page.hasMore && pageIndex < 32; pageIndex += 1) {
+        expect(page.bytesRead).toBeLessThanOrEqual(256);
+        expect(page.nextCursor).not.toBeNull();
+        expect(cursors.has(page.nextCursor!)).toBe(false);
+        cursors.add(page.nextCursor!);
+        page = await readClaudeJsonlHistoryWindow(jsonlPath, {
+          cursor: page.nextCursor!,
+          maxUserTurns: 2,
+          maxBytes: 256,
+        });
+        observedTexts.push(...page.messages.map(textOf));
+      }
+
+      expect(page.hasMore).toBe(false);
+      expect(observedTexts).toContain("latest question");
+      expect(observedTexts).toContain("latest answer");
+      expect(observedTexts).toContain("oldest question");
+      expect(observedTexts).toContain("oldest answer");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects malformed cursors and cursors from a different file", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "claude-tail-cursor-"));
+    const firstPath = join(directory, "first.jsonl");
+    const secondPath = join(directory, "second.jsonl");
+    try {
+      const history = [
+        userLine("1", "first question"),
+        assistantLine("1", "first answer"),
+        userLine("2", "second question"),
+        assistantLine("2", "second answer"),
+      ].join("\n");
+      writeFileSync(firstPath, history);
+      writeFileSync(secondPath, history);
+
+      await expect(
+        readClaudeJsonlHistoryWindow(firstPath, {
+          cursor: "not-a-valid-cursor",
+        }),
+      ).rejects.toThrow("Invalid Claude history cursor");
+      await expect(
+        readClaudeJsonlHistoryWindow(firstPath, { cursor: "" }),
+      ).rejects.toThrow("Invalid Claude history cursor");
+
+      const firstPage = await readClaudeJsonlHistoryWindow(firstPath, {
+        maxUserTurns: 1,
+        maxBytes: 64 * 1024,
+      });
+      expect(firstPage.nextCursor).not.toBeNull();
+      await expect(
+        readClaudeJsonlHistoryWindow(secondPath, {
+          cursor: firstPage.nextCursor!,
+        }),
+      ).rejects.toThrow("Invalid Claude history cursor");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

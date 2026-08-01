@@ -38,12 +38,16 @@ vi.mock("node:child_process", () => ({
 
 import {
   buildCodexSpawnSpec,
+  buildCodexServerActionResponse,
   codexErrorMessage,
   CodexCoreActionPreconditionError,
   CodexProcess,
   CodexRpcError,
+  CodexSharedRuntimeWriterUnavailableError,
+  CodexSharedRuntimeTurnOwnershipError,
   createCodexGoalResumeLease,
   parseCodexGoal,
+  projectCodexServerActionRequest,
 } from "./codex-process.js";
 import { stopManagedCodexAppServers } from "./codex-transport.js";
 
@@ -54,6 +58,45 @@ const originalCodexAppServerEnv = {
   port: process.env.BRIDGE_CODEX_APP_SERVER_PORT,
   url: process.env.BRIDGE_CODEX_APP_SERVER_URL,
 };
+
+describe("Codex server action projection", () => {
+  it("never offers approve-for-session when the exact request omits it", () => {
+    const projection = projectCodexServerActionRequest(
+      "request-scoped",
+      "item/commandExecution/requestApproval",
+      {
+        threadId: "thread-a",
+        turnId: "turn-a",
+        command: "pwd",
+        availableDecisions: ["accept", "decline"],
+      },
+    );
+    expect(projection?.allowedActions).toEqual(["approve", "reject"]);
+    expect(() =>
+      buildCodexServerActionResponse(
+        "request-scoped",
+        projection!,
+        "approve_always",
+      ),
+    ).toThrow("is not allowed");
+  });
+
+  it("maps a cancel-only rejection without inventing approval actions", () => {
+    const projection = projectCodexServerActionRequest(
+      "request-cancel",
+      "item/fileChange/requestApproval",
+      {
+        threadId: "thread-a",
+        turnId: "turn-a",
+        availableDecisions: ["cancel"],
+      },
+    );
+    expect(projection?.allowedActions).toEqual(["reject"]);
+    expect(
+      buildCodexServerActionResponse("request-cancel", projection!, "reject"),
+    ).toEqual({ decision: "cancel" });
+  });
+});
 
 function restoreCodexAppServerEnv(): void {
   restoreEnvVar("BRIDGE_PORT", originalCodexAppServerEnv.bridgePort);
@@ -174,6 +217,38 @@ describe("CodexProcess (app-server)", () => {
     ]);
     expect(warning).toHaveBeenCalledTimes(1);
     warning.mockRestore();
+  });
+
+  it("never falls back to an unkeyed write during durable recovery replay", async () => {
+    const proc = new CodexProcess("linux");
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockRejectedValue(
+        new CodexRpcError(
+          "turn/start",
+          "invalid params: unknown field clientUserMessageId",
+          -32602,
+        ),
+      );
+    const params = {
+      threadId: "thread-recovery",
+      input: [{ type: "text", text: "recover once" }],
+    };
+
+    await expect(
+      (proc as any).requestWithClientUserMessageIdFallback(
+        "turn/start",
+        params,
+        "mobile-recovery-message",
+        true,
+      ),
+    ).rejects.toThrow("recovered input was not replayed");
+
+    expect(request).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledWith("turn/start", {
+      ...params,
+      clientUserMessageId: "mobile-recovery-message",
+    });
   });
 
   it("emits authoritative provider receipts for accepted and rejected steer RPCs", async () => {
@@ -736,6 +811,13 @@ describe("CodexProcess (app-server)", () => {
       `${JSON.stringify({
         id: resumeReq.id,
         result: {
+          model: "gpt-5.6-sol",
+          reasoningEffort: "ultra",
+          serviceTier: "fast",
+          collaborationMode: {
+            mode: "plan",
+            settings: { reasoning_effort: "ultra" },
+          },
           thread: {
             id: "thread-shared-observer",
             status: {
@@ -778,8 +860,20 @@ describe("CodexProcess (app-server)", () => {
     });
     expect(proc.activeTurnId).toBe("turn-shared-active");
     expect(proc.status).toBe("waiting_approval");
+    expect(proc.collaborationMode).toBe("plan");
     expect(proc.isAttachmentReady).toBe(true);
     expect(inputReadyCount).toBe(0);
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "init",
+        sessionId: "thread-shared-observer",
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+        serviceTier: "fast",
+        planMode: true,
+      }),
+    );
 
     child.stdout.emit(
       "data",
@@ -1006,6 +1100,242 @@ describe("CodexProcess (app-server)", () => {
     proc.stop();
   });
 
+  it("never becomes a second currentTime/read responder in shared topology", () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    fakeChildren.push(child);
+    const internal = proc as any;
+    internal.stopped = false;
+    internal._runtimeGeneration = 7;
+    internal._attachmentRuntimeGeneration = 7;
+    internal._sharedRuntimePilotGates = {
+      enabled: true,
+      codexSourceId: "source-one",
+      allowThreadStart: true,
+      allowTurnStart: true,
+    };
+    internal._sharedRuntimeAttachMode = "adoption";
+    internal._threadId = "thread-shared-time";
+    internal.sharedRuntimeOwnedTurnIds.add("turn-owned");
+    attachFakeTransport(internal, child);
+
+    internal.handleServerRequest("time-shared", "currentTime/read", {
+      threadId: "thread-shared-time",
+    });
+    expect(outgoingResponses(child)).toEqual([]);
+
+    internal.handleServerRequest("time-foreign", "currentTime/read", {
+      threadId: "thread-foreign",
+    });
+    internal.handleServerRequest("time-owned-turn", "currentTime/read", {
+      threadId: "thread-shared-time",
+      turnId: "turn-owned",
+    });
+    internal._attachmentRuntimeGeneration = 6;
+    internal.handleServerRequest("time-stale", "currentTime/read", {
+      threadId: "thread-shared-time",
+    });
+    expect(outgoingResponses(child)).toEqual([]);
+
+    proc.stop();
+  });
+
+  it("buffers an early shared approval until turn/start proves the exact turn", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) => {
+      messages.push(message as unknown as Record<string, unknown>);
+    });
+    proc.start("/tmp/shared-early-approval", {
+      threadId: "thread-shared-early",
+      sharedRuntimeAttach: "adoption",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const resumeReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: resumeReq.id,
+        result: {
+          thread: {
+            id: "thread-shared-early",
+            status: { type: "idle" },
+            turns: [],
+          },
+        },
+      })}\n`,
+    );
+    await tick();
+
+    proc.sendInput("start an approval turn");
+    await tick();
+    const turnStart = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "turn/started",
+        params: {
+          threadId: "thread-shared-early",
+          turn: { id: "turn-shared-early", status: "inProgress" },
+        },
+      })}\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: "approval-early-owned",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          threadId: "thread-shared-early",
+          turnId: "turn-shared-early",
+          itemId: "item-early-owned",
+          command: "pwd",
+        },
+      })}\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: "approval-early-foreign",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          threadId: "thread-shared-early",
+          turnId: "turn-foreign-race",
+          itemId: "item-early-foreign",
+          command: "whoami",
+        },
+      })}\n`,
+    );
+    await tick();
+    expect(messages).not.toContainEqual(
+      expect.objectContaining({ type: "permission_request" }),
+    );
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: turnStart.id,
+        result: { turn: { id: "turn-shared-early" } },
+      })}\n`,
+    );
+    await tick();
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "item-early-owned",
+      }),
+    );
+    expect(messages).not.toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "item-early-foreign",
+      }),
+    );
+
+    proc.approve("item-early-owned");
+    expect(nextOutgoingResponse(child)).toMatchObject({
+      id: "approval-early-owned",
+      result: { decision: "accept" },
+    });
+    proc.stop();
+  });
+
+  it("discards provisional shared requests when turn/start is rejected", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) => {
+      messages.push(message as unknown as Record<string, unknown>);
+    });
+    proc.start("/tmp/shared-rejected-turn", {
+      threadId: "thread-shared-rejected",
+      sharedRuntimeAttach: "adoption",
+    });
+
+    const child = fakeChildren[0];
+    await tick();
+    const initReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ id: initReq.id, result: {} })}\n`,
+    );
+    await tick();
+    nextOutgoingNotification(child);
+    const resumeReq = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: resumeReq.id,
+        result: {
+          thread: {
+            id: "thread-shared-rejected",
+            status: { type: "idle" },
+            turns: [],
+          },
+        },
+      })}\n`,
+    );
+    await tick();
+
+    proc.sendInput("this turn will be rejected");
+    await tick();
+    const turnStart = nextOutgoingRequest(child);
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        method: "turn/started",
+        params: {
+          threadId: "thread-shared-rejected",
+          turn: { id: "turn-never-owned", status: "inProgress" },
+        },
+      })}\n`,
+    );
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: "approval-never-owned",
+        method: "item/fileChange/requestApproval",
+        params: {
+          threadId: "thread-shared-rejected",
+          turnId: "turn-never-owned",
+          itemId: "item-never-owned",
+        },
+      })}\n`,
+    );
+    await tick();
+    const pendingCompletion = (proc as any).pendingTurnCompletion;
+    expect(pendingCompletion.earlyServerRequests.size).toBe(1);
+
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: turnStart.id,
+        error: { code: -32000, message: "turn rejected" },
+      })}\n`,
+    );
+    await tick();
+    await tick();
+    expect(pendingCompletion.earlyServerRequests.size).toBe(0);
+    expect((proc as any).pendingTurnCompletion).toBeNull();
+    expect(messages).not.toContainEqual(
+      expect.objectContaining({
+        type: "permission_request",
+        toolUseId: "item-never-owned",
+      }),
+    );
+    expect((proc as any).sharedRuntimeOwnedTurnIds.size).toBe(0);
+
+    proc.stop();
+  });
+
   it("treats a daemon-created writer as shared for request ownership", () => {
     const proc = new CodexProcess("linux");
     const internal = proc as any;
@@ -1050,6 +1380,107 @@ describe("CodexProcess (app-server)", () => {
     proc.stop();
   });
 
+  it("forks through the shared writer without rebinding the parent attachment", async () => {
+    const proc = new CodexProcess("linux", () => true);
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+    const internal = proc as any;
+    internal.stopped = false;
+    internal._threadId = "thread-fork-parent";
+    internal._sharedRuntimeAttachMode = "adoption";
+    internal._sharedRuntimePilotGates = {
+      enabled: true,
+      codexSourceId: "source-one",
+      allowThreadStart: true,
+      allowTurnStart: true,
+    };
+
+    const fork = proc.forkThread();
+    const forkRequest = nextOutgoingRequest(child);
+    expect(forkRequest).toMatchObject({
+      method: "thread/fork",
+      params: { threadId: "thread-fork-parent" },
+    });
+    internal.handleRpcResponse({
+      id: forkRequest.id,
+      result: {
+        thread: {
+          id: "thread-fork-child",
+          ephemeral: false,
+          path: "/tmp/thread-fork-child.jsonl",
+        },
+      },
+    });
+    await expect(fork).resolves.toMatchObject({
+      threadId: "thread-fork-child",
+    });
+    expect(proc.sessionId).toBe("thread-fork-parent");
+    expect(internal.sharedRuntimeOwnedForkThreadIds).toEqual(
+      new Set(["thread-fork-child"]),
+    );
+
+    const rollback = proc.rollbackThreadById("thread-fork-child", 2);
+    const rollbackRequest = nextOutgoingRequest(child);
+    expect(rollbackRequest).toMatchObject({
+      method: "thread/rollback",
+      params: { threadId: "thread-fork-child", numTurns: 2 },
+    });
+    internal.handleRpcResponse({
+      id: rollbackRequest.id,
+      result: { thread: { id: "thread-fork-child" } },
+    });
+    await expect(rollback).resolves.toEqual({ id: "thread-fork-child" });
+    expect(internal.sharedRuntimeOwnedForkThreadIds.size).toBe(0);
+  });
+
+  it("rechecks the shared writer lease at the provider mutation boundary", async () => {
+    let writerAvailable = true;
+    const proc = new CodexProcess("linux", () => writerAvailable);
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+    const internal = proc as any;
+    internal.stopped = false;
+    internal._threadId = "thread-writer-fence";
+    internal._sharedRuntimeAttachMode = "adoption";
+
+    writerAvailable = false;
+    await expect(
+      Promise.resolve().then(() =>
+        internal.request("turn/start", {
+          threadId: "thread-writer-fence",
+          input: [{ type: "text", text: "must not be written" }],
+        }),
+      ),
+    ).rejects.toBeInstanceOf(CodexSharedRuntimeWriterUnavailableError);
+    expect(child.stdin.writes).toEqual([]);
+    expect(internal.pendingRpc.size).toBe(0);
+
+    const queuedInput = vi.fn();
+    internal.inputResolve = queuedInput;
+    internal._status = "idle";
+    expect(() => proc.sendInput("must remain queued")).toThrow(
+      CodexSharedRuntimeWriterUnavailableError,
+    );
+    expect(queuedInput).not.toHaveBeenCalled();
+    expect(internal.inputResolve).toBe(queuedInput);
+
+    writerAvailable = true;
+    const readAbort = new AbortController();
+    const read = internal.request(
+      "thread/read",
+      {
+        threadId: "thread-writer-fence",
+        includeTurns: false,
+      },
+      { signal: readAbort.signal },
+    );
+    const outgoing = nextOutgoingRequest(child);
+    expect(outgoing.method).toBe("thread/read");
+    readAbort.abort("test complete");
+    await expect(read).rejects.toThrow("thread/read aborted");
+    expect(internal.pendingRpc.size).toBe(0);
+  });
+
   it("refuses to steer an adopted shared turn that this attachment did not start", async () => {
     const proc = new CodexProcess("linux");
     const internal = proc as any;
@@ -1068,6 +1499,189 @@ describe("CodexProcess (app-server)", () => {
     await expect(
       proc.steerTurnStructured("turn-owned-by-desktop", "continue"),
     ).rejects.toThrow("owned by another subscriber");
+
+    proc.stop();
+  });
+
+  it("fails closed when a shared attachment interrupts a foreign turn", async () => {
+    const proc = new CodexProcess("linux");
+    const internal = proc as any;
+    internal.stopped = false;
+    internal._runtimeGeneration = 5;
+    internal._attachmentRuntimeGeneration = 5;
+    internal._sharedRuntimePilotGates = {
+      enabled: true,
+      codexSourceId: "source-one",
+      allowThreadStart: true,
+      allowTurnStart: true,
+    };
+    internal._sharedRuntimeAttachMode = "adoption";
+    internal._threadId = "thread-shared-adopted";
+    internal.pendingTurnId = "turn-owned-by-desktop";
+    internal._status = "running";
+    const request = vi.spyOn(internal, "request");
+
+    await expect(proc.interruptCurrentTurn()).rejects.toMatchObject({
+      name: "CodexSharedRuntimeTurnOwnershipError",
+      action: "interrupt",
+      turnId: "turn-owned-by-desktop",
+    });
+    await expect(proc.interruptCurrentTurnAndWait(50)).rejects.toBeInstanceOf(
+      CodexSharedRuntimeTurnOwnershipError,
+    );
+    expect(request).not.toHaveBeenCalled();
+
+    proc.stop();
+  });
+
+  it("allows interrupting a shared turn started by this attachment", async () => {
+    const proc = new CodexProcess("linux");
+    const internal = proc as any;
+    internal.stopped = false;
+    internal._runtimeGeneration = 5;
+    internal._attachmentRuntimeGeneration = 5;
+    internal._sharedRuntimePilotGates = {
+      enabled: true,
+      codexSourceId: "source-one",
+      allowThreadStart: true,
+      allowTurnStart: true,
+    };
+    internal._sharedRuntimeAttachMode = "adoption";
+    internal._threadId = "thread-shared-adopted";
+    internal.pendingTurnId = "turn-owned-by-bridge";
+    internal.sharedRuntimeOwnedTurnIds.add("turn-owned-by-bridge");
+    const request = vi.spyOn(internal, "request").mockResolvedValue({});
+
+    await expect(proc.interruptCurrentTurn()).resolves.toBeUndefined();
+    expect(request).toHaveBeenCalledWith("turn/interrupt", {
+      threadId: "thread-shared-adopted",
+      turnId: "turn-owned-by-bridge",
+    });
+
+    proc.stop();
+  });
+
+  it("exposes exact active-turn ownership with an opaque authority fence", () => {
+    const proc = new CodexProcess("linux");
+    const internal = proc as any;
+    internal.stopped = false;
+    internal._threadId = "thread-authority";
+    internal.pendingTurnId = "turn-authority";
+    const initialAuthority = proc.authorityGeneration;
+
+    expect(proc.activeTurnIsBridgeOwned).toBe(true);
+    expect(proc.bridgeOwnedActiveTurnId).toBe("turn-authority");
+
+    internal._sharedRuntimePilotGates = {
+      enabled: true,
+      codexSourceId: "source-one",
+      allowThreadStart: true,
+      allowTurnStart: true,
+    };
+    internal._sharedRuntimeAttachMode = "adoption";
+    expect(proc.activeTurnIsBridgeOwned).toBe(false);
+    expect(proc.bridgeOwnedActiveTurnId).toBeUndefined();
+
+    internal.sharedRuntimeOwnedTurnIds.add("turn-authority");
+    expect(proc.activeTurnIsBridgeOwned).toBe(true);
+    expect(proc.bridgeOwnedActiveTurnId).toBe("turn-authority");
+
+    proc.stop();
+    expect(proc.usesSharedRuntimeTopology).toBe(true);
+    expect(proc.authorityGeneration).not.toBe(initialAuthority);
+  });
+
+  it("allows the pilot to steer only an exact Bridge-owned shared turn", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    fakeChildren.push(child);
+    const internal = proc as any;
+    internal.stopped = false;
+    internal._runtimeGeneration = 5;
+    internal._attachmentRuntimeGeneration = 5;
+    internal._sharedRuntimePilotGates = {
+      enabled: true,
+      codexSourceId: "source-one",
+      allowThreadStart: true,
+      allowTurnStart: true,
+    };
+    internal._sharedRuntimeAttachMode = "adoption";
+    internal._threadId = "thread-shared-adopted";
+    internal.sharedRuntimeOwnedTurnIds.add("turn-owned-by-bridge");
+    attachFakeTransport(internal, child);
+
+    const steering = proc.steerTurnStructured(
+      "turn-owned-by-bridge",
+      "continue safely",
+    );
+    const request = await waitForOutgoingRequest(child, "turn/steer");
+    expect(request).toMatchObject({
+      method: "turn/steer",
+      params: {
+        threadId: "thread-shared-adopted",
+        expectedTurnId: "turn-owned-by-bridge",
+        input: [{ type: "text", text: "continue safely" }],
+      },
+    });
+    internal.handleRpcResponse({ id: request.id, result: {} });
+    await expect(steering).resolves.toBeUndefined();
+
+    proc.stop();
+  });
+
+  it("guides an exact Desktop-owned shared turn without acquiring stop authority", async () => {
+    const proc = new CodexProcess("linux", () => true);
+    const child = new FakeChildProcess();
+    fakeChildren.push(child);
+    const internal = proc as any;
+    internal.stopped = false;
+    internal._runtimeGeneration = 6;
+    internal._attachmentRuntimeGeneration = 6;
+    internal._attachmentReady = true;
+    internal._authoritativeThreadStatus = {
+      type: "active",
+      activeFlags: [],
+    };
+    internal._sharedRuntimePilotGates = {
+      enabled: true,
+      codexSourceId: "source-one",
+      allowThreadStart: true,
+      allowTurnStart: true,
+    };
+    internal._sharedRuntimeAttachMode = "adoption";
+    internal._threadId = "thread-shared-desktop";
+    internal.pendingTurnId = "turn-owned-by-desktop";
+    attachFakeTransport(internal, child);
+
+    expect(proc.canSteerExternalSharedRuntimeTurn).toBe(true);
+    expect(proc.activeTurnIsBridgeOwned).toBe(false);
+    const steering = proc.steerExternalTurnStructured(
+      "turn-owned-by-desktop",
+      "guide without taking ownership",
+    );
+    const request = await waitForOutgoingRequest(child, "turn/steer");
+    expect(request).toMatchObject({
+      method: "turn/steer",
+      params: {
+        threadId: "thread-shared-desktop",
+        expectedTurnId: "turn-owned-by-desktop",
+        input: [{ type: "text", text: "guide without taking ownership" }],
+      },
+    });
+    internal.handleRpcResponse({ id: request.id, result: {} });
+    await expect(steering).resolves.toBeUndefined();
+
+    await expect(proc.interruptCurrentTurn()).rejects.toMatchObject({
+      name: "CodexSharedRuntimeTurnOwnershipError",
+    });
+    await expect(
+      proc.steerExternalTurnStructured(
+        "stale-desktop-turn",
+        "do not cross the turn fence",
+      ),
+    ).rejects.toMatchObject({
+      name: "CodexSharedRuntimeTurnOwnershipError",
+    });
 
     proc.stop();
   });
@@ -1214,6 +1828,92 @@ describe("CodexProcess (app-server)", () => {
     expect(proc.approvalPolicy).toBeUndefined();
     expect(proc.approvalsReviewer).toBe("user");
     expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("publishes shared-runtime settings only after the canonical app-server ACK", async () => {
+    const proc = new CodexProcess("linux", () => true);
+    (proc as any)._threadId = "thread-shared-settings";
+    (proc as any)._sharedRuntimePilotGates = {
+      enabled: true,
+      codexSourceId: "source-shared",
+      allowThreadStart: true,
+      allowTurnStart: true,
+    };
+    (proc as any)._sharedRuntimeAttachMode = "adoption";
+    (proc as any)._runtimeGeneration = 3;
+    (proc as any)._attachmentRuntimeGeneration = 3;
+    (proc as any)._attachmentReady = true;
+    (proc as any)._status = "idle";
+    (proc as any)._authoritativeThreadStatus = { type: "idle" };
+    (proc as any).stopped = false;
+
+    let acknowledge!: (value: unknown) => void;
+    const response = new Promise((resolve) => {
+      acknowledge = resolve;
+    });
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockReturnValueOnce(response);
+
+    const update = proc.updateSharedRuntimeSettingsForNextTurn({
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
+      serviceTier: "fast",
+    });
+    await tick();
+
+    expect(request).toHaveBeenCalledWith("thread/settings/update", {
+      threadId: "thread-shared-settings",
+      model: "gpt-5.6-sol",
+      effort: "ultra",
+      serviceTier: "fast",
+    });
+    expect(proc.knownModel).toBeUndefined();
+    expect(proc.knownServiceTier).toBeUndefined();
+
+    acknowledge({});
+    await update;
+    expect(proc.knownModel).toBe("gpt-5.6-sol");
+    expect(proc.modelReasoningEffort).toBe("ultra");
+    expect(proc.knownServiceTier).toBe("fast");
+  });
+
+  it("fails shared-runtime settings closed while active and on unsupported RPCs", async () => {
+    const proc = new CodexProcess("linux", () => true);
+    (proc as any)._threadId = "thread-shared-settings-guarded";
+    (proc as any)._sharedRuntimePilotGates = {
+      enabled: true,
+      codexSourceId: "source-shared",
+      allowThreadStart: true,
+      allowTurnStart: true,
+    };
+    (proc as any)._sharedRuntimeAttachMode = "adoption";
+    (proc as any)._runtimeGeneration = 4;
+    (proc as any)._attachmentRuntimeGeneration = 4;
+    (proc as any)._attachmentReady = true;
+    (proc as any)._status = "running";
+    (proc as any)._authoritativeThreadStatus = {
+      type: "active",
+      activeFlags: [],
+    };
+    (proc as any).stopped = false;
+    const request = vi.spyOn(proc as any, "request");
+
+    await expect(
+      proc.updateSharedRuntimeSettingsForNextTurn({ serviceTier: "fast" }),
+    ).rejects.toThrow("idle writable runtime");
+    expect(request).not.toHaveBeenCalled();
+
+    (proc as any)._status = "idle";
+    (proc as any)._authoritativeThreadStatus = { type: "idle" };
+    request.mockRejectedValueOnce(
+      new CodexRpcError("thread/settings/update", "Method not found", -32601),
+    );
+    await expect(
+      proc.updateSharedRuntimeSettingsForNextTurn({ serviceTier: "fast" }),
+    ).rejects.toMatchObject({ code: -32601 });
+    expect(proc.knownServiceTier).toBeUndefined();
+    expect(proc.supportsNextTurnPermissionUpdates).toBe(false);
   });
 
   it("sends a complete workspace sandbox policy for next-turn permissions", async () => {
@@ -1964,6 +2664,61 @@ describe("CodexProcess (app-server)", () => {
       subtype: "success",
       result: "Streamed response",
     });
+  });
+
+  it("keeps authoritative app-server item time stable across delta and completion", () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, unknown>> = [];
+    proc.on("message", (message) =>
+      messages.push(message as Record<string, unknown>),
+    );
+
+    (proc as any).handleNotification("turn/started", {
+      turn: { id: "turn-timestamp" },
+    });
+    (proc as any).handleNotification("item/started", {
+      turnId: "turn-timestamp",
+      item: {
+        id: "agent-timestamp",
+        type: "agentMessage",
+        createdAt: 1_785_456_000,
+      },
+    });
+    (proc as any).handleNotification("item/agentMessage/delta", {
+      turnId: "turn-timestamp",
+      itemId: "agent-timestamp",
+      delta: "stable",
+    });
+    (proc as any).handleNotification("item/completed", {
+      turnId: "turn-timestamp",
+      item: {
+        id: "agent-timestamp",
+        type: "agentMessage",
+        text: "stable",
+        createdAt: 1_785_456_000,
+        completedAt: 1_785_456_005,
+      },
+    });
+
+    const projected = messages.filter(
+      (message) =>
+        message.type === "stream_delta" || message.type === "assistant",
+    );
+    expect(projected).toHaveLength(2);
+    expect(projected).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "stream_delta",
+          sourceTimestamp: "2026-07-31T00:00:00.000Z",
+          sourceTimestampIsAuthoritative: true,
+        }),
+        expect.objectContaining({
+          type: "assistant",
+          sourceTimestamp: "2026-07-31T00:00:00.000Z",
+          sourceTimestampIsAuthoritative: true,
+        }),
+      ]),
+    );
   });
 
   it("binds an id-less delta to the only started agent message", () => {
@@ -4044,6 +4799,7 @@ describe("CodexProcess (app-server)", () => {
     await proc.archiveThread("thread-archive");
     await proc.unarchiveThread("thread-unarchive");
     await proc.deleteThread("thread-delete");
+    await proc.renameThreadById("thread-rename", "New name");
 
     expect(request).toHaveBeenNthCalledWith(1, "thread/archive", {
       threadId: "thread-archive",
@@ -4053,6 +4809,10 @@ describe("CodexProcess (app-server)", () => {
     });
     expect(request).toHaveBeenNthCalledWith(3, "thread/delete", {
       threadId: "thread-delete",
+    });
+    expect(request).toHaveBeenNthCalledWith(4, "thread/name/set", {
+      threadId: "thread-rename",
+      name: "New name",
     });
   });
 
@@ -4741,6 +5501,8 @@ describe("CodexProcess (app-server)", () => {
       text: "sent from terminal",
       userMessageUuid: "user_1",
       timestamp: "2026-05-12T10:00:00.000Z",
+      sourceTimestamp: "2026-05-12T10:00:00.000Z",
+      sourceTimestampIsAuthoritative: true,
     });
 
     proc.stop();

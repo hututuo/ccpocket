@@ -57,6 +57,7 @@ export interface SessionIndexEntry {
     model?: string;
     modelReasoningEffort?: string;
     serviceTier?: string;
+    collaborationMode?: "plan" | "default";
     networkAccessEnabled?: boolean;
     webSearchMode?: string;
     additionalWritableRoots?: string[];
@@ -1376,6 +1377,7 @@ function parseCodexSessionJsonl(
   let model: string | undefined;
   let modelReasoningEffort: string | undefined;
   let serviceTier: string | undefined;
+  let collaborationMode: "plan" | "default" | undefined;
   let networkAccessEnabled: boolean | undefined;
   let webSearchMode: string | undefined;
 
@@ -1479,10 +1481,17 @@ function parseCodexSessionJsonl(
         if (typeof payload.model === "string") {
           model = payload.model;
         }
-        const collaborationMode = payload.collaboration_mode as
+        const collaboration = payload.collaboration_mode as
           Record<string, unknown> | undefined;
-        const collaborationSettings = collaborationMode?.settings as
+        const collaborationSettings = collaboration?.settings as
           Record<string, unknown> | undefined;
+        const collaborationModeValue = collaboration?.mode;
+        if (
+          collaborationModeValue === "plan" ||
+          collaborationModeValue === "default"
+        ) {
+          collaborationMode = collaborationModeValue;
+        }
         if (typeof collaborationSettings?.reasoning_effort === "string") {
           modelReasoningEffort = collaborationSettings.reasoning_effort;
         }
@@ -1520,10 +1529,17 @@ function parseCodexSessionJsonl(
           if (typeof settings.model === "string") {
             model = settings.model;
           }
-          const collaborationMode = settings.collaboration_mode as
+          const collaboration = settings.collaboration_mode as
             Record<string, unknown> | undefined;
-          const collaborationSettings = collaborationMode?.settings as
+          const collaborationSettings = collaboration?.settings as
             Record<string, unknown> | undefined;
+          const collaborationModeValue = collaboration?.mode;
+          if (
+            collaborationModeValue === "plan" ||
+            collaborationModeValue === "default"
+          ) {
+            collaborationMode = collaborationModeValue;
+          }
           const reasoningEffort =
             typeof settings.reasoning_effort === "string"
               ? settings.reasoning_effort
@@ -1593,6 +1609,7 @@ function parseCodexSessionJsonl(
     model ||
     modelReasoningEffort ||
     serviceTier ||
+    collaborationMode ||
     networkAccessEnabled !== undefined ||
     webSearchMode
       ? {
@@ -1602,6 +1619,7 @@ function parseCodexSessionJsonl(
           model,
           modelReasoningEffort,
           serviceTier,
+          collaborationMode,
           networkAccessEnabled,
           webSearchMode,
         }
@@ -1683,6 +1701,12 @@ async function parseCodexSessionJsonlFast(
 
 type CodexSettings = NonNullable<SessionIndexEntry["codexSettings"]>;
 type CodexSettingsRecordKind = "turn_context" | "thread_settings_applied";
+
+function normalizeCodexCollaborationMode(
+  value: unknown,
+): "plan" | "default" | undefined {
+  return value === "plan" || value === "default" ? value : undefined;
+}
 
 interface CodexSettingsMarker {
   kind: CodexSettingsRecordKind;
@@ -1818,6 +1842,9 @@ function codexSettingsFromTurnContext(
   const sandboxPolicy = asObject(payload.sandbox_policy);
   const collaborationMode = asObject(payload.collaboration_mode);
   const collaborationSettings = asObject(collaborationMode?.settings);
+  const collaborationModeValue = normalizeCodexCollaborationMode(
+    collaborationMode?.mode,
+  );
   return {
     ...(typeof payload.approval_policy === "string"
       ? { approvalPolicy: payload.approval_policy }
@@ -1831,6 +1858,9 @@ function codexSettingsFromTurnContext(
     ...(typeof payload.model === "string" ? { model: payload.model } : {}),
     ...(typeof collaborationSettings?.reasoning_effort === "string"
       ? { modelReasoningEffort: collaborationSettings.reasoning_effort }
+      : {}),
+    ...(collaborationModeValue
+      ? { collaborationMode: collaborationModeValue }
       : {}),
     serviceTier:
       typeof payload.service_tier === "string" &&
@@ -1852,6 +1882,9 @@ function codexSettingsFromThreadSettings(
 ): CodexSettings {
   const collaborationMode = asObject(settings.collaboration_mode);
   const collaborationSettings = asObject(collaborationMode?.settings);
+  const collaborationModeValue = normalizeCodexCollaborationMode(
+    collaborationMode?.mode,
+  );
   const reasoningEffort =
     typeof settings.reasoning_effort === "string"
       ? settings.reasoning_effort
@@ -1868,6 +1901,9 @@ function codexSettingsFromThreadSettings(
     ...(typeof settings.model === "string" ? { model: settings.model } : {}),
     ...(typeof reasoningEffort === "string"
       ? { modelReasoningEffort: reasoningEffort }
+      : {}),
+    ...(collaborationModeValue
+      ? { collaborationMode: collaborationModeValue }
       : {}),
     ...("service_tier" in settings
       ? {
@@ -1922,6 +1958,7 @@ function fillMissingCodexSettings(
   target.model ??= source.model;
   target.modelReasoningEffort ??= source.modelReasoningEffort;
   target.serviceTier ??= source.serviceTier;
+  target.collaborationMode ??= source.collaborationMode;
   target.networkAccessEnabled ??= source.networkAccessEnabled;
   target.webSearchMode ??= source.webSearchMode;
 }
@@ -4261,6 +4298,109 @@ async function codexJsonlThreadId(filePath: string): Promise<string | null> {
  * Read past conversation messages from a session's JSONL file.
  * Returns user and assistant messages suitable for display.
  */
+interface ParsedClaudeHistoryLine {
+  message: SessionHistoryMessage;
+  isRealUserTurn: boolean;
+}
+
+function parseClaudeHistoryLine(line: string): ParsedClaudeHistoryLine | null {
+  if (!line.trim()) return null;
+
+  let entry: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    const parsedEntry = asObject(parsed);
+    if (!parsedEntry) return null;
+    entry = parsedEntry;
+  } catch {
+    return null;
+  }
+
+  const type = entry.type;
+  if (type !== "user" && type !== "assistant") return null;
+
+  // Context compaction and transcript-only records are not real user input.
+  if (
+    type === "user" &&
+    (entry.isCompactSummary === true ||
+      entry.isVisibleInTranscriptOnly === true)
+  ) {
+    return null;
+  }
+
+  const sourceMessage = asObject(entry.message);
+  if (!sourceMessage) return null;
+  const sourceRole = sourceMessage.role;
+  if (sourceRole !== "user" && sourceRole !== "assistant") return null;
+  const sourceContent = sourceMessage.content;
+  if (!sourceContent) return null;
+
+  const isMeta =
+    sourceRole === "user" && entry.isMeta === true ? true : undefined;
+  const uuid = typeof entry.uuid === "string" ? entry.uuid : undefined;
+  const timestamp =
+    typeof entry.timestamp === "string" ? entry.timestamp : undefined;
+
+  if (typeof sourceContent === "string") {
+    if (!sourceContent) return null;
+    return {
+      message: {
+        role: sourceRole,
+        content: [{ type: "text", text: sourceContent }],
+        ...(uuid ? { uuid } : {}),
+        ...(timestamp ? { timestamp } : {}),
+        ...(isMeta ? { isMeta } : {}),
+      },
+      isRealUserTurn: type === "user" && sourceRole === "user" && !isMeta,
+    };
+  }
+
+  if (!Array.isArray(sourceContent)) return null;
+
+  // Preserve the existing display projection: text and tool_use are retained,
+  // while tool_result-only user records do not become visible user turns.
+  const content: SessionHistoryContentItem[] = [];
+  let imageCount = 0;
+  for (const rawContent of sourceContent) {
+    const item = asObject(rawContent);
+    if (!item) continue;
+    const contentType = item.type;
+
+    if (contentType === "text" && item.text) {
+      content.push({ type: "text", text: item.text as string });
+    } else if (contentType === "tool_use") {
+      content.push({
+        type: "tool_use",
+        id: item.id as string,
+        name: item.name as string,
+        input: (item.input as Record<string, unknown>) ?? {},
+      });
+    } else if (contentType === "image") {
+      imageCount += 1;
+    }
+  }
+
+  if (content.length === 0 && imageCount === 0) return null;
+  if (content.length === 0) {
+    content.push({
+      type: "text",
+      text: `[Image attached${imageCount > 1 ? ` x${imageCount}` : ""}]`,
+    });
+  }
+
+  return {
+    message: {
+      role: sourceRole,
+      content,
+      ...(uuid ? { uuid } : {}),
+      ...(timestamp ? { timestamp } : {}),
+      ...(isMeta ? { isMeta } : {}),
+      ...(imageCount > 0 ? { imageCount } : {}),
+    },
+    isRealUserTurn: type === "user" && sourceRole === "user" && !isMeta,
+  };
+}
+
 export async function getSessionHistory(
   sessionId: string,
   options: {
@@ -4278,101 +4418,335 @@ export async function getSessionHistory(
       if (processedLines % 512 === 0) {
         options.onProgress?.({ completedUnits: processedLines });
       }
-      if (!line.trim()) continue;
-
-      let entry: Record<string, unknown>;
-      try {
-        entry = JSON.parse(line) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
-
-      const type = entry.type as string;
-      if (type !== "user" && type !== "assistant") continue;
-
-      // Skip context compaction and transcript-only messages (not real user input)
-      if (type === "user") {
-        if (
-          entry.isCompactSummary === true ||
-          entry.isVisibleInTranscriptOnly === true
-        ) {
-          continue;
-        }
-      }
-
-      const message = entry.message as
-        { role: string; content: unknown[] | string } | undefined;
-      if (!message?.content) continue;
-
-      const role = message.role as "user" | "assistant";
-      const isMeta =
-        role === "user" && entry.isMeta === true ? true : undefined;
-
-      // Handle string content (e.g. user message after interrupt)
-      if (typeof message.content === "string") {
-        if (message.content) {
-          const uuid = entry.uuid as string | undefined;
-          const ts = entry.timestamp as string | undefined;
-          messages.push({
-            role,
-            content: [{ type: "text" as const, text: message.content }],
-            ...(uuid ? { uuid } : {}),
-            ...(ts ? { timestamp: ts } : {}),
-            ...(isMeta ? { isMeta } : {}),
-          });
-        }
-        continue;
-      }
-
-      if (!Array.isArray(message.content)) continue;
-
-      // Filter content to only text and tool_use (skip tool_result for cleaner display)
-      const content: SessionHistoryContentItem[] = [];
-      let imageCount = 0;
-      for (const c of message.content) {
-        if (typeof c !== "object" || c === null) continue;
-        const item = c as Record<string, unknown>;
-        const contentType = item.type as string;
-
-        if (contentType === "text" && item.text) {
-          content.push({ type: "text", text: item.text as string });
-        } else if (contentType === "tool_use") {
-          content.push({
-            type: "tool_use",
-            id: item.id as string,
-            name: item.name as string,
-            input: (item.input as Record<string, unknown>) ?? {},
-          });
-        } else if (contentType === "image") {
-          imageCount++;
-        }
-      }
-
-      if (content.length > 0 || imageCount > 0) {
-        const uuid = entry.uuid as string | undefined;
-        const ts = entry.timestamp as string | undefined;
-        // If there are only images and no text, add a placeholder
-        if (content.length === 0 && imageCount > 0) {
-          content.push({
-            type: "text",
-            text: `[Image attached${imageCount > 1 ? ` x${imageCount}` : ""}]`,
-          });
-        }
-        messages.push({
-          role,
-          content,
-          ...(uuid ? { uuid } : {}),
-          ...(ts ? { timestamp: ts } : {}),
-          ...(isMeta ? { isMeta } : {}),
-          ...(imageCount > 0 ? { imageCount } : {}),
-        });
-      }
+      const parsed = parseClaudeHistoryLine(line);
+      if (parsed) messages.push(parsed.message);
     }
   } catch {
     return [];
   }
 
   return messages;
+}
+
+const CLAUDE_HISTORY_WINDOW_DEFAULT_USER_TURNS = 5;
+const CLAUDE_HISTORY_WINDOW_DEFAULT_MAX_BYTES = 512 * 1024;
+const CLAUDE_HISTORY_WINDOW_READ_CHUNK_BYTES = 64 * 1024;
+const CLAUDE_HISTORY_CURSOR_VERSION = 1;
+const CLAUDE_HISTORY_CURSOR_MAX_LENGTH = 1024;
+
+interface ClaudeHistoryCursorPayload {
+  v: typeof CLAUDE_HISTORY_CURSOR_VERSION;
+  dev: string;
+  ino: string;
+  snapshotSize: number;
+  endOffset: number;
+  skipTrailingPartial: boolean;
+}
+
+export interface ClaudeJsonlHistoryWindowOptions {
+  /** Opaque cursor returned by the preceding page; omit for the newest page. */
+  cursor?: string;
+  /** Maximum number of non-meta user turns to include. */
+  maxUserTurns?: number;
+  /** Hard upper bound on bytes read from the JSONL file during this call. */
+  maxBytes?: number;
+}
+
+export interface ClaudeJsonlHistoryWindow {
+  messages: SessionHistoryMessage[];
+  /** Cursor for the next, older page. Null means the snapshot is exhausted. */
+  nextCursor: string | null;
+  hasMore: boolean;
+  /** Actual file bytes read, always less than or equal to maxBytes. */
+  bytesRead: number;
+  /** Number of real, non-meta user turns in this page. */
+  userTurnCount: number;
+}
+
+function invalidClaudeHistoryCursor(): Error {
+  return new Error("Invalid Claude history cursor");
+}
+
+function encodeClaudeHistoryCursor(
+  payload: ClaudeHistoryCursorPayload,
+): string {
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
+function decodeClaudeHistoryCursor(cursor: string): ClaudeHistoryCursorPayload {
+  if (
+    cursor.length === 0 ||
+    cursor.length > CLAUDE_HISTORY_CURSOR_MAX_LENGTH ||
+    !/^[A-Za-z0-9_-]+$/.test(cursor)
+  ) {
+    throw invalidClaudeHistoryCursor();
+  }
+
+  let parsed: unknown;
+  try {
+    const decoded = Buffer.from(cursor, "base64url");
+    if (decoded.toString("base64url") !== cursor) {
+      throw invalidClaudeHistoryCursor();
+    }
+    parsed = JSON.parse(decoded.toString("utf8")) as unknown;
+  } catch {
+    throw invalidClaudeHistoryCursor();
+  }
+
+  const payload = asObject(parsed);
+  if (!payload) throw invalidClaudeHistoryCursor();
+  const keys = Object.keys(payload).sort().join(",");
+  if (keys !== "dev,endOffset,ino,skipTrailingPartial,snapshotSize,v") {
+    throw invalidClaudeHistoryCursor();
+  }
+
+  const snapshotSize = payload.snapshotSize;
+  const endOffset = payload.endOffset;
+  if (
+    payload.v !== CLAUDE_HISTORY_CURSOR_VERSION ||
+    typeof payload.dev !== "string" ||
+    !/^\d+$/.test(payload.dev) ||
+    typeof payload.ino !== "string" ||
+    !/^\d+$/.test(payload.ino) ||
+    typeof snapshotSize !== "number" ||
+    !Number.isSafeInteger(snapshotSize) ||
+    snapshotSize < 0 ||
+    typeof endOffset !== "number" ||
+    !Number.isSafeInteger(endOffset) ||
+    endOffset < 0 ||
+    endOffset > snapshotSize ||
+    typeof payload.skipTrailingPartial !== "boolean"
+  ) {
+    throw invalidClaudeHistoryCursor();
+  }
+
+  return {
+    v: CLAUDE_HISTORY_CURSOR_VERSION,
+    dev: payload.dev,
+    ino: payload.ino,
+    snapshotSize,
+    endOffset,
+    skipTrailingPartial: payload.skipTrailingPartial,
+  };
+}
+
+function positiveSafeInteger(
+  value: number | undefined,
+  fallback: number,
+  label: string,
+): number {
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved <= 0) {
+    throw new Error(`${label} must be a positive safe integer`);
+  }
+  return resolved;
+}
+
+/**
+ * Read a display-ready Claude history window from the tail of one JSONL file.
+ *
+ * The cursor is an exclusive byte position moving toward older records. It is
+ * bound to an append-only file snapshot: later appends are allowed, while a
+ * different file or a truncation invalidates the cursor. A line larger than a
+ * page's byte budget is deliberately skipped across advancing cursors instead
+ * of being accumulated without bound.
+ */
+export async function readClaudeJsonlHistoryWindow(
+  jsonlPath: string,
+  options: ClaudeJsonlHistoryWindowOptions = {},
+): Promise<ClaudeJsonlHistoryWindow> {
+  const maxUserTurns = positiveSafeInteger(
+    options.maxUserTurns,
+    CLAUDE_HISTORY_WINDOW_DEFAULT_USER_TURNS,
+    "maxUserTurns",
+  );
+  const maxBytes = positiveSafeInteger(
+    options.maxBytes,
+    CLAUDE_HISTORY_WINDOW_DEFAULT_MAX_BYTES,
+    "maxBytes",
+  );
+
+  const handle = await open(jsonlPath, "r");
+  try {
+    const initialStat = await handle.stat();
+    if (!initialStat.isFile() || !Number.isSafeInteger(initialStat.size)) {
+      throw new Error("Claude history source must be a regular sized file");
+    }
+
+    const dev = String(initialStat.dev);
+    const ino = String(initialStat.ino);
+    const suppliedCursor =
+      options.cursor === undefined
+        ? null
+        : decodeClaudeHistoryCursor(options.cursor);
+    if (
+      suppliedCursor &&
+      (suppliedCursor.dev !== dev ||
+        suppliedCursor.ino !== ino ||
+        initialStat.size < suppliedCursor.snapshotSize)
+    ) {
+      throw invalidClaudeHistoryCursor();
+    }
+
+    const snapshotSize = suppliedCursor?.snapshotSize ?? initialStat.size;
+    let position = suppliedCursor?.endOffset ?? snapshotSize;
+    const pageEndOffset = position;
+    let skipTrailingPartial = suppliedCursor?.skipTrailingPartial ?? false;
+    let bytesRead = 0;
+    let userTurnCount = 0;
+    let stoppedAtOffset: number | null = null;
+    const newestFirst: SessionHistoryMessage[] = [];
+    let pendingParts: Buffer[] = [];
+    let pendingBytes = 0;
+    let pendingLineEndOffset = position;
+
+    const clearPending = (): void => {
+      pendingParts = [];
+      pendingBytes = 0;
+    };
+    const prependPending = (part: Buffer): void => {
+      if (part.length === 0) return;
+      pendingParts.unshift(part);
+      pendingBytes += part.length;
+    };
+    const consumeLine = (prefix: Buffer, lineStart: number): boolean => {
+      const byteLength = prefix.length + pendingBytes;
+      const line =
+        pendingParts.length === 0
+          ? prefix.toString("utf8")
+          : Buffer.concat([prefix, ...pendingParts], byteLength).toString(
+              "utf8",
+            );
+      clearPending();
+      const parsed = parseClaudeHistoryLine(line);
+      if (!parsed) return false;
+      newestFirst.push(parsed.message);
+      if (!parsed.isRealUserTurn) return false;
+      userTurnCount += 1;
+      if (userTurnCount < maxUserTurns) return false;
+      stoppedAtOffset = lineStart;
+      return true;
+    };
+
+    while (position > 0 && bytesRead < maxBytes && stoppedAtOffset === null) {
+      const readLength = Math.min(
+        CLAUDE_HISTORY_WINDOW_READ_CHUNK_BYTES,
+        maxBytes - bytesRead,
+        position,
+      );
+      const readStart = position - readLength;
+      const chunk = Buffer.allocUnsafe(readLength);
+      let filled = 0;
+      while (filled < readLength) {
+        const result = await handle.read(
+          chunk,
+          filled,
+          readLength - filled,
+          readStart + filled,
+        );
+        if (result.bytesRead === 0) {
+          throw new Error("Claude history file changed while reading");
+        }
+        filled += result.bytesRead;
+        bytesRead += result.bytesRead;
+      }
+      position = readStart;
+
+      let right = chunk.length;
+      if (skipTrailingPartial) {
+        const delimiter = chunk.lastIndexOf(0x0a, right - 1);
+        if (delimiter < 0) {
+          continue;
+        }
+        skipTrailingPartial = false;
+        clearPending();
+        pendingLineEndOffset = readStart + delimiter;
+        right = delimiter;
+      }
+
+      while (right > 0) {
+        const delimiter = chunk.lastIndexOf(0x0a, right - 1);
+        if (delimiter < 0) {
+          prependPending(chunk.subarray(0, right));
+          break;
+        }
+        const lineStart = readStart + delimiter + 1;
+        if (consumeLine(chunk.subarray(delimiter + 1, right), lineStart)) {
+          break;
+        }
+        pendingLineEndOffset = lineStart - 1;
+        right = delimiter;
+      }
+    }
+
+    if (
+      position === 0 &&
+      stoppedAtOffset === null &&
+      !skipTrailingPartial &&
+      pendingBytes > 0
+    ) {
+      consumeLine(Buffer.alloc(0), 0);
+    }
+
+    const finalStat = await handle.stat();
+    if (
+      String(finalStat.dev) !== dev ||
+      String(finalStat.ino) !== ino ||
+      finalStat.size < snapshotSize
+    ) {
+      throw new Error("Claude history file changed while reading");
+    }
+
+    const retryCompleteLine =
+      stoppedAtOffset === null &&
+      position > 0 &&
+      pendingBytes > 0 &&
+      pendingLineEndOffset < pageEndOffset;
+    const nextEndOffset =
+      stoppedAtOffset ?? (retryCompleteLine ? pendingLineEndOffset : position);
+    const hasMore = nextEndOffset > 0;
+    const nextCursor = hasMore
+      ? encodeClaudeHistoryCursor({
+          v: CLAUDE_HISTORY_CURSOR_VERSION,
+          dev,
+          ino,
+          snapshotSize,
+          endOffset: nextEndOffset,
+          skipTrailingPartial:
+            stoppedAtOffset === null &&
+            !retryCompleteLine &&
+            (skipTrailingPartial || pendingBytes > 0),
+        })
+      : null;
+
+    return {
+      messages: newestFirst.reverse(),
+      nextCursor,
+      hasMore,
+      bytesRead,
+      userTurnCount,
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Resolve one durable Claude session and read only its bounded history page. */
+export async function readClaudeSessionHistoryWindow(
+  sessionId: string,
+  options: ClaudeJsonlHistoryWindowOptions = {},
+): Promise<ClaudeJsonlHistoryWindow> {
+  const jsonlPath = await findSessionJsonlPath(sessionId);
+  if (!jsonlPath) {
+    return {
+      messages: [],
+      nextCursor: null,
+      hasMore: false,
+      bytesRead: 0,
+      userTurnCount: 0,
+    };
+  }
+  return readClaudeJsonlHistoryWindow(jsonlPath, options);
 }
 
 // ---- Extract full image data from JSONL for a specific message ----

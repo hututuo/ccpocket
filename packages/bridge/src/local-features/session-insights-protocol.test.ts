@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DURABLE_SESSION_INSIGHTS_CAPABILITY,
+  SCOPED_CONTEXT_USAGE_CAPABILITY,
   isLocalFeatureServerMessageType,
   parseLocalFeatureClientMessage,
 } from "./protocol.js";
@@ -56,6 +57,7 @@ describe("session insights protocol slot", () => {
     expect(DURABLE_SESSION_INSIGHTS_CAPABILITY).toBe(
       "durable_session_insights_v1",
     );
+    expect(SCOPED_CONTEXT_USAGE_CAPABILITY).toBe("scoped_context_usage_v1");
     expect(isLocalFeatureServerMessageType("context_usage")).toBe(true);
     expect(isLocalFeatureServerMessageType("context_usage_result")).toBe(true);
     expect(isLocalFeatureServerMessageType("context_usage_error")).toBe(true);

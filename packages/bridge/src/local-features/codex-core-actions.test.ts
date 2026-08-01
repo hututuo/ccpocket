@@ -141,6 +141,49 @@ describe("CodexCoreActionsFeatureHandler", () => {
     await first;
   });
 
+  it("uses the host authority gate for mutations but keeps MCP status read-only", async () => {
+    const sent: unknown[] = [];
+    const process = processWith();
+    const { context } = testContext(process, sent, {
+      mutationBlock: {
+        errorCode: "codex_shared_runtime_turn_owned_elsewhere",
+        message: "Desktop owns the active turn.",
+      },
+    });
+    const handler = new CodexCoreActionsFeatureHandler();
+
+    await handler.handle(
+      request({
+        type: "codex_compact_request",
+        sessionId: "session-1",
+        requestId: "compact-foreign",
+      }),
+      context,
+    );
+    await handler.handle(
+      request({
+        type: "codex_mcp_status_request",
+        sessionId: "session-1",
+        requestId: "mcp-read",
+      }),
+      context,
+    );
+
+    expect(process.compactThread).not.toHaveBeenCalled();
+    expect(process.listMcpServerStatus).toHaveBeenCalledOnce();
+    expect(sent).toEqual([
+      expect.objectContaining({
+        requestId: "compact-foreign",
+        status: "rejected",
+        errorCode: "codex_shared_runtime_turn_owned_elsewhere",
+      }),
+      expect.objectContaining({
+        requestId: "mcp-read",
+        status: "completed",
+      }),
+    ]);
+  });
+
   it("keeps using the process-owned admission lock after the RPC ack", async () => {
     const sent: unknown[] = [];
     const process = processWith();
@@ -206,10 +249,7 @@ describe("CodexCoreActionsFeatureHandler", () => {
       ),
     );
     process.startInlineReview.mockRejectedValueOnce(
-      new CodexCoreActionPreconditionError(
-        "session_busy",
-        "Codex became busy",
-      ),
+      new CodexCoreActionPreconditionError("session_busy", "Codex became busy"),
     );
     const { context } = testContext(process, sent);
     const handler = new CodexCoreActionsFeatureHandler();
@@ -322,11 +362,7 @@ describe("CodexCoreActionsFeatureHandler", () => {
     const sent: unknown[] = [];
     const process = processWith();
     process.listMcpServerStatus.mockRejectedValueOnce(
-      new CodexRpcError(
-        "mcpServerStatus/list",
-        "Method not found",
-        -32601,
-      ),
+      new CodexRpcError("mcpServerStatus/list", "Method not found", -32601),
     );
     const { context } = testContext(process, sent);
 
@@ -406,6 +442,7 @@ function testContext(
     sessionStatus?: string;
     queuedInput?: boolean;
     permissionRestartInProgress?: boolean;
+    mutationBlock?: { errorCode: string; message: string };
   } = {},
 ): {
   context: LocalFeatureHandleContext;
@@ -418,9 +455,7 @@ function testContext(
             id: sessionId,
             provider: options.provider ?? "codex",
             process: process as unknown as CodexProcess,
-            ...(options.sessionStatus
-              ? { status: options.sessionStatus }
-              : {}),
+            ...(options.sessionStatus ? { status: options.sessionStatus } : {}),
             ...(options.queuedInput
               ? { codexQueuedInput: { itemId: "queued" } }
               : {}),
@@ -436,6 +471,7 @@ function testContext(
     },
     send: (_client, message) => sent.push(message),
     supports: () => options.supports ?? true,
+    codexThreadMutationBlock: () => options.mutationBlock ?? null,
   };
   return {
     runtime,

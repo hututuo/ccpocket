@@ -17,7 +17,16 @@ const DEFAULT_EVENT_CAPACITY = 256;
 const MAX_EVENT_CAPACITY = 4096;
 const MAX_CONTROL_LINE_BYTES = 512 * 1024;
 const MAX_OPAQUE_ID_LENGTH = 256;
+const DEFAULT_RECONNECT_BASE_DELAY_MS = 250;
+const DEFAULT_RECONNECT_MAX_DELAY_MS = 10_000;
 const activeControls = new Set<CodexSharedRuntimeControl>();
+
+type ControlTimer = ReturnType<typeof setTimeout>;
+type ControlSetTimeout = (
+  callback: () => void,
+  delayMs: number,
+) => ControlTimer;
+type ControlClearTimeout = (timer: ControlTimer) => void;
 
 export type CodexSharedRuntimeControlMethod =
   | "thread/started"
@@ -51,17 +60,39 @@ export interface CodexSharedRuntimeControlEvent {
   method: CodexSharedRuntimeControlMethod;
   threadId?: string;
   turnId?: string;
-  requestId?: string;
+  requestId?: number | string;
   threadStatus?: CodexSharedRuntimeSafeThreadStatus;
   turnStatus?:
     "inProgress" | "completed" | "interrupted" | "failed" | "unknown";
+}
+
+/**
+ * Connection-affine JSON-RPC request. Full params are never added to the
+ * diagnostic ring or durable storage; Action Broker consumers may retain them
+ * only for this exact control connection generation.
+ */
+export interface CodexSharedRuntimeServerRequest {
+  requestId: number | string;
+  method: string;
+  params: Record<string, unknown>;
+  observedAt: string;
+  connectionGeneration: number;
+  threadId?: string;
+  turnId?: string;
 }
 
 interface CodexSharedRuntimeControlEvents {
   ready: [number];
   not_ready: [number];
   event: [CodexSharedRuntimeControlEvent];
-  diagnostic: ["transport_error" | "transport_exit" | "initialize_rejected"];
+  server_request: [CodexSharedRuntimeServerRequest];
+  diagnostic: [
+    | "transport_error"
+    | "transport_exit"
+    | "initialize_rejected"
+    | "config_read_rejected"
+    | "incompatible_config",
+  ];
 }
 
 export interface CodexSharedRuntimeControlOptions {
@@ -72,6 +103,11 @@ export interface CodexSharedRuntimeControlOptions {
   now?: () => Date;
   transportFactory?: (projectPath: string) => CodexTransport;
   daemonIdentityProvider?: () => CodexSharedRuntimeSafeDaemonIdentity;
+  reconnectBaseDelayMs?: number;
+  reconnectMaxDelayMs?: number;
+  random?: () => number;
+  setTimeoutFn?: ControlSetTimeout;
+  clearTimeoutFn?: ControlClearTimeout;
 }
 
 interface JsonRpcEnvelope {
@@ -85,15 +121,15 @@ interface JsonRpcEnvelope {
 interface ReadyWaiter {
   resolve: () => void;
   reject: (error: Error) => void;
-  timer?: NodeJS.Timeout;
+  timer?: ControlTimer;
 }
 
 /**
  * Stage 1 control-plane observer for the shared Codex daemon.
  *
- * It performs only initialize/initialized, never answers a server request and
- * never issues a thread RPC. The daemon remains independently owned; stop()
- * closes only this transport.
+ * It performs initialize/initialized plus one read-only effective-config
+ * preflight, never answers a server request, and never issues a thread RPC.
+ * The daemon remains independently owned; stop() closes only this transport.
  */
 export class CodexSharedRuntimeControl extends EventEmitter<CodexSharedRuntimeControlEvents> {
   private readonly env: NodeJS.ProcessEnv;
@@ -104,8 +140,17 @@ export class CodexSharedRuntimeControl extends EventEmitter<CodexSharedRuntimeCo
   private readonly transportFactory: (projectPath: string) => CodexTransport;
   private readonly daemonIdentityProvider: () => CodexSharedRuntimeSafeDaemonIdentity;
   private readonly frozenGates: Readonly<SharedRuntimePilotGates>;
+  private readonly reconnectBaseDelayMs: number;
+  private readonly reconnectMaxDelayMs: number;
+  private readonly random: () => number;
+  private readonly setTimeoutFn: ControlSetTimeout;
+  private readonly clearTimeoutFn: ControlClearTimeout;
 
   private transport: CodexTransport | null = null;
+  private started = false;
+  private hasEverBeenReady = false;
+  private reconnectAttempt = 0;
+  private reconnectTimer: ControlTimer | null = null;
   private _ready = false;
   private startupFailure: Error | null = null;
   private readonly readyWaiters = new Set<ReadyWaiter>();
@@ -114,6 +159,7 @@ export class CodexSharedRuntimeControl extends EventEmitter<CodexSharedRuntimeCo
     null;
   private initSequence = 0;
   private pendingInitializeId: number | null = null;
+  private pendingConfigReadId: number | null = null;
   private lineBuffer = "";
   private lineBufferBytes = 0;
   private discardUntilNewline = false;
@@ -153,6 +199,27 @@ export class CodexSharedRuntimeControl extends EventEmitter<CodexSharedRuntimeCo
           socketInode: verified.socketIdentity.inode,
         };
       });
+    this.reconnectBaseDelayMs = normalizeReconnectDelay(
+      options.reconnectBaseDelayMs,
+      DEFAULT_RECONNECT_BASE_DELAY_MS,
+      "base",
+    );
+    this.reconnectMaxDelayMs = normalizeReconnectDelay(
+      options.reconnectMaxDelayMs,
+      DEFAULT_RECONNECT_MAX_DELAY_MS,
+      "maximum",
+    );
+    if (this.reconnectMaxDelayMs < this.reconnectBaseDelayMs) {
+      throw new Error(
+        "Shared runtime control reconnect maximum must be at least the base delay",
+      );
+    }
+    this.random = options.random ?? Math.random;
+    this.setTimeoutFn =
+      options.setTimeoutFn ??
+      ((callback, delayMs) => setTimeout(callback, delayMs));
+    this.clearTimeoutFn =
+      options.clearTimeoutFn ?? ((timer) => clearTimeout(timer));
   }
 
   get ready(): boolean {
@@ -175,13 +242,36 @@ export class CodexSharedRuntimeControl extends EventEmitter<CodexSharedRuntimeCo
     return this.eventRing.map(cloneControlEvent);
   }
 
+  /**
+   * Respond on the same live connection that observed the request. A false
+   * result means the authority generation changed and the caller must leave
+   * the durable request unresolved/fail closed.
+   */
+  respondToServerRequest(
+    request: Pick<
+      CodexSharedRuntimeServerRequest,
+      "requestId" | "connectionGeneration"
+    >,
+    result: Record<string, unknown>,
+  ): boolean {
+    if (
+      !this._ready ||
+      !this.transport?.isRunning ||
+      request.connectionGeneration !== this._connectionGeneration
+    ) {
+      return false;
+    }
+    this.transport.write({ id: request.requestId, result });
+    return true;
+  }
+
   waitUntilReady(timeoutMs = 15_000): Promise<void> {
     if (this._ready) return Promise.resolve();
     if (this.startupFailure) return Promise.reject(this.startupFailure);
     return new Promise<void>((resolve, reject) => {
       const waiter: ReadyWaiter = { resolve, reject };
       if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
-        waiter.timer = setTimeout(() => {
+        waiter.timer = this.setTimeoutFn(() => {
           this.readyWaiters.delete(waiter);
           reject(
             new Error(
@@ -189,58 +279,101 @@ export class CodexSharedRuntimeControl extends EventEmitter<CodexSharedRuntimeCo
             ),
           );
         }, Math.floor(timeoutMs));
-        waiter.timer.unref?.();
+        unrefTimer(waiter.timer);
       }
       this.readyWaiters.add(waiter);
     });
   }
 
   start(): void {
-    if (this.transport) {
+    if (this.started || this.transport || this.reconnectTimer !== null) {
       throw new Error("Shared runtime control is already started");
     }
-
-    this._daemonIdentity = Object.freeze(
-      validateSafeDaemonIdentity(this.daemonIdentityProvider()),
-    );
-    const transport = this.transportFactory(this.projectPath);
-    this.transport = transport;
+    this.started = true;
+    this.hasEverBeenReady = false;
+    this.reconnectAttempt = 0;
     this._ready = false;
     this.startupFailure = null;
-    this.lineBuffer = "";
-    this.lineBufferBytes = 0;
-    this.discardUntilNewline = false;
+    this._daemonIdentity = null;
+    this.resetConnectionBuffers();
+    try {
+      this.openTransport(true);
+      if (this.startupFailure) throw this.startupFailure;
+    } catch (error) {
+      this.started = false;
+      const failure = asError(error);
+      this.failStartup(failure);
+      throw failure;
+    }
+  }
 
-    const ownsTransport = (): boolean => this.transport === transport;
+  stop(): void {
+    this.started = false;
+    this.hasEverBeenReady = false;
+    this.reconnectAttempt = 0;
+    this.cancelReconnect();
+    activeControls.delete(this);
+    const transport = this.transport;
+    this.transport = null;
+    this.pendingInitializeId = null;
+    this.pendingConfigReadId = null;
+    this.resetConnectionBuffers();
+    this.markNotReady();
+    this.failStartup(new Error("Shared runtime control stopped"));
+    if (!transport) return;
+    transport.stop();
+  }
+
+  private openTransport(initialStartup: boolean): void {
+    if (!this.started) return;
+    let transport: CodexTransport;
+    try {
+      this._daemonIdentity = Object.freeze(
+        validateSafeDaemonIdentity(this.daemonIdentityProvider()),
+      );
+      transport = this.transportFactory(this.projectPath);
+    } catch (error) {
+      if (!initialStartup) this.emit("diagnostic", "transport_error");
+      this.handleConnectionAttemptFailure(error, initialStartup);
+      return;
+    }
+
+    const generation = ++this._connectionGeneration;
+    this.transport = transport;
+    this.pendingInitializeId = null;
+    this.pendingConfigReadId = null;
+    this.resetConnectionBuffers();
+    const ownsTransport = (): boolean =>
+      this.started &&
+      this.transport === transport &&
+      this._connectionGeneration === generation;
+
     transport.on("data", (chunk) => {
       if (!ownsTransport()) return;
-      this._connectionGeneration = transport.connectionGeneration;
       this.handleData(chunk);
     });
     transport.on("error", () => {
       if (!ownsTransport()) return;
-      activeControls.delete(this);
-      this._connectionGeneration = transport.connectionGeneration;
-      this.markNotReady();
-      this.failStartup(
-        new Error("Shared runtime control transport failed before readiness"),
+      this.handleTransportFailure(
+        transport,
+        generation,
+        "transport_error",
+        "Shared runtime control transport failed before readiness",
       );
-      this.emit("diagnostic", "transport_error");
     });
     transport.on("exit", () => {
       if (!ownsTransport()) return;
-      activeControls.delete(this);
-      this._connectionGeneration = transport.connectionGeneration;
-      this.markNotReady();
-      this.failStartup(
-        new Error("Shared runtime control transport exited before readiness"),
+      this.handleTransportFailure(
+        transport,
+        generation,
+        "transport_exit",
+        "Shared runtime control transport exited before readiness",
       );
-      this.emit("diagnostic", "transport_exit");
     });
 
     try {
       transport.start(this.projectPath);
-      this._connectionGeneration = transport.connectionGeneration;
+      if (!ownsTransport()) return;
       const initializeId = ++this.initSequence;
       this.pendingInitializeId = initializeId;
       transport.write({
@@ -256,27 +389,97 @@ export class CodexSharedRuntimeControl extends EventEmitter<CodexSharedRuntimeCo
         },
       });
     } catch (error) {
-      this.transport = null;
-      this.pendingInitializeId = null;
-      transport.stop();
-      this._connectionGeneration = transport.connectionGeneration;
-      throw error;
+      const released =
+        ownsTransport() && this.releaseTransport(transport, generation);
+      if (!released) {
+        if (initialStartup && this.startupFailure) throw this.startupFailure;
+        return;
+      }
+      this.emit("diagnostic", "transport_error");
+      this.handleConnectionAttemptFailure(error, initialStartup);
     }
   }
 
-  stop(): void {
-    activeControls.delete(this);
-    const transport = this.transport;
+  private handleTransportFailure(
+    transport: CodexTransport,
+    generation: number,
+    diagnostic: "transport_error" | "transport_exit" | "initialize_rejected",
+    startupMessage: string,
+  ): void {
+    if (!this.releaseTransport(transport, generation)) return;
+    this.emit("diagnostic", diagnostic);
+    if (!this.hasEverBeenReady) {
+      this.started = false;
+      this.failStartup(new Error(startupMessage));
+      return;
+    }
+    this.scheduleReconnect();
+  }
+
+  private handleConnectionAttemptFailure(
+    error: unknown,
+    initialStartup: boolean,
+  ): void {
+    const failure = asError(error);
+    if (initialStartup && !this.hasEverBeenReady) {
+      this.started = false;
+      this.failStartup(failure);
+      throw failure;
+    }
+    this.scheduleReconnect();
+  }
+
+  private releaseTransport(
+    transport: CodexTransport,
+    generation: number,
+  ): boolean {
+    if (
+      this.transport !== transport ||
+      this._connectionGeneration !== generation
+    ) {
+      return false;
+    }
     this.transport = null;
     this.pendingInitializeId = null;
+    this.pendingConfigReadId = null;
+    activeControls.delete(this);
+    this.resetConnectionBuffers();
+    this.markNotReady();
+    transport.stop();
+    return true;
+  }
+
+  private scheduleReconnect(): void {
+    if (!this.started || this.reconnectTimer !== null) return;
+    const exponent = Math.min(this.reconnectAttempt, 30);
+    const exponentialDelay = Math.min(
+      this.reconnectMaxDelayMs,
+      this.reconnectBaseDelayMs * 2 ** exponent,
+    );
+    this.reconnectAttempt += 1;
+    const jitter = 0.5 + clampUnitInterval(this.random()) * 0.5;
+    const delayMs = Math.max(
+      1,
+      Math.min(this.reconnectMaxDelayMs, Math.floor(exponentialDelay * jitter)),
+    );
+    this.reconnectTimer = this.setTimeoutFn(() => {
+      this.reconnectTimer = null;
+      if (!this.started) return;
+      this.openTransport(false);
+    }, delayMs);
+    unrefTimer(this.reconnectTimer);
+  }
+
+  private cancelReconnect(): void {
+    const timer = this.reconnectTimer;
+    this.reconnectTimer = null;
+    if (timer !== null) this.clearTimeoutFn(timer);
+  }
+
+  private resetConnectionBuffers(): void {
     this.lineBuffer = "";
     this.lineBufferBytes = 0;
     this.discardUntilNewline = false;
-    this.markNotReady();
-    this.failStartup(new Error("Shared runtime control stopped"));
-    if (!transport) return;
-    transport.stop();
-    this._connectionGeneration = transport.connectionGeneration;
   }
 
   private markNotReady(): void {
@@ -289,7 +492,7 @@ export class CodexSharedRuntimeControl extends EventEmitter<CodexSharedRuntimeCo
     if (this.startupFailure) return;
     this.startupFailure = error;
     for (const waiter of this.readyWaiters) {
-      if (waiter.timer) clearTimeout(waiter.timer);
+      if (waiter.timer !== undefined) this.clearTimeoutFn(waiter.timer);
       waiter.reject(error);
     }
     this.readyWaiters.clear();
@@ -297,9 +500,11 @@ export class CodexSharedRuntimeControl extends EventEmitter<CodexSharedRuntimeCo
 
   private markReady(): void {
     this.startupFailure = null;
+    this.hasEverBeenReady = true;
+    this.reconnectAttempt = 0;
     this._ready = true;
     for (const waiter of this.readyWaiters) {
-      if (waiter.timer) clearTimeout(waiter.timer);
+      if (waiter.timer !== undefined) this.clearTimeoutFn(waiter.timer);
       waiter.resolve();
     }
     this.readyWaiters.clear();
@@ -387,10 +592,33 @@ export class CodexSharedRuntimeControl extends EventEmitter<CodexSharedRuntimeCo
       return;
     }
 
-    // A JSON-RPC request has both id and method. The observer deliberately
-    // sends no success and no error response; another authoritative client may
-    // own it on the shared daemon.
-    if (envelope.id != null && typeof envelope.method === "string") return;
+    if (
+      this.pendingConfigReadId !== null &&
+      envelope.id === this.pendingConfigReadId &&
+      envelope.method === undefined
+    ) {
+      this.handleConfigReadResponse(envelope);
+      return;
+    }
+
+    // A JSON-RPC request has both id and method. Keep its payload strictly in
+    // memory and hand it to the Action Broker; this control transport never
+    // answers it automatically. Shared mode must not create a second
+    // currentTime/read first responder. The effective-config preflight below
+    // rejects external-clock topology before readiness.
+    if (envelope.id != null && typeof envelope.method === "string") {
+      const observedAt = this.now().toISOString();
+      const request = sanitizeServerRequest(
+        envelope.id,
+        envelope.method,
+        envelope.params,
+        observedAt,
+        this._connectionGeneration,
+      );
+      if (!request) return;
+      this.emit("server_request", request);
+      return;
+    }
     if (typeof envelope.method !== "string") return;
 
     const event = sanitizeControlEvent(
@@ -412,21 +640,104 @@ export class CodexSharedRuntimeControl extends EventEmitter<CodexSharedRuntimeCo
 
   private handleInitializeResponse(envelope: JsonRpcEnvelope): void {
     this.pendingInitializeId = null;
+    const transport = this.transport;
+    const generation = this._connectionGeneration;
+    if (!transport) return;
     if (envelope.error !== undefined || envelope.result === undefined) {
-      this.failStartup(
-        new Error("Shared runtime control initialize was rejected"),
+      this.handleTransportFailure(
+        transport,
+        generation,
+        "initialize_rejected",
+        "Shared runtime control initialize was rejected",
       );
-      this.markNotReady();
-      this.emit("diagnostic", "initialize_rejected");
       return;
     }
-    const transport = this.transport;
-    if (!transport || !transport.isRunning) return;
-    transport.write({ method: "initialized", params: {} });
-    this._connectionGeneration = transport.connectionGeneration;
-    if (!this._ready) {
-      this.markReady();
+    if (!transport.isRunning) {
+      this.handleTransportFailure(
+        transport,
+        generation,
+        "transport_exit",
+        "Shared runtime control transport exited before readiness",
+      );
+      return;
     }
+    try {
+      transport.write({ method: "initialized", params: {} });
+      const configReadId = ++this.initSequence;
+      this.pendingConfigReadId = configReadId;
+      transport.write({
+        id: configReadId,
+        method: "config/read",
+        params: { includeLayers: false },
+      });
+    } catch {
+      this.handleTransportFailure(
+        transport,
+        generation,
+        "transport_error",
+        "Shared runtime control transport failed before readiness",
+      );
+      return;
+    }
+  }
+
+  private handleConfigReadResponse(envelope: JsonRpcEnvelope): void {
+    this.pendingConfigReadId = null;
+    const transport = this.transport;
+    const generation = this._connectionGeneration;
+    if (!transport) return;
+    if (envelope.error !== undefined || envelope.result === undefined) {
+      this.failIncompatibleRuntime(
+        transport,
+        generation,
+        "config_read_rejected",
+        "Shared runtime config/read preflight was rejected",
+      );
+      return;
+    }
+    const result = asRecord(envelope.result);
+    const config = asRecord(result?.config);
+    if (!config) {
+      this.failIncompatibleRuntime(
+        transport,
+        generation,
+        "config_read_rejected",
+        "Shared runtime config/read preflight returned an invalid config",
+      );
+      return;
+    }
+    if (usesExternalCurrentTime(config)) {
+      this.failIncompatibleRuntime(
+        transport,
+        generation,
+        "incompatible_config",
+        "Shared runtime is incompatible with external current-time reminders",
+      );
+      return;
+    }
+    if (!transport.isRunning) {
+      this.handleTransportFailure(
+        transport,
+        generation,
+        "transport_exit",
+        "Shared runtime control transport exited before readiness",
+      );
+      return;
+    }
+    if (!this._ready) this.markReady();
+  }
+
+  private failIncompatibleRuntime(
+    transport: CodexTransport,
+    generation: number,
+    diagnostic: "config_read_rejected" | "incompatible_config",
+    message: string,
+  ): void {
+    if (!this.releaseTransport(transport, generation)) return;
+    this.started = false;
+    this.cancelReconnect();
+    this.emit("diagnostic", diagnostic);
+    this.failStartup(new Error(message));
   }
 }
 
@@ -442,6 +753,33 @@ export function recordSharedRuntimeAttachmentLifecycle(
   for (const control of activeControls) {
     control.recordAttachmentLifecycle(method, params);
   }
+}
+
+function normalizeReconnectDelay(
+  value: number | undefined,
+  fallback: number,
+  label: string,
+): number {
+  if (value === undefined) return fallback;
+  if (!Number.isFinite(value) || value < 1 || value > 2_147_483_647) {
+    throw new Error(
+      `Shared runtime control reconnect ${label} delay is invalid`,
+    );
+  }
+  return Math.floor(value);
+}
+
+function clampUnitInterval(value: number): number {
+  if (!Number.isFinite(value)) return 0.5;
+  return Math.max(0, Math.min(1, value));
+}
+
+function unrefTimer(timer: ControlTimer): void {
+  timer.unref?.();
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function normalizeEventCapacity(value: number | undefined): number {
@@ -520,10 +858,44 @@ function sanitizeControlEvent(
     event.turnStatus = safeTurnStatus(turn?.status);
   }
   if (method === "serverRequest/resolved") {
-    const requestId = opaqueId(params.requestId);
-    if (requestId) event.requestId = requestId;
+    const requestId = requestIdValue(params.requestId);
+    if (requestId !== null) event.requestId = requestId;
   }
   return event;
+}
+
+function sanitizeServerRequest(
+  requestId: number | string,
+  method: string,
+  rawParams: Record<string, unknown> | undefined,
+  observedAt: string,
+  connectionGeneration: number,
+): CodexSharedRuntimeServerRequest | null {
+  const normalizedRequestId = requestIdValue(requestId);
+  if (normalizedRequestId === null || !method || method.length > 192) {
+    return null;
+  }
+  const params = asRecord(rawParams) ?? {};
+  const threadId = opaqueId(params.threadId);
+  const turnId = opaqueId(params.turnId);
+  return {
+    requestId: normalizedRequestId,
+    method,
+    params: { ...params },
+    observedAt,
+    connectionGeneration,
+    ...(threadId ? { threadId } : {}),
+    ...(turnId ? { turnId } : {}),
+  };
+}
+
+function requestIdValue(value: unknown): number | string | null {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? value : null;
+  }
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized ? normalized.slice(0, MAX_OPAQUE_ID_LENGTH) : null;
 }
 
 function isAllowedControlMethod(
@@ -593,6 +965,17 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object"
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function usesExternalCurrentTime(config: Record<string, unknown>): boolean {
+  const features = asRecord(config.features);
+  const currentTime = asRecord(
+    features?.current_time_reminder ?? features?.currentTimeReminder,
+  );
+  return (
+    currentTime?.clock_source === "external" ||
+    currentTime?.clockSource === "external"
+  );
 }
 
 function cloneControlEvent(

@@ -36,8 +36,10 @@ ccpocket-bridge --version
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
 | `BRIDGE_PORT` | `8765` | WebSocket port |
-| `BRIDGE_HOST` | `0.0.0.0` | Bind address |
+| `BRIDGE_HOST` | `127.0.0.1` | Bind address; non-loopback requires `BRIDGE_API_KEY` unless the legacy insecure opt-in below is set |
 | `BRIDGE_API_KEY` | (none) | API key authentication (enabled when set) |
+| `BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE` | `0` | Legacy compatibility escape hatch: set `1` to bind beyond loopback without an API key (unsafe; not recommended) |
+| `BRIDGE_PERSIST_DEBUG_TRACES` | `0` | Persist bounded diagnostic trace summaries to disk; disabled by default because traces can contain conversation-adjacent metadata |
 | `BRIDGE_ALLOWED_DIRS` | `$HOME` | Comma-separated list of project directories the Bridge may access; set exactly to `*` to allow any directory |
 | `BRIDGE_PUBLIC_WS_URL` | (none) | Public `ws://` / `wss://` URL used for startup deep link and QR code |
 | `BRIDGE_ARTIFACT_BASE_URL` | auto-detected | Mobile-reachable `http://` / `https://` base URL used by temporary file preview links |

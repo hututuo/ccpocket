@@ -1,4 +1,7 @@
 import type { CodexProcess } from "../codex-process.js";
+import type { CodexActionBrokerRuntime } from "../codex-action-broker-runtime.js";
+import type { CodexSharedRuntimeControlEvent } from "../codex-shared-runtime-control.js";
+import type { TerminalResultLedger } from "./terminal-result-ledger.js";
 import type { FileBrowserManager } from "../file-browser-manager.js";
 import type { ImageRef } from "../image-store.js";
 import type { ClientMessage, ServerMessage } from "../parser.js";
@@ -23,6 +26,16 @@ export type LocalFeatureInputAdmission =
 
 export type LocalFeatureClientDeliveryMode =
   "interactive" | "notifications_only";
+
+export interface ExternalCodexNotificationCandidate {
+  codexSourceId: string;
+  threadId: string;
+  turnId?: string;
+  observedAt: string;
+  label?: string;
+  /** Deliberately excludes history, deltas, tool results, and request bodies. */
+  message: Extract<ServerMessage, { type: "assistant" | "result" }>;
+}
 
 export interface LocalFeatureInputMessage {
   type: "input";
@@ -63,6 +76,31 @@ export type LocalFeatureRuntimeProcessStatus =
 export type LocalFeatureAttentionKind =
   "approval" | "question" | "permission" | "form";
 
+export type LocalFeatureRuntimeExecutionHost =
+  "bridge" | "desktopAppServer" | "unknown";
+
+export type LocalFeatureRuntimeControlState =
+  | "readOnly"
+  | "steerable"
+  | "writable"
+  | "reconciling"
+  | "blocked"
+  | "unavailable";
+
+export type LocalFeatureSharedRuntimeControlUpdate =
+  | {
+      kind: "ready";
+      connectionGeneration: number;
+    }
+  | {
+      kind: "not_ready";
+      connectionGeneration: number;
+    }
+  | {
+      kind: "event";
+      event: CodexSharedRuntimeControlEvent;
+    };
+
 /**
  * Privacy-bounded projection of one Bridge-owned runtime. Feature handlers use
  * this to overlay authoritative live state on the durable provider catalog
@@ -78,8 +116,21 @@ export interface LocalFeatureRuntimeConversationState {
     requestId: string;
     kind: LocalFeatureAttentionKind;
   };
+  /** Explicit turn initiator proof; absence is not Bridge ownership. */
+  executionHost?: LocalFeatureRuntimeExecutionHost;
+  activeTurnId?: string;
+  controlState?: LocalFeatureRuntimeControlState;
+  authorityGeneration?: string;
   observedAt: string;
 }
+
+export interface LocalFeatureCodexMutationBlock {
+  errorCode: string;
+  message: string;
+}
+
+export type LocalFeatureConversationActivity =
+  "active" | "inactive" | "unknown";
 
 export interface LocalFeatureRuntime {
   /** Stable installation identity; persisted by the Bridge host when available. */
@@ -88,10 +139,35 @@ export interface LocalFeatureRuntime {
   readonly codexSourceId?: string;
   /** Optional host-owned, root-scoped file-browser authority. */
   readonly fileBrowser?: FileBrowserManager;
+  /** Optional initialized persistent terminal-result ledger. */
+  readonly terminalResultLedger?: TerminalResultLedger;
+  /** Shared-daemon first-responder ledger; absent in private/legacy mode. */
+  readonly codexActionBroker?: CodexActionBrokerRuntime;
+  /**
+   * Signals that the content-free active/attention projection changed.
+   * Hosts use this to refresh background-delivery state without polling every
+   * provider thread or exposing conversation content to the lifecycle layer.
+   */
+  notifyBackgroundActivityChanged?(): void;
+  /** Whether an attached phone or registered push token needs light events. */
+  hasExternalCodexNotificationDemand?(): boolean;
+  /** Host-only narrow path; never re-enters transcript/session broadcasting. */
+  publishExternalCodexNotificationCandidate?(
+    candidate: ExternalCodexNotificationCandidate,
+  ): void;
   getSession(sessionId: string): LocalFeatureSession | undefined;
   getCodexThreadId(session: LocalFeatureSession): string | undefined;
   getProviderSessionId?(session: LocalFeatureSession): string | undefined;
   listRuntimeConversationStates?(): LocalFeatureRuntimeConversationState[];
+  /**
+   * Subscribes to the content-free shared daemon control stream. Hosts call
+   * the listener once synchronously with current ready/not_ready state, then
+   * return an idempotent cancellation function. Private/test hosts may omit
+   * the seam and retain their existing provider paths.
+   */
+  subscribeSharedRuntimeControl?(
+    listener: (update: LocalFeatureSharedRuntimeControlUpdate) => void,
+  ): () => void;
   getClientDeliveryMode?(client: object): LocalFeatureClientDeliveryMode;
   getActiveCodexProcess(): CodexProcess | null;
   createStandaloneCodexProcess(
@@ -135,6 +211,17 @@ export interface LocalFeatureRuntime {
    * screen owns that exact turn.
    */
   getSessionCodexActiveTurnId?(sessionId: string): string | undefined;
+  /**
+   * Host-owned final admission check for mutations that require an idle,
+   * writable Codex thread. Read-only RPCs deliberately bypass this seam.
+   */
+  codexThreadMutationBlock?(
+    session: LocalFeatureSession,
+    operation: string,
+  ):
+    | LocalFeatureCodexMutationBlock
+    | null
+    | Promise<LocalFeatureCodexMutationBlock | null>;
   /** Recreate a stale Codex runtime from durable history after Desktop work. */
   rehydrateCodexSessionAfterExternalTurn?(
     sessionId: string,
@@ -212,10 +299,18 @@ export interface LocalFeatureHandler {
   sessionMessage?(session: LocalFeatureSession, message: ServerMessage): void;
   /** Observe one provider catalog/content invalidation without owning its watcher. */
   sessionCatalogChanged?(change: SessionCatalogChange): void;
+  /** Stable provider-scoped identities that still require background delivery. */
+  backgroundActiveConversationKeys?(): Iterable<string>;
+  /** Content-free provider activity used to fence destructive lifecycle RPCs. */
+  conversationActivity?(
+    provider: string,
+    providerSessionId: string,
+  ): LocalFeatureConversationActivity;
   clientDeliveryModeChanged?(
     client: object,
     mode: LocalFeatureClientDeliveryMode,
   ): void;
+  backgroundNotificationDemandChanged?(): void;
   capabilitiesChanged?(client: object): void;
   disconnect?(client: object): void;
   close?(): void | Promise<void>;

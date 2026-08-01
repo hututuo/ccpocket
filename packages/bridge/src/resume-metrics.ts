@@ -13,6 +13,8 @@ export interface ResumePerformanceMetrics extends ResumeHistoryMetrics {
   provider: Provider;
   sourceSessionId: string;
   outcome: "success" | "failed";
+  /** Whether this resume read provider history or deliberately deferred it. */
+  historyMode?: "provider_read" | "deferred_sync" | "runtime_reused";
   historyLoadMs: number;
   sessionCreateMs: number;
   nameLoadMs: number;
@@ -21,11 +23,7 @@ export interface ResumePerformanceMetrics extends ResumeHistoryMetrics {
 
 function estimatedBase64Bytes(value: string): number {
   if (value.length === 0) return 0;
-  const padding = value.endsWith("==")
-    ? 2
-    : value.endsWith("=")
-      ? 1
-      : 0;
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
   // Persisted image payloads are normalized base64. Use length only so metrics
   // do not duplicate multi-megabyte strings during an already-heavy restore.
   return Math.max(0, Math.floor((value.length * 3) / 4) - padding);
@@ -74,6 +72,7 @@ export function formatResumePerformanceLog(
     `provider=${metrics.provider}`,
     `sourceSessionId=${metrics.sourceSessionId}`,
     `outcome=${metrics.outcome}`,
+    `historyMode=${metrics.historyMode ?? "provider_read"}`,
     `messages=${metrics.messageCount}`,
     `images=${metrics.imageCount}`,
     `inlineImages=${metrics.inlineImageCount}`,

@@ -6,6 +6,8 @@ import {
 
 export const DURABLE_SESSION_INSIGHTS_CAPABILITY =
   "durable_session_insights_v1" as const;
+export const SCOPED_CONTEXT_USAGE_CAPABILITY =
+  "scoped_context_usage_v1" as const;
 
 export interface CodexTokenUsageBreakdown {
   totalTokens: number;
@@ -19,7 +21,15 @@ export interface CodexTokenUsageBreakdown {
 export interface ContextUsageMessage {
   type: "context_usage";
   sessionId?: string;
+  /** Durable provider identity when usage comes from a shared daemon observer. */
+  threadId?: string;
   turnId?: string;
+  /** Additive source fence; absent on legacy/private Bridge messages. */
+  bridgeInstanceId?: string;
+  /** Additive source fence; absent on legacy/private Bridge messages. */
+  codexSourceId?: string;
+  /** Opaque observer authority fence, not a user-visible ordering key. */
+  authorityGeneration?: string;
   last: CodexTokenUsageBreakdown;
   total: CodexTokenUsageBreakdown;
   modelContextWindow: number | null;

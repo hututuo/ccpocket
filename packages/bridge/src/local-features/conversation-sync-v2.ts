@@ -6,6 +6,18 @@ import {
   type CodexThreadSourceKind,
   type CodexThreadSummary,
 } from "../codex-process.js";
+import { readCodexAppServerMode } from "../codex-app-server-config.js";
+import {
+  SharedCodexContentObserverCoordinator,
+  asSharedCodexContentObserverProcess,
+  type SharedCodexContentObserverCompletion,
+  type SharedCodexContentObserverMessage,
+  type SharedCodexContentObserverProcess,
+} from "../codex-shared-runtime-content-observer.js";
+import type {
+  CodexActionBrokerRuntimeRequest,
+  CodexActionBrokerRuntimeUpdate,
+} from "../codex-action-broker-runtime.js";
 import {
   selectTurnAwareHistoryWindow,
   TURN_AWARE_HISTORY_ENVELOPE_ENTRIES,
@@ -16,6 +28,7 @@ import {
   getAllRecentSessions,
   getCodexSessionIndexMetadata,
   getCodexDesktopToolTimeline,
+  readClaudeSessionHistoryWindow,
   resolveCodexSessionJsonlPath,
   type CodexSessionIndexMetadata,
   type SessionIndexEntry,
@@ -24,7 +37,6 @@ import type { SessionCatalogChange } from "../session-catalog-monitor.js";
 import {
   buildConversationContentSnapshot,
   paginateConversationContentEntries,
-  readDurableConversationHistory,
   toWireConversationContentEntry,
   type ConversationContentLatestTurnGap,
   type ConversationContentSnapshot,
@@ -42,6 +54,7 @@ import {
   type ConversationSyncStatus,
   type ConversationSyncTarget,
 } from "./slots/conversation-sync-v2-protocol.js";
+import type { ContextUsageMessage } from "./slots/session-insights-protocol.js";
 import {
   CodexRolloutMonitor,
   inspectCodexRolloutSnapshot,
@@ -53,10 +66,16 @@ import type {
   LocalFeatureHandler,
   LocalFeatureRuntime,
   LocalFeatureRuntimeConversationState,
+  LocalFeatureSharedRuntimeControlUpdate,
   LocalFeatureSession,
 } from "./runtime.js";
+import type {
+  TerminalResultScope,
+  TerminalResultValue,
+} from "./terminal-result-ledger.js";
 
 const MAX_CATALOG_ENTRIES = 10_000;
+const MAX_TERMINAL_RESULT_ENTRIES = 4_096;
 const MAX_CATALOG_NAME_LENGTH = 512;
 const MAX_CATALOG_TEXT_LENGTH = 4_096;
 const MAX_CATALOG_PATH_LENGTH = 4_096;
@@ -77,6 +96,12 @@ const PRIORITY_RECENT_COUNT = 5;
 const MIN_RECENT_COUNT = 10;
 const RECENT_WINDOW_MS = 3 * 24 * 60 * 60_000;
 const STATUS_WATCHDOG_MS = 5_000;
+const SHARED_CONTROL_RECONCILE_MS = 50;
+const MAX_SHARED_CONTROL_RECOVERY_THREADS = 64;
+const SHARED_CONTROL_RECOVERY_TIMEOUT_MS = 5_000;
+const SHARED_CONTROL_RECOVERY_CONCURRENCY = 4;
+const LEGACY_STATUS_STATE_PREFIX = "legacy-status-v1:";
+const APP_SERVER_STATUS_STATE_PREFIX = "app-server-status-v1:";
 const COLD_RECONCILE_MS = 10 * 60_000;
 const MAX_FRAME_BYTES = 64 * 1024;
 const FRAME_CONTENT_BUDGET = 56 * 1024;
@@ -118,6 +143,10 @@ const PAGE_PROJECTION_TEXT_BUDGETS = [
 ] as const;
 const LIVE_CONTENT_SETTLE_MS = 100;
 const LIVE_CONTENT_MAX_WAIT_MS = 1_000;
+const MAX_SHARED_OBSERVER_LIVE_MESSAGES = 256;
+const MAX_SHARED_OBSERVER_LIVE_BYTES_PER_THREAD = 512 * 1024;
+const MAX_SHARED_OBSERVER_INLINE_IMAGES = 4;
+const MAX_SHARED_OBSERVER_INLINE_IMAGE_BASE64_BYTES = 8 * 1024 * 1024;
 const CATALOG_CONNECTION_REUSE_MS = 5_000;
 // The one-shot discovery already finds every currently running rollout.
 // Idle recent threads are attached lazily on an exact catalog change or focus,
@@ -133,7 +162,7 @@ const MAX_EXTERNAL_LIVE_BYTES_PER_THREAD = 512 * 1024;
 // Bump whenever the meaning of a status snapshot changes without changing the
 // wire shape. This invalidates old persisted state tokens so Mobile clears
 // stale rows before applying the replacement snapshot.
-const STATUS_STATE_SCHEMA_VERSION = 2;
+const STATUS_STATE_SCHEMA_VERSION = 5;
 // Build 208 could persist a content revision without observing Desktop-owned
 // rollout changes, and the first v2 snapshot could cut into an oversized latest
 // turn without declaring that gap. Advance the semantic generation so upgraded
@@ -142,6 +171,10 @@ const STATUS_STATE_SCHEMA_VERSION = 2;
 const CONTENT_STATE_SCHEMA_VERSION = 4;
 
 type ConversationKey = string;
+type SharedRuntimeControlEvent = Extract<
+  LocalFeatureSharedRuntimeControlUpdate,
+  { kind: "event" }
+>["event"];
 type ConversationSyncEventPayload =
   ConversationSyncServerMessage extends infer Message
     ? Message extends unknown
@@ -181,6 +214,7 @@ interface SyncSubscription {
   requestId: string;
   batchId: string;
   interactive: boolean;
+  notificationOnly: boolean;
   focusedKey?: ConversationKey;
   catalogState?: string;
   statusState?: string;
@@ -199,6 +233,7 @@ interface SyncSubscription {
   dirty: boolean;
   fullSyncRequested: boolean;
   dirtyThreadKeys: Set<ConversationKey>;
+  capacityWaiters: Set<() => void>;
 }
 
 interface ConversationSyncV2Options {
@@ -207,6 +242,7 @@ interface ConversationSyncV2Options {
     current: ReadonlyMap<ConversationKey, CatalogRecord>,
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
   historyReader?: ConversationHistoryReader;
+  latestTurnHistoryReader?: ConversationHistoryReader;
   statusWatchdogMs?: number;
   coldReconcileMs?: number;
   observeCodexThread?: ObserveCodexThread;
@@ -214,6 +250,39 @@ interface ConversationSyncV2Options {
   desktopToolTimelineReader?: DesktopToolTimelineReader;
   initialExternalCodexMonitors?: number;
   maxExternalCodexMonitors?: number;
+  sharedControlReconcileMs?: number;
+  sharedControlRecoveryReader?: SharedControlRecoveryReader;
+  sharedControlRecoveryTimeoutMs?: number;
+  maxConcurrentSharedControlRecoveries?: number;
+  /** Deterministic test override; production derives this from Bridge mode. */
+  daemonMode?: boolean;
+  createSharedContentObserverProcess?: () => SharedCodexContentObserverProcess;
+  maxSharedContentObservers?: number;
+  sharedContentObserverUnfocusGraceMs?: number;
+  sharedContentObserverAttachTimeoutMs?: number;
+  maxConcurrentSharedContentObserverAttaches?: number;
+  sharedContentObserverRetryDelaysMs?: readonly number[];
+  /** Test seam for the focused-thread usage side channel. */
+  publishSharedContextUsage?: (
+    client: object,
+    message: ContextUsageMessage,
+  ) => void;
+}
+
+interface SharedControlRecoverySnapshot {
+  turnId?: string;
+  status?: "inProgress" | "completed" | "failed" | "interrupted" | "unknown";
+  observedAt?: string;
+}
+
+type SharedControlRecoveryReader = (
+  target: ConversationSyncTarget,
+  signal: AbortSignal,
+) => Promise<SharedControlRecoverySnapshot | null>;
+
+interface SharedControlRecoveryTarget {
+  target: ConversationSyncTarget;
+  lastKnown: ConversationSyncStatus;
 }
 
 interface ConversationHistoryReadRequest {
@@ -221,6 +290,7 @@ interface ConversationHistoryReadRequest {
   cursor: string | null;
   limit: number;
   sortDirection: "asc" | "desc";
+  itemsView?: "summary" | "full";
   turnId?: string;
 }
 
@@ -290,6 +360,8 @@ interface LiveContentRevision {
   /** Latest discrete assistant text allowed to advance catalog ordering. */
   catalogObservedAt?: string;
   revision: string;
+  /** Narrowest provider read still required before publishing this revision. */
+  readScope: "direct" | "latestTurn" | "recent";
 }
 
 interface ExternalCodexSnapshot {
@@ -350,6 +422,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     current: ReadonlyMap<ConversationKey, CatalogRecord>,
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
   private readonly historyReader: ConversationHistoryReader;
+  private readonly latestTurnHistoryReader: ConversationHistoryReader;
   private readonly statusWatchdogMs: number;
   private readonly coldReconcileMs: number;
   private readonly observeCodexThread: ObserveCodexThread;
@@ -357,6 +430,12 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private readonly desktopToolTimelineReader: DesktopToolTimelineReader;
   private readonly initialExternalCodexMonitors: number;
   private readonly maxExternalCodexMonitors: number;
+  private readonly sharedControlReconcileMs: number;
+  private readonly sharedControlRecoveryReader: SharedControlRecoveryReader;
+  private readonly sharedControlRecoveryTimeoutMs: number;
+  private readonly maxConcurrentSharedControlRecoveries: number;
+  private readonly daemonMode: boolean;
+  private readonly legacyCodexMonitoringEnabled: boolean;
 
   private readonly subscriptions = new Map<object, SyncSubscription>();
   private catalog = new Map<ConversationKey, CatalogRecord>();
@@ -367,6 +446,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     ConversationSyncCatalogEntry
   >();
   private statusProjection = new Map<ConversationKey, ConversationSyncStatus>();
+  private backgroundActiveKeys = new Set<ConversationKey>();
   private readonly catalogHistory = new Map<
     string,
     Map<ConversationKey, ConversationSyncCatalogEntry>
@@ -385,8 +465,15 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   >();
   private readonly resultLedger = new Map<
     ConversationKey,
-    { result: "completed" | "failed"; observedAt: string }
+    {
+      turnId?: string;
+      result: TerminalResultValue;
+      observedAt: string;
+      revision: number;
+    }
   >();
+  private readonly terminalResultScope?: TerminalResultScope;
+  private terminalResultWrites: Promise<void> = Promise.resolve();
   private readonly turnDetailCache = new Map<string, CachedTurnDetails>();
   private readonly liveContentRevisions = new Map<
     ConversationKey,
@@ -394,7 +481,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   >();
   private readonly pendingLiveContent = new Map<
     ConversationKey,
-    { target: ConversationSyncTarget; observedAt: string }
+    {
+      target: ConversationSyncTarget;
+      observedAt: string;
+      readScope: LiveContentRevision["readScope"];
+    }
   >();
   private readonly externalCodexMonitors = new Map<
     string,
@@ -409,11 +500,20 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     ConversationKey,
     ConversationSyncStatus
   >();
+  private readonly sharedRuntimeStatuses = new Map<
+    ConversationKey,
+    ConversationSyncStatus
+  >();
   private readonly externalCodexLiveMessages = new Map<
     ConversationKey,
     Map<string, ExternalCodexLiveMessage>
   >();
   private readonly externalCodexLiveBytes = new Map<ConversationKey, number>();
+  private readonly sharedObserverLiveMessages = new Map<
+    ConversationKey,
+    Map<string, ExternalCodexLiveMessage>
+  >();
+  private readonly sharedObserverLiveBytes = new Map<ConversationKey, number>();
   private readonly externalCodexDiscoveredRunning = new Map<
     string,
     ExternalCodexSnapshot
@@ -422,6 +522,28 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private externalCodexMonitorGeneration = 0;
   private externalCodexDiscoveryGeneration = 0;
   private externalCodexDiscoveryCompletedAt = 0;
+  private sharedRuntimeControlUnsubscribe?: () => void;
+  private codexActionBrokerUnsubscribe?: () => void;
+  private readonly sharedContentObservers?: SharedCodexContentObserverCoordinator;
+  private readonly publishSharedContextUsage: (
+    client: object,
+    message: ContextUsageMessage,
+  ) => void;
+  private sharedControlGeneration = 0;
+  private sharedControlReady = false;
+  private sharedControlLastSequence = 0;
+  private sharedControlCatalogReconcilePending = false;
+  private sharedControlStatusReconcilePending = false;
+  private sharedControlReconcileTimer?: ReturnType<typeof setTimeout>;
+  private readonly sharedControlRecoveryTargets = new Map<
+    ConversationKey,
+    SharedControlRecoveryTarget
+  >();
+  private sharedControlRecoveryAbort?: AbortController;
+  private sharedControlRecoveryFlight?: {
+    connectionGeneration: number;
+    promise: Promise<void>;
+  };
   private sharedCodexReadProcess?: CodexProcess;
   private sharedCodexReadProcessFlight?: Promise<CodexProcess>;
   private sharedCodexReadProcessUsers = 0;
@@ -442,6 +564,12 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     private readonly runtime: LocalFeatureRuntime,
     options: ConversationSyncV2Options = {},
   ) {
+    this.daemonMode =
+      options.daemonMode ?? readCodexAppServerMode() === "daemon";
+    this.publishSharedContextUsage =
+      options.publishSharedContextUsage ??
+      ((client, message) => this.runtime.send(client, message));
+    this.legacyCodexMonitoringEnabled = !this.daemonMode;
     this.catalogReader =
       options.catalogReader ?? (() => readUnifiedCatalog(this.runtime));
     this.statusReader =
@@ -451,6 +579,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       options.historyReader ??
       ((target, request) =>
         this.readRecentConversationHistory(target, request));
+    this.latestTurnHistoryReader =
+      options.latestTurnHistoryReader ??
+      ((target) => this.readLatestCodexConversationHistory(target));
     this.statusWatchdogMs = positiveInterval(
       options.statusWatchdogMs,
       STATUS_WATCHDOG_MS,
@@ -458,6 +589,28 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.coldReconcileMs = positiveInterval(
       options.coldReconcileMs,
       COLD_RECONCILE_MS,
+    );
+    this.sharedControlReconcileMs = positiveInterval(
+      options.sharedControlReconcileMs,
+      SHARED_CONTROL_RECONCILE_MS,
+    );
+    this.sharedControlRecoveryReader =
+      options.sharedControlRecoveryReader ??
+      ((target, signal) =>
+        this.readSharedControlRecoverySnapshot(target, signal));
+    this.sharedControlRecoveryTimeoutMs = positiveInterval(
+      options.sharedControlRecoveryTimeoutMs,
+      SHARED_CONTROL_RECOVERY_TIMEOUT_MS,
+    );
+    this.maxConcurrentSharedControlRecoveries = Math.min(
+      4,
+      Math.max(
+        2,
+        positiveInterval(
+          options.maxConcurrentSharedControlRecoveries,
+          SHARED_CONTROL_RECOVERY_CONCURRENCY,
+        ),
+      ),
     );
     this.observeCodexThread =
       options.observeCodexThread ??
@@ -481,6 +634,67 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         MAX_EXTERNAL_CODEX_MONITORS,
       ),
     );
+    if (
+      this.runtime.terminalResultLedger &&
+      this.runtime.bridgeInstanceId &&
+      this.runtime.codexSourceId
+    ) {
+      this.terminalResultScope = {
+        bridgeInstanceId: this.runtime.bridgeInstanceId,
+        codexSourceId: this.runtime.codexSourceId,
+      };
+      try {
+        for (const record of this.runtime.terminalResultLedger.list(
+          this.terminalResultScope,
+        )) {
+          this.resultLedger.set(
+            targetKey({
+              provider: record.provider,
+              providerSessionId: record.threadId,
+            }),
+            {
+              ...(record.turnId ? { turnId: record.turnId } : {}),
+              result: record.result,
+              observedAt: record.observedAt,
+              revision: record.revision,
+            },
+          );
+        }
+      } catch {
+        // Persistence is optional. An invalid identity or damaged legacy file
+        // must not make conversation sync unavailable.
+      }
+    }
+    const createSharedContentObserverProcess =
+      options.createSharedContentObserverProcess ??
+      (this.runtime.createDedicatedCodexProcess
+        ? () =>
+            asSharedCodexContentObserverProcess(
+              this.runtime.createDedicatedCodexProcess!(),
+            )
+        : undefined);
+    if (this.daemonMode && createSharedContentObserverProcess) {
+      this.sharedContentObservers = new SharedCodexContentObserverCoordinator({
+        codexSourceId: this.runtime.codexSourceId,
+        createProcess: createSharedContentObserverProcess,
+        onMessage: (event) => this.handleSharedObserverMessage(event),
+        onCompletion: (event) => this.handleSharedObserverCompletion(event),
+        maxObservers: options.maxSharedContentObservers,
+        unfocusGraceMs: options.sharedContentObserverUnfocusGraceMs,
+        attachTimeoutMs: options.sharedContentObserverAttachTimeoutMs,
+        maxConcurrentAttaches:
+          options.maxConcurrentSharedContentObserverAttaches,
+        retryDelaysMs: options.sharedContentObserverRetryDelaysMs,
+      });
+    }
+    this.sharedRuntimeControlUnsubscribe =
+      this.runtime.subscribeSharedRuntimeControl?.((update) =>
+        this.handleSharedRuntimeControlUpdate(update),
+      );
+    this.codexActionBrokerUnsubscribe =
+      this.runtime.codexActionBroker?.subscribe((update) =>
+        this.handleCodexActionBrokerUpdate(update),
+      );
   }
 
   async handle(
@@ -530,25 +744,63 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const subscription = this.subscriptions.get(client);
     if (!subscription) return;
     subscription.interactive = mode === "interactive";
+    subscription.notificationOnly = mode === "notifications_only";
     if (subscription.interactive) {
+      this.sharedContentObservers?.setActive(true);
       this.markCatalogDirtyIfStale();
       this.scheduleSync(client, subscription, { full: true });
       this.ensureTimers();
+      this.armSharedControlReconcile();
     } else {
       subscription.outbound.length = 0;
       subscription.queuedBytes = 0;
+      this.wakeCapacityWaiters(subscription);
       if (!this.hasInteractiveClients()) {
         this.clearExternalCodexMonitoring();
         this.requestSharedCodexReadProcessClose();
       }
     }
+    this.reconcileSharedContentObservers();
+    if (subscription.notificationOnly) {
+      this.requestSharedControlReconcile({ catalog: true, status: true });
+    }
+  }
+
+  backgroundNotificationDemandChanged(): void {
+    this.reconcileSharedContentObservers();
+    if (this.hasSharedObserverDemand()) {
+      this.requestSharedControlReconcile({ catalog: true, status: true });
+    }
+  }
+
+  backgroundActiveConversationKeys(): Iterable<string> {
+    return this.backgroundActiveKeys;
+  }
+
+  conversationActivity(
+    provider: string,
+    providerSessionId: string,
+  ): "active" | "inactive" | "unknown" {
+    const status = this.statusProjection.get(
+      targetKey({ provider, providerSessionId } as ConversationSyncTarget),
+    );
+    if (!status) return "unknown";
+    if (statusNeedsBackgroundDelivery(status)) return "active";
+    if (
+      status.activity === "unknown" ||
+      status.controlState === "reconciling" ||
+      status.controlState === "unavailable"
+    ) {
+      return "unknown";
+    }
+    return "inactive";
   }
 
   sessionCatalogChanged(change?: SessionCatalogChange): void {
     this.catalogDirty = true;
     const exactCodexThreadId =
       change?.provider === "codex" ? change.providerSessionId : undefined;
-    if (exactCodexThreadId) {
+    if (exactCodexThreadId && this.legacyCodexMonitoringEnabled) {
       this.pendingExternalCodexThreads.add(exactCodexThreadId);
     } else if (!this.hasInteractiveClients()) {
       this.externalCodexDiscoveryCompletedAt = 0;
@@ -562,7 +814,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       this.rememberLiveContent(target, new Date().toISOString());
     }
     void (
-      exactCodexThreadId
+      exactCodexThreadId && this.legacyCodexMonitoringEnabled
         ? this.ensureExternalCodexMonitor(exactCodexThreadId, true)
             .catch((error) => {
               this.reportExternalObservationFailure(error);
@@ -578,28 +830,17 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   }
 
   sessionMessage(session: LocalFeatureSession, message: ServerMessage): void {
-    if (!this.hasInteractiveClients()) return;
     const target = this.targetForSession(session);
     if (!target) return;
     const key = targetKey(target);
     const observedAt = new Date().toISOString();
     if (message.type === "result") {
-      this.resultLedger.set(key, {
-        result:
-          Boolean(message.error) ||
-          /error|fail/i.test(message.subtype) ||
-          /error|fail/i.test(message.stopReason ?? "")
-            ? "failed"
-            : "completed",
-        observedAt,
-      });
-    } else if (
-      message.type === "assistant" ||
-      message.type === "tool_result" ||
-      message.type === "user_input"
-    ) {
-      this.resultLedger.delete(key);
+      const terminal = terminalResultFromServerMessage(message);
+      if (terminal) this.setTerminalResult(target, terminal, observedAt);
+    } else if (message.type === "user_input") {
+      this.clearTerminalResult(target, observedAt);
     }
+    if (!this.hasInteractiveClients()) return;
 
     if (isStreamingConversationDelta(message)) {
       this.queueLiveContent(target, observedAt);
@@ -623,17 +864,761 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
   }
 
+  private setTerminalResult(
+    target: ConversationSyncTarget,
+    result: TerminalResultValue,
+    observedAt: string,
+    turnId?: string,
+  ): void {
+    const key = targetKey(target);
+    const previous = this.resultLedger.get(key);
+    if (previous && previous.observedAt > observedAt) return;
+    this.resultLedger.set(key, {
+      ...(turnId ? { turnId } : {}),
+      result,
+      observedAt,
+      revision: previous?.revision ?? 0,
+    });
+    this.pruneTerminalResults();
+    const ledger = this.runtime.terminalResultLedger;
+    const scope = this.terminalResultScope;
+    if (!ledger || !scope) return;
+    this.enqueueTerminalResultWrite(async () => {
+      const persisted = await ledger.record({
+        ...scope,
+        provider: target.provider,
+        threadId: target.providerSessionId,
+        ...(turnId ? { turnId } : {}),
+        result,
+        observedAt,
+      });
+      const current = this.resultLedger.get(key);
+      if (
+        current?.observedAt === observedAt &&
+        current.result === result &&
+        current.turnId === turnId
+      ) {
+        current.revision = persisted.revision;
+      }
+    });
+  }
+
+  private clearTerminalResult(
+    target: ConversationSyncTarget,
+    observedAt: string,
+    _activeTurnId?: string,
+  ): void {
+    const key = targetKey(target);
+    const previous = this.resultLedger.get(key);
+    if (previous && previous.observedAt > observedAt) return;
+    if (!previous) return;
+    this.resultLedger.delete(key);
+    const ledger = this.runtime.terminalResultLedger;
+    const scope = this.terminalResultScope;
+    if (!ledger || !scope) return;
+    this.enqueueTerminalResultWrite(async () => {
+      await ledger.clear(
+        scope,
+        target.provider,
+        target.providerSessionId,
+        observedAt,
+        previous.turnId,
+      );
+    });
+  }
+
+  private pruneTerminalResults(): void {
+    while (this.resultLedger.size > MAX_TERMINAL_RESULT_ENTRIES) {
+      let oldestKey: ConversationKey | undefined;
+      let oldestObservedAt: string | undefined;
+      for (const [key, result] of this.resultLedger) {
+        if (
+          oldestObservedAt === undefined ||
+          result.observedAt < oldestObservedAt
+        ) {
+          oldestKey = key;
+          oldestObservedAt = result.observedAt;
+        }
+      }
+      if (oldestKey === undefined) break;
+      this.resultLedger.delete(oldestKey);
+    }
+  }
+
+  private enqueueTerminalResultWrite(operation: () => Promise<void>): void {
+    this.terminalResultWrites = this.terminalResultWrites
+      .then(operation)
+      .catch(() => {
+        console.warn(
+          "[conversation-sync-v2] Terminal result persistence unavailable",
+        );
+      });
+  }
+
+  private handleSharedRuntimeControlUpdate(
+    update: LocalFeatureSharedRuntimeControlUpdate,
+  ): void {
+    if (this.closed) return;
+    if (update.kind === "ready") {
+      this.handleSharedControlReady(update.connectionGeneration);
+      return;
+    }
+    if (update.kind === "not_ready") {
+      this.handleSharedControlNotReady(update.connectionGeneration);
+      return;
+    }
+    if (update.kind === "event") {
+      this.handleSharedControlEvent(update.event);
+      return;
+    }
+    const exhaustive: never = update;
+    void exhaustive;
+  }
+
+  private handleSharedControlReady(connectionGeneration: number): void {
+    if (connectionGeneration < this.sharedControlGeneration) return;
+    if (
+      connectionGeneration === this.sharedControlGeneration &&
+      this.sharedControlReady
+    ) {
+      return;
+    }
+    const generationChanged =
+      connectionGeneration !== this.sharedControlGeneration;
+    if (generationChanged) this.cancelSharedControlRecovery();
+    this.sharedControlGeneration = connectionGeneration;
+    this.sharedControlReady = true;
+    this.sharedContentObservers?.setAuthority(connectionGeneration, true);
+    if (generationChanged) this.sharedControlLastSequence = 0;
+    this.clearSharedControlReconcileTimer();
+    // A ready generation is a reset boundary. Mark the existing catalog dirty
+    // here rather than inside the delayed worker so an initial Mobile sync and
+    // the ready reconciliation can share the same in-flight full read.
+    this.catalogDirty = true;
+    const changedKeys = this.transitionSharedDaemonAuthority("reconciling");
+    this.publishSharedControlChanges(changedKeys);
+    this.requestSharedControlReconcile({ catalog: true, status: true });
+    this.reconcileSharedContentObservers();
+  }
+
+  private handleSharedControlNotReady(connectionGeneration: number): void {
+    if (connectionGeneration < this.sharedControlGeneration) return;
+    this.cancelSharedControlRecovery();
+    this.sharedControlGeneration = connectionGeneration;
+    this.sharedControlReady = false;
+    this.sharedContentObservers?.setAuthority(connectionGeneration, false);
+    this.sharedControlLastSequence = 0;
+    this.clearSharedControlReconcileTimer();
+    this.sharedControlCatalogReconcilePending = false;
+    this.sharedControlStatusReconcilePending = false;
+    this.captureSharedControlRecoveryTargets();
+    const changedKeys = this.transitionSharedDaemonAuthority("unavailable");
+    this.publishSharedControlChanges(changedKeys);
+  }
+
+  private handleSharedControlEvent(event: SharedRuntimeControlEvent): void {
+    if (
+      !this.sharedControlReady ||
+      event.connectionGeneration !== this.sharedControlGeneration ||
+      event.sequence <= this.sharedControlLastSequence
+    ) {
+      return;
+    }
+    this.sharedControlLastSequence = event.sequence;
+    const threadId = event.threadId;
+    if (!threadId) return;
+    const target: ConversationSyncTarget = {
+      provider: "codex",
+      providerSessionId: threadId,
+    };
+    const key = targetKey(target);
+    const previous =
+      this.sharedRuntimeStatuses.get(key) ??
+      this.catalog.get(key)?.status ??
+      unknownStatus(target, event.observedAt, "appServer");
+    const next = sharedControlStatusFromEvent(
+      event,
+      previous,
+      sharedControlAuthorityGeneration(this.sharedControlGeneration),
+      this.runtime.codexActionBroker === undefined,
+    );
+    if (next) {
+      if (next.activity === "working" || next.activity === "compacting") {
+        next.executionHost = this.hasActiveBridgeOwnedCodexRuntime(
+          threadId,
+          event.turnId,
+        )
+          ? "bridge"
+          : "desktopAppServer";
+      }
+      if (
+        event.method === "turn/started" ||
+        ((event.method === "thread/started" ||
+          event.method === "thread/status/changed") &&
+          next.activity === "working")
+      ) {
+        this.clearTerminalResult(target, event.observedAt, event.turnId);
+      } else if (
+        event.method === "turn/completed" &&
+        (next.result === "completed" || next.result === "failed")
+      ) {
+        this.setTerminalResult(
+          target,
+          next.result,
+          event.observedAt,
+          event.turnId,
+        );
+        this.publishExternalCodexNotificationCandidate({
+          threadId,
+          turnId: event.turnId,
+          observedAt: event.observedAt,
+          message: {
+            type: "result",
+            subtype: next.result === "completed" ? "success" : "error",
+            sessionId: threadId,
+          },
+        });
+      }
+      this.rememberSharedRuntimeStatus(key, next);
+      if (
+        event.method === "turn/started" ||
+        event.method === "turn/completed"
+      ) {
+        this.sharedControlRecoveryTargets.delete(key);
+      }
+    }
+    const knownThread = this.catalog.has(key);
+    if (
+      knownThread &&
+      event.method === "turn/completed" &&
+      this.hasInteractiveClients()
+    ) {
+      // Status and content use separate observer transports. A completion can
+      // race observer eviction or reconnect, so the authoritative control
+      // event itself schedules one final latest-turn reconciliation.
+      this.queueLiveContent(target, event.observedAt, "latestTurn");
+    }
+    if (next && knownThread) {
+      this.publishSharedControlChanges(new Set([key]));
+    }
+    this.reconcileSharedContentObservers();
+    if (!knownThread) {
+      // The event is already the authoritative status for its one thread. A
+      // catalog read is only needed to materialize an unknown identity; known
+      // thread events must not fan out into a 10k-thread status scan.
+      this.catalogDirty = true;
+      this.requestSharedControlReconcile({ catalog: true, status: false });
+    }
+  }
+
+  private reconcileSharedContentObservers(): void {
+    const observers = this.sharedContentObservers;
+    if (!observers) return;
+    const observerDemand = this.hasSharedObserverDemand();
+    observers.setActive(observerDemand);
+    if (!observerDemand) return;
+    const focusedKeys = new Set(
+      [...this.subscriptions.values()]
+        .filter(
+          (subscription) => subscription.interactive && subscription.focusedKey,
+        )
+        .map((subscription) => subscription.focusedKey!),
+    );
+    const alreadyObservedRuntimeThreads = new Set(
+      (this.runtime.listRuntimeConversationStates?.() ?? [])
+        .filter(
+          (state) =>
+            state.provider === "codex" &&
+            state.providerSessionId &&
+            state.controlState !== "unavailable" &&
+            state.controlState !== "reconciling",
+        )
+        .map((state) => state.providerSessionId!),
+    );
+    observers.setInterests(
+      [...this.catalog.entries()]
+        .filter(
+          ([, record]) =>
+            record.entry.provider === "codex" &&
+            !alreadyObservedRuntimeThreads.has(record.entry.providerSessionId),
+        )
+        .map(([key, record]) => {
+          const status = this.sharedRuntimeStatuses.get(key) ?? record.status;
+          return {
+            threadId: record.entry.providerSessionId,
+            projectPath: record.entry.projectPath,
+            focused: focusedKeys.has(key),
+            needsAttention: status.attention !== "none",
+            active:
+              status.activity === "working" || status.activity === "compacting",
+            observedAt: status.observedAt,
+          };
+        })
+        .filter(
+          (interest) =>
+            interest.focused || interest.needsAttention || interest.active,
+        ),
+    );
+  }
+
+  private handleSharedObserverMessage(
+    event: SharedCodexContentObserverMessage,
+  ): void {
+    if (
+      this.closed ||
+      !this.sharedControlReady ||
+      event.connectionGeneration !== this.sharedControlGeneration
+    ) {
+      return;
+    }
+    if (event.message.type === "context_usage") {
+      this.forwardSharedObserverContextUsage(event);
+      return;
+    }
+    const target: ConversationSyncTarget = {
+      provider: "codex",
+      providerSessionId: event.threadId,
+    };
+    const message = withSourceTimestamp(
+      annotateObservedTurn(
+        sanitizeSharedObserverMessage(this.runtime, event.message),
+        event.turnId,
+      ),
+      event.observedAt,
+      false,
+    );
+    if (message.type === "result") {
+      const terminal = terminalResultFromServerMessage(message);
+      if (terminal) {
+        this.setTerminalResult(
+          target,
+          terminal,
+          event.observedAt,
+          event.turnId,
+        );
+      }
+      return;
+    }
+    if (message.type === "user_input") {
+      this.clearTerminalResult(target, event.observedAt, event.turnId);
+    }
+    if (isStreamingConversationDelta(message)) {
+      this.queueLiveContent(target, event.observedAt, "latestTurn");
+      return;
+    }
+    if (!isConversationTimelineMessage(message)) return;
+    const identity = observedMessageIdentity(message);
+    if (!identity) {
+      this.queueLiveContent(target, event.observedAt, "latestTurn");
+      return;
+    }
+    const remembered = this.rememberSharedObserverMessage(
+      target,
+      `${event.turnId ?? "turn-unknown"}:${identity}`,
+      message,
+      event.observedAt,
+    );
+    if (!remembered) {
+      this.queueLiveContent(target, event.observedAt, "latestTurn");
+      return;
+    }
+    const progressMessage = backgroundProgressCandidate(message);
+    if (progressMessage) {
+      this.publishExternalCodexNotificationCandidate({
+        threadId: event.threadId,
+        turnId: event.turnId,
+        observedAt: event.observedAt,
+        message: progressMessage,
+      });
+    }
+    this.publishLiveContent(
+      target,
+      event.observedAt,
+      assistantTextCatalogActivity(message, event.observedAt),
+      "direct",
+    );
+  }
+
+  private forwardSharedObserverContextUsage(
+    event: SharedCodexContentObserverMessage,
+  ): void {
+    if (event.message.type !== "context_usage") return;
+    const focusedKey = targetKey({
+      provider: "codex",
+      providerSessionId: event.threadId,
+    });
+    const bridgeInstanceId = this.runtime.bridgeInstanceId;
+    const codexSourceId = this.runtime.codexSourceId;
+    if (!bridgeInstanceId || !codexSourceId) return;
+    const message: ContextUsageMessage = {
+      ...event.message,
+      sessionId: event.threadId,
+      threadId: event.threadId,
+      ...(event.turnId ? { turnId: event.turnId } : {}),
+      bridgeInstanceId,
+      codexSourceId,
+      authorityGeneration: `daemon:${event.connectionGeneration}:${event.observerGeneration}`,
+    };
+    for (const [client, subscription] of this.subscriptions) {
+      if (
+        !subscription.interactive ||
+        subscription.focusedKey !== focusedKey ||
+        !this.runtime.supports(client, "context_usage")
+      ) {
+        continue;
+      }
+      this.publishSharedContextUsage(client, message);
+    }
+  }
+
+  private handleSharedObserverCompletion(
+    event: SharedCodexContentObserverCompletion,
+  ): void {
+    if (
+      this.closed ||
+      !this.sharedControlReady ||
+      event.connectionGeneration !== this.sharedControlGeneration
+    ) {
+      return;
+    }
+    // A completion is the canonicalization boundary. Direct observer messages
+    // make the UI live immediately, then one coalesced latest-turn read repairs
+    // any delta or tool notification that arrived without a stable identity.
+    this.queueLiveContent(
+      {
+        provider: "codex",
+        providerSessionId: event.threadId,
+      },
+      event.observedAt,
+      "latestTurn",
+    );
+  }
+
+  private publishExternalCodexNotificationCandidate(input: {
+    threadId: string;
+    turnId?: string;
+    observedAt: string;
+    message: Extract<ServerMessage, { type: "assistant" | "result" }>;
+  }): void {
+    const codexSourceId = this.runtime.codexSourceId;
+    if (
+      !codexSourceId ||
+      !this.runtime.publishExternalCodexNotificationCandidate
+    ) {
+      return;
+    }
+    const entry = this.catalog.get(
+      targetKey({
+        provider: "codex",
+        providerSessionId: input.threadId,
+      }),
+    )?.entry;
+    const projectLabel = entry?.projectPath
+      ?.replace(/[\\/]+$/, "")
+      .split(/[\\/]/)
+      .filter(Boolean)
+      .at(-1);
+    const name = entry?.name?.trim();
+    const label = name
+      ? projectLabel
+        ? `${name} (${projectLabel})`
+        : name
+      : projectLabel;
+    this.runtime.publishExternalCodexNotificationCandidate({
+      codexSourceId,
+      threadId: input.threadId,
+      ...(input.turnId ? { turnId: input.turnId } : {}),
+      observedAt: input.observedAt,
+      ...(label ? { label } : {}),
+      message: input.message,
+    });
+  }
+
+  private rememberSharedObserverMessage(
+    target: ConversationSyncTarget,
+    itemKey: string,
+    message: ServerMessage,
+    observedAt: string,
+  ): boolean {
+    const key = targetKey(target);
+    const bytes = Buffer.byteLength(stableJson(message), "utf8");
+    if (bytes > MAX_SHARED_OBSERVER_LIVE_BYTES_PER_THREAD) return false;
+    const messages =
+      this.sharedObserverLiveMessages.get(key) ??
+      new Map<string, ExternalCodexLiveMessage>();
+    let totalBytes = this.sharedObserverLiveBytes.get(key) ?? 0;
+    const previous = messages.get(itemKey);
+    if (previous) totalBytes = Math.max(0, totalBytes - previous.bytes);
+    messages.set(itemKey, { message, observedAt, bytes });
+    totalBytes += bytes;
+    while (
+      messages.size > MAX_SHARED_OBSERVER_LIVE_MESSAGES ||
+      totalBytes > MAX_SHARED_OBSERVER_LIVE_BYTES_PER_THREAD
+    ) {
+      const oldest = messages.keys().next().value;
+      if (oldest === undefined) break;
+      const removed = messages.get(oldest);
+      messages.delete(oldest);
+      if (removed) totalBytes = Math.max(0, totalBytes - removed.bytes);
+    }
+    if (messages.size === 0) {
+      this.deleteSharedObserverLiveMessages(key);
+      return false;
+    }
+    const retained = messages.has(itemKey);
+    this.sharedObserverLiveMessages.set(key, messages);
+    this.sharedObserverLiveBytes.set(key, totalBytes);
+    return retained;
+  }
+
+  private deleteSharedObserverLiveMessages(key: ConversationKey): void {
+    this.sharedObserverLiveMessages.delete(key);
+    this.sharedObserverLiveBytes.delete(key);
+  }
+
+  private transitionSharedDaemonAuthority(
+    controlState: "reconciling" | "unavailable",
+  ): Set<ConversationKey> {
+    const changedKeys = new Set<ConversationKey>();
+    for (const key of this.sharedRuntimeStatuses.keys()) {
+      const previous =
+        this.sharedRuntimeStatuses.get(key) ?? this.catalog.get(key)?.status;
+      if (!previous || !isSharedSpecialStatus(previous)) continue;
+      const next = sharedControlTransitionStatus(
+        previous,
+        controlState,
+        this.sharedControlGeneration,
+      );
+      this.rememberSharedRuntimeStatus(key, next);
+      if (this.catalog.has(key)) changedKeys.add(key);
+    }
+    return changedKeys;
+  }
+
+  private captureSharedControlRecoveryTargets(): void {
+    for (const [key, status] of this.sharedRuntimeStatuses) {
+      if (!isSharedSpecialStatus(status)) continue;
+      const record = this.catalog.get(key);
+      if (!record || record.entry.provider !== "codex") continue;
+      if (!this.sharedControlRecoveryTargets.has(key)) {
+        this.sharedControlRecoveryTargets.set(key, {
+          target: {
+            provider: "codex",
+            providerSessionId: record.entry.providerSessionId,
+          },
+          lastKnown: { ...status },
+        });
+      }
+      if (
+        this.sharedControlRecoveryTargets.size >=
+        MAX_SHARED_CONTROL_RECOVERY_THREADS
+      ) {
+        break;
+      }
+    }
+  }
+
+  private handleCodexActionBrokerUpdate(
+    update: CodexActionBrokerRuntimeUpdate,
+  ): void {
+    if (this.closed) return;
+    const changedKeys = new Set<ConversationKey>();
+    if (update.kind === "request") {
+      this.applyCodexActionRequest(update.request, changedKeys);
+    } else {
+      for (const request of this.runtime.codexActionBroker?.listRequests() ??
+        []) {
+        this.applyCodexActionRequest(request, changedKeys);
+      }
+    }
+    this.publishSharedControlChanges(changedKeys);
+    this.reconcileSharedContentObservers();
+  }
+
+  private applyCodexActionRequest(
+    request: CodexActionBrokerRuntimeRequest,
+    changedKeys: Set<ConversationKey>,
+  ): void {
+    if (
+      this.runtime.codexSourceId &&
+      request.codexSourceId !== this.runtime.codexSourceId
+    ) {
+      return;
+    }
+    const target: ConversationSyncTarget = {
+      provider: "codex",
+      providerSessionId: request.threadId,
+    };
+    const key = targetKey(target);
+    const previous =
+      this.sharedRuntimeStatuses.get(key) ?? this.catalog.get(key)?.status;
+    if (!previous) return;
+    if (request.state === "resolved" || request.state === "expired") {
+      if (previous.attentionRequestId !== request.opaqueRequestId) return;
+      const replacement = this.runtime.codexActionBroker
+        ?.listRequests({ threadId: request.threadId })
+        .filter(
+          (candidate) =>
+            candidate.opaqueRequestId !== request.opaqueRequestId &&
+            (candidate.state === "pending" || candidate.state === "claimed"),
+        )
+        .at(-1);
+      if (replacement) {
+        this.applyCodexActionRequest(replacement, changedKeys);
+        return;
+      }
+      const next: ConversationSyncStatus = {
+        ...previous,
+        attention: "none",
+        observedAt: request.updatedAt,
+      };
+      delete next.attentionRequestId;
+      this.rememberSharedRuntimeStatus(key, next);
+      if (this.catalog.has(key)) changedKeys.add(key);
+      return;
+    }
+    const brokerReady = this.runtime.codexActionBroker?.health.ready === true;
+    const next: ConversationSyncStatus = {
+      ...previous,
+      activity: previous.activity === "compacting" ? "compacting" : "working",
+      attention: attentionFromCodexAction(request),
+      result: "none",
+      runtimeAttachment: "loaded",
+      source: "appServer",
+      confidence: brokerReady && request.live ? "authoritative" : "unknown",
+      observedAt: request.updatedAt,
+      attentionRequestId: request.opaqueRequestId,
+      activeTurnId: request.turnId,
+      controlState: brokerReady && request.live ? "readOnly" : "unavailable",
+    };
+    this.rememberSharedRuntimeStatus(key, next);
+    if (this.catalog.has(key)) changedKeys.add(key);
+  }
+
+  private applyCodexActionBrokerOverlay(
+    onlyKeys?: ReadonlySet<ConversationKey>,
+  ): void {
+    for (const request of this.runtime.codexActionBroker?.listRequests() ??
+      []) {
+      const key = targetKey({
+        provider: "codex",
+        providerSessionId: request.threadId,
+      });
+      if (onlyKeys && !onlyKeys.has(key)) continue;
+      this.applyCodexActionRequest(request, new Set());
+    }
+  }
+
+  private rememberSharedRuntimeStatus(
+    key: ConversationKey,
+    status: ConversationSyncStatus,
+  ): void {
+    this.sharedRuntimeStatuses.set(key, status);
+    while (this.sharedRuntimeStatuses.size > MAX_CATALOG_ENTRIES) {
+      const oldest = this.sharedRuntimeStatuses.keys().next().value;
+      if (oldest === undefined) break;
+      this.sharedRuntimeStatuses.delete(oldest);
+    }
+  }
+
+  private publishSharedControlChanges(
+    changedKeys: ReadonlySet<ConversationKey>,
+  ): void {
+    if (changedKeys.size === 0) return;
+    this.applyRuntimeOverlay(changedKeys);
+    this.recomputeStates(changedKeys);
+    this.scheduleInteractiveClients({ dirtyKeys: changedKeys });
+  }
+
+  private requestSharedControlReconcile(options: {
+    catalog: boolean;
+    status: boolean;
+  }): void {
+    this.sharedControlCatalogReconcilePending ||= options.catalog;
+    this.sharedControlStatusReconcilePending ||= options.status;
+    this.armSharedControlReconcile();
+  }
+
+  private armSharedControlReconcile(): void {
+    if (
+      this.closed ||
+      !this.sharedControlReady ||
+      !this.hasSharedObserverDemand() ||
+      this.sharedControlReconcileTimer ||
+      (!this.sharedControlCatalogReconcilePending &&
+        !this.sharedControlStatusReconcilePending)
+    ) {
+      return;
+    }
+    this.sharedControlReconcileTimer = setTimeout(() => {
+      this.sharedControlReconcileTimer = undefined;
+      const catalog = this.sharedControlCatalogReconcilePending;
+      const status = this.sharedControlStatusReconcilePending;
+      this.sharedControlCatalogReconcilePending = false;
+      this.sharedControlStatusReconcilePending = false;
+      void this.runSharedControlReconcile(catalog, status);
+    }, this.sharedControlReconcileMs);
+    this.sharedControlReconcileTimer.unref?.();
+  }
+
+  private async runSharedControlReconcile(
+    catalogRequested: boolean,
+    statusRequested: boolean,
+  ): Promise<void> {
+    if (this.closed || !this.sharedControlReady) return;
+    if (catalogRequested) {
+      try {
+        await this.refreshCatalog();
+      } catch (error) {
+        this.reportBackgroundError("control_catalog_refresh_failed", error);
+      }
+    }
+    if (statusRequested && this.sharedControlReady) {
+      try {
+        await this.refreshStatuses();
+      } catch (error) {
+        this.reportBackgroundError("control_status_refresh_failed", error);
+      }
+    }
+    if (this.sharedControlReady && this.sharedControlRecoveryTargets.size > 0) {
+      await this.reconcileSharedControlRecoveryTargets(
+        this.sharedControlGeneration,
+      );
+    }
+    this.reconcileSharedContentObservers();
+    this.scheduleInteractiveClients();
+    this.armSharedControlReconcile();
+  }
+
+  private clearSharedControlReconcileTimer(): void {
+    if (!this.sharedControlReconcileTimer) return;
+    clearTimeout(this.sharedControlReconcileTimer);
+    this.sharedControlReconcileTimer = undefined;
+  }
+
   disconnect(client: object): void {
+    const subscription = this.subscriptions.get(client);
+    if (subscription) this.wakeCapacityWaiters(subscription);
     this.subscriptions.delete(client);
     if (!this.hasInteractiveClients()) {
       this.cancelTimers();
       this.clearExternalCodexMonitoring();
       this.requestSharedCodexReadProcessClose();
     }
+    this.reconcileSharedContentObservers();
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.closed = true;
+    this.sharedRuntimeControlUnsubscribe?.();
+    this.sharedRuntimeControlUnsubscribe = undefined;
+    this.codexActionBrokerUnsubscribe?.();
+    this.codexActionBrokerUnsubscribe = undefined;
+    this.sharedContentObservers?.close();
+    this.cancelSharedControlRecovery();
+    for (const subscription of this.subscriptions.values()) {
+      this.wakeCapacityWaiters(subscription);
+    }
     this.subscriptions.clear();
     this.snapshots.clear();
     this.snapshotFlights.clear();
@@ -645,10 +1630,18 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.clearExternalCodexMonitoring();
     this.externalCodexDiscoveredRunning.clear();
     this.pendingExternalCodexThreads.clear();
+    this.sharedRuntimeStatuses.clear();
+    this.sharedObserverLiveMessages.clear();
+    this.sharedObserverLiveBytes.clear();
+    this.sharedControlRecoveryTargets.clear();
+    this.sharedControlCatalogReconcilePending = false;
+    this.sharedControlStatusReconcilePending = false;
     this.externalCodexDiscoveryCompletedAt = 0;
     this.requestSharedCodexReadProcessClose();
     this.turnDetailCacheBytes = 0;
     this.cancelTimers();
+    await this.terminalResultWrites;
+    await this.runtime.terminalResultLedger?.flush();
   }
 
   private subscribe(
@@ -672,13 +1665,16 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         new Date(watermark.readAt).toISOString(),
       );
     }
+    const deliveryMode =
+      this.runtime.getClientDeliveryMode?.(client) ?? "interactive";
+    const previous = this.subscriptions.get(client);
+    if (previous) this.wakeCapacityWaiters(previous);
     const subscription: SyncSubscription = {
       id: message.requestId,
       requestId: message.requestId,
       batchId: `${message.requestId}:${Date.now().toString(36)}`,
-      interactive:
-        (this.runtime.getClientDeliveryMode?.(client) ?? "interactive") ===
-        "interactive",
+      interactive: deliveryMode === "interactive",
+      notificationOnly: deliveryMode === "notifications_only",
       ...(message.focused ? { focusedKey: targetKey(message.focused) } : {}),
       catalogState: message.catalogState,
       statusState: message.statusState,
@@ -695,12 +1691,19 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       dirty: false,
       fullSyncRequested: true,
       dirtyThreadKeys: new Set(),
+      capacityWaiters: new Set(),
     };
     this.subscriptions.set(client, subscription);
+    if (subscription.interactive || subscription.notificationOnly) {
+      this.reconcileSharedContentObservers();
+    }
     if (subscription.interactive) {
       this.markCatalogDirtyIfStale();
       this.scheduleSync(client, subscription, { full: true });
       this.ensureTimers();
+      this.armSharedControlReconcile();
+    } else if (subscription.notificationOnly) {
+      this.requestSharedControlReconcile({ catalog: true, status: true });
     }
   }
 
@@ -744,6 +1747,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       }
     }
     this.flush(client, subscription);
+    this.wakeCapacityWaiters(subscription);
     if (subscription.dirty && subscription.outbound.length === 0) {
       this.scheduleSync(client, subscription);
     }
@@ -781,13 +1785,17 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     subscription.focusedKey = message.focused
       ? targetKey(message.focused)
       : undefined;
+    this.reconcileSharedContentObservers();
     this.sendEvent(client, subscription, {
       event: "focus_applied",
       requestId: message.requestId,
       ...(message.focused ? { focused: message.focused } : {}),
     });
     if (!message.focused) return;
-    if (message.focused.provider === "codex") {
+    if (
+      message.focused.provider === "codex" &&
+      this.legacyCodexMonitoringEnabled
+    ) {
       void this.ensureExternalCodexMonitor(
         message.focused.providerSessionId,
         true,
@@ -821,12 +1829,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       requestId: message.requestId,
     });
     this.flush(client, subscription);
+    this.wakeCapacityWaiters(subscription);
     this.subscriptions.delete(client);
     if (!this.hasInteractiveClients()) {
       this.cancelTimers();
       this.clearExternalCodexMonitoring();
       this.requestSharedCodexReadProcessClose();
     }
+    this.reconcileSharedContentObservers();
   }
 
   private scheduleSync(
@@ -852,13 +1862,20 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     subscription.dirty = false;
     void this.runSync(client, subscription)
       .catch((error) => {
-        this.sendError(
-          client,
-          subscription,
-          undefined,
-          "sync_failed",
-          errorMessage(error),
-        );
+        try {
+          this.sendError(
+            client,
+            subscription,
+            undefined,
+            "sync_failed",
+            errorMessage(error),
+          );
+        } catch {
+          // A saturated or disconnected client may be unable to accept even
+          // the terminal error frame. Retain recovery intent without allowing
+          // this detached task to reject a second time.
+          subscription.dirty = true;
+        }
       })
       .finally(() => {
         subscription.syncing = false;
@@ -891,24 +1908,33 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
     const batchId = `${subscription.id}:${Date.now().toString(36)}`;
     subscription.batchId = batchId;
+    const statusState = this.statusStateForClient(client);
     const beginSequence = this.sendEvent(client, subscription, {
       event: "sync_begin",
       requestId: subscription.requestId,
       catalogState: this.catalogState,
-      statusState: this.statusState,
+      statusState,
     });
     if (subscription.catalogState === this.catalogState) {
       this.mergeCommit(subscription, beginSequence, {
         catalogState: this.catalogState,
       });
     }
-    if (subscription.statusState === this.statusState) {
+    if (subscription.statusState === statusState) {
       this.mergeCommit(subscription, beginSequence, {
-        statusState: this.statusState,
+        statusState,
       });
     }
-    this.sendCatalogChanges(client, subscription);
-    this.sendStatusChanges(client, subscription);
+    if (!(await this.sendCatalogChanges(client, subscription))) {
+      subscription.fullSyncRequested ||= fullSyncRequested;
+      subscription.dirty = true;
+      return;
+    }
+    if (!(await this.sendStatusChanges(client, subscription))) {
+      subscription.fullSyncRequested ||= fullSyncRequested;
+      subscription.dirty = true;
+      return;
+    }
 
     if (fullSyncRequested) {
       const ordered = this.orderedRecords(subscription);
@@ -993,7 +2019,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       event: "sync_complete",
       nextState: {
         catalogState: this.catalogState,
-        statusState: this.statusState,
+        statusState,
         threadContentStates: [...desiredThreadStates]
           .slice(-MAX_THREAD_STATES)
           .map(([key, revision]) => ({
@@ -1004,15 +2030,15 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     });
   }
 
-  private sendCatalogChanges(
+  private async sendCatalogChanges(
     client: object,
     subscription: SyncSubscription,
-  ): void {
+  ): Promise<boolean> {
     if (
       subscription.catalogState === this.catalogState ||
       subscription.pendingCatalogState === this.catalogState
     ) {
-      return;
+      return true;
     }
     const previous = subscription.catalogState
       ? this.catalogHistory.get(subscription.catalogState)
@@ -1059,8 +2085,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
     const pages = chunkByJsonBytes(changes, FRAME_CONTENT_BUDGET);
     const effectivePages = pages.length > 0 ? pages : [[]];
-    effectivePages.forEach((page, pageIndex) => {
-      const sequence = this.sendEvent(client, subscription, {
+    for (const [pageIndex, page] of effectivePages.entries()) {
+      const payload: ConversationSyncEventPayload = {
         event: "catalog_changes",
         catalogState: this.catalogState,
         pageIndex,
@@ -1074,68 +2100,103 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         destroyed: page
           .filter((change) => change.kind === "destroyed")
           .map((change) => change.value as ConversationSyncTarget),
-      });
+      };
+      if (
+        !(await this.waitForOutboundCapacity(client, subscription, payload))
+      ) {
+        return false;
+      }
+      const sequence = this.sendEvent(client, subscription, payload);
       if (pageIndex === effectivePages.length - 1) {
         subscription.pendingCatalogState = this.catalogState;
         this.mergeCommit(subscription, sequence, {
           catalogState: this.catalogState,
         });
       }
-    });
+    }
+    return true;
   }
 
-  private sendStatusChanges(
+  private async sendStatusChanges(
     client: object,
     subscription: SyncSubscription,
-  ): void {
+  ): Promise<boolean> {
+    const supportsAppServerStatusSemantics = this.runtime.supports(
+      client,
+      APP_SERVER_STATUS_CAPABILITY,
+    );
+    const statusState = clientStatusState(
+      this.statusState,
+      supportsAppServerStatusSemantics,
+    );
     if (
-      subscription.statusState === this.statusState ||
-      subscription.pendingStatusState === this.statusState
+      subscription.statusState === statusState ||
+      subscription.pendingStatusState === statusState
     ) {
-      return;
+      return true;
     }
-    const previous = subscription.statusState
-      ? this.statusHistory.get(subscription.statusState)
+    const previousState = subscription.statusState
+      ? parseClientStatusState(
+          subscription.statusState,
+          supportsAppServerStatusSemantics,
+        )
       : undefined;
-    if (subscription.statusState && !previous) {
+    const previous = previousState?.compatible
+      ? this.statusHistory.get(previousState.rawState)
+      : undefined;
+    if (subscription.statusState && (!previousState?.compatible || !previous)) {
       this.sendEvent(client, subscription, {
         event: "sync_reset",
         scope: "status",
         reason: "state_unavailable",
       });
-      subscription.threadStates.clear();
-      subscription.pendingThreadStates.clear();
     }
     const current = this.statusProjection;
-    const supportsAppServerStatusSemantics = this.runtime.supports(
-      client,
-      APP_SERVER_STATUS_CAPABILITY,
-    );
     const changes = [...current]
       .filter(([key, value]) => {
         const prior = previous?.get(key);
-        return !prior || stableJson(prior) !== stableJson(value);
+        return (
+          !prior ||
+          stableJson(
+            statusForClient(prior, supportsAppServerStatusSemantics),
+          ) !==
+            stableJson(statusForClient(value, supportsAppServerStatusSemantics))
+        );
       })
       .map(([, value]) =>
         statusForClient(value, supportsAppServerStatusSemantics),
       );
     const pages = chunkByJsonBytes(changes, FRAME_CONTENT_BUDGET);
     const effectivePages = pages.length > 0 ? pages : [[]];
-    effectivePages.forEach((page, pageIndex) => {
-      const sequence = this.sendEvent(client, subscription, {
+    for (const [pageIndex, page] of effectivePages.entries()) {
+      const payload: ConversationSyncEventPayload = {
         event: "status_changes",
-        statusState: this.statusState,
+        statusState,
         pageIndex,
         pageCount: effectivePages.length,
         changes: page,
-      });
+      };
+      if (
+        !(await this.waitForOutboundCapacity(client, subscription, payload))
+      ) {
+        return false;
+      }
+      const sequence = this.sendEvent(client, subscription, payload);
       if (pageIndex === effectivePages.length - 1) {
-        subscription.pendingStatusState = this.statusState;
+        subscription.pendingStatusState = statusState;
         this.mergeCommit(subscription, sequence, {
-          statusState: this.statusState,
+          statusState,
         });
       }
-    });
+    }
+    return true;
+  }
+
+  private statusStateForClient(client: object): string {
+    return clientStatusState(
+      this.statusState,
+      this.runtime.supports(client, APP_SERVER_STATUS_CAPABILITY),
+    );
   }
 
   private async sendTimelineRecords(
@@ -1166,7 +2227,23 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             subscription.pendingThreadStates.get(key) ??
             subscription.threadStates.get(key);
           if (known === this.timelineRevisionFor(record)) return null;
-          return this.snapshotFor(record);
+          try {
+            return await this.snapshotFor(record);
+          } catch (error) {
+            try {
+              this.sendError(
+                client,
+                subscription,
+                undefined,
+                "timeline_failed",
+                errorMessage(error),
+                record.entry,
+              );
+            } catch {
+              subscription.dirty = true;
+            }
+            return null;
+          }
         }),
       );
       for (let index = 0; index < batch.length; index += 1) {
@@ -1214,24 +2291,64 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (cached) return cached;
     const existing = this.snapshotFlights.get(key);
     if (existing) return existing;
-    const flight = this.historyReader(target)
-      .then((history) => {
-        const window = normalizeHistoryWindow(history);
+    const liveAtReadStart = this.liveContentRevisions.get(key);
+    const previousSnapshot = this.snapshots.get(key)?.at(-1);
+    const sharedMessagesAtReadStart = this.sharedObserverLiveMessages.get(key);
+    const historySource =
+      target.provider === "codex" &&
+      sharedMessagesAtReadStart &&
+      previousSnapshot &&
+      liveAtReadStart?.readScope === "direct"
+        ? Promise.resolve({
+            window: historyWindowFromSnapshot(previousSnapshot),
+            canonicalMessages: undefined,
+          })
+        : target.provider === "codex" &&
+            previousSnapshot &&
+            liveAtReadStart?.readScope === "latestTurn"
+          ? this.latestTurnHistoryReader(target).then((history) => {
+              const latest = normalizeHistoryWindow(history);
+              return {
+                window: mergeSnapshotWithLatestTurn(previousSnapshot, latest),
+                canonicalMessages: latest.messages,
+              };
+            })
+          : this.historyReader(target).then((history) => {
+              const window = normalizeHistoryWindow(history);
+              return { window, canonicalMessages: window.messages };
+            });
+    const flight = historySource
+      .then(({ window, canonicalMessages }) => {
         const externalMessages = this.externalCodexLiveMessages.get(key);
-        const mergedMessages = mergeExternalCodexMessages(
+        const sharedMessages = this.sharedObserverLiveMessages.get(key);
+        const externalMergedMessages = mergeExternalCodexMessages(
           window.messages,
           externalMessages?.values() ?? [],
         );
+        const mergedMessages = mergeObservedMessagesReplacingStable(
+          externalMergedMessages,
+          sharedMessages?.values() ?? [],
+        );
         const canonicalHistoryCoversExternalMessages =
           externalMessages === undefined ||
-          (!this.liveContentRevisions.has(key) &&
+          (canonicalMessages !== undefined &&
+            !this.liveContentRevisions.has(key) &&
             canonicalHistoryCoversDurableExternalMessages(
-              window.messages,
+              canonicalMessages,
               externalMessages.values(),
             ));
-        const messages = canonicalHistoryCoversExternalMessages
-          ? window.messages
-          : mergedMessages;
+        const canonicalHistoryCoversSharedMessages =
+          sharedMessages === undefined ||
+          (canonicalMessages !== undefined &&
+            canonicalHistoryCoversDurableExternalMessages(
+              canonicalMessages,
+              sharedMessages.values(),
+            ));
+        const messages =
+          canonicalHistoryCoversExternalMessages &&
+          canonicalHistoryCoversSharedMessages
+            ? window.messages
+            : mergedMessages;
         for (const turn of window.turnDetails ?? []) {
           this.rememberTurnDetails(target, turn);
         }
@@ -1246,7 +2363,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         const providerHistoryIndicatesContent =
           window.nextTurnCursor != null ||
           (window.turnDetails?.length ?? 0) > 0 ||
-          (externalMessages?.size ?? 0) > 0;
+          (externalMessages?.size ?? 0) > 0 ||
+          (sharedMessages?.size ?? 0) > 0;
         const catalogIndicatesPriorActivity =
           record.status.activity === "working" ||
           record.status.activity === "compacting" ||
@@ -1286,7 +2404,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         // history can materialize later without advancing app-server recency.
         // A reconnect must reread the provider instead of pinning a blank or
         // live-only projection under that same revision.
-        if (!catalogContentMissing && canonicalHistoryCoversExternalMessages) {
+        if (
+          !catalogContentMissing &&
+          canonicalHistoryCoversExternalMessages &&
+          (canonicalHistoryCoversSharedMessages || sharedMessages !== undefined)
+        ) {
           this.rememberSnapshot(key, snapshot);
         }
         if (
@@ -1299,6 +2421,19 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           // canonical provider history covering every buffered item proves it
           // is safe to drop the Desktop continuity buffer.
           this.deleteExternalCodexLiveMessages(key);
+        }
+        if (
+          sharedMessages &&
+          canonicalHistoryCoversSharedMessages &&
+          this.sharedObserverLiveMessages.get(key) === sharedMessages
+        ) {
+          this.deleteSharedObserverLiveMessages(key);
+        }
+        const currentLive = this.liveContentRevisions.get(key);
+        if (currentLive?.revision === requestedRevision) {
+          // The scoped provider read (or direct stable merge) has satisfied
+          // this exact revision. A later delta will promote the scope again.
+          currentLive.readScope = "direct";
         }
         return snapshot;
       })
@@ -1680,66 +2815,76 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           });
         }
         this.catalog = next;
-        const shouldWarmExternalCodex =
-          previousCatalog.size === 0 ||
-          (this.externalCodexMonitors.size === 0 &&
-            this.externalCodexMonitorFlights.size === 0);
-        const codexThreadIds = [...next.values()]
-          .filter((record) => record.entry.provider === "codex")
-          .map((record) => record.entry.providerSessionId);
-        for (const [threadId, snapshot] of this
-          .externalCodexDiscoveredRunning) {
-          if (!codexThreadIds.includes(threadId)) continue;
-          this.applyExternalCodexSnapshot(
-            threadId,
-            snapshot,
-            externalSnapshotObservedAt(snapshot),
-            false,
-          );
-        }
-        const discoveryExpired =
-          this.externalCodexDiscoveryCompletedAt === 0 ||
-          Date.now() - this.externalCodexDiscoveryCompletedAt >=
-            EXTERNAL_CODEX_DISCOVERY_TTL_MS;
-        const discovery =
-          discoveryExpired && this.hasInteractiveClients()
-            ? await this.discoverExternalCodexActivity(
-                codexThreadIds,
-                this.externalCodexDiscoveryGeneration,
-              )
-            : {
-                completed: true,
-                running: [...this.externalCodexDiscoveredRunning.keys()],
-              };
-        const pendingCodexThreads = [...this.pendingExternalCodexThreads];
-        const initialCodexThreads = shouldWarmExternalCodex
-          ? [...next.values()]
-              .filter((record) => record.entry.provider === "codex")
-              .slice(0, this.initialExternalCodexMonitors)
-              .map((record) => record.entry.providerSessionId)
-          : [];
-        await this.ensureExternalCodexMonitors([
-          ...pendingCodexThreads,
-          ...discovery.running,
-          ...initialCodexThreads,
-          ...changedCodexThreads.slice(0, this.maxExternalCodexMonitors),
-        ]);
-        if (discovery.completed) {
-          for (const threadId of pendingCodexThreads) {
-            this.pendingExternalCodexThreads.delete(threadId);
+        if (this.legacyCodexMonitoringEnabled) {
+          const shouldWarmExternalCodex =
+            previousCatalog.size === 0 ||
+            (this.externalCodexMonitors.size === 0 &&
+              this.externalCodexMonitorFlights.size === 0);
+          const codexThreadIds = [...next.values()]
+            .filter((record) => record.entry.provider === "codex")
+            .map((record) => record.entry.providerSessionId);
+          for (const [threadId, snapshot] of this
+            .externalCodexDiscoveredRunning) {
+            if (!codexThreadIds.includes(threadId)) continue;
+            this.applyExternalCodexSnapshot(
+              threadId,
+              snapshot,
+              externalSnapshotObservedAt(snapshot),
+              false,
+            );
           }
+          const discoveryExpired =
+            this.externalCodexDiscoveryCompletedAt === 0 ||
+            Date.now() - this.externalCodexDiscoveryCompletedAt >=
+              EXTERNAL_CODEX_DISCOVERY_TTL_MS;
+          const discovery =
+            discoveryExpired && this.hasInteractiveClients()
+              ? await this.discoverExternalCodexActivity(
+                  codexThreadIds,
+                  this.externalCodexDiscoveryGeneration,
+                )
+              : {
+                  completed: true,
+                  running: [...this.externalCodexDiscoveredRunning.keys()],
+                };
+          const pendingCodexThreads = [...this.pendingExternalCodexThreads];
+          const initialCodexThreads = shouldWarmExternalCodex
+            ? [...next.values()]
+                .filter((record) => record.entry.provider === "codex")
+                .slice(0, this.initialExternalCodexMonitors)
+                .map((record) => record.entry.providerSessionId)
+            : [];
+          await this.ensureExternalCodexMonitors([
+            ...pendingCodexThreads,
+            ...discovery.running,
+            ...initialCodexThreads,
+            ...changedCodexThreads.slice(0, this.maxExternalCodexMonitors),
+          ]);
+          if (discovery.completed) {
+            for (const threadId of pendingCodexThreads) {
+              this.pendingExternalCodexThreads.delete(threadId);
+            }
+          }
+        } else {
+          // The daemon app-server is the live authority. JSONL discovery and
+          // tail monitors would duplicate that stream, spend O(rollout) I/O,
+          // and can resurrect stale Desktop evidence after a newer daemon
+          // status. Keep the legacy path completely dormant in this mode.
+          this.clearExternalCodexMonitoring();
+          this.externalCodexDiscoveredRunning.clear();
+          this.pendingExternalCodexThreads.clear();
+          this.externalCodexDiscoveryCompletedAt = 0;
         }
         this.applyRuntimeOverlay();
         for (const key of this.liveContentRevisions.keys()) {
           if (!this.catalog.has(key)) {
             this.liveContentRevisions.delete(key);
             this.deleteExternalCodexLiveMessages(key);
+            this.deleteSharedObserverLiveMessages(key);
           }
         }
-        for (const key of this.resultLedger.keys()) {
-          if (!this.catalog.has(key)) this.resultLedger.delete(key);
-        }
         this.recomputeStates();
+        this.reconcileSharedContentObservers();
         this.catalogRefreshedAt = Date.now();
       } while (this.catalogDirty && !this.closed);
     })()
@@ -1766,6 +2911,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private async rewarmExternalCodexMonitoringIfNeeded(): Promise<void> {
     if (
       this.closed ||
+      !this.legacyCodexMonitoringEnabled ||
       !this.hasInteractiveClients() ||
       this.externalCodexMonitors.size > 0 ||
       this.externalCodexMonitorFlights.size > 0
@@ -1800,26 +2946,70 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private refreshStatuses(): Promise<void> {
     if (this.statusFlight) return this.statusFlight;
     const flight = (async () => {
-      const monitoredThreads = [...this.externalCodexMonitors.keys()];
-      for (
-        let offset = 0;
-        offset < monitoredThreads.length;
-        offset += PROVIDER_HISTORY_CONCURRENCY
-      ) {
-        await Promise.allSettled(
-          monitoredThreads
-            .slice(offset, offset + PROVIDER_HISTORY_CONCURRENCY)
-            .map((threadId) =>
-              this.ensureExternalCodexMonitor(threadId, true, false),
-            ),
+      // Freeze the authority inputs before awaiting app-server I/O. A shallow
+      // Map copy would still share CatalogRecord objects, so a live runtime
+      // event arriving during the read could mutate the supposed baseline and
+      // defeat the late-generation fence below.
+      const catalogAtReadStart = new Map(
+        [...this.catalog].map(([key, record]) => [
+          key,
+          {
+            entry: { ...record.entry },
+            status: { ...record.status },
+          },
+        ]),
+      );
+      const sharedControlGenerationAtReadStart = this.sharedControlGeneration;
+      const sharedControlSequenceAtReadStart = this.sharedControlLastSequence;
+      let statusReadFailed = false;
+      let statusReadError: unknown;
+      try {
+        const providerStatuses = await this.statusReader(catalogAtReadStart);
+        if (this.closed) return;
+        this.mergeProviderStatusSnapshot(
+          catalogAtReadStart,
+          providerStatuses,
+          sharedControlGenerationAtReadStart,
+          sharedControlSequenceAtReadStart,
+        );
+      } catch (error) {
+        statusReadFailed = true;
+        statusReadError = error;
+        if (this.closed) return;
+        this.markProviderStatusReadUnavailable(
+          catalogAtReadStart,
+          sharedControlGenerationAtReadStart,
+          sharedControlSequenceAtReadStart,
         );
       }
+
+      if (this.legacyCodexMonitoringEnabled) {
+        const monitoredThreads = [...this.externalCodexMonitors.keys()];
+        for (
+          let offset = 0;
+          offset < monitoredThreads.length;
+          offset += PROVIDER_HISTORY_CONCURRENCY
+        ) {
+          await Promise.allSettled(
+            monitoredThreads
+              .slice(offset, offset + PROVIDER_HISTORY_CONCURRENCY)
+              .map((threadId) =>
+                this.ensureExternalCodexMonitor(threadId, true, false),
+              ),
+          );
+        }
+      }
       if (this.closed) return;
+      // Runtime evidence is intentionally applied after the provider read.
+      // This keeps a Bridge-owned live turn authoritative without allowing a
+      // late watchdog result to overwrite it.
       this.applyRuntimeOverlay();
       this.recomputeStates();
+      this.reconcileSharedContentObservers();
       for (const [client, subscription] of this.subscriptions) {
         if (subscription.interactive) this.scheduleSync(client, subscription);
       }
+      if (statusReadFailed) throw statusReadError;
     })().finally(() => {
       if (this.statusFlight === flight) this.statusFlight = undefined;
     });
@@ -1827,13 +3017,126 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     return flight;
   }
 
+  private mergeProviderStatusSnapshot(
+    catalogAtReadStart: ReadonlyMap<ConversationKey, CatalogRecord>,
+    providerStatuses: ReadonlyMap<ConversationKey, ConversationSyncStatus>,
+    sharedControlGenerationAtReadStart: number,
+    sharedControlSequenceAtReadStart: number,
+  ): void {
+    const completedAt = new Date().toISOString();
+    const sharedAuthorityStillCurrent = this.sharedControlReadStillCurrent(
+      sharedControlGenerationAtReadStart,
+      sharedControlSequenceAtReadStart,
+    );
+    for (const [key, startedRecord] of catalogAtReadStart) {
+      if (startedRecord.entry.provider !== "codex") continue;
+      const record = this.catalog.get(key);
+      if (!record) continue;
+      const candidate = providerStatuses.get(key);
+      if (!candidate) {
+        if (
+          statusChangedSinceReadStarted(startedRecord.status, record.status)
+        ) {
+          continue;
+        }
+        const unavailable = unavailableProviderStatus(
+          record.status,
+          completedAt,
+        );
+        record.status = unavailable;
+        if (sharedAuthorityStillCurrent) {
+          this.rememberSharedRuntimeStatus(key, unavailable);
+        }
+        continue;
+      }
+      if (targetKey(candidate) !== key) continue;
+      let normalized = validIso(candidate.observedAt)
+        ? candidate
+        : { ...candidate, observedAt: completedAt };
+      if (sharedAuthorityStillCurrent) {
+        normalized = sharedControlProviderSnapshotStatus(
+          normalized,
+          sharedControlAuthorityGeneration(this.sharedControlGeneration),
+        );
+        if (
+          normalized.activity === "working" ||
+          normalized.activity === "compacting"
+        ) {
+          normalized = {
+            ...normalized,
+            executionHost: this.hasActiveBridgeOwnedCodexRuntime(
+              normalized.providerSessionId,
+              normalized.activeTurnId,
+            )
+              ? "bridge"
+              : "desktopAppServer",
+          };
+        }
+      }
+      if (
+        !providerStatusReadMayReplace(
+          startedRecord.status,
+          record.status,
+          normalized,
+        )
+      ) {
+        continue;
+      }
+      record.status = preserveObservedAt(record.status, normalized);
+      if (sharedAuthorityStillCurrent) {
+        this.rememberSharedRuntimeStatus(key, normalized);
+      }
+    }
+  }
+
+  private markProviderStatusReadUnavailable(
+    catalogAtReadStart: ReadonlyMap<ConversationKey, CatalogRecord>,
+    sharedControlGenerationAtReadStart: number,
+    sharedControlSequenceAtReadStart: number,
+  ): void {
+    const observedAt = new Date().toISOString();
+    const sharedAuthorityStillCurrent = this.sharedControlReadStillCurrent(
+      sharedControlGenerationAtReadStart,
+      sharedControlSequenceAtReadStart,
+    );
+    for (const [key, startedRecord] of catalogAtReadStart) {
+      if (startedRecord.entry.provider !== "codex") continue;
+      const record = this.catalog.get(key);
+      if (
+        !record ||
+        statusChangedSinceReadStarted(startedRecord.status, record.status)
+      ) {
+        continue;
+      }
+      const unavailable = unavailableProviderStatus(record.status, observedAt);
+      record.status = unavailable;
+      if (sharedAuthorityStillCurrent) {
+        this.rememberSharedRuntimeStatus(key, unavailable);
+      }
+    }
+  }
+
+  private sharedControlReadStillCurrent(
+    generation: number,
+    sequence: number,
+  ): boolean {
+    return (
+      this.runtime.subscribeSharedRuntimeControl !== undefined &&
+      this.sharedControlReady &&
+      this.sharedControlGeneration === generation &&
+      this.sharedControlLastSequence === sequence
+    );
+  }
+
   private async readRecentConversationHistory(
     target: ConversationSyncTarget,
     request?: ConversationHistoryReadRequest,
   ): Promise<ConversationHistoryWindow> {
+    if (target.provider === "claude") {
+      return readRecentClaudeConversationHistory(target, request);
+    }
     if (target.provider !== "codex") {
-      if (request) throw boundedLegacyPageUnavailable(target.provider);
-      return readLegacyInitialHistoryWindow(target);
+      throw boundedLegacyPageUnavailable(target.provider);
     }
     if (request) throw boundedLegacyPageUnavailable(target.provider);
     try {
@@ -1848,6 +3151,302 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       if (!isUnsupportedAppServerRead(error)) throw error;
       throw boundedLegacyPageUnavailable(target.provider);
     }
+  }
+
+  private async readLatestCodexConversationHistory(
+    target: ConversationSyncTarget,
+  ): Promise<ConversationHistoryWindow> {
+    if (target.provider !== "codex") {
+      throw boundedLegacyPageUnavailable(target.provider);
+    }
+    return this.withSharedCodexReadProcess((process) =>
+      readLatestCodexTurnHistory(process, target),
+    );
+  }
+
+  private async readSharedControlRecoverySnapshot(
+    target: ConversationSyncTarget,
+    signal: AbortSignal,
+  ): Promise<SharedControlRecoverySnapshot | null> {
+    if (target.provider !== "codex") return null;
+    return this.withSharedCodexReadProcess(async (process) => {
+      const page = await process.listThreadTurns(
+        {
+          threadId: target.providerSessionId,
+          limit: 1,
+          sortDirection: "desc",
+          itemsView: "summary",
+        },
+        {
+          signal,
+          timeoutMs: this.sharedControlRecoveryTimeoutMs,
+        },
+      );
+      const raw = page.data[0];
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+      const turn = raw as Record<string, unknown>;
+      return {
+        ...(typeof turn.id === "string" && turn.id.trim()
+          ? { turnId: turn.id.trim() }
+          : {}),
+        status: sharedRecoveryTurnStatus(turn.status),
+        ...(providerTimestampToIso(turn.completedAt ?? turn.updatedAt)
+          ? {
+              observedAt: providerTimestampToIso(
+                turn.completedAt ?? turn.updatedAt,
+              ),
+            }
+          : {}),
+      };
+    });
+  }
+
+  private async reconcileSharedControlRecoveryTargets(
+    connectionGeneration: number,
+  ): Promise<void> {
+    const current = this.sharedControlRecoveryFlight;
+    if (current?.connectionGeneration === connectionGeneration) {
+      return current.promise;
+    }
+    if (current) this.cancelSharedControlRecovery();
+
+    const abortController = new AbortController();
+    this.sharedControlRecoveryAbort = abortController;
+    const entries = [...this.sharedControlRecoveryTargets.entries()].slice(
+      0,
+      MAX_SHARED_CONTROL_RECOVERY_THREADS,
+    );
+    let nextEntry = 0;
+    const runWorker = async (): Promise<void> => {
+      while (nextEntry < entries.length) {
+        if (!this.isSharedControlRecoveryCurrent(connectionGeneration)) return;
+        const entry = entries[nextEntry++];
+        if (!entry) return;
+        await this.reconcileSharedControlRecoveryTarget(
+          entry,
+          connectionGeneration,
+          abortController.signal,
+        );
+      }
+    };
+    const promise = Promise.all(
+      Array.from(
+        {
+          length: Math.min(
+            this.maxConcurrentSharedControlRecoveries,
+            entries.length,
+          ),
+        },
+        () => runWorker(),
+      ),
+    )
+      .then(() => undefined)
+      .finally(() => {
+        if (this.sharedControlRecoveryFlight?.promise === promise) {
+          this.sharedControlRecoveryFlight = undefined;
+        }
+        if (this.sharedControlRecoveryAbort === abortController) {
+          this.sharedControlRecoveryAbort = undefined;
+        }
+        if (!this.hasInteractiveClients()) {
+          this.requestSharedCodexReadProcessClose();
+        }
+      });
+    this.sharedControlRecoveryFlight = {
+      connectionGeneration,
+      promise,
+    };
+    return promise;
+  }
+
+  private async reconcileSharedControlRecoveryTarget(
+    [key, recovery]: readonly [ConversationKey, SharedControlRecoveryTarget],
+    connectionGeneration: number,
+    generationSignal: AbortSignal,
+  ): Promise<void> {
+    try {
+      const snapshot = await this.readSharedControlRecoveryWithTimeout(
+        recovery.target,
+        generationSignal,
+      );
+      if (
+        !snapshot ||
+        !this.isSharedControlRecoveryTargetCurrent(
+          key,
+          recovery,
+          connectionGeneration,
+        )
+      ) {
+        return;
+      }
+      const observedAt =
+        snapshot.observedAt && validIso(snapshot.observedAt)
+          ? snapshot.observedAt
+          : new Date().toISOString();
+      const current =
+        this.sharedRuntimeStatuses.get(key) ??
+        this.catalog.get(key)?.status ??
+        recovery.lastKnown;
+      const status = snapshot.status ?? "unknown";
+      const terminalResult =
+        status === "completed"
+          ? "completed"
+          : status === "failed"
+            ? "failed"
+            : undefined;
+      const next: ConversationSyncStatus = {
+        ...current,
+        activity:
+          status === "inProgress"
+            ? "working"
+            : status === "failed"
+              ? "systemError"
+              : status === "completed" || status === "interrupted"
+                ? "idle"
+                : recovery.lastKnown.activity,
+        attention: status === "inProgress" ? current.attention : "none",
+        result:
+          status === "inProgress" ? "none" : (terminalResult ?? current.result),
+        runtimeAttachment: "loaded",
+        source: "appServer",
+        confidence: status === "unknown" ? "unknown" : "authoritative",
+        observedAt,
+        executionHost: current.executionHost ?? "unknown",
+        controlState: "readOnly",
+        authorityGeneration:
+          sharedControlAuthorityGeneration(connectionGeneration),
+        ...(status === "inProgress" && snapshot.turnId
+          ? { activeTurnId: snapshot.turnId }
+          : {}),
+      };
+      if (status !== "inProgress") {
+        delete next.activeTurnId;
+        delete next.attentionRequestId;
+      }
+      if (status === "inProgress") {
+        // A newly authoritative active turn supersedes any terminal result
+        // restored for an older turn. Clear the durable slot before publishing
+        // so a reconnect cannot briefly resurrect a false completion/unread.
+        this.clearTerminalResult(recovery.target, observedAt, snapshot.turnId);
+      }
+      this.rememberSharedRuntimeStatus(key, next);
+      if (terminalResult) {
+        this.setTerminalResult(
+          recovery.target,
+          terminalResult,
+          observedAt,
+          snapshot.turnId,
+        );
+      }
+      if (
+        terminalResult ||
+        (snapshot.turnId && snapshot.turnId !== recovery.lastKnown.activeTurnId)
+      ) {
+        this.rememberLiveContent(recovery.target, observedAt);
+      }
+      this.sharedControlRecoveryTargets.delete(key);
+      this.publishSharedControlChanges(new Set([key]));
+      this.reconcileSharedContentObservers();
+    } catch (error) {
+      if (
+        generationSignal.aborted ||
+        !this.isSharedControlRecoveryTargetCurrent(
+          key,
+          recovery,
+          connectionGeneration,
+        )
+      ) {
+        return;
+      }
+      // One bounded thread read may fail independently. Keep its last-known
+      // business state stale and fail mutations closed instead of clearing it
+      // or expanding the repair into a full catalog/history scan.
+      const stale = sharedControlTransitionStatus(
+        recovery.lastKnown,
+        "unavailable",
+        connectionGeneration,
+      );
+      this.rememberSharedRuntimeStatus(key, stale);
+      this.publishSharedControlChanges(new Set([key]));
+      this.reconcileSharedContentObservers();
+      this.reportBackgroundError("control_scoped_recovery_failed", error);
+    }
+  }
+
+  private readSharedControlRecoveryWithTimeout(
+    target: ConversationSyncTarget,
+    generationSignal: AbortSignal,
+  ): Promise<SharedControlRecoverySnapshot | null> {
+    const controller = new AbortController();
+    const abortFromGeneration = () =>
+      controller.abort(
+        generationSignal.reason ??
+          new Error("Shared control recovery generation changed"),
+      );
+    if (generationSignal.aborted) abortFromGeneration();
+    else {
+      generationSignal.addEventListener("abort", abortFromGeneration, {
+        once: true,
+      });
+    }
+    const timeout = setTimeout(() => {
+      controller.abort(
+        new Error(
+          `Shared control recovery timed out after ${this.sharedControlRecoveryTimeoutMs}ms`,
+        ),
+      );
+    }, this.sharedControlRecoveryTimeoutMs);
+    timeout.unref?.();
+    const aborted = new Promise<never>((_, reject) => {
+      const rejectAbort = () =>
+        reject(
+          controller.signal.reason instanceof Error
+            ? controller.signal.reason
+            : new Error("Shared control recovery aborted"),
+        );
+      if (controller.signal.aborted) rejectAbort();
+      else {
+        controller.signal.addEventListener("abort", rejectAbort, {
+          once: true,
+        });
+      }
+    });
+    return Promise.race([
+      this.sharedControlRecoveryReader(target, controller.signal),
+      aborted,
+    ]).finally(() => {
+      clearTimeout(timeout);
+      generationSignal.removeEventListener("abort", abortFromGeneration);
+    });
+  }
+
+  private isSharedControlRecoveryCurrent(
+    connectionGeneration: number,
+  ): boolean {
+    return (
+      !this.closed &&
+      this.sharedControlReady &&
+      this.sharedControlGeneration === connectionGeneration &&
+      this.sharedControlRecoveryAbort?.signal.aborted !== true
+    );
+  }
+
+  private isSharedControlRecoveryTargetCurrent(
+    key: ConversationKey,
+    recovery: SharedControlRecoveryTarget,
+    connectionGeneration: number,
+  ): boolean {
+    return (
+      this.isSharedControlRecoveryCurrent(connectionGeneration) &&
+      this.sharedControlRecoveryTargets.get(key) === recovery
+    );
+  }
+
+  private cancelSharedControlRecovery(): void {
+    this.sharedControlRecoveryAbort?.abort(
+      new Error("Shared control recovery generation changed"),
+    );
+    this.sharedControlRecoveryAbort = undefined;
   }
 
   private async withSharedCodexReadProcess<T>(
@@ -1943,6 +3542,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     threadIds: readonly string[],
     generation: number,
   ): Promise<{ completed: boolean; running: string[] }> {
+    if (!this.legacyCodexMonitoringEnabled) {
+      return { completed: true, running: [] };
+    }
     let failures = 0;
     for (
       let offset = 0;
@@ -2014,6 +3616,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private async ensureExternalCodexMonitors(
     threadIds: readonly string[],
   ): Promise<void> {
+    if (!this.legacyCodexMonitoringEnabled) return;
     const unique = [...new Set(threadIds.filter(Boolean))];
     for (
       let offset = 0;
@@ -2036,9 +3639,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     publish = true,
   ): Promise<ExternalCodexObservation | null> {
     if (
+      !this.legacyCodexMonitoringEnabled ||
       this.closed ||
       !this.hasInteractiveClients() ||
-      this.hasActiveLocalCodexRuntime(threadId)
+      this.hasActiveBridgeOwnedCodexRuntime(threadId)
     ) {
       this.dropExternalCodexMonitor(threadId);
       return Promise.resolve(null);
@@ -2117,7 +3721,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       if (
         this.closed ||
         !this.hasInteractiveClients() ||
-        this.hasActiveLocalCodexRuntime(threadId) ||
+        this.hasActiveBridgeOwnedCodexRuntime(threadId) ||
         this.externalCodexMonitorGenerations.get(threadId) !== generation
       ) {
         observation.close();
@@ -2193,12 +3797,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       const key = targetKey(target);
       let contentChanged = false;
       if (event.state === "running") {
-        this.resultLedger.delete(key);
+        this.clearTerminalResult(target, observedAt, event.turnId);
       } else if (event.outcome) {
-        this.resultLedger.set(key, {
-          result: event.outcome === "completed" ? "completed" : "failed",
+        this.setTerminalResult(
+          target,
+          event.outcome === "completed" ? "completed" : "failed",
           observedAt,
-        });
+          event.turnId,
+        );
         this.rememberLiveContent(target, observedAt);
         contentChanged = true;
       }
@@ -2213,21 +3819,12 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
 
     this.rememberExternalCodexMessage(target, event, observedAt);
     if (event.message.type === "result") {
-      this.resultLedger.set(targetKey(target), {
-        result:
-          Boolean(event.message.error) ||
-          /error|fail/i.test(event.message.subtype) ||
-          /error|fail/i.test(event.message.stopReason ?? "")
-            ? "failed"
-            : "completed",
-        observedAt,
-      });
-    } else if (
-      event.message.type === "assistant" ||
-      event.message.type === "tool_result" ||
-      event.message.type === "user_input"
-    ) {
-      this.resultLedger.delete(targetKey(target));
+      const terminal = terminalResultFromServerMessage(event.message);
+      if (terminal) {
+        this.setTerminalResult(target, terminal, observedAt, event.turnId);
+      }
+    } else if (event.message.type === "user_input") {
+      this.clearTerminalResult(target, observedAt, event.turnId);
     }
     if (isStreamingConversationDelta(event.message)) {
       this.queueLiveContent(target, observedAt);
@@ -2338,7 +3935,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     let totalBytes = this.externalCodexLiveBytes.get(key) ?? 0;
     const previous = messages.get(event.itemKey);
     if (previous) totalBytes = Math.max(0, totalBytes - previous.bytes);
-    messages.delete(event.itemKey);
+    // Map#set replaces an existing value without changing insertion order.
+    // Deleting first moved a streamed item to the end on every delta and made
+    // the Mobile timeline jump even though the provider item identity did not
+    // change.
     messages.set(event.itemKey, {
       message,
       observedAt,
@@ -2363,14 +3963,32 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.externalCodexLiveBytes.set(key, totalBytes);
   }
 
-  private hasActiveLocalCodexRuntime(threadId: string): boolean {
+  private hasActiveBridgeOwnedCodexRuntime(
+    threadId: string,
+    expectedTurnId?: string,
+  ): boolean {
     return (this.runtime.listRuntimeConversationStates?.() ?? []).some(
       (state) =>
         state.provider === "codex" &&
         state.providerSessionId === threadId &&
+        (!expectedTurnId || state.activeTurnId === expectedTurnId) &&
+        this.runtimeStateClaimsBridgeOwnership(state) &&
         (state.processStatus !== "idle" ||
           state.pendingAttention !== undefined),
     );
+  }
+
+  private runtimeStateClaimsBridgeOwnership(
+    state: LocalFeatureRuntimeConversationState,
+  ): boolean {
+    if (state.executionHost !== undefined) {
+      return state.executionHost === "bridge";
+    }
+    // Private mode predates the explicit authority fields and its runtime
+    // states are still local by construction. The daemon shares app-server
+    // state with Desktop, so absence there must remain unknown rather than be
+    // silently promoted to Bridge ownership.
+    return this.legacyCodexMonitoringEnabled;
   }
 
   private ensureExternalCodexMonitorCapacity(): boolean {
@@ -2431,11 +4049,18 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   }
 
   private applyRuntimeOverlay(onlyKeys?: ReadonlySet<ConversationKey>): void {
+    this.applyCodexActionBrokerOverlay(onlyKeys);
     for (const [key, status] of this.externalCodexStatuses) {
       if (onlyKeys && !onlyKeys.has(key)) continue;
       const record = this.catalog.get(key);
       if (!record) continue;
       if (!externalStatusMayOverride(record.status, status)) continue;
+      record.status = preserveObservedAt(record.status, status);
+    }
+    for (const [key, status] of this.sharedRuntimeStatuses) {
+      if (onlyKeys && !onlyKeys.has(key)) continue;
+      const record = this.catalog.get(key);
+      if (!record) continue;
       record.status = preserveObservedAt(record.status, status);
     }
     const runtimeStates = this.runtime.listRuntimeConversationStates?.() ?? [];
@@ -2444,11 +4069,23 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       if (!target) continue;
       const key = targetKey(target);
       if (onlyKeys && !onlyKeys.has(key)) continue;
-      const activeLocalCodexRuntime =
+      if (
         target.provider === "codex" &&
+        this.daemonMode &&
+        !hasExplicitRuntimeAuthority(runtimeState)
+      ) {
+        // A daemon-backed adoption can describe a Desktop turn. Without an
+        // explicit execution host/control generation this is not evidence
+        // that Bridge owns or can steer the turn, so retain the app-server
+        // status instead of manufacturing Bridge authority.
+        continue;
+      }
+      const activeBridgeOwnedCodexRuntime =
+        target.provider === "codex" &&
+        this.runtimeStateClaimsBridgeOwnership(runtimeState) &&
         (runtimeState.processStatus !== "idle" ||
           runtimeState.pendingAttention !== undefined);
-      if (activeLocalCodexRuntime) {
+      if (activeBridgeOwnedCodexRuntime) {
         this.dropExternalCodexMonitor(target.providerSessionId);
       }
       let record = this.catalog.get(key);
@@ -2472,7 +4109,17 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       }
       const runtimeStatus = statusFromRuntime(runtimeState, record.status);
       if (
-        !activeLocalCodexRuntime &&
+        activeBridgeOwnedCodexRuntime &&
+        runtimeStatus.activity === "working"
+      ) {
+        this.clearTerminalResult(
+          target,
+          runtimeStatus.observedAt,
+          runtimeStatus.activeTurnId,
+        );
+      }
+      if (
+        !activeBridgeOwnedCodexRuntime &&
         trustedProviderActivitySurvivesPassiveRuntime(
           record.status,
           runtimeStatus,
@@ -2482,7 +4129,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         // app-server or Desktop-owned turn stopped. Preserve the stronger
         // provider observation until that provider emits its own terminal
         // state. Structurally active Bridge runtimes still take precedence
-        // through activeLocalCodexRuntime above.
+        // through activeBridgeOwnedCodexRuntime above.
         continue;
       }
       record.status = runtimeStatus;
@@ -2491,13 +4138,25 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       if (onlyKeys && !onlyKeys.has(key)) continue;
       const record = this.catalog.get(key);
       if (!record) continue;
+      if (
+        record.status.activity === "working" ||
+        record.status.activity === "compacting" ||
+        (record.status.activeTurnId !== undefined &&
+          result.turnId !== undefined &&
+          record.status.activeTurnId !== result.turnId)
+      ) {
+        // A terminal result belongs to a particular completed turn. It must
+        // never overlay a newer authoritative active turn, even when the
+        // result was restored from disk before runtime recovery completed.
+        continue;
+      }
       record.status = {
         ...record.status,
         result: result.result,
-        observedAt:
-          result.observedAt > record.status.observedAt
-            ? result.observedAt
-            : record.status.observedAt,
+        // Result time is the provider terminal event time, not the later
+        // catalog/restart observation time. Turn identity above prevents an
+        // older terminal result from overlaying a newer active turn.
+        observedAt: result.observedAt,
       };
     }
   }
@@ -2513,6 +4172,16 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       ]);
       this.catalogProjection = catalog;
       this.statusProjection = statuses;
+      const nextBackgroundActiveKeys = new Set(
+        [...statuses]
+          .filter(([, status]) => statusNeedsBackgroundDelivery(status))
+          .map(([key]) => key),
+      );
+      const backgroundActivityChanged = !sameStringSet(
+        this.backgroundActiveKeys,
+        nextBackgroundActiveKeys,
+      );
+      this.backgroundActiveKeys = nextBackgroundActiveKeys;
       if (
         catalogState !== this.catalogState ||
         !this.catalogHistory.has(catalogState)
@@ -2527,6 +4196,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         this.statusState = statusState;
         rememberState(this.statusHistory, this.statusState, statuses);
       }
+      if (backgroundActivityChanged) {
+        this.runtime.notifyBackgroundActivityChanged?.();
+      }
       return;
     }
 
@@ -2536,6 +4208,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const statusChanges: Array<
       readonly [ConversationKey, ConversationSyncStatus | null]
     > = [];
+    let backgroundActivityChanged = false;
     for (const key of new Set(keys)) {
       const record = this.catalog.get(key);
       const nextCatalog = record?.entry;
@@ -2555,6 +4228,17 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
 
       const nextStatus = record?.status;
       const previousStatus = this.statusProjection.get(key);
+      const wasBackgroundActive = this.backgroundActiveKeys.has(key);
+      const isBackgroundActive =
+        nextStatus !== undefined && statusNeedsBackgroundDelivery(nextStatus);
+      if (wasBackgroundActive !== isBackgroundActive) {
+        backgroundActivityChanged = true;
+        if (isBackgroundActive) {
+          this.backgroundActiveKeys.add(key);
+        } else {
+          this.backgroundActiveKeys.delete(key);
+        }
+      }
       if (
         (nextStatus === undefined) !== (previousStatus === undefined) ||
         (nextStatus !== undefined &&
@@ -2592,6 +4276,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         this.statusState,
         this.statusProjection,
       );
+    }
+    if (backgroundActivityChanged) {
+      this.runtime.notifyBackgroundActivityChanged?.();
     }
   }
 
@@ -2666,7 +4353,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
 
   private ensureTimers(): void {
     if (this.closed || !this.hasInteractiveClients()) return;
-    if (!this.watchdogTimer) {
+    if (!this.usesSharedControlStatusStream() && !this.watchdogTimer) {
       this.watchdogTimer = setTimeout(() => {
         this.watchdogTimer = undefined;
         void this.refreshStatuses()
@@ -2681,11 +4368,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       const jitter = Math.floor(this.coldReconcileMs * Math.random() * 0.1);
       this.coldTimer = setTimeout(() => {
         this.coldTimer = undefined;
-        this.catalogDirty = true;
-        void this.refreshCatalog()
-          .then(() => this.scheduleInteractiveClients({ full: true }))
+        void this.runColdReconcile()
           .catch((error) => {
-            this.reportBackgroundError("catalog_refresh_failed", error);
+            this.reportBackgroundError("cold_reconcile_failed", error);
           })
           .finally(() => this.ensureTimers());
       }, this.coldReconcileMs + jitter);
@@ -2693,10 +4378,31 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
   }
 
+  private usesSharedControlStatusStream(): boolean {
+    return (
+      this.daemonMode &&
+      this.runtime.subscribeSharedRuntimeControl !== undefined
+    );
+  }
+
+  private async runColdReconcile(): Promise<void> {
+    this.catalogDirty = true;
+    await this.refreshCatalog();
+    // A cold pass is the bounded repair path for a control event lost before
+    // Bridge observed it. Unlike the five-second private watchdog, this full
+    // status snapshot runs only on the long cold cadence (and only while the
+    // shared control generation is ready).
+    if (this.usesSharedControlStatusStream() && this.sharedControlReady) {
+      await this.refreshStatuses();
+    }
+    this.scheduleInteractiveClients({ full: true });
+  }
+
   private cancelTimers(): void {
     if (this.watchdogTimer) clearTimeout(this.watchdogTimer);
     if (this.coldTimer) clearTimeout(this.coldTimer);
     if (this.liveContentTimer) clearTimeout(this.liveContentTimer);
+    this.clearSharedControlReconcileTimer();
     this.watchdogTimer = undefined;
     this.coldTimer = undefined;
     this.liveContentTimer = undefined;
@@ -2706,8 +4412,17 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private queueLiveContent(
     target: ConversationSyncTarget,
     observedAt: string,
+    readScope: LiveContentRevision["readScope"] = "recent",
   ): void {
-    this.pendingLiveContent.set(targetKey(target), { target, observedAt });
+    const key = targetKey(target);
+    const pending = this.pendingLiveContent.get(key);
+    this.pendingLiveContent.set(key, {
+      target,
+      observedAt: pending
+        ? laterIso(pending.observedAt, observedAt)
+        : observedAt,
+      readScope: mergeLiveReadScope(pending?.readScope, readScope),
+    });
     if (this.closed) return;
     const now = Date.now();
     this.liveContentBatchStartedAt ??= now;
@@ -2728,15 +4443,22 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     target: ConversationSyncTarget,
     observedAt: string,
     catalogObservedAt?: string,
+    readScope: LiveContentRevision["readScope"] = "recent",
   ): void {
     const key = targetKey(target);
+    const pending = this.pendingLiveContent.get(key);
     this.pendingLiveContent.delete(key);
     if (this.pendingLiveContent.size === 0) {
       if (this.liveContentTimer) clearTimeout(this.liveContentTimer);
       this.liveContentTimer = undefined;
       this.liveContentBatchStartedAt = undefined;
     }
-    this.rememberLiveContent(target, observedAt, catalogObservedAt);
+    this.rememberLiveContent(
+      target,
+      pending ? laterIso(pending.observedAt, observedAt) : observedAt,
+      catalogObservedAt,
+      mergeLiveReadScope(pending?.readScope, readScope),
+    );
     const changedKeys = new Set([key]);
     this.applyRuntimeOverlay(changedKeys);
     this.recomputeStates(changedKeys);
@@ -2749,8 +4471,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.pendingLiveContent.clear();
     this.liveContentBatchStartedAt = undefined;
     const changedKeys = new Set<ConversationKey>();
-    for (const { target, observedAt } of pending) {
-      this.rememberLiveContent(target, observedAt);
+    for (const { target, observedAt, readScope } of pending) {
+      this.rememberLiveContent(target, observedAt, undefined, readScope);
       changedKeys.add(targetKey(target));
     }
     this.applyRuntimeOverlay(changedKeys);
@@ -2762,6 +4484,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     target: ConversationSyncTarget,
     observedAt: string,
     catalogObservedAt?: string,
+    readScope: LiveContentRevision["readScope"] = "recent",
   ): void {
     const key = targetKey(target);
     const previous = this.liveContentRevisions.get(key);
@@ -2787,6 +4510,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         target,
         `${observedAt}:${++this.liveRevision}`,
       ),
+      readScope: mergeLiveReadScope(previous?.readScope, readScope),
     });
   }
 
@@ -3033,6 +4757,42 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     return sequence;
   }
 
+  private async waitForOutboundCapacity(
+    client: object,
+    subscription: SyncSubscription,
+    payload: ConversationSyncEventPayload,
+  ): Promise<boolean> {
+    const bytes = this.eventPayloadBytes(subscription, payload);
+    if (bytes > MAX_FRAME_BYTES) {
+      throw new Error(
+        `conversation_sync_v2 frame exceeds ${MAX_FRAME_BYTES} bytes`,
+      );
+    }
+    while (
+      subscription.queuedBytes + subscription.outstandingBytes + bytes >
+      SYNC_BACKPRESSURE_BYTES
+    ) {
+      if (
+        this.closed ||
+        this.subscriptions.get(client) !== subscription ||
+        !subscription.interactive ||
+        !this.clientReady(client)
+      ) {
+        return false;
+      }
+      await new Promise<void>((resolve) => {
+        subscription.capacityWaiters.add(resolve);
+      });
+    }
+    return true;
+  }
+
+  private wakeCapacityWaiters(subscription: SyncSubscription): void {
+    const waiters = [...subscription.capacityWaiters];
+    subscription.capacityWaiters.clear();
+    for (const resolve of waiters) resolve();
+  }
+
   private eventPayloadFits(
     subscription: SyncSubscription,
     payload: ConversationSyncEventPayload,
@@ -3112,6 +4872,15 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private hasInteractiveClients(): boolean {
     return [...this.subscriptions.values()].some(
       (subscription) => subscription.interactive,
+    );
+  }
+
+  private hasSharedObserverDemand(): boolean {
+    return (
+      [...this.subscriptions.values()].some(
+        (subscription) =>
+          subscription.interactive || subscription.notificationOnly,
+      ) || this.runtime.hasExternalCodexNotificationDemand?.() === true
     );
   }
 }
@@ -3198,6 +4967,154 @@ function mergeExternalCodexMessages(
     if (identity) identities.add(identity);
   }
   return merged;
+}
+
+function mergeObservedMessagesReplacingStable(
+  history: readonly ServerMessage[],
+  observed: Iterable<ExternalCodexLiveMessage>,
+): ServerMessage[] {
+  const merged = [...history];
+  const canonicalUsers = merged
+    .map((message, index) => ({ message, index }))
+    .filter((entry) => entry.message.type === "user_input");
+  const matchedCanonicalUsers = new Set<number>();
+  const identities = new Map<string, number>();
+  merged.forEach((message, index) => {
+    const identity = observedMessageIdentity(message);
+    if (identity) identities.set(identity, index);
+  });
+  for (const entry of observed) {
+    if (entry.message.type === "user_input") {
+      const matchingCanonical = canonicalUsers.find(
+        (candidate) =>
+          !matchedCanonicalUsers.has(candidate.index) &&
+          equivalentObservedUserMessage(candidate.message, entry.message),
+      );
+      if (matchingCanonical) {
+        matchedCanonicalUsers.add(matchingCanonical.index);
+        continue;
+      }
+    }
+    const identity = observedMessageIdentity(entry.message);
+    if (!identity) {
+      merged.push(entry.message);
+      continue;
+    }
+    const existing = identities.get(identity);
+    if (existing === undefined) {
+      identities.set(identity, merged.length);
+      merged.push(entry.message);
+    } else {
+      // Stable app-server item ids are update identities. Preserve their
+      // timeline position while replacing a tool-start shell or partial final
+      // message with its newer observer projection.
+      merged[existing] = entry.message;
+    }
+  }
+  return merged;
+}
+
+function historyWindowFromSnapshot(
+  snapshot: ConversationContentSnapshot,
+): ConversationHistoryWindow {
+  return {
+    messages: snapshot.entries.map((entry) => entry.message),
+    nextTurnCursor: snapshot.turnsNextCursor ?? null,
+    latestTurnComplete: snapshot.latestTurnComplete,
+    ...(snapshot.latestTurnGap
+      ? { latestTurnGap: snapshot.latestTurnGap }
+      : {}),
+  };
+}
+
+function mergeSnapshotWithLatestTurn(
+  snapshot: ConversationContentSnapshot,
+  latest: ConversationHistoryWindow,
+): ConversationHistoryWindow {
+  const base = snapshot.entries.map((entry) => entry.message);
+  const messages = mergeObservedMessagesReplacingStable(
+    base,
+    latest.messages.map((message) => ({
+      message,
+      observedAt: "",
+      bytes: 0,
+    })),
+  );
+  return {
+    messages,
+    nextTurnCursor: snapshot.turnsNextCursor ?? latest.nextTurnCursor,
+    turnDetails: latest.turnDetails,
+    latestTurnComplete: latest.latestTurnComplete,
+    ...(latest.latestTurnGap ? { latestTurnGap: latest.latestTurnGap } : {}),
+  };
+}
+
+function annotateObservedTurn(
+  message: ServerMessage,
+  turnId: string | undefined,
+): ServerMessage {
+  if (!turnId) return message;
+  if (message.type === "assistant" || message.type === "tool_result") {
+    return { ...message, historyTurnId: turnId };
+  }
+  return message;
+}
+
+function sanitizeSharedObserverMessage(
+  runtime: LocalFeatureRuntime,
+  message: ServerMessage,
+): ServerMessage {
+  if (message.type !== "tool_result") return message;
+  const inlineImages: Array<{ data: string; mimeType: string }> = [];
+  for (const value of message.rawContentBlocks ?? []) {
+    if (
+      inlineImages.length >= MAX_SHARED_OBSERVER_INLINE_IMAGES ||
+      !value ||
+      typeof value !== "object" ||
+      Array.isArray(value)
+    ) {
+      continue;
+    }
+    const block = value as Record<string, unknown>;
+    const source =
+      block.source && typeof block.source === "object"
+        ? (block.source as Record<string, unknown>)
+        : undefined;
+    if (
+      block.type !== "image" ||
+      source?.type !== "base64" ||
+      typeof source.data !== "string" ||
+      typeof source.media_type !== "string" ||
+      !source.media_type.startsWith("image/") ||
+      Buffer.byteLength(source.data, "utf8") >
+        MAX_SHARED_OBSERVER_INLINE_IMAGE_BASE64_BYTES
+    ) {
+      continue;
+    }
+    inlineImages.push({ data: source.data, mimeType: source.media_type });
+  }
+  const registered = runtime.registerInlineImages?.(inlineImages) ?? [];
+  const { rawContentBlocks: _, artifactCandidates: __, ...safe } = message;
+  return {
+    ...safe,
+    ...((message.images?.length ?? 0) + registered.length > 0
+      ? {
+          images: [...(message.images ?? []), ...registered].slice(
+            0,
+            MAX_SHARED_OBSERVER_INLINE_IMAGES,
+          ),
+        }
+      : {}),
+  };
+}
+
+function mergeLiveReadScope(
+  first: LiveContentRevision["readScope"] | undefined,
+  second: LiveContentRevision["readScope"],
+): LiveContentRevision["readScope"] {
+  const rank = { direct: 0, latestTurn: 1, recent: 2 } as const;
+  if (!first) return second;
+  return rank[first] >= rank[second] ? first : second;
 }
 
 function canonicalHistoryCoversDurableExternalMessages(
@@ -3354,26 +5271,13 @@ async function readCodexCatalog(
 
 async function readCurrentStatuses(
   runtime: LocalFeatureRuntime,
-  current: ReadonlyMap<ConversationKey, CatalogRecord>,
+  _current: ReadonlyMap<ConversationKey, CatalogRecord>,
 ): Promise<Map<ConversationKey, ConversationSyncStatus>> {
   const statuses = new Map<ConversationKey, ConversationSyncStatus>();
-  try {
-    const codex = await readCodexCatalog(runtime, {
-      includeDurableMetadata: false,
-    });
-    for (const seed of codex) statuses.set(targetKey(seed.entry), seed.status);
-  } catch {
-    for (const [key, record] of current) {
-      if (record.entry.provider === "codex") {
-        statuses.set(key, {
-          ...record.status,
-          activity: "unknown",
-          confidence: "unknown",
-          source: "appServer",
-        });
-      }
-    }
-  }
+  const codex = await readCodexCatalog(runtime, {
+    includeDurableMetadata: false,
+  });
+  for (const seed of codex) statuses.set(targetKey(seed.entry), seed.status);
   return statuses;
 }
 
@@ -3443,27 +5347,53 @@ async function readRecentCodexConversationHistory(
   };
 }
 
-async function readLegacyInitialHistoryWindow(
+async function readLatestCodexTurnHistory(
+  process: CodexProcess,
   target: ConversationSyncTarget,
 ): Promise<ConversationHistoryWindow> {
-  const messages = await readDurableConversationHistory(target);
-  const turns = groupLegacyTurns(messages);
-  const rawPage = paginateArray(
-    turns,
-    undefined,
-    PRIORITY_RECENT_COUNT,
-    "desc",
-  );
-  const pageTurns = [...rawPage.data].reverse();
-  const fullStart = Math.max(0, pageTurns.length - FULL_RECENT_TURNS);
-  const normalizedMessages = pageTurns.flatMap((turn, index) => {
-    const annotated = annotateTurnMessages(turn.items, turn.id);
-    if (index < fullStart) {
-      return compactTurnMessages(annotated, turn.id);
-    }
-    return annotated;
+  const page = await process.listThreadTurns({
+    threadId: target.providerSessionId,
+    limit: 1,
+    sortDirection: "desc",
+    itemsView: "full",
   });
-  const turnDetails = pageTurns
+  const normalized = normalizeCodexTurns(
+    [...page.data].reverse(),
+    "full",
+    target.providerSessionId,
+  );
+  const latestTurn = normalized.turns.at(-1);
+  return {
+    messages: latestTurn?.messages ?? [],
+    nextTurnCursor: page.nextCursor,
+    turnDetails: normalized.turnDetails,
+    latestTurnComplete: latestTurn?.latestTurnComplete ?? true,
+    ...(latestTurn?.latestTurnGap
+      ? { latestTurnGap: latestTurn.latestTurnGap }
+      : {}),
+  };
+}
+
+async function readRecentClaudeConversationHistory(
+  target: ConversationSyncTarget,
+  request?: ConversationHistoryReadRequest,
+): Promise<ConversationHistoryWindow> {
+  const page = await readClaudeSessionHistoryWindow(target.providerSessionId, {
+    ...(request?.cursor ? { cursor: request.cursor } : {}),
+    maxUserTurns: request?.limit ?? PRIORITY_RECENT_COUNT,
+  });
+  const messages = sessionHistoryToServerMessages(page.messages, {
+    idPrefix: `claude-history-${target.providerSessionId}`,
+  });
+  const turns = groupLegacyTurns(messages);
+  const fullStart = Math.max(0, turns.length - FULL_RECENT_TURNS);
+  const normalizedMessages = turns.flatMap((turn, index) => {
+    const annotated = annotateTurnMessages(turn.items, turn.id);
+    return !request && index < fullStart
+      ? compactTurnMessages(annotated, turn.id)
+      : annotated;
+  });
+  const turnDetails = turns
     .map((turn) => ({
       turnId: turn.id,
       details: historyToolDetailPayloads(
@@ -3473,9 +5403,9 @@ async function readLegacyInitialHistoryWindow(
     .filter((turn) => turn.details.length > 0);
   return {
     messages: normalizedMessages,
-    nextTurnCursor: rawPage.nextCursor,
+    nextTurnCursor: page.nextCursor,
     turnDetails,
-    sourceCursor: null,
+    sourceCursor: request?.cursor ?? null,
   };
 }
 
@@ -3563,6 +5493,7 @@ async function readLegacyTurnsPage(
       cursor: cursor.sourceCursor,
       limit: message.limit ?? 5,
       sortDirection: message.sortDirection ?? "desc",
+      itemsView: message.itemsView ?? "summary",
     }),
   );
   assertLegacySourceCursorConsumed(history, cursor.sourceCursor);
@@ -4559,6 +6490,26 @@ function normalizeCatalogEntry(
     entry.serviceTier,
     MAX_CATALOG_SETTING_LENGTH,
   );
+  const approvalPolicy = validCatalogSetting(
+    entry.approvalPolicy,
+    MAX_CATALOG_SETTING_LENGTH,
+  );
+  const approvalsReviewer = validCatalogSetting(
+    entry.approvalsReviewer,
+    MAX_CATALOG_SETTING_LENGTH,
+  );
+  const sandboxMode = validCatalogSetting(
+    entry.sandboxMode,
+    MAX_CATALOG_SETTING_LENGTH,
+  );
+  const collaborationMode =
+    entry.collaborationMode === "plan" || entry.collaborationMode === "default"
+      ? entry.collaborationMode
+      : undefined;
+  const webSearchMode = validCatalogSetting(
+    entry.webSearchMode,
+    MAX_CATALOG_SETTING_LENGTH,
+  );
   return {
     provider: entry.provider,
     providerSessionId: entry.providerSessionId,
@@ -4571,6 +6522,19 @@ function normalizeCatalogEntry(
     ...(model ? { model } : {}),
     ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
     ...(serviceTier ? { serviceTier } : {}),
+    ...(approvalPolicy ? { approvalPolicy } : {}),
+    ...(approvalsReviewer ? { approvalsReviewer } : {}),
+    ...(sandboxMode ? { sandboxMode } : {}),
+    ...(collaborationMode ? { collaborationMode } : {}),
+    ...(entry.networkAccessEnabled !== undefined
+      ? { networkAccessEnabled: entry.networkAccessEnabled }
+      : {}),
+    ...(webSearchMode ? { webSearchMode } : {}),
+    ...(entry.codexSettingsSnapshotComplete !== undefined
+      ? {
+          codexSettingsSnapshotComplete: entry.codexSettingsSnapshotComplete,
+        }
+      : {}),
     createdAt: entry.createdAt,
     modifiedAt: entry.modifiedAt,
     recencyAt: entry.recencyAt,
@@ -4617,7 +6581,15 @@ function catalogSettings(
   settings: SessionIndexEntry["codexSettings"] | undefined,
 ): Pick<
   ConversationSyncCatalogEntry,
-  "model" | "modelReasoningEffort" | "serviceTier"
+  | "model"
+  | "modelReasoningEffort"
+  | "serviceTier"
+  | "approvalPolicy"
+  | "approvalsReviewer"
+  | "sandboxMode"
+  | "collaborationMode"
+  | "networkAccessEnabled"
+  | "webSearchMode"
 > {
   const model = validCatalogSetting(settings?.model, MAX_CATALOG_MODEL_LENGTH);
   const modelReasoningEffort = validCatalogSetting(
@@ -4628,10 +6600,39 @@ function catalogSettings(
     settings?.serviceTier,
     MAX_CATALOG_SETTING_LENGTH,
   );
+  const approvalPolicy = validCatalogSetting(
+    settings?.approvalPolicy,
+    MAX_CATALOG_SETTING_LENGTH,
+  );
+  const approvalsReviewer = validCatalogSetting(
+    settings?.approvalsReviewer,
+    MAX_CATALOG_SETTING_LENGTH,
+  );
+  const sandboxMode = validCatalogSetting(
+    settings?.sandboxMode,
+    MAX_CATALOG_SETTING_LENGTH,
+  );
+  const collaborationMode =
+    settings?.collaborationMode === "plan" ||
+    settings?.collaborationMode === "default"
+      ? settings.collaborationMode
+      : undefined;
+  const webSearchMode = validCatalogSetting(
+    settings?.webSearchMode,
+    MAX_CATALOG_SETTING_LENGTH,
+  );
   return {
     ...(model ? { model } : {}),
     ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
     ...(serviceTier ? { serviceTier } : {}),
+    ...(approvalPolicy ? { approvalPolicy } : {}),
+    ...(approvalsReviewer ? { approvalsReviewer } : {}),
+    ...(sandboxMode ? { sandboxMode } : {}),
+    ...(collaborationMode ? { collaborationMode } : {}),
+    ...(settings?.networkAccessEnabled !== undefined
+      ? { networkAccessEnabled: settings.networkAccessEnabled }
+      : {}),
+    ...(webSearchMode ? { webSearchMode } : {}),
   };
 }
 
@@ -4772,12 +6773,209 @@ function statusForClient(
   return { ...status, activity: "idle" };
 }
 
+function clientStatusState(
+  rawState: string,
+  supportsAppServerStatusSemantics: boolean,
+): string {
+  return `${supportsAppServerStatusSemantics ? APP_SERVER_STATUS_STATE_PREFIX : LEGACY_STATUS_STATE_PREFIX}${rawState}`;
+}
+
+function parseClientStatusState(
+  state: string,
+  supportsAppServerStatusSemantics: boolean,
+): { compatible: boolean; rawState: string } {
+  const expectedPrefix = supportsAppServerStatusSemantics
+    ? APP_SERVER_STATUS_STATE_PREFIX
+    : LEGACY_STATUS_STATE_PREFIX;
+  if (!state.startsWith(expectedPrefix)) {
+    return { compatible: false, rawState: "" };
+  }
+  const rawState = state.slice(expectedPrefix.length);
+  return { compatible: rawState.length > 0, rawState };
+}
+
+function sharedControlAuthorityGeneration(
+  connectionGeneration: number,
+): string {
+  return `daemon:${connectionGeneration}`;
+}
+
+function sharedControlProviderSnapshotStatus(
+  status: ConversationSyncStatus,
+  authorityGeneration: string,
+): ConversationSyncStatus {
+  const {
+    executionHost: _executionHost,
+    controlState: _controlState,
+    authorityGeneration: _authorityGeneration,
+    ...rest
+  } = status;
+  return {
+    ...rest,
+    executionHost: "unknown",
+    controlState: "readOnly",
+    authorityGeneration,
+  };
+}
+
+function sharedControlTransitionStatus(
+  previous: ConversationSyncStatus,
+  controlState: "reconciling" | "unavailable",
+  connectionGeneration: number,
+): ConversationSyncStatus {
+  const {
+    controlState: _controlState,
+    authorityGeneration: _authorityGeneration,
+    ...rest
+  } = previous;
+  return {
+    ...rest,
+    source: "appServer",
+    confidence: "unknown",
+    controlState,
+    ...(controlState === "reconciling"
+      ? {
+          authorityGeneration:
+            sharedControlAuthorityGeneration(connectionGeneration),
+        }
+      : {}),
+  };
+}
+
+function sharedControlStatusFromEvent(
+  event: SharedRuntimeControlEvent,
+  previous: ConversationSyncStatus,
+  authorityGeneration: string,
+  allowUncorrelatedResolution = false,
+): ConversationSyncStatus | null {
+  const target: ConversationSyncTarget = {
+    provider: "codex",
+    providerSessionId: event.threadId!,
+  };
+  const base = {
+    ...target,
+    runtimeAttachment: "loaded" as const,
+    source: "appServer" as const,
+    confidence: "authoritative" as const,
+    observedAt: event.observedAt,
+    executionHost: "unknown" as const,
+    controlState: "readOnly" as const,
+    authorityGeneration,
+  };
+  if (
+    event.method === "thread/started" ||
+    event.method === "thread/status/changed"
+  ) {
+    const status = event.threadStatus;
+    if (status?.type === "active") {
+      const approval =
+        status.activeFlags?.includes("waitingOnApproval") ?? false;
+      const question =
+        status.activeFlags?.includes("waitingOnUserInput") ?? false;
+      return {
+        ...base,
+        activity: "working",
+        attention: question ? "question" : approval ? "approval" : "none",
+        result: "none",
+        ...(previous.activeTurnId
+          ? { activeTurnId: previous.activeTurnId }
+          : {}),
+      };
+    }
+    if (status?.type === "idle") {
+      return {
+        ...base,
+        activity: "idle",
+        attention: "none",
+        result: previous.result,
+      };
+    }
+    if (status?.type === "systemError") {
+      return {
+        ...base,
+        activity: "systemError",
+        attention: "none",
+        result: previous.result,
+      };
+    }
+    if (status?.type === "notLoaded") {
+      return {
+        ...base,
+        activity: "unknown",
+        attention: "none",
+        result: previous.result,
+        runtimeAttachment: "notLoaded",
+        confidence: "unknown",
+      };
+    }
+    return {
+      ...base,
+      activity: "unknown",
+      attention: "none",
+      result: previous.result,
+      confidence: "unknown",
+    };
+  }
+  if (event.method === "turn/started") {
+    return {
+      ...base,
+      activity: "working",
+      attention: "none",
+      result: "none",
+      ...(event.turnId ? { activeTurnId: event.turnId } : {}),
+    };
+  }
+  if (event.method === "turn/completed") {
+    const failed = event.turnStatus === "failed";
+    const terminal =
+      event.turnStatus === "completed" ||
+      event.turnStatus === "interrupted" ||
+      failed;
+    return {
+      ...base,
+      activity: failed ? "systemError" : terminal ? "idle" : "unknown",
+      attention: "none",
+      result: failed
+        ? "failed"
+        : event.turnStatus === "completed"
+          ? "completed"
+          : previous.result,
+      ...(terminal ? {} : event.turnId ? { activeTurnId: event.turnId } : {}),
+      ...(terminal ? {} : { confidence: "unknown" as const }),
+    };
+  }
+  if (event.method === "serverRequest/resolved") {
+    const resolvedCurrentRequest =
+      event.requestId !== undefined &&
+      (previous.attentionRequestId !== undefined
+        ? previous.attentionRequestId === String(event.requestId)
+        : allowUncorrelatedResolution);
+    return {
+      ...base,
+      activity: previous.activity,
+      attention: resolvedCurrentRequest ? "none" : previous.attention,
+      result: previous.result,
+      runtimeAttachment: previous.runtimeAttachment,
+      confidence: previous.confidence,
+      ...(previous.activeTurnId ? { activeTurnId: previous.activeTurnId } : {}),
+      ...(!resolvedCurrentRequest && previous.attentionRequestId
+        ? { attentionRequestId: previous.attentionRequestId }
+        : {}),
+    };
+  }
+  return null;
+}
+
 function statusFromRuntime(
   state: LocalFeatureRuntimeConversationState,
   previous: ConversationSyncStatus,
 ): ConversationSyncStatus {
   const target = targetFromRuntime(state)!;
-  const activity =
+  const controlCannotProveRunning =
+    state.controlState === "reconciling" ||
+    state.controlState === "blocked" ||
+    state.controlState === "unavailable";
+  const reportedActivity =
     state.processStatus === "starting" ||
     state.processStatus === "running" ||
     state.processStatus === "waiting_approval"
@@ -4787,24 +6985,46 @@ function statusFromRuntime(
         : state.processStatus === "idle"
           ? "idle"
           : "unknown";
+  const activity = controlCannotProveRunning
+    ? previous.activity
+    : reportedActivity;
   return {
     ...target,
     activity,
-    attention: state.pendingAttention?.kind ?? "none",
+    attention:
+      state.pendingAttention?.kind ??
+      (controlCannotProveRunning ? previous.attention : "none"),
     result:
       activity === "working" || activity === "compacting"
         ? "none"
         : previous.result,
     runtimeAttachment: "loaded",
     source: "bridgeRuntime",
-    confidence: "authoritative",
+    confidence: controlCannotProveRunning ? "unknown" : "authoritative",
     observedAt: validIso(state.observedAt)
       ? state.observedAt
       : previous.observedAt,
     ...(state.pendingAttention
       ? { attentionRequestId: state.pendingAttention.requestId }
       : {}),
+    ...(state.executionHost ? { executionHost: state.executionHost } : {}),
+    ...(state.activeTurnId ? { activeTurnId: state.activeTurnId } : {}),
+    ...(state.controlState ? { controlState: state.controlState } : {}),
+    ...(state.authorityGeneration
+      ? { authorityGeneration: state.authorityGeneration }
+      : {}),
   };
+}
+
+function hasExplicitRuntimeAuthority(
+  state: LocalFeatureRuntimeConversationState,
+): boolean {
+  return (
+    state.executionHost !== undefined ||
+    state.activeTurnId !== undefined ||
+    state.controlState !== undefined ||
+    state.authorityGeneration !== undefined
+  );
 }
 
 function targetFromRuntime(
@@ -4849,6 +7069,130 @@ function preserveObservedAt(
   return stableJson(semanticPrevious) === stableJson(semanticNext)
     ? { ...next, observedAt: previous.observedAt }
     : next;
+}
+
+function semanticStatusEqual(
+  left: ConversationSyncStatus,
+  right: ConversationSyncStatus,
+): boolean {
+  return (
+    stableJson({ ...left, observedAt: "" }) ===
+    stableJson({ ...right, observedAt: "" })
+  );
+}
+
+function statusChangedSinceReadStarted(
+  started: ConversationSyncStatus,
+  current: ConversationSyncStatus,
+): boolean {
+  return !semanticStatusEqual(started, current);
+}
+
+function providerStatusReadMayReplace(
+  started: ConversationSyncStatus,
+  current: ConversationSyncStatus,
+  candidate: ConversationSyncStatus,
+): boolean {
+  if (!statusChangedSinceReadStarted(started, current)) return true;
+  if (semanticStatusEqual(current, candidate)) return true;
+  if (
+    current.authorityGeneration !== undefined &&
+    candidate.authorityGeneration !== current.authorityGeneration
+  ) {
+    return false;
+  }
+  return statusObservedAfter(candidate, current);
+}
+
+function unavailableProviderStatus(
+  previous: ConversationSyncStatus,
+  observedAt: string,
+): ConversationSyncStatus {
+  const {
+    controlState: _controlState,
+    authorityGeneration: _authorityGeneration,
+    ...rest
+  } = previous;
+  return {
+    ...rest,
+    runtimeAttachment: previous.runtimeAttachment,
+    source: "appServer",
+    confidence: "unknown",
+    observedAt: previous.observedAt || observedAt,
+    controlState: "unavailable",
+  };
+}
+
+function isSharedSpecialStatus(status: ConversationSyncStatus): boolean {
+  return (
+    status.activity === "working" ||
+    status.activity === "compacting" ||
+    status.activity === "systemError" ||
+    status.attention !== "none" ||
+    status.result !== "none"
+  );
+}
+
+function statusNeedsBackgroundDelivery(
+  status: ConversationSyncStatus,
+): boolean {
+  return (
+    status.activity === "working" ||
+    status.activity === "compacting" ||
+    status.attention !== "none"
+  );
+}
+
+function sameStringSet(
+  left: ReadonlySet<string>,
+  right: ReadonlySet<string>,
+): boolean {
+  if (left.size !== right.size) return false;
+  for (const value of left) {
+    if (!right.has(value)) return false;
+  }
+  return true;
+}
+
+function attentionFromCodexAction(
+  request: CodexActionBrokerRuntimeRequest,
+): ConversationSyncStatus["attention"] {
+  switch (request.kind) {
+    case "command_approval":
+    case "file_approval":
+      return "approval";
+    case "permissions_approval":
+      return "permission";
+    case "user_input":
+      return "question";
+    case "mcp_elicitation":
+    case "tool_suggestion":
+      return "form";
+    case "current_time":
+    case "unknown":
+      return "permission";
+  }
+}
+
+function sharedRecoveryTurnStatus(
+  value: unknown,
+): SharedControlRecoverySnapshot["status"] {
+  return value === "inProgress" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "interrupted"
+    ? value
+    : "unknown";
+}
+
+function providerTimestampToIso(value: unknown): string | undefined {
+  if (typeof value === "string" && validIso(value)) return value;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+  const milliseconds = value < 10_000_000_000 ? value * 1_000 : value;
+  const timestamp = new Date(milliseconds).toISOString();
+  return validIso(timestamp) ? timestamp : undefined;
 }
 
 function externalSnapshotObservedAt(snapshot: ExternalCodexSnapshot): string {
@@ -4967,6 +7311,57 @@ function providerRevision(
 
 function isStreamingConversationDelta(message: ServerMessage): boolean {
   return message.type === "stream_delta" || message.type === "thinking_delta";
+}
+
+function terminalResultFromServerMessage(
+  message: Extract<ServerMessage, { type: "result" }>,
+): TerminalResultValue | null {
+  const subtype = message.subtype.trim().toLowerCase();
+  const explicitFailure =
+    Boolean(message.error) || /error|fail/i.test(message.stopReason ?? "");
+  if (explicitFailure || subtype === "error" || subtype === "failed") {
+    return "failed";
+  }
+  if (subtype === "success" || subtype === "completed") return "completed";
+  // stopped/interrupted/cancelled and future unknown subtypes describe an
+  // incomplete or unclassified turn. They must not manufacture completion
+  // unread state merely because they are not errors.
+  return null;
+}
+
+function backgroundProgressCandidate(
+  message: ServerMessage,
+): Extract<ServerMessage, { type: "assistant" }> | null {
+  if (message.type !== "assistant") return null;
+  const toolUse = [...message.message.content]
+    .reverse()
+    .find(
+      (content) =>
+        content.type === "tool_use" &&
+        typeof content.id === "string" &&
+        content.id.length > 0 &&
+        typeof content.name === "string" &&
+        content.name.length > 0,
+    );
+  if (!toolUse || toolUse.type !== "tool_use") return null;
+  return {
+    type: "assistant",
+    message: {
+      id: message.message.id,
+      role: "assistant",
+      model: "",
+      // The background seam deliberately carries no command input, result,
+      // transcript text, path, artifact, or raw content block.
+      content: [
+        {
+          type: "tool_use",
+          id: toolUse.id,
+          name: toolUse.name,
+          input: {},
+        },
+      ],
+    },
+  };
 }
 
 function isConversationTimelineMessage(message: ServerMessage): boolean {

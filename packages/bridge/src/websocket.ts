@@ -41,17 +41,28 @@ import {
   codexErrorMessage,
   CodexProcess,
   CodexRpcError,
+  CodexSharedRuntimeTurnOwnershipError,
   createCodexGoalResumeLease,
   matchesCodexGoalResumeLease,
   type CodexGoalResumeLease,
   type CodexModelMetadata,
   type CodexNextTurnPermissionSettings,
+  type CodexSharedRuntimeThreadSettings,
   type CodexStartOptions,
   type CodexThreadSourceKind,
   type CodexThreadSummary,
 } from "./codex-process.js";
 import { codexSourceIdentity } from "./codex-home.js";
 import { readCodexAppServerMode } from "./codex-app-server-config.js";
+import type {
+  CodexSharedRuntimeControl,
+  CodexSharedRuntimeControlEvent,
+} from "./codex-shared-runtime-control.js";
+import type {
+  CodexActionBrokerRuntime,
+  CodexActionBrokerRuntimeRequest,
+  CodexActionBrokerRuntimeUpdate,
+} from "./codex-action-broker-runtime.js";
 import { stopManagedCodexAppServers } from "./codex-transport.js";
 import {
   parseClientMessage,
@@ -142,6 +153,7 @@ import {
 import {
   createBackgroundNotificationPolicy,
   createBackgroundNotificationProjectionState,
+  projectCodexActionBackgroundNotification,
   projectBackgroundNotification,
   type BackgroundNotificationPolicy,
   type BackgroundNotificationProjectionState,
@@ -170,9 +182,22 @@ import { validateFileTransferPeerBaseUrl } from "./file-transfer-utils.js";
 import { createPathArtifactCandidate } from "./artifact-candidates.js";
 import { createLocalFeaturesController } from "./local-features/registry.js";
 import type { LocalFeaturesController } from "./local-features/controller.js";
+import type {
+  LocalFeatureAttentionKind,
+  LocalFeatureCodexMutationBlock,
+  ExternalCodexNotificationCandidate,
+  LocalFeatureRuntimeConversationState,
+  LocalFeatureSharedRuntimeControlUpdate,
+} from "./local-features/runtime.js";
+import type { TerminalResultLedger } from "./local-features/terminal-result-ledger.js";
+import {
+  InputDeliveryLedger,
+  InputDeliveryLedgerError,
+} from "./input-delivery-ledger.js";
 import {
   APP_SERVER_STATUS_CAPABILITY,
   BRIDGE_IDENTITY_V2_CAPABILITY,
+  CODEX_ACTION_BROKER_CAPABILITY,
   CONVERSATION_CONTENT_EVENT_CAPABILITY,
   CONVERSATION_ITEMS_BY_ID_CAPABILITY,
   CONVERSATION_MIRROR_SOURCE_IDENTITY_CAPABILITY,
@@ -183,6 +208,7 @@ import {
   EPHEMERAL_SIDE_CHAT_PARENT_IDENTITY_CAPABILITY,
   FILE_BROWSER_CAPABILITY,
   FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY,
+  SCOPED_CONTEXT_USAGE_CAPABILITY,
   isLocalFeatureServerMessageType,
 } from "./local-features/protocol.js";
 import type { FileTransferManager } from "./file-transfer-manager.js";
@@ -217,6 +243,10 @@ type FileContentServerMessage = Extract<
   { type: "file_content" }
 >;
 type ResumeClientMessage = Extract<ClientMessage, { type: "resume_session" }>;
+type CodexRuntimeAuthorityProjection = Pick<
+  LocalFeatureRuntimeConversationState,
+  "executionHost" | "activeTurnId" | "controlState" | "authorityGeneration"
+>;
 type ResumeOperationWaiter = {
   ws: WebSocket;
   resumeRequestId?: string;
@@ -243,7 +273,45 @@ type ResumeOperation = {
     completedAt: number;
   };
 };
+type SharedCodexSettingsMessage = Extract<
+  ClientMessage,
+  {
+    type:
+      | "set_permission_mode"
+      | "set_codex_model"
+      | "set_codex_speed"
+      | "set_sandbox_mode";
+  }
+>;
+type SharedCodexSettingsEnvelope = Required<
+  Pick<
+    SharedCodexSettingsMessage,
+    | "codexSourceId"
+    | "threadId"
+    | "runtimeSessionId"
+    | "authorityGeneration"
+    | "operationId"
+  >
+>;
+type SharedCodexSettingsOperation = {
+  fingerprint: string;
+  promise: Promise<void>;
+  createdAt: number;
+  settledAt?: number;
+};
 const RESUME_OPERATION_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const SHARED_CODEX_SETTINGS_OPERATION_TTL_MS = 10 * 60 * 1000;
+const SHARED_CODEX_SETTINGS_OPERATION_MAX = 256;
+
+class SharedCodexSettingsRejectedError extends Error {
+  constructor(
+    readonly errorCode: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "SharedCodexSettingsRejectedError";
+  }
+}
 const RESUME_PROGRESS_STAGE_RANK: Record<SessionLinkProgressStage, number> = {
   request_accepted: 0,
   runtime_checked: 1,
@@ -266,6 +334,26 @@ type BackgroundDeliveryClientState = {
   policy: BackgroundNotificationPolicy;
   projectionState: BackgroundNotificationProjectionState;
 };
+
+function codexActionAttentionKind(
+  request: CodexActionBrokerRuntimeRequest,
+): "approval" | "question" | "permission" | "form" {
+  switch (request.kind) {
+    case "command_approval":
+    case "file_approval":
+      return "approval";
+    case "permissions_approval":
+      return "permission";
+    case "user_input":
+      return "question";
+    case "mcp_elicitation":
+    case "tool_suggestion":
+      return "form";
+    case "current_time":
+    case "unknown":
+      return "permission";
+  }
+}
 
 type PendingBackgroundPushDelivery = {
   payloads: PushNotifyPayload[];
@@ -322,12 +410,16 @@ const CODEX_DESKTOP_CONTINUITY_CAPABILITY = "codex_desktop_continuity_v1";
 const CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY =
   "codex_resume_preserves_settings_v1";
 const CODEX_HOME_IDENTITY_CAPABILITY = "codex_home_identity_v1";
+const CODEX_RUNTIME_DETACH_CAPABILITY = "codex_runtime_detach_v1";
+const BRIDGE_APPLICATION_READINESS_CAPABILITY =
+  "bridge_application_readiness_v1";
 const PUSH_NOTIFICATION_PREFERENCES_CAPABILITY =
   "push_notification_preferences_v1";
 const PUSH_PROGRESS_EVENT = "session_progress";
 const PUSH_PROGRESS_MIN_INTERVAL_MS = 45_000;
 const BACKGROUND_PUSH_ACK_WAIT_MS = 750;
 const MAX_PENDING_BACKGROUND_PUSH_DELIVERIES = 128;
+const MAX_EXTERNAL_CODEX_TERMINAL_NOTIFICATION_KEYS = 2_048;
 const BOUNDED_HISTORY_WINDOW_CAPABILITY = "bounded_history_window_v1";
 const SESSION_ACTIVITY_AT_CAPABILITY = "session_activity_at_v1";
 const SESSION_REQUEST_CORRELATION_CAPABILITY = "session_request_correlation_v1";
@@ -1089,6 +1181,8 @@ type SessionLifecycleErrorCode =
   | "session_not_archived"
   | "archive_identity_mismatch"
   | "codex_source_mismatch"
+  | "codex_shared_runtime_writer_unavailable"
+  | "codex_status_unavailable"
   | "unsupported_capability"
   | "provider_rpc_failed"
   | "local_store_failed"
@@ -1347,6 +1441,10 @@ export interface BridgeServerOptions {
   fileTransfer?: FileTransferManager;
   fileBrowser?: FileBrowserManager;
   fileMutationAuthorizer?: FileMutationAuthorizer;
+  sharedRuntimeControl?: CodexSharedRuntimeControl;
+  codexActionBrokerRuntime?: CodexActionBrokerRuntime;
+  terminalResultLedger?: TerminalResultLedger;
+  inputDeliveryLedger?: InputDeliveryLedger;
   sessionCatalogMonitorFactory?: (
     onChanged: (revision: number, change?: SessionCatalogChange) => void,
   ) => SessionCatalogMonitorControl;
@@ -1478,6 +1576,30 @@ export class BridgeWebSocketServer {
   private readonly fileTransfer: FileTransferManager | null;
   private readonly fileBrowser: FileBrowserManager | null;
   private readonly fileMutationAuthorizer: FileMutationAuthorizer | null;
+  private readonly codexActionBrokerRuntime: CodexActionBrokerRuntime | null;
+  /**
+   * Final provider-write fence shared by SessionManager and every auxiliary
+   * CodexProcess factory. Admission checks alone are insufficient because a
+   * lease can move while a standalone process is initializing.
+   */
+  private readonly codexSharedRuntimeMutationAllowed?: () => boolean;
+  private codexActionBrokerNotificationUnsubscribe?: () => void;
+  private readonly codexActionPushProjectionStates = new Map<
+    PushLocale,
+    BackgroundNotificationProjectionState
+  >();
+  private readonly externalCodexPushProjectionStates = new Map<
+    PushLocale,
+    BackgroundNotificationProjectionState
+  >();
+  private readonly externalCodexTerminalNotificationKeys = new Set<string>();
+  private readonly inputDeliveryLedger: InputDeliveryLedger | null;
+  private readonly inputDeliveryOperations = new Map<string, Promise<void>>();
+  private readonly sharedCodexSettingsOperations = new Map<
+    string,
+    SharedCodexSettingsOperation
+  >();
+  private backgroundActivityBroadcastScheduled = false;
   private readonly sessionCatalogMonitor: SessionCatalogMonitorControl;
   private resumeOperations = new Map<string, ResumeOperation>();
 
@@ -1505,6 +1627,10 @@ export class BridgeWebSocketServer {
       fileTransfer,
       fileBrowser,
       fileMutationAuthorizer,
+      sharedRuntimeControl,
+      codexActionBrokerRuntime,
+      terminalResultLedger,
+      inputDeliveryLedger,
       sessionCatalogMonitorFactory,
     } = options;
     this.apiKeyAuthenticator =
@@ -1530,6 +1656,18 @@ export class BridgeWebSocketServer {
     this.fileTransfer = fileTransfer ?? null;
     this.fileBrowser = fileBrowser ?? null;
     this.fileMutationAuthorizer = fileMutationAuthorizer ?? null;
+    const daemonActionBrokerRuntime =
+      readCodexAppServerMode() === "daemon"
+        ? codexActionBrokerRuntime
+        : undefined;
+    this.codexActionBrokerRuntime = daemonActionBrokerRuntime ?? null;
+    this.codexSharedRuntimeMutationAllowed = daemonActionBrokerRuntime
+      ? () =>
+          daemonActionBrokerRuntime.health.ready === true &&
+          daemonActionBrokerRuntime.health.writerLeaseHeld === true
+      : undefined;
+    this.inputDeliveryLedger =
+      inputDeliveryLedger && this.bridgeInstanceId ? inputDeliveryLedger : null;
     this.sessionCatalogMonitor = sessionCatalogMonitorFactory
       ? sessionCatalogMonitorFactory((revision, change) =>
           this.broadcastSessionCatalogChanged(revision, change),
@@ -1595,6 +1733,11 @@ export class BridgeWebSocketServer {
     // key remains an independent authentication path.
     this.wss = new WebSocketServer({
       server,
+      // File transfer uses its bounded HTTP channel; WebSocket images still
+      // need several MiB of headroom, but an authenticated malformed client
+      // must not make ws buffer an effectively unbounded JSON message.
+      maxPayload: 32 * 1024 * 1024,
+      perMessageDeflate: false,
       verifyClient: (
         info: { req: IncomingMessage },
         done: (res: boolean, code?: number, message?: string) => void,
@@ -1641,6 +1784,16 @@ export class BridgeWebSocketServer {
         onBlocked: (session) =>
           this.localFeatures.codexQueuedInputDrainBlocked(session),
       },
+      this.codexSharedRuntimeMutationAllowed,
+      this.inputDeliveryLedger && this.bridgeInstanceId
+        ? {
+            ledger: this.inputDeliveryLedger,
+            scope: {
+              bridgeInstanceId: this.bridgeInstanceId,
+              codexSourceId: this.codexSourceId,
+            },
+          }
+        : undefined,
     );
     this.codexGoals = new CodexGoalController({
       getSession: (sessionId) => this.sessionManager.get(sessionId),
@@ -1650,6 +1803,14 @@ export class BridgeWebSocketServer {
       bridgeInstanceId: this.bridgeInstanceId,
       codexSourceId: this.codexSourceId,
       fileBrowser: this.fileBrowser ?? undefined,
+      terminalResultLedger,
+      codexActionBroker: daemonActionBrokerRuntime,
+      notifyBackgroundActivityChanged: () =>
+        this.scheduleBackgroundActivityBroadcast(),
+      hasExternalCodexNotificationDemand: () =>
+        this.hasExternalCodexNotificationDemand(),
+      publishExternalCodexNotificationCandidate: (candidate) =>
+        this.dispatchExternalCodexBackgroundCandidate(candidate),
       getSession: (sessionId) => this.sessionManager.get(sessionId),
       getCodexThreadId: (session) =>
         this.codexThreadIdForSession(session as SessionInfo),
@@ -1658,8 +1819,22 @@ export class BridgeWebSocketServer {
       listRuntimeConversationStates: () =>
         this.sessionManager.list().map((summary) => {
           const session = this.sessionManager.get(summary.id);
+          const codexProcess =
+            session?.provider === "codex" &&
+            session.process instanceof CodexProcess
+              ? session.process
+              : undefined;
+          const providerSessionId = session
+            ? this.providerSessionIdForSession(session)
+            : undefined;
+          const brokerRequest =
+            summary.provider === "codex" && providerSessionId
+              ? daemonActionBrokerRuntime?.currentRequestForThread(
+                  providerSessionId,
+                )
+              : undefined;
           const toolName = summary.pendingPermission?.toolName.toLowerCase();
-          const attentionKind =
+          const legacyAttentionKind: LocalFeatureAttentionKind | undefined =
             toolName == null
               ? undefined
               : toolName.includes("askuser") ||
@@ -1672,27 +1847,75 @@ export class BridgeWebSocketServer {
                       toolName.includes("exitplan")
                     ? "approval"
                     : "permission";
+          const pendingAttention: LocalFeatureRuntimeConversationState["pendingAttention"] =
+            brokerRequest
+              ? {
+                  requestId: brokerRequest.opaqueRequestId,
+                  kind: codexActionAttentionKind(brokerRequest),
+                }
+              : summary.pendingPermission && legacyAttentionKind
+                ? {
+                    requestId: summary.pendingPermission.toolUseId,
+                    kind: legacyAttentionKind,
+                  }
+                : undefined;
           return {
             bridgeSessionId: summary.id,
             provider: summary.provider,
-            ...(session
-              ? {
-                  providerSessionId: this.providerSessionIdForSession(session),
-                }
-              : {}),
+            ...(providerSessionId ? { providerSessionId } : {}),
             projectPath: summary.projectPath,
             processStatus: summary.status,
-            ...(summary.pendingPermission && attentionKind
-              ? {
-                  pendingAttention: {
-                    requestId: summary.pendingPermission.toolUseId,
-                    kind: attentionKind,
-                  },
-                }
+            ...(pendingAttention ? { pendingAttention } : {}),
+            ...(codexProcess
+              ? this.codexRuntimeAuthorityProjection(session!, codexProcess)
               : {}),
             observedAt: summary.lastActivityAt,
           };
         }),
+      ...(sharedRuntimeControl
+        ? {
+            subscribeSharedRuntimeControl: (
+              listener: (
+                update: LocalFeatureSharedRuntimeControlUpdate,
+              ) => void,
+            ) => {
+              let active = true;
+              const deliver = (
+                update: LocalFeatureSharedRuntimeControlUpdate,
+              ): void => {
+                if (!active) return;
+                try {
+                  listener(update);
+                } catch (error) {
+                  console.error(
+                    "[local-features] shared runtime control listener failed:",
+                    error,
+                  );
+                }
+              };
+              const onEvent = (event: CodexSharedRuntimeControlEvent) =>
+                deliver({ kind: "event", event });
+              const onReady = (connectionGeneration: number) =>
+                deliver({ kind: "ready", connectionGeneration });
+              const onNotReady = (connectionGeneration: number) =>
+                deliver({ kind: "not_ready", connectionGeneration });
+              sharedRuntimeControl.on("event", onEvent);
+              sharedRuntimeControl.on("ready", onReady);
+              sharedRuntimeControl.on("not_ready", onNotReady);
+              deliver({
+                kind: sharedRuntimeControl.ready ? "ready" : "not_ready",
+                connectionGeneration: sharedRuntimeControl.connectionGeneration,
+              });
+              return () => {
+                if (!active) return;
+                active = false;
+                sharedRuntimeControl.off("event", onEvent);
+                sharedRuntimeControl.off("ready", onReady);
+                sharedRuntimeControl.off("not_ready", onNotReady);
+              };
+            },
+          }
+        : {}),
       getClientDeliveryMode: (client) =>
         this.backgroundDeliveryClients.get(client as WebSocket)?.mode ===
         "notifications_only"
@@ -1706,7 +1929,8 @@ export class BridgeWebSocketServer {
             : undefined,
           requestTimeoutMs,
         ),
-      createDedicatedCodexProcess: () => new CodexProcess(this.platform),
+      createDedicatedCodexProcess: () =>
+        new CodexProcess(this.platform, this.codexSharedRuntimeMutationAllowed),
       createPersistedCodexChildSession: (parentSessionId, childOptions) =>
         this.createPersistedCodexChildSession(parentSessionId, childOptions),
       createEphemeralCodexChildSession: (parentSessionId, childOptions) =>
@@ -1740,11 +1964,7 @@ export class BridgeWebSocketServer {
           ) {
             return false;
           }
-          return (
-            session.process.status === "running" ||
-            session.process.status === "waiting_approval" ||
-            session.process.status === "compacting"
-          );
+          return session.process.bridgeOwnedActiveTurnId !== undefined;
         }),
       getLocallyActiveCodexTurnId: (threadId) => {
         const turnIds = new Set<string>();
@@ -1758,7 +1978,7 @@ export class BridgeWebSocketServer {
           ) {
             continue;
           }
-          const turnId = session.process.activeTurnId;
+          const turnId = session.process.bridgeOwnedActiveTurnId;
           if (turnId) turnIds.add(turnId);
         }
         return turnIds.size === 1 ? turnIds.values().next().value : undefined;
@@ -1772,8 +1992,10 @@ export class BridgeWebSocketServer {
         ) {
           return undefined;
         }
-        return session.process.activeTurnId;
+        return session.process.bridgeOwnedActiveTurnId;
       },
+      codexThreadMutationBlock: (rawSession, operation) =>
+        this.codexThreadMutationBlock(rawSession as SessionInfo, operation),
       rehydrateCodexSessionAfterExternalTurn: (
         sessionId,
         threadId,
@@ -1819,7 +2041,17 @@ export class BridgeWebSocketServer {
           .get(client as WebSocket)
           ?.has(messageType) ?? false,
     });
-
+    this.codexActionBrokerNotificationUnsubscribe =
+      this.codexActionBrokerRuntime?.subscribe((update) => {
+        try {
+          this.handleCodexActionBrokerNotificationUpdate(update);
+        } catch (error) {
+          console.error(
+            "[notifications] failed to project Codex Action Broker update:",
+            error,
+          );
+        }
+      });
     this.wss.on("connection", (ws, req) => {
       // API key authentication
       if (!this.apiKeyAuthenticator.acceptsWebSocketRequest(req)) {
@@ -2309,6 +2541,19 @@ export class BridgeWebSocketServer {
       });
       return;
     }
+    const mutationBlock = await this.codexThreadMutationBlock(
+      session,
+      "rewind this conversation",
+    );
+    if (mutationBlock) {
+      this.send(ws, {
+        type: "rewind_result",
+        success: false,
+        mode,
+        error: mutationBlock.message,
+      });
+      return;
+    }
     if (
       session.status !== "idle" ||
       (codexProcess.status ?? session.status) !== "idle"
@@ -2423,6 +2668,15 @@ export class BridgeWebSocketServer {
     codexSourceId?: string,
   ): Promise<void> {
     this.assertCodexSourceMatches("codex", codexSourceId);
+    if (
+      this.rejectUnavailableSharedCodexWriter(
+        ws,
+        "fork a Codex thread",
+        sessionId,
+      )
+    ) {
+      return;
+    }
     const requestedPersistedFork = persistedProjectPath !== undefined;
     const session =
       this.sessionManager.get(sessionId) ??
@@ -2450,6 +2704,19 @@ export class BridgeWebSocketServer {
         type: "error",
         message: "Fork is only supported for Codex sessions",
         errorCode: "fork_failed",
+      });
+      return;
+    }
+    const mutationBlock = await this.codexThreadMutationBlock(
+      session,
+      "fork this conversation",
+    );
+    if (mutationBlock) {
+      this.send(ws, {
+        type: "error",
+        sessionId: session.id,
+        message: mutationBlock.message,
+        errorCode: mutationBlock.errorCode,
       });
       return;
     }
@@ -2648,6 +2915,7 @@ export class BridgeWebSocketServer {
     approvalPolicy?: string;
     approvalsReviewer?: string;
   }> {
+    this.assertSharedCodexWriterAvailable("create a Codex child thread");
     const parent = this.sessionManager.get(parentSessionId);
     if (
       !parent ||
@@ -2742,6 +3010,9 @@ export class BridgeWebSocketServer {
     createdAt: string;
     lastActivityAt: string;
   }> {
+    this.assertSharedCodexWriterAvailable(
+      "create an ephemeral Codex child thread",
+    );
     const parent = this.sessionManager.get(parentSessionId);
     if (
       parent &&
@@ -3006,6 +3277,145 @@ export class BridgeWebSocketServer {
     session: SessionInfo,
   ): string | undefined {
     return session.claudeSessionId ?? session.process.sessionId ?? undefined;
+  }
+
+  private codexRuntimeAuthorityProjection(
+    session: SessionInfo,
+    process: CodexProcess,
+  ): CodexRuntimeAuthorityProjection {
+    const authorityGeneration = process.authorityGeneration;
+    if (session.codexAttachmentState === "unavailable") {
+      return {
+        executionHost: "unknown",
+        controlState: "unavailable",
+        authorityGeneration,
+      };
+    }
+    if (session.codexAttachmentState === "reconciling") {
+      return {
+        executionHost: "unknown",
+        controlState: "reconciling",
+        authorityGeneration,
+      };
+    }
+    if (!process.isRunning) {
+      return {
+        executionHost: "unknown",
+        controlState: "unavailable",
+        authorityGeneration,
+      };
+    }
+    if (
+      process.status === "starting" ||
+      (process.usesSharedRuntimeTopology && !process.isAttachmentReady)
+    ) {
+      return {
+        executionHost: "unknown",
+        controlState: "reconciling",
+        authorityGeneration,
+      };
+    }
+
+    const activeTurnId = process.activeTurnId;
+    if (!process.usesSharedRuntimeTopology) {
+      return {
+        executionHost: "bridge",
+        controlState: activeTurnId ? "steerable" : "writable",
+        ...(activeTurnId ? { activeTurnId } : {}),
+        authorityGeneration,
+      };
+    }
+    if (!activeTurnId) {
+      return {
+        executionHost: "unknown",
+        controlState: "writable",
+        authorityGeneration,
+      };
+    }
+    if (process.activeTurnIsBridgeOwned) {
+      return {
+        executionHost: "bridge",
+        activeTurnId,
+        controlState: "steerable",
+        authorityGeneration,
+      };
+    }
+    return {
+      executionHost: "desktopAppServer",
+      activeTurnId,
+      controlState:
+        process.canSteerExternalSharedRuntimeTurn &&
+        this.codexActionBrokerRuntime?.health.ready === true
+          ? "steerable"
+          : "readOnly",
+      authorityGeneration,
+    };
+  }
+
+  private async codexThreadMutationBlock(
+    session: SessionInfo,
+    operation: string,
+  ): Promise<LocalFeatureCodexMutationBlock | null> {
+    if (session.provider !== "codex" || !session.process) {
+      return {
+        errorCode: "session_not_found",
+        message: "An active Codex session was not found.",
+      };
+    }
+    const process = session.process as CodexProcess;
+    const daemonMode = readCodexAppServerMode() === "daemon";
+    const brokerHealth = this.codexActionBrokerRuntime?.health;
+    if (
+      daemonMode &&
+      (brokerHealth?.ready !== true || brokerHealth.writerLeaseHeld !== true)
+    ) {
+      return {
+        errorCode: "codex_shared_runtime_writer_unavailable",
+        message: `Cannot ${operation} while this Bridge is a read-only shared-runtime standby.`,
+      };
+    }
+    const projection = this.codexRuntimeAuthorityProjection(session, process);
+    if (
+      session.status !== "idle" ||
+      process.status !== "idle" ||
+      projection.controlState !== "writable"
+    ) {
+      const desktopOwned =
+        projection.executionHost === "desktopAppServer" ||
+        (projection.activeTurnId !== undefined &&
+          !process.activeTurnIsBridgeOwned);
+      return {
+        errorCode: desktopOwned
+          ? "codex_shared_runtime_turn_owned_elsewhere"
+          : "session_busy",
+        message: desktopOwned
+          ? `Cannot ${operation} while Codex Desktop owns the active turn.`
+          : `Codex must be idle and writable before ${operation}.`,
+      };
+    }
+    if (await this.localFeatures.hasExternalCodexActivityVerified(session)) {
+      return {
+        errorCode: "codex_shared_runtime_turn_owned_elsewhere",
+        message: `Cannot ${operation} while Codex Desktop owns the active turn.`,
+      };
+    }
+    if (
+      this.sessionManager.get(session.id) !== session ||
+      session.process !== process ||
+      session.status !== "idle" ||
+      process.status !== "idle" ||
+      this.codexRuntimeAuthorityProjection(session, process).controlState !==
+        "writable" ||
+      (daemonMode &&
+        (this.codexActionBrokerRuntime?.health.ready !== true ||
+          this.codexActionBrokerRuntime.health.writerLeaseHeld !== true))
+    ) {
+      return {
+        errorCode: "codex_shared_runtime_authority_changed",
+        message: `The Codex authority changed before ${operation} could start.`,
+      };
+    }
+    return null;
   }
 
   private findRunningCodexSession(threadId: string): SessionInfo | undefined {
@@ -4230,6 +4640,12 @@ export class BridgeWebSocketServer {
 
   async close(): Promise<void> {
     console.log("[ws] Shutting down...");
+    // Turn the shared writer predicate off synchronously before aborting
+    // feature handlers or destroying auxiliary runtimes. The lease remains
+    // held until the host has drained this server, so a standby cannot overlap.
+    this.codexActionBrokerRuntime?.beginDraining?.();
+    this.codexActionBrokerNotificationUnsubscribe?.();
+    this.codexActionBrokerNotificationUnsubscribe = undefined;
     this.sessionCatalogMonitor.close();
     // Abort local operations synchronously so the existing shutdown flush
     // contract remains observable before callers await this method. Drain the
@@ -4248,6 +4664,7 @@ export class BridgeWebSocketServer {
     this.restoringManagedGalleryPaths.clear();
     this.wss.close();
     await localFeaturesClosing;
+    await this.inputDeliveryLedger?.flush();
     await this.fileTransfer?.close();
   }
 
@@ -4414,6 +4831,7 @@ export class BridgeWebSocketServer {
       });
       if (msg.mode === "notifications_only") {
         this.send(ws, this.backgroundActivityState());
+        this.replayCodexActionBrokerNotifications(ws);
       }
       return;
     }
@@ -4467,6 +4885,21 @@ export class BridgeWebSocketServer {
       case "start": {
         const projectPath = resolvePlatformPath(msg.projectPath, this.platform);
         const provider = msg.provider ?? "claude";
+        if (
+          provider === "codex" &&
+          this.rejectUnavailableSharedCodexWriter(
+            ws,
+            "start or attach a Codex thread",
+          )
+        ) {
+          this.sendStartFailed(ws, {
+            provider,
+            projectPath,
+            startRequestId: msg.startRequestId,
+            errorMessage: "This Bridge is a read-only shared-runtime standby.",
+          });
+          break;
+        }
         if (!this.isExistingProjectPathAllowed(projectPath)) {
           const pathError = this.buildPathNotAllowedError(msg.projectPath);
           this.sendStartFailed(ws, {
@@ -4851,172 +5284,318 @@ export class BridgeWebSocketServer {
           });
           return;
         }
-        if (session.permissionRestartInProgress) {
-          this.send(ws, {
-            type: "input_rejected",
-            sessionId: session.id,
-            ...(msg.clientMessageId
-              ? { clientMessageId: msg.clientMessageId }
-              : {}),
-            reason: "Permission restart in progress",
-          });
-          break;
-        }
-        const text = msg.text;
-        const clientMessageId = msg.clientMessageId;
-        const baseSeq = msg.baseSeq;
-        const codexSkills = msg.skills ?? (msg.skill ? [msg.skill] : []);
-        const codexMentions = msg.mentions ?? [];
-
-        if (clientMessageId) {
-          const priorAdmission = this.findAcceptedClientInput(
-            session,
-            clientMessageId,
-          );
-          if (priorAdmission) {
-            this.sendInputBridgeAcceptance(
-              ws,
-              session,
-              clientMessageId,
-              priorAdmission.acceptedSeq,
-              priorAdmission.queued,
-            );
-            this.sendProviderInputReceipt(ws, session, priorAdmission);
-            break;
-          }
-        }
-
-        // A compact/review RPC can be accepted before app-server publishes the
-        // corresponding turn/started notification. The Codex process reports
-        // itself as not ready throughout that window, so the ordinary busy
-        // path below admits the input into the Bridge-owned queue instead of
-        // either consuming it early or rejecting a valid next turn.
-
-        // Snapshot busy state before dispatch. We prefer the actual enqueue
-        // result returned by SdkProcess sendInput* below, but keep this as a
-        // fallback for test doubles and async paths.
-        const isAgentBusySnapshot =
-          session.provider === "claude" && !session.process.isWaitingForInput;
-
-        // Normalize images: support new `images` array and legacy single-image fields
-        let images: Array<{ base64: string; mimeType: string }> = [];
-        if (msg.images && msg.images.length > 0) {
-          images = msg.images;
-        } else if (msg.imageBase64 && msg.mimeType) {
-          // Legacy single-image fallback
-          images = [{ base64: msg.imageBase64, mimeType: msg.mimeType }];
-        }
-
-        // Add user_input to in-memory history.
-        // The SDK stream does NOT emit user messages, so session.history would
-        // otherwise lack them.  This ensures get_history responses include user
-        // messages and replaceEntries on the client side preserves them.
-        // Flutter already shows the user bubble optimistically. For Codex we
-        // echo the accepted user_input back with its synthetic UUID so the live
-        // bubble becomes rewindable/forkable without requiring a stop+resume.
-        //
-        // Register images in the image store so they can be served via HTTP
-        // when the client re-enters the session and loads history.
-        let imageRefs:
-          Array<{ id: string; url: string; mimeType: string }> | undefined;
-        if (images.length > 0 && this.imageStore) {
-          imageRefs = [];
-          for (const img of images) {
-            const ref = this.imageStore.registerFromBase64(
-              img.base64,
-              img.mimeType,
-            );
-            if (ref) imageRefs.push(ref);
-          }
-          if (imageRefs.length === 0) imageRefs = undefined;
-        }
-
-        if (
-          clientMessageId &&
-          baseSeq !== undefined &&
-          this.hasInputConflictSince(session, baseSeq)
-        ) {
-          this.send(ws, {
-            type: "input_rejected",
-            sessionId: session.id,
-            clientMessageId,
-            reason: "conflict",
-          });
-          break;
-        }
-
-        const localFeatureAdmissionResult =
-          session.provider === "codex"
-            ? this.localFeatures.admitInput(ws, session, msg)
-            : { action: "allow" as const };
-        const localFeatureAdmission =
-          localFeatureAdmissionResult instanceof Promise
-            ? await localFeatureAdmissionResult
-            : localFeatureAdmissionResult;
-        const currentSession = this.sessionManager.get(session.id);
-        if (currentSession !== session) {
-          const priorThreadId = this.codexThreadIdForSession(session);
+        const releaseInputDeliveryOperation =
+          session.provider === "codex" && this.inputDeliveryLedger
+            ? await this.acquireInputDeliveryOperation(session.id)
+            : undefined;
+        try {
           if (
-            !currentSession ||
-            currentSession.provider !== "codex" ||
-            this.codexThreadIdForSession(currentSession) !== priorThreadId
+            session.provider === "codex" &&
+            this.rejectUnavailableSharedCodexWriter(
+              ws,
+              "send a Codex message",
+              session.id,
+            )
           ) {
             this.send(ws, {
               type: "input_rejected",
               sessionId: session.id,
-              ...(clientMessageId ? { clientMessageId } : {}),
-              reason: "Session changed while input was being admitted",
+              ...(msg.clientMessageId
+                ? { clientMessageId: msg.clientMessageId }
+                : {}),
+              reason: "Shared runtime writer is unavailable",
             });
             break;
           }
-          session = currentSession;
-        }
-        if (localFeatureAdmission.action === "reject") {
-          this.send(ws, {
-            type: "input_rejected",
-            sessionId: session.id,
-            ...(clientMessageId ? { clientMessageId } : {}),
-            reason: localFeatureAdmission.reason,
-          });
-          break;
-        }
-        const queueForExternalCodexTurn =
-          localFeatureAdmission.action === "queue";
+          if (session.permissionRestartInProgress) {
+            this.send(ws, {
+              type: "input_rejected",
+              sessionId: session.id,
+              ...(msg.clientMessageId
+                ? { clientMessageId: msg.clientMessageId }
+                : {}),
+              reason: "Permission restart in progress",
+            });
+            break;
+          }
+          const text = msg.text;
+          const clientMessageId = msg.clientMessageId;
+          const baseSeq = msg.baseSeq;
+          const codexSkills = msg.skills ?? (msg.skill ? [msg.skill] : []);
+          const codexMentions = msg.mentions ?? [];
 
-        if (
-          session.provider === "codex" &&
-          (queueForExternalCodexTurn || !session.process.isWaitingForInput)
-        ) {
-          if (session.codexQueuedInput) {
+          if (clientMessageId) {
+            const priorAdmission = this.findAcceptedClientInput(
+              session,
+              clientMessageId,
+            );
+            if (priorAdmission) {
+              this.sendInputBridgeAcceptance(
+                ws,
+                session,
+                clientMessageId,
+                priorAdmission.acceptedSeq,
+                priorAdmission.queued,
+              );
+              this.sendProviderInputReceipt(ws, session, priorAdmission);
+              break;
+            }
+          }
+
+          // A compact/review RPC can be accepted before app-server publishes the
+          // corresponding turn/started notification. The Codex process reports
+          // itself as not ready throughout that window, so the ordinary busy
+          // path below admits the input into the Bridge-owned queue instead of
+          // either consuming it early or rejecting a valid next turn.
+
+          // Snapshot busy state before dispatch. We prefer the actual enqueue
+          // result returned by SdkProcess sendInput* below, but keep this as a
+          // fallback for test doubles and async paths.
+          const isAgentBusySnapshot =
+            session.provider === "claude" && !session.process.isWaitingForInput;
+
+          // Normalize images: support new `images` array and legacy single-image fields
+          let images: Array<{ base64: string; mimeType: string }> = [];
+          if (msg.images && msg.images.length > 0) {
+            images = msg.images;
+          } else if (msg.imageBase64 && msg.mimeType) {
+            // Legacy single-image fallback
+            images = [{ base64: msg.imageBase64, mimeType: msg.mimeType }];
+          }
+
+          // Add user_input to in-memory history.
+          // The SDK stream does NOT emit user messages, so session.history would
+          // otherwise lack them.  This ensures get_history responses include user
+          // messages and replaceEntries on the client side preserves them.
+          // Flutter already shows the user bubble optimistically. For Codex we
+          // echo the accepted user_input back with its synthetic UUID so the live
+          // bubble becomes rewindable/forkable without requiring a stop+resume.
+          //
+          // Register images in the image store so they can be served via HTTP
+          // when the client re-enters the session and loads history.
+          let imageRefs:
+            Array<{ id: string; url: string; mimeType: string }> | undefined;
+          if (images.length > 0 && this.imageStore) {
+            imageRefs = [];
+            for (const img of images) {
+              const ref = this.imageStore.registerFromBase64(
+                img.base64,
+                img.mimeType,
+              );
+              if (ref) imageRefs.push(ref);
+            }
+            if (imageRefs.length === 0) imageRefs = undefined;
+          }
+
+          if (
+            clientMessageId &&
+            baseSeq !== undefined &&
+            this.hasInputConflictSince(session, baseSeq)
+          ) {
+            this.send(ws, {
+              type: "input_rejected",
+              sessionId: session.id,
+              clientMessageId,
+              reason: "conflict",
+            });
+            break;
+          }
+
+          const localFeatureAdmissionResult =
+            session.provider === "codex"
+              ? this.localFeatures.admitInput(ws, session, msg)
+              : { action: "allow" as const };
+          const localFeatureAdmission =
+            localFeatureAdmissionResult instanceof Promise
+              ? await localFeatureAdmissionResult
+              : localFeatureAdmissionResult;
+          const currentSession = this.sessionManager.get(session.id);
+          if (currentSession !== session) {
+            const priorThreadId = this.codexThreadIdForSession(session);
+            if (
+              !currentSession ||
+              currentSession.provider !== "codex" ||
+              this.codexThreadIdForSession(currentSession) !== priorThreadId
+            ) {
+              this.send(ws, {
+                type: "input_rejected",
+                sessionId: session.id,
+                ...(clientMessageId ? { clientMessageId } : {}),
+                reason: "Session changed while input was being admitted",
+              });
+              break;
+            }
+            session = currentSession;
+          }
+          if (localFeatureAdmission.action === "reject") {
             this.send(ws, {
               type: "input_rejected",
               sessionId: session.id,
               ...(clientMessageId ? { clientMessageId } : {}),
-              reason: "Queue is full",
+              reason: localFeatureAdmission.reason,
             });
             break;
           }
+          const queueForExternalCodexTurn =
+            localFeatureAdmission.action === "queue";
 
-          const queued = this.sessionManager.queueCodexInput(session.id, {
-            itemId: randomUUID(),
+          if (
+            session.provider === "codex" &&
+            (queueForExternalCodexTurn || !session.process.isWaitingForInput)
+          ) {
+            if (session.codexQueuedInput) {
+              this.send(ws, {
+                type: "input_rejected",
+                sessionId: session.id,
+                ...(clientMessageId ? { clientMessageId } : {}),
+                reason: "Queue is full",
+              });
+              break;
+            }
+
+            const queuedInput = {
+              itemId: randomUUID(),
+              text,
+              createdAt: new Date().toISOString(),
+              userMessageUuid: nextCodexUserTurnUuid(session),
+              ...(images.length > 0
+                ? { imageCount: images.length, images }
+                : {}),
+              ...(imageRefs ? { imageRefs } : {}),
+              ...(clientMessageId ? { clientMessageId } : {}),
+              ...(codexSkills.length > 0 ? { skills: codexSkills } : {}),
+              ...(codexMentions.length > 0 ? { mentions: codexMentions } : {}),
+            };
+            let queued = false;
+            try {
+              queued = this.inputDeliveryLedger
+                ? await this.sessionManager.queueCodexInputDurably(
+                    session.id,
+                    queuedInput,
+                    session.historyRevision,
+                  )
+                : this.sessionManager.queueCodexInput(session.id, queuedInput);
+            } catch (error) {
+              this.sendInputPersistenceRejection(
+                ws,
+                session,
+                clientMessageId,
+                error,
+              );
+              break;
+            }
+            if (!queued) {
+              this.send(ws, {
+                type: "input_rejected",
+                sessionId: session.id,
+                ...(clientMessageId ? { clientMessageId } : {}),
+                reason: "Queue is full",
+              });
+              break;
+            }
+            if (images.length > 0 && this.galleryStore && session.projectPath) {
+              for (const img of images) {
+                this.galleryStore
+                  .addImageFromBase64(
+                    img.base64,
+                    img.mimeType,
+                    session.projectPath,
+                    msg.sessionId,
+                    this.providerSessionIdForSession(session),
+                  )
+                  .catch((err) => {
+                    console.warn(
+                      `[ws] Failed to persist queued image to gallery: ${err}`,
+                    );
+                  });
+              }
+            }
+            this.sendInputBridgeAcceptance(
+              ws,
+              session,
+              clientMessageId,
+              session.historyRevision,
+              true,
+            );
+            this.localFeatures.inputAccepted(ws, session, msg, true);
+            this.broadcastSessionList();
+            break;
+          }
+
+          const userInputTimestamp = new Date().toISOString();
+          const codexUserMessageUuid =
+            session.provider === "codex"
+              ? nextCodexUserTurnUuid(session)
+              : undefined;
+          if (
+            session.provider === "codex" &&
+            clientMessageId &&
+            this.inputDeliveryLedger
+          ) {
+            try {
+              await this.sessionManager.prepareImmediateCodexInputDelivery(
+                session.id,
+                {
+                  itemId: randomUUID(),
+                  text,
+                  createdAt: userInputTimestamp,
+                  userMessageUuid: codexUserMessageUuid,
+                  clientMessageId,
+                  ...(images.length > 0
+                    ? { imageCount: images.length, images }
+                    : {}),
+                  ...(msg.imageId ? { imageCount: 1 } : {}),
+                  ...(imageRefs ? { imageRefs } : {}),
+                  ...(codexSkills.length > 0 ? { skills: codexSkills } : {}),
+                  ...(codexMentions.length > 0
+                    ? { mentions: codexMentions }
+                    : {}),
+                },
+                session.historyRevision + 1,
+              );
+            } catch (error) {
+              this.sendInputPersistenceRejection(
+                ws,
+                session,
+                clientMessageId,
+                error,
+              );
+              break;
+            }
+          }
+
+          const userEntry = this.sessionManager.appendHistory(session.id, {
+            type: "user_input",
             text,
-            createdAt: new Date().toISOString(),
-            userMessageUuid: nextCodexUserTurnUuid(session),
-            ...(images.length > 0 ? { imageCount: images.length, images } : {}),
-            ...(imageRefs ? { imageRefs } : {}),
+            ...(codexUserMessageUuid
+              ? { userMessageUuid: codexUserMessageUuid }
+              : {}),
             ...(clientMessageId ? { clientMessageId } : {}),
-            ...(codexSkills.length > 0 ? { skills: codexSkills } : {}),
-            ...(codexMentions.length > 0 ? { mentions: codexMentions } : {}),
-          });
-          if (!queued) {
+            timestamp: userInputTimestamp,
+            ...(images.length > 0 ? { imageCount: images.length } : {}),
+            ...(imageRefs ? { images: imageRefs } : {}),
+          } as ServerMessage);
+          const acceptedSeq = userEntry?.seq ?? session.historyRevision;
+
+          if (session.provider === "codex" && userEntry) {
             this.send(ws, {
-              type: "input_rejected",
+              ...userEntry.message,
               sessionId: session.id,
-              ...(clientMessageId ? { clientMessageId } : {}),
-              reason: "Queue is full",
-            });
-            break;
+              historySeq: acceptedSeq,
+            } as ServerMessage & { sessionId: string; historySeq: number });
           }
+          if (userEntry) {
+            this.broadcastSessionMessage(
+              session.id,
+              {
+                ...userEntry.message,
+                historySeq: acceptedSeq,
+              } as ServerMessage & { historySeq: number },
+              ws,
+            );
+          }
+
+          // Persist images to Gallery Store asynchronously (fire-and-forget)
           if (images.length > 0 && this.galleryStore && session.projectPath) {
             for (const img of images) {
               this.galleryStore
@@ -5029,238 +5608,187 @@ export class BridgeWebSocketServer {
                 )
                 .catch((err) => {
                   console.warn(
-                    `[ws] Failed to persist queued image to gallery: ${err}`,
+                    `[ws] Failed to persist image to gallery: ${err}`,
                   );
                 });
             }
           }
-          this.sendInputBridgeAcceptance(
-            ws,
-            session,
-            clientMessageId,
-            session.historyRevision,
-            true,
-          );
-          this.localFeatures.inputAccepted(ws, session, msg, true);
-          this.broadcastSessionList();
-          break;
-        }
 
-        const userEntry = this.sessionManager.appendHistory(session.id, {
-          type: "user_input",
-          text,
-          ...(session.provider === "codex"
-            ? { userMessageUuid: nextCodexUserTurnUuid(session) }
-            : {}),
-          ...(clientMessageId ? { clientMessageId } : {}),
-          timestamp: new Date().toISOString(),
-          ...(images.length > 0 ? { imageCount: images.length } : {}),
-          ...(imageRefs ? { images: imageRefs } : {}),
-        } as ServerMessage);
-        const acceptedSeq = userEntry?.seq ?? session.historyRevision;
-
-        if (session.provider === "codex" && userEntry) {
-          this.send(ws, {
-            ...userEntry.message,
-            sessionId: session.id,
-            historySeq: acceptedSeq,
-          } as ServerMessage & { sessionId: string; historySeq: number });
-        }
-        if (userEntry) {
-          this.broadcastSessionMessage(
-            session.id,
-            {
-              ...userEntry.message,
-              historySeq: acceptedSeq,
-            } as ServerMessage & { historySeq: number },
-            ws,
-          );
-        }
-
-        // Persist images to Gallery Store asynchronously (fire-and-forget)
-        if (images.length > 0 && this.galleryStore && session.projectPath) {
-          for (const img of images) {
-            this.galleryStore
-              .addImageFromBase64(
-                img.base64,
-                img.mimeType,
-                session.projectPath,
-                msg.sessionId,
-                this.providerSessionIdForSession(session),
-              )
-              .catch((err) => {
-                console.warn(`[ws] Failed to persist image to gallery: ${err}`);
-              });
-          }
-        }
-
-        // Codex input path
-        if (session.provider === "codex") {
-          this.sendInputBridgeAcceptance(
-            ws,
-            session,
-            clientMessageId,
-            acceptedSeq,
-            false,
-          );
-          this.localFeatures.inputAccepted(ws, session, msg, false);
-          const codexProc = session.process as CodexProcess;
-          if (images.length > 0) {
-            codexProc.sendInputStructured(text, {
-              images,
-              skills: codexSkills,
-              mentions: codexMentions,
-              ...(clientMessageId ? { clientMessageId } : {}),
-            });
-          } else if (msg.imageId && this.galleryStore) {
-            this.galleryStore
-              .getImageAsBase64(msg.imageId)
-              .then((imageData) => {
-                if (imageData) {
-                  codexProc.sendInputStructured(text, {
-                    images: [imageData],
-                    skills: codexSkills,
-                    mentions: codexMentions,
-                    ...(clientMessageId ? { clientMessageId } : {}),
-                  });
-                } else {
+          // Codex input path
+          if (session.provider === "codex") {
+            this.sendInputBridgeAcceptance(
+              ws,
+              session,
+              clientMessageId,
+              acceptedSeq,
+              false,
+            );
+            this.localFeatures.inputAccepted(ws, session, msg, false);
+            const codexProc = session.process as CodexProcess;
+            try {
+              if (images.length > 0) {
+                codexProc.sendInputStructured(text, {
+                  images,
+                  skills: codexSkills,
+                  mentions: codexMentions,
+                  ...(clientMessageId ? { clientMessageId } : {}),
+                });
+              } else if (msg.imageId && this.galleryStore) {
+                const imageData = await this.galleryStore.getImageAsBase64(
+                  msg.imageId,
+                );
+                if (!imageData)
                   console.warn(`[ws] Image not found: ${msg.imageId}`);
-                  codexProc.sendInputStructured(text, {
-                    skills: codexSkills,
-                    mentions: codexMentions,
-                    ...(clientMessageId ? { clientMessageId } : {}),
-                  });
-                }
-              })
-              .catch((err) => {
-                console.error(`[ws] Failed to load image: ${err}`);
+                codexProc.sendInputStructured(text, {
+                  ...(imageData ? { images: [imageData] } : {}),
+                  skills: codexSkills,
+                  mentions: codexMentions,
+                  ...(clientMessageId ? { clientMessageId } : {}),
+                });
+              } else if (codexSkills.length > 0 || codexMentions.length > 0) {
                 codexProc.sendInputStructured(text, {
                   skills: codexSkills,
                   mentions: codexMentions,
                   ...(clientMessageId ? { clientMessageId } : {}),
                 });
-              });
-          } else if (codexSkills.length > 0 || codexMentions.length > 0) {
-            codexProc.sendInputStructured(text, {
-              skills: codexSkills,
-              mentions: codexMentions,
-              ...(clientMessageId ? { clientMessageId } : {}),
-            });
-          } else {
-            if (clientMessageId) {
-              codexProc.sendInput(text, clientMessageId);
+              } else if (clientMessageId) {
+                codexProc.sendInput(text, clientMessageId);
+              } else {
+                codexProc.sendInput(text);
+              }
+            } catch (error) {
+              if (clientMessageId) {
+                const pendingReceipt =
+                  this.sessionManager.recordCodexInputDispatchFailure(
+                    session.id,
+                    clientMessageId,
+                    error,
+                  );
+                const receipt =
+                  pendingReceipt instanceof Promise
+                    ? await pendingReceipt
+                    : pendingReceipt;
+                if (receipt)
+                  this.sendProviderInputReceipt(ws, session, receipt);
+              }
+            }
+            break;
+          }
+
+          // Claude Code input path — enqueue first, then interrupt if busy
+          const claudeProc = session.process as SdkProcess;
+          let wasQueued = false;
+          let shouldInterrupt = false;
+          if (images.length > 0) {
+            console.log(
+              `[ws] Sending message with ${images.length} inline Base64 image(s)`,
+            );
+            if (typeof claudeProc.dispatchInputWithImages === "function") {
+              const result = claudeProc.dispatchInputWithImages(text, images);
+              wasQueued = result.queued;
+              shouldInterrupt = result.shouldInterrupt;
             } else {
-              codexProc.sendInput(text);
+              const result = claudeProc.sendInputWithImages(text, images);
+              wasQueued =
+                typeof result === "boolean" ? result : isAgentBusySnapshot;
+              shouldInterrupt = wasQueued;
             }
           }
-          break;
-        }
-
-        // Claude Code input path — enqueue first, then interrupt if busy
-        const claudeProc = session.process as SdkProcess;
-        let wasQueued = false;
-        let shouldInterrupt = false;
-        if (images.length > 0) {
-          console.log(
-            `[ws] Sending message with ${images.length} inline Base64 image(s)`,
-          );
-          if (typeof claudeProc.dispatchInputWithImages === "function") {
-            const result = claudeProc.dispatchInputWithImages(text, images);
-            wasQueued = result.queued;
-            shouldInterrupt = result.shouldInterrupt;
-          } else {
-            const result = claudeProc.sendInputWithImages(text, images);
-            wasQueued =
-              typeof result === "boolean" ? result : isAgentBusySnapshot;
-            shouldInterrupt = wasQueued;
+          // Legacy imageId mode (backward compatibility)
+          else if (msg.imageId && this.galleryStore) {
+            this.sendInputBridgeAcceptance(
+              ws,
+              session,
+              clientMessageId,
+              acceptedSeq,
+              isAgentBusySnapshot,
+            );
+            this.galleryStore
+              .getImageAsBase64(msg.imageId)
+              .then((imageData) => {
+                let queuedAfterResolve = false;
+                if (imageData) {
+                  if (
+                    typeof claudeProc.dispatchInputWithImages === "function"
+                  ) {
+                    const result = claudeProc.dispatchInputWithImages(text, [
+                      imageData,
+                    ]);
+                    queuedAfterResolve = result.queued;
+                    if (result.shouldInterrupt) claudeProc.interrupt();
+                  } else {
+                    const result = claudeProc.sendInputWithImages(text, [
+                      imageData,
+                    ]);
+                    queuedAfterResolve =
+                      typeof result === "boolean"
+                        ? result
+                        : isAgentBusySnapshot;
+                    if (queuedAfterResolve) claudeProc.interrupt();
+                  }
+                } else {
+                  console.warn(`[ws] Image not found: ${msg.imageId}`);
+                  if (typeof claudeProc.dispatchInput === "function") {
+                    const result = claudeProc.dispatchInput(text);
+                    queuedAfterResolve = result.queued;
+                    if (result.shouldInterrupt) claudeProc.interrupt();
+                  } else {
+                    const result = claudeProc.sendInput(text);
+                    queuedAfterResolve =
+                      typeof result === "boolean"
+                        ? result
+                        : isAgentBusySnapshot;
+                    if (queuedAfterResolve) claudeProc.interrupt();
+                  }
+                }
+              })
+              .catch((err) => {
+                console.error(`[ws] Failed to load image: ${err}`);
+                if (typeof claudeProc.dispatchInput === "function") {
+                  const result = claudeProc.dispatchInput(text);
+                  if (result.shouldInterrupt) claudeProc.interrupt();
+                } else {
+                  const result = claudeProc.sendInput(text);
+                  const queuedAfterResolve =
+                    typeof result === "boolean" ? result : isAgentBusySnapshot;
+                  if (queuedAfterResolve) claudeProc.interrupt();
+                }
+              });
+            break;
           }
-        }
-        // Legacy imageId mode (backward compatibility)
-        else if (msg.imageId && this.galleryStore) {
+          // Text-only message
+          else {
+            if (typeof claudeProc.dispatchInput === "function") {
+              const result = claudeProc.dispatchInput(text);
+              wasQueued = result.queued;
+              shouldInterrupt = result.shouldInterrupt;
+            } else {
+              const result = session.process.sendInput(text);
+              wasQueued =
+                typeof result === "boolean" ? result : isAgentBusySnapshot;
+              shouldInterrupt = wasQueued;
+            }
+          }
+
+          // Acknowledge receipt so the client can mark the message state.
+          // queued=true means the input was enqueued instead of being consumed
+          // immediately by the SDK stream.
           this.sendInputBridgeAcceptance(
             ws,
             session,
             clientMessageId,
             acceptedSeq,
-            isAgentBusySnapshot,
+            wasQueued,
           );
-          this.galleryStore
-            .getImageAsBase64(msg.imageId)
-            .then((imageData) => {
-              let queuedAfterResolve = false;
-              if (imageData) {
-                if (typeof claudeProc.dispatchInputWithImages === "function") {
-                  const result = claudeProc.dispatchInputWithImages(text, [
-                    imageData,
-                  ]);
-                  queuedAfterResolve = result.queued;
-                  if (result.shouldInterrupt) claudeProc.interrupt();
-                } else {
-                  const result = claudeProc.sendInputWithImages(text, [
-                    imageData,
-                  ]);
-                  queuedAfterResolve =
-                    typeof result === "boolean" ? result : isAgentBusySnapshot;
-                  if (queuedAfterResolve) claudeProc.interrupt();
-                }
-              } else {
-                console.warn(`[ws] Image not found: ${msg.imageId}`);
-                if (typeof claudeProc.dispatchInput === "function") {
-                  const result = claudeProc.dispatchInput(text);
-                  queuedAfterResolve = result.queued;
-                  if (result.shouldInterrupt) claudeProc.interrupt();
-                } else {
-                  const result = session.process.sendInput(text);
-                  queuedAfterResolve =
-                    typeof result === "boolean" ? result : isAgentBusySnapshot;
-                  if (queuedAfterResolve) claudeProc.interrupt();
-                }
-              }
-            })
-            .catch((err) => {
-              console.error(`[ws] Failed to load image: ${err}`);
-              if (typeof claudeProc.dispatchInput === "function") {
-                const result = claudeProc.dispatchInput(text);
-                if (result.shouldInterrupt) claudeProc.interrupt();
-              } else {
-                const result = session.process.sendInput(text);
-                const queuedAfterResolve =
-                  typeof result === "boolean" ? result : isAgentBusySnapshot;
-                if (queuedAfterResolve) claudeProc.interrupt();
-              }
-            });
-          break;
-        }
-        // Text-only message
-        else {
-          if (typeof claudeProc.dispatchInput === "function") {
-            const result = claudeProc.dispatchInput(text);
-            wasQueued = result.queued;
-            shouldInterrupt = result.shouldInterrupt;
-          } else {
-            const result = session.process.sendInput(text);
-            wasQueued =
-              typeof result === "boolean" ? result : isAgentBusySnapshot;
-            shouldInterrupt = wasQueued;
+
+          if (shouldInterrupt) {
+            console.log(
+              `[ws] Agent is busy — will queue input and interrupt current turn`,
+            );
+            claudeProc.interrupt();
           }
-        }
-
-        // Acknowledge receipt so the client can mark the message state.
-        // queued=true means the input was enqueued instead of being consumed
-        // immediately by the SDK stream.
-        this.sendInputBridgeAcceptance(
-          ws,
-          session,
-          clientMessageId,
-          acceptedSeq,
-          wasQueued,
-        );
-
-        if (shouldInterrupt) {
-          console.log(
-            `[ws] Agent is busy — will queue input and interrupt current turn`,
-          );
-          claudeProc.interrupt();
+        } finally {
+          releaseInputDeliveryOperation?.();
         }
         break;
       }
@@ -5278,12 +5806,30 @@ export class BridgeWebSocketServer {
           });
           return;
         }
-        const success = this.sessionManager.updateCodexQueuedInput(
-          session.id,
-          msg.itemId,
-          msg.text,
-          { skills: msg.skills ?? [], mentions: msg.mentions ?? [] },
-        );
+        const releaseInputDeliveryOperation = this.inputDeliveryLedger
+          ? await this.acquireInputDeliveryOperation(session.id)
+          : undefined;
+        let success: boolean;
+        try {
+          success = this.inputDeliveryLedger
+            ? await this.sessionManager.updateCodexQueuedInputDurably(
+                session.id,
+                msg.itemId,
+                msg.text,
+                { skills: msg.skills ?? [], mentions: msg.mentions ?? [] },
+              )
+            : this.sessionManager.updateCodexQueuedInput(
+                session.id,
+                msg.itemId,
+                msg.text,
+                { skills: msg.skills ?? [], mentions: msg.mentions ?? [] },
+              );
+        } catch (error) {
+          this.sendInputPersistenceOperationError(ws, error);
+          return;
+        } finally {
+          releaseInputDeliveryOperation?.();
+        }
         if (!success) {
           this.send(ws, {
             type: "error",
@@ -5302,10 +5848,26 @@ export class BridgeWebSocketServer {
           this.send(ws, { type: "error", message: "No active Codex session." });
           return;
         }
-        const success = this.sessionManager.cancelCodexQueuedInput(
-          session.id,
-          msg.itemId,
-        );
+        const releaseInputDeliveryOperation = this.inputDeliveryLedger
+          ? await this.acquireInputDeliveryOperation(session.id)
+          : undefined;
+        let success: boolean;
+        try {
+          success = this.inputDeliveryLedger
+            ? await this.sessionManager.cancelCodexQueuedInputDurably(
+                session.id,
+                msg.itemId,
+              )
+            : this.sessionManager.cancelCodexQueuedInput(
+                session.id,
+                msg.itemId,
+              );
+        } catch (error) {
+          this.sendInputPersistenceOperationError(ws, error);
+          return;
+        } finally {
+          releaseInputDeliveryOperation?.();
+        }
         if (!success) {
           this.send(ws, {
             type: "error",
@@ -5324,11 +5886,28 @@ export class BridgeWebSocketServer {
           this.send(ws, { type: "error", message: "No active Codex session." });
           return;
         }
-        const externalTurnId = this.localFeatures.externalCodexTurnId(session);
+        if (
+          this.rejectUnavailableSharedCodexWriter(
+            ws,
+            "guide a Codex turn",
+            session.id,
+          )
+        ) {
+          break;
+        }
+        const codexProcess = session.process as CodexProcess;
+        const sharedExternalTurn =
+          codexProcess.usesSharedRuntimeTopology &&
+          codexProcess.canSteerExternalSharedRuntimeTurn;
+        const externalTurnId = sharedExternalTurn
+          ? codexProcess.activeTurnId
+          : this.localFeatures.externalCodexTurnId(session);
         const hasExternalActivity =
+          sharedExternalTurn ||
           this.localFeatures.hasExternalCodexActivity(session);
         let targetTurnId: string;
         let isExpectedTurnCurrent: () => boolean;
+        let allowExternalSharedRuntimeTurn = false;
         if (msg.expectedTurnId) {
           if (!hasExternalActivity || msg.expectedTurnId !== externalTurnId) {
             this.send(ws, {
@@ -5342,7 +5921,9 @@ export class BridgeWebSocketServer {
           const owningProcess = session.process;
           if (
             !(owningProcess instanceof CodexProcess) ||
-            owningProcess.activeTurnId !== msg.expectedTurnId
+            owningProcess.activeTurnId !== msg.expectedTurnId ||
+            (owningProcess.usesSharedRuntimeTopology &&
+              !owningProcess.canSteerExternalSharedRuntimeTurn)
           ) {
             this.send(ws, {
               type: "error",
@@ -5353,12 +5934,36 @@ export class BridgeWebSocketServer {
             });
             return;
           }
+          if (sharedExternalTurn) {
+            const providerThreadId = this.providerSessionIdForSession(session);
+            if (
+              msg.codexSourceId !== this.codexSourceId ||
+              msg.threadId !== providerThreadId ||
+              msg.authorityGeneration !== owningProcess.authorityGeneration
+            ) {
+              this.send(ws, {
+                type: "error",
+                message:
+                  "The Desktop turn authority changed before guidance was applied. The queued message was kept.",
+                errorCode: "queued_input_steer_stale_authority",
+                sessionId: session.id,
+              });
+              return;
+            }
+          }
           targetTurnId = msg.expectedTurnId;
+          allowExternalSharedRuntimeTurn = sharedExternalTurn;
+          const expectedAuthorityGeneration = msg.authorityGeneration;
           isExpectedTurnCurrent = () =>
             this.sessionManager.get(session.id)?.process === owningProcess &&
             owningProcess.activeTurnId === targetTurnId &&
-            this.localFeatures.hasExternalCodexActivity(session) &&
-            this.localFeatures.externalCodexTurnId(session) === targetTurnId;
+            (sharedExternalTurn
+              ? owningProcess.authorityGeneration ===
+                  expectedAuthorityGeneration &&
+                owningProcess.canSteerExternalSharedRuntimeTurn
+              : this.localFeatures.hasExternalCodexActivity(session) &&
+                this.localFeatures.externalCodexTurnId(session) ===
+                  targetTurnId);
         } else {
           // Older/current Mobile clients omit expectedTurnId for a guide to
           // their own running turn. Never reinterpret that omission as
@@ -5398,6 +6003,7 @@ export class BridgeWebSocketServer {
           msg.itemId,
           targetTurnId,
           isExpectedTurnCurrent,
+          allowExternalSharedRuntimeTurn,
         );
         if (!result.ok) {
           this.send(ws, {
@@ -5462,6 +6068,7 @@ export class BridgeWebSocketServer {
                 locale,
                 msg.enabledEventTypes,
                 msg.approvalActionsSupported,
+                msg.approvalActionsVersion,
               );
             } catch (error) {
               this.restorePushTokenPreferences(
@@ -5485,6 +6092,7 @@ export class BridgeWebSocketServer {
           const clientTokens = this.clientPushTokens.get(ws) ?? new Set();
           clientTokens.add(msg.token);
           this.clientPushTokens.set(ws, clientTokens);
+          this.localFeatures.backgroundNotificationDemandChanged();
           console.log("[ws] push_register: token registered successfully");
           this.sendPushRegistrationResult(ws, msg, {
             operation: "register",
@@ -5551,6 +6159,7 @@ export class BridgeWebSocketServer {
             }
           });
           this.clientPushTokens.get(ws)?.delete(msg.token);
+          this.localFeatures.backgroundNotificationDemandChanged();
           console.log("[ws] push_unregister: token unregistered successfully");
           this.sendPushRegistrationResult(ws, msg, {
             operation: "unregister",
@@ -5594,6 +6203,31 @@ export class BridgeWebSocketServer {
               : {}),
           });
           return;
+        }
+        if (
+          session.provider === "codex" &&
+          (session.process as CodexProcess).usesSharedRuntimeTopology
+        ) {
+          await this.handleSharedCodexPermissionMode(
+            ws,
+            session,
+            session.process as CodexProcess,
+            msg,
+          );
+          break;
+        }
+        if (msg.operationId !== undefined) {
+          this.send(ws, {
+            type: "error",
+            message:
+              "The detached Codex settings target is no longer a shared runtime.",
+            errorCode: "codex_shared_runtime_settings_stale_authority",
+            sessionId: session.id,
+            ...(msg.permissionChangeId
+              ? { permissionChangeId: msg.permissionChangeId }
+              : {}),
+          });
+          break;
         }
         if (session.permissionRestartInProgress) {
           this.send(ws, {
@@ -6350,10 +6984,74 @@ export class BridgeWebSocketServer {
           break;
         }
 
+        const process = session.process as CodexProcess;
         const modelReasoningEffort =
           msg.modelReasoningEffort as CodexStartOptions["modelReasoningEffort"];
         const currentModel = sanitizeCodexModel(session.codexSettings?.model);
         const currentEffort = session.codexSettings?.modelReasoningEffort;
+        if (process.usesSharedRuntimeTopology) {
+          if (
+            model === currentModel &&
+            modelReasoningEffort === currentEffort
+          ) {
+            break;
+          }
+          try {
+            const settings: CodexSharedRuntimeThreadSettings = {
+              model,
+              ...(modelReasoningEffort !== undefined
+                ? { modelReasoningEffort }
+                : {}),
+            };
+            await this.runSharedCodexSettingsOperation(
+              session,
+              process,
+              msg,
+              JSON.stringify({ type: msg.type, settings }),
+              () => process.updateSharedRuntimeSettingsForNextTurn(settings),
+              () => {
+                session.codexSettings = {
+                  ...(session.codexSettings ?? {}),
+                  model,
+                  ...(modelReasoningEffort !== undefined
+                    ? { modelReasoningEffort }
+                    : {}),
+                };
+                session.lastActivityAt = new Date();
+                this.broadcast({
+                  type: "system",
+                  subtype: "set_codex_model",
+                  sessionId: session.id,
+                  provider: "codex",
+                  model,
+                  ...(modelReasoningEffort !== undefined
+                    ? { modelReasoningEffort }
+                    : {}),
+                });
+                this.broadcastSessionList();
+              },
+            );
+          } catch (error) {
+            this.sendSharedCodexSettingsError(
+              ws,
+              session,
+              msg,
+              "set_codex_model_rejected",
+              error,
+            );
+          }
+          break;
+        }
+        if (msg.operationId !== undefined) {
+          this.send(ws, {
+            type: "error",
+            sessionId: session.id,
+            message:
+              "The detached Codex settings target is no longer a shared runtime.",
+            errorCode: "codex_shared_runtime_settings_stale_authority",
+          });
+          break;
+        }
         if (model === currentModel && modelReasoningEffort === currentEffort) {
           break;
         }
@@ -6370,7 +7068,6 @@ export class BridgeWebSocketServer {
           break;
         }
 
-        const process = session.process as CodexProcess;
         process.setModel(model, modelReasoningEffort);
         void process.persistRuntimeModelForNextTurn();
         session.codexSettings = {
@@ -6415,6 +7112,54 @@ export class BridgeWebSocketServer {
           return;
         }
         const serviceTier = msg.serviceTier === "fast" ? "fast" : "standard";
+        const process = session.process as CodexProcess;
+        if (process.usesSharedRuntimeTopology) {
+          if (session.codexSettings?.serviceTier === serviceTier) break;
+          try {
+            const settings: CodexSharedRuntimeThreadSettings = { serviceTier };
+            await this.runSharedCodexSettingsOperation(
+              session,
+              process,
+              msg,
+              JSON.stringify({ type: msg.type, settings }),
+              () => process.updateSharedRuntimeSettingsForNextTurn(settings),
+              () => {
+                session.codexSettings = {
+                  ...(session.codexSettings ?? {}),
+                  serviceTier,
+                };
+                session.lastActivityAt = new Date();
+                this.broadcastSessionMessage(session.id, {
+                  type: "system",
+                  subtype: "set_codex_speed",
+                  sessionId: session.id,
+                  provider: "codex",
+                  serviceTier,
+                });
+                this.broadcastSessionList();
+              },
+            );
+          } catch (error) {
+            this.sendSharedCodexSettingsError(
+              ws,
+              session,
+              msg,
+              "set_codex_speed_rejected",
+              error,
+            );
+          }
+          break;
+        }
+        if (msg.operationId !== undefined) {
+          this.send(ws, {
+            type: "error",
+            sessionId: session.id,
+            message:
+              "The detached Codex settings target is no longer a shared runtime.",
+            errorCode: "codex_shared_runtime_settings_stale_authority",
+          });
+          break;
+        }
         if (session.codexSettings?.serviceTier === serviceTier) break;
         if (
           await this.localFeatures.hasExternalCodexActivityVerified(session)
@@ -6429,7 +7174,6 @@ export class BridgeWebSocketServer {
           return;
         }
 
-        const process = session.process as CodexProcess;
         process.setServiceTier(serviceTier);
         void process.persistRuntimeServiceTierForNextTurn();
         session.codexSettings = {
@@ -6502,6 +7246,20 @@ export class BridgeWebSocketServer {
           });
           break;
         }
+        const mutationBlock = await this.codexThreadMutationBlock(
+          session,
+          "change this Goal",
+        );
+        if (mutationBlock) {
+          this.send(ws, {
+            type: "error",
+            message: mutationBlock.message,
+            errorCode: mutationBlock.errorCode,
+            sessionId: session.id,
+            ...(msg.goalChangeId ? { goalChangeId: msg.goalChangeId } : {}),
+          });
+          break;
+        }
         try {
           const goal = await this.codexGoals.set(
             session.id,
@@ -6568,6 +7326,20 @@ export class BridgeWebSocketServer {
           });
           break;
         }
+        const mutationBlock = await this.codexThreadMutationBlock(
+          session,
+          "clear this Goal",
+        );
+        if (mutationBlock) {
+          this.send(ws, {
+            type: "error",
+            message: mutationBlock.message,
+            errorCode: mutationBlock.errorCode,
+            sessionId: session.id,
+            ...(msg.goalChangeId ? { goalChangeId: msg.goalChangeId } : {}),
+          });
+          break;
+        }
         try {
           const goal = await this.codexGoals.clear(
             session.id,
@@ -6628,6 +7400,20 @@ export class BridgeWebSocketServer {
             message: `Invalid sandbox mode: ${msg.sandboxMode}`,
           });
           return;
+        }
+        if (
+          msg.operationId !== undefined &&
+          (session.provider !== "codex" ||
+            !(session.process as CodexProcess).usesSharedRuntimeTopology)
+        ) {
+          this.send(ws, {
+            type: "error",
+            sessionId: session.id,
+            message:
+              "The detached Codex settings target is no longer a shared runtime.",
+            errorCode: "codex_shared_runtime_settings_stale_authority",
+          });
+          break;
         }
 
         // ---- Claude sandbox toggle ----
@@ -6703,9 +7489,58 @@ export class BridgeWebSocketServer {
         }
 
         // ---- Codex sandbox toggle ----
+        const codexProcess = session.process as CodexProcess;
         const newSandboxMode = sandboxModeToInternal(msg.sandboxMode);
         const currentSandboxMode =
           session.codexSettings?.sandboxMode ?? "workspace-write";
+        if (codexProcess.usesSharedRuntimeTopology) {
+          if (newSandboxMode === currentSandboxMode) break;
+          try {
+            const settings: CodexSharedRuntimeThreadSettings = {
+              sandboxMode: newSandboxMode,
+            };
+            await this.runSharedCodexSettingsOperation(
+              session,
+              codexProcess,
+              msg,
+              JSON.stringify({ type: msg.type, settings }),
+              () =>
+                codexProcess.updateSharedRuntimeSettingsForNextTurn(settings),
+              () => {
+                session.codexSettings = {
+                  ...(session.codexSettings ?? {}),
+                  sandboxMode: newSandboxMode,
+                };
+                session.lastActivityAt = new Date();
+                this.broadcast({
+                  type: "system",
+                  subtype: "set_permission_mode",
+                  sessionId: session.id,
+                  provider: "codex",
+                  approvalPolicy: codexProcess.approvalPolicy,
+                  approvalsReviewer: codexProcess.approvalsReviewer,
+                  codexPermissionsMode: codexProcess.codexPermissionsMode,
+                  executionMode:
+                    codexProcess.approvalPolicy === "never"
+                      ? "fullAccess"
+                      : "default",
+                  planMode: codexProcess.collaborationMode === "plan",
+                  sandboxMode: newSandboxMode,
+                });
+                this.broadcastSessionList();
+              },
+            );
+          } catch (error) {
+            this.sendSharedCodexSettingsError(
+              ws,
+              session,
+              msg,
+              "set_sandbox_mode_rejected",
+              error,
+            );
+          }
+          break;
+        }
         if (newSandboxMode === currentSandboxMode) {
           break; // No change needed
         }
@@ -7045,6 +7880,7 @@ export class BridgeWebSocketServer {
           this.send(ws, { type: "error", message: "No active session." });
           return;
         }
+        if (this.rejectLegacySharedCodexAction(ws, session, "approve")) break;
         if (this.rejectDuringPermissionRestart(ws, session, "approve")) break;
         if (session.provider === "codex") {
           (session.process as CodexProcess).approve(msg.id);
@@ -7131,6 +7967,7 @@ export class BridgeWebSocketServer {
           this.send(ws, { type: "error", message: "No active session." });
           return;
         }
+        if (this.rejectLegacySharedCodexAction(ws, session, "approve")) break;
         if (this.rejectDuringPermissionRestart(ws, session, "approve")) break;
         if (session.provider === "codex") {
           (session.process as CodexProcess).approveAlways(msg.id);
@@ -7146,6 +7983,7 @@ export class BridgeWebSocketServer {
           this.send(ws, { type: "error", message: "No active session." });
           return;
         }
+        if (this.rejectLegacySharedCodexAction(ws, session, "reject")) break;
         if (this.rejectDuringPermissionRestart(ws, session, "reject")) break;
         if (session.provider === "codex") {
           (session.process as CodexProcess).reject(msg.id, msg.message);
@@ -7161,6 +7999,7 @@ export class BridgeWebSocketServer {
           this.send(ws, { type: "error", message: "No active session." });
           return;
         }
+        if (this.rejectLegacySharedCodexAction(ws, session, "answer")) break;
         if (this.rejectDuringPermissionRestart(ws, session, "answer")) break;
         if (session.provider === "codex") {
           (session.process as CodexProcess).answer(msg.toolUseId, msg.result);
@@ -7176,6 +8015,7 @@ export class BridgeWebSocketServer {
           this.send(ws, { type: "error", message: "No active session." });
           return;
         }
+        if (this.rejectLegacySharedCodexAction(ws, session, "install")) break;
         if (session.provider !== "codex") {
           this.send(ws, {
             type: "error",
@@ -7201,9 +8041,107 @@ export class BridgeWebSocketServer {
         break;
       }
 
+      case "detach_session": {
+        const session = this.sessionManager.get(msg.sessionId);
+        if (!session || session.provider !== "codex") {
+          this.send(ws, {
+            type: "error",
+            errorCode: "codex_runtime_detach_not_found",
+            sessionId: msg.sessionId,
+            message: "The Codex runtime attachment is no longer available.",
+          });
+          break;
+        }
+        const process = session.process as CodexProcess;
+        const providerThreadId = this.providerSessionIdForSession(session);
+        if (
+          !process.usesSharedRuntimeTopology ||
+          process.activeTurnIsBridgeOwned ||
+          msg.codexSourceId !== this.codexSourceId ||
+          msg.threadId !== providerThreadId ||
+          msg.authorityGeneration !== process.authorityGeneration
+        ) {
+          this.send(ws, {
+            type: "error",
+            errorCode: "codex_runtime_detach_stale_authority",
+            sessionId: session.id,
+            message:
+              "The Codex runtime authority changed before the phone detached.",
+          });
+          break;
+        }
+        // Detach only the Bridge attachment. Do not emit a terminal result and
+        // do not call turn/interrupt: the Desktop-owned turn keeps running on
+        // the shared app-server and remains visible through durable sync.
+        this.destroySession(session.id);
+        this.recordDebugEvent(session.id, {
+          direction: "internal",
+          channel: "bridge",
+          type: "session_detached",
+        });
+        this.debugEvents.delete(session.id);
+        this.notifiedPermissionToolUses.delete(session.id);
+        this.progressNotificationState.delete(session.id);
+        this.broadcastSessionList();
+        break;
+      }
+
       case "stop_session": {
         const session = this.sessionManager.get(msg.sessionId);
         if (session) {
+          if (session.provider === "codex") {
+            if (
+              this.rejectUnavailableSharedCodexWriter(
+                ws,
+                "interrupt a Codex turn",
+                session.id,
+              )
+            ) {
+              break;
+            }
+            const process = session.process as CodexProcess;
+            if (process.usesSharedRuntimeTopology) {
+              const activeTurnId = process.activeTurnId;
+              if (
+                !activeTurnId &&
+                process.authoritativeThreadStatus?.type === "active"
+              ) {
+                this.send(ws, {
+                  type: "error",
+                  errorCode: "codex_shared_runtime_turn_owned_elsewhere",
+                  sessionId: session.id,
+                  message:
+                    "Cannot stop the shared Codex turn because this Bridge does not own it.",
+                });
+                break;
+              }
+              if (activeTurnId) {
+                try {
+                  await process.interruptCurrentTurnAndWait();
+                  if (process.activeTurnId) {
+                    throw new CodexSharedRuntimeTurnOwnershipError(
+                      "stop",
+                      process.activeTurnId,
+                    );
+                  }
+                } catch (error) {
+                  this.send(ws, {
+                    type: "error",
+                    errorCode:
+                      error instanceof CodexSharedRuntimeTurnOwnershipError
+                        ? "codex_shared_runtime_turn_owned_elsewhere"
+                        : "codex_shared_runtime_stop_failed",
+                    sessionId: session.id,
+                    message:
+                      error instanceof Error
+                        ? error.message
+                        : "Failed to stop the shared Codex turn.",
+                  });
+                  break;
+                }
+              }
+            }
+          }
           // Notify clients before destroying (destroy removes listeners)
           this.broadcastSessionMessage(msg.sessionId, {
             type: "result",
@@ -7880,6 +8818,22 @@ export class BridgeWebSocketServer {
         sendResumeProgress("request_accepted");
         if (
           provider === "codex" &&
+          this.rejectUnavailableSharedCodexWriter(
+            ws,
+            "attach a Codex thread",
+            msg.sessionId,
+          )
+        ) {
+          this.sendResumeFailed(ws, {
+            provider,
+            sourceSessionId: msg.sessionId,
+            projectPath: resumeProjectPath,
+            resumeRequestId: msg.resumeRequestId,
+          });
+          break;
+        }
+        if (
+          provider === "codex" &&
           msg.codexSourceId !== undefined &&
           msg.codexSourceId !== this.codexSourceId
         ) {
@@ -8002,6 +8956,10 @@ export class BridgeWebSocketServer {
           if (!resumeOperation.isOwner) break;
           sharedResumeOperation = resumeOperation;
 
+          const daemonPilot = readCodexAppServerMode() === "daemon";
+          const historyMode = daemonPilot
+            ? ("deferred_sync" as const)
+            : ("provider_read" as const);
           let releaseThreadOperation: (() => void) | undefined;
           let historyMetrics = summarizeResumeHistory([]);
           let historyLoadMs = 0;
@@ -8035,6 +8993,7 @@ export class BridgeWebSocketServer {
                   provider: "codex",
                   sourceSessionId: sessionRefId,
                   outcome: "success",
+                  historyMode: "runtime_reused",
                   ...historyMetrics,
                   historyLoadMs,
                   sessionCreateMs,
@@ -8064,13 +9023,16 @@ export class BridgeWebSocketServer {
               })
             ).get(sessionRefId);
             const indexedSettings = indexedMetadata?.codexSettings;
-            const requestedProfile = msg.profile ?? indexedSettings?.profile;
-            const additionalWritableRoots =
-              this.normalizeAdditionalWritableRoots(
-                msg.additionalWritableRoots ??
-                  indexedSettings?.additionalWritableRoots,
-                effectiveProjectPath,
-              );
+            const requestedProfile = daemonPilot
+              ? undefined
+              : (msg.profile ?? indexedSettings?.profile);
+            const additionalWritableRoots = daemonPilot
+              ? {}
+              : this.normalizeAdditionalWritableRoots(
+                  msg.additionalWritableRoots ??
+                    indexedSettings?.additionalWritableRoots,
+                  effectiveProjectPath,
+                );
             if (additionalWritableRoots.deniedRoot) {
               const pathError = this.buildPathNotAllowedError(
                 additionalWritableRoots.deniedRoot,
@@ -8090,18 +9052,21 @@ export class BridgeWebSocketServer {
                   effectiveProjectPath,
                 )
               : undefined;
-            historyStartedAt = Date.now();
-            sendResumeProgress("history_reading");
-            const pastMessages = await this.getCodexThreadHistory(
-              sessionRefId,
-              effectiveProjectPath,
-            );
-            historyLoadMs = Date.now() - historyStartedAt;
-            historyLoaded = true;
-            historyMetrics = summarizeResumeHistory(pastMessages);
-            sendResumeProgress("history_read", {
-              completedUnits: pastMessages.length,
-            });
+            let pastMessages: SessionHistoryMessage[] = [];
+            if (!daemonPilot) {
+              historyStartedAt = Date.now();
+              sendResumeProgress("history_reading");
+              pastMessages = await this.getCodexThreadHistory(
+                sessionRefId,
+                effectiveProjectPath,
+              );
+              historyLoadMs = Date.now() - historyStartedAt;
+              historyLoaded = true;
+              historyMetrics = summarizeResumeHistory(pastMessages);
+              sendResumeProgress("history_read", {
+                completedUnits: pastMessages.length,
+              });
+            }
 
             const savedApprovalPolicy = indexedSettings?.approvalPolicy
               ? normalizeCodexApprovalPolicy(indexedSettings.approvalPolicy)
@@ -8117,7 +9082,6 @@ export class BridgeWebSocketServer {
               : undefined;
             const createStartedAt = Date.now();
             sendResumeProgress("runtime_starting");
-            const daemonPilot = readCodexAppServerMode() === "daemon";
             const sessionId = this.sessionManager.create(
               effectiveProjectPath,
               undefined,
@@ -8191,7 +9155,11 @@ export class BridgeWebSocketServer {
                 throw error;
               }
             }
-            createdSession.codexInitialHistoryPending = true;
+            // Private/legacy resumes reuse the eager provider snapshot once.
+            // Daemon adoption starts empty; a legacy get_history can still
+            // request canonical history after attach, while v2 clients use
+            // their SQLite cache plus turns/items pagination.
+            createdSession.codexInitialHistoryPending = !daemonPilot;
             createdSession.forkedFromThreadId =
               indexedMetadata?.forkedFromThreadId;
 
@@ -8237,6 +9205,7 @@ export class BridgeWebSocketServer {
                 provider: "codex",
                 sourceSessionId: sessionRefId,
                 outcome: "success",
+                historyMode,
                 ...historyMetrics,
                 historyLoadMs,
                 sessionCreateMs,
@@ -8253,6 +9222,7 @@ export class BridgeWebSocketServer {
                 provider: "codex",
                 sourceSessionId: sessionRefId,
                 outcome: "failed",
+                historyMode,
                 ...historyMetrics,
                 historyLoadMs,
                 sessionCreateMs,
@@ -8263,7 +9233,9 @@ export class BridgeWebSocketServer {
             this.failResumeOperation(
               resumeOperation.key,
               resumeOperation.operationId,
-              `Failed to load Codex session history: ${codexErrorMessage(err)}`,
+              daemonPilot
+                ? `Failed to resume shared Codex session: ${codexErrorMessage(err)}`
+                : `Failed to load Codex session history: ${codexErrorMessage(err)}`,
             );
           } finally {
             releaseThreadOperation?.();
@@ -8536,6 +9508,51 @@ export class BridgeWebSocketServer {
         if (!session) {
           this.send(ws, { type: "error", message: "No active session." });
           return;
+        }
+        if (session.provider === "codex") {
+          if (
+            this.rejectUnavailableSharedCodexWriter(
+              ws,
+              "interrupt a Codex turn",
+              session.id,
+            )
+          ) {
+            break;
+          }
+          const process = session.process as CodexProcess;
+          if (
+            process.usesSharedRuntimeTopology &&
+            !process.activeTurnId &&
+            process.authoritativeThreadStatus?.type === "active"
+          ) {
+            this.send(ws, {
+              type: "error",
+              errorCode: "codex_shared_runtime_turn_owned_elsewhere",
+              sessionId: session.id,
+              message:
+                "Cannot interrupt the shared Codex turn because this Bridge does not own it.",
+            });
+            break;
+          }
+          if (process.usesSharedRuntimeTopology) {
+            try {
+              await process.interruptCurrentTurn();
+            } catch (error) {
+              this.send(ws, {
+                type: "error",
+                errorCode:
+                  error instanceof CodexSharedRuntimeTurnOwnershipError
+                    ? "codex_shared_runtime_turn_owned_elsewhere"
+                    : "codex_shared_runtime_interrupt_failed",
+                sessionId: session.id,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : "Failed to interrupt the shared Codex turn.",
+              });
+            }
+            break;
+          }
         }
         session.process.interrupt();
         break;
@@ -10673,33 +11690,55 @@ export class BridgeWebSocketServer {
     // 1. Try running session first
     const runningSession = this.sessionManager.get(sessionId);
     if (runningSession) {
-      this.sessionManager.renameSession(sessionId, name);
-
-      // Persist to provider storage
-      if (
-        runningSession.provider === "claude" &&
-        runningSession.claudeSessionId
-      ) {
-        await renameClaudeSession(
-          runningSession.worktreePath ?? runningSession.projectPath,
-          runningSession.claudeSessionId,
-          name,
-        );
-      } else if (
-        runningSession.provider === "codex" &&
-        runningSession.process
-      ) {
-        try {
-          await (
-            runningSession.process as import("./codex-process.js").CodexProcess
-          ).renameThread(name ?? "");
-        } catch (err) {
-          console.warn(`[websocket] Failed to rename Codex thread:`, err);
+      try {
+        let persisted = true;
+        if (
+          runningSession.provider === "claude" &&
+          runningSession.claudeSessionId
+        ) {
+          persisted = await renameClaudeSession(
+            runningSession.worktreePath ?? runningSession.projectPath,
+            runningSession.claudeSessionId,
+            name,
+          );
+        } else if (runningSession.provider === "codex") {
+          const codexProcess = runningSession.process as CodexProcess;
+          if (typeof codexProcess.renameThread !== "function") {
+            throw new Error("The active Codex runtime cannot rename threads.");
+          }
+          this.assertSharedCodexWriterAvailable("rename a Codex thread");
+          await codexProcess.renameThread(name ?? "");
         }
+        if (!persisted) {
+          throw new Error("The provider did not persist the new name.");
+        }
+        // Publish only after provider persistence succeeds. A failed daemon
+        // RPC must never leave a locally optimistic title behind.
+        this.sessionManager.renameSession(sessionId, name);
+        this.broadcastSessionList();
+        this.send(ws, {
+          type: "rename_result",
+          sessionId,
+          name,
+          success: true,
+        });
+      } catch (error) {
+        const failure =
+          error instanceof SessionLifecycleError
+            ? this.classifySessionLifecycleError(error)
+            : {
+                code: "provider_rpc_failed" as const,
+                message: errorMessageOf(error),
+              };
+        this.send(ws, {
+          type: "rename_result",
+          sessionId,
+          name,
+          success: false,
+          error: failure.message,
+          errorCode: failure.code,
+        });
       }
-
-      this.broadcastSessionList();
-      this.send(ws, { type: "rename_result", sessionId, name, success: true });
       return;
     }
 
@@ -10718,10 +11757,46 @@ export class BridgeWebSocketServer {
       return;
     }
 
-    // For Codex recent sessions, write directly to session_index.jsonl.
+    // Shared-daemon mode must notify the canonical app-server so Desktop and
+    // Mobile observe the same name immediately. Private mode retains the
+    // legacy session_index append for compatibility.
     if (provider === "codex" && providerSessionId) {
-      const success = await renameCodexSession(providerSessionId, name);
-      this.send(ws, { type: "rename_result", sessionId, name, success });
+      try {
+        let success = true;
+        if (readCodexAppServerMode() === "daemon") {
+          this.assertSharedCodexWriterAvailable("rename a Codex thread");
+          if (!projectPath) {
+            throw new SessionLifecycleError(
+              "path_not_allowed",
+              "The Codex project path is required to rename this thread.",
+            );
+          }
+          const resolvedProjectPath =
+            this.resolveLifecycleProjectPath(projectPath);
+          await this.withCodexLifecycleProcess(resolvedProjectPath, (process) =>
+            process.renameThreadById(providerSessionId, name ?? ""),
+          );
+        } else {
+          success = await renameCodexSession(providerSessionId, name);
+        }
+        this.send(ws, { type: "rename_result", sessionId, name, success });
+      } catch (error) {
+        const failure =
+          error instanceof SessionLifecycleError
+            ? this.classifySessionLifecycleError(error)
+            : {
+                code: "provider_rpc_failed" as const,
+                message: errorMessageOf(error),
+              };
+        this.send(ws, {
+          type: "rename_result",
+          sessionId,
+          name,
+          success: false,
+          error: failure.message,
+          errorCode: failure.code,
+        });
+      }
       return;
     }
 
@@ -10733,6 +11808,392 @@ export class BridgeWebSocketServer {
   ): SessionInfo | undefined {
     if (sessionId) return this.sessionManager.get(sessionId);
     return this.getFirstSession();
+  }
+
+  private sharedCodexSettingsEnvelope(
+    msg: SharedCodexSettingsMessage,
+  ): SharedCodexSettingsEnvelope | null {
+    const values = [
+      msg.codexSourceId,
+      msg.threadId,
+      msg.runtimeSessionId,
+      msg.authorityGeneration,
+      msg.operationId,
+    ];
+    if (
+      values.some((value) => typeof value !== "string" || value.length === 0)
+    ) {
+      return null;
+    }
+    if (
+      msg.sessionId !== msg.runtimeSessionId ||
+      msg.runtimeSessionId == null ||
+      msg.codexSourceId == null ||
+      msg.threadId == null ||
+      msg.authorityGeneration == null ||
+      msg.operationId == null
+    ) {
+      return null;
+    }
+    return {
+      codexSourceId: msg.codexSourceId,
+      threadId: msg.threadId,
+      runtimeSessionId: msg.runtimeSessionId,
+      authorityGeneration: msg.authorityGeneration,
+      operationId: msg.operationId,
+    };
+  }
+
+  private assertSharedCodexSettingsIdentity(
+    session: SessionInfo,
+    process: CodexProcess,
+    envelope: SharedCodexSettingsEnvelope,
+  ): void {
+    if (
+      !process.usesSharedRuntimeTopology ||
+      this.sessionManager.get(envelope.runtimeSessionId) !== session ||
+      session.id !== envelope.runtimeSessionId ||
+      envelope.codexSourceId !== this.codexSourceId ||
+      this.codexThreadIdForSession(session) !== envelope.threadId ||
+      process.authorityGeneration !== envelope.authorityGeneration
+    ) {
+      throw new SharedCodexSettingsRejectedError(
+        "codex_shared_runtime_settings_stale_authority",
+        "The shared Codex settings target is no longer current. Refresh the conversation and try again.",
+      );
+    }
+  }
+
+  private async assertSharedCodexSettingsWritable(
+    session: SessionInfo,
+    process: CodexProcess,
+    envelope: SharedCodexSettingsEnvelope,
+  ): Promise<void> {
+    this.assertSharedCodexSettingsIdentity(session, process, envelope);
+    const brokerHealth = this.codexActionBrokerRuntime?.health;
+    if (brokerHealth?.ready !== true || brokerHealth.writerLeaseHeld !== true) {
+      throw new SharedCodexSettingsRejectedError(
+        "codex_shared_runtime_settings_unavailable",
+        "Shared Codex settings are unavailable until the Action Broker writer is ready.",
+      );
+    }
+    if (
+      session.permissionRestartInProgress ||
+      session.codexAttachmentState === "reconciling" ||
+      session.codexAttachmentState === "unavailable" ||
+      !process.isRunning ||
+      !process.isAttachmentReady ||
+      session.status !== "idle" ||
+      process.status !== "idle" ||
+      process.authoritativeThreadStatus.type !== "idle" ||
+      process.activeTurnId !== undefined ||
+      this.codexRuntimeAuthorityProjection(session, process).controlState !==
+        "writable"
+    ) {
+      throw new SharedCodexSettingsRejectedError(
+        "codex_shared_runtime_settings_not_idle",
+        "Shared Codex settings can only be changed while the exact runtime is idle and writable.",
+      );
+    }
+    if (await this.localFeatures.hasExternalCodexActivityVerified(session)) {
+      throw new SharedCodexSettingsRejectedError(
+        "codex_settings_owned_elsewhere",
+        "Codex Desktop owns the active turn. Settings remain read-only until that turn finishes.",
+      );
+    }
+    // The external activity probe is asynchronous. Re-check all exact local
+    // fences before admitting the provider mutation.
+    this.assertSharedCodexSettingsIdentity(session, process, envelope);
+    if (
+      session.status !== "idle" ||
+      process.status !== "idle" ||
+      process.authoritativeThreadStatus.type !== "idle" ||
+      process.activeTurnId !== undefined ||
+      this.codexActionBrokerRuntime?.health.ready !== true
+    ) {
+      throw new SharedCodexSettingsRejectedError(
+        "codex_shared_runtime_settings_not_idle",
+        "The shared Codex runtime changed before settings could be saved.",
+      );
+    }
+  }
+
+  private pruneSharedCodexSettingsOperations(now = Date.now()): void {
+    for (const [key, operation] of this.sharedCodexSettingsOperations) {
+      if (
+        operation.settledAt !== undefined &&
+        now - operation.settledAt > SHARED_CODEX_SETTINGS_OPERATION_TTL_MS
+      ) {
+        this.sharedCodexSettingsOperations.delete(key);
+      }
+    }
+    while (
+      this.sharedCodexSettingsOperations.size >=
+      SHARED_CODEX_SETTINGS_OPERATION_MAX
+    ) {
+      const oldest = [...this.sharedCodexSettingsOperations].find(
+        ([, operation]) => operation.settledAt !== undefined,
+      )?.[0];
+      if (oldest === undefined) break;
+      this.sharedCodexSettingsOperations.delete(oldest);
+    }
+  }
+
+  private async runSharedCodexSettingsOperation(
+    session: SessionInfo,
+    process: CodexProcess,
+    msg: SharedCodexSettingsMessage,
+    fingerprint: string,
+    mutate: () => Promise<void>,
+    publish: () => void,
+  ): Promise<void> {
+    const envelope = this.sharedCodexSettingsEnvelope(msg);
+    if (!envelope) {
+      throw new SharedCodexSettingsRejectedError(
+        "codex_shared_runtime_settings_read_only",
+        "Shared Codex settings require an exact current runtime target.",
+      );
+    }
+    this.assertSharedCodexSettingsIdentity(session, process, envelope);
+    this.pruneSharedCodexSettingsOperations();
+    const key = [
+      envelope.codexSourceId,
+      envelope.threadId,
+      envelope.runtimeSessionId,
+      envelope.authorityGeneration,
+      envelope.operationId,
+    ].join("\u0000");
+    const existing = this.sharedCodexSettingsOperations.get(key);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) {
+        throw new SharedCodexSettingsRejectedError(
+          "codex_shared_runtime_settings_operation_conflict",
+          "This shared Codex settings operation ID was already used for different settings.",
+        );
+      }
+      await existing.promise;
+      return;
+    }
+    if (
+      this.sharedCodexSettingsOperations.size >=
+      SHARED_CODEX_SETTINGS_OPERATION_MAX
+    ) {
+      throw new SharedCodexSettingsRejectedError(
+        "codex_shared_runtime_settings_busy",
+        "Too many shared Codex settings operations are still pending. Wait for them to settle and retry.",
+      );
+    }
+
+    const promise = (async () => {
+      await this.assertSharedCodexSettingsWritable(session, process, envelope);
+      await mutate();
+      // A canonical ACK may arrive after a local attachment replacement. The
+      // provider write is real, but a stale attachment must not overwrite the
+      // replacement runtime's projection.
+      this.assertSharedCodexSettingsIdentity(session, process, envelope);
+      publish();
+    })();
+    const operation: SharedCodexSettingsOperation = {
+      fingerprint,
+      promise,
+      createdAt: Date.now(),
+    };
+    this.sharedCodexSettingsOperations.set(key, operation);
+    void promise.then(
+      () => {
+        operation.settledAt = Date.now();
+      },
+      () => {
+        operation.settledAt = Date.now();
+      },
+    );
+    await promise;
+  }
+
+  private sendSharedCodexSettingsError(
+    ws: WebSocket,
+    session: SessionInfo,
+    msg: SharedCodexSettingsMessage,
+    fallbackErrorCode: string,
+    error: unknown,
+  ): void {
+    const rejected =
+      error instanceof SharedCodexSettingsRejectedError ? error : undefined;
+    this.send(ws, {
+      type: "error",
+      sessionId: session.id,
+      errorCode: rejected?.errorCode ?? fallbackErrorCode,
+      message:
+        rejected?.message ??
+        `Failed to save shared Codex settings: ${errorMessageOf(error)}`,
+      ...(msg.type === "set_permission_mode" && msg.permissionChangeId
+        ? { permissionChangeId: msg.permissionChangeId }
+        : {}),
+    });
+  }
+
+  private async handleSharedCodexPermissionMode(
+    ws: WebSocket,
+    session: SessionInfo,
+    process: CodexProcess,
+    msg: Extract<ClientMessage, { type: "set_permission_mode" }>,
+  ): Promise<void> {
+    try {
+      if (!this.sharedCodexSettingsEnvelope(msg)) {
+        throw new SharedCodexSettingsRejectedError(
+          "codex_shared_runtime_settings_read_only",
+          "Shared Codex settings require an exact current runtime target.",
+        );
+      }
+      if (msg.applyStrategy === "restart_now") {
+        throw new SharedCodexSettingsRejectedError(
+          "set_permission_mode_rejected",
+          "A shared Codex attachment cannot be restarted to apply settings. Use the idle next-turn update instead.",
+        );
+      }
+
+      const normalizedCodexPermissionsMode = normalizeCodexPermissionsMode(
+        msg.codexPermissionsMode,
+      );
+      const requestedCodexPermissionsMode =
+        this.codexAutoReviewDisabled &&
+        normalizedCodexPermissionsMode === "autoReview"
+          ? "default"
+          : normalizedCodexPermissionsMode;
+      const permissionPreset = requestedCodexPermissionsMode
+        ? codexSettingsFromPermissionsMode(requestedCodexPermissionsMode)
+        : undefined;
+      const currentApproval = normalizeCodexApprovalPolicyIfKnown(
+        process.approvalPolicy,
+      );
+      const currentReviewer = process.approvalsReviewer;
+      const currentPermissionsMode = normalizeCodexPermissionsMode(
+        session.codexSettings?.codexPermissionsMode,
+      );
+      const currentSandboxMode = session.codexSettings?.sandboxMode;
+      const explicitApproval = requestedCodexPermissionsMode
+        ? permissionPreset?.approvalPolicy
+        : normalizeCodexApprovalPolicy(
+            msg.approvalPolicy ??
+              (msg.executionMode == null
+                ? undefined
+                : msg.executionMode === "fullAccess"
+                  ? "never"
+                  : "on-request"),
+          );
+      const executionMode = deriveExecutionMode({
+        provider: "codex",
+        permissionMode: msg.mode,
+        executionMode: msg.executionMode,
+        approvalPolicy: explicitApproval,
+      });
+      const requestedCollaboration =
+        msg.planMode === undefined && msg.mode !== "plan"
+          ? process.collaborationMode
+          : derivePlanMode({
+                permissionMode: msg.mode,
+                planMode: msg.planMode,
+              })
+            ? "plan"
+            : "default";
+      if (requestedCollaboration !== process.collaborationMode) {
+        throw new SharedCodexSettingsRejectedError(
+          "codex_shared_runtime_collaboration_settings_read_only",
+          "Plan mode is not part of detached shared-runtime settings yet. Change it from the owning Codex client.",
+        );
+      }
+      const newSandboxMode = permissionPreset
+        ? permissionPreset.sandboxMode
+        : currentSandboxMode;
+      const requestedReviewer =
+        this.codexAutoReviewDisabled &&
+        isCodexAutoReviewApprovalsReviewer(msg.approvalsReviewer)
+          ? "user"
+          : msg.approvalsReviewer;
+      const configuredReviewer =
+        requestedCodexPermissionsMode === "custom"
+          ? undefined
+          : (permissionPreset?.approvalsReviewer ??
+            requestedReviewer ??
+            currentReviewer);
+      const newReviewer = this.codexAutoReviewDisabled
+        ? "user"
+        : configuredReviewer;
+      const derivedPermissionsMode =
+        permissionPreset?.codexPermissionsMode ??
+        currentPermissionsMode ??
+        deriveCodexPermissionsMode({
+          approvalPolicy: explicitApproval,
+          approvalsReviewer: newReviewer,
+          sandboxMode: newSandboxMode,
+        });
+      const newPermissionsMode =
+        this.codexAutoReviewDisabled && derivedPermissionsMode === "autoReview"
+          ? "default"
+          : derivedPermissionsMode;
+      const legacyPermissionMode = modesToLegacyPermissionMode(
+        "codex",
+        executionMode,
+        process.collaborationMode === "plan",
+      );
+      const settings: CodexSharedRuntimeThreadSettings = {
+        approvalPolicy:
+          requestedCodexPermissionsMode === "custom" ? null : explicitApproval,
+        approvalsReviewer:
+          requestedCodexPermissionsMode === "custom"
+            ? null
+            : (newReviewer as CodexStartOptions["approvalsReviewer"]),
+        codexPermissionsMode: newPermissionsMode,
+        sandboxMode:
+          requestedCodexPermissionsMode === "custom"
+            ? null
+            : (newSandboxMode as CodexStartOptions["sandboxMode"]),
+      };
+
+      await this.runSharedCodexSettingsOperation(
+        session,
+        process,
+        msg,
+        JSON.stringify({ type: msg.type, settings }),
+        () => process.updateSharedRuntimeSettingsForNextTurn(settings),
+        () => {
+          session.codexSettings = {
+            ...(session.codexSettings ?? {}),
+            ...(explicitApproval !== undefined
+              ? { approvalPolicy: explicitApproval }
+              : {}),
+            approvalsReviewer: newReviewer,
+            codexPermissionsMode: newPermissionsMode,
+            sandboxMode: newSandboxMode,
+          };
+          session.lastActivityAt = new Date();
+          this.broadcast({
+            type: "system",
+            subtype: "set_permission_mode",
+            sessionId: session.id,
+            permissionMode: legacyPermissionMode,
+            executionMode,
+            approvalPolicy: explicitApproval,
+            approvalsReviewer: newReviewer,
+            codexPermissionsMode: newPermissionsMode,
+            planMode: process.collaborationMode === "plan",
+            sandboxMode: newSandboxMode,
+            ...(msg.permissionChangeId
+              ? { permissionChangeId: msg.permissionChangeId }
+              : {}),
+          });
+          this.broadcastSessionList();
+        },
+      );
+    } catch (error) {
+      this.sendSharedCodexSettingsError(
+        ws,
+        session,
+        msg,
+        "set_permission_mode_rejected",
+        error,
+      );
+    }
   }
 
   private getFirstSession() {
@@ -10802,9 +12263,13 @@ export class BridgeWebSocketServer {
       bridgeCapabilities: [
         CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
-        CODEX_DESKTOP_CONTINUITY_CAPABILITY,
+        ...(readCodexAppServerMode() === "daemon"
+          ? []
+          : [CODEX_DESKTOP_CONTINUITY_CAPABILITY]),
         CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY,
         CODEX_HOME_IDENTITY_CAPABILITY,
+        CODEX_RUNTIME_DETACH_CAPABILITY,
+        BRIDGE_APPLICATION_READINESS_CAPABILITY,
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
         PUSH_REGISTRATION_STATUS_CAPABILITY,
         BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
@@ -10826,8 +12291,14 @@ export class BridgeWebSocketServer {
         CONVERSATION_SYNC_V2_CAPABILITY,
         CONVERSATION_ITEMS_BY_ID_CAPABILITY,
         APP_SERVER_STATUS_CAPABILITY,
+        ...(this.codexActionBrokerRuntime
+          ? [CODEX_ACTION_BROKER_CAPABILITY]
+          : []),
         DETACHED_SUBAGENTS_READ_CAPABILITY,
         DURABLE_SESSION_INSIGHTS_CAPABILITY,
+        ...(readCodexAppServerMode() === "daemon" && this.bridgeInstanceId
+          ? [SCOPED_CONTEXT_USAGE_CAPABILITY]
+          : []),
         CONVERSATION_MIRROR_SOURCE_IDENTITY_CAPABILITY,
         GIT_DIFF_REQUEST_CORRELATION_CAPABILITY,
         GIT_PROJECT_RESULT_CORRELATION_CAPABILITY,
@@ -10843,6 +12314,7 @@ export class BridgeWebSocketServer {
           : []),
       ],
     });
+    this.send(ws, this.backgroundActivityState());
   }
 
   private sendPromptHistoryStatus(ws: WebSocket): void {
@@ -10884,9 +12356,13 @@ export class BridgeWebSocketServer {
       bridgeCapabilities: [
         CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
-        CODEX_DESKTOP_CONTINUITY_CAPABILITY,
+        ...(readCodexAppServerMode() === "daemon"
+          ? []
+          : [CODEX_DESKTOP_CONTINUITY_CAPABILITY]),
         CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY,
         CODEX_HOME_IDENTITY_CAPABILITY,
+        CODEX_RUNTIME_DETACH_CAPABILITY,
+        BRIDGE_APPLICATION_READINESS_CAPABILITY,
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
         PUSH_REGISTRATION_STATUS_CAPABILITY,
         BACKGROUND_NOTIFICATION_DELIVERY_CAPABILITY,
@@ -10908,8 +12384,14 @@ export class BridgeWebSocketServer {
         CONVERSATION_SYNC_V2_CAPABILITY,
         CONVERSATION_ITEMS_BY_ID_CAPABILITY,
         APP_SERVER_STATUS_CAPABILITY,
+        ...(this.codexActionBrokerRuntime
+          ? [CODEX_ACTION_BROKER_CAPABILITY]
+          : []),
         DETACHED_SUBAGENTS_READ_CAPABILITY,
         DURABLE_SESSION_INSIGHTS_CAPABILITY,
+        ...(readCodexAppServerMode() === "daemon" && this.bridgeInstanceId
+          ? [SCOPED_CONTEXT_USAGE_CAPABILITY]
+          : []),
         CONVERSATION_MIRROR_SOURCE_IDENTITY_CAPABILITY,
         GIT_DIFF_REQUEST_CORRELATION_CAPABILITY,
         GIT_PROJECT_RESULT_CORRELATION_CAPABILITY,
@@ -11283,26 +12765,31 @@ export class BridgeWebSocketServer {
         const backgroundDelivery = this.backgroundDeliveryClients.get(client);
         if (backgroundDelivery?.mode === "notifications_only") {
           const projectionSession = this.sessionManager.get(sessionId);
-          const notification = deliveryId
-            ? projectBackgroundNotification(
-                msg,
-                {
-                  deliveryId,
-                  sessionId,
-                  provider: projectionSession?.provider ?? "claude",
-                  providerSessionId: projectionSession?.claudeSessionId,
-                  bridgeInstanceId: this.bridgeInstanceId,
-                  codexSourceId:
-                    projectionSession?.provider === "codex" &&
-                    this.bridgeInstanceId
-                      ? this.codexSourceId
-                      : undefined,
-                  label: this.sessionLabel(sessionId),
-                },
-                backgroundDelivery.policy,
-                backgroundDelivery.projectionState,
-              )
-            : null;
+          const suppressLegacySharedCodexApproval =
+            this.codexActionBrokerRuntime != null &&
+            projectionSession?.provider === "codex" &&
+            msg.type === "permission_request";
+          const notification =
+            deliveryId && !suppressLegacySharedCodexApproval
+              ? projectBackgroundNotification(
+                  msg,
+                  {
+                    deliveryId,
+                    sessionId,
+                    provider: projectionSession?.provider ?? "claude",
+                    providerSessionId: projectionSession?.claudeSessionId,
+                    bridgeInstanceId: this.bridgeInstanceId,
+                    codexSourceId:
+                      projectionSession?.provider === "codex" &&
+                      this.bridgeInstanceId
+                        ? this.codexSourceId
+                        : undefined,
+                    label: this.sessionLabel(sessionId),
+                  },
+                  backgroundDelivery.policy,
+                  backgroundDelivery.projectionState,
+                )
+              : null;
           if (notification) {
             const compatibleNotification = this.prepareServerMessageForClient(
               client,
@@ -11445,11 +12932,12 @@ export class BridgeWebSocketServer {
       await this.requireArchiveStoreReady();
       this.assertCodexSourceMatches(provider, msg.codexSourceId);
       const projectPath = this.resolveLifecycleProjectPath(msg.projectPath);
-      this.assertProviderSessionInactive(provider, sessionId);
       if (provider === "codex") {
+        this.assertSharedCodexWriterAvailable("archive a Codex thread");
+        this.assertCodexConversationInactive(sessionId);
         await this.runCodexLifecycleMutation(sessionId, () =>
           this.withCodexLifecycleProcess(projectPath, async (codexProcess) => {
-            this.assertProviderSessionInactive(provider, sessionId);
+            this.assertCodexConversationInactive(sessionId);
             let reservation: ArchiveCapacityReservation;
             try {
               reservation = await this.archiveStore.reserveArchiveCapacity(
@@ -11583,6 +13071,7 @@ export class BridgeWebSocketServer {
       const entry = this.requireArchivedSession(msg);
       this.assertProviderSessionInactive(entry.provider, sessionId);
       if (entry.provider === "codex") {
+        this.assertSharedCodexWriterAvailable("restore a Codex thread");
         await this.runCodexLifecycleMutation(sessionId, () =>
           this.withCodexLifecycleProcess(
             entry.projectPath,
@@ -11660,6 +13149,9 @@ export class BridgeWebSocketServer {
         );
       }
       this.assertProviderSessionInactive("codex", sessionId);
+      this.assertSharedCodexWriterAvailable(
+        "permanently delete a Codex thread",
+      );
       await this.runCodexLifecycleMutation(sessionId, () =>
         this.withCodexLifecycleProcess(
           entry.projectPath,
@@ -11757,6 +13249,34 @@ export class BridgeWebSocketServer {
       "codex_source_mismatch",
       "This Codex thread belongs to a different configured source.",
     );
+  }
+
+  private assertSharedCodexWriterAvailable(action: string): void {
+    if (readCodexAppServerMode() !== "daemon") return;
+    const health = this.codexActionBrokerRuntime?.health;
+    if (health?.ready === true && health.writerLeaseHeld === true) return;
+    throw new SessionLifecycleError(
+      "codex_shared_runtime_writer_unavailable",
+      `Cannot ${action} while this Bridge is a read-only shared-runtime standby.`,
+    );
+  }
+
+  private assertCodexConversationInactive(threadId: string): void {
+    this.assertProviderSessionInactive("codex", threadId);
+    if (readCodexAppServerMode() !== "daemon") return;
+    const activity = this.localFeatures.conversationActivity("codex", threadId);
+    if (activity === "active") {
+      throw new SessionLifecycleError(
+        "session_active",
+        "Wait for the active Desktop or Bridge turn to finish before changing this thread's archive state.",
+      );
+    }
+    if (activity === "unknown") {
+      throw new SessionLifecycleError(
+        "codex_status_unavailable",
+        "Codex thread status is still reconciling. Refresh and try again before changing its archive state.",
+      );
+    }
   }
 
   private resolveLifecycleProjectPath(projectPath: string): string {
@@ -12238,7 +13758,10 @@ export class BridgeWebSocketServer {
     projectPath?: string,
     requestTimeoutMs?: number,
   ): Promise<CodexProcess> {
-    const proc = new CodexProcess();
+    const proc = new CodexProcess(
+      this.platform,
+      this.codexSharedRuntimeMutationAllowed,
+    );
     try {
       const cwd = projectPath ?? process.cwd();
       if (requestTimeoutMs === undefined) {
@@ -12269,6 +13792,12 @@ export class BridgeWebSocketServer {
 
   /** Whether any registered token has privacy mode enabled (conservative: privacy wins). */
   private isPrivacyMode(): boolean {
+    // Push tokens survive Bridge restarts in Cloud, while their locale/privacy
+    // preferences are rehydrated only after Mobile reconnects and registers.
+    // Unknown policy must therefore fail private: otherwise a completion or
+    // approval observed during that window could expose labels, tool names, or
+    // result/error text on the lock screen.
+    if (this.tokenPrivacyMode.size === 0) return true;
     for (const privacy of this.tokenPrivacyMode.values()) {
       if (privacy) return true;
     }
@@ -12300,6 +13829,265 @@ export class BridgeWebSocketServer {
     return {
       bridgeInstanceId: this.bridgeInstanceId,
       ...(provider === "codex" ? { codexSourceId: this.codexSourceId } : {}),
+    };
+  }
+
+  private hasExternalCodexNotificationDemand(): boolean {
+    const hasNotificationOnlyClient = [...this.wss.clients].some(
+      (client) =>
+        client.readyState === WebSocket.OPEN &&
+        this.backgroundDeliveryClients.get(client)?.mode ===
+          "notifications_only",
+    );
+    return (
+      hasNotificationOnlyClient ||
+      (this.pushRelay.isConfigured && this.tokenLocales.size > 0)
+    );
+  }
+
+  private dispatchExternalCodexBackgroundCandidate(
+    candidate: ExternalCodexNotificationCandidate,
+  ): void {
+    if (
+      !this.bridgeInstanceId ||
+      candidate.codexSourceId !== this.codexSourceId ||
+      (candidate.message.type !== "assistant" &&
+        candidate.message.type !== "result")
+    ) {
+      return;
+    }
+
+    if (
+      candidate.message.type === "result" &&
+      (candidate.message.subtype === "success" ||
+        candidate.message.subtype === "error")
+    ) {
+      const terminalKey = [
+        candidate.codexSourceId,
+        candidate.threadId,
+        candidate.turnId ?? candidate.observedAt,
+        candidate.message.subtype,
+      ].join("\u0000");
+      if (this.externalCodexTerminalNotificationKeys.has(terminalKey)) return;
+      this.externalCodexTerminalNotificationKeys.add(terminalKey);
+      while (
+        this.externalCodexTerminalNotificationKeys.size >
+        MAX_EXTERNAL_CODEX_TERMINAL_NOTIFICATION_KEYS
+      ) {
+        const oldest = this.externalCodexTerminalNotificationKeys
+          .values()
+          .next().value;
+        if (oldest === undefined) break;
+        this.externalCodexTerminalNotificationKeys.delete(oldest);
+      }
+    }
+
+    const runtimeSession = this.sessionManager
+      .list()
+      .map(({ id }) => this.sessionManager.get(id))
+      .find(
+        (session) =>
+          session?.provider === "codex" &&
+          this.codexThreadIdForSession(session) === candidate.threadId,
+      );
+    const sessionId = runtimeSession?.id ?? candidate.threadId;
+    const occurredAtMs = Date.parse(candidate.observedAt);
+    const context = {
+      deliveryId: randomUUID(),
+      sessionId,
+      provider: "codex" as const,
+      providerSessionId: candidate.threadId,
+      bridgeInstanceId: this.bridgeInstanceId,
+      codexSourceId: candidate.codexSourceId,
+      label:
+        candidate.label ??
+        (runtimeSession ? this.sessionLabel(runtimeSession.id) : ""),
+      now: Number.isFinite(occurredAtMs) ? occurredAtMs : Date.now(),
+    };
+
+    const localDeliveries: Array<{
+      client: WebSocket;
+      message: Record<string, unknown>;
+    }> = [];
+    for (const client of this.wss.clients) {
+      if (
+        client.readyState !== WebSocket.OPEN ||
+        this.backgroundDeliveryClients.get(client)?.mode !==
+          "notifications_only"
+      ) {
+        continue;
+      }
+      const delivery = this.backgroundDeliveryClients.get(client)!;
+      const notification = projectBackgroundNotification(
+        candidate.message,
+        context,
+        delivery.policy,
+        delivery.projectionState,
+      );
+      if (!notification) continue;
+      const compatible = this.prepareServerMessageForClient(
+        client,
+        notification,
+      );
+      if (compatible) {
+        localDeliveries.push({
+          client,
+          message: compatible as Record<string, unknown>,
+        });
+      }
+    }
+
+    const pushPayloads: PushNotifyPayload[] = [];
+    if (this.pushRelay.isConfigured && this.tokenLocales.size > 0) {
+      const enabledEventTypes = [
+        "approval_required",
+        "ask_user_question",
+        "session_completed",
+        "session_failed",
+        ...(this.hasExplicitPushSubscriber(PUSH_PROGRESS_EVENT)
+          ? [PUSH_PROGRESS_EVENT]
+          : []),
+      ];
+      for (const locale of this.getRegisteredLocales()) {
+        const state =
+          this.externalCodexPushProjectionStates.get(locale) ??
+          createBackgroundNotificationProjectionState();
+        this.externalCodexPushProjectionStates.set(locale, state);
+        const notification = projectBackgroundNotification(
+          candidate.message,
+          context,
+          createBackgroundNotificationPolicy({
+            locale,
+            privacyMode: this.isPrivacyMode(),
+            enabledEventTypes,
+          }),
+          state,
+        );
+        if (notification) {
+          pushPayloads.push({
+            eventType: notification.eventType,
+            title: notification.title,
+            body: notification.body,
+            locale,
+            data: notification.data,
+          });
+        }
+      }
+    }
+
+    // Register the ACK suppression window before the local frame is sent.
+    this.queuePushNotifications(context.deliveryId, pushPayloads);
+    for (const delivery of localDeliveries) {
+      delivery.client.send(JSON.stringify(delivery.message));
+    }
+  }
+
+  private handleCodexActionBrokerNotificationUpdate(
+    update: CodexActionBrokerRuntimeUpdate,
+  ): void {
+    if (update.kind !== "request") return;
+    const deliveryId = randomUUID();
+    for (const client of this.wss.clients) {
+      this.sendCodexActionBrokerNotification(
+        client,
+        update.request,
+        deliveryId,
+      );
+    }
+    this.queueCodexActionBrokerPushNotification(update.request, deliveryId);
+  }
+
+  private replayCodexActionBrokerNotifications(client: WebSocket): void {
+    const requests = this.codexActionBrokerRuntime?.listRequests({ limit: 64 });
+    if (!requests) return;
+    for (const request of requests) {
+      this.sendCodexActionBrokerNotification(client, request, randomUUID());
+    }
+  }
+
+  private sendCodexActionBrokerNotification(
+    client: WebSocket,
+    request: CodexActionBrokerRuntimeRequest,
+    deliveryId: string,
+  ): void {
+    if (
+      client.readyState !== WebSocket.OPEN ||
+      !this.bridgeInstanceId ||
+      this.backgroundDeliveryClients.get(client)?.mode !==
+        "notifications_only" ||
+      this.clientSupportedServerMessages
+        .get(client)
+        ?.has("codex_action_broker_v1") !== true
+    ) {
+      return;
+    }
+    const delivery = this.backgroundDeliveryClients.get(client)!;
+    const context = this.codexActionNotificationContext(request, deliveryId);
+    const notification = projectCodexActionBackgroundNotification(
+      request,
+      context,
+      delivery.policy,
+      delivery.projectionState,
+    );
+    if (!notification) return;
+    const compatible = this.prepareServerMessageForClient(client, notification);
+    if (compatible) client.send(JSON.stringify(compatible));
+  }
+
+  private queueCodexActionBrokerPushNotification(
+    request: CodexActionBrokerRuntimeRequest,
+    deliveryId: string,
+  ): void {
+    if (!this.pushRelay.isConfigured || !this.bridgeInstanceId) return;
+    const payloads: PushNotifyPayload[] = [];
+    for (const locale of this.getRegisteredLocales()) {
+      const state =
+        this.codexActionPushProjectionStates.get(locale) ??
+        createBackgroundNotificationProjectionState();
+      this.codexActionPushProjectionStates.set(locale, state);
+      const notification = projectCodexActionBackgroundNotification(
+        request,
+        this.codexActionNotificationContext(request, deliveryId),
+        createBackgroundNotificationPolicy({
+          locale,
+          privacyMode: this.isPrivacyMode(),
+        }),
+        state,
+      );
+      if (notification) {
+        payloads.push({
+          eventType: notification.eventType,
+          title: notification.title,
+          body: notification.body,
+          locale,
+          data: notification.data,
+        });
+      }
+    }
+    this.queuePushNotifications(deliveryId, payloads);
+  }
+
+  private codexActionNotificationContext(
+    request: CodexActionBrokerRuntimeRequest,
+    deliveryId: string,
+  ) {
+    const runtimeSession = this.sessionManager
+      .list()
+      .map(({ id }) => this.sessionManager.get(id))
+      .find(
+        (session) =>
+          session?.provider === "codex" &&
+          this.codexThreadIdForSession(session) === request.threadId,
+      );
+    const sessionId = runtimeSession?.id ?? request.threadId;
+    return {
+      deliveryId,
+      sessionId,
+      provider: "codex" as const,
+      providerSessionId: request.threadId,
+      bridgeInstanceId: this.bridgeInstanceId,
+      codexSourceId: request.codexSourceId,
+      label: runtimeSession ? this.sessionLabel(runtimeSession.id) : "",
     };
   }
 
@@ -12485,6 +14273,16 @@ export class BridgeWebSocketServer {
     }
 
     if (msg.type === "permission_request") {
+      const permissionSession = this.sessionManager.get(sessionId);
+      if (
+        this.codexActionBrokerRuntime != null &&
+        permissionSession?.provider === "codex"
+      ) {
+        // Shared-runtime Codex approvals are projected only from the canonical
+        // Action Broker request. A legacy permission message does not carry the
+        // source/turn/generation fence required for a safe notification action.
+        return;
+      }
       const seen =
         this.notifiedPermissionToolUses.get(sessionId) ?? new Set<string>();
       if (seen.has(msg.toolUseId)) return;
@@ -12724,14 +14522,29 @@ export class BridgeWebSocketServer {
   }
 
   private backgroundActiveWorkCount(): number {
-    return this.sessionManager.list().filter((session) => {
-      return (
-        session.queuedInput != null ||
-        session.status === "starting" ||
-        session.status === "running" ||
-        session.status === "compacting"
+    const activeKeys = this.localFeatures.backgroundActiveConversationKeys();
+    for (const summary of this.sessionManager.list()) {
+      if (
+        summary.queuedInput == null &&
+        summary.pendingPermission == null &&
+        summary.status !== "starting" &&
+        summary.status !== "running" &&
+        summary.status !== "waiting_approval" &&
+        summary.status !== "compacting"
+      ) {
+        continue;
+      }
+      const session = this.sessionManager.get(summary.id);
+      const providerSessionId = session
+        ? this.providerSessionIdForSession(session)
+        : undefined;
+      activeKeys.add(
+        providerSessionId
+          ? `${summary.provider}\u0000${providerSessionId}`
+          : `runtime\u0000${summary.id}`,
       );
-    }).length;
+    }
+    return activeKeys.size;
   }
 
   private backgroundActivityState(): BackgroundActivityStateMessage {
@@ -12740,6 +14553,15 @@ export class BridgeWebSocketServer {
       activeWorkCount: this.backgroundActiveWorkCount(),
       occurredAt: new Date().toISOString(),
     };
+  }
+
+  private scheduleBackgroundActivityBroadcast(): void {
+    if (this.backgroundActivityBroadcastScheduled) return;
+    this.backgroundActivityBroadcastScheduled = true;
+    queueMicrotask(() => {
+      this.backgroundActivityBroadcastScheduled = false;
+      this.broadcast({ ...this.backgroundActivityState() });
+    });
   }
 
   private shouldSendToClient(
@@ -12830,6 +14652,27 @@ export class BridgeWebSocketServer {
     });
   }
 
+  private async acquireInputDeliveryOperation(
+    sessionId: string,
+  ): Promise<() => void> {
+    const previous = this.inputDeliveryOperations.get(sessionId);
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.inputDeliveryOperations.set(sessionId, current);
+    await previous;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      release();
+      if (this.inputDeliveryOperations.get(sessionId) === current) {
+        this.inputDeliveryOperations.delete(sessionId);
+      }
+    };
+  }
+
   private findAcceptedClientInput(
     session: SessionInfo,
     clientMessageId: string,
@@ -12881,6 +14724,63 @@ export class BridgeWebSocketServer {
       }
     }
     return null;
+  }
+
+  private inputPersistenceFailureReason(error: unknown): string {
+    if (!(error instanceof InputDeliveryLedgerError)) {
+      return "Durable Bridge delivery is unavailable; the message was not accepted.";
+    }
+    switch (error.code) {
+      case "payload_too_large":
+        return "The message is too large for durable Bridge delivery.";
+      case "unsafe_payload":
+        return "This message cannot be queued safely across a Bridge restart.";
+      case "identity_conflict":
+        return "This message id is already bound to different content.";
+      case "queue_full":
+        return "The durable next-turn queue is full.";
+      case "capacity":
+        return "Durable Bridge delivery storage is full; the message was not accepted.";
+      case "record_missing":
+        return "The durable queued message is no longer available.";
+      case "unavailable":
+      default:
+        return "Durable Bridge delivery is unavailable; the message was not accepted.";
+    }
+  }
+
+  private sendInputPersistenceRejection(
+    ws: WebSocket,
+    session: SessionInfo,
+    clientMessageId: string | undefined,
+    error: unknown,
+  ): void {
+    console.warn(
+      "[ws] Codex input rejected before acknowledgement because durable delivery is unavailable:",
+      error instanceof Error ? error.name : "UnknownError",
+    );
+    this.send(ws, {
+      type: "input_rejected",
+      sessionId: session.id,
+      ...(clientMessageId ? { clientMessageId } : {}),
+      reason: this.inputPersistenceFailureReason(error),
+      errorCode: "input_delivery_persistence_unavailable",
+    });
+  }
+
+  private sendInputPersistenceOperationError(
+    ws: WebSocket,
+    error: unknown,
+  ): void {
+    console.warn(
+      "[ws] Durable queued-input mutation failed:",
+      error instanceof Error ? error.name : "UnknownError",
+    );
+    this.send(ws, {
+      type: "error",
+      message: this.inputPersistenceFailureReason(error),
+      errorCode: "input_delivery_persistence_unavailable",
+    });
   }
 
   private sendInputBridgeAcceptance(
@@ -13573,6 +15473,52 @@ export class BridgeWebSocketServer {
       message: `Cannot ${action} while the permission restart is in progress.`,
       errorCode: "permission_restart_in_progress",
       sessionId: session.id,
+    });
+    return true;
+  }
+
+  /**
+   * A daemon Bridge is writable only while it owns the source-global Action
+   * Broker lease. `/readyz` is diagnostic only; every legacy WebSocket write
+   * path must enforce the same fence so a warm standby cannot start a turn or
+   * mutate a thread behind the leader's back.
+   */
+  private rejectUnavailableSharedCodexWriter(
+    ws: WebSocket,
+    action: string,
+    sessionId?: string,
+  ): boolean {
+    if (readCodexAppServerMode() !== "daemon") return false;
+    const health = this.codexActionBrokerRuntime?.health;
+    if (health?.ready === true && health.writerLeaseHeld === true) return false;
+    this.send(ws, {
+      type: "error",
+      errorCode: "codex_shared_runtime_writer_unavailable",
+      message: `Cannot ${action} while this Bridge is a read-only shared-runtime standby. Reconnect to the active Bridge and try again.`,
+      ...(sessionId ? { sessionId } : {}),
+    });
+    return true;
+  }
+
+  /**
+   * In daemon topology app-server requests have exactly one first responder:
+   * the Action Broker. Old approve/reject/answer frames have no source,
+   * generation, or writer-lease proof and therefore fail closed. Private mode
+   * keeps the original legacy behavior unchanged.
+   */
+  private rejectLegacySharedCodexAction(
+    ws: WebSocket,
+    session: SessionInfo,
+    action: string,
+  ): boolean {
+    if (session.provider !== "codex" || readCodexAppServerMode() !== "daemon") {
+      return false;
+    }
+    this.send(ws, {
+      type: "error",
+      errorCode: "codex_action_broker_required",
+      sessionId: session.id,
+      message: `Cannot ${action} through the legacy approval channel in shared-runtime mode. Update CC Pocket and use the current approval card.`,
     });
     return true;
   }

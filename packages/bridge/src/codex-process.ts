@@ -179,6 +179,12 @@ export interface CodexNextTurnPermissionSettings {
   sandboxMode?: CodexStartOptions["sandboxMode"] | null;
 }
 
+export interface CodexSharedRuntimeThreadSettings extends CodexNextTurnPermissionSettings {
+  model?: string;
+  modelReasoningEffort?: CodexStartOptions["modelReasoningEffort"];
+  serviceTier?: string;
+}
+
 type CodexSandboxPolicy =
   | { type: "dangerFullAccess" }
   | { type: "readOnly"; networkAccess: boolean }
@@ -194,6 +200,7 @@ export interface CodexProcessEvents {
   message: [ServerMessage];
   status: [ProcessStatus];
   exit: [number | null];
+  shared_runtime_yield: [];
   input_ready: [];
   input_delivery: [CodexInputDeliveryEvent];
 }
@@ -231,6 +238,8 @@ interface PendingInput {
   text: string;
   /** Persisted by app-server as UserMessageThreadItem.clientId. */
   clientMessageId?: string;
+  /** Recovery replay must never fall back to an unkeyed provider write. */
+  requireClientUserMessageId?: boolean;
   images?: Array<{
     base64: string;
     mimeType: string;
@@ -248,6 +257,8 @@ interface PendingInput {
 export interface CodexRpcRequestOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Internal: direct fork helpers keep the current parent attachment bound. */
+  bindThreadResult?: boolean;
 }
 
 export class CodexRpcError extends Error {
@@ -259,6 +270,37 @@ export class CodexRpcError extends Error {
   ) {
     super(message);
     this.name = "CodexRpcError";
+  }
+}
+
+export type CodexSharedRuntimeTurnAction = "interrupt" | "stop" | "steer";
+
+export class CodexSharedRuntimeTurnOwnershipError extends Error {
+  constructor(
+    public readonly action: CodexSharedRuntimeTurnAction,
+    public readonly turnId: string,
+  ) {
+    super(
+      `Cannot ${action} shared Codex turn ${turnId}; it is owned by another subscriber`,
+    );
+    this.name = "CodexSharedRuntimeTurnOwnershipError";
+  }
+}
+
+export type CodexSharedRuntimeMutationGuard = () => boolean;
+
+/**
+ * Raised when a daemon-side Codex attachment loses the source-global writer
+ * lease before the provider mutation is emitted. The WebSocket admission
+ * check remains useful for a clear client error, but this process-local fence
+ * closes the race between that check and the eventual app-server RPC.
+ */
+export class CodexSharedRuntimeWriterUnavailableError extends Error {
+  constructor(public readonly method: string) {
+    super(
+      `Cannot perform ${method}; this Bridge no longer owns the shared Codex writer lease`,
+    );
+    this.name = "CodexSharedRuntimeWriterUnavailableError";
   }
 }
 
@@ -322,6 +364,24 @@ const CODEX_CORE_RPC_TIMEOUTS_MS = [
   ["turn/steer", 60_000],
   ["turn/interrupt", 30_000],
 ] as const;
+const CODEX_MUTATING_RPC_METHODS = new Set([
+  "plugin/install",
+  "review/start",
+  "thread/archive",
+  "thread/compact/start",
+  "thread/delete",
+  "thread/fork",
+  "thread/goal/clear",
+  "thread/goal/set",
+  "thread/name/set",
+  "thread/rollback",
+  "thread/settings/update",
+  "thread/start",
+  "thread/unarchive",
+  "turn/interrupt",
+  "turn/start",
+  "turn/steer",
+]);
 function isUnsupportedClientUserMessageIdError(error: unknown): boolean {
   if (!(error instanceof CodexRpcError)) return false;
   let detail = error.message;
@@ -480,6 +540,38 @@ interface PendingUserInputRequest {
     | "tool_suggestion";
 }
 
+export type CodexServerActionDecision =
+  "approve" | "approve_always" | "reject" | "answer";
+
+export interface CodexServerActionProjection {
+  kind:
+    | "command_approval"
+    | "file_approval"
+    | "permissions_approval"
+    | "user_input"
+    | "mcp_elicitation"
+    | "tool_suggestion";
+  toolUseId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  allowedActions: CodexServerActionDecision[];
+  responseShape:
+    | {
+        type: "approval";
+        approvalKind: "command" | "file";
+        availableDecisions?: string[];
+      }
+    | {
+        type: "permissions";
+        requestedPermissions: Record<string, unknown>;
+      }
+    | {
+        type: "user_input";
+        questions: PendingUserInputQuestion[];
+        requestKind: PendingUserInputRequest["kind"];
+      };
+}
+
 interface PendingGuardianReviewWarning {
   review: GuardianReviewDetails;
   message: string;
@@ -497,11 +589,28 @@ interface ToolSuggestionApp {
 interface PendingTurnCompletion {
   resolve: () => void;
   reject: (error: Error) => void;
+  /** Runtime fence for provisional requests received before turn/start replies. */
+  runtimeGeneration: number;
   /** Bound only by the authoritative turn/start RPC response. */
   turnId: string | null;
   /** Same-thread completions can race ahead of that response. */
   earlyCompletions: Map<string, Record<string, unknown>>;
+  /**
+   * Same-thread server requests can also race ahead of the turn/start response.
+   * They remain unanswered until that response proves the exact turn id.
+   */
+  earlyServerRequests: Map<
+    string,
+    Array<{
+      id: number | string;
+      method: string;
+      params: Record<string, unknown>;
+    }>
+  >;
 }
+
+const MAX_EARLY_SERVER_REQUEST_TURNS = 8;
+const MAX_EARLY_SERVER_REQUESTS = 32;
 
 interface RpcSuccess {
   id: number | string;
@@ -552,6 +661,7 @@ interface CodexResolvedSettings {
   sandboxMode?: string;
   modelReasoningEffort?: string;
   serviceTier?: string;
+  collaborationMode?: "plan" | "default";
   networkAccessEnabled?: boolean;
   webSearchMode?: string;
 }
@@ -618,6 +728,20 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private readonly attachmentWaiters = new Set<CodexAttachmentWaiter>();
   /** Turns whose successful turn/start response came from this attachment. */
   private readonly sharedRuntimeOwnedTurnIds = new Set<string>();
+  /**
+   * Narrow, reference-counted permits for an exact Desktop-owned turn/steer.
+   *
+   * These permits never confer interrupt, approval, settings, or turn/start
+   * authority. They exist only while the source/thread/generation envelope has
+   * already been checked by the WebSocket coordinator and the app-server RPC
+   * still carries expectedTurnId as its final compare-and-set fence.
+   */
+  private readonly sharedRuntimeExternalSteerPermits = new Map<
+    string,
+    number
+  >();
+  /** Fresh fork targets this attachment may narrow before handing them off. */
+  private readonly sharedRuntimeOwnedForkThreadIds = new Set<string>();
   private _activeTurnHydration: Promise<void> | null = null;
   private _lastStopWasSharedRuntime = false;
   private _agentNickname: string | null = null;
@@ -723,6 +847,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     "unknown";
   private _nativePlanModeProbe: Promise<boolean> | null = null;
   private _runtimeGeneration = 0;
+  /** Opaque fence for runtime/attachment authority; consumers must not parse. */
+  private _authorityGeneration = randomUUID();
   private _runtimeModel: string | undefined;
   private _runtimeModelReasoningEffort:
     CodexStartOptions["modelReasoningEffort"] | undefined;
@@ -736,6 +862,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     string,
     CodexItemToolDescriptor
   >();
+  /** Provider item start time inherited by deltas and completed projections. */
+  private readonly startedItemSourceTimestamps = new Map<string, string>();
   private pendingPlanCompletion: {
     toolUseId: string;
     planText: string;
@@ -755,10 +883,15 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private _idleWhenInteractionsClear = false;
   private steerTempPaths: string[] = [];
   private readonly platform: NodeJS.Platform;
+  private readonly sharedRuntimeMutationAllowed?: CodexSharedRuntimeMutationGuard;
 
-  constructor(platform: NodeJS.Platform = process.platform) {
+  constructor(
+    platform: NodeJS.Platform = process.platform,
+    sharedRuntimeMutationAllowed?: CodexSharedRuntimeMutationGuard,
+  ) {
     super();
     this.platform = platform;
+    this.sharedRuntimeMutationAllowed = sharedRuntimeMutationAllowed;
   }
 
   get status(): ProcessStatus {
@@ -783,6 +916,42 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
    */
   get activeTurnId(): string | undefined {
     return this.pendingTurnId ?? this.activeCoreActionTurnId ?? undefined;
+  }
+
+  /** True when this process is attached to a shared app-server topology. */
+  get usesSharedRuntimeTopology(): boolean {
+    return this.isSharedRuntimeTopology() || this._lastStopWasSharedRuntime;
+  }
+
+  /** True only when the exact active turn was started by this Bridge process. */
+  get activeTurnIsBridgeOwned(): boolean {
+    const turnId = this.activeTurnId;
+    if (!turnId || this.stopped) return false;
+    if (!this.usesSharedRuntimeTopology) return true;
+    return this.sharedRuntimeOwnedTurnIds.has(turnId);
+  }
+
+  /** Exact active turn only when Bridge ownership is authoritative. */
+  get bridgeOwnedActiveTurnId(): string | undefined {
+    return this.activeTurnIsBridgeOwned ? this.activeTurnId : undefined;
+  }
+
+  /** True only for a ready formal attachment observing a foreign active turn. */
+  get canSteerExternalSharedRuntimeTurn(): boolean {
+    const turnId = this.activeTurnId;
+    return (
+      this.isSharedRuntimeTopology() &&
+      this._sharedRuntimeAttachMode === "adoption" &&
+      this.isAttachmentReady &&
+      this._authoritativeThreadStatus?.type === "active" &&
+      turnId !== undefined &&
+      !this.sharedRuntimeOwnedTurnIds.has(turnId)
+    );
+  }
+
+  /** Opaque authority fence; changes whenever runtime attachment is replaced. */
+  get authorityGeneration(): string {
+    return this._authorityGeneration;
   }
 
   /** True only while compact/review is admitted but not yet a normal Turn. */
@@ -960,6 +1129,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     model: string,
     modelReasoningEffort?: CodexStartOptions["modelReasoningEffort"],
   ): void {
+    this.assertSharedRuntimeMutationAllowed("settings/model");
     const sanitizedModel = sanitizeCodexModel(model);
     if (sanitizedModel) {
       this._runtimeModel = sanitizedModel;
@@ -979,6 +1149,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
   /** Update Codex speed for the next turn without restarting the thread. */
   setServiceTier(serviceTier: string): void {
+    this.assertSharedRuntimeMutationAllowed("settings/serviceTier");
     this._runtimeServiceTier = normalizeServiceTier(serviceTier);
     console.log(`[codex-process] Speed changed to: ${this.serviceTier}`);
   }
@@ -1006,6 +1177,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
    * Takes effect on the next `turn/start` RPC call.
    */
   setApprovalPolicy(policy: string): void {
+    this.assertSharedRuntimeMutationAllowed("settings/approvalPolicy");
     this._approvalPolicy = policy;
     console.log(`[codex-process] Approval policy changed to: ${policy}`);
   }
@@ -1015,6 +1187,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
    * Takes effect on the next `turn/start` RPC call.
    */
   setApprovalsReviewer(reviewer: string): void {
+    this.assertSharedRuntimeMutationAllowed("settings/approvalsReviewer");
     this._approvalsReviewer = this._autoReviewDisabledByPolicy
       ? "user"
       : normalizeApprovalsReviewerForAppServer(
@@ -1103,6 +1276,167 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     // Keep later updates serial without letting one rejection poison the tail.
     // The public pending promise remains the real operation so a dependent
     // turn cannot silently pass a failed permission update.
+    this._threadSettingsUpdateTail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    this._pendingThreadSettingsUpdate = operation;
+    void operation.then(
+      () => {
+        if (this._pendingThreadSettingsUpdate === operation) {
+          this._pendingThreadSettingsUpdate = null;
+        }
+      },
+      () => {
+        if (this._pendingThreadSettingsUpdate === operation) {
+          this._pendingThreadSettingsUpdate = null;
+        }
+      },
+    );
+    return operation;
+  }
+
+  /**
+   * Persist one detached shared-runtime settings mutation atomically.
+   *
+   * Unlike the private-runtime setters, this method never changes Bridge's
+   * local projection before the app-server acknowledges
+   * `thread/settings/update`. It is intentionally unavailable to observers,
+   * active turns, and stale/degraded attachments.
+   */
+  updateSharedRuntimeSettingsForNextTurn(
+    settings: CodexSharedRuntimeThreadSettings,
+  ): Promise<void> {
+    const operation = this._threadSettingsUpdateTail.then(async () => {
+      if (
+        !this.isSharedRuntimeTopology() ||
+        this._sharedRuntimeAttachMode !== "adoption"
+      ) {
+        throw new Error(
+          "Shared Codex settings require a formal runtime attachment",
+        );
+      }
+      if (
+        !this.isAttachmentReady ||
+        this._status !== "idle" ||
+        this._authoritativeThreadStatus.type !== "idle" ||
+        this.activeTurnId !== undefined
+      ) {
+        throw new Error(
+          "Shared Codex settings require an idle writable runtime",
+        );
+      }
+      if (!this._threadId) {
+        throw new Error("No thread ID available for shared settings update");
+      }
+      this.assertSharedRuntimeMutationAllowed("thread/settings/update");
+
+      const params: Record<string, unknown> = { threadId: this._threadId };
+      let sanitizedModel: string | undefined;
+      let normalizedEffort:
+        CodexStartOptions["modelReasoningEffort"] | undefined;
+      let normalizedTier: string | null | undefined;
+      let sandboxPolicy: CodexSandboxPolicy | null | undefined;
+
+      if (settings.model !== undefined) {
+        sanitizedModel = sanitizeCodexModel(settings.model);
+        if (!sanitizedModel) throw new Error("Invalid Codex model");
+        params.model = sanitizedModel;
+      }
+      if (settings.modelReasoningEffort !== undefined) {
+        normalizedEffort = normalizeReasoningEffort(
+          settings.modelReasoningEffort,
+        );
+        params.effort = normalizedEffort;
+      }
+      if (settings.serviceTier !== undefined) {
+        normalizedTier = normalizeServiceTier(settings.serviceTier);
+        params.serviceTier = normalizedTier;
+      }
+      if (settings.approvalPolicy !== undefined) {
+        params.approvalPolicy =
+          settings.approvalPolicy === null
+            ? null
+            : normalizeApprovalPolicy(settings.approvalPolicy);
+      }
+      if (settings.approvalsReviewer !== undefined) {
+        params.approvalsReviewer =
+          settings.approvalsReviewer === null
+            ? null
+            : normalizeApprovalsReviewerForAppServer(
+                settings.approvalsReviewer,
+              );
+      }
+      if (settings.sandboxMode !== undefined) {
+        sandboxPolicy =
+          settings.sandboxMode === null
+            ? null
+            : await this.buildSandboxPolicy(settings.sandboxMode);
+        params.sandboxPolicy = sandboxPolicy;
+      }
+      if (Object.keys(params).length === 1) {
+        throw new Error("Shared Codex settings update is empty");
+      }
+
+      // The sandbox policy builder may have awaited a read RPC. Re-check all
+      // local fences immediately before the mutating RPC leaves the process.
+      if (
+        !this.isAttachmentReady ||
+        this._status !== "idle" ||
+        this._authoritativeThreadStatus.type !== "idle" ||
+        this.activeTurnId !== undefined
+      ) {
+        throw new Error(
+          "Shared Codex runtime changed before settings could be saved",
+        );
+      }
+      this.assertSharedRuntimeMutationAllowed("thread/settings/update");
+
+      try {
+        await this.request("thread/settings/update", params);
+      } catch (err) {
+        if (isUnsupportedThreadSettingsMethod(err)) {
+          this._threadSettingsUpdateMethodSupport = "unsupported";
+          this._supportsNextTurnPermissionUpdates = false;
+        }
+        throw err;
+      }
+
+      this._threadSettingsUpdateMethodSupport = "supported";
+      this._supportsNextTurnPermissionUpdates = true;
+      if (sanitizedModel !== undefined) {
+        this._runtimeModel = sanitizedModel;
+        this.startModel = sanitizedModel;
+      }
+      if (normalizedEffort !== undefined) {
+        this._runtimeModelReasoningEffort = normalizedEffort;
+      }
+      if (normalizedTier !== undefined) {
+        this._runtimeServiceTier = normalizedTier;
+      }
+      if (settings.approvalPolicy !== undefined) {
+        this._approvalPolicy = settings.approvalPolicy;
+      }
+      if (settings.approvalsReviewer !== undefined) {
+        this._approvalsReviewer =
+          settings.approvalsReviewer === null
+            ? null
+            : normalizeApprovalsReviewerForAppServer(
+                settings.approvalsReviewer,
+              );
+      }
+      if (settings.codexPermissionsMode !== undefined) {
+        this._codexPermissionsMode = settings.codexPermissionsMode;
+      }
+      if (settings.sandboxMode !== undefined) {
+        this._runtimeSandboxMode = settings.sandboxMode ?? undefined;
+        this._runtimeSandboxPolicy = sandboxPolicy;
+        if (sandboxPolicy?.type === "workspaceWrite") {
+          this._workspaceWriteSandboxPolicy = sandboxPolicy;
+        }
+      }
+    });
+
     this._threadSettingsUpdateTail = operation.then(
       () => undefined,
       () => undefined,
@@ -1395,6 +1729,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
    * Takes effect on the next `turn/start` RPC call.
    */
   setCollaborationMode(mode: "plan" | "default"): void {
+    this.assertSharedRuntimeMutationAllowed("settings/collaborationMode");
     if (mode === "plan") {
       if (!this.nativePlanModeCapabilityKnown) {
         throw new CodexNativePlanModeProbeRetryError();
@@ -1419,8 +1754,13 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!this._threadId) {
       throw new Error("No thread ID available for rename");
     }
+    await this.renameThreadById(this._threadId, name);
+  }
+
+  /** Rename an exact durable thread without taking turn ownership. */
+  async renameThreadById(threadId: string, name: string): Promise<void> {
     await this.request("thread/name/set", {
-      threadId: this._threadId,
+      threadId,
       name,
     });
   }
@@ -1897,6 +2237,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!thread) {
       throw new Error("thread/rollback returned no thread");
     }
+    this.sharedRuntimeOwnedForkThreadIds.delete(threadId);
     return thread;
   }
 
@@ -1907,14 +2248,21 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!this._threadId) {
       throw new Error("No thread ID available for fork");
     }
-    const response = (await this.request("thread/fork", {
-      threadId: this._threadId,
-      persistExtendedHistory: true,
-    })) as Record<string, unknown>;
+    const response = (await this.request(
+      "thread/fork",
+      {
+        threadId: this._threadId,
+        persistExtendedHistory: true,
+      },
+      { bindThreadResult: false },
+    )) as Record<string, unknown>;
     const thread = response.thread as Record<string, unknown> | undefined;
     const threadId = typeof thread?.id === "string" ? thread.id : undefined;
     if (!thread || !threadId) {
       throw new Error("thread/fork returned no thread id");
+    }
+    if (this.isSharedRuntimeTopology()) {
+      this.sharedRuntimeOwnedForkThreadIds.add(threadId);
     }
     return { threadId, thread };
   }
@@ -2133,6 +2481,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   start(projectPath: string, options?: CodexStartOptions): void {
+    if (options?.sharedRuntimeAttach !== "observer") {
+      this.assertSharedRuntimeMutationAllowed("runtime/attach");
+    }
     if (options?.sharedRuntimeAttach && !options.threadId) {
       throw new Error("Shared runtime attach requires an existing thread id");
     }
@@ -2205,7 +2556,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this._authoritativeThreadStatus = { type: "unknown" };
     this._activeTurnHydration = null;
     this.sharedRuntimeOwnedTurnIds.clear();
+    this.sharedRuntimeExternalSteerPermits.clear();
+    this.sharedRuntimeOwnedForkThreadIds.clear();
     this._lastStopWasSharedRuntime = wasSharedRuntime;
+    this._authorityGeneration = randomUUID();
 
     const resolvedPermissionIds = new Set<string>();
     if (this.pendingPlanCompletion) {
@@ -2271,6 +2625,33 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     );
   }
 
+  private assertSharedRuntimeMutationAllowed(method: string): void {
+    const guard = this.sharedRuntimeMutationAllowed;
+    if (!guard) return;
+    let allowed = false;
+    try {
+      allowed = guard() === true;
+    } catch {
+      // A failing lease/readiness probe is not authority. Fail closed without
+      // leaking the probe error or emitting a provider mutation.
+    }
+    if (!allowed) {
+      throw new CodexSharedRuntimeWriterUnavailableError(method);
+    }
+  }
+
+  private assertSharedRuntimeTurnOwned(
+    turnId: string,
+    action: CodexSharedRuntimeTurnAction,
+  ): void {
+    if (
+      this.isSharedRuntimeTopology() &&
+      !this.sharedRuntimeOwnedTurnIds.has(turnId)
+    ) {
+      throw new CodexSharedRuntimeTurnOwnershipError(action, turnId);
+    }
+  }
+
   private isRuntimeGenerationCurrent(runtimeGeneration: number): boolean {
     return runtimeGeneration === this._runtimeGeneration;
   }
@@ -2288,6 +2669,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.activeCoreActionMethod = null;
     this.stopped = false;
     this._runtimeGeneration += 1;
+    this._authorityGeneration = randomUUID();
     this._sharedRuntimePilotGates = snapshotSharedRuntimePilotGates();
     this.setStatus("starting");
     this._threadId = null;
@@ -2298,12 +2680,18 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this._attachmentFailure = null;
     this._activeTurnHydration = null;
     this.sharedRuntimeOwnedTurnIds.clear();
+    this.sharedRuntimeExternalSteerPermits.clear();
+    this.sharedRuntimeOwnedForkThreadIds.clear();
     this._lastStopWasSharedRuntime = false;
     if (options?.sharedRuntimeAttach && options.threadId) {
       this._sharedRuntimeAttachmentKey = claimSharedRuntimePilotAttachment(
         this,
         options.threadId,
         this._sharedRuntimePilotGates,
+        options.sharedRuntimeAttach,
+        options.sharedRuntimeAttach === "observer"
+          ? () => this.yieldSharedRuntimeObserver()
+          : undefined,
       );
     }
     this._agentNickname = null;
@@ -2371,6 +2759,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.lastResultText = null;
     this.agentTurnTracker.reset();
     this.startedToolItems.clear();
+    this.startedItemSourceTimestamps.clear();
     this._skills = [];
     this._apps = [];
     this._plugins = [];
@@ -2468,6 +2857,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   /** Interrupt the active turn and wait until app-server accepts the request. */
   async interruptCurrentTurn(): Promise<void> {
     if (!this._threadId || !this.pendingTurnId) return;
+    this.assertSharedRuntimeTurnOwned(this.pendingTurnId, "interrupt");
     await this.request("turn/interrupt", {
       threadId: this._threadId,
       turnId: this.pendingTurnId,
@@ -2487,6 +2877,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     }
     const turnId = this.pendingTurnId;
     if (!turnId) return false;
+    this.assertSharedRuntimeTurnOwned(turnId, "interrupt");
     try {
       await this.request("turn/interrupt", { threadId, turnId });
     } catch (err) {
@@ -2508,6 +2899,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   sendInput(text: string, clientMessageId?: string): void {
+    this.assertSharedRuntimeMutationAllowed("turn/start");
     const resolve = this.inputResolve;
     if (!resolve || !this.isWaitingForInput) {
       console.error("[codex-process] No pending input resolver for sendInput");
@@ -2522,6 +2914,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     images: Array<{ base64: string; mimeType: string }>,
     clientMessageId?: string,
   ): void {
+    this.assertSharedRuntimeMutationAllowed("turn/start");
     const resolve = this.inputResolve;
     if (!resolve || !this.isWaitingForInput) {
       console.error(
@@ -2547,8 +2940,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       skills?: Array<{ name: string; path: string }>;
       mentions?: Array<{ name: string; path: string }>;
       clientMessageId?: string;
+      requireClientUserMessageId?: boolean;
     },
   ): void {
+    this.assertSharedRuntimeMutationAllowed("turn/start");
     const resolve = this.inputResolve;
     if (!resolve || !this.isWaitingForInput) {
       console.error(
@@ -2563,6 +2958,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       skills: options?.skills,
       mentions: options?.mentions,
       clientMessageId: options?.clientMessageId,
+      requireClientUserMessageId: options?.requireClientUserMessageId,
     });
   }
 
@@ -2600,15 +2996,57 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!this._threadId || !expectedTurnId) {
       throw new Error("No Codex thread or expected turn to steer");
     }
-    if (
-      this.isSharedRuntimeTopology() &&
-      !this.sharedRuntimeOwnedTurnIds.has(expectedTurnId)
-    ) {
-      throw new Error(
-        "Cannot steer a shared Codex turn owned by another subscriber",
-      );
-    }
+    this.assertSharedRuntimeTurnOwned(expectedTurnId, "steer");
 
+    await this.steerAuthorizedTurnStructured(expectedTurnId, text, options);
+  }
+
+  /**
+   * Guide a Desktop-owned turn through the same shared app-server.
+   *
+   * The caller must already have validated source/thread/authority generation.
+   * We deliberately do not add the turn to sharedRuntimeOwnedTurnIds: Desktop
+   * remains the execution host, so interrupt/stop and request responses remain
+   * forbidden to this attachment.
+   */
+  async steerExternalTurnStructured(
+    expectedTurnId: string,
+    text: string,
+    options?: {
+      images?: Array<{ base64: string; mimeType: string }>;
+      skills?: Array<{ name: string; path: string }>;
+      mentions?: Array<{ name: string; path: string }>;
+      clientMessageId?: string;
+    },
+  ): Promise<void> {
+    if (!this._threadId || !expectedTurnId) {
+      throw new Error("No Codex thread or expected turn to steer");
+    }
+    this.assertSharedRuntimeMutationAllowed("turn/steer");
+    if (
+      !this.canSteerExternalSharedRuntimeTurn ||
+      this.activeTurnId !== expectedTurnId
+    ) {
+      throw new CodexSharedRuntimeTurnOwnershipError("steer", expectedTurnId);
+    }
+    this.grantExternalSteerPermit(expectedTurnId);
+    try {
+      await this.steerAuthorizedTurnStructured(expectedTurnId, text, options);
+    } finally {
+      this.revokeExternalSteerPermit(expectedTurnId);
+    }
+  }
+
+  private async steerAuthorizedTurnStructured(
+    expectedTurnId: string,
+    text: string,
+    options?: {
+      images?: Array<{ base64: string; mimeType: string }>;
+      skills?: Array<{ name: string; path: string }>;
+      mentions?: Array<{ name: string; path: string }>;
+      clientMessageId?: string;
+    },
+  ): Promise<void> {
     const { input, tempPaths } = await this.toRpcInput({
       text,
       images: options?.images,
@@ -2654,7 +3092,24 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     }
   }
 
+  private grantExternalSteerPermit(turnId: string): void {
+    this.sharedRuntimeExternalSteerPermits.set(
+      turnId,
+      (this.sharedRuntimeExternalSteerPermits.get(turnId) ?? 0) + 1,
+    );
+  }
+
+  private revokeExternalSteerPermit(turnId: string): void {
+    const count = this.sharedRuntimeExternalSteerPermits.get(turnId) ?? 0;
+    if (count <= 1) {
+      this.sharedRuntimeExternalSteerPermits.delete(turnId);
+      return;
+    }
+    this.sharedRuntimeExternalSteerPermits.set(turnId, count - 1);
+  }
+
   approve(toolUseId?: string): void {
+    this.assertSharedRuntimeMutationAllowed("serverRequest/approve");
     // Check if this is a plan completion approval
     if (
       this.pendingPlanCompletion &&
@@ -2685,6 +3140,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   approveAlways(toolUseId?: string): void {
+    this.assertSharedRuntimeMutationAllowed("serverRequest/approveAlways");
     const pending = this.resolvePendingApproval(toolUseId);
     if (!pending) {
       // Fallback: McpElicitation lives in pendingUserInputs
@@ -2706,6 +3162,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   reject(toolUseId?: string, _message?: string): void {
+    this.assertSharedRuntimeMutationAllowed("serverRequest/reject");
     // Check if this is a plan completion rejection
     if (
       this.pendingPlanCompletion &&
@@ -2736,6 +3193,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   answer(toolUseId: string, result: string): void {
+    this.assertSharedRuntimeMutationAllowed("serverRequest/answer");
     const pending = this.resolvePendingUserInput(toolUseId);
     if (!pending) {
       console.log(
@@ -2761,6 +3219,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
    * required, and is accepted only after installation is complete.
    */
   async installToolSuggestion(toolUseId: string): Promise<void> {
+    this.assertSharedRuntimeMutationAllowed("plugin/install");
     const pending = this.resolvePendingUserInput(toolUseId);
     if (!pending || pending.kind !== "tool_suggestion") {
       throw new Error("No pending tool suggestion found");
@@ -3358,6 +3817,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           resolvedSettings.serviceTier,
         );
       }
+      if (resolvedSettings.collaborationMode !== undefined) {
+        this._collaborationMode = resolvedSettings.collaborationMode;
+      }
 
       this.bindThreadAttachment(threadId);
       this._agentNickname = stringOrNull(thread?.agentNickname);
@@ -3411,6 +3873,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           : {}),
         ...(resolvedSettings.webSearchMode
           ? { webSearchMode: resolvedSettings.webSearchMode }
+          : {}),
+        ...(resolvedSettings.collaborationMode
+          ? { planMode: resolvedSettings.collaborationMode === "plan" }
           : {}),
         ...(sharedRuntimeAttach === null &&
         options?.additionalWritableRoots?.length
@@ -3611,8 +4076,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       const turnCompletion: PendingTurnCompletion = {
         resolve,
         reject,
+        runtimeGeneration: this._runtimeGeneration,
         turnId: null,
         earlyCompletions: new Map(),
+        earlyServerRequests: new Map(),
       };
       this.pendingTurnCompletion = turnCompletion;
       void this.request("turn/start", {
@@ -3627,6 +4094,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           }
         })
         .catch((error) => {
+          turnCompletion.earlyServerRequests.clear();
           if (this.pendingTurnCompletion === turnCompletion) {
             this.pendingTurnCompletion = null;
             this.pendingTurnId = null;
@@ -4068,8 +4536,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         const turnCompletion: PendingTurnCompletion = {
           resolve,
           reject,
+          runtimeGeneration,
           turnId: null,
           earlyCompletions: new Map(),
+          earlyServerRequests: new Map(),
         };
         this.pendingTurnCompletion = turnCompletion;
 
@@ -4155,6 +4625,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           "turn/start",
           params,
           pendingInput.clientMessageId,
+          pendingInput.requireClientUserMessageId === true,
         )
           .then((receipt) => {
             this.emitInputDelivery(
@@ -4171,6 +4642,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
             }
           })
           .catch((err) => {
+            turnCompletion.earlyServerRequests.clear();
             this.emitInputDelivery(
               pendingInput.clientMessageId,
               "provider_rejected",
@@ -4388,6 +4860,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this,
       threadId,
       this._sharedRuntimePilotGates,
+      this._sharedRuntimeAttachMode ?? "adoption",
+      this._sharedRuntimeAttachMode === "observer"
+        ? () => this.yieldSharedRuntimeObserver()
+        : undefined,
     );
     if (
       this._sharedRuntimeAttachmentKey !== null &&
@@ -4401,6 +4877,15 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this._sharedRuntimeAttachmentKey = claimedKey;
     this._threadId = threadId;
     this._attachmentRuntimeGeneration = this._runtimeGeneration;
+  }
+
+  private yieldSharedRuntimeObserver(): void {
+    if (this._sharedRuntimeAttachMode !== "observer" || this.stopped) return;
+    // The coordinator removes its record synchronously before stopping the
+    // transport. If no coordinator is listening, still close the observer so
+    // the formal attachment never shares an event stream with it.
+    this.emit("shared_runtime_yield");
+    if (!this.stopped) this.stop();
   }
 
   private handleGoalRpcSuccess(pending: PendingRpc, result: unknown): void {
@@ -4479,7 +4964,14 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     method: string,
     params: Record<string, unknown>,
   ): void {
+    if (method === "currentTime/read" && this.isSharedRuntimeTopology()) {
+      console.warn(
+        "[codex-process] ignored currentTime/read in shared runtime topology",
+      );
+      return;
+    }
     if (!this.canHandleServerRequest(params)) {
+      if (this.bufferProvisionalTurnServerRequest(id, method, params)) return;
       console.warn(`[codex-process] ignored unowned server request: ${method}`);
       return;
     }
@@ -4690,6 +5182,60 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (stringOrNull(params.threadId) !== this._threadId) return false;
     const turnId = stringOrNull(params.turnId);
     return turnId !== null && this.sharedRuntimeOwnedTurnIds.has(turnId);
+  }
+
+  private bufferProvisionalTurnServerRequest(
+    id: number | string,
+    method: string,
+    params: Record<string, unknown>,
+  ): boolean {
+    if (
+      !this.isSharedRuntimeTopology() ||
+      this._sharedRuntimeAttachMode === "observer" ||
+      this.stopped ||
+      !this._threadId ||
+      this._attachmentRuntimeGeneration !== this._runtimeGeneration ||
+      stringOrNull(params.threadId) !== this._threadId
+    ) {
+      return false;
+    }
+    const turnId = stringOrNull(params.turnId);
+    const pending = this.pendingTurnCompletion;
+    if (
+      !turnId ||
+      !pending ||
+      pending.turnId !== null ||
+      pending.runtimeGeneration !== this._runtimeGeneration
+    ) {
+      return false;
+    }
+
+    let requestCount = 0;
+    for (const requests of pending.earlyServerRequests.values()) {
+      requestCount += requests.length;
+    }
+    if (requestCount >= MAX_EARLY_SERVER_REQUESTS) return false;
+
+    let requests = pending.earlyServerRequests.get(turnId);
+    if (!requests) {
+      if (pending.earlyServerRequests.size >= MAX_EARLY_SERVER_REQUEST_TURNS) {
+        return false;
+      }
+      requests = [];
+      pending.earlyServerRequests.set(turnId, requests);
+    }
+    if (
+      requests.some(
+        (request) =>
+          request.id === id &&
+          typeof request.id === typeof id &&
+          request.method === method,
+      )
+    ) {
+      return true;
+    }
+    requests.push({ id, method, params: { ...params } });
+    return true;
   }
 
   private queueGuardianReviewWarning(
@@ -5149,7 +5695,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
             itemId: stringOrNull(params.itemId),
             text: delta,
           });
-          this.emitMessage({ type: "stream_delta", text: delta });
+          this.emitItemDelta({ type: "stream_delta", text: delta }, params);
         }
         break;
       }
@@ -5163,7 +5709,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
               ? params.textDelta
               : "";
         if (delta) {
-          this.emitMessage({ type: "thinking_delta", text: delta });
+          this.emitItemDelta({ type: "thinking_delta", text: delta }, params);
         }
         break;
       }
@@ -5171,7 +5717,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       case "item/plan/delta": {
         const delta = typeof params.delta === "string" ? params.delta : "";
         if (delta) {
-          this.emitMessage({ type: "thinking_delta", text: delta });
+          this.emitItemDelta({ type: "thinking_delta", text: delta }, params);
         }
         break;
       }
@@ -5411,7 +5957,13 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     expected: PendingTurnCompletion,
     turnId: string,
   ): void {
-    if (this.pendingTurnCompletion !== expected) return;
+    if (
+      this.pendingTurnCompletion !== expected ||
+      expected.runtimeGeneration !== this._runtimeGeneration
+    ) {
+      expected.earlyServerRequests.clear();
+      return;
+    }
     expected.turnId = turnId;
     this.pendingTurnId = turnId;
     if (
@@ -5419,6 +5971,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this._sharedRuntimeAttachMode !== "observer"
     ) {
       this.sharedRuntimeOwnedTurnIds.add(turnId);
+    }
+    const earlyServerRequests = expected.earlyServerRequests.get(turnId) ?? [];
+    expected.earlyServerRequests.clear();
+    for (const request of earlyServerRequests) {
+      this.handleServerRequest(request.id, request.method, request.params);
     }
     const earlyCompletion = expected.earlyCompletions.get(turnId);
     expected.earlyCompletions.clear();
@@ -5478,6 +6035,17 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     );
   }
 
+  private emitItemDelta(
+    message: ServerMessage,
+    params: Record<string, unknown>,
+  ): void {
+    const itemId = stringOrNull(params.itemId);
+    const sourceTimestamp =
+      (itemId ? this.startedItemSourceTimestamps.get(itemId) : undefined) ??
+      codexItemSourceTimestamp(params, false);
+    this.emitMessage(withCodexSourceTimestamp(message, sourceTimestamp));
+  }
+
   private processItemStarted(
     item: Record<string, unknown> | undefined,
     turnId: string | null = null,
@@ -5485,55 +6053,67 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!item || typeof item !== "object") return;
     const itemId = typeof item.id === "string" ? item.id : randomUUID();
     const itemType = normalizeItemType(item.type);
+    const sourceTimestamp = codexItemSourceTimestamp(item, false);
+    if (sourceTimestamp) {
+      this.startedItemSourceTimestamps.set(itemId, sourceTimestamp);
+    }
     if (itemType === "agentmessage") {
       this.agentTurnTracker.startAgentItem({ turnId, itemId });
     }
 
     const descriptor = describeCodexItemTool(item, itemType);
     if (descriptor) {
-      this.emitStartedToolUse(itemId, descriptor);
+      this.emitStartedToolUse(itemId, descriptor, sourceTimestamp);
     }
   }
 
   private emitStartedToolUse(
     itemId: string,
     descriptor: CodexItemToolDescriptor,
+    sourceTimestamp?: string,
   ): void {
     if (this.startedToolItems.has(itemId)) return;
     this.startedToolItems.set(itemId, descriptor);
-    this.emitToolUse(itemId, descriptor);
+    this.emitToolUse(itemId, descriptor, sourceTimestamp);
   }
 
   private emitToolUse(
     itemId: string,
     descriptor: CodexItemToolDescriptor,
+    sourceTimestamp?: string,
   ): void {
-    this.emitMessage({
-      type: "assistant",
-      message: {
-        id: itemId,
-        role: "assistant",
-        content: [
-          {
-            type: "tool_use",
+    this.emitMessage(
+      withCodexSourceTimestamp(
+        {
+          type: "assistant",
+          message: {
             id: itemId,
-            name: descriptor.name,
-            input: descriptor.input,
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: itemId,
+                name: descriptor.name,
+                input: descriptor.input,
+              },
+            ],
+            model: this.getMessageModel(),
           },
-        ],
-        model: this.getMessageModel(),
-      },
-    });
+        },
+        sourceTimestamp,
+      ),
+    );
   }
 
   private ensureStartedToolUse(
     itemId: string,
     descriptor: CodexItemToolDescriptor,
+    sourceTimestamp?: string,
   ): void {
     const started = this.startedToolItems.get(itemId);
     this.startedToolItems.delete(itemId);
     if (!started) {
-      this.emitToolUse(itemId, descriptor);
+      this.emitToolUse(itemId, descriptor, sourceTimestamp);
       return;
     }
 
@@ -5541,7 +6121,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     // than its started counterpart. Re-emit the same stable assistant id so
     // capable clients replace the generic row instead of losing Read/List/Search.
     if (started.name !== descriptor.name) {
-      this.emitToolUse(itemId, descriptor);
+      this.emitToolUse(
+        itemId,
+        descriptor,
+        this.startedItemSourceTimestamps.get(itemId) ?? sourceTimestamp,
+      );
     }
   }
 
@@ -5552,6 +6136,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!item || typeof item !== "object") return;
     const itemId = typeof item.id === "string" ? item.id : randomUUID();
     const itemType = normalizeItemType(item.type);
+    const sourceTimestamp =
+      codexItemSourceTimestamp(item, true) ??
+      this.startedItemSourceTimestamps.get(itemId);
+    const emit = (message: ServerMessage): void =>
+      this.emitMessage(withCodexSourceTimestamp(message, sourceTimestamp));
+    this.startedItemSourceTimestamps.delete(itemId);
 
     switch (itemType) {
       case "agentmessage": {
@@ -5566,7 +6156,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         if (emission.affectsActiveTurn) {
           this.lastResultText = emission.text;
         }
-        this.emitMessage({
+        emit({
           type: "assistant",
           message: {
             id: itemId,
@@ -5583,7 +6173,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       case "userinput": {
         const text = extractUserText(item);
         if (!text) return;
-        this.emitMessage({
+        emit({
           type: "user_input",
           text,
           userMessageUuid: itemId,
@@ -5597,14 +6187,14 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       case "reasoning": {
         const text = extractReasoningText(item);
         if (text) {
-          this.emitMessage({ type: "thinking_delta", text });
+          emit({ type: "thinking_delta", text });
         }
         break;
       }
 
       case "commandexecution": {
         const descriptor = describeCodexItemTool(item, itemType)!;
-        this.ensureStartedToolUse(itemId, descriptor);
+        this.ensureStartedToolUse(itemId, descriptor, sourceTimestamp);
         const output =
           typeof item.aggregatedOutput === "string"
             ? item.aggregatedOutput
@@ -5612,7 +6202,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
               ? item.output
               : "";
         const exitCode = numberOrUndefined(item.exitCode ?? item.exit_code);
-        this.emitMessage({
+        emit({
           type: "tool_result",
           toolUseId: itemId,
           content: output || `exit code: ${exitCode ?? "unknown"}`,
@@ -5623,9 +6213,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
       case "filechange": {
         const descriptor = describeCodexItemTool(item, itemType)!;
-        this.ensureStartedToolUse(itemId, descriptor);
+        this.ensureStartedToolUse(itemId, descriptor, sourceTimestamp);
         const content = formatFileChangesWithDiff(item.changes);
-        this.emitMessage({
+        emit({
           type: "tool_result",
           toolUseId: itemId,
           content,
@@ -5640,11 +6230,15 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         const toolName = `mcp:${server}/${tool}`;
         const result = item.result ?? item.error ?? "MCP call completed";
         const normalized = normalizeMcpToolResult(result);
-        this.ensureStartedToolUse(itemId, {
-          name: toolName,
-          input: toToolUseInput(item.arguments),
-        });
-        this.emitMessage({
+        this.ensureStartedToolUse(
+          itemId,
+          {
+            name: toolName,
+            input: toToolUseInput(item.arguments),
+          },
+          sourceTimestamp,
+        );
+        emit({
           type: "tool_result",
           toolUseId: itemId,
           content: normalized.content,
@@ -5658,12 +6252,16 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
       case "dynamictoolcall": {
         const tool = typeof item.tool === "string" ? item.tool : "DynamicTool";
-        this.ensureStartedToolUse(itemId, {
-          name: tool,
-          input: toToolUseInput(item.arguments),
-        });
+        this.ensureStartedToolUse(
+          itemId,
+          {
+            name: tool,
+            input: toToolUseInput(item.arguments),
+          },
+          sourceTimestamp,
+        );
         const content = formatDynamicToolResult(item);
-        this.emitMessage({
+        emit({
           type: "tool_result",
           toolUseId: itemId,
           content,
@@ -5676,9 +6274,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         this.ensureStartedToolUse(
           itemId,
           describeCodexItemTool(item, itemType)!,
+          sourceTimestamp,
         );
         const normalized = formatImageGenerationResult(item);
-        this.emitMessage({
+        emit({
           type: "tool_result",
           toolUseId: itemId,
           content: normalized.content,
@@ -5695,11 +6294,15 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
       case "websearch": {
         const query = typeof item.query === "string" ? item.query : "";
-        this.ensureStartedToolUse(itemId, {
-          name: "WebSearch",
-          input: query ? { query } : {},
-        });
-        this.emitMessage({
+        this.ensureStartedToolUse(
+          itemId,
+          {
+            name: "WebSearch",
+            input: query ? { query } : {},
+          },
+          sourceTimestamp,
+        );
+        emit({
           type: "tool_result",
           toolUseId: itemId,
           content: query ? `Web search: ${query}` : "Web search completed",
@@ -5710,7 +6313,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
       case "collabagenttoolcall": {
         const descriptor = describeCodexItemTool(item, itemType)!;
-        this.ensureStartedToolUse(itemId, descriptor);
+        this.ensureStartedToolUse(itemId, descriptor, sourceTimestamp);
         const tool = typeof item.tool === "string" ? item.tool : "subagent";
         const status =
           typeof item.status === "string" ? item.status : "completed";
@@ -5724,7 +6327,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
             ? [`agents: ${receiverThreadIds.join(", ")}`]
             : []),
         ].join("\n");
-        this.emitMessage({
+        emit({
           type: "tool_result",
           toolUseId: itemId,
           content,
@@ -5738,8 +6341,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       case "contextcompaction":
       case "subagentactivity": {
         const descriptor = describeCodexItemTool(item, itemType)!;
-        this.ensureStartedToolUse(itemId, descriptor);
-        this.emitMessage({
+        this.ensureStartedToolUse(itemId, descriptor, sourceTimestamp);
+        emit({
           type: "tool_result",
           toolUseId: itemId,
           content: completedCodexItemSummary(item, itemType),
@@ -5759,7 +6362,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         const text = typeof item.review === "string" ? item.review : "";
         if (!text) break;
         this.lastResultText = text;
-        this.emitMessage({
+        emit({
           type: "assistant",
           message: {
             id: itemId,
@@ -5774,7 +6377,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       case "error": {
         const message =
           typeof item.message === "string" ? item.message : "Codex item error";
-        this.emitMessage({ type: "error", message });
+        emit({ type: "error", message });
         break;
       }
 
@@ -5856,7 +6459,21 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     method: "turn/start" | "turn/steer",
     params: Record<string, unknown>,
     clientMessageId?: string,
+    requireClientUserMessageId = false,
   ): Promise<CodexInputRpcReceipt> {
+    if (requireClientUserMessageId && !clientMessageId) {
+      throw new Error(
+        "A durable recovery replay requires a clientUserMessageId.",
+      );
+    }
+    if (
+      requireClientUserMessageId &&
+      this.clientUserMessageIdSupport.get(method) === false
+    ) {
+      throw new Error(
+        "This app-server cannot safely deduplicate the recovered input.",
+      );
+    }
     if (
       !clientMessageId ||
       this.clientUserMessageIdSupport.get(method) === false
@@ -5876,6 +6493,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     } catch (error) {
       if (!isUnsupportedClientUserMessageIdError(error)) throw error;
       this.clientUserMessageIdSupport.set(method, false);
+      if (requireClientUserMessageId) {
+        throw new Error(
+          "This app-server rejected clientUserMessageId; the recovered input was not replayed.",
+        );
+      }
       console.warn(
         "[codex-process] app-server does not support clientUserMessageId; retrying without durable client acknowledgement",
       );
@@ -5915,11 +6537,35 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     params?: Record<string, unknown>,
     options: CodexRpcRequestOptions = {},
   ): Promise<unknown> {
-    assertSharedRuntimePilotRpcAllowed(
-      method,
-      this._sharedRuntimeAttachMode,
-      this._sharedRuntimePilotGates,
-    );
+    if (
+      CODEX_MUTATING_RPC_METHODS.has(method) ||
+      (method === "thread/resume" &&
+        this.sharedRuntimeMutationAllowed !== undefined &&
+        this._sharedRuntimeAttachMode !== "observer")
+    ) {
+      this.assertSharedRuntimeMutationAllowed(method);
+    }
+    const isAuthorizedSharedRuntimeSteer =
+      method === "turn/steer" &&
+      this._sharedRuntimePilotGates?.allowTurnStart === true &&
+      this._sharedRuntimeAttachMode !== "observer" &&
+      params?.threadId === this._threadId &&
+      typeof params?.expectedTurnId === "string" &&
+      (this.sharedRuntimeOwnedTurnIds.has(params.expectedTurnId) ||
+        (this.sharedRuntimeExternalSteerPermits.get(params.expectedTurnId) ??
+          0) > 0);
+    const isOwnedSharedRuntimeForkRollback =
+      method === "thread/rollback" &&
+      this._sharedRuntimeAttachMode !== "observer" &&
+      typeof params?.threadId === "string" &&
+      this.sharedRuntimeOwnedForkThreadIds.has(params.threadId);
+    if (!isAuthorizedSharedRuntimeSteer && !isOwnedSharedRuntimeForkRollback) {
+      assertSharedRuntimePilotRpcAllowed(
+        method,
+        this._sharedRuntimeAttachMode,
+        this._sharedRuntimePilotGates,
+      );
+    }
     const id = this.rpcSeq++;
     const envelope =
       params === undefined ? { id, method } : { id, method, params };
@@ -5949,9 +6595,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         resolve,
         reject,
         method,
-        ...(method === "thread/start" ||
-        method === "thread/resume" ||
-        method === "thread/fork"
+        ...(options.bindThreadResult !== false &&
+        (method === "thread/start" ||
+          method === "thread/resume" ||
+          method === "thread/fork")
           ? {
               threadBinding: {
                 ...(typeof params?.threadId === "string"
@@ -6063,6 +6710,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.pendingRpc.clear();
 
     if (this.pendingTurnCompletion) {
+      this.pendingTurnCompletion.earlyServerRequests.clear();
       this.pendingTurnCompletion.reject(error);
       this.pendingTurnCompletion = null;
     }
@@ -6147,6 +6795,260 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       }
     }
   }
+}
+
+/**
+ * Build the authenticated Mobile projection for an app-server request without
+ * retaining it durably. The Action Broker persists only the request identity,
+ * kind and lifecycle; this payload stays bound to the live connection.
+ */
+export function projectCodexServerActionRequest(
+  requestId: number | string,
+  method: string,
+  params: Record<string, unknown>,
+): CodexServerActionProjection | null {
+  const toolUseId = codexServerRequestToolUseId(params, requestId);
+  switch (method) {
+    case "item/commandExecution/requestApproval": {
+      const availableDecisions = Array.isArray(params.availableDecisions)
+        ? params.availableDecisions.filter(
+            (entry): entry is string => typeof entry === "string",
+          )
+        : undefined;
+      return {
+        kind: "command_approval",
+        toolUseId,
+        toolName: "Bash",
+        input: {
+          ...(typeof params.command === "string"
+            ? { command: params.command }
+            : {}),
+          ...(typeof params.cwd === "string" ? { cwd: params.cwd } : {}),
+          ...(params.commandActions
+            ? { commandActions: params.commandActions }
+            : {}),
+          ...(params.networkApprovalContext
+            ? { networkApprovalContext: params.networkApprovalContext }
+            : {}),
+          ...(params.additionalPermissions
+            ? { additionalPermissions: params.additionalPermissions }
+            : {}),
+          ...(params.skillMetadata
+            ? { skillMetadata: params.skillMetadata }
+            : {}),
+          ...(params.proposedExecpolicyAmendment
+            ? {
+                proposedExecpolicyAmendment: params.proposedExecpolicyAmendment,
+              }
+            : {}),
+          ...(params.proposedNetworkPolicyAmendments
+            ? {
+                proposedNetworkPolicyAmendments:
+                  params.proposedNetworkPolicyAmendments,
+              }
+            : {}),
+          ...(availableDecisions ? { availableDecisions } : {}),
+          ...(typeof params.reason === "string"
+            ? { reason: params.reason }
+            : {}),
+        },
+        allowedActions: approvalActionsFromAvailable(availableDecisions),
+        responseShape: {
+          type: "approval",
+          approvalKind: "command",
+          ...(availableDecisions ? { availableDecisions } : {}),
+        },
+      };
+    }
+    case "item/fileChange/requestApproval": {
+      const availableDecisions = Array.isArray(params.availableDecisions)
+        ? params.availableDecisions.filter(
+            (entry): entry is string => typeof entry === "string",
+          )
+        : undefined;
+      return {
+        kind: "file_approval",
+        toolUseId,
+        toolName: "FileChange",
+        input: {
+          ...(Array.isArray(params.changes) ? { changes: params.changes } : {}),
+          ...(typeof params.grantRoot === "string"
+            ? { grantRoot: params.grantRoot }
+            : {}),
+          ...(availableDecisions ? { availableDecisions } : {}),
+          ...(typeof params.reason === "string"
+            ? { reason: params.reason }
+            : {}),
+        },
+        allowedActions: approvalActionsFromAvailable(availableDecisions),
+        responseShape: {
+          type: "approval",
+          approvalKind: "file",
+          ...(availableDecisions ? { availableDecisions } : {}),
+        },
+      };
+    }
+    case "item/permissions/requestApproval": {
+      const requestedPermissions = asRecord(params.permissions) ?? {};
+      return {
+        kind: "permissions_approval",
+        toolUseId,
+        toolName: "Permissions",
+        input: {
+          permissions: requestedPermissions,
+          ...(typeof params.reason === "string"
+            ? { reason: params.reason }
+            : {}),
+        },
+        allowedActions: ["approve", "approve_always", "reject"],
+        responseShape: {
+          type: "permissions",
+          requestedPermissions,
+        },
+      };
+    }
+    case "item/tool/requestUserInput": {
+      const questions = normalizeUserInputQuestions(params.questions);
+      return {
+        kind: "user_input",
+        toolUseId,
+        toolName: "AskUserQuestion",
+        input: {
+          questions: questions.map((question) => ({
+            id: question.id,
+            question: question.question,
+            header: question.header,
+            options: question.options,
+            multiSelect: false,
+            isOther: question.isOther,
+            isSecret: question.isSecret,
+          })),
+        },
+        allowedActions: ["answer", "reject"],
+        responseShape: {
+          type: "user_input",
+          questions: questions.map(({ id, question }) => ({ id, question })),
+          requestKind: "questions",
+        },
+      };
+    }
+    case "mcpServer/elicitation/request": {
+      const elicitation = createElicitationInput(params);
+      const toolName =
+        elicitation.kind === "tool_suggestion"
+          ? "ToolSuggestion"
+          : "McpElicitation";
+      const allowedActions: CodexServerActionDecision[] =
+        elicitation.kind === "tool_suggestion"
+          ? ["reject"]
+          : elicitation.kind === "elicitation_form"
+            ? ["answer", "reject"]
+            : ["approve", "reject", "answer"];
+      return {
+        kind:
+          elicitation.kind === "tool_suggestion"
+            ? "tool_suggestion"
+            : "mcp_elicitation",
+        toolUseId,
+        toolName,
+        input: elicitation.input,
+        allowedActions,
+        responseShape: {
+          type: "user_input",
+          questions: elicitation.questions,
+          requestKind: elicitation.kind,
+        },
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+export function buildCodexServerActionResponse(
+  requestId: number | string,
+  projection: CodexServerActionProjection,
+  action: CodexServerActionDecision,
+  answer?: string,
+): Record<string, unknown> {
+  if (!projection.allowedActions.includes(action)) {
+    throw new Error(`Codex server action ${action} is not allowed`);
+  }
+  if (projection.responseShape.type === "approval") {
+    const decision =
+      action === "approve"
+        ? "accept"
+        : action === "approve_always"
+          ? "acceptForSession"
+          : rejectDecisionFromAvailable(
+              projection.responseShape.availableDecisions,
+            );
+    return { decision };
+  }
+  if (projection.responseShape.type === "permissions") {
+    return {
+      scope: action === "approve_always" ? "session" : "turn",
+      permissions:
+        action === "reject"
+          ? {}
+          : projection.responseShape.requestedPermissions,
+    };
+  }
+
+  const pending: PendingUserInputRequest = {
+    requestId,
+    toolUseId: projection.toolUseId,
+    toolName: projection.toolName,
+    questions: projection.responseShape.questions,
+    input: projection.input,
+    kind: projection.responseShape.requestKind,
+  };
+  const rawResult =
+    action === "answer"
+      ? (answer ?? "")
+      : action === "approve"
+        ? "Accept"
+        : resolveUserInputRejectResult(pending, "Decline");
+  return buildUserInputResponse(pending, rawResult);
+}
+
+function codexServerRequestToolUseId(
+  params: Record<string, unknown>,
+  requestId: number | string,
+): string {
+  if (typeof params.approvalId === "string") return params.approvalId;
+  if (typeof params.elicitationId === "string") return params.elicitationId;
+  if (typeof params.itemId === "string") return params.itemId;
+  return typeof requestId === "string" ? requestId : `approval-${requestId}`;
+}
+
+function rejectDecisionFromAvailable(
+  availableDecisions: string[] | undefined,
+): "decline" | "cancel" {
+  if (!availableDecisions) return "decline";
+  const decisions = new Set(availableDecisions);
+  return decisions.has("cancel") && !decisions.has("decline")
+    ? "cancel"
+    : "decline";
+}
+
+function approvalActionsFromAvailable(
+  availableDecisions: string[] | undefined,
+): CodexServerActionDecision[] {
+  // Older app-server versions omitted this field and supported the legacy
+  // three-way response. Once the server provides an explicit set, never offer
+  // a broader action than that exact request accepts.
+  if (!availableDecisions) {
+    return ["approve", "approve_always", "reject"];
+  }
+  const decisions = new Set(availableDecisions);
+  const actions: CodexServerActionDecision[] = [];
+  if (decisions.has("accept")) actions.push("approve");
+  if (decisions.has("acceptForSession")) actions.push("approve_always");
+  if (decisions.has("decline") || decisions.has("cancel")) {
+    actions.push("reject");
+  }
+  return actions;
 }
 
 function buildApprovalResponse(
@@ -6435,6 +7337,11 @@ function extractResolvedSettingsFromThreadResponse(
       typeof response.serviceTier === "string"
         ? response.serviceTier
         : undefined,
+    collaborationMode:
+      collaborationMode?.mode === "plan" ||
+      collaborationMode?.mode === "default"
+        ? collaborationMode.mode
+        : undefined,
     networkAccessEnabled:
       typeof sandbox?.networkAccess === "boolean"
         ? sandbox.networkAccess
@@ -6497,6 +7404,59 @@ function normalizeSandboxPolicyFromRpc(
 function normalizeItemType(raw: unknown): string {
   if (typeof raw !== "string") return "";
   return raw.replace(/[_\s-]/g, "").toLowerCase();
+}
+
+function codexItemSourceTimestamp(
+  item: Record<string, unknown>,
+  completed: boolean,
+): string | undefined {
+  const candidates = completed
+    ? [
+        item.createdAt,
+        item.created_at,
+        item.timestamp,
+        item.completedAt,
+        item.completed_at,
+        item.updatedAt,
+        item.updated_at,
+      ]
+    : [
+        item.createdAt,
+        item.created_at,
+        item.timestamp,
+        item.updatedAt,
+        item.updated_at,
+      ];
+  for (const candidate of candidates) {
+    const normalized = codexProviderTimestampToIso(candidate);
+    if (normalized) return normalized;
+  }
+  return undefined;
+}
+
+function codexProviderTimestampToIso(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
+  }
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+  const milliseconds = value >= 1_000_000_000_000 ? value : value * 1000;
+  const date = new Date(milliseconds);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+}
+
+function withCodexSourceTimestamp(
+  message: ServerMessage,
+  sourceTimestamp?: string,
+): ServerMessage {
+  if (!sourceTimestamp || message.sourceTimestamp) return message;
+  return {
+    ...message,
+    sourceTimestamp,
+    sourceTimestampIsAuthoritative: true,
+  };
 }
 
 interface CodexItemToolDescriptor {
