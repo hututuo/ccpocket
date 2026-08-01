@@ -16,6 +16,7 @@ import 'package:ccpocket/features/session_list/state/session_list_cubit.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/models/messages.dart';
+import 'package:ccpocket/services/draft_service.dart';
 import 'package:ccpocket/widgets/bubbles/ask_user_question_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -182,6 +183,128 @@ void main() {
       }
     },
   );
+
+  testWidgets('restored Codex submission resumes attachment after reconnect', (
+    tester,
+  ) async {
+    final bridge = MockBridgeService()
+      ..authenticatedBridgeInstanceId = 'bridge-restored-resume'
+      ..authenticatedCodexSourceId = 'source-restored-resume'
+      ..advertisedBridgeCapabilities = const {
+        conversationSyncV2Capability,
+        sessionRequestCorrelationCapability,
+      }
+      ..emitSessionList(const []);
+    final identity = bridge.dataSourceIdentity;
+    final target = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+      codexSourceId: bridge.authenticatedCodexSourceId,
+    );
+    const metadata = RecentSession(
+      sessionId: 'thread-restored-resume',
+      provider: 'codex',
+      firstPrompt: 'Restored pending message',
+      created: '2026-08-01T00:00:00.000Z',
+      modified: '2026-08-01T00:01:00.000Z',
+      gitBranch: 'main',
+      projectPath: '/workspace/restored-resume',
+      isSidechain: false,
+      codexSourceId: 'source-restored-resume',
+    );
+    final sessionList = _ProjectionSessionListCubit(
+      bridge: bridge,
+      sourceFingerprint: target.fingerprint,
+      metadataAvailable: false,
+      status: const ConversationSyncV2Status(
+        provider: 'codex',
+        providerSessionId: 'thread-restored-resume',
+        activity: 'idle',
+        attention: 'none',
+        result: 'none',
+        runtimeAttachment: 'notLoaded',
+        source: 'appServer',
+        confidence: 'authoritative',
+        observedAt: '2026-08-01T00:01:00.000Z',
+        executionHost: 'unknown',
+        controlState: 'writable',
+      ),
+      metadata: metadata,
+    );
+    final prefs = await SharedPreferences.getInstance();
+    final drafts = DraftService(prefs);
+    await drafts.savePendingSubmission(
+      metadata.sessionId,
+      PendingChatSubmissionDraft(
+        clientMessageId: 'client-restored-resume',
+        text: 'Continue after reconnect',
+      ),
+    );
+    final repository = _CountingSessionCatalogCacheRepository(
+      SessionCatalogCacheDatabase(
+        databasePath: 'unused-restored-resume-cache.db',
+      ),
+      snapshots: const {},
+    );
+    final sync = ConversationContentSyncService(
+      bridge: BridgeServiceConversationContentSyncGateway(bridge),
+      cache: repository,
+    );
+
+    try {
+      await tester.pumpWidget(
+        await buildTestCodexSessionScreen(
+          bridge: bridge,
+          sessionId: 'pending-restored-runtime',
+          projectPath: metadata.projectPath,
+          isPending: true,
+          durableProviderSessionId: metadata.sessionId,
+          dataSourceIdentity: identity,
+          conversationContentSync: sync,
+          sessionListCubit: sessionList,
+          draftService: drafts,
+        ),
+      );
+      await tester.pump();
+      expect(
+        _sentWireMessages(
+          bridge,
+        ).where((message) => message['type'] == 'resume_session'),
+        isEmpty,
+      );
+
+      sessionList.replace(
+        sourceFingerprint: target.fingerprint,
+        status: sessionList.status,
+        metadata: metadata,
+        metadataAvailable: true,
+      );
+      for (var attempt = 0; attempt < 50; attempt++) {
+        if (_sentWireMessages(
+          bridge,
+        ).any((message) => message['type'] == 'resume_session')) {
+          break;
+        }
+        await tester.pump(const Duration(milliseconds: 10));
+      }
+
+      final resumeMessages = _sentWireMessages(
+        bridge,
+      ).where((message) => message['type'] == 'resume_session').toList();
+      expect(resumeMessages, hasLength(1));
+      expect(resumeMessages.single['sessionId'], metadata.sessionId);
+      expect(
+        find.text('Connected. Loading live session status…'),
+        findsOneWidget,
+      );
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      await sync.dispose();
+      await repository.close();
+      bridge.dispose();
+      unawaited(sessionList.close());
+    }
+  });
 
   testWidgets(
     'cache revisions update the detached cubit without rebuilding child state',
@@ -1572,12 +1695,14 @@ class _ProjectionSessionListCubit extends SessionListCubit {
     required this.sourceFingerprint,
     required this.status,
     required this.metadata,
+    this.metadataAvailable = true,
   });
 
   final StreamController<void> _changes = StreamController<void>.broadcast();
   String sourceFingerprint;
   ConversationSyncV2Status status;
   RecentSession metadata;
+  bool metadataAvailable;
 
   @override
   Stream<void> get catalogSnapshotChanges => _changes.stream;
@@ -1594,7 +1719,10 @@ class _ProjectionSessionListCubit extends SessionListCubit {
   RecentSession? conversationMetadataFor(
     String provider,
     String providerSessionId,
-  ) => provider == metadata.provider && providerSessionId == metadata.sessionId
+  ) =>
+      metadataAvailable &&
+          provider == metadata.provider &&
+          providerSessionId == metadata.sessionId
       ? metadata
       : null;
 
@@ -1602,10 +1730,12 @@ class _ProjectionSessionListCubit extends SessionListCubit {
     required String sourceFingerprint,
     required ConversationSyncV2Status status,
     required RecentSession metadata,
+    bool? metadataAvailable,
   }) {
     this.sourceFingerprint = sourceFingerprint;
     this.status = status;
     this.metadata = metadata;
+    this.metadataAvailable = metadataAvailable ?? this.metadataAvailable;
     _changes.add(null);
   }
 

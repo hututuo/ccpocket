@@ -224,6 +224,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   StreamSubscription<ConversationContentCacheUpdate>? _cachedPreviewSub;
   StreamSubscription<List<SessionInfo>>? _identitySessionListSub;
   StreamSubscription<List<RecentSession>>? _identityRecentSessionsSub;
+  StreamSubscription<void>? _identityCatalogSnapshotSub;
   ConversationHotWindowSnapshot? _cachedPreview;
   bool _loadingCachedPreview = false;
   bool _cachedPreviewDirty = false;
@@ -275,13 +276,29 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     _identitySessionListSub = bridge.sessionList.listen((sessions) {
       _reconcileAuthoritativeDataSourceIdentity(bridge);
       _reconcileDurableLiveRuntime(bridge, sessions);
+      _requestRestoredDeferredAttachmentIfReady();
     });
     _identityRecentSessionsSub = bridge.recentSessionsStream.listen((_) {
       _reconcileAuthoritativeDataSourceIdentity(bridge);
       _reconcileDurableLiveRuntime(bridge, bridge.sessions);
+      _requestRestoredDeferredAttachmentIfReady();
     });
+    try {
+      final sessionList = context.read<SessionListCubit>();
+      _identityCatalogSnapshotSub = sessionList.catalogSnapshotChanges.listen((
+        _,
+      ) {
+        if (!mounted) return;
+        _reconcileAuthoritativeDataSourceIdentity(bridge);
+        _reconcileDurableLiveRuntime(bridge, bridge.sessions);
+        _requestRestoredDeferredAttachmentIfReady();
+      });
+    } catch (_) {
+      // Official/isolated widget hosts may omit the optional v2 projection.
+    }
     _reconcileAuthoritativeDataSourceIdentity(bridge);
     _reconcileDurableLiveRuntime(bridge, bridge.sessions);
+    _requestRestoredDeferredAttachmentIfReady();
   }
 
   /// Keeps the transient runtime handle of a durable Codex page aligned with
@@ -749,6 +766,44 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     return true;
   }
 
+  /// Restarts a persisted first-send after the socket and v2 catalog recover.
+  ///
+  /// The draft itself is intentionally durable, but restoring it without
+  /// re-requesting the live attachment leaves the page forever at
+  /// "Loading live session status". [PendingSessionBinding] and Bridge request
+  /// ids make repeated readiness callbacks idempotent.
+  void _requestRestoredDeferredAttachmentIfReady() {
+    if (!mounted || !_isPending || _deferredSubmission == null) return;
+    final external = widget.pendingSessionCreated;
+    final hasReusableExternalBinding =
+        external is PendingSessionBinding &&
+        !external.isDisposed &&
+        external.value == null &&
+        external.failure.value == null;
+    if (!hasReusableExternalBinding) {
+      final durableId = widget.durableProviderSessionId?.trim();
+      if (durableId == null || durableId.isEmpty) return;
+      final bridge = context.read<BridgeService>();
+      final hasAttachmentMetadata =
+          _currentProjectedDurableSession(bridge, durableId) != null ||
+          bridge.recentSessions.any(
+            (session) =>
+                session.provider == Provider.codex.value &&
+                session.sessionId == durableId,
+          );
+      if (!hasAttachmentMetadata) return;
+    }
+    final binding = _ensureDurableAttachmentBinding();
+    if (binding == null ||
+        binding.isDisposed ||
+        binding.value != null ||
+        binding.failure.value != null) {
+      return;
+    }
+    _listenForSessionCreated();
+    unawaited(binding.requestAttachment());
+  }
+
   void _consumeDeferredSubmission(ChatComposerSubmission submission) {
     if (_deferredSubmission != submission) return;
     final durableId = widget.durableProviderSessionId;
@@ -1158,6 +1213,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     _cachedPreviewSub?.cancel();
     _identitySessionListSub?.cancel();
     _identityRecentSessionsSub?.cancel();
+    _identityCatalogSnapshotSub?.cancel();
     final durableId = widget.durableProviderSessionId;
     if (durableId != null) {
       try {

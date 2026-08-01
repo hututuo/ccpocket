@@ -221,9 +221,11 @@ Future<Widget> buildTestClaudeSessionScreen({
   ValueNotifier<SystemMessage?>? pendingSessionCreated,
   BridgeDataSourceIdentity? dataSourceIdentity,
   ConversationContentSyncService? conversationContentSync,
+  DraftService? draftService,
 }) => _buildTestSessionScreen(
   bridge: bridge,
   conversationContentSync: conversationContentSync,
+  draftService: draftService,
   child: ClaudeSessionScreen(
     sessionId: sessionId,
     projectPath: projectPath,
@@ -239,8 +241,11 @@ Future<Widget> _buildTestSessionScreen({
   required Widget child,
   ConversationContentSyncService? conversationContentSync,
   SessionListCubit? sessionListCubit,
+  DraftService? draftService,
 }) async {
-  SharedPreferences.setMockInitialValues({});
+  if (draftService == null) {
+    SharedPreferences.setMockInitialValues({});
+  }
   final prefs = await SharedPreferences.getInstance();
   return MaterialApp(
     localizationsDelegates: AppLocalizations.localizationsDelegates,
@@ -250,7 +255,9 @@ Future<Widget> _buildTestSessionScreen({
     home: MultiRepositoryProvider(
       providers: [
         RepositoryProvider<BridgeService>.value(value: bridge),
-        RepositoryProvider<DraftService>.value(value: DraftService(prefs)),
+        RepositoryProvider<DraftService>.value(
+          value: draftService ?? DraftService(prefs),
+        ),
         RepositoryProvider<PromptHistoryService>.value(
           value: PromptHistoryService(DatabaseService()),
         ),
@@ -301,10 +308,12 @@ Future<Widget> buildTestCodexSessionScreen({
   BridgeDataSourceIdentity? dataSourceIdentity,
   ConversationContentSyncService? conversationContentSync,
   SessionListCubit? sessionListCubit,
+  DraftService? draftService,
 }) => _buildTestSessionScreen(
   bridge: bridge,
   conversationContentSync: conversationContentSync,
   sessionListCubit: sessionListCubit,
+  draftService: draftService,
   child: CodexSessionScreen(
     sessionId: sessionId,
     projectPath: projectPath,
