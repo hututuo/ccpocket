@@ -12,6 +12,7 @@ import {
   unlink,
 } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
+import { homedir } from "node:os";
 import { resolve, extname, basename, relative } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { promisify } from "node:util";
@@ -13763,7 +13764,16 @@ export class BridgeWebSocketServer {
       this.codexSharedRuntimeMutationAllowed,
     );
     try {
-      const cwd = projectPath ?? process.cwd();
+      // launchd starts the Bridge with `/` as its process cwd. A read-only
+      // app-server bootstrapped there cannot resolve project-local metadata
+      // and repeatedly emits `not a git repository` diagnostics. Use the
+      // first configured authority root (the user's home by default) for
+      // project-agnostic catalog/status reads; mutation/resume paths still
+      // pass the exact session project path explicitly.
+      const cwd =
+        projectPath ??
+        this.allowedDirs.find((directory) => directory.trim().length > 0) ??
+        homedir();
       if (requestTimeoutMs === undefined) {
         await proc.initializeOnly(cwd);
       } else {

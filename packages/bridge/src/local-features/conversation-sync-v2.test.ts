@@ -4550,6 +4550,85 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(stop).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps catalog, status, and hot history on one private read app-server", async () => {
+    const sent: ConversationSyncServerMessage[] = [];
+    const listThreads = vi.fn(async () => ({
+      data: [],
+      nextCursor: null,
+    }));
+    const listThreadTurns = vi.fn(async () => ({
+      data: [],
+      nextCursor: null,
+    }));
+    const stop = vi.fn();
+    const standalone = {
+      isRunning: true,
+      listThreads,
+      listThreadTurns,
+      stop,
+    } as unknown as CodexProcess;
+    const createStandaloneCodexProcess = vi.fn(async () => standalone);
+    const runtime: LocalFeatureRuntime = {
+      bridgeInstanceId: "bridge-1",
+      codexSourceId: "source-1",
+      getSession: () => undefined,
+      getCodexThreadId: () => undefined,
+      getActiveCodexProcess: () => null,
+      createStandaloneCodexProcess,
+      send(_client, message) {
+        sent.push(message as ConversationSyncServerMessage);
+      },
+      isClientOpen: () => true,
+      supports: (_client, capability) =>
+        capability === CONVERSATION_SYNC_V2_CAPABILITY ||
+        capability === APP_SERVER_STATUS_CAPABILITY,
+    };
+    let withSharedRead!: <T>(
+      operation: (process: CodexProcess) => Promise<T>,
+    ) => Promise<T>;
+    const seed = codexSeed(0, "thread-private-read");
+    const handler = new ConversationSyncV2FeatureHandler(runtime, {
+      catalogReader: () =>
+        withSharedRead(async (process) => {
+          await process.listThreads({ limit: 1 });
+          return [seed];
+        }),
+      statusReader: () =>
+        withSharedRead(async (process) => {
+          await process.listThreads({ limit: 1 });
+          return new Map([["codex\0thread-private-read", seed.status]]);
+        }),
+      inspectCodexThread: async () => null,
+      daemonMode: false,
+      statusWatchdogMs: 60_000,
+      coldReconcileMs: 60_000,
+    });
+    withSharedRead = (
+      handler as unknown as {
+        withSharedCodexReadProcess<T>(
+          operation: (process: CodexProcess) => Promise<T>,
+        ): Promise<T>;
+      }
+    ).withSharedCodexReadProcess.bind(handler);
+
+    const client = {};
+    await handler.handle(subscribeMessage(), context(client, runtime));
+    await vi.waitFor(() =>
+      expect(sent.some((message) => message.event === "sync_complete")).toBe(
+        true,
+      ),
+    );
+    await (
+      handler as unknown as { refreshStatuses(): Promise<void> }
+    ).refreshStatuses();
+
+    expect(listThreads).toHaveBeenCalledTimes(2);
+    expect(listThreadTurns).toHaveBeenCalledTimes(1);
+    expect(createStandaloneCodexProcess).toHaveBeenCalledTimes(1);
+    handler.close();
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to bounded turns/list on the shared reader when items/list is unavailable", async () => {
     const sent: ConversationSyncServerMessage[] = [];
     const listThreadTurns = vi.fn(async () => ({

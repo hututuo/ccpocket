@@ -171,6 +171,9 @@ const STATUS_STATE_SCHEMA_VERSION = 5;
 const CONTENT_STATE_SCHEMA_VERSION = 4;
 
 type ConversationKey = string;
+type WithCodexReadProcess = <T>(
+  operation: (process: CodexProcess) => Promise<T>,
+) => Promise<T>;
 type SharedRuntimeControlEvent = Extract<
   LocalFeatureSharedRuntimeControlUpdate,
   { kind: "event" }
@@ -571,10 +574,17 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       ((client, message) => this.runtime.send(client, message));
     this.legacyCodexMonitoringEnabled = !this.daemonMode;
     this.catalogReader =
-      options.catalogReader ?? (() => readUnifiedCatalog(this.runtime));
+      options.catalogReader ??
+      (() =>
+        readUnifiedCatalog(this.runtime, (operation) =>
+          this.withSharedCodexReadProcess(operation),
+        ));
     this.statusReader =
       options.statusReader ??
-      ((current) => readCurrentStatuses(this.runtime, current));
+      ((current) =>
+        readCurrentStatuses(this.runtime, current, (operation) =>
+          this.withSharedCodexReadProcess(operation),
+        ));
     this.historyReader =
       options.historyReader ??
       ((target, request) =>
@@ -5189,6 +5199,7 @@ function equivalentObservedUserMessage(
 
 async function readUnifiedCatalog(
   runtime: LocalFeatureRuntime,
+  withCodexReadProcess?: WithCodexReadProcess,
 ): Promise<ConversationSyncCatalogSeed[]> {
   const [claude, codex] = await Promise.all([
     getAllRecentSessions({
@@ -5197,7 +5208,7 @@ async function readUnifiedCatalog(
       offset: 0,
       metadataOnly: true,
     }).then((result) => result.sessions.map(sessionSeed)),
-    readCodexCatalog(runtime),
+    readCodexCatalog(runtime, {}, withCodexReadProcess),
   ]);
   return [...codex, ...claude]
     .sort((left, right) =>
@@ -5209,9 +5220,13 @@ async function readUnifiedCatalog(
 async function readCodexCatalog(
   runtime: LocalFeatureRuntime,
   options: { includeDurableMetadata?: boolean } = {},
+  withCodexReadProcess?: WithCodexReadProcess,
 ): Promise<ConversationSyncCatalogSeed[]> {
   try {
-    return await withCodexProcess(runtime, undefined, async (process) => {
+    const read =
+      withCodexReadProcess ??
+      ((operation) => withCodexProcess(runtime, undefined, operation));
+    return await read(async (process) => {
       const threads: CodexThreadSummary[] = [];
       let cursor: string | null = null;
       do {
@@ -5272,11 +5287,14 @@ async function readCodexCatalog(
 async function readCurrentStatuses(
   runtime: LocalFeatureRuntime,
   _current: ReadonlyMap<ConversationKey, CatalogRecord>,
+  withCodexReadProcess?: WithCodexReadProcess,
 ): Promise<Map<ConversationKey, ConversationSyncStatus>> {
   const statuses = new Map<ConversationKey, ConversationSyncStatus>();
-  const codex = await readCodexCatalog(runtime, {
-    includeDurableMetadata: false,
-  });
+  const codex = await readCodexCatalog(
+    runtime,
+    { includeDurableMetadata: false },
+    withCodexReadProcess,
+  );
   for (const seed of codex) statuses.set(targetKey(seed.entry), seed.status);
   return statuses;
 }

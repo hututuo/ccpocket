@@ -4856,6 +4856,35 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     }
   });
 
+  it("boots project-agnostic Codex readers from the configured authority root", async () => {
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      allowedDirs: ["/Users/test/allowed-root"],
+    });
+    const initializeOnly = vi
+      .spyOn(CodexProcess.prototype, "initializeOnly")
+      .mockResolvedValue(undefined);
+    const stop = vi
+      .spyOn(CodexProcess.prototype, "stop")
+      .mockImplementation(() => {});
+    try {
+      const process = await (bridge as any).createStandaloneCodexProcess(
+        undefined,
+        15_000,
+      );
+
+      expect(initializeOnly).toHaveBeenCalledWith(
+        "/Users/test/allowed-root",
+        15_000,
+      );
+      process.stop();
+    } finally {
+      initializeOnly.mockRestore();
+      stop.mockRestore();
+      bridge.close();
+    }
+  });
+
   it("keeps standalone and legacy side-chat Codex processes behind the live shared writer fence", async () => {
     vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
     const health: CodexActionBrokerRuntimeHealth = {
