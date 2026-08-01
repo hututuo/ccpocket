@@ -1388,3 +1388,25 @@
   `captured → enabling → shared → restoring → restored` transaction with
   verified rollback and interrupted-state recovery, not an ambient permanent
   configuration.
+
+## 2026-08-01 private and daemon Codex runtime paths both remain supported
+
+- `private` 继续是默认和旧部署兼容路径；未设置
+  `BRIDGE_CODEX_APP_SERVER_MODE` 时不得自动切换到共享 daemon，也不得因为安装了
+  新 Bridge 就改变 Desktop 的运行方式。
+- `daemon` 继续作为显式配置、精确版本、可回滚的共享运行时路径。它只有在本地
+  Unix socket、版本、writer lease、control stream 和用户侧 Desktop 试验门禁均
+  通过后才可启用；不满足条件时 fail closed，不伪装成 private 已成功。
+- 两条路径共用目录、状态、历史、来源身份和 Mobile v2 缓存语义。项目无关的只读
+  catalog/status/history 读取复用一个有界 app-server 连接；private 下仍为 Bridge
+  自己的只读进程，daemon 下仍连接共享运行时。会话 resume、发送、审批等 mutation
+  继续走各模式原有的所有权和 writer fence，不能借读取复用跨越写入边界。
+- launchd 的进程 cwd 不是会话 cwd。项目无关的只读进程从第一个已配置 authority
+  root（owner 全盘只读时回退用户 Home）启动；实际 resume/mutation 始终传入该
+  durable 会话的真实项目路径。
+- Mobile 从 `conversation_sync_v2` 持久目录打开的会话，不得回头要求该会话同时
+  出现在旧的 bounded `recentSessions` 列表中才允许首次发送。接管必须使用当前已
+  认证 Bridge/source 分区里的精确 provider thread ID 和 v2 metadata；相同 thread
+  ID 出现在另一 Codex Home 时继续 fail closed。
+- 源码合入、运行 Bridge 切换、Desktop daemon 试验、OTA/IPA 和真机验收仍是独立
+  门禁。本决定只保留两条产品路径，不授权自动修改当前生产模式或发布通道。
