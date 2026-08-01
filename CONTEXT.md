@@ -22,9 +22,12 @@ projection directly. The Bridge recomputes only the affected durable thread,
 publishes the current execution host/control state/authority generation, and
 does not reread catalog or history. The exact Mobile mutation fence remains
 unchanged. Bridge passed 113 files / 2,271 tests in single-worker mode; Mobile
-authority/preview regression files passed 201 tests. Source is committed;
-production Bridge deployment and physical-phone acceptance remain separate
-gates.
+authority/preview regression files passed 201 tests. Source is committed and
+the production Bridge now runs `1.69.6-compat.12` from source `652867a8` as PID
+`64563`, with one `127.0.0.1:8765` listener and healthy `/health` and `/readyz`
+signals. The existing LAN proxy remains unchanged. Physical-phone acceptance
+of conversation reopen, model/effort controls, plan mode and stop remains a
+separate gate; no Mobile, OTA, IPA, Cloud, VPN or Desktop configuration changed.
 
 ## Active shared Codex runtime implementation
 
