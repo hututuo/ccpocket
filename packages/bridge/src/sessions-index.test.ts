@@ -2157,6 +2157,8 @@ describe("codex sessions integration", () => {
       sandboxMode: "danger-full-access",
       collaborationMode: "plan",
     });
+    expect(metadata.get(threadId)?.projectPath).toBe("/tmp/child-project");
+    expect(metadata.get(threadId)?.resumeCwd).toBeUndefined();
   });
 
   it("rejects authoritative settings when the persisted rollout owner differs", async () => {

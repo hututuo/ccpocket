@@ -2468,16 +2468,18 @@ export async function getCodexSessionIndexMetadata(
     // read authoritatively from the already-resolved child file.
     const matchingParsed =
       parsed?.threadId === expectedThreadId ? parsed : undefined;
+    let persistedOwnerMetadata: CodexRolloutOwnerMetadata | null = null;
     if (!matchingParsed) {
       if (!authoritativeSettings) continue;
       // Filename indexes are fast but a copied or damaged rollout can carry
       // another thread's id. Confirm the first persisted owner before using
       // settings without a matching presentation parse.
-      const persistedOwner = await codexJsonlThreadId(filePath).catch(
+      persistedOwnerMetadata = await codexJsonlOwnerMetadata(filePath).catch(
         () => null,
       );
-      if (persistedOwner !== expectedThreadId) continue;
+      if (persistedOwnerMetadata?.threadId !== expectedThreadId) continue;
     }
+    const pathMetadata = matchingParsed?.entry ?? persistedOwnerMetadata;
     result.set(expectedThreadId, {
       ...(matchingParsed?.entry.forkedFromThreadId
         ? { forkedFromThreadId: matchingParsed.entry.forkedFromThreadId }
@@ -2487,11 +2489,11 @@ export async function getCodexSessionIndexMetadata(
         : authoritativeSettings
           ? { codexSettings: authoritativeSettings }
           : {}),
-      ...(matchingParsed?.entry.projectPath
-        ? { projectPath: matchingParsed.entry.projectPath }
+      ...(pathMetadata?.projectPath
+        ? { projectPath: pathMetadata.projectPath }
         : {}),
-      ...(matchingParsed?.entry.resumeCwd
-        ? { resumeCwd: matchingParsed.entry.resumeCwd }
+      ...(pathMetadata?.resumeCwd
+        ? { resumeCwd: pathMetadata.resumeCwd }
         : {}),
       ...(matchingParsed?.entry.firstPrompt
         ? { firstPrompt: matchingParsed.entry.firstPrompt }
@@ -4304,7 +4306,15 @@ function trimCodexDesktopToolTimelineCache(): void {
   }
 }
 
-async function codexJsonlThreadId(filePath: string): Promise<string | null> {
+interface CodexRolloutOwnerMetadata {
+  threadId: string;
+  projectPath?: string;
+  resumeCwd?: string;
+}
+
+async function codexJsonlOwnerMetadata(
+  filePath: string,
+): Promise<CodexRolloutOwnerMetadata | null> {
   for await (const { line } of streamJsonlLines(filePath)) {
     if (!line.trim()) continue;
     let entry: Record<string, unknown>;
@@ -4315,11 +4325,25 @@ async function codexJsonlThreadId(filePath: string): Promise<string | null> {
     }
     if (entry.type !== "session_meta") continue;
     const payload = asObject(entry.payload);
-    return typeof payload?.id === "string" && payload.id.length > 0
-      ? payload.id
-      : null;
+    if (typeof payload?.id !== "string" || payload.id.length === 0) {
+      return null;
+    }
+    const rawCwd =
+      typeof payload.cwd === "string" && payload.cwd.trim().length > 0
+        ? payload.cwd
+        : undefined;
+    const projectPath = rawCwd ? normalizeWorktreePath(rawCwd) : undefined;
+    return {
+      threadId: payload.id,
+      ...(projectPath ? { projectPath } : {}),
+      ...(rawCwd && rawCwd !== projectPath ? { resumeCwd: rawCwd } : {}),
+    };
   }
   return null;
+}
+
+async function codexJsonlThreadId(filePath: string): Promise<string | null> {
+  return (await codexJsonlOwnerMetadata(filePath))?.threadId ?? null;
 }
 
 /**

@@ -1916,21 +1916,21 @@ describe("CodexProcess (app-server)", () => {
     expect(proc.supportsNextTurnPermissionUpdates).toBe(false);
   });
 
-  it("updates durable thread settings without attaching to or resuming the thread", async () => {
+  it("updates durable speed atomically without resetting current thread settings", async () => {
     const proc = new CodexProcess("linux", () => true);
     const request = vi.spyOn(proc as any, "request").mockResolvedValue({});
 
     await proc.updateDurableThreadSettingsForNextTurn(
       "thread-desktop-active",
+      { serviceTier: "fast" },
       {
-        model: "gpt-5.6-sol",
-        modelReasoningEffort: "ultra",
-        serviceTier: "fast",
-        collaborationMode: "plan",
-      },
-      {
-        currentModel: "gpt-5.5",
-        currentModelReasoningEffort: "high",
+        currentModel: "gpt-5.6-sol",
+        currentModelReasoningEffort: "ultra",
+        currentServiceTier: "standard",
+        currentApprovalPolicy: "never",
+        currentApprovalsReviewer: "user",
+        currentSandboxMode: "danger-full-access",
+        currentCollaborationMode: "default",
       },
     );
 
@@ -1940,8 +1940,11 @@ describe("CodexProcess (app-server)", () => {
       model: "gpt-5.6-sol",
       effort: "ultra",
       serviceTier: "fast",
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxPolicy: { type: "dangerFullAccess" },
       collaborationMode: {
-        mode: "plan",
+        mode: "default",
         settings: {
           model: "gpt-5.6-sol",
           reasoning_effort: "ultra",
@@ -1953,7 +1956,7 @@ describe("CodexProcess (app-server)", () => {
     expect(proc.knownServiceTier).toBeUndefined();
   });
 
-  it("preserves durable permission context and requires a model for Plan", async () => {
+  it("preserves the complete durable context for permission updates", async () => {
     const proc = new CodexProcess("linux", () => true);
     (proc as any)._projectPath = "/tmp/project-durable-settings";
     const request = vi
@@ -1975,6 +1978,13 @@ describe("CodexProcess (app-server)", () => {
         sandboxMode: "workspace-write",
       },
       {
+        currentModel: "gpt-5.6-sol",
+        currentModelReasoningEffort: "ultra",
+        currentServiceTier: "fast",
+        currentApprovalPolicy: "on-request",
+        currentApprovalsReviewer: "user",
+        currentSandboxMode: "read-only",
+        currentCollaborationMode: "default",
         networkAccessEnabled: true,
         additionalWritableRoots: ["/tmp/mobile-root"],
       },
@@ -1982,6 +1992,9 @@ describe("CodexProcess (app-server)", () => {
 
     expect(request).toHaveBeenNthCalledWith(2, "thread/settings/update", {
       threadId: "thread-durable-permissions",
+      model: "gpt-5.6-sol",
+      effort: "ultra",
+      serviceTier: "fast",
       approvalPolicy: "never",
       approvalsReviewer: "user",
       sandboxPolicy: {
@@ -1995,6 +2008,13 @@ describe("CodexProcess (app-server)", () => {
         excludeTmpdirEnvVar: false,
         excludeSlashTmp: false,
       },
+      collaborationMode: {
+        mode: "default",
+        settings: {
+          model: "gpt-5.6-sol",
+          reasoning_effort: "ultra",
+        },
+      },
     });
 
     await expect(
@@ -2002,7 +2022,47 @@ describe("CodexProcess (app-server)", () => {
         "thread-no-model",
         { collaborationMode: "plan" },
       ),
-    ).rejects.toThrow("requires the current thread model");
+    ).rejects.toThrow("complete authoritative snapshot");
+  });
+
+  it("allows an explicit custom permission reset inside a complete snapshot", async () => {
+    const proc = new CodexProcess("linux", () => true);
+    const request = vi.spyOn(proc as any, "request").mockResolvedValue({});
+
+    await proc.updateDurableThreadSettingsForNextTurn(
+      "thread-durable-custom",
+      {
+        approvalPolicy: null,
+        approvalsReviewer: null,
+        sandboxMode: null,
+      },
+      {
+        currentModel: "gpt-5.6-sol",
+        currentModelReasoningEffort: "ultra",
+        currentServiceTier: "fast",
+        currentApprovalPolicy: "never",
+        currentApprovalsReviewer: "user",
+        currentSandboxMode: "danger-full-access",
+        currentCollaborationMode: "default",
+      },
+    );
+
+    expect(request).toHaveBeenCalledWith("thread/settings/update", {
+      threadId: "thread-durable-custom",
+      model: "gpt-5.6-sol",
+      effort: "ultra",
+      serviceTier: "fast",
+      approvalPolicy: null,
+      approvalsReviewer: null,
+      sandboxPolicy: null,
+      collaborationMode: {
+        mode: "default",
+        settings: {
+          model: "gpt-5.6-sol",
+          reasoning_effort: "ultra",
+        },
+      },
+    });
   });
 
   it("sends a complete workspace sandbox policy for next-turn permissions", async () => {

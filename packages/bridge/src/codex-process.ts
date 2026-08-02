@@ -189,6 +189,11 @@ export interface CodexSharedRuntimeThreadSettings extends CodexNextTurnPermissio
 export interface CodexDurableThreadSettingsContext {
   currentModel?: string;
   currentModelReasoningEffort?: CodexStartOptions["modelReasoningEffort"];
+  currentServiceTier?: string;
+  currentApprovalPolicy?: CodexStartOptions["approvalPolicy"];
+  currentApprovalsReviewer?: CodexStartOptions["approvalsReviewer"];
+  currentSandboxMode?: CodexStartOptions["sandboxMode"];
+  currentCollaborationMode?: CodexStartOptions["collaborationMode"];
   networkAccessEnabled?: boolean;
   additionalWritableRoots?: string[];
 }
@@ -1486,47 +1491,88 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         throw new Error("Durable Codex settings require a thread ID");
       }
 
+      const completeSettings: CodexSharedRuntimeThreadSettings = {
+        ...(context.currentModel ? { model: context.currentModel } : {}),
+        ...(context.currentModelReasoningEffort
+          ? {
+              modelReasoningEffort: context.currentModelReasoningEffort,
+            }
+          : {}),
+        ...(context.currentServiceTier
+          ? { serviceTier: context.currentServiceTier }
+          : {}),
+        ...(context.currentApprovalPolicy
+          ? { approvalPolicy: context.currentApprovalPolicy }
+          : {}),
+        ...(context.currentApprovalsReviewer
+          ? { approvalsReviewer: context.currentApprovalsReviewer }
+          : {}),
+        ...(context.currentSandboxMode
+          ? { sandboxMode: context.currentSandboxMode }
+          : {}),
+        ...(context.currentCollaborationMode
+          ? { collaborationMode: context.currentCollaborationMode }
+          : {}),
+        ...settings,
+      };
+      if (
+        !completeSettings.model ||
+        !completeSettings.modelReasoningEffort ||
+        !completeSettings.serviceTier ||
+        completeSettings.approvalPolicy === undefined ||
+        completeSettings.approvalsReviewer === undefined ||
+        completeSettings.sandboxMode === undefined ||
+        !completeSettings.collaborationMode
+      ) {
+        throw new Error(
+          "Durable Codex settings require a complete authoritative snapshot",
+        );
+      }
+
       const params: Record<string, unknown> = { threadId: normalizedThreadId };
       let sanitizedModel: string | undefined;
       let normalizedEffort:
         | CodexStartOptions["modelReasoningEffort"]
         | undefined;
 
-      if (settings.model !== undefined) {
-        sanitizedModel = sanitizeCodexModel(settings.model);
+      if (completeSettings.model !== undefined) {
+        sanitizedModel = sanitizeCodexModel(completeSettings.model);
         if (!sanitizedModel) throw new Error("Invalid Codex model");
         params.model = sanitizedModel;
       }
-      if (settings.modelReasoningEffort !== undefined) {
+      if (completeSettings.modelReasoningEffort !== undefined) {
         normalizedEffort = normalizeReasoningEffort(
-          settings.modelReasoningEffort,
+          completeSettings.modelReasoningEffort,
         );
         params.effort = normalizedEffort;
       }
-      if (settings.serviceTier !== undefined) {
-        params.serviceTier = normalizeServiceTier(settings.serviceTier);
+      if (completeSettings.serviceTier !== undefined) {
+        params.serviceTier = normalizeServiceTier(completeSettings.serviceTier);
       }
-      if (settings.approvalPolicy !== undefined) {
+      if (completeSettings.approvalPolicy !== undefined) {
         params.approvalPolicy =
-          settings.approvalPolicy === null
+          completeSettings.approvalPolicy === null
             ? null
-            : normalizeApprovalPolicy(settings.approvalPolicy);
+            : normalizeApprovalPolicy(completeSettings.approvalPolicy);
       }
-      if (settings.approvalsReviewer !== undefined) {
+      if (completeSettings.approvalsReviewer !== undefined) {
         params.approvalsReviewer =
-          settings.approvalsReviewer === null
+          completeSettings.approvalsReviewer === null
             ? null
             : normalizeApprovalsReviewerForAppServer(
-                settings.approvalsReviewer,
+                completeSettings.approvalsReviewer,
               );
       }
-      if (settings.sandboxMode !== undefined) {
+      if (completeSettings.sandboxMode !== undefined) {
         params.sandboxPolicy =
-          settings.sandboxMode === null
+          completeSettings.sandboxMode === null
             ? null
-            : await this.buildSandboxPolicy(settings.sandboxMode, context);
+            : await this.buildSandboxPolicy(
+                completeSettings.sandboxMode,
+                context,
+              );
       }
-      if (settings.collaborationMode !== undefined) {
+      if (completeSettings.collaborationMode !== undefined) {
         const collaborationModel =
           sanitizedModel ??
           sanitizeCodexModel(context.currentModel) ??
@@ -1540,7 +1586,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         const collaborationEffort =
           normalizedEffort ?? context.currentModelReasoningEffort;
         params.collaborationMode = {
-          mode: settings.collaborationMode,
+          mode: completeSettings.collaborationMode,
           settings: {
             model: collaborationModel,
             ...(collaborationEffort

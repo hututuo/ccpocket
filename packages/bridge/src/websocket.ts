@@ -12088,6 +12088,17 @@ export class BridgeWebSocketServer {
         context.settings.modelReasoningEffort as
           | CodexStartOptions["modelReasoningEffort"]
           | undefined,
+      currentServiceTier: context.settings.serviceTier,
+      currentApprovalPolicy: context.settings.approvalPolicy as
+        | CodexStartOptions["approvalPolicy"]
+        | undefined,
+      currentApprovalsReviewer: context.settings.approvalsReviewer as
+        | CodexStartOptions["approvalsReviewer"]
+        | undefined,
+      currentSandboxMode: context.settings.sandboxMode as
+        | CodexStartOptions["sandboxMode"]
+        | undefined,
+      currentCollaborationMode: context.settings.collaborationMode,
       networkAccessEnabled: context.settings.networkAccessEnabled,
       additionalWritableRoots: context.settings.additionalWritableRoots,
     };

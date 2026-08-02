@@ -12369,6 +12369,11 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       expect.objectContaining({
         currentModel: "gpt-5.6-sol",
         currentModelReasoningEffort: "ultra",
+        currentServiceTier: "fast",
+        currentApprovalPolicy: "never",
+        currentApprovalsReviewer: "user",
+        currentSandboxMode: "danger-full-access",
+        currentCollaborationMode: "default",
       }),
     );
     expect(stop).toHaveBeenCalledOnce();
