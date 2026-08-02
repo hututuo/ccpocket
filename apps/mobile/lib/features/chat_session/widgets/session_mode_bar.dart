@@ -771,8 +771,12 @@ Future<void> togglePlanMode(
       chatCubit.isCodex &&
       chatCubit.state.status == ProcessStatus.idle &&
       !hasPendingApproval;
+  final canSaveDetachedForNextTurn =
+      chatCubit.detachedPreview &&
+      chatCubit.codexSettingsActionability ==
+          CodexSettingsActionability.editable;
 
-  if (canToggleInPlace) {
+  if (canToggleInPlace || canSaveDetachedForNextTurn) {
     HapticFeedback.lightImpact();
     chatCubit.setSessionModes(planMode: nextPlanMode);
     return;

@@ -844,6 +844,146 @@ void main() {
     );
 
     test(
+      'durable thread settings stay editable without an attachment and while Desktop is active',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+          codexDurableThreadSettingsCapability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+        );
+        addTearDown(cubit.close);
+
+        cubit.updateDetachedProviderSettings(
+          const RecentSession(
+            sessionId: 'durable-thread',
+            provider: 'codex',
+            rawPermissionMode: 'bypassPermissions',
+            firstPrompt: 'Durable settings',
+            created: '2026-08-02T01:00:00.000Z',
+            modified: '2026-08-02T01:01:00.000Z',
+            gitBranch: 'main',
+            projectPath: '/tmp/project',
+            isSidechain: false,
+            codexApprovalPolicy: 'never',
+            codexApprovalsReviewer: 'user',
+            codexPermissionsMode: 'fullAccess',
+            codexSandboxMode: 'danger-full-access',
+            codexCollaborationMode: 'default',
+            codexModel: 'gpt-5.6-sol',
+            codexModelReasoningEffort: 'ultra',
+            codexServiceTier: 'fast',
+            codexSettingsSnapshotComplete: true,
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+
+        expect(cubit.detachedLiveRuntimeSessionId, isNull);
+        expect(
+          cubit.codexSettingsActionability,
+          CodexSettingsActionability.editable,
+        );
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-02T01:02:00.000Z',
+            executionHost: 'desktopAppServer',
+            controlState: 'readOnly',
+            activeTurnId: 'desktop-turn-1',
+            authorityGeneration: 'desktop-authority-1',
+          ),
+        );
+
+        expect(cubit.state.externalDesktopTurnActive, isTrue);
+        expect(cubit.state.codexModel, 'gpt-5.6-sol');
+        expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
+        expect(cubit.state.codexSpeed, CodexSpeed.fast);
+        expect(
+          cubit.codexSettingsActionability,
+          CodexSettingsActionability.editable,
+        );
+
+        cubit.setSessionModes(planMode: true);
+        cubit.setCodexApprovalPolicy(CodexApprovalPolicy.onFailure);
+        cubit.setCodexPermissionsMode(
+          CodexPermissionsMode.defaultPermissions,
+          applyStrategy: CodexPermissionApplyStrategy.nextTurn,
+        );
+        cubit.setCodexModel(
+          'gpt-5.4-mini',
+          reasoningEffort: ReasoningEffort.low,
+        );
+        cubit.setCodexSpeed(CodexSpeed.standard);
+        cubit.setSandboxMode(SandboxMode.on);
+
+        expect(mockBridge.sentMessages, hasLength(6));
+        final operationIds = <String>{};
+        for (final message in mockBridge.sentMessages) {
+          final payload = jsonDecode(message.toJson()) as Map<String, dynamic>;
+          expect(message.delivery, ClientMessageDelivery.ephemeral);
+          expect(payload['settingsTarget'], 'durable_thread');
+          expect(payload['codexSourceId'], 'source-a');
+          expect(payload['threadId'], 'durable-thread');
+          expect(payload['operationId'], isA<String>());
+          expect(payload, isNot(contains('sessionId')));
+          expect(payload, isNot(contains('runtimeSessionId')));
+          expect(payload, isNot(contains('authorityGeneration')));
+          operationIds.add(payload['operationId'] as String);
+        }
+        expect(operationIds, hasLength(6));
+
+        final permissionPayload = mockBridge.sentMessages
+            .map(
+              (message) =>
+                  jsonDecode(message.toJson()) as Map<String, dynamic>,
+            )
+            .singleWhere(
+              (payload) => payload['permissionChangeId'] != null,
+            );
+        expect(cubit.isPermissionChangePending, isTrue);
+        mockBridge.emitMessage(
+          SystemMessage(
+            subtype: 'set_permission_mode',
+            sessionId: 'durable-thread',
+            provider: 'codex',
+            permissionMode: 'acceptEdits',
+            executionMode: 'default',
+            approvalPolicy: 'on-request',
+            approvalsReviewer: 'user',
+            codexPermissionsMode: 'default',
+            planMode: false,
+            sandboxMode: 'workspace-write',
+            permissionChangeId:
+                permissionPayload['permissionChangeId'] as String,
+          ),
+          sessionId: 'durable-thread',
+        );
+        await Future<void>.microtask(() {});
+        expect(cubit.isPermissionChangePending, isFalse);
+
+        // Detached views keep displaying provider facts until the authoritative
+        // thread/settings/updated projection arrives; no transient optimistic
+        // value is mistaken for a provider acknowledgement.
+        expect(cubit.state.codexModel, 'gpt-5.6-sol');
+        expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
+        expect(cubit.state.codexSpeed, CodexSpeed.fast);
+      },
+    );
+
+    test(
       'v2 complete settings clear missing facts while legacy sparse rows retain them',
       () async {
         final cubit = ChatSessionCubit(

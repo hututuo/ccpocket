@@ -264,6 +264,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (!isCodex || !detachedPreview) {
       return CodexSettingsActionability.editable;
     }
+    if (_canBuildDurableSettingsMutationTarget) {
+      return CodexSettingsActionability.editable;
+    }
     if (state.externalDesktopTurnActive ||
         _detachedExecutionHost == 'desktopAppServer') {
       return CodexSettingsActionability.readOnlyDesktopOwner;
@@ -373,10 +376,38 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         authorityGeneration.isNotEmpty;
   }
 
+  bool get _canBuildDurableSettingsMutationTarget {
+    final codexSourceId = _bridge.codexSourceId?.trim();
+    final sourceFingerprint = _detachedProviderSourceFingerprint?.trim();
+    return detachedPreview &&
+        _bridge.bridgeCapabilities.contains(
+          codexDurableThreadSettingsCapability,
+        ) &&
+        _bridge.isConnected &&
+        _bridge.hasAuthoritativeSessionListForCurrentConnection &&
+        codexSourceId != null &&
+        codexSourceId.isNotEmpty &&
+        sourceFingerprint != null &&
+        sourceFingerprint.isNotEmpty;
+  }
+
+  String? _runtimeSessionIdForSettingsMutation() {
+    if (!detachedPreview) return sessionId;
+    if (_canBuildDurableSettingsMutationTarget) return sessionId;
+    return _runtimeSessionIdForMutation(allowSteerable: false);
+  }
+
   CodexSettingsMutationTarget? _detachedSettingsMutationTarget(
     String runtimeSessionId,
   ) {
     if (!detachedPreview) return null;
+    if (_canBuildDurableSettingsMutationTarget) {
+      return CodexSettingsMutationTarget.durableThread(
+        codexSourceId: _bridge.codexSourceId!.trim(),
+        threadId: sessionId,
+        operationId: _uuid.v4(),
+      );
+    }
     if (!_canBuildDetachedSettingsMutationTarget(runtimeSessionId)) {
       logger.warning(
         '[session:$sessionId] ignored detached settings mutation: '
@@ -435,6 +466,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   StreamSubscription<ServerMessage>? _subscription;
+  StreamSubscription<ServerMessage>? _detachedSettingsSubscription;
   StreamSubscription<BridgeConnectionState>? _goalConnectionSubscription;
   StreamSubscription<List<SessionInfo>>? _goalSessionListSubscription;
   StreamSubscription<List<SessionInfo>>? _codexRuntimeSnapshotSubscription;
@@ -591,6 +623,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       .contains(codexPermissionApplyStrategyCapability);
 
   bool get supportsCodexPermissionApplyStrategy {
+    // The durable shared-writer contract always applies detached permission
+    // changes to subsequent turns and does not require a transient runtime.
+    if (_canBuildDurableSettingsMutationTarget) {
+      return true;
+    }
     if (!bridgeSupportsCodexPermissionApplyStrategy) {
       return false;
     }
@@ -758,6 +795,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       _restoreInitialHistoryMessages();
       updateDetachedLiveRuntime(initialLiveRuntimeSessionId);
       if (isCodex) {
+        _detachedSettingsSubscription = _bridge
+            .messagesForSession(sessionId)
+            .where(_isDetachedSettingsResponse)
+            .listen(_onMessage);
         codexModelCatalogRevision.value = _bridge.codexModelCatalogRevision;
         _codexModelCatalogSubscription = _bridge.codexModelCatalogChanges
             .listen((revision) => codexModelCatalogRevision.value = revision);
@@ -846,6 +887,29 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
     // Re-query history while status is "starting" to handle lost broadcasts
     _startStatusRefreshTimer();
+  }
+
+  bool _isDetachedSettingsResponse(ServerMessage message) {
+    if (message is SystemMessage) {
+      return message.sessionId == sessionId &&
+          message.provider == Provider.codex.value &&
+          (message.subtype == 'set_permission_mode' ||
+              message.subtype == 'set_codex_model' ||
+              message.subtype == 'set_codex_speed');
+    }
+    if (message is! ErrorMessage || message.sessionId != sessionId) {
+      return false;
+    }
+    final code = message.errorCode;
+    return code == 'set_permission_mode_rejected' ||
+        code == 'set_sandbox_mode_rejected' ||
+        code == 'set_codex_model_rejected' ||
+        code == 'set_codex_speed_rejected' ||
+        code == 'codex_durable_thread_settings_unavailable' ||
+        code == 'codex_durable_thread_settings_not_found' ||
+        code == 'codex_shared_runtime_settings_stale_authority' ||
+        code == 'codex_shared_runtime_settings_operation_conflict' ||
+        code == 'codex_shared_runtime_settings_busy';
   }
 
   void _restoreInitialHistoryMessages() {
@@ -6140,9 +6204,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void setSessionModes({ExecutionMode? executionMode, bool? planMode}) {
-    final runtimeSessionId = _runtimeSessionIdForMutation(
-      allowSteerable: false,
-    );
+    final runtimeSessionId = isCodex
+        ? _runtimeSessionIdForSettingsMutation()
+        : _runtimeSessionIdForMutation(allowSteerable: false);
     if (runtimeSessionId == null) return;
     if (!_allowCodexSettingsMutation()) return;
     if (isCodex && isPermissionChangePending) {
@@ -6240,9 +6304,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     CodexApprovalPolicy policy, {
     String approvalsReviewer = 'user',
   }) {
-    final runtimeSessionId = _runtimeSessionIdForMutation(
-      allowSteerable: false,
-    );
+    final runtimeSessionId = _runtimeSessionIdForSettingsMutation();
     if (runtimeSessionId == null) return;
     if (!_allowCodexSettingsMutation()) return;
     if (isPermissionChangePending) {
@@ -6309,9 +6371,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     CodexPermissionsMode mode, {
     CodexPermissionApplyStrategy? applyStrategy,
   }) {
-    final runtimeSessionId = _runtimeSessionIdForMutation(
-      allowSteerable: false,
-    );
+    final runtimeSessionId = _runtimeSessionIdForSettingsMutation();
     if (runtimeSessionId == null) return;
     if (!_allowCodexSettingsMutation()) return;
     if (detachedPreview &&
@@ -6426,16 +6486,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void setCodexModel(String model, {ReasoningEffort? reasoningEffort}) {
-    final runtimeSessionId = _runtimeSessionIdForMutation(
-      allowSteerable: false,
-    );
+    final runtimeSessionId = _runtimeSessionIdForSettingsMutation();
     if (runtimeSessionId == null) return;
     if (!isCodex) return;
     if (!_allowCodexSettingsMutation()) return;
-    // A turn owned by an independent Codex Desktop app-server is read-only
-    // from this Bridge connection. Do not let stale Mobile settings overwrite
-    // the external owner's model/effort while that turn is active.
-    if (state.externalDesktopTurnActive) return;
+    if (state.externalDesktopTurnActive &&
+        !_canBuildDurableSettingsMutationTarget) {
+      return;
+    }
     final normalizedModel = sanitizeCodexModelName(model);
     if (normalizedModel == null) return;
     final nextReasoningEffort =
@@ -6477,12 +6535,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void setCodexSpeed(CodexSpeed speed) {
-    final runtimeSessionId = _runtimeSessionIdForMutation(
-      allowSteerable: false,
-    );
+    final runtimeSessionId = _runtimeSessionIdForSettingsMutation();
     if (runtimeSessionId == null) return;
     if (!_allowCodexSettingsMutation()) return;
-    if (state.externalDesktopTurnActive) return;
+    if (state.externalDesktopTurnActive &&
+        !_canBuildDurableSettingsMutationTarget) {
+      return;
+    }
     if (!isCodex || speed == CodexSpeed.unknown || speed == state.codexSpeed) {
       return;
     }
@@ -6509,9 +6568,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// Change sandbox mode (Claude & Codex).
   /// Bridge destroys and resumes the session with new sandbox settings.
   void setSandboxMode(SandboxMode mode) {
-    final runtimeSessionId = _runtimeSessionIdForMutation(
-      allowSteerable: false,
-    );
+    final runtimeSessionId = isCodex
+        ? _runtimeSessionIdForSettingsMutation()
+        : _runtimeSessionIdForMutation(allowSteerable: false);
     if (runtimeSessionId == null) return;
     if (isCodex && !_allowCodexSettingsMutation()) return;
     final detachedTarget = isCodex
@@ -6542,6 +6601,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   void _rollbackFailedModeChange(ErrorMessage msg) {
     if (msg.errorCode == 'codex_settings_owned_elsewhere') {
       _rollbackCodexSettingsOwnedElsewhere();
+    } else if (msg.errorCode == 'set_codex_model_rejected') {
+      _rollbackPendingCodexRuntimeSettings(model: true);
+    } else if (msg.errorCode == 'set_codex_speed_rejected') {
+      _rollbackPendingCodexRuntimeSettings(speed: true);
     }
     final nativePlanModeUnsupported =
         msg.errorCode == 'codex_native_plan_mode_unsupported';
@@ -6663,8 +6726,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _rollbackCodexSettingsOwnedElsewhere() {
-    final rollbackModel = _pendingCodexModelMutation;
-    final rollbackSpeed = _pendingCodexSpeedMutation;
+    _rollbackPendingCodexRuntimeSettings(model: true, speed: true);
+  }
+
+  void _rollbackPendingCodexRuntimeSettings({
+    bool model = false,
+    bool speed = false,
+  }) {
+    final rollbackModel = model && _pendingCodexModelMutation;
+    final rollbackSpeed = speed && _pendingCodexSpeedMutation;
     if (!rollbackModel && !rollbackSpeed) return;
     final previousModel = _pendingCodexModelRollback;
     final previousEffort = _pendingCodexEffortRollback;
@@ -7454,6 +7524,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _desktopContinuitySubscription?.cancel();
     _desktopContinuityConnectionSubscription?.cancel();
     _deliveryPendingInputs.clear();
+    _detachedSettingsSubscription?.cancel();
     _subscription?.cancel();
     _sideEffectsController.close();
     _bridge.invalidateLocalSessionHistoryPaging(sessionId);

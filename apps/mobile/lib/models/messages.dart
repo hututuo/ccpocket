@@ -5545,28 +5545,45 @@ class CodexSettingsMutationTarget {
     required this.runtimeSessionId,
     required this.authorityGeneration,
     required this.operationId,
-  });
+  }) : settingsTarget = null;
 
+  const CodexSettingsMutationTarget.durableThread({
+    required this.codexSourceId,
+    required this.threadId,
+    required this.operationId,
+  }) : settingsTarget = 'durable_thread',
+       runtimeSessionId = null,
+       authorityGeneration = null;
+
+  final String? settingsTarget;
   final String codexSourceId;
   final String threadId;
-  final String runtimeSessionId;
-  final String authorityGeneration;
+  final String? runtimeSessionId;
+  final String? authorityGeneration;
   final String operationId;
 
-  Map<String, dynamic> get wireFields => <String, dynamic>{
-    // Retain the legacy routing field while adding the exact shared-runtime
-    // authority fields understood by a capable Bridge.
-    'sessionId': runtimeSessionId,
-    'codexSourceId': codexSourceId,
-    'threadId': threadId,
-    'runtimeSessionId': runtimeSessionId,
-    'authorityGeneration': authorityGeneration,
-    'operationId': operationId,
-  };
+  Map<String, dynamic> get wireFields => settingsTarget == 'durable_thread'
+      ? <String, dynamic>{
+          'settingsTarget': settingsTarget,
+          'codexSourceId': codexSourceId,
+          'threadId': threadId,
+          'operationId': operationId,
+        }
+      : <String, dynamic>{
+          // Retain the legacy routing field while adding the exact attached
+          // runtime authority fields understood by older capable Bridges.
+          'sessionId': runtimeSessionId,
+          'codexSourceId': codexSourceId,
+          'threadId': threadId,
+          'runtimeSessionId': runtimeSessionId,
+          'authorityGeneration': authorityGeneration,
+          'operationId': operationId,
+        };
 }
 
 const turnAwareHistoryWindowCapability = 'turn_aware_history_window_v1';
 const codexRuntimeDetachCapability = 'codex_runtime_detach_v1';
+const codexDurableThreadSettingsCapability = 'codex_durable_thread_settings_v1';
 const historyPageCapability = 'history_page_v1';
 const historyToolDetailCapability = 'history_tool_detail_v1';
 const sessionActivityAtCapability = 'session_activity_at_v1';

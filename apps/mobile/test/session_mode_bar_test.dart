@@ -69,6 +69,9 @@ class _MockBridgeService extends BridgeService {
   Set<String> get bridgeCapabilities => advertisedBridgeCapabilities;
 
   @override
+  String? get codexSourceId => 'source-a';
+
+  @override
   Stream<List<SessionInfo>> get sessionList => _sessionListController.stream;
 
   @override
@@ -939,6 +942,80 @@ void main() {
     expect(message['planMode'], true);
     expect(message['executionMode'], 'default');
   });
+
+  testWidgets(
+    'detached Desktop turn saves Plan through the durable thread target',
+    (tester) async {
+      bridge.advertisedBridgeCapabilities = const {
+        conversationSyncV2Capability,
+        codexDurableThreadSettingsCapability,
+      };
+      final detachedCubit = ChatSessionCubit(
+        sessionId: 'durable-desktop-thread',
+        provider: Provider.codex,
+        bridge: bridge,
+        streamingCubit: streamingCubit,
+        detachedPreview: true,
+      );
+      addTearDown(detachedCubit.close);
+      detachedCubit.updateDetachedProviderSettings(
+        const RecentSession(
+          sessionId: 'durable-desktop-thread',
+          provider: 'codex',
+          rawPermissionMode: 'acceptEdits',
+          firstPrompt: 'Shared settings',
+          created: '2026-08-02T01:00:00.000Z',
+          modified: '2026-08-02T01:01:00.000Z',
+          gitBranch: 'main',
+          projectPath: '/project',
+          isSidechain: false,
+          codexApprovalPolicy: 'on-request',
+          codexApprovalsReviewer: 'user',
+          codexPermissionsMode: 'default',
+          codexSandboxMode: 'workspace-write',
+          codexCollaborationMode: 'default',
+          codexModel: 'gpt-5.6-sol',
+          codexModelReasoningEffort: 'ultra',
+          codexServiceTier: 'fast',
+          codexSettingsSnapshotComplete: true,
+        ),
+        sourceFingerprint: 'bridge-a/source-a',
+      );
+      detachedCubit.updateDetachedProviderStatus(
+        const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'durable-desktop-thread',
+          activity: 'working',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-08-02T01:02:00.000Z',
+          executionHost: 'desktopAppServer',
+          controlState: 'readOnly',
+          activeTurnId: 'desktop-turn-1',
+          authorityGeneration: 'desktop-authority-1',
+        ),
+      );
+
+      await tester.pumpWidget(_wrap(detachedCubit));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(detachedCubit.supportsCodexPermissionApplyStrategy, isTrue);
+      expect(find.text('Plan Off'), findsOneWidget);
+
+      await tester.tap(find.text('Plan Off'));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('Enable Plan Mode'), findsNothing);
+      final message = _decode(bridge.sentMessages.last);
+      expect(message['type'], 'set_permission_mode');
+      expect(message['planMode'], true);
+      expect(message['settingsTarget'], 'durable_thread');
+      expect(message['threadId'], 'durable-desktop-thread');
+      expect(message, isNot(contains('runtimeSessionId')));
+    },
+  );
 
   testWidgets(
     'explicitly unsupported native Plan shows localized guidance without switching',
