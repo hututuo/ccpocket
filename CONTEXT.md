@@ -1,5 +1,15 @@
 # CC Pocket Compatibility Fork Context
 
+## Mandatory local Bridge production release SOP
+
+Future `com.ccpocket.bridge` local production deployments are governed by
+[`docs/bridge-local-production-release-sop.md`](docs/bridge-local-production-release-sop.md).
+It is the single authoritative SOP for the release session: derive candidate and
+probe environment from the live LaunchAgent plist, run real authenticated wire
+smoke, change only `BRIDGE_CLI_ENTRY` after all gates pass, and retain an exact
+rollback. It does not authorize a deployment by itself and keeps source,
+runtime, Mobile/OTA/IPA, Cloud, physical-phone and `stable` gates separate.
+
 ## 2026-08-02 focused Codex settings catalog correction
 
 The current source-only correction is:

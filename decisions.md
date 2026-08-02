@@ -1464,3 +1464,17 @@
   generation even when Desktop produces no subsequent message. Missing
   authority remains fail-closed and must never be bypassed to hide a loading
   symptom.
+
+## 2026-08-02 Bridge-only 本地生产发布使用单一强制 SOP
+
+- 本机 `com.ccpocket.bridge` 生产发布遵循
+  `docs/bridge-local-production-release-sop.md`。`test-bridge` 的源码门禁和
+  `release-bridge` 的 npm/GitHub 流程均不能替代该 SOP 的候选、切换和运行时验收。
+- 生产环境与独立探针以当前 LaunchAgent plist、真实进程、loopback listener 和
+  health/readyz 的交叉验证为准；不得从发布会话的继承环境推断。候选和探针显式继承
+  plist 的 `CODEX_HOME`、daemon socket 与 source identity，候选不得随意改写 source id。
+- raw rollout、正式 metadata API 与认证 `conversation_sync_v2` 是逐层门禁。raw 有字段
+  而 metadata/v2 未产出时 fail closed，保留最小差异证据交回开发会话，不以构建或候选
+  启动成功替代生产可用。
+- 生产切换仅允许修改 `BRIDGE_CLI_ENTRY`，保留共享 app-server、LAN proxy、网络和用户
+  会话数据；所有失败都停止候选或恢复旧 entry，最终只留当前 runtime 和一个回滚 runtime。
