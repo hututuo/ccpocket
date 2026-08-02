@@ -258,9 +258,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
     return layout;
   }
 
-  void _migratePartialTurnDisclosureState(
-    Map<String, String> turnKeyAliases,
-  ) {
+  void _migratePartialTurnDisclosureState(Map<String, String> turnKeyAliases) {
     for (final alias in turnKeyAliases.entries) {
       final partialKey = alias.key;
       final canonicalKey = alias.value;
@@ -838,28 +836,29 @@ class _ChatMessageListState extends State<ChatMessageList> {
           key: ValueKey('process_details_viewport_current_$progressKey'),
           expanded: expanded,
           transientGuardianReview: currentTool?.guardianReview,
-          children: expanded
-              ? _buildProcessSegmentDetails(
-                  segment: segment,
-                  entries: entries,
-                  hiddenToolUseIds: hiddenToolUseIds,
-                  transcriptTailComplete: transcriptTailComplete,
-                  imageItemsByAnchor: imageItemsByAnchor,
-                  imageGroupMemberIndices: imageGroupMemberIndices,
-                  excludedProcessEntryIndices:
-                      segment.attachedGuardianEntryIndices,
-                )
-              : [
-                  if (currentTool != null)
-                    ChatCurrentToolActivityLine(
-                      activity: currentTool,
-                      onTap: () => _toggleCurrentProgress(progressKey),
-                      timestamp: _timestampForEntryIndex(
-                        entries,
-                        currentTool.entryIndex,
-                      ),
-                    ),
-                ],
+          children: [
+            if (currentTool != null)
+              ChatCurrentToolActivityLine(
+                activity: currentTool,
+                expanded: expanded,
+                onTap: () => _toggleCurrentProgress(progressKey),
+                timestamp: _timestampForEntryIndex(
+                  entries,
+                  currentTool.entryIndex,
+                ),
+              ),
+            if (expanded)
+              ..._buildProcessSegmentDetails(
+                segment: segment,
+                entries: entries,
+                hiddenToolUseIds: hiddenToolUseIds,
+                transcriptTailComplete: transcriptTailComplete,
+                imageItemsByAnchor: imageItemsByAnchor,
+                imageGroupMemberIndices: imageGroupMemberIndices,
+                excludedProcessEntryIndices:
+                    segment.attachedGuardianEntryIndices,
+              ),
+          ],
         ),
       );
     }
@@ -1045,6 +1044,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
                               if (currentTool != null)
                                 ChatCurrentToolActivityLine(
                                   activity: currentTool,
+                                  expanded: expanded,
                                   onTap: () =>
                                       _toggleCurrentProgress(progressKey),
                                   timestamp: _timestampForEntryIndex(
@@ -1354,9 +1354,7 @@ class _ProcessDetailsViewportState extends State<_ProcessDetailsViewport> {
 
   void _syncGuardianReview() {
     final review = widget.transientGuardianReview;
-    final identity = review == null
-        ? null
-        : chatGuardianReviewIdentity(review);
+    final identity = review == null ? null : chatGuardianReviewIdentity(review);
     if (identity == _guardianIdentity) return;
     _guardianTimer?.cancel();
     _guardianIdentity = identity;
@@ -1400,12 +1398,7 @@ class _ProcessDetailsViewportState extends State<_ProcessDetailsViewport> {
 
     final colorScheme = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        0,
-        2,
-        0,
-        6,
-      ),
+      padding: const EdgeInsets.fromLTRB(0, 2, 0, 6),
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: colorScheme.surfaceContainerLow,

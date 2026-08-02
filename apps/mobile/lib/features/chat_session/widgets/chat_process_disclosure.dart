@@ -267,11 +267,13 @@ class ChatCurrentToolActivityLine extends StatelessWidget {
   const ChatCurrentToolActivityLine({
     super.key,
     required this.activity,
+    required this.expanded,
     required this.onTap,
     this.timestamp,
   });
 
   final ChatProcessToolActivity activity;
+  final bool expanded;
   final VoidCallback onTap;
   final ChatMessageTimestampData? timestamp;
 
@@ -348,7 +350,10 @@ class ChatCurrentToolActivityLine extends StatelessWidget {
                   const SizedBox(width: 5),
                 ],
                 Icon(
-                  Icons.chevron_right,
+                  expanded ? Icons.expand_less : Icons.chevron_right,
+                  key: ValueKey(
+                    'chat_current_tool_disclosure_icon_${activity.toolUseId}',
+                  ),
                   size: 15,
                   color: appColors.subtleText,
                 ),

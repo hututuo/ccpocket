@@ -77,6 +77,9 @@ class _MutableChatSessionCubit extends ChatSessionCubit {
   }
 }
 
+IconData? _iconForKey(WidgetTester tester, String key) =>
+    tester.widget<Icon>(find.byKey(ValueKey(key))).icon;
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -1053,6 +1056,10 @@ void main() {
       expect(find.text('Earlier update.'), findsNothing);
       expect(find.byType(ChatCurrentToolActivityLine), findsOneWidget);
       expect(find.text('first result'), findsNothing);
+      expect(
+        _iconForKey(tester, 'chat_current_tool_disclosure_icon_tool-2'),
+        Icons.chevron_right,
+      );
 
       final currentHeader = find.byKey(
         const ValueKey('chat_current_progress_turn:client:turn-active'),
@@ -1068,17 +1075,31 @@ void main() {
         greaterThan(tester.getBottomLeft(currentOutput).dy),
       );
 
-      await tester.tap(currentHeader);
+      await tester.tap(currentToolLine);
       await tester.pump();
 
       expect(find.text('current thought'), findsOneWidget);
       expect(find.byType(ToolUseTile), findsOneWidget);
-      expect(find.byType(ChatCurrentToolActivityLine), findsNothing);
+      expect(find.byType(ChatCurrentToolActivityLine), findsOneWidget);
+      expect(
+        _iconForKey(tester, 'chat_current_tool_disclosure_icon_tool-2'),
+        Icons.expand_less,
+      );
       expect(
         tester.getTopLeft(find.text('current thought')).dy,
-        greaterThan(tester.getBottomLeft(currentOutput).dy),
+        greaterThan(tester.getBottomLeft(currentToolLine).dy),
       );
       expect(find.text('Earlier update.'), findsNothing);
+
+      await tester.tap(currentToolLine);
+      await tester.pump();
+      expect(find.text('current thought'), findsNothing);
+      expect(find.byType(ToolUseTile), findsNothing);
+      expect(find.byType(ChatCurrentToolActivityLine), findsOneWidget);
+      expect(
+        _iconForKey(tester, 'chat_current_tool_disclosure_icon_tool-2'),
+        Icons.chevron_right,
+      );
       expect(tester.takeException(), isNull);
       await cubit.close();
     },
@@ -1128,7 +1149,15 @@ void main() {
       );
       final guardian = find.byType(GuardianApprovalNotice);
       expect(toolLine, findsOneWidget);
+      expect(
+        tester.widget<ChatCurrentToolActivityLine>(toolLine).activity.completed,
+        isTrue,
+      );
       expect(toolRow, findsOneWidget);
+      expect(
+        _iconForKey(tester, 'chat_current_tool_disclosure_icon_guardian-tool'),
+        Icons.chevron_right,
+      );
       expect(guardian, findsOneWidget);
       expect(find.text('Auto Review approved'), findsOneWidget);
       expect(
@@ -1142,12 +1171,16 @@ void main() {
       await tester.tap(currentHeader);
       await tester.pump();
       expect(find.byType(GuardianApprovalNotice), findsOneWidget);
+      expect(
+        _iconForKey(tester, 'chat_current_tool_disclosure_icon_guardian-tool'),
+        Icons.expand_less,
+      );
 
       await tester.pump(const Duration(milliseconds: 2900));
       expect(find.byType(GuardianApprovalNotice), findsOneWidget);
       await tester.pump(const Duration(milliseconds: 200));
       expect(find.byType(GuardianApprovalNotice), findsNothing);
-      expect(find.byType(ChatCurrentToolActivityLine), findsNothing);
+      expect(find.byType(ChatCurrentToolActivityLine), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -1206,6 +1239,10 @@ void main() {
       expect(liveBubble.text, 'Live temporary output');
       expect(find.text('Persisted before the live delta.'), findsNothing);
       expect(find.byKey(const ValueKey('live_thinking_details')), findsNothing);
+      expect(
+        _iconForKey(tester, 'chat_current_tool_disclosure_icon_tool-stream'),
+        Icons.chevron_right,
+      );
 
       await tester.tap(
         find.byKey(
@@ -1219,6 +1256,11 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('live reasoning'), findsOneWidget);
+      expect(find.byType(ChatCurrentToolActivityLine), findsOneWidget);
+      expect(
+        _iconForKey(tester, 'chat_current_tool_disclosure_icon_tool-stream'),
+        Icons.expand_less,
+      );
       expect(tester.takeException(), isNull);
       await cubit.close();
     },
