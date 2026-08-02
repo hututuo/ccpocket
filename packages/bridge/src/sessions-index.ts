@@ -2449,34 +2449,54 @@ export async function getCodexSessionIndexMetadata(
           ...authoritativeSettings,
         };
       }
-      return { expectedThreadId, parsed, authoritativeSettings };
+      return { expectedThreadId, filePath, parsed, authoritativeSettings };
     },
   );
 
   for (const {
     expectedThreadId,
+    filePath,
     parsed,
     authoritativeSettings,
   } of parsedResults) {
-    if (parsed && parsed.threadId !== expectedThreadId) continue;
-    if (!parsed && !authoritativeSettings) continue;
+    // A persisted fork can replay an inherited parent session_meta close to
+    // the tail. The bounded presentation parser may therefore identify that
+    // parent even though the path index resolved this exact child rollout.
+    // Discard the mismatched presentation fields, but do not discard settings
+    // read authoritatively from the already-resolved child file.
+    const matchingParsed =
+      parsed?.threadId === expectedThreadId ? parsed : undefined;
+    if (!matchingParsed) {
+      if (!authoritativeSettings) continue;
+      // Filename indexes are fast but a copied or damaged rollout can carry
+      // another thread's id. Confirm the first persisted owner before using
+      // settings without a matching presentation parse.
+      const persistedOwner = await codexJsonlThreadId(filePath).catch(
+        () => null,
+      );
+      if (persistedOwner !== expectedThreadId) continue;
+    }
     result.set(expectedThreadId, {
-      ...(parsed?.entry.forkedFromThreadId
-        ? { forkedFromThreadId: parsed.entry.forkedFromThreadId }
+      ...(matchingParsed?.entry.forkedFromThreadId
+        ? { forkedFromThreadId: matchingParsed.entry.forkedFromThreadId }
         : {}),
-      ...(parsed?.entry.codexSettings
-        ? { codexSettings: parsed.entry.codexSettings }
+      ...(matchingParsed?.entry.codexSettings
+        ? { codexSettings: matchingParsed.entry.codexSettings }
         : authoritativeSettings
           ? { codexSettings: authoritativeSettings }
           : {}),
-      ...(parsed?.entry.resumeCwd ? { resumeCwd: parsed.entry.resumeCwd } : {}),
-      ...(parsed?.entry.firstPrompt
-        ? { firstPrompt: parsed.entry.firstPrompt }
+      ...(matchingParsed?.entry.resumeCwd
+        ? { resumeCwd: matchingParsed.entry.resumeCwd }
         : {}),
-      ...(parsed?.entry.lastPrompt
-        ? { lastPrompt: parsed.entry.lastPrompt }
+      ...(matchingParsed?.entry.firstPrompt
+        ? { firstPrompt: matchingParsed.entry.firstPrompt }
         : {}),
-      ...(parsed?.entry.summary ? { summary: parsed.entry.summary } : {}),
+      ...(matchingParsed?.entry.lastPrompt
+        ? { lastPrompt: matchingParsed.entry.lastPrompt }
+        : {}),
+      ...(matchingParsed?.entry.summary
+        ? { summary: matchingParsed.entry.summary }
+        : {}),
     });
   }
 

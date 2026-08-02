@@ -2092,6 +2092,113 @@ describe("codex sessions integration", () => {
     });
   });
 
+  it("keeps authoritative settings when the fast tail replays a parent session_meta", async () => {
+    const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68106";
+    const parentThreadId = "019c56c0-d4d8-7b22-9e3c-200664d68107";
+    const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
+    mkdirSync(codexDir, { recursive: true });
+
+    writeFileSync(
+      join(codexDir, `rollout-2026-02-13T12-00-00-${threadId}.jsonl`),
+      [
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.000Z",
+          type: "session_meta",
+          payload: { id: threadId, cwd: "/tmp/child-project" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.100Z",
+          type: "turn_context",
+          payload: {
+            model: "gpt-5.6-sol",
+            approval_policy: "never",
+            approvals_reviewer: "user",
+            sandbox_policy: { type: "danger-full-access" },
+            collaboration_mode: {
+              mode: "plan",
+              settings: { reasoning_effort: "ultra" },
+            },
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.200Z",
+          type: "event_msg",
+          payload: { type: "user_message", message: "child request" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.300Z",
+          type: "event_msg",
+          payload: { type: "token_count", details: "x".repeat(180_000) },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:01.000Z",
+          type: "session_meta",
+          payload: { id: parentThreadId, cwd: "/tmp/parent-project" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:01.100Z",
+          type: "event_msg",
+          payload: { type: "agent_message", message: "child answer" },
+        }),
+      ].join("\n"),
+    );
+
+    const metadata = await getCodexSessionIndexMetadata([threadId], {
+      authoritativeCodexSettings: true,
+    });
+
+    expect(metadata.get(threadId)?.codexSettings).toMatchObject({
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxMode: "danger-full-access",
+      collaborationMode: "plan",
+    });
+  });
+
+  it("rejects authoritative settings when the persisted rollout owner differs", async () => {
+    const requestedThreadId = "019c56c0-d4d8-7b22-9e3c-200664d68108";
+    const persistedThreadId = "019c56c0-d4d8-7b22-9e3c-200664d68109";
+    const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
+    mkdirSync(codexDir, { recursive: true });
+
+    writeFileSync(
+      join(
+        codexDir,
+        `rollout-2026-02-13T12-00-00-${requestedThreadId}.jsonl`,
+      ),
+      [
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.000Z",
+          type: "session_meta",
+          payload: { id: persistedThreadId, cwd: "/tmp/wrong-owner" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.100Z",
+          type: "turn_context",
+          payload: {
+            model: "gpt-5.6-sol",
+            approval_policy: "never",
+            sandbox_policy: { type: "danger-full-access" },
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-02-13T12:00:00.200Z",
+          type: "event_msg",
+          payload: { type: "user_message", message: "wrong owner" },
+        }),
+      ].join("\n"),
+    );
+
+    const metadata = await getCodexSessionIndexMetadata(
+      [requestedThreadId],
+      { authoritativeCodexSettings: true },
+    );
+
+    expect(metadata.has(requestedThreadId)).toBe(false);
+  });
+
   it("loads codex index metadata only for requested thread ids", async () => {
     const wantedThreadId = "019c56c0-d4d8-7b22-9e3c-200664d68101";
     const ignoredThreadId = "019c56c0-d4d8-7b22-9e3c-200664d68102";
