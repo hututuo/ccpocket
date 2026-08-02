@@ -53,24 +53,80 @@ prefix_rule(
 
 # Safe verification commands used in this repo.
 prefix_rule(
+    pattern=["npm", "run", "bridge:build"],
+    decision="allow",
+    justification="The repository Bridge build is a routine local verification step.",
+)
+prefix_rule(
+    pattern=["npm", "run", "test:bridge"],
+    decision="allow",
+    justification="The repository Bridge test script is a routine local verification step.",
+)
+prefix_rule(
+    pattern=["npm", "test", "--workspace=packages/bridge"],
+    decision="allow",
+    justification="The scoped Bridge test runner is a routine local verification step.",
+)
+prefix_rule(
+    pattern=["npm", "run", ["functions:typecheck", "functions:build"]],
+    decision="allow",
+    justification="Cloud Functions type-check and local build do not deploy external state.",
+)
+prefix_rule(
+    pattern=["npm", "--prefix", "functions", "test"],
+    decision="allow",
+    justification="The scoped Cloud Functions test suite is local verification only.",
+)
+prefix_rule(
+    pattern=["npx", "vitest", "run"],
+    decision="allow",
+    justification="Vitest run is a bounded local verification command.",
+)
+prefix_rule(
     pattern=["npx", "tsc", "--noEmit"],
+    decision="allow",
     justification="TypeScript type-check without emit is verification only.",
 )
 prefix_rule(
     pattern=["dart", "analyze"],
+    decision="allow",
     justification="Static analysis is verification only.",
 )
 prefix_rule(
     pattern=["flutter", "test"],
+    decision="allow",
     justification="Tests are verification only.",
+)
+prefix_rule(
+    pattern=["flutter", "analyze"],
+    decision="allow",
+    justification="Flutter static analysis is verification only.",
+)
+prefix_rule(
+    pattern=["flutter", "build", "ios"],
+    decision="allow",
+    justification="An iOS build writes only reproducible local build outputs and does not publish or install.",
+)
+prefix_rule(
+    pattern=["shorebird", "--json", "patches", "list"],
+    decision="allow",
+    justification="Listing Shorebird patches is read-only release inspection.",
+)
+prefix_rule(
+    pattern=["shorebird", "patches", "list"],
+    decision="allow",
+    justification="Listing Shorebird patches is read-only release inspection.",
 )
 
 # Explicit prompts for commands that mutate state or control long-running processes.
 #
-# This repo is configured as a trusted project in ~/.codex/config.toml and the
-# harness runs with AskForApproval=Never. Rules that require prompt cause those
-# commands to fail outright instead of asking. Keep low-risk local workflow
-# commands auto-allowed and reserve prompts for higher-risk operations.
+# This project uses approval_policy=on-request. Keep deterministic local build,
+# test and analysis commands explicitly allowed above. Reserve prompts for
+# commands that install dependencies, execute arbitrary scripts, publish,
+# control services, or otherwise change state beyond reproducible outputs.
+# Background release tasks must retain on-request plus the configured reviewer;
+# they must not be resumed with an AskForApproval=Never override while prompt
+# rules remain active.
 prefix_rule(
     pattern=["git", ["add", "commit"]],
     justification="Local staging and commits are allowed in this trusted project workflow.",
@@ -81,9 +137,14 @@ prefix_rule(
     justification="Potentially destructive or remote-affecting git commands should still require confirmation.",
 )
 prefix_rule(
-    pattern=["npm", ["install", "update", "publish", "run"]],
+    pattern=["npm", ["install", "update", "publish"]],
     decision="prompt",
-    justification="npm install/run commands may modify the workspace or start processes.",
+    justification="npm dependency and publication commands may modify the workspace or external state.",
+)
+prefix_rule(
+    pattern=["npm", "run", ["bridge", "dev", "setup", "functions:deploy", "shorebird:patch:android", "shorebird:patch:ios", "shorebird:release:android", "shorebird:release:ios", "shorebird:promote"]],
+    decision="prompt",
+    justification="These npm scripts start services, deploy, publish OTA content, or change external state.",
 )
 prefix_rule(
     pattern=["node"],
@@ -100,9 +161,9 @@ prefix_rule(
     justification="These Dart commands can apply edits or start programs.",
 )
 prefix_rule(
-    pattern=["flutter", ["run", "pub", "build", "drive"]],
+    pattern=["flutter", ["run", "pub", "drive"]],
     decision="prompt",
-    justification="Flutter run/build/pub commands may write files or start long-running processes.",
+    justification="Flutter run/pub/drive commands may change dependencies, devices, or long-running processes.",
 )
 prefix_rule(
     pattern=["defaults", "write", "com.apple.iphonesimulator"],
