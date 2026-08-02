@@ -148,6 +148,7 @@ const MAX_SHARED_OBSERVER_LIVE_BYTES_PER_THREAD = 512 * 1024;
 const MAX_SHARED_OBSERVER_INLINE_IMAGES = 4;
 const MAX_SHARED_OBSERVER_INLINE_IMAGE_BASE64_BYTES = 8 * 1024 * 1024;
 const CATALOG_CONNECTION_REUSE_MS = 5_000;
+const FOCUSED_CODEX_SETTINGS_RETRY_MS = 5_000;
 // The one-shot discovery already finds every currently running rollout.
 // Idle recent threads are attached lazily on an exact catalog change or focus,
 // avoiding ten redundant 8 MiB seed parses on every cold phone connection.
@@ -241,6 +242,10 @@ interface SyncSubscription {
 
 interface ConversationSyncV2Options {
   catalogReader?: () => Promise<ConversationSyncCatalogSeed[]>;
+  /** Test seam for the one focused rollout's authoritative settings scan. */
+  focusedCodexMetadataReader?: (
+    threadId: string,
+  ) => Promise<CodexSessionIndexMetadata | undefined>;
   statusReader?: (
     current: ReadonlyMap<ConversationKey, CatalogRecord>,
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
@@ -421,6 +426,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   ] as const;
 
   private readonly catalogReader: () => Promise<ConversationSyncCatalogSeed[]>;
+  private readonly focusedCodexMetadataReader: (
+    threadId: string,
+  ) => Promise<CodexSessionIndexMetadata | undefined>;
   private readonly statusReader: (
     current: ReadonlyMap<ConversationKey, CatalogRecord>,
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
@@ -555,6 +563,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private catalogFlight?: Promise<void>;
   private catalogDirty = true;
   private catalogRefreshedAt = 0;
+  private readonly focusedCodexSettingsFlights = new Map<
+    ConversationKey,
+    Promise<boolean>
+  >();
+  private readonly focusedCodexSettingsAttempts = new Map<
+    ConversationKey,
+    { signature: string; attemptedAt: number; complete: boolean }
+  >();
   private statusFlight?: Promise<void>;
   private watchdogTimer?: ReturnType<typeof setTimeout>;
   private coldTimer?: ReturnType<typeof setTimeout>;
@@ -579,6 +595,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         readUnifiedCatalog(this.runtime, (operation) =>
           this.withSharedCodexReadProcess(operation),
         ));
+    this.focusedCodexMetadataReader =
+      options.focusedCodexMetadataReader ??
+      (async (threadId) =>
+        (
+          await getCodexSessionIndexMetadata([threadId], {
+            authoritativeCodexSettings: true,
+          })
+        ).get(threadId));
     this.statusReader =
       options.statusReader ??
       ((current) =>
@@ -1662,6 +1686,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.sharedObserverLiveMessages.clear();
     this.sharedObserverLiveBytes.clear();
     this.sharedControlRecoveryTargets.clear();
+    this.focusedCodexSettingsFlights.clear();
+    this.focusedCodexSettingsAttempts.clear();
     this.sharedControlCatalogReconcilePending = false;
     this.sharedControlStatusReconcilePending = false;
     this.externalCodexDiscoveryCompletedAt = 0;
@@ -1926,6 +1952,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const dirtyThreadKeys = new Set(subscription.dirtyThreadKeys);
     subscription.dirtyThreadKeys.clear();
     await this.refreshCatalog();
+    if (subscription.focusedKey) {
+      const focusedKey = subscription.focusedKey;
+      void this.hydrateFocusedCodexSettings(focusedKey).then((changed) => {
+        if (changed && !this.closed) {
+          this.scheduleInteractiveClients({ dirtyKeys: [focusedKey] });
+        }
+      });
+    }
     await this.rewarmExternalCodexMonitoringIfNeeded();
     if (
       this.closed ||
@@ -2820,6 +2854,12 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           let entry = normalizeCatalogEntry(seed.entry);
           const key = targetKey(entry);
           const previousRecord = previousCatalog.get(key);
+          if (previousRecord) {
+            entry = mergeIncompleteCodexCatalogSettings(
+              entry,
+              previousRecord.entry,
+            );
+          }
           if (
             entry.provider === "codex" &&
             previousRecord &&
@@ -2843,6 +2883,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           });
         }
         this.catalog = next;
+        for (const key of this.focusedCodexSettingsAttempts.keys()) {
+          if (!next.has(key)) this.focusedCodexSettingsAttempts.delete(key);
+        }
         if (this.legacyCodexMonitoringEnabled) {
           const shouldWarmExternalCodex =
             previousCatalog.size === 0 ||
@@ -2924,6 +2967,76 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         if (this.catalogFlight === flight) this.catalogFlight = undefined;
       });
     this.catalogFlight = flight;
+    return flight;
+  }
+
+  private hydrateFocusedCodexSettings(
+    key: ConversationKey,
+  ): Promise<boolean> {
+    const target = parseTargetKeyRequired(key);
+    if (target.provider !== "codex") return Promise.resolve(false);
+    const record = this.catalog.get(key);
+    if (!record) return Promise.resolve(false);
+    const signature = codexCatalogSettingsObservationSignature(record.entry);
+    const previousAttempt = this.focusedCodexSettingsAttempts.get(key);
+    if (
+      previousAttempt?.signature === signature &&
+      (previousAttempt.complete ||
+        Date.now() - previousAttempt.attemptedAt <
+          FOCUSED_CODEX_SETTINGS_RETRY_MS)
+    ) {
+      return Promise.resolve(false);
+    }
+    const existing = this.focusedCodexSettingsFlights.get(key);
+    if (existing) return existing;
+
+    this.focusedCodexSettingsAttempts.set(key, {
+      signature,
+      attemptedAt: Date.now(),
+      complete: false,
+    });
+    const flight = this.focusedCodexMetadataReader(target.providerSessionId)
+      .then((metadata) => {
+        if (this.closed || !metadata?.codexSettings) return false;
+        const current = this.catalog.get(key);
+        if (!current) return false;
+        if (codexCatalogSettingsObservationSignature(current.entry) !== signature) {
+          // The authoritative read started against an older catalog
+          // observation. Never let its result overwrite a newer revision;
+          // schedule one focused retry after this flight releases its slot.
+          this.focusedCodexSettingsAttempts.delete(key);
+          this.scheduleInteractiveClients({ dirtyKeys: [key] });
+          return false;
+        }
+        const nextEntry = replaceCodexCatalogSettings(
+          current.entry,
+          metadata.codexSettings,
+        );
+        const changed = stableJson(nextEntry) !== stableJson(current.entry);
+        if (changed) {
+          current.entry = nextEntry;
+          this.recomputeStates([key]);
+        }
+        this.focusedCodexSettingsAttempts.set(key, {
+          signature: codexCatalogSettingsObservationSignature(current.entry),
+          attemptedAt: Date.now(),
+          complete: true,
+        });
+        return changed;
+      })
+      .catch((error) => {
+        const kind = error instanceof Error ? error.name : typeof error;
+        console.warn(
+          `[conversation-sync-v2] Focused Codex settings unavailable (${kind})`,
+        );
+        return false;
+      })
+      .finally(() => {
+        if (this.focusedCodexSettingsFlights.get(key) === flight) {
+          this.focusedCodexSettingsFlights.delete(key);
+        }
+      });
+    this.focusedCodexSettingsFlights.set(key, flight);
     return flight;
   }
 
@@ -6669,6 +6782,90 @@ function catalogSettings(
       ? { networkAccessEnabled: settings.networkAccessEnabled }
       : {}),
     ...(webSearchMode ? { webSearchMode } : {}),
+  };
+}
+
+function codexCatalogSettingsObservationSignature(
+  entry: ConversationSyncCatalogEntry,
+): string {
+  return `${entry.revision}\0${entry.modifiedAt}`;
+}
+
+function replaceCodexCatalogSettings(
+  entry: ConversationSyncCatalogEntry,
+  settings: SessionIndexEntry["codexSettings"],
+): ConversationSyncCatalogEntry {
+  const {
+    model: _model,
+    modelReasoningEffort: _modelReasoningEffort,
+    serviceTier: _serviceTier,
+    approvalPolicy: _approvalPolicy,
+    approvalsReviewer: _approvalsReviewer,
+    sandboxMode: _sandboxMode,
+    collaborationMode: _collaborationMode,
+    networkAccessEnabled: _networkAccessEnabled,
+    webSearchMode: _webSearchMode,
+    codexSettingsSnapshotComplete: _codexSettingsSnapshotComplete,
+    ...identityAndPresentation
+  } = entry;
+  return normalizeCatalogEntry({
+    ...identityAndPresentation,
+    ...catalogSettings(settings),
+    codexSettingsSnapshotComplete: true,
+  });
+}
+
+function mergeIncompleteCodexCatalogSettings(
+  incoming: ConversationSyncCatalogEntry,
+  previous: ConversationSyncCatalogEntry,
+): ConversationSyncCatalogEntry {
+  if (
+    incoming.provider !== "codex" ||
+    previous.provider !== "codex" ||
+    incoming.codexSettingsSnapshotComplete === true
+  ) {
+    return incoming;
+  }
+  return {
+    ...incoming,
+    ...(incoming.model === undefined && previous.model !== undefined
+      ? { model: previous.model }
+      : {}),
+    ...(incoming.modelReasoningEffort === undefined &&
+    previous.modelReasoningEffort !== undefined
+      ? { modelReasoningEffort: previous.modelReasoningEffort }
+      : {}),
+    ...(incoming.serviceTier === undefined &&
+    previous.serviceTier !== undefined
+      ? { serviceTier: previous.serviceTier }
+      : {}),
+    ...(incoming.approvalPolicy === undefined &&
+    previous.approvalPolicy !== undefined
+      ? { approvalPolicy: previous.approvalPolicy }
+      : {}),
+    ...(incoming.approvalsReviewer === undefined &&
+    previous.approvalsReviewer !== undefined
+      ? { approvalsReviewer: previous.approvalsReviewer }
+      : {}),
+    ...(incoming.sandboxMode === undefined &&
+    previous.sandboxMode !== undefined
+      ? { sandboxMode: previous.sandboxMode }
+      : {}),
+    ...(incoming.collaborationMode === undefined &&
+    previous.collaborationMode !== undefined
+      ? { collaborationMode: previous.collaborationMode }
+      : {}),
+    ...(incoming.networkAccessEnabled === undefined &&
+    previous.networkAccessEnabled !== undefined
+      ? { networkAccessEnabled: previous.networkAccessEnabled }
+      : {}),
+    ...(incoming.webSearchMode === undefined &&
+    previous.webSearchMode !== undefined
+      ? { webSearchMode: previous.webSearchMode }
+      : {}),
+    ...(previous.codexSettingsSnapshotComplete === true
+      ? { codexSettingsSnapshotComplete: true }
+      : {}),
   };
 }
 

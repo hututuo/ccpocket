@@ -1071,20 +1071,25 @@ class SessionCatalogCacheRepository {
                 (entry) => entry.toRecentSession(codexSourceId: codexSourceId),
               )
               .toList(growable: false);
-          final assistantOutputByIdentity =
-              await _cachedAssistantOutputByIdentity(
-                transaction,
-                partitionId,
-                decodedSessions,
-              );
+          final cachedSessionsByIdentity = await _cachedSessionsByIdentity(
+            transaction,
+            partitionId,
+            decodedSessions,
+          );
           for (var index = 0; index < incomingEntries.length; index++) {
             final entry = incomingEntries[index];
-            final decodedSession = decodedSessions[index];
+            final identity = _conversationIdentity(
+              entry.provider,
+              entry.providerSessionId,
+            );
+            final cachedSession = cachedSessionsByIdentity[identity];
+            final decodedSession = _mergeIncompleteCodexCatalogSettings(
+              entry: entry,
+              incoming: decodedSessions[index],
+              cached: cachedSession,
+            );
             final preservedAssistantOutputAt =
-                assistantOutputByIdentity[_conversationIdentity(
-                  entry.provider,
-                  entry.providerSessionId,
-                )];
+                cachedSession?.lastAssistantOutputAt;
             await transaction.delete(
               SessionCatalogCacheDatabase.entriesTable,
               where: 'partition_id = ? AND provider = ? AND session_id = ?',
@@ -2725,6 +2730,132 @@ class SessionCatalogCacheRepository {
       }
     }
     return checkpoints;
+  }
+
+  static Future<Map<String, RecentSession>> _cachedSessionsByIdentity(
+    DatabaseExecutor database,
+    String partitionId,
+    Iterable<RecentSession> incoming,
+  ) async {
+    final identities = <String, (String, String)>{};
+    for (final session in incoming) {
+      final provider = session.provider ?? Provider.claude.value;
+      identities[_conversationIdentity(provider, session.sessionId)] = (
+        provider,
+        session.sessionId,
+      );
+    }
+    if (identities.isEmpty) return const {};
+
+    final sessions = <String, RecentSession>{};
+    final values = identities.values.toList(growable: false);
+    const identitiesPerQuery = 200;
+    for (var start = 0; start < values.length; start += identitiesPerQuery) {
+      final candidateEnd = start + identitiesPerQuery;
+      final end = candidateEnd < values.length ? candidateEnd : values.length;
+      final chunk = values.sublist(start, end);
+      final identityPredicate = List.filled(
+        chunk.length,
+        '(provider = ? AND session_id = ?)',
+      ).join(' OR ');
+      final rows = await database.query(
+        SessionCatalogCacheDatabase.entriesTable,
+        columns: ['provider', 'session_id', 'session_json'],
+        where: 'partition_id = ? AND ($identityPredicate)',
+        whereArgs: [
+          partitionId,
+          for (final (provider, sessionId) in chunk) ...[provider, sessionId],
+        ],
+      );
+      for (final row in rows) {
+        try {
+          final decoded = jsonDecode(row['session_json']! as String);
+          if (decoded is! Map) continue;
+          final session = RecentSession.fromJson(
+            Map<String, dynamic>.from(decoded),
+          );
+          sessions[_conversationIdentity(
+                row['provider']! as String,
+                row['session_id']! as String,
+              )] =
+              session;
+        } catch (_) {
+          // The cache is rebuildable; one damaged prior row must not block
+          // the authoritative catalog transaction.
+        }
+      }
+    }
+    return sessions;
+  }
+
+  static RecentSession _mergeIncompleteCodexCatalogSettings({
+    required ConversationSyncV2CatalogEntry entry,
+    required RecentSession incoming,
+    required RecentSession? cached,
+  }) {
+    if (entry.provider != Provider.codex.value ||
+        entry.codexSettingsSnapshotComplete ||
+        cached == null) {
+      return incoming;
+    }
+    final collaborationKnown = incoming.codexCollaborationMode != null;
+    final incomingHasPermissionFacts =
+        incoming.codexApprovalPolicy != null ||
+        incoming.codexApprovalsReviewer != null ||
+        incoming.codexSandboxMode != null ||
+        collaborationKnown;
+    return RecentSession(
+      sessionId: incoming.sessionId,
+      provider: incoming.provider,
+      codexSourceId: incoming.codexSourceId,
+      rawPermissionMode:
+          incoming.rawPermissionMode ??
+          (incomingHasPermissionFacts ? null : cached.rawPermissionMode),
+      forkedFromThreadId: incoming.forkedFromThreadId,
+      name: incoming.name,
+      agentNickname: incoming.agentNickname,
+      agentRole: incoming.agentRole,
+      summary: incoming.summary,
+      firstPrompt: incoming.firstPrompt,
+      lastPrompt: incoming.lastPrompt,
+      created: incoming.created,
+      modified: incoming.modified,
+      lastAssistantOutputAt: incoming.lastAssistantOutputAt,
+      gitBranch: incoming.gitBranch,
+      projectPath: incoming.projectPath,
+      resumeCwd: incoming.resumeCwd,
+      isSidechain: incoming.isSidechain,
+      codexApprovalPolicy:
+          incoming.codexApprovalPolicy ?? cached.codexApprovalPolicy,
+      codexApprovalsReviewer:
+          incoming.codexApprovalsReviewer ?? cached.codexApprovalsReviewer,
+      codexPermissionsMode:
+          incoming.codexPermissionsMode ??
+          (incomingHasPermissionFacts ? null : cached.codexPermissionsMode),
+      executionMode:
+          incoming.executionMode ??
+          (incoming.codexApprovalPolicy != null ? null : cached.executionMode),
+      planMode: collaborationKnown ? incoming.planMode : cached.planMode,
+      codexSandboxMode: incoming.codexSandboxMode ?? cached.codexSandboxMode,
+      codexCollaborationMode:
+          incoming.codexCollaborationMode ?? cached.codexCollaborationMode,
+      codexModel: incoming.codexModel ?? cached.codexModel,
+      codexProfile: incoming.codexProfile ?? cached.codexProfile,
+      codexModelReasoningEffort:
+          incoming.codexModelReasoningEffort ??
+          cached.codexModelReasoningEffort,
+      codexServiceTier: incoming.codexServiceTier ?? cached.codexServiceTier,
+      codexNetworkAccessEnabled:
+          incoming.codexNetworkAccessEnabled ??
+          cached.codexNetworkAccessEnabled,
+      codexWebSearchMode:
+          incoming.codexWebSearchMode ?? cached.codexWebSearchMode,
+      codexAdditionalWritableRoots:
+          incoming.codexAdditionalWritableRoots.isNotEmpty
+          ? incoming.codexAdditionalWritableRoots
+          : cached.codexAdditionalWritableRoots,
+      codexSettingsSnapshotComplete: cached.codexSettingsSnapshotComplete,
+    );
   }
 
   static String _conversationIdentity(String provider, String sessionId) =>

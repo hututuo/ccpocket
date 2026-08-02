@@ -161,6 +161,336 @@ describe("conversation_sync_v2 protocol", () => {
     });
   });
 
+  it("hydrates authoritative settings only for the focused Codex thread", async () => {
+    const focused = codexSeed(0, "thread-focused-settings");
+    Object.assign(focused.entry, {
+      model: "stale-model",
+      webSearchMode: "live",
+      codexSettingsSnapshotComplete: false,
+    });
+    const background = codexSeed(1, "thread-background-settings");
+    const focusedCodexMetadataReader = vi.fn(async (threadId: string) =>
+      threadId === focused.entry.providerSessionId
+        ? {
+            codexSettings: {
+              model: "gpt-5.6-sol",
+              modelReasoningEffort: "max",
+              serviceTier: "standard",
+              approvalPolicy: "on-request",
+              approvalsReviewer: "auto_review",
+              sandboxMode: "workspace-write",
+              collaborationMode: "default" as const,
+              networkAccessEnabled: false,
+            },
+          }
+        : undefined,
+    );
+    const fixture = createFixture(
+      [focused, background],
+      async (target) => history(target.providerSessionId),
+      { focusedCodexMetadataReader },
+    );
+    const client = {};
+    const subscription = {
+      ...subscribeMessage(),
+      focused: {
+        provider: "codex" as const,
+        providerSessionId: focused.entry.providerSessionId,
+      },
+    };
+
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "sync_complete").length,
+      ).toBeGreaterThanOrEqual(1),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "catalog_changes")
+          .flatMap((event) => [...event.created, ...event.updated])
+          .find(
+            (entry) =>
+              entry.providerSessionId === focused.entry.providerSessionId &&
+              entry.codexSettingsSnapshotComplete === true,
+          ),
+      ).toBeDefined(),
+    );
+
+    const catalogEntries = events(fixture.sent, client, "catalog_changes")
+      .flatMap((event) => [...event.created, ...event.updated]);
+    const hydratedEntry = catalogEntries.find(
+      (entry) =>
+        entry.providerSessionId === focused.entry.providerSessionId &&
+        entry.codexSettingsSnapshotComplete === true,
+    );
+    expect(hydratedEntry).toMatchObject({
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "max",
+      serviceTier: "standard",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+      sandboxMode: "workspace-write",
+      collaborationMode: "default",
+      networkAccessEnabled: false,
+      codexSettingsSnapshotComplete: true,
+    });
+    expect(hydratedEntry).not.toHaveProperty("webSearchMode");
+    expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(1);
+    expect(focusedCodexMetadataReader).toHaveBeenCalledWith(
+      focused.entry.providerSessionId,
+    );
+    expect(
+      catalogEntries.find(
+        (entry) =>
+          entry.providerSessionId === background.entry.providerSessionId,
+      ),
+    ).not.toHaveProperty("codexSettingsSnapshotComplete", true);
+    fixture.handler.close();
+  });
+
+  it("does not block the initial focused sync on authoritative settings", async () => {
+    const focused = codexSeed(0, "thread-nonblocking-settings");
+    let resolveMetadata!: (value: {
+      codexSettings: {
+        model: string;
+        modelReasoningEffort: string;
+      };
+    }) => void;
+    const focusedCodexMetadataReader = vi.fn(
+      () =>
+        new Promise<{
+          codexSettings: {
+            model: string;
+            modelReasoningEffort: string;
+          };
+        }>((resolve) => {
+          resolveMetadata = resolve;
+        }),
+    );
+    const fixture = createFixture(
+      [focused],
+      async (target) => history(target.providerSessionId),
+      { focusedCodexMetadataReader },
+    );
+    const client = {};
+
+    await fixture.handler.handle(
+      {
+        ...subscribeMessage(),
+        focused: {
+          provider: "codex",
+          providerSessionId: focused.entry.providerSessionId,
+        },
+      },
+      context(client, fixture.runtime),
+    );
+
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(1);
+    expect(
+      events(fixture.sent, client, "catalog_changes")
+        .flatMap((event) => [...event.created, ...event.updated])
+        .some((entry) => entry.codexSettingsSnapshotComplete === true),
+    ).toBe(false);
+
+    resolveMetadata({
+      codexSettings: {
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+      },
+    });
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "catalog_changes")
+          .flatMap((event) => [...event.created, ...event.updated])
+          .find((entry) => entry.codexSettingsSnapshotComplete === true),
+      ).toMatchObject({
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+      }),
+    );
+    fixture.handler.close();
+  });
+
+  it("rejects a focused settings result from an older catalog revision", async () => {
+    type SettingsMetadata = {
+      codexSettings: {
+        model: string;
+        modelReasoningEffort: string;
+      };
+    };
+    const focused = codexSeed(0, "thread-settings-generation");
+    const seeds = [focused];
+    const resolvers: Array<(value: SettingsMetadata) => void> = [];
+    const focusedCodexMetadataReader = vi.fn(
+      () =>
+        new Promise<SettingsMetadata>((resolve) => {
+          resolvers.push(resolve);
+        }),
+    );
+    const fixture = createFixture(
+      seeds,
+      async (target) => history(target.providerSessionId),
+      { focusedCodexMetadataReader },
+    );
+    const client = {};
+
+    await fixture.handler.handle(
+      {
+        ...subscribeMessage(),
+        focused: {
+          provider: "codex",
+          providerSessionId: focused.entry.providerSessionId,
+        },
+      },
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const initialComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    )[0]!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: initialComplete.subscriptionId,
+        sequence: initialComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+
+    focused.entry.revision = "revision-settings-generation-2";
+    focused.entry.modifiedAt = "2026-08-02T01:02:03.000Z";
+    fixture.handler.sessionCatalogChanged();
+    await vi.waitFor(() => expect(fixture.catalogReader).toHaveBeenCalledTimes(2));
+
+    resolvers[0]!({
+      codexSettings: {
+        model: "stale-model",
+        modelReasoningEffort: "low",
+      },
+    });
+    await vi.waitFor(() =>
+      expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(2),
+    );
+    resolvers[1]!({
+      codexSettings: {
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+      },
+    });
+
+    await vi.waitFor(() => {
+      const internal = fixture.handler as unknown as {
+        catalog: Map<
+          string,
+          {
+            entry: ConversationSyncCatalogEntry;
+            status: ConversationSyncStatus;
+          }
+        >;
+      };
+      expect(
+        internal.catalog.get("codex\0thread-settings-generation")?.entry,
+      ).toMatchObject({
+        revision: "revision-settings-generation-2",
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+        codexSettingsSnapshotComplete: true,
+      });
+    });
+    expect(
+      events(fixture.sent, client, "catalog_changes")
+        .flatMap((event) => [...event.created, ...event.updated])
+        .some((entry) => entry.model === "stale-model"),
+    ).toBe(false);
+    fixture.handler.close();
+  });
+
+  it("preserves known Codex settings across a later sparse catalog refresh", async () => {
+    const original = codexSeed(0, "thread-sparse-settings");
+    Object.assign(original.entry, {
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
+      serviceTier: "fast",
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxMode: "danger-full-access",
+      collaborationMode: "plan",
+      networkAccessEnabled: true,
+      codexSettingsSnapshotComplete: true,
+    });
+    const seeds = [original];
+    const fixture = createFixture(
+      seeds,
+      async (target) => history(target.providerSessionId),
+    );
+    const client = {};
+    const subscription = subscribeMessage();
+
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const initialComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    )[0]!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: initialComplete.subscriptionId,
+        sequence: initialComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+
+    const sparse = codexSeed(0, original.entry.providerSessionId);
+    sparse.entry.modifiedAt = "2026-08-02T00:57:53.000Z";
+    sparse.entry.recencyAt = original.entry.recencyAt;
+    sparse.entry.revision = original.entry.revision;
+    seeds[0] = sparse;
+    fixture.handler.sessionCatalogChanged();
+
+    await vi.waitFor(() =>
+      expect(fixture.catalogReader).toHaveBeenCalledTimes(2),
+    );
+    const internal = fixture.handler as unknown as {
+      catalog: Map<
+        string,
+        { entry: ConversationSyncCatalogEntry; status: ConversationSyncStatus }
+      >;
+    };
+    expect(internal.catalog.get("codex\0thread-sparse-settings")?.entry).toMatchObject({
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "ultra",
+      serviceTier: "fast",
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxMode: "danger-full-access",
+      collaborationMode: "plan",
+      networkAccessEnabled: true,
+      codexSettingsSnapshotComplete: true,
+      modifiedAt: "2026-08-02T00:57:53.000Z",
+    });
+    fixture.handler.close();
+  });
+
   it("accepts bounded state cursors and rejects duplicate thread identities", () => {
     expect(
       conversationSyncV2ProtocolContribution.parseClient(

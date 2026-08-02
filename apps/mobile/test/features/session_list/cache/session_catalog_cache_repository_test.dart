@@ -909,6 +909,119 @@ void main() {
     expect(state.statusState, 'status-state-2');
   });
 
+  test(
+    'merges sparse Codex settings but lets a complete snapshot clear them',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-v2-settings',
+        codexSourceId: 'source-v2-settings',
+      );
+      await repository.applyConversationCatalogBatch(
+        target: target,
+        codexSourceId: 'source-v2-settings',
+        catalogState: 'catalog-settings-complete',
+        created: const [
+          ConversationSyncV2CatalogEntry(
+            provider: 'codex',
+            providerSessionId: 'thread-v2-settings',
+            revision: 'revision-settings-1',
+            projectPath: '/workspace/settings',
+            model: 'gpt-5.6-sol',
+            modelReasoningEffort: 'ultra',
+            serviceTier: 'fast',
+            approvalPolicy: 'never',
+            approvalsReviewer: 'user',
+            sandboxMode: 'danger-full-access',
+            collaborationMode: 'plan',
+            networkAccessEnabled: true,
+            webSearchMode: 'live',
+            codexSettingsSnapshotComplete: true,
+            createdAt: '2026-08-02T00:00:00.000Z',
+            modifiedAt: '2026-08-02T00:01:00.000Z',
+            recencyAt: '2026-08-02T00:01:00.000Z',
+            availability: 'durable',
+          ),
+        ],
+        updated: const [],
+        destroyed: const [],
+      );
+
+      await repository.applyConversationCatalogBatch(
+        target: target,
+        codexSourceId: 'source-v2-settings',
+        catalogState: 'catalog-settings-sparse',
+        created: const [],
+        updated: const [
+          ConversationSyncV2CatalogEntry(
+            provider: 'codex',
+            providerSessionId: 'thread-v2-settings',
+            revision: 'revision-settings-2',
+            projectPath: '/workspace/settings',
+            createdAt: '2026-08-02T00:00:00.000Z',
+            modifiedAt: '2026-08-02T00:02:00.000Z',
+            recencyAt: '2026-08-02T00:02:00.000Z',
+            availability: 'durable',
+          ),
+        ],
+        destroyed: const [],
+      );
+
+      var session = (await repository.load(target))!.sessions.single;
+      expect(session.codexModel, 'gpt-5.6-sol');
+      expect(session.codexModelReasoningEffort, 'ultra');
+      expect(session.codexServiceTier, 'fast');
+      expect(session.codexApprovalPolicy, 'never');
+      expect(session.codexApprovalsReviewer, 'user');
+      expect(session.codexSandboxMode, 'danger-full-access');
+      expect(session.codexCollaborationMode, 'plan');
+      expect(session.planMode, isTrue);
+      expect(session.codexNetworkAccessEnabled, isTrue);
+      expect(session.codexWebSearchMode, 'live');
+      expect(session.codexSettingsSnapshotComplete, isTrue);
+
+      await repository.applyConversationCatalogBatch(
+        target: target,
+        codexSourceId: 'source-v2-settings',
+        catalogState: 'catalog-settings-cleared',
+        created: const [],
+        updated: const [
+          ConversationSyncV2CatalogEntry(
+            provider: 'codex',
+            providerSessionId: 'thread-v2-settings',
+            revision: 'revision-settings-3',
+            projectPath: '/workspace/settings',
+            model: 'gpt-5.6-sol',
+            modelReasoningEffort: 'max',
+            serviceTier: 'standard',
+            approvalPolicy: 'on-request',
+            approvalsReviewer: 'auto_review',
+            sandboxMode: 'workspace-write',
+            collaborationMode: 'default',
+            networkAccessEnabled: false,
+            codexSettingsSnapshotComplete: true,
+            createdAt: '2026-08-02T00:00:00.000Z',
+            modifiedAt: '2026-08-02T00:03:00.000Z',
+            recencyAt: '2026-08-02T00:03:00.000Z',
+            availability: 'durable',
+          ),
+        ],
+        destroyed: const [],
+      );
+
+      session = (await repository.load(target))!.sessions.single;
+      expect(session.codexModelReasoningEffort, 'max');
+      expect(session.codexServiceTier, 'standard');
+      expect(session.codexApprovalPolicy, 'on-request');
+      expect(session.codexApprovalsReviewer, 'auto_review');
+      expect(session.codexSandboxMode, 'workspace-write');
+      expect(session.codexCollaborationMode, 'default');
+      expect(session.planMode, isFalse);
+      expect(session.codexNetworkAccessEnabled, isFalse);
+      expect(session.codexWebSearchMode, isNull);
+      expect(session.codexSettingsSnapshotComplete, isTrue);
+    },
+  );
+
   test('rejects direct partial catalog and status page mutations', () async {
     final target = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-partial-pages',
