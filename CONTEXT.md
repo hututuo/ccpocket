@@ -10,7 +10,7 @@ smoke, change only `BRIDGE_CLI_ENTRY` after all gates pass, and retain an exact
 rollback. It does not authorize a deployment by itself and keeps source,
 runtime, Mobile/OTA/IPA, Cloud, physical-phone and `stable` gates separate.
 
-## 2026-08-02 focused Codex settings catalog correction
+## 2026-08-02 focused Codex settings catalog correction and deployment
 
 The current source-only correction is:
 
@@ -46,9 +46,13 @@ Bridge run also exposed fixed-date Action Broker tests that expired after the
 calendar crossed 2026-08-01; `30547f65` injects the fixture clock without
 changing production behavior.
 
-This lane is `source-verified / deployment-pending / phone-acceptance-pending`.
-No production Bridge, Mobile OTA, IPA, Swift/native code, Cloud, VPN, Codex
-Desktop configuration or user session data was changed.
+The inherited-parent metadata ownership correction in `df29b600` is now
+production-deployed as runtime `1.69.6-compat.12-df29b600`; the exact focused
+metadata and authenticated `conversation_sync_v2` complete-snapshot gate passed.
+The direct rollback is `1.69.6-compat.12-652867a8`. The full production evidence
+is in `runs/20260802-105110_bridge-1.69.6-compat.12-df29b600-deploy/DEPLOYMENT.md`.
+Mobile OTA, IPA, Swift/native code, Cloud, VPN, Codex Desktop configuration and
+user session data were not changed. Physical-phone acceptance remains pending.
 
 ## 2026-08-02 runtime authority lifecycle correction
 
