@@ -628,6 +628,20 @@ class AppLocalizationsZh extends AppLocalizations {
   String get apiKeyHint => '如果没有认证可留空';
 
   @override
+  String get bridgeConnectionKeyLabel => 'Bridge 连接密钥';
+
+  @override
+  String get bridgeConnectionKeyRequiredTitle => '需要 Bridge 连接密钥';
+
+  @override
+  String get bridgeConnectionKeyMissingBody =>
+      '这台 Bridge 要求连接密钥。请输入电脑端配置的密钥，或重新扫描 Bridge 显示的二维码。';
+
+  @override
+  String get bridgeConnectionKeyRejectedBody =>
+      '保存的 Bridge 连接密钥不正确或已经更改。请输入当前密钥，或重新扫描 Bridge 显示的二维码。';
+
+  @override
   String get scanQrCode => '扫描二维码';
 
   @override

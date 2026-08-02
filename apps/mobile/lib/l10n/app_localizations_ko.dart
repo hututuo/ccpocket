@@ -635,6 +635,20 @@ class AppLocalizationsKo extends AppLocalizations {
   String get apiKeyHint => '인증이 없으면 비워 두세요';
 
   @override
+  String get bridgeConnectionKeyLabel => 'Bridge 연결 키';
+
+  @override
+  String get bridgeConnectionKeyRequiredTitle => 'Bridge 연결 키 필요';
+
+  @override
+  String get bridgeConnectionKeyMissingBody =>
+      '이 Bridge에는 연결 키가 필요합니다. Mac에서 설정한 키를 입력하거나 Bridge에 표시된 QR 코드를 다시 스캔하세요.';
+
+  @override
+  String get bridgeConnectionKeyRejectedBody =>
+      '저장된 Bridge 연결 키가 올바르지 않거나 변경되었습니다. 현재 키를 입력하거나 Bridge에 표시된 QR 코드를 다시 스캔하세요.';
+
+  @override
   String get scanQrCode => 'QR 코드 스캔';
 
   @override

@@ -91,6 +91,40 @@ enum BridgeApplicationReadiness {
       this == ready || this == legacyUnsupported;
 }
 
+enum BridgeConnectionFailureKind { authenticationRejected }
+
+class BridgeConnectionFailure {
+  const BridgeConnectionFailure({
+    required this.kind,
+    required this.connectionEpoch,
+  });
+
+  final BridgeConnectionFailureKind kind;
+  final int connectionEpoch;
+}
+
+bool bridgeHealthRequiresConnectionKey(Map<String, dynamic>? health) {
+  final authentication = health?['bridgeAuthentication'];
+  return authentication is Map && authentication['required'] == true;
+}
+
+@visibleForTesting
+bool isBridgeAuthenticationHandshakeError(
+  Object error, {
+  bool connectionKeyWasSupplied = false,
+}) {
+  final text = error.toString().toLowerCase();
+  if (text.contains('api_key_required')) return true;
+  final hasUnauthorized = text.contains('unauthorized');
+  final hasHttp401 = RegExp(r'(^|\D)401(\D|$)').hasMatch(text);
+  final upgradeRejected =
+      text.contains('not upgraded to websocket') ||
+      text.contains('websocket connection failed');
+  return hasUnauthorized ||
+      hasHttp401 ||
+      (connectionKeyWasSupplied && upgradeRejected);
+}
+
 @visibleForTesting
 BridgeApplicationReadiness parseBridgeApplicationReadiness({
   required int statusCode,
@@ -373,6 +407,8 @@ class BridgeService implements BridgeServiceBase {
       StreamController<(LocalFeatureServerMessage, String?)>.broadcast();
   final _connectionController =
       StreamController<BridgeConnectionState>.broadcast();
+  final _connectionFailureController =
+      StreamController<BridgeConnectionFailure>.broadcast();
   final _connectionBootstrapController =
       StreamController<BridgeConnectionBootstrapSnapshot>.broadcast();
   final _clientDeliveryModeStateController =
@@ -626,6 +662,8 @@ class BridgeService implements BridgeServiceBase {
   int _reconnectAttempt = 0;
   static const _maxReconnectDelay = 30;
   bool _intentionalDisconnect = false;
+  bool _authenticationBlocked = false;
+  int? _reportedAuthenticationFailureEpoch;
   Stopwatch? _connectionDiagnosticStopwatch;
   int? _sessionListRequestStartedAtMs;
   int _remainingFrameDiagnostics = _maxFrameDiagnosticsPerConnection;
@@ -645,6 +683,8 @@ class BridgeService implements BridgeServiceBase {
   @override
   Stream<BridgeConnectionState> get connectionStatus =>
       _connectionController.stream;
+  Stream<BridgeConnectionFailure> get connectionFailures =>
+      _connectionFailureController.stream;
   Stream<BridgeConnectionBootstrapSnapshot> get connectionBootstrap =>
       _connectionBootstrapController.stream;
   BridgeConnectionBootstrapSnapshot get currentConnectionBootstrap =>
@@ -1859,6 +1899,8 @@ class BridgeService implements BridgeServiceBase {
                         nextCacheSourceHint != null &&
                         _cacheCodexSourceIdHint != nextCacheSourceHint))));
     _connectionEpoch++;
+    _authenticationBlocked = false;
+    _reportedAuthenticationFailureEpoch = null;
     _resetLegacyRecentSessionsTransport();
     _failPendingHistoryRequests(clearCursors: false);
     // Legacy history responses in flight on the old socket can never arrive
@@ -1902,6 +1944,8 @@ class BridgeService implements BridgeServiceBase {
     );
     _logConnectionDiagnostic('connect_started', epoch: epoch);
     _setBridgeConnectionState(BridgeConnectionState.connecting);
+    final connectionKeyWasSupplied =
+        Uri.tryParse(url)?.queryParameters['token']?.isNotEmpty == true;
     try {
       final channel = WebSocketChannel.connect(Uri.parse(url));
       _channel = channel;
@@ -2645,6 +2689,13 @@ class BridgeService implements BridgeServiceBase {
         },
         onError: (error, stackTrace) {
           if (epoch != _connectionEpoch) return;
+          if (isBridgeAuthenticationHandshakeError(
+            error,
+            connectionKeyWasSupplied: connectionKeyWasSupplied,
+          )) {
+            _stopForAuthenticationFailure(channel, epoch);
+            return;
+          }
           _cancelAuthoritativeSessionListWatchdog();
           _logConnectionDiagnostic(
             'socket_error',
@@ -2672,6 +2723,10 @@ class BridgeService implements BridgeServiceBase {
         },
         onDone: () {
           if (epoch != _connectionEpoch) return;
+          if (channel.closeCode == 4001) {
+            _stopForAuthenticationFailure(channel, epoch);
+            return;
+          }
           _cancelAuthoritativeSessionListWatchdog();
           _logConnectionDiagnostic('socket_done', epoch: epoch);
           _channel = null;
@@ -2703,6 +2758,13 @@ class BridgeService implements BridgeServiceBase {
             .then((_) => _completeWebSocketHandshake(channel, epoch))
             .catchError((Object error, StackTrace stackTrace) {
               if (epoch != _connectionEpoch || _intentionalDisconnect) return;
+              if (isBridgeAuthenticationHandshakeError(
+                error,
+                connectionKeyWasSupplied: connectionKeyWasSupplied,
+              )) {
+                _stopForAuthenticationFailure(channel, epoch);
+                return;
+              }
               _cancelAuthoritativeSessionListWatchdog();
               _logConnectionDiagnostic(
                 'handshake_failed',
@@ -2794,6 +2856,47 @@ class BridgeService implements BridgeServiceBase {
         BridgeClientDeliveryMode.notificationsOnly) {
       unawaited(_reassertDesiredClientDeliveryMode());
     }
+  }
+
+  void _stopForAuthenticationFailure(WebSocketChannel channel, int epoch) {
+    if (epoch != _connectionEpoch || _intentionalDisconnect) return;
+    if (_reportedAuthenticationFailureEpoch == epoch) return;
+    _reportedAuthenticationFailureEpoch = epoch;
+    _authenticationBlocked = true;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _cancelAuthoritativeSessionListWatchdog();
+    _logConnectionDiagnostic(
+      'authentication_failed',
+      epoch: epoch,
+      warning: true,
+    );
+    _setConnectionBootstrapPhase(
+      BridgeConnectionBootstrapPhase.idle,
+      epoch: epoch,
+    );
+    _failPendingHistoryRequests(clearCursors: false);
+    _clearPendingLocalFeatureRequests();
+    _goalRequestRouter.clear();
+    _failPendingPermissionChanges('Bridge rejected the saved connection key.');
+    _invalidatePermissionApplyCapabilities();
+    _failPendingArtifactResolutions(
+      const ArtifactResolveException(
+        code: 'bridge_authentication_rejected',
+        message: 'Bridge rejected the saved connection key.',
+      ),
+    );
+    _requeueInFlightInputMessages();
+    _requeueInFlightPendingMessages();
+    if (identical(_channel, channel)) _channel = null;
+    channel.sink.close();
+    _setBridgeConnectionState(BridgeConnectionState.disconnected);
+    _connectionFailureController.add(
+      BridgeConnectionFailure(
+        kind: BridgeConnectionFailureKind.authenticationRejected,
+        connectionEpoch: epoch,
+      ),
+    );
   }
 
   void _ensureInteractiveAuthorityRequest() {
@@ -3467,7 +3570,9 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void _scheduleReconnect({String reason = 'transport_lost'}) {
-    if (_intentionalDisconnect || _lastUrl == null) return;
+    if (_intentionalDisconnect || _authenticationBlocked || _lastUrl == null) {
+      return;
+    }
     if (_reconnectTimer?.isActive ?? false) {
       _setBridgeConnectionState(BridgeConnectionState.reconnecting);
       return;
@@ -7015,7 +7120,7 @@ class BridgeService implements BridgeServiceBase {
   /// Call this when the app returns to foreground — iOS may silently kill
   /// background WebSocket connections without triggering [onDone]/[onError].
   void ensureConnected() {
-    if (_lastUrl == null) return;
+    if (_lastUrl == null || _authenticationBlocked) return;
     if (_connectionState == BridgeConnectionState.connected) {
       // The channel may appear "connected" but the underlying socket is dead.
       // A non-null closeCode means the socket has already been closed.
@@ -7113,6 +7218,7 @@ class BridgeService implements BridgeServiceBase {
     _taggedMessageController.close();
     _localFeatureMessageController.close();
     _connectionController.close();
+    _connectionFailureController.close();
     _connectionBootstrapController.close();
     _clientDeliveryModeStateController.close();
     _backgroundNotificationController.close();

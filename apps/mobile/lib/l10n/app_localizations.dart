@@ -1254,6 +1254,30 @@ abstract class AppLocalizations {
   /// **'認証なしの場合は空欄'**
   String get apiKeyHint;
 
+  /// No description provided for @bridgeConnectionKeyLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge 接続キー'**
+  String get bridgeConnectionKeyLabel;
+
+  /// No description provided for @bridgeConnectionKeyRequiredTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge 接続キーが必要です'**
+  String get bridgeConnectionKeyRequiredTitle;
+
+  /// No description provided for @bridgeConnectionKeyMissingBody.
+  ///
+  /// In ja, this message translates to:
+  /// **'この Bridge には接続キーが必要です。Mac 側で設定したキーを入力するか、Bridge に表示された QR コードをもう一度スキャンしてください。'**
+  String get bridgeConnectionKeyMissingBody;
+
+  /// No description provided for @bridgeConnectionKeyRejectedBody.
+  ///
+  /// In ja, this message translates to:
+  /// **'保存済みの Bridge 接続キーが正しくないか、変更されています。現在のキーを入力するか、Bridge に表示された QR コードをもう一度スキャンしてください。'**
+  String get bridgeConnectionKeyRejectedBody;
+
   /// No description provided for @scanQrCode.
   ///
   /// In ja, this message translates to:

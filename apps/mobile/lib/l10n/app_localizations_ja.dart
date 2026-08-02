@@ -636,6 +636,20 @@ class AppLocalizationsJa extends AppLocalizations {
   String get apiKeyHint => '認証なしの場合は空欄';
 
   @override
+  String get bridgeConnectionKeyLabel => 'Bridge 接続キー';
+
+  @override
+  String get bridgeConnectionKeyRequiredTitle => 'Bridge 接続キーが必要です';
+
+  @override
+  String get bridgeConnectionKeyMissingBody =>
+      'この Bridge には接続キーが必要です。Mac 側で設定したキーを入力するか、Bridge に表示された QR コードをもう一度スキャンしてください。';
+
+  @override
+  String get bridgeConnectionKeyRejectedBody =>
+      '保存済みの Bridge 接続キーが正しくないか、変更されています。現在のキーを入力するか、Bridge に表示された QR コードをもう一度スキャンしてください。';
+
+  @override
   String get scanQrCode => 'QR コードをスキャン';
 
   @override

@@ -56,6 +56,96 @@ void main() {
 
   tearDown(logger.cleanHistory);
 
+  test('parses additive Bridge connection authentication health', () {
+    expect(
+      bridgeHealthRequiresConnectionKey({
+        'bridgeAuthentication': {'required': true, 'scheme': 'api_key'},
+      }),
+      isTrue,
+    );
+    expect(
+      bridgeHealthRequiresConnectionKey({
+        'bridgeAuthentication': {'required': false, 'scheme': 'none'},
+      }),
+      isFalse,
+    );
+    expect(bridgeHealthRequiresConnectionKey({'status': 'ok'}), isFalse);
+  });
+
+  test('recognizes sanitized authentication handshake errors', () {
+    expect(
+      isBridgeAuthenticationHandshakeError(
+        Exception('WebSocket upgrade failed with HTTP status 401'),
+      ),
+      isTrue,
+    );
+    expect(
+      isBridgeAuthenticationHandshakeError(Exception('401 Unauthorized')),
+      isTrue,
+    );
+    expect(
+      isBridgeAuthenticationHandshakeError(Exception('connection refused')),
+      isFalse,
+    );
+    expect(
+      isBridgeAuthenticationHandshakeError(
+        Exception('Connection was not upgraded to websocket'),
+        connectionKeyWasSupplied: true,
+      ),
+      isTrue,
+    );
+    expect(
+      isBridgeAuthenticationHandshakeError(
+        Exception('Connection was not upgraded to websocket'),
+      ),
+      isFalse,
+    );
+  });
+
+  test(
+    'authentication rejection stops reconnect and emits recovery signal',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      var attempts = 0;
+      server.listen((request) async {
+        attempts += 1;
+        request.response.statusCode = HttpStatus.unauthorized;
+        await request.response.close();
+      });
+      final bridge = BridgeService()
+        ..reconnectDelayForTest = (_) => const Duration(milliseconds: 20);
+      try {
+        final failure = bridge.connectionFailures.first;
+        bridge.connect('ws://127.0.0.1:${server.port}?token=wrong-key');
+
+        expect(
+          await failure.timeout(const Duration(seconds: 2)),
+          isA<BridgeConnectionFailure>().having(
+            (value) => value.kind,
+            'kind',
+            BridgeConnectionFailureKind.authenticationRejected,
+          ),
+        );
+        expect(
+          bridge.currentBridgeConnectionState,
+          BridgeConnectionState.disconnected,
+        );
+        final attemptsAfterFailure = attempts;
+        bridge.ensureConnected();
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(attempts, attemptsAfterFailure);
+        expect(
+          _connectionDiagnostics().join('\n'),
+          contains('event=authentication_failed'),
+        );
+      } finally {
+        bridge.disconnect();
+        bridge.dispose();
+        await server.close(force: true);
+      }
+    },
+  );
+
   test(
     'half-open authority handshake rebuilds the socket and requests again',
     () async {

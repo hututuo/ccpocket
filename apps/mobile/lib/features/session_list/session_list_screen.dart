@@ -53,6 +53,7 @@ import 'pending_session_binding.dart';
 import 'services/session_resume_coordinator.dart';
 import 'state/session_list_cubit.dart';
 import 'state/session_list_state.dart';
+import 'widgets/bridge_connection_key_dialog.dart';
 import 'widgets/connect_form.dart';
 import 'widgets/home_content.dart';
 import 'widgets/machine_edit_sheet.dart';
@@ -751,6 +752,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   // pending operation that owns them. This listener never navigates by itself.
   StreamSubscription<ServerMessage>? _messageSub;
   StreamSubscription<BridgeConnectionState>? _archiveConnectionSub;
+  StreamSubscription<BridgeConnectionFailure>? _connectionFailureSub;
   StreamSubscription<RecentSessionsMessage>? _catalogReadinessSub;
   StreamSubscription<List<SessionInfo>>? _sessionListReadinessSub;
   StreamSubscription<void>? _catalogCacheReadinessSub;
@@ -767,6 +769,8 @@ class _SessionListScreenState extends State<SessionListScreen>
   late final SessionArchivePendingRequests _archivePendingRequests;
   final _catalogBootstrapGate = SessionCatalogBootstrapGate();
   final _catalogRecoveryPolicy = SessionCatalogRecoveryPolicy();
+  Future<void> Function(String connectionKey)? _retryWithConnectionKey;
+  bool _connectionKeyDialogVisible = false;
 
   // macOS app update
   AppUpdateInfo? _appUpdateInfo;
@@ -830,6 +834,11 @@ class _SessionListScreenState extends State<SessionListScreen>
       }
       _syncConnectionUiGate(bridge, status);
       _refreshCatalogAfterAuthoritativeSessionList(bridge);
+    });
+    _connectionFailureSub = bridge.connectionFailures.listen((failure) {
+      if (failure.kind == BridgeConnectionFailureKind.authenticationRejected) {
+        _presentConnectionKeyPrompt(rejectedSavedKey: true);
+      }
     });
     _connectionBootstrapSub = bridge.connectionBootstrap.listen((_) {
       if (mounted) setState(() {});
@@ -1053,6 +1062,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     _connectionReadinessTimer?.cancel();
     _resetApplicationReadinessPolling(resetReadiness: true);
     _retryConnectionAttempt = retry;
+    _retryWithConnectionKey = null;
     _connectionUiGate.reset();
     _catalogRecoveryPolicy.reset();
     if (mounted) {
@@ -1071,6 +1081,53 @@ class _SessionListScreenState extends State<SessionListScreen>
       _connectionSelectionPending = true;
     }
     return token;
+  }
+
+  void _setConnectionKeyRetry(
+    Future<void> Function(String connectionKey) retry,
+  ) {
+    _retryWithConnectionKey = retry;
+  }
+
+  void _presentConnectionKeyPrompt({required bool rejectedSavedKey}) {
+    if (!mounted || _connectionKeyDialogVisible) return;
+    _connectionReadinessTimer?.cancel();
+    _connectionReadinessTimer = null;
+    _applicationReadinessPollTimer?.cancel();
+    _applicationReadinessPollTimer = null;
+    setState(() {
+      _isAutoConnecting = false;
+      _connectionSelectionPending = false;
+      _connectionAwaitingReadiness = false;
+      _connectionTakingLonger = false;
+      _connectionAttemptFailed = true;
+    });
+    unawaited(_showConnectionKeyPrompt(rejectedSavedKey: rejectedSavedKey));
+  }
+
+  Future<void> _showConnectionKeyPrompt({
+    required bool rejectedSavedKey,
+  }) async {
+    if (!mounted || _connectionKeyDialogVisible) return;
+    _connectionKeyDialogVisible = true;
+    final result = await showDialog<BridgeConnectionKeyPromptResult>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) =>
+          BridgeConnectionKeyDialog(rejectedSavedKey: rejectedSavedKey),
+    );
+    _connectionKeyDialogVisible = false;
+    if (!mounted || result == null) return;
+    switch (result.action) {
+      case BridgeConnectionKeyPromptAction.connect:
+        final key = result.connectionKey;
+        final retry = _retryWithConnectionKey;
+        if (key != null && retry != null) await retry(key);
+        return;
+      case BridgeConnectionKeyPromptAction.scanQr:
+        await _scanQrCode();
+        return;
+    }
   }
 
   bool _isCurrentConnectionAttempt(int token) =>
@@ -1283,6 +1340,9 @@ class _SessionListScreenState extends State<SessionListScreen>
         retry: _loadPreferencesAndAutoConnect,
         autoConnecting: true,
       );
+      _setConnectionKeyRetry(
+        (connectionKey) => _connectWithParams(url, connectionKey),
+      );
       final bridge = context.read<BridgeService>();
       // Try to get API key from SecureStorage via MachineManagerCubit.
       String? apiKey;
@@ -1301,6 +1361,12 @@ class _SessionListScreenState extends State<SessionListScreen>
             expectedCodexSourceId = machine.codexSourceId;
             apiKey = await cubit?.getApiKey(machine.id);
             if (!_isCurrentConnectionAttempt(attempt)) return;
+            if (cubit != null) {
+              _setConnectionKeyRetry((connectionKey) async {
+                await cubit.updateMachine(machine, apiKey: connectionKey);
+                await _loadPreferencesAndAutoConnect();
+              });
+            }
             if (machine.sshJumpHost?.trim().isNotEmpty == true) {
               if (!_isCurrentConnectionAttempt(attempt)) return;
               await _connectToMachineConfig(machine, autoConnecting: true);
@@ -1312,6 +1378,13 @@ class _SessionListScreenState extends State<SessionListScreen>
         // Ignore — autoConnect falls back to legacy SharedPreferences.
       }
       if (!_isCurrentConnectionAttempt(attempt)) return;
+      final health = await BridgeService.checkHealth(url);
+      if (!_isCurrentConnectionAttempt(attempt)) return;
+      if (bridgeHealthRequiresConnectionKey(health) &&
+          (apiKey == null || apiKey.isEmpty)) {
+        _presentConnectionKeyPrompt(rejectedSavedKey: false);
+        return;
+      }
       late final bool attempted;
       try {
         attempted = await bridge.autoConnect(
@@ -1339,6 +1412,9 @@ class _SessionListScreenState extends State<SessionListScreen>
     final attempt = _beginConnectionAttempt(
       retry: () => _connectWithParams(rawUrl, apiKey),
       autoConnecting: false,
+    );
+    _setConnectionKeyRetry(
+      (connectionKey) => _connectWithParams(rawUrl, connectionKey),
     );
     // Allow shorthand: just IP or host:port without ws:// prefix
     if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
@@ -1407,6 +1483,12 @@ class _SessionListScreenState extends State<SessionListScreen>
           );
           if (!_isCurrentConnectionAttempt(attempt)) return;
         }
+      }
+
+      if (bridgeHealthRequiresConnectionKey(health) &&
+          effectiveApiKey == null) {
+        _presentConnectionKeyPrompt(rejectedSavedKey: false);
+        return;
       }
 
       if (!_isCurrentConnectionAttempt(attempt)) return;
@@ -1565,6 +1647,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     );
     _messageSub?.cancel();
     _archiveConnectionSub?.cancel();
+    _connectionFailureSub?.cancel();
     _catalogReadinessSub?.cancel();
     _sessionListReadinessSub?.cancel();
     _catalogCacheReadinessSub?.cancel();
@@ -3959,6 +4042,10 @@ class _SessionListScreenState extends State<SessionListScreen>
       autoConnecting: autoConnecting,
     );
     final cubit = context.read<MachineManagerCubit>();
+    _setConnectionKeyRetry((connectionKey) async {
+      await cubit.updateMachine(machine, apiKey: connectionKey);
+      await _connectToMachineConfig(machine, autoConnecting: autoConnecting);
+    });
     final bridge = context.read<BridgeService>();
     final tunnelService = context.read<SshBridgeTunnelService?>();
     final messenger = ScaffoldMessenger.of(context);
@@ -3980,6 +4067,13 @@ class _SessionListScreenState extends State<SessionListScreen>
     try {
       final apiKey = await cubit.getApiKey(machine.id);
       if (!_isCurrentConnectionAttempt(attempt)) return;
+      final health = await BridgeService.checkHealth(machine.wsUrl);
+      if (!_isCurrentConnectionAttempt(attempt)) return;
+      if (bridgeHealthRequiresConnectionKey(health) &&
+          (apiKey == null || apiKey.isEmpty)) {
+        _presentConnectionKeyPrompt(rejectedSavedKey: false);
+        return;
+      }
 
       // Record connection to update lastConnected
       await cubit.recordConnection(
