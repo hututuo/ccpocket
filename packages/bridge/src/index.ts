@@ -63,6 +63,7 @@ import {
   assertSecureBridgeBinding,
   DEFAULT_BRIDGE_HOST,
 } from "./bridge-bind-security.js";
+import { resolveBridgeConnectionAuthentication } from "./bridge-connection-auth.js";
 
 function startupErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -72,12 +73,18 @@ export async function startServer() {
   installProcessGuards();
   const PORT = parseBridgePort();
   const HOST = process.env.BRIDGE_HOST ?? DEFAULT_BRIDGE_HOST;
-  const API_KEY = process.env.BRIDGE_API_KEY;
+  const connectionAuthentication = resolveBridgeConnectionAuthentication({
+    apiKey: process.env.BRIDGE_API_KEY,
+    requireApiKey: process.env.BRIDGE_REQUIRE_API_KEY,
+  });
+  const API_KEY = connectionAuthentication.effectiveApiKey;
   assertSecureBridgeBinding({
     host: HOST,
     apiKey: API_KEY,
     allowUnauthenticatedRemote:
-      process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE === "1",
+      process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE === "1" ||
+      (connectionAuthentication.explicitlyConfigured &&
+        !connectionAuthentication.required),
   });
   const bridgeAuthenticator = new BridgeApiKeyAuthenticator(API_KEY);
   const {
@@ -138,9 +145,11 @@ export async function startServer() {
     console.log("[bridge] Shared Codex runtime control observer ready");
   }
 
-  if (API_KEY) {
-    console.log("[bridge] API key authentication enabled");
-  }
+  console.log(
+    connectionAuthentication.required
+      ? "[bridge] Connection key authentication enabled"
+      : "[bridge] Connection key authentication disabled",
+  );
   if (FULL_DISK_READ_REQUESTED && !OWNER_FULL_DISK_READ) {
     console.warn(
       "[bridge] Full-disk phone browsing and out-of-project artifact previews " +
@@ -495,6 +504,10 @@ export async function startServer() {
       const readiness = currentReadiness();
       const body = JSON.stringify({
         status: "ok",
+        bridgeAuthentication: {
+          required: connectionAuthentication.required,
+          scheme: connectionAuthentication.required ? "api_key" : "none",
+        },
         applicationReady: readiness.ready,
         degradedReasons: readiness.reasons,
         degradedFeatures: readiness.degradedFeatures,

@@ -21,6 +21,8 @@ const BOOLEAN_FLAGS = new Set([
   "json",
   "uninstall",
   "no-mdns",
+  "require-api-key",
+  "no-require-api-key",
   "password-stdin",
 ]);
 

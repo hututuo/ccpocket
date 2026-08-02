@@ -14,6 +14,7 @@ import {
   assertSecureBridgeBinding,
   DEFAULT_BRIDGE_HOST,
 } from "./bridge-bind-security.js";
+import { resolveBridgeConnectionAuthentication } from "./bridge-connection-auth.js";
 
 const PLIST_LABEL = "com.ccpocket.bridge";
 
@@ -55,6 +56,7 @@ interface SetupOptions {
   port?: string;
   host?: string;
   apiKey?: string;
+  requireApiKey?: boolean;
   publicWsUrl?: string;
   artifactBaseUrl?: string;
   disableMdns?: boolean;
@@ -71,10 +73,21 @@ interface SetupOptions {
 export function setupLaunchd(opts: SetupOptions): void {
   const port = parseBridgePort(opts.port ?? process.env.BRIDGE_PORT);
   const host = opts.host ?? process.env.BRIDGE_HOST ?? DEFAULT_BRIDGE_HOST;
-  const apiKey = opts.apiKey ?? process.env.BRIDGE_API_KEY ?? "";
+  const connectionAuthentication = resolveBridgeConnectionAuthentication({
+    apiKey: opts.apiKey ?? process.env.BRIDGE_API_KEY,
+    requireApiKey:
+      opts.requireApiKey ?? process.env.BRIDGE_REQUIRE_API_KEY,
+  });
+  const apiKey = connectionAuthentication.configuredApiKey ?? "";
   const allowUnauthenticatedRemote =
-    process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE === "1";
-  assertSecureBridgeBinding({ host, apiKey, allowUnauthenticatedRemote });
+    process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE === "1" ||
+    (connectionAuthentication.explicitlyConfigured &&
+      !connectionAuthentication.required);
+  assertSecureBridgeBinding({
+    host,
+    apiKey: connectionAuthentication.effectiveApiKey,
+    allowUnauthenticatedRemote,
+  });
   const allowedDirs = process.env.BRIDGE_ALLOWED_DIRS ?? "";
   const publicWsUrl =
     opts.publicWsUrl ?? process.env.BRIDGE_PUBLIC_WS_URL ?? "";
@@ -135,6 +148,8 @@ export function setupLaunchd(opts: SetupOptions): void {
         <string>${port}</string>
         <key>BRIDGE_HOST</key>
         <string>${host}</string>
+        <key>BRIDGE_REQUIRE_API_KEY</key>
+        <string>${connectionAuthentication.required ? "1" : "0"}</string>
         <key>BRIDGE_CLI_ENTRY</key>
         <string>${escapeXml(bridgeCliEntry)}</string>`;
 

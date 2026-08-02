@@ -27,6 +27,8 @@ const PLIST_PATH =
 const originalBridgeEnv = {
   port: process.env.BRIDGE_PORT,
   host: process.env.BRIDGE_HOST,
+  apiKey: process.env.BRIDGE_API_KEY,
+  requireApiKey: process.env.BRIDGE_REQUIRE_API_KEY,
   allowUnauthenticatedRemote: process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE,
   allowedDirs: process.env.BRIDGE_ALLOWED_DIRS,
   publicWsUrl: process.env.BRIDGE_PUBLIC_WS_URL,
@@ -73,6 +75,8 @@ describe("setup-launchd", () => {
       expect(content).toContain("<string>8765</string>");
       expect(content).toContain("<key>BRIDGE_HOST</key>");
       expect(content).toContain("<string>127.0.0.1</string>");
+      expect(content).toContain("<key>BRIDGE_REQUIRE_API_KEY</key>");
+      expect(content).toContain("<string>0</string>");
       expect(content).toContain(
         '<string>exec node "$BRIDGE_CLI_ENTRY"</string>',
       );
@@ -93,6 +97,41 @@ describe("setup-launchd", () => {
       expect(content).not.toContain("BRIDGE_CODEX_SOURCE_ID");
       expect(content).not.toContain("BRIDGE_CODEX_APP_SERVER_MODE");
       expect(content).not.toContain("BRIDGE_CODEX_SHARED_APP_SERVER_URL");
+    });
+
+    it("persists an explicit enabled connection-key toggle", () => {
+      setupLaunchd({ apiKey: "owner-key", requireApiKey: true });
+
+      const content = mockWriteFileSync.mock.calls[0]![1] as string;
+      expect(content).toContain("<key>BRIDGE_REQUIRE_API_KEY</key>");
+      expect(content).toContain("<string>1</string>");
+      expect(content).toContain("<key>BRIDGE_API_KEY</key>");
+      expect(content).toContain("<string>owner-key</string>");
+    });
+
+    it("retains the key while explicitly disabling authentication", () => {
+      setupLaunchd({ apiKey: "owner-key", requireApiKey: false });
+
+      const content = mockWriteFileSync.mock.calls[0]![1] as string;
+      expect(content).toContain("<key>BRIDGE_REQUIRE_API_KEY</key>");
+      expect(content).toContain("<string>0</string>");
+      expect(content).toContain("<string>owner-key</string>");
+    });
+
+    it("treats an explicit disabled toggle as the remote-bind opt-in", () => {
+      setupLaunchd({ host: "0.0.0.0", requireApiKey: false });
+
+      const content = mockWriteFileSync.mock.calls[0]![1] as string;
+      expect(content).toContain("<string>0.0.0.0</string>");
+      expect(content).toContain("<key>BRIDGE_REQUIRE_API_KEY</key>");
+      expect(content).toContain("<string>0</string>");
+    });
+
+    it("rejects an enabled toggle without a configured key", () => {
+      expect(() => setupLaunchd({ requireApiKey: true })).toThrow(
+        /BRIDGE_API_KEY is empty/,
+      );
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
     });
 
     it("rejects an unauthenticated remote host before writing the service", () => {
@@ -331,6 +370,8 @@ describe("setup-launchd", () => {
 function clearBridgeEnv(): void {
   delete process.env.BRIDGE_PORT;
   delete process.env.BRIDGE_HOST;
+  delete process.env.BRIDGE_API_KEY;
+  delete process.env.BRIDGE_REQUIRE_API_KEY;
   delete process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE;
   delete process.env.BRIDGE_ALLOWED_DIRS;
   delete process.env.BRIDGE_PUBLIC_WS_URL;
@@ -354,6 +395,8 @@ function clearBridgeEnv(): void {
 function restoreBridgeEnv(): void {
   restoreEnvVar("BRIDGE_PORT", originalBridgeEnv.port);
   restoreEnvVar("BRIDGE_HOST", originalBridgeEnv.host);
+  restoreEnvVar("BRIDGE_API_KEY", originalBridgeEnv.apiKey);
+  restoreEnvVar("BRIDGE_REQUIRE_API_KEY", originalBridgeEnv.requireApiKey);
   restoreEnvVar(
     "BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE",
     originalBridgeEnv.allowUnauthenticatedRemote,

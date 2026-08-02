@@ -25,7 +25,8 @@ Please include:
 CC Pocket's Bridge Server exposes filesystem operations over WebSocket. Key security measures include:
 
 - **`BRIDGE_ALLOWED_DIRS`**: Restricts which directories can be accessed; defaults to `$HOME` and accepts the exact value `*` only for intentional unrestricted access
-- **`BRIDGE_API_KEY`**: Optional API key authentication for connections
+- **`BRIDGE_API_KEY`**: Stores the Bridge connection key
+- **`BRIDGE_REQUIRE_API_KEY`**: Explicitly enables (`1`) or disables (`0`) connection-key authentication; when unset, legacy installs infer it from whether a key exists. Disabling it on a non-loopback listener intentionally exposes the Bridge to the trusted LAN and also disables owner full-disk read surfaces that require an authenticated phone.
 - **Path validation**: Unless explicitly unrestricted, all paths are resolved and checked against allowed directories before any operation
 - **Network security**: Tailscale or local network recommended for remote access; no data is sent to external servers
 - **Credential storage**: API keys and SSH keys are stored using platform-native encrypted storage (iOS Keychain / Android Keystore)

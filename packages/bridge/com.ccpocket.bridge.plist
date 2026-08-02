@@ -30,7 +30,10 @@
         <string>8765</string>
         <key>BRIDGE_HOST</key>
         <string>0.0.0.0</string>
-        <!-- Set your API key for authentication -->
+        <!-- Set to 1 to require the connection key, or 0 to disable it. -->
+        <key>BRIDGE_REQUIRE_API_KEY</key>
+        <string>1</string>
+        <!-- The key may remain configured while authentication is disabled. -->
         <key>BRIDGE_API_KEY</key>
         <string>YOUR_SECRET_KEY_HERE</string>
     </dict>

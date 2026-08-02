@@ -8,13 +8,14 @@
 # Usage:
 #   npm run setup                          # Default setup (port 8765)
 #   npm run setup -- --port 9000           # Custom port
-#   npm run setup -- --api-key SECRET      # With API key
+#   npm run setup -- --api-key SECRET --require-api-key
 #   npm run setup -- --uninstall           # Remove service
 #
 # Environment variables (overridden by CLI args):
 #   BRIDGE_PORT     (default: 8765)
 #   BRIDGE_HOST     (default: 0.0.0.0)
 #   BRIDGE_API_KEY  (default: none)
+#   BRIDGE_REQUIRE_API_KEY (default: inferred from whether a key exists)
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -25,6 +26,7 @@ PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 PORT="${BRIDGE_PORT:-8765}"
 HOST="${BRIDGE_HOST:-0.0.0.0}"
 API_KEY="${BRIDGE_API_KEY:-}"
+REQUIRE_API_KEY="${BRIDGE_REQUIRE_API_KEY:-}"
 NO_START=false
 UNINSTALL=false
 
@@ -37,7 +39,10 @@ Register Bridge Server as a macOS launchd service.
 Options:
   --port <port>       Bridge port (default: 8765)
   --host <host>       Bind address (default: 0.0.0.0)
-  --api-key <key>     API key for authentication
+  --api-key <key>     Set the saved Bridge connection key
+  --require-api-key   Require the configured connection key
+  --no-require-api-key
+                      Disable connection-key authentication
   --no-start          Register only, don't start immediately
   --uninstall         Remove the launchd service
   -h, --help          Show this help
@@ -50,12 +55,25 @@ while [[ $# -gt 0 ]]; do
     --port) [[ $# -lt 2 ]] && { echo "Error: --port requires a value"; exit 1; }; PORT="$2"; shift 2 ;;
     --host) [[ $# -lt 2 ]] && { echo "Error: --host requires a value"; exit 1; }; HOST="$2"; shift 2 ;;
     --api-key) [[ $# -lt 2 ]] && { echo "Error: --api-key requires a value"; exit 1; }; API_KEY="$2"; shift 2 ;;
+    --require-api-key) REQUIRE_API_KEY=1; shift ;;
+    --no-require-api-key) REQUIRE_API_KEY=0; shift ;;
     --no-start) NO_START=true; shift ;;
     --uninstall) UNINSTALL=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 1 ;;
   esac
 done
+
+case "$REQUIRE_API_KEY" in
+  "") [[ -n "$API_KEY" ]] && REQUIRE_API_KEY=1 || REQUIRE_API_KEY=0 ;;
+  1) REQUIRE_API_KEY=1 ;;
+  0) REQUIRE_API_KEY=0 ;;
+  *) echo "Error: BRIDGE_REQUIRE_API_KEY must be 1 or 0"; exit 1 ;;
+esac
+if [[ "$REQUIRE_API_KEY" == 1 && -z "$API_KEY" ]]; then
+  echo "Error: connection-key authentication is enabled but BRIDGE_API_KEY is empty"
+  exit 1
+fi
 
 # --- Uninstall ---
 if [ "$UNINSTALL" = true ]; then
@@ -90,6 +108,10 @@ ENV_BLOCK="        <key>BRIDGE_PORT</key>
         <string>$PORT</string>
         <key>BRIDGE_HOST</key>
         <string>$HOST</string>"
+
+ENV_BLOCK="$ENV_BLOCK
+        <key>BRIDGE_REQUIRE_API_KEY</key>
+        <string>$REQUIRE_API_KEY</string>"
 
 if [ -n "$API_KEY" ]; then
   ENV_BLOCK="$ENV_BLOCK

@@ -37,8 +37,9 @@ ccpocket-bridge --version
 |---------------------|---------|-------------|
 | `BRIDGE_PORT` | `8765` | WebSocket port |
 | `BRIDGE_HOST` | `127.0.0.1` | Bind address; non-loopback requires `BRIDGE_API_KEY` unless the legacy insecure opt-in below is set |
-| `BRIDGE_API_KEY` | (none) | API key authentication (enabled when set) |
-| `BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE` | `0` | Legacy compatibility escape hatch: set `1` to bind beyond loopback without an API key (unsafe; not recommended) |
+| `BRIDGE_API_KEY` | (none) | Saved Bridge connection key; retained when authentication is toggled off |
+| `BRIDGE_REQUIRE_API_KEY` | inferred | `1` requires `BRIDGE_API_KEY`; `0` disables connection-key authentication; when unset, existing installs keep the legacy “key present = enabled” behavior |
+| `BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE` | `0` | Legacy compatibility escape hatch for installs that leave `BRIDGE_REQUIRE_API_KEY` unset; an explicit `BRIDGE_REQUIRE_API_KEY=0` is the modern opt-out and also acknowledges unauthenticated LAN exposure |
 | `BRIDGE_PERSIST_DEBUG_TRACES` | `0` | Persist bounded diagnostic trace summaries to disk; disabled by default because traces can contain conversation-adjacent metadata |
 | `BRIDGE_ALLOWED_DIRS` | `$HOME` | Comma-separated list of project directories the Bridge may access; set exactly to `*` to allow any directory |
 | `BRIDGE_PUBLIC_WS_URL` | (none) | Public `ws://` / `wss://` URL used for startup deep link and QR code |
@@ -77,8 +78,8 @@ Push relay uses Firebase Anonymous Auth automatically; no FCM environment
 variables are required.
 
 ```bash
-# Example: custom port with API key
-BRIDGE_PORT=9000 BRIDGE_API_KEY=my-secret npx @ccpocket/bridge@latest
+# Example: custom port with connection-key authentication enabled
+BRIDGE_PORT=9000 BRIDGE_REQUIRE_API_KEY=1 BRIDGE_API_KEY=my-secret npx @ccpocket/bridge@latest
 
 # Example: allow projects outside $HOME
 BRIDGE_ALLOWED_DIRS="$HOME,/scratch/$USER" npx @ccpocket/bridge@latest
@@ -286,6 +287,7 @@ that affect startup:
 - `BRIDGE_PORT` / `--port`
 - `BRIDGE_HOST` / `--host`
 - `BRIDGE_API_KEY` / `--api-key`
+- `BRIDGE_REQUIRE_API_KEY` / `--require-api-key` / `--no-require-api-key`
 - `BRIDGE_ALLOWED_DIRS`
 - `BRIDGE_PUBLIC_WS_URL` / `--public-ws-url`
 - `BRIDGE_ARTIFACT_BASE_URL` / `--artifact-base-url`
@@ -304,6 +306,7 @@ Example:
 
 ```bash
 BRIDGE_ALLOWED_DIRS="$HOME,/scratch/$USER" \
+BRIDGE_REQUIRE_API_KEY=1 \
 BRIDGE_API_KEY=my-secret \
 node packages/bridge/dist/cli.js setup
 ```

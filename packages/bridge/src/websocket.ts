@@ -1748,6 +1748,14 @@ export class BridgeWebSocketServer {
           this.apiKeyAuthenticator.isConfigured &&
           this.apiKeyAuthenticator.acceptsWebSocketRequest(info.req);
         if (
+          this.apiKeyAuthenticator.isConfigured &&
+          !authenticatedByToken
+        ) {
+          console.log("[ws] Client rejected: invalid token");
+          done(false, 401, "Bridge connection key required");
+          return;
+        }
+        if (
           origin !== undefined &&
           !authenticatedByToken &&
           !isAllowedBrowserOrigin(origin, info.req.headers.host, browserOrigins)
@@ -2056,7 +2064,9 @@ export class BridgeWebSocketServer {
         }
       });
     this.wss.on("connection", (ws, req) => {
-      // API key authentication
+      // Defense in depth for custom servers or future upgrade hooks that may
+      // bypass verifyClient. Normal invalid credentials are rejected with an
+      // HTTP 401 during the upgrade so Mobile can recover immediately.
       if (!this.apiKeyAuthenticator.acceptsWebSocketRequest(req)) {
         console.log("[ws] Client rejected: invalid token");
         ws.close(4001, "Unauthorized");

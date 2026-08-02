@@ -42,7 +42,10 @@ Options:
   -v, --version         Show the installed Bridge version
       --port <port>     WebSocket port (default: 8765)
       --host <host>     Bind address (default: 0.0.0.0)
-      --api-key <key>   Enable API key authentication
+      --api-key <key>   Set the saved Bridge connection key
+      --require-api-key Require the configured Bridge connection key
+      --no-require-api-key
+                         Disable connection-key authentication while retaining the key
       --public-ws-url <url>
                          Public ws:// or wss:// URL used in QR codes
       --artifact-base-url <url>
@@ -80,7 +83,8 @@ File access options:
 
 Setup options:
       --uninstall       Remove the registered service
-      setup persists --port, --host, --api-key, --public-ws-url,
+      setup persists --port, --host, --api-key, --require-api-key,
+      --no-require-api-key, --public-ws-url,
       --artifact-base-url, --no-mdns, Codex app-server options,
       --codex-source-id,
       BRIDGE_ALLOWED_DIRS, BRIDGE_AUTO_ARTIFACTS, and
@@ -88,7 +92,8 @@ Setup options:
       BRIDGE_CODEX_ASSIST_MODEL / BRIDGE_CODEX_ASSIST_REASONING_EFFORT
 
 Configuration can also be provided with BRIDGE_PORT, BRIDGE_HOST,
-BRIDGE_API_KEY, BRIDGE_ALLOWED_DIRS, BRIDGE_PUBLIC_WS_URL, and
+BRIDGE_API_KEY, BRIDGE_REQUIRE_API_KEY, BRIDGE_ALLOWED_DIRS,
+BRIDGE_PUBLIC_WS_URL, and
 BRIDGE_ARTIFACT_BASE_URL, BRIDGE_AUTO_ARTIFACTS,
 BRIDGE_ARTIFACT_REGISTRY_FILE, and BRIDGE_DISABLE_MDNS.
 Phone transfer storage can be configured with
@@ -157,11 +162,25 @@ if (parsed.helpRequested) {
     );
     process.exit(1);
   }
+  const requireApiKeyFlag = hasFlag(parsed, "require-api-key");
+  const noRequireApiKeyFlag = hasFlag(parsed, "no-require-api-key");
+  if (requireApiKeyFlag && noRequireApiKeyFlag) {
+    console.error(
+      "Setup failed: --require-api-key and --no-require-api-key cannot be used together",
+    );
+    process.exit(1);
+  }
+
   // Service setup subcommand (platform-specific)
   const opts = {
     port: parseFlag(parsed, "port"),
     host: parseFlag(parsed, "host"),
     apiKey: parseFlag(parsed, "api-key"),
+    requireApiKey: requireApiKeyFlag
+      ? true
+      : noRequireApiKeyFlag
+        ? false
+        : undefined,
     publicWsUrl: parseFlag(parsed, "public-ws-url"),
     artifactBaseUrl: parseFlag(parsed, "artifact-base-url"),
     disableMdns: hasFlag(parsed, "no-mdns"),
@@ -337,6 +356,8 @@ if (parsed.helpRequested) {
   const port = parseFlag(parsed, "port");
   const host = parseFlag(parsed, "host");
   const apiKey = parseFlag(parsed, "api-key");
+  const requireApiKeyFlag = hasFlag(parsed, "require-api-key");
+  const noRequireApiKeyFlag = hasFlag(parsed, "no-require-api-key");
   const publicWsUrl = parseFlag(parsed, "public-ws-url");
   const artifactBaseUrl = parseFlag(parsed, "artifact-base-url");
   const codexAppServerMode = parseFlag(parsed, "codex-app-server-mode");
@@ -358,6 +379,14 @@ if (parsed.helpRequested) {
   if (port !== undefined) process.env.BRIDGE_PORT = port;
   if (host) process.env.BRIDGE_HOST = host;
   if (apiKey) process.env.BRIDGE_API_KEY = apiKey;
+  if (requireApiKeyFlag && noRequireApiKeyFlag) {
+    console.error(
+      "[bridge] Failed to start: --require-api-key and --no-require-api-key cannot be used together",
+    );
+    process.exit(1);
+  }
+  if (requireApiKeyFlag) process.env.BRIDGE_REQUIRE_API_KEY = "1";
+  if (noRequireApiKeyFlag) process.env.BRIDGE_REQUIRE_API_KEY = "0";
   if (publicWsUrl) process.env.BRIDGE_PUBLIC_WS_URL = publicWsUrl;
   if (artifactBaseUrl) {
     process.env.BRIDGE_ARTIFACT_BASE_URL = artifactBaseUrl;

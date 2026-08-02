@@ -31,6 +31,8 @@ const SERVICE_PATH =
 const originalBridgeEnv = {
   port: process.env.BRIDGE_PORT,
   host: process.env.BRIDGE_HOST,
+  apiKey: process.env.BRIDGE_API_KEY,
+  requireApiKey: process.env.BRIDGE_REQUIRE_API_KEY,
   allowUnauthenticatedRemote: process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE,
   allowedDirs: process.env.BRIDGE_ALLOWED_DIRS,
   publicWsUrl: process.env.BRIDGE_PUBLIC_WS_URL,
@@ -90,6 +92,7 @@ describe("setup-systemd", () => {
       expect(content).toContain('/src/cli.js"');
       expect(content).toContain("Environment=BRIDGE_PORT=8765");
       expect(content).toContain("Environment=BRIDGE_HOST=127.0.0.1");
+      expect(content).toContain("Environment=BRIDGE_REQUIRE_API_KEY=0");
       expect(content).toContain("Restart=on-failure");
       expect(content).toContain("WantedBy=default.target");
       expect(content).not.toContain("BRIDGE_API_KEY");
@@ -139,6 +142,30 @@ describe("setup-systemd", () => {
 
       const content = mockWriteFileSync.mock.calls[0]![1] as string;
       expect(content).toContain("Environment=BRIDGE_API_KEY=my-secret");
+      expect(content).toContain("Environment=BRIDGE_REQUIRE_API_KEY=1");
+    });
+
+    it("retains the key while explicitly disabling authentication", () => {
+      setupSystemd({ apiKey: "my-secret", requireApiKey: false });
+
+      const content = mockWriteFileSync.mock.calls[0]![1] as string;
+      expect(content).toContain("Environment=BRIDGE_API_KEY=my-secret");
+      expect(content).toContain("Environment=BRIDGE_REQUIRE_API_KEY=0");
+    });
+
+    it("treats an explicit disabled toggle as the remote-bind opt-in", () => {
+      setupSystemd({ host: "0.0.0.0", requireApiKey: false });
+
+      const content = mockWriteFileSync.mock.calls[0]![1] as string;
+      expect(content).toContain("Environment=BRIDGE_HOST=0.0.0.0");
+      expect(content).toContain("Environment=BRIDGE_REQUIRE_API_KEY=0");
+    });
+
+    it("rejects an enabled toggle without a configured key", () => {
+      expect(() => setupSystemd({ requireApiKey: true })).toThrow(
+        /BRIDGE_API_KEY is empty/,
+      );
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
     });
 
     it("includes BRIDGE_ALLOWED_DIRS when provided", () => {
@@ -465,6 +492,8 @@ describe("setup-systemd", () => {
 function clearBridgeEnv(): void {
   delete process.env.BRIDGE_PORT;
   delete process.env.BRIDGE_HOST;
+  delete process.env.BRIDGE_API_KEY;
+  delete process.env.BRIDGE_REQUIRE_API_KEY;
   delete process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE;
   delete process.env.BRIDGE_ALLOWED_DIRS;
   delete process.env.BRIDGE_PUBLIC_WS_URL;
@@ -488,6 +517,8 @@ function clearBridgeEnv(): void {
 function restoreBridgeEnv(): void {
   restoreEnvVar("BRIDGE_PORT", originalBridgeEnv.port);
   restoreEnvVar("BRIDGE_HOST", originalBridgeEnv.host);
+  restoreEnvVar("BRIDGE_API_KEY", originalBridgeEnv.apiKey);
+  restoreEnvVar("BRIDGE_REQUIRE_API_KEY", originalBridgeEnv.requireApiKey);
   restoreEnvVar(
     "BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE",
     originalBridgeEnv.allowUnauthenticatedRemote,

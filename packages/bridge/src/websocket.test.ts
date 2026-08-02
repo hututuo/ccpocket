@@ -19175,6 +19175,48 @@ describe("BridgeWebSocketServer handshake Origin gate", () => {
     getCodexSessionIndexMetadataMock.mockResolvedValue(new Map());
   });
 
+  it("rejects a missing or invalid connection key during upgrade", async () => {
+    const httpServer = createServer();
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      apiKey: "owner-key",
+    });
+    await new Promise<void>((res) => {
+      httpServer.listen(0, "127.0.0.1", res);
+    });
+    const port = (httpServer.address() as { port: number }).port;
+
+    const attempt = (token?: string) =>
+      new Promise<{ opened: boolean; statusCode?: number }>((resolve) => {
+        const query = token === undefined ? "" : `?token=${token}`;
+        const ws = new WsClient(`ws://127.0.0.1:${port}${query}`);
+        ws.on("unexpected-response", (_req, response) => {
+          resolve({ opened: false, statusCode: response.statusCode });
+          ws.terminate();
+        });
+        ws.on("open", () => {
+          resolve({ opened: true });
+          ws.close();
+        });
+        ws.on("error", () => {});
+      });
+
+    try {
+      await expect(attempt()).resolves.toEqual({
+        opened: false,
+        statusCode: 401,
+      });
+      await expect(attempt("wrong-key")).resolves.toEqual({
+        opened: false,
+        statusCode: 401,
+      });
+      await expect(attempt("owner-key")).resolves.toEqual({ opened: true });
+    } finally {
+      await bridge.close();
+      await new Promise<void>((res) => httpServer.close(() => res()));
+    }
+  });
+
   it("binds private browser Origins to the actual WebSocket host", async () => {
     const httpServer = createServer();
     const bridge = new BridgeWebSocketServer({ server: httpServer });

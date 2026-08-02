@@ -39,6 +39,8 @@ describe("parseCliArgs", () => {
       "--public-ws-url",
       "wss://example.ngrok-free.app",
       "--no-mdns",
+      "--require-api-key",
+      "--no-require-api-key",
     ]);
 
     expect(parsed.command).toBeUndefined();
@@ -46,6 +48,8 @@ describe("parseCliArgs", () => {
       "wss://example.ngrok-free.app",
     );
     expect(hasFlag(parsed, "no-mdns")).toBe(true);
+    expect(hasFlag(parsed, "require-api-key")).toBe(true);
+    expect(hasFlag(parsed, "no-require-api-key")).toBe(true);
   });
 
   it("parses inline flag values", () => {
