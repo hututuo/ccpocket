@@ -584,6 +584,24 @@ Future<Machine?> findAutoConnectMachine(
   return cubit.findByHostPort(uri.host, uri.hasPort ? uri.port : 8765);
 }
 
+/// Resolve the credential for an endpoint connection without requiring the
+/// user to enter the same Bridge API key again.
+///
+/// Discovery and manual-address entry both use [_connectWithParams]. When the
+/// endpoint already belongs to a saved machine, its API key lives in secure
+/// storage and must be reused just like the saved-machine connection path.
+Future<String?> resolveBridgeConnectionApiKey({
+  String? providedApiKey,
+  String? savedMachineId,
+  Future<String?> Function(String machineId)? loadSavedApiKey,
+}) async {
+  final provided = providedApiKey?.trim();
+  if (provided != null && provided.isNotEmpty) return provided;
+  if (savedMachineId == null || loadSavedApiKey == null) return null;
+  final saved = (await loadSavedApiKey(savedMachineId))?.trim();
+  return saved == null || saved.isEmpty ? null : saved;
+}
+
 /// Shorten absolute path by replacing $HOME with ~.
 String shortenPath(String path) {
   final home = getHomeDirectory();
@@ -1359,6 +1377,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     if (!_isCurrentConnectionAttempt(attempt)) return;
     // Auto-save to Machines on successful health check (or user choosing to connect)
     final trimmedApiKey = apiKey?.trim() ?? '';
+    String? effectiveApiKey = trimmedApiKey.isEmpty ? null : trimmedApiKey;
     String? logicalConnectionIdentity;
     String? expectedBridgeInstanceId;
     String? expectedCodexSourceId;
@@ -1381,6 +1400,12 @@ class _SessionListScreenState extends State<SessionListScreen>
           logicalConnectionIdentity = 'machine:${machine.id}';
           expectedBridgeInstanceId = machine.bridgeInstanceId;
           expectedCodexSourceId = machine.codexSourceId;
+          effectiveApiKey = await resolveBridgeConnectionApiKey(
+            providedApiKey: effectiveApiKey,
+            savedMachineId: machine.id,
+            loadSavedApiKey: machineManagerCubit.getApiKey,
+          );
+          if (!_isCurrentConnectionAttempt(attempt)) return;
         }
       }
 
@@ -1390,9 +1415,8 @@ class _SessionListScreenState extends State<SessionListScreen>
       }
       if (!_isCurrentConnectionAttempt(attempt)) return;
       var connectUrl = url;
-      if (trimmedApiKey.isNotEmpty) {
-        final sep = connectUrl.contains('?') ? '&' : '?';
-        connectUrl = '$connectUrl${sep}token=$trimmedApiKey';
+      if (effectiveApiKey != null) {
+        connectUrl = withBridgeApiKey(connectUrl, effectiveApiKey);
       }
       bridge.connect(
         connectUrl,

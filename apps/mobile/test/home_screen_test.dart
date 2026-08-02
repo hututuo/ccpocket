@@ -61,6 +61,45 @@ void main() {
     _session(projectPath: '/home/user/cli-tool', sessionId: 's6'),
   ];
 
+  group('Bridge endpoint credential reuse', () {
+    test('prefers a newly supplied API key', () async {
+      var secureStorageReads = 0;
+
+      final result = await resolveBridgeConnectionApiKey(
+        providedApiKey: '  new-key  ',
+        savedMachineId: 'machine-1',
+        loadSavedApiKey: (_) async {
+          secureStorageReads += 1;
+          return 'saved-key';
+        },
+      );
+
+      expect(result, 'new-key');
+      expect(secureStorageReads, 0);
+    });
+
+    test('reuses the saved endpoint API key when discovery omits it', () async {
+      final result = await resolveBridgeConnectionApiKey(
+        savedMachineId: 'machine-1',
+        loadSavedApiKey: (machineId) async {
+          expect(machineId, 'machine-1');
+          return '  saved-key  ';
+        },
+      );
+
+      expect(result, 'saved-key');
+    });
+
+    test('keeps unauthenticated legacy endpoints credential-free', () async {
+      final result = await resolveBridgeConnectionApiKey(
+        savedMachineId: 'machine-1',
+        loadSavedApiKey: (_) async => null,
+      );
+
+      expect(result, isNull);
+    });
+  });
+
   test('standalone chat routes preserve the durable provider identity', () {
     const claudeArgs = ClaudeSessionRouteArgs(
       sessionId: 'pending-claude',
