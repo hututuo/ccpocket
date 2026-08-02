@@ -1,5 +1,14 @@
 # CC Pocket Compatibility Fork Context
 
+## 2026-08-02 authorized task-contact boundary
+
+The user has authorized only the persistent release task
+`019f8e9d-2490-79c0-817c-87e3eb93ea2f`, and it may be contacted only when the
+user explicitly asks to hand off a build, deployment or release. The historical
+task `019f8ff9-0945-72a3-a29e-c17df6f112e5` is not an authorized coordinator;
+do not send it reports, commands or corrections. Ordinary development and
+review results stay in the current task and are reported directly to the user.
+
 ## 2026-08-02 canonical current worktree and Codex project policy
 
 All source branches registered during the July 30 to August 2 integration are

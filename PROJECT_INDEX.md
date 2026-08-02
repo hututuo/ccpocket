@@ -2,6 +2,7 @@
 
 | Path or ref | Type | Purpose | Deletable | Status |
 |---|---|---|---|---|
+| `docs/PROJECT_HANDOFF.md` task-contact correction | Project governance | Remove the unauthorized historical coordinator callback and restrict cross-task contact to the user-authorized release task when explicitly requested | No | `accepted`; never message `019f8ff9-0945-72a3-a29e-c17df6f112e5`; release task `019f8e9d-2490-79c0-817c-87e3eb93ea2f` remains request-only |
 | `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/current` / `integration/ccpocket-current` | **Canonical active source worktree** | Stable no-date entry for subsequent single- or multi-Agent CC Pocket development | No | starts at `e4583b50`; policy `f1d18745`; recovered UI `0a374184`; all dated registered source worktrees removed |
 | `refs/archive/ccpocket/worktree-cleanup-20260802/*` | Worktree cleanup archive refs | Preserve every removed branch tip plus the old project-config and process-disclosure dirty states before deletion | No until a later archive-retention audit | 17 refs; dirty snapshots `ec485ba3` and `8e84406f`; process-disclosure semantics recovered on current line |
 | `notes/worktree-and-project-policy-cleanup_v01_20260802-223500.md` | Repository cleanup record | Record branch/worktree convergence, recoverable Trash scope, AltServer patch extraction, IPA audit and production non-interference checks | No | `accepted`; two registered checkouts, two ordinary branches, 17 archive refs, production Bridge unchanged |

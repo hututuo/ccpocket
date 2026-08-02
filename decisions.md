@@ -1,5 +1,14 @@
 # ccPocket Compatibility Decisions
 
+## 2026-08-02 historical coordinator task is not an authorized contact
+
+- 用户只授权了发布任务 `019f8e9d-2490-79c0-817c-87e3eb93ea2f`，且只有用户当次明确
+  要求构建、部署或发布交接时才可以联系。
+- `019f8ff9-0945-72a3-a29e-c17df6f112e5` 不是用户授权的协调入口。旧交接文档中要求
+  实现 Agent 主动向它回报的规则已作废；禁止再向它发送完成回报、命令或纠正消息。
+- 普通源码实现、审计、测试、提交和合并判断均在当前任务内向用户汇报，不自行唤醒或
+  联系其他历史任务。
+
 ## 2026-08-02 project policy and release-task cwd must not conflict
 
 - 权威开发入口固定为无日期 worktree
