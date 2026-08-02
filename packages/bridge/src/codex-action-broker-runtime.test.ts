@@ -622,7 +622,10 @@ describe("CodexActionBrokerRuntime", () => {
     ]);
     const firstControl = new FakeSharedControl();
     const first = new CodexActionBrokerRuntime(
-      new CodexActionBroker({ filePath: ledgerPath }),
+      new CodexActionBroker({
+        filePath: ledgerPath,
+        now: () => new Date(NOW),
+      }),
       firstControl as unknown as CodexSharedRuntimeControl,
       "source-a",
       new CodexActionBrokerWriterLease("source-a", {
@@ -642,7 +645,10 @@ describe("CodexActionBrokerRuntime", () => {
 
     const secondControl = new FakeSharedControl();
     const second = new CodexActionBrokerRuntime(
-      new CodexActionBroker({ filePath: ledgerPath }),
+      new CodexActionBroker({
+        filePath: ledgerPath,
+        now: () => new Date(NOW),
+      }),
       secondControl as unknown as CodexSharedRuntimeControl,
       "source-a",
       new CodexActionBrokerWriterLease("source-a", {
@@ -711,7 +717,10 @@ describe("CodexActionBrokerRuntime", () => {
     ]);
     const firstControl = new FakeSharedControl();
     const first = new CodexActionBrokerRuntime(
-      new CodexActionBroker({ filePath: ledgerPath }),
+      new CodexActionBroker({
+        filePath: ledgerPath,
+        now: () => new Date(NOW),
+      }),
       firstControl as unknown as CodexSharedRuntimeControl,
       "source-a",
       new CodexActionBrokerWriterLease("source-a", {
@@ -727,7 +736,10 @@ describe("CodexActionBrokerRuntime", () => {
 
     const secondControl = new FakeSharedControl();
     const second = new CodexActionBrokerRuntime(
-      new CodexActionBroker({ filePath: ledgerPath }),
+      new CodexActionBroker({
+        filePath: ledgerPath,
+        now: () => new Date(NOW),
+      }),
       secondControl as unknown as CodexSharedRuntimeControl,
       "source-a",
       new CodexActionBrokerWriterLease("source-a", {
@@ -797,7 +809,10 @@ describe("CodexActionBrokerRuntime", () => {
       [401, true],
       [402, true],
     ]);
-    const firstBroker = new CodexActionBroker({ filePath: ledgerPath });
+    const firstBroker = new CodexActionBroker({
+      filePath: ledgerPath,
+      now: () => new Date(NOW),
+    });
     const firstControl = new FakeSharedControl();
     const first = new CodexActionBrokerRuntime(
       firstBroker,
@@ -816,7 +831,10 @@ describe("CodexActionBrokerRuntime", () => {
 
     const secondControl = new FakeSharedControl();
     const second = new CodexActionBrokerRuntime(
-      new CodexActionBroker({ filePath: ledgerPath }),
+      new CodexActionBroker({
+        filePath: ledgerPath,
+        now: () => new Date(NOW),
+      }),
       secondControl as unknown as CodexSharedRuntimeControl,
       "source-a",
       new CodexActionBrokerWriterLease("source-a", {
@@ -928,7 +946,10 @@ describe("CodexActionBrokerRuntime", () => {
     roots.push(root);
     const control = new FakeSharedControl();
     const runtime = new CodexActionBrokerRuntime(
-      new CodexActionBroker({ filePath: join(root, "broker.json") }),
+      new CodexActionBroker({
+        filePath: join(root, "broker.json"),
+        now: () => new Date(NOW),
+      }),
       control as unknown as CodexSharedRuntimeControl,
       "source-a",
       new CodexActionBrokerWriterLease("source-a", {
