@@ -13,11 +13,13 @@ linear ancestors of the new canonical source line:
 - Recovered process-disclosure change: `0a374184`
 
 The dated `mobile-tiered-session-sync-20260730` worktree is no longer the
-authoritative development baseline. It remains temporarily only because the
-persistent release task and its MCP processes still have that directory as
-their recorded/current working directory. A dated worktree path, task cwd or
-project selector is never source authority; every task must use the explicit
-current worktree, branch and full HEAD from its handoff.
+authoritative development baseline and was removed after its dirty project
+configuration was archived as `ec485ba3` and every branch tip received a
+local archive ref. The persistent release task still records that obsolete
+cwd in its history, but a task cwd or project selector is never source
+authority. Every future handoff must explicitly use the current worktree,
+branch and full HEAD; if a runner cannot change to that path it must stop
+before building or publishing.
 
 The repository previously combined `AskForApproval=Never` background turns
 with project rules that marked Node, npm and Flutter build commands as
@@ -35,6 +37,14 @@ process-disclosure improvement in the old parallel lane. It was archived as
 ported onto the current line, and verified by 14 Widget tests plus targeted
 analysis. Expanded current progress now retains its latest-tool row and shows
 an explicit expanded/collapsed icon.
+
+The cleanup left exactly two registered checkouts: the detached primary Git
+store and the `current` development worktree. Seventeen archive refs preserve
+all removed tips and both dirty snapshots. Large rebuildable worktree,
+candidate and dependency material was moved to the recoverable Trash folder
+recorded in `notes/worktree-and-project-policy-cleanup_v01_20260802-223500.md`;
+production Bridge files, user session data, VPN/Desktop configuration and the
+two current/rollback IPA files were not removed.
 
 ## 2026-08-02 shared durable-thread settings control
 

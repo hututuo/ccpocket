@@ -1,0 +1,276 @@
+diff --git a/AltServer/Devices/ALTDeviceManager+Installation.swift b/AltServer/Devices/ALTDeviceManager+Installation.swift
+index 21e525a..de7acac 100644
+--- a/AltServer/Devices/ALTDeviceManager+Installation.swift
++++ b/AltServer/Devices/ALTDeviceManager+Installation.swift
+@@ -258,7 +258,13 @@ extension ALTDeviceManager
+ private extension ALTDeviceManager
+ {
+     func prepare(_ device: ALTDevice, completionHandler: @escaping (Result<Void, Error>) -> Void)
+-    {        
++    {
++        // CoreDevice establishes the modern developer services as part of its tunnel.
++        // The legacy DeveloperDiskImage probe cannot address these devices.
++        guard !self.isCoreDevice(withUDID: device.identifier) else {
++            return completionHandler(.success(()))
++        }
++
+         Task<Void, Never> {
+             do
+             {
+@@ -1003,9 +1009,38 @@ private extension ALTDeviceManager
+                     {
+                         try Result(success, error).get()
+                         
+-                        let activeProfiles: Set<String>? = (team.type == .free && application.isAltStoreApp) ? Set(profiles.values.map(\.bundleIdentifier)) : nil
+-                        ALTDeviceManager.shared.installApp(at: application.fileURL, toDeviceWithUDID: device.identifier, activeProvisioningProfiles: activeProfiles) { (success, error) in
+-                            completionHandler(Result(success, error))
++                        if self.isCoreDevice(withUDID: device.identifier)
++                        {
++                            guard #available(macOS 12, *) else {
++                                return completionHandler(.failure(ALTServerError(.connectionFailed)))
++                            }
++
++                            Task<Void, Never> {
++                                do
++                                {
++                                    let xcrunURL = URL(fileURLWithPath: "/usr/bin/xcrun")
++                                    let arguments = [
++                                        "devicectl", "device", "install", "app",
++                                        "--device", device.identifier,
++                                        application.fileURL.path,
++                                        "--timeout", "180"
++                                    ]
++                                    _ = try await Process.launchAndWait(xcrunURL, arguments: arguments)
++                                    completionHandler(.success(()))
++                                }
++                                catch
++                                {
++                                    print("Failed to install app with CoreDevice", error)
++                                    completionHandler(.failure(error))
++                                }
++                            }
++                        }
++                        else
++                        {
++                            let activeProfiles: Set<String>? = (team.type == .free && application.isAltStoreApp) ? Set(profiles.values.map(\.bundleIdentifier)) : nil
++                            ALTDeviceManager.shared.installApp(at: application.fileURL, toDeviceWithUDID: device.identifier, activeProvisioningProfiles: activeProfiles) { (success, error) in
++                                completionHandler(Result(success, error))
++                            }
+                         }
+                     }
+                     catch
+diff --git a/AltServer/Devices/ALTDeviceManager.h b/AltServer/Devices/ALTDeviceManager.h
+index 12295a2..4d02e08 100644
+--- a/AltServer/Devices/ALTDeviceManager.h
++++ b/AltServer/Devices/ALTDeviceManager.h
+@@ -29,6 +29,9 @@ extern NSNotificationName const ALTDeviceManagerDeviceDidDisconnectNotification
+ 
+ - (void)start;
+ 
++/* CoreDevice */
++- (BOOL)isCoreDeviceWithUDID:(NSString *)udid NS_SWIFT_NAME(isCoreDevice(withUDID:));
++
+ /* App Installation */
+ - (NSProgress *)installAppAtURL:(NSURL *)fileURL toDeviceWithUDID:(NSString *)udid activeProvisioningProfiles:(nullable NSSet<NSString *> *)activeProvisioningProfiles completionHandler:(void (^)(BOOL success, NSError *_Nullable error))completionHandler;
+ - (void)removeAppForBundleIdentifier:(NSString *)bundleIdentifier fromDeviceWithUDID:(NSString *)udid completionHandler:(void (^)(BOOL success, NSError *_Nullable error))completionHandler;
+diff --git a/AltServer/Devices/ALTDeviceManager.mm b/AltServer/Devices/ALTDeviceManager.mm
+index bbea7e0..073c753 100644
+--- a/AltServer/Devices/ALTDeviceManager.mm
++++ b/AltServer/Devices/ALTDeviceManager.mm
+@@ -47,6 +47,7 @@ @interface ALTDeviceManager ()
+ @property (nonatomic, readonly) dispatch_queue_t devicesQueue;
+ 
+ @property (nonatomic, readonly) NSMutableSet<ALTDevice *> *cachedDevices;
++@property (nonatomic, readonly) NSMutableSet<NSString *> *coreDeviceIdentifiers;
+ 
+ @end
+ 
+@@ -77,6 +78,7 @@ - (instancetype)init
+         _devicesQueue = dispatch_queue_create("com.rileytestut.AltServer.Devices", DISPATCH_QUEUE_CONCURRENT_WITH_AUTORELEASE_POOL);
+         
+         _cachedDevices = [NSMutableSet set];
++        _coreDeviceIdentifiers = [NSMutableSet set];
+     }
+     
+     return self;
+@@ -87,6 +89,14 @@ - (void)start
+     idevice_event_subscribe(ALTDeviceDidChangeConnectionStatus, nil);
+ }
+ 
++- (BOOL)isCoreDeviceWithUDID:(NSString *)udid
++{
++    @synchronized (self.coreDeviceIdentifiers)
++    {
++        return [self.coreDeviceIdentifiers containsObject:udid];
++    }
++}
++
+ #pragma mark - App Installation -
+ 
+ - (NSProgress *)installAppAtURL:(NSURL *)fileURL toDeviceWithUDID:(NSString *)udid activeProvisioningProfiles:(nullable NSSet<NSString *> *)activeProvisioningProfiles completionHandler:(void (^)(BOOL, NSError * _Nullable))completionHandler
+@@ -1492,6 +1502,119 @@ - (void)startDebugConnectionToDevice:(ALTDevice *)device completionHandler:(void
+ }
+ #pragma mark - Getters -
+ 
++- (nullable NSArray<ALTDevice *> *)fetchAvailableCoreDevices
++{
++    NSURL *outputURL = [NSFileManager.defaultManager.temporaryDirectory URLByAppendingPathComponent:[NSString stringWithFormat:@"AltServer-CoreDevice-%@.json", NSUUID.UUID.UUIDString]];
++    NSFileHandle *nullDevice = [NSFileHandle fileHandleWithNullDevice];
++
++    NSTask *task = [[NSTask alloc] init];
++    task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/xcrun"];
++    task.arguments = @[
++        @"devicectl", @"list", @"devices",
++        @"--filter", @"State BEGINSWITH 'available' AND Platform == 'iOS' AND connectionProperties.pairingState == 'paired'",
++        @"--timeout", @"5",
++        @"--json-output", outputURL.path,
++        @"--quiet"
++    ];
++    task.standardOutput = nullDevice;
++    task.standardError = nullDevice;
++
++    NSError *launchError = nil;
++    if (![task launchAndReturnError:&launchError])
++    {
++        NSLog(@"CoreDevice enumeration could not start: %@", launchError);
++        return nil;
++    }
++
++    [task waitUntilExit];
++    if (task.terminationStatus != 0)
++    {
++        NSLog(@"CoreDevice enumeration failed with status %d.", task.terminationStatus);
++        [NSFileManager.defaultManager removeItemAtURL:outputURL error:nil];
++        return nil;
++    }
++
++    NSError *readError = nil;
++    NSData *data = [NSData dataWithContentsOfURL:outputURL options:0 error:&readError];
++    [NSFileManager.defaultManager removeItemAtURL:outputURL error:nil];
++    if (data == nil)
++    {
++        NSLog(@"CoreDevice enumeration output could not be read: %@", readError);
++        return nil;
++    }
++
++    NSError *JSONError = nil;
++    NSDictionary *JSON = [NSJSONSerialization JSONObjectWithData:data options:0 error:&JSONError];
++    if (![JSON isKindOfClass:NSDictionary.class])
++    {
++        NSLog(@"CoreDevice enumeration returned invalid JSON: %@", JSONError);
++        return nil;
++    }
++
++    NSDictionary *result = JSON[@"result"];
++    NSArray *devices = result[@"devices"];
++    if (![devices isKindOfClass:NSArray.class])
++    {
++        NSLog(@"CoreDevice enumeration returned no device list.");
++        return nil;
++    }
++
++    NSMutableArray<ALTDevice *> *coreDevices = [NSMutableArray array];
++    for (NSDictionary *deviceDictionary in devices)
++    {
++        if (![deviceDictionary isKindOfClass:NSDictionary.class])
++        {
++            continue;
++        }
++
++        NSDictionary *connectionProperties = deviceDictionary[@"connectionProperties"];
++        NSDictionary *deviceProperties = deviceDictionary[@"deviceProperties"];
++        NSDictionary *hardwareProperties = deviceDictionary[@"hardwareProperties"];
++        if (![connectionProperties isKindOfClass:NSDictionary.class] ||
++            ![deviceProperties isKindOfClass:NSDictionary.class] ||
++            ![hardwareProperties isKindOfClass:NSDictionary.class])
++        {
++            continue;
++        }
++
++        NSString *pairingState = connectionProperties[@"pairingState"];
++        NSString *platform = hardwareProperties[@"platform"];
++        NSString *productType = hardwareProperties[@"productType"];
++        NSString *identifier = hardwareProperties[@"udid"];
++        NSString *name = deviceProperties[@"name"];
++        NSString *version = deviceProperties[@"osVersionNumber"];
++        if (![pairingState isEqualToString:@"paired"] ||
++            ![platform isEqualToString:@"iOS"] ||
++            identifier.length == 0 || name.length == 0)
++        {
++            continue;
++        }
++
++        ALTDeviceType deviceType = ALTDeviceTypeNone;
++        if ([productType hasPrefix:@"iPhone"])
++        {
++            deviceType = ALTDeviceTypeiPhone;
++        }
++        else if ([productType hasPrefix:@"iPad"])
++        {
++            deviceType = ALTDeviceTypeiPad;
++        }
++        else
++        {
++            continue;
++        }
++
++        ALTDevice *device = [[ALTDevice alloc] initWithName:name identifier:identifier type:deviceType];
++        if (version.length > 0)
++        {
++            device.osVersion = NSOperatingSystemVersionFromString(version);
++        }
++        [coreDevices addObject:device];
++    }
++
++    return coreDevices;
++}
++
+ - (NSArray<ALTDevice *> *)connectedDevices
+ {    
+     return [self availableDevicesIncludingNetworkDevices:NO];
+@@ -1512,7 +1635,8 @@ - (void)startDebugConnectionToDevice:(ALTDevice *)device completionHandler:(void
+     if (idevice_get_device_list_extended(&devices, &count) < 0)
+     {
+         fprintf(stderr, "ERROR: Unable to retrieve device list!\n");
+-        return @[];
++        devices = NULL;
++        count = 0;
+     }
+     
+     for (int i = 0; i < count; i++)
+@@ -1643,7 +1767,33 @@ - (void)startDebugConnectionToDevice:(ALTDevice *)device completionHandler:(void
+         cleanUp();
+     }
+     
+-    idevice_device_list_extended_free(devices);
++    if (devices != NULL)
++    {
++        idevice_device_list_extended_free(devices);
++    }
++
++    if (includingNetworkDevices)
++    {
++        NSArray<ALTDevice *> *coreDevices = [self fetchAvailableCoreDevices];
++        if (coreDevices != nil)
++        {
++            NSMutableSet<NSString *> *coreDeviceIdentifiers = [NSMutableSet set];
++            for (ALTDevice *device in coreDevices)
++            {
++                // Keep the established libimobiledevice path for devices it can already reach.
++                if (![connectedDevices containsObject:device])
++                {
++                    [connectedDevices addObject:device];
++                    [coreDeviceIdentifiers addObject:device.identifier];
++                }
++            }
++
++            @synchronized (self.coreDeviceIdentifiers)
++            {
++                [self.coreDeviceIdentifiers setSet:coreDeviceIdentifiers];
++            }
++        }
++    }
+     
+     return connectedDevices.allObjects;
+ }
+

@@ -18,7 +18,8 @@
   或物理设备权限。
 - 清理 worktree 前必须同时满足：HEAD 已进入当前线或有 archive ref、脏改动已单独归档、
   没有运行进程持有 cwd、运行时/回滚/交付物不依赖该目录。仍被任务或 MCP 进程占用的旧
-  worktree 明确标为 temporary retained，不能强删。
+  worktree 明确标为 temporary retained，不能强删。完成进程退出和归档后，日期 worktree
+  应移除；持久任务下一次运行必须显式切换到 `current`，不得为兼容旧 cwd 重建同名目录。
 
 ## 2026-08-02 shared threads separate turn authority from durable settings
 
