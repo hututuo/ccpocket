@@ -48,6 +48,11 @@ port 或 public URL，绝不能把它当作生产事实。
 URL（除上述 candidate public URL）、allowed dirs、文件传输和会话配置。候选默认
 继承生产 source id；不得人为覆盖它来让真实 durable thread 不再匹配。
 
+`BRIDGE_REQUIRE_API_KEY` 与 `BRIDGE_API_KEY` 是两个独立配置事实，也必须从 plist
+原样继承。不得仅凭“存在 key”推断当前认证开关，更不得在 runtime 切换时顺便开关
+认证。本机开发阶段当前要求 `BRIDGE_REQUIRE_API_KEY=1`；以后改成 `0` 是单独的配置
+变更和风险确认，不是普通 Bridge 升级的默认动作。
+
 所有独立 metadata 与协议探针也必须显式注入从 plist 读取的
 `CODEX_HOME`、`BRIDGE_CODEX_DAEMON_SOCKET` 和 `BRIDGE_CODEX_SOURCE_ID`，并在证据中
 标注环境来源为“当前 LaunchAgent plist”。不依赖 shell 默认值。
@@ -80,6 +85,11 @@ wire smoke。切换后再证明新生产实例持有 writer lease。
 目标 provider/thread、观察到的协议事件集合及 complete snapshot 命中状态；不记录正文。
 
 普通候选至少验证：认证、只读目录、v1、v2、目标目录/状态行为，以及错误不会泄露秘密。
+当 `BRIDGE_REQUIRE_API_KEY=1` 时还必须证明：`/health` 声明
+`bridgeAuthentication.required=true`，缺失和错误连接密钥均在 WebSocket upgrade
+阶段返回 401，正确密钥可以连接。记录中只保存状态码和布尔结果，不保存密钥、完整 URL
+或 deep link。当配置为 `0` 时必须证明 health 声明 `required=false`、无密钥可以连接，
+并明确报告 owner 全盘读取等依赖认证的高权限表面已经 fail closed。
 
 涉及 focused Codex settings 时，以下六项全部为强制项：
 
@@ -103,8 +113,8 @@ wire smoke。切换后再证明新生产实例持有 writer lease。
 1. 在外部控制 shell 中备份当前 plist 与 runtime，并记录可执行回滚入口；Bridge
    不能管理、停止、重建或迁移共享 app-server。
 2. 生成 candidate plist，对比并断言唯一改动是 `BRIDGE_CLI_ENTRY`。必须保留
-   `CODEX_HOME`、daemon socket/source id、API key、public/artifact URL、allowed dirs、
-   文件传输和会话配置。
+   `CODEX_HOME`、daemon socket/source id、`BRIDGE_REQUIRE_API_KEY`、API key、
+   public/artifact URL、allowed dirs、文件传输和会话配置。
 3. 使用项目已验证的温和 LaunchAgent registration 流程切换。若这会终止共享
    app-server 或正在运行的 Codex 会话，停止而非强行发布。
 4. 任何切换、监听、health、daemon、Action Broker 或协议验收失败，立即恢复旧
@@ -121,6 +131,8 @@ wire smoke。切换后再证明新生产实例持有 writer lease。
   Bridge；
 - LaunchAgent entry、进程 argv/runtime path 与已记录的 runtime hash 一致；
 - `/health`、`/version`、`/readyz`；
+- `/health.bridgeAuthentication` 与生产 plist 的认证开关一致；认证开启时，缺失/错误
+  key 快速 401、正确 key 正常握手；
 - shared daemon identity/socket；
 - Action Broker ready、control-ready、non-degraded 且 writer lease held；
 - 认证目录、v1/v2 与本次目标行为的真实 smoke；

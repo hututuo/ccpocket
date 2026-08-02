@@ -10,6 +10,31 @@ smoke, change only `BRIDGE_CLI_ENTRY` after all gates pass, and retain an exact
 rollback. It does not authorize a deployment by itself and keeps source,
 runtime, Mobile/OTA/IPA, Cloud, physical-phone and `stable` gates separate.
 
+## 2026-08-02 optional Bridge connection-key recovery
+
+The active source lane is:
+
+- Worktree:
+  `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/optional-bridge-connection-auth-20260802`
+- Branch: `feature/optional-bridge-connection-auth-20260802`
+- Bridge commit: `e6e559d0`
+- Mobile commit: `246dc703`
+
+Bridge now separates the saved `BRIDGE_API_KEY` from the explicit
+`BRIDGE_REQUIRE_API_KEY=1/0` switch. Unset keeps legacy key-presence behavior;
+explicit `0` is the deliberate trusted-LAN opt-out. `/health` declares the
+effective mode and bad credentials are rejected with HTTP 401 during the
+WebSocket upgrade. The current production request remains auth-on.
+
+Mobile now detects the additive health declaration, new 401 handshake, and
+legacy 4001 close. Missing or rejected credentials stop the 5% bootstrap and
+automatic reconnect loop, then offer secure local key replacement or QR
+rescan. Generic network/WebSocket failures remain distinct. Bridge passed 114
+files / 2,295 tests in single-worker mode; the focused Mobile connection,
+dialog and home regression suite passed 89 tests, and targeted analyze was
+clean. Source is verified; production Bridge deployment, owner OTA and physical
+phone acceptance are separate pending gates.
+
 ## 2026-08-02 focused Codex settings catalog correction and deployment
 
 The current source-only correction is:

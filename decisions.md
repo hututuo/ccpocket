@@ -1482,3 +1482,20 @@
   启动成功替代生产可用。
 - 生产切换仅允许修改 `BRIDGE_CLI_ENTRY`，保留共享 app-server、LAN proxy、网络和用户
   会话数据；所有失败都停止候选或恢复旧 entry，最终只留当前 runtime 和一个回滚 runtime。
+
+## 2026-08-02 Bridge 连接密钥改为显式可选配置
+
+- `BRIDGE_API_KEY` 只保存连接密钥；`BRIDGE_REQUIRE_API_KEY=1/0` 明确表示是否要求手机
+  提交该密钥。开关未配置时继续兼容旧部署：有 key 即开启、无 key 即关闭。
+- 显式 `0` 本身就是用户对可信局域网无认证暴露的确认，不再要求同时设置旧的
+  `BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE=1`。但认证关闭时，依赖已认证手机的 owner
+  全盘读取等高权限表面继续 fail closed，不能把“可连接”误报成“高权限也可用”。
+- 当前开发期生产 Bridge 保持 `BRIDGE_REQUIRE_API_KEY=1`。以后默认关闭必须作为独立
+  产品/部署决定执行，不能在普通 runtime 更新中顺便改变。
+- 新 Bridge 在 `/health` 加法声明认证是否必需，并在 WebSocket upgrade 阶段对缺失或
+  错误密钥返回 401；旧 Bridge 的 4001 close code 继续兼容。
+- Mobile 遇到缺失或错误密钥时必须停止 5% 进度和自动重试，显示明确的连接密钥弹窗，
+  允许覆盖 Secure Storage 中本机路线的密钥或重新扫码。网络拒绝、普通 WebSocket
+  故障和旧服务器不得被无条件误判为密钥错误。
+- Bridge 连接密钥只负责设备连接认证，与文件修改/删除使用的 Bridge 口令和 Face ID
+  step-up 授权是两套边界，UI、配置和日志不得混称。
