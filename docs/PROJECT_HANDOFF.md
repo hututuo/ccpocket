@@ -9,6 +9,7 @@
 |---|---|---|
 | CC Pocket 合并协调会话 | `019f8ff9-0945-72a3-a29e-c17df6f112e5` | 收集各任务完成回报，审核交错改动，决定合并顺序；不要绕过它自行合入共享或稳定分支 |
 | CC Pocket owner OTA 发布会话 | `019f8e9d-2490-79c0-817c-87e3eb93ea2f` | 反复执行 Mobile 发布、owner OTA 和发布证据核验；这是正常持久 Codex 会话，不是一次性 sub-agent |
+| 当前权威源码工作树 | `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/current` | 后续开发、审计和发布交接的默认源码入口；任务仍需现场核对 branch、完整 HEAD 和 clean 状态 |
 | 仓库总规则 | `CLAUDE.md` | 官方仓库规则和本文入口 |
 | 长期产品决策 | `decisions.md` | 已采纳、废弃和待迁移的项目决策 |
 | 本手册 | `docs/PROJECT_HANDOFF.md` | Agent 分工、兼容、发布、验证和核心产品约束 |
@@ -21,9 +22,12 @@
 ### 0.1 发布会话的使用规则
 
 - 固定标题：`CC Pocket owner OTA 发布`。
-- 固定模型配置：`gpt-5.6-terra`，reasoning effort `high`。
+- 默认保留该会话当前的模型和 reasoning effort；只有用户明确指定时才覆盖，不能由协调
+  Agent 在恢复命令中顺便改写持久会话配置。
 - 后续发布优先恢复上述会话，不能每次重新开一个发布 sub-agent，避免重复发布和丢失发布上下文。
 - 每次恢复时仍要明确传入当次的绝对 worktree、branch、完整 HEAD、基础 IPA 版本、Shorebird release、目标通道和预期产物；不能沿用旧临时目录或旧版本事实。
+- 该会话历史 cwd 是日期 worktree，只是旧任务宿主，不是源码权威。项目选择器显示该名称
+  也不能用来推断当前源码；实际命令必须使用交接中的当前绝对 worktree。
 - 该会话负责机械发布、发布前后通道快照和发布证据，不负责替协调会话做复杂语义合并。
 - 源码与验证完成后，协调 Agent 应一次性发送包含全部允许/禁止边界、精确 HEAD、提交、
   Bridge SOP、OTA lineage 和回滚条件的完整任务，然后停止自行部署和逐步纠正。发布会话
@@ -32,6 +36,9 @@
   不代表 OTA 成功，OTA 上传成功也不代表物理手机已经应用。默认仍禁止 stable、IPA、
   Cloud、Desktop 配置、网络和会话数据变更。
 - 第一次遇到新流程要先人工跑通，再逐步脚本化确定性步骤。脚本负责检查和执行，模型负责解释冲突、原生差异、未知警告、lineage、签名和兼容风险。
+- 项目级审批使用 `on-request` 和当前 reviewer。禁止用
+  `--dangerously-bypass-approvals-and-sandbox`、`--ignore-rules` 或显式 `never` 恢复
+  发布会话；这些覆盖会让项目中的 prompt 规则失效或把安全门禁整体绕过。
 - 默认只发布 `owner`。`stable` 晋级、回滚、替换基础 IPA、安装真机和任何无法撤销的发布动作都必须得到用户单独明确授权。
 - `019f8f65-adaf-74b0-bcff-65217586b2ee` 是误建且已归档的会话，不能当作发布入口。
 
@@ -39,8 +46,7 @@
 
 ```zsh
 codex exec resume \
-  -m gpt-5.6-terra \
-  -c 'model_reasoning_effort="high"' \
+  --all \
   019f8e9d-2490-79c0-817c-87e3eb93ea2f \
   '<写明本次 worktree、HEAD、基础版本、目标通道和发布任务>'
 ```

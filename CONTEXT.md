@@ -1,5 +1,41 @@
 # CC Pocket Compatibility Fork Context
 
+## 2026-08-02 canonical current worktree and Codex project policy
+
+All source branches registered during the July 30 to August 2 integration are
+linear ancestors of the new canonical source line:
+
+- Worktree:
+  `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/current`
+- Branch: `integration/ccpocket-current`
+- Starting source: `e4583b50` (`1.111.1+214`)
+- Project-policy correction: `f1d18745`
+- Recovered process-disclosure change: `0a374184`
+
+The dated `mobile-tiered-session-sync-20260730` worktree is no longer the
+authoritative development baseline. It remains temporarily only because the
+persistent release task and its MCP processes still have that directory as
+their recorded/current working directory. A dated worktree path, task cwd or
+project selector is never source authority; every task must use the explicit
+current worktree, branch and full HEAD from its handoff.
+
+The repository previously combined `AskForApproval=Never` background turns
+with project rules that marked Node, npm and Flutter build commands as
+`prompt`. Those commands therefore failed before process creation. The current
+project config uses `approval_policy=on-request`; deterministic Bridge tests,
+builds, Flutter tests/analysis and local iOS builds have exact allow rules,
+while arbitrary Node, deploy, publish, stable promotion and Git remote actions
+remain prompted. Release tasks must keep the current reviewer and must not use
+`--dangerously-bypass-approvals-and-sandbox` or `--ignore-rules` to conceal a
+policy conflict.
+
+The only uncommitted source found during worktree cleanup was a three-file
+process-disclosure improvement in the old parallel lane. It was archived as
+`refs/archive/ccpocket/worktree-cleanup-20260802/parallel-bugfix-a-process-disclosure-wip`,
+ported onto the current line, and verified by 14 Widget tests plus targeted
+analysis. Expanded current progress now retains its latest-tool row and shows
+an explicit expanded/collapsed icon.
+
 ## 2026-08-02 shared durable-thread settings control
 
 The source-verified correction is in:

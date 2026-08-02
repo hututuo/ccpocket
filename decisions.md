@@ -1,5 +1,25 @@
 # ccPocket Compatibility Decisions
 
+## 2026-08-02 project policy and release-task cwd must not conflict
+
+- 权威开发入口固定为无日期 worktree
+  `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/current`，分支
+  `integration/ccpocket-current`。旧任务保存的 cwd、Codex 项目选择器、临时 release
+  worktree 和运行时路径都不是源码基线；交接仍必须写完整 worktree、branch 和 HEAD。
+- `.codex/config.toml` 使用 `approval_policy=on-request`，使真正的高影响命令可以由
+  当前 reviewer 处理。不得再用 `AskForApproval=Never` 配合 `decision=prompt`，也不得
+  用 `--dangerously-bypass-approvals-and-sandbox` 或 `--ignore-rules` 掩盖规则冲突。
+- Bridge build/test、Functions 本地 typecheck/build/test、Flutter test/analyze 和本地
+  iOS build 使用精确 allow 规则。任意 Node、依赖安装/发布、服务启动、Cloud deploy、
+  Shorebird patch/release/promote、Git remote/destructive 操作继续 prompt；不能为了后台
+  自动化把 `node`、`bash`、`npm run` 或 `flutter` 整体放开。
+- 固定发布任务只接收一次完整发布包并独立执行。协调任务不持续监看，但发布任务必须在
+  完成或真实阻断时主动回报。流程自治不扩大 stable、Cloud、Desktop、网络、会话数据
+  或物理设备权限。
+- 清理 worktree 前必须同时满足：HEAD 已进入当前线或有 archive ref、脏改动已单独归档、
+  没有运行进程持有 cwd、运行时/回滚/交付物不依赖该目录。仍被任务或 MCP 进程占用的旧
+  worktree 明确标为 temporary retained，不能强删。
+
 ## 2026-08-02 shared threads separate turn authority from durable settings
 
 - 当前 turn 的 stop、steer、approval/question response 和消息投递仍只有一个精确
