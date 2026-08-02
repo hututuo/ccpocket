@@ -173,6 +173,10 @@
 - `logicalConnectionIdentity` 保持 transport/readiness 身份，不能在握手中途替换
   为 Bridge UUID，否则会破坏后台重连对 `machine:<UUID>` 的解析和 connection
   generation 门禁。
+- 局域网发现和手工地址入口若命中已保存的同一 endpoint，必须从该 Machine 的
+  Secure Storage 复用 API key；发现包和地址输入不携带凭据，不能因此退回无认证
+  WebSocket。显式输入的新 key 优先并覆盖旧值，真正无认证的 legacy Bridge 仍可
+  保持空凭据。连接日志和错误提示不得输出 key，只报告认证阶段与脱敏原因。
 - 本节只授权隔离分支内的源码与自动验证，不等于合入稳定分支、替换运行中
   Bridge、发布 OTA、签名 IPA 或安装真机。
 
