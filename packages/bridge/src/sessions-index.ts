@@ -1308,6 +1308,8 @@ interface CodexRecentPerfStats {
 export interface CodexSessionIndexMetadata {
   forkedFromThreadId?: string;
   codexSettings?: SessionIndexEntry["codexSettings"];
+  /** Canonical project path derived from the persisted rollout cwd. */
+  projectPath?: string;
   resumeCwd?: string;
   /** First user prompt parsed from the rollout file. The thread/list API
    *  only exposes a preview blob, so these three text fields let recent-
@@ -2485,6 +2487,9 @@ export async function getCodexSessionIndexMetadata(
         : authoritativeSettings
           ? { codexSettings: authoritativeSettings }
           : {}),
+      ...(matchingParsed?.entry.projectPath
+        ? { projectPath: matchingParsed.entry.projectPath }
+        : {}),
       ...(matchingParsed?.entry.resumeCwd
         ? { resumeCwd: matchingParsed.entry.resumeCwd }
         : {}),
@@ -2537,6 +2542,9 @@ export async function getCodexSessionIndexMetadataForFiles(
         : {}),
       ...(parsed.entry.codexSettings
         ? { codexSettings: parsed.entry.codexSettings }
+        : {}),
+      ...(parsed.entry.projectPath
+        ? { projectPath: parsed.entry.projectPath }
         : {}),
       ...(parsed.entry.resumeCwd ? { resumeCwd: parsed.entry.resumeCwd } : {}),
       ...(parsed.entry.firstPrompt

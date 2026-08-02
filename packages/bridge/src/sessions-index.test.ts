@@ -1380,6 +1380,8 @@ describe("codex sessions integration", () => {
 
     const metadata = await getCodexSessionIndexMetadata([threadId]);
     expect(metadata.get(threadId)?.forkedFromThreadId).toBe(parentThreadId);
+    expect(metadata.get(threadId)?.projectPath).toBe("/tmp/project-a");
+    expect(metadata.get(threadId)?.resumeCwd).toBeUndefined();
   });
 
   it("excludes codex subagent sessions from recent sessions", async () => {
@@ -2268,6 +2270,7 @@ describe("codex sessions integration", () => {
     const metadata = await getCodexSessionIndexMetadata([wantedThreadId]);
 
     expect([...metadata.keys()]).toEqual([wantedThreadId]);
+    expect(metadata.get(wantedThreadId)?.projectPath).toBe("/tmp/project-a");
     expect(metadata.get(wantedThreadId)?.resumeCwd).toBe(
       "/tmp/project-a-worktrees/feature-x",
     );

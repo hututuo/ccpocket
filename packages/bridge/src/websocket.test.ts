@@ -12309,7 +12309,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         [
           "thread-durable-settings",
           {
-            resumeCwd: "/tmp/project-durable-settings",
+            // Ordinary durable rollouts keep only the canonical projectPath;
+            // resumeCwd is present only when the raw cwd was a worktree.
+            projectPath: "/tmp/project-durable-settings",
             codexSettings: {
               model: "gpt-5.6-sol",
               modelReasoningEffort: "ultra",
@@ -12358,6 +12360,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     await (bridge as any).handleClientMessage(planRequest, ws);
 
     expect(updateDurableThreadSettingsForNextTurn).toHaveBeenCalledOnce();
+    expect(
+      (bridge as any).createStandaloneCodexProcess,
+    ).toHaveBeenCalledWith("/tmp/project-durable-settings");
     expect(updateDurableThreadSettingsForNextTurn).toHaveBeenCalledWith(
       "thread-durable-settings",
       { collaborationMode: "plan" },

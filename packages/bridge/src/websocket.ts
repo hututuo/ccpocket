@@ -11923,7 +11923,11 @@ export class BridgeWebSocketServer {
         authoritativeCodexSettings: true,
       })
     ).get(threadId);
-    const rawProjectPath = runtimeSession?.projectPath ?? metadata?.resumeCwd;
+    const rawProjectPath =
+      runtimeSession?.worktreePath ??
+      runtimeSession?.projectPath ??
+      metadata?.resumeCwd ??
+      metadata?.projectPath;
     if (!rawProjectPath) {
       throw new SharedCodexSettingsRejectedError(
         "codex_durable_thread_settings_not_found",
