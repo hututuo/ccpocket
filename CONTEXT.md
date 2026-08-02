@@ -32,8 +32,12 @@ automatic reconnect loop, then offer secure local key replacement or QR
 rescan. Generic network/WebSocket failures remain distinct. Bridge passed 114
 files / 2,295 tests in single-worker mode; the focused Mobile connection,
 dialog and home regression suite passed 89 tests, and targeted analyze was
-clean. Source is verified; production Bridge deployment, owner OTA and physical
-phone acceptance are separate pending gates.
+clean. Runtime `1.69.6-compat.12-470900ee` is now production-deployed with
+`BRIDGE_REQUIRE_API_KEY=1`; 401/valid-key protocol smoke, daemon readiness and
+writer lease passed. The direct rollback is `df29b600`, and evidence is in
+`runs/20260802-131342_bridge-1.69.6-compat.12-470900ee-deploy/DEPLOYMENT.md`.
+Owner OTA remains blocked pending an exact build-212 cloud base and signing
+material; physical-phone acceptance is separate and pending.
 
 ## 2026-08-02 focused Codex settings catalog correction and deployment
 
