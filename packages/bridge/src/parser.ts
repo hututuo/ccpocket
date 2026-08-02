@@ -105,13 +105,16 @@ export type CodexPermissionsMode =
   "default" | "autoReview" | "fullAccess" | "custom";
 
 /**
- * Exact, non-replayable target for a detached shared-runtime settings write.
+ * Target for a detached Codex settings write.
  *
  * Every field is optional at the union level so old clients remain wire
- * compatible. The parser accepts either none of them (the private/legacy
- * path), or all five with `sessionId === runtimeSessionId`.
+ * compatible. The parser accepts one of three complete shapes: no envelope
+ * (private/legacy), all five exact attachment fields with
+ * `sessionId === runtimeSessionId`, or a durable thread target carrying source,
+ * thread and idempotency identities but no transient runtime fields.
  */
 export interface CodexSettingsMutationEnvelope {
+  settingsTarget?: "durable_thread";
   codexSourceId?: string;
   threadId?: string;
   runtimeSessionId?: string;
@@ -1335,6 +1338,17 @@ function isValidWireIdentifier(
 function hasValidCodexSettingsMutationEnvelope(
   msg: Record<string, unknown>,
 ): boolean {
+  if (msg.settingsTarget !== undefined) {
+    return (
+      msg.settingsTarget === "durable_thread" &&
+      isValidWireIdentifier(msg.codexSourceId, 128) &&
+      isValidWireIdentifier(msg.threadId) &&
+      isValidWireIdentifier(msg.operationId, 128) &&
+      msg.runtimeSessionId === undefined &&
+      msg.authorityGeneration === undefined &&
+      msg.sessionId === undefined
+    );
+  }
   const fields = [
     msg.codexSourceId,
     msg.threadId,

@@ -119,6 +119,13 @@ describe("shared runtime Stage 1 pilot gates", () => {
     expect(() =>
       assertSharedRuntimePilotRpcAllowed(
         "thread/settings/update",
+        null,
+        gates(env),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertSharedRuntimePilotRpcAllowed(
+        "thread/settings/update",
         "observer",
         gates(env),
       ),

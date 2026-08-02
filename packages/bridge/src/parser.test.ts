@@ -838,6 +838,42 @@ describe("parseClientMessage", () => {
     ).toMatchObject({ operationId: "operation-1" });
   });
 
+  it("parses durable Codex thread settings targets without a runtime attachment", () => {
+    const durableTarget =
+      '"settingsTarget":"durable_thread","codexSourceId":"source-1","threadId":"thread-1","operationId":"operation-1"';
+    for (const payload of [
+      `{"type":"set_permission_mode","mode":"plan","planMode":true,${durableTarget}}`,
+      `{"type":"set_codex_model","model":"gpt-5.6-sol",${durableTarget}}`,
+      `{"type":"set_codex_speed","serviceTier":"fast",${durableTarget}}`,
+      `{"type":"set_sandbox_mode","sandboxMode":"off",${durableTarget}}`,
+    ]) {
+      expect(parseClientMessage(payload)).toMatchObject({
+        settingsTarget: "durable_thread",
+        codexSourceId: "source-1",
+        threadId: "thread-1",
+        operationId: "operation-1",
+      });
+    }
+  });
+
+  it("rejects mixed or partial durable Codex thread settings targets", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"set_codex_speed","serviceTier":"fast","settingsTarget":"durable_thread","codexSourceId":"source-1","threadId":"thread-1"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"set_codex_speed","serviceTier":"fast","settingsTarget":"durable_thread","codexSourceId":"source-1","threadId":"thread-1","operationId":"operation-1","sessionId":"runtime-1"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"set_codex_speed","serviceTier":"fast","settingsTarget":"attached_runtime","codexSourceId":"source-1","threadId":"thread-1","operationId":"operation-1"}',
+      ),
+    ).toBeNull();
+  });
+
   it("rejects partial, mismatched, and oversized Codex settings envelopes", () => {
     expect(
       parseClientMessage(

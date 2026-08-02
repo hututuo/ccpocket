@@ -183,6 +183,14 @@ export interface CodexSharedRuntimeThreadSettings extends CodexNextTurnPermissio
   model?: string;
   modelReasoningEffort?: CodexStartOptions["modelReasoningEffort"];
   serviceTier?: string;
+  collaborationMode?: "plan" | "default";
+}
+
+export interface CodexDurableThreadSettingsContext {
+  currentModel?: string;
+  currentModelReasoningEffort?: CodexStartOptions["modelReasoningEffort"];
+  networkAccessEnabled?: boolean;
+  additionalWritableRoots?: string[];
 }
 
 type CodexSandboxPolicy =
@@ -1457,6 +1465,104 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     return operation;
   }
 
+  /**
+   * Persist settings for an exact durable thread without resuming or attaching
+   * to it. The official RPC defines every field here as applying to subsequent
+   * turns, so an active turn may continue under its already-started settings.
+   *
+   * This is deliberately the only initialize-only shared-writer seam. The
+   * source-global writer guard is checked by request() immediately before the
+   * RPC leaves this process, while the WebSocket coordinator supplies durable
+   * source identity, per-thread serialization and idempotency.
+   */
+  updateDurableThreadSettingsForNextTurn(
+    threadId: string,
+    settings: CodexSharedRuntimeThreadSettings,
+    context: CodexDurableThreadSettingsContext = {},
+  ): Promise<void> {
+    const operation = this._threadSettingsUpdateTail.then(async () => {
+      const normalizedThreadId = threadId.trim();
+      if (!normalizedThreadId) {
+        throw new Error("Durable Codex settings require a thread ID");
+      }
+
+      const params: Record<string, unknown> = { threadId: normalizedThreadId };
+      let sanitizedModel: string | undefined;
+      let normalizedEffort:
+        | CodexStartOptions["modelReasoningEffort"]
+        | undefined;
+
+      if (settings.model !== undefined) {
+        sanitizedModel = sanitizeCodexModel(settings.model);
+        if (!sanitizedModel) throw new Error("Invalid Codex model");
+        params.model = sanitizedModel;
+      }
+      if (settings.modelReasoningEffort !== undefined) {
+        normalizedEffort = normalizeReasoningEffort(
+          settings.modelReasoningEffort,
+        );
+        params.effort = normalizedEffort;
+      }
+      if (settings.serviceTier !== undefined) {
+        params.serviceTier = normalizeServiceTier(settings.serviceTier);
+      }
+      if (settings.approvalPolicy !== undefined) {
+        params.approvalPolicy =
+          settings.approvalPolicy === null
+            ? null
+            : normalizeApprovalPolicy(settings.approvalPolicy);
+      }
+      if (settings.approvalsReviewer !== undefined) {
+        params.approvalsReviewer =
+          settings.approvalsReviewer === null
+            ? null
+            : normalizeApprovalsReviewerForAppServer(
+                settings.approvalsReviewer,
+              );
+      }
+      if (settings.sandboxMode !== undefined) {
+        params.sandboxPolicy =
+          settings.sandboxMode === null
+            ? null
+            : await this.buildSandboxPolicy(settings.sandboxMode, context);
+      }
+      if (settings.collaborationMode !== undefined) {
+        const collaborationModel =
+          sanitizedModel ??
+          sanitizeCodexModel(context.currentModel) ??
+          sanitizeCodexModel(this._runtimeModel) ??
+          sanitizeCodexModel(this.startModel);
+        if (!collaborationModel) {
+          throw new Error(
+            "Codex collaboration mode requires the current thread model",
+          );
+        }
+        const collaborationEffort =
+          normalizedEffort ?? context.currentModelReasoningEffort;
+        params.collaborationMode = {
+          mode: settings.collaborationMode,
+          settings: {
+            model: collaborationModel,
+            ...(collaborationEffort
+              ? { reasoning_effort: collaborationEffort }
+              : {}),
+          },
+        };
+      }
+      if (Object.keys(params).length === 1) {
+        throw new Error("Durable Codex settings update is empty");
+      }
+
+      await this.request("thread/settings/update", params);
+    });
+
+    this._threadSettingsUpdateTail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  }
+
   private async probeNextTurnPermissionUpdates(): Promise<void> {
     if (!this._threadId) return;
     try {
@@ -1677,14 +1783,17 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
   private async buildSandboxPolicy(
     mode: NonNullable<CodexStartOptions["sandboxMode"]>,
+    context: CodexDurableThreadSettingsContext = {},
   ): Promise<CodexSandboxPolicy> {
+    const networkAccessEnabled =
+      context.networkAccessEnabled ?? this._networkAccessEnabled;
     if (mode === "danger-full-access") {
       return { type: "dangerFullAccess" };
     }
     if (mode === "read-only") {
       return {
         type: "readOnly",
-        networkAccess: this._networkAccessEnabled,
+        networkAccess: networkAccessEnabled,
       };
     }
     const cachedWorkspacePolicy =
@@ -1711,6 +1820,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         ...(cachedWorkspacePolicy?.writableRoots ?? []),
         ...configuredRoots,
         ...this._additionalWritableRoots,
+        ...(context.additionalWritableRoots ?? []),
       ],
       this.platform,
     );
@@ -1718,7 +1828,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       type: "workspaceWrite",
       writableRoots,
       networkAccess:
-        cachedWorkspacePolicy?.networkAccess ?? this._networkAccessEnabled,
+        context.networkAccessEnabled ??
+        cachedWorkspacePolicy?.networkAccess ??
+        this._networkAccessEnabled,
       excludeTmpdirEnvVar: cachedWorkspacePolicy?.excludeTmpdirEnvVar ?? false,
       excludeSlashTmp: cachedWorkspacePolicy?.excludeSlashTmp ?? false,
     };

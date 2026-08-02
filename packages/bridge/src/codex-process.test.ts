@@ -1916,6 +1916,95 @@ describe("CodexProcess (app-server)", () => {
     expect(proc.supportsNextTurnPermissionUpdates).toBe(false);
   });
 
+  it("updates durable thread settings without attaching to or resuming the thread", async () => {
+    const proc = new CodexProcess("linux", () => true);
+    const request = vi.spyOn(proc as any, "request").mockResolvedValue({});
+
+    await proc.updateDurableThreadSettingsForNextTurn(
+      "thread-desktop-active",
+      {
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+        serviceTier: "fast",
+        collaborationMode: "plan",
+      },
+      {
+        currentModel: "gpt-5.5",
+        currentModelReasoningEffort: "high",
+      },
+    );
+
+    expect(request).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledWith("thread/settings/update", {
+      threadId: "thread-desktop-active",
+      model: "gpt-5.6-sol",
+      effort: "ultra",
+      serviceTier: "fast",
+      collaborationMode: {
+        mode: "plan",
+        settings: {
+          model: "gpt-5.6-sol",
+          reasoning_effort: "ultra",
+        },
+      },
+    });
+    expect(proc.sessionId).toBeNull();
+    expect(proc.knownModel).toBeUndefined();
+    expect(proc.knownServiceTier).toBeUndefined();
+  });
+
+  it("preserves durable permission context and requires a model for Plan", async () => {
+    const proc = new CodexProcess("linux", () => true);
+    (proc as any)._projectPath = "/tmp/project-durable-settings";
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValueOnce({
+        config: {
+          sandbox_workspace_write: {
+            writable_roots: ["/tmp/config-root"],
+          },
+        },
+      })
+      .mockResolvedValueOnce({});
+
+    await proc.updateDurableThreadSettingsForNextTurn(
+      "thread-durable-permissions",
+      {
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandboxMode: "workspace-write",
+      },
+      {
+        networkAccessEnabled: true,
+        additionalWritableRoots: ["/tmp/mobile-root"],
+      },
+    );
+
+    expect(request).toHaveBeenNthCalledWith(2, "thread/settings/update", {
+      threadId: "thread-durable-permissions",
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandboxPolicy: {
+        type: "workspaceWrite",
+        writableRoots: [
+          "/tmp/project-durable-settings",
+          "/tmp/config-root",
+          "/tmp/mobile-root",
+        ],
+        networkAccess: true,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      },
+    });
+
+    await expect(
+      proc.updateDurableThreadSettingsForNextTurn(
+        "thread-no-model",
+        { collaborationMode: "plan" },
+      ),
+    ).rejects.toThrow("requires the current thread model");
+  });
+
   it("sends a complete workspace sandbox policy for next-turn permissions", async () => {
     const proc = new CodexProcess("linux");
     (proc as any)._threadId = "thread-workspace";

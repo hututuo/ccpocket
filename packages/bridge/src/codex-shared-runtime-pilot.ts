@@ -123,7 +123,10 @@ export function assertSharedRuntimePilotRpcAllowed(
     );
   }
   if (method === "thread/settings/update") {
-    if (attachMode === "adoption" && gates.allowTurnStart) return;
+    // Settings are durable thread metadata for subsequent turns. A narrow
+    // initialize-only writer may update them without resuming or subscribing
+    // to the thread, while observer attachments remain strictly read-only.
+    if (attachMode !== "observer" && gates.allowTurnStart) return;
     throw new Error(
       "thread/settings/update is disabled; a formal shared writer and the turn-start pilot gate are required",
     );

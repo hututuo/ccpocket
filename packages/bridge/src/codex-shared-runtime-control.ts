@@ -32,6 +32,7 @@ export type CodexSharedRuntimeControlMethod =
   | "thread/started"
   | "thread/status/changed"
   | "thread/name/updated"
+  | "thread/settings/updated"
   | "turn/started"
   | "turn/completed"
   | "serverRequest/resolved";
@@ -129,8 +130,9 @@ interface ReadyWaiter {
  * Stage 1 control-plane observer for the shared Codex daemon.
  *
  * It performs initialize/initialized plus one read-only effective-config
- * preflight, never answers a server request, and never issues a thread RPC.
- * The daemon remains independently owned; stop() closes only this transport.
+ * preflight and observes content-free lifecycle/settings invalidations. It
+ * never answers a server request and never issues a thread RPC. The daemon
+ * remains independently owned; stop() closes only this transport.
  */
 export class CodexSharedRuntimeControl extends EventEmitter<CodexSharedRuntimeControlEvents> {
   private readonly env: NodeJS.ProcessEnv;
@@ -537,6 +539,24 @@ export class CodexSharedRuntimeControl extends EventEmitter<CodexSharedRuntimeCo
     if (event) this.appendEvent(event);
   }
 
+  /**
+   * Publish a content-free invalidation after a provider-acknowledged settings
+   * mutation. The daemon normally emits the same notification; duplicating the
+   * identity-only signal is harmless and closes the gap on older builds that
+   * acknowledge the RPC without broadcasting the notification to observers.
+   */
+  recordThreadSettingsUpdated(threadId: string): void {
+    if (!this._ready || !activeControls.has(this)) return;
+    const event = sanitizeControlEvent(
+      "thread/settings/updated",
+      { threadId },
+      ++this.eventSequence,
+      this.now().toISOString(),
+      this._connectionGeneration,
+    );
+    if (event) this.appendEvent(event);
+  }
+
   private handleData(chunk: string): void {
     let offset = 0;
     if (this.discardUntilNewline) {
@@ -918,6 +938,7 @@ function isAllowedControlMethod(
     method === "thread/started" ||
     method === "thread/status/changed" ||
     method === "thread/name/updated" ||
+    method === "thread/settings/updated" ||
     method === "turn/started" ||
     method === "turn/completed" ||
     method === "serverRequest/resolved"

@@ -46,6 +46,7 @@ import {
   createCodexGoalResumeLease,
   matchesCodexGoalResumeLease,
   type CodexGoalResumeLease,
+  type CodexDurableThreadSettingsContext,
   type CodexModelMetadata,
   type CodexNextTurnPermissionSettings,
   type CodexSharedRuntimeThreadSettings,
@@ -294,6 +295,19 @@ type SharedCodexSettingsEnvelope = Required<
     | "operationId"
   >
 >;
+type DurableCodexSettingsEnvelope = Required<
+  Pick<SharedCodexSettingsMessage, "codexSourceId" | "threadId" | "operationId">
+> & { settingsTarget: "durable_thread" };
+type DurableCodexSettingsSnapshot = NonNullable<
+  CodexSessionIndexMetadata["codexSettings"]
+> & {
+  codexPermissionsMode?: string;
+};
+type DurableCodexSettingsContext = {
+  projectPath: string;
+  settings: DurableCodexSettingsSnapshot;
+  runtimeSession?: SessionInfo;
+};
 type SharedCodexSettingsOperation = {
   fingerprint: string;
   promise: Promise<void>;
@@ -412,6 +426,8 @@ const CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY =
   "codex_resume_preserves_settings_v1";
 const CODEX_HOME_IDENTITY_CAPABILITY = "codex_home_identity_v1";
 const CODEX_RUNTIME_DETACH_CAPABILITY = "codex_runtime_detach_v1";
+const CODEX_DURABLE_THREAD_SETTINGS_CAPABILITY =
+  "codex_durable_thread_settings_v1";
 const BRIDGE_APPLICATION_READINESS_CAPABILITY =
   "bridge_application_readiness_v1";
 const PUSH_NOTIFICATION_PREFERENCES_CAPABILITY =
@@ -1578,6 +1594,7 @@ export class BridgeWebSocketServer {
   private readonly fileBrowser: FileBrowserManager | null;
   private readonly fileMutationAuthorizer: FileMutationAuthorizer | null;
   private readonly codexActionBrokerRuntime: CodexActionBrokerRuntime | null;
+  private readonly sharedRuntimeControl: CodexSharedRuntimeControl | null;
   /**
    * Final provider-write fence shared by SessionManager and every auxiliary
    * CodexProcess factory. Admission checks alone are insufficient because a
@@ -1603,6 +1620,13 @@ export class BridgeWebSocketServer {
   private backgroundActivityBroadcastScheduled = false;
   private readonly sessionCatalogMonitor: SessionCatalogMonitorControl;
   private resumeOperations = new Map<string, ResumeOperation>();
+
+  private get durableCodexThreadSettingsSupported(): boolean {
+    return (
+      this.sharedRuntimeControl?.pilotGates.allowTurnStart === true &&
+      this.codexActionBrokerRuntime !== null
+    );
+  }
 
   constructor(options: BridgeServerOptions) {
     const {
@@ -1662,6 +1686,10 @@ export class BridgeWebSocketServer {
         ? codexActionBrokerRuntime
         : undefined;
     this.codexActionBrokerRuntime = daemonActionBrokerRuntime ?? null;
+    this.sharedRuntimeControl =
+      readCodexAppServerMode() === "daemon"
+        ? (sharedRuntimeControl ?? null)
+        : null;
     this.codexSharedRuntimeMutationAllowed = daemonActionBrokerRuntime
       ? () =>
           daemonActionBrokerRuntime.health.ready === true &&
@@ -4851,6 +4879,17 @@ export class BridgeWebSocketServer {
 
     if (this.fileTransfer && isFileTransferClientMessage(msg)) {
       await this.fileTransfer.handleClientMessage(ws, msg);
+      return;
+    }
+
+    const durableSettingsEnvelope =
+      this.durableCodexSettingsEnvelope(msg);
+    if (durableSettingsEnvelope) {
+      await this.handleDurableCodexSettings(
+        ws,
+        msg as SharedCodexSettingsMessage,
+        durableSettingsEnvelope,
+      );
       return;
     }
 
@@ -11823,6 +11862,493 @@ export class BridgeWebSocketServer {
     return this.getFirstSession();
   }
 
+  private durableCodexSettingsEnvelope(
+    msg: ClientMessage,
+  ): DurableCodexSettingsEnvelope | null {
+    if (
+      msg.type !== "set_permission_mode" &&
+      msg.type !== "set_codex_model" &&
+      msg.type !== "set_codex_speed" &&
+      msg.type !== "set_sandbox_mode"
+    ) {
+      return null;
+    }
+    if (msg.settingsTarget !== "durable_thread") return null;
+    const codexSourceId = msg.codexSourceId?.trim();
+    const threadId = msg.threadId?.trim();
+    const operationId = msg.operationId?.trim();
+    if (!codexSourceId || !threadId || !operationId) return null;
+    return {
+      settingsTarget: "durable_thread",
+      codexSourceId,
+      threadId,
+      operationId,
+    };
+  }
+
+  private async resolveDurableCodexSettingsContext(
+    threadId: string,
+  ): Promise<DurableCodexSettingsContext> {
+    let runtimeSession: SessionInfo | undefined;
+    for (const summary of this.sessionManager.list()) {
+      const candidate = this.sessionManager.get(summary.id);
+      if (
+        candidate?.provider === "codex" &&
+        this.codexThreadIdForSession(candidate) === threadId
+      ) {
+        runtimeSession = candidate;
+        break;
+      }
+    }
+
+    const metadata = (
+      await getCodexSessionIndexMetadata([threadId], {
+        authoritativeCodexSettings: true,
+      })
+    ).get(threadId);
+    const rawProjectPath = runtimeSession?.projectPath ?? metadata?.resumeCwd;
+    if (!rawProjectPath) {
+      throw new SharedCodexSettingsRejectedError(
+        "codex_durable_thread_settings_not_found",
+        "The durable Codex thread could not be resolved from this source.",
+      );
+    }
+    const projectPath = this.resolveLifecycleProjectPath(rawProjectPath);
+    const process = runtimeSession?.process;
+    const settings: DurableCodexSettingsSnapshot = {
+      ...(metadata?.codexSettings ?? {}),
+      ...(runtimeSession?.codexSettings ?? {}),
+      ...(process instanceof CodexProcess
+        ? {
+            ...(process.knownModel ? { model: process.knownModel } : {}),
+            ...(process.modelReasoningEffort
+              ? { modelReasoningEffort: process.modelReasoningEffort }
+              : {}),
+            ...(process.knownServiceTier
+              ? { serviceTier: process.knownServiceTier }
+              : {}),
+            collaborationMode: process.collaborationMode,
+          }
+        : {}),
+    };
+    return { projectPath, settings, runtimeSession };
+  }
+
+  private durableCodexSettingsFingerprint(
+    msg: SharedCodexSettingsMessage,
+  ): string {
+    switch (msg.type) {
+      case "set_codex_model":
+        return JSON.stringify({
+          type: msg.type,
+          model: msg.model,
+          modelReasoningEffort: msg.modelReasoningEffort,
+        });
+      case "set_codex_speed":
+        return JSON.stringify({ type: msg.type, serviceTier: msg.serviceTier });
+      case "set_sandbox_mode":
+        return JSON.stringify({ type: msg.type, sandboxMode: msg.sandboxMode });
+      case "set_permission_mode":
+        return JSON.stringify({
+          type: msg.type,
+          mode: msg.mode,
+          executionMode: msg.executionMode,
+          approvalPolicy: msg.approvalPolicy,
+          approvalsReviewer: msg.approvalsReviewer,
+          codexPermissionsMode: msg.codexPermissionsMode,
+          planMode: msg.planMode,
+          applyStrategy: msg.applyStrategy,
+          permissionChangeId: msg.permissionChangeId,
+        });
+    }
+  }
+
+  private async runDurableCodexSettingsOperation(
+    envelope: DurableCodexSettingsEnvelope,
+    fingerprint: string,
+    operation: (context: DurableCodexSettingsContext) => Promise<void>,
+  ): Promise<void> {
+    if (
+      readCodexAppServerMode() !== "daemon" ||
+      !this.durableCodexThreadSettingsSupported ||
+      this.sharedRuntimeControl?.ready !== true ||
+      this.codexActionBrokerRuntime?.health.ready !== true ||
+      this.codexActionBrokerRuntime.health.writerLeaseHeld !== true
+    ) {
+      throw new SharedCodexSettingsRejectedError(
+        "codex_durable_thread_settings_unavailable",
+        "Durable Codex settings are unavailable until the shared writer is ready.",
+      );
+    }
+    if (envelope.codexSourceId !== this.codexSourceId) {
+      throw new SharedCodexSettingsRejectedError(
+        "codex_shared_runtime_settings_stale_authority",
+        "This Codex thread belongs to a different configured source.",
+      );
+    }
+
+    this.pruneSharedCodexSettingsOperations();
+    const key = [
+      envelope.codexSourceId,
+      envelope.threadId,
+      "durable_thread",
+      envelope.operationId,
+    ].join("\u0000");
+    const existing = this.sharedCodexSettingsOperations.get(key);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) {
+        throw new SharedCodexSettingsRejectedError(
+          "codex_shared_runtime_settings_operation_conflict",
+          "This durable Codex settings operation ID was already used for different settings.",
+        );
+      }
+      await existing.promise;
+      return;
+    }
+    if (
+      this.sharedCodexSettingsOperations.size >=
+      SHARED_CODEX_SETTINGS_OPERATION_MAX
+    ) {
+      throw new SharedCodexSettingsRejectedError(
+        "codex_shared_runtime_settings_busy",
+        "Too many shared Codex settings operations are still pending.",
+      );
+    }
+
+    const promise = (async () => {
+      const release = await this.acquireCodexThreadOperation(envelope.threadId);
+      try {
+        const context = await this.resolveDurableCodexSettingsContext(
+          envelope.threadId,
+        );
+        if (
+          this.codexActionBrokerRuntime?.health.ready !== true ||
+          this.codexActionBrokerRuntime.health.writerLeaseHeld !== true
+        ) {
+          throw new SharedCodexSettingsRejectedError(
+            "codex_durable_thread_settings_unavailable",
+            "The shared Codex writer changed before settings could be saved.",
+          );
+        }
+        await operation(context);
+        this.sharedRuntimeControl?.recordThreadSettingsUpdated(
+          envelope.threadId,
+        );
+      } finally {
+        release();
+      }
+    })();
+    const record: SharedCodexSettingsOperation = {
+      fingerprint,
+      promise,
+      createdAt: Date.now(),
+    };
+    this.sharedCodexSettingsOperations.set(key, record);
+    void promise.then(
+      () => {
+        record.settledAt = Date.now();
+      },
+      () => {
+        record.settledAt = Date.now();
+      },
+    );
+    await promise;
+  }
+
+  private async applyDurableCodexThreadSettings(
+    context: DurableCodexSettingsContext,
+    threadId: string,
+    settings: CodexSharedRuntimeThreadSettings,
+  ): Promise<void> {
+    const process = await this.createStandaloneCodexProcess(context.projectPath);
+    const writerContext: CodexDurableThreadSettingsContext = {
+      currentModel: context.settings.model,
+      currentModelReasoningEffort:
+        context.settings.modelReasoningEffort as
+          | CodexStartOptions["modelReasoningEffort"]
+          | undefined,
+      networkAccessEnabled: context.settings.networkAccessEnabled,
+      additionalWritableRoots: context.settings.additionalWritableRoots,
+    };
+    try {
+      await process.updateDurableThreadSettingsForNextTurn(
+        threadId,
+        settings,
+        writerContext,
+      );
+    } finally {
+      process.stop();
+    }
+  }
+
+  private async handleDurableCodexSettings(
+    ws: WebSocket,
+    msg: SharedCodexSettingsMessage,
+    envelope: DurableCodexSettingsEnvelope,
+  ): Promise<void> {
+    try {
+      if (
+        msg.type === "set_permission_mode" &&
+        msg.applyStrategy === "restart_now"
+      ) {
+        throw new SharedCodexSettingsRejectedError(
+          "set_permission_mode_rejected",
+          "Shared thread settings apply to the next turn without restarting the current turn.",
+        );
+      }
+      await this.runDurableCodexSettingsOperation(
+        envelope,
+        this.durableCodexSettingsFingerprint(msg),
+        async (context) => {
+          switch (msg.type) {
+            case "set_codex_model": {
+              const model = sanitizeCodexModel(msg.model);
+              if (!model) {
+                throw new SharedCodexSettingsRejectedError(
+                  "set_codex_model_rejected",
+                  "Invalid Codex model.",
+                );
+              }
+              const modelReasoningEffort =
+                msg.modelReasoningEffort as
+                  | CodexStartOptions["modelReasoningEffort"]
+                  | undefined;
+              const settings: CodexSharedRuntimeThreadSettings = {
+                model,
+                ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
+              };
+              await this.applyDurableCodexThreadSettings(
+                context,
+                envelope.threadId,
+                settings,
+              );
+              if (context.runtimeSession) {
+                context.runtimeSession.codexSettings = {
+                  ...(context.runtimeSession.codexSettings ?? {}),
+                  model,
+                  ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
+                };
+              }
+              this.broadcast({
+                type: "system",
+                subtype: "set_codex_model",
+                sessionId: envelope.threadId,
+                provider: "codex",
+                model,
+                ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
+              });
+              return;
+            }
+            case "set_codex_speed": {
+              const serviceTier =
+                msg.serviceTier === "fast" ? "fast" : "standard";
+              await this.applyDurableCodexThreadSettings(
+                context,
+                envelope.threadId,
+                { serviceTier },
+              );
+              if (context.runtimeSession) {
+                context.runtimeSession.codexSettings = {
+                  ...(context.runtimeSession.codexSettings ?? {}),
+                  serviceTier,
+                };
+              }
+              this.broadcast({
+                type: "system",
+                subtype: "set_codex_speed",
+                sessionId: envelope.threadId,
+                provider: "codex",
+                serviceTier,
+              });
+              return;
+            }
+            case "set_sandbox_mode": {
+              const sandboxMode = sandboxModeToInternal(msg.sandboxMode);
+              await this.applyDurableCodexThreadSettings(
+                context,
+                envelope.threadId,
+                { sandboxMode },
+              );
+              if (context.runtimeSession) {
+                context.runtimeSession.codexSettings = {
+                  ...(context.runtimeSession.codexSettings ?? {}),
+                  sandboxMode,
+                };
+              }
+              this.broadcast({
+                type: "system",
+                subtype: "set_permission_mode",
+                sessionId: envelope.threadId,
+                provider: "codex",
+                sandboxMode,
+              });
+              return;
+            }
+            case "set_permission_mode": {
+              await this.applyDurableCodexPermissionMode(
+                context,
+                envelope.threadId,
+                msg,
+              );
+              return;
+            }
+          }
+        },
+      );
+    } catch (error) {
+      const rejected =
+        error instanceof SharedCodexSettingsRejectedError ? error : undefined;
+      const operationErrorCode =
+        msg.type === "set_codex_model"
+          ? "set_codex_model_rejected"
+          : msg.type === "set_codex_speed"
+            ? "set_codex_speed_rejected"
+            : msg.type === "set_sandbox_mode"
+              ? "set_sandbox_mode_rejected"
+              : "set_permission_mode_rejected";
+      this.send(ws, {
+        type: "error",
+        sessionId: envelope.threadId,
+        errorCode: operationErrorCode,
+        message: rejected
+          ? `${rejected.errorCode}: ${rejected.message}`
+          : `Failed to save durable Codex settings: ${errorMessageOf(error)}`,
+        ...(msg.type === "set_permission_mode" && msg.permissionChangeId
+          ? { permissionChangeId: msg.permissionChangeId }
+          : {}),
+      });
+    }
+  }
+
+  private async applyDurableCodexPermissionMode(
+    context: DurableCodexSettingsContext,
+    threadId: string,
+    msg: Extract<ClientMessage, { type: "set_permission_mode" }>,
+  ): Promise<void> {
+    const current = context.settings;
+    const normalizedCodexPermissionsMode = normalizeCodexPermissionsMode(
+      msg.codexPermissionsMode,
+    );
+    const requestedCodexPermissionsMode =
+      this.codexAutoReviewDisabled &&
+      normalizedCodexPermissionsMode === "autoReview"
+        ? "default"
+        : normalizedCodexPermissionsMode;
+    const preset = requestedCodexPermissionsMode
+      ? codexSettingsFromPermissionsMode(requestedCodexPermissionsMode)
+      : undefined;
+    const permissionsRequested =
+      requestedCodexPermissionsMode !== undefined ||
+      msg.approvalPolicy !== undefined ||
+      msg.approvalsReviewer !== undefined ||
+      msg.executionMode === "fullAccess";
+    const explicitApproval = requestedCodexPermissionsMode
+      ? preset?.approvalPolicy
+      : msg.approvalPolicy !== undefined
+        ? normalizeCodexApprovalPolicy(msg.approvalPolicy)
+        : msg.executionMode === "fullAccess"
+          ? "never"
+          : normalizeCodexApprovalPolicyIfKnown(current.approvalPolicy);
+    const currentReviewer = current.approvalsReviewer;
+    const requestedReviewer =
+      this.codexAutoReviewDisabled &&
+      isCodexAutoReviewApprovalsReviewer(msg.approvalsReviewer)
+        ? "user"
+        : msg.approvalsReviewer;
+    const configuredReviewer =
+      requestedCodexPermissionsMode === "custom"
+        ? undefined
+        : (preset?.approvalsReviewer ?? requestedReviewer ?? currentReviewer);
+    const approvalsReviewer = this.codexAutoReviewDisabled
+      ? "user"
+      : configuredReviewer;
+    const sandboxMode =
+      requestedCodexPermissionsMode === "custom"
+        ? null
+        : (preset?.sandboxMode ??
+          (current.sandboxMode as CodexStartOptions["sandboxMode"] | undefined));
+    const collaborationMode =
+      msg.planMode === undefined && msg.mode !== "plan"
+        ? (current.collaborationMode ?? "default")
+        : derivePlanMode({
+              permissionMode: msg.mode,
+              planMode: msg.planMode,
+            })
+          ? "plan"
+          : "default";
+    const derivedPermissionsMode =
+      requestedCodexPermissionsMode ??
+      (permissionsRequested
+        ? deriveCodexPermissionsMode({
+            approvalPolicy: explicitApproval,
+            approvalsReviewer,
+            sandboxMode: sandboxMode ?? undefined,
+          })
+        : normalizeCodexPermissionsMode(current.codexPermissionsMode));
+    const settings: CodexSharedRuntimeThreadSettings = {
+      ...(permissionsRequested
+        ? {
+            approvalPolicy:
+              requestedCodexPermissionsMode === "custom"
+                ? null
+                : explicitApproval,
+            approvalsReviewer:
+              requestedCodexPermissionsMode === "custom"
+                ? null
+                : (approvalsReviewer as CodexStartOptions["approvalsReviewer"]),
+            codexPermissionsMode: derivedPermissionsMode,
+            sandboxMode,
+          }
+        : {}),
+      collaborationMode,
+    };
+    await this.applyDurableCodexThreadSettings(context, threadId, settings);
+
+    if (context.runtimeSession) {
+      context.runtimeSession.codexSettings = {
+        ...(context.runtimeSession.codexSettings ?? {}),
+        ...(explicitApproval ? { approvalPolicy: explicitApproval } : {}),
+        ...(approvalsReviewer ? { approvalsReviewer } : {}),
+        ...(derivedPermissionsMode
+          ? { codexPermissionsMode: derivedPermissionsMode }
+          : {}),
+        ...(sandboxMode ? { sandboxMode } : {}),
+      };
+    }
+    const executionMode = deriveExecutionMode({
+      provider: "codex",
+      permissionMode: msg.mode,
+      executionMode: msg.executionMode,
+      approvalPolicy: explicitApproval,
+    });
+    this.broadcast({
+      type: "system",
+      subtype: "set_permission_mode",
+      sessionId: threadId,
+      provider: "codex",
+      permissionMode: modesToLegacyPermissionMode(
+        "codex",
+        executionMode,
+        collaborationMode === "plan",
+      ),
+      executionMode,
+      approvalPolicy: explicitApproval,
+      approvalsReviewer,
+      codexPermissionsMode: derivedPermissionsMode,
+      planMode: collaborationMode === "plan",
+      sandboxMode: sandboxMode ?? undefined,
+      ...(msg.permissionChangeId
+        ? { permissionChangeId: msg.permissionChangeId }
+        : {}),
+    });
+    this.broadcast({
+      type: "system",
+      subtype: "tip",
+      sessionId: threadId,
+      tipCode: "permission_mode_next_turn_applied",
+    });
+  }
+
   private sharedCodexSettingsEnvelope(
     msg: SharedCodexSettingsMessage,
   ): SharedCodexSettingsEnvelope | null {
@@ -12282,6 +12808,9 @@ export class BridgeWebSocketServer {
         CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY,
         CODEX_HOME_IDENTITY_CAPABILITY,
         CODEX_RUNTIME_DETACH_CAPABILITY,
+        ...(this.durableCodexThreadSettingsSupported
+          ? [CODEX_DURABLE_THREAD_SETTINGS_CAPABILITY]
+          : []),
         BRIDGE_APPLICATION_READINESS_CAPABILITY,
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
         PUSH_REGISTRATION_STATUS_CAPABILITY,
@@ -12375,6 +12904,9 @@ export class BridgeWebSocketServer {
         CODEX_RESUME_PRESERVES_SETTINGS_CAPABILITY,
         CODEX_HOME_IDENTITY_CAPABILITY,
         CODEX_RUNTIME_DETACH_CAPABILITY,
+        ...(this.durableCodexThreadSettingsSupported
+          ? [CODEX_DURABLE_THREAD_SETTINGS_CAPABILITY]
+          : []),
         BRIDGE_APPLICATION_READINESS_CAPABILITY,
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
         PUSH_REGISTRATION_STATUS_CAPABILITY,

@@ -1084,6 +1084,20 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       providerSessionId: threadId,
     };
     const key = targetKey(target);
+    if (event.method === "thread/settings/updated") {
+      const knownThread = this.catalog.has(key);
+      this.focusedCodexSettingsAttempts.delete(key);
+      if (!knownThread) {
+        this.catalogDirty = true;
+        this.requestSharedControlReconcile({ catalog: true, status: false });
+        return;
+      }
+      void this.hydrateFocusedCodexSettings(key).then((changed) => {
+        if (!changed || this.closed) return;
+        this.scheduleInteractiveClients({ dirtyKeys: [key] });
+      });
+      return;
+    }
     const previous =
       this.sharedRuntimeStatuses.get(key) ??
       this.catalog.get(key)?.status ??

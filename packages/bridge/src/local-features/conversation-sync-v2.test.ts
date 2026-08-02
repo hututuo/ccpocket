@@ -5651,6 +5651,98 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("rehydrates only the focused thread after a durable settings invalidation", async () => {
+    const threadId = "thread-settings-invalidated";
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 1,
+    });
+    let model = "gpt-5.5";
+    const focusedCodexMetadataReader = vi.fn(async (requested: string) => ({
+      codexSettings: {
+        model,
+        modelReasoningEffort: model === "gpt-5.5" ? "high" : "ultra",
+        serviceTier: "fast",
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        sandboxMode: "workspace-write",
+        collaborationMode: "default" as const,
+      },
+      resumeCwd: `/project/${requested}`,
+    }));
+    const historyReader = vi.fn(async () => history(threadId));
+    const fixture = createFixture(
+      [codexSeed(0, threadId)],
+      historyReader,
+      {
+        daemonMode: true,
+        focusedCodexMetadataReader,
+        sharedControlReconcileMs: 60_000,
+      },
+      { subscribeSharedRuntimeControl: control.subscribe },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      {
+        ...subscribeMessage(),
+        focused: { provider: "codex", providerSessionId: threadId },
+      },
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "catalog_changes")
+          .flatMap((event) => [...event.created, ...event.updated])
+          .find((entry) => entry.model === "gpt-5.5"),
+      ).toBeDefined(),
+    );
+    const initialComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    ).at(-1)!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: initialComplete.subscriptionId,
+        sequence: initialComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+    const initialCatalogReads = fixture.catalogReader.mock.calls.length;
+    const initialHistoryReads = historyReader.mock.calls.length;
+
+    model = "gpt-5.6-sol";
+    control.emit({
+      kind: "event",
+      event: {
+        sequence: 1,
+        observedAt: "2026-08-02T02:00:00.000Z",
+        connectionGeneration: 1,
+        method: "thread/settings/updated",
+        threadId,
+      },
+    });
+
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "catalog_changes")
+          .flatMap((event) => event.updated)
+          .find((entry) => entry.model === "gpt-5.6-sol"),
+      ).toMatchObject({
+        providerSessionId: threadId,
+        modelReasoningEffort: "ultra",
+        codexSettingsSnapshotComplete: true,
+      }),
+    );
+    expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(2);
+    expect(focusedCodexMetadataReader).toHaveBeenLastCalledWith(threadId);
+    expect(fixture.catalogReader).toHaveBeenCalledTimes(initialCatalogReads);
+    expect(historyReader).toHaveBeenCalledTimes(initialHistoryReads);
+    fixture.handler.close();
+  });
+
   it("keeps interrupted shared-control turns non-terminal", async () => {
     const control = createSharedControlSource({
       kind: "ready",

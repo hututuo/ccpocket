@@ -12249,6 +12249,224 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     await bridge.close();
   });
 
+  it("updates durable thread settings without a runtime target or Desktop ownership downgrade", async () => {
+    vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
+    const actionRuntime = writableCodexActionBrokerRuntime();
+    const recordThreadSettingsUpdated = vi.fn();
+    const sharedRuntimeControl = {
+      ready: true,
+      connectionGeneration: 1,
+      pilotGates: { allowTurnStart: true },
+      on: vi.fn(),
+      off: vi.fn(),
+      recordThreadSettingsUpdated,
+    } as any;
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      allowedDirs: ["/tmp"],
+      codexActionBrokerRuntime: actionRuntime,
+      sharedRuntimeControl,
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).wss.clients.add(ws);
+    getCodexSessionIndexMetadataMock.mockResolvedValue(
+      new Map([
+        [
+          "thread-durable-settings",
+          {
+            resumeCwd: "/tmp/project-durable-settings",
+            codexSettings: {
+              model: "gpt-5.6-sol",
+              modelReasoningEffort: "ultra",
+              serviceTier: "fast",
+              approvalPolicy: "never",
+              approvalsReviewer: "user",
+              sandboxMode: "danger-full-access",
+              collaborationMode: "default",
+            },
+          },
+        ],
+      ]),
+    );
+    const updateDurableThreadSettingsForNextTurn = vi.fn(async () => {});
+    const stop = vi.fn();
+    vi.spyOn(bridge as any, "createStandaloneCodexProcess").mockResolvedValue({
+      updateDurableThreadSettingsForNextTurn,
+      stop,
+    });
+    const externalActivity = vi
+      .spyOn((bridge as any).localFeatures, "hasExternalCodexActivityVerified")
+      .mockResolvedValue(true);
+    const target = {
+      settingsTarget: "durable_thread",
+      codexSourceId: (bridge as any).codexSourceId,
+      threadId: "thread-durable-settings",
+    } as const;
+
+    (bridge as any).sendSessionList(ws);
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .find((message: any) => message.type === "session_list")
+        .bridgeCapabilities,
+    ).toContain("codex_durable_thread_settings_v1");
+
+    ws.send.mockClear();
+    const planRequest = {
+      type: "set_permission_mode",
+      mode: "plan",
+      planMode: true,
+      ...target,
+      operationId: "durable-plan-1",
+    } as const;
+    await (bridge as any).handleClientMessage(planRequest, ws);
+    await (bridge as any).handleClientMessage(planRequest, ws);
+
+    expect(updateDurableThreadSettingsForNextTurn).toHaveBeenCalledOnce();
+    expect(updateDurableThreadSettingsForNextTurn).toHaveBeenCalledWith(
+      "thread-durable-settings",
+      { collaborationMode: "plan" },
+      expect.objectContaining({
+        currentModel: "gpt-5.6-sol",
+        currentModelReasoningEffort: "ultra",
+      }),
+    );
+    expect(stop).toHaveBeenCalledOnce();
+    expect(recordThreadSettingsUpdated).toHaveBeenCalledWith(
+      "thread-durable-settings",
+    );
+    expect(externalActivity).not.toHaveBeenCalled();
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .filter(
+          (message: any) => message.subtype === "set_permission_mode",
+        ),
+    ).toHaveLength(1);
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_codex_model",
+        model: "gpt-5.4-mini",
+        modelReasoningEffort: "high",
+        ...target,
+        operationId: "durable-model-desktop-active",
+      },
+      ws,
+    );
+    expect(updateDurableThreadSettingsForNextTurn).toHaveBeenLastCalledWith(
+      "thread-durable-settings",
+      {
+        model: "gpt-5.4-mini",
+        modelReasoningEffort: "high",
+      },
+      expect.any(Object),
+    );
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .find((message: any) => message.subtype === "set_codex_model"),
+    ).toMatchObject({
+      sessionId: "thread-durable-settings",
+      model: "gpt-5.4-mini",
+      modelReasoningEffort: "high",
+    });
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_codex_speed",
+        serviceTier: "standard",
+        ...target,
+        codexSourceId: "foreign-source",
+        operationId: "durable-foreign-source",
+      },
+      ws,
+    );
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      errorCode: "set_codex_speed_rejected",
+      sessionId: "thread-durable-settings",
+      message: expect.stringContaining(
+        "codex_shared_runtime_settings_stale_authority",
+      ),
+    });
+
+    await bridge.close();
+  });
+
+  it("fails durable thread settings closed when the shared writer is unavailable", async () => {
+    vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
+    const actionRuntime = writableCodexActionBrokerRuntime();
+    Object.assign(actionRuntime.health, {
+      ready: false,
+      writerLeaseHeld: false,
+      degraded: true,
+      degradedReason: "writer_lease_unavailable",
+    });
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      codexActionBrokerRuntime: actionRuntime,
+      sharedRuntimeControl: {
+        ready: true,
+        connectionGeneration: 1,
+        pilotGates: { allowTurnStart: true },
+        on: vi.fn(),
+        off: vi.fn(),
+        recordThreadSettingsUpdated: vi.fn(),
+      } as any,
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_codex_speed",
+        serviceTier: "fast",
+        settingsTarget: "durable_thread",
+        codexSourceId: (bridge as any).codexSourceId,
+        threadId: "thread-writer-unavailable",
+        operationId: "durable-writer-unavailable",
+      },
+      ws,
+    );
+
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      errorCode: "set_codex_speed_rejected",
+      sessionId: "thread-writer-unavailable",
+      message: expect.stringContaining(
+        "codex_durable_thread_settings_unavailable",
+      ),
+    });
+    expect(getCodexSessionIndexMetadataMock).not.toHaveBeenCalled();
+    await bridge.close();
+  });
+
+  it("does not advertise durable settings when the shared turn writer gate is disabled", async () => {
+    vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      codexActionBrokerRuntime: writableCodexActionBrokerRuntime(),
+      sharedRuntimeControl: {
+        ready: true,
+        connectionGeneration: 1,
+        pilotGates: { allowTurnStart: false },
+        on: vi.fn(),
+        off: vi.fn(),
+        recordThreadSettingsUpdated: vi.fn(),
+      } as any,
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+
+    (bridge as any).sendSessionList(ws);
+    const sessionList = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "session_list");
+    expect(sessionList.bridgeCapabilities).not.toContain(
+      "codex_durable_thread_settings_v1",
+    );
+    await bridge.close();
+  });
+
   it("rejects stale, foreign-active, and failed shared-runtime settings without optimistic state", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;

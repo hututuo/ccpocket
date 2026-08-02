@@ -368,6 +368,37 @@ describe("CodexSharedRuntimeControl", () => {
     control.stop();
   });
 
+  it("publishes content-free durable settings invalidations", () => {
+    const transport = new FakeControlTransport();
+    const control = createControl(transport);
+    initialize(control, transport);
+
+    transport.receive({
+      method: "thread/settings/updated",
+      params: {
+        threadId: "thread-provider-settings",
+        model: "sensitive-model-selection",
+        cwd: "/private/sensitive/path",
+      },
+    });
+    control.recordThreadSettingsUpdated("thread-bridge-settings");
+
+    expect(control.events).toEqual([
+      expect.objectContaining({
+        method: "thread/settings/updated",
+        threadId: "thread-provider-settings",
+      }),
+      expect.objectContaining({
+        method: "thread/settings/updated",
+        threadId: "thread-bridge-settings",
+      }),
+    ]);
+    const serialized = JSON.stringify(control.events);
+    expect(serialized).not.toContain("sensitive-model-selection");
+    expect(serialized).not.toContain("/private/sensitive/path");
+    control.stop();
+  });
+
   it("accepts sanitized turn lifecycle from the owning attachment without issuing an RPC", () => {
     const transport = new FakeControlTransport();
     const control = createControl(transport);
