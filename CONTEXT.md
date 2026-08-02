@@ -1,5 +1,45 @@
 # CC Pocket Compatibility Fork Context
 
+## 2026-08-02 focused Codex settings catalog correction
+
+The current source-only correction is:
+
+- Worktree:
+  `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/codex-dual-mode-compat-20260801`
+- Branch: `fix/codex-dual-mode-compat-20260801`
+- Product fix: `bb277214`
+- Deterministic test-fixture follow-up: `30547f65`
+
+The shared runtime authority was already correct, but the catalog still used a
+bounded 128 KiB head plus 16 KiB tail parse for settings. In a roughly 341 MB
+active rollout, the latest Codex model, effort, permission and collaboration
+markers can sit outside both windows. The independent usage request still
+returned quota, which explains the physical-phone combination of visible quota
+with `未知 · 等待同步` controls. Later transcript activity could move a marker
+into the tail and make the controls appear temporarily.
+
+`conversation_sync_v2` now starts one non-blocking authoritative settings read
+for the exact focused Codex thread. It does not delay the initial sync, does
+not scan every catalog thread, deduplicates concurrent reads, retries bounded
+failures and rejects a result if the catalog revision changed while it was in
+flight. Sparse Bridge catalog refreshes retain an already complete settings
+snapshot; an authoritative complete snapshot can still clear removed fields.
+Mobile applies the same incomplete-versus-complete merge rule while committing
+catalog pages to SQLite, so a later sparse page cannot erase known controls.
+
+The exact 343,819,795-byte rollout returned nine authoritative setting fields
+in a fresh-process measurement of 12.1 ms; this is a single observation, not a
+p95 claim. Bridge passed 113 files / 2,275 tests. Mobile passed 2,879 tests with
+four environment-only skips; full analysis reported 0 errors, 0 warnings and
+52 existing infos, while the two changed Mobile files were clean. The full
+Bridge run also exposed fixed-date Action Broker tests that expired after the
+calendar crossed 2026-08-01; `30547f65` injects the fixture clock without
+changing production behavior.
+
+This lane is `source-verified / deployment-pending / phone-acceptance-pending`.
+No production Bridge, Mobile OTA, IPA, Swift/native code, Cloud, VPN, Codex
+Desktop configuration or user session data was changed.
+
 ## 2026-08-02 runtime authority lifecycle correction
 
 The active source correction is in:

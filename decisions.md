@@ -1,5 +1,23 @@
 # ccPocket Compatibility Decisions
 
+## 2026-08-02 focused Codex settings use incomplete/complete snapshots
+
+- 普通目录读取继续使用有界 head/tail 元数据，未命中 model、effort、tier、
+  approval、sandbox 或 collaboration 时必须视为 sparse snapshot，不能解释为
+  权威清空。
+- 用户聚焦一个 Codex durable thread 后，Bridge 只对该精确 thread 做一次异步的
+  authoritative settings 读取。该读取不得阻塞首次 `sync_complete`，不得扫描
+  其他目录会话，并使用 single-flight、5 秒失败冷却和 revision/modifiedAt 代次
+  门禁；迟到结果只能丢弃并针对最新 revision 重试。
+- Bridge 目录刷新与 Mobile SQLite catalog commit 都遵守同一规则：incomplete
+  snapshot 只补充或保留已知设置，`codexSettingsSnapshotComplete=true` 才能权威
+  清除缺失字段。设置快照完整性不改变 provider 历史、状态或运行时所有权。
+- quota/usage 是独立 RPC，不能用额度可见推断模型、权限或 Plan 已同步。UI 的
+  设置事实仍来自 durable catalog，运行与停止权限仍来自 status/authority。
+- 新 Bridge 与旧 Mobile 继续使用既有 additive 字段；新 Mobile 与旧 Bridge 只
+  保留已经确认过的设置，不凭 sparse snapshot 编造首次值。此修复没有 schema、
+  Swift/native、Cloud 或破坏性协议变化。
+
 ## 2026-07-30 durable Codex threads use external rollout activity
 
 - 所有 durable Codex 会话都可直接读取本地缓存；`thread/loaded/list`、
