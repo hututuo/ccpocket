@@ -1,5 +1,27 @@
 # ccPocket Compatibility Decisions
 
+## 2026-08-02 shared threads separate turn authority from durable settings
+
+- 当前 turn 的 stop、steer、approval/question response 和消息投递仍只有一个精确
+  execution owner，并继续使用 runtime session、authority generation 和 Action
+  Broker 门禁。共享架构不等于同一个 turn 可以被两端无条件重复控制。
+- model、reasoning effort、service tier、Plan/default collaboration、approval
+  policy、reviewer 和 sandbox 是 durable thread 的后续轮次设置。官方
+  `thread/settings/update` 可以按精确 `threadId` 更新而不执行 `thread/resume`；
+  因此 idle 无 attachment 或当前 Desktop-active 都不能再成为设置只读理由。
+- 新协议只增加 capability `codex_durable_thread_settings_v1` 和
+  `settingsTarget=durable_thread + codexSourceId + threadId + operationId`。
+  它不得携带 transient runtime identity；混合或不完整 target 必须拒绝。
+- Bridge durable settings writer 必须处于 daemon shared mode，持有 Action Broker
+  writer lease，并通过既有 turn-start pilot gate。写入按 thread 串行、按 operation
+  幂等，不 resume、不 attach、不读历史；source 或 writer 不确定时 fail closed。
+- 设置 ACK 后只发 content-free `thread/settings/updated` invalidation，v2 只重读
+  当前 focused thread 的设置，不扫描目录、状态或历史。Mobile 也只增加精确线程的
+  settings ACK/error 订阅，不能形成第二套 conversation subscription。
+- 新 Mobile + 旧 Bridge 保留原 waiting/read-only 路径；旧 Mobile + 新 Bridge
+  保持原 wire 行为。旧 app-server、writer 未就绪或 capability 缺失时不得假装修改
+  成功。设置影响后续 turns，不声称改变已运行中的 turn。
+
 ## 2026-08-02 focused Codex settings use incomplete/complete snapshots
 
 - 普通目录读取继续使用有界 head/tail 元数据，未命中 model、effort、tier、

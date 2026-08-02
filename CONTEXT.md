@@ -1,5 +1,35 @@
 # CC Pocket Compatibility Fork Context
 
+## 2026-08-02 shared durable-thread settings control
+
+The source-verified correction is in:
+
+- Worktree:
+  `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/shared-thread-settings-control-20260802`
+- Branch: `fix/shared-thread-settings-control-20260802`
+- Bridge: `1dce49c7`
+- Mobile: `08015a75`
+- Audit: `notes/shared-thread-settings-control_v01_20260802-151806.md`
+
+Shared Codex previously reused the transient runtime authority gate for every
+setting write. An idle durable thread therefore showed settings but could not
+change them without a runtime attachment, while a Desktop-active thread was
+treated as settings-owned by Desktop. That rule confused exactly-once control
+of the current turn with durable configuration for subsequent turns.
+
+Bridge now capability-gates an exact source + durable thread settings target
+and calls official `thread/settings/update` through the shared writer without
+resuming, attaching or reading history. Current-turn stop, steer, approvals and
+input remain protected by the existing runtime generation. Mobile makes idle
+and Desktop-active durable settings editable only when this capability and an
+authoritative source identity are present, and listens narrowly for the exact
+thread's setting acknowledgements.
+
+Bridge passed 114 files / 2,304 tests in a resource-isolated single-worker run;
+Mobile passed 2,889 tests with four environment-only skips. Full analysis found
+0 errors, 0 warnings and 52 existing infos. Source is verified but production
+Bridge, OTA/IPA and physical-phone acceptance remain pending.
+
 ## Mandatory local Bridge production release SOP
 
 Future `com.ccpocket.bridge` local production deployments are governed by
