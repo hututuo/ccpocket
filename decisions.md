@@ -15,13 +15,14 @@
   `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/current`，分支
   `integration/ccpocket-current`。旧任务保存的 cwd、Codex 项目选择器、临时 release
   worktree 和运行时路径都不是源码基线；交接仍必须写完整 worktree、branch 和 HEAD。
-- `.codex/config.toml` 使用 `approval_policy=on-request`，使真正的高影响命令可以由
-  当前 reviewer 处理。不得再用 `AskForApproval=Never` 配合 `decision=prompt`，也不得
-  用 `--dangerously-bypass-approvals-and-sandbox` 或 `--ignore-rules` 掩盖规则冲突。
+- `.codex/config.toml` 不再固定 `approval_policy`，项目规则也不再对 Node、npm、Git、
+  Dart、Flutter、Simulator、Pod、Python 等命令附加 `decision=prompt`。审批和 sandbox
+  完全服从用户为当前 Codex 任务选择的 Normal / Full Access：开启完全访问时，项目文件
+  不得再制造第二层审批或拒绝。
 - Bridge build/test、Functions 本地 typecheck/build/test、Flutter test/analyze 和本地
-  iOS build 使用精确 allow 规则。任意 Node、依赖安装/发布、服务启动、Cloud deploy、
-  Shorebird patch/release/promote、Git remote/destructive 操作继续 prompt；不能为了后台
-  自动化把 `node`、`bash`、`npm run` 或 `flutter` 整体放开。
+  iOS build 仍可保留精确 allow 规则，用于普通模式下减少确定性本地验证的重复询问；
+  这些 allow 规则不能扩大 sandbox，也不能代替用户对部署、发布、stable、Cloud、远端
+  Git 或破坏性操作的工作流授权。
 - 固定发布任务只接收一次完整发布包并独立执行。协调任务不持续监看，但发布任务必须在
   完成或真实阻断时主动回报。流程自治不扩大 stable、Cloud、Desktop、网络、会话数据
   或物理设备权限。

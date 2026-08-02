@@ -31,14 +31,14 @@ branch and full HEAD; if a runner cannot change to that path it must stop
 before building or publishing.
 
 The repository previously combined `AskForApproval=Never` background turns
-with project rules that marked Node, npm and Flutter build commands as
-`prompt`. Those commands therefore failed before process creation. The current
-project config uses `approval_policy=on-request`; deterministic Bridge tests,
-builds, Flutter tests/analysis and local iOS builds have exact allow rules,
-while arbitrary Node, deploy, publish, stable promotion and Git remote actions
-remain prompted. Release tasks must keep the current reviewer and must not use
-`--dangerously-bypass-approvals-and-sandbox` or `--ignore-rules` to conceal a
-policy conflict.
+with project rules that marked Node, npm, Git and other commands as `prompt`.
+Those commands therefore failed before process creation even when the user had
+selected Full Access. The project no longer fixes `approval_policy` or adds
+mandatory prompt rules. Command approval and sandboxing now follow the current
+Codex task's Normal / Full Access selection. Narrow allow rules remain only for
+routine local inspection, build and test commands; they do not reduce Full
+Access. Release authorization and product deployment gates remain workflow
+requirements, not execpolicy overrides.
 
 The only uncommitted source found during worktree cleanup was a three-file
 process-disclosure improvement in the old parallel lane. It was archived as

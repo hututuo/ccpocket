@@ -118,52 +118,16 @@ prefix_rule(
     justification="Listing Shorebird patches is read-only release inspection.",
 )
 
-# Explicit prompts for commands that mutate state or control long-running processes.
-#
-# This project uses approval_policy=on-request. Keep deterministic local build,
-# test and analysis commands explicitly allowed above. Reserve prompts for
-# commands that install dependencies, execute arbitrary scripts, publish,
-# control services, or otherwise change state beyond reproducible outputs.
-# Background release tasks must retain on-request plus the configured reviewer;
-# they must not be resumed with an AskForApproval=Never override while prompt
-# rules remain active.
+# Routine trusted-project workflow commands. Approval and sandbox behavior for
+# every command not explicitly allowed here comes from the current Codex task;
+# repository rules must not override the user's Normal / Full Access choice.
 prefix_rule(
     pattern=["git", ["add", "commit"]],
     justification="Local staging and commits are allowed in this trusted project workflow.",
 )
 prefix_rule(
-    pattern=["git", ["checkout", "switch", "restore", "reset", "clean", "push", "pull", "merge", "rebase", "cherry-pick", "stash"]],
-    decision="prompt",
-    justification="Potentially destructive or remote-affecting git commands should still require confirmation.",
-)
-prefix_rule(
-    pattern=["npm", ["install", "update", "publish"]],
-    decision="prompt",
-    justification="npm dependency and publication commands may modify the workspace or external state.",
-)
-prefix_rule(
-    pattern=["npm", "run", ["bridge", "dev", "setup", "functions:deploy", "shorebird:patch:android", "shorebird:patch:ios", "shorebird:release:android", "shorebird:release:ios", "shorebird:promote"]],
-    decision="prompt",
-    justification="These npm scripts start services, deploy, publish OTA content, or change external state.",
-)
-prefix_rule(
-    pattern=["node"],
-    decision="prompt",
-    justification="node can execute arbitrary scripts and should be confirmed.",
-)
-prefix_rule(
     pattern=["dart", "format"],
     justification="Formatting source files is a routine trusted-project workflow step.",
-)
-prefix_rule(
-    pattern=["dart", ["fix", "run"]],
-    decision="prompt",
-    justification="These Dart commands can apply edits or start programs.",
-)
-prefix_rule(
-    pattern=["flutter", ["run", "pub", "drive"]],
-    decision="prompt",
-    justification="Flutter run/pub/drive commands may change dependencies, devices, or long-running processes.",
 )
 prefix_rule(
     pattern=["defaults", "write", "com.apple.iphonesimulator"],
@@ -177,29 +141,4 @@ prefix_rule(
         "xcrun simctl list devices available",
         "xcrun simctl ui booted appearance light",
     ],
-)
-prefix_rule(
-    pattern=["xcrun", "simctl", ["addmedia", "clone", "create", "delete", "erase", "icloud_sync", "install", "install_app_data", "keychain", "openurl", "pair", "pair_activate", "privacy", "push", "rename", "runtime", "spawn", "uninstall", "unpair", "upgrade"]],
-    decision="prompt",
-    justification="Destructive or high-impact Simulator actions should still require confirmation.",
-    match=[
-        "xcrun simctl erase booted",
-        "xcrun simctl privacy booted grant notifications com.example.app",
-        "xcrun simctl install booted build/ios/iphonesimulator/Runner.app",
-    ],
-    not_match=[
-        "xcrun simctl list devices available",
-        "xcrun simctl ui booted appearance light",
-        "xcrun simctl io booted screenshot /tmp/example.png",
-    ],
-)
-prefix_rule(
-    pattern=["pod", "install"],
-    decision="prompt",
-    justification="pod install changes iOS dependencies and lockfiles.",
-)
-prefix_rule(
-    pattern=[["mkdir", "chmod", "tar", "open", "kill", "pkill", "python3", "xargs"]],
-    decision="prompt",
-    justification="These commands mutate local state, launch programs, or control processes.",
 )

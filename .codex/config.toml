@@ -1,9 +1,6 @@
-# Project-local MCP config. Execpolicy lives in .codex/rules/default.rules.
-# Keep prompts available for high-impact commands. Routine build and test
-# commands are explicitly allowed by the project rules, while release-side
-# effects still require the current task's authorization and reviewer.
-
-approval_policy = "on-request"
+# Project-local MCP config. Command approval and sandbox policy are selected by
+# the current Codex task. Do not override the user's Normal / Full Access choice
+# from this repository.
 
 [mcp_servers.marionette]
 command = "marionette_mcp"

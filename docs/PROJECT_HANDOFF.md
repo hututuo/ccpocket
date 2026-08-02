@@ -42,9 +42,9 @@
   不代表 OTA 成功，OTA 上传成功也不代表物理手机已经应用。默认仍禁止 stable、IPA、
   Cloud、Desktop 配置、网络和会话数据变更。
 - 第一次遇到新流程要先人工跑通，再逐步脚本化确定性步骤。脚本负责检查和执行，模型负责解释冲突、原生差异、未知警告、lineage、签名和兼容风险。
-- 项目级审批使用 `on-request` 和当前 reviewer。禁止用
-  `--dangerously-bypass-approvals-and-sandbox`、`--ignore-rules` 或显式 `never` 恢复
-  发布会话；这些覆盖会让项目中的 prompt 规则失效或把安全门禁整体绕过。
+- 命令审批和 sandbox 服从用户为当前任务选择的 Normal / Full Access，仓库不再固定
+  `approval_policy` 或用项目级 `prompt` 规则抵消完全访问。部署、stable、Cloud、安装和
+  其他外部动作的授权边界继续由本手册约束，不能因为 Full Access 而自动扩大任务范围。
 - 默认只发布 `owner`。`stable` 晋级、回滚、替换基础 IPA、安装真机和任何无法撤销的发布动作都必须得到用户单独明确授权。
 - `019f8f65-adaf-74b0-bcff-65217586b2ee` 是误建且已归档的会话，不能当作发布入口。
 
