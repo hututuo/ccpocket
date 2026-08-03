@@ -62,6 +62,7 @@ class _SubagentsPanelState extends State<SubagentsPanel> {
           detachedCodexSourceId: widget.detachedCodexSourceId,
         );
     _controller.addListener(_changed);
+    _controller.setDetailsVisible(true);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _controller.subagents.isEmpty) _controller.refresh();
     });
@@ -78,6 +79,7 @@ class _SubagentsPanelState extends State<SubagentsPanel> {
       return;
     }
     _controller.removeListener(_changed);
+    _controller.setDetailsVisible(false);
     if (_ownsController) _controller.dispose();
     _ownsController = widget.controller == null;
     _controller =
@@ -89,6 +91,7 @@ class _SubagentsPanelState extends State<SubagentsPanel> {
           detachedCodexSourceId: widget.detachedCodexSourceId,
         );
     _controller.addListener(_changed);
+    _controller.setDetailsVisible(true);
     _selectedThreadId = null;
     _controller.refresh();
   }
@@ -100,6 +103,7 @@ class _SubagentsPanelState extends State<SubagentsPanel> {
   @override
   void dispose() {
     _controller.removeListener(_changed);
+    _controller.setDetailsVisible(false);
     if (_ownsController) _controller.dispose();
     super.dispose();
   }
@@ -120,8 +124,8 @@ class _SubagentsPanelState extends State<SubagentsPanel> {
   Widget _buildList(BuildContext context) {
     final l = AppLocalizations.of(context);
     final strings = SubagentsStrings.of(context);
-    final active = _controller.subagents.where((agent) => agent.isActive);
-    final done = _controller.subagents.where((agent) => !agent.isActive);
+    final active = _controller.activeSubagents;
+    final done = _controller.doneSubagents;
     final visible = (_showActive ? active : done).toList();
     return Column(
       children: [

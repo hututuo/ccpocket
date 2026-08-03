@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:ccpocket/features/subagents/widgets/subagents_panel.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
@@ -107,5 +108,80 @@ void main() {
     expect(find.text('Inspect the protocol'), findsOneWidget);
     expect(find.text('User'), findsOneWidget);
     expect(find.textContaining('"command": "pwd"'), findsOneWidget);
+  });
+
+  testWidgets('activity completion moves a child from Active to Done', (
+    tester,
+  ) async {
+    final bridge = _Bridge();
+    addTearDown(bridge.dispose);
+    await tester.pumpWidget(
+      _app(SubagentsPanel(sessionId: 's1', bridgeService: bridge)),
+    );
+    await tester.pump();
+
+    final initialRequest = bridge.sent.last;
+    final initialRequestId = _requestId(initialRequest);
+    bridge.emit(
+      SubagentListMessage(
+        sessionId: 's1',
+        requestId: initialRequestId,
+        subagents: const [SubagentInfo(threadId: 'child', status: 'running')],
+      ),
+      's1',
+    );
+    await tester.pump();
+    expect(find.text('Active (1)'), findsOneWidget);
+    expect(find.text('Done (0)'), findsOneWidget);
+
+    bridge.emit(
+      SubagentActivitySummaryMessage(
+        scope: 'runtime',
+        ownerSessionId: 's1',
+        providerThreadId: 'provider-parent',
+        revision: 'revision-1',
+        activeCount: 1,
+        totalCount: 1,
+        truncated: false,
+        subscribed: false,
+        listRequestId: initialRequestId,
+      ),
+      's1',
+    );
+    await tester.pump();
+    final watch = jsonDecode(bridge.sent.last.toJson()) as Map<String, dynamic>;
+    bridge.emit(
+      SubagentActivitySummaryMessage(
+        scope: 'runtime',
+        ownerSessionId: 's1',
+        providerThreadId: 'provider-parent',
+        revision: 'revision-2',
+        activeCount: 0,
+        totalCount: 1,
+        truncated: false,
+        subscribed: true,
+        subscriptionId: watch['subscriptionId'] as String,
+      ),
+      's1',
+    );
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(bridge.sent.last.type, 'get_subagents');
+
+    final reconciliationRequestId = _requestId(bridge.sent.last);
+    bridge.emit(
+      SubagentListMessage(
+        sessionId: 's1',
+        requestId: reconciliationRequestId,
+        subagents: const [SubagentInfo(threadId: 'child', status: 'done')],
+      ),
+      's1',
+    );
+    await tester.pump();
+    expect(find.text('Active (0)'), findsOneWidget);
+    expect(find.text('Done (1)'), findsOneWidget);
+    expect(find.byKey(const ValueKey('subagent_child')), findsNothing);
+    await tester.tap(find.text('Done (1)'));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('subagent_child')), findsOneWidget);
   });
 }

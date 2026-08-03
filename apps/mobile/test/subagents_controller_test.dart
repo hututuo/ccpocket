@@ -16,6 +16,7 @@ class _Bridge extends BridgeService {
   bool authoritative = false;
   Set<String> capabilities = const {};
   String? sourceId;
+  String? runtimeProviderThreadId;
 
   @override
   bool get isConnected => connected;
@@ -35,6 +36,12 @@ class _Bridge extends BridgeService {
 
   @override
   String? get codexSourceId => sourceId;
+
+  @override
+  String? providerSessionIdForRuntime(
+    String runtimeSessionId, {
+    String? provider,
+  }) => runtimeProviderThreadId;
 
   @override
   Stream<LocalFeatureServerMessage> localFeatureMessagesForSession(
@@ -123,6 +130,124 @@ void main() {
     expect(controller.subagents.single.threadId, 'current');
   });
 
+  test('coalesces activity revisions behind one in-flight list read', () async {
+    final bridge = _Bridge();
+    final controller = SubagentsController(sessionId: 's1', bridge: bridge)
+      ..setDetailsVisible(true);
+    addTearDown(controller.dispose);
+    addTearDown(bridge.dispose);
+
+    controller.refresh();
+    final initialRequest = _requestId(bridge.sent.single);
+    bridge.emit(
+      SubagentListMessage(
+        sessionId: 's1',
+        requestId: initialRequest,
+        subagents: const [SubagentInfo(threadId: 'child', status: 'running')],
+      ),
+      tag: 's1',
+    );
+    await Future<void>.delayed(Duration.zero);
+    bridge.emit(
+      SubagentActivitySummaryMessage(
+        scope: 'runtime',
+        ownerSessionId: 's1',
+        providerThreadId: 'provider-parent',
+        revision: 'revision-1',
+        activeCount: 1,
+        totalCount: 1,
+        truncated: false,
+        subscribed: false,
+        listRequestId: initialRequest,
+      ),
+      tag: 's1',
+    );
+    await Future<void>.delayed(Duration.zero);
+    final watch = jsonDecode(bridge.sent.last.toJson()) as Map<String, dynamic>;
+    final subscriptionId = watch['subscriptionId'] as String;
+    bridge.emit(
+      SubagentActivitySummaryMessage(
+        scope: 'runtime',
+        ownerSessionId: 's1',
+        providerThreadId: 'provider-parent',
+        revision: 'revision-1',
+        activeCount: 1,
+        totalCount: 1,
+        truncated: false,
+        subscribed: true,
+        subscriptionId: subscriptionId,
+      ),
+      tag: 's1',
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    controller.refresh();
+    final inFlightRequest = _requestId(bridge.sent.last);
+    bridge.emit(
+      SubagentActivitySummaryMessage(
+        scope: 'runtime',
+        ownerSessionId: 's1',
+        providerThreadId: 'provider-parent',
+        revision: 'revision-2',
+        activeCount: 0,
+        totalCount: 1,
+        truncated: false,
+        subscribed: true,
+        subscriptionId: subscriptionId,
+      ),
+      tag: 's1',
+    );
+    bridge.emit(
+      SubagentActivitySummaryMessage(
+        scope: 'runtime',
+        ownerSessionId: 's1',
+        providerThreadId: 'provider-parent',
+        revision: 'revision-3',
+        activeCount: 0,
+        totalCount: 1,
+        truncated: false,
+        subscribed: true,
+        subscriptionId: subscriptionId,
+      ),
+      tag: 's1',
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      bridge.sent.where((message) => message.type == 'get_subagents'),
+      hasLength(2),
+    );
+
+    bridge.emit(
+      SubagentListMessage(
+        sessionId: 's1',
+        requestId: inFlightRequest,
+        subagents: const [SubagentInfo(threadId: 'child', status: 'done')],
+      ),
+      tag: 's1',
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      bridge.sent.where((message) => message.type == 'get_subagents'),
+      hasLength(3),
+    );
+    final pendingRequest = _requestId(bridge.sent.last);
+
+    bridge.emit(
+      SubagentListMessage(
+        sessionId: 's1',
+        requestId: pendingRequest,
+        subagents: const [SubagentInfo(threadId: 'child', status: 'done')],
+      ),
+      tag: 's1',
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      bridge.sent.where((message) => message.type == 'get_subagents'),
+      hasLength(3),
+    );
+    expect(controller.listReconciliationPending, isFalse);
+  });
+
   test(
     'activity summaries keep the collapsed badge live and refresh details only when visible',
     () async {
@@ -206,6 +331,204 @@ void main() {
       );
     },
   );
+
+  test(
+    'visible activity revisions reconcile Active/Done from the next list snapshot',
+    () async {
+      final bridge = _Bridge();
+      final controller = SubagentsController(sessionId: 's1', bridge: bridge)
+        ..setDetailsVisible(true);
+      addTearDown(controller.dispose);
+      addTearDown(bridge.dispose);
+
+      controller.refresh();
+      final initialRequest = _requestId(bridge.sent.single);
+      bridge.emit(
+        SubagentListMessage(
+          sessionId: 's1',
+          requestId: initialRequest,
+          subagents: const [SubagentInfo(threadId: 'child', status: 'running')],
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      bridge.emit(
+        SubagentActivitySummaryMessage(
+          scope: 'runtime',
+          ownerSessionId: 's1',
+          providerThreadId: 'provider-parent',
+          revision: 'revision-1',
+          activeCount: 1,
+          totalCount: 1,
+          truncated: false,
+          subscribed: false,
+          listRequestId: initialRequest,
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+      final watch =
+          jsonDecode(bridge.sent.last.toJson()) as Map<String, dynamic>;
+      bridge.emit(
+        SubagentActivitySummaryMessage(
+          scope: 'runtime',
+          ownerSessionId: 's1',
+          providerThreadId: 'provider-parent',
+          revision: 'revision-2',
+          activeCount: 0,
+          totalCount: 1,
+          truncated: false,
+          subscribed: true,
+          subscriptionId: watch['subscriptionId'] as String,
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+
+      expect(controller.activeCount, 0);
+      expect(controller.activeSubagents.single.threadId, 'child');
+      expect(bridge.sent.last.type, 'get_subagents');
+      final reconciliationRequest = _requestId(bridge.sent.last);
+      bridge.emit(
+        SubagentListMessage(
+          sessionId: 's1',
+          requestId: reconciliationRequest,
+          subagents: const [SubagentInfo(threadId: 'child', status: 'done')],
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.activeSubagents, isEmpty);
+      expect(controller.doneSubagents.single.threadId, 'child');
+      expect(controller.activeCount, 0);
+      expect(controller.listReconciliationPending, isFalse);
+    },
+  );
+
+  test(
+    'a delayed activity offer from an older list generation is ignored',
+    () async {
+      final bridge = _Bridge();
+      final controller = SubagentsController(sessionId: 's1', bridge: bridge);
+      addTearDown(controller.dispose);
+      addTearDown(bridge.dispose);
+
+      controller.refresh();
+      final firstRequest = _requestId(bridge.sent.single);
+      bridge.emit(
+        SubagentListMessage(
+          sessionId: 's1',
+          requestId: firstRequest,
+          subagents: const [SubagentInfo(threadId: 'first', status: 'running')],
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      controller.refresh();
+      final secondRequest = _requestId(bridge.sent.last);
+      expect(secondRequest, isNot(firstRequest));
+      bridge.emit(
+        SubagentActivitySummaryMessage(
+          scope: 'runtime',
+          ownerSessionId: 's1',
+          providerThreadId: 'provider-parent',
+          revision: 'old-revision',
+          activeCount: 1,
+          totalCount: 1,
+          truncated: false,
+          subscribed: false,
+          listRequestId: firstRequest,
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(bridge.sent.last.type, 'get_subagents');
+      expect(controller.activityRevision, isNull);
+      bridge.emit(
+        SubagentListMessage(
+          sessionId: 's1',
+          requestId: secondRequest,
+          subagents: const [SubagentInfo(threadId: 'second', status: 'done')],
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.subagents.single.threadId, 'second');
+    },
+  );
+
+  test(
+    'a list response from the previous runtime thread cannot overwrite the new target',
+    () async {
+      final bridge = _Bridge()..runtimeProviderThreadId = 'thread-a';
+      final controller = SubagentsController(sessionId: 's1', bridge: bridge);
+      addTearDown(controller.dispose);
+      addTearDown(bridge.dispose);
+
+      controller.refresh();
+      final oldRequest = _requestId(bridge.sent.single);
+      bridge.runtimeProviderThreadId = 'thread-b';
+      controller.refresh();
+      expect(bridge.sent, hasLength(1));
+
+      bridge.emit(
+        SubagentListMessage(
+          sessionId: 's1',
+          requestId: oldRequest,
+          subagents: const [
+            SubagentInfo(threadId: 'old-target', status: 'done'),
+          ],
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(bridge.sent.last.type, 'get_subagents');
+      final newRequest = _requestId(bridge.sent.last);
+      expect(newRequest, isNot(oldRequest));
+      expect(controller.subagents, isEmpty);
+      bridge.emit(
+        SubagentListMessage(
+          sessionId: 's1',
+          requestId: newRequest,
+          subagents: const [
+            SubagentInfo(threadId: 'new-target', status: 'done'),
+          ],
+        ),
+        tag: 's1',
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.subagents.single.threadId, 'new-target');
+    },
+  );
+
+  test('old Bridge fallback keeps snapshot-derived active count', () async {
+    final bridge = _Bridge();
+    final controller = SubagentsController(sessionId: 's1', bridge: bridge);
+    addTearDown(controller.dispose);
+    addTearDown(bridge.dispose);
+
+    controller.refresh();
+    final request = _requestId(bridge.sent.single);
+    bridge.emit(
+      SubagentListMessage(
+        sessionId: 's1',
+        requestId: request,
+        subagents: const [SubagentInfo(threadId: 'child', status: 'running')],
+      ),
+      tag: 's1',
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(controller.activeCount, 1);
+    expect(controller.activityRevision, isNull);
+    expect(bridge.sent, hasLength(1));
+  });
 
   test('history requires a pending exact request', () async {
     final bridge = _Bridge();
