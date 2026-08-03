@@ -5365,6 +5365,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
               networkAccessEnabled: true,
               webSearchMode: "live",
               additionalWritableRoots: ["/tmp/shared"],
+              collaborationMode: "plan",
             },
           },
         ],
@@ -5407,6 +5408,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       networkAccessEnabled: true,
       webSearchMode: "live",
       additionalWritableRoots: [resolve("/tmp/shared")],
+      collaborationMode: "plan",
     });
     expect(session.forkedFromThreadId).toBe("thr_parent");
     const resumed = ws.send.mock.calls
@@ -5474,6 +5476,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
               serviceTier: "fast",
               approvalPolicy: "never",
               sandboxMode: "danger-full-access",
+              collaborationMode: "plan",
             },
           },
         ],
@@ -5495,6 +5498,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         serviceTier: "standard",
         approvalPolicy: "on-request",
         sandboxMode: "workspace-write",
+        planMode: false,
       },
       ws,
     );
@@ -5505,6 +5509,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       serviceTier: "standard",
       approvalPolicy: "on-request",
       sandboxMode: "workspace-write",
+      collaborationMode: "default",
     });
 
     bridge.close();

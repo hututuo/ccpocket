@@ -9132,6 +9132,17 @@ export class BridgeWebSocketServer {
             const savedSandboxMode = indexedSettings?.sandboxMode
               ? sandboxModeToInternal(indexedSettings.sandboxMode)
               : undefined;
+            const savedCollaborationMode =
+              indexedSettings?.collaborationMode === "plan" ||
+              indexedSettings?.collaborationMode === "default"
+                ? indexedSettings.collaborationMode
+                : undefined;
+            const requestedCollaborationMode =
+              msg.planMode === undefined && msg.permissionMode !== "plan"
+                ? savedCollaborationMode
+                : planMode
+                  ? ("plan" as const)
+                  : ("default" as const);
             const createStartedAt = Date.now();
             sendResumeProgress("runtime_starting");
             const sessionId = this.sessionManager.create(
@@ -9176,9 +9187,7 @@ export class BridgeWebSocketServer {
                       (indexedSettings?.webSearchMode as
                         "disabled" | "cached" | "live" | undefined),
                     additionalWritableRoots: additionalWritableRoots.roots,
-                    collaborationMode: planMode
-                      ? ("plan" as const)
-                      : ("default" as const),
+                    collaborationMode: requestedCollaborationMode,
                   }),
             );
             sessionCreateMs = Date.now() - createStartedAt;
