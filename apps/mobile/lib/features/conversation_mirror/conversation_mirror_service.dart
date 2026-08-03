@@ -2695,7 +2695,7 @@ class ConversationMirrorService extends ChangeNotifier {
             provider: pending.provider,
             providerSessionId: pending.providerSessionId,
           );
-        } else {
+        } else if (result.errorCode != 'malformed_items') {
           _stopWatchForRequest(
             key: key,
             requestId: requestId,
@@ -2738,7 +2738,7 @@ class ConversationMirrorService extends ChangeNotifier {
           providerSessionId: pending.providerSessionId,
           codexSourceId: pending.codexSourceId,
         );
-      } else {
+      } else if (result.errorCode != 'malformed_items') {
         _stopWatchForRequest(
           key: null,
           requestId: requestId,
@@ -2747,6 +2747,14 @@ class ConversationMirrorService extends ChangeNotifier {
           codexSourceId: pending.codexSourceId,
         );
       }
+      keepAcceptedWatch =
+          result.errorCode == 'malformed_items' &&
+          _watchRequestIdsByConversation[_logicalWatchKey(
+                pending.provider,
+                pending.providerSessionId,
+                pending.codexSourceId,
+              )] ==
+              requestId;
     }
     if (!keepAcceptedWatch) _acceptedRequestIds.remove(requestId);
     if (!pending.completer.isCompleted) pending.completer.complete(result);

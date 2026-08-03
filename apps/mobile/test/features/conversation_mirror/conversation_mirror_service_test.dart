@@ -3138,6 +3138,31 @@ void main() {
       final download = service.downloadAndWatch(_recentSession);
       await _waitUntil(() async => bridge.sent.isNotEmpty);
       final watchRequestId = bridge.sent.single['requestId'] as String;
+      final initialSync = service.syncNow(_recentSession);
+      await _waitUntil(
+        () async => bridge.sent
+                .where(
+                  (request) => request['type'] == 'conversation_mirror_sync',
+                )
+                .length ==
+            1,
+      );
+      final initialSyncRequest = bridge.sent
+          .where((request) => request['type'] == 'conversation_mirror_sync')
+          .single;
+      final initialSyncRequestId = initialSyncRequest['requestId'] as String;
+      expect(initialSyncRequestId, isNot(watchRequestId));
+      bridge
+        ..emit(_event(requestId: initialSyncRequestId, event: 'accepted'))
+        ..emit(
+          _event(
+            requestId: initialSyncRequestId,
+            event: 'not_modified',
+            revision: initialRevision,
+            threadStatus: 'idle',
+          ),
+        );
+      expect((await initialSync).success, isTrue);
       final nextRevision = _hashText('malformed-patch-r2');
       bridge
         ..emit(_event(requestId: watchRequestId, event: 'accepted'))
@@ -3169,11 +3194,77 @@ void main() {
         (await service.metadataFor(_recentSession))?.revision,
         initialRevision,
       );
+      await _waitUntil(
+        () async => bridge.sent
+                .where(
+                  (request) => request['type'] == 'conversation_mirror_sync',
+                )
+                .length ==
+            2,
+      );
+      final syncRequests = bridge.sent
+          .where((request) => request['type'] == 'conversation_mirror_sync')
+          .toList(growable: false);
+      final resetRequest = syncRequests[1];
+      expect(resetRequest['requestId'], isNot(watchRequestId));
+      expect(resetRequest['requestId'], isNot(syncRequests[0]['requestId']));
+      expect(resetRequest['provider'], 'codex');
+      expect(resetRequest['providerSessionId'], 'provider-session-1');
+      expect(resetRequest['projectPath'], '/tmp/project');
+
+      final laterMessage = <String, dynamic>{
+        'type': 'user_input',
+        'text': 'watch survived malformed patch',
+        'userMessageUuid': 'codex:user-turn:1',
+      };
+      final laterRevision = _hashText('malformed-patch-r3');
+      bridge
+        ..emit(_event(requestId: watchRequestId, event: 'accepted'))
+        ..emit(
+          _event(
+            requestId: watchRequestId,
+            event: 'watching',
+            revision: initialRevision,
+            threadStatus: 'idle',
+          ),
+        )
+        ..emit(
+          _event(
+            requestId: watchRequestId,
+            event: 'patch',
+            baseRevision: initialRevision,
+            revision: laterRevision,
+            upserts: [
+              {
+                'entryId': 'entry-1',
+                'index': 1,
+                'contentHash': _hashJson(laterMessage),
+                'message': laterMessage,
+              },
+            ],
+            deletes: const [],
+          ),
+        );
+      await _waitUntil(
+        () async =>
+            (await service.metadataFor(_recentSession))?.revision ==
+            laterRevision,
+      );
+      expect(
+        (await store.readEntries(
+          const ConversationMirrorKey(
+            bridgeInstanceId: 'bridge-test',
+            provider: 'codex',
+            providerSessionId: 'provider-session-1',
+          ),
+        )).last.message['text'],
+        'watch survived malformed patch',
+      );
       expect(
         bridge.sent.where(
-          (request) => request['type'] == 'conversation_mirror_sync',
+          (request) => request['type'] == 'conversation_mirror_unwatch',
         ),
-        hasLength(1),
+        isEmpty,
       );
     },
   );
