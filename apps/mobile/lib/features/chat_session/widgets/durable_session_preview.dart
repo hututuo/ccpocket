@@ -169,6 +169,14 @@ class _DurableSessionPreviewUpdaterState
     if (expectedSourceFingerprint != null &&
         expectedSourceFingerprint.isNotEmpty &&
         sourceFingerprint != expectedSourceFingerprint) {
+      cubit.suspendDetachedProviderProjection();
+      if (!sessionList.hasUsableCatalogForCurrentTarget) {
+        // Authentication, route canonicalization, and the first priority
+        // commit can temporarily expose different fingerprints for the same
+        // Bridge/source. Keep the last committed durable facts visible while
+        // denying mutations until the current target is authoritative.
+        return;
+      }
       cubit.updateDetachedProviderStatus(
         null,
         sourceFingerprint: expectedSourceFingerprint,

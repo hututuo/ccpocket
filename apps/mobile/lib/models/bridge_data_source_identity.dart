@@ -121,6 +121,7 @@ class BridgeDataSourceIdentity {
   BridgeDataSourceIdentity reconciledWithAuthenticated(
     BridgeDataSourceIdentity authenticated, {
     required String provider,
+    bool allowProvisionalRouteUpgrade = false,
   }) {
     final authenticatedBridgeId =
         authenticated._normalizedBridgeInstanceId;
@@ -134,7 +135,9 @@ class BridgeDataSourceIdentity {
     if (currentBridgeId == null) {
       final currentRoute = _normalizedLegacyRouteIdentity;
       final authenticatedRoute = authenticated._normalizedLegacyRouteIdentity;
-      if (currentRoute != null && currentRoute != authenticatedRoute) {
+      if (!allowProvisionalRouteUpgrade &&
+          currentRoute != null &&
+          currentRoute != authenticatedRoute) {
         return this;
       }
     }

@@ -261,6 +261,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     final next = _dataSourceIdentity.reconciledWithAuthenticated(
       authenticatedIdentity,
       provider: Provider.claude.value,
+      allowProvisionalRouteUpgrade: true,
     );
     if (!next.isSatisfiedBy(
       authenticatedIdentity,

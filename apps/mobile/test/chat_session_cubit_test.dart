@@ -1392,6 +1392,51 @@ void main() {
     );
 
     test(
+      'runtime replacement preserves durable working state while revoking authority',
+      () {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-working-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-working-old',
+        );
+        addTearDown(cubit.close);
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-working-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'bridgeRuntime',
+            confidence: 'authoritative',
+            observedAt: '2026-08-03T01:10:00.000Z',
+            executionHost: 'bridge',
+            activeTurnId: 'turn-working',
+            controlState: 'steerable',
+            authorityGeneration: 'authority-working-old',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+
+        expect(cubit.state.status, ProcessStatus.running);
+        expect(cubit.canMutateAttachedRuntime, isTrue);
+
+        cubit.updateDetachedLiveRuntime('runtime-working-new');
+
+        expect(cubit.state.status, ProcessStatus.running);
+        expect(cubit.canMutateAttachedRuntime, isFalse);
+        expect(cubit.detachedActionBrokerAuthorityGeneration, isNull);
+      },
+    );
+
+    test(
       'source replacement clears transient approval and rejects its old action',
       () async {
         mockBridge.advertisedBridgeCapabilities = const {

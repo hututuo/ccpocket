@@ -147,5 +147,13 @@ void main() {
       ),
       otherRoute,
     );
+    expect(
+      otherRoute.reconciledWithAuthenticated(
+        authenticated,
+        provider: 'codex',
+        allowProvisionalRouteUpgrade: true,
+      ),
+      authenticated,
+    );
   });
 }

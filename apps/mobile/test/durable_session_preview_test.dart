@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:ccpocket/features/claude_session/claude_session_screen.dart';
 import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
+import 'package:ccpocket/features/chat_session/state/chat_session_state.dart';
 import 'package:ccpocket/features/chat_session/state/streaming_state_cubit.dart';
 import 'package:ccpocket/features/chat_session/widgets/durable_session_preview.dart';
 import 'package:ccpocket/features/chat_session/widgets/chat_input_with_overlays.dart';
@@ -400,6 +401,7 @@ void main() {
       final sessionList = _ProjectionSessionListCubit(
         bridge: bridge,
         sourceFingerprint: 'source-b',
+        projectionReady: true,
         status: const ConversationSyncV2Status(
           provider: 'codex',
           providerSessionId: 'same-thread',
@@ -493,6 +495,162 @@ void main() {
       expect(cubit.state.codexModel, 'model-source-a');
       expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
       expect(cubit.canMutateAttachedRuntime, isTrue);
+    },
+  );
+
+  testWidgets(
+    'transient route canonicalization preserves durable facts but suspends control',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+          codexDurableThreadSettingsCapability,
+        }
+        ..authenticatedBridgeInstanceId = 'bridge-a'
+        ..authenticatedCodexSourceId = 'source-a'
+        ..authoritativeSessionList = true;
+      final streaming = StreamingStateCubit();
+      final cubit = ChatSessionCubit(
+        sessionId: 'stable-thread',
+        provider: Provider.codex,
+        bridge: bridge,
+        streamingCubit: streaming,
+        detachedPreview: true,
+        initialLiveRuntimeSessionId: 'runtime-a',
+      );
+      final sessionList = _ProjectionSessionListCubit(
+        bridge: bridge,
+        sourceFingerprint: 'canonical-a',
+        projectionReady: true,
+        status: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'stable-thread',
+          activity: 'working',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'bridgeRuntime',
+          confidence: 'authoritative',
+          observedAt: '2026-08-03T01:00:00.000Z',
+          executionHost: 'bridge',
+          activeTurnId: 'turn-a',
+          controlState: 'steerable',
+          authorityGeneration: 'authority-a',
+        ),
+        metadata: const RecentSession(
+          sessionId: 'stable-thread',
+          provider: 'codex',
+          firstPrompt: 'Stable settings',
+          created: '2026-08-03T00:00:00.000Z',
+          modified: '2026-08-03T01:00:00.000Z',
+          gitBranch: 'main',
+          projectPath: '/stable',
+          isSidechain: false,
+          codexModel: 'gpt-stable',
+          codexModelReasoningEffort: 'high',
+          codexServiceTier: 'standard',
+          codexApprovalPolicy: 'never',
+          codexApprovalsReviewer: 'user',
+          codexSandboxMode: 'danger-full-access',
+          codexCollaborationMode: 'default',
+          codexSettingsSnapshotComplete: true,
+        ),
+      );
+      addTearDown(cubit.close);
+      addTearDown(streaming.close);
+      addTearDown(sessionList.close);
+      addTearDown(bridge.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MultiBlocProvider(
+            providers: [
+              BlocProvider<ChatSessionCubit>.value(value: cubit),
+              BlocProvider<SessionListCubit>.value(value: sessionList),
+            ],
+            child: const DurableSessionPreviewUpdater(
+              revision: 'stable-route',
+              messages: [],
+              hasEarlier: false,
+              statusProvider: 'codex',
+              statusProviderSessionId: 'stable-thread',
+              expectedSourceFingerprint: 'canonical-a',
+              liveRuntimeSessionId: 'runtime-a',
+              child: SizedBox.shrink(),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(cubit.state.status, ProcessStatus.running);
+      expect(cubit.state.codexModel, 'gpt-stable');
+      expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.high);
+      expect(
+        cubit.codexSettingsActionability,
+        CodexSettingsActionability.editable,
+      );
+
+      sessionList.replace(
+        sourceFingerprint: 'provisional-tailnet-route',
+        projectionReady: false,
+        status: sessionList.status,
+        metadata: sessionList.metadata,
+      );
+      await tester.pump();
+
+      expect(cubit.state.status, ProcessStatus.running);
+      expect(cubit.state.codexModel, 'gpt-stable');
+      expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.high);
+      expect(
+        cubit.codexSettingsActionability,
+        CodexSettingsActionability.waitingForRuntime,
+      );
+      expect(cubit.canMutateAttachedRuntime, isFalse);
+
+      sessionList.replace(
+        sourceFingerprint: 'canonical-a',
+        projectionReady: true,
+        status: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'stable-thread',
+          activity: 'idle',
+          attention: 'none',
+          result: 'completed',
+          runtimeAttachment: 'loaded',
+          source: 'bridgeRuntime',
+          confidence: 'authoritative',
+          observedAt: '2026-08-03T01:01:00.000Z',
+          executionHost: 'unknown',
+          controlState: 'writable',
+          authorityGeneration: 'authority-b',
+        ),
+        metadata: sessionList.metadata,
+      );
+      await tester.pump();
+
+      expect(cubit.state.status, ProcessStatus.idle);
+      expect(cubit.state.codexModel, 'gpt-stable');
+      expect(
+        cubit.codexSettingsActionability,
+        CodexSettingsActionability.editable,
+      );
+
+      sessionList.replace(
+        sourceFingerprint: 'canonical-other-source',
+        projectionReady: true,
+        status: sessionList.status,
+        metadata: sessionList.metadata,
+      );
+      await tester.pump();
+
+      expect(cubit.state.status, ProcessStatus.unknown);
+      expect(cubit.state.codexModel, 'gpt-stable');
+      expect(
+        cubit.codexSettingsActionability,
+        CodexSettingsActionability.waitingForRuntime,
+      );
+      expect(cubit.canMutateAttachedRuntime, isFalse);
     },
   );
 
@@ -820,7 +978,7 @@ void main() {
   );
 
   testWidgets(
-    'provisional identity authentication preserves the chat state subtree',
+    'different IP route authentication preserves the chat state subtree',
     (tester) async {
       final bridge = MockBridgeService()
         ..mockLogicalConnectionIdentity = 'machine:provisional-upgrade'
@@ -880,7 +1038,9 @@ void main() {
 
         bridge
           ..authenticatedBridgeInstanceId = 'bridge-authenticated-upgrade'
-          ..authenticatedCodexSourceId = 'source-authenticated-upgrade';
+          ..authenticatedCodexSourceId = 'source-authenticated-upgrade'
+          ..mockLogicalConnectionIdentity = 'machine:tailnet-upgrade'
+          ..mockLastUrl = 'wss://100.94.144.77:8765';
         bridge.emitSessionList([
           const SessionInfo(
             id: 'runtime-authenticated-upgrade',
@@ -1696,6 +1856,7 @@ class _ProjectionSessionListCubit extends SessionListCubit {
     required this.status,
     required this.metadata,
     this.metadataAvailable = true,
+    this.projectionReady = false,
   });
 
   final StreamController<void> _changes = StreamController<void>.broadcast();
@@ -1703,6 +1864,10 @@ class _ProjectionSessionListCubit extends SessionListCubit {
   ConversationSyncV2Status status;
   RecentSession metadata;
   bool metadataAvailable;
+  bool projectionReady;
+
+  @override
+  bool get hasUsableCatalogForCurrentTarget => projectionReady;
 
   @override
   Stream<void> get catalogSnapshotChanges => _changes.stream;
@@ -1731,11 +1896,13 @@ class _ProjectionSessionListCubit extends SessionListCubit {
     required ConversationSyncV2Status status,
     required RecentSession metadata,
     bool? metadataAvailable,
+    bool? projectionReady,
   }) {
     this.sourceFingerprint = sourceFingerprint;
     this.status = status;
     this.metadata = metadata;
     this.metadataAvailable = metadataAvailable ?? this.metadataAvailable;
+    this.projectionReady = projectionReady ?? this.projectionReady;
     _changes.add(null);
   }
 

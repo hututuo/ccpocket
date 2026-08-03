@@ -229,6 +229,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   String? _detachedAuthoritySourceFingerprint;
   String? _detachedActiveTurnId;
   String? _detachedRejectedAuthorityGeneration;
+  bool _detachedProviderProjectionCurrent = false;
   final ValueNotifier<int> detachedLiveRuntimeRevision = ValueNotifier(0);
 
   /// Transient Bridge attachment used by a durable, cache-first page.
@@ -351,7 +352,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool get _hasCurrentDetachedAuthorityLease {
     final authorityGeneration = _detachedAuthorityGeneration;
     final authoritySource = _detachedAuthoritySourceFingerprint;
-    return _detachedAuthorityObserved &&
+    return _detachedProviderProjectionCurrent &&
+        _detachedAuthorityObserved &&
         _detachedLiveRuntimeSessionId != null &&
         authorityGeneration != null &&
         authorityGeneration.isNotEmpty &&
@@ -380,6 +382,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final codexSourceId = _bridge.codexSourceId?.trim();
     final sourceFingerprint = _detachedProviderSourceFingerprint?.trim();
     return detachedPreview &&
+        _detachedProviderProjectionCurrent &&
         _bridge.bridgeCapabilities.contains(
           codexDurableThreadSettingsCapability,
         ) &&
@@ -938,7 +941,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         _detachedAuthorityGeneration != null) {
       _detachedRejectedAuthorityGeneration = _detachedAuthorityGeneration;
     }
-    _clearDetachedRuntimeTransients(previousRuntimeSessionId);
+    _clearDetachedRuntimeTransients(
+      previousRuntimeSessionId,
+      preserveProviderProjection: true,
+    );
     _detachedAuthorityObserved = false;
     _detachedExecutionHost = null;
     _detachedControlState = null;
@@ -975,7 +981,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _synchronizeDetachedCodexRuntimeSnapshot(_bridge.sessions);
   }
 
-  void _clearDetachedRuntimeTransients(String? previousRuntimeSessionId) {
+  void _clearDetachedRuntimeTransients(
+    String? previousRuntimeSessionId, {
+    bool preserveProviderProjection = false,
+  }) {
     if (previousRuntimeSessionId != null) {
       for (final item in _deliveryPendingInputs.values) {
         _bridge.clearDeliveryPendingInput(
@@ -1001,7 +1010,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     emit(
       state.copyWith(
         entries: durableEntries,
-        status: ProcessStatus.unknown,
+        status:
+            preserveProviderProjection &&
+                _detachedProviderProjectionCurrent &&
+                state.status != ProcessStatus.waitingApproval
+            ? state.status
+            : ProcessStatus.unknown,
         approval: const ApprovalState.none(),
         queuedInput: null,
         externalDesktopTurnActive: false,
@@ -1099,6 +1113,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     final observedAt = DateTime.tryParse(status.observedAt)?.toUtc();
     if (observedAt == null) return;
+    _detachedProviderProjectionCurrent = true;
     final previousObservedAt = _detachedProviderStatusObservedAt;
     if (previousObservedAt != null && observedAt.isBefore(previousObservedAt)) {
       return;
@@ -1213,6 +1228,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     final observedAt = DateTime.tryParse(session.modified)?.toUtc();
     if (observedAt == null) return;
+    _detachedProviderProjectionCurrent = true;
     final previousObservedAt = _detachedProviderSettingsObservedAt;
     if (previousObservedAt != null && observedAt.isBefore(previousObservedAt)) {
       return;
@@ -1398,6 +1414,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _detachedAuthoritySourceFingerprint = null;
     _detachedActiveTurnId = null;
     _detachedRejectedAuthorityGeneration = null;
+    _detachedProviderProjectionCurrent = false;
     _detachedProviderSettingsObservedAt = null;
     _detachedProviderSettingsSignature = null;
     _detachedProviderOwnsModel = false;
@@ -1406,6 +1423,46 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     codexServiceTierRaw.value = null;
     detachedLiveRuntimeRevision.value += 1;
     return true;
+  }
+
+  /// Suspends mutations while the page's source partition is being
+  /// re-authenticated without discarding already committed durable facts.
+  ///
+  /// Route aliases can briefly disagree with the canonical Bridge/source
+  /// fingerprint during reconnect or IP changes. That transition must revoke
+  /// runtime authority immediately, but it must not make model, effort,
+  /// permissions, or provider activity flicker to unknown. A confirmed source
+  /// mismatch invalidates live status separately after priority sync while
+  /// the original source's durable settings remain visible but read-only.
+  void suspendDetachedProviderProjection() {
+    if (!detachedPreview || isClosed) return;
+    final authorityChanged =
+        _detachedProviderProjectionCurrent ||
+        _detachedAuthorityObserved ||
+        _detachedExecutionHost != null ||
+        _detachedControlState != null ||
+        _detachedAuthorityGeneration != null ||
+        _detachedAuthorityLiveRuntimeGeneration != null ||
+        _detachedAuthoritySourceFingerprint != null ||
+        _detachedActiveTurnId != null;
+    _detachedProviderProjectionCurrent = false;
+    _detachedAuthorityObserved = false;
+    _detachedExecutionHost = null;
+    _detachedControlState = null;
+    _detachedAuthorityGeneration = null;
+    _detachedAuthorityLiveRuntimeGeneration = null;
+    _detachedAuthoritySourceFingerprint = null;
+    _detachedActiveTurnId = null;
+    externalDesktopTurnSteerable.value = false;
+    if (authorityChanged) {
+      detachedLiveRuntimeRevision.value += 1;
+      emit(
+        state.copyWith(
+          externalDesktopTurnActive: false,
+          externalDesktopTurnId: null,
+        ),
+      );
+    }
   }
 
   void _clearDetachedProviderSettings() {

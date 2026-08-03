@@ -423,6 +423,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     final next = _dataSourceIdentity.reconciledWithAuthenticated(
       authenticatedIdentity,
       provider: Provider.codex.value,
+      allowProvisionalRouteUpgrade: true,
     );
     if (!next.isSatisfiedBy(
       authenticatedIdentity,
