@@ -179,6 +179,39 @@ void main() {
     expect(complete.event, ConversationMirrorEventKind.snapshotComplete);
   });
 
+  test('fails safe when probe notModified is missing or wrongly typed', () {
+    final missing =
+        ServerMessage.fromJson({
+              ..._base('probe'),
+              'revision': 'rev-1',
+              'entryCount': 0,
+              'totalBytes': 0,
+            })
+            as ConversationMirrorEventMessage;
+    final stringValue =
+        ServerMessage.fromJson({
+              ..._base('probe'),
+              'revision': 'rev-1',
+              'entryCount': 0,
+              'totalBytes': 0,
+              'notModified': 'true',
+            })
+            as ConversationMirrorEventMessage;
+    final numericValue =
+        ServerMessage.fromJson({
+              ..._base('probe'),
+              'revision': 'rev-1',
+              'entryCount': 0,
+              'totalBytes': 0,
+              'notModified': 1,
+            })
+            as ConversationMirrorEventMessage;
+
+    expect(missing.notModified, isFalse);
+    expect(stringValue.notModified, isFalse);
+    expect(numericValue.notModified, isFalse);
+  });
+
   test('parses a bounded fragmented mirror entry', () {
     final chunk =
         ServerMessage.fromJson({
@@ -242,6 +275,113 @@ void main() {
     expect(patch.baseRevision, 'rev-1');
     expect(patch.entries.single.rawMessage['text'], 'updated');
     expect(patch.deletes, ['item-2']);
+  });
+
+  test('drops malformed inline entries and deletes independently', () {
+    final patch =
+        ServerMessage.fromJson({
+              ..._base('patch'),
+              'baseRevision': 'rev-1',
+              'revision': 'rev-2',
+              'upserts': [
+                _entry(id: 'valid-entry'),
+                null,
+                {'entryId': 'missing-message'},
+              ],
+              'deletes': ['valid-delete', 42, ''],
+            })
+            as ConversationMirrorEventMessage;
+
+    expect(
+      patch.entries.map((entry) => entry.entryId).toList(growable: false),
+      ['valid-entry'],
+    );
+    expect(patch.deletes, ['valid-delete']);
+    expect(patch.malformedEntryCount, 2);
+    expect(patch.malformedDeleteCount, 2);
+  });
+
+  test(
+    'all malformed inline lists become empty without hiding frame identity',
+    () {
+      final patch =
+          ServerMessage.fromJson({
+                ..._base('patch'),
+                'baseRevision': 'rev-1',
+                'revision': 'rev-2',
+                'upserts': [null, {'index': 'not-an-int'}],
+                'deletes': [null, 42, ''],
+              })
+              as ConversationMirrorEventMessage;
+
+      expect(patch.entries, isEmpty);
+      expect(patch.deletes, isEmpty);
+      expect(patch.malformedEntryCount, 2);
+      expect(patch.malformedDeleteCount, 3);
+      expect(patch.providerSessionId, 'thread-1');
+      expect(patch.baseRevision, 'rev-1');
+      expect(patch.revision, 'rev-2');
+    },
+  );
+
+  test('retains inline list bounds and strict scope/revision fields', () {
+    expect(
+      () => ServerMessage.fromJson({
+        ..._base('snapshot_page'),
+        'revision': 'rev-1',
+        'pageIndex': 0,
+        'pageCount': 1,
+        'entries': List<dynamic>.filled(101, null),
+      }),
+      throwsFormatException,
+    );
+    final oversizedEntry = {
+      ..._entry(id: 'oversized-inline'),
+      'message': {
+        'type': 'tool_result',
+        'content': 'x' * (512 * 1024),
+      },
+    };
+    final boundedPage =
+        ServerMessage.fromJson({
+              ..._base('snapshot_page'),
+              'revision': 'rev-1',
+              'pageIndex': 0,
+              'pageCount': 1,
+              'entries': [oversizedEntry],
+            })
+            as ConversationMirrorEventMessage;
+    expect(boundedPage.entries, isEmpty);
+    expect(boundedPage.malformedEntryCount, 1);
+
+    expect(
+      () => ServerMessage.fromJson({
+        ..._base('patch'),
+        'baseRevision': 'rev-1',
+        'revision': 'rev-2',
+        'upserts': List<dynamic>.filled(2001, null),
+      }),
+      throwsFormatException,
+    );
+    expect(
+      () => ServerMessage.fromJson({
+        ..._base('patch'),
+        'baseRevision': 'rev-1',
+        'revision': 2,
+        'upserts': [null],
+      }),
+      throwsFormatException,
+    );
+    expect(
+      () => ServerMessage.fromJson({
+        ..._base('patch'),
+        'providerSessionId': 7,
+        'baseRevision': 'rev-1',
+        'revision': 'rev-2',
+        'upserts': [null],
+      }),
+      throwsFormatException,
+    );
   });
 
   test('ignores additive fields and preserves future message envelopes', () {

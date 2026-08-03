@@ -5,6 +5,16 @@ const LocalFeatureProtocolSlot conversationMirrorProtocolSlot =
 const conversationMirrorSourceIdentityCapability =
     'conversation_mirror_source_identity_v1';
 
+// Mirror snapshot pages are bounded by the local store's 100-entry page
+// limit. Patches do not carry a page count, but their inline lists still need
+// a finite safety bound before per-entry wrappers are materialized.
+const _conversationMirrorMaxInlineEntries = 2000;
+const _conversationMirrorMaxSnapshotPageEntries = 100;
+const _conversationMirrorMaxInlineDeletes = 2000;
+const _conversationMirrorMaxEntryBytes = 512 * 1024;
+const _conversationMirrorMaxEntryIdLength = 512;
+const _conversationMirrorMaxContentHashLength = 128;
+
 class _ConversationMirrorProtocolSlot
     implements LocalFeatureProtocolSlot, LocalFeatureRequestProtocolSlot {
   const _ConversationMirrorProtocolSlot();
@@ -143,9 +153,17 @@ class ConversationMirrorWireEntry {
     }
     final normalized = Map<String, dynamic>.from(rawMessage);
     return ConversationMirrorWireEntry(
-      entryId: _conversationMirrorRequiredString(json, 'entryId'),
+      entryId: _conversationMirrorRequiredString(
+        json,
+        'entryId',
+        maximumLength: _conversationMirrorMaxEntryIdLength,
+      ),
       index: _conversationMirrorRequiredInt(json, 'index', minimum: 0),
-      contentHash: _conversationMirrorRequiredString(json, 'contentHash'),
+      contentHash: _conversationMirrorRequiredString(
+        json,
+        'contentHash',
+        maximumLength: _conversationMirrorMaxContentHashLength,
+      ),
       rawMessage: Map.unmodifiable(normalized),
     );
   }
@@ -285,6 +303,8 @@ class ConversationMirrorEventMessage implements LocalFeatureTransientMessage {
   final bool notModified;
   final List<ConversationMirrorWireEntry> entries;
   final List<String> deletes;
+  final int malformedEntryCount;
+  final int malformedDeleteCount;
   final String? errorCode;
   final String? error;
 
@@ -304,6 +324,8 @@ class ConversationMirrorEventMessage implements LocalFeatureTransientMessage {
     this.notModified = false,
     this.entries = const [],
     this.deletes = const [],
+    this.malformedEntryCount = 0,
+    this.malformedDeleteCount = 0,
     this.errorCode,
     this.error,
   });
@@ -323,10 +345,15 @@ class ConversationMirrorEventMessage implements LocalFeatureTransientMessage {
       ConversationMirrorEventKind.patch => json['upserts'],
       _ => json['entries'],
     };
-    final entries = rawEntries == null
-        ? const <ConversationMirrorWireEntry>[]
-        : _conversationMirrorEntryList(rawEntries);
-    final deletes = _conversationMirrorStringList(json['deletes']);
+    final entryResult = rawEntries == null
+        ? const _ConversationMirrorListResult<ConversationMirrorWireEntry>()
+        : _conversationMirrorEntryList(
+            rawEntries,
+            maximumLength: event == ConversationMirrorEventKind.snapshotPage
+                ? _conversationMirrorMaxSnapshotPageEntries
+                : _conversationMirrorMaxInlineEntries,
+          );
+    final deleteResult = _conversationMirrorStringList(json['deletes']);
     final message = ConversationMirrorEventMessage(
       event: event,
       requestId: _conversationMirrorRequiredString(json, 'requestId'),
@@ -354,9 +381,19 @@ class ConversationMirrorEventMessage implements LocalFeatureTransientMessage {
       pageIndex: _conversationMirrorOptionalInt(json, 'pageIndex', minimum: 0),
       pageCount: _conversationMirrorOptionalInt(json, 'pageCount', minimum: 0),
       threadStatus: _conversationMirrorOptionalString(json, 'threadStatus'),
-      notModified: json['notModified'] as bool? ?? false,
-      entries: entries,
-      deletes: deletes,
+      // The v1 Bridge requires this only on probe responses. Missing or
+      // wrongly typed values fail safe to false, so a malformed flag can
+      // trigger normal reconciliation but can never claim a changed snapshot
+      // is unchanged.
+      notModified: _conversationMirrorOptionalBool(
+        json,
+        'notModified',
+        fallback: false,
+      ),
+      entries: entryResult.values,
+      deletes: deleteResult.values,
+      malformedEntryCount: entryResult.malformedCount,
+      malformedDeleteCount: deleteResult.malformedCount,
       errorCode: _conversationMirrorOptionalString(json, 'errorCode'),
       error: _conversationMirrorOptionalString(json, 'error'),
     );
@@ -523,36 +560,106 @@ void _validateConversationMirrorEvent(ConversationMirrorEventMessage message) {
   }
 }
 
-List<ConversationMirrorWireEntry> _conversationMirrorEntryList(Object raw) {
+class _ConversationMirrorListResult<T> {
+  const _ConversationMirrorListResult({
+    this.values = const [],
+    this.malformedCount = 0,
+  });
+
+  final List<T> values;
+  final int malformedCount;
+}
+
+_ConversationMirrorListResult<ConversationMirrorWireEntry>
+_conversationMirrorEntryList(
+  Object raw, {
+  required int maximumLength,
+}) {
   if (raw is! List) {
     throw const FormatException('Conversation mirror entries must be a list.');
   }
-  return List.unmodifiable(
-    raw.map((entry) {
-      if (entry is! Map) {
-        throw const FormatException('Conversation mirror entry must be a map.');
-      }
-      return ConversationMirrorWireEntry.fromJson(
-        Map<String, dynamic>.from(entry),
+  if (raw.length > maximumLength) {
+    throw const FormatException(
+      'Conversation mirror entries exceed the safety bound.',
+    );
+  }
+  final entries = <ConversationMirrorWireEntry>[];
+  var malformedCount = 0;
+  for (final candidate in raw) {
+    if (candidate is! Map) {
+      malformedCount++;
+      continue;
+    }
+    try {
+      final entry = ConversationMirrorWireEntry.fromJson(
+        Map<String, dynamic>.from(candidate),
       );
-    }),
+      if (utf8.encode(jsonEncode(entry.rawMessage)).length >
+          _conversationMirrorMaxEntryBytes) {
+        throw const FormatException(
+          'Conversation mirror entry exceeds the safety bound.',
+        );
+      }
+      entries.add(entry);
+    } catch (_) {
+      // Keep malformed-item handling local to this list. The surrounding
+      // frame still has strict identity, revision and page validation.
+      malformedCount++;
+    }
+  }
+  return _ConversationMirrorListResult(
+    values: List.unmodifiable(entries),
+    malformedCount: malformedCount,
   );
 }
 
-List<String> _conversationMirrorStringList(Object? raw) {
-  if (raw == null) return const [];
-  if (raw is! List || raw.any((item) => item is! String || item.isEmpty)) {
+_ConversationMirrorListResult<String> _conversationMirrorStringList(
+  Object? raw,
+) {
+  if (raw == null) return const _ConversationMirrorListResult<String>();
+  if (raw is! List) {
     throw const FormatException('Conversation mirror deletes are invalid.');
   }
-  return List.unmodifiable(raw.cast<String>());
+  if (raw.length > _conversationMirrorMaxInlineDeletes) {
+    throw const FormatException(
+      'Conversation mirror deletes exceed the safety bound.',
+    );
+  }
+  final deletes = <String>[];
+  var malformedCount = 0;
+  for (final candidate in raw) {
+    if (candidate is! String ||
+        candidate.isEmpty ||
+        candidate.length > _conversationMirrorMaxEntryIdLength) {
+      malformedCount++;
+      continue;
+    }
+    deletes.add(candidate);
+  }
+  return _ConversationMirrorListResult(
+    values: List.unmodifiable(deletes),
+    malformedCount: malformedCount,
+  );
+}
+
+bool _conversationMirrorOptionalBool(
+  Map<String, dynamic> json,
+  String key, {
+  required bool fallback,
+}) {
+  final value = json[key];
+  return value is bool ? value : fallback;
 }
 
 String _conversationMirrorRequiredString(
   Map<String, dynamic> json,
-  String key,
-) {
+  String key, {
+  int? maximumLength,
+}) {
   final value = json[key];
-  if (value is! String || value.trim().isEmpty) {
+  if (value is! String ||
+      value.trim().isEmpty ||
+      (maximumLength != null && value.length > maximumLength)) {
     throw FormatException('Conversation mirror field $key is required.');
   }
   return value;

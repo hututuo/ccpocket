@@ -3118,6 +3118,65 @@ void main() {
       expect(published.whereType<StatusMessage>(), isEmpty);
     },
   );
+
+  test(
+    'malformed patch keeps the old revision and requests a snapshot reset',
+    () async {
+      final initialMessage = <String, dynamic>{
+        'type': 'user_input',
+        'text': 'cached',
+        'userMessageUuid': 'codex:user-turn:0',
+      };
+      final initialRevision = _hashText('malformed-patch-r1');
+      await _seedLocalCopy(
+        store,
+        message: initialMessage,
+        revision: initialRevision,
+      );
+      await service.metadataFor(_recentSession);
+
+      final download = service.downloadAndWatch(_recentSession);
+      await _waitUntil(() async => bridge.sent.isNotEmpty);
+      final watchRequestId = bridge.sent.single['requestId'] as String;
+      final nextRevision = _hashText('malformed-patch-r2');
+      bridge
+        ..emit(_event(requestId: watchRequestId, event: 'accepted'))
+        ..emit(
+          _event(
+            requestId: watchRequestId,
+            event: 'watching',
+            revision: initialRevision,
+            threadStatus: 'idle',
+          ),
+        )
+        ..emit(
+          ConversationMirrorEventMessage.fromJson({
+            ..._baseMirrorEvent(
+              requestId: watchRequestId,
+              event: 'patch',
+              revision: nextRevision,
+              baseRevision: initialRevision,
+            ),
+            'upserts': [null, {'entryId': 'missing-message'}],
+            'deletes': [''],
+          }),
+        );
+
+      final result = await download;
+      expect(result.success, isFalse);
+      expect(result.errorCode, 'malformed_items');
+      expect(
+        (await service.metadataFor(_recentSession))?.revision,
+        initialRevision,
+      );
+      expect(
+        bridge.sent.where(
+          (request) => request['type'] == 'conversation_mirror_sync',
+        ),
+        hasLength(1),
+      );
+    },
+  );
 }
 
 const _recentSession = RecentSession(
@@ -3188,6 +3247,22 @@ ConversationMirrorEventMessage _event({
   'upserts': ?upserts,
   'deletes': ?deletes,
 });
+
+Map<String, dynamic> _baseMirrorEvent({
+  required String requestId,
+  required String event,
+  required String revision,
+  required String baseRevision,
+}) => {
+  'type': 'conversation_mirror_event_v1',
+  'event': event,
+  'requestId': requestId,
+  'bridgeInstanceId': 'bridge-test',
+  'provider': 'codex',
+  'providerSessionId': 'provider-session-1',
+  'revision': revision,
+  'baseRevision': baseRevision,
+};
 
 String _hashJson(Map<String, dynamic> value) =>
     sha256.convert(utf8.encode(jsonEncode(value))).toString();

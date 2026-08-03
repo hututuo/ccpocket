@@ -1056,6 +1056,16 @@ class ConversationMirrorService extends ChangeNotifier {
     }
     if (message is ConversationMirrorEventMessage) {
       if (!_acceptedRequestIds.contains(message.requestId)) return;
+      if (message.malformedEntryCount > 0 ||
+          message.malformedDeleteCount > 0) {
+        // Keep diagnostics bounded and privacy-safe: never include the
+        // malformed item, path, or provider thread identity.
+        debugPrint(
+          '[conversation-mirror] dropped malformed inline items '
+          '(entries=${message.malformedEntryCount}, '
+          'deletes=${message.malformedDeleteCount})',
+        );
+      }
       if (message.event == ConversationMirrorEventKind.accepted) {
         // Capture before the storage queue or any await. `accepted` marks the
         // provider-read boundary for this transfer, so later canonical content
@@ -1273,6 +1283,24 @@ class ConversationMirrorService extends ChangeNotifier {
           );
           break;
         case ConversationMirrorEventKind.patch:
+          if (event.malformedEntryCount > 0 ||
+              event.malformedDeleteCount > 0) {
+            // A patch revision covers the complete mutation set. Applying
+            // only the surviving items would advance the local revision while
+            // silently losing the dropped mutations, so fail closed and
+            // rebuild from a complete snapshot instead.
+            _finishPending(
+              event.requestId,
+              const ConversationMirrorSyncResult(
+                success: false,
+                changed: false,
+                errorCode: 'malformed_items',
+                error: 'Mirror patch contained malformed inline items.',
+              ),
+            );
+            await _requestSnapshotReset(key, pending?.projectPath);
+            break;
+          }
           final result = await _store.applyPatch(
             key: key,
             baseRevision: event.baseRevision!,
@@ -2688,7 +2716,7 @@ class ConversationMirrorService extends ChangeNotifier {
         );
       }
       keepAcceptedWatch =
-          result.success &&
+          (result.success || result.errorCode == 'malformed_items') &&
           pending.createsWatch &&
           (_watchRequestIds[key] == requestId ||
               _watchRequestIdsByConversation[_logicalWatchKey(
