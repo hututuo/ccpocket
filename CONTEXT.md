@@ -577,3 +577,17 @@ listeners were alive, but `/readyz` returned HTTP 503 with
 `action_broker_writer_unavailable`. A future release task must restore and
 verify daemon control plus Action Broker mutation before claiming the backend
 or phone settings path is accepted. This source task did not restart it.
+
+The first release attempt restored the managed app-server daemon successfully
+but exposed a branch-convergence omission: the Mobile-derived candidate did not
+contain the already-proven production Bridge commits for canonical durable
+`projectPath` resolution and atomic full-settings preservation. The candidate
+therefore failed the real mutation gate with
+`codex_durable_thread_settings_not_found` and was safely rolled back without a
+settings side effect.
+
+The missing behavior is now integrated as `c31dbd87` and `314ceb47`. Focused
+Bridge regression tests passed 9/9, TypeScript/native helper build passed, and
+the worktree remained clean after documentation. Future release handoffs must
+compare both the latest Mobile branch and the latest deployed Bridge behavior;
+neither branch alone is a complete integration baseline.

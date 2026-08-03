@@ -172,6 +172,25 @@ revision 和 operation result 为边界逐步抽取；每一步必须有旧 Brid
 不能仅凭端口、`/version` 或 `/health` 的进程存活断言共享运行时可用，必须先恢复 daemon
 control/Action Broker，再做真实设置 mutation 和手机链路 smoke。本轮未重启或修改生产。
 
+## 4.3 发布回归后补充的分支收束（2026-08-03）
+
+首次发布候选在恢复共享 daemon 后，真实 durable mutation 仍返回
+`codex_durable_thread_settings_not_found`。根因不是 daemon、权限或测试线程，而是 Mobile
+最新线 `b28cae13` 与生产 Bridge 修复线在 `a9e03bf0` 后发生分叉：候选漏带了生产线已有的
+路径解析与原子保留行为。
+
+已按当前候选语义补入：
+
+- `c31dbd87`（原行为提交 `145a0ac0`）：将 metadata canonical `projectPath` 纳入 durable
+  resolver，并保持 `worktreePath → runtime projectPath → resumeCwd → projectPath` 优先级。
+- `314ceb47`（原行为提交 `3524e255`）：durable mutation 必须基于完整 authoritative
+  settings snapshot 覆盖目标字段，原子保留 model、effort、speed、approval、reviewer、
+  sandbox 与 collaboration mode。
+
+补充验证：Bridge 三个相关测试文件的 9 个定向用例通过，562 个无关用例跳过；TypeScript
+与 native helper build、`git diff --check` 通过。发布会话此前的 114 文件/2304 项全量证据
+对应补入前候选，最终发布仍须对新 HEAD 做必要候选 smoke 和真实非目标字段对比。
+
 ## 5. 最终验收矩阵
 
 - private Codex + 新 app-server：durable ACK，重启/resume/Goal continuation 保持设置。
