@@ -1,8 +1,8 @@
 # CC Pocket 业务逻辑审计后的收敛实施计划
 
-- 状态：`active`
-- 审计输入：`notes/business-logic-code-audit_v02_20260803-133209.md`
-- 过程输入：`runs/20260803-124550_ccpocket-business-logic-audit/WORKING_REPORT.md`
+- 状态：`accepted / source-verified / release-pending`
+- 审计输入：`/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/current/notes/business-logic-code-audit_v02_20260803-133209.md`
+- 过程输入：`/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-worktrees/current/runs/20260803-124550_ccpocket-business-logic-audit/WORKING_REPORT.md`
 - 最新源码基线：`fix/mobile-status-projection-stability-20260803@b28cae1346b11d543fd51a2350a19eafdcca9a72`
 - 本轮核心实施线：`fix/settings-runtime-consistency-20260803`
 - 边界：源码、测试和候选集成；生产 Bridge、OTA、IPA、设备、Cloud 和 stable 是独立门禁。
@@ -55,7 +55,7 @@ Owner：主协调 Agent。
 - runtime-only 不能伪装为 durable；它仍表示当前 Bridge runtime 的下一次普通 turn
   override 已接受。
 
-当前提交：`b2def0dafc039f6ef1955ea4c89e9968c390b8ac`。
+集成提交：`b2def0dafc039f6ef1955ea4c89e9968c390b8ac`。
 
 验收：持久化完成前无成功 ACK；成功为 durable；旧 app-server/失败为 runtime-only；
 共享路径仍为 durable；旧客户端忽略新增字段；Bridge build、相关 Bridge/Mobile 测试和
@@ -72,7 +72,7 @@ Owner：主协调 Agent。
 - 请求未覆盖时，采用 authoritative index 中合法的 `collaborationMode`。
 - 索引也未知时保持 undefined，让官方 runtime 决定；不得制造假 Default。
 
-当前提交：`f153e7cf396e7fb054dc4a36209593da6827da26`。
+集成提交：`f153e7cf396e7fb054dc4a36209593da6827da26`。
 
 验收：索引 Plan 保留、索引 Default 保留、显式关闭优先、旧无字段 runtime-owned、
 approval/restart 既有回归不退化。
@@ -94,6 +94,10 @@ approval/restart 既有回归不退化。
 验收：合法、混合坏项、全坏、bounds、错误 scope/revision、watch 保留和 scoped reset
 均有回归；targeted test/analyze/diff-check 通过。
 
+集成提交：`8096e67d`、`bfb56c7f`。根审查曾发现首版测试没有真正等待 reset，且
+`_finishPending` 仍会提前释放 watch；补丁已改为显式保留 watch ownership，并验证 reset
+真实发出后原 watch 仍可继续接收合法 patch。
+
 ### D. Luna Max：Subagent list/activity 对账
 
 隔离线：`fix/subagent-activity-reconciliation-20260803`。
@@ -109,6 +113,9 @@ approval/restart 既有回归不退化。
 
 验收：active→done、可见/不可见、in-flight+pending、target 切换、旧 generation、旧 Bridge
 fallback 和性能边界均有测试。
+
+集成提交：`d8ae7d72`。activity count 只用于折叠态即时数量，Active/Done 的逐项归属始终
+来自 list snapshot；页面不可见时不启动详情轮询。
 
 ## 3. 本轮不直接执行的项目
 
@@ -142,6 +149,28 @@ revision 和 operation result 为边界逐步抽取；每一步必须有旧 Brid
    兼容矩阵、源码/部署/OTA/IPA/设备门禁。
 5. 不直接合入稳定分支、不 push、不部署、不发布。用户另行授权后，固定发布任务只接收
    一次完整的 exact worktree/branch/HEAD/rollback/允许与禁止范围。
+
+## 4.1 实际集成结果（2026-08-03）
+
+- 候选分支：`fix/settings-runtime-consistency-20260803`。
+- 集成 HEAD：以最终台账记录为准；功能序列为
+  `f153e7cf → b2def0da → d8ae7d72 → 8096e67d → bfb56c7f`，计划文档提交
+  `0e57c3f5` 位于其中但不改变运行行为。
+- Bridge 设置/Plan 组合回归：3 项通过；TypeScript 与 native helper build 通过。
+- Mobile 设置 ACK、Mirror、Subagent 组合回归：123 项通过。
+- Targeted analyze：0 error、0 warning；仅 2 条基线已有的
+  `prefer_initializing_formals` info。
+- Dart format 与 `git diff --check` 通过，候选工作树干净。
+- 未执行全量测试、iOS 构建、IPA、OTA、生产 Bridge 切换或物理设备验收；这些仍属于固定
+  发布流程的后续门禁。
+
+## 4.2 当前生产运行门禁（2026-08-03 复核）
+
+生产仍运行 `1.69.6-compat.15-b7bdeb7b`。loopback Bridge 和 LAN proxy 各自监听既有
+地址，并非两个 Bridge 实例；但 `/readyz` 返回 HTTP 503，原因为
+`shared_runtime_control_unavailable` 与 `action_broker_writer_unavailable`。因此后续发布任务
+不能仅凭端口、`/version` 或 `/health` 的进程存活断言共享运行时可用，必须先恢复 daemon
+control/Action Broker，再做真实设置 mutation 和手机链路 smoke。本轮未重启或修改生产。
 
 ## 5. 最终验收矩阵
 

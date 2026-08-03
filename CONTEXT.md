@@ -535,3 +535,45 @@ git -C "/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-compat" \
 ```
 
 Before editing, verify the new worktree path, branch, HEAD, and clean status.
+
+## Business-logic audit convergence on 2026-08-03
+
+The reviewed audit reports were reconciled against the latest Mobile source
+baseline `b28cae1346b11d543fd51a2350a19eafdcca9a72`, not the older dirty
+`integration/ccpocket-current` checkout. The source candidate is the isolated
+branch `fix/settings-runtime-consistency-20260803`.
+
+The candidate now contains five behavior units:
+
+- preserve indexed Plan/default collaboration mode when a new Mobile resume
+  request omits an explicit override;
+- wait for private Codex `thread/settings/update` and label the additive ACK as
+  `durable` or `runtime_only` instead of racing an authoritative snapshot;
+- tolerate bounded malformed Mirror inline items while failing closed on an
+  incomplete patch revision and retaining the original watch through a scoped
+  snapshot reset;
+- reconcile Subagent activity revisions to authoritative list snapshots only
+  while details are visible, with target/generation fences and old-Bridge
+  fallback;
+- retain the accepted implementation and compatibility plan at
+  `plans/business-logic-remediation_v01_20260803-151723.md`.
+
+Integrated evidence: three focused Bridge tests passed; Bridge TypeScript and
+native helper build passed; 123 combined Mobile tests passed; targeted analyze
+reported no errors or warnings and only two pre-existing info diagnostics;
+format and `git diff --check` passed. No production, OTA, IPA, Cloud, stable or
+physical-device gate was exercised.
+
+The audit's Side Chat wording was narrowed: the active UI and Bridge registry
+use the ephemeral path. Persisted protocol/parser/pane files are legacy
+artifacts, not proof of a currently registered competing product path. Do not
+re-register persisted Side Chat or delete its compatibility artifacts before a
+supported-old-Bridge matrix is complete.
+
+At the final live check, production remained
+`1.69.6-compat.15-b7bdeb7b`. Its process and existing loopback/LAN proxy
+listeners were alive, but `/readyz` returned HTTP 503 with
+`shared_runtime_control_unavailable` and
+`action_broker_writer_unavailable`. A future release task must restore and
+verify daemon control plus Action Broker mutation before claiming the backend
+or phone settings path is accepted. This source task did not restart it.
