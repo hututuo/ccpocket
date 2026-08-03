@@ -326,12 +326,11 @@ class SessionCatalogCacheRepository {
         final partitionId = await _ensureWritablePartition(transaction, target);
         final now = DateTime.now().toUtc().millisecondsSinceEpoch;
         final authoritativeReplacement = _isAuthoritativeReplacement(response);
-        final assistantOutputByIdentity =
-            await _cachedAssistantOutputByIdentity(
-              transaction,
-              partitionId,
-              response.sessions,
-            );
+        final cachedSessionsByIdentity = await _cachedSessionsByIdentity(
+          transaction,
+          partitionId,
+          response.sessions,
+        );
         if (authoritativeReplacement) {
           await transaction.delete(
             SessionCatalogCacheDatabase.entriesTable,
@@ -341,20 +340,24 @@ class SessionCatalogCacheRepository {
         }
         for (final incoming in response.sessions) {
           final provider = incoming.provider ?? Provider.claude.value;
-          final preserved =
-              assistantOutputByIdentity[_conversationIdentity(
+          final cached =
+              cachedSessionsByIdentity[_conversationIdentity(
                 provider,
                 incoming.sessionId,
               )];
+          final merged = mergeIncompleteCodexSettings(
+            incoming: incoming,
+            cached: cached,
+          );
           final latestAssistantOutputAt = _latestIsoTimestamp(
-            incoming.lastAssistantOutputAt,
-            preserved,
+            merged.lastAssistantOutputAt,
+            cached?.lastAssistantOutputAt,
           );
           final session =
               latestAssistantOutputAt == null ||
-                  latestAssistantOutputAt == incoming.lastAssistantOutputAt
-              ? incoming
-              : incoming.copyWithLastAssistantOutputAt(latestAssistantOutputAt);
+                  latestAssistantOutputAt == merged.lastAssistantOutputAt
+              ? merged
+              : merged.copyWithLastAssistantOutputAt(latestAssistantOutputAt);
           if (!authoritativeReplacement) {
             await transaction.delete(
               SessionCatalogCacheDatabase.entriesTable,
@@ -1083,8 +1086,7 @@ class SessionCatalogCacheRepository {
               entry.providerSessionId,
             );
             final cachedSession = cachedSessionsByIdentity[identity];
-            final decodedSession = _mergeIncompleteCodexCatalogSettings(
-              entry: entry,
+            final decodedSession = mergeIncompleteCodexSettings(
               incoming: decodedSessions[index],
               cached: cachedSession,
             );
@@ -2676,62 +2678,6 @@ class SessionCatalogCacheRepository {
     return advanced ? candidateTime.toIso8601String() : null;
   }
 
-  static Future<Map<String, String>> _cachedAssistantOutputByIdentity(
-    DatabaseExecutor database,
-    String partitionId,
-    Iterable<RecentSession> incoming,
-  ) async {
-    final identities = <String, (String, String)>{};
-    for (final session in incoming) {
-      final provider = session.provider ?? Provider.claude.value;
-      identities[_conversationIdentity(provider, session.sessionId)] = (
-        provider,
-        session.sessionId,
-      );
-    }
-    if (identities.isEmpty) return const {};
-
-    final checkpoints = <String, String>{};
-    final values = identities.values.toList(growable: false);
-    const identitiesPerQuery = 200;
-    for (var start = 0; start < values.length; start += identitiesPerQuery) {
-      final candidateEnd = start + identitiesPerQuery;
-      final end = candidateEnd < values.length ? candidateEnd : values.length;
-      final chunk = values.sublist(start, end);
-      final identityPredicate = List.filled(
-        chunk.length,
-        '(provider = ? AND session_id = ?)',
-      ).join(' OR ');
-      final rows = await database.query(
-        SessionCatalogCacheDatabase.entriesTable,
-        columns: ['provider', 'session_id', 'session_json'],
-        where: 'partition_id = ? AND ($identityPredicate)',
-        whereArgs: [
-          partitionId,
-          for (final (provider, sessionId) in chunk) ...[provider, sessionId],
-        ],
-      );
-      for (final row in rows) {
-        try {
-          final decoded = jsonDecode(row['session_json']! as String);
-          if (decoded is! Map) continue;
-          final candidate = RecentSession.fromJson(
-            Map<String, dynamic>.from(decoded),
-          ).lastAssistantOutputAt;
-          final key = _conversationIdentity(
-            row['provider']! as String,
-            row['session_id']! as String,
-          );
-          final latest = _latestIsoTimestamp(checkpoints[key], candidate);
-          if (latest != null) checkpoints[key] = latest;
-        } catch (_) {
-          // Catalog cache rows are rebuildable; skip only the damaged row.
-        }
-      }
-    }
-    return checkpoints;
-  }
-
   static Future<Map<String, RecentSession>> _cachedSessionsByIdentity(
     DatabaseExecutor database,
     String partitionId,
@@ -2788,13 +2734,19 @@ class SessionCatalogCacheRepository {
     return sessions;
   }
 
-  static RecentSession _mergeIncompleteCodexCatalogSettings({
-    required ConversationSyncV2CatalogEntry entry,
+  /// Applies the same sparse Codex-settings semantics to persistent and
+  /// in-memory catalog projections.
+  ///
+  /// A regular catalog refresh is intentionally allowed to omit expensive
+  /// settings fields. Once a focused authoritative snapshot has been
+  /// committed, a later sparse refresh must not erase it. A complete incoming
+  /// snapshot is authoritative and may explicitly clear or replace fields.
+  static RecentSession mergeIncompleteCodexSettings({
     required RecentSession incoming,
     required RecentSession? cached,
   }) {
-    if (entry.provider != Provider.codex.value ||
-        entry.codexSettingsSnapshotComplete ||
+    if (incoming.provider != Provider.codex.value ||
+        incoming.codexSettingsSnapshotComplete ||
         cached == null) {
       return incoming;
     }

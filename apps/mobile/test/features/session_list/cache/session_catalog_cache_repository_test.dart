@@ -946,6 +946,40 @@ void main() {
         destroyed: const [],
       );
 
+      // The legacy directory path is still active during v2 startup and can
+      // deliver a bounded, settings-sparse catalog after focused hydration.
+      // It must share the same merge semantics instead of downgrading the
+      // committed authoritative snapshot.
+      await repository.upsertResponse(
+        target: target,
+        response: RecentSessionsMessage(
+          requestScope: 'catalog',
+          sessions: [
+            RecentSession(
+              sessionId: 'thread-v2-settings',
+              provider: Provider.codex.value,
+              codexSourceId: 'source-v2-settings',
+              firstPrompt: 'Sparse legacy refresh',
+              created: '2026-08-02T00:00:00.000Z',
+              modified: '2026-08-02T00:01:30.000Z',
+              gitBranch: 'main',
+              projectPath: '/workspace/settings',
+              isSidechain: false,
+            ),
+          ],
+        ),
+      );
+
+      var session = (await repository.load(target))!.sessions.single;
+      expect(session.codexModel, 'gpt-5.6-sol');
+      expect(session.codexModelReasoningEffort, 'ultra');
+      expect(session.codexServiceTier, 'fast');
+      expect(session.codexApprovalPolicy, 'never');
+      expect(session.codexApprovalsReviewer, 'user');
+      expect(session.codexSandboxMode, 'danger-full-access');
+      expect(session.codexCollaborationMode, 'plan');
+      expect(session.codexSettingsSnapshotComplete, isTrue);
+
       await repository.applyConversationCatalogBatch(
         target: target,
         codexSourceId: 'source-v2-settings',
@@ -966,7 +1000,7 @@ void main() {
         destroyed: const [],
       );
 
-      var session = (await repository.load(target))!.sessions.single;
+      session = (await repository.load(target))!.sessions.single;
       expect(session.codexModel, 'gpt-5.6-sol');
       expect(session.codexModelReasoningEffort, 'ultra');
       expect(session.codexServiceTier, 'fast');

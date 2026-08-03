@@ -832,11 +832,24 @@ void main() {
         cache.snapshots[target.fingerprint] = SessionCatalogCacheSnapshot(
           partitionId: 'bridge-v2-source-v2',
           sessions: [
-            _session(
-              id: 'thread-old',
+            const ConversationSyncV2CatalogEntry(
               provider: 'codex',
-              codexSourceId: 'source-v2',
-            ),
+              providerSessionId: 'thread-old',
+              revision: 'revision-settings-complete',
+              projectPath: '/home/user/project-a',
+              model: 'gpt-5.6-sol',
+              modelReasoningEffort: 'ultra',
+              serviceTier: 'fast',
+              approvalPolicy: 'never',
+              approvalsReviewer: 'user',
+              sandboxMode: 'danger-full-access',
+              collaborationMode: 'plan',
+              codexSettingsSnapshotComplete: true,
+              createdAt: '2026-07-30T00:00:00.000Z',
+              modifiedAt: '2026-07-30T00:02:00.000Z',
+              recencyAt: '2026-07-30T00:02:00.000Z',
+              availability: 'durable',
+            ).toRecentSession(codexSourceId: 'source-v2'),
             _session(
               id: 'thread-destroyed',
               provider: 'codex',
@@ -1010,6 +1023,16 @@ void main() {
           'thread-old',
         ]);
         expect(cubit.state.sessions.last.name, 'Updated thread');
+        expect(cubit.state.sessions.last.codexModel, 'gpt-5.6-sol');
+        expect(cubit.state.sessions.last.codexModelReasoningEffort, 'ultra');
+        expect(cubit.state.sessions.last.codexServiceTier, 'fast');
+        expect(cubit.state.sessions.last.codexApprovalPolicy, 'never');
+        expect(
+          cubit.state.sessions.last.codexSandboxMode,
+          'danger-full-access',
+        );
+        expect(cubit.state.sessions.last.codexCollaborationMode, 'plan');
+        expect(cubit.state.sessions.last.codexSettingsSnapshotComplete, isTrue);
         expect(
           cubit.conversationStatusFor(cubit.state.sessions.last)?.activity,
           'working',
@@ -1035,6 +1058,36 @@ void main() {
               .lastAssistantOutputAt,
           '2026-07-30T00:05:30.000Z',
         );
+
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            requestScope: 'list',
+            hasMore: true,
+            sessions: [
+              RecentSession(
+                sessionId: 'thread-old',
+                provider: Provider.codex.value,
+                codexSourceId: 'source-v2',
+                firstPrompt: 'Sparse legacy refresh',
+                created: '2026-07-30T00:00:00.000Z',
+                modified: '2026-07-30T00:08:00.000Z',
+                gitBranch: 'main',
+                projectPath: '/home/user/project-b',
+                isSidechain: false,
+              ),
+            ],
+          ),
+        );
+        await pumpEventQueue();
+
+        final legacyRefreshed = cubit.state.sessions.single;
+        expect(legacyRefreshed.codexModel, 'gpt-5.6-sol');
+        expect(legacyRefreshed.codexModelReasoningEffort, 'ultra');
+        expect(legacyRefreshed.codexServiceTier, 'fast');
+        expect(legacyRefreshed.codexApprovalPolicy, 'never');
+        expect(legacyRefreshed.codexSandboxMode, 'danger-full-access');
+        expect(legacyRefreshed.codexCollaborationMode, 'plan');
+        expect(legacyRefreshed.codexSettingsSnapshotComplete, isTrue);
 
         sync.emit(
           ConversationSyncCacheUpdate(

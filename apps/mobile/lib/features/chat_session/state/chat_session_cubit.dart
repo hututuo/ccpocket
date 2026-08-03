@@ -12,6 +12,7 @@ import '../../../models/messages.dart';
 import '../../../services/bridge_service.dart';
 import '../../../services/chat_message_handler.dart';
 import '../../../services/desktop_continuity_backlog.dart';
+import '../../../utils/diagnostic_token.dart';
 import '../../../utils/history_window_policy.dart';
 import 'chat_session_state.dart';
 import 'streaming_state_cubit.dart';
@@ -294,6 +295,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   bool get codexPlanModeKnown =>
       !isCodex || !detachedPreview || state.codexPermissionStateKnown;
+
+  String get _projectionThreadToken =>
+      diagnosticToken(provider?.value ?? 'unknown', sessionId);
+
+  String _projectionSourceToken(String? sourceFingerprint) {
+    final normalized = sourceFingerprint?.trim();
+    return normalized == null || normalized.isEmpty
+        ? 'none'
+        : diagnosticToken('source', normalized);
+  }
 
   bool _allowCodexSettingsMutation() {
     if (!isCodex ||
@@ -1207,6 +1218,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             : null,
       ),
     );
+    logger.info(
+      '[status_projection] event=status_applied '
+      'thread=$_projectionThreadToken '
+      'source=${_projectionSourceToken(_detachedProviderSourceFingerprint)} '
+      'activity=${status.activity} attention=${status.attention} '
+      'host=${status.executionHost ?? 'unknown'} '
+      'control=${status.controlState ?? 'unknown'} '
+      'authority=${authorityGeneration?.isNotEmpty == true} '
+      'current=$_detachedProviderProjectionCurrent',
+    );
   }
 
   /// Hydrates factual model settings for a detached Codex thread from the
@@ -1396,12 +1417,27 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             : nextSpeed,
       ),
     );
+    logger.info(
+      '[settings_projection] event=settings_applied '
+      'thread=$_projectionThreadToken '
+      'source=${_projectionSourceToken(_detachedProviderSourceFingerprint)} '
+      'complete=$isCompleteSnapshot '
+      'model=${model?.isNotEmpty == true} '
+      'effort=${effort?.value ?? 'unknown'} '
+      'tier=${serviceTier?.isNotEmpty == true ? serviceTier : 'unknown'} '
+      'permission=$hasPermissionFacts '
+      'collaboration=${collaborationMode ?? 'unknown'} '
+      'modelKnown=$codexModelSettingsKnown '
+      'planKnown=$codexPlanModeKnown '
+      'actionability=${codexSettingsActionability.name}',
+    );
   }
 
   bool _adoptDetachedProviderSource(String? sourceFingerprint) {
     final normalized = sourceFingerprint?.trim();
     if (normalized == null || normalized.isEmpty) return false;
     if (_detachedProviderSourceFingerprint == normalized) return false;
+    final previousSource = _detachedProviderSourceFingerprint;
     _clearDetachedRuntimeTransients(_detachedLiveRuntimeSessionId);
     _detachedProviderSourceFingerprint = normalized;
     _detachedProviderStatusObservedAt = null;
@@ -1422,6 +1458,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _detachedProviderOwnsSpeed = false;
     codexServiceTierRaw.value = null;
     detachedLiveRuntimeRevision.value += 1;
+    logger.info(
+      '[settings_projection] event=source_changed '
+      'thread=$_projectionThreadToken '
+      'from=${_projectionSourceToken(previousSource)} '
+      'to=${_projectionSourceToken(normalized)}',
+    );
     return true;
   }
 
@@ -1434,7 +1476,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// permissions, or provider activity flicker to unknown. A confirmed source
   /// mismatch invalidates live status separately after priority sync while
   /// the original source's durable settings remain visible but read-only.
-  void suspendDetachedProviderProjection() {
+  void suspendDetachedProviderProjection({
+    String reason = 'source_reconciliation',
+    String? observedSourceFingerprint,
+    String? expectedSourceFingerprint,
+    bool? catalogUsable,
+  }) {
     if (!detachedPreview || isClosed) return;
     final authorityChanged =
         _detachedProviderProjectionCurrent ||
@@ -1463,6 +1510,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         ),
       );
     }
+    logger.info(
+      '[settings_projection] event=projection_suspended '
+      'thread=$_projectionThreadToken reason=$reason '
+      'observed=${_projectionSourceToken(observedSourceFingerprint)} '
+      'expected=${_projectionSourceToken(expectedSourceFingerprint)} '
+      'catalogUsable=${catalogUsable ?? 'unknown'} '
+      'authorityChanged=$authorityChanged',
+    );
   }
 
   void _clearDetachedProviderSettings() {

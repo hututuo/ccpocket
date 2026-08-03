@@ -8,6 +8,7 @@ import '../../../core/logger.dart';
 import '../../../models/messages.dart';
 import '../../../models/new_session_tab.dart';
 import '../../../services/bridge_service.dart';
+import '../../../utils/diagnostic_token.dart';
 import '../../conversation_content_sync/conversation_content_sync_service.dart';
 import '../cache/session_catalog_cache_repository.dart';
 import 'session_list_state.dart';
@@ -395,16 +396,40 @@ class SessionListCubit extends Cubit<SessionListState> {
       );
       return !replacedKeys.contains(key) && !destroyedKeys.contains(key);
     });
-    final upserts = update.catalogUpserts.map((entry) {
-      final session = entry.toRecentSession(codexSourceId: codexSourceId);
-      return _preserveAssistantOutputCheckpoint(
-        session,
-        existingByKey[_conversationKey(
-          session.provider ?? Provider.claude.value,
-          session.sessionId,
-        )],
+    var preservedCompleteCodexSettings = 0;
+    final preservedThreadTokens = <String>[];
+    final upserts = update.catalogUpserts
+        .map((entry) {
+          final incoming = entry.toRecentSession(codexSourceId: codexSourceId);
+          final key = _conversationKey(
+            incoming.provider ?? Provider.claude.value,
+            incoming.sessionId,
+          );
+          final existing = existingByKey[key];
+          final session = _preserveAssistantOutputCheckpoint(
+            incoming,
+            existing,
+          );
+          if (!entry.codexSettingsSnapshotComplete &&
+              existing?.codexSettingsSnapshotComplete == true &&
+              session.codexSettingsSnapshotComplete) {
+            preservedCompleteCodexSettings += 1;
+            if (preservedThreadTokens.length < 5) {
+              preservedThreadTokens.add(
+                diagnosticToken(entry.provider, entry.providerSessionId),
+              );
+            }
+          }
+          return session;
+        })
+        .toList(growable: false);
+    if (preservedCompleteCodexSettings > 0) {
+      logger.info(
+        '[settings_projection] event=sparse_catalog_preserved '
+        'count=$preservedCompleteCodexSettings '
+        'threads=${preservedThreadTokens.join(',')}',
       );
-    });
+    }
     _cachedSessions = _mergeCachedSessions(retained, upserts);
     if (destroyedKeys.isNotEmpty) {
       _conversationStatuses = Map.unmodifiable(
@@ -1188,7 +1213,7 @@ class SessionListCubit extends Cubit<SessionListState> {
     return List<RecentSession>.unmodifiable(merged);
   }
 
-  static List<RecentSession> _preserveAssistantOutputCheckpoints(
+  List<RecentSession> _preserveAssistantOutputCheckpoints(
     Iterable<RecentSession> incoming,
     Iterable<RecentSession> existing,
   ) {
@@ -1203,35 +1228,62 @@ class SessionListCubit extends Cubit<SessionListState> {
         existingByKey[key],
       );
     }
-    return List<RecentSession>.unmodifiable(
-      incoming.map((session) {
-        final key = _conversationKey(
-          session.provider ?? Provider.claude.value,
-          session.sessionId,
-        );
-        return _preserveAssistantOutputCheckpoint(session, existingByKey[key]);
-      }),
-    );
+    var preservedCompleteCodexSettings = 0;
+    final preservedThreadTokens = <String>[];
+    final result = incoming
+        .map((session) {
+          final key = _conversationKey(
+            session.provider ?? Provider.claude.value,
+            session.sessionId,
+          );
+          final previous = existingByKey[key];
+          final merged = _preserveAssistantOutputCheckpoint(session, previous);
+          if (!session.codexSettingsSnapshotComplete &&
+              previous?.codexSettingsSnapshotComplete == true &&
+              merged.codexSettingsSnapshotComplete) {
+            preservedCompleteCodexSettings += 1;
+            if (preservedThreadTokens.length < 5) {
+              preservedThreadTokens.add(
+                diagnosticToken(
+                  session.provider ?? Provider.claude.value,
+                  session.sessionId,
+                ),
+              );
+            }
+          }
+          return merged;
+        })
+        .toList(growable: false);
+    if (preservedCompleteCodexSettings > 0) {
+      logger.info(
+        '[settings_projection] event=legacy_catalog_preserved '
+        'count=$preservedCompleteCodexSettings '
+        'threads=${preservedThreadTokens.join(',')}',
+      );
+    }
+    return List<RecentSession>.unmodifiable(result);
   }
 
   static RecentSession _preserveAssistantOutputCheckpoint(
     RecentSession incoming,
     RecentSession? existing,
   ) {
-    if (existing == null) return incoming;
+    final merged = SessionCatalogCacheRepository.mergeIncompleteCodexSettings(
+      incoming: incoming,
+      cached: existing,
+    );
+    if (existing == null) return merged;
     final existingTime = DateTime.tryParse(
       existing.lastAssistantOutputAt ?? '',
     )?.toUtc();
-    if (existingTime == null) return incoming;
+    if (existingTime == null) return merged;
     final incomingTime = DateTime.tryParse(
-      incoming.lastAssistantOutputAt ?? '',
+      merged.lastAssistantOutputAt ?? '',
     )?.toUtc();
     if (incomingTime != null && !existingTime.isAfter(incomingTime)) {
-      return incoming;
+      return merged;
     }
-    return incoming.copyWithLastAssistantOutputAt(
-      existingTime.toIso8601String(),
-    );
+    return merged.copyWithLastAssistantOutputAt(existingTime.toIso8601String());
   }
 
   static int _compareIsoTimestamps(String left, String right) {

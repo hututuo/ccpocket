@@ -71,9 +71,7 @@ class _DurableSessionPreviewUpdaterState
         _handleLiveRuntimeRevision,
       );
       _boundRuntimeCubit = cubit;
-      cubit.detachedLiveRuntimeRevision.addListener(
-        _handleLiveRuntimeRevision,
-      );
+      cubit.detachedLiveRuntimeRevision.addListener(_handleLiveRuntimeRevision);
       _consumedLiveRuntimeSessionId = null;
     }
     cubit.updateDetachedLiveRuntime(normalized);
@@ -169,7 +167,12 @@ class _DurableSessionPreviewUpdaterState
     if (expectedSourceFingerprint != null &&
         expectedSourceFingerprint.isNotEmpty &&
         sourceFingerprint != expectedSourceFingerprint) {
-      cubit.suspendDetachedProviderProjection();
+      cubit.suspendDetachedProviderProjection(
+        reason: 'source_fingerprint_mismatch',
+        observedSourceFingerprint: sourceFingerprint,
+        expectedSourceFingerprint: expectedSourceFingerprint,
+        catalogUsable: sessionList.hasUsableCatalogForCurrentTarget,
+      );
       if (!sessionList.hasUsableCatalogForCurrentTarget) {
         // Authentication, route canonicalization, and the first priority
         // commit can temporarily expose different fingerprints for the same
