@@ -11867,7 +11867,13 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(session).toBeDefined();
     ws.send.mockClear();
 
-    await (bridge as any).handleClientMessage(
+    let resolveModelPersistence!: (value: boolean) => void;
+    session.process.persistRuntimeModelForNextTurn.mockReturnValueOnce(
+      new Promise<boolean>((resolve) => {
+        resolveModelPersistence = resolve;
+      }),
+    );
+    const modelUpdate = (bridge as any).handleClientMessage(
       {
         type: "set_codex_model",
         sessionId,
@@ -11876,6 +11882,20 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       },
       ws,
     );
+    await vi.waitFor(() =>
+      expect(
+        session.process.persistRuntimeModelForNextTurn,
+      ).toHaveBeenCalledOnce(),
+    );
+    expect(
+      ws.send.mock.calls
+        .map((c: unknown[]) => JSON.parse(c[0] as string))
+        .some(
+          (m: any) => m.type === "system" && m.subtype === "set_codex_model",
+        ),
+    ).toBe(false);
+    resolveModelPersistence(true);
+    await modelUpdate;
 
     expect(session.process.setModel).toHaveBeenCalledWith(
       "gpt-5.6-sol",
@@ -11901,8 +11921,11 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       provider: "codex",
       model: "gpt-5.6-sol",
       modelReasoningEffort: "ultra",
+      settingsPersistence: "durable",
     });
-    expect(messages.find((m: any) => m.type === "session_list")).toMatchObject({
+    expect(
+      messages.filter((m: any) => m.type === "session_list").at(-1),
+    ).toMatchObject({
       sessions: expect.arrayContaining([
         expect.objectContaining({
           id: sessionId,
@@ -11915,6 +11938,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     });
 
     ws.send.mockClear();
+    session.process.persistRuntimeServiceTierForNextTurn.mockResolvedValueOnce(
+      false,
+    );
     await (bridge as any).handleClientMessage(
       {
         type: "set_codex_speed",
@@ -11935,7 +11961,11 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         .find(
           (m: any) => m.type === "system" && m.subtype === "set_codex_speed",
         ),
-    ).toMatchObject({ sessionId, serviceTier: "fast" });
+    ).toMatchObject({
+      sessionId,
+      serviceTier: "fast",
+      settingsPersistence: "runtime_only",
+    });
 
     const ownerCheck = vi
       .spyOn((bridge as any).localFeatures, "hasExternalCodexActivityVerified")

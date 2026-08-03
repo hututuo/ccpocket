@@ -736,6 +736,8 @@ export type ServerMessage = (
       sandboxMode?: string;
       modelReasoningEffort?: string;
       serviceTier?: string;
+      /** Whether a settings ACK reached app-server persistence or runtime only. */
+      settingsPersistence?: "durable" | "runtime_only";
       networkAccessEnabled?: boolean;
       webSearchMode?: string;
       additionalWritableRoots?: string[];

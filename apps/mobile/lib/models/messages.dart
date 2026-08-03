@@ -1289,6 +1289,7 @@ sealed class ServerMessage {
         sandboxMode: json['sandboxMode'] as String?,
         modelReasoningEffort: json['modelReasoningEffort'] as String?,
         serviceTier: json['serviceTier'] as String?,
+        settingsPersistence: json['settingsPersistence'] as String?,
         networkAccessEnabled: json['networkAccessEnabled'] as bool?,
         webSearchMode: json['webSearchMode'] as String?,
         slashCommands:
@@ -2181,6 +2182,7 @@ class SystemMessage implements ServerMessage {
   final String? sandboxMode;
   final String? modelReasoningEffort;
   final String? serviceTier;
+  final String? settingsPersistence;
   final bool? networkAccessEnabled;
   final String? webSearchMode;
   final List<String> slashCommands;
@@ -2219,6 +2221,7 @@ class SystemMessage implements ServerMessage {
     this.sandboxMode,
     this.modelReasoningEffort,
     this.serviceTier,
+    this.settingsPersistence,
     this.networkAccessEnabled,
     this.webSearchMode,
     this.slashCommands = const [],

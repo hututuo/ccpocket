@@ -3007,6 +3007,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       } else if (msg.subtype == 'set_codex_speed') {
         _clearPendingCodexSpeedRollback();
       }
+      if (msg.settingsPersistence == 'runtime_only') {
+        logger.warning(
+          '[settings_projection] event=runtime_only_ack '
+          'subtype=${msg.subtype} '
+          'session=${diagnosticToken('session', sessionId)}',
+        );
+      }
     }
     // Prevent duplicate past_history processing
     if (msg is PastHistoryMessage) {
@@ -4933,6 +4940,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         :final sandboxMode,
         :final model,
         :final modelReasoningEffort,
+        :final settingsPersistence,
         :final sourceSessionId,
         :final tipCode,
       ):
@@ -4951,6 +4959,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           sandboxMode,
           model,
           modelReasoningEffort,
+          settingsPersistence,
           sourceSessionId,
           tipCode,
         ].join('\u0001');

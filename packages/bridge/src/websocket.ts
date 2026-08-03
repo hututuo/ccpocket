@@ -7076,6 +7076,7 @@ export class BridgeWebSocketServer {
                   sessionId: session.id,
                   provider: "codex",
                   model,
+                  settingsPersistence: "durable",
                   ...(modelReasoningEffort !== undefined
                     ? { modelReasoningEffort }
                     : {}),
@@ -7121,7 +7122,8 @@ export class BridgeWebSocketServer {
         }
 
         process.setModel(model, modelReasoningEffort);
-        void process.persistRuntimeModelForNextTurn();
+        const settingsPersisted =
+          await process.persistRuntimeModelForNextTurn();
         session.codexSettings = {
           ...(session.codexSettings ?? {}),
           model,
@@ -7136,6 +7138,7 @@ export class BridgeWebSocketServer {
           sessionId: session.id,
           provider: "codex",
           model,
+          settingsPersistence: settingsPersisted ? "durable" : "runtime_only",
           ...(modelReasoningEffort !== undefined
             ? { modelReasoningEffort }
             : {}),
@@ -7145,10 +7148,10 @@ export class BridgeWebSocketServer {
           direction: "internal" as const,
           channel: "bridge",
           type: "codex_model_changed",
-          detail: `model=${model} effort=${modelReasoningEffort ?? ""}`,
+          detail: `model=${model} effort=${modelReasoningEffort ?? ""} persistence=${settingsPersisted ? "durable" : "runtime_only"}`,
         });
         console.log(
-          `[ws] set_codex_model(codex): model=${model} effort=${modelReasoningEffort ?? ""}`,
+          `[ws] set_codex_model(codex): model=${model} effort=${modelReasoningEffort ?? ""} persistence=${settingsPersisted ? "durable" : "runtime_only"}`,
         );
         break;
       }
@@ -7187,6 +7190,7 @@ export class BridgeWebSocketServer {
                   sessionId: session.id,
                   provider: "codex",
                   serviceTier,
+                  settingsPersistence: "durable",
                 });
                 this.broadcastSessionList();
               },
@@ -7227,7 +7231,8 @@ export class BridgeWebSocketServer {
         }
 
         process.setServiceTier(serviceTier);
-        void process.persistRuntimeServiceTierForNextTurn();
+        const settingsPersisted =
+          await process.persistRuntimeServiceTierForNextTurn();
         session.codexSettings = {
           ...(session.codexSettings ?? {}),
           serviceTier,
@@ -7239,9 +7244,12 @@ export class BridgeWebSocketServer {
           sessionId: session.id,
           provider: "codex",
           serviceTier,
+          settingsPersistence: settingsPersisted ? "durable" : "runtime_only",
         });
         this.broadcastSessionList();
-        console.log(`[ws] set_codex_speed(codex): serviceTier=${serviceTier}`);
+        console.log(
+          `[ws] set_codex_speed(codex): serviceTier=${serviceTier} persistence=${settingsPersisted ? "durable" : "runtime_only"}`,
+        );
         break;
       }
 
@@ -12144,6 +12152,7 @@ export class BridgeWebSocketServer {
                 sessionId: envelope.threadId,
                 provider: "codex",
                 model,
+                settingsPersistence: "durable",
                 ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
               });
               return;
@@ -12168,6 +12177,7 @@ export class BridgeWebSocketServer {
                 sessionId: envelope.threadId,
                 provider: "codex",
                 serviceTier,
+                settingsPersistence: "durable",
               });
               return;
             }
