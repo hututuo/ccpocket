@@ -1,5 +1,26 @@
 # CC Pocket Compatibility Fork Context
 
+## 2026-08-03 Mobile Codex settings projection convergence
+
+The active source correction is `c0c22101` on
+`fix/mobile-status-projection-stability-20260803`, following the route and
+runtime continuity correction `e92750fe`. The confirmed intermittent
+`未知 · 等待同步` cycle was caused by split merge semantics: focused settings
+could be complete in SQLite, while a later settings-sparse v2 event or legacy
+`recent_sessions` response replaced the in-memory projection; the legacy write
+path could also downgrade SQLite. All four v2/legacy and memory/SQLite paths now
+use one sparse-versus-complete merge rule. Complete snapshots remain
+authoritative; sparse refreshes preserve missing known settings without
+granting mutation authority.
+
+Content-free correlated diagnostics now cover catalog preservation, source
+changes, projection suspension, applied settings and applied runtime status.
+The source and focused tests pass, but no physical device was available to
+confirm the installed build. Production Bridge remains
+`1.69.6-compat.15-b7bdeb7b`; it was not changed. Full details and the phone
+acceptance boundary are in
+`notes/mobile-settings-projection-race_v01_20260803-121147.md`.
+
 ## 2026-08-02 authorized task-contact boundary
 
 The user has authorized only the persistent release task
