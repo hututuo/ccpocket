@@ -1,5 +1,21 @@
 # ccPocket Compatibility Decisions
 
+## 2026-08-04 priority settings prewarm and acknowledged projection
+
+- `conversation_sync_v2` 在首次 full subscription 中异步预热 focused、最近五个
+  Codex 会话及特殊状态会话的权威设置；目录、状态和 timeline 首批不得等待预热。
+- 设置读取总并发为 3、待执行队列上限为 32、单次读取上限为 5 秒。最近五个先保留，
+  再用剩余槽位容纳特殊会话；完整快照不重复读取，最后一个 interactive client 离开
+  或切换 notification-only 后不再启动旧队列。
+- settings hydration 必须同时服从 shared-control generation、thread epoch 和 catalog
+  revision。重连先清旧队列、刷新 catalog，再重新选优先级；旧 generation 的迟到结果
+  不得重新投影。
+- detached/shared 设置仍禁止发送时乐观更新。只有结构完整的成功 ACK 可以立即更新当前
+  页面并清 rollback；catalog 继续负责权威校准和 SQLite 持久化，畸形 ACK 不能吞掉后续
+  rejection 的回滚能力。
+- model/effort 的已知性不再依赖 service tier。旧 Bridge 缺 tier 时只让 speed 保持未知或
+  只读，不能连带隐藏已知模型和思考强度。
+
 ## 2026-08-02 historical coordinator task is not an authorized contact
 
 - 用户只授权了发布任务 `019f8e9d-2490-79c0-817c-87e3eb93ea2f`，且只有用户当次明确

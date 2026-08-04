@@ -1,5 +1,22 @@
 # CC Pocket Compatibility Fork Context
 
+## 2026-08-04 first-open settings prewarm and ACK projection
+
+The source-verified follow-up is in
+`fix/mobile-toolbar-batch-settings-20260804` from base `83c0cf56`:
+
+- Bridge `5120b478`: prewarms focused, recent-five and special Codex settings
+  with concurrency 3, queue 32, five-second timeout and generation/epoch fences.
+- Mobile `882b02ff`: applies valid durable model/effort/speed ACKs immediately,
+  preserves rollback on malformed ACKs, and does not hide model/effort merely
+  because service tier is missing.
+
+Bridge passed 118 focused protocol tests and build; Mobile passed 217 related
+tests with 0 analyzer errors/warnings and two existing infos. Independent Luna
+Max review concluded LGTM. Details are in
+`notes/mobile-settings-projection-race_v02_20260804-095340.md`. Production
+Bridge, owner OTA, IPA, device, Cloud, Desktop and stable remain unchanged.
+
 ## 2026-08-03 Mobile Codex settings projection convergence
 
 The active source correction is `c0c22101` on
