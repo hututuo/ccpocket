@@ -297,6 +297,39 @@
 - 本节只授权隔离分支源码与自动验证；不等于稳定分支合并、运行中 Bridge
   替换、OTA、IPA 或真机安装。
 
+## 2026-08-04 Native compaction and bounded Bridge input queue
+
+- 本节取代 2026-07-29 “单项权威队列”的数量限制，但保留其身份隔离、持久
+  admission、幂等重放和手机不成为队列权威的原则。新 Bridge 为每个 Codex
+  thread 提供最多 16 项的持久 FIFO；一次真实 `input_ready` 只交付队首一项，
+  后续项等待下一次 turn readiness，不能在一轮开始时一次性倾泻给 provider。
+- Bridge 是 next-turn backlog 的权威，因为当前 Codex app-server 没有原生的
+  “多个后续主任务”队列接口。Bridge 使用官方 `turn/start` 交付队首；明确的
+  当前轮引导继续使用官方 `turn/steer(expectedTurnId)`，两者不得因 UI 文案而
+  混用。队列编辑、取消和 steer 必须使用精确 `itemId`，不能按文本猜测。
+- 第一勾只在 Bridge 已把该输入持久写入 delivery ledger 后出现；第二勾只在
+  provider RPC 接受或权威 provider 事实确认后出现。普通在线在途消息仍不是
+  conversation queue。Mobile 只能投影 `conversation_queue` 与 delivery status，
+  不得用定时器或本地 optimistic 状态伪造后端排队。
+- 新能力通过 additive `codex_multi_input_queue_v1`、`queuedInputs` 和
+  `queuedInputLimit` 暴露。旧 Mobile 继续读取队首 `queuedInput`；新 Mobile
+  连接旧 Bridge 时继续采用单项权威队列，并保留旧 transport 在权威排队结果
+  到达前允许多个普通在途提交的行为。
+- 用户手动压缩统一调用官方 `thread/compact/start`。输入框中的精确
+  `/compact`（无附件）是该 core action 的快捷入口，不作为普通用户消息写入
+  历史；若 durable thread 尚未挂接，Mobile 先请求精确 runtime attachment，
+  authority 确认后只发送一次 compact request。
+- 用户手动压缩是独立业务动作：完成后显示独立提示，不归入上一轮的工具调用，
+  也不生成普通 assistant result。Agent 在正在运行的 turn 内触发的自动压缩仍
+  保留为该轮的 `ContextCompaction` process item，且不能提前释放 next-turn
+  队列。
+- app-server 可能先发送 `thread/status=idle`，后发送 compact 的终止事件。
+  Bridge 必须以 compact 的真实完成/失败终止作为重新检查 readiness 的边界；
+  即使状态已经是 idle，也只发布一次 `input_ready`，随后按 FIFO 交付一项。
+- 队列恢复、广播和 UI 均必须有界；重启只恢复 replay-safe 的持久记录，超过
+  上限的 admission 明确拒绝，不允许无界内存 backlog。发布、Bridge 替换、
+  IPA/OTA 和真机验收仍是独立门禁。
+
 ## 2026-07-30 Mobile session list modes
 
 - 首页会话目录保留两种明确模式：默认“按项目”分组，以及“最近聊天”全局
