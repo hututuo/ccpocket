@@ -16,6 +16,7 @@ class TipChip extends StatelessWidget {
     'git_not_available' => l.gitUnavailableTip,
     'auto_mode_fallback_default' => l.autoModeFallbackDefaultTip,
     'permission_mode_next_turn_applied' => l.permissionModeNextTurnAppliedTip,
+    'manual_context_compacted' => l.manualContextCompactedTip,
     _ => message.subtype,
   };
 

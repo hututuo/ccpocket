@@ -458,6 +458,7 @@
   "applyPermissionsRestartNowTitle": "Restart now",
   "applyPermissionsRestartNowDescription": "Interrupt the current turn and dismiss its pending approval, then resume this conversation with the new permissions.",
   "permissionModeNextTurnAppliedTip": "Permissions saved. They apply from the next turn that has not started; any current approval remains unchanged.",
+  "manualContextCompactedTip": "Context compacted manually.",
   "codexApprovalUntrustedDescription": "Auto-run only trusted commands; ask for everything else",
   "codexApprovalOnRequestDescription": "Ask only when the agent decides approval is needed",
   "codexApprovalOnFailureDescription": "Run without asking first; ask only when a command fails (Deprecated)",

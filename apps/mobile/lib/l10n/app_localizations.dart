@@ -2280,6 +2280,12 @@ abstract class AppLocalizations {
   /// **'権限を保存しました。まだ開始していない次のターンから適用され、現在の承認は従来の権限のままです。'**
   String get permissionModeNextTurnAppliedTip;
 
+  /// No description provided for @manualContextCompactedTip.
+  ///
+  /// In ja, this message translates to:
+  /// **'コンテキストを手動で圧縮しました。'**
+  String get manualContextCompactedTip;
+
   /// No description provided for @codexApprovalUntrustedDescription.
   ///
   /// In ja, this message translates to:

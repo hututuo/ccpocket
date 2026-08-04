@@ -51,6 +51,7 @@ import {
 import {
   InputDeliveryLedger,
   InputDeliveryLedgerError,
+  MAX_DURABLE_QUEUED_INPUTS_PER_THREAD,
   type DurableInputDeliveryRecord,
   type DurableInputPayload,
   type InputDeliveryIdentity,
@@ -125,7 +126,12 @@ export interface SessionInfo {
   };
   /** Claude sandbox enabled state (for resume). */
   sandboxEnabled?: boolean;
-  /** Codex-only pending input waiting for the next turn. */
+  /** Canonical bounded FIFO of Codex inputs waiting for future turns. */
+  codexQueuedInputs?: QueuedCodexInput[];
+  /**
+   * Legacy alias for the FIFO head. Kept during the additive protocol
+   * transition so older integrations and test doubles remain compatible.
+   */
   codexQueuedInput?: QueuedCodexInput;
   /**
    * Bounded in-memory delivery receipts keyed by Mobile clientMessageId.
@@ -276,6 +282,8 @@ export interface SessionSummary {
     input: Record<string, unknown>;
   };
   queuedInput?: QueuedInputItem;
+  queuedInputs?: QueuedInputItem[];
+  queuedInputLimit?: number;
   /** Runtime-probed support for app-server next-turn permission settings. */
   codexPermissionApplyStrategySupported?: boolean;
   /** Runtime-probed support for the experimental native Codex Plan preset. */
@@ -296,6 +304,8 @@ interface SessionCreateInternalOptions {
 }
 
 export const MAX_HISTORY_PER_SESSION = 100;
+export const MAX_CODEX_QUEUED_INPUTS =
+  MAX_DURABLE_QUEUED_INPUTS_PER_THREAD;
 const MAX_IDLE_SESSIONS = 30;
 const MAX_INPUT_DELIVERY_RECEIPTS_PER_SESSION = 512;
 const SHARED_ATTACHMENT_RETRY_INITIAL_MS = 250;
@@ -421,6 +431,13 @@ export function publicQueuedInput(
     ...(item.skills?.length ? { skills: item.skills } : {}),
     ...(item.mentions?.length ? { mentions: item.mentions } : {}),
   };
+}
+
+export function codexQueuedInputsForSession(
+  session: Pick<SessionInfo, "codexQueuedInputs" | "codexQueuedInput">,
+): QueuedCodexInput[] {
+  if (session.codexQueuedInputs) return session.codexQueuedInputs;
+  return session.codexQueuedInput ? [session.codexQueuedInput] : [];
 }
 
 function structuredImagePaths(candidates: ArtifactCandidate[]): string[] {
@@ -780,7 +797,9 @@ export class SessionManager {
       // path uses that identity as its compare-and-clear revision, so an edit
       // or cancel racing an in-flight RPC cannot be mistaken for the snapshot
       // that was actually sent.
-      session.codexQueuedInput = replacementSession.codexQueuedInput;
+      this.setCodexQueuedInputs(session, [
+        ...codexQueuedInputsForSession(replacementSession),
+      ]);
       session.inputDeliveryReceipts =
         replacementSession.inputDeliveryReceipts ??
         session.inputDeliveryReceipts;
@@ -1463,14 +1482,15 @@ export class SessionManager {
         if (sharedRuntimeDisconnected) {
           session.codexAttachmentState = "unavailable";
         }
-        if (
-          !sharedRuntimeDisconnected &&
-          !(
-            session.codexQueuedInput?.clientMessageId &&
+        if (!sharedRuntimeDisconnected) {
+          this.setCodexQueuedInputs(
+            session,
             this.inputDeliveryLedger
-          )
-        ) {
-          session.codexQueuedInput = undefined;
+              ? codexQueuedInputsForSession(session).filter(
+                  (item) => item.clientMessageId != null,
+                )
+              : [],
+          );
         }
         // Add the disconnect boundary after every already-emitted provider
         // message, but only once. Retry phases change attachment authority,
@@ -1787,17 +1807,32 @@ export class SessionManager {
           : {}),
         sandboxEnabled: s.sandboxEnabled,
         pendingPermission,
-        queuedInput:
-          s.provider === "codex"
-            ? publicQueuedInput(
-                s.codexQueuedInput,
-                s.codexQueuedInput?.clientMessageId
-                  ? s.inputDeliveryReceipts?.get(
-                      s.codexQueuedInput.clientMessageId,
-                    )
-                  : undefined,
-              )
-            : undefined,
+        ...(s.provider === "codex"
+          ? {
+              queuedInput: (() => {
+                const item = codexQueuedInputsForSession(s)[0];
+                return publicQueuedInput(
+                  item,
+                  item?.clientMessageId
+                    ? s.inputDeliveryReceipts?.get(item.clientMessageId)
+                    : undefined,
+                );
+              })(),
+              queuedInputs: codexQueuedInputsForSession(s)
+                .map((item) =>
+                  publicQueuedInput(
+                    item,
+                    item.clientMessageId
+                      ? s.inputDeliveryReceipts?.get(item.clientMessageId)
+                      : undefined,
+                  ),
+                )
+                .filter(
+                  (item): item is QueuedInputItem => item !== undefined,
+                ),
+              queuedInputLimit: MAX_CODEX_QUEUED_INPUTS,
+            }
+          : {}),
       };
     });
   }
@@ -2108,8 +2143,8 @@ export class SessionManager {
         "userMessageUuid" in message ? message.userMessageUuid : undefined,
       );
     }
-    if (session.codexQueuedInput) {
-      observe(session.codexQueuedInput.userMessageUuid);
+    for (const queued of codexQueuedInputsForSession(session)) {
+      observe(queued.userMessageUuid);
     }
     return codexUserTurnUuid(Math.max(maxOrdinal, userTurnCount) + 1);
   }
@@ -2268,6 +2303,45 @@ export class SessionManager {
     };
   }
 
+  private setCodexQueuedInputs(
+    session: SessionInfo,
+    inputs: QueuedCodexInput[],
+  ): void {
+    const bounded = inputs.slice(0, MAX_CODEX_QUEUED_INPUTS);
+    session.codexQueuedInputs = bounded;
+    session.codexQueuedInput = bounded[0];
+  }
+
+  private replaceCodexQueuedInput(
+    session: SessionInfo,
+    current: QueuedCodexInput,
+    next: QueuedCodexInput,
+  ): boolean {
+    const queue = codexQueuedInputsForSession(session);
+    const index = queue.indexOf(current);
+    if (index === -1) return false;
+    this.setCodexQueuedInputs(session, [
+      ...queue.slice(0, index),
+      next,
+      ...queue.slice(index + 1),
+    ]);
+    return true;
+  }
+
+  private removeCodexQueuedInput(
+    session: SessionInfo,
+    current: QueuedCodexInput,
+  ): boolean {
+    const queue = codexQueuedInputsForSession(session);
+    const index = queue.indexOf(current);
+    if (index === -1) return false;
+    this.setCodexQueuedInputs(session, [
+      ...queue.slice(0, index),
+      ...queue.slice(index + 1),
+    ]);
+    return true;
+  }
+
   private restoreInputDeliveryState(
     session: SessionInfo,
     providerThreadId: string,
@@ -2295,15 +2369,15 @@ export class SessionManager {
     const replay = [...plan.replay].sort((left, right) =>
       left.record.occurredAt.localeCompare(right.record.occurredAt),
     );
-    const selected = replay.shift();
-    if (selected) {
-      const { record, payload, requireClientUserMessageId } = selected;
-      session.codexQueuedInput = {
+    const selected = replay.splice(0, MAX_CODEX_QUEUED_INPUTS);
+    this.setCodexQueuedInputs(
+      session,
+      selected.map(({ record, payload, requireClientUserMessageId }) => ({
         ...payload,
         clientMessageId: record.clientMessageId,
         recoveryRequiresClientUserMessageId: requireClientUserMessageId,
-      };
-    }
+      })),
+    );
 
     const forcedUnknown = [
       ...plan.outcomeUnknown,
@@ -2430,7 +2504,10 @@ export class SessionManager {
       ),
     });
     const current = this.sessions.get(id);
-    if (current !== session || current.codexQueuedInput) {
+    if (
+      current !== session ||
+      codexQueuedInputsForSession(current).length >= MAX_CODEX_QUEUED_INPUTS
+    ) {
       await this.inputDeliveryLedger.markOutcomeUnknown(
         identity,
         "The runtime queue changed while durable admission was being committed; the input was not enqueued.",
@@ -2488,12 +2565,15 @@ export class SessionManager {
     },
   ): Promise<boolean> {
     const session = this.sessions.get(id);
-    const current = session?.codexQueuedInput;
+    const current = session
+      ? codexQueuedInputsForSession(session).find(
+          (candidate) => candidate.itemId === itemId,
+        )
+      : undefined;
     if (!session || session.provider !== "codex" || !current) return false;
     if (!current.clientMessageId || !this.inputDeliveryLedger) {
       return this.updateCodexQueuedInput(id, itemId, text, options);
     }
-    if (current.itemId !== itemId) return false;
     const identity = this.inputDeliveryIdentity(
       session,
       current.clientMessageId,
@@ -2515,10 +2595,30 @@ export class SessionManager {
       identity,
       this.durablePayloadFromQueue(next),
     );
-    if (this.sessions.get(id)?.codexQueuedInput !== current) return false;
-    session.codexQueuedInput = next;
-    session.lastActivityAt = new Date();
-    this.broadcastCodexQueue(session);
+    const latest = this.sessions.get(id);
+    const latestCurrent =
+      latest?.provider === "codex"
+        ? codexQueuedInputsForSession(latest).find(
+            (candidate) =>
+              candidate.itemId === itemId &&
+              candidate.clientMessageId === current.clientMessageId,
+          )
+        : undefined;
+    if (!latest || !latestCurrent) {
+      return false;
+    }
+    // A runtime replacement can atomically swap SessionInfo while the durable
+    // write is awaiting fsync. Re-resolve by the stable delivery identity so
+    // the in-memory queue cannot keep stale text after the ledger committed.
+    this.replaceCodexQueuedInput(latest, latestCurrent, {
+      ...latestCurrent,
+      text,
+      updatedAt: next.updatedAt,
+      skills: options?.skills,
+      mentions: options?.mentions,
+    });
+    latest.lastActivityAt = new Date();
+    this.broadcastCodexQueue(latest);
     return true;
   }
 
@@ -2527,12 +2627,15 @@ export class SessionManager {
     itemId: string,
   ): Promise<boolean> {
     const session = this.sessions.get(id);
-    const current = session?.codexQueuedInput;
+    const current = session
+      ? codexQueuedInputsForSession(session).find(
+          (candidate) => candidate.itemId === itemId,
+        )
+      : undefined;
     if (!session || session.provider !== "codex" || !current) return false;
     if (!current.clientMessageId || !this.inputDeliveryLedger) {
       return this.cancelCodexQueuedInput(id, itemId);
     }
-    if (current.itemId !== itemId) return false;
     const identity = this.inputDeliveryIdentity(
       session,
       current.clientMessageId,
@@ -2544,10 +2647,24 @@ export class SessionManager {
       );
     }
     await this.inputDeliveryLedger.cancel(identity);
-    if (this.sessions.get(id)?.codexQueuedInput !== current) return false;
-    session.codexQueuedInput = undefined;
-    session.lastActivityAt = new Date();
-    this.broadcastCodexQueue(session);
+    const latest = this.sessions.get(id);
+    const latestCurrent =
+      latest?.provider === "codex"
+        ? codexQueuedInputsForSession(latest).find(
+            (candidate) =>
+              candidate.itemId === itemId &&
+              candidate.clientMessageId === current.clientMessageId,
+          )
+        : undefined;
+    if (!latest || !latestCurrent) {
+      return false;
+    }
+    // Cancellation is already durable at this point. Apply it to whichever
+    // replacement currently owns the stable public session id; otherwise a
+    // cancelled ledger record could leave an undrainable ghost queue item.
+    this.removeCodexQueuedInput(latest, latestCurrent);
+    latest.lastActivityAt = new Date();
+    this.broadcastCodexQueue(latest);
     return true;
   }
 
@@ -2570,8 +2687,9 @@ export class SessionManager {
   queueCodexInput(id: string, input: QueuedCodexInput): boolean {
     const session = this.sessions.get(id);
     if (!session || session.provider !== "codex") return false;
-    if (session.codexQueuedInput) return false;
-    session.codexQueuedInput = input;
+    const queue = codexQueuedInputsForSession(session);
+    if (queue.length >= MAX_CODEX_QUEUED_INPUTS) return false;
+    this.setCodexQueuedInputs(session, [...queue, input]);
     session.lastActivityAt = new Date();
     this.broadcastCodexQueue(session);
     return true;
@@ -2597,7 +2715,9 @@ export class SessionManager {
     this.storeInputDeliveryReceipt(session, receipt);
     if (
       queued &&
-      session.codexQueuedInput?.clientMessageId === clientMessageId
+      codexQueuedInputsForSession(session).some(
+        (item) => item.clientMessageId === clientMessageId,
+      )
     ) {
       this.broadcastCodexQueue(session);
     }
@@ -2641,15 +2761,17 @@ export class SessionManager {
   ): boolean {
     const session = this.sessions.get(id);
     if (!session || session.provider !== "codex") return false;
-    const current = session.codexQueuedInput;
-    if (!current || current.itemId !== itemId) return false;
-    session.codexQueuedInput = {
+    const current = codexQueuedInputsForSession(session).find(
+      (candidate) => candidate.itemId === itemId,
+    );
+    if (!current) return false;
+    this.replaceCodexQueuedInput(session, current, {
       ...current,
       text,
       updatedAt: new Date().toISOString(),
       skills: options?.skills,
       mentions: options?.mentions,
-    };
+    });
     session.lastActivityAt = new Date();
     this.broadcastCodexQueue(session);
     return true;
@@ -2658,13 +2780,11 @@ export class SessionManager {
   cancelCodexQueuedInput(id: string, itemId: string): boolean {
     const session = this.sessions.get(id);
     if (!session || session.provider !== "codex") return false;
-    if (
-      !session.codexQueuedInput ||
-      session.codexQueuedInput.itemId !== itemId
-    ) {
-      return false;
-    }
-    session.codexQueuedInput = undefined;
+    const current = codexQueuedInputsForSession(session).find(
+      (candidate) => candidate.itemId === itemId,
+    );
+    if (!current) return false;
+    this.removeCodexQueuedInput(session, current);
     session.lastActivityAt = new Date();
     this.broadcastCodexQueue(session);
     return true;
@@ -2681,8 +2801,10 @@ export class SessionManager {
     if (!session || session.provider !== "codex") {
       return { ok: false, error: "No active Codex session." };
     }
-    const queued = session.codexQueuedInput;
-    if (!queued || queued.itemId !== itemId) {
+    const queued = codexQueuedInputsForSession(session).find(
+      (candidate) => candidate.itemId === itemId,
+    );
+    if (!queued) {
       return { ok: false, error: "Queued message not found." };
     }
     if (!(session.process instanceof CodexProcess)) {
@@ -2752,8 +2874,8 @@ export class SessionManager {
     if (!currentSession || currentSession.provider !== "codex") {
       return { ok: true };
     }
-    if (currentSession.codexQueuedInput === queued) {
-      currentSession.codexQueuedInput = undefined;
+    if (codexQueuedInputsForSession(currentSession).includes(queued)) {
+      this.removeCodexQueuedInput(currentSession, queued);
       currentSession.lastActivityAt = new Date();
       this.broadcastCodexQueue(currentSession);
     }
@@ -2766,19 +2888,21 @@ export class SessionManager {
   }
 
   private broadcastCodexQueue(session: SessionInfo): void {
-    const item = publicQueuedInput(
-      session.codexQueuedInput,
-      session.codexQueuedInput?.clientMessageId
-        ? session.inputDeliveryReceipts?.get(
-            session.codexQueuedInput.clientMessageId,
-          )
-        : undefined,
-    );
+    const items = codexQueuedInputsForSession(session)
+      .map((item) =>
+        publicQueuedInput(
+          item,
+          item.clientMessageId
+            ? session.inputDeliveryReceipts?.get(item.clientMessageId)
+            : undefined,
+        ),
+      )
+      .filter((item): item is QueuedInputItem => item !== undefined);
     this.onMessage(session.id, {
       type: "conversation_queue",
       sessionId: session.id,
-      limit: 1,
-      items: item ? [item] : [],
+      limit: MAX_CODEX_QUEUED_INPUTS,
+      items,
     });
   }
 
@@ -2795,7 +2919,7 @@ export class SessionManager {
       isStillSafe?.() === false ||
       !session ||
       session.provider !== "codex" ||
-      !session.codexQueuedInput ||
+      codexQueuedInputsForSession(session).length === 0 ||
       !(session.process instanceof CodexProcess) ||
       !session.process.isWaitingForInput
     ) {
@@ -2819,7 +2943,7 @@ export class SessionManager {
 
   private drainCodexQueue(session: SessionInfo): boolean {
     if (session.provider !== "codex") return false;
-    const queued = session.codexQueuedInput;
+    const queued = codexQueuedInputsForSession(session)[0];
     if (!queued || !(session.process instanceof CodexProcess)) return false;
     if (!session.process.isWaitingForInput) return false;
     if (!this.sharedCodexQueueDrainIsSafe(session)) {
@@ -2848,7 +2972,7 @@ export class SessionManager {
           const current = this.sessions.get(session.id);
           if (
             current !== session ||
-            current.codexQueuedInput !== queued ||
+            codexQueuedInputsForSession(current)[0] !== queued ||
             !(current.process instanceof CodexProcess) ||
             !current.process.isWaitingForInput ||
             !this.sharedCodexQueueDrainIsSafe(current) ||
@@ -2883,13 +3007,13 @@ export class SessionManager {
   ): void {
     if (
       this.sessions.get(session.id) !== session ||
-      session.codexQueuedInput !== queued ||
+      codexQueuedInputsForSession(session)[0] !== queued ||
       !(session.process instanceof CodexProcess)
     ) {
       return;
     }
 
-    session.codexQueuedInput = undefined;
+    this.removeCodexQueuedInput(session, queued);
     this.broadcastCodexQueue(session);
 
     const userMsg = this.buildQueuedUserInputMessage(queued);
@@ -3166,7 +3290,11 @@ export class SessionManager {
             ...(event.error ? { error: event.error } : {}),
           };
       this.storeInputDeliveryReceipt(session, receipt);
-      if (session.codexQueuedInput?.clientMessageId === event.clientMessageId) {
+      if (
+        codexQueuedInputsForSession(session).some(
+          (item) => item.clientMessageId === event.clientMessageId,
+        )
+      ) {
         this.broadcastCodexQueue(session);
       }
       return receipt;

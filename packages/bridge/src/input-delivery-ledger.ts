@@ -10,6 +10,7 @@ const DEFAULT_MAX_RECORDS = 4_096;
 const DEFAULT_MAX_STORE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_PAYLOAD_BYTES = 512 * 1024;
 const DEFAULT_TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+export const MAX_DURABLE_QUEUED_INPUTS_PER_THREAD = 16;
 const MAX_ID_LENGTH = 256;
 const MAX_SOURCE_ID_LENGTH = 160;
 const MAX_TEXT_FIELD_LENGTH = 32 * 1024;
@@ -137,6 +138,7 @@ export interface InputDeliveryLedgerOptions {
   maxRecords?: number;
   maxStoreBytes?: number;
   maxPayloadBytes?: number;
+  maxQueuedInputsPerThread?: number;
   terminalRetentionMs?: number;
   now?: () => Date;
 }
@@ -185,6 +187,7 @@ export class InputDeliveryLedger {
   private readonly maxRecords: number;
   private readonly maxStoreBytes: number;
   private readonly maxPayloadBytes: number;
+  private readonly maxQueuedInputsPerThread: number;
   private readonly terminalRetentionMs: number;
   private readonly now: () => Date;
 
@@ -205,6 +208,14 @@ export class InputDeliveryLedger {
       options.maxPayloadBytes,
       DEFAULT_MAX_PAYLOAD_BYTES,
       "payload byte limit",
+    );
+    this.maxQueuedInputsPerThread = Math.min(
+      positiveInteger(
+        options.maxQueuedInputsPerThread,
+        MAX_DURABLE_QUEUED_INPUTS_PER_THREAD,
+        "per-thread queue capacity",
+      ),
+      MAX_DURABLE_QUEUED_INPUTS_PER_THREAD,
     );
     this.terminalRetentionMs = nonNegativeInteger(
       options.terminalRetentionMs,
@@ -333,15 +344,15 @@ export class InputDeliveryLedger {
           },
         };
       }
-      if (
-        queued &&
-        next.records.some(
-          (record) =>
-            sameThread(record, identity) &&
-            (record.state === "queued" ||
-              (record.state === "provider_dispatching" && record.queued)),
-        )
-      ) {
+      const queuedForThread = queued
+        ? next.records.filter(
+            (record) =>
+              sameThread(record, identity) &&
+              (record.state === "queued" ||
+                (record.state === "provider_dispatching" && record.queued)),
+          ).length
+        : 0;
+      if (queued && queuedForThread >= this.maxQueuedInputsPerThread) {
         throw new InputDeliveryLedgerError(
           "queue_full",
           "The durable next-turn queue is full.",
@@ -571,6 +582,7 @@ export class InputDeliveryLedger {
         JSON.parse(raw),
         this.maxRecords,
         this.maxPayloadBytes,
+        this.maxQueuedInputsPerThread,
       );
       this.pruneExpiredTerminals(this.data);
     } finally {
@@ -806,6 +818,7 @@ function parseStore(
   value: unknown,
   maxRecords: number,
   maxPayloadBytes: number,
+  maxQueuedInputsPerThread: number,
 ): PersistedInputDeliveryStore {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Input delivery ledger is malformed");
@@ -825,7 +838,7 @@ function parseStore(
     normalizePersistedRecord(entry, maxPayloadBytes),
   );
   const keys = new Set<string>();
-  const activeQueues = new Set<string>();
+  const activeQueues = new Map<string, number>();
   for (const record of records) {
     const key = inputDeliveryKey(record);
     if (keys.has(key))
@@ -836,10 +849,11 @@ function parseStore(
       (record.state === "queued" || record.state === "provider_dispatching")
     ) {
       const thread = threadKey(record);
-      if (activeQueues.has(thread)) {
-        throw new Error("Input delivery ledger has multiple active queues");
+      const count = (activeQueues.get(thread) ?? 0) + 1;
+      if (count > maxQueuedInputsPerThread) {
+        throw new Error("Input delivery ledger queue exceeds its capacity");
       }
-      activeQueues.add(thread);
+      activeQueues.set(thread, count);
     }
   }
   const clientIdCapabilities =

@@ -767,6 +767,15 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     return true;
   }
 
+  bool _requestDeferredCompactAttachment() {
+    if (!_isPending) return false;
+    final binding = _ensureDurableAttachmentBinding();
+    if (binding == null) return false;
+    _listenForSessionCreated();
+    unawaited(binding.requestAttachment());
+    return true;
+  }
+
   /// Restarts a persisted first-send after the socket and v2 catalog recover.
   ///
   /// The draft itself is intentionally durable, but restoring it without
@@ -1264,6 +1273,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
           liveRuntimeSessionId: _isPending ? null : _sessionId,
           deferredSubmissionPending: _deferredSubmission != null,
           onDeferredSubmit: _queueDeferredSubmission,
+          onDeferredCompact: _requestDeferredCompactAttachment,
           initialSubmission: _deferredSubmission,
           onInitialSubmissionConsumed: _consumeDeferredSubmission,
           onBackToSessions: widget.onBackToSessions,
@@ -1370,6 +1380,7 @@ class _CodexProviders extends StatelessWidget {
   final String? liveRuntimeSessionId;
   final bool deferredSubmissionPending;
   final ChatComposerSubmitCallback? onDeferredSubmit;
+  final bool Function()? onDeferredCompact;
   final ChatComposerSubmission? initialSubmission;
   final ValueChanged<ChatComposerSubmission>? onInitialSubmissionConsumed;
   final BridgeDataSourceIdentity dataSourceIdentity;
@@ -1401,6 +1412,7 @@ class _CodexProviders extends StatelessWidget {
     this.liveRuntimeSessionId,
     this.deferredSubmissionPending = false,
     this.onDeferredSubmit,
+    this.onDeferredCompact,
     this.initialSubmission,
     this.onInitialSubmissionConsumed,
     required this.dataSourceIdentity,
@@ -1506,6 +1518,7 @@ class _CodexProviders extends StatelessWidget {
           detachedPreview: detachedPreview,
           deferredSubmissionPending: deferredSubmissionPending,
           onDeferredSubmit: onDeferredSubmit,
+          onDeferredCompact: onDeferredCompact,
           dataSourceIdentity: dataSourceIdentity,
         ),
       ),
@@ -1531,6 +1544,7 @@ class _CodexChatBody extends HookWidget {
   final bool detachedPreview;
   final bool deferredSubmissionPending;
   final ChatComposerSubmitCallback? onDeferredSubmit;
+  final bool Function()? onDeferredCompact;
   final BridgeDataSourceIdentity dataSourceIdentity;
 
   const _CodexChatBody({
@@ -1547,6 +1561,7 @@ class _CodexChatBody extends HookWidget {
     this.detachedPreview = false,
     this.deferredSubmissionPending = false,
     this.onDeferredSubmit,
+    this.onDeferredCompact,
     required this.dataSourceIdentity,
   });
 
@@ -1649,6 +1664,9 @@ class _CodexChatBody extends HookWidget {
           [chatSessionCubit],
         );
     useValueListenable(chatSessionCubit.detachedLiveRuntimeRevision);
+    final authoritativeQueuedInputs = useValueListenable(
+      chatSessionCubit.queuedInputs,
+    );
     final sessionState = context.watch<ChatSessionCubit>().state;
     final bridgeState = context.watch<ConnectionCubit>().state;
     final actionBroker = useMemoized(
@@ -1699,6 +1717,7 @@ class _CodexChatBody extends HookWidget {
       ),
       [coreActionSessionId, bridge],
     );
+    final deferredCompactPending = useState(false);
     void showCompactFeedback(String message) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context)
@@ -1745,24 +1764,54 @@ class _CodexChatBody extends HookWidget {
       };
     }, [compactActionController]);
 
-    void requestCompactImmediately() {
+    bool requestCompactImmediately() {
       final strings = CodexCoreActionsStrings.of(context);
       if (runtimeMutationSessionId == null ||
           runtimeMutationSessionId != compactActionController.sessionId) {
+        if (detachedPreview && (onDeferredCompact?.call() ?? false)) {
+          deferredCompactPending.value = true;
+          showCompactFeedback(strings.preparingCompact);
+          return true;
+        }
         showCompactFeedback(strings.failed);
-        return;
+        return false;
       }
       if (!compactActionController.connected) {
         showCompactFeedback(strings.disconnected);
-        return;
+        return false;
       }
       if (compactActionController.actionLoading) {
+        deferredCompactPending.value = false;
         showCompactFeedback(strings.compacting);
-        return;
+        return true;
       }
       final started = compactActionController.requestCompact();
+      if (started) deferredCompactPending.value = false;
       showCompactFeedback(started ? strings.compacting : strings.failed);
+      return started;
     }
+
+    useEffect(
+      () {
+        if (!deferredCompactPending.value ||
+            runtimeMutationSessionId == null ||
+            runtimeMutationSessionId != compactActionController.sessionId ||
+            !compactActionController.connected) {
+          return null;
+        }
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!context.mounted || !deferredCompactPending.value) return;
+          requestCompactImmediately();
+        });
+        return null;
+      },
+      [
+        deferredCompactPending.value,
+        runtimeMutationSessionId,
+        compactActionController,
+        bridgeState,
+      ],
+    );
 
     final localFeatureContext = CodexSessionFeatureContext(
       context: context,
@@ -1833,6 +1882,20 @@ class _CodexChatBody extends HookWidget {
     final parentState = context
         .findAncestorStateOfType<_CodexSessionScreenState>();
     bool submitWhileAttaching(ChatComposerSubmission submission) {
+      if (submission.text.trim().toLowerCase() == '/compact' &&
+          (submission.images == null || submission.images!.isEmpty)) {
+        final accepted = requestCompactImmediately();
+        if (accepted) {
+          // The composer persists every custom submission before invoking us.
+          // `/compact` is a core action, not a chat message; retaining that
+          // draft could replay it as ordinary input or compact twice later.
+          draftService.deletePendingSubmission(
+            sessionId,
+            clientMessageId: submission.clientMessageId,
+          );
+        }
+        return accepted;
+      }
       final waitsForAttachment = onDeferredSubmit?.call(submission) ?? false;
       if (waitsForAttachment) {
         final queuedLocally = !context.read<BridgeService>().isConnected;
@@ -2179,7 +2242,11 @@ class _CodexChatBody extends HookWidget {
     final status = sessionState.status;
     final approval = sessionState.approval;
     final inPlanMode = sessionState.inPlanMode;
-    final queuedInput = sessionState.queuedInput;
+    final queuedInputs = authoritativeQueuedInputs.isNotEmpty
+        ? authoritativeQueuedInputs
+        : (sessionState.queuedInput == null
+              ? const <QueuedInputItem>[]
+              : [sessionState.queuedInput!]);
     final currentGoal = CodexGoalManagement.cardData(sessionState.goal);
 
     // Approval state pattern matching (Codex: permission + ask-user only)
@@ -3005,51 +3072,58 @@ class _CodexChatBody extends HookWidget {
                             ),
                           ),
                       if (approval is ApprovalNone)
-                        if (queuedInput != null)
+                        if (queuedInputs.isNotEmpty)
                           ValueListenableBuilder<bool>(
                             valueListenable: context
                                 .read<ChatSessionCubit>()
                                 .externalDesktopTurnSteerable,
-                            builder: (context, turnSteerable, _) =>
-                                CodexQueuedInputPanel(
-                                  item: queuedInput,
-                                  isOfflinePending:
+                            builder: (context, turnSteerable, _) => ConstrainedBox(
+                              constraints: const BoxConstraints(maxHeight: 260),
+                              child: ListView.builder(
+                                key: const ValueKey('codex_queue_list'),
+                                shrinkWrap: true,
+                                itemCount: queuedInputs.length,
+                                itemBuilder: (context, index) {
+                                  final item = queuedInputs[index];
+                                  final isOffline =
                                       ChatSessionCubit.isOfflineQueuedInput(
-                                        queuedInput,
-                                      ),
-                                  isDeliveryPending:
+                                        item,
+                                      );
+                                  final isDeliveryPending =
                                       ChatSessionCubit.isDeliveryPendingQueuedInput(
-                                        queuedInput,
+                                        item,
+                                      );
+                                  return CodexQueuedInputPanel(
+                                    key: ValueKey('codex_queue_${item.itemId}'),
+                                    item: item,
+                                    isOfflinePending: isOffline,
+                                    isDeliveryPending: isDeliveryPending,
+                                    onSteer:
+                                        isOffline ||
+                                            isDeliveryPending ||
+                                            (sessionState
+                                                    .externalDesktopTurnActive &&
+                                                !turnSteerable)
+                                        ? null
+                                        : () => chatSessionCubit
+                                              .steerQueuedInput(item),
+                                    onEdit: () => unawaited(
+                                      moveQueuedInputToComposer(
+                                        inputController: chatInputController,
+                                        item: item,
+                                        cancelQueuedInput: () =>
+                                            chatSessionCubit.cancelQueuedInput(
+                                              item,
+                                            ),
                                       ),
-                                  onSteer:
-                                      ChatSessionCubit.isOfflineQueuedInput(
-                                            queuedInput,
-                                          ) ||
-                                          ChatSessionCubit.isDeliveryPendingQueuedInput(
-                                            queuedInput,
-                                          ) ||
-                                          (sessionState
-                                                  .externalDesktopTurnActive &&
-                                              !turnSteerable)
-                                      ? null
-                                      : () => context
-                                            .read<ChatSessionCubit>()
-                                            .steerQueuedInput(queuedInput),
-                                  onEdit: () => unawaited(
-                                    moveQueuedInputToComposer(
-                                      inputController: chatInputController,
-                                      item: queuedInput,
-                                      cancelQueuedInput: () => context
-                                          .read<ChatSessionCubit>()
-                                          .cancelQueuedInput(queuedInput),
                                     ),
-                                  ),
-                                  onCancel: () => unawaited(
-                                    context
-                                        .read<ChatSessionCubit>()
-                                        .cancelQueuedInput(queuedInput),
-                                  ),
-                                ),
+                                    onCancel: () => unawaited(
+                                      chatSessionCubit.cancelQueuedInput(item),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
                           ),
                       if (approval is ApprovalNone)
                         ChatInputWithOverlays(
@@ -3060,7 +3134,7 @@ class _CodexChatBody extends HookWidget {
                           hintText: l.codexMessagePlaceholder,
                           inputBlocked:
                               (detachedPreview && deferredSubmissionPending) ||
-                              queuedInput != null,
+                              chatSessionCubit.codexInputQueueFull,
                           onSubmit: detachedPreview
                               ? submitWhileAttaching
                               : null,

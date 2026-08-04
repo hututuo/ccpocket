@@ -203,6 +203,8 @@ SessionInfo _sessionInfoForUnifiedCard(
     codexGoalControlSupported: runtime?.codexGoalControlSupported,
     pendingPermission: runtime?.pendingPermission,
     queuedInput: runtime?.queuedInput,
+    queuedInputs: runtime?.queuedInputs ?? const [],
+    queuedInputLimit: runtime?.queuedInputLimit ?? 1,
   );
 }
 

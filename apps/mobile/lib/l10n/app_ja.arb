@@ -504,6 +504,7 @@
   "applyPermissionsRestartNowTitle": "今すぐ再起動",
   "applyPermissionsRestartNowDescription": "現在のターンを中断して保留中の承認を閉じ、新しい権限で同じ会話を再開します。",
   "permissionModeNextTurnAppliedTip": "権限を保存しました。まだ開始していない次のターンから適用され、現在の承認は従来の権限のままです。",
+  "manualContextCompactedTip": "コンテキストを手動で圧縮しました。",
   "codexApprovalUntrustedDescription": "trusted コマンドだけ自動実行し、それ以外は確認します",
   "codexApprovalOnRequestDescription": "必要だと判断した操作だけ確認します",
   "codexApprovalOnFailureDescription": "通常は確認せず実行し、失敗時だけ追加権限を確認します（非推奨）",

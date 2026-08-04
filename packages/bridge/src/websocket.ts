@@ -23,8 +23,10 @@ import {
 } from "./session-catalog-monitor.js";
 import {
   artifactCandidateRootsForSession,
+  codexQueuedInputsForSession,
   publicQueuedInput,
   SessionManager,
+  MAX_CODEX_QUEUED_INPUTS,
   MAX_HISTORY_PER_SESSION,
   type HistoryEntry,
   type InputDeliveryReceipt,
@@ -455,6 +457,7 @@ const GIT_PROJECT_RESULT_CORRELATION_CAPABILITY =
   "git_project_result_correlation_v1";
 const INPUT_DELIVERY_ACK_CAPABILITY = "input_delivery_ack_v1";
 const INPUT_DELIVERY_STATUS_MESSAGE = "input_delivery_status_v1";
+const CODEX_MULTI_INPUT_QUEUE_CAPABILITY = "codex_multi_input_queue_v1";
 const BOUNDED_HISTORY_WINDOW_ENTRIES = 200;
 const ARCHIVED_SESSION_LIST_LIMIT = 1_000;
 const CODEX_GOAL_RAW_STATUS_CAPABILITY = "goal_state_raw_status";
@@ -2046,7 +2049,9 @@ export class BridgeWebSocketServer {
           isStillSafe,
         ),
       hasCodexQueuedInput: (sessionId) =>
-        this.sessionManager.get(sessionId)?.codexQueuedInput != null,
+        codexQueuedInputsForSession(
+          this.sessionManager.get(sessionId) ?? {},
+        ).length > 0,
       registerInlineImages: (images) => {
         if (!this.imageStore) return [];
         const refs: ImageRef[] = [];
@@ -2607,7 +2612,7 @@ export class BridgeWebSocketServer {
       });
       return;
     }
-    if (session.codexQueuedInput) {
+    if (codexQueuedInputsForSession(session).length > 0) {
       this.send(ws, {
         type: "rewind_result",
         success: false,
@@ -2772,7 +2777,7 @@ export class BridgeWebSocketServer {
       });
       return;
     }
-    if (session.codexQueuedInput) {
+    if (codexQueuedInputsForSession(session).length > 0) {
       this.send(ws, {
         type: "error",
         message: "Cannot fork while Codex has queued input",
@@ -5490,12 +5495,23 @@ export class BridgeWebSocketServer {
           }
           const queueForExternalCodexTurn =
             localFeatureAdmission.action === "queue";
+          const existingCodexQueueLength =
+            session.provider === "codex"
+              ? codexQueuedInputsForSession(session).length
+              : 0;
 
           if (
             session.provider === "codex" &&
-            (queueForExternalCodexTurn || !session.process.isWaitingForInput)
+            (queueForExternalCodexTurn ||
+              existingCodexQueueLength > 0 ||
+              !session.process.isWaitingForInput)
           ) {
-            if (session.codexQueuedInput) {
+            // Once a FIFO exists, every newer input must join behind it even
+            // if the provider has already re-entered its input loop. The
+            // input_ready drain can be deliberately delayed behind artifact
+            // work; treating this window as immediate delivery would let a
+            // later message overtake the durable queue head.
+            if (existingCodexQueueLength >= MAX_CODEX_QUEUED_INPUTS) {
               this.send(ws, {
                 type: "input_rejected",
                 sessionId: session.id,
@@ -12879,6 +12895,7 @@ export class BridgeWebSocketServer {
         GIT_DIFF_REQUEST_CORRELATION_CAPABILITY,
         GIT_PROJECT_RESULT_CORRELATION_CAPABILITY,
         INPUT_DELIVERY_ACK_CAPABILITY,
+        CODEX_MULTI_INPUT_QUEUE_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileBrowser ? [FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
@@ -12975,6 +12992,7 @@ export class BridgeWebSocketServer {
         GIT_DIFF_REQUEST_CORRELATION_CAPABILITY,
         GIT_PROJECT_RESULT_CORRELATION_CAPABILITY,
         INPUT_DELIVERY_ACK_CAPABILITY,
+        CODEX_MULTI_INPUT_QUEUE_CAPABILITY,
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileBrowser ? [FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
@@ -15285,7 +15303,11 @@ export class BridgeWebSocketServer {
           )
         : undefined;
     if (receipt) return receipt;
-    if (session.codexQueuedInput?.clientMessageId === clientMessageId) {
+    if (
+      codexQueuedInputsForSession(session).some(
+        (item) => item.clientMessageId === clientMessageId,
+      )
+    ) {
       return {
         clientMessageId,
         stage: "bridge_accepted",
@@ -15449,19 +15471,21 @@ export class BridgeWebSocketServer {
     sessionId: string,
     session: SessionInfo,
   ): void {
-    const item = publicQueuedInput(
-      session.codexQueuedInput,
-      session.codexQueuedInput?.clientMessageId
-        ? session.inputDeliveryReceipts?.get(
-            session.codexQueuedInput.clientMessageId,
-          )
-        : undefined,
-    );
+    const items = codexQueuedInputsForSession(session)
+      .map((item) =>
+        publicQueuedInput(
+          item,
+          item.clientMessageId
+            ? session.inputDeliveryReceipts?.get(item.clientMessageId)
+            : undefined,
+        ),
+      )
+      .filter((item) => item !== undefined);
     this.sendConversationQueue(ws, {
       type: "conversation_queue",
       sessionId,
-      limit: 1,
-      items: item ? [item] : [],
+      limit: MAX_CODEX_QUEUED_INPUTS,
+      items,
     } as Record<string, unknown>);
   }
 

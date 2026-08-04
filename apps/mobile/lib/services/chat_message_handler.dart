@@ -50,6 +50,8 @@ class ChatStateUpdate {
   final bool? inPlanMode;
   final List<SlashCommand>? slashCommands;
   final QueuedInputItem? queuedInput;
+  final List<QueuedInputItem>? queuedInputs;
+  final int? queuedInputLimit;
   final bool clearQueuedInput;
   final bool resetPending;
   final bool resetAsk;
@@ -113,6 +115,8 @@ class ChatStateUpdate {
     this.inPlanMode,
     this.slashCommands,
     this.queuedInput,
+    this.queuedInputs,
+    this.queuedInputLimit,
     this.clearQueuedInput = false,
     this.resetPending = false,
     this.resetAsk = false,
@@ -219,9 +223,11 @@ class ChatMessageHandler {
           ignoredToolUseIds: ignoredToolUseIds,
           timestampAnchor: historyTimestampAnchor,
         );
-      case ConversationQueueMessage(:final items):
+      case ConversationQueueMessage(:final items, :final limit):
         return ChatStateUpdate(
           queuedInput: items.isNotEmpty ? items.first : null,
+          queuedInputs: items,
+          queuedInputLimit: limit,
           clearQueuedInput: items.isEmpty,
         );
       case SystemMessage(
@@ -658,6 +664,8 @@ class ChatMessageHandler {
     bool? planMode;
     bool? inPlanMode;
     QueuedInputItem? queuedInput;
+    List<QueuedInputItem>? queuedInputs;
+    int? queuedInputLimit;
     var clearQueuedInput = false;
 
     // Track last known timestamp from user messages so server entries
@@ -672,6 +680,8 @@ class ChatMessageHandler {
         lastStatus = m.status;
       } else if (m is ConversationQueueMessage) {
         queuedInput = m.items.isNotEmpty ? m.items.first : null;
+        queuedInputs = m.items;
+        queuedInputLimit = m.limit;
         clearQueuedInput = m.items.isEmpty;
       } else if (m is InputAckMessage ||
           m is InputDeliveryStatusMessage ||
@@ -877,6 +887,8 @@ class ChatMessageHandler {
       codexModelReasoningEffort: codexModelReasoningEffort,
       codexSpeed: codexSpeed,
       queuedInput: queuedInput,
+      queuedInputs: queuedInputs,
+      queuedInputLimit: queuedInputLimit,
       clearQueuedInput: clearQueuedInput,
     );
   }

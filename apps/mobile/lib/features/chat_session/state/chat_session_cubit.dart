@@ -232,6 +232,30 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   String? _detachedRejectedAuthorityGeneration;
   bool _detachedProviderProjectionCurrent = false;
   final ValueNotifier<int> detachedLiveRuntimeRevision = ValueNotifier(0);
+  final ValueNotifier<List<QueuedInputItem>> queuedInputs = ValueNotifier(
+    const [],
+  );
+  int _queuedInputLimit = 1;
+
+  int get queuedInputLimit => _queuedInputLimit;
+
+  bool get codexInputQueueFull {
+    if (!isCodex) return false;
+    final supportsMultiple = _bridge.bridgeCapabilities.contains(
+      codexMultiInputQueueCapability,
+    );
+    if (!supportsMultiple) {
+      // Legacy Bridges only expose an authoritative single queued item. Do
+      // not mistake locally in-flight submissions for an acknowledged queue:
+      // the old transport may accept several immediate turns before deciding
+      // whether one of them needs to wait.
+      return state.queuedInput != null ||
+          _deliveryPendingInputs.length >=
+              BridgeService.maxDeliveryPendingInputsPerSession;
+    }
+    return queuedInputs.value.length + _deliveryPendingInputs.length >=
+        _queuedInputLimit;
+  }
 
   /// Transient Bridge attachment used by a durable, cache-first page.
   ///
@@ -701,6 +725,38 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     return incoming.mergeDeliveryStateFrom(current);
   }
 
+  void _setAuthoritativeQueuedInputs(
+    List<QueuedInputItem> incoming,
+    int limit,
+  ) {
+    final previous = queuedInputs.value;
+    final merged = incoming
+        .map((item) {
+          for (final old in previous) {
+            if (queuedInputItemsShareIdentity(old, item)) {
+              return item.mergeDeliveryStateFrom(old);
+            }
+          }
+          return item;
+        })
+        .toList(growable: false);
+    _queuedInputLimit = limit < 1 ? 1 : limit;
+    if (_sameQueuedInputList(previous, merged)) return;
+    queuedInputs.value = List.unmodifiable(merged);
+  }
+
+  bool _sameQueuedInputList(
+    List<QueuedInputItem> left,
+    List<QueuedInputItem> right,
+  ) {
+    if (identical(left, right)) return true;
+    if (left.length != right.length) return false;
+    for (var index = 0; index < left.length; index++) {
+      if (left[index] != right[index]) return false;
+    }
+    return true;
+  }
+
   QueuedInputItem? _advanceQueuedInputDelivery(
     QueuedInputItem? item,
     String? clientMessageId,
@@ -713,6 +769,25 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return item;
     }
     return item.withDeliveryStage(stage, error: error);
+  }
+
+  QueuedInputItem? _advanceAuthoritativeQueuedInputDelivery(
+    String? clientMessageId,
+    QueuedInputDeliveryStage stage, {
+    String? error,
+  }) {
+    if (clientMessageId == null || queuedInputs.value.isEmpty) return null;
+    var changed = false;
+    final next = queuedInputs.value
+        .map((item) {
+          if (queuedInputClientMessageId(item) != clientMessageId) return item;
+          final advanced = item.withDeliveryStage(stage, error: error);
+          changed = changed || advanced != item;
+          return advanced;
+        })
+        .toList(growable: false);
+    if (changed) queuedInputs.value = List.unmodifiable(next);
+    return next.isEmpty ? null : next.first;
   }
 
   ChatSessionCubit({
@@ -1004,6 +1079,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
     }
     _deliveryPendingInputs.clear();
+    _setAuthoritativeQueuedInputs(const [], 1);
     _pendingPermissionRequests.clear();
     _clearPendingPermissionModeRollback(_pendingPermissionChangeId);
     _clearPendingCodexModelRollback();
@@ -2424,7 +2500,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
     }
 
-    final runtimeQueue = runtime.queuedInput;
+    final runtimeQueues = runtime.queuedInputs.isNotEmpty
+        ? runtime.queuedInputs
+        : (runtime.queuedInput == null
+              ? const <QueuedInputItem>[]
+              : [runtime.queuedInput!]);
+    _setAuthoritativeQueuedInputs(runtimeQueues, runtime.queuedInputLimit);
+    final runtimeQueue = runtimeQueues.isEmpty ? null : runtimeQueues.first;
     if (runtimeQueue != null && !_sameQueuedInput(queuedInput, runtimeQueue)) {
       queuedInput = runtimeQueue;
       changed = true;
@@ -3862,51 +3944,68 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       );
     }
 
+    if (update.queuedInputs != null) {
+      _setAuthoritativeQueuedInputs(
+        update.queuedInputs!,
+        update.queuedInputLimit ?? _queuedInputLimit,
+      );
+    } else if (update.clearQueuedInput) {
+      _setAuthoritativeQueuedInputs(const [], _queuedInputLimit);
+    }
     var nextQueuedInput = update.clearQueuedInput
         ? null
         : _mergeQueuedInputUpdate(current.queuedInput, update.queuedInput);
-    if (originalMsg is ConversationQueueMessage && nextQueuedInput != null) {
-      var queueClientMessageId = queuedInputClientMessageId(nextQueuedInput);
-      if (queueClientMessageId == null) {
-        // Older Bridges did not echo clientMessageId in queue snapshots. A
-        // unique pending message with the same text is the only safe legacy
-        // correlation; otherwise keep both facts visible instead of guessing.
-        final legacyMatches = _deliveryPendingInputs.entries
-            .where((entry) => entry.value.text == nextQueuedInput!.text)
-            .toList(growable: false);
-        if (legacyMatches.length == 1) {
-          final match = legacyMatches.single;
-          queueClientMessageId = match.key;
-          nextQueuedInput = nextQueuedInput.mergeDeliveryStateFrom(match.value);
+    if (originalMsg is ConversationQueueMessage) {
+      final resolvedQueue = List<QueuedInputItem>.of(queuedInputs.value);
+      for (var index = 0; index < resolvedQueue.length; index++) {
+        var item = resolvedQueue[index];
+        var queueClientMessageId = queuedInputClientMessageId(item);
+        if (queueClientMessageId == null) {
+          // Older Bridges did not echo clientMessageId. Correlate only a
+          // unique same-text pending item; never guess across duplicates.
+          final legacyPendingMatches = _deliveryPendingInputs.entries
+              .where((entry) => entry.value.text == item.text)
+              .toList(growable: false);
+          final legacyQueueMatches = resolvedQueue
+              .where((candidate) => candidate.text == item.text)
+              .length;
+          if (legacyPendingMatches.length == 1 && legacyQueueMatches == 1) {
+            final match = legacyPendingMatches.single;
+            queueClientMessageId = match.key;
+            item = item.mergeDeliveryStateFrom(match.value);
+          }
         }
-      }
-      if (queueClientMessageId != null) {
-        final optimisticIndex = nextEntries.indexWhere(
-          (entry) =>
-              entry is UserChatEntry &&
-              entry.clientMessageId == queueClientMessageId,
-        );
-        if (optimisticIndex != -1) {
-          final optimistic = nextEntries[optimisticIndex] as UserChatEntry;
-          final queueStage = switch (optimistic.status) {
-            MessageStatus.providerAccepted =>
-              QueuedInputDeliveryStage.providerAccepted,
-            MessageStatus.providerRejected =>
-              QueuedInputDeliveryStage.providerRejected,
-            _ => QueuedInputDeliveryStage.bridgeAccepted,
-          };
-          nextQueuedInput = nextQueuedInput.withDeliveryStage(queueStage);
-          nextEntries = [
-            ...nextEntries.take(optimisticIndex),
-            ...nextEntries.skip(optimisticIndex + 1),
-          ];
+        if (queueClientMessageId != null) {
+          final optimisticIndex = nextEntries.indexWhere(
+            (entry) =>
+                entry is UserChatEntry &&
+                entry.clientMessageId == queueClientMessageId,
+          );
+          if (optimisticIndex != -1) {
+            final optimistic = nextEntries[optimisticIndex] as UserChatEntry;
+            final queueStage = switch (optimistic.status) {
+              MessageStatus.providerAccepted =>
+                QueuedInputDeliveryStage.providerAccepted,
+              MessageStatus.providerRejected =>
+                QueuedInputDeliveryStage.providerRejected,
+              _ => QueuedInputDeliveryStage.bridgeAccepted,
+            };
+            item = item.withDeliveryStage(queueStage);
+            nextEntries = [
+              ...nextEntries.take(optimisticIndex),
+              ...nextEntries.skip(optimisticIndex + 1),
+            ];
+          }
+          _deliveryPendingInputs.remove(queueClientMessageId);
+          _bridge.clearDeliveryPendingInput(
+            sessionId,
+            itemId: '$deliveryPendingQueuedInputPrefix$queueClientMessageId',
+          );
         }
-        _deliveryPendingInputs.remove(queueClientMessageId);
-        _bridge.clearDeliveryPendingInput(
-          sessionId,
-          itemId: '$deliveryPendingQueuedInputPrefix$queueClientMessageId',
-        );
+        resolvedQueue[index] = item;
       }
+      _setAuthoritativeQueuedInputs(resolvedQueue, originalMsg.limit);
+      nextQueuedInput = resolvedQueue.isEmpty ? null : resolvedQueue.first;
     }
     QueuedInputItem? deliveredPendingInput;
     String? deliveredPendingClientMessageId;
@@ -3966,6 +4065,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           error: originalMsg.error,
         );
       }
+      final authoritativeHead = _advanceAuthoritativeQueuedInputDelivery(
+        originalMsg.clientMessageId,
+        originalMsg.stage == InputDeliveryStage.providerAccepted
+            ? QueuedInputDeliveryStage.providerAccepted
+            : QueuedInputDeliveryStage.providerRejected,
+        error: originalMsg.error,
+      );
+      if (authoritativeHead != null &&
+          queuedInputItemsShareIdentity(
+            authoritativeHead,
+            nextQueuedInput ?? authoritativeHead,
+          )) {
+        nextQueuedInput = authoritativeHead;
+      }
     }
     if (originalMsg is InputAckMessage && originalMsg.queued == true) {
       // Keep the internal correlation until the authoritative queue snapshot
@@ -3977,6 +4090,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           originalMsg.clientMessageId,
           QueuedInputDeliveryStage.bridgeAccepted,
         );
+        final authoritativeHead = _advanceAuthoritativeQueuedInputDelivery(
+          originalMsg.clientMessageId,
+          QueuedInputDeliveryStage.bridgeAccepted,
+        );
+        if (authoritativeHead != null &&
+            queuedInputItemsShareIdentity(
+              authoritativeHead,
+              nextQueuedInput ?? authoritativeHead,
+            )) {
+          nextQueuedInput = authoritativeHead;
+        }
       }
     }
     if (originalMsg is! InputAckMessage &&
@@ -5349,12 +5473,26 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           }
       }
     }
-    if (isCodex && state.queuedInput != null) return false;
+    final isOffline = !_bridge.isConnected;
+    if (isCodex) {
+      if (isOffline && state.queuedInput != null) return false;
+      final supportsMultiple = _bridge.bridgeCapabilities.contains(
+        codexMultiInputQueueCapability,
+      );
+      if (supportsMultiple) {
+        final occupied =
+            queuedInputs.value.length + _deliveryPendingInputs.length;
+        if (occupied >= _queuedInputLimit) return false;
+      } else if (state.queuedInput != null ||
+          _deliveryPendingInputs.length >=
+              BridgeService.maxDeliveryPendingInputsPerSession) {
+        return false;
+      }
+    }
 
     final effectiveClientMessageId = clientMessageId?.trim().isNotEmpty == true
         ? clientMessageId!.trim()
         : _uuid.v4();
-    final isOffline = !_bridge.isConnected;
     final baseSeq = isOffline
         ? _bridge.cachedSessionHistorySeq(bridgeSessionId)
         : null;
@@ -5437,15 +5575,26 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     required QueuedInputItem? deliveryPendingItem,
   }) {
     if (images.isEmpty && _pendingInputDispatchCount == 0) {
-      _dispatchPreparedInput(
-        runtimeLease: runtimeLease,
-        text: text,
-        clientMessageId: clientMessageId,
-        baseSeq: baseSeq,
-        skills: skills,
-        mentions: mentions,
-        deliveryPendingItem: deliveryPendingItem,
-      );
+      try {
+        _dispatchPreparedInput(
+          runtimeLease: runtimeLease,
+          text: text,
+          clientMessageId: clientMessageId,
+          baseSeq: baseSeq,
+          skills: skills,
+          mentions: mentions,
+          deliveryPendingItem: deliveryPendingItem,
+        );
+      } catch (error, stackTrace) {
+        _handleInputDispatchFailure(
+          bridgeSessionId: runtimeLease.sessionId,
+          text: text,
+          clientMessageId: clientMessageId,
+          images: images,
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }
       return;
     }
 
@@ -5503,10 +5652,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _requireCurrentRuntimeMutationLease(runtimeLease);
     final bridgeSessionId = runtimeLease.sessionId;
     if (deliveryPendingItem != null) {
+      if (!_bridge.setDeliveryPendingInput(
+        bridgeSessionId,
+        deliveryPendingItem,
+      )) {
+        throw StateError(
+          'Too many unacknowledged inputs are waiting for this session.',
+        );
+      }
       if (!isClosed) {
         _deliveryPendingInputs[clientMessageId] = deliveryPendingItem;
       }
-      _bridge.setDeliveryPendingInput(bridgeSessionId, deliveryPendingItem);
     }
     _bridge.send(
       ClientMessage.input(
@@ -7692,6 +7848,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _statusRefreshConnectionSubscription?.cancel();
     codexModelCatalogRevision.dispose();
     codexServiceTierRaw.dispose();
+    queuedInputs.dispose();
     externalDesktopTurnSteerable.dispose();
     detachedLiveRuntimeRevision.dispose();
     _desktopContinuitySubscription?.cancel();

@@ -769,6 +769,15 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private pendingCoreAction: PendingCoreAction | null = null;
   private activeCoreActionTurnId: string | null = null;
   private activeCoreActionMethod: CodexCoreActionMethod | null = null;
+  /**
+   * Context-compaction items belonging to an explicit Bridge core action.
+   * Automatic compaction remains part of the active agent turn; manual
+   * compaction is projected as a standalone lifecycle tip instead of being
+   * attached to the preceding turn's tool group.
+   */
+  private readonly manualCompactionItemIds = new Set<string>();
+  private readonly manualCompactionTipTurnIds = new Set<string>();
+  private inputReadyAnnouncementScheduled = false;
   private pendingApprovals = new Map<string, PendingApproval>();
   private pendingUserInputs = new Map<string, PendingUserInputRequest>();
   private pendingGuardianReviewWarnings = new Map<
@@ -2338,6 +2347,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     ) {
       this.setStatus("idle");
     }
+    // The app-server may publish thread/status=idle before it ever publishes
+    // a matching turn lifecycle. In that ordering there is no later status
+    // transition when the admission timeout (or RPC failure) releases the
+    // core-action lease, so explicitly re-evaluate the input loop here.
+    this.announceInputReadyIfAvailable();
   }
 
   /**
@@ -2825,6 +2839,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.releaseCoreAction();
     this.activeCoreActionTurnId = null;
     this.activeCoreActionMethod = null;
+    this.manualCompactionItemIds.clear();
+    this.manualCompactionTipTurnIds.clear();
+    this.inputReadyAnnouncementScheduled = false;
     this.stopped = false;
     this._runtimeGeneration += 1;
     this._authorityGeneration = randomUUID();
@@ -6027,8 +6044,45 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       }
       if (turnId !== pendingCompletion.turnId) return;
     }
+    const completedCoreActionMethod =
+      this.activeCoreActionTurnId &&
+      (!turnId || this.activeCoreActionTurnId === turnId)
+        ? this.activeCoreActionMethod
+        : this.pendingCoreAction?.method;
+    const isManualCompactionTurn =
+      completedCoreActionMethod === "thread/compact/start";
     this.observeCoreActionTurnCompleted(turnId);
     const status = String(turn?.status ?? "completed");
+    if (isManualCompactionTurn) {
+      const tipAlreadyEmitted = turnId
+        ? this.manualCompactionTipTurnIds.has(turnId)
+        : false;
+      if (!tipAlreadyEmitted) this.emitManualCompactionTip();
+      if (turnId) this.rememberManualCompactionTip(turnId);
+      if (turnId) {
+        this.lastCompletedTurn = { turnId, status };
+        this.sharedRuntimeOwnedTurnIds.delete(turnId);
+      }
+      if (!turnId || this.pendingTurnId === turnId) {
+        this.pendingTurnId = null;
+      }
+      this.lastTokenUsage = null;
+      this.lastPlanItemText = null;
+      this.lastResultText = null;
+      if (
+        this.pendingApprovals.size === 0 &&
+        this.pendingUserInputs.size === 0
+      ) {
+        this.setStatus("idle");
+      }
+      this.announceInputReadyIfAvailable();
+      if (this.pendingTurnCompletion) {
+        this.pendingTurnCompletion.resolve();
+        this.pendingTurnCompletion = null;
+      }
+      this.cleanupSteerTempPaths();
+      return;
+    }
     if (status === "completed") {
       this.prepareTurnCompletionAgentSummary(turn, turnId);
     }
@@ -6102,6 +6156,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       ) {
         this.setStatus("idle");
       }
+    }
+
+    if (completedCoreActionMethod !== null) {
+      this.announceInputReadyIfAvailable();
     }
 
     if (this.pendingTurnCompletion) {
@@ -6219,6 +6277,11 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this.agentTurnTracker.startAgentItem({ turnId, itemId });
     }
 
+    if (itemType === "contextcompaction" && this.isCompactingCoreAction) {
+      this.manualCompactionItemIds.add(itemId);
+      return;
+    }
+
     const descriptor = describeCodexItemTool(item, itemType);
     if (descriptor) {
       this.emitStartedToolUse(itemId, descriptor, sourceTimestamp);
@@ -6300,6 +6363,20 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     const emit = (message: ServerMessage): void =>
       this.emitMessage(withCodexSourceTimestamp(message, sourceTimestamp));
     this.startedItemSourceTimestamps.delete(itemId);
+
+    const isManualCompaction =
+      itemType === "contextcompaction" &&
+      (this.manualCompactionItemIds.delete(itemId) ||
+        this.isCompactingCoreAction);
+    if (isManualCompaction) {
+      this.startedToolItems.delete(itemId);
+      const tipAlreadyEmitted = turnId
+        ? this.manualCompactionTipTurnIds.has(turnId)
+        : false;
+      if (!tipAlreadyEmitted) this.emitManualCompactionTip(sourceTimestamp);
+      if (turnId) this.rememberManualCompactionTip(turnId);
+      return;
+    }
 
     switch (itemType) {
       case "agentmessage": {
@@ -6861,6 +6938,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.releaseCoreAction();
     this.activeCoreActionTurnId = null;
     this.activeCoreActionMethod = null;
+    this.manualCompactionItemIds.clear();
+    this.manualCompactionTipTurnIds.clear();
+    this.inputReadyAnnouncementScheduled = false;
     for (const pending of this.pendingRpc.values()) {
       this.clearPendingRpcLifecycle(pending);
       pending.reject(error);
@@ -6882,21 +6962,55 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 
   private setStatus(status: ProcessStatus): void {
-    if (this._status !== status) {
+    const changed = this._status !== status;
+    if (changed) {
       this._status = status;
       this.emit("status", status);
       this.emitMessage({ type: "status", status });
       if (status === "idle" && this.isWaitingForInput) {
-        // A compact/review core action temporarily borrows the app-server
-        // thread without consuming the normal input-loop resolver. Re-announce
-        // readiness once that action releases so a Bridge-owned queued input
-        // cannot remain stranded after compaction completes.
-        queueMicrotask(() => {
-          if (!this.stopped && this.isWaitingForInput) {
-            this.emit("input_ready");
-          }
-        });
+        this.announceInputReadyIfAvailable();
       }
+    }
+  }
+
+  private announceInputReadyIfAvailable(): void {
+    if (this.inputReadyAnnouncementScheduled) return;
+    this.inputReadyAnnouncementScheduled = true;
+    // A compact/review core action temporarily borrows the app-server thread
+    // without consuming the normal input-loop resolver. The authoritative
+    // thread/status notification can report idle before turn/completed
+    // releases that action, so readiness must be re-evaluated even when the
+    // visible status is already idle.
+    queueMicrotask(() => {
+      this.inputReadyAnnouncementScheduled = false;
+      if (!this.stopped && this.isWaitingForInput) {
+        this.emit("input_ready");
+      }
+    });
+  }
+
+  private emitManualCompactionTip(sourceTimestamp?: string): void {
+    this.emitMessage(
+      withCodexSourceTimestamp(
+        {
+          type: "system",
+          subtype: "tip",
+          tipCode: "manual_context_compacted",
+          sessionId: this._threadId ?? undefined,
+          provider: "codex",
+        },
+        sourceTimestamp,
+      ),
+    );
+  }
+
+  private rememberManualCompactionTip(turnId: string): void {
+    this.manualCompactionTipTurnIds.delete(turnId);
+    this.manualCompactionTipTurnIds.add(turnId);
+    while (this.manualCompactionTipTurnIds.size > 64) {
+      const oldest = this.manualCompactionTipTurnIds.values().next().value;
+      if (oldest === undefined) break;
+      this.manualCompactionTipTurnIds.delete(oldest);
     }
   }
 

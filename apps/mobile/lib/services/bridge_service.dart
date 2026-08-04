@@ -392,6 +392,7 @@ class _PendingSessionLinkResolution {
 }
 
 class BridgeService implements BridgeServiceBase {
+  static const maxDeliveryPendingInputsPerSession = 32;
   static const gitMutationOperationLane = 'git-mutation';
   static final Object _gitOperationQuarantine = Object();
   static final Object _legacySessionInsightsContextQuarantine = Object();
@@ -1686,9 +1687,14 @@ class BridgeService implements BridgeServiceBase {
   ///
   /// This is recovery metadata, not a conversation queue. It must never be
   /// projected into [SessionInfo.queuedInput] or shown with queue controls.
-  void setDeliveryPendingInput(String sessionId, QueuedInputItem item) {
-    (_deliveryPendingInputs[sessionId] ??= {})[item.itemId] =
-        _DeliveryPendingInputState(item);
+  bool setDeliveryPendingInput(String sessionId, QueuedInputItem item) {
+    final pending = _deliveryPendingInputs[sessionId] ??= {};
+    if (!pending.containsKey(item.itemId) &&
+        pending.length >= maxDeliveryPendingInputsPerSession) {
+      return false;
+    }
+    pending[item.itemId] = _DeliveryPendingInputState(item);
+    return true;
   }
 
   void clearDeliveryPendingInput(String sessionId, {String? itemId}) {
@@ -1705,8 +1711,19 @@ class BridgeService implements BridgeServiceBase {
     if (removedIds.isEmpty) return;
     final idx = _sessions.indexWhere((session) => session.id == sessionId);
     if (idx < 0) return;
-    if (removedIds.contains(_sessions[idx].queuedInput?.itemId)) {
-      _patchSessionQueuedInput(sessionId, null);
+    final currentQueue = _sessions[idx].queuedInputs.isNotEmpty
+        ? _sessions[idx].queuedInputs
+        : (_sessions[idx].queuedInput == null
+              ? const <QueuedInputItem>[]
+              : [_sessions[idx].queuedInput!]);
+    if (currentQueue.any((item) => removedIds.contains(item.itemId))) {
+      _patchSessionQueue(
+        sessionId,
+        currentQueue
+            .where((item) => !removedIds.contains(item.itemId))
+            .toList(growable: false),
+        _sessions[idx].queuedInputLimit,
+      );
     }
   }
 
@@ -2465,12 +2482,9 @@ class BridgeService implements BridgeServiceBase {
                 _messageController.add(msg);
               case WorktreeRemovedMessage():
                 _messageController.add(msg);
-              case ConversationQueueMessage(:final items):
+              case ConversationQueueMessage(:final items, :final limit):
                 if (sessionId != null) {
-                  _patchSessionQueuedInput(
-                    sessionId,
-                    items.isNotEmpty ? items.first : null,
-                  );
+                  _patchSessionQueue(sessionId, items, limit);
                 }
                 _taggedMessageController.add((msg, sessionId));
                 _messageController.add(msg);
@@ -6817,20 +6831,34 @@ class BridgeService implements BridgeServiceBase {
     _sessionListController.add(_sessions);
   }
 
-  void _patchSessionQueuedInput(String sessionId, QueuedInputItem? item) {
+  void _patchSessionQueue(
+    String sessionId,
+    List<QueuedInputItem> items,
+    int limit,
+  ) {
     final idx = _sessions.indexWhere((s) => s.id == sessionId);
     if (idx < 0) return;
-    final previous = _sessions[idx].queuedInput;
-    final merged =
-        item != null &&
-            previous != null &&
-            queuedInputItemsShareIdentity(previous, item)
-        ? item.mergeDeliveryStateFrom(previous)
-        : item;
+    final previous = _sessions[idx].queuedInputs.isNotEmpty
+        ? _sessions[idx].queuedInputs
+        : (_sessions[idx].queuedInput == null
+              ? const <QueuedInputItem>[]
+              : [_sessions[idx].queuedInput!]);
+    final merged = items
+        .map((item) {
+          for (final old in previous) {
+            if (queuedInputItemsShareIdentity(old, item)) {
+              return item.mergeDeliveryStateFrom(old);
+            }
+          }
+          return item;
+        })
+        .toList(growable: false);
     _sessions = List.of(_sessions)
       ..[idx] = _sessions[idx].copyWith(
-        queuedInput: merged,
-        clearQueuedInput: merged == null,
+        queuedInput: merged.isEmpty ? null : merged.first,
+        clearQueuedInput: merged.isEmpty,
+        queuedInputs: merged,
+        queuedInputLimit: limit,
       );
     _sessionListController.add(_sessions);
   }

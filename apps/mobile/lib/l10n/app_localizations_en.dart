@@ -1221,6 +1221,9 @@ class AppLocalizationsEn extends AppLocalizations {
       'Permissions saved. They apply from the next turn that has not started; any current approval remains unchanged.';
 
   @override
+  String get manualContextCompactedTip => 'Context compacted manually.';
+
+  @override
   String get codexApprovalUntrustedDescription =>
       'Auto-run only trusted commands; ask for everything else';
 

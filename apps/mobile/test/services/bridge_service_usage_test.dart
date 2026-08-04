@@ -2515,6 +2515,45 @@ void main() {
       bridge.dispose();
     });
 
+    test('delivery recovery metadata is bounded per session', () {
+      final bridge = BridgeService();
+      addTearDown(bridge.dispose);
+
+      for (
+        var index = 0;
+        index < BridgeService.maxDeliveryPendingInputsPerSession;
+        index++
+      ) {
+        expect(
+          bridge.setDeliveryPendingInput(
+            'bounded-session',
+            QueuedInputItem(
+              itemId: 'pending:$index',
+              text: 'Pending $index',
+              createdAt: '2026-08-04T00:00:00.000Z',
+            ),
+          ),
+          isTrue,
+        );
+      }
+
+      expect(
+        bridge.setDeliveryPendingInput(
+          'bounded-session',
+          const QueuedInputItem(
+            itemId: 'pending:overflow',
+            text: 'Overflow',
+            createdAt: '2026-08-04T00:00:01.000Z',
+          ),
+        ),
+        isFalse,
+      );
+      expect(
+        bridge.deliveryPendingInputsForSession('bounded-session'),
+        hasLength(BridgeService.maxDeliveryPendingInputsPerSession),
+      );
+    });
+
     test('conversation queue updates cached session queued input', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final socketReady = Completer<WebSocket>();

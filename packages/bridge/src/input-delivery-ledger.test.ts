@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   InputDeliveryLedger,
   InputDeliveryLedgerError,
+  MAX_DURABLE_QUEUED_INPUTS_PER_THREAD,
   inputDeliveryLedgerFileForPort,
   type DurableInputPayload,
   type InputDeliveryIdentity,
@@ -76,6 +77,66 @@ describe("InputDeliveryLedger", () => {
       ],
       outcomeUnknown: [],
     });
+  });
+
+  it("persists a bounded FIFO of multiple next-turn inputs per thread", async () => {
+    const { file } = await temporaryLedgerFile();
+    const ledger = await readyLedger(file, { maxQueuedInputsPerThread: 3 });
+    for (var index = 1; index <= 3; index++) {
+      await ledger.admit({
+        identity: inputIdentity(`queued-${index}`),
+        acceptedSeq: index,
+        queued: true,
+        payload: inputPayload(`queued text ${index}`, `queued-item-${index}`),
+      });
+    }
+
+    await expect(
+      ledger.admit({
+        identity: inputIdentity("queued-overflow"),
+        acceptedSeq: 4,
+        queued: true,
+        payload: inputPayload("overflow", "queued-item-overflow"),
+      }),
+    ).rejects.toMatchObject<InputDeliveryLedgerError>({ code: "queue_full" });
+
+    await ledger.flush();
+    const restarted = await readyLedger(file, {
+      maxQueuedInputsPerThread: 3,
+    });
+    const plan = restarted.recoveryPlan(inputScope(), "thread-a");
+    expect(plan.replay.map(({ record }) => record.clientMessageId)).toEqual([
+      "queued-1",
+      "queued-2",
+      "queued-3",
+    ]);
+    expect(plan.outcomeUnknown).toEqual([]);
+  });
+
+  it("never allows a configured queue capacity above the protocol limit", async () => {
+    const { file } = await temporaryLedgerFile();
+    const ledger = await readyLedger(file, { maxQueuedInputsPerThread: 99 });
+    for (
+      var index = 1;
+      index <= MAX_DURABLE_QUEUED_INPUTS_PER_THREAD;
+      index++
+    ) {
+      await ledger.admit({
+        identity: inputIdentity(`bounded-${index}`),
+        acceptedSeq: index,
+        queued: true,
+        payload: inputPayload(`bounded ${index}`, `bounded-item-${index}`),
+      });
+    }
+
+    await expect(
+      ledger.admit({
+        identity: inputIdentity("bounded-overflow"),
+        acceptedSeq: MAX_DURABLE_QUEUED_INPUTS_PER_THREAD + 1,
+        queued: true,
+        payload: inputPayload("overflow", "bounded-item-overflow"),
+      }),
+    ).rejects.toMatchObject<InputDeliveryLedgerError>({ code: "queue_full" });
   });
 
   it("deduplicates a retry after persistence but before the phone receives ACK", async () => {
@@ -512,6 +573,7 @@ async function readyLedger(
     maxRecords?: number;
     maxStoreBytes?: number;
     maxPayloadBytes?: number;
+    maxQueuedInputsPerThread?: number;
   } = {},
 ): Promise<InputDeliveryLedger> {
   const ledger = new InputDeliveryLedger({ filePath: file, ...options });

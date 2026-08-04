@@ -125,6 +125,9 @@ vi.mock("./session.js", async () => {
           ...(item.mentions?.length ? { mentions: item.mentions } : {}),
         }
       : undefined;
+  const codexQueuedInputsForSession = (session: any): any[] =>
+    session.codexQueuedInputs ??
+    (session.codexQueuedInput ? [session.codexQueuedInput] : []);
 
   class MockSessionManager {
     private sessions = new Map<string, any>();
@@ -806,7 +809,9 @@ vi.mock("./session.js", async () => {
 
   return {
     MAX_HISTORY_PER_SESSION: 100,
+    MAX_CODEX_QUEUED_INPUTS: 16,
     artifactCandidateRootsForSession,
+    codexQueuedInputsForSession,
     publicQueuedInput,
     SessionManager: MockSessionManager,
   };
@@ -17016,6 +17021,85 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(queueState.items[0]).toMatchObject({
       clientMessageId: "mobile-queued-state-1",
       deliveryStage: "bridge_accepted",
+    });
+
+    bridge.close();
+  });
+
+  it("keeps newer input behind an existing FIFO while input_ready drain is delayed", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: ["conversation_queue"],
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "start",
+        projectPath: "/tmp/project-codex-fifo-window",
+        provider: "codex",
+      },
+      ws,
+    );
+    const created = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find(
+        (message: any) =>
+          message.type === "system" && message.subtype === "session_created",
+      );
+    const sessionId = created.sessionId as string;
+    const manager = (bridge as any).sessionManager;
+    const session = manager.get(sessionId);
+    const existing = {
+      itemId: "fifo-head",
+      text: "must run first",
+      createdAt: "2026-08-04T02:10:00.000Z",
+      clientMessageId: "fifo-head-client",
+    };
+    session.codexQueuedInput = existing;
+    session.codexQueuedInputs = [existing];
+    // This is the exact race: app-server is ready, while SessionManager has
+    // not yet drained the already durable head because earlier message work
+    // still owns the serialized processing chain.
+    session.process.isWaitingForInput = true;
+    const queueSpy = vi
+      .spyOn(manager, "queueCodexInput")
+      .mockImplementation((_id: string, input: any) => {
+        session.codexQueuedInputs = [existing, input];
+        session.codexQueuedInput = existing;
+        return true;
+      });
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "input",
+        sessionId,
+        text: "must remain second",
+        clientMessageId: "fifo-second-client",
+      },
+      ws,
+    );
+
+    expect(queueSpy).toHaveBeenCalledOnce();
+    expect(session.codexQueuedInputs.map((item: any) => item.text)).toEqual([
+      "must run first",
+      "must remain second",
+    ]);
+    expect(session.process.sendInput).not.toHaveBeenCalled();
+    const ack = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "input_ack");
+    expect(ack).toMatchObject({
+      sessionId,
+      clientMessageId: "fifo-second-client",
+      queued: true,
     });
 
     bridge.close();

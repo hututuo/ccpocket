@@ -5291,6 +5291,8 @@ class SessionInfo {
   final bool? codexGoalControlSupported;
   final PermissionRequestMessage? pendingPermission;
   final QueuedInputItem? queuedInput;
+  final List<QueuedInputItem> queuedInputs;
+  final int queuedInputLimit;
 
   const SessionInfo({
     required this.id,
@@ -5331,6 +5333,8 @@ class SessionInfo {
     this.codexGoalControlSupported,
     this.pendingPermission,
     this.queuedInput,
+    this.queuedInputs = const [],
+    this.queuedInputLimit = 1,
   });
 
   ExecutionMode get resolvedExecutionMode => deriveExecutionMode(
@@ -5386,6 +5390,8 @@ class SessionInfo {
     bool clearPermission = false,
     QueuedInputItem? queuedInput,
     bool clearQueuedInput = false,
+    List<QueuedInputItem>? queuedInputs,
+    int? queuedInputLimit,
   }) {
     return SessionInfo(
       id: id,
@@ -5443,6 +5449,10 @@ class SessionInfo {
           ? null
           : (pendingPermission ?? this.pendingPermission),
       queuedInput: clearQueuedInput ? null : (queuedInput ?? this.queuedInput),
+      queuedInputs: clearQueuedInput
+          ? const []
+          : (queuedInputs ?? this.queuedInputs),
+      queuedInputLimit: queuedInputLimit ?? this.queuedInputLimit,
     );
   }
 
@@ -5450,6 +5460,18 @@ class SessionInfo {
     final codexSettings = json['codexSettings'] as Map<String, dynamic>?;
     final permJson = json['pendingPermission'] as Map<String, dynamic>?;
     final queueJson = json['queuedInput'] as Map<String, dynamic>?;
+    final queueItems = (json['queuedInputs'] as List?)
+        ?.whereType<Map>()
+        .map(
+          (item) => QueuedInputItem.fromJson(Map<String, dynamic>.from(item)),
+        )
+        .toList(growable: false);
+    final legacyQueue = queueJson == null
+        ? null
+        : QueuedInputItem.fromJson(queueJson);
+    final resolvedQueue =
+        queueItems ??
+        (legacyQueue == null ? const <QueuedInputItem>[] : [legacyQueue]);
     return SessionInfo(
       id: json['id'] as String,
       provider: json['provider'] as String?,
@@ -5507,9 +5529,9 @@ class SessionInfo {
           json['codexNativePlanModeSupported'] as bool?,
       codexGoalControlSupported: json['codexGoalControlSupported'] as bool?,
       pendingPermission: _pendingPermissionFromJson(permJson),
-      queuedInput: queueJson != null
-          ? QueuedInputItem.fromJson(queueJson)
-          : null,
+      queuedInput: resolvedQueue.isEmpty ? null : resolvedQueue.first,
+      queuedInputs: resolvedQueue,
+      queuedInputLimit: json['queuedInputLimit'] as int? ?? 1,
     );
   }
 
@@ -5603,6 +5625,7 @@ const gitDiffRequestCorrelationCapability = 'git_diff_request_correlation_v1';
 const gitProjectResultCorrelationCapability =
     'git_project_result_correlation_v1';
 const inputDeliveryAckBridgeCapability = 'input_delivery_ack_v1';
+const codexMultiInputQueueCapability = 'codex_multi_input_queue_v1';
 const inputDeliveryStatusMessageType = 'input_delivery_status_v1';
 
 class ClientMessage {

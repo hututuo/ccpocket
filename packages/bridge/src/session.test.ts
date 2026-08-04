@@ -512,6 +512,141 @@ describe("SessionManager codex path", () => {
     expect(codexInstances[0].stop).toHaveBeenCalledOnce();
   });
 
+  it("applies durable queue edits and cancellation across a runtime replacement", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ccpocket-queue-swap-"));
+    try {
+      const ledger = new InputDeliveryLedger({
+        filePath: join(directory, "delivery.json"),
+      });
+      await ledger.init();
+      const scope = {
+        bridgeInstanceId: "bridge-queue-swap",
+        codexSourceId: "source-queue-swap",
+      };
+      const manager = new SessionManager(
+        () => {},
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { ledger, scope },
+      );
+      const sessionId = manager.create(
+        "/tmp/project-queue-swap",
+        undefined,
+        undefined,
+        undefined,
+        "codex",
+        { threadId: "thread-queue-swap" },
+      );
+      await manager.queueCodexInputDurably(
+        sessionId,
+        {
+          itemId: "queued-swap",
+          text: "before durable edit",
+          createdAt: "2026-08-04T02:00:00.000Z",
+          clientMessageId: "client-queue-swap",
+        },
+        41,
+      );
+
+      const originalUpdateQueued = ledger.updateQueued.bind(ledger);
+      let markUpdatePersisted!: () => void;
+      const updatePersisted = new Promise<void>(
+        (resolve) => (markUpdatePersisted = resolve),
+      );
+      let releaseUpdate!: () => void;
+      const updateApplyGate = new Promise<void>(
+        (resolve) => (releaseUpdate = resolve),
+      );
+      const updateSpy = vi
+        .spyOn(ledger, "updateQueued")
+        .mockImplementation(async (identity, payload) => {
+          const updated = await originalUpdateQueued(identity, payload);
+          markUpdatePersisted();
+          await updateApplyGate;
+          return updated;
+        });
+
+      const editReplacement = manager.replaceCodexSession(
+        sessionId,
+        "/tmp/project-queue-swap",
+        [],
+        undefined,
+        { threadId: "thread-queue-swap" },
+        1_000,
+      );
+      const editing = manager.updateCodexQueuedInputDurably(
+        sessionId,
+        "queued-swap",
+        "after durable edit",
+      );
+      await updatePersisted;
+      codexInstances[1].emit("input_ready");
+      await expect(editReplacement).resolves.toBe(sessionId);
+      expect(manager.get(sessionId)?.codexQueuedInput?.text).toBe(
+        "before durable edit",
+      );
+      releaseUpdate();
+      await expect(editing).resolves.toBe(true);
+      expect(manager.get(sessionId)?.codexQueuedInput?.text).toBe(
+        "after durable edit",
+      );
+      updateSpy.mockRestore();
+
+      const originalCancel = ledger.cancel.bind(ledger);
+      let markCancelPersisted!: () => void;
+      const cancelPersisted = new Promise<void>(
+        (resolve) => (markCancelPersisted = resolve),
+      );
+      let releaseCancel!: () => void;
+      const cancelApplyGate = new Promise<void>(
+        (resolve) => (releaseCancel = resolve),
+      );
+      vi.spyOn(ledger, "cancel").mockImplementation(async (identity) => {
+        const cancelled = await originalCancel(identity);
+        markCancelPersisted();
+        await cancelApplyGate;
+        return cancelled;
+      });
+
+      const cancelReplacement = manager.replaceCodexSession(
+        sessionId,
+        "/tmp/project-queue-swap",
+        [],
+        undefined,
+        { threadId: "thread-queue-swap" },
+        1_000,
+      );
+      const cancelling = manager.cancelCodexQueuedInputDurably(
+        sessionId,
+        "queued-swap",
+      );
+      await cancelPersisted;
+      codexInstances[2].emit("input_ready");
+      await expect(cancelReplacement).resolves.toBe(sessionId);
+      expect(manager.get(sessionId)?.codexQueuedInput?.itemId).toBe(
+        "queued-swap",
+      );
+      releaseCancel();
+      await expect(cancelling).resolves.toBe(true);
+      expect(manager.get(sessionId)?.codexQueuedInput).toBeUndefined();
+      expect(
+        ledger.get({
+          ...scope,
+          providerThreadId: "thread-queue-swap",
+          clientMessageId: "client-queue-swap",
+        }),
+      ).toMatchObject({ state: "cancelled" });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("carries the user-echo dedup state across a Codex replacement", async () => {
     const manager = new SessionManager(() => {});
     const sessionId = manager.create(
@@ -2279,6 +2414,73 @@ describe("SessionManager codex path", () => {
     expect(proc.sendInputStructured).toHaveBeenCalledWith(
       "run after refresh",
       expect.any(Object),
+    );
+  });
+
+  it("keeps a bounded FIFO and drains one queued input per completed turn", () => {
+    const forwarded: ServerMessage[] = [];
+    const manager = new SessionManager((_sessionId, message) => {
+      forwarded.push(message);
+    });
+    const sessionId = manager.create(
+      "/tmp/project-codex-multi-queue",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    const proc = codexInstances[0];
+    proc.isWaitingForInput = false;
+
+    expect(
+      manager.queueCodexInput(sessionId, {
+        itemId: "queued-first",
+        text: "first future turn",
+        createdAt: "2026-08-04T01:00:00.000Z",
+      }),
+    ).toBe(true);
+    expect(
+      manager.queueCodexInput(sessionId, {
+        itemId: "queued-second",
+        text: "second future turn",
+        createdAt: "2026-08-04T01:00:01.000Z",
+      }),
+    ).toBe(true);
+    expect(manager.list()[0]).toMatchObject({
+      queuedInput: { itemId: "queued-first" },
+      queuedInputs: [
+        { itemId: "queued-first" },
+        { itemId: "queued-second" },
+      ],
+      queuedInputLimit: 16,
+    });
+
+    proc.isWaitingForInput = true;
+    proc.emit("input_ready");
+    expect(proc.sendInputStructured).toHaveBeenCalledOnce();
+    expect(proc.sendInputStructured).toHaveBeenLastCalledWith(
+      "first future turn",
+      expect.any(Object),
+    );
+    expect(manager.get(sessionId)?.codexQueuedInput?.itemId).toBe(
+      "queued-second",
+    );
+
+    proc.isWaitingForInput = true;
+    proc.emit("input_ready");
+    expect(proc.sendInputStructured).toHaveBeenCalledTimes(2);
+    expect(proc.sendInputStructured).toHaveBeenLastCalledWith(
+      "second future turn",
+      expect.any(Object),
+    );
+    expect(manager.get(sessionId)?.codexQueuedInput).toBeUndefined();
+    expect(
+      forwarded.filter((message) => message.type === "conversation_queue"),
+    ).toContainEqual(
+      expect.objectContaining({
+        limit: 16,
+        items: [],
+      }),
     );
   });
 

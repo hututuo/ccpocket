@@ -4,11 +4,13 @@ import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
 import 'package:ccpocket/features/session_list/pending_session_binding.dart';
 import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/models/messages.dart';
+import 'package:ccpocket/services/draft_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:patrol_finders/patrol_finders.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'helpers/chat_test_helpers.dart';
 
@@ -280,6 +282,103 @@ void main() {
 
         expect(durableCodexPreview('durable-codex-a'), findsOneWidget);
         expect(bridge.lastRequestedSessionId, isNot('runtime-for-thread-b'));
+      },
+    );
+
+    patrolWidgetTest(
+      'H2c1: compact entered before attachment waits and executes once',
+      ($) async {
+        SharedPreferences.setMockInitialValues({});
+        final draftService = DraftService(
+          await SharedPreferences.getInstance(),
+        );
+        bridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        var attachmentRequests = 0;
+        final binding = PendingSessionBinding(
+          kind: PendingSessionRequestKind.resume,
+          requestId: 'compact-before-attach',
+          provider: 'codex',
+          projectPath: '/tmp/project',
+          providerSessionId: 'durable-compact-thread',
+          allowLegacyFallback: false,
+          onAttachmentRequested: () async {
+            attachmentRequests += 1;
+          },
+        );
+        addTearDown(binding.dispose);
+        await $.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-compact-runtime',
+            projectPath: '/tmp/project',
+            isPending: true,
+            durableProviderSessionId: 'durable-compact-thread',
+            pendingSessionCreated: binding,
+            draftService: draftService,
+          ),
+        );
+        await pumpN($.tester);
+
+        await $.tester.enterText(
+          find.byKey(const ValueKey('message_input')),
+          '/compact',
+        );
+        await pumpN($.tester);
+        await $(#send_button).tap();
+        await pumpN($.tester);
+        expect(attachmentRequests, 1);
+        expect(findSentMessage(bridge, 'input'), isNull);
+        expect(findSentMessage(bridge, 'codex_compact_request'), isNull);
+        expect(
+          draftService.getPendingSubmission('durable-compact-thread'),
+          isNull,
+        );
+
+        binding.value = const SystemMessage(
+          subtype: 'session_created',
+          sessionId: 'live-compact-runtime',
+          claudeSessionId: 'durable-compact-thread',
+          provider: 'codex',
+          projectPath: '/tmp/project',
+          sourceSessionId: 'durable-compact-thread',
+          resumeRequestId: 'compact-before-attach',
+        );
+        await pumpN($.tester);
+        final cubit = BlocProvider.of<ChatSessionCubit>(
+          $.tester.element(find.byKey(const ValueKey('message_input'))),
+        );
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-compact-thread',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-04T00:00:00.000Z',
+            executionHost: 'bridge',
+            controlState: 'writable',
+            authorityGeneration: 'compact-authority',
+          ),
+          sourceFingerprint: 'bridge-test/source-test',
+        );
+        expect(
+          cubit.runtimeSessionIdForMutation(allowSteerable: false),
+          'live-compact-runtime',
+        );
+        await pumpN($.tester);
+
+        final compactRequests = findAllSentMessages(
+          bridge,
+          'codex_compact_request',
+        );
+        expect(compactRequests, hasLength(1));
+        expect(compactRequests.single['sessionId'], 'live-compact-runtime');
+        expect(findSentMessage(bridge, 'input'), isNull);
       },
     );
 

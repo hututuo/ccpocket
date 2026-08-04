@@ -1189,6 +1189,9 @@ class AppLocalizationsJa extends AppLocalizations {
       '権限を保存しました。まだ開始していない次のターンから適用され、現在の承認は従来の権限のままです。';
 
   @override
+  String get manualContextCompactedTip => 'コンテキストを手動で圧縮しました。';
+
+  @override
   String get codexApprovalUntrustedDescription =>
       'trusted コマンドだけ自動実行し、それ以外は確認します';
 

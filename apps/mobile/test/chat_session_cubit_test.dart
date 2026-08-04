@@ -8433,8 +8433,17 @@ void main() {
     );
 
     test('ambiguous legacy queue text keeps every fact visible', () async {
+      mockBridge.advertisedBridgeCapabilities = const {
+        ChatSessionCubit.codexDesktopContinuityCapability,
+        codexMultiInputQueueCapability,
+      };
       final cubit = createCubit('s1', provider: Provider.codex);
       addTearDown(cubit.close);
+      await Future.microtask(() {});
+      mockBridge.emitMessage(
+        const ConversationQueueMessage(sessionId: 's1', limit: 16, items: []),
+        sessionId: 's1',
+      );
       await Future.microtask(() {});
 
       cubit.sendMessage('Same follow up');
@@ -8461,6 +8470,66 @@ void main() {
       expect(cubit.state.queuedInput?.itemId, 'legacy-q1');
       expect(cubit.state.queuedInput?.clientMessageId, isNull);
     });
+
+    test(
+      'multi queue snapshot keeps FIFO items and removes matching bubbles',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          ChatSessionCubit.codexDesktopContinuityCapability,
+          codexMultiInputQueueCapability,
+        };
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
+        mockBridge.emitMessage(
+          const ConversationQueueMessage(sessionId: 's1', limit: 16, items: []),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.sendMessage('First queued'), isTrue);
+        expect(cubit.sendMessage('Second queued'), isTrue);
+        final optimistic = cubit.state.entries
+            .whereType<UserChatEntry>()
+            .toList(growable: false);
+        final firstClientId = optimistic[0].clientMessageId!;
+        final secondClientId = optimistic[1].clientMessageId!;
+
+        mockBridge.emitMessage(
+          ConversationQueueMessage(
+            sessionId: 's1',
+            limit: 16,
+            items: [
+              QueuedInputItem(
+                itemId: 'queue-first',
+                text: 'First queued',
+                createdAt: '2026-08-04T00:00:00.000Z',
+                clientMessageId: firstClientId,
+                deliveryStage: QueuedInputDeliveryStage.bridgeAccepted,
+              ),
+              QueuedInputItem(
+                itemId: 'queue-second',
+                text: 'Second queued',
+                createdAt: '2026-08-04T00:00:01.000Z',
+                clientMessageId: secondClientId,
+                deliveryStage: QueuedInputDeliveryStage.bridgeAccepted,
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.entries.whereType<UserChatEntry>(), isEmpty);
+        expect(cubit.state.queuedInput?.itemId, 'queue-first');
+        expect(cubit.queuedInputs.value.map((item) => item.itemId), [
+          'queue-first',
+          'queue-second',
+        ]);
+        expect(cubit.queuedInputLimit, 16);
+        expect(cubit.codexInputQueueFull, isFalse);
+      },
+    );
 
     test(
       'codex queued input update steer and cancel send client messages',

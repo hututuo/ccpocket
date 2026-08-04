@@ -4,6 +4,7 @@ class CodexCoreActionsStrings {
   const CodexCoreActionsStrings({
     required this.title,
     required this.compacting,
+    required this.preparingCompact,
     required this.reviewTitle,
     required this.reviewBody,
     required this.reviewAction,
@@ -31,6 +32,7 @@ class CodexCoreActionsStrings {
 
   final String title;
   final String compacting;
+  final String preparingCompact;
   final String reviewTitle;
   final String reviewBody;
   final String reviewAction;
@@ -66,6 +68,7 @@ class CodexCoreActionsStrings {
   static const _en = CodexCoreActionsStrings(
     title: 'Codex tools',
     compacting: 'Requesting context compaction…',
+    preparingCompact: 'Preparing this conversation for compaction…',
     reviewTitle: 'Code review',
     reviewBody: 'Start an official inline Codex review.',
     reviewAction: 'Start review',
@@ -94,6 +97,7 @@ class CodexCoreActionsStrings {
   static const _zh = CodexCoreActionsStrings(
     title: 'Codex 工具',
     compacting: '正在请求压缩当前对话…',
+    preparingCompact: '正在连接当前会话，随后会自动开始压缩…',
     reviewTitle: '代码审查',
     reviewBody: '启动 Codex 官方的会话内代码审查。',
     reviewAction: '开始审查',
@@ -122,6 +126,7 @@ class CodexCoreActionsStrings {
   static const _ja = CodexCoreActionsStrings(
     title: 'Codex ツール',
     compacting: '会話の圧縮をリクエストしています…',
+    preparingCompact: '会話に接続しています。準備後に圧縮を開始します…',
     reviewTitle: 'コードレビュー',
     reviewBody: 'Codex の公式インラインレビューを開始します。',
     reviewAction: 'レビュー開始',
@@ -150,6 +155,7 @@ class CodexCoreActionsStrings {
   static const _ko = CodexCoreActionsStrings(
     title: 'Codex 도구',
     compacting: '대화 압축을 요청하는 중…',
+    preparingCompact: '대화에 연결 중입니다. 준비되면 압축을 시작합니다…',
     reviewTitle: '코드 리뷰',
     reviewBody: 'Codex 공식 인라인 리뷰를 시작합니다.',
     reviewAction: '리뷰 시작',

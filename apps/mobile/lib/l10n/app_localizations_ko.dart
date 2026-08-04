@@ -1186,6 +1186,9 @@ class AppLocalizationsKo extends AppLocalizations {
       '권한을 저장했습니다. 아직 시작하지 않은 다음 턴부터 적용되며 현재 승인은 기존 권한을 유지합니다.';
 
   @override
+  String get manualContextCompactedTip => '컨텍스트를 수동으로 압축했습니다.';
+
+  @override
   String get codexApprovalUntrustedDescription =>
       '신뢰할 수 있는 명령만 자동 실행하고 나머지는 확인';
 

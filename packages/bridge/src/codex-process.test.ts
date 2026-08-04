@@ -5107,6 +5107,164 @@ describe("CodexProcess (app-server)", () => {
     inputError.mockRestore();
   });
 
+  it("re-announces input readiness when idle arrives before compact completion", async () => {
+    const proc = new CodexProcess("linux");
+    const inputReady = vi.fn();
+    proc.on("input_ready", inputReady);
+    (proc as any)._threadId = "thread-compact-idle-race";
+    (proc as any)._status = "idle";
+    (proc as any).inputResolve = vi.fn();
+    vi.spyOn(proc as any, "request").mockResolvedValue({});
+
+    await proc.compactThread();
+    (proc as any).handleNotification("turn/started", {
+      threadId: "thread-compact-idle-race",
+      turn: { id: "turn-compact-race" },
+    });
+
+    // The app-server can publish idle before the terminal turn event. The
+    // core-action lease still blocks input at this point.
+    (proc as any).handleNotification("thread/status/changed", {
+      threadId: "thread-compact-idle-race",
+      status: { type: "idle" },
+    });
+    await Promise.resolve();
+    expect(proc.status).toBe("idle");
+    expect(proc.isWaitingForInput).toBe(false);
+    expect(inputReady).not.toHaveBeenCalled();
+
+    (proc as any).handleNotification("turn/completed", {
+      threadId: "thread-compact-idle-race",
+      turn: { id: "turn-compact-race", status: "completed" },
+    });
+    await Promise.resolve();
+    expect(proc.isWaitingForInput).toBe(true);
+    expect(inputReady).toHaveBeenCalledOnce();
+
+    // A late duplicate idle notification is observation-only. It must not
+    // create a second readiness edge after the compact terminal already
+    // released the input loop.
+    (proc as any).handleNotification("thread/status/changed", {
+      threadId: "thread-compact-idle-race",
+      status: { type: "idle" },
+    });
+    await Promise.resolve();
+    expect(inputReady).toHaveBeenCalledOnce();
+    proc.stop();
+  });
+
+  it("projects manual compaction outside the previous turn tool group", async () => {
+    const proc = new CodexProcess("linux");
+    const messages: Array<Record<string, any>> = [];
+    proc.on("message", (message) => messages.push(message as any));
+    (proc as any)._threadId = "thread-manual-compact-item";
+    (proc as any)._status = "idle";
+    vi.spyOn(proc as any, "request").mockResolvedValue({});
+
+    await proc.compactThread();
+    (proc as any).handleNotification("turn/started", {
+      threadId: "thread-manual-compact-item",
+      turn: { id: "turn-manual-compact" },
+    });
+    (proc as any).handleNotification("item/started", {
+      threadId: "thread-manual-compact-item",
+      turnId: "turn-manual-compact",
+      item: { type: "contextCompaction", id: "manual-compact-item" },
+    });
+    (proc as any).handleNotification("turn/completed", {
+      threadId: "thread-manual-compact-item",
+      turn: { id: "turn-manual-compact", status: "completed" },
+    });
+    (proc as any).handleNotification("item/completed", {
+      threadId: "thread-manual-compact-item",
+      turnId: "turn-manual-compact",
+      item: { type: "contextCompaction", id: "manual-compact-item" },
+    });
+
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        subtype: "tip",
+        tipCode: "manual_context_compacted",
+      }),
+    );
+    expect(
+      messages.some(
+        (message) =>
+          message.type === "tool_result" &&
+          message.toolUseId === "manual-compact-item",
+      ),
+    ).toBe(false);
+    expect(messages.filter((message) => message.type === "result")).toEqual(
+      [],
+    );
+    expect(
+      messages.filter(
+        (message) =>
+          message.type === "system" &&
+          message.tipCode === "manual_context_compacted",
+      ),
+    ).toHaveLength(1);
+    expect(
+      messages.some(
+        (message) =>
+          message.type === "assistant" &&
+          message.message?.content?.some(
+            (content: Record<string, unknown>) =>
+              content.type === "tool_use" &&
+              content.id === "manual-compact-item",
+          ),
+      ),
+    ).toBe(false);
+    proc.stop();
+  });
+
+  it("keeps automatic compaction inside its active turn without early input readiness", async () => {
+    const proc = new CodexProcess("linux");
+    const inputReady = vi.fn();
+    const messages: Array<Record<string, any>> = [];
+    proc.on("input_ready", inputReady);
+    proc.on("message", (message) => messages.push(message as any));
+    (proc as any)._threadId = "thread-auto-compact";
+    (proc as any)._status = "running";
+    (proc as any).pendingTurnId = "turn-agent";
+    (proc as any).inputResolve = vi.fn();
+
+    (proc as any).handleNotification("item/started", {
+      threadId: "thread-auto-compact",
+      turnId: "turn-agent",
+      item: { type: "contextCompaction", id: "auto-compact-item" },
+    });
+    (proc as any).handleNotification("item/completed", {
+      threadId: "thread-auto-compact",
+      turnId: "turn-agent",
+      item: { type: "contextCompaction", id: "auto-compact-item" },
+    });
+    await Promise.resolve();
+
+    expect(inputReady).not.toHaveBeenCalled();
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "tool_result",
+        toolUseId: "auto-compact-item",
+        toolName: "ContextCompaction",
+      }),
+    );
+    expect(
+      messages.some(
+        (message) => message.tipCode === "manual_context_compacted",
+      ),
+    ).toBe(false);
+
+    (proc as any).handleNotification("turn/completed", {
+      threadId: "thread-auto-compact",
+      turn: { id: "turn-agent", status: "completed" },
+    });
+    await Promise.resolve();
+    expect(inputReady).toHaveBeenCalledOnce();
+    proc.stop();
+  });
+
   it("matches review admission to its returned turn id", async () => {
     const proc = new CodexProcess("linux");
     (proc as any)._threadId = "thread-review-lock";
@@ -5197,8 +5355,11 @@ describe("CodexProcess (app-server)", () => {
     const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
     const proc = new CodexProcess("linux");
+    const inputReady = vi.fn();
+    proc.on("input_ready", inputReady);
     (proc as any)._threadId = "thread-core-action-cleanup";
     (proc as any)._status = "idle";
+    (proc as any).inputResolve = vi.fn();
     vi.spyOn(proc as any, "request").mockResolvedValue({});
     try {
       await proc.compactThread({ timeoutMs: 1 });
@@ -5211,15 +5372,25 @@ describe("CodexProcess (app-server)", () => {
       });
       expect(proc.hasPendingCoreAction).toBe(false);
       expect(clearTimeoutSpy).toHaveBeenCalledWith(completedTimer);
+      await Promise.resolve();
+      inputReady.mockClear();
 
       await proc.compactThread({ timeoutMs: 1 });
       const expiredTimer = (proc as any).pendingCoreAction.startTimeout;
       expect(expiredTimer).toBeDefined();
+      (proc as any).handleNotification("thread/status/changed", {
+        threadId: "thread-core-action-cleanup",
+        status: { type: "idle" },
+      });
+      await Promise.resolve();
+      expect(proc.status).toBe("idle");
+      expect(inputReady).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(14_999);
       expect(proc.hasPendingCoreAction).toBe(true);
       await vi.advanceTimersByTimeAsync(1);
       expect(proc.hasPendingCoreAction).toBe(false);
       expect(proc.status).toBe("idle");
+      expect(inputReady).toHaveBeenCalledOnce();
       expect(warning).toHaveBeenCalledWith(
         expect.stringContaining("within 15000ms"),
       );

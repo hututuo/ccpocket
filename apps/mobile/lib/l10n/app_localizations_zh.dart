@@ -1175,6 +1175,9 @@ class AppLocalizationsZh extends AppLocalizations {
       '权限已保存，将从下一个尚未开始的轮次生效；当前审批仍按原权限处理。';
 
   @override
+  String get manualContextCompactedTip => '已手动压缩上下文。';
+
+  @override
   String get codexApprovalUntrustedDescription => '仅自动运行受信任命令，其他操作都需要确认';
 
   @override

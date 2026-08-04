@@ -18,7 +18,7 @@ void main() {
         ServerMessage.fromJson({
               'type': 'conversation_queue',
               'sessionId': 's1',
-              'limit': 1,
+              'limit': 16,
               'items': [
                 {
                   'itemId': 'q1',
@@ -27,16 +27,59 @@ void main() {
                   'clientMessageId': 'cm1',
                   'deliveryStage': 'provider_accepted',
                 },
+                {
+                  'itemId': 'q2',
+                  'text': 'Queued second',
+                  'createdAt': '2026-07-31T00:00:01.000Z',
+                  'clientMessageId': 'cm2',
+                  'deliveryStage': 'bridge_accepted',
+                },
               ],
             })
             as ConversationQueueMessage;
 
-    expect(message.items.single.clientMessageId, 'cm1');
+    expect(message.limit, 16);
+    expect(message.items, hasLength(2));
+    expect(message.items.first.clientMessageId, 'cm1');
     expect(
-      message.items.single.deliveryStage,
+      message.items.first.deliveryStage,
       QueuedInputDeliveryStage.providerAccepted,
     );
   });
+
+  test(
+    'session summaries preserve the additive full queue and legacy head',
+    () {
+      final session = SessionInfo.fromJson({
+        'id': 'runtime-1',
+        'provider': 'codex',
+        'projectPath': '/tmp/project',
+        'status': 'running',
+        'queuedInputLimit': 16,
+        'queuedInput': {
+          'itemId': 'q1',
+          'text': 'first',
+          'createdAt': '2026-08-04T00:00:00.000Z',
+        },
+        'queuedInputs': [
+          {
+            'itemId': 'q1',
+            'text': 'first',
+            'createdAt': '2026-08-04T00:00:00.000Z',
+          },
+          {
+            'itemId': 'q2',
+            'text': 'second',
+            'createdAt': '2026-08-04T00:00:01.000Z',
+          },
+        ],
+      });
+
+      expect(session.queuedInputLimit, 16);
+      expect(session.queuedInput?.itemId, 'q1');
+      expect(session.queuedInputs.map((item) => item.itemId), ['q1', 'q2']);
+    },
+  );
 
   testWidgets('CodexQueuedInputPanel exposes steer edit and cancel actions', (
     tester,
