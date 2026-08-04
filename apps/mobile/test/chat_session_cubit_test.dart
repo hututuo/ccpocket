@@ -640,7 +640,7 @@ void main() {
     );
 
     test(
-      'detached settings wait for exact authority and never update optimistically',
+      'detached settings wait for exact authority and apply the durable ACK',
       () async {
         mockBridge.advertisedBridgeCapabilities = const {
           conversationSyncV2Capability,
@@ -738,6 +738,41 @@ void main() {
         expect(settingsPayload['authorityGeneration'], 'settings-authority-1');
         expect(settingsPayload['operationId'], isNotEmpty);
 
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'set_codex_model',
+            sessionId: 'settings-thread',
+            provider: 'codex',
+            model: 'gpt-5.4-mini',
+            modelReasoningEffort: 'low',
+            settingsPersistence: 'durable',
+          ),
+          sessionId: 'settings-thread',
+        );
+        await Future<void>.microtask(() {});
+
+        expect(cubit.state.codexModel, 'gpt-5.4-mini');
+        expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.low);
+
+        mockBridge.sentMessages.clear();
+        cubit.setCodexSpeed(CodexSpeed.standard);
+        expect(cubit.state.codexSpeed, CodexSpeed.fast);
+        expect(mockBridge.sentMessages, hasLength(1));
+
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'set_codex_speed',
+            sessionId: 'settings-thread',
+            provider: 'codex',
+            serviceTier: 'standard',
+            settingsPersistence: 'durable',
+          ),
+          sessionId: 'settings-thread',
+        );
+        await Future<void>.microtask(() {});
+
+        expect(cubit.state.codexSpeed, CodexSpeed.standard);
+
         mockBridge.sentMessages.clear();
         cubit.updateDetachedProviderStatus(
           const ConversationSyncV2Status(
@@ -760,8 +795,8 @@ void main() {
           CodexSettingsActionability.readOnlyDesktopOwner,
         );
 
-        cubit.setCodexSpeed(CodexSpeed.standard);
-        expect(cubit.state.codexSpeed, CodexSpeed.fast);
+        cubit.setCodexSpeed(CodexSpeed.fast);
+        expect(cubit.state.codexSpeed, CodexSpeed.standard);
         expect(mockBridge.sentMessages, isEmpty);
 
         cubit.updateDetachedProviderStatus(
@@ -774,6 +809,37 @@ void main() {
         expect(cubit.state.codexSpeed, CodexSpeed.unknown);
       },
     );
+
+    test('detached model and effort stay known without a service tier', () {
+      final cubit = ChatSessionCubit(
+        sessionId: 'settings-without-tier',
+        provider: Provider.codex,
+        bridge: mockBridge,
+        streamingCubit: streamingCubit,
+        detachedPreview: true,
+      );
+      addTearDown(cubit.close);
+
+      cubit.updateDetachedProviderSettings(
+        const RecentSession(
+          sessionId: 'settings-without-tier',
+          provider: 'codex',
+          firstPrompt: 'Settings without tier',
+          created: '2026-08-04T00:00:00.000Z',
+          modified: '2026-08-04T00:01:00.000Z',
+          gitBranch: 'main',
+          projectPath: '/tmp/project',
+          isSidechain: false,
+          codexModel: 'gpt-5.6-sol',
+          codexModelReasoningEffort: 'max',
+          codexSettingsSnapshotComplete: true,
+        ),
+        sourceFingerprint: 'bridge-a/source-a',
+      );
+
+      expect(cubit.state.codexSpeed, CodexSpeed.unknown);
+      expect(cubit.codexModelSettingsKnown, isTrue);
+    });
 
     test(
       'detached settings factories share one exact ephemeral authority envelope',
@@ -7012,6 +7078,26 @@ void main() {
         expect(cubit.state.codexSpeed, CodexSpeed.standard);
 
         mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'set_codex_model',
+            sessionId: 's1',
+            provider: 'codex',
+            settingsPersistence: 'durable',
+          ),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const SystemMessage(
+            subtype: 'set_codex_speed',
+            sessionId: 's1',
+            provider: 'codex',
+            settingsPersistence: 'durable',
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        mockBridge.emitMessage(
           const ErrorMessage(
             sessionId: 's1',
             message: 'Codex Desktop owns the active turn.',
@@ -7019,7 +7105,7 @@ void main() {
           ),
           sessionId: 's1',
         );
-        await Future.microtask(() {});
+        await pumpEventQueue();
 
         expect(cubit.state.codexModel, 'gpt-5.6-sol');
         expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);

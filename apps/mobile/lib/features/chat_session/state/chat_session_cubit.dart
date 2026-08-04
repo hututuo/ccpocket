@@ -290,8 +290,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       !isCodex ||
       !detachedPreview ||
       (state.codexModel?.trim().isNotEmpty == true &&
-          state.codexModelReasoningEffort != null &&
-          state.codexSpeed != CodexSpeed.unknown);
+          state.codexModelReasoningEffort != null);
 
   bool get codexPlanModeKnown =>
       !isCodex || !detachedPreview || state.codexPermissionStateKnown;
@@ -3003,9 +3002,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     if (msg is SystemMessage && msg.provider == Provider.codex.value) {
       if (msg.subtype == 'set_codex_model') {
-        _clearPendingCodexModelRollback();
+        if (_applyCodexModelAcknowledgement(msg)) {
+          _clearPendingCodexModelRollback();
+        }
       } else if (msg.subtype == 'set_codex_speed') {
-        _clearPendingCodexSpeedRollback();
+        if (_applyCodexSpeedAcknowledgement(msg)) {
+          _clearPendingCodexSpeedRollback();
+        }
       }
       if (msg.settingsPersistence == 'runtime_only') {
         logger.warning(
@@ -6900,6 +6903,55 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _pendingCodexSpeedMutation = false;
     _pendingCodexSpeedRollback = null;
     _pendingCodexServiceTierRollback = null;
+  }
+
+  bool _applyCodexModelAcknowledgement(SystemMessage message) {
+    final model = sanitizeCodexModelName(message.model ?? '');
+    if (model == null) return false;
+    final effort =
+        reasoningEffortByValue(message.modelReasoningEffort) ??
+        state.codexModelReasoningEffort;
+    if (state.codexModel != model ||
+        state.codexModelReasoningEffort != effort) {
+      emit(
+        state.copyWith(codexModel: model, codexModelReasoningEffort: effort),
+      );
+    }
+    final runtimeSessionId = runtimeSessionIdForRead;
+    if (runtimeSessionId != null) {
+      _bridge.patchSessionCodexModel(
+        runtimeSessionId,
+        model,
+        modelReasoningEffort: effort?.value,
+      );
+    }
+    logger.info(
+      '[settings_projection] event=model_ack_applied '
+      'thread=$_projectionThreadToken model=$model '
+      'effort=${effort?.value ?? 'unknown'}',
+    );
+    return true;
+  }
+
+  bool _applyCodexSpeedAcknowledgement(SystemMessage message) {
+    final serviceTier = message.serviceTier?.trim();
+    final speed = codexRuntimeSpeedFromRaw(serviceTier);
+    if (serviceTier == null || serviceTier.isEmpty || speed == null) {
+      return false;
+    }
+    _updateCodexServiceTierRaw(serviceTier);
+    if (state.codexSpeed != speed) {
+      emit(state.copyWith(codexSpeed: speed));
+    }
+    final runtimeSessionId = runtimeSessionIdForRead;
+    if (runtimeSessionId != null) {
+      _bridge.patchSessionCodexSpeed(runtimeSessionId, serviceTier);
+    }
+    logger.info(
+      '[settings_projection] event=speed_ack_applied '
+      'thread=$_projectionThreadToken tier=$serviceTier',
+    );
+    return true;
   }
 
   void _applyNativePlanModeUnsupportedRollback() {
