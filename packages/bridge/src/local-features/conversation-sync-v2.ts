@@ -93,6 +93,9 @@ export const CONVERSATION_SYNC_PRIMARY_CODEX_SOURCE_KINDS = [
   "appServer",
 ] as const satisfies readonly CodexThreadSourceKind[];
 const PRIORITY_RECENT_COUNT = 5;
+const PRIORITY_CODEX_SETTINGS_CONCURRENCY = 3;
+const MAX_PENDING_PRIORITY_CODEX_SETTINGS = 32;
+const CODEX_SETTINGS_HYDRATION_TIMEOUT_MS = 5_000;
 const MIN_RECENT_COUNT = 10;
 const RECENT_WINDOW_MS = 3 * 24 * 60 * 60_000;
 const STATUS_WATCHDOG_MS = 5_000;
@@ -242,10 +245,11 @@ interface SyncSubscription {
 
 interface ConversationSyncV2Options {
   catalogReader?: () => Promise<ConversationSyncCatalogSeed[]>;
-  /** Test seam for the one focused rollout's authoritative settings scan. */
+  /** Test seam for authoritative Codex thread settings scans. */
   focusedCodexMetadataReader?: (
     threadId: string,
   ) => Promise<CodexSessionIndexMetadata | undefined>;
+  codexSettingsHydrationTimeoutMs?: number;
   statusReader?: (
     current: ReadonlyMap<ConversationKey, CatalogRecord>,
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
@@ -429,6 +433,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private readonly focusedCodexMetadataReader: (
     threadId: string,
   ) => Promise<CodexSessionIndexMetadata | undefined>;
+  private readonly codexSettingsHydrationTimeoutMs: number;
   private readonly statusReader: (
     current: ReadonlyMap<ConversationKey, CatalogRecord>,
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
@@ -571,6 +576,18 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     ConversationKey,
     { signature: string; attemptedAt: number; complete: boolean }
   >();
+  private codexSettingsHydrationGeneration = 0;
+  private readonly codexSettingsHydrationEpochs = new Map<
+    ConversationKey,
+    number
+  >();
+  private readonly codexSettingsFlightObservations = new Map<
+    ConversationKey,
+    { generation: number; epoch: number }
+  >();
+  private readonly codexSettingsRerunKeys = new Set<ConversationKey>();
+  private readonly priorityCodexSettingsQueue = new Set<ConversationKey>();
+  private activePriorityCodexSettings = 0;
   private statusFlight?: Promise<void>;
   private watchdogTimer?: ReturnType<typeof setTimeout>;
   private coldTimer?: ReturnType<typeof setTimeout>;
@@ -603,6 +620,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             authoritativeCodexSettings: true,
           })
         ).get(threadId));
+    this.codexSettingsHydrationTimeoutMs =
+      options.codexSettingsHydrationTimeoutMs ??
+      CODEX_SETTINGS_HYDRATION_TIMEOUT_MS;
     this.statusReader =
       options.statusReader ??
       ((current) =>
@@ -790,6 +810,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       subscription.queuedBytes = 0;
       this.wakeCapacityWaiters(subscription);
       if (!this.hasInteractiveClients()) {
+        this.priorityCodexSettingsQueue.clear();
         this.clearExternalCodexMonitoring();
         this.requestSharedCodexReadProcessClose();
       }
@@ -1040,6 +1061,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (generationChanged) this.cancelSharedControlRecovery();
     this.sharedControlGeneration = connectionGeneration;
     this.sharedControlReady = true;
+    this.invalidateAllCodexSettingsHydration();
     this.sharedContentObservers?.setAuthority(connectionGeneration, true);
     if (generationChanged) this.sharedControlLastSequence = 0;
     this.clearSharedControlReconcileTimer();
@@ -1058,6 +1080,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.cancelSharedControlRecovery();
     this.sharedControlGeneration = connectionGeneration;
     this.sharedControlReady = false;
+    this.invalidateAllCodexSettingsHydration();
     this.sharedContentObservers?.setAuthority(connectionGeneration, false);
     this.sharedControlLastSequence = 0;
     this.clearSharedControlReconcileTimer();
@@ -1086,16 +1109,15 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const key = targetKey(target);
     if (event.method === "thread/settings/updated") {
       const knownThread = this.catalog.has(key);
-      this.focusedCodexSettingsAttempts.delete(key);
+      this.invalidateCodexSettingsHydration(key);
       if (!knownThread) {
         this.catalogDirty = true;
         this.requestSharedControlReconcile({ catalog: true, status: false });
         return;
       }
-      void this.hydrateFocusedCodexSettings(key).then((changed) => {
-        if (!changed || this.closed) return;
-        this.scheduleInteractiveClients({ dirtyKeys: [key] });
-      });
+      if (!this.focusedCodexSettingsFlights.has(key)) {
+        this.prioritizeCodexSettingsHydration(key);
+      }
       return;
     }
     const previous =
@@ -1635,6 +1657,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (catalogRequested) {
       try {
         await this.refreshCatalog();
+        this.enqueuePriorityCodexSettingsForInteractiveClients();
       } catch (error) {
         this.reportBackgroundError("control_catalog_refresh_failed", error);
       }
@@ -1667,6 +1690,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (subscription) this.wakeCapacityWaiters(subscription);
     this.subscriptions.delete(client);
     if (!this.hasInteractiveClients()) {
+      this.priorityCodexSettingsQueue.clear();
       this.cancelTimers();
       this.clearExternalCodexMonitoring();
       this.requestSharedCodexReadProcessClose();
@@ -1702,6 +1726,12 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.sharedControlRecoveryTargets.clear();
     this.focusedCodexSettingsFlights.clear();
     this.focusedCodexSettingsAttempts.clear();
+    this.codexSettingsHydrationGeneration += 1;
+    this.codexSettingsHydrationEpochs.clear();
+    this.codexSettingsFlightObservations.clear();
+    this.codexSettingsRerunKeys.clear();
+    this.priorityCodexSettingsQueue.clear();
+    this.activePriorityCodexSettings = 0;
     this.sharedControlCatalogReconcilePending = false;
     this.sharedControlStatusReconcilePending = false;
     this.externalCodexDiscoveryCompletedAt = 0;
@@ -1900,6 +1930,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.wakeCapacityWaiters(subscription);
     this.subscriptions.delete(client);
     if (!this.hasInteractiveClients()) {
+      this.priorityCodexSettingsQueue.clear();
       this.cancelTimers();
       this.clearExternalCodexMonitoring();
       this.requestSharedCodexReadProcessClose();
@@ -1966,13 +1997,16 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const dirtyThreadKeys = new Set(subscription.dirtyThreadKeys);
     subscription.dirtyThreadKeys.clear();
     await this.refreshCatalog();
+    const fullSyncOrdered = fullSyncRequested
+      ? this.orderedRecords(subscription)
+      : undefined;
+    if (fullSyncOrdered) {
+      this.enqueuePriorityCodexSettingsHydration(
+        this.priorityCodexSettingsRecords(fullSyncOrdered, subscription),
+      );
+    }
     if (subscription.focusedKey) {
-      const focusedKey = subscription.focusedKey;
-      void this.hydrateFocusedCodexSettings(focusedKey).then((changed) => {
-        if (changed && !this.closed) {
-          this.scheduleInteractiveClients({ dirtyKeys: [focusedKey] });
-        }
-      });
+      this.prioritizeCodexSettingsHydration(subscription.focusedKey);
     }
     await this.rewarmExternalCodexMonitoringIfNeeded();
     if (
@@ -2013,7 +2047,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
 
     if (fullSyncRequested) {
-      const ordered = this.orderedRecords(subscription);
+      const ordered = fullSyncOrdered ?? this.orderedRecords(subscription);
       const priority = ordered.filter((record, index) =>
         this.isPriorityRecord(record, index, subscription),
       );
@@ -2900,6 +2934,15 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         for (const key of this.focusedCodexSettingsAttempts.keys()) {
           if (!next.has(key)) this.focusedCodexSettingsAttempts.delete(key);
         }
+        for (const key of this.codexSettingsHydrationEpochs.keys()) {
+          if (!next.has(key)) this.codexSettingsHydrationEpochs.delete(key);
+        }
+        for (const key of this.codexSettingsRerunKeys) {
+          if (!next.has(key)) this.codexSettingsRerunKeys.delete(key);
+        }
+        for (const key of this.priorityCodexSettingsQueue) {
+          if (!next.has(key)) this.priorityCodexSettingsQueue.delete(key);
+        }
         if (this.legacyCodexMonitoringEnabled) {
           const shouldWarmExternalCodex =
             previousCatalog.size === 0 ||
@@ -2984,6 +3027,24 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     return flight;
   }
 
+  private invalidateAllCodexSettingsHydration(): void {
+    this.codexSettingsHydrationGeneration += 1;
+    this.focusedCodexSettingsAttempts.clear();
+    this.codexSettingsRerunKeys.clear();
+    this.priorityCodexSettingsQueue.clear();
+  }
+
+  private invalidateCodexSettingsHydration(key: ConversationKey): void {
+    this.codexSettingsHydrationEpochs.set(
+      key,
+      (this.codexSettingsHydrationEpochs.get(key) ?? 0) + 1,
+    );
+    this.focusedCodexSettingsAttempts.delete(key);
+    if (this.focusedCodexSettingsFlights.has(key)) {
+      this.codexSettingsRerunKeys.add(key);
+    }
+  }
+
   private hydrateFocusedCodexSettings(
     key: ConversationKey,
   ): Promise<boolean> {
@@ -3009,9 +3070,23 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       attemptedAt: Date.now(),
       complete: false,
     });
-    const flight = this.focusedCodexMetadataReader(target.providerSessionId)
+    const hydrationGeneration = this.codexSettingsHydrationGeneration;
+    const hydrationEpoch = this.codexSettingsHydrationEpochs.get(key) ?? 0;
+    this.codexSettingsFlightObservations.set(key, {
+      generation: hydrationGeneration,
+      epoch: hydrationEpoch,
+    });
+    const flight = this.readCodexSettingsMetadataWithTimeout(
+      target.providerSessionId,
+    )
       .then((metadata) => {
         if (this.closed || !metadata?.codexSettings) return false;
+        if (
+          hydrationGeneration !== this.codexSettingsHydrationGeneration ||
+          hydrationEpoch !== (this.codexSettingsHydrationEpochs.get(key) ?? 0)
+        ) {
+          return false;
+        }
         const current = this.catalog.get(key);
         if (!current) return false;
         if (codexCatalogSettingsObservationSignature(current.entry) !== signature) {
@@ -3019,6 +3094,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           // observation. Never let its result overwrite a newer revision;
           // schedule one focused retry after this flight releases its slot.
           this.focusedCodexSettingsAttempts.delete(key);
+          this.codexSettingsRerunKeys.add(key);
           this.scheduleInteractiveClients({ dirtyKeys: [key] });
           return false;
         }
@@ -3041,17 +3117,176 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       .catch((error) => {
         const kind = error instanceof Error ? error.name : typeof error;
         console.warn(
-          `[conversation-sync-v2] Focused Codex settings unavailable (${kind})`,
+          `[conversation-sync-v2] Codex settings unavailable (${kind})`,
         );
         return false;
       })
       .finally(() => {
         if (this.focusedCodexSettingsFlights.get(key) === flight) {
           this.focusedCodexSettingsFlights.delete(key);
+          this.codexSettingsFlightObservations.delete(key);
+        }
+        if (this.codexSettingsRerunKeys.delete(key)) {
+          this.prioritizeCodexSettingsHydration(key);
         }
       });
     this.focusedCodexSettingsFlights.set(key, flight);
     return flight;
+  }
+
+  private readCodexSettingsMetadataWithTimeout(
+    threadId: string,
+  ): Promise<CodexSessionIndexMetadata | undefined> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        reject(
+          new Error(
+            `Codex settings hydration timed out after ${this.codexSettingsHydrationTimeoutMs}ms`,
+          ),
+        );
+      }, this.codexSettingsHydrationTimeoutMs);
+      timeout.unref?.();
+    });
+    return Promise.race([
+      this.focusedCodexMetadataReader(threadId),
+      timedOut,
+    ]).finally(() => {
+      if (timeout) clearTimeout(timeout);
+    });
+  }
+
+  private priorityCodexSettingsRecords(
+    ordered: readonly CatalogRecord[],
+    subscription: SyncSubscription,
+  ): CatalogRecord[] {
+    const selected = new Map<ConversationKey, CatalogRecord>();
+    const add = (record: CatalogRecord | undefined): void => {
+      if (!record || record.entry.provider !== "codex") return;
+      if (record.entry.codexSettingsSnapshotComplete === true) return;
+      selected.set(targetKey(record.entry), record);
+    };
+    if (subscription.focusedKey) {
+      add(this.catalog.get(subscription.focusedKey));
+    }
+    const recent = [...ordered]
+      .filter((record) => record.entry.provider === "codex")
+      .sort((left, right) =>
+        right.entry.recencyAt.localeCompare(left.entry.recencyAt),
+      )
+      .slice(0, PRIORITY_RECENT_COUNT);
+    for (const record of recent) add(record);
+    for (const record of ordered) {
+      if (selected.size >= MAX_PENDING_PRIORITY_CODEX_SETTINGS) break;
+      if (this.isSpecial(record, subscription)) add(record);
+    }
+    return [...selected.values()];
+  }
+
+  private enqueuePriorityCodexSettingsForInteractiveClients(): void {
+    for (const subscription of this.subscriptions.values()) {
+      if (!subscription.interactive) continue;
+      const ordered = this.orderedRecords(subscription);
+      this.enqueuePriorityCodexSettingsHydration(
+        this.priorityCodexSettingsRecords(ordered, subscription),
+      );
+      if (subscription.focusedKey) {
+        this.prioritizeCodexSettingsHydration(subscription.focusedKey);
+      }
+    }
+  }
+
+  private enqueuePriorityCodexSettingsHydration(
+    records: readonly CatalogRecord[],
+  ): void {
+    for (const record of records) {
+      if (record.entry.provider !== "codex") continue;
+      const key = targetKey(record.entry);
+      if (
+        this.priorityCodexSettingsQueue.has(key)
+      ) {
+        continue;
+      }
+      if (this.focusedCodexSettingsFlights.has(key)) {
+        if (this.isCodexSettingsFlightInvalidated(key)) {
+          this.codexSettingsRerunKeys.add(key);
+        }
+        continue;
+      }
+      if (
+        this.priorityCodexSettingsQueue.size >=
+        MAX_PENDING_PRIORITY_CODEX_SETTINGS
+      ) {
+        break;
+      }
+      this.priorityCodexSettingsQueue.add(key);
+    }
+    this.drainPriorityCodexSettingsHydration();
+  }
+
+  private prioritizeCodexSettingsHydration(key: ConversationKey): void {
+    if (!this.hasInteractiveClients()) return;
+    if (this.focusedCodexSettingsFlights.has(key)) {
+      if (this.isCodexSettingsFlightInvalidated(key)) {
+        this.codexSettingsRerunKeys.add(key);
+      }
+      return;
+    }
+    const pending = [...this.priorityCodexSettingsQueue].filter(
+      (candidate) => candidate !== key,
+    );
+    this.priorityCodexSettingsQueue.clear();
+    this.priorityCodexSettingsQueue.add(key);
+    for (const candidate of pending) {
+      if (
+        this.priorityCodexSettingsQueue.size >=
+        MAX_PENDING_PRIORITY_CODEX_SETTINGS
+      ) {
+        break;
+      }
+      this.priorityCodexSettingsQueue.add(candidate);
+    }
+    this.drainPriorityCodexSettingsHydration();
+  }
+
+  private isCodexSettingsFlightInvalidated(key: ConversationKey): boolean {
+    const observation = this.codexSettingsFlightObservations.get(key);
+    return (
+      observation == null ||
+      observation.generation !== this.codexSettingsHydrationGeneration ||
+      observation.epoch !== (this.codexSettingsHydrationEpochs.get(key) ?? 0)
+    );
+  }
+
+  private drainPriorityCodexSettingsHydration(): void {
+    while (
+      !this.closed &&
+      this.hasInteractiveClients() &&
+      this.activePriorityCodexSettings <
+        PRIORITY_CODEX_SETTINGS_CONCURRENCY &&
+      this.priorityCodexSettingsQueue.size > 0
+    ) {
+      const key = this.priorityCodexSettingsQueue.values().next().value as
+        | ConversationKey
+        | undefined;
+      if (!key) return;
+      this.priorityCodexSettingsQueue.delete(key);
+      if (!this.catalog.has(key)) continue;
+      this.activePriorityCodexSettings += 1;
+      void this.hydrateFocusedCodexSettings(key)
+        .then((changed) => {
+          if (changed && !this.closed) {
+            this.scheduleInteractiveClients({ dirtyKeys: [key] });
+          }
+        })
+        .finally(() => {
+          this.activePriorityCodexSettings = Math.max(
+            0,
+            this.activePriorityCodexSettings - 1,
+          );
+          this.drainPriorityCodexSettingsHydration();
+        });
+    }
   }
 
   private markCatalogDirtyIfStale(): void {

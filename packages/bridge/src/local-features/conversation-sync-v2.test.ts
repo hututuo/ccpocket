@@ -161,7 +161,7 @@ describe("conversation_sync_v2 protocol", () => {
     });
   });
 
-  it("hydrates authoritative settings only for the focused Codex thread", async () => {
+  it("hydrates the focused Codex thread and prewarms priority settings", async () => {
     const focused = codexSeed(0, "thread-focused-settings");
     Object.assign(focused.entry, {
       model: "stale-model",
@@ -239,9 +239,12 @@ describe("conversation_sync_v2 protocol", () => {
       codexSettingsSnapshotComplete: true,
     });
     expect(hydratedEntry).not.toHaveProperty("webSearchMode");
-    expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(1);
+    expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(2);
     expect(focusedCodexMetadataReader).toHaveBeenCalledWith(
       focused.entry.providerSessionId,
+    );
+    expect(focusedCodexMetadataReader).toHaveBeenCalledWith(
+      background.entry.providerSessionId,
     );
     expect(
       catalogEntries.find(
@@ -250,6 +253,317 @@ describe("conversation_sync_v2 protocol", () => {
       ),
     ).not.toHaveProperty("codexSettingsSnapshotComplete", true);
     fixture.handler.close();
+  });
+
+  it("prewarms the five recent Codex settings with bounded concurrency", async () => {
+    const seeds = Array.from({ length: 7 }, (_, index) =>
+      codexSeed(index, `thread-prewarm-${index}`),
+    );
+    type SettingsMetadata = {
+      codexSettings: {
+        model: string;
+        modelReasoningEffort: string;
+        serviceTier: string;
+      };
+    };
+    const pending = new Map<
+      string,
+      (metadata: SettingsMetadata) => void
+    >();
+    let activeReads = 0;
+    let maximumActiveReads = 0;
+    const focusedCodexMetadataReader = vi.fn(
+      (threadId: string) =>
+        new Promise<SettingsMetadata>((resolve) => {
+          activeReads += 1;
+          maximumActiveReads = Math.max(maximumActiveReads, activeReads);
+          pending.set(threadId, (metadata) => {
+            activeReads -= 1;
+            resolve(metadata);
+          });
+        }),
+    );
+    const fixture = createFixture(
+      seeds,
+      async (target) => history(target.providerSessionId),
+      { focusedCodexMetadataReader },
+    );
+    const client = {};
+    const subscription = subscribeMessage();
+
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(3);
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "focus-bounded-prewarm",
+        subscriptionId: subscription.requestId,
+        focused: {
+          provider: "codex",
+          providerSessionId: "thread-prewarm-4",
+        },
+      },
+      context(client, fixture.runtime),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(3);
+
+    const firstPending = pending.entries().next().value as
+      | [string, (metadata: SettingsMetadata) => void]
+      | undefined;
+    expect(firstPending).toBeDefined();
+    firstPending![1]({
+      codexSettings: {
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+        serviceTier: "standard",
+      },
+    });
+    pending.delete(firstPending![0]);
+    await vi.waitFor(() =>
+      expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(4),
+    );
+    expect(focusedCodexMetadataReader).toHaveBeenLastCalledWith(
+      "thread-prewarm-4",
+    );
+
+    while (focusedCodexMetadataReader.mock.calls.length < 5) {
+      const previousCalls = focusedCodexMetadataReader.mock.calls.length;
+      for (const resolve of [...pending.values()]) {
+        resolve({
+          codexSettings: {
+            model: "gpt-5.6-sol",
+            modelReasoningEffort: "ultra",
+            serviceTier: "standard",
+          },
+        });
+      }
+      pending.clear();
+      await vi.waitFor(() =>
+        expect(focusedCodexMetadataReader.mock.calls.length).toBe(
+          Math.min(previousCalls + 3, 5),
+        ),
+      );
+    }
+    for (const resolve of [...pending.values()]) {
+      resolve({
+        codexSettings: {
+          model: "gpt-5.6-sol",
+          modelReasoningEffort: "ultra",
+          serviceTier: "standard",
+        },
+      });
+    }
+    pending.clear();
+
+    await vi.waitFor(() => {
+      const hydratedIds = [
+        ...new Set(
+          events(fixture.sent, client, "catalog_changes")
+            .flatMap((event) => [...event.created, ...event.updated])
+            .filter((entry) => entry.codexSettingsSnapshotComplete === true)
+            .map((entry) => entry.providerSessionId),
+        ),
+      ].sort();
+      expect(hydratedIds).toEqual(
+        Array.from({ length: 5 }, (_, index) => `thread-prewarm-${index}`),
+      );
+    });
+    expect(maximumActiveReads).toBe(3);
+    expect(focusedCodexMetadataReader).not.toHaveBeenCalledWith(
+      "thread-prewarm-5",
+    );
+    expect(focusedCodexMetadataReader).not.toHaveBeenCalledWith(
+      "thread-prewarm-6",
+    );
+    fixture.handler.close();
+  });
+
+  it("keeps the five recent Codex threads inside a saturated special queue", async () => {
+    const seeds = Array.from({ length: 40 }, (_, index) => {
+      const value = codexSeed(index, `thread-saturated-prewarm-${index}`);
+      if (index >= 5) {
+        value.status = {
+          ...value.status,
+          activity: "working",
+          runtimeAttachment: "loaded",
+          confidence: "authoritative",
+        };
+      }
+      return value;
+    });
+    const focusedCodexMetadataReader = vi.fn(
+      () => new Promise<undefined>(() => {}),
+    );
+    const fixture = createFixture(
+      seeds,
+      async (target) => history(target.providerSessionId),
+      { focusedCodexMetadataReader },
+    );
+    const client = {};
+    const internal = fixture.handler as unknown as {
+      priorityCodexSettingsQueue: Set<string>;
+    };
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(3),
+    );
+
+    expect(focusedCodexMetadataReader.mock.calls).toEqual([
+      ["thread-saturated-prewarm-0"],
+      ["thread-saturated-prewarm-1"],
+      ["thread-saturated-prewarm-2"],
+    ]);
+    expect([...internal.priorityCodexSettingsQueue]).toEqual(
+      expect.arrayContaining([
+        "codex\0thread-saturated-prewarm-3",
+        "codex\0thread-saturated-prewarm-4",
+      ]),
+    );
+    expect(internal.priorityCodexSettingsQueue.size).toBe(29);
+    await fixture.handler.close();
+  });
+
+  it("stops queued settings prewarm after the last client disconnects", async () => {
+    const seeds = Array.from({ length: 7 }, (_, index) =>
+      codexSeed(index, `thread-disconnect-prewarm-${index}`),
+    );
+    const pending: Array<() => void> = [];
+    const focusedCodexMetadataReader = vi.fn(
+      () =>
+        new Promise<undefined>((resolve) => {
+          pending.push(() => resolve(undefined));
+        }),
+    );
+    const fixture = createFixture(
+      seeds,
+      async (target) => history(target.providerSessionId),
+      { focusedCodexMetadataReader },
+    );
+    const client = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(3),
+    );
+
+    fixture.handler.disconnect(client);
+    for (const resolve of pending) resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(3);
+    await fixture.handler.close();
+  });
+
+  it("releases prewarm slots when a settings reader times out", async () => {
+    const seeds = Array.from({ length: 6 }, (_, index) =>
+      codexSeed(index, `thread-timeout-prewarm-${index}`),
+    );
+    const focusedCodexMetadataReader = vi.fn((threadId: string) => {
+      if (/[0-2]$/.test(threadId)) {
+        return new Promise<undefined>(() => {});
+      }
+      return Promise.resolve({
+        codexSettings: {
+          model: "gpt-5.6-sol",
+          modelReasoningEffort: "ultra",
+          serviceTier: "standard",
+        },
+      });
+    });
+    const fixture = createFixture(
+      seeds,
+      async (target) => history(target.providerSessionId),
+      {
+        focusedCodexMetadataReader,
+        codexSettingsHydrationTimeoutMs: 5,
+      },
+    );
+    const client = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+
+    await vi.waitFor(() =>
+      expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(5),
+    );
+    await vi.waitFor(() => {
+      const hydratedIds = events(fixture.sent, client, "catalog_changes")
+        .flatMap((event) => [...event.created, ...event.updated])
+        .filter((entry) => entry.codexSettingsSnapshotComplete === true)
+        .map((entry) => entry.providerSessionId);
+      expect(hydratedIds).toEqual(
+        expect.arrayContaining([
+          "thread-timeout-prewarm-3",
+          "thread-timeout-prewarm-4",
+        ]),
+      );
+    });
+    await fixture.handler.close();
+  });
+
+  it("restores pending priority prewarm after shared control reconnects", async () => {
+    const seeds = Array.from({ length: 7 }, (_, index) =>
+      codexSeed(index, `thread-reconnect-prewarm-${index}`),
+    );
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 1,
+    });
+    const focusedCodexMetadataReader = vi.fn(
+      () => new Promise<undefined>(() => {}),
+    );
+    const fixture = createFixture(
+      seeds,
+      async (target) => history(target.providerSessionId),
+      {
+        daemonMode: true,
+        focusedCodexMetadataReader,
+        sharedControlReconcileMs: 1,
+      },
+      { subscribeSharedRuntimeControl: control.subscribe },
+    );
+    const client = {};
+    const internal = fixture.handler as unknown as {
+      priorityCodexSettingsQueue: Set<string>;
+    };
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(3),
+    );
+    expect(internal.priorityCodexSettingsQueue.size).toBe(2);
+
+    control.emit({ kind: "not_ready", connectionGeneration: 1 });
+    expect(internal.priorityCodexSettingsQueue.size).toBe(0);
+    control.emit({ kind: "ready", connectionGeneration: 2 });
+
+    await vi.waitFor(() =>
+      expect(internal.priorityCodexSettingsQueue.size).toBe(2),
+    );
+    await fixture.handler.close();
   });
 
   it("does not block the initial focused sync on authoritative settings", async () => {
@@ -316,6 +630,88 @@ describe("conversation_sync_v2 protocol", () => {
       }),
     );
     fixture.handler.close();
+  });
+
+  it("rejects settings hydration from an older shared-control generation", async () => {
+    type SettingsMetadata = {
+      codexSettings: {
+        model: string;
+        modelReasoningEffort: string;
+      };
+    };
+    const thread = codexSeed(0, "thread-settings-control-generation");
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 1,
+    });
+    const resolvers: Array<(value: SettingsMetadata) => void> = [];
+    const focusedCodexMetadataReader = vi.fn(
+      () =>
+        new Promise<SettingsMetadata>((resolve) => {
+          resolvers.push(resolve);
+        }),
+    );
+    const fixture = createFixture(
+      [thread],
+      async (target) => history(target.providerSessionId),
+      {
+        daemonMode: true,
+        focusedCodexMetadataReader,
+        sharedControlReconcileMs: 1,
+      },
+      { subscribeSharedRuntimeControl: control.subscribe },
+    );
+    const client = {};
+
+    await fixture.handler.handle(
+      {
+        ...subscribeMessage(),
+        focused: {
+          provider: "codex",
+          providerSessionId: thread.entry.providerSessionId,
+        },
+      },
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(1),
+    );
+
+    control.emit({ kind: "not_ready", connectionGeneration: 1 });
+    control.emit({ kind: "ready", connectionGeneration: 2 });
+    resolvers[0]!({
+      codexSettings: {
+        model: "stale-generation-model",
+        modelReasoningEffort: "high",
+      },
+    });
+
+    await vi.waitFor(() =>
+      expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(2),
+    );
+    resolvers[1]!({
+      codexSettings: {
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+      },
+    });
+
+    await vi.waitFor(() => {
+      const complete = events(fixture.sent, client, "catalog_changes")
+        .flatMap((event) => [...event.created, ...event.updated])
+        .filter((entry) => entry.codexSettingsSnapshotComplete === true);
+      expect(complete).toContainEqual(
+        expect.objectContaining({
+          providerSessionId: thread.entry.providerSessionId,
+          model: "gpt-5.6-sol",
+          modelReasoningEffort: "ultra",
+        }),
+      );
+      expect(complete).not.toContainEqual(
+        expect.objectContaining({ model: "stale-generation-model" }),
+      );
+    });
+    await fixture.handler.close();
   });
 
   it("rejects a focused settings result from an older catalog revision", async () => {
