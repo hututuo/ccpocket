@@ -5,8 +5,10 @@ import 'package:flutter/scheduler.dart';
 import 'package:marionette_flutter/marionette_flutter.dart';
 
 import '../theme/markdown_style.dart';
+import '../features/file_peek/file_path_syntax.dart';
 
 final _probe = _FrameTimingProbe();
+final chatListPerformanceProbe = ChatListPerformanceProbe();
 
 void registerPerformanceProbeExtensions() {
   if (!kDebugMode) return;
@@ -18,6 +20,8 @@ void registerPerformanceProbeExtensions() {
     callback: (params) async {
       _probe.reset();
       markdownPerformanceProbe.reset();
+      chatListPerformanceProbe.reset();
+      filePathSuffixPerformanceProbe.reset();
       return MarionetteExtensionResult.success({'status': 'reset'});
     },
   );
@@ -31,9 +35,47 @@ void registerPerformanceProbeExtensions() {
       return MarionetteExtensionResult.success({
         ..._probe.summary(threshold: Duration(milliseconds: thresholdMs)),
         'markdown': markdownPerformanceProbe.summary(),
+        'chatList': chatListPerformanceProbe.summary(),
+        'filePathSuffixes': filePathSuffixPerformanceProbe.summary(),
       });
     },
   );
+}
+
+class ChatListPerformanceProbe {
+  var _buildCount = 0;
+  var _derivedDataCount = 0;
+  var _derivedDataMicros = 0;
+
+  void reset() {
+    _buildCount = 0;
+    _derivedDataCount = 0;
+    _derivedDataMicros = 0;
+  }
+
+  void recordBuild() {
+    if (!kDebugMode) return;
+    _buildCount++;
+  }
+
+  void recordDerivedData(Duration elapsed) {
+    if (!kDebugMode) return;
+    _derivedDataCount++;
+    _derivedDataMicros += elapsed.inMicroseconds;
+  }
+
+  Map<String, Object?> summary() => {
+    'buildCount': _buildCount,
+    'derivedDataCount': _derivedDataCount,
+    'derivedDataTotalMs': _roundMs(_derivedDataMicros.toDouble()),
+    'derivedDataAvgMs': _derivedDataCount == 0
+        ? 0
+        : _roundMs(_derivedDataMicros / _derivedDataCount),
+  };
+
+  double _roundMs(double micros) {
+    return (micros / 1000 * 10).roundToDouble() / 10;
+  }
 }
 
 class _FrameTimingProbe {

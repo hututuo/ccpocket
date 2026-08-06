@@ -38,6 +38,29 @@ List<String> _detectAllFilePaths(String input, Set<String> knownSuffixes) {
 
 void main() {
   group('FilePathSyntax.buildSuffixSet', () {
+    test('caches suffixes for the same file-list state', () {
+      final files = <String>['lib/main.dart', 'README.md'];
+
+      final first = FilePathSyntax.cachedSuffixSet(files);
+      final second = FilePathSyntax.cachedSuffixSet(files);
+
+      expect(identical(first, second), isTrue);
+      expect(first, containsAll({'lib/main.dart', 'main.dart', 'README.md'}));
+    });
+
+    test('invalidates cached suffixes when the same list is mutated', () {
+      final files = <String>['lib/main.dart'];
+
+      final first = FilePathSyntax.cachedSuffixSet(files);
+      files[0] = 'lib/other.dart';
+      final second = FilePathSyntax.cachedSuffixSet(files);
+
+      expect(first, contains('main.dart'));
+      expect(second, containsAll({'lib/other.dart', 'other.dart'}));
+      expect(second, isNot(contains('main.dart')));
+      expect(() => second.add('unexpected.dart'), throwsUnsupportedError);
+    });
+
     test('generates all suffixes for a path', () {
       final suffixes = FilePathSyntax.buildSuffixSet([
         'lib/models/messages.dart',

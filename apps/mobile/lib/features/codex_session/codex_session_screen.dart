@@ -3013,7 +3013,7 @@ class _CodexChatBody extends HookWidget {
                               ),
                             );
                           },
-                          contentBuilder: (overlayHeight) => ChatMessageList(
+                          content: ChatMessageList(
                             sessionId: sessionId,
                             scrollController: scroll.controller,
                             httpBaseUrl: context

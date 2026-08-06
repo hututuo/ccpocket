@@ -1,14 +1,14 @@
 import 'package:flutter/material.dart';
 
 class BottomOverlayLayout extends StatefulWidget {
-  final Widget Function(double overlayHeight) contentBuilder;
+  final Widget content;
   final Widget? overlay;
   final Widget? topOverlay;
   final Widget Function(double overlayHeight)? floatingButtonBuilder;
 
   const BottomOverlayLayout({
     super.key,
-    required this.contentBuilder,
+    required this.content,
     this.overlay,
     this.topOverlay,
     this.floatingButtonBuilder,
@@ -68,7 +68,7 @@ class _BottomOverlayLayoutState extends State<BottomOverlayLayout> {
             // scroll behind it.
             Padding(
               padding: EdgeInsets.only(bottom: clampedObstruction),
-              child: widget.contentBuilder(bottomObstruction),
+              child: widget.content,
             ),
             if (widget.topOverlay != null) widget.topOverlay!,
             if (widget.floatingButtonBuilder != null)

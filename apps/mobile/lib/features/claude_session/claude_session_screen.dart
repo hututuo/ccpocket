@@ -1950,7 +1950,7 @@ class _ChatScreenBody extends HookWidget {
                         ),
                       );
                     },
-                    contentBuilder: (overlayHeight) => ChatMessageList(
+                    content: ChatMessageList(
                       sessionId: sessionId,
                       scrollController: scroll.controller,
                       httpBaseUrl: context.read<BridgeService>().httpBaseUrl,

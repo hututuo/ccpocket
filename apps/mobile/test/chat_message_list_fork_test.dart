@@ -18,6 +18,7 @@ void main() {
 
       expect(shouldShowForkForAssistant(entries, 1), isFalse);
       expect(shouldShowForkForAssistant(entries, 3), isTrue);
+      expect(forkableAssistantEntryIndices(entries), {3});
     });
 
     test('uses the next user turn as a completed Desktop-history boundary', () {
@@ -30,6 +31,21 @@ void main() {
 
       expect(shouldShowForkForAssistant(entries, 1), isTrue);
       expect(shouldShowForkForAssistant(entries, 3), isFalse);
+      expect(forkableAssistantEntryIndices(entries), {1});
+    });
+
+    test('does not split one turn at result-only boundaries', () {
+      final entries = <ChatEntry>[
+        ServerChatEntry(_assistant('a1')),
+        ServerChatEntry(_result()),
+        ServerChatEntry(_assistant('a2')),
+        ServerChatEntry(_toolResult('tool')),
+        ServerChatEntry(_result()),
+      ];
+
+      expect(shouldShowForkForAssistant(entries, 0), isFalse);
+      expect(shouldShowForkForAssistant(entries, 2), isTrue);
+      expect(forkableAssistantEntryIndices(entries), {2});
     });
 
     test(
