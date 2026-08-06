@@ -884,7 +884,7 @@ void main() {
   );
 
   test(
-    'clears rebuildable cache once and preserves retry backoff after partial progress',
+    'preserves readable cache and retry backoff after partial progress',
     () async {
       await service.dispose();
       await repository.close();
@@ -947,7 +947,7 @@ void main() {
         ),
       );
       await gateway.nextOutgoing('conversation_sync_unsubscribe');
-      expect(failingRepository.clearTargetCalls, 1);
+      expect(failingRepository.clearTargetCalls, 0);
 
       final secondSubscribe = await gateway.nextOutgoing(
         'conversation_sync_subscribe',
@@ -980,7 +980,7 @@ void main() {
         ),
       );
       await gateway.nextOutgoing('conversation_sync_unsubscribe');
-      expect(failingRepository.clearTargetCalls, 1);
+      expect(failingRepository.clearTargetCalls, 0);
 
       final subscribeCount = gateway.sentTypes
           .where((type) => type == 'conversation_sync_subscribe')
@@ -1593,7 +1593,7 @@ void main() {
           codexSourceId: 'codex-home-a',
           batchId: 'batch-repair-failures',
           sequence: 3,
-          provider: 'claude',
+          provider: 'codex',
           providerSessionId: 'thread-turns-repair-failure',
           revision: 'revision-turns-repair-failure',
           mode: 'snapshot',
@@ -1666,7 +1666,7 @@ void main() {
       expect(failingRepository.clearTargetCalls, 0);
 
       final turnsLoad = service.loadOlderTurns(
-        provider: 'claude',
+        provider: 'codex',
         providerSessionId: 'thread-turns-repair-failure',
       );
       final turnsFailure = expectLater(
@@ -1682,6 +1682,8 @@ void main() {
       final turnsRequest = await gateway.nextOutgoing(
         'conversation_turns_page',
       );
+      expect(turnsRequest['limit'], 1);
+      expect(turnsRequest['itemsView'], 'summary');
       gateway.addEvent(
         ConversationSyncV2EventMessage(
           event: ConversationSyncV2EventKind.turnsPageResponse,
@@ -1691,7 +1693,7 @@ void main() {
           batchId: 'batch-repair-failures',
           sequence: 5,
           requestId: turnsRequest['requestId']! as String,
-          provider: 'claude',
+          provider: 'codex',
           providerSessionId: 'thread-turns-repair-failure',
           data: const [
             {
@@ -1704,7 +1706,7 @@ void main() {
                 },
               ],
               'itemCount': 1,
-              'itemsView': 'full',
+              'itemsView': 'summary',
             },
           ],
           nextCursor: null,
@@ -1716,7 +1718,7 @@ void main() {
         5,
       );
       final turnsCached = await service.loadCachedWindow(
-        provider: 'claude',
+        provider: 'codex',
         providerSessionId: 'thread-turns-repair-failure',
       );
       expect(turnsCached?.latestTurnComplete, isFalse);

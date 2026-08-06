@@ -1029,6 +1029,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _clearDetachedRuntimeTransients(
       previousRuntimeSessionId,
       preserveProviderProjection: true,
+      preserveVisualTimeline: true,
     );
     _detachedAuthorityObserved = false;
     _detachedExecutionHost = null;
@@ -1069,6 +1070,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   void _clearDetachedRuntimeTransients(
     String? previousRuntimeSessionId, {
     bool preserveProviderProjection = false,
+    bool preserveVisualTimeline = false,
   }) {
     if (previousRuntimeSessionId != null) {
       for (final item in _deliveryPendingInputs.values) {
@@ -1084,15 +1086,19 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _clearPendingPermissionModeRollback(_pendingPermissionChangeId);
     _clearPendingCodexModelRollback();
     _clearPendingCodexSpeedRollback();
-    _handler.currentStreaming = null;
-    _streamingCubit.reset();
-    _desktopContinuityHandlers.clear();
-    _desktopContinuityItemKeys.clear();
-    _restoredDesktopContinuityItemKeys.clear();
-    _desktopContinuityStreamingTurnKey = null;
-    final durableEntries = state.entries
-        .where((entry) => entry is! StreamingChatEntry)
-        .toList(growable: false);
+    if (!preserveVisualTimeline) {
+      _handler.currentStreaming = null;
+      _streamingCubit.reset();
+      _desktopContinuityHandlers.clear();
+      _desktopContinuityItemKeys.clear();
+      _restoredDesktopContinuityItemKeys.clear();
+      _desktopContinuityStreamingTurnKey = null;
+    }
+    final durableEntries = preserveVisualTimeline
+        ? state.entries
+        : state.entries
+              .where((entry) => entry is! StreamingChatEntry)
+              .toList(growable: false);
     emit(
       state.copyWith(
         entries: durableEntries,
@@ -1125,6 +1131,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         clearError: true,
       );
     }
+    // An empty cache row does not currently carry enough provenance to
+    // distinguish stale durable entries from accepted live/optimistic entries.
+    // Keep the visible projection until the cache protocol supplies that fence.
     if (messages.isEmpty) return;
     try {
       final history = HistoryMessage(messages: messages);
@@ -2799,6 +2808,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     try {
       final result = await loader();
       if (isClosed) return false;
+      if (!result.loaded && result.hasMore) {
+        // A page that made no progress is not a successful load. Treating it
+        // as success leaves hasMore=true with no error, so the list's automatic
+        // paging control loops forever behind a spinner and Retry never gets a
+        // terminal state to replace.
+        throw StateError('Conversation history page made no progress.');
+      }
       localHistoryPaging.value = LocalHistoryPagingState(
         enabled: true,
         hasMore: result.hasMore,
@@ -7678,12 +7694,23 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Retry a failed user message.
   void retryMessage(UserChatEntry entry) {
+    final runtimeLease = _captureRuntimeMutationLease();
+    if (runtimeLease == null) return;
     final clientMessageId = _uuid.v4();
-    final retrySessionId = detachedPreview
-        ? _runtimeSessionIdForMutation()
-        : (entry.sessionId ?? sessionId);
-    if (retrySessionId == null) return;
+    final retrySessionId = runtimeLease.sessionId;
     final isOffline = !_bridge.isConnected;
+    final baseSeq = isOffline
+        ? _bridge.cachedSessionHistorySeq(retrySessionId)
+        : null;
+    final deliveryPendingItem = isCodex && !isOffline
+        ? QueuedInputItem(
+            itemId: '$deliveryPendingQueuedInputPrefix$clientMessageId',
+            text: entry.text,
+            createdAt: DateTime.now().toUtc().toIso8601String(),
+            clientMessageId: clientMessageId,
+            imageCount: entry.imageCount,
+          )
+        : null;
     emit(
       state.copyWith(
         entries: state.entries.map((e) {
@@ -7705,15 +7732,19 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         }).toList(),
       ),
     );
-    _bridge.send(
-      ClientMessage.input(
-        entry.text,
-        sessionId: retrySessionId,
-        clientMessageId: clientMessageId,
-        baseSeq: isOffline
-            ? _bridge.cachedSessionHistorySeq(retrySessionId)
-            : null,
-      ),
+    // Use the same ordered preparation, runtime-generation fence, pending
+    // delivery correlation, and failure transition as a normal submission.
+    // The old direct send could leave this bubble spinning forever when the
+    // socket queued the frame or the runtime changed during dispatch.
+    _dispatchInputInOrder(
+      runtimeLease: runtimeLease,
+      text: entry.text,
+      clientMessageId: clientMessageId,
+      baseSeq: baseSeq,
+      images: const [],
+      skills: const [],
+      mentions: const [],
+      deliveryPendingItem: deliveryPendingItem,
     );
   }
 

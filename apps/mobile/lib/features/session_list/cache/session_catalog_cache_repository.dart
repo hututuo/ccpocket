@@ -1339,17 +1339,10 @@ class SessionCatalogCacheRepository {
             );
           case 'thread':
             if (thread == null) return;
-            await transaction.delete(
-              SessionCatalogCacheDatabase.hotWindowsTable,
-              where:
-                  'partition_id = ? AND provider = ? '
-                  'AND provider_session_id = ?',
-              whereArgs: [
-                partitionId,
-                thread.provider,
-                thread.providerSessionId,
-              ],
-            );
+            // A reset invalidates the incremental base, not the last committed
+            // readable projection. Keep the hot window until the replacement
+            // snapshot commits atomically; otherwise a routine scoped recovery
+            // visibly blanks or rewinds an open conversation.
             await transaction.delete(
               SessionCatalogCacheDatabase.timelineStagesTable,
               where:

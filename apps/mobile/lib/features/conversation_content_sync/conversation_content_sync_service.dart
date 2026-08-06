@@ -605,10 +605,11 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     if (subscriptionId == null ||
         target.fingerprint != _cacheTarget.fingerprint ||
         !_canProcessContent) {
-      return const ConversationTurnsPageLoadResult(
-        loaded: false,
-        hasMore: true,
-      );
+      // Do not report a synthetic successful no-op. The caller would retain
+      // hasMore=true, repaint an endless spinner, and immediately auto-request
+      // the same page again. Let the bounded retry wrapper wait for the next
+      // authoritative subscription or surface a retryable error.
+      throw const _ConversationPagingInterrupted();
     }
     final requestId = _nextRequestId('turns');
     final completer = Completer<ConversationTurnsPageLoadResult>();
@@ -757,9 +758,16 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 // A current-turn repair must never consume the older-turn
                 // cursor. A null cursor asks the provider for its newest page.
                 cursor: null,
-                limit: 5,
+                // Very large Codex turns can make a full five-turn app-server
+                // response exceed the interactive deadline. Recover the
+                // newest user/final spine first; explicit item paging remains
+                // the bounded path for tool details. Claude's JSONL window is
+                // already bounded locally and keeps the richer page.
+                limit: provider == Provider.codex.value ? 1 : 5,
                 sortDirection: 'desc',
-                itemsView: 'full',
+                itemsView: provider == Provider.codex.value
+                    ? 'summary'
+                    : 'full',
               ),
       );
       return await completer.future.timeout(timeout);
@@ -1140,18 +1148,12 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     if (!threadRevisionMismatch &&
         !streamContinuityFailure &&
         _v2RecoveryTargetFingerprint != target.fingerprint) {
+      // A transient SQLite/decode failure is not proof that the last committed
+      // projection is invalid. Keep it readable while a fresh subscription is
+      // staged; clearing the whole source here makes one failed page rewind all
+      // conversations and destroys the only useful recovery base.
       _v2RecoveryTargetFingerprint = target.fingerprint;
-      try {
-        await cache.clearTarget(target);
-        recovery = 'target_reset';
-      } catch (clearError) {
-        recovery = 'target_reset_failed';
-        logger.warning(
-          '[conversation_sync_v2] event=cache_reset '
-          'generation=$generation target=$targetToken '
-          'error=${clearError.runtimeType}',
-        );
-      }
+      recovery = 'preserve_cache_retry';
     }
 
     logger.warning(
@@ -1374,11 +1376,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           sourceEntryCount: event.sourceEntryCount!,
         );
         if (!committed.baseRevisionMatched) {
-          await cache.deleteConversationWindow(
-            target: target,
-            provider: event.provider!,
-            providerSessionId: event.providerSessionId!,
-          );
+          // The current window is newer or from a different committed base.
+          // Reject the patch before touching visible data and request a scoped
+          // replacement instead of blanking the conversation.
           throw const _ConversationTimelineBaseRevisionMismatch();
         }
         if (committed.windowCommitted) {

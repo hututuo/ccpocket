@@ -638,6 +638,39 @@ void main() {
     expect(patched?.entries.single.entryId, 'entry-2');
   });
 
+  test('thread reset preserves the last committed hot window', () async {
+    final target = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-thread-reset',
+      codexSourceId: 'source-thread-reset',
+    );
+    await repository.replaceConversationWindow(
+      target: target,
+      provider: 'codex',
+      providerSessionId: 'thread-reset',
+      revision: 'revision-before-reset',
+      entries: [_entry('visible-before-reset', 0, 'running')],
+      hasEarlier: true,
+      sourceEntryCount: 10,
+    );
+
+    await repository.resetConversationSyncScope(
+      target: target,
+      scope: 'thread',
+      thread: const ConversationSyncV2Target(
+        provider: 'codex',
+        providerSessionId: 'thread-reset',
+      ),
+    );
+
+    final retained = await repository.loadConversationWindow(
+      target: target,
+      provider: 'codex',
+      providerSessionId: 'thread-reset',
+    );
+    expect(retained?.revision, 'revision-before-reset');
+    expect(retained?.entries.single.entryId, 'visible-before-reset');
+  });
+
   test('advertises only readable complete hot-window revisions', () async {
     final target = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-readable-revisions',

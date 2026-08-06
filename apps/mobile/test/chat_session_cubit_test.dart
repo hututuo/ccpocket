@@ -1013,12 +1013,9 @@ void main() {
 
         final permissionPayload = mockBridge.sentMessages
             .map(
-              (message) =>
-                  jsonDecode(message.toJson()) as Map<String, dynamic>,
+              (message) => jsonDecode(message.toJson()) as Map<String, dynamic>,
             )
-            .singleWhere(
-              (payload) => payload['permissionChangeId'] != null,
-            );
+            .singleWhere((payload) => payload['permissionChangeId'] != null);
         expect(cubit.isPermissionChangePending, isTrue);
         mockBridge.emitMessage(
           SystemMessage(
@@ -1458,8 +1455,8 @@ void main() {
     );
 
     test(
-      'runtime replacement preserves durable working state while revoking authority',
-      () {
+      'runtime replacement preserves live visual state while revoking authority',
+      () async {
         mockBridge.advertisedBridgeCapabilities = const {
           conversationSyncV2Capability,
         };
@@ -1493,12 +1490,19 @@ void main() {
 
         expect(cubit.state.status, ProcessStatus.running);
         expect(cubit.canMutateAttachedRuntime, isTrue);
+        mockBridge.emitMessage(
+          const StreamDeltaMessage(text: 'visible live output'),
+          sessionId: 'runtime-working-old',
+        );
+        await pumpEventQueue();
+        expect(streamingCubit.state.text, 'visible live output');
 
         cubit.updateDetachedLiveRuntime('runtime-working-new');
 
         expect(cubit.state.status, ProcessStatus.running);
         expect(cubit.canMutateAttachedRuntime, isFalse);
         expect(cubit.detachedActionBrokerAuthorityGeneration, isNull);
+        expect(streamingCubit.state.text, 'visible live output');
       },
     );
 
@@ -7859,8 +7863,8 @@ void main() {
       expect(cubit.state.totalCost, 0.05);
     });
 
-    test('retryMessage changes status to sending and resends', () async {
-      final cubit = createCubit('s1');
+    test('retryMessage uses the ordered Codex delivery path', () async {
+      final cubit = createCubit('s1', provider: Provider.codex);
       addTearDown(cubit.close);
       await Future.microtask(() {});
 
@@ -7877,7 +7881,42 @@ void main() {
       expect(retriedEntry.status, MessageStatus.sending);
       expect(retriedEntry.text, 'Retry me');
       expect(mockBridge.sentMessages, hasLength(1));
+      final resent = jsonDecode(mockBridge.sentMessages.single.toJson());
+      expect(resent['type'], 'input');
+      expect(resent['clientMessageId'], isNotNull);
+      expect(
+        mockBridge
+            .deliveryPendingInputsForSession('s1')
+            .map((item) => item.clientMessageId),
+        contains(resent['clientMessageId']),
+      );
     });
+
+    test(
+      'detached history no-progress becomes retryable instead of spinning',
+      () async {
+        var calls = 0;
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-no-progress',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialHistoryHasEarlier: true,
+          detachedHistoryPageLoader: () async {
+            calls++;
+            return (loaded: false, hasMore: true);
+          },
+        );
+        addTearDown(cubit.close);
+
+        expect(await cubit.loadOlderLocalHistory(), isFalse);
+        expect(calls, 1);
+        expect(cubit.localHistoryPaging.value.loading, isFalse);
+        expect(cubit.localHistoryPaging.value.hasMore, isTrue);
+        expect(cubit.localHistoryPaging.value.error, isA<StateError>());
+      },
+    );
 
     test('build calls requestSessionHistory for the session', () {
       final cubit = createCubit('s1');
