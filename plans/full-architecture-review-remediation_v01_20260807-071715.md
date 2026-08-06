@@ -44,7 +44,46 @@ CC Pocket 从本计划起按独立产品线演进，不再把“可无冲突回�
 - Side Chat 旧文件、menubar remote key、Firebase/App Check 分别属于兼容清理、独立客户端和云端安全任务。
 - 历史读取多入口服务不同代客户端和实时/离线场景；后续收敛必须先建立调用者矩阵，不能只按同名函数删除。
 
-## 3. 实施顺序
+## 3. 执行分工与硬边界
+
+本轮不按文件数量分工，而按“是否需要跨层架构判断”分工。任何执行者发现事实与本计划不一致时，必须先记录源码证据和影响，不得自行扩大范围。
+
+### 3.1 Luna Max：简单、封闭、可独立验收的切片
+
+Luna Max 只承接以下边界清晰的任务，每项使用独立提交并回报精确测试结果：
+
+1. **L1 — Mobile 错误提示与消息重试（R1/R2）**
+   - 仅修改 ErrorBubble、本地化资源、`retryMessage` 返回值、Codex 重试回调及直接相关测试。
+   - 不修改 Bridge wire、authority 判定、发送队列、SQLite、运行时绑定或共享模式。
+   - 验收：无 lease 时返回 false 且消息仍为 failed；有 lease 时生成新 `clientMessageId` 并走 ordered dispatch；两个 Bridge 错误码有本地化恢复说明；Codex 失败气泡有真实重试入口。
+2. **L2 — 空且不完整窗口的恢复 UI（R3）**
+   - 只复用既有 `latestTurnComplete/latestTurnGap/loadOlderTurns`；不得增加新协议字段或第二套历史加载器。
+   - 仅在 `entries.isEmpty && !latestTurnComplete` 显示非模态恢复条；权威空会话和已有正文不得误报。
+   - Codex 与 Claude 均需直接测试。
+3. **L3 — 例行验证与证据收集**
+   - 运行指定的 Flutter/Bridge 定向测试、analyze、build 和磁盘/产物检查；不得部署、发布、切生产或清理用户数据。
+
+Luna Max 交付后由根协调任务做最小复核：检查 diff、断言是否覆盖验收、复跑关键测试。没有根任务复核，不视为已集成。
+
+### 3.2 根协调任务：复杂链路与最终判断
+
+根协调任务保留以下工作，不下放：
+
+1. 官方提交选择、冲突语义合并和独立产品线上游策略。
+2. **R4 Bridge provider 失败退避**：涉及 snapshot、revision、dirty sync、多客户端和缓存覆盖语义。
+3. **R5 streaming turn 身份隔离**：涉及 runtime rebind、activeTurnId、generation fence 和视觉连续性。
+4. 跨 Provider → Bridge → protocol → SQLite → Cubit → UI 的最终一致性复审。
+5. 分支整合、冲突处理、提交边界、回滚点与最终完成判断。
+6. 任何生产 Bridge、OTA、IPA、Cloud、stable、Desktop 配置或物理设备动作的授权判断。
+
+### 3.3 并行与工作树规则
+
+- 每个 Luna 切片必须使用明确 worktree/branch/HEAD；不得在另一个 Agent 正修改的文件上并发写入。
+- 当前 L1 已有根任务开始的未提交草稿，因此本次由 Luna Max 在当前 worktree 接管并完成；根任务在其完成前暂停该 worktree 的源码写入。
+- 后续 L2 若与根任务并行，必须从已验收 HEAD 新建独立 worktree，最后由根任务 cherry-pick；不得共享脏工作树。
+- 发布会话只接收用户明确授权的发布任务。本轮源码修复不得向发布会话或其他用户任务发送命令。
+
+## 4. 实施顺序
 
 ### Stage A：选择性吸收官方性能提交
 
@@ -79,7 +118,7 @@ CC Pocket 从本计划起按独立产品线演进，不再把“可无冲突回�
 2. 新权威状态确认同 activeTurnId 时继续；确认新 activeTurnId 或 idle/terminal 时清旧 streaming buffer。
 3. 旧 generation 的 delta 继续由既有 subscription fence 拒绝。
 
-## 4. 兼容与性能门禁
+## 5. 兼容与性能门禁
 
 - 新 Mobile + 新 Bridge：完整本地化、重试、gap repair、退避与 turn fence。
 - 新 Mobile + 旧 Bridge：未知新诊断仍按普通 ErrorBubble；v2 缺失时继续 v1；Mirror 行为不变。
@@ -90,7 +129,7 @@ CC Pocket 从本计划起按独立产品线演进，不再把“可无冲突回�
 - retry false 不得改写消息状态；retry true 必须发出新的 clientMessageId 并走既有 ordered dispatch。
 - runtime replacement 同 turn 不闪退，不同 turn 不串流。
 
-## 5. 验证与提交
+## 6. 验证与提交
 
 建议提交边界：
 
@@ -109,7 +148,7 @@ CC Pocket 从本计划起按独立产品线演进，不再把“可无冲突回�
 - 性能：失败退避 fake-clock 测试、长会话列表/路径缓存基准、无重复 provider read 计数。
 - iOS build、IPA、OTA、生产 Bridge 与真机是独立发布门禁，不在本计划的源码完成声明中混写。
 
-## 6. 完成标准
+## 7. 完成标准
 
 - R1-R5 均有源代码证据和回归；被驳回项有调用条件证据，未被误删。
 - 定向和全量测试无 P0/P1；analyze 单独报告新增与既有 info。
