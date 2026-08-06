@@ -220,8 +220,11 @@ describe("conversation_sync_v2 protocol", () => {
       ).toBeDefined(),
     );
 
-    const catalogEntries = events(fixture.sent, client, "catalog_changes")
-      .flatMap((event) => [...event.created, ...event.updated]);
+    const catalogEntries = events(
+      fixture.sent,
+      client,
+      "catalog_changes",
+    ).flatMap((event) => [...event.created, ...event.updated]);
     const hydratedEntry = catalogEntries.find(
       (entry) =>
         entry.providerSessionId === focused.entry.providerSessionId &&
@@ -266,10 +269,7 @@ describe("conversation_sync_v2 protocol", () => {
         serviceTier: string;
       };
     };
-    const pending = new Map<
-      string,
-      (metadata: SettingsMetadata) => void
-    >();
+    const pending = new Map<string, (metadata: SettingsMetadata) => void>();
     let activeReads = 0;
     let maximumActiveReads = 0;
     const focusedCodexMetadataReader = vi.fn(
@@ -318,8 +318,7 @@ describe("conversation_sync_v2 protocol", () => {
     expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(3);
 
     const firstPending = pending.entries().next().value as
-      | [string, (metadata: SettingsMetadata) => void]
-      | undefined;
+      [string, (metadata: SettingsMetadata) => void] | undefined;
     expect(firstPending).toBeDefined();
     firstPending![1]({
       codexSettings: {
@@ -750,11 +749,7 @@ describe("conversation_sync_v2 protocol", () => {
     await vi.waitFor(() =>
       expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
     );
-    const initialComplete = events(
-      fixture.sent,
-      client,
-      "sync_complete",
-    )[0]!;
+    const initialComplete = events(fixture.sent, client, "sync_complete")[0]!;
     await fixture.handler.handle(
       {
         type: "conversation_sync_ack",
@@ -768,7 +763,9 @@ describe("conversation_sync_v2 protocol", () => {
     focused.entry.revision = "revision-settings-generation-2";
     focused.entry.modifiedAt = "2026-08-02T01:02:03.000Z";
     fixture.handler.sessionCatalogChanged();
-    await vi.waitFor(() => expect(fixture.catalogReader).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(fixture.catalogReader).toHaveBeenCalledTimes(2),
+    );
 
     resolvers[0]!({
       codexSettings: {
@@ -827,9 +824,8 @@ describe("conversation_sync_v2 protocol", () => {
       codexSettingsSnapshotComplete: true,
     });
     const seeds = [original];
-    const fixture = createFixture(
-      seeds,
-      async (target) => history(target.providerSessionId),
+    const fixture = createFixture(seeds, async (target) =>
+      history(target.providerSessionId),
     );
     const client = {};
     const subscription = subscribeMessage();
@@ -841,11 +837,7 @@ describe("conversation_sync_v2 protocol", () => {
     await vi.waitFor(() =>
       expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
     );
-    const initialComplete = events(
-      fixture.sent,
-      client,
-      "sync_complete",
-    )[0]!;
+    const initialComplete = events(fixture.sent, client, "sync_complete")[0]!;
     await fixture.handler.handle(
       {
         type: "conversation_sync_ack",
@@ -872,7 +864,9 @@ describe("conversation_sync_v2 protocol", () => {
         { entry: ConversationSyncCatalogEntry; status: ConversationSyncStatus }
       >;
     };
-    expect(internal.catalog.get("codex\0thread-sparse-settings")?.entry).toMatchObject({
+    expect(
+      internal.catalog.get("codex\0thread-sparse-settings")?.entry,
+    ).toMatchObject({
       model: "gpt-5.6-sol",
       modelReasoningEffort: "ultra",
       serviceTier: "fast",
@@ -1098,7 +1092,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
-  it("isolates one timeline reader failure without aborting the remaining sync batch", async () => {
+  it("keeps one unavailable timeline retryable without aborting the remaining sync batch", async () => {
     const fixture = createFixture([seed(0), seed(1)], async (target) => {
       if (target.providerSessionId === "session-0") {
         throw new Error("one damaged legacy history");
@@ -1115,20 +1109,76 @@ describe("ConversationSyncV2FeatureHandler", () => {
       expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
     );
 
-    expect(events(fixture.sent, client, "error")).toContainEqual(
-      expect.objectContaining({
-        errorCode: "timeline_failed",
-        target: {
-          provider: "claude",
-          providerSessionId: "session-0",
-        },
-      }),
-    );
+    expect(events(fixture.sent, client, "error")).toHaveLength(0);
+    expect(
+      events(fixture.sent, client, "timeline_page").find(
+        (event) => event.providerSessionId === "session-0",
+      ),
+    ).toMatchObject({
+      entries: [],
+      latestTurnComplete: false,
+      latestTurnGap: {
+        missingEntryCount: 1,
+        payloadOmitted: false,
+        repair: "turns_page",
+      },
+    });
     expect(
       events(fixture.sent, client, "timeline_page").some(
         (event) => event.providerSessionId === "session-1",
       ),
     ).toBe(true);
+    fixture.handler.close();
+  });
+
+  it("publishes direct runtime content when canonical history remains unavailable", async () => {
+    const fixture = createFixture([seed(0)], async () => {
+      throw new Error("canonical history unavailable");
+    });
+    fixture.runtime.getProviderSessionId = () => "session-0";
+    const session: LocalFeatureSession = {
+      id: "runtime-0",
+      provider: "claude",
+      process: {},
+      projectPath: "/project/0",
+    };
+    const client = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const firstComplete = events(fixture.sent, client, "sync_complete")[0]!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: firstComplete.subscriptionId,
+        sequence: firstComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+
+    fixture.handler.sessionMessage(session, {
+      type: "assistant",
+      messageUuid: "runtime-live-while-history-unavailable",
+      message: {
+        id: "runtime-live-while-history-unavailable",
+        role: "assistant",
+        model: "test",
+        content: [{ type: "text", text: "retained live output" }],
+      },
+    });
+
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(2),
+    );
+    expect(
+      JSON.stringify(events(fixture.sent, client, "timeline_page").at(-1)),
+    ).toContain("retained live output");
     fixture.handler.close();
   });
 
@@ -5382,6 +5432,14 @@ describe("ConversationSyncV2FeatureHandler", () => {
 
     expect(listThreadTurns).toHaveBeenCalledTimes(3);
     expect(listThreadItems).toHaveBeenCalledTimes(1);
+    expect(
+      listThreadTurns.mock.calls.every(
+        ([, options]) => options?.timeoutMs === 10_000,
+      ),
+    ).toBe(true);
+    expect(listThreadItems.mock.calls[0]?.[1]).toMatchObject({
+      timeoutMs: 10_000,
+    });
     expect(createStandaloneCodexProcess).toHaveBeenCalledTimes(1);
     handler.close();
     expect(stop).toHaveBeenCalledTimes(1);
@@ -6092,11 +6150,9 @@ describe("ConversationSyncV2FeatureHandler", () => {
           .find((entry) => entry.model === "gpt-5.5"),
       ).toBeDefined(),
     );
-    const initialComplete = events(
-      fixture.sent,
-      client,
-      "sync_complete",
-    ).at(-1)!;
+    const initialComplete = events(fixture.sent, client, "sync_complete").at(
+      -1,
+    )!;
     await fixture.handler.handle(
       {
         type: "conversation_sync_ack",

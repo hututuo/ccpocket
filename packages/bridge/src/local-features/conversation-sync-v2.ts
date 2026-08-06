@@ -133,6 +133,7 @@ const MAX_CODEX_RAW_STRING_BYTES = 24 * 1024;
 const MAX_CODEX_RAW_ARRAY_ITEMS = 64;
 const MAX_CODEX_RAW_OBJECT_KEYS = 64;
 const MAX_CODEX_RAW_DEPTH = 5;
+const CODEX_HISTORY_RPC_TIMEOUT_MS = 10_000;
 const PAGE_PROJECTION_TEXT_BUDGETS = [
   32 * 1024,
   16 * 1024,
@@ -916,14 +917,27 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (!this.hasInteractiveClients()) return;
 
     if (isStreamingConversationDelta(message)) {
-      this.queueLiveContent(target, observedAt);
+      this.queueLiveContent(target, observedAt, "latestTurn");
       return;
     }
     if (isConversationTimelineMessage(message)) {
+      const identity = observedMessageIdentity(message);
+      if (identity) {
+        // Runtime messages are already accepted provider output. Retain the
+        // bounded stable projection so an unavailable canonical history read
+        // cannot make the just-seen item disappear on the durable route.
+        this.rememberSharedObserverMessage(
+          target,
+          `runtime:${identity}`,
+          message,
+          observedAt,
+        );
+      }
       this.publishLiveContent(
         target,
         observedAt,
         assistantTextCatalogActivity(message, observedAt),
+        "direct",
       );
       return;
     }
@@ -2344,9 +2358,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
               this.sendError(
                 client,
                 subscription,
-                undefined,
+                subscription.requestId,
                 "timeline_failed",
-                errorMessage(error),
+                "Conversation timeline is temporarily unavailable.",
                 record.entry,
               );
             } catch {
@@ -2404,7 +2418,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const liveAtReadStart = this.liveContentRevisions.get(key);
     const previousSnapshot = this.snapshots.get(key)?.at(-1);
     const sharedMessagesAtReadStart = this.sharedObserverLiveMessages.get(key);
-    const historySource =
+    let providerHistoryUnavailable = false;
+    const historySource = (
       target.provider === "codex" &&
       sharedMessagesAtReadStart &&
       previousSnapshot &&
@@ -2426,7 +2441,24 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           : this.historyReader(target).then((history) => {
               const window = normalizeHistoryWindow(history);
               return { window, canonicalMessages: window.messages };
-            });
+            })
+    ).catch((error) => {
+      providerHistoryUnavailable = true;
+      const kind = error instanceof Error ? error.name : typeof error;
+      console.warn(
+        `[conversation-sync-v2] Canonical timeline temporarily unavailable (${kind})`,
+      );
+      return {
+        window: previousSnapshot
+          ? historyWindowFromSnapshot(previousSnapshot)
+          : {
+              messages: [],
+              nextTurnCursor: null,
+              latestTurnComplete: false,
+            },
+        canonicalMessages: undefined,
+      };
+    });
     const flight = historySource
       .then(({ window, canonicalMessages }) => {
         const externalMessages = this.externalCodexLiveMessages.get(key);
@@ -2488,7 +2520,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             catalogIndicatesPriorActivity);
         const latestTurnGap = mergeLatestTurnGaps(
           mergeLatestTurnGaps(window.latestTurnGap, built.latestTurnGap),
-          catalogContentMissing
+          providerHistoryUnavailable || catalogContentMissing
             ? {
                 missingEntryCount: 1,
                 payloadOmitted: false,
@@ -2498,7 +2530,12 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         );
         const snapshot = {
           ...built,
-          revision: requestedRevision,
+          revision: providerHistoryUnavailable
+            ? providerRevision(
+                target,
+                `provider-unavailable:${requestedRevision}`,
+              )
+            : requestedRevision,
           hasEarlier:
             built.hasEarlier ||
             window.nextTurnCursor != null ||
@@ -2515,6 +2552,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         // A reconnect must reread the provider instead of pinning a blank or
         // live-only projection under that same revision.
         if (
+          !providerHistoryUnavailable &&
           !catalogContentMissing &&
           canonicalHistoryCoversExternalMessages &&
           (canonicalHistoryCoversSharedMessages || sharedMessages !== undefined)
@@ -2540,7 +2578,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           this.deleteSharedObserverLiveMessages(key);
         }
         const currentLive = this.liveContentRevisions.get(key);
-        if (currentLive?.revision === requestedRevision) {
+        if (
+          !providerHistoryUnavailable &&
+          currentLive?.revision === requestedRevision
+        ) {
           // The scoped provider read (or direct stable merge) has satisfied
           // this exact revision. A later delta will promote the scope again.
           currentLive.readScope = "direct";
@@ -3045,9 +3086,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
   }
 
-  private hydrateFocusedCodexSettings(
-    key: ConversationKey,
-  ): Promise<boolean> {
+  private hydrateFocusedCodexSettings(key: ConversationKey): Promise<boolean> {
     const target = parseTargetKeyRequired(key);
     if (target.provider !== "codex") return Promise.resolve(false);
     const record = this.catalog.get(key);
@@ -3089,7 +3128,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         }
         const current = this.catalog.get(key);
         if (!current) return false;
-        if (codexCatalogSettingsObservationSignature(current.entry) !== signature) {
+        if (
+          codexCatalogSettingsObservationSignature(current.entry) !== signature
+        ) {
           // The authoritative read started against an older catalog
           // observation. Never let its result overwrite a newer revision;
           // schedule one focused retry after this flight releases its slot.
@@ -3202,9 +3243,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     for (const record of records) {
       if (record.entry.provider !== "codex") continue;
       const key = targetKey(record.entry);
-      if (
-        this.priorityCodexSettingsQueue.has(key)
-      ) {
+      if (this.priorityCodexSettingsQueue.has(key)) {
         continue;
       }
       if (this.focusedCodexSettingsFlights.has(key)) {
@@ -3262,13 +3301,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     while (
       !this.closed &&
       this.hasInteractiveClients() &&
-      this.activePriorityCodexSettings <
-        PRIORITY_CODEX_SETTINGS_CONCURRENCY &&
+      this.activePriorityCodexSettings < PRIORITY_CODEX_SETTINGS_CONCURRENCY &&
       this.priorityCodexSettingsQueue.size > 0
     ) {
       const key = this.priorityCodexSettingsQueue.values().next().value as
-        | ConversationKey
-        | undefined;
+        ConversationKey | undefined;
       if (!key) return;
       this.priorityCodexSettingsQueue.delete(key);
       if (!this.catalog.has(key)) continue;
@@ -5710,15 +5747,18 @@ async function readRecentCodexConversationHistory(
     target.providerSessionId,
   );
   const [page, desktopToolTimeline] = await Promise.all([
-    process.listThreadTurns({
-      threadId: target.providerSessionId,
-      limit: 5,
-      sortDirection: "desc",
-      // The current app-server summary view keeps only the user/final spine and
-      // omits tool ids/counts. Read one bounded full page at the Bridge, then
-      // compact the older two turns before crossing the wire.
-      itemsView: "full",
-    }),
+    process.listThreadTurns(
+      {
+        threadId: target.providerSessionId,
+        limit: 5,
+        sortDirection: "desc",
+        // The current app-server summary view keeps only the user/final spine and
+        // omits tool ids/counts. Read one bounded full page at the Bridge, then
+        // compact the older two turns before crossing the wire.
+        itemsView: "full",
+      },
+      { timeoutMs: CODEX_HISTORY_RPC_TIMEOUT_MS },
+    ),
     timeline,
   ]);
   const turns = [...page.data].reverse();
@@ -5749,12 +5789,15 @@ async function readLatestCodexTurnHistory(
   process: CodexProcess,
   target: ConversationSyncTarget,
 ): Promise<ConversationHistoryWindow> {
-  const page = await process.listThreadTurns({
-    threadId: target.providerSessionId,
-    limit: 1,
-    sortDirection: "desc",
-    itemsView: "full",
-  });
+  const page = await process.listThreadTurns(
+    {
+      threadId: target.providerSessionId,
+      limit: 1,
+      sortDirection: "desc",
+      itemsView: "full",
+    },
+    { timeoutMs: CODEX_HISTORY_RPC_TIMEOUT_MS },
+  );
   const normalized = normalizeCodexTurns(
     [...page.data].reverse(),
     "full",
@@ -5844,7 +5887,7 @@ async function readTurnsPage(
               // item details are fetched by the explicit items endpoint.
               itemsView: message.itemsView ?? "summary",
             },
-            { signal },
+            { signal, timeoutMs: CODEX_HISTORY_RPC_TIMEOUT_MS },
           );
           const chronologicalTurns =
             (message.sortDirection ?? "desc") === "desc"
@@ -5980,7 +6023,7 @@ async function readItemsPage(
                 limit,
                 sortDirection: message.sortDirection ?? "asc",
               },
-              { signal },
+              { signal, timeoutMs: CODEX_HISTORY_RPC_TIMEOUT_MS },
             );
             // The official response is ThreadItemEntry { turnId, item }, not a
             // bare ThreadItem. Accept the bare form as a forward-compatible
@@ -6798,7 +6841,7 @@ async function findCodexTurnMessages(
         sortDirection: "desc",
         itemsView: "full",
       },
-      { signal },
+      { signal, timeoutMs: CODEX_HISTORY_RPC_TIMEOUT_MS },
     );
     const found = page.data.find((rawTurn) => {
       if (!rawTurn || typeof rawTurn !== "object" || Array.isArray(rawTurn)) {
@@ -7084,8 +7127,7 @@ function mergeIncompleteCodexCatalogSettings(
     previous.modelReasoningEffort !== undefined
       ? { modelReasoningEffort: previous.modelReasoningEffort }
       : {}),
-    ...(incoming.serviceTier === undefined &&
-    previous.serviceTier !== undefined
+    ...(incoming.serviceTier === undefined && previous.serviceTier !== undefined
       ? { serviceTier: previous.serviceTier }
       : {}),
     ...(incoming.approvalPolicy === undefined &&
@@ -7096,8 +7138,7 @@ function mergeIncompleteCodexCatalogSettings(
     previous.approvalsReviewer !== undefined
       ? { approvalsReviewer: previous.approvalsReviewer }
       : {}),
-    ...(incoming.sandboxMode === undefined &&
-    previous.sandboxMode !== undefined
+    ...(incoming.sandboxMode === undefined && previous.sandboxMode !== undefined
       ? { sandboxMode: previous.sandboxMode }
       : {}),
     ...(incoming.collaborationMode === undefined &&

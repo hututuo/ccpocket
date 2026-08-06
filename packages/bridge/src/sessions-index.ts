@@ -2492,9 +2492,7 @@ export async function getCodexSessionIndexMetadata(
       ...(pathMetadata?.projectPath
         ? { projectPath: pathMetadata.projectPath }
         : {}),
-      ...(pathMetadata?.resumeCwd
-        ? { resumeCwd: pathMetadata.resumeCwd }
-        : {}),
+      ...(pathMetadata?.resumeCwd ? { resumeCwd: pathMetadata.resumeCwd } : {}),
       ...(matchingParsed?.entry.firstPrompt
         ? { firstPrompt: matchingParsed.entry.firstPrompt }
         : {}),
@@ -4180,6 +4178,11 @@ interface CodexDesktopToolTimelineCacheEntry {
 }
 
 const CODEX_DESKTOP_TOOL_TIMELINE_CACHE_LIMIT = 8;
+// A newly focused durable thread must not block its first visible history on a
+// complete scan of a potentially hundreds-of-megabytes rollout. Recent turns
+// and their tool timestamps live at the tail; subsequent refreshes continue
+// incrementally from the remembered offset.
+const CODEX_DESKTOP_TOOL_TIMELINE_INITIAL_TAIL_BYTES = 16 * 1024 * 1024;
 const codexDesktopToolTimelineCache = new Map<
   string,
   CodexDesktopToolTimelineCacheEntry
@@ -4191,9 +4194,9 @@ const codexDesktopToolTimelineRefreshes = new Map<
 
 /**
  * Read the host-side Responses API tool records omitted by app-server's
- * canonical ThreadItems. The first read streams the rollout once; later reads
- * consume appended bytes only, which keeps Desktop continuity polling cheap
- * even for very large conversations.
+ * canonical ThreadItems. The first read consumes a bounded recent tail; later
+ * reads consume appended bytes only, which keeps initial conversation loading
+ * and Desktop continuity polling bounded even for very large conversations.
  */
 export async function getCodexDesktopToolTimeline(
   threadId: string,
@@ -4232,10 +4235,14 @@ async function refreshCodexDesktopToolTimeline(
       cache.mtimeMs !== 0 &&
       fileStat.mtimeMs !== cache.mtimeMs)
   ) {
+    const initialReadOffset = Math.max(
+      0,
+      fileStat.size - CODEX_DESKTOP_TOOL_TIMELINE_INITIAL_TAIL_BYTES,
+    );
     cache = {
       jsonlPath,
       builder: new CodexDesktopToolTimelineBuilder(),
-      readOffset: 0,
+      readOffset: initialReadOffset,
       pendingLine: Buffer.alloc(0),
       mtimeMs: 0,
     };
