@@ -1,5 +1,22 @@
 # CC Pocket Compatibility Fork Context
 
+## 2026-08-06 conversation sync stability program
+
+The active investigation and implementation plan is
+`plans/conversation-sync-stability_v01_20260806-160058.md` on
+`fix/conversation-sync-stability-20260806`, based on production source
+`98d48eccddd6e52ef4733c27e11a8ee5fe493ac3`.
+
+This program prioritizes real open/load/retry/live-cache continuity over code
+beautification or new abstractions. It must trace every loading and retry action
+from UI to provider and back through SQLite, prevent stale snapshots from
+overwriting live content, persist accepted new messages, keep visible content
+stable while runtime mutation authority reconciles, and provide a bounded
+latest-turn path for very large Codex rollouts. Luna Max performs the first
+read-only open exploration; the root task reviews its evidence before source
+changes. Production Bridge, release task, OTA/IPA, stable and physical device
+remain untouched until separately authorized.
+
 ## 2026-08-04 first-open settings prewarm and ACK projection
 
 The source-verified follow-up is in

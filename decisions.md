@@ -1,5 +1,30 @@
 # ccPocket Compatibility Decisions
 
+## 2026-08-06 conversation chain stability precedes structural cleanup
+
+- Conversation open, loading, retry, live delivery, SQLite persistence and
+  rendering must form one observable business loop. A spinner, a sent frame or
+  a passing Widget test is not completion unless the requested provider result
+  commits and reaches a terminal UI state.
+- The Mobile hot window is the latest committed rebuildable replica, not a
+  startup-era snapshot. Accepted live content must be persisted promptly; an
+  older snapshot/history page can fill a gap but cannot replace newer live or
+  committed content.
+- Mutation authority and visual continuity are separate. An uncertain runtime
+  generation revokes writes immediately, but it does not clear already shown
+  messages, streaming output, durable identity or the reading anchor.
+- Reopening a conversation with newer/unread/active content shows the latest
+  content. Raw pixel offsets are not restored across content revisions; stable
+  message anchors may be restored only when no newer content exists.
+- Fixes should repair or remove the existing owning path. Do not add abstraction
+  layers, duplicate coordinators, high-frequency polling or broad refactors for
+  appearance. New additive protocol state is justified only when the existing
+  revision/generation facts cannot prove monotonic ordering.
+- The active implementation plan is
+  `plans/conversation-sync-stability_v01_20260806-160058.md`. Investigation is
+  read-only first, then root-reviewed implementation. Deployment and Mobile
+  release remain separately authorized gates.
+
 ## 2026-08-04 priority settings prewarm and acknowledged projection
 
 - `conversation_sync_v2` 在首次 full subscription 中异步预热 focused、最近五个
