@@ -7873,13 +7873,17 @@ void main() {
 
       cubit.sendMessage('Retry me');
       final entryToRetry = cubit.state.entries.last as UserChatEntry;
+      entryToRetry.status = MessageStatus.failed;
+      final previousClientMessageId = entryToRetry.clientMessageId;
 
       mockBridge.sentMessages.clear();
-      cubit.retryMessage(entryToRetry);
+      expect(cubit.retryMessage(entryToRetry), isTrue);
 
       final retriedEntry = cubit.state.entries.last as UserChatEntry;
       expect(retriedEntry.status, MessageStatus.sending);
       expect(retriedEntry.text, 'Retry me');
+      expect(retriedEntry.clientMessageId, isNot(previousClientMessageId));
+      expect(retriedEntry.clientMessageId, isNotNull);
       expect(mockBridge.sentMessages, hasLength(1));
       final resent = jsonDecode(mockBridge.sentMessages.single.toJson());
       expect(resent['type'], 'input');
@@ -7891,6 +7895,41 @@ void main() {
         contains(resent['clientMessageId']),
       );
     });
+
+    test(
+      'retryMessage fails closed without a runtime lease and preserves the failed message',
+      () {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-retry-without-lease',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-retry-without-lease',
+          initialHistoryMessages: const [
+            UserInputMessage(
+              text: 'Retry only after authority is ready',
+              clientMessageId: 'failed-message-id',
+            ),
+          ],
+        );
+        addTearDown(cubit.close);
+
+        final failedEntry = cubit.state.entries.single as UserChatEntry;
+        failedEntry.status = MessageStatus.failed;
+        final entriesBefore = cubit.state.entries;
+
+        expect(cubit.retryMessage(failedEntry), isFalse);
+        expect(identical(cubit.state.entries, entriesBefore), isTrue);
+        expect(cubit.state.entries.single, same(failedEntry));
+        expect(failedEntry.status, MessageStatus.failed);
+        expect(failedEntry.clientMessageId, 'failed-message-id');
+        expect(mockBridge.sentMessages, isEmpty);
+      },
+    );
 
     test(
       'detached history no-progress becomes retryable instead of spinning',

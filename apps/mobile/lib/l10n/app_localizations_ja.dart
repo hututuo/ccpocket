@@ -279,6 +279,12 @@ class AppLocalizationsJa extends AppLocalizations {
   String get errorCodexWarningTitle => 'Codex の警告';
 
   @override
+  String get errorCodexRuntimeWriterUnavailableTitle => '会話の制御状態を同期しています';
+
+  @override
+  String get errorCodexActionBrokerRequiredTitle => '現在の承認リクエストを使用してください';
+
+  @override
   String get errorClaudeAuthLoginHint =>
       'Bridge マシンで「claude auth login」を実行してください';
 
@@ -300,6 +306,18 @@ class AppLocalizationsJa extends AppLocalizations {
   @override
   String get errorAutoModeUnavailableHint =>
       'ここでは Default モードを使用するか、Auto モード対応の Claude 環境に切り替えてください';
+
+  @override
+  String get errorCodexRuntimeWriterUnavailableHint =>
+      'アクティブな Bridge に再接続し、この会話の制御状態が同期されてから再試行してください。';
+
+  @override
+  String get errorCodexActionBrokerRequiredHint =>
+      '現在の承認カードから応答してください。カードが表示されない場合は会話を更新してください。';
+
+  @override
+  String get conversationRetryWaitingForRuntime =>
+      'この会話は Bridge と制御状態を同期中です。失敗したメッセージは再送されていません。しばらくしてから再試行してください。';
 
   @override
   String get autoModeFallbackDefaultTip =>

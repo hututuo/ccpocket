@@ -279,6 +279,12 @@ class AppLocalizationsKo extends AppLocalizations {
   String get errorCodexWarningTitle => 'Codex 경고';
 
   @override
+  String get errorCodexRuntimeWriterUnavailableTitle => '대화 제어 상태를 동기화하는 중';
+
+  @override
+  String get errorCodexActionBrokerRequiredTitle => '현재 승인 요청을 사용하세요';
+
+  @override
   String get errorClaudeAuthLoginHint =>
       'Bridge 기기에서 \"claude auth login\"을 실행하세요';
 
@@ -299,6 +305,18 @@ class AppLocalizationsKo extends AppLocalizations {
   @override
   String get errorAutoModeUnavailableHint =>
       '여기서는 Default 모드를 사용하거나 Auto 모드를 지원하는 Claude 환경으로 전환하세요';
+
+  @override
+  String get errorCodexRuntimeWriterUnavailableHint =>
+      '활성 Bridge에 다시 연결하고 이 대화의 제어 상태가 동기화된 뒤 다시 시도하세요.';
+
+  @override
+  String get errorCodexActionBrokerRequiredHint =>
+      '현재 승인 카드에서 응답하세요. 카드가 보이지 않으면 대화를 새로 고치세요.';
+
+  @override
+  String get conversationRetryWaitingForRuntime =>
+      '이 대화는 Bridge와 제어 상태를 동기화하고 있습니다. 실패한 메시지는 다시 전송되지 않았습니다. 잠시 후 다시 시도하세요.';
 
   @override
   String get autoModeFallbackDefaultTip =>

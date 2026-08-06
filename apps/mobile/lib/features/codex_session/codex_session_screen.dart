@@ -3020,7 +3020,19 @@ class _CodexChatBody extends HookWidget {
                                 .read<BridgeService>()
                                 .httpBaseUrl,
                             projectPath: chatFileRoot,
-                            onRetryMessage: null,
+                            onRetryMessage: (entry) {
+                              final accepted = context
+                                  .read<ChatSessionCubit>()
+                                  .retryMessage(entry);
+                              if (accepted || !context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    l.conversationRetryWaitingForRuntime,
+                                  ),
+                                ),
+                              );
+                            },
                             onRewindMessage: (entry) {
                               _showCodexRewindDialog(
                                 context,

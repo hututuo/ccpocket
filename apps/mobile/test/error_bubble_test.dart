@@ -35,6 +35,70 @@ void main() {
     expect(find.byKey(const ValueKey('codex_warning_dismiss')), findsNothing);
   });
 
+  testWidgets('localizes shared Codex runtime errors with recovery guidance', (
+    tester,
+  ) async {
+    const cases = {
+      'codex_shared_runtime_writer_unavailable': {
+        'en': (
+          title: 'Conversation control is still synchronizing',
+          hint:
+              "Reconnect to the active Bridge and wait for this conversation's control state before retrying.",
+        ),
+        'zh': (
+          title: '会话控制权仍在同步',
+          hint: '请重新连接当前活动的 Bridge，等待此会话的控制状态同步完成后再重试。',
+        ),
+        'ja': (
+          title: '会話の制御状態を同期しています',
+          hint: 'アクティブな Bridge に再接続し、この会話の制御状態が同期されてから再試行してください。',
+        ),
+        'ko': (
+          title: '대화 제어 상태를 동기화하는 중',
+          hint: '활성 Bridge에 다시 연결하고 이 대화의 제어 상태가 동기화된 뒤 다시 시도하세요.',
+        ),
+      },
+      'codex_action_broker_required': {
+        'en': (
+          title: 'Use the current approval request',
+          hint:
+              'Respond from the active approval card. Refresh the conversation if the card is not visible.',
+        ),
+        'zh': (title: '请使用当前审批请求', hint: '请在当前审批卡片中操作；如果卡片没有显示，请刷新会话。'),
+        'ja': (
+          title: '現在の承認リクエストを使用してください',
+          hint: '現在の承認カードから応答してください。カードが表示されない場合は会話を更新してください。',
+        ),
+        'ko': (
+          title: '현재 승인 요청을 사용하세요',
+          hint: '현재 승인 카드에서 응답하세요. 카드가 보이지 않으면 대화를 새로 고치세요.',
+        ),
+      },
+    };
+
+    for (final entry in cases.entries) {
+      for (final localeEntry in entry.value.entries) {
+        final locale = Locale(localeEntry.key);
+        final expected = localeEntry.value;
+        await tester.pumpWidget(
+          _wrapErrorBubble(
+            locale: locale,
+            child: ErrorBubble(
+              message: ErrorMessage(
+                message: 'The shared Codex runtime cannot accept this action.',
+                errorCode: entry.key,
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text(expected.title), findsOneWidget);
+        expect(find.text(expected.hint), findsOneWidget);
+      }
+    }
+  });
+
   testWidgets('dismisses a Codex warning from its close button', (
     tester,
   ) async {

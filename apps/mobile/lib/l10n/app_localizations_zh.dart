@@ -279,6 +279,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get errorCodexWarningTitle => 'Codex 警告';
 
   @override
+  String get errorCodexRuntimeWriterUnavailableTitle => '会话控制权仍在同步';
+
+  @override
+  String get errorCodexActionBrokerRequiredTitle => '请使用当前审批请求';
+
+  @override
   String get errorClaudeAuthLoginHint => '请在 Bridge 所在电脑运行“claude auth login”';
 
   @override
@@ -297,6 +303,18 @@ class AppLocalizationsZh extends AppLocalizations {
   @override
   String get errorAutoModeUnavailableHint =>
       '请在此使用“默认”模式，或切换到支持“自动”模式的 Claude 环境';
+
+  @override
+  String get errorCodexRuntimeWriterUnavailableHint =>
+      '请重新连接当前活动的 Bridge，等待此会话的控制状态同步完成后再重试。';
+
+  @override
+  String get errorCodexActionBrokerRequiredHint =>
+      '请在当前审批卡片中操作；如果卡片没有显示，请刷新会话。';
+
+  @override
+  String get conversationRetryWaitingForRuntime =>
+      '此会话仍在与 Bridge 同步控制权。失败消息尚未重新发送，请稍后重试。';
 
   @override
   String get autoModeFallbackDefaultTip =>

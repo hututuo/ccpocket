@@ -594,6 +594,18 @@ abstract class AppLocalizations {
   /// **'Codex の警告'**
   String get errorCodexWarningTitle;
 
+  /// No description provided for @errorCodexRuntimeWriterUnavailableTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'会話の制御状態を同期しています'**
+  String get errorCodexRuntimeWriterUnavailableTitle;
+
+  /// No description provided for @errorCodexActionBrokerRequiredTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'現在の承認リクエストを使用してください'**
+  String get errorCodexActionBrokerRequiredTitle;
+
   /// No description provided for @errorClaudeAuthLoginHint.
   ///
   /// In ja, this message translates to:
@@ -629,6 +641,24 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'ここでは Default モードを使用するか、Auto モード対応の Claude 環境に切り替えてください'**
   String get errorAutoModeUnavailableHint;
+
+  /// No description provided for @errorCodexRuntimeWriterUnavailableHint.
+  ///
+  /// In ja, this message translates to:
+  /// **'アクティブな Bridge に再接続し、この会話の制御状態が同期されてから再試行してください。'**
+  String get errorCodexRuntimeWriterUnavailableHint;
+
+  /// No description provided for @errorCodexActionBrokerRequiredHint.
+  ///
+  /// In ja, this message translates to:
+  /// **'現在の承認カードから応答してください。カードが表示されない場合は会話を更新してください。'**
+  String get errorCodexActionBrokerRequiredHint;
+
+  /// No description provided for @conversationRetryWaitingForRuntime.
+  ///
+  /// In ja, this message translates to:
+  /// **'この会話は Bridge と制御状態を同期中です。失敗したメッセージは再送されていません。しばらくしてから再試行してください。'**
+  String get conversationRetryWaitingForRuntime;
 
   /// No description provided for @autoModeFallbackDefaultTip.
   ///

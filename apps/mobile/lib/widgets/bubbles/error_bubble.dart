@@ -21,6 +21,9 @@ String? _errorTitle(String? errorCode, AppLocalizations l) {
     'git_not_available' => l.gitUnavailableTitle,
     'bridge_update_required' => l.errorBridgeUpdateRequiredTitle,
     'auto_mode_unavailable' => l.errorAutoModeUnavailableTitle,
+    'codex_shared_runtime_writer_unavailable' =>
+      l.errorCodexRuntimeWriterUnavailableTitle,
+    'codex_action_broker_required' => l.errorCodexActionBrokerRequiredTitle,
     'codex_warning' => l.errorCodexWarningTitle,
     _ => null,
   };
@@ -37,6 +40,9 @@ String? _errorHint(String? errorCode, AppLocalizations l) {
     'git_not_available' => l.gitUnavailableHint,
     'bridge_update_required' => 'npm update -g @ccpocket/bridge',
     'auto_mode_unavailable' => l.errorAutoModeUnavailableHint,
+    'codex_shared_runtime_writer_unavailable' =>
+      l.errorCodexRuntimeWriterUnavailableHint,
+    'codex_action_broker_required' => l.errorCodexActionBrokerRequiredHint,
     _ => null,
   };
 }

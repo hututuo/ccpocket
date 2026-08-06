@@ -7693,9 +7693,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   /// Retry a failed user message.
-  void retryMessage(UserChatEntry entry) {
+  /// Retries [entry] when the current runtime mutation lease is authoritative.
+  ///
+  /// Returns false without changing the visible message when a detached
+  /// conversation is still waiting for its runtime authority projection. This
+  /// lets the UI explain the real retry gate instead of making a tap appear to
+  /// do nothing.
+  bool retryMessage(UserChatEntry entry) {
     final runtimeLease = _captureRuntimeMutationLease();
-    if (runtimeLease == null) return;
+    if (runtimeLease == null) return false;
     final clientMessageId = _uuid.v4();
     final retrySessionId = runtimeLease.sessionId;
     final isOffline = !_bridge.isConnected;
@@ -7746,6 +7752,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       mentions: const [],
       deliveryPendingItem: deliveryPendingItem,
     );
+    return true;
   }
 
   ({List<Map<String, String>> skills, List<Map<String, String>> mentions})

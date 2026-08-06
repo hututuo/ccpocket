@@ -283,6 +283,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get errorCodexWarningTitle => 'Codex Warning';
 
   @override
+  String get errorCodexRuntimeWriterUnavailableTitle =>
+      'Conversation control is still synchronizing';
+
+  @override
+  String get errorCodexActionBrokerRequiredTitle =>
+      'Use the current approval request';
+
+  @override
   String get errorClaudeAuthLoginHint =>
       'Run \"claude auth login\" on the Bridge machine';
 
@@ -305,6 +313,18 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get errorAutoModeUnavailableHint =>
       'Use Default mode here, or switch to a Claude environment that supports Auto mode';
+
+  @override
+  String get errorCodexRuntimeWriterUnavailableHint =>
+      'Reconnect to the active Bridge and wait for this conversation\'s control state before retrying.';
+
+  @override
+  String get errorCodexActionBrokerRequiredHint =>
+      'Respond from the active approval card. Refresh the conversation if the card is not visible.';
+
+  @override
+  String get conversationRetryWaitingForRuntime =>
+      'This conversation is still synchronizing control with Bridge. The failed message was not resent; retry shortly.';
 
   @override
   String get autoModeFallbackDefaultTip =>
