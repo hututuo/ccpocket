@@ -12,10 +12,15 @@ beautification or new abstractions. It must trace every loading and retry action
 from UI to provider and back through SQLite, prevent stale snapshots from
 overwriting live content, persist accepted new messages, keep visible content
 stable while runtime mutation authority reconciles, and provide a bounded
-latest-turn path for very large Codex rollouts. Luna Max performs the first
-read-only open exploration; the root task reviews its evidence before source
-changes. Production Bridge, release task, OTA/IPA, stable and physical device
-remain untouched until separately authorized.
+latest-turn path for very large Codex rollouts. Luna Max completed the first
+read-only open exploration and the root task accepted the six primary chain
+findings. The first implementation slice is now recorded as `bdf62a5f`
+(Bridge bounded history/live fallback), `057ad4dd` (Mobile cache/runtime/retry
+continuity), and `d2bf80cc` (visible retry and durable scroll behavior). The
+detailed evidence and explicitly open protocol gaps are in
+`notes/conversation-sync-stability-audit_v01_20260806.md`. Production Bridge,
+release task, OTA/IPA, stable and physical device remain untouched until
+separately authorized.
 
 ## 2026-08-04 first-open settings prewarm and ACK projection
 
