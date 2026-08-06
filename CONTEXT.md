@@ -1,5 +1,21 @@
 # CC Pocket Compatibility Fork Context
 
+## 2026-08-07 architecture Review remediation and independent upstream policy
+
+The active line is `fix/architecture-review-remediation-20260807`, based on
+`b61597e9`. Its plan is
+`plans/full-architecture-review-remediation_v01_20260807-071715.md`.
+
+The external full-architecture Review was rechecked against real call
+conditions. Shared-writer recovery, Codex retry, empty incomplete hot windows,
+provider-read backoff and cross-runtime turn fencing are accepted fixes.
+Claims that v1/v2/Mirror always compete, queue snapshots are duplicate
+broadcasts, or current backpressure drops sequence frames are rejected pending
+contrary runtime evidence. The project now selectively absorbs useful upstream
+commits instead of preserving full official replay compatibility; CC Pocket's
+own old/new Mobile and Bridge compatibility remains mandatory. Production,
+OTA, IPA, Cloud, Desktop and device state are not changed by this source plan.
+
 ## 2026-08-06 conversation sync stability program
 
 The active investigation and implementation plan is

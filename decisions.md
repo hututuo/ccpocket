@@ -1,5 +1,22 @@
 # ccPocket Compatibility Decisions
 
+## 2026-08-07 selective upstream adoption and independent product line
+
+- CC Pocket now evolves as an independent product line. Clean replay onto every
+  official upstream commit is no longer a mandatory product constraint.
+- Upstream changes are reviewed commit by commit. Absorb behavior that improves
+  the accepted CC Pocket architecture or user experience; omit pure version,
+  release-process or conflicting implementation changes without manufacturing
+  merge ancestry.
+- The current useful upstream change is `8c075b33` (long-session Mobile
+  performance). The adjacent `4bb3d2e3` version bump is not part of the local
+  implementation line.
+- Independence does not remove CC Pocket's own compatibility obligations: new
+  and old Mobile/Bridge combinations, additive protocol evolution, provider
+  history authority, local cache readability and rollback remain required.
+- The active implementation plan is
+  `plans/full-architecture-review-remediation_v01_20260807-071715.md`.
+
 ## 2026-08-06 conversation chain stability precedes structural cleanup
 
 - Conversation open, loading, retry, live delivery, SQLite persistence and
