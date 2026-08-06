@@ -26,7 +26,10 @@ typedef ScrollTrackingResult = ({
 ///    by [sessionId] so switching sessions preserves position.
 /// 3. **Scroll-to-bottom**: Provides a [scrollToBottom] callback that smoothly
 ///    animates to the bottom (skipped when the user has scrolled up).
-ScrollTrackingResult useScrollTracking(String sessionId) {
+ScrollTrackingResult useScrollTracking(
+  String sessionId, {
+  bool persistRawOffset = true,
+}) {
   final controller = useMemoized(ReadingPositionAutoScrollController.new);
   // Dispose the controller when the hook is disposed.
   useEffect(() => controller.dispose, const []);
@@ -72,7 +75,7 @@ ScrollTrackingResult useScrollTracking(String sessionId) {
 
     // Restore saved offset after first frame.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final saved = _scrollOffsets[sessionId];
+      final saved = persistRawOffset ? _scrollOffsets[sessionId] : null;
       if (saved != null && controller.hasClients) {
         controller.jumpTo(saved);
       }
@@ -80,13 +83,13 @@ ScrollTrackingResult useScrollTracking(String sessionId) {
 
     return () {
       // Persist offset before disposal.
-      if (controller.hasClients) {
+      if (persistRawOffset && controller.hasClients) {
         _scrollOffsets[sessionId] = controller.offset;
       }
       controller.removeListener(onScroll);
       prevMaxExtent.value = null;
     };
-  }, [sessionId]);
+  }, [sessionId, persistRawOffset]);
 
   void scrollToBottom() {
     if (isScrolledUpRef.value) return;

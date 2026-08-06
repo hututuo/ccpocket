@@ -186,6 +186,8 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   StreamSubscription<List<SessionInfo>>? _identitySessionListSub;
   StreamSubscription<List<RecentSession>>? _identityRecentSessionsSub;
   ConversationHotWindowSnapshot? _cachedPreview;
+  Object? _cachedPreviewLoadError;
+  bool _cachedPreviewErrorSnackbarVisible = false;
   bool _loadingCachedPreview = false;
   bool _cachedPreviewDirty = false;
   String? _expectedCacheTargetFingerprint;
@@ -316,8 +318,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       _cachedPreviewSub = sync.updates
           .where(
             (update) =>
-                update.targetFingerprint ==
-                    _expectedCacheTargetFingerprint &&
+                update.targetFingerprint == _expectedCacheTargetFingerprint &&
                 update.provider == Provider.claude.value &&
                 update.providerSessionId == durableId,
           )
@@ -441,10 +442,30 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
             setState(() {
               _cachedPreview = snapshot;
               _cachedPreviewTargetFingerprint = targetFingerprint;
+              _cachedPreviewLoadError = null;
             });
           })
           .catchError((Object error) {
             debugPrint('Failed to load cached Claude preview: $error');
+            if (!mounted || widget.durableProviderSessionId != durableId) {
+              return;
+            }
+            setState(() => _cachedPreviewLoadError = error);
+            if (_cachedPreviewErrorSnackbarVisible) return;
+            _cachedPreviewErrorSnackbarVisible = true;
+            final messenger = ScaffoldMessenger.of(context);
+            messenger
+                .showSnackBar(
+                  SnackBar(
+                    content: Text(AppLocalizations.of(context).turnLoadFailed),
+                    action: SnackBarAction(
+                      label: AppLocalizations.of(context).retry,
+                      onPressed: _retryDurablePreviewLoad,
+                    ),
+                  ),
+                )
+                .closed
+                .whenComplete(() => _cachedPreviewErrorSnackbarVisible = false);
           })
           .whenComplete(() {
             if (mounted && widget.durableProviderSessionId == durableId) {
@@ -463,6 +484,16 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
             }
           }),
     );
+  }
+
+  void _retryDurablePreviewLoad() {
+    if (!mounted || _cachedPreviewLoadError == null) return;
+    setState(() => _cachedPreviewLoadError = null);
+    if (_loadingCachedPreview) {
+      _cachedPreviewDirty = true;
+      return;
+    }
+    _loadDurablePreview();
   }
 
   Future<({bool loaded, bool hasMore})> _loadOlderDurableHistory() async {
@@ -510,9 +541,9 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     if (!_isPending) return;
     final durableId = widget.durableProviderSessionId;
     if (durableId == null || durableId.isEmpty) return;
-    final submission = context
-        .read<DraftService>()
-        .getPendingSubmission(durableId);
+    final submission = context.read<DraftService>().getPendingSubmission(
+      durableId,
+    );
     if (submission == null) return;
     _deferredSubmission = (
       clientMessageId: submission.clientMessageId,
@@ -798,8 +829,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
         oldWidget.worktreePath == widget.worktreePath &&
         oldWidget.gitBranch == widget.gitBranch &&
         oldWidget.isPending == widget.isPending &&
-        oldWidget.durableProviderSessionId ==
-            widget.durableProviderSessionId &&
+        oldWidget.durableProviderSessionId == widget.durableProviderSessionId &&
         oldWidget.pendingSessionCreated == widget.pendingSessionCreated &&
         oldWidget.initialPermissionMode == widget.initialPermissionMode &&
         oldWidget.initialSandboxMode == widget.initialSandboxMode &&
@@ -931,9 +961,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
               const CircularProgressIndicator.adaptive(),
               const SizedBox(height: 16),
               Text(
-                durableId == null
-                    ? l.creatingSession
-                    : l.loadingSessionStatus,
+                durableId == null ? l.creatingSession : l.loadingSessionStatus,
                 style: const TextStyle(fontSize: 16),
               ),
             ],
@@ -1328,44 +1356,36 @@ class _ChatScreenBody extends HookWidget {
       ],
     );
 
-    useEffect(
-      () {
-        if (chatFileRoot == null) return null;
+    useEffect(() {
+      if (chatFileRoot == null) return null;
 
-        final bridge = context.read<BridgeService>();
-        GitStatusCubit? gitStatusCubit;
-        GitViewCacheService? gitViewCache;
-        try {
-          gitStatusCubit = context.read<GitStatusCubit>();
-          gitViewCache = context.read<GitViewCacheService>();
-        } catch (_) {}
-        final sub = bridge.messagesForSession(sessionId).listen((msg) {
-          if (isBackgroundRef.value) return;
-          if (msg case ToolResultMessage(
-            :final toolName,
-          ) when _fileListRefreshToolNames.contains(toolName)) {
+      final bridge = context.read<BridgeService>();
+      GitStatusCubit? gitStatusCubit;
+      GitViewCacheService? gitViewCache;
+      try {
+        gitStatusCubit = context.read<GitStatusCubit>();
+        gitViewCache = context.read<GitViewCacheService>();
+      } catch (_) {}
+      final sub = bridge.messagesForSession(sessionId).listen((msg) {
+        if (isBackgroundRef.value) return;
+        if (msg case ToolResultMessage(
+          :final toolName,
+        ) when _fileListRefreshToolNames.contains(toolName)) {
+          bridge.requestFileList(chatFileRoot);
+        } else if (msg case ResultMessage(:final fileEdits)) {
+          if ((fileEdits ?? 0) > 0) {
             bridge.requestFileList(chatFileRoot);
-          } else if (msg case ResultMessage(:final fileEdits)) {
-            if ((fileEdits ?? 0) > 0) {
-              bridge.requestFileList(chatFileRoot);
-            }
-            gitStatusCubit?.refresh(
-              sessionId: sessionId,
-              projectPath: gitProjectPath!,
-              includeRemote: showRemoteGitStatusBadge,
-            );
-            gitViewCache?.refreshIfPresent(sessionId);
           }
-        });
-        return sub.cancel;
-      },
-      [
-        sessionId,
-        chatFileRoot,
-        gitProjectPath,
-        showRemoteGitStatusBadge,
-      ],
-    );
+          gitStatusCubit?.refresh(
+            sessionId: sessionId,
+            projectPath: gitProjectPath!,
+            includeRemote: showRemoteGitStatusBadge,
+          );
+          gitViewCache?.refreshIfPresent(sessionId);
+        }
+      });
+      return sub.cancel;
+    }, [sessionId, chatFileRoot, gitProjectPath, showRemoteGitStatusBadge]);
 
     // --- Listen for branch updates ---
     useEffect(() {
@@ -1963,8 +1983,7 @@ class _ChatScreenBody extends HookWidget {
                     status: status,
                     onScrollToBottom: scroll.scrollToBottom,
                     inputController: chatInputController,
-                    inputBlocked:
-                        detachedPreview && deferredSubmissionPending,
+                    inputBlocked: detachedPreview && deferredSubmissionPending,
                     onSubmit: detachedPreview ? submitWhileAttaching : null,
                     initialDiffSelection: diffSelectionFromNav.value,
                     onDiffSelectionConsumed: () {

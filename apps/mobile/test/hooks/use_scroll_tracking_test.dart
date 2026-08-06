@@ -93,5 +93,39 @@ void main() {
       await tester.pumpAndSettle();
       expect(result.isScrolledUp, isFalse);
     });
+
+    testWidgets('can ignore a raw offset saved by an older content revision', (
+      tester,
+    ) async {
+      late ScrollTrackingResult result;
+
+      Widget build({required bool persistRawOffset}) => MaterialApp(
+        home: HookBuilder(
+          builder: (context) {
+            result = useScrollTracking(
+              'durable-revision-sensitive-session',
+              persistRawOffset: persistRawOffset,
+            );
+            return ListView.builder(
+              controller: result.controller,
+              reverse: true,
+              itemCount: 100,
+              itemBuilder: (_, i) => SizedBox(height: 50, child: Text('$i')),
+            );
+          },
+        ),
+      );
+
+      await tester.pumpWidget(build(persistRawOffset: true));
+      await tester.pumpAndSettle();
+      result.controller.jumpTo(300);
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+
+      await tester.pumpWidget(build(persistRawOffset: false));
+      await tester.pumpAndSettle();
+      expect(result.controller.offset, 0);
+    });
   });
 }

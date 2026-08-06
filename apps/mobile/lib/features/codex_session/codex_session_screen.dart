@@ -226,6 +226,8 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   StreamSubscription<List<RecentSession>>? _identityRecentSessionsSub;
   StreamSubscription<void>? _identityCatalogSnapshotSub;
   ConversationHotWindowSnapshot? _cachedPreview;
+  Object? _cachedPreviewLoadError;
+  bool _cachedPreviewErrorSnackbarVisible = false;
   bool _loadingCachedPreview = false;
   bool _cachedPreviewDirty = false;
   String? _expectedCacheTargetFingerprint;
@@ -639,10 +641,30 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
             setState(() {
               _cachedPreview = snapshot;
               _cachedPreviewTargetFingerprint = targetFingerprint;
+              _cachedPreviewLoadError = null;
             });
           })
           .catchError((Object error) {
             debugPrint('Failed to load cached Codex preview: $error');
+            if (!mounted || widget.durableProviderSessionId != durableId) {
+              return;
+            }
+            setState(() => _cachedPreviewLoadError = error);
+            if (_cachedPreviewErrorSnackbarVisible) return;
+            _cachedPreviewErrorSnackbarVisible = true;
+            final messenger = ScaffoldMessenger.of(context);
+            messenger
+                .showSnackBar(
+                  SnackBar(
+                    content: Text(AppLocalizations.of(context).turnLoadFailed),
+                    action: SnackBarAction(
+                      label: AppLocalizations.of(context).retry,
+                      onPressed: _retryDurablePreviewLoad,
+                    ),
+                  ),
+                )
+                .closed
+                .whenComplete(() => _cachedPreviewErrorSnackbarVisible = false);
           })
           .whenComplete(() {
             if (mounted && widget.durableProviderSessionId == durableId) {
@@ -661,6 +683,16 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
             }
           }),
     );
+  }
+
+  void _retryDurablePreviewLoad() {
+    if (!mounted || _cachedPreviewLoadError == null) return;
+    setState(() => _cachedPreviewLoadError = null);
+    if (_loadingCachedPreview) {
+      _cachedPreviewDirty = true;
+      return;
+    }
+    _loadDurablePreview();
   }
 
   Future<({bool loaded, bool hasMore})> _loadOlderDurableHistory() async {
@@ -1587,7 +1619,14 @@ class _CodexChatBody extends HookWidget {
     useOnAppLifecycleStateChange((_, current) {
       isBackgroundRef.value = current != AppLifecycleState.resumed;
     });
-    final scroll = useScrollTracking(sessionId);
+    // Durable cache-first routes can replace entry heights as newer revisions
+    // arrive. A raw pixel offset from an earlier revision can therefore reopen
+    // on an unrelated old message. Keep raw persistence only for the legacy
+    // runtime-owned route; durable routes start from their current latest edge.
+    final scroll = useScrollTracking(
+      sessionId,
+      persistRawOffset: !detachedPreview,
+    );
     useKeyboardScrollAdjustment(scroll.controller);
 
     // Chat input controller
