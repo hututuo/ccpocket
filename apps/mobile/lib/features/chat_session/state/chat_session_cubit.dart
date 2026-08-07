@@ -1168,11 +1168,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       // state arrives.
       return;
     }
+    final preservedTurnId = _detachedPreservedVisualTurnId;
     final sameTurn =
         active &&
         result == 'none' &&
-        _detachedPreservedVisualTurnId != null &&
-        _detachedPreservedVisualTurnId == normalizedTurnId;
+        // A missing old turn id is lack of evidence, not proof that a later
+        // authoritative active id belongs to a different turn. Preserve the
+        // visible live surface unless two known ids conflict or the provider
+        // reports a terminal state.
+        (preservedTurnId == null || preservedTurnId == normalizedTurnId);
     final buffered = List<ServerMessage>.of(_detachedPendingVisualMessages);
     if (!sameTurn) _clearDetachedVisualTimeline();
     _detachedPreservedVisualTurnId = null;
@@ -1620,7 +1624,31 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (normalized == null || normalized.isEmpty) return false;
     if (_detachedProviderSourceFingerprint == normalized) return false;
     final previousSource = _detachedProviderSourceFingerprint;
-    _clearDetachedRuntimeTransients(_detachedLiveRuntimeSessionId);
+    final firstAuthoritativeSource = previousSource == null;
+    if (firstAuthoritativeSource && !_detachedVisualTurnValidationPending) {
+      final hasVisualTimeline =
+          _handler.currentStreaming != null ||
+          _streamingCubit.state.isStreaming ||
+          _streamingCubit.state.text.isNotEmpty ||
+          _streamingCubit.state.thinking.isNotEmpty ||
+          state.entries.any((entry) => entry is StreamingChatEntry);
+      if (hasVisualTimeline) {
+        final activeTurnId = _detachedActiveTurnId?.trim();
+        _detachedPreservedVisualTurnId = activeTurnId?.isNotEmpty == true
+            ? activeTurnId
+            : null;
+        _detachedVisualTurnValidationPending = true;
+        _detachedPendingVisualMessages.clear();
+      }
+    }
+    _clearDetachedRuntimeTransients(
+      _detachedLiveRuntimeSessionId,
+      // The first authoritative fingerprint confirms the provisional route;
+      // it is not evidence that the already visible live stream came from a
+      // different source. Two known, unequal fingerprints are a real source
+      // replacement and still clear the old runtime projection.
+      preserveVisualTimeline: firstAuthoritativeSource,
+    );
     _detachedProviderSourceFingerprint = normalized;
     _detachedProviderStatusObservedAt = null;
     _detachedProviderStatusSignature = null;

@@ -619,6 +619,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     _loadingCachedPreview = true;
     _loadingCachedPreviewTargetFingerprint = targetFingerprint;
     _cachedPreviewDirty = false;
+    final cacheCommitEpoch = sync.cacheCommitEpoch;
     unawaited(
       sync
           .loadCachedWindow(
@@ -638,6 +639,22 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
               }
               return;
             }
+            if (sync.cacheCommitEpoch != cacheCommitEpoch) {
+              _cachedPreviewDirty = true;
+              return;
+            }
+            // A cache commit can arrive while this SQLite read is in flight.
+            // Never flash the now-stale result before the coalesced follow-up
+            // read; doing so can visibly rewind an active conversation.
+            if (_cachedPreviewDirty) return;
+            final currentPreview = _cachedPreview;
+            if (snapshot == null && currentPreview != null) return;
+            if (snapshot != null &&
+                currentPreview != null &&
+                _cachedPreviewTargetFingerprint == targetFingerprint &&
+                snapshot.cachedAt.isBefore(currentPreview.cachedAt)) {
+              return;
+            }
             setState(() {
               _cachedPreview = snapshot;
               _cachedPreviewTargetFingerprint = targetFingerprint;
@@ -649,6 +666,11 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
             if (!mounted || widget.durableProviderSessionId != durableId) {
               return;
             }
+            if (sync.cacheCommitEpoch != cacheCommitEpoch) {
+              _cachedPreviewDirty = true;
+              return;
+            }
+            if (_cachedPreviewDirty) return;
             setState(() => _cachedPreviewLoadError = error);
             if (_cachedPreviewErrorSnackbarVisible) return;
             _cachedPreviewErrorSnackbarVisible = true;
@@ -711,7 +733,11 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   }
 
   Future<bool> _repairLatestTurn() async =>
-      (await _loadOlderDurableHistory()).loaded;
+      (await context.read<ConversationContentSyncService>().repairLatestTurn(
+        provider: Provider.codex.value,
+        providerSessionId: widget.durableProviderSessionId!,
+        expectedDataSourceIdentity: _dataSourceIdentity,
+      )).loaded;
 
   bool _isCurrentDurablePreviewTargetConfirmed() {
     try {

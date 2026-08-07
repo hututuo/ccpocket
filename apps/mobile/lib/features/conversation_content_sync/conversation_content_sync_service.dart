@@ -194,6 +194,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   _pendingLatestTurnRepairPages = {};
   final Map<String, Future<ConversationTurnsPageLoadResult>>
   _historyPageFlights = {};
+  final Map<String, Future<ConversationTurnsPageLoadResult>>
+  _latestTurnRepairFlights = {};
+  final Map<String, Future<void>> _historyOperationTails = {};
   final Set<Completer<void>> _subscriptionReadyWaiters = {};
 
   StreamSubscription<BridgeConnectionState>? _connectionSubscription;
@@ -215,12 +218,14 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   int _requestSequence = 0;
   int _retryAttempt = 0;
   int _highestV2CommittedSequence = 0;
+  int _cacheCommitEpoch = 0;
   bool _v2PriorityBootstrapComplete = false;
   String? _v2RecoveryTargetFingerprint;
   Future<void> _v2MutationTail = Future<void>.value();
 
   Stream<ConversationContentCacheUpdate> get updates =>
       _updatesController.stream;
+  int get cacheCommitEpoch => _cacheCommitEpoch;
   Stream<ConversationSyncCacheUpdate> get syncUpdates =>
       _syncUpdatesController.stream;
 
@@ -509,11 +514,14 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     if (existing != null) return existing;
     late final Future<ConversationTurnsPageLoadResult> flight;
     flight =
-        _loadOlderTurnsWithRetry(
-          provider: provider,
-          providerSessionId: providerSessionId,
-          expectedDataSourceIdentity: expectedDataSourceIdentity,
-          limit: limit,
+        _enqueueHistoryOperation(
+          flightKey,
+          () => _loadOlderTurnsWithRetry(
+            provider: provider,
+            providerSessionId: providerSessionId,
+            expectedDataSourceIdentity: expectedDataSourceIdentity,
+            limit: limit,
+          ),
         ).whenComplete(() {
           if (identical(_historyPageFlights[flightKey], flight)) {
             _historyPageFlights.remove(flightKey);
@@ -521,6 +529,130 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         });
     _historyPageFlights[flightKey] = flight;
     return flight;
+  }
+
+  /// Repairs only the incomplete newest turn.
+  ///
+  /// This is deliberately separate from [loadOlderTurns]. A running thread
+  /// normally has an incomplete newest turn; letting ordinary upward paging
+  /// divert into tail repair makes the history Retry control unable to load
+  /// older turns until the active turn finishes.
+  Future<ConversationTurnsPageLoadResult> repairLatestTurn({
+    required String provider,
+    required String providerSessionId,
+    BridgeDataSourceIdentity? expectedDataSourceIdentity,
+  }) {
+    if (expectedDataSourceIdentity != null &&
+        !matchesCurrentDataSource(
+          expectedDataSourceIdentity,
+          provider: provider,
+        )) {
+      return Future.value(
+        const ConversationTurnsPageLoadResult(loaded: false, hasMore: false),
+      );
+    }
+    final flightKey =
+        '${_cacheTarget.fingerprint}\u0000$provider\u0000$providerSessionId';
+    final existing = _latestTurnRepairFlights[flightKey];
+    if (existing != null) return existing;
+    late final Future<ConversationTurnsPageLoadResult> flight;
+    flight =
+        _enqueueHistoryOperation(
+          flightKey,
+          () => _repairLatestTurnWithRetry(
+            provider: provider,
+            providerSessionId: providerSessionId,
+            expectedDataSourceIdentity: expectedDataSourceIdentity,
+          ),
+        ).whenComplete(() {
+          if (identical(_latestTurnRepairFlights[flightKey], flight)) {
+            _latestTurnRepairFlights.remove(flightKey);
+          }
+        });
+    _latestTurnRepairFlights[flightKey] = flight;
+    return flight;
+  }
+
+  Future<T> _enqueueHistoryOperation<T>(
+    String key,
+    Future<T> Function() operation,
+  ) {
+    final previous = _historyOperationTails[key] ?? Future<void>.value();
+    final result = previous.then((_) => operation());
+    late final Future<void> tail;
+    tail = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    _historyOperationTails[key] = tail;
+    unawaited(
+      tail.whenComplete(() {
+        if (identical(_historyOperationTails[key], tail)) {
+          _historyOperationTails.remove(key);
+        }
+      }),
+    );
+    return result;
+  }
+
+  Future<ConversationTurnsPageLoadResult> _repairLatestTurnWithRetry({
+    required String provider,
+    required String providerSessionId,
+    required BridgeDataSourceIdentity? expectedDataSourceIdentity,
+  }) async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        if (expectedDataSourceIdentity != null &&
+            !matchesCurrentDataSource(
+              expectedDataSourceIdentity,
+              provider: provider,
+            )) {
+          return const ConversationTurnsPageLoadResult(
+            loaded: false,
+            hasMore: false,
+          );
+        }
+        if (!bridge.supportsConversationSyncV2 || !_canProcessContent) {
+          return const ConversationTurnsPageLoadResult(
+            loaded: false,
+            hasMore: false,
+          );
+        }
+        final target = _cacheTarget;
+        final snapshot = await cache.loadConversationWindow(
+          target: target,
+          provider: provider,
+          providerSessionId: providerSessionId,
+        );
+        if (snapshot == null) {
+          return const ConversationTurnsPageLoadResult(
+            loaded: false,
+            hasMore: false,
+          );
+        }
+        if (snapshot.latestTurnComplete) {
+          return ConversationTurnsPageLoadResult(
+            loaded: true,
+            hasMore: snapshot.hasEarlier,
+          );
+        }
+        return await _repairLatestTurnGap(
+          target: target,
+          snapshot: snapshot,
+          provider: provider,
+          providerSessionId: providerSessionId,
+        );
+      } on _ConversationPagingInterrupted {
+        if (attempt > 0 || !_canProcessContent) rethrow;
+        final scope = Object.hash(
+          provider,
+          providerSessionId,
+        ).toUnsigned(32).toRadixString(16).padLeft(8, '0');
+        logger.info(
+          '[conversation_sync_v2] event=latest_turn_repair_retry '
+          'reason=subscription_replaced scope=$scope',
+        );
+        await _waitForActiveSubscription(const Duration(seconds: 8));
+      }
+    }
+    return const ConversationTurnsPageLoadResult(loaded: false, hasMore: true);
   }
 
   Future<ConversationTurnsPageLoadResult> _loadOlderTurnsWithRetry({
@@ -585,14 +717,6 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       return const ConversationTurnsPageLoadResult(
         loaded: false,
         hasMore: false,
-      );
-    }
-    if (!snapshot.latestTurnComplete) {
-      return _repairLatestTurnGap(
-        target: target,
-        snapshot: snapshot,
-        provider: provider,
-        providerSessionId: providerSessionId,
       );
     }
     if (!snapshot.hasEarlier) {
@@ -1382,7 +1506,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           throw const _ConversationTimelineBaseRevisionMismatch();
         }
         if (committed.windowCommitted) {
-          _updatesController.add(
+          _publishCacheUpdate(
             ConversationContentCacheUpdate(
               targetFingerprint: target.fingerprint,
               provider: event.provider!,
@@ -1486,7 +1610,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                   ),
                 );
               }
-              _updatesController.add(
+              _publishCacheUpdate(
                 ConversationContentCacheUpdate(
                   targetFingerprint: target.fingerprint,
                   provider: event.provider!,
@@ -1531,7 +1655,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               );
             }
             if (snapshot != null) {
-              _updatesController.add(
+              _publishCacheUpdate(
                 ConversationContentCacheUpdate(
                   targetFingerprint: target.fingerprint,
                   provider: event.provider!,
@@ -1607,7 +1731,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                   ),
                 );
               }
-              _updatesController.add(
+              _publishCacheUpdate(
                 ConversationContentCacheUpdate(
                   targetFingerprint: target.fingerprint,
                   provider: event.provider!,
@@ -1974,7 +2098,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       _handleTransportLoss();
       return;
     }
-    _updatesController.add(
+    _publishCacheUpdate(
       ConversationContentCacheUpdate(
         targetFingerprint: targetFingerprint,
         provider: provider,
@@ -1983,6 +2107,11 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       ),
     );
     _retryAttempt = 0;
+  }
+
+  void _publishCacheUpdate(ConversationContentCacheUpdate update) {
+    _cacheCommitEpoch += 1;
+    _updatesController.add(update);
   }
 
   void _handleError(ConversationContentEventMessage event) {

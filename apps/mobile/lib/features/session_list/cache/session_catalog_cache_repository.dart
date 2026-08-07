@@ -2180,6 +2180,8 @@ class SessionCatalogCacheRepository {
           columns: [
             'revision',
             'source_entry_count',
+            'has_earlier',
+            'turns_next_cursor',
             'latest_turn_complete',
             'latest_turn_gap_json',
           ],
@@ -2201,11 +2203,24 @@ class SessionCatalogCacheRepository {
             gap?.repair != 'turns_page') {
           return false;
         }
+        final preservedRows = await transaction.query(
+          SessionCatalogCacheDatabase.hotEntriesTable,
+          columns: ['entry_id'],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ? AND entry_index < 0',
+          whereArgs: [partitionId, provider, providerSessionId],
+        );
+        if (preservedRows.length + entries.length > maxHotWindowEntries) {
+          throw StateError(
+            'Conversation latest turns repair exceeds the local safety bound.',
+          );
+        }
         await transaction.delete(
           SessionCatalogCacheDatabase.hotEntriesTable,
           where:
               'partition_id = ? AND provider = ? '
-              'AND provider_session_id = ?',
+              'AND provider_session_id = ? AND entry_index >= 0',
           whereArgs: [partitionId, provider, providerSessionId],
         );
         for (var index = 0; index < entries.length; index++) {
@@ -2223,19 +2238,37 @@ class SessionCatalogCacheRepository {
             ),
           );
         }
+        final countRows = await transaction.rawQuery(
+          '''
+          SELECT COUNT(*) AS entry_count
+          FROM ${SessionCatalogCacheDatabase.hotEntriesTable}
+          WHERE partition_id = ?
+            AND provider = ?
+            AND provider_session_id = ?
+          ''',
+          [partitionId, provider, providerSessionId],
+        );
+        final committedCount = Sqflite.firstIntValue(countRows) ?? 0;
+        final hasPagedPrefix = preservedRows.isNotEmpty;
         final sourceEntryCount = window['source_entry_count']! as int;
         await transaction.update(
           SessionCatalogCacheDatabase.hotWindowsTable,
           {
-            'entry_count': entries.length,
-            'has_earlier': turnsNextCursor == null ? 0 : 1,
-            'turns_next_cursor': turnsNextCursor,
+            'entry_count': committedCount,
+            'has_earlier': hasPagedPrefix
+                ? window['has_earlier']
+                : turnsNextCursor == null
+                ? 0
+                : 1,
+            'turns_next_cursor': hasPagedPrefix
+                ? window['turns_next_cursor']
+                : turnsNextCursor,
             'latest_turn_complete': 1,
             'latest_turn_gap_json': null,
             'latest_turn_gap_cursor': null,
-            'source_entry_count': sourceEntryCount > entries.length
+            'source_entry_count': sourceEntryCount > committedCount
                 ? sourceEntryCount
-                : entries.length,
+                : committedCount,
             'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
           },
           where:

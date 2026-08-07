@@ -1556,6 +1556,121 @@ void main() {
     );
 
     test(
+      'runtime replacement keeps live output when the old turn id was unknown',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-unknown-turn-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-unknown-old',
+        );
+        addTearDown(cubit.close);
+
+        mockBridge.emitMessage(
+          const StreamDeltaMessage(text: 'visible before authority'),
+          sessionId: 'runtime-unknown-old',
+        );
+        await pumpEventQueue();
+        cubit.updateDetachedLiveRuntime('runtime-unknown-new');
+        mockBridge.emitMessage(
+          const StreamDeltaMessage(text: ' and after rebind'),
+          sessionId: 'runtime-unknown-new',
+        );
+        await pumpEventQueue();
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-unknown-turn-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'bridgeRuntime',
+            confidence: 'authoritative',
+            observedAt: '2026-08-07T01:30:00.000Z',
+            executionHost: 'bridge',
+            activeTurnId: 'turn-now-known',
+            controlState: 'steerable',
+            authorityGeneration: 'authority-now-known',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        await pumpEventQueue();
+
+        expect(
+          streamingCubit.state.text,
+          'visible before authority and after rebind',
+        );
+      },
+    );
+
+    test(
+      'first source confirmation honors terminal state and real source changes',
+      () async {
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-source-validation',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-source-validation',
+        );
+        addTearDown(cubit.close);
+
+        mockBridge.emitMessage(
+          const StreamDeltaMessage(text: 'provisional output'),
+          sessionId: 'runtime-source-validation',
+        );
+        await pumpEventQueue();
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-source-validation',
+            activity: 'idle',
+            attention: 'none',
+            result: 'completed',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-07T01:40:00.000Z',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        await pumpEventQueue();
+        expect(streamingCubit.state.text, isEmpty);
+
+        mockBridge.emitMessage(
+          const StreamDeltaMessage(text: 'source A output'),
+          sessionId: 'runtime-source-validation',
+        );
+        await pumpEventQueue();
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-source-validation',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-07T01:41:00.000Z',
+            activeTurnId: 'source-b-turn',
+          ),
+          sourceFingerprint: 'bridge-b/source-b',
+        );
+        await pumpEventQueue();
+        expect(streamingCubit.state.text, isEmpty);
+      },
+    );
+
+    test(
       'runtime replacement starts a clean visual stream for a different turn',
       () async {
         mockBridge.advertisedBridgeCapabilities = const {

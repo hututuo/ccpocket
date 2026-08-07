@@ -96,7 +96,7 @@ void main() {
           await tester.pump();
           await tester.pump();
 
-          expect(harness.sync.loadOlderTurnsCalls, 1, reason: provider);
+          expect(harness.sync.latestTurnRepairCalls, 1, reason: provider);
           expect(
             find.byKey(const ValueKey('durable_latest_turn_recovery_banner')),
             findsOneWidget,
@@ -214,7 +214,7 @@ void main() {
           await tester.tap(retry);
           await tester.pump();
           await tester.pump();
-          expect(harness.sync.loadOlderTurnsCalls, 2, reason: provider);
+          expect(harness.sync.latestTurnRepairCalls, 2, reason: provider);
           expect(
             find.byKey(const ValueKey('durable_latest_turn_recovery_banner')),
             findsOneWidget,
@@ -1646,6 +1646,7 @@ void main() {
         codexSourceId: bridge.authenticatedCodexSourceId,
       );
       final firstRead = Completer<ConversationHotWindowSnapshot?>();
+      final secondRead = Completer<ConversationHotWindowSnapshot?>();
       final staleSnapshot = _previewSnapshot(
         partitionId: target.fingerprint,
         providerSessionId: 'durable-thread-race',
@@ -1663,10 +1664,7 @@ void main() {
       final repository = _CountingSessionCatalogCacheRepository(
         SessionCatalogCacheDatabase(databasePath: 'unused-race-cache.db'),
         snapshots: const {},
-        queuedReads: [
-          firstRead.future,
-          Future<ConversationHotWindowSnapshot?>.value(committedSnapshot),
-        ],
+        queuedReads: [firstRead.future, secondRead.future],
       );
       final sync = _ControllableConversationContentSyncService(
         bridge: BridgeServiceConversationContentSyncGateway(bridge),
@@ -1687,18 +1685,32 @@ void main() {
         await tester.pump();
         expect(repository.loadConversationWindowCalls, 1);
 
-        sync.emitTimelineCommit(
-          provider: Provider.codex.value,
-          providerSessionId: 'durable-thread-race',
-          revision: 'revision-after-commit',
-        );
-        await tester.pump();
+        // The database commit epoch advances before its broadcast listener is
+        // delivered. The in-flight stale read must still be rejected.
+        sync.advanceCacheCommitEpoch();
         firstRead.complete(staleSnapshot);
         await tester.pump();
-        await tester.pump();
-        await tester.pump();
+        expect(find.text('Stale cached turn'), findsNothing);
+        expect(find.text('Committed cached turn'), findsNothing);
 
+        for (
+          var attempt = 0;
+          attempt < 10 && repository.loadConversationWindowCalls < 2;
+          attempt++
+        ) {
+          await tester.pump();
+        }
         expect(repository.loadConversationWindowCalls, 2);
+
+        secondRead.complete(committedSnapshot);
+        for (
+          var attempt = 0;
+          attempt < 10 && find.text('Committed cached turn').evaluate().isEmpty;
+          attempt++
+        ) {
+          await tester.pump();
+        }
+
         expect(find.text('Committed cached turn'), findsOneWidget);
         expect(find.text('Stale cached turn'), findsNothing);
       } finally {
@@ -2036,16 +2048,15 @@ class _LatestTurnRecoverySyncService extends ConversationContentSyncService {
   });
 
   final List<Future<ConversationTurnsPageLoadResult>> repairResponses;
-  int loadOlderTurnsCalls = 0;
+  int latestTurnRepairCalls = 0;
 
   @override
-  Future<ConversationTurnsPageLoadResult> loadOlderTurns({
+  Future<ConversationTurnsPageLoadResult> repairLatestTurn({
     required String provider,
     required String providerSessionId,
     BridgeDataSourceIdentity? expectedDataSourceIdentity,
-    int limit = 5,
   }) {
-    loadOlderTurnsCalls++;
+    latestTurnRepairCalls++;
     if (repairResponses.isEmpty) {
       return Future<ConversationTurnsPageLoadResult>.value(
         const ConversationTurnsPageLoadResult(loaded: false, hasMore: false),
@@ -2089,9 +2100,17 @@ class _ControllableConversationContentSyncService
   final StreamController<ConversationContentCacheUpdate> _testUpdates =
       StreamController<ConversationContentCacheUpdate>.broadcast();
   final List<ConversationContentTarget?> focusedTargets = [];
+  int _testCacheCommitEpoch = 0;
 
   @override
   Stream<ConversationContentCacheUpdate> get updates => _testUpdates.stream;
+
+  @override
+  int get cacheCommitEpoch => _testCacheCommitEpoch;
+
+  void advanceCacheCommitEpoch() {
+    _testCacheCommitEpoch += 1;
+  }
 
   @override
   void setFocusedConversation({String? provider, String? providerSessionId}) {
@@ -2115,6 +2134,7 @@ class _ControllableConversationContentSyncService
     required String revision,
     String? targetFingerprint,
   }) {
+    advanceCacheCommitEpoch();
     _testUpdates.add(
       ConversationContentCacheUpdate(
         targetFingerprint: targetFingerprint ?? currentCacheTargetFingerprint,

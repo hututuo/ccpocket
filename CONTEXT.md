@@ -1,5 +1,17 @@
 # CC Pocket Compatibility Fork Context
 
+## 2026-08-07 field retry and cache-rewind correction
+
+The latest source correction on `fix/architecture-review-remediation-20260807`
+separates upward older-turn paging from incomplete newest-turn repair, rejects
+stale SQLite reads before they can rewind an open Codex or Claude screen, and
+preserves visible live output while a provisional source or runtime binding is
+being authoritatively confirmed. Two known unequal turn ids or source
+fingerprints retain the existing isolation behavior. The detailed evidence is
+in `notes/conversation-retry-cache-rewind_v01_20260807-094748.md`. The change is
+Dart-only and source-verified; release and physical-device acceptance remain
+separate gates.
+
 ## 2026-08-07 architecture Review remediation and independent upstream policy
 
 The source-verified line is `fix/architecture-review-remediation-20260807`,

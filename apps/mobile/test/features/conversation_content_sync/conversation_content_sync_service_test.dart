@@ -1101,6 +1101,163 @@ void main() {
   });
 
   test(
+    'serializes older paging and latest-turn repair without discarding prefix',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-incomplete-with-older',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-incomplete-with-older',
+          statusState: 'status-incomplete-with-older',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-incomplete-with-older',
+          sequence: 2,
+          provider: 'codex',
+          providerSessionId: 'thread-incomplete-with-older',
+          revision: 'revision-incomplete-with-older',
+          mode: 'snapshot',
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('incomplete-latest-shell', 0)],
+          hasEarlier: true,
+          turnsNextCursor: 'older-while-latest-active',
+          latestTurnComplete: false,
+          latestTurnGap: const ConversationSyncV2LatestTurnGap(
+            missingEntryCount: 1,
+            payloadOmitted: false,
+            repair: 'turns_page',
+          ),
+          sourceEntryCount: 2,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final olderLoad = service.loadOlderTurns(
+        provider: 'codex',
+        providerSessionId: 'thread-incomplete-with-older',
+      );
+      final repairLoad = service.repairLatestTurn(
+        provider: 'codex',
+        providerSessionId: 'thread-incomplete-with-older',
+      );
+      final request = await gateway.nextOutgoing('conversation_turns_page');
+      expect(request['cursor'], 'older-while-latest-active');
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        gateway.sentTypes.where((type) => type == 'conversation_turns_page'),
+        hasLength(1),
+      );
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.turnsPageResponse,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-incomplete-with-older',
+          sequence: 3,
+          requestId: request['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-incomplete-with-older',
+          data: const [
+            {
+              'turnId': 'older-turn',
+              'messages': [
+                {
+                  'type': 'user_input',
+                  'text': 'Older cached prompt',
+                  'userMessageUuid': 'older-cached-user',
+                },
+              ],
+              'itemCount': 1,
+              'itemsView': 'summary',
+            },
+          ],
+          nextCursor: null,
+        ),
+      );
+
+      final olderResult = await olderLoad;
+      expect(olderResult.loaded, isTrue);
+      expect(olderResult.hasMore, isFalse);
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final repairRequest = await gateway.nextOutgoing(
+        'conversation_turns_page',
+      );
+      expect(repairRequest, isNot(contains('cursor')));
+      expect(repairRequest['limit'], 1);
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.turnsPageResponse,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-incomplete-with-older',
+          sequence: 4,
+          requestId: repairRequest['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-incomplete-with-older',
+          data: const [
+            {
+              'turnId': 'latest-turn',
+              'messages': [
+                {
+                  'type': 'user_input',
+                  'text': 'Latest repaired prompt',
+                  'userMessageUuid': 'latest-repaired-user',
+                },
+              ],
+              'itemCount': 1,
+              'itemsView': 'summary',
+            },
+          ],
+          nextCursor: 'provider-cursor-before-preserved-prefix',
+        ),
+      );
+      final repairResult = await repairLoad;
+      expect(repairResult.loaded, isTrue);
+      expect(repairResult.hasMore, isFalse);
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final cached = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-incomplete-with-older',
+      );
+      expect(cached?.latestTurnComplete, isTrue);
+      expect(cached?.hasEarlier, isFalse);
+      expect(cached?.turnsNextCursor, isNull);
+      expect(cached?.entries.map((entry) => entry.entryId), [
+        'user:older-cached-user',
+        'user:latest-repaired-user',
+      ]);
+    },
+  );
+
+  test(
     'hydrates a multi-page current turn over 512 KiB before older history',
     () async {
       await service.dispose();
@@ -1158,7 +1315,7 @@ void main() {
       );
       await gateway.nextOutgoing('conversation_sync_ack');
 
-      final load = service.loadOlderTurns(
+      final load = service.repairLatestTurn(
         provider: 'codex',
         providerSessionId: 'thread-current-gap',
       );
@@ -1302,7 +1459,7 @@ void main() {
       );
       await gateway.nextOutgoing('conversation_sync_ack');
 
-      final load = service.loadOlderTurns(
+      final load = service.repairLatestTurn(
         provider: 'codex',
         providerSessionId: 'thread-current-gap-retry',
       );
@@ -1448,7 +1605,7 @@ void main() {
       );
       await gateway.nextOutgoing('conversation_sync_ack');
 
-      final repair = service.loadOlderTurns(
+      final repair = service.repairLatestTurn(
         provider: 'claude',
         providerSessionId: 'thread-turns-gap',
       );
@@ -1613,7 +1770,7 @@ void main() {
       );
       await gateway.nextOutgoing('conversation_sync_ack');
 
-      final itemsLoad = service.loadOlderTurns(
+      final itemsLoad = service.repairLatestTurn(
         provider: 'codex',
         providerSessionId: 'thread-items-repair-failure',
       );
@@ -1665,7 +1822,7 @@ void main() {
       expect(itemsCached?.latestTurnGap?.repair, 'items_page');
       expect(failingRepository.clearTargetCalls, 0);
 
-      final turnsLoad = service.loadOlderTurns(
+      final turnsLoad = service.repairLatestTurn(
         provider: 'codex',
         providerSessionId: 'thread-turns-repair-failure',
       );
@@ -1795,7 +1952,7 @@ void main() {
       );
       await gateway.nextOutgoing('conversation_sync_ack');
 
-      final load = service.loadOlderTurns(
+      final load = service.repairLatestTurn(
         provider: 'codex',
         providerSessionId: 'thread-latest-turn-byte-budget',
       );
