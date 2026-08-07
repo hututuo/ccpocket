@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -140,6 +146,30 @@ describe("CodexActionBrokerWriterLease", () => {
     expect(await lease.assertHeld(DAEMON)).toBe(false);
     expect(await lease.assertHeld(restarted)).toBe(true);
     await lease.release();
+  });
+
+  it("reports an asynchronously lost heartbeat lease", async () => {
+    const root = await rootFixture();
+    const lease = new CodexActionBrokerWriterLease("source-a", {
+      rootDir: root,
+      pid: 913,
+      randomToken: () => "heartbeat-owner",
+      processAlive: (pid) => pid === 913,
+      heartbeatMs: 100,
+    });
+    const acquired = await lease.acquire(DAEMON);
+    expect(acquired).toMatchObject({ held: true });
+    const ownerPath = join(acquired.lockPath!, "owner.json");
+    const owner = JSON.parse(await readFile(ownerPath, "utf8"));
+    const loss = new Promise<string>((resolve) => lease.once("lost", resolve));
+    await writeFile(
+      ownerPath,
+      `${JSON.stringify({ ...owner, processNonce: "replacement-owner" })}\n`,
+      { mode: 0o600 },
+    );
+
+    await expect(loss).resolves.toBe("owner_mismatch");
+    expect(lease.health).toMatchObject({ held: false });
   });
 
   it("does not strand an empty source lock when setup fails after mkdir", async () => {

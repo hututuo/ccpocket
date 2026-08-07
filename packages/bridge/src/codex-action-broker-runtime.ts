@@ -22,6 +22,7 @@ import type {
   CodexSharedRuntimeServerRequest,
 } from "./codex-shared-runtime-control.js";
 import type { CodexActionBrokerWriterLease } from "./codex-action-broker-writer-lease.js";
+import type { CodexActionBrokerWriterLeaseLossReason } from "./codex-action-broker-writer-lease.js";
 
 const MAX_BUFFERED_SERVER_REQUESTS = 64;
 const WRITER_LEASE_RETRY_MS = 1_000;
@@ -133,6 +134,25 @@ export class CodexActionBrokerRuntime extends EventEmitter<CodexActionBrokerRunt
     Promise<CodexActionBrokerRespondResult>
   >();
   private leaseRetryTimer?: ReturnType<typeof setTimeout>;
+  private readonly onWriterLeaseLost = (
+    reason: CodexActionBrokerWriterLeaseLossReason,
+  ): void => {
+    console.warn(
+      `[codex-action-broker] writer lease lost (${reason}); scheduling recovery`,
+    );
+    this.enqueue(async () => {
+      if (this.closed || this.draining) return;
+      const affected = [...this.liveBindings.keys()];
+      this.liveBindings.clear();
+      this.brokerGeneration = undefined;
+      this.leaseEpoch = undefined;
+      for (const opaqueRequestId of affected) this.emitRecord(opaqueRequestId);
+      if (this.control.ready) {
+        this.scheduleLeaseRetry(this.control.connectionGeneration);
+      }
+      this.emitHealth();
+    });
+  };
 
   private readonly onReady = (connectionGeneration: number): void => {
     this.enqueue(() => this.activateGeneration(connectionGeneration));
@@ -163,6 +183,9 @@ export class CodexActionBrokerRuntime extends EventEmitter<CodexActionBrokerRunt
     private readonly writerLease?: CodexActionBrokerWriterLease,
   ) {
     super();
+    if (typeof this.writerLease?.on === "function") {
+      this.writerLease.on("lost", this.onWriterLeaseLost);
+    }
   }
 
   get health(): CodexActionBrokerRuntimeHealth {
@@ -232,6 +255,9 @@ export class CodexActionBrokerRuntime extends EventEmitter<CodexActionBrokerRunt
     this.control.off("not_ready", this.onNotReady);
     this.control.off("server_request", this.onServerRequest);
     this.control.off("event", this.onControlEvent);
+    if (typeof this.writerLease?.off === "function") {
+      this.writerLease.off("lost", this.onWriterLeaseLost);
+    }
     this.clearLeaseRetry();
     await this.mutationTail;
     await Promise.allSettled([...this.inFlightResponses]);

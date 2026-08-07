@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import {
   chmod,
   lstat,
@@ -45,6 +46,10 @@ export interface CodexActionBrokerWriterLeaseOptions {
   heartbeatMs?: number;
 }
 
+export type CodexActionBrokerWriterLeaseLossReason =
+  | "owner_mismatch"
+  | "heartbeat_failed";
+
 /**
  * Cross-process single-writer fence for one Codex source and one verified
  * daemon socket. A directory is the atomic ownership primitive: takeover first
@@ -55,7 +60,7 @@ export interface CodexActionBrokerWriterLeaseOptions {
  * event-loop stall fail closed; clean warm handoff must explicitly release the
  * lease after draining in-flight actions.
  */
-export class CodexActionBrokerWriterLease {
+export class CodexActionBrokerWriterLease extends EventEmitter {
   private readonly rootDir: string;
   private readonly pid: number;
   private readonly now: () => Date;
@@ -71,6 +76,7 @@ export class CodexActionBrokerWriterLease {
     private readonly codexSourceId: string,
     options: CodexActionBrokerWriterLeaseOptions = {},
   ) {
+    super();
     if (!codexSourceId.trim() || codexSourceId.length > 128) {
       throw new Error("Codex Action Broker writer lease source ID is invalid");
     }
@@ -81,6 +87,22 @@ export class CodexActionBrokerWriterLease {
     this.processNonce = options.randomToken?.() ?? randomUUID();
     this.processAlive = options.processAlive ?? defaultProcessAlive;
     this.heartbeatMs = normalizeHeartbeat(options.heartbeatMs);
+  }
+
+  on(
+    event: "lost",
+    listener: (reason: CodexActionBrokerWriterLeaseLossReason) => void,
+  ): this;
+  override on(event: string | symbol, listener: (...args: any[]) => void): this {
+    return super.on(event, listener);
+  }
+
+  off(
+    event: "lost",
+    listener: (reason: CodexActionBrokerWriterLeaseLossReason) => void,
+  ): this;
+  override off(event: string | symbol, listener: (...args: any[]) => void): this {
+    return super.off(event, listener);
   }
 
   get health(): CodexActionBrokerWriterLeaseHealth {
@@ -255,20 +277,26 @@ export class CodexActionBrokerWriterLease {
         const owner = this.heldOwner;
         const path = this.lockPath;
         if (!owner || !path || !(await this.ownerStillMatches(owner, path))) {
-          this.clearHeartbeat();
-          this.heldOwner = undefined;
-          this.lockPath = undefined;
+          this.markLeaseLost("owner_mismatch");
           return;
         }
         owner.heartbeatAt = this.now().toISOString();
         await writeOwner(path, owner);
       }).catch(() => {
-        this.clearHeartbeat();
-        this.heldOwner = undefined;
-        this.lockPath = undefined;
+        this.markLeaseLost("heartbeat_failed");
       });
     }, this.heartbeatMs);
     this.heartbeatTimer.unref?.();
+  }
+
+  private markLeaseLost(
+    reason: CodexActionBrokerWriterLeaseLossReason,
+  ): void {
+    const wasHeld = this.heldOwner !== undefined || this.lockPath !== undefined;
+    this.clearHeartbeat();
+    this.heldOwner = undefined;
+    this.lockPath = undefined;
+    if (wasHeld) this.emit("lost", reason);
   }
 
   private clearHeartbeat(): void {

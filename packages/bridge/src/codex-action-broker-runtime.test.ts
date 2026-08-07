@@ -706,6 +706,50 @@ describe("CodexActionBrokerRuntime", () => {
     await second.close();
   });
 
+  it("automatically reacquires a lease lost by the heartbeat", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cab-runtime-heartbeat-loss-"));
+    roots.push(root);
+    const leaseRoot = join(root, "lease");
+    const control = new FakeSharedControl();
+    const lease = new CodexActionBrokerWriterLease("source-a", {
+      rootDir: leaseRoot,
+      pid: 211,
+      randomToken: () => "runtime-heartbeat-owner",
+      processAlive: (pid) => pid === 211,
+      heartbeatMs: 100,
+    });
+    const runtime = new CodexActionBrokerRuntime(
+      new CodexActionBroker({
+        filePath: join(root, "broker.json"),
+        now: () => new Date(NOW),
+      }),
+      control as unknown as CodexSharedRuntimeControl,
+      "source-a",
+      lease,
+    );
+    await runtime.start();
+    control.becomeReady();
+    await runtime.flush();
+    expect(runtime.health).toMatchObject({
+      ready: true,
+      writerLeaseHeld: true,
+    });
+
+    const lockPath = lease.health.lockPath!;
+    await rm(lockPath, { recursive: true, force: true });
+    await vi.waitFor(
+      () => {
+        expect(runtime.health).toMatchObject({
+          ready: true,
+          writerLeaseHeld: true,
+        });
+        expect(lease.health.leaseEpoch).toBe(2);
+      },
+      { timeout: 3_000, interval: 25 },
+    );
+    await runtime.close();
+  });
+
   it("does not revive a resolved standby request during same-connection handoff", async () => {
     const root = await mkdtemp(join(tmpdir(), "cab-runtime-resolved-handoff-"));
     roots.push(root);
