@@ -1,6 +1,6 @@
 # CC Pocket 全架构 Review 复核与稳定性修复计划
 
-- 状态：`active`
+- 状态：`accepted`（源码实现与自动验证完成；发布和真机验收待单独授权）
 - 审查输入：`/Users/huyiyang/WorkBuddy/2026-08-07-00-59-16/review/CC_Pocket_Full_Architecture_Review_20260807.md`
 - 源码基线：`fix/conversation-sync-stability-20260806@b61597e9b0e4e49a84c2e2e87dbe85375c4c7614`
 - 实施线：`fix/architecture-review-remediation-20260807`

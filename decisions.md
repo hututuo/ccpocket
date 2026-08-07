@@ -11,11 +11,18 @@
 - The current useful upstream change is `8c075b33` (long-session Mobile
   performance). The adjacent `4bb3d2e3` version bump is not part of the local
   implementation line.
+- Selective adoption is recorded by behavior and tests, not by manufacturing
+  merge ancestry. A conflict-resolved local commit may intentionally differ
+  from the official patch when CC Pocket already has stronger interaction or
+  compatibility semantics.
 - Independence does not remove CC Pocket's own compatibility obligations: new
   and old Mobile/Bridge combinations, additive protocol evolution, provider
   history authority, local cache readability and rollback remain required.
 - The active implementation plan is
   `plans/full-architecture-review-remediation_v01_20260807-071715.md`.
+- Source completion and validation are recorded in
+  `notes/full-architecture-review-remediation_v01_20260807-083002.md`; runtime,
+  Mobile release and physical-device acceptance remain separate decisions.
 
 ## 2026-08-06 conversation chain stability precedes structural cleanup
 

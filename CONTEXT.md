@@ -2,9 +2,11 @@
 
 ## 2026-08-07 architecture Review remediation and independent upstream policy
 
-The active line is `fix/architecture-review-remediation-20260807`, based on
-`b61597e9`. Its plan is
-`plans/full-architecture-review-remediation_v01_20260807-071715.md`.
+The source-verified line is `fix/architecture-review-remediation-20260807`,
+based on `b61597e9`, with implementation HEAD `1966a4a7`. Its plan is
+`plans/full-architecture-review-remediation_v01_20260807-071715.md` and the
+final source audit is
+`notes/full-architecture-review-remediation_v01_20260807-083002.md`.
 
 The external full-architecture Review was rechecked against real call
 conditions. Shared-writer recovery, Codex retry, empty incomplete hot windows,
@@ -15,6 +17,13 @@ contrary runtime evidence. The project now selectively absorbs useful upstream
 commits instead of preserving full official replay compatibility; CC Pocket's
 own old/new Mobile and Bridge compatibility remains mandatory. Production,
 OTA, IPA, Cloud, Desktop and device state are not changed by this source plan.
+The verified implementation selectively absorbs upstream long-session
+performance work, adds real Codex failed-message retry, restores incomplete
+hot windows, bounds provider-read failure retries and validates preserved
+streaming by active turn. Bridge passed 114 files / 2,323 tests; Mobile passed
+2,925 tests with four skips, and analyze has 0 errors / 0 warnings / 52 infos.
+The session-sync benchmark stayed below 64 KiB per frame and completed the
+synthetic 10,000-session initial sync at p95 95.68 ms on this Mac.
 
 ## 2026-08-06 conversation sync stability program
 
