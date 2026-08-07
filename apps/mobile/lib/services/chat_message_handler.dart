@@ -189,6 +189,16 @@ class ChatMessageHandler {
   String currentThinkingText = '';
   StreamingChatEntry? currentStreaming;
 
+  /// Drops only the incomplete, socket-scoped streaming accumulator.
+  ///
+  /// Committed chat entries are owned by [ChatSessionCubit]. Keeping this
+  /// reset here prevents a disconnected partial thought from being attached
+  /// to the first assistant message after reconnect.
+  void resetTransientStreaming() {
+    currentThinkingText = '';
+    currentStreaming = null;
+  }
+
   /// Whether a git_not_available tip has been shown in this session.
   /// Used to suppress duplicate git errors in the chat stream.
   bool _gitTipShown = false;

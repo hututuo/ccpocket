@@ -510,7 +510,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   StreamSubscription<ServerMessage>? _detachedSettingsSubscription;
   StreamSubscription<BridgeConnectionState>? _goalConnectionSubscription;
   StreamSubscription<List<SessionInfo>>? _goalSessionListSubscription;
-  StreamSubscription<List<SessionInfo>>? _codexRuntimeSnapshotSubscription;
+  StreamSubscription<List<SessionInfo>>? _runtimeSnapshotSubscription;
   StreamSubscription<int>? _codexModelCatalogSubscription;
   StreamSubscription<LocalSessionHistoryAvailabilityChange>?
   _localHistoryAvailabilitySubscription;
@@ -539,6 +539,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool _sessionSnapshotOwnsSpeed = false;
   bool _statusFromHistoryFallback = false;
   bool _statusFromSessionSnapshot = false;
+  bool _statusFromLiveMessage = false;
   DateTime? _detachedProviderStatusObservedAt;
   String? _detachedProviderStatusSignature;
   String? _detachedProviderSourceFingerprint;
@@ -894,7 +895,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         codexModelCatalogRevision.value = _bridge.codexModelCatalogRevision;
         _codexModelCatalogSubscription = _bridge.codexModelCatalogChanges
             .listen((revision) => codexModelCatalogRevision.value = revision);
-        _codexRuntimeSnapshotSubscription = _bridge.sessionList.listen(
+        _runtimeSnapshotSubscription = _bridge.sessionList.listen(
           _synchronizeDetachedCodexRuntimeSnapshot,
         );
         _synchronizeDetachedCodexRuntimeSnapshot(_bridge.sessions);
@@ -917,6 +918,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _statusRefreshConnectionSubscription = _bridge.connectionStatus.listen(
       _onStatusRefreshConnectionState,
     );
+    _runtimeSnapshotSubscription = _bridge.sessionList.listen(
+      _synchronizeRuntimeSnapshot,
+    );
+    _synchronizeRuntimeSnapshot(_bridge.sessions);
 
     if (isCodex) {
       _goalConnectionSubscription = _bridge.connectionStatus.listen(
@@ -926,14 +931,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         _updateCodexRuntimeSupportFromSessions,
       );
       _updateCodexRuntimeSupportFromSessions(_bridge.sessions);
-      _codexRuntimeSnapshotSubscription = _bridge.sessionList.listen(
-        _synchronizeCodexRuntimeSnapshot,
-      );
       codexModelCatalogRevision.value = _bridge.codexModelCatalogRevision;
       _codexModelCatalogSubscription = _bridge.codexModelCatalogChanges.listen(
         (revision) => codexModelCatalogRevision.value = revision,
       );
-      _synchronizeCodexRuntimeSnapshot(_bridge.sessions);
       _desktopContinuitySubscription = _bridge
           .localFeatureMessagesForSession(sessionId)
           .listen(_onDesktopContinuityMessage);
@@ -1829,18 +1830,26 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void _onStatusRefreshConnectionState(BridgeConnectionState connectionState) {
-    if (isClosed || state.status != ProcessStatus.starting) return;
+    if (isClosed) return;
     if (connectionState != BridgeConnectionState.connected) {
       _statusHistoryWaitingForReconnect = true;
-      _statusRefreshTimer?.cancel();
-      _statusRefreshTimer = null;
+      if (connectionState == BridgeConnectionState.disconnected) {
+        _handler.resetTransientStreaming();
+        _streamingCubit.reset();
+        _statusFromLiveMessage = false;
+        if (!isCodex) _resetSessionSnapshotAuthorityForConnection();
+      }
+      if (state.status == ProcessStatus.starting) {
+        _statusRefreshTimer?.cancel();
+        _statusRefreshTimer = null;
+      }
       return;
     }
     if (!_statusHistoryWaitingForReconnect) return;
     _statusHistoryWaitingForReconnect = false;
     _historyFallbackRequested = true;
     _bridge.requestSessionHistory(sessionId);
-    _startStatusRefreshTimer();
+    if (state.status == ProcessStatus.starting) _startStatusRefreshTimer();
   }
 
   void _onGoalConnectionState(BridgeConnectionState connectionState) {
@@ -2338,6 +2347,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     // fallback until the new peer supplies either SessionInfo or history.
     _statusFromHistoryFallback = true;
     _statusFromSessionSnapshot = false;
+    _statusFromLiveMessage = false;
     _hasAuthoritativeSessionSnapshot = false;
     _sessionSnapshotOwnsThreadId = false;
     _sessionSnapshotOwnsProjectPath = false;
@@ -2566,8 +2576,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _flushDeferredGoalRead();
   }
 
-  void _synchronizeCodexRuntimeSnapshot(List<SessionInfo> sessions) {
-    if (!isCodex || isClosed) return;
+  void _synchronizeRuntimeSnapshot(List<SessionInfo> sessions) {
+    if (isClosed) return;
+    if (!isCodex) {
+      _synchronizeClaudeRuntimeSnapshot(sessions);
+      return;
+    }
     final runtime = _runtimeSessionFrom(sessions);
     if (runtime == null) return;
     _updateCodexServiceTierRaw(runtime.codexServiceTier);
@@ -2577,6 +2591,31 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       emit(state.copyWith(codexSpeed: CodexSpeed.standard));
     }
     _restoreRuntimeInteractions(runtime);
+  }
+
+  void _synchronizeClaudeRuntimeSnapshot(List<SessionInfo> sessions) {
+    if (isCodex || isClosed || !_bridge.isConnected) return;
+    final incomingGeneration = _bridge.authoritativeSessionListGeneration;
+    if (_awaitingFreshSessionListAfterReconnect) {
+      if (!_bridge.hasAuthoritativeSessionListForCurrentConnection ||
+          incomingGeneration <= _sessionListGenerationAtDisconnect) {
+        return;
+      }
+      _awaitingFreshSessionListAfterReconnect = false;
+    }
+    if (incomingGeneration > _lastConsumedSessionListGeneration) {
+      _lastConsumedSessionListGeneration = incomingGeneration;
+    }
+    final runtime = _runtimeSessionFrom(sessions);
+    if (runtime == null || runtime.provider != Provider.claude.value) return;
+    final snapshotStatus = ProcessStatus.fromString(runtime.status);
+    _hasAuthoritativeSessionSnapshot = true;
+    _statusFromSessionSnapshot = true;
+    _statusFromHistoryFallback = false;
+    _statusFromLiveMessage = false;
+    if (snapshotStatus != state.status) {
+      emit(state.copyWith(status: snapshotStatus));
+    }
   }
 
   void _synchronizeDetachedCodexRuntimeSnapshot(List<SessionInfo> sessions) {
@@ -3330,6 +3369,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (msg is StatusMessage) {
         _statusFromHistoryFallback = false;
         _statusFromSessionSnapshot = false;
+        _statusFromLiveMessage = true;
       }
       if (msg is ToolResultMessage && resolvesPermission) {
         _pendingPermissionRequests.remove(msg.toolUseId);
@@ -3620,6 +3660,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final historyStatusIsFallbackOnly =
         originalMsg is HistoryMessage &&
         ((isCodex && _hasAuthoritativeSessionSnapshot) ||
+            (!isCodex && _statusFromLiveMessage) ||
             (detachedPreview && _detachedProviderStatusObservedAt != null));
     final effectiveStatus = historyStatusIsFallbackOnly
         ? current.status
@@ -4362,7 +4403,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (originalMsg is HistoryMessage &&
         effectiveStatus != null &&
         effectiveStatus != current.status) {
-      _statusFromHistoryFallback = isCodex && !_hasAuthoritativeSessionSnapshot;
+      _statusFromHistoryFallback = isCodex
+          ? !_hasAuthoritativeSessionSnapshot
+          : !_statusFromLiveMessage;
       _statusFromSessionSnapshot = false;
     }
 
@@ -8005,7 +8048,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _desktopContinuityReconcileTimer?.cancel();
     _goalConnectionSubscription?.cancel();
     _goalSessionListSubscription?.cancel();
-    _codexRuntimeSnapshotSubscription?.cancel();
+    _runtimeSnapshotSubscription?.cancel();
     _codexModelCatalogSubscription?.cancel();
     _localHistoryAvailabilitySubscription?.cancel();
     _historySyncSubscription?.cancel();

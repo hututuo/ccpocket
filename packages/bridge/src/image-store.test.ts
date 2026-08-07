@@ -104,10 +104,15 @@ describe("ImageStore.extractImagePaths", () => {
   it("extracts local path but not URL from mixed content", () => {
     const text =
       "Local: /tmp/local.png, Remote: https://example.com/remote.jpg";
-    const result = extract(text);
-    expect(result).toContain("/tmp/local.png");
-    // URL paths that look like absolute paths (e.g., /remote.jpg from URL) may be extracted
-    // but //example.com paths would be filtered
+    expect(extract(text)).toEqual(["/tmp/local.png"]);
+  });
+
+  it("ignores image-like paths inside remote URLs", () => {
+    expect(
+      extract(
+        "https://example.com/assets/remote.png http://other.test/a.webp",
+      ),
+    ).toEqual([]);
   });
 
   // ---- Deduplication ----
@@ -183,6 +188,7 @@ describe("ImageStore.registerImages", () => {
     try {
       const store = new ImageStore();
       await expect(store.registerImages([privatePath])).resolves.toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
       expect(JSON.stringify(warn.mock.calls)).not.toContain(privatePath);
       expect(JSON.stringify(warn.mock.calls)).not.toContain(
         "secret-image-name.png",

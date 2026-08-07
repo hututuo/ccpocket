@@ -910,6 +910,27 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     await bridge.close();
   });
 
+  it("terminates a client that misses the WebSocket heartbeat", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const client = {
+      readyState: OPEN_STATE,
+      ping: vi.fn(),
+      terminate: vi.fn(),
+    } as any;
+    (bridge as any).wss.clients.add(client);
+    (bridge as any).responsiveClients.add(client);
+
+    (bridge as any).runClientHeartbeat();
+    expect(client.ping).toHaveBeenCalledOnce();
+    expect(client.terminate).not.toHaveBeenCalled();
+
+    (bridge as any).runClientHeartbeat();
+    expect(client.terminate).toHaveBeenCalledOnce();
+
+    (bridge as any).wss.clients.delete(client);
+    await bridge.close();
+  });
+
   it("advertises, gates, routes, disconnects, and closes the optional v2 file-transfer module", async () => {
     const fileTransfer = {
       connect: vi.fn(),
@@ -6718,19 +6739,34 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     });
 
     ws.send.mockClear();
-    await (bridge as any).handleClientMessage(
-      {
-        type: "get_history_delta",
-        sessionId,
-        sinceSeq: 0,
-      },
-      ws,
-    );
+    const secondWs = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    await Promise.all([
+      (bridge as any).handleClientMessage(
+        {
+          type: "get_history_delta",
+          sessionId,
+          sinceSeq: 0,
+        },
+        ws,
+      ),
+      (bridge as any).handleClientMessage(
+        {
+          type: "get_history_delta",
+          sessionId,
+          sinceSeq: 0,
+        },
+        secondWs,
+      ),
+    ]);
 
     expect(session.process.readThread).toHaveBeenCalledWith(
       "thr_codex_1",
       true,
     );
+    expect(session.process.readThread).toHaveBeenCalledTimes(1);
     expect(getCodexDesktopToolTimelineMock).toHaveBeenCalledWith("thr_codex_1");
     expect(codexThreadToSessionHistoryMock).toHaveBeenCalledWith(
       { id: "thr_codex_1", turns: [] },

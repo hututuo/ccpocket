@@ -1501,8 +1501,11 @@ export class BridgeWebSocketServer {
   private static readonly DEFAULT_FILE_LIST_MAX_BYTES = 512 * 1024;
   private static readonly DEFAULT_DELTA_BATCH_MS = 100;
   private static readonly DEFAULT_DELTA_BATCH_MAX_CHARS = 4096;
+  private static readonly CLIENT_HEARTBEAT_INTERVAL_MS = 30_000;
 
   private wss: WebSocketServer;
+  private readonly responsiveClients = new WeakSet<WebSocket>();
+  private readonly clientHeartbeatTimer: ReturnType<typeof setInterval>;
   private sessionManager: SessionManager;
   private readonly apiKeyAuthenticator: BridgeApiKeyAuthenticator;
   private allowedDirs: string[];
@@ -1616,6 +1619,10 @@ export class BridgeWebSocketServer {
   private readonly externalCodexTerminalNotificationKeys = new Set<string>();
   private readonly inputDeliveryLedger: InputDeliveryLedger | null;
   private readonly inputDeliveryOperations = new Map<string, Promise<void>>();
+  private readonly codexCanonicalHistoryReads = new WeakMap<
+    SessionInfo,
+    Promise<HistoryEntry[] | null>
+  >();
   private readonly sharedCodexSettingsOperations = new Map<
     string,
     SharedCodexSettingsOperation
@@ -1798,6 +1805,11 @@ export class BridgeWebSocketServer {
         done(true);
       },
     });
+    this.clientHeartbeatTimer = setInterval(
+      () => this.runClientHeartbeat(),
+      BridgeWebSocketServer.CLIENT_HEARTBEAT_INTERVAL_MS,
+    );
+    this.clientHeartbeatTimer.unref?.();
 
     this.sessionManager = new SessionManager(
       (sessionId, msg) => {
@@ -2110,6 +2122,8 @@ export class BridgeWebSocketServer {
       ws.once("close", releaseAuthenticatedPeer);
 
       console.log("[ws] Client connected");
+      this.responsiveClients.add(ws);
+      ws.on("pong", () => this.responsiveClients.add(ws));
       this.handleConnection(ws, req);
     });
 
@@ -3549,6 +3563,22 @@ export class BridgeWebSocketServer {
   private async codexCanonicalHistoryEntries(
     session: SessionInfo,
   ): Promise<HistoryEntry[] | null> {
+    const inFlight = this.codexCanonicalHistoryReads.get(session);
+    if (inFlight) return inFlight;
+    const read = this.readCodexCanonicalHistoryEntries(session);
+    this.codexCanonicalHistoryReads.set(session, read);
+    try {
+      return await read;
+    } finally {
+      if (this.codexCanonicalHistoryReads.get(session) === read) {
+        this.codexCanonicalHistoryReads.delete(session);
+      }
+    }
+  }
+
+  private async readCodexCanonicalHistoryEntries(
+    session: SessionInfo,
+  ): Promise<HistoryEntry[] | null> {
     if (session.auxiliary?.kind === "ephemeral_side_chat") {
       // Official ephemeral threads are live-only and reject thread/read when
       // the includeTurns parameter is present. Their complete available
@@ -4686,6 +4716,7 @@ export class BridgeWebSocketServer {
 
   async close(): Promise<void> {
     console.log("[ws] Shutting down...");
+    clearInterval(this.clientHeartbeatTimer);
     // Turn the shared writer predicate off synchronously before aborting
     // feature handlers or destroying auxiliary runtimes. The lease remains
     // held until the host has drained this server, so a standby cannot overlap.
@@ -4796,6 +4827,22 @@ export class BridgeWebSocketServer {
     ws.on("error", (err) => {
       console.error("[ws] Client error:", err.message);
     });
+  }
+
+  private runClientHeartbeat(): void {
+    for (const client of this.wss.clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      if (!this.responsiveClients.has(client)) {
+        client.terminate();
+        continue;
+      }
+      this.responsiveClients.delete(client);
+      try {
+        client.ping();
+      } catch {
+        client.terminate();
+      }
+    }
   }
 
   private refreshConnectionMetadata(now = Date.now()): void {

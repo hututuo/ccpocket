@@ -3459,27 +3459,70 @@ void main() {
       },
     );
 
-    test('Claude history can still settle a running status', () async {
-      final cubit = createCubit('s1', provider: Provider.claude);
-      addTearDown(cubit.close);
+    test(
+      'Claude history cannot overwrite a newer live running status',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.claude);
+        addTearDown(cubit.close);
 
-      mockBridge.emitMessage(
-        const StatusMessage(status: ProcessStatus.running),
-        sessionId: 's1',
-      );
-      await Future.microtask(() {});
-      expect(cubit.state.status, ProcessStatus.running);
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.running),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(cubit.state.status, ProcessStatus.running);
 
-      mockBridge.emitMessage(
-        const HistoryMessage(
-          messages: [StatusMessage(status: ProcessStatus.idle)],
-        ),
-        sessionId: 's1',
-      );
-      await Future.microtask(() {});
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [StatusMessage(status: ProcessStatus.idle)],
+          ),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
 
-      expect(cubit.state.status, ProcessStatus.idle);
-    });
+        expect(cubit.state.status, ProcessStatus.running);
+
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        expect(cubit.state.status, ProcessStatus.idle);
+      },
+    );
+
+    test(
+      'Claude consumes a fresh authoritative status snapshot after reconnect',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.claude);
+        addTearDown(cubit.close);
+
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.running),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+        expect(cubit.state.status, ProcessStatus.running);
+
+        mockBridge.emitConnection(BridgeConnectionState.disconnected);
+        mockBridge.emitConnection(BridgeConnectionState.connected);
+        mockBridge.emitSessions(const [
+          SessionInfo(
+            id: 's1',
+            provider: 'claude',
+            projectPath: '/project',
+            status: 'idle',
+            createdAt: '',
+            lastActivityAt: '',
+          ),
+        ]);
+        await Future.microtask(() {});
+        await Future.microtask(() {});
+
+        expect(cubit.state.status, ProcessStatus.idle);
+      },
+    );
 
     test('Codex history remains status fallback without SessionInfo', () async {
       mockBridge.cachedMessagesBySession['s1'] = const [
@@ -8327,6 +8370,46 @@ void main() {
 
         await tester.pump(const Duration(minutes: 5));
         expect(mockBridge.requestSessionHistoryCallCount, 6);
+      },
+    );
+
+    test(
+      'disconnect clears partial streaming and reconciles a running session after reconnect',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.claude);
+        addTearDown(cubit.close);
+
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.running),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const ThinkingDeltaMessage(text: 'partial thought'),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const StreamDeltaMessage(text: 'partial answer'),
+          sessionId: 's1',
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(streamingCubit.state.isStreaming, isTrue);
+        final requestsBeforeDisconnect =
+            mockBridge.requestSessionHistoryCallCount;
+
+        mockBridge.emitConnection(BridgeConnectionState.disconnected);
+        await Future.microtask(() {});
+
+        expect(streamingCubit.state.text, isEmpty);
+        expect(streamingCubit.state.thinking, isEmpty);
+        expect(streamingCubit.state.isStreaming, isFalse);
+
+        mockBridge.emitConnection(BridgeConnectionState.connected);
+        await Future.microtask(() {});
+
+        expect(
+          mockBridge.requestSessionHistoryCallCount,
+          requestsBeforeDisconnect + 1,
+        );
       },
     );
 

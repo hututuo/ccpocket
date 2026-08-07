@@ -1127,6 +1127,21 @@ describe("SessionManager codex path", () => {
     expect(result?.entries[0].seq).toBe(6);
   });
 
+  it("resets a client watermark that is ahead of a restarted session", () => {
+    const manager = new SessionManager(() => {});
+    const sessionId = manager.create("/tmp/project-history-restarted");
+
+    const result = manager.getHistorySince(sessionId, 42);
+
+    expect(result).toEqual({
+      kind: "snapshot",
+      fromSeq: 1,
+      toSeq: 0,
+      entries: [],
+      reason: "reset",
+    });
+  });
+
   it("trims history as a chronological tail instead of preserving only user inputs", () => {
     const manager = new SessionManager(() => {});
     const sessionId = manager.create("/tmp/project-history-tail");

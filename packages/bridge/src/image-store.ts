@@ -38,8 +38,10 @@ const MIME_TYPES: Record<string, string> = {
   ".webp": "image/webp",
 };
 
-// Matches absolute paths ending with image extensions
+// Matches local absolute paths ending with image extensions after remote URLs
+// have been removed from the candidate text.
 const IMAGE_PATH_RE = /(\/[\w./_-]+\.(?:png|jpe?g|gif|webp))/gi;
+const REMOTE_URL_RE = /(?:https?:)?\/\/[^\s"'<>]+/gi;
 
 export class ImageStore {
   private store = new Map<string, StoredImage>();
@@ -153,11 +155,9 @@ export class ImageStore {
   /** Extract local image file paths from text (ignores URLs). */
   extractImagePaths(text: unknown): string[] {
     const str = typeof text === "string" ? text : JSON.stringify(text ?? "");
-    const matches = str.match(IMAGE_PATH_RE);
+    const matches = str.replace(REMOTE_URL_RE, "").match(IMAGE_PATH_RE);
     if (!matches) return [];
-    // Filter out URLs (paths starting with //) and deduplicate
-    const localPaths = matches.filter((p) => !p.startsWith("//"));
-    return [...new Set(localPaths)];
+    return [...new Set(matches)];
   }
 
   /** Register an image from raw base64 data. Returns an ImageRef with a URL for HTTP access. */
@@ -203,7 +203,9 @@ export class ImageStore {
           projectPath,
         );
         if (!resolvedPath) {
-          console.warn("[image-store] Skipping image (not file or >10MB)");
+          // Text can legitimately mention a stale or remote-looking image
+          // path. Absence is not an operational Bridge failure and should not
+          // flood the persistent service log.
           continue;
         }
         const ext = extname(resolvedPath).toLowerCase();

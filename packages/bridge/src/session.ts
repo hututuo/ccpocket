@@ -1665,6 +1665,15 @@ export class SessionManager {
 
     const toSeq = session.historyRevision;
     const entries = session.historyEntries;
+    if (sinceSeq > toSeq) {
+      return {
+        kind: "snapshot",
+        fromSeq: entries[0]?.seq ?? toSeq + 1,
+        toSeq,
+        entries: [...entries],
+        reason: "reset",
+      };
+    }
     if (entries.length === 0) {
       return {
         kind: "delta",
