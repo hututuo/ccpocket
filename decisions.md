@@ -1663,3 +1663,20 @@
   `writer_lease_unavailable`。
 - Mobile 的 79% 表示 Bridge 认证与目录已完成、但 `/readyz` 尚未允许应用进入。
   该门禁继续 fail closed；修复后端 readiness，不得把 79% 改成假完成。
+
+## 2026-08-08 外部静态审计必须按真实职责复核后修复
+
+- 外部审计报告是问题线索，不因其标注“P0/P1 已确认”就成为源码权威。每项必须沿
+  provider/app-server → Bridge → protocol → SQLite/runtime cache → Cubit/UI 的实际调用
+  条件复核；已有等价实现、兼容握手或分层缓存职责不得被同名表象覆盖。
+- 断线恢复继续使用现有 v2 state token/ACK/scoped reset 和 runtime seq/canonical history；
+  不新增第二套无范围通用 backlog。瞬态 stream/thinking 可在断线时丢弃，最终 provider
+  history 才是 durable authority。
+- `input_ack` 是发送设备的投递收据；其他设备通过权威 `user_input` broadcast 获取消息，
+  不广播设备本地 ACK。
+- Push token register/unregister 可有界重试；notify 在 Cloud 尚无 deliveryId 幂等去重前
+  保持单次发送，防止重复通知。
+- Shared daemon 的 durable settings 应复用已存在的健康 app-server client，只有没有可用
+  client 时才创建短暂 fallback；writer lease/source/operation-id 门禁不可降低。
+- Claude durable input、Claude session model mutation、catalog repository 和 idle eviction
+  lease 需要独立能力或运行证据，不能以“顺手修复”名义猜测实现。

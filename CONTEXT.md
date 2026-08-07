@@ -1,5 +1,19 @@
 # CC Pocket Compatibility Fork Context
 
+## 2026-08-08 external full-chain audit recheck
+
+The current source-remediation line is
+`fix/audit-report-remediation-20260808`, based on `03749002`. The external
+WorkBuddy report was treated as a lead list rather than authority: its real
+disconnect/status/heartbeat/canonical-read defects were fixed, while proposals
+that would duplicate v2 recovery, broadcast device-local ACKs, or delete
+compatibility/focus/Mirror paths were rejected against current call semantics.
+Token registration now has bounded safe retry and durable Codex settings reuse
+an active shared app-server client. Detailed disposition and open provider
+capability gaps are in
+`notes/audit-report-remediation_v01_20260808-060855.md`. Production, Cloud,
+OTA, IPA, Desktop, network and phone state remain unchanged.
+
 ## 2026-08-08 LAN and readiness recovery
 
 The current fix line is `fix/lan-readiness-recovery-20260808`, based on
