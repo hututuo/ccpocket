@@ -99,7 +99,7 @@ void main() {
           expect(harness.sync.loadOlderTurnsCalls, 1, reason: provider);
           expect(
             find.byKey(const ValueKey('durable_latest_turn_recovery_banner')),
-            findsNothing,
+            findsOneWidget,
             reason: provider,
           );
         } finally {
@@ -217,7 +217,7 @@ void main() {
           expect(harness.sync.loadOlderTurnsCalls, 2, reason: provider);
           expect(
             find.byKey(const ValueKey('durable_latest_turn_recovery_banner')),
-            findsNothing,
+            findsOneWidget,
             reason: provider,
           );
         } finally {

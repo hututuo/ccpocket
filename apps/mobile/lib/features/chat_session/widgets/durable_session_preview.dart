@@ -312,11 +312,10 @@ class DurableLatestTurnRecoveryBanner extends StatefulWidget {
 class _DurableLatestTurnRecoveryBannerState
     extends State<DurableLatestTurnRecoveryBanner> {
   bool _retrying = false;
-  bool _recovered = false;
   bool _failed = false;
 
   Future<void> _retryLatestTurn() async {
-    if (_retrying || _recovered) return;
+    if (_retrying) return;
     setState(() {
       _retrying = true;
       _failed = false;
@@ -328,7 +327,6 @@ class _DurableLatestTurnRecoveryBannerState
       if (!mounted) return;
       setState(() {
         _retrying = false;
-        _recovered = recovered;
         _failed = !recovered;
       });
     } catch (_) {
@@ -342,7 +340,6 @@ class _DurableLatestTurnRecoveryBannerState
 
   @override
   Widget build(BuildContext context) {
-    if (_recovered) return const SizedBox.shrink();
     final l = AppLocalizations.of(context);
     final colors = Theme.of(context).colorScheme;
     return Material(
