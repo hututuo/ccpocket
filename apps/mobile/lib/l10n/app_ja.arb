@@ -138,6 +138,7 @@
   "errorCodexRuntimeWriterUnavailableHint": "アクティブな Bridge に再接続し、この会話の制御状態が同期されてから再試行してください。",
   "errorCodexActionBrokerRequiredHint": "現在の承認カードから応答してください。カードが表示されない場合は会話を更新してください。",
   "conversationRetryWaitingForRuntime": "この会話は Bridge と制御状態を同期中です。失敗したメッセージは再送されていません。しばらくしてから再試行してください。",
+  "conversationLatestTurnIncomplete": "会話の最新部分を復元できていません。",
   "autoModeFallbackDefaultTip": "Auto mode はこの環境で使えないため Default に切り替えました",
   "galleryWithCount": "ギャラリー ({count})",
   "@galleryWithCount": {

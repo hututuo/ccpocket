@@ -327,6 +327,10 @@ class AppLocalizationsEn extends AppLocalizations {
       'This conversation is still synchronizing control with Bridge. The failed message was not resent; retry shortly.';
 
   @override
+  String get conversationLatestTurnIncomplete =>
+      'The newest part of this conversation is incomplete.';
+
+  @override
   String get autoModeFallbackDefaultTip =>
       'Auto mode is not available in this environment, so Default mode was selected';
 

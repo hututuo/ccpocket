@@ -10,6 +10,8 @@ import '../state/chat_session_cubit.dart';
 
 typedef LiveRuntimeReadyCallback = bool Function(ChatSessionCubit cubit);
 
+typedef LatestTurnRepairCallback = Future<bool> Function();
+
 /// Applies durable-cache revisions to an existing detached chat cubit.
 ///
 /// Keeping the provider and message widgets mounted preserves scroll position
@@ -285,6 +287,112 @@ class DurableSessionBindingBanner extends StatelessWidget {
                       color: colors.onSurfaceVariant,
                     ),
                   ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Compact, retryable status shown when the cache has no visible entries and
+/// the newest turn is known to be incomplete.
+class DurableLatestTurnRecoveryBanner extends StatefulWidget {
+  final LatestTurnRepairCallback onRetry;
+
+  const DurableLatestTurnRecoveryBanner({super.key, required this.onRetry});
+
+  @override
+  State<DurableLatestTurnRecoveryBanner> createState() =>
+      _DurableLatestTurnRecoveryBannerState();
+}
+
+class _DurableLatestTurnRecoveryBannerState
+    extends State<DurableLatestTurnRecoveryBanner> {
+  bool _retrying = false;
+  bool _recovered = false;
+  bool _failed = false;
+
+  Future<void> _retryLatestTurn() async {
+    if (_retrying || _recovered) return;
+    setState(() {
+      _retrying = true;
+      _failed = false;
+    });
+    try {
+      final recovered = await widget.onRetry().timeout(
+        const Duration(seconds: 35),
+      );
+      if (!mounted) return;
+      setState(() {
+        _retrying = false;
+        _recovered = recovered;
+        _failed = !recovered;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _retrying = false;
+        _failed = true;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_recovered) return const SizedBox.shrink();
+    final l = AppLocalizations.of(context);
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      key: const ValueKey('durable_latest_turn_recovery_banner'),
+      color: colors.surfaceContainerHigh,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (_retrying) const LinearProgressIndicator(minHeight: 2),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.sync_problem_outlined,
+                  size: 16,
+                  color: colors.onSurfaceVariant,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _failed
+                        ? '${l.conversationLatestTurnIncomplete} ${l.turnLoadFailed}'
+                        : l.conversationLatestTurnIncomplete,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                TextButton(
+                  key: const ValueKey('durable_latest_turn_recovery_retry'),
+                  onPressed: _retrying ? null : _retryLatestTurn,
+                  child: _retrying
+                      ? Semantics(
+                          label: l.loading,
+                          child: const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              key: ValueKey(
+                                'durable_latest_turn_recovery_loading',
+                              ),
+                              strokeWidth: 2,
+                            ),
+                          ),
+                        )
+                      : Text(l.retry),
                 ),
               ],
             ),

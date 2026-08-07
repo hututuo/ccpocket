@@ -317,6 +317,9 @@ class AppLocalizationsZh extends AppLocalizations {
       '此会话仍在与 Bridge 同步控制权。失败消息尚未重新发送，请稍后重试。';
 
   @override
+  String get conversationLatestTurnIncomplete => '会话最新内容不完整。';
+
+  @override
   String get autoModeFallbackDefaultTip =>
       '当前环境不支持 Auto mode，已切换为 Default mode';
 

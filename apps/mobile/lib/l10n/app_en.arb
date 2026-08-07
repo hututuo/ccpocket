@@ -128,6 +128,7 @@
   "errorCodexRuntimeWriterUnavailableHint": "Reconnect to the active Bridge and wait for this conversation's control state before retrying.",
   "errorCodexActionBrokerRequiredHint": "Respond from the active approval card. Refresh the conversation if the card is not visible.",
   "conversationRetryWaitingForRuntime": "This conversation is still synchronizing control with Bridge. The failed message was not resent; retry shortly.",
+  "conversationLatestTurnIncomplete": "The newest part of this conversation is incomplete.",
   "autoModeFallbackDefaultTip": "Auto mode is not available in this environment, so Default mode was selected",
   "galleryWithCount": "Gallery ({count})",
   "disconnect": "Disconnect",

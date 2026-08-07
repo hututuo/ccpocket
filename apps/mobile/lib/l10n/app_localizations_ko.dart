@@ -319,6 +319,9 @@ class AppLocalizationsKo extends AppLocalizations {
       '이 대화는 Bridge와 제어 상태를 동기화하고 있습니다. 실패한 메시지는 다시 전송되지 않았습니다. 잠시 후 다시 시도하세요.';
 
   @override
+  String get conversationLatestTurnIncomplete => '이 대화의 최신 내용이 완전하지 않습니다.';
+
+  @override
   String get autoModeFallbackDefaultTip =>
       '이 환경에서는 Auto mode를 사용할 수 없어 Default mode로 전환했습니다';
 

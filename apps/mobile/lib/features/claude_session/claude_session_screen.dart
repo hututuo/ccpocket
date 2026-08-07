@@ -511,6 +511,25 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     return (loaded: result.loaded, hasMore: result.hasMore);
   }
 
+  Future<bool> _repairLatestTurn() async =>
+      (await _loadOlderDurableHistory()).loaded;
+
+  bool _isCurrentDurablePreviewTargetConfirmed() {
+    try {
+      final sync = context.read<ConversationContentSyncService>();
+      return sync.matchesCurrentDataSource(
+            _dataSourceIdentity,
+            provider: Provider.claude.value,
+          ) &&
+          !sync.hasAuthoritativeDataSourceConflict(
+            _dataSourceIdentity,
+            provider: Provider.claude.value,
+          );
+    } catch (_) {
+      return false;
+    }
+  }
+
   bool _queueDeferredSubmission(ChatComposerSubmission submission) {
     if (!_isPending || _deferredSubmission != null) return false;
     setState(() => _deferredSubmission = submission);
@@ -896,6 +915,11 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   Widget build(BuildContext context) {
     final durableId = widget.durableProviderSessionId;
     final cachedPreview = _cachedPreview;
+    final latestTurnRecoveryVisible =
+        cachedPreview != null &&
+        cachedPreview.entries.isEmpty &&
+        !cachedPreview.latestTurnComplete &&
+        _isCurrentDurablePreviewTargetConfirmed();
     if (_isPending && durableId != null) {
       return ConversationRouteFocusRestorer(
         onRouteCurrent: _restoreDurableConversationFocusIfCurrentSource,
@@ -920,6 +944,8 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
               const [],
           initialHistoryHasEarlier: cachedPreview?.hasEarlier ?? false,
           detachedHistoryPageLoader: _loadOlderDurableHistory,
+          latestTurnRecoveryVisible: latestTurnRecoveryVisible,
+          onLatestTurnRecoveryRetry: _repairLatestTurn,
           expectedSourceFingerprint: _expectedCacheTargetFingerprint,
           deferredSubmissionPending: _deferredSubmission != null,
           onDeferredSubmit: _queueDeferredSubmission,
@@ -1012,6 +1038,8 @@ class _ChatScreenProviders extends StatelessWidget {
   final List<ServerMessage> initialHistoryMessages;
   final bool initialHistoryHasEarlier;
   final DetachedHistoryPageLoader? detachedHistoryPageLoader;
+  final bool latestTurnRecoveryVisible;
+  final LatestTurnRepairCallback? onLatestTurnRecoveryRetry;
   final String? expectedSourceFingerprint;
   final bool deferredSubmissionPending;
   final ChatComposerSubmitCallback? onDeferredSubmit;
@@ -1036,6 +1064,8 @@ class _ChatScreenProviders extends StatelessWidget {
     this.initialHistoryMessages = const [],
     this.initialHistoryHasEarlier = false,
     this.detachedHistoryPageLoader,
+    this.latestTurnRecoveryVisible = false,
+    this.onLatestTurnRecoveryRetry,
     this.expectedSourceFingerprint,
     this.deferredSubmissionPending = false,
     this.onDeferredSubmit,
@@ -1117,6 +1147,8 @@ class _ChatScreenProviders extends StatelessWidget {
           deferredSubmissionPending: deferredSubmissionPending,
           onDeferredSubmit: onDeferredSubmit,
           dataSourceIdentity: dataSourceIdentity,
+          latestTurnRecoveryVisible: latestTurnRecoveryVisible,
+          onLatestTurnRecoveryRetry: onLatestTurnRecoveryRetry,
         ),
       ),
     );
@@ -1132,6 +1164,8 @@ class _ChatScreenBody extends HookWidget {
   final bool hideSessionBackButton;
   final bool detachedPreview;
   final bool deferredSubmissionPending;
+  final bool latestTurnRecoveryVisible;
+  final LatestTurnRepairCallback? onLatestTurnRecoveryRetry;
   final ChatComposerSubmitCallback? onDeferredSubmit;
   final BridgeDataSourceIdentity dataSourceIdentity;
 
@@ -1144,6 +1178,8 @@ class _ChatScreenBody extends HookWidget {
     this.hideSessionBackButton = false,
     this.detachedPreview = false,
     this.deferredSubmissionPending = false,
+    this.latestTurnRecoveryVisible = false,
+    this.onLatestTurnRecoveryRetry,
     this.onDeferredSubmit,
     required this.dataSourceIdentity,
   });
@@ -1855,6 +1891,13 @@ class _ChatScreenBody extends HookWidget {
                   DurableSessionBindingBanner(
                     queuedLocally:
                         bridgeState != BridgeConnectionState.connected,
+                  ),
+                if (detachedPreview &&
+                    latestTurnRecoveryVisible &&
+                    sessionState.entries.isEmpty &&
+                    onLatestTurnRecoveryRetry != null)
+                  DurableLatestTurnRecoveryBanner(
+                    onRetry: onLatestTurnRecoveryRetry!,
                   ),
                 Expanded(
                   child: BottomOverlayLayout(

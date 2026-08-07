@@ -107,6 +107,7 @@
   "errorCodexRuntimeWriterUnavailableHint": "请重新连接当前活动的 Bridge，等待此会话的控制状态同步完成后再重试。",
   "errorCodexActionBrokerRequiredHint": "请在当前审批卡片中操作；如果卡片没有显示，请刷新会话。",
   "conversationRetryWaitingForRuntime": "此会话仍在与 Bridge 同步控制权。失败消息尚未重新发送，请稍后重试。",
+  "conversationLatestTurnIncomplete": "会话最新内容不完整。",
   "autoModeFallbackDefaultTip": "当前环境不支持 Auto mode，已切换为 Default mode",
   "galleryWithCount": "图库 ({count})",
   "disconnect": "断开连接",

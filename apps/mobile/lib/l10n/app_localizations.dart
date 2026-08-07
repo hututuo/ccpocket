@@ -660,6 +660,12 @@ abstract class AppLocalizations {
   /// **'この会話は Bridge と制御状態を同期中です。失敗したメッセージは再送されていません。しばらくしてから再試行してください。'**
   String get conversationRetryWaitingForRuntime;
 
+  /// No description provided for @conversationLatestTurnIncomplete.
+  ///
+  /// In ja, this message translates to:
+  /// **'会話の最新部分を復元できていません。'**
+  String get conversationLatestTurnIncomplete;
+
   /// No description provided for @autoModeFallbackDefaultTip.
   ///
   /// In ja, this message translates to:

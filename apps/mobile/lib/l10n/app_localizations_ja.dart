@@ -320,6 +320,9 @@ class AppLocalizationsJa extends AppLocalizations {
       'この会話は Bridge と制御状態を同期中です。失敗したメッセージは再送されていません。しばらくしてから再試行してください。';
 
   @override
+  String get conversationLatestTurnIncomplete => '会話の最新部分を復元できていません。';
+
+  @override
   String get autoModeFallbackDefaultTip =>
       'Auto mode はこの環境で使えないため Default に切り替えました';
 

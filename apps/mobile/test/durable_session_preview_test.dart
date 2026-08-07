@@ -64,6 +64,170 @@ void main() {
   });
 
   testWidgets(
+    'Codex and Claude show source-confirmed latest-turn recovery and retry it',
+    (tester) async {
+      for (final provider in [Provider.codex.value, Provider.claude.value]) {
+        final harness = _LatestTurnRecoveryHarness(
+          provider: provider,
+          latestTurnComplete: false,
+          entries: const [],
+          repairResponses: [
+            Future<ConversationTurnsPageLoadResult>.value(
+              const ConversationTurnsPageLoadResult(
+                loaded: true,
+                hasMore: false,
+              ),
+            ),
+          ],
+        );
+        try {
+          await tester.pumpWidget(await harness.build());
+          await tester.pump();
+          await tester.pump();
+
+          expect(
+            find.byKey(const ValueKey('durable_latest_turn_recovery_banner')),
+            findsOneWidget,
+            reason: provider,
+          );
+          await tester.tap(
+            find.byKey(const ValueKey('durable_latest_turn_recovery_retry')),
+          );
+          await tester.pump();
+          await tester.pump();
+
+          expect(harness.sync.loadOlderTurnsCalls, 1, reason: provider);
+          expect(
+            find.byKey(const ValueKey('durable_latest_turn_recovery_banner')),
+            findsNothing,
+            reason: provider,
+          );
+        } finally {
+          await harness.dispose(tester);
+        }
+      }
+    },
+  );
+
+  testWidgets(
+    'authoritative empty and visible durable entries do not show recovery',
+    (tester) async {
+      for (final provider in [Provider.codex.value, Provider.claude.value]) {
+        for (final scenario in [
+          (
+            latestTurnComplete: true,
+            entries: const <ConversationContentWireEntry>[],
+          ),
+          (
+            latestTurnComplete: false,
+            entries: const <ConversationContentWireEntry>[
+              ConversationContentWireEntry(
+                entryId: 'visible-entry',
+                index: 0,
+                contentHash: 'hash-visible-entry',
+                rawMessage: {
+                  'type': 'user_input',
+                  'text': 'Visible cached entry',
+                  'userMessageUuid': 'visible-entry',
+                },
+              ),
+            ],
+          ),
+        ]) {
+          final harness = _LatestTurnRecoveryHarness(
+            provider: provider,
+            latestTurnComplete: scenario.latestTurnComplete,
+            entries: scenario.entries,
+            repairResponses: const [],
+          );
+          try {
+            await tester.pumpWidget(await harness.build());
+            await tester.pump();
+            await tester.pump();
+            expect(
+              find.byKey(const ValueKey('durable_latest_turn_recovery_banner')),
+              findsNothing,
+              reason: '$provider ${scenario.latestTurnComplete}',
+            );
+          } finally {
+            await harness.dispose(tester);
+          }
+        }
+      }
+    },
+  );
+
+  testWidgets(
+    'latest-turn recovery stops loading after failure and can be retried',
+    (tester) async {
+      for (final provider in [Provider.codex.value, Provider.claude.value]) {
+        final firstRepair = Completer<ConversationTurnsPageLoadResult>();
+        final harness = _LatestTurnRecoveryHarness(
+          provider: provider,
+          latestTurnComplete: false,
+          entries: const [],
+          repairResponses: [
+            firstRepair.future,
+            Future<ConversationTurnsPageLoadResult>.value(
+              const ConversationTurnsPageLoadResult(
+                loaded: true,
+                hasMore: false,
+              ),
+            ),
+          ],
+        );
+        try {
+          await tester.pumpWidget(await harness.build());
+          await tester.pump();
+          await tester.pump();
+          final retry = find.byKey(
+            const ValueKey('durable_latest_turn_recovery_retry'),
+          );
+          await tester.tap(retry);
+          await tester.pump();
+          expect(
+            find.byKey(const ValueKey('durable_latest_turn_recovery_loading')),
+            findsOneWidget,
+            reason: provider,
+          );
+
+          firstRepair.complete(
+            const ConversationTurnsPageLoadResult(
+              loaded: false,
+              hasMore: false,
+            ),
+          );
+          await tester.pump();
+          await tester.pump();
+          expect(
+            find.byKey(const ValueKey('durable_latest_turn_recovery_loading')),
+            findsNothing,
+            reason: provider,
+          );
+          expect(
+            find.textContaining('Could not load this turn'),
+            findsOneWidget,
+            reason: provider,
+          );
+          expect(tester.widget<TextButton>(retry).onPressed, isNotNull);
+
+          await tester.tap(retry);
+          await tester.pump();
+          await tester.pump();
+          expect(harness.sync.loadOlderTurnsCalls, 2, reason: provider);
+          expect(
+            find.byKey(const ValueKey('durable_latest_turn_recovery_banner')),
+            findsNothing,
+            reason: provider,
+          );
+        } finally {
+          await harness.dispose(tester);
+        }
+      }
+    },
+  );
+
+  testWidgets(
     'first send attaches a v2-only durable conversation absent from the legacy recent list',
     (tester) async {
       final bridge = MockBridgeService()
@@ -1770,6 +1934,125 @@ ConversationHotWindowSnapshot _previewSnapshot({
     sourceEntryCount: 1,
     cachedAt: DateTime.utc(2026, 7, 31),
   );
+}
+
+class _LatestTurnRecoveryHarness {
+  _LatestTurnRecoveryHarness({
+    required this.provider,
+    required bool latestTurnComplete,
+    required List<ConversationContentWireEntry> entries,
+    required this.repairResponses,
+  }) {
+    final id = ++_nextId;
+    bridge = MockBridgeService()
+      ..authenticatedBridgeInstanceId = 'bridge-latest-turn-$id'
+      ..authenticatedCodexSourceId = provider == Provider.codex.value
+          ? 'source-latest-turn-$id'
+          : null
+      ..advertisedBridgeCapabilities = const {conversationSyncV2Capability};
+    identity = bridge.dataSourceIdentity;
+    final target = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+      codexSourceId: bridge.authenticatedCodexSourceId,
+    );
+    providerSessionId = 'latest-turn-session-$id';
+    repository = _CountingSessionCatalogCacheRepository(
+      SessionCatalogCacheDatabase(databasePath: 'unused-latest-turn-$id.db'),
+      snapshots: {
+        target.fingerprint: ConversationHotWindowSnapshot(
+          partitionId: target.fingerprint,
+          provider: provider,
+          providerSessionId: providerSessionId,
+          revision: 'latest-turn-revision-$id',
+          entries: entries,
+          hasEarlier: false,
+          turnsNextCursor: null,
+          latestTurnComplete: latestTurnComplete,
+          latestTurnGap: latestTurnComplete
+              ? null
+              : const ConversationSyncV2LatestTurnGap(
+                  missingEntryCount: 1,
+                  payloadOmitted: true,
+                  repair: 'turns_page',
+                ),
+          latestTurnGapCursor: null,
+          sourceEntryCount: entries.length,
+          cachedAt: DateTime.utc(2026, 8, 7),
+        ),
+      },
+    );
+    sync = _LatestTurnRecoverySyncService(
+      bridge: BridgeServiceConversationContentSyncGateway(bridge),
+      cache: repository,
+      repairResponses: repairResponses,
+    );
+  }
+
+  static int _nextId = 0;
+
+  final String provider;
+  final List<Future<ConversationTurnsPageLoadResult>> repairResponses;
+  late final String providerSessionId;
+  late final MockBridgeService bridge;
+  late final BridgeDataSourceIdentity identity;
+  late final _CountingSessionCatalogCacheRepository repository;
+  late final _LatestTurnRecoverySyncService sync;
+
+  Future<Widget> build() {
+    if (provider == Provider.codex.value) {
+      return buildTestCodexSessionScreen(
+        bridge: bridge,
+        sessionId: 'pending-latest-turn-runtime',
+        isPending: true,
+        durableProviderSessionId: providerSessionId,
+        dataSourceIdentity: identity,
+        conversationContentSync: sync,
+      );
+    }
+    return buildTestClaudeSessionScreen(
+      bridge: bridge,
+      sessionId: 'pending-latest-turn-runtime',
+      isPending: true,
+      durableProviderSessionId: providerSessionId,
+      dataSourceIdentity: identity,
+      conversationContentSync: sync,
+    );
+  }
+
+  Future<void> dispose(WidgetTester tester) async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    await sync.dispose();
+    await repository.close();
+    bridge.dispose();
+  }
+}
+
+class _LatestTurnRecoverySyncService extends ConversationContentSyncService {
+  _LatestTurnRecoverySyncService({
+    required super.bridge,
+    required super.cache,
+    required this.repairResponses,
+  });
+
+  final List<Future<ConversationTurnsPageLoadResult>> repairResponses;
+  int loadOlderTurnsCalls = 0;
+
+  @override
+  Future<ConversationTurnsPageLoadResult> loadOlderTurns({
+    required String provider,
+    required String providerSessionId,
+    BridgeDataSourceIdentity? expectedDataSourceIdentity,
+    int limit = 5,
+  }) {
+    loadOlderTurnsCalls++;
+    if (repairResponses.isEmpty) {
+      return Future<ConversationTurnsPageLoadResult>.value(
+        const ConversationTurnsPageLoadResult(loaded: false, hasMore: false),
+      );
+    }
+    return repairResponses.removeAt(0);
+  }
 }
 
 class _CountingSessionCatalogCacheRepository
