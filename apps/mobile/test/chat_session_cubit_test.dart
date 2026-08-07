@@ -1503,6 +1503,204 @@ void main() {
         expect(cubit.canMutateAttachedRuntime, isFalse);
         expect(cubit.detachedActionBrokerAuthorityGeneration, isNull);
         expect(streamingCubit.state.text, 'visible live output');
+
+        mockBridge.emitMessage(
+          const StreamDeltaMessage(text: ' after rebind'),
+          sessionId: 'runtime-working-new',
+        );
+        await pumpEventQueue();
+        expect(streamingCubit.state.text, 'visible live output');
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-working-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'bridgeRuntime',
+            confidence: 'authoritative',
+            observedAt: '2026-08-03T01:10:30.000Z',
+            executionHost: 'bridge',
+            activeTurnId: 'turn-working',
+            controlState: 'steerable',
+            authorityGeneration: 'authority-working-old',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        await pumpEventQueue();
+        expect(streamingCubit.state.text, 'visible live output');
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-working-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'bridgeRuntime',
+            confidence: 'authoritative',
+            observedAt: '2026-08-03T01:11:00.000Z',
+            executionHost: 'bridge',
+            activeTurnId: 'turn-working',
+            controlState: 'steerable',
+            authorityGeneration: 'authority-working-new',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        await pumpEventQueue();
+        expect(streamingCubit.state.text, 'visible live output after rebind');
+      },
+    );
+
+    test(
+      'runtime replacement starts a clean visual stream for a different turn',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-different-turn',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-different-old',
+        );
+        addTearDown(cubit.close);
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-different-turn',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'bridgeRuntime',
+            confidence: 'authoritative',
+            observedAt: '2026-08-03T02:00:00.000Z',
+            executionHost: 'bridge',
+            activeTurnId: 'turn-old',
+            controlState: 'steerable',
+            authorityGeneration: 'authority-old',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        mockBridge.emitMessage(
+          const StreamDeltaMessage(text: 'old turn output'),
+          sessionId: 'runtime-different-old',
+        );
+        await pumpEventQueue();
+        expect(streamingCubit.state.text, 'old turn output');
+
+        cubit.updateDetachedLiveRuntime('runtime-different-new');
+        mockBridge.emitMessage(
+          const StreamDeltaMessage(text: 'new turn output'),
+          sessionId: 'runtime-different-new',
+        );
+        mockBridge.emitMessage(
+          const StreamDeltaMessage(text: ' stale old delta'),
+          sessionId: 'runtime-different-old',
+        );
+        await pumpEventQueue();
+        expect(streamingCubit.state.text, 'old turn output');
+
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-different-turn',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'bridgeRuntime',
+            confidence: 'authoritative',
+            observedAt: '2026-08-03T02:01:00.000Z',
+            executionHost: 'bridge',
+            activeTurnId: 'turn-new',
+            controlState: 'steerable',
+            authorityGeneration: 'authority-new',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        await pumpEventQueue();
+
+        expect(streamingCubit.state.text, 'new turn output');
+        expect(streamingCubit.state.text, isNot(contains('old turn output')));
+        expect(streamingCubit.state.text, isNot(contains('stale old delta')));
+      },
+    );
+
+    test(
+      'runtime replacement drops preserved visual state after idle',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-idle-after-rebind',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-idle-old',
+        );
+        addTearDown(cubit.close);
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-idle-after-rebind',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'bridgeRuntime',
+            confidence: 'authoritative',
+            observedAt: '2026-08-03T03:00:00.000Z',
+            executionHost: 'bridge',
+            activeTurnId: 'turn-ending',
+            controlState: 'steerable',
+            authorityGeneration: 'authority-ending',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        mockBridge.emitMessage(
+          const StreamDeltaMessage(text: 'ending output'),
+          sessionId: 'runtime-idle-old',
+        );
+        await pumpEventQueue();
+
+        cubit.updateDetachedLiveRuntime('runtime-idle-new');
+        mockBridge.emitMessage(
+          const StreamDeltaMessage(text: 'late buffered output'),
+          sessionId: 'runtime-idle-new',
+        );
+        await pumpEventQueue();
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-idle-after-rebind',
+            activity: 'idle',
+            attention: 'none',
+            result: 'completed',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-03T03:01:00.000Z',
+            executionHost: 'bridge',
+            controlState: 'writable',
+            authorityGeneration: 'authority-idle',
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        await pumpEventQueue();
+
+        expect(streamingCubit.state.text, isEmpty);
+        expect(streamingCubit.state.thinking, isEmpty);
+        expect(streamingCubit.state.isStreaming, isFalse);
+        expect(cubit.state.entries.whereType<StreamingChatEntry>(), isEmpty);
       },
     );
 

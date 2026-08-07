@@ -210,6 +210,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   static const _desktopContinuityRetryMax = Duration(seconds: 8);
   static const _statusHistoryRetryBase = Duration(seconds: 3);
   static const _statusHistoryRetryMaxAttempts = 4;
+  static const _maxDetachedVisualPendingMessages = 256;
 
   final String sessionId;
   final Provider? provider;
@@ -229,6 +230,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   int? _detachedAuthorityLiveRuntimeGeneration;
   String? _detachedAuthoritySourceFingerprint;
   String? _detachedActiveTurnId;
+  String? _detachedPreservedVisualTurnId;
+  bool _detachedVisualTurnValidationPending = false;
+  final List<ServerMessage> _detachedPendingVisualMessages = [];
   String? _detachedRejectedAuthorityGeneration;
   bool _detachedProviderProjectionCurrent = false;
   final ValueNotifier<int> detachedLiveRuntimeRevision = ValueNotifier(0);
@@ -1017,6 +1021,24 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (next == _detachedLiveRuntimeSessionId) return;
 
     final previousRuntimeSessionId = _detachedLiveRuntimeSessionId;
+    final hasVisualTimeline =
+        _handler.currentStreaming != null ||
+        _streamingCubit.state.isStreaming ||
+        _streamingCubit.state.text.isNotEmpty ||
+        _streamingCubit.state.thinking.isNotEmpty ||
+        state.entries.any((entry) => entry is StreamingChatEntry);
+    if (hasVisualTimeline) {
+      final activeTurnId = _detachedActiveTurnId?.trim();
+      _detachedPreservedVisualTurnId = activeTurnId?.isNotEmpty == true
+          ? activeTurnId
+          : null;
+      _detachedVisualTurnValidationPending = true;
+      _detachedPendingVisualMessages.clear();
+    } else {
+      _detachedPreservedVisualTurnId = null;
+      _detachedVisualTurnValidationPending = false;
+      _detachedPendingVisualMessages.clear();
+    }
     final generation = ++_detachedLiveRuntimeGeneration;
     unawaited(_subscription?.cancel());
     _subscription = null;
@@ -1062,6 +1084,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           message is HistoryToolDetailsMessage) {
         return;
       }
+      if (_bufferDetachedVisualMessageUntilTurnValidation(message)) return;
       _onMessage(message);
     });
     _synchronizeDetachedCodexRuntimeSnapshot(_bridge.sessions);
@@ -1087,12 +1110,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _clearPendingCodexModelRollback();
     _clearPendingCodexSpeedRollback();
     if (!preserveVisualTimeline) {
-      _handler.currentStreaming = null;
-      _streamingCubit.reset();
-      _desktopContinuityHandlers.clear();
-      _desktopContinuityItemKeys.clear();
-      _restoredDesktopContinuityItemKeys.clear();
-      _desktopContinuityStreamingTurnKey = null;
+      _resetDetachedVisualTimelineInternals();
     }
     final durableEntries = preserveVisualTimeline
         ? state.entries
@@ -1114,6 +1132,79 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         externalDesktopTurnId: null,
       ),
     );
+  }
+
+  bool _bufferDetachedVisualMessageUntilTurnValidation(ServerMessage message) {
+    if (!_detachedVisualTurnValidationPending ||
+        (message is! StreamDeltaMessage && message is! ThinkingDeltaMessage)) {
+      return false;
+    }
+    if (_detachedPendingVisualMessages.length >=
+        _maxDetachedVisualPendingMessages) {
+      final buffered = List<ServerMessage>.of(_detachedPendingVisualMessages)
+        ..add(message);
+      _clearDetachedVisualTimeline();
+      for (final pending in buffered) {
+        if (isClosed) return true;
+        _onMessage(pending);
+      }
+      return true;
+    }
+    _detachedPendingVisualMessages.add(message);
+    return true;
+  }
+
+  void _validateDetachedVisualTurn({
+    required bool active,
+    required String result,
+    required String? activeTurnId,
+  }) {
+    if (!_detachedVisualTurnValidationPending) return;
+    final normalizedTurnId = activeTurnId?.trim();
+    final hasTurnId = normalizedTurnId?.isNotEmpty == true;
+    if (active && result == 'none' && !hasTurnId) {
+      // The status is still incomplete. Keep the old visual surface isolated
+      // and continue buffering only deltas until an exact turn or terminal
+      // state arrives.
+      return;
+    }
+    final sameTurn =
+        active &&
+        result == 'none' &&
+        _detachedPreservedVisualTurnId != null &&
+        _detachedPreservedVisualTurnId == normalizedTurnId;
+    final buffered = List<ServerMessage>.of(_detachedPendingVisualMessages);
+    if (!sameTurn) _clearDetachedVisualTimeline();
+    _detachedPreservedVisualTurnId = null;
+    _detachedVisualTurnValidationPending = false;
+    _detachedPendingVisualMessages.clear();
+    if (!active || result != 'none') return;
+    for (final pending in buffered) {
+      if (isClosed) return;
+      _onMessage(pending);
+    }
+  }
+
+  void _resetDetachedVisualTimelineInternals() {
+    _handler.currentStreaming = null;
+    _streamingCubit.reset();
+    _desktopContinuityHandlers.clear();
+    _desktopContinuityItemKeys.clear();
+    _restoredDesktopContinuityItemKeys.clear();
+    _desktopContinuityStreamingTurnKey = null;
+    _detachedPreservedVisualTurnId = null;
+    _detachedVisualTurnValidationPending = false;
+    _detachedPendingVisualMessages.clear();
+  }
+
+  void _clearDetachedVisualTimeline() {
+    _resetDetachedVisualTimelineInternals();
+    final durableEntries = state.entries
+        .where((entry) => entry is! StreamingChatEntry)
+        .toList(growable: false);
+    if (durableEntries.length != state.entries.length) {
+      emit(state.copyWith(entries: durableEntries));
+    }
   }
 
   /// Reconciles a newer durable cache snapshot without recreating the screen
@@ -1273,6 +1364,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             : executionHost == 'desktopAppServer');
     final activeTurnId = status.activeTurnId?.trim();
     final hasActiveTurnId = activeTurnId?.isNotEmpty == true;
+    if (!replaysRejectedAuthority) {
+      _validateDetachedVisualTurn(
+        active: active,
+        result: status.result,
+        activeTurnId: activeTurnId,
+      );
+    }
     _detachedActiveTurnId = replaysRejectedAuthority || !hasActiveTurnId
         ? null
         : activeTurnId;
