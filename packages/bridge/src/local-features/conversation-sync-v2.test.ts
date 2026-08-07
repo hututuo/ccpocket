@@ -1109,20 +1109,20 @@ describe("ConversationSyncV2FeatureHandler", () => {
       expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
     );
 
-    expect(events(fixture.sent, client, "error")).toHaveLength(0);
+    expect(events(fixture.sent, client, "error")).toEqual([
+      expect.objectContaining({
+        errorCode: "timeline_failed",
+        target: {
+          provider: "claude",
+          providerSessionId: "session-0",
+        },
+      }),
+    ]);
     expect(
       events(fixture.sent, client, "timeline_page").find(
         (event) => event.providerSessionId === "session-0",
       ),
-    ).toMatchObject({
-      entries: [],
-      latestTurnComplete: false,
-      latestTurnGap: {
-        missingEntryCount: 1,
-        payloadOmitted: false,
-        repair: "turns_page",
-      },
-    });
+    ).toBeUndefined();
     expect(
       events(fixture.sent, client, "timeline_page").some(
         (event) => event.providerSessionId === "session-1",
@@ -1180,6 +1180,59 @@ describe("ConversationSyncV2FeatureHandler", () => {
       JSON.stringify(events(fixture.sent, client, "timeline_page").at(-1)),
     ).toContain("retained live output");
     fixture.handler.close();
+  });
+
+  it("adds live fallback content without deleting a phone-only cached window", async () => {
+    const fixture = createFixture([seed(0)], async () => {
+      throw new Error("canonical history unavailable");
+    });
+    fixture.runtime.getProviderSessionId = () => "session-0";
+    const session: LocalFeatureSession = {
+      id: "runtime-0",
+      provider: "claude",
+      process: {},
+      projectPath: "/project/0",
+    };
+    const client = {};
+    const subscription = subscribeMessage([
+      {
+        provider: "claude",
+        providerSessionId: "session-0",
+        revision: "phone-cache-only-revision",
+      },
+    ]);
+
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    fixture.handler.sessionMessage(session, {
+      type: "assistant",
+      messageUuid: "runtime-live-additive-fallback",
+      message: {
+        id: "runtime-live-additive-fallback",
+        role: "assistant",
+        model: "test",
+        content: [{ type: "text", text: "additive live output" }],
+      },
+    });
+
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(2),
+    );
+    const livePage = events(fixture.sent, client, "timeline_page").at(-1);
+    expect(livePage).toMatchObject({
+      mode: "patch",
+      baseRevision: "phone-cache-only-revision",
+      deletes: [],
+      latestTurnComplete: false,
+    });
+    expect(JSON.stringify(livePage)).toContain("additive live output");
+    await fixture.handler.close();
   });
 
   it("accepts an ordered lower watermark that repairs phone clock skew", async () => {
@@ -2962,6 +3015,94 @@ describe("ConversationSyncV2FeatureHandler", () => {
       ),
     ).not.toHaveLength(0);
     fixture.handler.close();
+  });
+
+  it("shares a bounded provider-history cooldown across clients", async () => {
+    const historyReader = vi.fn(async () => {
+      throw new Error("provider temporarily unavailable");
+    });
+    const fixture = createFixture([seed(0)], historyReader, {
+      providerHistoryRetryDelaysMs: [500, 10_000],
+    });
+    const firstClient = {};
+    const secondClient = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(firstClient, fixture.runtime),
+    );
+    await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, firstClient, "sync_complete")).toHaveLength(
+        1,
+      ),
+    );
+    expect(events(fixture.sent, firstClient, "error")).toEqual([
+      expect.objectContaining({ errorCode: "timeline_failed" }),
+    ]);
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(secondClient, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, secondClient, "sync_complete")).toHaveLength(
+        1,
+      ),
+    );
+    expect(historyReader).toHaveBeenCalledTimes(1);
+    expect(events(fixture.sent, secondClient, "timeline_page")).toEqual([]);
+
+    await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(2), {
+      timeout: 2_000,
+    });
+    await fixture.handler.close();
+  });
+
+  it("lets explicit focus bypass a provider-history cooldown once", async () => {
+    let attempts = 0;
+    const historyReader = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("provider temporarily unavailable");
+      }
+      return history("session-0-recovered");
+    });
+    const fixture = createFixture([seed(0)], historyReader, {
+      providerHistoryRetryDelaysMs: [60_000],
+    });
+    const client = {};
+    const subscription = subscribeMessage();
+
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "focus-provider-history-retry",
+        subscriptionId: subscription.requestId,
+        focused: { provider: "claude", providerSessionId: "session-0" },
+      },
+      context(client, fixture.runtime),
+    );
+
+    await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "timeline_page").flatMap(
+          (event) => event.entries,
+        ),
+      ).not.toHaveLength(0),
+    );
+    await fixture.handler.close();
   });
 
   it("returns bounded detached tool details without a runtime session", async () => {

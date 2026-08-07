@@ -118,6 +118,12 @@ const MAX_SNAPSHOT_TARGETS = 32;
 const MAX_STATE_HISTORY = 4;
 const MAX_THREAD_STATES = 512;
 const PROVIDER_HISTORY_CONCURRENCY = 2;
+const PROVIDER_HISTORY_RETRY_DELAYS_MS = [
+  2_000,
+  5_000,
+  15_000,
+  30_000,
+] as const;
 const FULL_RECENT_TURNS = 3;
 const MAX_TURN_DETAIL_CACHE_BYTES = 16 * 1024 * 1024;
 const MAX_TURN_DETAIL_CACHE_ENTRIES = 128;
@@ -205,6 +211,11 @@ export interface ConversationSyncCatalogSeed {
 
 interface CatalogRecord extends ConversationSyncCatalogSeed {}
 
+interface SyncTimelineSnapshot extends ConversationContentSnapshot {
+  /** Internal-only marker; never serialized onto the wire. */
+  providerHistoryUnavailable?: boolean;
+}
+
 interface OutboundFrame {
   sequence: number;
   bytes: number;
@@ -256,6 +267,8 @@ interface ConversationSyncV2Options {
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
   historyReader?: ConversationHistoryReader;
   latestTurnHistoryReader?: ConversationHistoryReader;
+  /** Deterministic test seam for canonical-history failure backoff. */
+  providerHistoryRetryDelaysMs?: readonly number[];
   statusWatchdogMs?: number;
   coldReconcileMs?: number;
   observeCodexThread?: ObserveCodexThread;
@@ -280,6 +293,20 @@ interface ConversationSyncV2Options {
     client: object,
     message: ContextUsageMessage,
   ) => void;
+}
+
+class ProviderHistoryBackoffError extends Error {
+  constructor(readonly shouldReport: boolean) {
+    super("Canonical conversation history is temporarily unavailable.");
+    this.name = "ProviderHistoryBackoffError";
+  }
+}
+
+interface ProviderHistoryFailureState {
+  revision: string;
+  failures: number;
+  retryAt: number;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 interface SharedControlRecoverySnapshot {
@@ -440,6 +467,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
   private readonly historyReader: ConversationHistoryReader;
   private readonly latestTurnHistoryReader: ConversationHistoryReader;
+  private readonly providerHistoryRetryDelaysMs: readonly number[];
   private readonly statusWatchdogMs: number;
   private readonly coldReconcileMs: number;
   private readonly observeCodexThread: ObserveCodexThread;
@@ -478,7 +506,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   >();
   private readonly snapshotFlights = new Map<
     ConversationKey,
-    Promise<ConversationContentSnapshot>
+    Promise<SyncTimelineSnapshot>
+  >();
+  private readonly providerHistoryFailures = new Map<
+    ConversationKey,
+    ProviderHistoryFailureState
   >();
   private readonly resultLedger = new Map<
     ConversationKey,
@@ -637,6 +669,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.latestTurnHistoryReader =
       options.latestTurnHistoryReader ??
       ((target) => this.readLatestCodexConversationHistory(target));
+    const configuredHistoryRetryDelays =
+      options.providerHistoryRetryDelaysMs?.filter(
+        (delay) => Number.isFinite(delay) && delay > 0,
+      );
+    this.providerHistoryRetryDelaysMs =
+      configuredHistoryRetryDelays?.length
+        ? configuredHistoryRetryDelays
+        : PROVIDER_HISTORY_RETRY_DELAYS_MS;
     this.statusWatchdogMs = positiveInterval(
       options.statusWatchdogMs,
       STATUS_WATCHDOG_MS,
@@ -1726,6 +1766,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.subscriptions.clear();
     this.snapshots.clear();
     this.snapshotFlights.clear();
+    for (const failure of this.providerHistoryFailures.values()) {
+      if (failure.timer) clearTimeout(failure.timer);
+    }
+    this.providerHistoryFailures.clear();
     this.turnDetailCache.clear();
     this.liveContentRevisions.clear();
     this.pendingLiveContent.clear();
@@ -1904,6 +1948,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       ...(message.focused ? { focused: message.focused } : {}),
     });
     if (!message.focused) return;
+    // A user opening or explicitly retrying a conversation is an intentional
+    // recovery signal. It may bypass the background cooldown once; another
+    // real provider failure immediately installs the next bounded delay.
+    this.clearProviderHistoryFailure(targetKey(message.focused));
     if (
       message.focused.provider === "codex" &&
       this.legacyCodexMonitoringEnabled
@@ -2354,6 +2402,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           try {
             return await this.snapshotFor(record);
           } catch (error) {
+            const shouldReport =
+              !(error instanceof ProviderHistoryBackoffError) ||
+              error.shouldReport;
+            if (!shouldReport) return null;
             try {
               this.sendError(
                 client,
@@ -2395,7 +2447,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
 
   private async snapshotFor(
     record: CatalogRecord,
-  ): Promise<ConversationContentSnapshot> {
+  ): Promise<SyncTimelineSnapshot> {
     const key = targetKey(record.entry);
     // Capture the revision before the provider read begins. Runtime messages
     // can mutate the catalog record while this await is in flight; labelling
@@ -2415,6 +2467,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (cached) return cached;
     const existing = this.snapshotFlights.get(key);
     if (existing) return existing;
+    const failure = this.providerHistoryFailures.get(key);
+    if (failure) {
+      if (failure.revision !== requestedRevision) {
+        this.clearProviderHistoryFailure(key);
+      } else if (Date.now() < failure.retryAt) {
+        throw new ProviderHistoryBackoffError(false);
+      }
+    }
     const liveAtReadStart = this.liveContentRevisions.get(key);
     const previousSnapshot = this.snapshots.get(key)?.at(-1);
     const sharedMessagesAtReadStart = this.sharedObserverLiveMessages.get(key);
@@ -2448,6 +2508,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       console.warn(
         `[conversation-sync-v2] Canonical timeline temporarily unavailable (${kind})`,
       );
+      this.recordProviderHistoryFailure(key, requestedRevision);
       return {
         window: previousSnapshot
           ? historyWindowFromSnapshot(previousSnapshot)
@@ -2461,6 +2522,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     });
     const flight = historySource
       .then(({ window, canonicalMessages }) => {
+        if (!providerHistoryUnavailable) {
+          this.clearProviderHistoryFailure(key);
+        }
         const externalMessages = this.externalCodexLiveMessages.get(key);
         const sharedMessages = this.sharedObserverLiveMessages.get(key);
         const externalMergedMessages = mergeExternalCodexMessages(
@@ -2491,6 +2555,12 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           canonicalHistoryCoversSharedMessages
             ? window.messages
             : mergedMessages;
+        const hasFreshObservedContent =
+          (externalMessages?.size ?? 0) > 0 ||
+          (sharedMessages?.size ?? 0) > 0;
+        if (providerHistoryUnavailable && !hasFreshObservedContent) {
+          throw new ProviderHistoryBackoffError(true);
+        }
         for (const turn of window.turnDetails ?? []) {
           this.rememberTurnDetails(target, turn);
         }
@@ -2536,6 +2606,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
                 `provider-unavailable:${requestedRevision}`,
               )
             : requestedRevision,
+          ...(providerHistoryUnavailable
+            ? { providerHistoryUnavailable: true }
+            : {}),
           hasEarlier:
             built.hasEarlier ||
             window.nextTurnCursor != null ||
@@ -2608,7 +2681,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     client: object,
     subscription: SyncSubscription,
     record: CatalogRecord,
-    snapshot: ConversationContentSnapshot,
+    snapshot: SyncTimelineSnapshot,
     phase: "priority" | "recent" | "cold",
     timelineIndex: number,
     timelineCount: number,
@@ -2630,7 +2703,17 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           timelineIndex,
           timelineCount,
         )
-      : false;
+      : known && snapshot.providerHistoryUnavailable
+        ? this.sendTimelineAdditivePatch(
+            client,
+            subscription,
+            known,
+            snapshot,
+            phase,
+            timelineIndex,
+            timelineCount,
+          )
+        : false;
     if (!sent) {
       this.sendTimelineSnapshot(
         client,
@@ -2642,6 +2725,56 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       );
     }
     subscription.pendingThreadStates.set(key, snapshot.revision);
+  }
+
+  private sendTimelineAdditivePatch(
+    client: object,
+    subscription: SyncSubscription,
+    baseRevision: string,
+    snapshot: SyncTimelineSnapshot,
+    phase: "priority" | "recent" | "cold",
+    timelineIndex: number,
+    timelineCount: number,
+  ): boolean {
+    const pages = this.timelinePatchPages(
+      subscription,
+      baseRevision,
+      snapshot,
+      snapshot.entries,
+      [],
+      phase,
+      timelineIndex,
+      timelineCount,
+    );
+    let finalSequence = -1;
+    for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
+      const page = pages[pageIndex]!;
+      finalSequence = this.sendEvent(client, subscription, {
+        event: "timeline_page",
+        provider: snapshot.provider,
+        providerSessionId: snapshot.providerSessionId,
+        revision: snapshot.revision,
+        baseRevision,
+        mode: "patch",
+        phase,
+        timelineIndex,
+        timelineCount,
+        pageIndex,
+        pageCount: pages.length,
+        entries: page.entries.map(toWireConversationContentEntry),
+        deletes: [],
+        hasEarlier: true,
+        turnsNextCursor: snapshot.turnsNextCursor,
+        latestTurnComplete: false,
+        latestTurnGap: snapshot.latestTurnGap,
+        sourceEntryCount: snapshot.sourceEntryCount,
+      });
+    }
+    if (finalSequence < 0) return false;
+    this.mergeCommit(subscription, finalSequence, {
+      thread: { key: targetKey(snapshot), revision: snapshot.revision },
+    });
+    return true;
   }
 
   private sendTimelinePatch(
@@ -2956,6 +3089,12 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           ) {
             changedCodexThreads.push(entry.providerSessionId);
           }
+          if (
+            previousRecord &&
+            previousRecord.entry.revision !== entry.revision
+          ) {
+            this.clearProviderHistoryFailure(key);
+          }
           const live = this.liveContentRevisions.get(key);
           if (
             live &&
@@ -2972,6 +3111,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           });
         }
         this.catalog = next;
+        for (const key of this.providerHistoryFailures.keys()) {
+          if (!next.has(key)) this.clearProviderHistoryFailure(key);
+        }
         for (const key of this.focusedCodexSettingsAttempts.keys()) {
           if (!next.has(key)) this.focusedCodexSettingsAttempts.delete(key);
         }
@@ -4728,6 +4870,50 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
   }
 
+  private clearProviderHistoryFailure(key: ConversationKey): void {
+    const failure = this.providerHistoryFailures.get(key);
+    if (failure?.timer) clearTimeout(failure.timer);
+    this.providerHistoryFailures.delete(key);
+  }
+
+  private recordProviderHistoryFailure(
+    key: ConversationKey,
+    revision: string,
+  ): void {
+    const previous = this.providerHistoryFailures.get(key);
+    if (previous?.timer) clearTimeout(previous.timer);
+    const failures =
+      previous?.revision === revision ? previous.failures + 1 : 1;
+    const delays = this.providerHistoryRetryDelaysMs;
+    const delay =
+      delays.length === 0
+        ? 0
+        : delays[Math.min(failures - 1, delays.length - 1)]!;
+    const retryAt = Date.now() + delay;
+    const failure: ProviderHistoryFailureState = {
+      revision,
+      failures,
+      retryAt,
+    };
+    if (delay > 0 && !this.closed) {
+      failure.timer = setTimeout(() => {
+        const current = this.providerHistoryFailures.get(key);
+        if (
+          this.closed ||
+          current !== failure ||
+          current.revision !== revision ||
+          Date.now() < current.retryAt
+        ) {
+          return;
+        }
+        current.timer = undefined;
+        this.scheduleInteractiveClients({ dirtyKeys: [key] });
+      }, delay);
+      failure.timer.unref?.();
+    }
+    this.providerHistoryFailures.set(key, failure);
+  }
+
   private rememberTurnDetails(
     target: ConversationSyncTarget,
     turn: ConversationTurnDetails,
@@ -4914,6 +5100,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     readScope: LiveContentRevision["readScope"] = "recent",
   ): void {
     const key = targetKey(target);
+    // A live provider event advances the effective thread revision and is a
+    // stronger recovery signal than the previous failed canonical read.
+    this.clearProviderHistoryFailure(key);
     const previous = this.liveContentRevisions.get(key);
     const latestCatalogObservedAt = catalogObservedAt
       ? previous?.catalogObservedAt
