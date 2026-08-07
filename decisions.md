@@ -1650,3 +1650,16 @@
   故障和旧服务器不得被无条件误判为密钥错误。
 - Bridge 连接密钥只负责设备连接认证，与文件修改/删除使用的 Bridge 口令和 Face ID
   step-up 授权是两套边界，UI、配置和日志不得混称。
+
+## 2026-08-08 LAN 地址与 writer lease 恢复
+
+- Bridge 继续只绑定 `127.0.0.1:8765`，避免与 Tailscale TCP Serve 的 Tailnet
+  listener 冲突。局域网入口由独立认证代理绑定当前私有 `en0` IPv4；不得再把某次
+  DHCP 地址写成长期固定配置。代理在地址缺失时等待，在地址变化时重绑，API Key
+  摘要和 loopback upstream 不变。
+- Action Broker writer lease 的心跳如果发现 owner 不匹配或持久化失败，必须向
+  runtime 发布明确的 lease-loss 事件。Runtime 清除旧 generation/live binding，
+  进入既有的 1 秒 fenced retry；不得只清空 lease 内存后永久停在
+  `writer_lease_unavailable`。
+- Mobile 的 79% 表示 Bridge 认证与目录已完成、但 `/readyz` 尚未允许应用进入。
+  该门禁继续 fail closed；修复后端 readiness，不得把 79% 改成假完成。

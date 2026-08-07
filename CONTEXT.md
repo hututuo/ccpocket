@@ -1,5 +1,22 @@
 # CC Pocket Compatibility Fork Context
 
+## 2026-08-08 LAN and readiness recovery
+
+The current fix line is `fix/lan-readiness-recovery-20260808`, based on
+`d2dd008b`. Live diagnosis separated two failures: the authenticated LAN proxy
+still targeted the retired Wi-Fi address `192.168.124.67`, while the Bridge's
+Action Broker heartbeat had silently cleared its in-memory writer lease and
+never notified the runtime to retry. Mobile therefore either could not reach
+the LAN endpoint or correctly stopped at 79% because `/readyz` returned
+`action_broker_writer_unavailable`.
+
+The system proxy now follows the current private `en0` IPv4 and the Bridge
+runtime listens for an explicit lease-loss event, clears the stale generation,
+and schedules the existing fenced reacquisition path. A same-runtime restart
+restored production immediately without restarting the shared app-server;
+permanent Bridge deployment and physical-phone acceptance remain separate.
+Evidence: `notes/lan-and-readiness-recovery_v01_20260808-005605.md`.
+
 ## 2026-08-07 field retry and cache-rewind correction
 
 The latest source correction on `fix/architecture-review-remediation-20260807`
