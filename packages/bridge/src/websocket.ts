@@ -12144,7 +12144,6 @@ export class BridgeWebSocketServer {
     threadId: string,
     settings: CodexSharedRuntimeThreadSettings,
   ): Promise<void> {
-    const process = await this.createStandaloneCodexProcess(context.projectPath);
     const writerContext: CodexDurableThreadSettingsContext = {
       currentModel: context.settings.model,
       currentModelReasoningEffort:
@@ -12165,15 +12164,13 @@ export class BridgeWebSocketServer {
       networkAccessEnabled: context.settings.networkAccessEnabled,
       additionalWritableRoots: context.settings.additionalWritableRoots,
     };
-    try {
-      await process.updateDurableThreadSettingsForNextTurn(
+    await this.withCodexLifecycleProcess(context.projectPath, (process) =>
+      process.updateDurableThreadSettingsForNextTurn(
         threadId,
         settings,
         writerContext,
-      );
-    } finally {
-      process.stop();
-    }
+      ),
+    );
   }
 
   private async handleDurableCodexSettings(

@@ -12481,6 +12481,71 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     await bridge.close();
   });
 
+  it("reuses an active shared app-server client for durable thread settings", async () => {
+    vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
+    const actionRuntime = writableCodexActionBrokerRuntime();
+    const sharedRuntimeControl = {
+      ready: true,
+      connectionGeneration: 1,
+      pilotGates: { allowTurnStart: true },
+      on: vi.fn(),
+      off: vi.fn(),
+      recordThreadSettingsUpdated: vi.fn(),
+    } as any;
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      allowedDirs: ["/tmp"],
+      codexActionBrokerRuntime: actionRuntime,
+      sharedRuntimeControl,
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    getCodexSessionIndexMetadataMock.mockResolvedValue(
+      new Map([
+        [
+          "thread-active-reader",
+          {
+            projectPath: "/tmp/project-active-reader",
+            codexSettings: {
+              model: "gpt-5.6-sol",
+              modelReasoningEffort: "high",
+              serviceTier: "standard",
+            },
+          },
+        ],
+      ]),
+    );
+    const updateDurableThreadSettingsForNextTurn = vi.fn(async () => {});
+    const activeProcess = {
+      isRunning: true,
+      updateDurableThreadSettingsForNextTurn,
+    };
+    vi.spyOn(bridge as any, "getActiveCodexProcess").mockReturnValue(
+      activeProcess,
+    );
+    const standalone = vi.spyOn(bridge as any, "createStandaloneCodexProcess");
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "set_codex_speed",
+        serviceTier: "fast",
+        settingsTarget: "durable_thread",
+        codexSourceId: (bridge as any).codexSourceId,
+        threadId: "thread-active-reader",
+        operationId: "reuse-active-reader-1",
+      },
+      ws,
+    );
+
+    expect(updateDurableThreadSettingsForNextTurn).toHaveBeenCalledWith(
+      "thread-active-reader",
+      { serviceTier: "fast" },
+      expect.any(Object),
+    );
+    expect(standalone).not.toHaveBeenCalled();
+
+    await bridge.close();
+  });
+
   it("fails durable thread settings closed when the shared writer is unavailable", async () => {
     vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
     const actionRuntime = writableCodexActionBrokerRuntime();

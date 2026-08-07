@@ -126,6 +126,69 @@ describe("PushRelayClient", () => {
     ).rejects.toThrow("Push relay returned 500");
   });
 
+  it("retries idempotent token registration after transient failures", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("network unavailable"))
+      .mockResolvedValueOnce(new Response("busy", { status: 503 }))
+      .mockResolvedValueOnce(new Response("", { status: 200 }));
+    const retryDelay = vi.fn(async () => {});
+    const client = new PushRelayClient({
+      relayUrl: "https://relay.example.com/push",
+      firebaseAuth: createMockAuth(),
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      retryDelay,
+    });
+
+    await client.registerToken("token-1", "ios");
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(retryDelay).toHaveBeenNthCalledWith(1, 250);
+    expect(retryDelay).toHaveBeenNthCalledWith(2, 500);
+  });
+
+  it("does not retry notification delivery without server-side deduplication", async () => {
+    const fetchMock = vi.fn(async () => new Response("busy", { status: 503 }));
+    const retryDelay = vi.fn(async () => {});
+    const client = new PushRelayClient({
+      relayUrl: "https://relay.example.com/push",
+      firebaseAuth: createMockAuth(),
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      retryDelay,
+    });
+
+    await expect(
+      client.notify({
+        eventType: "session_completed",
+        title: "done",
+        body: "ok",
+      }),
+    ).rejects.toThrow("Push relay returned 503");
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(retryDelay).not.toHaveBeenCalled();
+  });
+
+  it("does not retry a non-transient token registration rejection", async () => {
+    const fetchMock = vi.fn(
+      async () => new Response("unauthorized", { status: 401 }),
+    );
+    const retryDelay = vi.fn(async () => {});
+    const client = new PushRelayClient({
+      relayUrl: "https://relay.example.com/push",
+      firebaseAuth: createMockAuth(),
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      retryDelay,
+    });
+
+    await expect(client.registerToken("token-1", "ios")).rejects.toThrow(
+      "Push relay returned 401",
+    );
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(retryDelay).not.toHaveBeenCalled();
+  });
+
   it("uses default relay URL when not specified", async () => {
     const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
     const mockAuth = createMockAuth();
