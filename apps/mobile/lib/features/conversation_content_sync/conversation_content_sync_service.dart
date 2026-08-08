@@ -1099,6 +1099,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       targetFingerprint: target.fingerprint,
       provider: provider,
       providerSessionId: providerSessionId,
+      expectedRevision: snapshot.revision,
+      expectedCursor: snapshot.turnsNextCursor,
       completer: completer,
     );
     _pendingTurnsPages[requestId] = pending;
@@ -2059,16 +2061,24 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               target: target,
               provider: event.provider!,
               providerSessionId: event.providerSessionId!,
+              expectedRevision: request.expectedRevision,
+              expectedCursor: request.expectedCursor,
               rawMessages: event.pageRawMessages(),
               nextCursor: event.nextCursor,
             );
             if (!request.completer.isCompleted) {
-              request.completer.complete(
-                ConversationTurnsPageLoadResult(
-                  loaded: snapshot != null,
-                  hasMore: event.nextCursor != null,
-                ),
-              );
+              if (snapshot == null) {
+                request.completer.completeError(
+                  const _ConversationPagingInterrupted(),
+                );
+              } else {
+                request.completer.complete(
+                  ConversationTurnsPageLoadResult(
+                    loaded: true,
+                    hasMore: event.nextCursor != null,
+                  ),
+                );
+              }
             }
             if (snapshot != null) {
               _publishCacheUpdate(
@@ -3000,6 +3010,8 @@ class _PendingTurnsPage {
     required this.targetFingerprint,
     required this.provider,
     required this.providerSessionId,
+    required this.expectedRevision,
+    required this.expectedCursor,
     required this.completer,
   });
 
@@ -3007,6 +3019,8 @@ class _PendingTurnsPage {
   final String targetFingerprint;
   final String provider;
   final String providerSessionId;
+  final String expectedRevision;
+  final String? expectedCursor;
   final Completer<ConversationTurnsPageLoadResult> completer;
 }
 

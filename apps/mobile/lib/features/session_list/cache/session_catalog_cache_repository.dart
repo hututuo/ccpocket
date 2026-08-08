@@ -1995,6 +1995,8 @@ class SessionCatalogCacheRepository {
     required SessionCatalogCacheTarget target,
     required String provider,
     required String providerSessionId,
+    required String expectedRevision,
+    required String? expectedCursor,
     required List<Map<String, dynamic>> rawMessages,
     required String? nextCursor,
   }) async {
@@ -2018,24 +2020,29 @@ class SessionCatalogCacheRepository {
         ),
       );
     }
-    await _enqueueMutation(() async {
+    final applied = await _enqueueMutationResult(() async {
       final db = await database.database;
-      await db.transaction((transaction) async {
+      return db.transaction((transaction) async {
         final partitionId = await _resolveReadablePartition(
           transaction,
           target,
         );
-        if (partitionId == null) return;
+        if (partitionId == null) return false;
         final windows = await transaction.query(
           SessionCatalogCacheDatabase.hotWindowsTable,
-          columns: ['source_entry_count'],
+          columns: ['revision', 'turns_next_cursor', 'source_entry_count'],
           where:
               'partition_id = ? AND provider = ? '
               'AND provider_session_id = ?',
           whereArgs: [partitionId, provider, providerSessionId],
           limit: 1,
         );
-        if (windows.isEmpty) return;
+        if (windows.isEmpty) return false;
+        final current = windows.single;
+        if (current['revision'] != expectedRevision ||
+            current['turns_next_cursor'] != expectedCursor) {
+          return false;
+        }
 
         final existingIds = <String>{};
         if (candidates.isNotEmpty) {
@@ -2113,8 +2120,10 @@ class SessionCatalogCacheRepository {
               'AND provider_session_id = ?',
           whereArgs: [partitionId, provider, providerSessionId],
         );
+        return true;
       });
     });
+    if (!applied) return null;
     return loadConversationWindow(
       target: target,
       provider: provider,

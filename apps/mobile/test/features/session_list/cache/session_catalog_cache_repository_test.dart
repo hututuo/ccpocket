@@ -2259,6 +2259,8 @@ void main() {
         target: target,
         provider: 'codex',
         providerSessionId: 'thread-turn-pages',
+        expectedRevision: 'revision-turn-pages',
+        expectedCursor: 'cursor-1',
         rawMessages: const [
           {
             'type': 'user_input',
@@ -2279,6 +2281,8 @@ void main() {
         target: target,
         provider: 'codex',
         providerSessionId: 'thread-turn-pages',
+        expectedRevision: 'revision-turn-pages',
+        expectedCursor: 'cursor-2',
         rawMessages: const [
           {
             'type': 'user_input',
@@ -2325,6 +2329,8 @@ void main() {
         target: target,
         provider: 'codex',
         providerSessionId: 'thread-provider-user-pages',
+        expectedRevision: 'revision-provider-user-pages',
+        expectedCursor: 'cursor-provider-users',
         rawMessages: const [
           {
             'type': 'user_input',
@@ -2347,6 +2353,75 @@ void main() {
         'user-provider:provider-user-second',
         'current-entry',
       ]);
+    },
+  );
+
+  test(
+    'rejects an older turn page after the canonical window revision advances',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-stale-turn-page',
+        codexSourceId: 'source-stale-turn-page',
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-stale-turn-page-r1',
+        provider: 'codex',
+        providerSessionId: 'thread-stale-turn-page',
+        revision: 'revision-one',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [_entry('current-r1', 0, 'idle')],
+        deletes: const [],
+        hasEarlier: true,
+        turnsNextCursor: 'cursor-one',
+        sourceEntryCount: 2,
+      );
+
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-stale-turn-page-r2',
+        provider: 'codex',
+        providerSessionId: 'thread-stale-turn-page',
+        revision: 'revision-two',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [_entry('current-r2', 0, 'working')],
+        deletes: const [],
+        hasEarlier: true,
+        turnsNextCursor: 'cursor-two',
+        sourceEntryCount: 2,
+      );
+
+      final stale = await repository.prependConversationTurnsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-stale-turn-page',
+        expectedRevision: 'revision-one',
+        expectedCursor: 'cursor-one',
+        rawMessages: const [
+          {
+            'type': 'user_input',
+            'text': 'stale earlier prompt',
+            'userMessageUuid': 'stale-user',
+          },
+        ],
+        nextCursor: null,
+      );
+
+      expect(stale, isNull);
+      final current = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-stale-turn-page',
+      );
+      expect(current?.revision, 'revision-two');
+      expect(current?.turnsNextCursor, 'cursor-two');
+      expect(current?.entries.map((entry) => entry.entryId), ['current-r2']);
     },
   );
 
@@ -2378,6 +2453,8 @@ void main() {
         target: target,
         provider: 'codex',
         providerSessionId: 'thread-legacy-turn-pages',
+        expectedRevision: 'revision-legacy-turn-pages',
+        expectedCursor: 'cursor-legacy-turn-pages',
         rawMessages: const [
           {
             'type': 'user_input',
