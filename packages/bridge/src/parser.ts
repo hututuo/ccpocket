@@ -391,6 +391,7 @@ export type ClientMessage =
       requestId: string;
       sessionId: string;
       toolUseIds: string[];
+      historyTurnId?: string;
     }
   | {
       type: "resolve_artifact";
@@ -2118,6 +2119,14 @@ export function parseClientMessage(data: string): ClientMessage | null {
               value.trim() !== value,
           ) ||
           new Set(msg.toolUseIds).size !== msg.toolUseIds.length
+        )
+          return null;
+        if (
+          msg.historyTurnId !== undefined &&
+          (typeof msg.historyTurnId !== "string" ||
+            msg.historyTurnId.length === 0 ||
+            msg.historyTurnId.length > 256 ||
+            msg.historyTurnId.trim() !== msg.historyTurnId)
         )
           return null;
         break;

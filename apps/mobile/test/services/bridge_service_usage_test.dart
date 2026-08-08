@@ -1617,6 +1617,7 @@ void main() {
         bridge.configureSessionHistoryToolDetails(({
           required runtimeSessionId,
           required toolUseIds,
+          required historyTurnId,
         }) async {
           return toolUseIds.contains('tool-local')
               ? const [
@@ -1631,6 +1632,7 @@ void main() {
 
         final details = await bridge.requestHistoryToolDetails(
           runtimeSessionId: runtimeSessionId,
+          historyTurnId: 'provider-turn-one',
           toolUseIds: const [
             'tool-local',
             'tool-1',
@@ -1654,6 +1656,7 @@ void main() {
           'tool-6',
           'tool-7',
         ]);
+        expect(requests.single['historyTurnId'], 'provider-turn-one');
         expect((requests.single['requestId'] as String).length, lessThan(128));
         expect(details, hasLength(2));
         expect(details?.first.toolUseId, 'tool-local');
@@ -1687,6 +1690,7 @@ void main() {
         bridge.configureSessionHistoryToolDetails(({
           required runtimeSessionId,
           required toolUseIds,
+          required historyTurnId,
         }) async {
           expect(runtimeSessionId, 's1');
           expect(toolUseIds, ['tool-local', 'missing']);

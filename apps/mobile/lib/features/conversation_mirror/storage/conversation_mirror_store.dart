@@ -785,8 +785,9 @@ class ConversationMirrorStore {
   /// fallback exists only for custom test engines and older compatible hosts.
   Future<List<ConversationMirrorEntry>> readToolEntries(
     ConversationMirrorKey key,
-    Iterable<String> toolUseIds,
-  ) async {
+    Iterable<String> toolUseIds, {
+    String? historyTurnId,
+  }) async {
     _validateKey(key);
     final ids = toolUseIds
         .map((value) => value.trim())
@@ -799,6 +800,10 @@ class ConversationMirrorStore {
       _validateIdentifier(id, 'Tool use ID', maxLength: 256);
     }
     final requested = ids.toSet();
+    final normalizedTurnId = historyTurnId?.trim();
+    if (normalizedTurnId?.isNotEmpty == true) {
+      _validateIdentifier(normalizedTurnId!, 'History turn ID', maxLength: 256);
+    }
     final placeholders = List.filled(ids.length, '?').join(', ');
     final db = await _database.database;
     return db.transaction((txn) async {
@@ -816,6 +821,10 @@ class ConversationMirrorStore {
           FROM ${ConversationMirrorDatabase.entriesTable} AS entries
           WHERE $_keyWhere
             AND generation = ?
+            AND (
+              ? IS NULL
+              OR json_extract(message_json, '\$.historyTurnId') = ?
+            )
             AND (
               (
                 json_extract(message_json, '\$.type') = 'tool_result'
@@ -840,7 +849,13 @@ class ConversationMirrorStore {
           ORDER BY ordinal ASC
           LIMIT 32
           ''',
-          [...baseArgs, ...ids, ...ids],
+          [
+            ...baseArgs,
+            normalizedTurnId?.isNotEmpty == true ? normalizedTurnId : null,
+            normalizedTurnId?.isNotEmpty == true ? normalizedTurnId : null,
+            ...ids,
+            ...ids,
+          ],
         );
       } on DatabaseException {
         final candidates = await txn.query(
@@ -854,6 +869,10 @@ class ConversationMirrorStore {
               try {
                 final decoded = jsonDecode(row['message_json'] as String);
                 if (decoded is! Map) return false;
+                if (normalizedTurnId?.isNotEmpty == true &&
+                    decoded['historyTurnId'] != normalizedTurnId) {
+                  return false;
+                }
                 if (decoded['type'] == 'tool_result') {
                   return requested.contains(decoded['toolUseId']);
                 }

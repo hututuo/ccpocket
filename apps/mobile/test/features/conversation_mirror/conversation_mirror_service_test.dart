@@ -269,9 +269,7 @@ void main() {
   test(
     'adopts the authenticated source for a legacy unscoped target',
     () async {
-      bridge.capabilities = const {
-        'conversation_mirror_source_identity_v1',
-      };
+      bridge.capabilities = const {'conversation_mirror_source_identity_v1'};
       bridge.emitSessionCatalogIdentity(
         nextBridgeId: 'bridge-test',
         nextSourceId: 'codex-home-source-a',
@@ -425,90 +423,93 @@ void main() {
     },
   );
 
-  test('reassembles a large entry snapshot without the 512 KiB failure', () async {
-    final download = service.downloadAndWatch(_recentSession);
-    await _waitUntil(() async => bridge.sent.isNotEmpty);
-    final requestId = bridge.sent.single['requestId'] as String;
-    final revision = _hashText('large-fragmented-entry');
-    final message = <String, dynamic>{
-      'type': 'tool_result',
-      'toolUseId': 'large-tool-result',
-      'content': 'x' * 700000,
-    };
-    final payload = Uint8List.fromList(utf8.encode(jsonEncode(message)));
-    final contentHash = sha256.convert(payload).toString();
-    const chunkSize = 256 * 1024;
-    final chunks = <Uint8List>[];
-    for (var offset = 0; offset < payload.length; offset += chunkSize) {
-      chunks.add(
-        Uint8List.sublistView(
-          payload,
-          offset,
-          math.min(offset + chunkSize, payload.length),
-        ),
-      );
-    }
-    bridge
-      ..emit(_event(requestId: requestId, event: 'accepted'))
-      ..emit(
+  test(
+    'reassembles a large entry snapshot without the 512 KiB failure',
+    () async {
+      final download = service.downloadAndWatch(_recentSession);
+      await _waitUntil(() async => bridge.sent.isNotEmpty);
+      final requestId = bridge.sent.single['requestId'] as String;
+      final revision = _hashText('large-fragmented-entry');
+      final message = <String, dynamic>{
+        'type': 'tool_result',
+        'toolUseId': 'large-tool-result',
+        'content': 'x' * 700000,
+      };
+      final payload = Uint8List.fromList(utf8.encode(jsonEncode(message)));
+      final contentHash = sha256.convert(payload).toString();
+      const chunkSize = 256 * 1024;
+      final chunks = <Uint8List>[];
+      for (var offset = 0; offset < payload.length; offset += chunkSize) {
+        chunks.add(
+          Uint8List.sublistView(
+            payload,
+            offset,
+            math.min(offset + chunkSize, payload.length),
+          ),
+        );
+      }
+      bridge
+        ..emit(_event(requestId: requestId, event: 'accepted'))
+        ..emit(
+          _event(
+            requestId: requestId,
+            event: 'watching',
+            revision: revision,
+            threadStatus: 'idle',
+          ),
+        )
+        ..emit(
+          _event(
+            requestId: requestId,
+            event: 'snapshot_begin',
+            revision: revision,
+            entryCount: 1,
+            pageCount: 1,
+            totalBytes: payload.length,
+            threadStatus: 'idle',
+          ),
+        );
+      // Delivery order is not trusted by the reassembler. A repeated identical
+      // chunk is idempotent; conflicting duplicates are rejected.
+      for (final chunkIndex in [2, 0, 0, 1]) {
+        bridge.emit(
+          ConversationMirrorEntryChunkMessage(
+            requestId: requestId,
+            bridgeInstanceId: 'bridge-test',
+            provider: 'codex',
+            providerSessionId: 'provider-session-1',
+            revision: revision,
+            pageIndex: 0,
+            pageCount: 1,
+            entryId: 'large-entry',
+            index: 0,
+            contentHash: contentHash,
+            chunkIndex: chunkIndex,
+            chunkCount: chunks.length,
+            totalBytes: payload.length,
+            payloadBase64: base64Encode(chunks[chunkIndex]),
+          ),
+        );
+      }
+      bridge.emit(
         _event(
           requestId: requestId,
-          event: 'watching',
-          revision: revision,
-          threadStatus: 'idle',
-        ),
-      )
-      ..emit(
-        _event(
-          requestId: requestId,
-          event: 'snapshot_begin',
+          event: 'snapshot_complete',
           revision: revision,
           entryCount: 1,
-          pageCount: 1,
-          totalBytes: payload.length,
           threadStatus: 'idle',
         ),
       );
-    // Delivery order is not trusted by the reassembler. A repeated identical
-    // chunk is idempotent; conflicting duplicates are rejected.
-    for (final chunkIndex in [2, 0, 0, 1]) {
-      bridge.emit(
-        ConversationMirrorEntryChunkMessage(
-          requestId: requestId,
-          bridgeInstanceId: 'bridge-test',
-          provider: 'codex',
-          providerSessionId: 'provider-session-1',
-          revision: revision,
-          pageIndex: 0,
-          pageCount: 1,
-          entryId: 'large-entry',
-          index: 0,
-          contentHash: contentHash,
-          chunkIndex: chunkIndex,
-          chunkCount: chunks.length,
-          totalBytes: payload.length,
-          payloadBase64: base64Encode(chunks[chunkIndex]),
-        ),
-      );
-    }
-    bridge.emit(
-      _event(
-        requestId: requestId,
-        event: 'snapshot_complete',
-        revision: revision,
-        entryCount: 1,
-        threadStatus: 'idle',
-      ),
-    );
 
-    final result = await download;
-    final metadata = await service.metadataFor(_recentSession);
-    final stored = await store.readEntries(metadata!.key);
+      final result = await download;
+      final metadata = await service.metadataFor(_recentSession);
+      final stored = await store.readEntries(metadata!.key);
 
-    expect(result.success, isTrue);
-    expect(stored.single.entryId, 'large-entry');
-    expect(stored.single.message['content'], 'x' * 700000);
-  });
+      expect(result.success, isTrue);
+      expect(stored.single.entryId, 'large-entry');
+      expect(stored.single.message['content'], 'x' * 700000);
+    },
+  );
 
   test(
     'a silent pre-feature Bridge falls back on the short first-frame deadline',
@@ -1046,12 +1047,7 @@ void main() {
         where:
             'bridge_instance_id = ? AND provider = ? AND '
             'provider_session_id = ? AND generation = ?',
-        whereArgs: [
-          'bridge-test',
-          'codex',
-          'provider-session-1',
-          generation,
-        ],
+        whereArgs: ['bridge-test', 'codex', 'provider-session-1', generation],
       );
       return rows.isEmpty ? null : rows.single['actual_entry_count'] as int;
     }
@@ -1079,9 +1075,7 @@ void main() {
           ],
         ),
       );
-      await _waitUntil(
-        () async => await stagedEntryCount() == pageIndex + 1,
-      );
+      await _waitUntil(() async => await stagedEntryCount() == pageIndex + 1);
       await Future<void>.delayed(Duration.zero);
       expect(
         notifications,
@@ -1369,9 +1363,7 @@ void main() {
     final budgetRequestId = bridge.sent.single['requestId'] as String;
 
     expect(
-      await budgetedReconciliation.timeout(
-        const Duration(milliseconds: 200),
-      ),
+      await budgetedReconciliation.timeout(const Duration(milliseconds: 200)),
       0,
     );
     expect(service.isSyncing(_recentSession), isFalse);
@@ -1428,11 +1420,7 @@ void main() {
     'not-modified sync restores an invalidated full-history cursor',
     () async {
       final revision = _hashText('not-modified-cursor-rebind');
-      await _seedLocalConversation(
-        store,
-        entryCount: 3000,
-        revision: revision,
-      );
+      await _seedLocalConversation(store, entryCount: 3000, revision: revision);
       await service.metadataFor(_recentSession);
       bridge.connected = false;
 
@@ -1601,16 +1589,13 @@ void main() {
       await service.metadataFor(_recentSession);
       bridge
         ..connected = false
-        ..canonicalMessages = List.generate(
-          50,
-          (index) {
-            final ordinal = index + 550;
-            return UserInputMessage(
-              text: 'message-$ordinal',
-              userMessageUuid: 'codex:user-turn:$ordinal',
-            );
-          },
-        );
+        ..canonicalMessages = List.generate(50, (index) {
+          final ordinal = index + 550;
+          return UserInputMessage(
+            text: 'message-$ordinal',
+            userMessageUuid: 'codex:user-turn:$ordinal',
+          );
+        });
       store
         ..readStarted = Completer<void>()
         ..readGate = Completer<void>();
@@ -1818,6 +1803,105 @@ void main() {
   );
 
   test(
+    'canonical overlap keeps repeated assistant and tool ids isolated by provider turn',
+    () async {
+      await _seedLocalConversation(
+        store,
+        entryCount: 4,
+        revision: _hashText('turn-scoped-canonical-overlap'),
+        messageBuilder: (index) {
+          final turnId = index < 2 ? 'turn-one' : 'turn-two';
+          if (index.isEven) {
+            return {
+              'type': 'assistant',
+              'historyTurnId': turnId,
+              'messageUuid': 'reused-assistant',
+              'message': {
+                'id': 'reused-assistant',
+                'role': 'assistant',
+                'model': 'codex',
+                'content': [
+                  {'type': 'text', 'text': 'cached assistant $turnId'},
+                ],
+              },
+            };
+          }
+          return {
+            'type': 'tool_result',
+            'historyTurnId': turnId,
+            'toolUseId': 'reused-tool',
+            'content': 'cached tool $turnId',
+          };
+        },
+      );
+      bridge
+        ..connected = false
+        ..canonicalMessages = const [
+          AssistantServerMessage(
+            historyTurnId: 'turn-one',
+            messageUuid: 'reused-assistant',
+            message: AssistantMessage(
+              id: 'reused-assistant',
+              role: 'assistant',
+              model: 'codex',
+              content: [TextContent(text: 'canonical assistant turn one')],
+            ),
+          ),
+          ToolResultMessage(
+            historyTurnId: 'turn-one',
+            toolUseId: 'reused-tool',
+            content: 'canonical tool turn one',
+          ),
+          AssistantServerMessage(
+            historyTurnId: 'turn-two',
+            messageUuid: 'reused-assistant',
+            message: AssistantMessage(
+              id: 'reused-assistant',
+              role: 'assistant',
+              model: 'codex',
+              content: [TextContent(text: 'canonical assistant turn two')],
+            ),
+          ),
+          ToolResultMessage(
+            historyTurnId: 'turn-two',
+            toolUseId: 'reused-tool',
+            content: 'canonical tool turn two',
+          ),
+        ];
+
+      expect(
+        await bridge.tryBootstrapSessionHistory(
+          runtimeSessionId: 'runtime-1',
+          provider: 'codex',
+          projectPath: '/tmp/project',
+        ),
+        isTrue,
+      );
+
+      final initial = bridge.externallyPublishedHistories.single;
+      expect(initial, hasLength(4));
+      expect(
+        initial.whereType<AssistantServerMessage>().map(
+          (message) => (message.message.content.single as TextContent).text,
+        ),
+        orderedEquals(const [
+          'canonical assistant turn one',
+          'canonical assistant turn two',
+        ]),
+      );
+      expect(
+        initial.whereType<ToolResultMessage>().map(
+          (message) => message.content,
+        ),
+        orderedEquals(const [
+          'canonical tool turn one',
+          'canonical tool turn two',
+        ]),
+      );
+    },
+  );
+
+  test(
     'a superseded page read cannot remove the replacement mirror cursor',
     () async {
       await _seedLocalConversation(
@@ -2003,6 +2087,69 @@ void main() {
       expect(details?.single.toolName, 'Read');
       expect(details?.single.input, {'file_path': '/tmp/local.txt'});
       expect(details?.single.result?.content, 'local contents');
+      expect(bridge.sent, isEmpty);
+    },
+  );
+
+  test(
+    'offline mirror tool details select the requested provider turn',
+    () async {
+      await _seedLocalConversation(
+        store,
+        entryCount: 4,
+        revision: _hashText('offline-turn-scoped-tool-detail'),
+        messageBuilder: (index) {
+          final turnId = index < 2 ? 'provider-turn-one' : 'provider-turn-two';
+          if (index.isEven) {
+            return {
+              'type': 'assistant',
+              'historyTurnId': turnId,
+              'messageUuid': 'assistant-$turnId',
+              'message': {
+                'id': 'assistant-$turnId',
+                'role': 'assistant',
+                'model': 'codex',
+                'content': [
+                  {
+                    'type': 'tool_use',
+                    'id': 'reused-tool',
+                    'name': 'Read',
+                    'input': {'file_path': '/tmp/$turnId.txt'},
+                  },
+                ],
+              },
+            };
+          }
+          return {
+            'type': 'tool_result',
+            'historyTurnId': turnId,
+            'toolUseId': 'reused-tool',
+            'toolName': 'Read',
+            'content': 'result for $turnId',
+          };
+        },
+      );
+      bridge.connected = false;
+      expect(
+        await bridge.tryBootstrapSessionHistory(
+          runtimeSessionId: 'runtime-1',
+          provider: 'codex',
+          projectPath: '/tmp/project',
+        ),
+        isTrue,
+      );
+
+      final details = await bridge.requestHistoryToolDetails(
+        runtimeSessionId: 'runtime-1',
+        toolUseIds: const ['reused-tool'],
+        historyTurnId: 'provider-turn-one',
+      );
+
+      expect(details, hasLength(1));
+      expect(details?.single.input, {
+        'file_path': '/tmp/provider-turn-one.txt',
+      });
+      expect(details?.single.result?.content, 'result for provider-turn-one');
       expect(bridge.sent, isEmpty);
     },
   );
@@ -3140,7 +3287,8 @@ void main() {
       final watchRequestId = bridge.sent.single['requestId'] as String;
       final initialSync = service.syncNow(_recentSession);
       await _waitUntil(
-        () async => bridge.sent
+        () async =>
+            bridge.sent
                 .where(
                   (request) => request['type'] == 'conversation_mirror_sync',
                 )
@@ -3182,7 +3330,10 @@ void main() {
               revision: nextRevision,
               baseRevision: initialRevision,
             ),
-            'upserts': [null, {'entryId': 'missing-message'}],
+            'upserts': [
+              null,
+              {'entryId': 'missing-message'},
+            ],
             'deletes': [''],
           }),
         );
@@ -3195,7 +3346,8 @@ void main() {
         initialRevision,
       );
       await _waitUntil(
-        () async => bridge.sent
+        () async =>
+            bridge.sent
                 .where(
                   (request) => request['type'] == 'conversation_mirror_sync',
                 )

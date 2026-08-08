@@ -1223,6 +1223,17 @@ describe("parseClientMessage", () => {
     });
     expect(
       parseClientMessage(
+        '{"type":"get_history_tool_details","requestId":"tools-2","sessionId":"s2","toolUseIds":["tool-1"],"historyTurnId":"provider-turn-one"}',
+      ),
+    ).toEqual({
+      type: "get_history_tool_details",
+      requestId: "tools-2",
+      sessionId: "s2",
+      toolUseIds: ["tool-1"],
+      historyTurnId: "provider-turn-one",
+    });
+    expect(
+      parseClientMessage(
         '{"type":"get_history_tool_details","requestId":"tools-1","sessionId":"s2","toolUseIds":[]}',
       ),
     ).toBeNull();
@@ -1234,6 +1245,11 @@ describe("parseClientMessage", () => {
     expect(
       parseClientMessage(
         '{"type":"get_history_tool_details","requestId":"tools-1","sessionId":"s2","toolUseIds":["tool-1"," tool-1 "]}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"get_history_tool_details","requestId":"tools-1","sessionId":"s2","toolUseIds":["tool-1"],"historyTurnId":" provider-turn-one "}',
       ),
     ).toBeNull();
   });

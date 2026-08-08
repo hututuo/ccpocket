@@ -123,6 +123,71 @@ void main() {
     );
   });
 
+  test('keeps repeated legacy tool ids as distinct turn-scoped gaps', () {
+    final selected = selectTurnAwareServerMessageWindow([
+      const UserInputMessage(text: 'first', historyTurnId: 'provider-turn-one'),
+      const AssistantServerMessage(
+        historyTurnId: 'provider-turn-one',
+        message: AssistantMessage(
+          id: 'assistant-one',
+          role: 'assistant',
+          model: 'codex',
+          content: [
+            ToolUseContent(
+              id: 'reused-tool',
+              name: 'Read',
+              input: {'file_path': 'one.txt'},
+            ),
+          ],
+        ),
+      ),
+      const ToolResultMessage(
+        historyTurnId: 'provider-turn-one',
+        toolUseId: 'reused-tool',
+        content: 'first result',
+      ),
+      const UserInputMessage(
+        text: 'second',
+        historyTurnId: 'provider-turn-two',
+      ),
+      const AssistantServerMessage(
+        historyTurnId: 'provider-turn-two',
+        message: AssistantMessage(
+          id: 'assistant-two',
+          role: 'assistant',
+          model: 'codex',
+          content: [
+            ToolUseContent(
+              id: 'reused-tool',
+              name: 'Read',
+              input: {'file_path': 'two.txt'},
+            ),
+          ],
+        ),
+      ),
+      const ToolResultMessage(
+        historyTurnId: 'provider-turn-two',
+        toolUseId: 'reused-tool',
+        content: 'second result',
+      ),
+    ], toolCalls: 0);
+
+    final gaps = selected
+        .whereType<AssistantServerMessage>()
+        .expand((message) => message.historyToolDetailGaps)
+        .toList(growable: false);
+    expect(gaps, hasLength(2));
+    expect(gaps.map((gap) => gap.turnId), [
+      'provider-turn-one',
+      'provider-turn-two',
+    ]);
+    expect(gaps.map((gap) => gap.gapId).toSet(), hasLength(2));
+    expect(gaps.map((gap) => gap.toolUseIds), [
+      ['reused-tool'],
+      ['reused-tool'],
+    ]);
+  });
+
   test('drops anonymous tool payloads that have no stable detail identity', () {
     final largeInput = List.filled(1000, 'x').join();
     final selected = selectTurnAwareServerMessageWindow([

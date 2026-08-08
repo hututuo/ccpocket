@@ -105,6 +105,42 @@ describe("codexThreadToSessionHistory", () => {
     );
   });
 
+  it("retains repeated tool ids separately across provider turns", () => {
+    const history = codexThreadToSessionHistory({
+      turns: ["provider-turn-one", "provider-turn-two"].map((turnId) => ({
+        id: turnId,
+        items: [
+          {
+            type: "userMessage",
+            id: `user-${turnId}`,
+            content: [{ type: "text", text: `request ${turnId}` }],
+          },
+          {
+            type: "commandExecution",
+            id: "reused-tool",
+            command: "pwd",
+            status: "completed",
+            aggregatedOutput: `result ${turnId}`,
+          },
+        ],
+      })),
+    });
+
+    const results = history.filter(
+      (message) =>
+        message.role === "tool_result" && message.toolUseId === "reused-tool",
+    );
+    expect(results).toHaveLength(2);
+    expect(results.map((message) => message.historyTurnId)).toEqual([
+      "provider-turn-one",
+      "provider-turn-two",
+    ]);
+    expect(results.map((message) => message.content)).toEqual([
+      "status: completed\nresult provider-turn-one",
+      "status: completed\nresult provider-turn-two",
+    ]);
+  });
+
   it("converts official thread turns into display history", () => {
     const history = codexThreadToSessionHistory({
       turns: [
@@ -2219,10 +2255,7 @@ describe("codex sessions integration", () => {
     mkdirSync(codexDir, { recursive: true });
 
     writeFileSync(
-      join(
-        codexDir,
-        `rollout-2026-02-13T12-00-00-${requestedThreadId}.jsonl`,
-      ),
+      join(codexDir, `rollout-2026-02-13T12-00-00-${requestedThreadId}.jsonl`),
       [
         JSON.stringify({
           timestamp: "2026-02-13T12:00:00.000Z",
@@ -2246,10 +2279,9 @@ describe("codex sessions integration", () => {
       ].join("\n"),
     );
 
-    const metadata = await getCodexSessionIndexMetadata(
-      [requestedThreadId],
-      { authoritativeCodexSettings: true },
-    );
+    const metadata = await getCodexSessionIndexMetadata([requestedThreadId], {
+      authoritativeCodexSettings: true,
+    });
 
     expect(metadata.has(requestedThreadId)).toBe(false);
   });
@@ -2373,6 +2405,74 @@ describe("codex sessions integration", () => {
     expect(history[0].content[0].text).toBe("show me the diff");
     expect(history[1].role).toBe("assistant");
     expect(history[1].content[0].text).toBe("Here is the diff summary.");
+  });
+
+  it("keeps repeated JSONL tool ids isolated by active provider turn", async () => {
+    const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68019";
+    const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
+    mkdirSync(codexDir, { recursive: true });
+    const lines: string[] = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: threadId, cwd: "/tmp/project-a" },
+      }),
+    ];
+    for (const turnId of ["provider-turn-one", "provider-turn-two"]) {
+      lines.push(
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "task_started", turn_id: turnId },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            client_id: "reused-client-message",
+            message: `request ${turnId}`,
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "exec_command",
+            call_id: "reused-tool",
+            arguments: JSON.stringify({ cmd: "pwd" }),
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: "reused-tool",
+            output: `result ${turnId}`,
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "task_complete", turn_id: turnId },
+        }),
+      );
+    }
+    writeFileSync(
+      join(codexDir, `rollout-2026-02-13T11-26-43-${threadId}.jsonl`),
+      lines.join("\n"),
+    );
+
+    const history = await getCodexSessionHistory(threadId);
+    const results = history.filter(
+      (message) =>
+        message.role === "tool_result" && message.toolUseId === "reused-tool",
+    );
+    expect(results).toHaveLength(2);
+    expect(results.map((message) => message.historyTurnId)).toEqual([
+      "provider-turn-one",
+      "provider-turn-two",
+    ]);
+    expect(results.map((message) => message.content)).toEqual([
+      "result provider-turn-one",
+      "result provider-turn-two",
+    ]);
   });
 
   it("streams codex history with large irrelevant entries", async () => {

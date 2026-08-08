@@ -3069,6 +3069,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           ? await _bridge.requestHistoryToolDetails(
               runtimeSessionId: sessionId,
               toolUseIds: requestedIds,
+              historyTurnId: gap.turnId,
             )
           : await _detachedHistoryToolDetailLoader!(gap, requestedIds);
       if (isClosed || !_historyToolDetailGapIsActive(gap.gapId)) {

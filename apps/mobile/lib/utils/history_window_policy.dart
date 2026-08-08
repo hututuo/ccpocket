@@ -217,9 +217,10 @@ Set<String> _newestConcreteToolIds(
     final ids = _concreteToolIdsForMessage(messages[index]);
     for (var position = ids.length - 1; position >= 0; position--) {
       final id = ids[position];
-      if (selected.contains(id)) continue;
+      final occurrenceKey = _historyToolOccurrenceKey(messages[index], id);
+      if (selected.contains(occurrenceKey)) continue;
       if (selected.length >= limit) return selected;
-      selected.add(id);
+      selected.add(occurrenceKey);
     }
   }
   return selected;
@@ -289,13 +290,15 @@ List<TurnAwareServerMessageProjection> _projectMessages(
 
   void addGapTool(int sourceIndex, String toolUseId, String toolName) {
     final id = toolUseId.trim();
-    if (id.isEmpty || !gappedToolIds.add(id)) return;
+    final turnId = _historyTurnIdForMessage(messages[sourceIndex]);
+    final occurrenceKey = _historyToolOccurrenceKeyForTurn(turnId, id);
+    if (id.isEmpty || !gappedToolIds.add(occurrenceKey)) return;
     final host = gapHost ?? createGapHost(sourceIndex);
     var gap = host.gaps.lastOrNull;
-    if (gap == null || gap.toolUseIds.length >= turnAwareHistoryGapToolIds) {
-      gap = _GapBuilder(
-        turnId: _historyTurnIdForMessage(messages[sourceIndex]),
-      );
+    if (gap == null ||
+        gap.toolUseIds.length >= turnAwareHistoryGapToolIds ||
+        gap.turnId != turnId) {
+      gap = _GapBuilder(turnId: turnId);
       host.gaps.add(gap);
     }
     gap.toolUseIds.add(id);
@@ -320,14 +323,18 @@ List<TurnAwareServerMessageProjection> _projectMessages(
         for (final content in message.message.content)
           if (content is! ToolUseContent ||
               (content.id.trim().isNotEmpty &&
-                  retainedToolIds.contains(content.id.trim())))
+                  retainedToolIds.contains(
+                    _historyToolOccurrenceKey(message, content.id.trim()),
+                  )))
             content,
       ];
       final omittedTools = [
         for (final content in message.message.content)
           if (content is ToolUseContent &&
               content.id.trim().isNotEmpty &&
-              !retainedToolIds.contains(content.id.trim()))
+              !retainedToolIds.contains(
+                _historyToolOccurrenceKey(message, content.id.trim()),
+              ))
             content,
       ];
       final hasRetainedTool = retainedContent.any(
@@ -394,7 +401,8 @@ List<TurnAwareServerMessageProjection> _projectMessages(
 
     if (message is ToolResultMessage) {
       final id = message.toolUseId.trim();
-      if (id.isNotEmpty && !retainedToolIds.contains(id)) {
+      if (id.isNotEmpty &&
+          !retainedToolIds.contains(_historyToolOccurrenceKey(message, id))) {
         addGapTool(index, id, message.toolName ?? '');
         continue;
       }
@@ -448,9 +456,18 @@ List<int> _hardCapProjectedMessages(
   return selected.toList()..sort();
 }
 
-String historyToolDetailGapId(List<String> toolUseIds) {
+String historyToolDetailGapId(List<String> toolUseIds, {String? turnId}) {
+  final normalizedTurnId = turnId?.trim();
   final digest = sha256
-      .convert(utf8.encode(jsonEncode(toolUseIds)))
+      .convert(
+        utf8.encode(
+          jsonEncode(
+            normalizedTurnId?.isNotEmpty == true
+                ? [normalizedTurnId, toolUseIds]
+                : toolUseIds,
+          ),
+        ),
+      )
       .toString()
       .substring(0, 24);
   return 'tool-gap-v1:${toolUseIds.length}:$digest';
@@ -528,7 +545,7 @@ class _GapBuilder {
   final List<String> toolNames = [];
 
   HistoryToolDetailGap build() => HistoryToolDetailGap(
-    gapId: historyToolDetailGapId(toolUseIds),
+    gapId: historyToolDetailGapId(toolUseIds, turnId: turnId),
     toolUseIds: List.unmodifiable(toolUseIds),
     toolNames: List.unmodifiable(toolNames),
     toolCallCount: toolUseIds.length,
@@ -542,3 +559,15 @@ String? _historyTurnIdForMessage(ServerMessage message) => switch (message) {
   ToolResultMessage(:final historyTurnId) => historyTurnId,
   _ => null,
 };
+
+String _historyToolOccurrenceKey(ServerMessage message, String toolUseId) =>
+    _historyToolOccurrenceKeyForTurn(
+      _historyTurnIdForMessage(message),
+      toolUseId,
+    );
+
+String _historyToolOccurrenceKeyForTurn(String? turnId, String toolUseId) {
+  final normalizedTurnId = turnId?.trim();
+  return '${normalizedTurnId?.isNotEmpty == true ? normalizedTurnId : 'legacy'}'
+      '\u0000${toolUseId.trim()}';
+}

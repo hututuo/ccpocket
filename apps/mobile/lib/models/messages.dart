@@ -6169,11 +6169,13 @@ class ClientMessage {
     required String requestId,
     required String sessionId,
     required List<String> toolUseIds,
+    String? historyTurnId,
   }) => ClientMessage._({
     'type': 'get_history_tool_details',
     'requestId': requestId,
     'sessionId': sessionId,
     'toolUseIds': toolUseIds,
+    'historyTurnId': ?historyTurnId,
   });
 
   factory ClientMessage.resolveSessionLink({

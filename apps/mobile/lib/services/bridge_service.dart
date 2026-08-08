@@ -276,6 +276,7 @@ typedef SessionHistoryToolDetailLoader =
     Future<List<HistoryToolDetail>?> Function({
       required String runtimeSessionId,
       required List<String> toolUseIds,
+      required String? historyTurnId,
     });
 
 class _ExternalSessionHistoryMetadata {
@@ -6026,6 +6027,7 @@ class BridgeService implements BridgeServiceBase {
   Future<List<HistoryToolDetail>?> requestHistoryToolDetails({
     required String runtimeSessionId,
     required List<String> toolUseIds,
+    String? historyTurnId,
     Duration timeout = const Duration(seconds: 12),
   }) async {
     final normalizedIds = toolUseIds
@@ -6043,6 +6045,7 @@ class BridgeService implements BridgeServiceBase {
         final local = await localLoader(
           runtimeSessionId: runtimeSessionId,
           toolUseIds: normalizedIds,
+          historyTurnId: historyTurnId,
         );
         for (final detail in local ?? const <HistoryToolDetail>[]) {
           if (normalizedIds.contains(detail.toolUseId)) {
@@ -6083,6 +6086,7 @@ class BridgeService implements BridgeServiceBase {
           requestId: requestId,
           sessionId: runtimeSessionId,
           toolUseIds: missingIds,
+          historyTurnId: historyTurnId,
         ),
       );
       final response = await completer.future.timeout(timeout);

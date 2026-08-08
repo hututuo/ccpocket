@@ -101,14 +101,18 @@ function newestHistoricalAndAllLatestTurnToolIds<
     const ids = concreteToolIdsForMessage(entries[index].message);
     for (let position = ids.length - 1; position >= 0; position -= 1) {
       const id = ids[position];
-      if (selected.has(id)) continue;
+      const occurrenceKey = historyToolOccurrenceKey(
+        entries[index].message,
+        id,
+      );
+      if (selected.has(occurrenceKey)) continue;
       if (selected.size >= historicalLimit) break;
-      selected.add(id);
+      selected.add(occurrenceKey);
     }
   }
   for (let index = latestTurnStart; index < entries.length; index += 1) {
     for (const id of concreteToolIdsForMessage(entries[index].message)) {
-      selected.add(id);
+      selected.add(historyToolOccurrenceKey(entries[index].message, id));
     }
   }
   return selected;
@@ -125,9 +129,13 @@ function newestToolIds<T extends SequencedServerMessage>(
     const ids = concreteToolIdsForMessage(entries[index].message);
     for (let position = ids.length - 1; position >= 0; position -= 1) {
       const id = ids[position];
-      if (selected.has(id)) continue;
+      const occurrenceKey = historyToolOccurrenceKey(
+        entries[index].message,
+        id,
+      );
+      if (selected.has(occurrenceKey)) continue;
       if (selected.size >= limit) return selected;
-      selected.add(id);
+      selected.add(occurrenceKey);
     }
   }
   return selected;
@@ -180,6 +188,10 @@ function projectEntries<T extends SequencedServerMessage>(
   const createGapHost = (sourceIndex: number) => {
     const source = entries[sourceIndex];
     const sourceMessage = source.message;
+    const historyTurnId =
+      sourceMessage.type === "assistant" || sourceMessage.type === "tool_result"
+        ? sourceMessage.historyTurnId
+        : undefined;
     const outputIndex = projected.length;
     const gaps: HistoryToolDetailGap[] = [];
     projected.push({
@@ -198,6 +210,7 @@ function projectEntries<T extends SequencedServerMessage>(
         ...(sourceMessage.type === "assistant" && sourceMessage.messageUuid
           ? { messageUuid: sourceMessage.messageUuid }
           : {}),
+        ...(historyTurnId ? { historyTurnId } : {}),
         historyToolDetailGaps: gaps,
       }),
     });
@@ -212,7 +225,8 @@ function projectEntries<T extends SequencedServerMessage>(
     turnId?: string,
   ) => {
     const id = toolUseId.trim();
-    if (!id || gappedToolIds.has(id)) return;
+    const occurrenceKey = historyToolOccurrenceKeyForTurn(turnId, id);
+    if (!id || gappedToolIds.has(occurrenceKey)) return;
     const host = gapHost ?? createGapHost(sourceIndex);
     let gap = host.gaps.at(-1);
     if (
@@ -232,8 +246,8 @@ function projectEntries<T extends SequencedServerMessage>(
     gap.toolUseIds.push(id);
     gap.toolNames.push(toolName.trim());
     gap.toolCallCount = gap.toolUseIds.length;
-    gap.gapId = historyToolDetailGapId(gap.toolUseIds);
-    gappedToolIds.add(id);
+    gap.gapId = historyToolDetailGapId(gap.toolUseIds, gap.turnId);
+    gappedToolIds.add(occurrenceKey);
     setHostGaps(host);
   };
 
@@ -254,13 +268,17 @@ function projectEntries<T extends SequencedServerMessage>(
         (content) =>
           content.type !== "tool_use" ||
           (content.id.trim().length > 0 &&
-            retainedToolIds.has(content.id.trim())),
+            retainedToolIds.has(
+              historyToolOccurrenceKey(message, content.id.trim()),
+            )),
       );
       const omittedTools = message.message.content.filter(
         (content) =>
           content.type === "tool_use" &&
           content.id.trim().length > 0 &&
-          !retainedToolIds.has(content.id.trim()),
+          !retainedToolIds.has(
+            historyToolOccurrenceKey(message, content.id.trim()),
+          ),
       );
       const existingGaps = message.historyToolDetailGaps ?? [];
       const hasRetainedTool = retainedContent.some(
@@ -316,7 +334,7 @@ function projectEntries<T extends SequencedServerMessage>(
 
     if (message.type === "tool_result") {
       const id = message.toolUseId.trim();
-      if (id && !retainedToolIds.has(id)) {
+      if (id && !retainedToolIds.has(historyToolOccurrenceKey(message, id))) {
         addGapTool(index, id, message.toolName ?? "", message.historyTurnId);
         continue;
       }
@@ -359,12 +377,39 @@ function hardCapProjectedEntries<T extends SequencedServerMessage>(
   return [...selected].sort((left, right) => left - right);
 }
 
-export function historyToolDetailGapId(toolUseIds: readonly string[]): string {
+export function historyToolDetailGapId(
+  toolUseIds: readonly string[],
+  turnId?: string,
+): string {
+  const normalizedTurnId = turnId?.trim();
   const digest = createHash("sha256")
-    .update(JSON.stringify(toolUseIds))
+    .update(
+      normalizedTurnId
+        ? JSON.stringify([normalizedTurnId, toolUseIds])
+        : JSON.stringify(toolUseIds),
+    )
     .digest("hex")
     .slice(0, 24);
   return `tool-gap-v1:${toolUseIds.length}:${digest}`;
+}
+
+function historyToolOccurrenceKey(
+  message: ServerMessage,
+  toolUseId: string,
+): string {
+  const turnId =
+    message.type === "assistant" || message.type === "tool_result"
+      ? message.historyTurnId
+      : undefined;
+  return historyToolOccurrenceKeyForTurn(turnId, toolUseId);
+}
+
+function historyToolOccurrenceKeyForTurn(
+  turnId: string | undefined,
+  toolUseId: string,
+): string {
+  const normalizedTurnId = turnId?.trim();
+  return `${normalizedTurnId || "legacy"}\u0000${toolUseId.trim()}`;
 }
 
 function startOfLatestRootTurns<T extends SequencedServerMessage>(

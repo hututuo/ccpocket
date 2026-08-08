@@ -1544,6 +1544,95 @@ describe("CodexRolloutMonitor", () => {
     monitor.close();
   });
 
+  it("does not deduplicate repeated user assistant and tool ids across provider turns", async () => {
+    const path = await rollout();
+    const events: CodexDesktopContinuityMonitorEvent[] = [];
+    const monitor = new CodexRolloutMonitor({
+      threadId: "thread-repeated-provider-ids",
+      path,
+      getLocalActiveTurnId: () => undefined,
+      consumeLocalClientMessageId: () => false,
+      onEvent: (entry) => events.push(entry),
+    });
+    await monitor.start();
+
+    for (const [index, turnId] of [
+      "provider-turn-one",
+      "provider-turn-two",
+    ].entries()) {
+      const timestamp = `2026-07-19T12:0${index}:00Z`;
+      await appendEntries(path, [
+        event(
+          "event_msg",
+          { type: "task_started", turn_id: turnId },
+          timestamp,
+        ),
+        event(
+          "event_msg",
+          {
+            type: "user_message",
+            client_id: "reused-client-message",
+            message: `request ${turnId}`,
+          },
+          timestamp,
+        ),
+        event(
+          "response_item",
+          {
+            type: "function_call",
+            call_id: "reused-tool",
+            name: "Read",
+            arguments: JSON.stringify({ file_path: `${turnId}.txt` }),
+          },
+          timestamp,
+        ),
+        event(
+          "response_item",
+          {
+            type: "function_call_output",
+            call_id: "reused-tool",
+            output: `result ${turnId}`,
+          },
+          timestamp,
+        ),
+        event(
+          "event_msg",
+          { type: "task_complete", turn_id: turnId },
+          timestamp,
+        ),
+      ]);
+      await monitor.refreshNow();
+    }
+
+    const messages = events.filter(
+      (
+        entry,
+      ): entry is Extract<
+        CodexDesktopContinuityMonitorEvent,
+        { kind: "message" }
+      > => entry.kind === "message",
+    );
+    expect(
+      messages.filter((entry) => entry.message.type === "user_input"),
+    ).toHaveLength(2);
+    expect(
+      messages.filter(
+        (entry) =>
+          entry.message.type === "assistant" &&
+          entry.message.message.content.some(
+            (content) => content.type === "tool_use",
+          ),
+      ),
+    ).toHaveLength(2);
+    expect(
+      messages.filter((entry) => entry.message.type === "tool_result"),
+    ).toHaveLength(2);
+    expect(new Set(messages.map((entry) => entry.turnId))).toEqual(
+      new Set(["provider-turn-one", "provider-turn-two"]),
+    );
+    monitor.close();
+  });
+
   it("pairs event assistant messages with canonical response ids and suppresses late duplicates", async () => {
     vi.useFakeTimers();
     const path = await rollout();

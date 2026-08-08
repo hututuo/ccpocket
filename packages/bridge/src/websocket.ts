@@ -321,10 +321,7 @@ type SharedCodexSettingsOperation = {
 type CodexProviderHistoryCursorState = {
   threadId: string;
   headToken?: string;
-  cursors: Map<
-    string,
-    { providerCursor: string; sequenceExclusive: number }
-  >;
+  cursors: Map<string, { providerCursor: string; sequenceExclusive: number }>;
   tokenOrder: string[];
 };
 const RESUME_OPERATION_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -1815,10 +1812,7 @@ export class BridgeWebSocketServer {
         const authenticatedByToken =
           this.apiKeyAuthenticator.isConfigured &&
           this.apiKeyAuthenticator.acceptsWebSocketRequest(info.req);
-        if (
-          this.apiKeyAuthenticator.isConfigured &&
-          !authenticatedByToken
-        ) {
+        if (this.apiKeyAuthenticator.isConfigured && !authenticatedByToken) {
           console.log("[ws] Client rejected: invalid token");
           done(false, 401, "Bridge connection key required");
           return;
@@ -2102,9 +2096,8 @@ export class BridgeWebSocketServer {
           isStillSafe,
         ),
       hasCodexQueuedInput: (sessionId) =>
-        codexQueuedInputsForSession(
-          this.sessionManager.get(sessionId) ?? {},
-        ).length > 0,
+        codexQueuedInputsForSession(this.sessionManager.get(sessionId) ?? {})
+          .length > 0,
       registerInlineImages: (images) => {
         if (!this.imageStore) return [];
         const refs: ImageRef[] = [];
@@ -3646,11 +3639,7 @@ export class BridgeWebSocketServer {
         session.process as CodexProcess,
       );
       history = page.history;
-      this.resetCodexProviderHistoryCursor(
-        session,
-        threadId,
-        page.nextCursor,
-      );
+      this.resetCodexProviderHistoryCursor(session, threadId, page.nextCursor);
     }
     session.claudeSessionId = threadId;
 
@@ -3915,18 +3904,24 @@ export class BridgeWebSocketServer {
       return [];
     }
     if (message.type === "assistant") {
+      const historyTurnId = message.historyTurnId?.trim();
+      const turnScope = historyTurnId ? `turn:${historyTurnId}:` : "";
       const assistantId = message.messageUuid ?? message.message.id;
-      if (assistantId) return [`assistant:${assistantId}`];
+      if (assistantId) return [`assistant:${turnScope}${assistantId}`];
       return [
-        `assistant-content:${this.historyValueKey(message.message.content)}`,
+        `assistant-content:${turnScope}${this.historyValueKey(message.message.content)}`,
       ];
     }
     if (message.type === "tool_result") {
+      const historyTurnId = message.historyTurnId?.trim();
+      const turnScope = historyTurnId ? `turn:${historyTurnId}:` : "";
       if (message.toolUseId) {
-        return [`tool-result:${message.toolUseId}:${message.toolName ?? ""}`];
+        return [
+          `tool-result:${turnScope}${message.toolUseId}:${message.toolName ?? ""}`,
+        ];
       }
       return [
-        `tool-result-content:${message.toolName ?? ""}:${message.content}`,
+        `tool-result-content:${turnScope}${message.toolName ?? ""}:${message.content}`,
       ];
     }
     return [];
@@ -4127,11 +4122,7 @@ export class BridgeWebSocketServer {
           };
     this.codexProviderHistoryCursors.set(session, state);
     state.headToken = providerCursor
-      ? this.registerCodexProviderHistoryCursor(
-          session,
-          state,
-          providerCursor,
-        )
+      ? this.registerCodexProviderHistoryCursor(session, state, providerCursor)
       : undefined;
   }
 
@@ -4178,13 +4169,11 @@ export class BridgeWebSocketServer {
   private codexProviderHistoryCursor(
     session: SessionInfo,
     token: string | undefined,
-  ):
-    | {
-        state: CodexProviderHistoryCursorState;
-        cursor: string;
-        sequenceExclusive: number;
-      }
-    | null {
+  ): {
+    state: CodexProviderHistoryCursorState;
+    cursor: string;
+    sequenceExclusive: number;
+  } | null {
     if (!token?.startsWith("v2:")) return null;
     const state = this.codexProviderHistoryCursors.get(session);
     if (!state || state.threadId !== this.codexThreadIdForSession(session)) {
@@ -4296,11 +4285,19 @@ export class BridgeWebSocketServer {
   private historyToolDetails(
     entries: HistoryEntry[],
     toolUseIds: string[],
+    historyTurnId?: string,
   ): HistoryToolDetailPayload[] {
     const requested = new Set(toolUseIds);
     const details = new Map<string, HistoryToolDetailPayload>();
     for (const entry of entries) {
       const message = entry.message;
+      if (
+        historyTurnId &&
+        (message.type === "assistant" || message.type === "tool_result") &&
+        message.historyTurnId !== historyTurnId
+      ) {
+        continue;
+      }
       if (message.type === "assistant") {
         for (const content of message.message.content) {
           if (content.type !== "tool_use" || !requested.has(content.id)) {
@@ -4356,12 +4353,17 @@ export class BridgeWebSocketServer {
   private async codexHistoryToolDetails(
     session: SessionInfo,
     toolUseIds: string[],
+    historyTurnId?: string,
   ): Promise<HistoryToolDetailPayload[]> {
     const cachedEntries = [
       ...(session.codexOrderedHistoryEntries ?? []),
       ...session.historyEntries,
     ];
-    const cachedDetails = this.historyToolDetails(cachedEntries, toolUseIds);
+    const cachedDetails = this.historyToolDetails(
+      cachedEntries,
+      toolUseIds,
+      historyTurnId,
+    );
     const rawHistory = (session.pastMessages ?? []) as SessionHistoryMessage[];
     if (rawHistory.length === 0) return cachedDetails;
 
@@ -4379,6 +4381,7 @@ export class BridgeWebSocketServer {
     }> = [];
     for (let index = rawHistory.length - 1; index >= 0; index -= 1) {
       const item = rawHistory[index];
+      if (historyTurnId && item.historyTurnId !== historyTurnId) continue;
       if (item.role === "assistant" && Array.isArray(item.content)) {
         const matchingIds = item.content
           .filter(
@@ -4419,7 +4422,11 @@ export class BridgeWebSocketServer {
         selectedEntries.push({ seq: index + 1, message: converted });
       }
     }
-    const rawDetails = this.historyToolDetails(selectedEntries, toolUseIds);
+    const rawDetails = this.historyToolDetails(
+      selectedEntries,
+      toolUseIds,
+      historyTurnId,
+    );
     const rawById = new Map(
       rawDetails.map((detail) => [detail.toolUseId, detail]),
     );
@@ -5199,8 +5206,7 @@ export class BridgeWebSocketServer {
       return;
     }
 
-    const durableSettingsEnvelope =
-      this.durableCodexSettingsEnvelope(msg);
+    const durableSettingsEnvelope = this.durableCodexSettingsEnvelope(msg);
     if (durableSettingsEnvelope) {
       await this.handleDurableCodexSettings(
         ws,
@@ -9012,8 +9018,16 @@ export class BridgeWebSocketServer {
         try {
           const details =
             session.provider === "codex"
-              ? await this.codexHistoryToolDetails(session, msg.toolUseIds)
-              : this.historyToolDetails(session.historyEntries, msg.toolUseIds);
+              ? await this.codexHistoryToolDetails(
+                  session,
+                  msg.toolUseIds,
+                  msg.historyTurnId,
+                )
+              : this.historyToolDetails(
+                  session.historyEntries,
+                  msg.toolUseIds,
+                  msg.historyTurnId,
+                );
           this.send(ws, {
             type: "history_tool_details",
             requestId: msg.requestId,
@@ -12457,20 +12471,15 @@ export class BridgeWebSocketServer {
   ): Promise<void> {
     const writerContext: CodexDurableThreadSettingsContext = {
       currentModel: context.settings.model,
-      currentModelReasoningEffort:
-        context.settings.modelReasoningEffort as
-          | CodexStartOptions["modelReasoningEffort"]
-          | undefined,
+      currentModelReasoningEffort: context.settings.modelReasoningEffort as
+        CodexStartOptions["modelReasoningEffort"] | undefined,
       currentServiceTier: context.settings.serviceTier,
       currentApprovalPolicy: context.settings.approvalPolicy as
-        | CodexStartOptions["approvalPolicy"]
-        | undefined,
+        CodexStartOptions["approvalPolicy"] | undefined,
       currentApprovalsReviewer: context.settings.approvalsReviewer as
-        | CodexStartOptions["approvalsReviewer"]
-        | undefined,
+        CodexStartOptions["approvalsReviewer"] | undefined,
       currentSandboxMode: context.settings.sandboxMode as
-        | CodexStartOptions["sandboxMode"]
-        | undefined,
+        CodexStartOptions["sandboxMode"] | undefined,
       currentCollaborationMode: context.settings.collaborationMode,
       networkAccessEnabled: context.settings.networkAccessEnabled,
       additionalWritableRoots: context.settings.additionalWritableRoots,
@@ -12512,10 +12521,8 @@ export class BridgeWebSocketServer {
                   "Invalid Codex model.",
                 );
               }
-              const modelReasoningEffort =
-                msg.modelReasoningEffort as
-                  | CodexStartOptions["modelReasoningEffort"]
-                  | undefined;
+              const modelReasoningEffort = msg.modelReasoningEffort as
+                CodexStartOptions["modelReasoningEffort"] | undefined;
               const settings: CodexSharedRuntimeThreadSettings = {
                 model,
                 ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
@@ -12671,7 +12678,8 @@ export class BridgeWebSocketServer {
       requestedCodexPermissionsMode === "custom"
         ? null
         : (preset?.sandboxMode ??
-          (current.sandboxMode as CodexStartOptions["sandboxMode"] | undefined));
+          (current.sandboxMode as
+            CodexStartOptions["sandboxMode"] | undefined));
     const collaborationMode =
       msg.planMode === undefined && msg.mode !== "plan"
         ? (current.collaborationMode ?? "default")

@@ -1632,14 +1632,12 @@ describe("ConversationSyncV2FeatureHandler", () => {
       context(client, fixture.runtime),
     );
 
-    const response = events(
-      fixture.sent,
-      client,
-      "turns_page_response",
-    ).at(-1)!;
+    const response = events(fixture.sent, client, "turns_page_response").at(
+      -1,
+    )!;
     expect(
-      response.data.flatMap((turn) =>
-        (turn as { messages?: ServerMessage[] }).messages ?? [],
+      response.data.flatMap(
+        (turn) => (turn as { messages?: ServerMessage[] }).messages ?? [],
       ),
     ).toMatchObject([{ type: "user_input", text: "visible-user" }]);
     await fixture.handler.close();
@@ -2218,6 +2216,122 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(listThreadItems).toHaveBeenCalledTimes(1);
     expect(listThreadTurns).toHaveBeenCalledTimes(2);
     expect(historyReader).toHaveBeenCalledTimes(2);
+    fixture.handler.close();
+  });
+
+  it("preserves explicit legacy turn ids and disambiguates repeated fallback user ids", async () => {
+    const listThreadTurns = vi.fn(async () => {
+      throw new Error("Method not found");
+    });
+    const listThreadItems = vi.fn(async () => {
+      throw new Error("unknown method thread/items/list");
+    });
+    const historyReader = vi.fn(async () => [
+      {
+        type: "user_input" as const,
+        text: "explicit prompt",
+        historyTurnId: "provider-explicit-turn",
+        userMessageUuid: "reused-user",
+      },
+      {
+        type: "assistant" as const,
+        historyTurnId: "provider-explicit-turn",
+        messageUuid: "explicit-answer",
+        message: {
+          id: "explicit-answer",
+          role: "assistant" as const,
+          model: "test",
+          content: [{ type: "text" as const, text: "explicit answer" }],
+        },
+      },
+      {
+        type: "user_input" as const,
+        text: "first fallback prompt",
+        userMessageUuid: "reused-fallback-user",
+      },
+      {
+        type: "assistant" as const,
+        messageUuid: "first-fallback-answer",
+        message: {
+          id: "first-fallback-answer",
+          role: "assistant" as const,
+          model: "test",
+          content: [{ type: "text" as const, text: "first fallback" }],
+        },
+      },
+      {
+        type: "user_input" as const,
+        text: "second fallback prompt",
+        userMessageUuid: "reused-fallback-user",
+      },
+      {
+        type: "assistant" as const,
+        messageUuid: "second-fallback-answer",
+        message: {
+          id: "second-fallback-answer",
+          role: "assistant" as const,
+          model: "test",
+          content: [{ type: "text" as const, text: "second fallback" }],
+        },
+      },
+      {
+        type: "user_input" as const,
+        text: "assistant-scoped prompt",
+        userMessageUuid: "assistant-scoped-user",
+      },
+      {
+        type: "assistant" as const,
+        historyTurnId: "provider-turn-from-assistant",
+        messageUuid: "assistant-scoped-answer",
+        message: {
+          id: "assistant-scoped-answer",
+          role: "assistant" as const,
+          model: "test",
+          content: [{ type: "text" as const, text: "assistant scoped" }],
+        },
+      },
+    ]);
+    const fixture = createCodexPageFixture(
+      { listThreadTurns, listThreadItems },
+      historyReader,
+    );
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "legacy-repeated-turns",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-legacy",
+        limit: 10,
+        sortDirection: "asc",
+        itemsView: "summary",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+
+    const response = events(
+      fixture.sent,
+      fixture.client,
+      "turns_page_response",
+    ).find((event) => event.requestId === "legacy-repeated-turns")!;
+    expect(response.data.map((turn) => turn.turnId)).toEqual([
+      "provider-explicit-turn",
+      "legacy-turn:reused-fallback-user",
+      "legacy-turn:reused-fallback-user:occurrence:1",
+      "provider-turn-from-assistant",
+    ]);
     fixture.handler.close();
   });
 
@@ -3937,6 +4051,84 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(historyReader.mock.calls.length).toBeGreaterThanOrEqual(2);
     fixture.handler.close();
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps repeated external assistant and tool ids distinct across provider turns", async () => {
+    type HandlerOptions = NonNullable<
+      ConstructorParameters<typeof ConversationSyncV2FeatureHandler>[1]
+    >;
+    type ObserverCallback = Parameters<
+      NonNullable<HandlerOptions["observeCodexThread"]>
+    >[1];
+    let callback: ObserverCallback | undefined;
+    const fixture = createFixture(
+      [codexSeed(0, "thread-turn-scoped-live")],
+      async () => [],
+      {
+        initialExternalCodexMonitors: 1,
+        observeCodexThread: async (_threadId, onEvent) => {
+          callback = onEvent;
+          return {
+            snapshot: { state: "running" as const },
+            refreshNow: async () => {},
+            close: () => {},
+          };
+        },
+      },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() => expect(callback).toBeDefined());
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    for (const turnId of ["provider-turn-one", "provider-turn-two"]) {
+      callback!({
+        kind: "message",
+        itemKey: "assistant:reused-assistant",
+        turnId,
+        timestamp: new Date().toISOString(),
+        message: {
+          type: "assistant",
+          messageUuid: "reused-assistant",
+          message: {
+            id: "reused-assistant",
+            role: "assistant",
+            model: "codex",
+            content: [{ type: "text", text: `assistant ${turnId}` }],
+          },
+        },
+      });
+      callback!({
+        kind: "message",
+        itemKey: "tool:reused-tool",
+        turnId,
+        timestamp: new Date().toISOString(),
+        message: {
+          type: "tool_result",
+          toolUseId: "reused-tool",
+          content: `tool ${turnId}`,
+        },
+      });
+    }
+
+    await vi.waitFor(
+      () => {
+        const serialized = JSON.stringify(
+          events(fixture.sent, client, "timeline_page"),
+        );
+        expect(serialized).toContain("assistant provider-turn-one");
+        expect(serialized).toContain("assistant provider-turn-two");
+        expect(serialized).toContain("tool provider-turn-one");
+        expect(serialized).toContain("tool provider-turn-two");
+      },
+      { timeout: 3_000 },
+    );
+    fixture.handler.close();
   });
 
   it("keeps external live messages until canonical history covers them", async () => {

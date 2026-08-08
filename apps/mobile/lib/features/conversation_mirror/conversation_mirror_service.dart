@@ -2074,14 +2074,24 @@ class ConversationMirrorService extends ChangeNotifier {
           return 'user:uuid:$uuid';
         }
         return null;
-      case AssistantServerMessage(:final messageUuid, :final message):
+      case AssistantServerMessage(
+        :final messageUuid,
+        :final historyTurnId,
+        :final message,
+      ):
+        final turnId = historyTurnId?.trim();
+        final turnScope = turnId?.isNotEmpty == true ? 'turn:$turnId:' : '';
         final uuid = messageUuid?.trim();
-        if (uuid?.isNotEmpty == true) return 'assistant:uuid:$uuid';
+        if (uuid?.isNotEmpty == true) {
+          return 'assistant:${turnScope}uuid:$uuid';
+        }
         final id = message.id.trim();
-        return id.isEmpty ? null : 'assistant:id:$id';
-      case ToolResultMessage(:final toolUseId):
+        return id.isEmpty ? null : 'assistant:${turnScope}id:$id';
+      case ToolResultMessage(:final toolUseId, :final historyTurnId):
+        final turnId = historyTurnId?.trim();
+        final turnScope = turnId?.isNotEmpty == true ? 'turn:$turnId:' : '';
         final id = toolUseId.trim();
-        return id.isEmpty ? null : 'tool-result:$id';
+        return id.isEmpty ? null : 'tool-result:${turnScope}id:$id';
       default:
         return null;
     }
@@ -2195,6 +2205,7 @@ class ConversationMirrorService extends ChangeNotifier {
   Future<List<HistoryToolDetail>?> _loadRuntimeHistoryToolDetails({
     required String runtimeSessionId,
     required List<String> toolUseIds,
+    required String? historyTurnId,
   }) async {
     final cursor = _pageCursorsByRuntime[runtimeSessionId];
     if (cursor == null || toolUseIds.isEmpty) return null;
@@ -2207,7 +2218,11 @@ class ConversationMirrorService extends ChangeNotifier {
       _removeRuntimePageCursor(runtimeSessionId, expected: cursor);
       return null;
     }
-    final entries = await _store.readToolEntries(cursor.key, toolUseIds);
+    final entries = await _store.readToolEntries(
+      cursor.key,
+      toolUseIds,
+      historyTurnId: historyTurnId,
+    );
     final metadataAfter = await _store.readMetadata(cursor.key);
     if (!_pageCursorMetadataMatches(cursor, metadataAfter) ||
         !_pageCursorIdentityMatches(runtimeSessionId, cursor) ||
@@ -2218,19 +2233,26 @@ class ConversationMirrorService extends ChangeNotifier {
     return _historyToolDetailsFromMessages(
       _decodeRenderableEntries(entries),
       toolUseIds,
+      historyTurnId: historyTurnId,
     );
   }
 
   List<HistoryToolDetail> _historyToolDetailsFromMessages(
     List<ServerMessage> messages,
-    List<String> toolUseIds,
-  ) {
+    List<String> toolUseIds, {
+    String? historyTurnId,
+  }) {
     const maximumFieldBytes = 64 * 1024;
     const maximumAttachments = 32;
     final requested = toolUseIds.toSet();
+    final normalizedTurnId = historyTurnId?.trim();
     final details = <String, HistoryToolDetail>{};
     for (final message in messages) {
       if (message is AssistantServerMessage) {
+        if (normalizedTurnId?.isNotEmpty == true &&
+            message.historyTurnId?.trim() != normalizedTurnId) {
+          continue;
+        }
         for (final content in message.message.content) {
           if (content is! ToolUseContent || !requested.contains(content.id)) {
             continue;
@@ -2247,6 +2269,10 @@ class ConversationMirrorService extends ChangeNotifier {
       }
       if (message is! ToolResultMessage ||
           !requested.contains(message.toolUseId)) {
+        continue;
+      }
+      if (normalizedTurnId?.isNotEmpty == true &&
+          message.historyTurnId?.trim() != normalizedTurnId) {
         continue;
       }
       final existing = details[message.toolUseId];

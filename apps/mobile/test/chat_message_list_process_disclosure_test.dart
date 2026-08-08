@@ -50,6 +50,7 @@ class _Bridge extends BridgeService {
   Future<List<HistoryToolDetail>?> requestHistoryToolDetails({
     required String runtimeSessionId,
     required List<String> toolUseIds,
+    String? historyTurnId,
     Duration timeout = const Duration(seconds: 12),
   }) {
     final ids = List<String>.unmodifiable(toolUseIds);

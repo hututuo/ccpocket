@@ -2128,7 +2128,7 @@ export class CodexRolloutMonitor {
         rawInput,
       );
       const name = descriptor.name;
-      this.toolNames.set(callId, name);
+      this.toolNames.set(this.turnScopedIdentity(turn.turnId, callId), name);
       while (this.toolNames.size > 512) {
         this.toolNames.delete(this.toolNames.keys().next().value!);
       }
@@ -2156,7 +2156,9 @@ export class CodexRolloutMonitor {
     if (type === "function_call_output" || type === "custom_tool_call_output") {
       const callId = optionalString(payload.call_id);
       if (!callId) return;
-      const toolName = this.toolNames.get(callId);
+      const toolName = this.toolNames.get(
+        this.turnScopedIdentity(turn.turnId, callId),
+      );
       const normalized = normalizeCodexDesktopToolOutput(payload.output);
       this.emitMessage(
         `tool-result:${callId}`,
@@ -2257,8 +2259,12 @@ export class CodexRolloutMonitor {
     // `call_id`, so retain an alias for the completion path.
     const itemId = optionalString(payload.id);
     const transportCallId = optionalString(payload.call_id);
+    const turnId = turn.turnId;
     const previouslyEmittedTransportId =
-      transportCallId && this.emittedKeys.has(`tool-start:${transportCallId}`)
+      transportCallId &&
+      this.emittedKeys.has(
+        this.turnScopedIdentity(turnId, `tool-start:${transportCallId}`),
+      )
         ? transportCallId
         : undefined;
     const callId =
@@ -2270,12 +2276,26 @@ export class CodexRolloutMonitor {
         `${timestamp ?? ""}:${JSON.stringify(payload).slice(0, 4096)}`,
       )}`;
     for (const alias of [itemId, transportCallId]) {
-      if (alias) setBoundedMap(this.toolIdAliases, alias, callId, 512);
+      if (alias) {
+        setBoundedMap(
+          this.toolIdAliases,
+          this.turnScopedIdentity(turnId, alias),
+          callId,
+          512,
+        );
+      }
     }
     if (transportCallId) {
-      this.flushPendingCompletedTool(`call:${transportCallId}`);
+      this.flushPendingCompletedTool(
+        this.turnScopedIdentity(turnId, `call:${transportCallId}`),
+      );
     }
-    setBoundedMap(this.toolNames, callId, name, 512);
+    setBoundedMap(
+      this.toolNames,
+      this.turnScopedIdentity(turnId, callId),
+      name,
+      512,
+    );
     this.emitMessage(
       `tool-start:${callId}`,
       {
@@ -2314,15 +2334,21 @@ export class CodexRolloutMonitor {
     turnId?: string,
   ): void {
     const rawCallId = optionalString(payload.call_id);
-    if (rawCallId && this.toolIdAliases.has(rawCallId)) {
+    const scopedRawCallId = rawCallId
+      ? this.turnScopedIdentity(turnId, rawCallId)
+      : undefined;
+    if (scopedRawCallId && this.toolIdAliases.has(scopedRawCallId)) {
       this.consumeCompletedEventTool(type, payload, timestamp, turnId);
       return;
     }
-    const key = rawCallId
-      ? `call:${rawCallId}`
-      : `anonymous:${type}:${hashText(
-          `${timestamp ?? ""}:${JSON.stringify(payload).slice(0, 4096)}`,
-        )}`;
+    const key = this.turnScopedIdentity(
+      turnId,
+      rawCallId
+        ? `call:${rawCallId}`
+        : `anonymous:${type}:${hashText(
+            `${timestamp ?? ""}:${JSON.stringify(payload).slice(0, 4096)}`,
+          )}`,
+    );
     const previous = this.pendingCompletedTools.get(key);
     if (previous) {
       this.pendingCompletedTools.delete(key);
@@ -2383,7 +2409,8 @@ export class CodexRolloutMonitor {
     const rawCallId = optionalString(payload.call_id);
     const callId =
       (rawCallId
-        ? (this.toolIdAliases.get(rawCallId) ?? rawCallId)
+        ? (this.toolIdAliases.get(this.turnScopedIdentity(turnId, rawCallId)) ??
+          rawCallId)
         : undefined) ??
       (type === "image_generation_end"
         ? `desktop-image-${hashText(
@@ -2426,7 +2453,12 @@ export class CodexRolloutMonitor {
       const normalized = normalizeMcpToolResult(payload.result);
       output = normalized.content;
     }
-    setBoundedMap(this.toolNames, callId, name, 512);
+    setBoundedMap(
+      this.toolNames,
+      this.turnScopedIdentity(turnId, callId),
+      name,
+      512,
+    );
     this.emitMessage(
       `tool-start:${callId}`,
       {
@@ -2685,7 +2717,8 @@ export class CodexRolloutMonitor {
     turnId?: string,
     imageBase64?: CodexDesktopInlineImage[],
   ): void {
-    if (!remember(this.emittedKeys, itemKey, MAX_DEDUPE_KEYS)) return;
+    const dedupeKey = this.turnScopedIdentity(turnId, itemKey);
+    if (!remember(this.emittedKeys, dedupeKey, MAX_DEDUPE_KEYS)) return;
     this.options.onEvent({
       kind: "message",
       itemKey,
@@ -2694,6 +2727,16 @@ export class CodexRolloutMonitor {
       ...(turnId ? { turnId } : {}),
       ...(timestamp ? { timestamp } : {}),
     });
+  }
+
+  private turnScopedIdentity(
+    turnId: string | undefined,
+    identity: string,
+  ): string {
+    const normalizedTurnId = turnId?.trim();
+    return normalizedTurnId
+      ? `turn:${normalizedTurnId}:${identity}`
+      : `legacy:${identity}`;
   }
 
   private clearTurnDedupe(): void {

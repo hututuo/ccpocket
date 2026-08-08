@@ -2699,12 +2699,14 @@ function appendCodexThinkingMessage(
   messages: SessionHistoryMessage[],
   text: string,
   timestamp?: string,
+  historyTurnId?: string,
 ): void {
   const normalized = text.trim();
   if (!normalized) return;
   messages.push({
     role: "assistant",
     content: [{ type: "thinking", thinking: normalized }],
+    ...(historyTurnId ? { historyTurnId } : {}),
     ...(timestamp ? { timestamp } : {}),
   });
 }
@@ -2715,9 +2717,11 @@ function appendCodexOfficialToolResult(
   name: string | undefined,
   content: string,
   timestamp?: string,
+  historyTurnId?: string,
 ): void {
   appendToolResultMessage(messages, id, name, content, {
     ...(timestamp ? { timestamp } : {}),
+    ...(historyTurnId ? { historyTurnId } : {}),
   });
 }
 
@@ -2797,6 +2801,7 @@ export function codexThreadToSessionHistory(
             ...(rawItemId ? { rawItemId } : {}),
             ...(clientMessageId ? { clientMessageId } : {}),
             content: [{ type: "text", text: displayText }],
+            ...(historyTurnId ? { historyTurnId } : {}),
             ...(imageCount > 0 ? { imageCount } : {}),
             ...(imagePaths.length > 0 ? { imagePaths } : {}),
             ...(imageBase64.length > 0 ? { imageBase64 } : {}),
@@ -2812,6 +2817,7 @@ export function codexThreadToSessionHistory(
             stringValue(item.text) ?? "",
             itemTimestamp,
             itemId,
+            historyTurnId,
           );
           break;
         }
@@ -2823,6 +2829,7 @@ export function codexThreadToSessionHistory(
             stringValue(item.text) ?? "",
             itemTimestamp,
             itemId,
+            historyTurnId,
           );
           break;
         }
@@ -2838,6 +2845,7 @@ export function codexThreadToSessionHistory(
             messages,
             [...summary, ...content].join("\n"),
             itemTimestamp,
+            historyTurnId,
           );
           break;
         }
@@ -2849,6 +2857,7 @@ export function codexThreadToSessionHistory(
             itemId,
             descriptor.name,
             descriptor.input,
+            historyTurnId,
           );
           const outputParts: string[] = [];
           if (typeof item.status === "string") {
@@ -2866,21 +2875,31 @@ export function codexThreadToSessionHistory(
             descriptor.name,
             outputParts.join("\n").trim(),
             itemTimestamp,
+            historyTurnId,
           );
           break;
         }
 
         case "fileChange": {
-          appendToolUseMessage(messages, itemId, "FileChange", {
-            changes: Array.isArray(item.changes) ? item.changes : [],
-            ...(typeof item.status === "string" ? { status: item.status } : {}),
-          });
+          appendToolUseMessage(
+            messages,
+            itemId,
+            "FileChange",
+            {
+              changes: Array.isArray(item.changes) ? item.changes : [],
+              ...(typeof item.status === "string"
+                ? { status: item.status }
+                : {}),
+            },
+            historyTurnId,
+          );
           appendCodexOfficialToolResult(
             messages,
             itemId,
             "FileChange",
             formatCodexFileChanges(item.changes),
             itemTimestamp,
+            historyTurnId,
           );
           break;
         }
@@ -2888,10 +2907,18 @@ export function codexThreadToSessionHistory(
         case "mcpToolCall": {
           const server = stringValue(item.server) ?? "mcp";
           const tool = stringValue(item.tool) ?? "tool";
-          appendToolUseMessage(messages, itemId, `mcp:${server}/${tool}`, {
-            arguments: item.arguments ?? {},
-            ...(typeof item.status === "string" ? { status: item.status } : {}),
-          });
+          appendToolUseMessage(
+            messages,
+            itemId,
+            `mcp:${server}/${tool}`,
+            {
+              arguments: item.arguments ?? {},
+              ...(typeof item.status === "string"
+                ? { status: item.status }
+                : {}),
+            },
+            historyTurnId,
+          );
           if (item.result != null || item.error != null) {
             const normalized = normalizeCodexMcpResult(
               item.result ?? item.error,
@@ -2904,6 +2931,7 @@ export function codexThreadToSessionHistory(
               {
                 imageBase64: normalized.imageBase64,
                 ...(itemTimestamp ? { timestamp: itemTimestamp } : {}),
+                ...(historyTurnId ? { historyTurnId } : {}),
               },
             );
           }
@@ -2913,10 +2941,18 @@ export function codexThreadToSessionHistory(
         case "dynamicToolCall": {
           const tool = stringValue(item.tool) ?? "tool";
           const toolInput = parseObjectLike(item.arguments);
-          appendToolUseMessage(messages, itemId, tool, {
-            arguments: item.arguments ?? {},
-            ...(typeof item.status === "string" ? { status: item.status } : {}),
-          });
+          appendToolUseMessage(
+            messages,
+            itemId,
+            tool,
+            {
+              arguments: item.arguments ?? {},
+              ...(typeof item.status === "string"
+                ? { status: item.status }
+                : {}),
+            },
+            historyTurnId,
+          );
           const contentItems = arrayValue(item.contentItems);
           const normalized = normalizeCodexDesktopToolOutput(contentItems);
           const declaredImagePaths = arrayValue(item.imagePaths).filter(
@@ -2945,6 +2981,7 @@ export function codexThreadToSessionHistory(
               imagePaths,
               imageBase64: imagePaths.length > 0 ? [] : normalized.imageBase64,
               ...(itemTimestamp ? { timestamp: itemTimestamp } : {}),
+              ...(historyTurnId ? { historyTurnId } : {}),
             },
           );
           break;
@@ -2952,16 +2989,23 @@ export function codexThreadToSessionHistory(
 
         case "webSearch": {
           const query = stringValue(item.query) ?? "";
-          appendToolUseMessage(messages, itemId, "WebSearch", {
-            query,
-            ...(item.action != null ? { action: item.action } : {}),
-          });
+          appendToolUseMessage(
+            messages,
+            itemId,
+            "WebSearch",
+            {
+              query,
+              ...(item.action != null ? { action: item.action } : {}),
+            },
+            historyTurnId,
+          );
           appendCodexOfficialToolResult(
             messages,
             itemId,
             "WebSearch",
             query ? `Web search: ${query}` : "Web search completed",
             itemTimestamp,
+            historyTurnId,
           );
           break;
         }
@@ -2973,22 +3017,30 @@ export function codexThreadToSessionHistory(
           const receiverThreadIds = arrayValue(item.receiverThreadIds).map(
             (value) => String(value),
           );
-          appendToolUseMessage(messages, itemId, toolName, {
-            tool,
-            status,
-            ...(typeof item.prompt === "string" ? { prompt: item.prompt } : {}),
-            ...(typeof item.senderThreadId === "string"
-              ? { senderThreadId: item.senderThreadId }
-              : {}),
-            ...(receiverThreadIds.length > 0 ? { receiverThreadIds } : {}),
-            ...(typeof item.model === "string" ? { model: item.model } : {}),
-            ...(typeof item.reasoningEffort === "string"
-              ? { reasoningEffort: item.reasoningEffort }
-              : {}),
-            ...(item.agentsStates != null
-              ? { agentsStates: item.agentsStates }
-              : {}),
-          });
+          appendToolUseMessage(
+            messages,
+            itemId,
+            toolName,
+            {
+              tool,
+              status,
+              ...(typeof item.prompt === "string"
+                ? { prompt: item.prompt }
+                : {}),
+              ...(typeof item.senderThreadId === "string"
+                ? { senderThreadId: item.senderThreadId }
+                : {}),
+              ...(receiverThreadIds.length > 0 ? { receiverThreadIds } : {}),
+              ...(typeof item.model === "string" ? { model: item.model } : {}),
+              ...(typeof item.reasoningEffort === "string"
+                ? { reasoningEffort: item.reasoningEffort }
+                : {}),
+              ...(item.agentsStates != null
+                ? { agentsStates: item.agentsStates }
+                : {}),
+            },
+            historyTurnId,
+          );
           if (status !== "inProgress") {
             appendCodexOfficialToolResult(
               messages,
@@ -3001,6 +3053,7 @@ export function codexThreadToSessionHistory(
                   : []),
               ].join("\n"),
               itemTimestamp,
+              historyTurnId,
             );
           }
           break;
@@ -3010,33 +3063,47 @@ export function codexThreadToSessionHistory(
           const kind = stringValue(item.kind) ?? "activity";
           const toolName = codexSubAgentActivityHistoryToolName(kind);
           const agentPath = stringValue(item.agentPath);
-          appendToolUseMessage(messages, itemId, toolName, {
-            kind,
-            ...(typeof item.agentThreadId === "string"
-              ? { agentThreadId: item.agentThreadId }
-              : {}),
-            ...(agentPath ? { agentPath } : {}),
-          });
+          appendToolUseMessage(
+            messages,
+            itemId,
+            toolName,
+            {
+              kind,
+              ...(typeof item.agentThreadId === "string"
+                ? { agentThreadId: item.agentThreadId }
+                : {}),
+              ...(agentPath ? { agentPath } : {}),
+            },
+            historyTurnId,
+          );
           appendCodexOfficialToolResult(
             messages,
             itemId,
             toolName,
             codexSubAgentActivitySummary(kind, agentPath),
             itemTimestamp,
+            historyTurnId,
           );
           break;
         }
 
         case "contextCompaction": {
-          appendToolUseMessage(messages, itemId, "ContextCompaction", {
-            description: "Compact the conversation context",
-          });
+          appendToolUseMessage(
+            messages,
+            itemId,
+            "ContextCompaction",
+            {
+              description: "Compact the conversation context",
+            },
+            historyTurnId,
+          );
           appendCodexOfficialToolResult(
             messages,
             itemId,
             "ContextCompaction",
             "Conversation context compacted",
             itemTimestamp,
+            historyTurnId,
           );
           break;
         }
@@ -3048,6 +3115,7 @@ export function codexThreadToSessionHistory(
             itemId,
             "ViewImage",
             path ? { path } : {},
+            historyTurnId,
           );
           appendToolResultMessage(
             messages,
@@ -3057,6 +3125,7 @@ export function codexThreadToSessionHistory(
             {
               ...(path ? { imagePaths: [path] } : {}),
               ...(itemTimestamp ? { timestamp: itemTimestamp } : {}),
+              ...(historyTurnId ? { historyTurnId } : {}),
             },
           );
           break;
@@ -3070,6 +3139,7 @@ export function codexThreadToSessionHistory(
             itemId,
             "Wait",
             durationMs === undefined ? {} : { durationMs },
+            historyTurnId,
           );
           appendCodexOfficialToolResult(
             messages,
@@ -3079,17 +3149,26 @@ export function codexThreadToSessionHistory(
               ? "Wait completed"
               : `Waited ${durationMs} ms`,
             itemTimestamp,
+            historyTurnId,
           );
           break;
         }
 
         case "imageGeneration": {
-          appendToolUseMessage(messages, itemId, "ImageGeneration", {
-            ...(typeof item.status === "string" ? { status: item.status } : {}),
-            ...(typeof item.revisedPrompt === "string"
-              ? { revisedPrompt: item.revisedPrompt }
-              : {}),
-          });
+          appendToolUseMessage(
+            messages,
+            itemId,
+            "ImageGeneration",
+            {
+              ...(typeof item.status === "string"
+                ? { status: item.status }
+                : {}),
+              ...(typeof item.revisedPrompt === "string"
+                ? { revisedPrompt: item.revisedPrompt }
+                : {}),
+            },
+            historyTurnId,
+          );
           appendImageGenerationResult(
             messages,
             {
@@ -3101,6 +3180,7 @@ export function codexThreadToSessionHistory(
             },
             itemId,
             itemTimestamp,
+            historyTurnId,
           );
           break;
         }
@@ -3113,6 +3193,7 @@ export function codexThreadToSessionHistory(
             stringValue(item.review) ?? "",
             itemTimestamp,
             itemId,
+            historyTurnId,
           );
           break;
         }
@@ -3121,7 +3202,11 @@ export function codexThreadToSessionHistory(
           break;
       }
       if (historyTurnId) {
-        for (let index = historyStartIndex; index < messages.length; index += 1) {
+        for (
+          let index = historyStartIndex;
+          index < messages.length;
+          index += 1
+        ) {
           messages[index]!.historyTurnId = historyTurnId;
         }
       }
@@ -3428,6 +3513,7 @@ function appendTextMessage(
   text: string,
   timestamp?: string,
   uuid?: string,
+  historyTurnId?: string,
 ): boolean {
   const normalized = text.trim();
   if (!normalized) return false;
@@ -3441,7 +3527,8 @@ function appendTextMessage(
     last.content[0].type === "text" &&
     typeof last.content[0].text === "string" &&
     last.content[0].text.trim() === normalized &&
-    (!uuid || last.uuid === uuid)
+    (!uuid || last.uuid === uuid) &&
+    last.historyTurnId === historyTurnId
   ) {
     return false;
   }
@@ -3450,6 +3537,7 @@ function appendTextMessage(
     role,
     ...(uuid ? { uuid } : {}),
     content: [{ type: "text", text }],
+    ...(historyTurnId ? { historyTurnId } : {}),
     ...(timestamp ? { timestamp } : {}),
   });
   return true;
@@ -3516,6 +3604,7 @@ function appendImageGenerationResult(
   payload: Record<string, unknown>,
   fallbackId: string,
   timestamp?: string,
+  historyTurnId?: string,
 ): void {
   const id =
     typeof payload.call_id === "string"
@@ -3523,7 +3612,14 @@ function appendImageGenerationResult(
       : typeof payload.id === "string"
         ? payload.id
         : fallbackId;
-  if (messages.some((m) => m.role === "tool_result" && m.toolUseId === id)) {
+  if (
+    messages.some(
+      (m) =>
+        m.role === "tool_result" &&
+        m.toolUseId === id &&
+        m.historyTurnId === historyTurnId,
+    )
+  ) {
     return;
   }
 
@@ -3558,6 +3654,7 @@ function appendImageGenerationResult(
     toolUseId: id,
     toolName: "ImageGeneration",
     content: contentLines.join("\n"),
+    ...(historyTurnId ? { historyTurnId } : {}),
     ...(savedPath ? { imagePaths: [savedPath] } : {}),
     ...(base64Image ? { imageBase64: [base64Image] } : {}),
     ...(timestamp ? { timestamp } : {}),
@@ -3578,9 +3675,17 @@ function appendToolResultMessage(
     imagePaths?: string[];
     imageBase64?: Array<{ data: string; mimeType: string }>;
     timestamp?: string;
+    historyTurnId?: string;
   },
 ): void {
-  if (messages.some((m) => m.role === "tool_result" && m.toolUseId === id)) {
+  if (
+    messages.some(
+      (m) =>
+        m.role === "tool_result" &&
+        m.toolUseId === id &&
+        m.historyTurnId === options?.historyTurnId,
+    )
+  ) {
     return;
   }
 
@@ -3595,6 +3700,7 @@ function appendToolResultMessage(
     toolUseId: id,
     ...(name ? { toolName: name } : {}),
     content,
+    ...(options?.historyTurnId ? { historyTurnId: options.historyTurnId } : {}),
     ...(imagePaths.length > 0 ? { imagePaths } : {}),
     ...(imageBase64.length > 0 ? { imageBase64 } : {}),
     ...(options?.timestamp ? { timestamp: options.timestamp } : {}),
@@ -3606,6 +3712,7 @@ function appendToolUseMessage(
   id: string,
   name: string,
   input: Record<string, unknown>,
+  historyTurnId?: string,
 ): void {
   const normalizedName = name.trim();
   if (!normalizedName) return;
@@ -3618,7 +3725,8 @@ function appendToolUseMessage(
     last.content.length === 1 &&
     last.content[0].type === "tool_use" &&
     last.content[0].id === id &&
-    last.content[0].name === normalizedName
+    last.content[0].name === normalizedName &&
+    last.historyTurnId === historyTurnId
   ) {
     return;
   }
@@ -3626,6 +3734,7 @@ function appendToolUseMessage(
   messages.push({
     role: "assistant",
     uuid: id,
+    ...(historyTurnId ? { historyTurnId } : {}),
     content: [
       {
         type: "tool_use",
@@ -5387,6 +5496,7 @@ export async function getCodexSessionHistory(
   const responseToolNames = new Map<string, string>();
   const responseToolImagePaths = new Map<string, string[]>();
   let userTurnOrdinal = 0;
+  let activeHistoryTurnId: string | undefined;
 
   try {
     for await (const { line, index } of streamJsonlLines(jsonlPath)) {
@@ -5403,6 +5513,20 @@ export async function getCodexSessionHistory(
       if (entry.type === "event_msg") {
         const payload = asObject(entry.payload);
         if (!payload) continue;
+
+        if (payload.type === "task_started") {
+          activeHistoryTurnId =
+            stringValue(payload.turn_id) ?? stringValue(payload.turnId);
+          continue;
+        }
+        if (payload.type === "task_complete") {
+          const completedTurnId =
+            stringValue(payload.turn_id) ?? stringValue(payload.turnId);
+          if (!completedTurnId || completedTurnId === activeHistoryTurnId) {
+            activeHistoryTurnId = undefined;
+          }
+          continue;
+        }
 
         if (payload.type === "thread_rolled_back") {
           const rawNumTurns = payload.num_turns ?? payload.numTurns;
@@ -5438,6 +5562,9 @@ export async function getCodexSessionHistory(
                 role: "user",
                 uuid: codexUserTurnUuid(++userTurnOrdinal),
                 content: [{ type: "text", text }],
+                ...(activeHistoryTurnId
+                  ? { historyTurnId: activeHistoryTurnId }
+                  : {}),
                 imageCount,
                 ...(entryTimestamp ? { timestamp: entryTimestamp } : {}),
               });
@@ -5450,6 +5577,7 @@ export async function getCodexSessionHistory(
                 text,
                 entryTimestamp,
                 codexUserTurnUuid(userTurnOrdinal + 1),
+                activeHistoryTurnId,
               )
             ) {
               userTurnOrdinal += 1;
@@ -5467,6 +5595,8 @@ export async function getCodexSessionHistory(
             "assistant",
             payload.message,
             entryTimestamp,
+            undefined,
+            activeHistoryTurnId,
           );
         }
 
@@ -5476,6 +5606,7 @@ export async function getCodexSessionHistory(
             payload,
             `image-generation-${index}`,
             entryTimestamp,
+            activeHistoryTurnId,
           );
         }
 
@@ -5498,6 +5629,9 @@ export async function getCodexSessionHistory(
             {
               imageBase64: normalized.imageBase64,
               ...(entryTimestamp ? { timestamp: entryTimestamp } : {}),
+              ...(activeHistoryTurnId
+                ? { historyTurnId: activeHistoryTurnId }
+                : {}),
             },
           );
         }
@@ -5507,6 +5641,13 @@ export async function getCodexSessionHistory(
       if (entry.type === "response_item") {
         const payload = asObject(entry.payload);
         if (!payload) continue;
+        const responseTurnId =
+          stringValue(
+            asObject(payload.internal_chat_message_metadata_passthrough)
+              ?.turn_id,
+          ) ?? activeHistoryTurnId;
+        const scopedToolKey = (id: string) =>
+          `${responseTurnId ?? "legacy"}\u0000${id}`;
 
         if (payload.type === "message") {
           const content = Array.isArray(payload.content)
@@ -5521,7 +5662,14 @@ export async function getCodexSessionHistory(
               )
               .map((item) => item.text as string)
               .join("\n");
-            appendTextMessage(messages, "assistant", text, entryTimestamp);
+            appendTextMessage(
+              messages,
+              "assistant",
+              text,
+              entryTimestamp,
+              undefined,
+              responseTurnId,
+            );
             continue;
           }
 
@@ -5544,6 +5692,7 @@ export async function getCodexSessionHistory(
                   text,
                   entryTimestamp,
                   codexUserTurnUuid(userTurnOrdinal + 1),
+                  responseTurnId,
                 )
               ) {
                 userTurnOrdinal += 1;
@@ -5564,13 +5713,21 @@ export async function getCodexSessionHistory(
             rawName,
             payload.arguments,
           );
-          appendToolUseMessage(messages, id, descriptor.name, descriptor.input);
-          responseToolNames.set(id, descriptor.name);
+          appendToolUseMessage(
+            messages,
+            id,
+            descriptor.name,
+            descriptor.input,
+            responseTurnId,
+          );
+          responseToolNames.set(scopedToolKey(id), descriptor.name);
           const imagePaths = codexDesktopToolImagePaths(
             descriptor.name,
             descriptor.input,
           );
-          if (imagePaths.length > 0) responseToolImagePaths.set(id, imagePaths);
+          if (imagePaths.length > 0) {
+            responseToolImagePaths.set(scopedToolKey(id), imagePaths);
+          }
           continue;
         }
 
@@ -5585,13 +5742,21 @@ export async function getCodexSessionHistory(
             rawName,
             payload.input,
           );
-          appendToolUseMessage(messages, id, descriptor.name, descriptor.input);
-          responseToolNames.set(id, descriptor.name);
+          appendToolUseMessage(
+            messages,
+            id,
+            descriptor.name,
+            descriptor.input,
+            responseTurnId,
+          );
+          responseToolNames.set(scopedToolKey(id), descriptor.name);
           const imagePaths = codexDesktopToolImagePaths(
             descriptor.name,
             descriptor.input,
           );
-          if (imagePaths.length > 0) responseToolImagePaths.set(id, imagePaths);
+          if (imagePaths.length > 0) {
+            responseToolImagePaths.set(scopedToolKey(id), imagePaths);
+          }
           continue;
         }
 
@@ -5603,8 +5768,9 @@ export async function getCodexSessionHistory(
             typeof payload.call_id === "string"
               ? payload.call_id
               : `tool-result-${index}`;
-          const toolName = responseToolNames.get(id);
-          const imagePaths = responseToolImagePaths.get(id) ?? [];
+          const toolName = responseToolNames.get(scopedToolKey(id));
+          const imagePaths =
+            responseToolImagePaths.get(scopedToolKey(id)) ?? [];
           const normalized = normalizeCodexDesktopToolOutput(payload.output);
           const imageBase64 =
             imagePaths.length > 0 ? [] : normalized.imageBase64;
@@ -5622,10 +5788,11 @@ export async function getCodexSessionHistory(
               imagePaths,
               imageBase64,
               ...(entryTimestamp ? { timestamp: entryTimestamp } : {}),
+              ...(responseTurnId ? { historyTurnId: responseTurnId } : {}),
             },
           );
-          responseToolNames.delete(id);
-          responseToolImagePaths.delete(id);
+          responseToolNames.delete(scopedToolKey(id));
+          responseToolImagePaths.delete(scopedToolKey(id));
           continue;
         }
 
@@ -5639,8 +5806,9 @@ export async function getCodexSessionHistory(
             id,
             "WebSearch",
             getCodexSearchInput(payload),
+            responseTurnId,
           );
-          responseToolNames.set(id, "WebSearch");
+          responseToolNames.set(scopedToolKey(id), "WebSearch");
           continue;
         }
 
@@ -5650,6 +5818,7 @@ export async function getCodexSessionHistory(
             payload,
             `image-generation-${index}`,
             entryTimestamp,
+            responseTurnId,
           );
           continue;
         }
@@ -5663,7 +5832,13 @@ export async function getCodexSessionHistory(
                 ? payload.call_id
                 : `cmd-${index}`;
           const descriptor = describeCodexHistoryCommand(payload);
-          appendToolUseMessage(messages, id, descriptor.name, descriptor.input);
+          appendToolUseMessage(
+            messages,
+            id,
+            descriptor.name,
+            descriptor.input,
+            responseTurnId,
+          );
           continue;
         }
 
@@ -5682,6 +5857,7 @@ export async function getCodexSessionHistory(
             id,
             `mcp:${server}/${tool}`,
             parseObjectLike(payload.arguments),
+            responseTurnId,
           );
           continue;
         }
@@ -5696,7 +5872,13 @@ export async function getCodexSessionHistory(
           const input = Array.isArray(payload.changes)
             ? { changes: payload.changes as unknown[] }
             : parseObjectLike(payload.changes);
-          appendToolUseMessage(messages, id, "FileChange", input);
+          appendToolUseMessage(
+            messages,
+            id,
+            "FileChange",
+            input,
+            responseTurnId,
+          );
           continue;
         }
 
@@ -5711,7 +5893,13 @@ export async function getCodexSessionHistory(
             typeof payload.query === "string"
               ? { query: payload.query }
               : getCodexSearchInput(payload);
-          appendToolUseMessage(messages, id, "WebSearch", input);
+          appendToolUseMessage(
+            messages,
+            id,
+            "WebSearch",
+            input,
+            responseTurnId,
+          );
           continue;
         }
 
@@ -5728,6 +5916,7 @@ export async function getCodexSessionHistory(
             id,
             codexCollabHistoryToolName(tool),
             parseObjectLike(payload),
+            responseTurnId,
           );
           continue;
         }
@@ -5738,6 +5927,7 @@ export async function getCodexSessionHistory(
             typeof payload.id === "string" ? payload.id : `compact-${index}`,
             "ContextCompaction",
             { description: "Compact the conversation context" },
+            responseTurnId,
           );
           continue;
         }
@@ -5747,7 +5937,13 @@ export async function getCodexSessionHistory(
             typeof payload.id === "string" ? payload.id : `image-view-${index}`;
           const path =
             typeof payload.path === "string" ? payload.path : undefined;
-          appendToolUseMessage(messages, id, "ViewImage", path ? { path } : {});
+          appendToolUseMessage(
+            messages,
+            id,
+            "ViewImage",
+            path ? { path } : {},
+            responseTurnId,
+          );
           appendToolResultMessage(
             messages,
             id,
@@ -5756,6 +5952,7 @@ export async function getCodexSessionHistory(
             {
               ...(path ? { imagePaths: [path] } : {}),
               ...(entryTimestamp ? { timestamp: entryTimestamp } : {}),
+              ...(responseTurnId ? { historyTurnId: responseTurnId } : {}),
             },
           );
           continue;
@@ -5767,6 +5964,7 @@ export async function getCodexSessionHistory(
             typeof payload.id === "string" ? payload.id : `wait-${index}`,
             "Wait",
             parseObjectLike(payload),
+            responseTurnId,
           );
         }
       }

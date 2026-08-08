@@ -121,6 +121,58 @@ describe("selectTurnAwareHistoryWindow", () => {
     });
   });
 
+  it("keeps repeated legacy tool ids as distinct turn-scoped gaps", () => {
+    const entries = [
+      entry(1, {
+        type: "user_input" as const,
+        text: "first",
+        historyTurnId: "provider-turn-one",
+      }),
+      entry(2, {
+        ...toolUse("reused-tool"),
+        historyTurnId: "provider-turn-one",
+      }),
+      entry(3, {
+        type: "tool_result" as const,
+        toolUseId: "reused-tool",
+        historyTurnId: "provider-turn-one",
+        content: "first result",
+      }),
+      entry(4, {
+        type: "user_input" as const,
+        text: "second",
+        historyTurnId: "provider-turn-two",
+      }),
+      entry(5, {
+        ...toolUse("reused-tool"),
+        historyTurnId: "provider-turn-two",
+      }),
+      entry(6, {
+        type: "tool_result" as const,
+        toolUseId: "reused-tool",
+        historyTurnId: "provider-turn-two",
+        content: "second result",
+      }),
+    ];
+
+    const selected = selectTurnAwareHistoryWindow(entries, { toolCalls: 0 });
+    const gaps = selected.flatMap((item) =>
+      item.message.type === "assistant"
+        ? (item.message.historyToolDetailGaps ?? [])
+        : [],
+    );
+    expect(gaps).toHaveLength(2);
+    expect(gaps.map((gap) => gap.turnId)).toEqual([
+      "provider-turn-one",
+      "provider-turn-two",
+    ]);
+    expect(new Set(gaps.map((gap) => gap.gapId)).size).toBe(2);
+    expect(gaps.map((gap) => gap.toolUseIds)).toEqual([
+      ["reused-tool"],
+      ["reused-tool"],
+    ]);
+  });
+
   it("drops anonymous tool payloads that cannot be loaded by stable id", () => {
     const selected = selectTurnAwareHistoryWindow([
       entry(1, { type: "user_input", text: "inspect" }),

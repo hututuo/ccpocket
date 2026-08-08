@@ -314,12 +314,10 @@ vi.mock("./session.js", async () => {
         listAvailableModelMetadata: vi.fn(async () => []),
         readProfileConfig: vi.fn(async () => ({ profiles: [] })),
         readThread: vi.fn(async () => ({ id: "thread-read", turns: [] })),
-        requestReadOnlyRpc: vi.fn(
-          async (method: string) =>
-            method === "thread/turns/list" ||
-            method === "thread/items/list"
-              ? { data: [], nextCursor: null }
-              : { thread: { id: "thread-read", turns: [] } },
+        requestReadOnlyRpc: vi.fn(async (method: string) =>
+          method === "thread/turns/list" || method === "thread/items/list"
+            ? { data: [], nextCursor: null }
+            : { thread: { id: "thread-read", turns: [] } },
         ),
         archiveThread: vi.fn(async () => {}),
         unarchiveThread: vi.fn(async () => {}),
@@ -7738,6 +7736,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         seq: 1,
         message: {
           type: "assistant",
+          historyTurnId: "provider-turn-one",
           message: {
             id: "assistant-tools",
             role: "assistant",
@@ -7763,9 +7762,40 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         seq: 2,
         message: {
           type: "tool_result",
+          historyTurnId: "provider-turn-one",
           toolUseId: "tool-1",
           toolName: "Read",
           content: "file contents",
+        },
+      },
+      {
+        seq: 3,
+        message: {
+          type: "assistant",
+          historyTurnId: "provider-turn-two",
+          message: {
+            id: "assistant-tools-two",
+            role: "assistant",
+            model: "test",
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-1",
+                name: "Read",
+                input: { file_path: "/tmp/wrong-turn.txt" },
+              },
+            ],
+          },
+        },
+      },
+      {
+        seq: 4,
+        message: {
+          type: "tool_result",
+          historyTurnId: "provider-turn-two",
+          toolUseId: "tool-1",
+          toolName: "Read",
+          content: "wrong turn contents",
         },
       },
     ];
@@ -7776,6 +7806,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         requestId: "history-tools-1",
         sessionId,
         toolUseIds: ["tool-1", "missing"],
+        historyTurnId: "provider-turn-one",
       },
       ws,
     );
@@ -12988,9 +13019,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     await (bridge as any).handleClientMessage(planRequest, ws);
 
     expect(updateDurableThreadSettingsForNextTurn).toHaveBeenCalledOnce();
-    expect(
-      (bridge as any).createStandaloneCodexProcess,
-    ).toHaveBeenCalledWith("/tmp/project-durable-settings");
+    expect((bridge as any).createStandaloneCodexProcess).toHaveBeenCalledWith(
+      "/tmp/project-durable-settings",
+    );
     expect(updateDurableThreadSettingsForNextTurn).toHaveBeenCalledWith(
       "thread-durable-settings",
       { collaborationMode: "plan" },
@@ -13012,9 +13043,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(
       ws.send.mock.calls
         .map((call: unknown[]) => JSON.parse(call[0] as string))
-        .filter(
-          (message: any) => message.subtype === "set_permission_mode",
-        ),
+        .filter((message: any) => message.subtype === "set_permission_mode"),
     ).toHaveLength(1);
 
     ws.send.mockClear();
@@ -18398,8 +18427,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       sandboxMode: "danger-full-access",
     });
     const readThread = child.process.readThread as ReturnType<typeof vi.fn>;
-    const requestReadOnlyRpc = child.process
-      .requestReadOnlyRpc as ReturnType<typeof vi.fn>;
+    const requestReadOnlyRpc = child.process.requestReadOnlyRpc as ReturnType<
+      typeof vi.fn
+    >;
     readThread.mockRejectedValue(
       new Error("ephemeral threads do not support includeTurns"),
     );

@@ -120,10 +120,7 @@ const MAX_STATE_HISTORY = 4;
 const MAX_THREAD_STATES = 512;
 const PROVIDER_HISTORY_CONCURRENCY = 2;
 const PROVIDER_HISTORY_RETRY_DELAYS_MS = [
-  2_000,
-  5_000,
-  15_000,
-  30_000,
+  2_000, 5_000, 15_000, 30_000,
 ] as const;
 const FULL_RECENT_TURNS = 3;
 const MAX_TURN_DETAIL_CACHE_BYTES = 16 * 1024 * 1024;
@@ -688,10 +685,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       options.providerHistoryRetryDelaysMs?.filter(
         (delay) => Number.isFinite(delay) && delay > 0,
       );
-    this.providerHistoryRetryDelaysMs =
-      configuredHistoryRetryDelays?.length
-        ? configuredHistoryRetryDelays
-        : PROVIDER_HISTORY_RETRY_DELAYS_MS;
+    this.providerHistoryRetryDelaysMs = configuredHistoryRetryDelays?.length
+      ? configuredHistoryRetryDelays
+      : PROVIDER_HISTORY_RETRY_DELAYS_MS;
     this.statusWatchdogMs = positiveInterval(
       options.statusWatchdogMs,
       STATUS_WATCHDOG_MS,
@@ -2594,8 +2590,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             ? window.messages
             : mergedMessages;
         const hasFreshObservedContent =
-          (externalMessages?.size ?? 0) > 0 ||
-          (sharedMessages?.size ?? 0) > 0;
+          (externalMessages?.size ?? 0) > 0 || (sharedMessages?.size ?? 0) > 0;
         if (providerHistoryUnavailable && !hasFreshObservedContent) {
           throw new ProviderHistoryBackoffError(true);
         }
@@ -4611,7 +4606,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         ? event.timestamp
         : undefined;
     const message = withSourceTimestamp(
-      event.message,
+      annotateObservedTurn(event.message, event.turnId),
       providerTimestamp ?? observedAt,
       providerTimestamp !== undefined,
     );
@@ -4621,13 +4616,16 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       this.externalCodexLiveMessages.get(key) ??
       new Map<string, ExternalCodexLiveMessage>();
     let totalBytes = this.externalCodexLiveBytes.get(key) ?? 0;
-    const previous = messages.get(event.itemKey);
+    const storageItemKey = event.turnId
+      ? `turn:${event.turnId}:${event.itemKey}`
+      : event.itemKey;
+    const previous = messages.get(storageItemKey);
     if (previous) totalBytes = Math.max(0, totalBytes - previous.bytes);
     // Map#set replaces an existing value without changing insertion order.
     // Deleting first moved a streamed item to the end on every delta and made
     // the Mobile timeline jump even though the provider item identity did not
     // change.
-    messages.set(event.itemKey, {
+    messages.set(storageItemKey, {
       message,
       observedAt,
       bytes,
@@ -5876,23 +5874,36 @@ function canonicalHistoryCoversDurableExternalMessages(
 
 function observedMessageIdentity(message: ServerMessage): string | null {
   if (message.type === "user_input") {
+    const providerItemId = message.providerItemId?.trim();
+    if (providerItemId) return `user:provider:${providerItemId}`;
+    const turnId = message.historyTurnId?.trim();
+    const turnScope = turnId ? `turn:${turnId}:` : "";
     const clientMessageId =
       "clientMessageId" in message &&
       typeof message.clientMessageId === "string"
         ? message.clientMessageId
         : undefined;
-    return `user:${
-      message.providerItemId ??
-      message.userMessageUuid ??
-      clientMessageId ??
-      createHash("sha256").update(stableJson(message)).digest("hex")
-    }`;
+    const userMessageUuid = message.userMessageUuid?.trim();
+    if (userMessageUuid) {
+      return `user:${turnScope}uuid:${userMessageUuid}`;
+    }
+    const normalizedClientMessageId = clientMessageId?.trim();
+    if (normalizedClientMessageId) {
+      return `user:${turnScope}client:${normalizedClientMessageId}`;
+    }
+    return `user:${turnScope}hash:${createHash("sha256")
+      .update(stableJson(message))
+      .digest("hex")}`;
   }
   if (message.type === "assistant") {
-    return `assistant:${message.messageUuid ?? message.message.id}`;
+    const turnId = message.historyTurnId?.trim();
+    const turnScope = turnId ? `turn:${turnId}:` : "";
+    return `assistant:${turnScope}${message.messageUuid ?? message.message.id}`;
   }
   if (message.type === "tool_result") {
-    return `tool-result:${message.toolUseId}`;
+    const turnId = message.historyTurnId?.trim();
+    const turnScope = turnId ? `turn:${turnId}:` : "";
+    return `tool-result:${turnScope}${message.toolUseId}`;
   }
   // Deltas are ordered chunks. Equal text in two distinct chunks is valid;
   // the rollout item key already provides the only safe live dedupe identity.
@@ -8329,13 +8340,42 @@ function groupLegacyTurns(messages: readonly ServerMessage[]): Array<{
   items: ServerMessage[];
 }> {
   const turns: Array<{ id: string; items: ServerMessage[] }> = [];
+  const fallbackOccurrences = new Map<string, number>();
+  const fallbackTurnIndexes = new Set<number>();
   for (const message of messages) {
     if (message.type === "user_input" || turns.length === 0) {
-      const id =
-        message.type === "user_input"
-          ? `legacy-turn:${message.userMessageUuid ?? turns.length}`
-          : `legacy-turn:prefix`;
+      let id = "legacy-turn:prefix";
+      let usesFallback = true;
+      if (message.type === "user_input") {
+        const explicitTurnId = message.historyTurnId?.trim();
+        if (explicitTurnId) {
+          id = explicitTurnId;
+          usesFallback = false;
+        } else {
+          const fallbackId = `legacy-turn:${
+            message.userMessageUuid ?? turns.length
+          }`;
+          const occurrence = fallbackOccurrences.get(fallbackId) ?? 0;
+          fallbackOccurrences.set(fallbackId, occurrence + 1);
+          id =
+            occurrence === 0
+              ? fallbackId
+              : `${fallbackId}:occurrence:${occurrence}`;
+        }
+      }
       turns.push({ id, items: [] });
+      if (usesFallback) fallbackTurnIndexes.add(turns.length - 1);
+    }
+    const currentIndex = turns.length - 1;
+    if (fallbackTurnIndexes.has(currentIndex)) {
+      const observedTurnId =
+        "historyTurnId" in message && typeof message.historyTurnId === "string"
+          ? message.historyTurnId.trim()
+          : "";
+      if (observedTurnId) {
+        turns[currentIndex]!.id = observedTurnId;
+        fallbackTurnIndexes.delete(currentIndex);
+      }
     }
     turns.at(-1)!.items.push(message);
   }
