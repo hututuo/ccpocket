@@ -199,14 +199,16 @@ void main() {
 
     await tester.tap(
       find.byKey(
-        const ValueKey('chat_intermediate_disclosure_partial:tool:tool-source'),
+        const ValueKey(
+          'chat_intermediate_disclosure_partial:tool-result:tool-source',
+        ),
       ),
     );
     await tester.pump();
     await tester.tap(
       find.byKey(
         const ValueKey(
-          'chat_process_disclosure_partial:tool:tool-source:segment:leading:tool-result:tool-source',
+          'chat_process_disclosure_partial:tool-result:tool-source:segment:leading:tool-result:tool-source',
         ),
       ),
     );
