@@ -1,5 +1,22 @@
 # CC Pocket Compatibility Fork Context
 
+## 2026-08-08 compact bounded-history compatibility correction
+
+The `fix/compact-bounded-history-20260808` line keeps Codex history on the
+bounded `thread/turns/list` adapter after compact. The provider's exact
+pre-materialization error remains an empty-history compatibility case, while
+all other provider errors fail closed. A compact accepted before a private
+resume's first history request invalidates the eager snapshot eligibility so
+the next read returns to the bounded provider path.
+
+The review correction also established a reusable paging rule: a terminal
+Bridge error frame is insufficient when Mobile retains its local continuation
+cursor. The correlated error must reach the paging state so automatic loading
+stops, a visible Retry is rendered, and that explicit Retry reuses the same
+opaque cursor. Regression tests must mock the bounded RPC actually invoked,
+not a retired whole-thread method. This is source-only work; production,
+deployment, OTA, IPA and physical-device gates remain untouched.
+
 ## 2026-08-08 external full-chain audit recheck
 
 The current source-remediation line is

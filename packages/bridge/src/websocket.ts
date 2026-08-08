@@ -321,7 +321,10 @@ type SharedCodexSettingsOperation = {
 type CodexProviderHistoryCursorState = {
   threadId: string;
   headToken?: string;
-  cursors: Map<string, string>;
+  cursors: Map<
+    string,
+    { providerCursor: string; sequenceExclusive: number }
+  >;
   tokenOrder: string[];
 };
 const RESUME_OPERATION_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -2065,6 +2068,17 @@ export class BridgeWebSocketServer {
       },
       codexThreadMutationBlock: (rawSession, operation) =>
         this.codexThreadMutationBlock(rawSession as SessionInfo, operation),
+      codexCoreActionAccepted: (rawSession, action) => {
+        if (action !== "compact") return;
+        const session = rawSession as SessionInfo;
+        // Private resumes preload a bounded provider snapshot. Once compact is
+        // accepted that snapshot is stale, so the first canonical read must
+        // return to the same bounded adapter. Keep the snapshot itself as a
+        // fail-closed fallback; only its one-shot eligibility is invalidated.
+        session.codexInitialHistoryPending = false;
+        this.codexCanonicalHistoryReads.delete(session);
+        this.codexProviderHistoryCursors.delete(session);
+      },
       rehydrateCodexSessionAfterExternalTurn: (
         sessionId,
         threadId,
@@ -4100,16 +4114,19 @@ export class BridgeWebSocketServer {
     session: SessionInfo,
     state: CodexProviderHistoryCursorState,
     providerCursor: string,
+    sequenceExclusive = 0,
   ): string {
     const existing = [...state.cursors.entries()].find(
-      ([, cursor]) => cursor === providerCursor,
+      ([, cursor]) =>
+        cursor.providerCursor === providerCursor &&
+        cursor.sequenceExclusive === sequenceExclusive,
     );
     if (existing) return existing[0];
     const token = `v2:${createHash("sha256")
       .update(`${state.threadId}\0${providerCursor}\0${randomUUID()}`)
       .digest("hex")
       .slice(0, 32)}`;
-    state.cursors.set(token, providerCursor);
+    state.cursors.set(token, { providerCursor, sequenceExclusive });
     state.tokenOrder.push(token);
     while (state.tokenOrder.length > MAX_CODEX_PROVIDER_HISTORY_CURSORS) {
       const expiredIndex = state.tokenOrder.findIndex(
@@ -4136,14 +4153,26 @@ export class BridgeWebSocketServer {
   private codexProviderHistoryCursor(
     session: SessionInfo,
     token: string | undefined,
-  ): { state: CodexProviderHistoryCursorState; cursor: string } | null {
+  ):
+    | {
+        state: CodexProviderHistoryCursorState;
+        cursor: string;
+        sequenceExclusive: number;
+      }
+    | null {
     if (!token?.startsWith("v2:")) return null;
     const state = this.codexProviderHistoryCursors.get(session);
     if (!state || state.threadId !== this.codexThreadIdForSession(session)) {
       return null;
     }
     const cursor = state.cursors.get(token);
-    return cursor ? { state, cursor } : null;
+    return cursor
+      ? {
+          state,
+          cursor: cursor.providerCursor,
+          sequenceExclusive: cursor.sequenceExclusive,
+        }
+      : null;
   }
 
   private async readCodexProviderHistoryPage(
@@ -4170,23 +4199,29 @@ export class BridgeWebSocketServer {
       session,
       page.history,
     );
-    const firstSeq = Math.max(1, beforeSeq - messages.length);
+    // The ordinary canonical window starts at seq 1, so older provider pages
+    // use a separate decreasing sequence domain. The opaque v2 cursor remains
+    // authoritative for continuation; this prevents every older page from
+    // exposing the same synthetic seq=1.
+    const firstSeq = provider.sequenceExclusive - messages.length;
     const entries = messages.map((message, index) => ({
       seq: firstSeq + index,
       message,
     }));
     const visibleEntries = selectTurnAwareHistoryWindow(entries);
-    const nextBeforeSeq = visibleEntries[0]?.seq ?? beforeSeq;
     const nextBeforeCursor = page.nextCursor
       ? this.registerCodexProviderHistoryCursor(
           session,
           provider.state,
           page.nextCursor,
+          firstSeq,
         )
       : undefined;
     return {
       entries: visibleEntries,
-      nextBeforeSeq,
+      // Client request validation keeps this legacy numeric cursor positive.
+      // Progress for v2 pages is represented by nextBeforeCursor.
+      nextBeforeSeq: Math.max(1, beforeSeq),
       ...(nextBeforeCursor ? { nextBeforeCursor } : {}),
       hasMore: nextBeforeCursor !== undefined,
     };
@@ -4775,6 +4810,9 @@ export class BridgeWebSocketServer {
         getCodexDesktopToolTimeline(threadId),
       ]);
       return codexThreadToSessionHistory(thread, { desktopToolTimeline });
+    } catch (error) {
+      if (this.isCodexThreadNotMaterializedError(error)) return [];
+      throw error;
     } finally {
       if (isStandalone) {
         process.stop();
@@ -4811,9 +4849,26 @@ export class BridgeWebSocketServer {
         }),
         nextCursor: page.nextCursor,
       };
+    } catch (error) {
+      if (this.isCodexThreadNotMaterializedError(error)) {
+        return { history: [], nextCursor: null };
+      }
+      throw error;
     } finally {
       if (isStandalone) process.stop();
     }
+  }
+
+  private isCodexThreadNotMaterializedError(error: unknown): boolean {
+    let detail = error instanceof Error ? error.message : String(error);
+    if (error instanceof CodexRpcError) {
+      try {
+        detail += ` ${JSON.stringify(error.data)}`;
+      } catch {}
+    }
+    return /thread .+ is not materialized yet; includeTurns is unavailable before first user message/.test(
+      detail,
+    );
   }
 
   private async getCodexThreadHistory(
@@ -8833,7 +8888,9 @@ export class BridgeWebSocketServer {
               sessionId: msg.sessionId,
               beforeSeq: msg.beforeSeq,
               nextBeforeSeq: msg.beforeSeq,
-              hasMore: true,
+              // Terminal for this automatic attempt. Current Mobile keeps the
+              // request cursor locally only for an explicit Retry action.
+              hasMore: false,
               messages: [],
               error: `Failed to read history page: ${
                 error instanceof Error ? error.message : String(error)

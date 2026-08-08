@@ -302,6 +302,15 @@ class _RemoteHistoryCursor {
   String? beforeCursor;
 }
 
+class _RemoteHistoryPageException implements Exception {
+  const _RemoteHistoryPageException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 enum SessionLinkResolveSupport { resolved, unsupported, unavailable }
 
 class SessionLinkResolveResult {
@@ -5971,7 +5980,10 @@ class BridgeService implements BridgeServiceBase {
       final response = await completer.future.timeout(timeout);
       if (response.error != null) {
         logger.warning(response.error!);
-        return null;
+        // Propagate a correlated provider failure into ChatSessionCubit. It
+        // preserves this cursor for an explicit Retry while its error state
+        // suppresses ChatMessageList's automatic pagination callback.
+        throw _RemoteHistoryPageException(response.error!);
       }
       if (!identical(_remoteHistoryCursors[runtimeSessionId], cursor)) {
         return null;
@@ -5986,6 +5998,8 @@ class BridgeService implements BridgeServiceBase {
         ),
         hasMore: response.hasMore,
       );
+    } on _RemoteHistoryPageException {
+      rethrow;
     } on TimeoutException catch (error, stackTrace) {
       logger.warning(
         '[history:$runtimeSessionId] Older history page timed out',

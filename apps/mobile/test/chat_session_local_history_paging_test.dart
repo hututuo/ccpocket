@@ -404,6 +404,96 @@ void main() {
     },
   );
 
+  testWidgets(
+    'history page failure waits for explicit retry instead of auto progress',
+    (tester) async {
+      var attempts = 0;
+      var hasMore = true;
+      bridge.sessionSnapshot = const [
+        SessionInfo(
+          id: 's1',
+          provider: 'codex',
+          projectPath: '/project',
+          status: 'idle',
+          createdAt: '',
+          lastActivityAt: '',
+        ),
+      ];
+      bridge.configureSessionHistoryBootstrap(({
+        required runtimeSessionId,
+        required provider,
+        required providerSessionId,
+        required projectPath,
+        required force,
+      }) async {
+        bridge.publishExternalSessionHistory(runtimeSessionId, const []);
+        return true;
+      });
+      bridge.configureSessionHistoryPaging(
+        hasMore: (_) => hasMore,
+        loader: ({required runtimeSessionId, required limit}) async {
+          attempts += 1;
+          if (attempts == 1) {
+            throw StateError('temporary provider page failure');
+          }
+          hasMore = false;
+          return const LocalSessionHistoryPage(messages: [], hasMore: false);
+        },
+      );
+
+      final cubit = createCubit();
+      await settleBootstrap();
+
+      expect(await cubit.loadOlderLocalHistory(), isFalse);
+      expect(attempts, 1);
+      expect(cubit.localHistoryPaging.value.hasMore, isTrue);
+      expect(cubit.localHistoryPaging.value.loading, isFalse);
+      expect(cubit.localHistoryPaging.value.error, isA<StateError>());
+
+      final scrollController = AutoScrollController();
+      addTearDown(scrollController.dispose);
+      await tester.pumpWidget(
+        RepositoryProvider<BridgeService>.value(
+          value: bridge,
+          child: MultiBlocProvider(
+            providers: [
+              BlocProvider<ChatSessionCubit>.value(value: cubit),
+              BlocProvider<StreamingStateCubit>.value(value: streamingCubit),
+            ],
+            child: MaterialApp(
+              localizationsDelegates: AppLocalizations.localizationsDelegates,
+              supportedLocales: AppLocalizations.supportedLocales,
+              locale: const Locale('en'),
+              theme: AppTheme.darkTheme,
+              home: Scaffold(
+                body: ChatMessageList(
+                  sessionId: 's1',
+                  scrollController: scrollController,
+                  httpBaseUrl: null,
+                  onRetryMessage: null,
+                  collapseToolResults: null,
+                  isCodex: true,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final retry = find.byKey(const ValueKey('local_history_retry'));
+      expect(retry, findsOneWidget);
+      expect(attempts, 1);
+
+      await tester.tap(retry);
+      await tester.pumpAndSettle();
+      expect(attempts, 2);
+      expect(cubit.localHistoryPaging.value.hasMore, isFalse);
+      expect(cubit.localHistoryPaging.value.error, isNull);
+      expect(retry, findsNothing);
+    },
+  );
+
   test(
     'canonical history coexists with an in-flight local mirror page',
     () async {

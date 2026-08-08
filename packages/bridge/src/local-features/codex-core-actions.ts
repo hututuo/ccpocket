@@ -108,6 +108,7 @@ export class CodexCoreActionsFeatureHandler implements LocalFeatureHandler {
     }
     await this.handleAction(
       message,
+      session,
       session.process,
       threadId,
       isSessionBusy(session),
@@ -124,6 +125,7 @@ export class CodexCoreActionsFeatureHandler implements LocalFeatureHandler {
       CodexCoreActionsClientMessage,
       { type: "codex_compact_request" | "codex_review_request" }
     >,
+    session: LocalFeatureSession,
     process: CodexCoreActionProcess,
     threadId: string,
     sessionBusy: boolean,
@@ -157,6 +159,16 @@ export class CodexCoreActionsFeatureHandler implements LocalFeatureHandler {
         await process.compactThread(options);
       } else {
         review = await process.startInlineReview(message.target, options);
+      }
+      try {
+        context.runtime.codexCoreActionAccepted?.(session, action);
+      } catch (error) {
+        // A host-side cache invalidation hook must not turn an action already
+        // accepted by Codex into a failed action result.
+        console.error(
+          "[codex-core-actions] accepted action hook failed:",
+          error,
+        );
       }
       if (context.signal.aborted) return;
       context.runtime.send(context.client, {

@@ -222,6 +222,11 @@ export interface LocalFeatureRuntime {
     | LocalFeatureCodexMutationBlock
     | null
     | Promise<LocalFeatureCodexMutationBlock | null>;
+  /** Host notification after the provider accepts a standalone core action. */
+  codexCoreActionAccepted?(
+    session: LocalFeatureSession,
+    action: "compact" | "review",
+  ): void;
   /** Recreate a stale Codex runtime from durable history after Desktop work. */
   rehydrateCodexSessionAfterExternalTurn?(
     sessionId: string,

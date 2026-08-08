@@ -15,7 +15,9 @@ describe("CodexCoreActionsFeatureHandler", () => {
   it("routes compact and each review target as correlated inline actions", async () => {
     const sent: unknown[] = [];
     const process = processWith();
-    const { context } = testContext(process, sent);
+    const { context, runtime } = testContext(process, sent);
+    const actionAccepted = vi.fn();
+    runtime.codexCoreActionAccepted = actionAccepted;
     const handler = new CodexCoreActionsFeatureHandler();
 
     await handler.handle(
@@ -43,6 +45,16 @@ describe("CodexCoreActionsFeatureHandler", () => {
     expect(process.startInlineReview).toHaveBeenCalledWith(
       { type: "baseBranch", branch: "origin/main" },
       { signal: context.signal, timeoutMs: 15_000 },
+    );
+    expect(actionAccepted).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ id: "session-1" }),
+      "compact",
+    );
+    expect(actionAccepted).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: "session-1" }),
+      "review",
     );
     expect(sent).toEqual([
       {

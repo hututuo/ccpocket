@@ -4028,6 +4028,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       type: "user_input",
       text: "older page",
     });
+    expect(older.messages[0].seq).toBe(-1);
     expect(older.hasMore).toBe(true);
     expect(older.nextBeforeCursor).toMatch(/^v2:[a-f0-9]{32}$/);
     expect(older.nextBeforeCursor).not.toBe(history.historyWindow.cursor);
@@ -4050,6 +4051,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       type: "user_input",
       text: "oldest page",
     });
+    expect(oldest.messages[0].seq).toBe(-2);
     expect(oldest.hasMore).toBe(false);
     expect(oldest.nextBeforeCursor).toBeUndefined();
     expect(
@@ -4057,6 +4059,223 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         (call: unknown[]) => (call[1] as Record<string, unknown>).cursor,
       ),
     ).toEqual([null, null, "older-1", "older-2"]);
+
+    bridge.close();
+  });
+
+  it("refreshes a private resume snapshot when compact precedes first history", async () => {
+    codexThreadToSessionHistoryMock.mockImplementation((thread: any) =>
+      thread?.turns?.[0]?.id === "turn-after-compact"
+        ? [
+            {
+              role: "user",
+              uuid: "codex:user:after-compact",
+              content: [{ type: "text", text: "fresh bounded history" }],
+            },
+          ]
+        : [],
+    );
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    (bridge as any).localFeatures.hasExternalCodexActivityVerified = vi.fn(
+      async () => false,
+    );
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const sessionId = (bridge as any).sessionManager.create(
+      "/tmp/project-compact-before-history",
+      undefined,
+      [
+        {
+          role: "user",
+          uuid: "codex:user:pre-compact",
+          content: [{ type: "text", text: "stale eager snapshot" }],
+        },
+      ],
+      undefined,
+      "codex",
+      { threadId: "thread-compact-before-history" },
+    );
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.codexInitialHistoryPending = true;
+    session.process.compactThread = vi.fn(async () => {});
+    session.process.startInlineReview = vi.fn();
+    session.process.listMcpServerStatus = vi.fn();
+    session.process.requestReadOnlyRpc.mockResolvedValue({
+      data: [{ id: "turn-after-compact", items: [] }],
+      nextCursor: null,
+    });
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: ["codex_action_result"],
+      },
+      ws,
+    );
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "codex_compact_request",
+        sessionId,
+        requestId: "compact-before-history",
+      },
+      ws,
+    );
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .find(
+          (message: any) =>
+            message.type === "codex_action_result" &&
+            message.requestId === "compact-before-history",
+        ),
+    ).toMatchObject({ status: "accepted", action: "compact" });
+    expect(session.codexInitialHistoryPending).toBe(false);
+    await (bridge as any).handleClientMessage(
+      { type: "get_history", sessionId },
+      ws,
+    );
+
+    expect(session.process.requestReadOnlyRpc).toHaveBeenCalledWith(
+      "thread/turns/list",
+      expect.objectContaining({
+        threadId: "thread-compact-before-history",
+        cursor: null,
+        limit: 5,
+      }),
+      { timeoutMs: 15_000 },
+    );
+    expect(session.process.readThread).not.toHaveBeenCalled();
+    const history = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "history");
+    expect(history.messages).toEqual([
+      expect.objectContaining({
+        type: "user_input",
+        text: "fresh bounded history",
+      }),
+    ]);
+    expect(JSON.stringify(history)).not.toContain("stale eager snapshot");
+
+    bridge.close();
+  });
+
+  it("returns one terminal v2 page error and preserves explicit retry", async () => {
+    codexThreadToSessionHistoryMock.mockImplementation((thread: any) => {
+      const turnId = thread?.turns?.[0]?.id;
+      return turnId
+        ? [
+            {
+              role: "user",
+              uuid: `codex:user:${turnId}`,
+              content: [{ type: "text", text: turnId }],
+            },
+          ]
+        : [];
+    });
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const sessionId = (bridge as any).sessionManager.create(
+      "/tmp/project-history-page-retry",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      { threadId: "thread-history-page-retry" },
+    );
+    const session = (bridge as any).sessionManager.get(sessionId);
+    let olderAttempts = 0;
+    session.process.requestReadOnlyRpc.mockImplementation(
+      async (_method: string, params: Record<string, unknown>) => {
+        if (params.cursor === null) {
+          return {
+            data: [{ id: "latest", items: [] }],
+            nextCursor: "provider-older",
+          };
+        }
+        olderAttempts += 1;
+        if (olderAttempts === 1) throw new Error("temporary provider failure");
+        return {
+          data: [{ id: "older-after-retry", items: [] }],
+          nextCursor: null,
+        };
+      },
+    );
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: [
+          "turn_aware_history_window_v1",
+          "history_page_v1",
+        ],
+      },
+      ws,
+    );
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      { type: "get_history", sessionId },
+      ws,
+    );
+    const history = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "history");
+    const beforeCursor = history.historyWindow.cursor as string;
+    const beforeSeq = history.historyWindow.fromSeq as number;
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "get_history_page",
+        requestId: "page-failure",
+        sessionId,
+        beforeSeq,
+        beforeCursor,
+      },
+      ws,
+    );
+    const failed = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "history_page");
+    expect(failed).toMatchObject({
+      requestId: "page-failure",
+      beforeSeq,
+      nextBeforeSeq: beforeSeq,
+      hasMore: false,
+      messages: [],
+    });
+    expect(failed.nextBeforeCursor).toBeUndefined();
+    expect(failed.error).toContain("temporary provider failure");
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "get_history_page",
+        requestId: "page-explicit-retry",
+        sessionId,
+        beforeSeq,
+        beforeCursor,
+      },
+      ws,
+    );
+    const retried = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "history_page");
+    expect(retried).toMatchObject({
+      requestId: "page-explicit-retry",
+      nextBeforeSeq: beforeSeq,
+      hasMore: false,
+    });
+    expect(retried.error).toBeUndefined();
+    expect(retried.messages).toEqual([
+      expect.objectContaining({
+        seq: -1,
+        message: expect.objectContaining({
+          type: "user_input",
+          text: "older-after-retry",
+        }),
+      }),
+    ]);
+    expect(olderAttempts).toBe(2);
 
     bridge.close();
   });
@@ -7957,9 +8176,11 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     const manager = (bridge as any).sessionManager;
     const session = manager.get(sessionId);
     session.claudeSessionId = "thr_codex_empty";
-    session.process.readThread.mockRejectedValue(
-      new Error(
+    session.process.requestReadOnlyRpc.mockRejectedValue(
+      new CodexRpcError(
+        "thread/turns/list",
         "thread thr_codex_empty is not materialized yet; includeTurns is unavailable before first user message",
+        -32602,
       ),
     );
 
@@ -7974,6 +8195,16 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     );
 
     expect(getCodexSessionHistoryMock).not.toHaveBeenCalled();
+    expect(session.process.requestReadOnlyRpc).toHaveBeenCalledWith(
+      "thread/turns/list",
+      expect.objectContaining({
+        threadId: "thr_codex_empty",
+        cursor: null,
+        limit: 5,
+      }),
+      { timeoutMs: 15_000 },
+    );
+    expect(session.process.readThread).not.toHaveBeenCalled();
     const sends = ws.send.mock.calls.map((c: unknown[]) =>
       JSON.parse(c[0] as string),
     );
@@ -7990,6 +8221,40 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(session.history).toEqual([]);
     expect(session.historyRevision).toBe(sends[0].toSeq);
     expect(session.codexCanonicalHistoryRevision).toBe(0);
+
+    session.process.requestReadOnlyRpc.mockClear();
+    await expect(
+      (bridge as any).getCodexThreadHistoryPageFromRpc(
+        "thr_codex_empty",
+        "/tmp/project-codex",
+        session.process,
+        "provider-older-page",
+      ),
+    ).resolves.toEqual({ history: [], nextCursor: null });
+    expect(session.process.requestReadOnlyRpc).toHaveBeenCalledWith(
+      "thread/turns/list",
+      expect.objectContaining({
+        threadId: "thr_codex_empty",
+        cursor: "provider-older-page",
+        limit: 5,
+      }),
+      { timeoutMs: 15_000 },
+    );
+
+    const unrelatedError = new CodexRpcError(
+      "thread/turns/list",
+      "thread thr_codex_empty is not materialized yet; another provider failure",
+      -32602,
+    );
+    session.process.requestReadOnlyRpc.mockRejectedValueOnce(unrelatedError);
+    await expect(
+      (bridge as any).getCodexThreadHistoryPageFromRpc(
+        "thr_codex_empty",
+        "/tmp/project-codex",
+        session.process,
+        "provider-older-page",
+      ),
+    ).rejects.toBe(unrelatedError);
 
     const baselineRevision = session.historyRevision;
     manager.appendHistory(sessionId, {

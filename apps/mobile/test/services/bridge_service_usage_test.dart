@@ -1448,6 +1448,114 @@ void main() {
     );
 
     test(
+      'remote history page errors preserve the cursor for explicit retry',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        final requestedCursors = <String?>[];
+
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+          socket.listen((data) {
+            final request = jsonDecode(data as String) as Map<String, dynamic>;
+            if (request['type'] != 'get_history_page') return;
+            requestedCursors.add(request['beforeCursor'] as String?);
+            if (requestedCursors.length == 1) {
+              socket.add(
+                jsonEncode({
+                  'type': 'history_page',
+                  'requestId': request['requestId'],
+                  'sessionId': 's1',
+                  'beforeSeq': 101,
+                  'nextBeforeSeq': 101,
+                  'hasMore': false,
+                  'messages': const [],
+                  'error': 'temporary provider page failure',
+                }),
+              );
+              return;
+            }
+            socket.add(
+              jsonEncode({
+                'type': 'history_page',
+                'requestId': request['requestId'],
+                'sessionId': 's1',
+                'beforeSeq': 101,
+                'nextBeforeSeq': 101,
+                'hasMore': false,
+                'messages': [
+                  {
+                    'seq': -1,
+                    'message': {
+                      'type': 'user_input',
+                      'text': 'older after retry',
+                    },
+                  },
+                ],
+              }),
+            );
+          });
+        });
+
+        final bridge = BridgeService();
+        final historyReceived = bridge.messages
+            .where((message) => message is HistoryMessage)
+            .cast<HistoryMessage>()
+            .first;
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': const [],
+            'bridgeCapabilities': const [
+              historyPageCapability,
+              turnAwareHistoryWindowCapability,
+            ],
+          }),
+        );
+        socket.add(
+          jsonEncode({
+            'type': 'history',
+            'sessionId': 's1',
+            'messages': const [],
+            'historyWindow': const {
+              'capability': turnAwareHistoryWindowCapability,
+              'fromSeq': 101,
+              'hasMore': true,
+              'cursor': 'v2:retry-token',
+            },
+          }),
+        );
+        await historyReceived.timeout(const Duration(seconds: 2));
+
+        await expectLater(
+          bridge.tryLoadOlderLocalSessionHistory(runtimeSessionId: 's1'),
+          throwsA(
+            isA<Exception>().having(
+              (error) => error.toString(),
+              'message',
+              contains('temporary provider page failure'),
+            ),
+          ),
+        );
+        expect(bridge.hasOlderRemoteSessionHistory('s1'), isTrue);
+
+        final retried = await bridge.tryLoadOlderLocalSessionHistory(
+          runtimeSessionId: 's1',
+        );
+        expect(retried?.messages.single, isA<UserInputMessage>());
+        expect(retried?.hasMore, isFalse);
+        expect(requestedCursors, ['v2:retry-token', 'v2:retry-token']);
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
       'history tool details are correlated, bounded, and connection fenced',
       () async {
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
