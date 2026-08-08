@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../../../models/messages.dart';
 import '../../../../services/bridge_service.dart';
@@ -10,6 +11,7 @@ import '../../subagents/state/subagents_controller.dart';
 import '../../subagents/widgets/subagents_panel.dart';
 import '../l10n/side_chat_strings.dart';
 import '../state/ephemeral_side_chat_registry_service.dart';
+import '../state/floating_todo_store.dart';
 
 typedef OpenAuxiliarySideChat =
     Future<void> Function(
@@ -17,6 +19,12 @@ typedef OpenAuxiliarySideChat =
       String parentProviderSessionId,
       EphemeralSideChatEntry? entry,
     );
+
+/// Sends a todo through the owning main session's normal composer boundary.
+/// The callback returns only whether that boundary accepted the submission;
+/// it does not represent a Bridge or model completion acknowledgement.
+typedef SendFloatingTodo = FutureOr<bool> Function(String text);
+typedef FloatingTodoAction = FutureOr<void> Function(FloatingTodoItem item);
 
 enum _DockEdge { left, right }
 
@@ -30,6 +38,7 @@ class AuxiliaryFloatingDock extends StatefulWidget {
   const AuxiliaryFloatingDock({
     super.key,
     required this.sessionId,
+    this.durableSessionId,
     this.parentProviderSessionId,
     required this.bridgeService,
     required this.registryService,
@@ -37,9 +46,15 @@ class AuxiliaryFloatingDock extends StatefulWidget {
     this.legacyRuntimeParentSessionId,
     this.detachedSubagentsProviderThreadId,
     this.detachedSubagentsCodexSourceId,
+    this.onSendTodo,
+    this.todoStore = const FloatingTodoStore(),
   });
 
   final String sessionId;
+
+  /// Exact durable provider-thread identity used for local todo storage.
+  /// Runtime session IDs are intentionally not a fallback for this key.
+  final String? durableSessionId;
   final String? parentProviderSessionId;
   final BridgeService bridgeService;
   final EphemeralSideChatRegistryService registryService;
@@ -51,6 +66,8 @@ class AuxiliaryFloatingDock extends StatefulWidget {
   final String? legacyRuntimeParentSessionId;
   final String? detachedSubagentsProviderThreadId;
   final String? detachedSubagentsCodexSourceId;
+  final SendFloatingTodo? onSendTodo;
+  final FloatingTodoStore todoStore;
 
   @override
   State<AuxiliaryFloatingDock> createState() => _AuxiliaryFloatingDockState();
@@ -89,6 +106,13 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
   bool _positionTouched = false;
   bool _expanded = false;
   bool _dragging = false;
+  List<FloatingTodoItem> _todos = const [];
+  String? _todoIdentity;
+  bool _todoLoading = false;
+  int _todoLoadGeneration = 0;
+  Future<void> _todoWriteTail = Future.value();
+  final Set<String> _sendingTodoIds = <String>{};
+  final _todoUuid = const Uuid();
   late SubagentsController _subagentsController;
   int _lastSubagentActiveCount = 0;
 
@@ -103,6 +127,7 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
       if (mounted) _subagentsController.refresh();
     });
     unawaited(_restorePlacement());
+    _loadTodos();
   }
 
   @override
@@ -113,6 +138,7 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
       widget.registryService.addListener(_registryChanged);
     }
     if (oldWidget.sessionId != widget.sessionId ||
+        oldWidget.parentProviderSessionId != widget.parentProviderSessionId ||
         oldWidget.bridgeService != widget.bridgeService ||
         oldWidget.detachedSubagentsProviderThreadId !=
             widget.detachedSubagentsProviderThreadId ||
@@ -125,6 +151,108 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
         ..setDetailsVisible(_expanded)
         ..refresh();
       _lastSubagentActiveCount = _subagentsController.activeCount;
+    }
+    if (_todoIdentityFor(oldWidget) != _todoIdentityFor(widget) ||
+        oldWidget.todoStore != widget.todoStore) {
+      _loadTodos();
+    }
+  }
+
+  String _todoIdentityFor(AuxiliaryFloatingDock dock) {
+    return dock.durableSessionId?.trim() ?? '';
+  }
+
+  String get _currentTodoIdentity => _todoIdentityFor(widget);
+
+  void _loadTodos() {
+    final identity = _currentTodoIdentity;
+    final generation = ++_todoLoadGeneration;
+    _todoIdentity = identity;
+    if (mounted) {
+      setState(() {
+        _todos = const [];
+        _todoLoading = identity.isNotEmpty;
+      });
+    }
+    if (identity.isEmpty) return;
+    unawaited(
+      widget.todoStore.load(identity).then((items) {
+        if (!mounted || generation != _todoLoadGeneration) return;
+        setState(() {
+          _todos = items;
+          _todoLoading = false;
+        });
+      }),
+    );
+  }
+
+  void _queueTodoSave(List<FloatingTodoItem> snapshot) {
+    final identity = _todoIdentity;
+    if (identity == null || identity.isEmpty) return;
+    _todoWriteTail = _todoWriteTail.then<void>(
+      (_) => widget.todoStore.save(identity, snapshot),
+      onError: (Object error, StackTrace stack) =>
+          widget.todoStore.save(identity, snapshot),
+    );
+    unawaited(_todoWriteTail);
+  }
+
+  void _replaceTodos(Iterable<FloatingTodoItem> next) {
+    final snapshot = List<FloatingTodoItem>.unmodifiable(next);
+    if (!mounted) return;
+    setState(() => _todos = snapshot);
+    _queueTodoSave(snapshot);
+  }
+
+  void _addTodo(String text) {
+    final normalized = text.trim();
+    if (_todoLoading ||
+        _todoIdentity == null ||
+        _todoIdentity!.isEmpty ||
+        normalized.isEmpty ||
+        normalized.length > floatingTodoMaxTextCharacters ||
+        _todos.length >= floatingTodoMaxItems) {
+      return;
+    }
+    _replaceTodos([
+      ..._todos,
+      FloatingTodoItem(id: _todoUuid.v4(), text: normalized),
+    ]);
+  }
+
+  void _toggleTodo(FloatingTodoItem item) {
+    _replaceTodos(
+      _todos.map(
+        (candidate) => candidate.id == item.id
+            ? candidate.copyWith(completed: !candidate.completed)
+            : candidate,
+      ),
+    );
+  }
+
+  void _deleteTodo(FloatingTodoItem item) {
+    _replaceTodos(_todos.where((candidate) => candidate.id != item.id));
+  }
+
+  Future<void> _sendTodo(FloatingTodoItem item) async {
+    if (item.submitted || widget.onSendTodo == null) return;
+    if (!_sendingTodoIds.add(item.id)) return;
+    final identity = _todoIdentity;
+    try {
+      final accepted = await widget.onSendTodo!(item.text);
+      if (!accepted || !mounted || identity != _todoIdentity) return;
+      _replaceTodos(
+        _todos.map(
+          (candidate) => candidate.id == item.id
+              ? candidate.copyWith(submitted: true)
+              : candidate,
+        ),
+      );
+    } catch (_) {
+      // Leave the item visible and retryable when the main composer rejects
+      // the request (for example, an ownedElsewhere or stale lease fence).
+    } finally {
+      _sendingTodoIds.remove(item.id);
     }
   }
 
@@ -542,7 +670,9 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
             )
             .length;
         final activeSubagentCount = _subagentsController.activeCount;
-        final activeCount = activeSideChatCount + activeSubagentCount;
+        final pendingTodoCount = _todos.where((todo) => !todo.completed).length;
+        final activeCount =
+            activeSideChatCount + activeSubagentCount + pendingTodoCount;
         final badgeCount = activeCount > 0 ? activeCount : entries.length;
         final colorScheme = Theme.of(context).colorScheme;
         final panelSize = _panelSize(size);
@@ -582,6 +712,12 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
                         ) ||
                         legacyRuntimeParentSessionId != null,
                     onOpenSideChat: _openSideChat,
+                    todos: _todos,
+                    loading: _todoLoading,
+                    onAddTodo: _addTodo,
+                    onToggleTodo: _toggleTodo,
+                    onDeleteTodo: _deleteTodo,
+                    onSendTodo: _sendTodo,
                     onCollapse: _collapse,
                     onHeaderPointerMove: _dragPanel,
                     onHeaderPointerEnd: _snapPanel,
@@ -681,6 +817,12 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
     this.detachedSubagentsCodexSourceId,
     required this.canOpenNewSideChat,
     required this.onOpenSideChat,
+    required this.todos,
+    required this.loading,
+    required this.onAddTodo,
+    required this.onToggleTodo,
+    required this.onDeleteTodo,
+    required this.onSendTodo,
     required this.onCollapse,
     required this.onHeaderPointerMove,
     required this.onHeaderPointerEnd,
@@ -696,6 +838,12 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
   final String? detachedSubagentsCodexSourceId;
   final bool canOpenNewSideChat;
   final OpenAuxiliarySideChat onOpenSideChat;
+  final List<FloatingTodoItem> todos;
+  final bool loading;
+  final ValueChanged<String> onAddTodo;
+  final ValueChanged<FloatingTodoItem> onToggleTodo;
+  final ValueChanged<FloatingTodoItem> onDeleteTodo;
+  final FloatingTodoAction onSendTodo;
   final VoidCallback onCollapse;
   final PointerMoveEventListener onHeaderPointerMove;
   final VoidCallback onHeaderPointerEnd;
@@ -703,7 +851,7 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 2,
+      length: 3,
       child: Material(
         color: Theme.of(context).colorScheme.surface,
         child: Column(
@@ -742,6 +890,7 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
               tabs: [
                 Tab(text: SideChatStrings.of(context).sideChats),
                 Tab(text: SideChatStrings.of(context).subagents),
+                Tab(text: SideChatStrings.of(context).todos),
               ],
             ),
             Expanded(
@@ -761,8 +910,213 @@ class _AuxiliaryRegistryPanel extends StatelessWidget {
                     detachedCodexSourceId: detachedSubagentsCodexSourceId,
                     controller: subagentsController,
                   ),
+                  _FloatingTodoList(
+                    todos: todos,
+                    loading: loading,
+                    onAdd: onAddTodo,
+                    onToggle: onToggleTodo,
+                    onDelete: onDeleteTodo,
+                    onSend: onSendTodo,
+                  ),
                 ],
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FloatingTodoList extends StatefulWidget {
+  const _FloatingTodoList({
+    required this.todos,
+    required this.loading,
+    required this.onAdd,
+    required this.onToggle,
+    required this.onDelete,
+    required this.onSend,
+  });
+
+  final List<FloatingTodoItem> todos;
+  final bool loading;
+  final ValueChanged<String> onAdd;
+  final ValueChanged<FloatingTodoItem> onToggle;
+  final ValueChanged<FloatingTodoItem> onDelete;
+  final FloatingTodoAction onSend;
+
+  @override
+  State<_FloatingTodoList> createState() => _FloatingTodoListState();
+}
+
+class _FloatingTodoListState extends State<_FloatingTodoList> {
+  late final TextEditingController _inputController;
+
+  @override
+  void initState() {
+    super.initState();
+    _inputController = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _inputController.dispose();
+    super.dispose();
+  }
+
+  void _add() {
+    final text = _inputController.text.trim();
+    if (text.isEmpty || text.length > floatingTodoMaxTextCharacters) return;
+    widget.onAdd(text);
+    _inputController.clear();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = SideChatStrings.of(context);
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      child: Column(
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: TextField(
+                  key: const ValueKey('floating_todo_input'),
+                  controller: _inputController,
+                  enabled: !widget.loading,
+                  maxLength: floatingTodoMaxTextCharacters,
+                  minLines: 1,
+                  maxLines: 2,
+                  textInputAction: TextInputAction.done,
+                  decoration: InputDecoration(
+                    hintText: strings.todoPlaceholder,
+                    counterText: '',
+                    isDense: true,
+                    border: const OutlineInputBorder(),
+                  ),
+                  onSubmitted: (_) => _add(),
+                ),
+              ),
+              const SizedBox(width: 6),
+              IconButton.filled(
+                key: const ValueKey('floating_todo_add'),
+                tooltip: strings.addTodo,
+                onPressed: widget.loading ? null : _add,
+                icon: const Icon(Icons.add),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Expanded(
+            child: widget.loading
+                ? const Center(child: CircularProgressIndicator.adaptive())
+                : widget.todos.isEmpty
+                ? Center(
+                    child: Text(
+                      strings.noTodos,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: colorScheme.onSurfaceVariant),
+                    ),
+                  )
+                : ListView.separated(
+                    key: const ValueKey('floating_todo_list'),
+                    padding: const EdgeInsets.only(bottom: 8),
+                    itemCount: widget.todos.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 4),
+                    itemBuilder: (context, index) {
+                      final item = widget.todos[index];
+                      return _FloatingTodoRow(
+                        key: ValueKey('floating_todo_${item.id}'),
+                        item: item,
+                        strings: strings,
+                        onToggle: () => widget.onToggle(item),
+                        onDelete: () => widget.onDelete(item),
+                        onSend: () {
+                          widget.onSend(item);
+                        },
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FloatingTodoRow extends StatelessWidget {
+  const _FloatingTodoRow({
+    super.key,
+    required this.item,
+    required this.strings,
+    required this.onToggle,
+    required this.onDelete,
+    required this.onSend,
+  });
+
+  final FloatingTodoItem item;
+  final SideChatStrings strings;
+  final VoidCallback onToggle;
+  final VoidCallback onDelete;
+  final VoidCallback onSend;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textStyle = item.completed
+        ? TextStyle(
+            color: colorScheme.onSurfaceVariant,
+            decoration: TextDecoration.lineThrough,
+          )
+        : null;
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        child: Row(
+          children: [
+            Checkbox(
+              key: ValueKey('floating_todo_check_${item.id}'),
+              value: item.completed,
+              onChanged: (_) => onToggle(),
+              semanticLabel: strings.todoCompleted,
+            ),
+            Expanded(
+              child: Text(
+                item.text,
+                key: ValueKey('floating_todo_text_${item.id}'),
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: textStyle,
+              ),
+            ),
+            if (item.submitted)
+              Padding(
+                padding: const EdgeInsets.only(left: 4),
+                child: Tooltip(
+                  message: strings.todoSubmitted,
+                  child: Icon(
+                    Icons.check_circle_outline,
+                    size: 18,
+                    color: colorScheme.primary,
+                  ),
+                ),
+              )
+            else
+              IconButton(
+                key: ValueKey('floating_todo_send_${item.id}'),
+                tooltip: strings.sendTodo,
+                onPressed: onSend,
+                icon: const Icon(Icons.send_outlined, size: 19),
+              ),
+            IconButton(
+              key: ValueKey('floating_todo_delete_${item.id}'),
+              tooltip: strings.deleteTodo,
+              onPressed: onDelete,
+              icon: const Icon(Icons.delete_outline, size: 19),
             ),
           ],
         ),

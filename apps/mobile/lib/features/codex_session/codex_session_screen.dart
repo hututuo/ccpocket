@@ -2077,6 +2077,48 @@ class _CodexChatBody extends HookWidget {
       return sent;
     }
 
+    Future<bool> sendFloatingTodo(String text) async {
+      final submission = (
+        clientMessageId: const Uuid().v4(),
+        text: text,
+        images: null,
+        mentionablePaths: const <String>[],
+        additionalMentions: const <Map<String, String>>[],
+      );
+      // Keep the floating action on the same authority and queue boundary as
+      // the composer. A detached page without a current writable lease uses
+      // the existing durable-attachment path; it never writes Bridge input
+      // directly or bypasses ownedElsewhere checks.
+      if (detachedPreview && !chatSessionCubit.canMutateAttachedRuntime) {
+        try {
+          await draftService.savePendingSubmission(
+            sessionId,
+            PendingChatSubmissionDraft(
+              clientMessageId: submission.clientMessageId,
+              text: submission.text,
+              images: const [],
+              mentionablePaths: const [],
+              additionalMentions: const [],
+            ),
+          );
+        } catch (_) {
+          return false;
+        }
+        final accepted = submitWhileAttaching(submission);
+        if (!accepted) {
+          draftService.deletePendingSubmission(
+            sessionId,
+            clientMessageId: submission.clientMessageId,
+          );
+        }
+        return accepted;
+      }
+      return chatSessionCubit.sendMessage(
+        submission.text,
+        clientMessageId: submission.clientMessageId,
+      );
+    }
+
     final canCopyCodexCliJoinCommand =
         codexCliJoinCommand.value != null &&
         _hasSentUserMessage(sessionState.entries);
@@ -3333,6 +3375,9 @@ class _CodexChatBody extends HookWidget {
                         '${sessionInsightsSessionId ?? sessionId}',
                       ),
                       sessionId: sessionId,
+                      durableSessionId:
+                          sessionInsightsSessionId ??
+                          sessionState.claudeSessionId,
                       parentProviderSessionId:
                           sessionInsightsSessionId ?? sessionId,
                       detachedSubagentsProviderThreadId: detachedPreview
@@ -3346,6 +3391,7 @@ class _CodexChatBody extends HookWidget {
                       legacyRuntimeParentSessionId: detachedPreview
                           ? liveRuntimeSessionId
                           : sessionId,
+                      onSendTodo: sendFloatingTodo,
                       onOpenSideChat:
                           (parentSessionId, parentProviderSessionId, entry) =>
                               _openLocalFeaturePaneOrSheet(

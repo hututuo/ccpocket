@@ -157,6 +157,74 @@ void main() {
     expect(openedChild, 'child-1');
   });
 
+  testWidgets('keeps durable todos isolated and sends through the callback', (
+    tester,
+  ) async {
+    final bridge = _Bridge();
+    final gateway = _Gateway()..isConnected = true;
+    final registry = EphemeralSideChatRegistryService(bridge: gateway);
+    addTearDown(gateway.dispose);
+    addTearDown(bridge.dispose);
+    final sent = <String>[];
+
+    Widget buildDock(String durableId) => MaterialApp(
+      home: Scaffold(
+        body: AuxiliaryFloatingDock(
+          sessionId: 'runtime-$durableId',
+          durableSessionId: durableId,
+          parentProviderSessionId: durableId,
+          bridgeService: bridge,
+          registryService: registry,
+          onOpenSideChat: (_, _, _) async {},
+          onSendTodo: (text) {
+            sent.add(text);
+            return true;
+          },
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(buildDock('durable-main'));
+    await tester.tap(find.byKey(const ValueKey('auxiliary_floating_dock_tap')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('To-dos'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('floating_todo_input')),
+      'Send the release note',
+    );
+    await tester.tap(find.byKey(const ValueKey('floating_todo_add')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Send the release note'), findsOneWidget);
+    await tester.tap(find.byType(Checkbox));
+    await tester.pump();
+    expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isTrue);
+    await tester.tap(find.byType(Checkbox));
+    await tester.pump();
+    expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isFalse);
+    // The generated item id is intentionally opaque; locate its semantic
+    // action by the localized tooltip exposed by the row.
+    await tester.tap(find.byTooltip('Send to main chat'));
+    await tester.pumpAndSettle();
+    expect(sent, ['Send the release note']);
+    expect(find.byTooltip('Send to main chat'), findsNothing);
+    expect(find.byTooltip('Submitted'), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const ValueKey('floating_todo_input')),
+      'Delete this task',
+    );
+    await tester.tap(find.byKey(const ValueKey('floating_todo_add')));
+    await tester.pumpAndSettle();
+    expect(find.text('Delete this task'), findsOneWidget);
+    await tester.tap(find.byTooltip('Delete task').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Delete this task'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    registry.dispose();
+    await tester.pump();
+  });
+
   testWidgets('collapsed badge includes active subagents for this parent', (
     tester,
   ) async {

@@ -11,6 +11,14 @@ class SideChatStrings {
     required this.collapse,
     required this.sideChats,
     required this.subagents,
+    required this.todos,
+    required this.todoPlaceholder,
+    required this.addTodo,
+    required this.noTodos,
+    required this.sendTodo,
+    required this.todoSubmitted,
+    required this.todoCompleted,
+    required this.deleteTodo,
     required this.closeFailed,
     required this.newTemporarySideChat,
     required this.noLiveSideChats,
@@ -44,6 +52,14 @@ class SideChatStrings {
   final String collapse;
   final String sideChats;
   final String subagents;
+  final String todos;
+  final String todoPlaceholder;
+  final String addTodo;
+  final String noTodos;
+  final String sendTodo;
+  final String todoSubmitted;
+  final String todoCompleted;
+  final String deleteTodo;
   final String closeFailed;
   final String newTemporarySideChat;
   final String noLiveSideChats;
@@ -100,6 +116,14 @@ class SideChatStrings {
     collapse: 'Collapse',
     sideChats: 'Side chats',
     subagents: 'Subagents',
+    todos: 'To-dos',
+    todoPlaceholder: 'Add a task for this conversation…',
+    addTodo: 'Add',
+    noTodos: 'No tasks for this conversation.',
+    sendTodo: 'Send to main chat',
+    todoSubmitted: 'Submitted',
+    todoCompleted: 'Completed',
+    deleteTodo: 'Delete task',
     closeFailed: 'Unable to close side chat',
     newTemporarySideChat: 'New temporary side chat',
     noLiveSideChats: 'No live side chats',
@@ -136,6 +160,14 @@ class SideChatStrings {
     collapse: '收起',
     sideChats: '临时会话',
     subagents: '子 Agent',
+    todos: '待办',
+    todoPlaceholder: '为当前会话添加待办…',
+    addTodo: '添加',
+    noTodos: '当前会话暂无待办。',
+    sendTodo: '发送到主会话',
+    todoSubmitted: '已提交',
+    todoCompleted: '已完成',
+    deleteTodo: '删除待办',
     closeFailed: '临时会话关闭失败',
     newTemporarySideChat: '新建官方临时会话',
     noLiveSideChats: '暂无正在保留的临时会话',
@@ -170,6 +202,14 @@ class SideChatStrings {
     collapse: '折りたたむ',
     sideChats: 'サイドチャット',
     subagents: 'サブエージェント',
+    todos: 'ToDo',
+    todoPlaceholder: 'この会話のタスクを追加…',
+    addTodo: '追加',
+    noTodos: 'この会話にタスクはありません。',
+    sendTodo: 'メインチャットへ送信',
+    todoSubmitted: '送信済み',
+    todoCompleted: '完了',
+    deleteTodo: 'タスクを削除',
     closeFailed: 'サイドチャットを終了できませんでした',
     newTemporarySideChat: '新しい一時サイドチャット',
     noLiveSideChats: '維持中のサイドチャットはありません',
@@ -205,6 +245,14 @@ class SideChatStrings {
     collapse: '접기',
     sideChats: '사이드 채팅',
     subagents: '하위 에이전트',
+    todos: '할 일',
+    todoPlaceholder: '이 대화의 할 일을 추가…',
+    addTodo: '추가',
+    noTodos: '이 대화에 할 일이 없습니다.',
+    sendTodo: '기본 채팅으로 보내기',
+    todoSubmitted: '제출됨',
+    todoCompleted: '완료됨',
+    deleteTodo: '할 일 삭제',
     closeFailed: '사이드 채팅을 종료하지 못했습니다',
     newTemporarySideChat: '새 임시 사이드 채팅',
     noLiveSideChats: '유지 중인 사이드 채팅이 없습니다',
