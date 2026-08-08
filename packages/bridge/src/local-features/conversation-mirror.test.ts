@@ -174,7 +174,7 @@ describe("CodexConversationMirrorReader", () => {
       text: "old",
       clientMessageId: "client-message-1",
       providerItemId: "user-1",
-      historyTurnId: "thread-1:mirror-items",
+      historyTurnId: "thread-1:bounded-items",
       userMessageUuid: "codex:user-turn:1",
     });
     expect(result.entries[0]?.contentHash).toBe(

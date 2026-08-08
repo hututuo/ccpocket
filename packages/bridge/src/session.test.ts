@@ -2198,6 +2198,7 @@ describe("SessionManager codex path", () => {
     try {
       const ledger = new InputDeliveryLedger({
         filePath: join(directory, "delivery.json"),
+        now: () => new Date("2026-08-01T02:00:02.000Z"),
       });
       await ledger.init();
       const forwarded: ServerMessage[] = [];

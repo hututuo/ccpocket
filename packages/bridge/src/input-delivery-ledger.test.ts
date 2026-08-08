@@ -235,7 +235,8 @@ describe("InputDeliveryLedger", () => {
 
   it("persists provider acceptance before a phone receipt and never replays it", async () => {
     const { file } = await temporaryLedgerFile();
-    const ledger = await readyLedger(file);
+    const now = () => new Date("2026-08-01T01:01:01.000Z");
+    const ledger = await readyLedger(file, { now });
     const identity = inputIdentity("accepted-before-phone-receipt");
     await ledger.admit({
       identity,
@@ -251,7 +252,7 @@ describe("InputDeliveryLedger", () => {
       clientUserMessageIdAccepted: true,
     });
 
-    const restarted = await readyLedger(file);
+    const restarted = await readyLedger(file, { now });
     const plan = restarted.recoveryPlan(
       inputScope(),
       identity.providerThreadId,
@@ -574,6 +575,8 @@ async function readyLedger(
     maxStoreBytes?: number;
     maxPayloadBytes?: number;
     maxQueuedInputsPerThread?: number;
+    terminalRetentionMs?: number;
+    now?: () => Date;
   } = {},
 ): Promise<InputDeliveryLedger> {
   const ledger = new InputDeliveryLedger({ filePath: file, ...options });

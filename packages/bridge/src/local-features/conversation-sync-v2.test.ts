@@ -1386,6 +1386,10 @@ describe("ConversationSyncV2FeatureHandler", () => {
           text: "session-0",
           historyTurnId: "legacy-turn:user-session-0",
         },
+        {
+          type: "assistant",
+          historyTurnId: "legacy-turn:user-session-0",
+        },
       ],
     });
     fixture.handler.close();
