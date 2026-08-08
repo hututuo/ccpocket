@@ -1713,3 +1713,23 @@
   client 时才创建短暂 fallback；writer lease/source/operation-id 门禁不可降低。
 - Claude durable input、Claude session model mutation、catalog repository 和 idle eviction
   lease 需要独立能力或运行证据，不能以“顺手修复”名义猜测实现。
+
+## 2026-08-08 退役完整历史下载入口与手动压缩分割线
+
+- 新 Mobile 不再提供“完整下载并常驻”、手动完整同步、卡片下载图标或等价 action
+  handler。历史导航统一使用轻量用户轮次索引、持久热窗口和按需分页；不得用另一个
+  全量副本作为正常使用前提。
+- 旧版本已经写入手机的完整副本不自动删除。卡片只显示不可点击的保存标记，管理
+  页面只允许取消旧常驻和删除手机副本；普通缓存清理和电脑端权威会话仍保持隔离。
+  Bridge Mirror 协议和服务层兼容能力暂时保留，避免破坏旧 Mobile，但新 UI 不得重新
+  暴露调用入口。
+- 官方 `thread/compact/start` 产生的独立 compaction turn 投影为带
+  `historyTurnId` 的 `manual_context_compacted` 系统标记。它必须跨 canonical refresh
+  保留、按 turn 去重，并在 Mobile 时间线上显示两侧分割线和“已压缩上下文”；它不是
+  上一轮中间过程或工具调用。
+- Agent 运行 turn 内的自动压缩继续显示为该 turn 的 `ContextCompaction` process item。
+  Bridge 只有在一个 app-server turn 的有效 items 全部是 context-compaction 类型时才
+  将其视为显式手动压缩；camelCase、snake_case 和 kebab-case 只做加法兼容。
+- 较老的 summary 分页若 provider 本身省略 compaction item，可以不为补一个分割线而
+  退化成无界 full-history 读取；实时路径、近期五轮 full 窗口和显式 full items 页必须
+  保留该标记。发布、Bridge runtime、OTA、IPA 和真机视觉验收仍是独立门禁。

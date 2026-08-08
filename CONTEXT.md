@@ -1,5 +1,22 @@
 # CC Pocket Compatibility Fork Context
 
+## 2026-08-08 retired full-download UI and manual-compaction boundary
+
+The current source line is `feature/session-reliability-and-tasks-20260808`
+at `5e54dedb`. Commit `9ce2f0a7` removes every user-reachable action that can
+start or manually refresh a full conversation mirror. A passive check and
+stop/delete management remain only for full copies already stored by an older
+build; the bounded conversation cache and user-turn index are the normal
+history path.
+
+Commit `5e54dedb` gives an explicit `thread/compact/start` its provider turn
+identity, preserves it across canonical refresh, and renders it as the
+standalone “已压缩上下文” timeline divider. A compaction inside an ordinary
+agent turn remains a `ContextCompaction` process item. Bridge 617 focused tests
+and Mobile 156 focused tests pass; targeted Mobile analysis has no errors or
+warnings and retains five pre-existing infos. Source changes are not yet in a
+new Bridge runtime, OTA, IPA, or physical phone build.
+
 ## 2026-08-08 message identity, bounded history, user index and floating todo
 
 The source-verified reliability line is
