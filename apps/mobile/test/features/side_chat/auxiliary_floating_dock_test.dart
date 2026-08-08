@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:ccpocket/features/side_chat/state/ephemeral_side_chat_registry_service.dart';
 import 'package:ccpocket/features/side_chat/widgets/auxiliary_floating_dock.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
+import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:flutter/material.dart';
@@ -166,23 +167,33 @@ void main() {
     addTearDown(gateway.dispose);
     addTearDown(bridge.dispose);
     final sent = <String>[];
-
-    Widget buildDock(String durableId) => MaterialApp(
-      home: Scaffold(
-        body: AuxiliaryFloatingDock(
-          sessionId: 'runtime-$durableId',
-          durableSessionId: durableId,
-          parentProviderSessionId: durableId,
-          bridgeService: bridge,
-          registryService: registry,
-          onOpenSideChat: (_, _, _) async {},
-          onSendTodo: (text) {
-            sent.add(text);
-            return true;
-          },
-        ),
-      ),
+    const sourceA = BridgeDataSourceIdentity(
+      bridgeInstanceId: 'bridge-todo',
+      codexSourceId: 'source-a',
     );
+    const sourceB = BridgeDataSourceIdentity(
+      bridgeInstanceId: 'bridge-todo',
+      codexSourceId: 'source-b',
+    );
+
+    Widget buildDock(String durableId, {BridgeDataSourceIdentity? source}) =>
+        MaterialApp(
+          home: Scaffold(
+            body: AuxiliaryFloatingDock(
+              sessionId: 'runtime-$durableId',
+              durableSessionId: durableId,
+              parentProviderSessionId: durableId,
+              todoDataSourceIdentity: source ?? sourceA,
+              bridgeService: bridge,
+              registryService: registry,
+              onOpenSideChat: (_, _, _) async {},
+              onSendTodo: (text) {
+                sent.add(text);
+                return true;
+              },
+            ),
+          ),
+        );
 
     await tester.pumpWidget(buildDock('durable-main'));
     await tester.tap(find.byKey(const ValueKey('auxiliary_floating_dock_tap')));
@@ -220,6 +231,14 @@ void main() {
     await tester.tap(find.byTooltip('Delete task').last);
     await tester.pumpAndSettle();
     expect(find.text('Delete this task'), findsNothing);
+
+    await tester.pumpWidget(buildDock('durable-main', source: sourceB));
+    await tester.pumpAndSettle();
+    expect(find.text('Send the release note'), findsNothing);
+
+    await tester.pumpWidget(buildDock('durable-main'));
+    await tester.pumpAndSettle();
+    expect(find.text('Send the release note'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
     registry.dispose();
     await tester.pump();

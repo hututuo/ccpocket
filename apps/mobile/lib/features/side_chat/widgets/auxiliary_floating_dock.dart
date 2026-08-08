@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../../../models/bridge_data_source_identity.dart';
 import '../../../../models/messages.dart';
 import '../../../../services/bridge_service.dart';
 import '../../subagents/state/subagents_controller.dart';
@@ -46,6 +47,8 @@ class AuxiliaryFloatingDock extends StatefulWidget {
     this.legacyRuntimeParentSessionId,
     this.detachedSubagentsProviderThreadId,
     this.detachedSubagentsCodexSourceId,
+    this.todoDataSourceIdentity,
+    this.todoProvider = 'codex',
     this.onSendTodo,
     this.todoStore = const FloatingTodoStore(),
   });
@@ -66,6 +69,8 @@ class AuxiliaryFloatingDock extends StatefulWidget {
   final String? legacyRuntimeParentSessionId;
   final String? detachedSubagentsProviderThreadId;
   final String? detachedSubagentsCodexSourceId;
+  final BridgeDataSourceIdentity? todoDataSourceIdentity;
+  final String todoProvider;
   final SendFloatingTodo? onSendTodo;
   final FloatingTodoStore todoStore;
 
@@ -159,7 +164,14 @@ class _AuxiliaryFloatingDockState extends State<AuxiliaryFloatingDock> {
   }
 
   String _todoIdentityFor(AuxiliaryFloatingDock dock) {
-    return dock.durableSessionId?.trim() ?? '';
+    final durableSessionId = dock.durableSessionId?.trim() ?? '';
+    if (durableSessionId.isEmpty) return '';
+    return FloatingTodoStore.identityFor(
+      dataSourceIdentity:
+          dock.todoDataSourceIdentity ?? dock.bridgeService.dataSourceIdentity,
+      provider: dock.todoProvider,
+      durableSessionId: durableSessionId,
+    );
   }
 
   String get _currentTodoIdentity => _todoIdentityFor(widget);

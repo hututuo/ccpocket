@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:ccpocket/features/side_chat/state/floating_todo_store.dart';
+import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -9,27 +10,60 @@ void main() {
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
-  test('uses the exact durable identity and keeps insertion order', () async {
-    final store = const FloatingTodoStore();
-    await store.save('thread-main', const [
-      FloatingTodoItem(id: 'one', text: 'First'),
-      FloatingTodoItem(id: 'two', text: 'Second', completed: true),
-    ]);
-    await store.save('thread-other', const [
-      FloatingTodoItem(id: 'other', text: 'Other'),
-    ]);
+  test(
+    'uses the exact source and durable identity in insertion order',
+    () async {
+      final store = const FloatingTodoStore();
+      const sourceA = BridgeDataSourceIdentity(
+        bridgeInstanceId: 'bridge-a',
+        codexSourceId: 'source-a',
+      );
+      const sourceB = BridgeDataSourceIdentity(
+        bridgeInstanceId: 'bridge-a',
+        codexSourceId: 'source-b',
+      );
+      final mainIdentity = FloatingTodoStore.identityFor(
+        dataSourceIdentity: sourceA,
+        provider: 'codex',
+        durableSessionId: 'thread-main',
+      );
+      final sameThreadOtherSource = FloatingTodoStore.identityFor(
+        dataSourceIdentity: sourceB,
+        provider: 'codex',
+        durableSessionId: 'thread-main',
+      );
+      final otherIdentity = FloatingTodoStore.identityFor(
+        dataSourceIdentity: sourceA,
+        provider: 'codex',
+        durableSessionId: 'thread-other',
+      );
+      await store.save(mainIdentity, const [
+        FloatingTodoItem(id: 'one', text: 'First'),
+        FloatingTodoItem(id: 'two', text: 'Second', completed: true),
+      ]);
+      await store.save(otherIdentity, const [
+        FloatingTodoItem(id: 'other', text: 'Other'),
+      ]);
+      await store.save(sameThreadOtherSource, const [
+        FloatingTodoItem(id: 'other-source', text: 'Other source'),
+      ]);
 
-    expect((await store.load('thread-main')).map((item) => item.id), [
-      'one',
-      'two',
-    ]);
-    expect((await store.load('thread-other')).single.text, 'Other');
-    expect(await store.load('thread-missing'), isEmpty);
-    expect(
-      FloatingTodoStore.preferenceKeyFor('thread-main'),
-      isNot(FloatingTodoStore.preferenceKeyFor('thread-other')),
-    );
-  });
+      expect((await store.load(mainIdentity)).map((item) => item.id), [
+        'one',
+        'two',
+      ]);
+      expect((await store.load(otherIdentity)).single.text, 'Other');
+      expect(
+        (await store.load(sameThreadOtherSource)).single.text,
+        'Other source',
+      );
+      expect(await store.load('thread-missing'), isEmpty);
+      expect(
+        FloatingTodoStore.preferenceKeyFor(mainIdentity),
+        isNot(FloatingTodoStore.preferenceKeyFor(sameThreadOtherSource)),
+      );
+    },
+  );
 
   test('corrupt or future-version data falls back to an empty list', () async {
     final preferences = await SharedPreferences.getInstance();

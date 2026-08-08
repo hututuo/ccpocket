@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const int floatingTodoMaxItems = 200;
@@ -62,9 +63,10 @@ class FloatingTodoItem {
 
 /// Versioned SharedPreferences storage for the floating todo list.
 ///
-/// The key contains the exact durable identity (encoded, rather than using a
-/// title/project/runtime alias), so two same-name conversations cannot share
-/// items. Malformed or future-version data is ignored safely.
+/// The key contains the exact source-scoped durable identity (encoded, rather
+/// than using a title/project/runtime alias), so equal thread IDs from two
+/// Codex Homes or Bridges cannot share items. Malformed or future-version data
+/// is ignored safely.
 class FloatingTodoStore {
   const FloatingTodoStore({
     this.preferencesLoader = SharedPreferences.getInstance,
@@ -74,6 +76,21 @@ class FloatingTodoStore {
 
   static const keyPrefix = 'auxiliary_floating_todos_v1_';
   static const _schemaVersion = 1;
+
+  static String identityFor({
+    required BridgeDataSourceIdentity dataSourceIdentity,
+    required String provider,
+    required String durableSessionId,
+  }) {
+    final normalizedProvider = provider.trim();
+    final normalizedSessionId = durableSessionId.trim();
+    if (normalizedProvider.isEmpty || normalizedSessionId.isEmpty) return '';
+    return [
+      dataSourceIdentity.scopeKeyForProvider(normalizedProvider),
+      normalizedProvider,
+      normalizedSessionId,
+    ].join('\u0000');
+  }
 
   static String preferenceKeyFor(String durableSessionId) {
     final encoded = base64Url

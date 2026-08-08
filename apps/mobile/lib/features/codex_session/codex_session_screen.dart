@@ -3386,6 +3386,8 @@ class _CodexChatBody extends HookWidget {
                       detachedSubagentsCodexSourceId: detachedPreview
                           ? dataSourceIdentity.codexSourceId
                           : null,
+                      todoDataSourceIdentity: dataSourceIdentity,
+                      todoProvider: Provider.codex.value,
                       bridgeService: bridge,
                       registryService: ephemeralSideChatRegistry,
                       legacyRuntimeParentSessionId: detachedPreview
