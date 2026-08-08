@@ -1389,8 +1389,15 @@ class _ChatMessageListState extends State<ChatMessageList> {
               : 'tool_summary:${entry.timestamp.microsecondsSinceEpoch}',
         _ => '${message.runtimeType}:${entry.timestamp.microsecondsSinceEpoch}',
       },
-      UserChatEntry(:final messageUuid, :final clientMessageId, :final text) =>
-        messageUuid != null && messageUuid.isNotEmpty
+      UserChatEntry(
+        :final providerItemId,
+        :final messageUuid,
+        :final clientMessageId,
+        :final text,
+      ) =>
+        providerItemId != null && providerItemId.isNotEmpty
+            ? 'user_provider:$providerItemId'
+            : messageUuid != null && messageUuid.isNotEmpty
             ? 'user_uuid:$messageUuid'
             : clientMessageId != null && clientMessageId.isNotEmpty
             ? 'user_client:$clientMessageId'

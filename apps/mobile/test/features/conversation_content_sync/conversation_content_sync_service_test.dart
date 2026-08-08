@@ -1101,6 +1101,221 @@ void main() {
   });
 
   test(
+    'loads and reuses a lightweight user index without tool payloads',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      gateway.supportsConversationUserIndex = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-user-index',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-user-index',
+          statusState: 'status-user-index',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final load = service.loadUserMessageIndex(
+        provider: 'codex',
+        providerSessionId: 'thread-user-index',
+        revision: 'revision-user-index',
+      );
+      final request = await gateway.nextOutgoing('conversation_turns_page');
+      expect(request['projection'], 'user_index');
+      expect(request['itemsView'], 'summary');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.turnsPageResponse,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-user-index',
+          sequence: 2,
+          requestId: request['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-user-index',
+          data: const [
+            {
+              'turnId': 'turn-user-index',
+              'messages': [
+                {
+                  'type': 'user_input',
+                  'text': 'indexed prompt',
+                  'providerItemId': 'provider-user-index',
+                  'timestamp': '2026-08-08T01:02:03.000Z',
+                },
+              ],
+              'itemCount': 1,
+              'itemsView': 'summary',
+            },
+          ],
+          nextCursor: null,
+        ),
+      );
+
+      final snapshot = await load;
+      expect(snapshot?.complete, isTrue);
+      expect(snapshot?.entries.single.providerTurnId, 'turn-user-index');
+      expect(snapshot?.entries.single.providerItemId, 'provider-user-index');
+      expect(snapshot?.entries.single.message.text, 'indexed prompt');
+      await gateway.nextOutgoing('conversation_sync_ack');
+      final requestsBeforeCacheHit = gateway.sentTypes
+          .where((type) => type == 'conversation_turns_page')
+          .length;
+      final cacheHit = await service.loadUserMessageIndex(
+        provider: 'codex',
+        providerSessionId: 'thread-user-index',
+        revision: 'revision-user-index',
+      );
+      expect(cacheHit?.entries.single.message.text, 'indexed prompt');
+      expect(
+        gateway.sentTypes
+            .where((type) => type == 'conversation_turns_page')
+            .length,
+        requestsBeforeCacheHit,
+      );
+    },
+  );
+
+  test(
+    'loads one provider turn by bounded item pages then serves SQLite',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-user-turn',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-user-turn',
+          statusState: 'status-user-turn',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final load = service.loadUserTurnWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-user-turn',
+        providerTurnId: 'turn-target',
+        revision: 'revision-user-turn',
+      );
+      final firstRequest = await gateway.nextOutgoing(
+        'conversation_items_page',
+      );
+      expect(firstRequest['turnId'], 'turn-target');
+      expect(firstRequest['cursor'], isNull);
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.itemsPageResponse,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-user-turn',
+          sequence: 2,
+          requestId: firstRequest['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-user-turn',
+          turnId: 'turn-target',
+          data: const [
+            {
+              'type': 'user_input',
+              'text': 'target prompt',
+              'providerItemId': 'provider-target-user',
+            },
+          ],
+          nextCursor: 'target-page-2',
+        ),
+      );
+      final secondRequest = await gateway.nextOutgoing(
+        'conversation_items_page',
+      );
+      expect(secondRequest['cursor'], 'target-page-2');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.itemsPageResponse,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-user-turn',
+          sequence: 3,
+          requestId: secondRequest['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-user-turn',
+          turnId: 'turn-target',
+          data: const [
+            {
+              'type': 'assistant',
+              'message': {
+                'id': 'assistant-target',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'target answer'},
+                ],
+              },
+            },
+          ],
+          nextCursor: null,
+        ),
+      );
+
+      final messages = await load;
+      expect(messages, hasLength(2));
+      expect(
+        (messages?.first as UserInputMessage).historyTurnId,
+        'turn-target',
+      );
+      expect(
+        (messages?.last as AssistantServerMessage).historyTurnId,
+        'turn-target',
+      );
+      final requestsBeforeCacheHit = gateway.sentTypes
+          .where((type) => type == 'conversation_items_page')
+          .length;
+      final cacheHit = await service.loadUserTurnWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-user-turn',
+        providerTurnId: 'turn-target',
+        revision: 'newer-revision',
+      );
+      expect(cacheHit, hasLength(2));
+      expect(
+        gateway.sentTypes
+            .where((type) => type == 'conversation_items_page')
+            .length,
+        requestsBeforeCacheHit,
+      );
+    },
+  );
+
+  test(
     'serializes older paging and latest-turn repair without discarding prefix',
     () async {
       await service.dispose();
@@ -3093,6 +3308,9 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
 
   @override
   bool supportsConversationItemsById = true;
+
+  @override
+  bool supportsConversationUserIndex = false;
 
   @override
   BridgeClientDeliveryMode desiredClientDeliveryMode =

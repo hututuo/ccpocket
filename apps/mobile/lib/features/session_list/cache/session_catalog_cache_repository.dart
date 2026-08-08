@@ -124,6 +124,86 @@ class ConversationHotWindowSnapshot {
   final DateTime cachedAt;
 }
 
+class ConversationUserIndexEntry {
+  const ConversationUserIndexEntry({
+    required this.providerTurnId,
+    required this.providerItemId,
+    required this.message,
+  });
+
+  final String providerTurnId;
+  final String providerItemId;
+  final UserInputMessage message;
+}
+
+class ConversationUserIndexSnapshot {
+  const ConversationUserIndexSnapshot({
+    required this.revision,
+    required this.entries,
+    required this.complete,
+    required this.cachedAt,
+  });
+
+  final String revision;
+  final List<ConversationUserIndexEntry> entries;
+  final bool complete;
+  final DateTime cachedAt;
+}
+
+class ConversationUserIndexStage {
+  const ConversationUserIndexStage({
+    required this.revision,
+    required this.cursor,
+    required this.pageDepth,
+    required this.complete,
+  });
+
+  final String revision;
+  final String? cursor;
+  final int pageDepth;
+  final bool complete;
+}
+
+class ConversationUserIndexPageEntry {
+  const ConversationUserIndexPageEntry({
+    required this.providerTurnId,
+    required this.providerItemId,
+    required this.rawMessage,
+  });
+
+  final String providerTurnId;
+  final String providerItemId;
+  final Map<String, dynamic> rawMessage;
+}
+
+class ConversationUserTurnDetailSnapshot {
+  const ConversationUserTurnDetailSnapshot({
+    required this.revision,
+    required this.messages,
+    required this.complete,
+    required this.cachedAt,
+  });
+
+  final String revision;
+  final List<ServerMessage> messages;
+  final bool complete;
+  final DateTime cachedAt;
+}
+
+class ConversationUserTurnDetailStage {
+  const ConversationUserTurnDetailStage({
+    required this.revision,
+    required this.cursor,
+    required this.pageDepth,
+    required this.complete,
+  });
+
+  final String revision;
+  final String? cursor;
+  final int pageDepth;
+  final bool complete;
+}
+
 class ConversationSyncCacheState {
   const ConversationSyncCacheState({
     required this.catalogState,
@@ -2402,6 +2482,7 @@ class SessionCatalogCacheRepository {
         for (final table in [
           SessionCatalogCacheDatabase.timelineStagesTable,
           SessionCatalogCacheDatabase.hotWindowsTable,
+          SessionCatalogCacheDatabase.userIndexStatesTable,
         ]) {
           await transaction.delete(
             table,
@@ -2425,6 +2506,7 @@ class SessionCatalogCacheRepository {
       SessionCatalogCacheDatabase.hotWindowsTable,
       SessionCatalogCacheDatabase.statusesTable,
       SessionCatalogCacheDatabase.syncStatesTable,
+      SessionCatalogCacheDatabase.userIndexStatesTable,
       SessionCatalogCacheDatabase.entriesTable,
     ]) {
       await transaction.delete(
@@ -2446,6 +2528,496 @@ class SessionCatalogCacheRepository {
     // Read watermarks are user state, not a rebuildable cache. Keeping the
     // partition and aliases also lets all routes for the same Bridge retain
     // the same unread boundary after catalog/history data is rebuilt.
+  }
+
+  Future<ConversationUserIndexSnapshot?> loadConversationUserIndex({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) async {
+    if (!target.isValid) return null;
+    await _mutationTail;
+    final db = await database.database;
+    final partitionId = await _resolveReadablePartition(db, target);
+    if (partitionId == null) return null;
+    final states = await db.query(
+      SessionCatalogCacheDatabase.userIndexStatesTable,
+      columns: ['active_revision', 'active_complete', 'updated_at'],
+      where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+      whereArgs: [partitionId, provider, providerSessionId],
+      limit: 1,
+    );
+    if (states.isEmpty) return null;
+    final revision = states.single['active_revision'] as String?;
+    if (revision == null || revision.isEmpty) return null;
+    final rows = await db.query(
+      SessionCatalogCacheDatabase.userIndexEntriesTable,
+      columns: ['provider_turn_id', 'provider_item_id', 'message_json'],
+      where:
+          'partition_id = ? AND provider = ? AND provider_session_id = ? '
+          'AND revision = ?',
+      whereArgs: [partitionId, provider, providerSessionId, revision],
+      // Bridge pages are requested descending (newest first). Read older
+      // pages first and reverse each page so navigation is chronological.
+      orderBy: 'page_depth DESC, item_order DESC',
+    );
+    final entries = <ConversationUserIndexEntry>[];
+    for (final row in rows) {
+      try {
+        final decoded = jsonDecode(row['message_json']! as String);
+        if (decoded is! Map) continue;
+        final message = ServerMessage.fromJson(
+          Map<String, dynamic>.from(decoded),
+        );
+        if (message is! UserInputMessage ||
+            message.isSynthetic ||
+            message.isMeta) {
+          continue;
+        }
+        entries.add(
+          ConversationUserIndexEntry(
+            providerTurnId: row['provider_turn_id']! as String,
+            providerItemId: row['provider_item_id']! as String,
+            message: message,
+          ),
+        );
+      } catch (_) {
+        // One rebuildable row must not hide the remaining usable index.
+      }
+    }
+    return ConversationUserIndexSnapshot(
+      revision: revision,
+      entries: List.unmodifiable(entries),
+      complete: states.single['active_complete'] == 1,
+      cachedAt: DateTime.fromMillisecondsSinceEpoch(
+        states.single['updated_at']! as int,
+        isUtc: true,
+      ),
+    );
+  }
+
+  Future<ConversationUserIndexStage?> prepareConversationUserIndex({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String revision,
+  }) {
+    if (!target.isValid || revision.trim().isEmpty) {
+      return Future.value();
+    }
+    return _enqueueMutationResult(() async {
+      final db = await database.database;
+      return db.transaction((transaction) async {
+        final partitionId = await _ensureWritablePartition(transaction, target);
+        final where =
+            'partition_id = ? AND provider = ? AND provider_session_id = ?';
+        final whereArgs = [partitionId, provider, providerSessionId];
+        final rows = await transaction.query(
+          SessionCatalogCacheDatabase.userIndexStatesTable,
+          where: where,
+          whereArgs: whereArgs,
+          limit: 1,
+        );
+        final current = rows.isEmpty ? null : rows.single;
+        final activeRevision = current?['active_revision'] as String?;
+        final activeComplete = current?['active_complete'] == 1;
+        if (activeRevision == revision && activeComplete) {
+          return ConversationUserIndexStage(
+            revision: revision,
+            cursor: null,
+            pageDepth: 0,
+            complete: true,
+          );
+        }
+        final stagingRevision = current?['staging_revision'] as String?;
+        if (stagingRevision == revision) {
+          return ConversationUserIndexStage(
+            revision: revision,
+            cursor: current?['staging_cursor'] as String?,
+            pageDepth: current?['staging_page_depth'] as int? ?? 0,
+            complete: false,
+          );
+        }
+        final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+        final stateValues = {
+          'active_revision': activeRevision,
+          'active_complete': activeComplete ? 1 : 0,
+          'staging_revision': revision,
+          'staging_cursor': null,
+          'staging_page_depth': 0,
+          'updated_at': now,
+        };
+        if (current == null) {
+          await transaction
+              .insert(SessionCatalogCacheDatabase.userIndexStatesTable, {
+                'partition_id': partitionId,
+                'provider': provider,
+                'provider_session_id': providerSessionId,
+                ...stateValues,
+              });
+        } else {
+          await transaction.update(
+            SessionCatalogCacheDatabase.userIndexStatesTable,
+            stateValues,
+            where: where,
+            whereArgs: whereArgs,
+          );
+        }
+        await transaction.delete(
+          SessionCatalogCacheDatabase.userIndexEntriesTable,
+          where: '$where AND revision = ?',
+          whereArgs: [...whereArgs, revision],
+        );
+        return ConversationUserIndexStage(
+          revision: revision,
+          cursor: null,
+          pageDepth: 0,
+          complete: false,
+        );
+      });
+    });
+  }
+
+  Future<ConversationUserIndexStage?> commitConversationUserIndexPage({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String revision,
+    required String? expectedCursor,
+    required int pageDepth,
+    required String? nextCursor,
+    required List<ConversationUserIndexPageEntry> entries,
+  }) {
+    if (!target.isValid) return Future.value();
+    return _enqueueMutationResult(() async {
+      final db = await database.database;
+      return db.transaction((transaction) async {
+        final partitionId = await _resolveReadablePartition(
+          transaction,
+          target,
+        );
+        if (partitionId == null) return null;
+        final where =
+            'partition_id = ? AND provider = ? AND provider_session_id = ?';
+        final whereArgs = [partitionId, provider, providerSessionId];
+        final states = await transaction.query(
+          SessionCatalogCacheDatabase.userIndexStatesTable,
+          where: where,
+          whereArgs: whereArgs,
+          limit: 1,
+        );
+        if (states.isEmpty) return null;
+        final state = states.single;
+        if (state['staging_revision'] != revision ||
+            state['staging_cursor'] != expectedCursor ||
+            state['staging_page_depth'] != pageDepth) {
+          return null;
+        }
+        for (var itemOrder = 0; itemOrder < entries.length; itemOrder++) {
+          final entry = entries[itemOrder];
+          final providerTurnId = entry.providerTurnId.trim();
+          final providerItemId = entry.providerItemId.trim();
+          if (providerTurnId.isEmpty || providerItemId.isEmpty) continue;
+          final raw = Map<String, dynamic>.from(entry.rawMessage);
+          raw['providerItemId'] = providerItemId;
+          raw['historyTurnId'] = providerTurnId;
+          final timestamp = DateTime.tryParse(
+            (raw['receivedAt'] ?? raw['sourceTimestamp'] ?? raw['timestamp'])
+                    as String? ??
+                '',
+          );
+          await transaction.insert(
+            SessionCatalogCacheDatabase.userIndexEntriesTable,
+            {
+              'partition_id': partitionId,
+              'provider': provider,
+              'provider_session_id': providerSessionId,
+              'revision': revision,
+              'provider_turn_id': providerTurnId,
+              'provider_item_id': providerItemId,
+              'page_depth': pageDepth,
+              'item_order': itemOrder,
+              'message_json': jsonEncode(raw),
+              'timestamp_sort': timestamp?.toUtc().millisecondsSinceEpoch ?? 0,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+        final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+        final complete = nextCursor == null;
+        await transaction.update(
+          SessionCatalogCacheDatabase.userIndexStatesTable,
+          complete
+              ? {
+                  'active_revision': revision,
+                  'active_complete': 1,
+                  'staging_revision': null,
+                  'staging_cursor': null,
+                  'staging_page_depth': 0,
+                  'updated_at': now,
+                }
+              : {
+                  'staging_cursor': nextCursor,
+                  'staging_page_depth': pageDepth + 1,
+                  'updated_at': now,
+                },
+          where: where,
+          whereArgs: whereArgs,
+        );
+        if (complete) {
+          await transaction.delete(
+            SessionCatalogCacheDatabase.userIndexEntriesTable,
+            where: '$where AND revision != ?',
+            whereArgs: [...whereArgs, revision],
+          );
+        }
+        return ConversationUserIndexStage(
+          revision: revision,
+          cursor: nextCursor,
+          pageDepth: pageDepth + 1,
+          complete: complete,
+        );
+      });
+    });
+  }
+
+  Future<ConversationUserTurnDetailSnapshot?> loadConversationUserTurnDetail({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String providerTurnId,
+  }) async {
+    if (!target.isValid || providerTurnId.trim().isEmpty) return null;
+    await _mutationTail;
+    final db = await database.database;
+    final partitionId = await _resolveReadablePartition(db, target);
+    if (partitionId == null) return null;
+    final where =
+        'partition_id = ? AND provider = ? AND provider_session_id = ? '
+        'AND provider_turn_id = ?';
+    final whereArgs = [
+      partitionId,
+      provider,
+      providerSessionId,
+      providerTurnId,
+    ];
+    final states = await db.query(
+      SessionCatalogCacheDatabase.userTurnDetailsTable,
+      columns: ['revision', 'complete', 'updated_at'],
+      where: where,
+      whereArgs: whereArgs,
+      limit: 1,
+    );
+    if (states.isEmpty) return null;
+    final revision = states.single['revision']! as String;
+    final rows = await db.query(
+      SessionCatalogCacheDatabase.userTurnDetailItemsTable,
+      columns: ['message_json'],
+      where: '$where AND revision = ?',
+      whereArgs: [...whereArgs, revision],
+      orderBy: 'page_depth ASC, item_order ASC',
+    );
+    final messages = <ServerMessage>[];
+    for (final row in rows) {
+      try {
+        final decoded = jsonDecode(row['message_json']! as String);
+        if (decoded is! Map) continue;
+        messages.add(
+          ServerMessage.fromJson(Map<String, dynamic>.from(decoded)),
+        );
+      } catch (_) {
+        // Detail pages are rebuildable. Skip one malformed row and keep the
+        // remaining bounded turn usable.
+      }
+    }
+    return ConversationUserTurnDetailSnapshot(
+      revision: revision,
+      messages: List.unmodifiable(messages),
+      complete: states.single['complete'] == 1,
+      cachedAt: DateTime.fromMillisecondsSinceEpoch(
+        states.single['updated_at']! as int,
+        isUtc: true,
+      ),
+    );
+  }
+
+  Future<ConversationUserTurnDetailStage?> prepareConversationUserTurnDetail({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String providerTurnId,
+    required String revision,
+  }) {
+    final normalizedTurnId = providerTurnId.trim();
+    if (!target.isValid ||
+        normalizedTurnId.isEmpty ||
+        revision.trim().isEmpty) {
+      return Future.value();
+    }
+    return _enqueueMutationResult(() async {
+      final db = await database.database;
+      return db.transaction((transaction) async {
+        final partitionId = await _ensureWritablePartition(transaction, target);
+        final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+        await transaction.insert(
+          SessionCatalogCacheDatabase.userIndexStatesTable,
+          {
+            'partition_id': partitionId,
+            'provider': provider,
+            'provider_session_id': providerSessionId,
+            'active_revision': null,
+            'active_complete': 0,
+            'staging_revision': null,
+            'staging_cursor': null,
+            'staging_page_depth': 0,
+            'updated_at': now,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+        final where =
+            'partition_id = ? AND provider = ? AND provider_session_id = ? '
+            'AND provider_turn_id = ?';
+        final whereArgs = [
+          partitionId,
+          provider,
+          providerSessionId,
+          normalizedTurnId,
+        ];
+        final rows = await transaction.query(
+          SessionCatalogCacheDatabase.userTurnDetailsTable,
+          where: where,
+          whereArgs: whereArgs,
+          limit: 1,
+        );
+        if (rows.isNotEmpty) {
+          final current = rows.single;
+          if (current['complete'] == 1) {
+            return ConversationUserTurnDetailStage(
+              revision: current['revision']! as String,
+              cursor: null,
+              pageDepth: current['page_depth']! as int,
+              complete: true,
+            );
+          }
+          if (current['revision'] == revision) {
+            return ConversationUserTurnDetailStage(
+              revision: revision,
+              cursor: current['next_cursor'] as String?,
+              pageDepth: current['page_depth']! as int,
+              complete: false,
+            );
+          }
+          await transaction.delete(
+            SessionCatalogCacheDatabase.userTurnDetailsTable,
+            where: where,
+            whereArgs: whereArgs,
+          );
+        }
+        await transaction
+            .insert(SessionCatalogCacheDatabase.userTurnDetailsTable, {
+              'partition_id': partitionId,
+              'provider': provider,
+              'provider_session_id': providerSessionId,
+              'provider_turn_id': normalizedTurnId,
+              'revision': revision,
+              'next_cursor': null,
+              'page_depth': 0,
+              'complete': 0,
+              'updated_at': now,
+            });
+        return ConversationUserTurnDetailStage(
+          revision: revision,
+          cursor: null,
+          pageDepth: 0,
+          complete: false,
+        );
+      });
+    });
+  }
+
+  Future<ConversationUserTurnDetailStage?>
+  commitConversationUserTurnDetailPage({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String providerTurnId,
+    required String revision,
+    required String? expectedCursor,
+    required int pageDepth,
+    required String? nextCursor,
+    required List<Map<String, dynamic>> rawMessages,
+  }) {
+    if (!target.isValid) return Future.value();
+    return _enqueueMutationResult(() async {
+      final db = await database.database;
+      return db.transaction((transaction) async {
+        final partitionId = await _resolveReadablePartition(
+          transaction,
+          target,
+        );
+        if (partitionId == null) return null;
+        final where =
+            'partition_id = ? AND provider = ? AND provider_session_id = ? '
+            'AND provider_turn_id = ?';
+        final whereArgs = [
+          partitionId,
+          provider,
+          providerSessionId,
+          providerTurnId,
+        ];
+        final rows = await transaction.query(
+          SessionCatalogCacheDatabase.userTurnDetailsTable,
+          where: where,
+          whereArgs: whereArgs,
+          limit: 1,
+        );
+        if (rows.isEmpty) return null;
+        final state = rows.single;
+        if (state['revision'] != revision ||
+            state['next_cursor'] != expectedCursor ||
+            state['page_depth'] != pageDepth ||
+            state['complete'] == 1) {
+          return null;
+        }
+        for (var itemOrder = 0; itemOrder < rawMessages.length; itemOrder++) {
+          final raw = Map<String, dynamic>.from(rawMessages[itemOrder]);
+          raw['historyTurnId'] = providerTurnId;
+          await transaction.insert(
+            SessionCatalogCacheDatabase.userTurnDetailItemsTable,
+            {
+              'partition_id': partitionId,
+              'provider': provider,
+              'provider_session_id': providerSessionId,
+              'provider_turn_id': providerTurnId,
+              'revision': revision,
+              'page_depth': pageDepth,
+              'item_order': itemOrder,
+              'message_json': jsonEncode(raw),
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+        final complete = nextCursor == null;
+        final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+        await transaction.update(
+          SessionCatalogCacheDatabase.userTurnDetailsTable,
+          {
+            'next_cursor': nextCursor,
+            'page_depth': pageDepth + 1,
+            'complete': complete ? 1 : 0,
+            'updated_at': now,
+          },
+          where: where,
+          whereArgs: whereArgs,
+        );
+        return ConversationUserTurnDetailStage(
+          revision: revision,
+          cursor: nextCursor,
+          pageDepth: pageDepth + 1,
+          complete: complete,
+        );
+      });
+    });
   }
 
   Future<void> close() async {
@@ -2514,9 +3086,13 @@ class SessionCatalogCacheRepository {
       final type = rawMessage['type'] as String? ?? 'unknown';
       String? identity;
       if (type == 'user_input') {
-        identity = rawMessage['userMessageUuid'] as String?;
-        identity = identity?.trim().isNotEmpty == true
-            ? 'user:$identity'
+        final providerItemId = (rawMessage['providerItemId'] as String?)
+            ?.trim();
+        final legacyUuid = (rawMessage['userMessageUuid'] as String?)?.trim();
+        identity = providerItemId?.isNotEmpty == true
+            ? 'user-provider:$providerItemId'
+            : legacyUuid?.isNotEmpty == true
+            ? 'user:$legacyUuid'
             : 'user:$contentHash';
       } else if (type == 'assistant') {
         final nested = rawMessage['message'];

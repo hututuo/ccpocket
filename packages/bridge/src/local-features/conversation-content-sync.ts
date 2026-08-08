@@ -1422,7 +1422,9 @@ function providerTurnId(
 ): string | undefined {
   for (const message of messages) {
     if (
-      (message.type === "assistant" || message.type === "tool_result") &&
+      (message.type === "user_input" ||
+        message.type === "assistant" ||
+        message.type === "tool_result") &&
       message.historyTurnId?.trim()
     ) {
       return message.historyTurnId.trim();
@@ -1865,7 +1867,9 @@ function messageIdentity(
   serialized: string,
 ): string {
   if (message.type === "user_input") {
-    return `user:${message.userMessageUuid ?? sha256(serialized)}`;
+    return `user:${
+      message.providerItemId ?? message.userMessageUuid ?? sha256(serialized)
+    }`;
   }
   if (message.type === "assistant") {
     return `assistant:${message.messageUuid ?? message.message.id}`;

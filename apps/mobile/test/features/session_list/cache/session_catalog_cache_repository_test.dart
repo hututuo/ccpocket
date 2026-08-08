@@ -1835,6 +1835,272 @@ void main() {
     },
   );
 
+  test(
+    'prepends different provider users even when legacy UUIDs collide',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-provider-user-pages',
+        codexSourceId: 'source-provider-user-pages',
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-provider-user-pages',
+        provider: 'codex',
+        providerSessionId: 'thread-provider-user-pages',
+        revision: 'revision-provider-user-pages',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [_entry('current-entry', 0, 'idle')],
+        deletes: const [],
+        hasEarlier: true,
+        turnsNextCursor: 'cursor-provider-users',
+        sourceEntryCount: 3,
+      );
+
+      final snapshot = await repository.prependConversationTurnsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-provider-user-pages',
+        rawMessages: const [
+          {
+            'type': 'user_input',
+            'text': 'first prompt',
+            'providerItemId': 'provider-user-first',
+            'userMessageUuid': 'codex:user-turn:1',
+          },
+          {
+            'type': 'user_input',
+            'text': 'second prompt',
+            'providerItemId': 'provider-user-second',
+            'userMessageUuid': 'codex:user-turn:1',
+          },
+        ],
+        nextCursor: null,
+      );
+
+      expect(snapshot?.entries.map((entry) => entry.entryId), [
+        'user-provider:provider-user-first',
+        'user-provider:provider-user-second',
+        'current-entry',
+      ]);
+    },
+  );
+
+  test(
+    'user index keeps the active revision visible until staging completes',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-user-index-stage',
+        codexSourceId: 'source-user-index-stage',
+      );
+      var stage = await repository.prepareConversationUserIndex(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-user-index-stage',
+        revision: 'revision-1',
+      );
+      stage = await repository.commitConversationUserIndexPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-user-index-stage',
+        revision: 'revision-1',
+        expectedCursor: stage!.cursor,
+        pageDepth: stage.pageDepth,
+        nextCursor: null,
+        entries: const [
+          ConversationUserIndexPageEntry(
+            providerTurnId: 'turn-old',
+            providerItemId: 'item-old',
+            rawMessage: {
+              'type': 'user_input',
+              'text': 'old active prompt',
+              'timestamp': '2026-08-01T01:02:03.000Z',
+            },
+          ),
+        ],
+      );
+      expect(stage?.complete, isTrue);
+
+      stage = await repository.prepareConversationUserIndex(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-user-index-stage',
+        revision: 'revision-2',
+      );
+      stage = await repository.commitConversationUserIndexPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-user-index-stage',
+        revision: 'revision-2',
+        expectedCursor: stage!.cursor,
+        pageDepth: stage.pageDepth,
+        nextCursor: 'older-page',
+        entries: const [
+          ConversationUserIndexPageEntry(
+            providerTurnId: 'turn-new',
+            providerItemId: 'item-new',
+            rawMessage: {
+              'type': 'user_input',
+              'text': 'newest prompt',
+              'timestamp': '2026-08-02T01:02:03.000Z',
+            },
+          ),
+          ConversationUserIndexPageEntry(
+            providerTurnId: 'turn-middle-new',
+            providerItemId: 'item-middle-new',
+            rawMessage: {
+              'type': 'user_input',
+              'text': 'middle newer prompt',
+              'timestamp': '2026-08-01T01:02:03.000Z',
+            },
+          ),
+        ],
+      );
+      final whileStaging = await repository.loadConversationUserIndex(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-user-index-stage',
+      );
+      expect(whileStaging?.revision, 'revision-1');
+      expect(whileStaging?.entries.single.message.text, 'old active prompt');
+
+      stage = await repository.commitConversationUserIndexPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-user-index-stage',
+        revision: 'revision-2',
+        expectedCursor: stage!.cursor,
+        pageDepth: stage.pageDepth,
+        nextCursor: null,
+        entries: const [
+          ConversationUserIndexPageEntry(
+            providerTurnId: 'turn-middle-old',
+            providerItemId: 'item-middle-old',
+            rawMessage: {
+              'type': 'user_input',
+              'text': 'middle older prompt',
+              'timestamp': '2026-07-31T01:02:03.000Z',
+            },
+          ),
+          ConversationUserIndexPageEntry(
+            providerTurnId: 'turn-oldest',
+            providerItemId: 'item-oldest',
+            rawMessage: {
+              'type': 'user_input',
+              'text': 'oldest prompt',
+              'timestamp': '2026-07-30T01:02:03.000Z',
+            },
+          ),
+        ],
+      );
+      final completed = await repository.loadConversationUserIndex(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-user-index-stage',
+      );
+      expect(completed?.revision, 'revision-2');
+      expect(completed?.complete, isTrue);
+      expect(completed?.entries.map((entry) => entry.providerTurnId), [
+        'turn-oldest',
+        'turn-middle-old',
+        'turn-middle-new',
+        'turn-new',
+      ]);
+      expect(completed?.entries.map((entry) => entry.message.providerItemId), [
+        'item-oldest',
+        'item-middle-old',
+        'item-middle-new',
+        'item-new',
+      ]);
+    },
+  );
+
+  test(
+    'turn detail pages persist in provider order and resume safely',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-turn-detail',
+        codexSourceId: 'source-turn-detail',
+      );
+      var stage = await repository.prepareConversationUserTurnDetail(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-turn-detail',
+        providerTurnId: 'turn-target',
+        revision: 'revision-detail',
+      );
+      stage = await repository.commitConversationUserTurnDetailPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-turn-detail',
+        providerTurnId: 'turn-target',
+        revision: 'revision-detail',
+        expectedCursor: stage!.cursor,
+        pageDepth: stage.pageDepth,
+        nextCursor: 'page-2',
+        rawMessages: const [
+          {
+            'type': 'user_input',
+            'text': 'target prompt',
+            'providerItemId': 'target-user-item',
+          },
+        ],
+      );
+      stage = await repository.commitConversationUserTurnDetailPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-turn-detail',
+        providerTurnId: 'turn-target',
+        revision: 'revision-detail',
+        expectedCursor: stage!.cursor,
+        pageDepth: stage.pageDepth,
+        nextCursor: null,
+        rawMessages: const [
+          {
+            'type': 'assistant',
+            'message': {
+              'id': 'assistant-target',
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'target answer'},
+              ],
+            },
+          },
+        ],
+      );
+      expect(stage?.complete, isTrue);
+
+      final detail = await repository.loadConversationUserTurnDetail(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-turn-detail',
+        providerTurnId: 'turn-target',
+      );
+      expect(detail?.complete, isTrue);
+      expect(detail?.messages, hasLength(2));
+      expect(
+        (detail?.messages.first as UserInputMessage).historyTurnId,
+        'turn-target',
+      );
+      expect(
+        (detail?.messages.last as AssistantServerMessage).historyTurnId,
+        'turn-target',
+      );
+
+      final reused = await repository.prepareConversationUserTurnDetail(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-turn-detail',
+        providerTurnId: 'turn-target',
+        revision: 'newer-catalog-revision',
+      );
+      expect(reused?.complete, isTrue);
+      expect(reused?.revision, 'revision-detail');
+    },
+  );
+
   test('rejects mutations after close begins', () async {
     final target = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-closed',

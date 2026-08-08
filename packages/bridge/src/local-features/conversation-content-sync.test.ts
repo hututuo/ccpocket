@@ -324,6 +324,51 @@ describe("ConversationContentSyncFeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("uses provider user item identity before a page-local legacy UUID", () => {
+    const snapshot = buildConversationContentSnapshot(
+      { provider: "codex", providerSessionId: "thread-user-identity" },
+      [
+        {
+          type: "user_input",
+          text: "first",
+          providerItemId: "provider-user-1",
+          userMessageUuid: "codex:user-turn:1",
+        },
+        {
+          type: "assistant",
+          message: {
+            id: "assistant-1",
+            role: "assistant",
+            model: "",
+            content: [{ type: "text", text: "first answer" }],
+          },
+        },
+        {
+          type: "user_input",
+          text: "second",
+          providerItemId: "provider-user-2",
+          userMessageUuid: "codex:user-turn:1",
+        },
+        {
+          type: "assistant",
+          message: {
+            id: "assistant-2",
+            role: "assistant",
+            model: "",
+            content: [{ type: "text", text: "second answer" }],
+          },
+        },
+      ],
+      { maxMessageTextBytes: 1_024, maxSnapshotBytes: 64 * 1_024 },
+    );
+
+    expect(
+      snapshot.entries
+        .filter((entry) => entry.message.type === "user_input")
+        .map((entry) => entry.entryId),
+    ).toEqual(["user:provider-user-1", "user:provider-user-2"]);
+  });
+
   it("does not let an oversized stale message outside the latest root window block sync", async () => {
     const fixture = createFixture(1);
     const client = {};

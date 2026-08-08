@@ -46,6 +46,9 @@ function sessionHistoryMessageToServerMessages(
       {
         type: "user_input",
         text,
+        ...(history.rawItemId
+          ? { providerItemId: history.rawItemId }
+          : {}),
         ...(history.uuid ? { userMessageUuid: history.uuid } : {}),
         ...(history.isMeta ? { isMeta: true } : {}),
         ...(history.imageCount ? { imageCount: history.imageCount } : {}),

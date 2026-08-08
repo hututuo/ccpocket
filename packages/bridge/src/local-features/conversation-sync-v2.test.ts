@@ -928,6 +928,7 @@ describe("conversation_sync_v2 protocol", () => {
         limit: 5,
         sortDirection: "desc",
         itemsView: "summary",
+        projection: "user_index",
       }),
     ).toMatchObject({
       type: "conversation_turns_page",
@@ -1310,6 +1311,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
         limit: 5,
         sortDirection: "desc",
         itemsView: "summary",
+        projection: "user_index",
       },
       context(client, fixture.runtime),
     );
@@ -1389,6 +1391,91 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(
       Buffer.byteLength(JSON.stringify(response), "utf8"),
     ).toBeLessThanOrEqual(64 * 1024);
+    fixture.handler.close();
+  });
+
+  it("preserves provider user item and turn identities across one Codex page", async () => {
+    const fixture = createCodexPageFixture({
+      listThreadTurns: vi.fn(async () => ({
+        data: [
+          {
+            id: "turn-newer",
+            items: [
+              {
+                type: "userMessage",
+                id: "user-newer",
+                content: [{ type: "text", text: "newer" }],
+              },
+              { type: "agentMessage", id: "agent-newer", text: "answer" },
+            ],
+          },
+          {
+            id: "turn-older",
+            items: [
+              {
+                type: "userMessage",
+                id: "user-older",
+                content: [{ type: "text", text: "older" }],
+              },
+              { type: "agentMessage", id: "agent-older", text: "answer" },
+            ],
+          },
+        ],
+        nextCursor: "older-page",
+      })),
+    });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "provider-user-identities",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-identities",
+        limit: 5,
+        sortDirection: "desc",
+        itemsView: "summary",
+        projection: "user_index",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+
+    const response = events(
+      fixture.sent,
+      fixture.client,
+      "turns_page_response",
+    ).at(-1)!;
+    const users = response.data.flatMap((rawTurn) => {
+      const turn = rawTurn as { messages?: ServerMessage[] };
+      return (turn.messages ?? []).filter(
+        (message): message is Extract<ServerMessage, { type: "user_input" }> =>
+          message.type === "user_input",
+      );
+    });
+    expect(users).toHaveLength(2);
+    expect(new Set(users.map((message) => message.providerItemId))).toEqual(
+      new Set(["user-newer", "user-older"]),
+    );
+    expect(new Set(users.map((message) => message.historyTurnId))).toEqual(
+      new Set(["turn-newer", "turn-older"]),
+    );
+    expect(
+      response.data.map((rawTurn) => {
+        const turn = rawTurn as { messages?: ServerMessage[] };
+        return turn.messages?.map((message) => message.type);
+      }),
+    ).toEqual([["user_input"], ["user_input"]]);
     fixture.handler.close();
   });
 

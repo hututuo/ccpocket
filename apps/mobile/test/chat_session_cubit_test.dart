@@ -5565,6 +5565,215 @@ void main() {
     });
 
     test(
+      'provider user item upgrades one optimistic bubble without client echo',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        cubit.sendMessage('Provider accepted this prompt');
+        var users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(1));
+        expect(users.single.clientMessageId, isNotNull);
+        expect(users.single.messageUuid, isNull);
+
+        mockBridge.emitMessage(
+          const UserInputMessage(
+            text: 'Provider accepted this prompt',
+            providerItemId: 'provider-user-item-1',
+            historyTurnId: 'provider-turn-1',
+            // Legacy rewind identity can be page-local. It must not replace
+            // the provider item as the entity key.
+            userMessageUuid: 'codex:user-turn:1',
+            timestamp: '2026-08-08T01:02:03.000Z',
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(1));
+        expect(users.single.clientMessageId, isNotNull);
+        expect(users.single.providerItemId, 'provider-user-item-1');
+        expect(users.single.historyTurnId, 'provider-turn-1');
+        expect(users.single.messageUuid, 'codex:user-turn:1');
+
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              UserInputMessage(
+                text: 'Provider accepted this prompt',
+                providerItemId: 'provider-user-item-1',
+                historyTurnId: 'provider-turn-1',
+                userMessageUuid: 'codex:user-turn:1',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+        users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(1));
+        expect(users.single.clientMessageId, isNotNull);
+        expect(users.single.providerItemId, 'provider-user-item-1');
+      },
+    );
+
+    test(
+      'different provider users survive a repeated legacy page UUID in order',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+
+        mockBridge.emitMessage(
+          HistoryMessage(
+            messages: [
+              const UserInputMessage(
+                text: 'first prompt',
+                providerItemId: 'provider-user-first',
+                historyTurnId: 'provider-turn-first',
+                userMessageUuid: 'codex:user-turn:1',
+              ),
+              AssistantServerMessage(
+                message: AssistantMessage(
+                  id: 'assistant-first',
+                  role: 'assistant',
+                  content: const [TextContent(text: 'first answer')],
+                  model: '',
+                ),
+              ),
+              const UserInputMessage(
+                text: 'second prompt',
+                providerItemId: 'provider-user-second',
+                historyTurnId: 'provider-turn-second',
+                userMessageUuid: 'codex:user-turn:1',
+              ),
+              AssistantServerMessage(
+                message: AssistantMessage(
+                  id: 'assistant-second',
+                  role: 'assistant',
+                  content: const [TextContent(text: 'second answer')],
+                  model: '',
+                ),
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users.map((entry) => entry.text), [
+          'first prompt',
+          'second prompt',
+        ]);
+        expect(users.map((entry) => entry.providerItemId), [
+          'provider-user-first',
+          'provider-user-second',
+        ]);
+      },
+    );
+
+    test(
+      'targeted provider turn fills its indexed gap without rewinding live tail',
+      () async {
+        var detailLoads = 0;
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-indexed-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialHistoryMessages: [
+            const UserInputMessage(
+              text: 'newer prompt',
+              providerItemId: 'provider-user-newer',
+              historyTurnId: 'turn-newer',
+            ),
+            AssistantServerMessage(
+              message: const AssistantMessage(
+                id: 'assistant-newer',
+                role: 'assistant',
+                content: [TextContent(text: 'newer answer')],
+                model: '',
+              ),
+              historyTurnId: 'turn-newer',
+            ),
+          ],
+          detachedUserMessageIndexLoader: () async => (
+            messages: const [
+              UserInputMessage(
+                text: 'older prompt',
+                providerItemId: 'provider-user-older',
+                historyTurnId: 'turn-older',
+              ),
+              UserInputMessage(
+                text: 'newer prompt',
+                providerItemId: 'provider-user-newer',
+                historyTurnId: 'turn-newer',
+              ),
+            ],
+            complete: true,
+          ),
+          detachedUserTurnLoader: (turnId) async {
+            detailLoads += 1;
+            expect(turnId, 'turn-older');
+            return [
+              const UserInputMessage(
+                text: 'older prompt',
+                providerItemId: 'provider-user-older',
+                historyTurnId: 'turn-older',
+              ),
+              AssistantServerMessage(
+                message: const AssistantMessage(
+                  id: 'assistant-older',
+                  role: 'assistant',
+                  content: [TextContent(text: 'older answer')],
+                  model: '',
+                ),
+                historyTurnId: 'turn-older',
+              ),
+            ];
+          },
+        );
+        addTearDown(cubit.close);
+        await pumpEventQueue();
+
+        final index = await cubit.loadAllUserMessagesForNavigation();
+        expect(index.map((entry) => entry.text), [
+          'older prompt',
+          'newer prompt',
+        ]);
+        final loaded = await cubit.revealUserMessage(index.first);
+
+        expect(loaded?.providerItemId, 'provider-user-older');
+        expect(detailLoads, 1);
+        expect(
+          cubit.state.entries.map((entry) {
+            if (entry is UserChatEntry) return 'user:${entry.text}';
+            if (entry case ServerChatEntry(
+              message: AssistantServerMessage(:final message),
+            )) {
+              final text = message.content.whereType<TextContent>().first.text;
+              return 'assistant:$text';
+            }
+            return entry.runtimeType.toString();
+          }),
+          [
+            'user:older prompt',
+            'assistant:older answer',
+            'user:newer prompt',
+            'assistant:newer answer',
+          ],
+        );
+      },
+    );
+
+    test(
       'codex user_input with UUID and no local entry is displayed',
       () async {
         final cubit = createCubit('s1', provider: Provider.codex);

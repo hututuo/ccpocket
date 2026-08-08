@@ -23,6 +23,7 @@ abstract interface class ConversationContentSyncGateway {
   bool get supportsConversationContentEvents;
   bool get supportsConversationSyncV2;
   bool get supportsConversationItemsById;
+  bool get supportsConversationUserIndex;
   BridgeClientDeliveryMode get desiredClientDeliveryMode;
 
   void send(ClientMessage message);
@@ -74,6 +75,10 @@ class BridgeServiceConversationContentSyncGateway
   @override
   bool get supportsConversationItemsById =>
       bridge.supportsConversationItemsById;
+
+  @override
+  bool get supportsConversationUserIndex =>
+      bridge.supportsConversationUserIndex;
 
   @override
   BridgeClientDeliveryMode get desiredClientDeliveryMode =>
@@ -190,6 +195,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   final Map<String, _ConversationStatusBatchStage> _v2StatusStages = {};
   final Map<String, _PendingTurnsPage> _pendingTurnsPages = {};
   final Map<String, _PendingItemsPage> _pendingItemsPages = {};
+  final Map<String, _PendingUserIndexPage> _pendingUserIndexPages = {};
+  final Map<String, _PendingUserTurnDetailPage> _pendingUserTurnDetailPages =
+      {};
   final Map<String, _PendingLatestTurnRepairPage>
   _pendingLatestTurnRepairPages = {};
   final Map<String, Future<ConversationTurnsPageLoadResult>>
@@ -197,6 +205,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   final Map<String, Future<ConversationTurnsPageLoadResult>>
   _latestTurnRepairFlights = {};
   final Map<String, Future<void>> _historyOperationTails = {};
+  final Map<String, Future<ConversationUserIndexSnapshot?>> _userIndexFlights =
+      {};
+  final Map<String, Future<List<ServerMessage>?>> _userTurnDetailFlights = {};
   final Set<Completer<void>> _subscriptionReadyWaiters = {};
 
   StreamSubscription<BridgeConnectionState>? _connectionSubscription;
@@ -222,6 +233,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   bool _v2PriorityBootstrapComplete = false;
   String? _v2RecoveryTargetFingerprint;
   Future<void> _v2MutationTail = Future<void>.value();
+  Future<void>? _userIndexWarmup;
 
   Stream<ConversationContentCacheUpdate> get updates =>
       _updatesController.stream;
@@ -529,6 +541,320 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         });
     _historyPageFlights[flightKey] = flight;
     return flight;
+  }
+
+  /// Loads the lightweight user-turn spine without downloading tools or full
+  /// assistant history. Completed revisions are served entirely from SQLite.
+  Future<ConversationUserIndexSnapshot?> loadUserMessageIndex({
+    required String provider,
+    required String providerSessionId,
+    required String revision,
+    BridgeDataSourceIdentity? expectedDataSourceIdentity,
+    int maximumPages = 250,
+  }) {
+    if (expectedDataSourceIdentity != null &&
+        !matchesCurrentDataSource(
+          expectedDataSourceIdentity,
+          provider: provider,
+        )) {
+      return Future.value();
+    }
+    final flightKey = [
+      _cacheTarget.fingerprint,
+      provider,
+      providerSessionId,
+      revision,
+    ].join('\u0000');
+    final existing = _userIndexFlights[flightKey];
+    if (existing != null) return existing;
+    late final Future<ConversationUserIndexSnapshot?> flight;
+    flight =
+        _loadUserMessageIndex(
+          provider: provider,
+          providerSessionId: providerSessionId,
+          revision: revision,
+          expectedDataSourceIdentity: expectedDataSourceIdentity,
+          maximumPages: maximumPages.clamp(1, 500),
+        ).whenComplete(() {
+          if (identical(_userIndexFlights[flightKey], flight)) {
+            _userIndexFlights.remove(flightKey);
+          }
+        });
+    _userIndexFlights[flightKey] = flight;
+    return flight;
+  }
+
+  Future<ConversationUserIndexSnapshot?> _loadUserMessageIndex({
+    required String provider,
+    required String providerSessionId,
+    required String revision,
+    required BridgeDataSourceIdentity? expectedDataSourceIdentity,
+    required int maximumPages,
+  }) async {
+    final target = _cacheTarget;
+    final cached = await cache.loadConversationUserIndex(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
+    if (cached?.revision == revision && cached?.complete == true) {
+      return cached;
+    }
+    if (!bridge.supportsConversationSyncV2 ||
+        !bridge.supportsConversationUserIndex ||
+        !_canProcessContent) {
+      return cached;
+    }
+    var stage = await cache.prepareConversationUserIndex(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      revision: revision,
+    );
+    if (stage == null || stage.complete) {
+      return cache.loadConversationUserIndex(
+        target: target,
+        provider: provider,
+        providerSessionId: providerSessionId,
+      );
+    }
+    final generation = _generation;
+    for (var page = 0; page < maximumPages && !stage!.complete; page++) {
+      if (generation != _generation ||
+          target.fingerprint != _cacheTarget.fingerprint ||
+          !_canProcessContent ||
+          (expectedDataSourceIdentity != null &&
+              !matchesCurrentDataSource(
+                expectedDataSourceIdentity,
+                provider: provider,
+              ))) {
+        break;
+      }
+      stage = await _requestUserIndexPage(
+        target: target,
+        provider: provider,
+        providerSessionId: providerSessionId,
+        stage: stage,
+      );
+      if (stage == null) break;
+    }
+    return cache.loadConversationUserIndex(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
+  }
+
+  Future<ConversationUserIndexStage?> _requestUserIndexPage({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required ConversationUserIndexStage stage,
+  }) async {
+    final subscriptionId = _activeSubscriptionId;
+    if (subscriptionId == null || !_canProcessContent) {
+      throw const _ConversationPagingInterrupted();
+    }
+    final requestId = _nextRequestId('user-index');
+    final completer = Completer<ConversationUserIndexStage?>();
+    final pending = _PendingUserIndexPage(
+      generation: _generation,
+      targetFingerprint: target.fingerprint,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      revision: stage.revision,
+      cursor: stage.cursor,
+      pageDepth: stage.pageDepth,
+      completer: completer,
+    );
+    _pendingUserIndexPages[requestId] = pending;
+    try {
+      bridge.send(
+        conversationSyncV2TurnsPage(
+          requestId: requestId,
+          subscriptionId: subscriptionId,
+          target: ConversationSyncV2Target(
+            provider: provider,
+            providerSessionId: providerSessionId,
+          ),
+          cursor: stage.cursor,
+          limit: 200,
+          sortDirection: 'desc',
+          itemsView: 'summary',
+          projection: 'user_index',
+        ),
+      );
+      return await completer.future.timeout(const Duration(seconds: 15));
+    } finally {
+      if (identical(_pendingUserIndexPages[requestId], pending)) {
+        _pendingUserIndexPages.remove(requestId);
+      }
+    }
+  }
+
+  /// Loads one provider turn on demand and persists each bounded item page.
+  ///
+  /// The per-attempt page budget limits foreground work, not product history:
+  /// an incomplete cursor remains in SQLite and the next tap resumes from it.
+  Future<List<ServerMessage>?> loadUserTurnWindow({
+    required String provider,
+    required String providerSessionId,
+    required String providerTurnId,
+    required String revision,
+    BridgeDataSourceIdentity? expectedDataSourceIdentity,
+    int maximumPagesPerAttempt = 64,
+  }) {
+    if (expectedDataSourceIdentity != null &&
+        !matchesCurrentDataSource(
+          expectedDataSourceIdentity,
+          provider: provider,
+        )) {
+      return Future.value();
+    }
+    final normalizedTurnId = providerTurnId.trim();
+    if (normalizedTurnId.isEmpty) return Future.value();
+    final flightKey = [
+      _cacheTarget.fingerprint,
+      provider,
+      providerSessionId,
+      normalizedTurnId,
+    ].join('\u0000');
+    final existing = _userTurnDetailFlights[flightKey];
+    if (existing != null) return existing;
+    late final Future<List<ServerMessage>?> flight;
+    flight =
+        _loadUserTurnWindow(
+          provider: provider,
+          providerSessionId: providerSessionId,
+          providerTurnId: normalizedTurnId,
+          revision: revision,
+          expectedDataSourceIdentity: expectedDataSourceIdentity,
+          maximumPagesPerAttempt: maximumPagesPerAttempt.clamp(1, 256),
+        ).whenComplete(() {
+          if (identical(_userTurnDetailFlights[flightKey], flight)) {
+            _userTurnDetailFlights.remove(flightKey);
+          }
+        });
+    _userTurnDetailFlights[flightKey] = flight;
+    return flight;
+  }
+
+  Future<List<ServerMessage>?> _loadUserTurnWindow({
+    required String provider,
+    required String providerSessionId,
+    required String providerTurnId,
+    required String revision,
+    required BridgeDataSourceIdentity? expectedDataSourceIdentity,
+    required int maximumPagesPerAttempt,
+  }) async {
+    final target = _cacheTarget;
+    final cached = await cache.loadConversationUserTurnDetail(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      providerTurnId: providerTurnId,
+    );
+    if (cached?.complete == true) return cached!.messages;
+    if (!bridge.supportsConversationSyncV2 || !_canProcessContent) return null;
+    var stage = await cache.prepareConversationUserTurnDetail(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      providerTurnId: providerTurnId,
+      revision: revision,
+    );
+    if (stage == null) return null;
+    if (stage.complete) {
+      return (await cache.loadConversationUserTurnDetail(
+        target: target,
+        provider: provider,
+        providerSessionId: providerSessionId,
+        providerTurnId: providerTurnId,
+      ))?.messages;
+    }
+    final generation = _generation;
+    final cursors = <String?>{};
+    for (
+      var page = 0;
+      page < maximumPagesPerAttempt && stage != null && !stage.complete;
+      page++
+    ) {
+      if (generation != _generation ||
+          target.fingerprint != _cacheTarget.fingerprint ||
+          !_canProcessContent ||
+          (expectedDataSourceIdentity != null &&
+              !matchesCurrentDataSource(
+                expectedDataSourceIdentity,
+                provider: provider,
+              ))) {
+        break;
+      }
+      if (!cursors.add(stage.cursor)) {
+        throw StateError('Conversation turn detail cursor repeated.');
+      }
+      stage = await _requestUserTurnDetailPage(
+        target: target,
+        provider: provider,
+        providerSessionId: providerSessionId,
+        providerTurnId: providerTurnId,
+        stage: stage,
+      );
+    }
+    final result = await cache.loadConversationUserTurnDetail(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      providerTurnId: providerTurnId,
+    );
+    return result?.complete == true ? result!.messages : null;
+  }
+
+  Future<ConversationUserTurnDetailStage?> _requestUserTurnDetailPage({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String providerTurnId,
+    required ConversationUserTurnDetailStage stage,
+  }) async {
+    final subscriptionId = _activeSubscriptionId;
+    if (subscriptionId == null || !_canProcessContent) {
+      throw const _ConversationPagingInterrupted();
+    }
+    final requestId = _nextRequestId('user-turn');
+    final completer = Completer<ConversationUserTurnDetailStage?>();
+    final pending = _PendingUserTurnDetailPage(
+      generation: _generation,
+      targetFingerprint: target.fingerprint,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      providerTurnId: providerTurnId,
+      revision: stage.revision,
+      cursor: stage.cursor,
+      pageDepth: stage.pageDepth,
+      completer: completer,
+    );
+    _pendingUserTurnDetailPages[requestId] = pending;
+    try {
+      bridge.send(
+        conversationSyncV2ItemsPage(
+          requestId: requestId,
+          subscriptionId: subscriptionId,
+          target: ConversationSyncV2Target(
+            provider: provider,
+            providerSessionId: providerSessionId,
+          ),
+          turnId: providerTurnId,
+          cursor: stage.cursor,
+          limit: 200,
+          sortDirection: 'asc',
+        ),
+      );
+      return await completer.future.timeout(const Duration(seconds: 15));
+    } finally {
+      if (identical(_pendingUserTurnDetailPages[requestId], pending)) {
+        _pendingUserTurnDetailPages.remove(requestId);
+      }
+    }
   }
 
   /// Repairs only the incomplete newest turn.
@@ -1049,6 +1375,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _highestV2CommittedSequence = 0;
     _v2PriorityBootstrapComplete = false;
     _failPendingTurnsPages(const _ConversationPagingInterrupted());
+    _failPendingUserIndexPages(const _ConversationPagingInterrupted());
+    _failPendingUserTurnDetailPages(const _ConversationPagingInterrupted());
     _failPendingItemsPages(
       StateError('Conversation item paging was interrupted.'),
     );
@@ -1542,6 +1870,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           kind: ConversationSyncCacheUpdateKind.completed,
           targetFingerprint: target.fingerprint,
         );
+        _scheduleUserIndexWarmup(generation, target);
       case ConversationSyncV2EventKind.syncReset:
         _discardV2PageBatchForReset(event.scope!);
         await cache.resetConversationSyncScope(
@@ -1556,6 +1885,54 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           providerSessionId: event.target?.providerSessionId,
         );
       case ConversationSyncV2EventKind.turnsPageResponse:
+        final userIndexRequest = event.requestId == null
+            ? null
+            : _pendingUserIndexPages[event.requestId!];
+        if (userIndexRequest != null &&
+            userIndexRequest.generation == generation &&
+            userIndexRequest.targetFingerprint == target.fingerprint &&
+            userIndexRequest.provider == event.provider &&
+            userIndexRequest.providerSessionId == event.providerSessionId) {
+          final entries = <ConversationUserIndexPageEntry>[];
+          for (final rawTurn in event.data) {
+            if (rawTurn is! Map) continue;
+            final turn = Map<String, dynamic>.from(rawTurn);
+            final turnId = (turn['turnId'] as String?)?.trim();
+            if (turnId == null || turnId.isEmpty) continue;
+            final rawMessages = turn['messages'];
+            if (rawMessages is! List) continue;
+            for (final rawMessage in rawMessages) {
+              if (rawMessage is! Map) continue;
+              final message = Map<String, dynamic>.from(rawMessage);
+              if (message['type'] != 'user_input') continue;
+              final providerItemId =
+                  ((message['providerItemId'] ?? message['userMessageUuid'])
+                          as String?)
+                      ?.trim();
+              if (providerItemId == null || providerItemId.isEmpty) continue;
+              entries.add(
+                ConversationUserIndexPageEntry(
+                  providerTurnId: turnId,
+                  providerItemId: providerItemId,
+                  rawMessage: message,
+                ),
+              );
+            }
+          }
+          final stage = await cache.commitConversationUserIndexPage(
+            target: target,
+            provider: event.provider!,
+            providerSessionId: event.providerSessionId!,
+            revision: userIndexRequest.revision,
+            expectedCursor: userIndexRequest.cursor,
+            pageDepth: userIndexRequest.pageDepth,
+            nextCursor: event.nextCursor,
+            entries: entries,
+          );
+          if (!userIndexRequest.completer.isCompleted) {
+            userIndexRequest.completer.complete(stage);
+          }
+        }
         final latestTurnRequest = event.requestId == null
             ? null
             : _pendingLatestTurnRepairPages[event.requestId!];
@@ -1677,10 +2054,33 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           }
         }
       case ConversationSyncV2EventKind.itemsPageResponse:
+        final userTurnRequest = event.requestId == null
+            ? null
+            : _pendingUserTurnDetailPages[event.requestId!];
         final latestTurnRequest = event.requestId == null
             ? null
             : _pendingLatestTurnRepairPages[event.requestId!];
-        if (latestTurnRequest != null &&
+        if (userTurnRequest != null &&
+            userTurnRequest.generation == generation &&
+            userTurnRequest.targetFingerprint == target.fingerprint &&
+            userTurnRequest.provider == event.provider &&
+            userTurnRequest.providerSessionId == event.providerSessionId &&
+            userTurnRequest.providerTurnId == event.turnId) {
+          final stage = await cache.commitConversationUserTurnDetailPage(
+            target: target,
+            provider: event.provider!,
+            providerSessionId: event.providerSessionId!,
+            providerTurnId: userTurnRequest.providerTurnId,
+            revision: userTurnRequest.revision,
+            expectedCursor: userTurnRequest.cursor,
+            pageDepth: userTurnRequest.pageDepth,
+            nextCursor: event.nextCursor,
+            rawMessages: event.pageRawMessages(),
+          );
+          if (!userTurnRequest.completer.isCompleted) {
+            userTurnRequest.completer.complete(stage);
+          }
+        } else if (latestTurnRequest != null &&
             latestTurnRequest.repair == 'items_page' &&
             latestTurnRequest.generation == generation &&
             latestTurnRequest.targetFingerprint == target.fingerprint &&
@@ -1789,6 +2189,23 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         if (itemRequest != null && !itemRequest.completer.isCompleted) {
           itemRequest.completer.completeError(
             StateError(event.error ?? 'Conversation item page failed.'),
+          );
+        }
+        final userIndexRequest = event.requestId == null
+            ? null
+            : _pendingUserIndexPages[event.requestId!];
+        if (userIndexRequest != null &&
+            !userIndexRequest.completer.isCompleted) {
+          userIndexRequest.completer.completeError(
+            StateError(event.error ?? 'Conversation user index failed.'),
+          );
+        }
+        final userTurnRequest = event.requestId == null
+            ? null
+            : _pendingUserTurnDetailPages[event.requestId!];
+        if (userTurnRequest != null && !userTurnRequest.completer.isCompleted) {
+          userTurnRequest.completer.completeError(
+            StateError(event.error ?? 'Conversation turn detail failed.'),
           );
         }
         final latestTurnRequest = event.requestId == null
@@ -2075,6 +2492,86 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     );
   }
 
+  void _scheduleUserIndexWarmup(
+    int generation,
+    SessionCatalogCacheTarget target,
+  ) {
+    if (!bridge.supportsConversationUserIndex || _userIndexWarmup != null) {
+      return;
+    }
+    late final Future<void> flight;
+    flight = _warmRecentUserIndexes(generation, target).whenComplete(() {
+      if (identical(_userIndexWarmup, flight)) _userIndexWarmup = null;
+    });
+    _userIndexWarmup = flight;
+    unawaited(
+      flight.catchError((Object error, StackTrace stackTrace) {
+        logger.warning(
+          '[conversation_sync_v2] Recent user-index warmup failed',
+          error,
+          stackTrace,
+        );
+      }),
+    );
+  }
+
+  Future<void> _warmRecentUserIndexes(
+    int generation,
+    SessionCatalogCacheTarget target,
+  ) async {
+    final catalog = await cache.load(target);
+    if (catalog == null ||
+        generation != _generation ||
+        target.fingerprint != _cacheTarget.fingerprint ||
+        !_canProcessContent) {
+      return;
+    }
+    final cutoff = DateTime.now().toUtc().subtract(const Duration(days: 3));
+    final candidates = <RecentSession>[];
+    for (var index = 0; index < catalog.sessions.length; index++) {
+      final session = catalog.sessions[index];
+      final modified = DateTime.tryParse(session.modified)?.toUtc();
+      final recent = modified != null && !modified.isBefore(cutoff);
+      if (index < 10 || recent) candidates.add(session);
+      if (index >= 10 && !recent) break;
+    }
+    var next = 0;
+    Future<void> worker() async {
+      while (generation == _generation &&
+          target.fingerprint == _cacheTarget.fingerprint &&
+          _canProcessContent) {
+        final index = next++;
+        if (index >= candidates.length) return;
+        final session = candidates[index];
+        final provider = session.provider ?? Provider.claude.value;
+        if (provider != Provider.codex.value &&
+            provider != Provider.claude.value) {
+          continue;
+        }
+        try {
+          await loadUserMessageIndex(
+            provider: provider,
+            providerSessionId: session.sessionId,
+            revision: session.modified.isNotEmpty
+                ? session.modified
+                : 'unknown:${session.sessionId}',
+            maximumPages: 500,
+          );
+        } catch (error, stackTrace) {
+          logger.warning(
+            '[conversation_sync_v2] User-index warmup failed for one thread',
+            error,
+            stackTrace,
+          );
+        }
+      }
+    }
+
+    // Match the Bridge provider-history concurrency and avoid one socket RPC
+    // per conversation running without a bound.
+    await Future.wait([worker(), worker()]);
+  }
+
   void _publishCommit({
     required String targetFingerprint,
     required String provider,
@@ -2145,6 +2642,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _highestV2CommittedSequence = 0;
     _v2PriorityBootstrapComplete = false;
     _failPendingTurnsPages(const _ConversationPagingInterrupted());
+    _failPendingUserIndexPages(const _ConversationPagingInterrupted());
+    _failPendingUserTurnDetailPages(const _ConversationPagingInterrupted());
     _failPendingItemsPages(
       StateError('Conversation item paging was interrupted.'),
     );
@@ -2266,6 +2765,24 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       }
     }
     _pendingTurnsPages.clear();
+  }
+
+  void _failPendingUserIndexPages(Object error) {
+    for (final request in _pendingUserIndexPages.values) {
+      if (!request.completer.isCompleted) {
+        request.completer.completeError(error);
+      }
+    }
+    _pendingUserIndexPages.clear();
+  }
+
+  void _failPendingUserTurnDetailPages(Object error) {
+    for (final request in _pendingUserTurnDetailPages.values) {
+      if (!request.completer.isCompleted) {
+        request.completer.completeError(error);
+      }
+    }
+    _pendingUserTurnDetailPages.clear();
   }
 
   void _failPendingItemsPages(Object error) {
@@ -2447,6 +2964,52 @@ class _PendingTurnsPage {
   final String provider;
   final String providerSessionId;
   final Completer<ConversationTurnsPageLoadResult> completer;
+}
+
+class _PendingUserIndexPage {
+  const _PendingUserIndexPage({
+    required this.generation,
+    required this.targetFingerprint,
+    required this.provider,
+    required this.providerSessionId,
+    required this.revision,
+    required this.cursor,
+    required this.pageDepth,
+    required this.completer,
+  });
+
+  final int generation;
+  final String targetFingerprint;
+  final String provider;
+  final String providerSessionId;
+  final String revision;
+  final String? cursor;
+  final int pageDepth;
+  final Completer<ConversationUserIndexStage?> completer;
+}
+
+class _PendingUserTurnDetailPage {
+  const _PendingUserTurnDetailPage({
+    required this.generation,
+    required this.targetFingerprint,
+    required this.provider,
+    required this.providerSessionId,
+    required this.providerTurnId,
+    required this.revision,
+    required this.cursor,
+    required this.pageDepth,
+    required this.completer,
+  });
+
+  final int generation;
+  final String targetFingerprint;
+  final String provider;
+  final String providerSessionId;
+  final String providerTurnId;
+  final String revision;
+  final String? cursor;
+  final int pageDepth;
+  final Completer<ConversationUserTurnDetailStage?> completer;
 }
 
 class _PendingItemsPage {

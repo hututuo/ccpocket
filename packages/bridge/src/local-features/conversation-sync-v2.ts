@@ -5670,7 +5670,11 @@ function annotateObservedTurn(
   turnId: string | undefined,
 ): ServerMessage {
   if (!turnId) return message;
-  if (message.type === "assistant" || message.type === "tool_result") {
+  if (
+    message.type === "user_input" ||
+    message.type === "assistant" ||
+    message.type === "tool_result"
+  ) {
     return { ...message, historyTurnId: turnId };
   }
   return message;
@@ -5759,6 +5763,7 @@ function observedMessageIdentity(message: ServerMessage): string | null {
         ? message.clientMessageId
         : undefined;
     return `user:${
+      message.providerItemId ??
       message.userMessageUuid ??
       clientMessageId ??
       createHash("sha256").update(stableJson(message)).digest("hex")
@@ -6088,18 +6093,21 @@ async function readTurnsPage(
             message.providerSessionId,
             await timeline,
           );
-          const candidate: ConversationTurnsPage = {
+          const candidate = projectTurnsPage(message, {
             data: normalized.turns,
             nextCursor: page.nextCursor,
             turnDetails: normalized.turnDetails,
-          };
+          });
           if (pageFits(candidate)) return candidate;
           lastPage = candidate;
         }
         if (!lastPage) {
           throw new Error("Codex turns page did not return a bounded result");
         }
-        return projectOversizedTurnsPage(message, lastPage, pageFits);
+        return projectTurnsPage(
+          message,
+          projectOversizedTurnsPage(message, lastPage, pageFits),
+        );
       });
     } catch (error) {
       if (!isUnsupportedAppServerRead(error)) throw error;
@@ -6158,7 +6166,7 @@ async function readLegacyTurnsPage(
       (message.sortDirection ?? "desc") === "desc"
         ? [...pageTurns].reverse()
         : pageTurns;
-    const candidate: ConversationTurnsPage = {
+    const candidate = projectTurnsPage(message, {
       data: wireTurns.map(({ details: _, ...turn }) => turn),
       nextCursor: nextLegacyWindowCursor(
         cursor,
@@ -6168,14 +6176,48 @@ async function readLegacyTurnsPage(
       turnDetails: pageTurns
         .filter((turn) => turn.details.length > 0)
         .map((turn) => ({ turnId: turn.turnId, details: turn.details })),
-    };
+    });
     if (pageFits(candidate)) return candidate;
     lastPage = candidate;
   }
   if (!lastPage) {
     throw new Error("Legacy turns page did not return a bounded result");
   }
-  return projectOversizedTurnsPage(message, lastPage, pageFits);
+  return projectTurnsPage(
+    message,
+    projectOversizedTurnsPage(message, lastPage, pageFits),
+  );
+}
+
+function projectTurnsPage(
+  message: Extract<
+    ConversationSyncClientMessage,
+    { type: "conversation_turns_page" }
+  >,
+  page: ConversationTurnsPage,
+): ConversationTurnsPage {
+  if (message.projection !== "user_index") return page;
+  const data = page.data.flatMap((rawTurn) => {
+    if (!rawTurn || typeof rawTurn !== "object" || Array.isArray(rawTurn)) {
+      return [];
+    }
+    const turn = rawTurn as Record<string, unknown>;
+    const messages = Array.isArray(turn.messages)
+      ? (turn.messages as ServerMessage[]).filter(
+          (entry) => entry.type === "user_input",
+        )
+      : [];
+    if (messages.length === 0) return [];
+    return [
+      {
+        turnId: turn.turnId,
+        messages,
+        itemCount: messages.length,
+        itemsView: "summary",
+      },
+    ];
+  });
+  return { data, nextCursor: page.nextCursor };
 }
 
 async function readItemsPage(
@@ -6853,7 +6895,11 @@ function annotateTurnMessages(
   turnId: string,
 ): ServerMessage[] {
   return messages.map((message) => {
-    if (message.type === "assistant" || message.type === "tool_result") {
+    if (
+      message.type === "user_input" ||
+      message.type === "assistant" ||
+      message.type === "tool_result"
+    ) {
       return { ...message, historyTurnId: turnId };
     }
     return message;

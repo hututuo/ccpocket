@@ -1012,6 +1012,10 @@ export type ServerMessage = (
       type: "user_input";
       text: string;
       clientMessageId?: string;
+      /** Stable provider item identity. Never derive this from page position. */
+      providerItemId?: string;
+      /** Provider turn provenance used to keep paged/live items together. */
+      historyTurnId?: string;
       userMessageUuid?: string;
       isSynthetic?: boolean;
       isMeta?: boolean;

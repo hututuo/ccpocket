@@ -84,8 +84,10 @@ class ChatStateUpdate {
   /// than creating a duplicate.
   final ({
     String text,
-    String uuid,
+    String? uuid,
     String? clientMessageId,
+    String? providerItemId,
+    String? historyTurnId,
     int imageCount,
     List<String> imageUrls,
     DateTime? timestamp,
@@ -306,6 +308,8 @@ class ChatMessageHandler {
       case UserInputMessage(
         :final text,
         :final clientMessageId,
+        :final providerItemId,
+        :final historyTurnId,
         :final userMessageUuid,
         :final isSynthetic,
         :final isMeta,
@@ -322,7 +326,7 @@ class ChatMessageHandler {
             (timestamp == null
                 ? null
                 : DateTime.tryParse(timestamp)?.toLocal());
-        if (userMessageUuid != null) {
+        if (userMessageUuid != null || providerItemId != null) {
           // SDK echoed user message with UUID — update existing entry's UUID
           // so it becomes rewindable, instead of adding a duplicate.
           return ChatStateUpdate(
@@ -330,6 +334,8 @@ class ChatMessageHandler {
               text: text,
               uuid: userMessageUuid,
               clientMessageId: clientMessageId,
+              providerItemId: providerItemId,
+              historyTurnId: historyTurnId,
               imageCount: imageCount,
               imageUrls: imageUrls,
               timestamp: displayTimestamp,
@@ -344,6 +350,8 @@ class ChatMessageHandler {
             UserChatEntry(
               text,
               clientMessageId: clientMessageId,
+              providerItemId: providerItemId,
+              historyTurnId: historyTurnId,
               status: MessageStatus.sent,
               timestamp: displayTimestamp,
               timestampIsAuthoritative:
@@ -715,6 +723,8 @@ class ChatMessageHandler {
             m.text,
             status: MessageStatus.sent,
             clientMessageId: m.clientMessageId,
+            providerItemId: m.providerItemId,
+            historyTurnId: m.historyTurnId,
             messageUuid: m.userMessageUuid,
             imageCount: m.imageCount,
             imageUrls: m.imageUrls,

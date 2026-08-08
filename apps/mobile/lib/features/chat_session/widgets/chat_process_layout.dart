@@ -243,11 +243,7 @@ ChatProcessLayout buildChatProcessLayout(
     // after its UserChatEntry has already been paged out. Treat that leading
     // range as one partial turn so its thought/tool hierarchy keeps the same
     // two-level disclosure instead of falling back to independent bubbles.
-    final partialTurnKey = _partialTurnKey(
-      entries,
-      turnContentStart,
-      turnEnd,
-    );
+    final partialTurnKey = _partialTurnKey(entries, turnContentStart, turnEnd);
     final turnKey = userEntry == null ? partialTurnKey : _turnKey(userEntry);
     if (userEntry != null &&
         partialTurnKey != 'partial:empty' &&
@@ -649,6 +645,10 @@ String _segmentIdentity(
 }
 
 String _turnKey(UserChatEntry entry) {
+  final providerItemId = entry.providerItemId?.trim();
+  if (providerItemId?.isNotEmpty == true) {
+    return 'provider:$providerItemId';
+  }
   final messageUuid = entry.messageUuid?.trim();
   if (messageUuid?.isNotEmpty == true) return 'uuid:$messageUuid';
   final clientId = entry.clientMessageId?.trim();

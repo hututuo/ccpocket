@@ -8,6 +8,8 @@ import {
 export const CONVERSATION_SYNC_V2_CAPABILITY = "conversation_sync_v2" as const;
 export const CONVERSATION_ITEMS_BY_ID_CAPABILITY =
   "conversation_items_by_id_v1" as const;
+export const CONVERSATION_USER_INDEX_CAPABILITY =
+  "conversation_user_index_v1" as const;
 export const APP_SERVER_STATUS_CAPABILITY = "app_server_status_v1" as const;
 export const BRIDGE_IDENTITY_V2_CAPABILITY = "bridge_identity_v2" as const;
 
@@ -70,6 +72,7 @@ export type ConversationSyncClientMessage =
       limit?: number;
       sortDirection?: "asc" | "desc";
       itemsView?: "summary" | "full";
+      projection?: "user_index";
     } & ConversationSyncTarget)
   | ({
       type: "conversation_items_page";
@@ -555,7 +558,7 @@ export const conversationSyncV2ProtocolContribution: LocalFeatureProtocolContrib
     ];
     const allowedKeys =
       message.type === "conversation_turns_page"
-        ? [...commonKeys, "itemsView"]
+        ? [...commonKeys, "itemsView", "projection"]
         : [...commonKeys, "turnId", "toolUseIds"];
     if (
       !hasOnlyLocalFeatureKeys(message, allowedKeys) ||
@@ -578,6 +581,12 @@ export const conversationSyncV2ProtocolContribution: LocalFeatureProtocolContrib
       ) {
         return null;
       }
+      if (
+        message.projection !== undefined &&
+        message.projection !== "user_index"
+      ) {
+        return null;
+      }
       return {
         type: message.type,
         protocolVersion: 2,
@@ -590,6 +599,7 @@ export const conversationSyncV2ProtocolContribution: LocalFeatureProtocolContrib
           ? { sortDirection: message.sortDirection }
           : {}),
         ...(message.itemsView ? { itemsView: message.itemsView } : {}),
+        ...(message.projection ? { projection: message.projection } : {}),
       };
     }
     if (

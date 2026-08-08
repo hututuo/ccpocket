@@ -2,6 +2,7 @@ part of '../../messages.dart';
 
 const conversationSyncV2Capability = 'conversation_sync_v2';
 const conversationItemsByIdCapability = 'conversation_items_by_id_v1';
+const conversationUserIndexCapability = 'conversation_user_index_v1';
 const appServerStatusV1Capability = 'app_server_status_v1';
 const bridgeIdentityV2Capability = 'bridge_identity_v2';
 
@@ -25,6 +26,7 @@ class _ConversationSyncV2ProtocolSlot implements LocalFeatureProtocolSlot {
   @override
   List<String> get supportedServerMessageTypes => const [
     conversationSyncV2Capability,
+    conversationUserIndexCapability,
     appServerStatusV1Capability,
   ];
 
@@ -923,6 +925,7 @@ ClientMessage conversationSyncV2TurnsPage({
   int limit = 5,
   String sortDirection = 'desc',
   String itemsView = 'summary',
+  String? projection,
 }) => ClientMessage._(<String, dynamic>{
   'type': 'conversation_turns_page',
   'protocolVersion': 2,
@@ -933,6 +936,7 @@ ClientMessage conversationSyncV2TurnsPage({
   'limit': limit.clamp(1, 200),
   'sortDirection': sortDirection,
   'itemsView': itemsView,
+  'projection': ?projection,
 }, delivery: ClientMessageDelivery.ephemeral);
 
 ClientMessage conversationSyncV2ItemsPage({

@@ -1344,6 +1344,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
               : '${cachedPreview.revision}:'
                     '${cachedPreview.entries.length}:'
                     '${cachedPreview.cachedAt.microsecondsSinceEpoch}',
+          historyRevision: cachedPreview?.revision ?? '',
           initialHistoryMessages:
               cachedPreview?.entries
                   .map((entry) => entry.decodeMessage())
@@ -1457,6 +1458,7 @@ class _CodexProviders extends StatelessWidget {
   final bool allowMessageFork;
   final bool detachedPreview;
   final String previewRevision;
+  final String historyRevision;
   final List<ServerMessage> initialHistoryMessages;
   final bool initialHistoryHasEarlier;
   final DetachedHistoryPageLoader? detachedHistoryPageLoader;
@@ -1491,6 +1493,7 @@ class _CodexProviders extends StatelessWidget {
     this.allowMessageFork = true,
     this.detachedPreview = false,
     this.previewRevision = '',
+    this.historyRevision = '',
     this.initialHistoryMessages = const [],
     this.initialHistoryHasEarlier = false,
     this.detachedHistoryPageLoader,
@@ -1539,6 +1542,40 @@ class _CodexProviders extends StatelessWidget {
                           providerSessionId: sessionId,
                           gap: gap,
                           toolUseIds: toolUseIds,
+                          expectedDataSourceIdentity: dataSourceIdentity,
+                        )
+                  : null,
+              detachedUserMessageIndexLoader:
+                  detachedPreview && historyRevision.isNotEmpty
+                  ? () async {
+                      final snapshot = await context
+                          .read<ConversationContentSyncService>()
+                          .loadUserMessageIndex(
+                            provider: Provider.codex.value,
+                            providerSessionId: sessionId,
+                            revision: historyRevision,
+                            expectedDataSourceIdentity: dataSourceIdentity,
+                          );
+                      if (snapshot == null) return null;
+                      return (
+                        messages: snapshot.entries
+                            .map((entry) => entry.message)
+                            .toList(growable: false),
+                        complete:
+                            snapshot.complete &&
+                            snapshot.revision == historyRevision,
+                      );
+                    }
+                  : null,
+              detachedUserTurnLoader:
+                  detachedPreview && historyRevision.isNotEmpty
+                  ? (providerTurnId) => context
+                        .read<ConversationContentSyncService>()
+                        .loadUserTurnWindow(
+                          provider: Provider.codex.value,
+                          providerSessionId: sessionId,
+                          providerTurnId: providerTurnId,
+                          revision: historyRevision,
                           expectedDataSourceIdentity: dataSourceIdentity,
                         )
                   : null,

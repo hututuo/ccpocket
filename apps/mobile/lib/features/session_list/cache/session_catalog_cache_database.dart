@@ -16,7 +16,7 @@ class SessionCatalogCacheDatabase {
   SessionCatalogCacheDatabase({this.databasePath, this.openDatabase});
 
   static const fileName = 'session_catalog_cache_v1.db';
-  static const schemaVersion = 5;
+  static const schemaVersion = 6;
 
   static const partitionsTable = 'session_catalog_partitions';
   static const aliasesTable = 'session_catalog_aliases';
@@ -32,6 +32,10 @@ class SessionCatalogCacheDatabase {
       'conversation_timeline_stage_entries';
   static const timelineStageDeletesTable =
       'conversation_timeline_stage_deletes';
+  static const userIndexStatesTable = 'conversation_user_index_states';
+  static const userIndexEntriesTable = 'conversation_user_index_entries';
+  static const userTurnDetailsTable = 'conversation_user_turn_details';
+  static const userTurnDetailItemsTable = 'conversation_user_turn_detail_items';
 
   final String? databasePath;
   final SessionCatalogCacheDatabaseOpener? openDatabase;
@@ -149,6 +153,9 @@ class SessionCatalogCacheDatabase {
         );
       }
     }
+    if (oldVersion < 6) {
+      await _createConversationUserIndexSchema(database);
+    }
   }
 
   static Future<void> _createSchema(Database database, int version) async {
@@ -206,6 +213,138 @@ class SessionCatalogCacheDatabase {
 
     await _createHotConversationSchema(database);
     await _createConversationSyncSchema(database);
+    await _createConversationUserIndexSchema(database);
+  }
+
+  static Future<void> _createConversationUserIndexSchema(
+    Database database,
+  ) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $userIndexStatesTable (
+        partition_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        active_revision TEXT,
+        active_complete INTEGER NOT NULL DEFAULT 0,
+        staging_revision TEXT,
+        staging_cursor TEXT,
+        staging_page_depth INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (partition_id, provider, provider_session_id),
+        FOREIGN KEY (partition_id)
+          REFERENCES $partitionsTable (partition_id)
+          ON DELETE CASCADE
+      )
+    ''');
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $userIndexEntriesTable (
+        partition_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        provider_turn_id TEXT NOT NULL,
+        provider_item_id TEXT NOT NULL,
+        page_depth INTEGER NOT NULL,
+        item_order INTEGER NOT NULL,
+        message_json TEXT NOT NULL,
+        timestamp_sort INTEGER NOT NULL,
+        PRIMARY KEY (
+          partition_id,
+          provider,
+          provider_session_id,
+          revision,
+          provider_item_id
+        ),
+        FOREIGN KEY (partition_id, provider, provider_session_id)
+          REFERENCES $userIndexStatesTable (
+            partition_id,
+            provider,
+            provider_session_id
+          )
+          ON DELETE CASCADE
+      )
+    ''');
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS conversation_user_index_order
+      ON $userIndexEntriesTable (
+        partition_id,
+        provider,
+        provider_session_id,
+        revision,
+        page_depth DESC,
+        item_order DESC
+      )
+    ''');
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $userTurnDetailsTable (
+        partition_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        provider_turn_id TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        next_cursor TEXT,
+        page_depth INTEGER NOT NULL DEFAULT 0,
+        complete INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (
+          partition_id,
+          provider,
+          provider_session_id,
+          provider_turn_id
+        ),
+        FOREIGN KEY (partition_id, provider, provider_session_id)
+          REFERENCES $userIndexStatesTable (
+            partition_id,
+            provider,
+            provider_session_id
+          )
+          ON DELETE CASCADE
+      )
+    ''');
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $userTurnDetailItemsTable (
+        partition_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        provider_turn_id TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        page_depth INTEGER NOT NULL,
+        item_order INTEGER NOT NULL,
+        message_json TEXT NOT NULL,
+        PRIMARY KEY (
+          partition_id,
+          provider,
+          provider_session_id,
+          provider_turn_id,
+          revision,
+          page_depth,
+          item_order
+        ),
+        FOREIGN KEY (
+          partition_id,
+          provider,
+          provider_session_id,
+          provider_turn_id
+        ) REFERENCES $userTurnDetailsTable (
+          partition_id,
+          provider,
+          provider_session_id,
+          provider_turn_id
+        ) ON DELETE CASCADE
+      )
+    ''');
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS conversation_user_turn_detail_order
+      ON $userTurnDetailItemsTable (
+        partition_id,
+        provider,
+        provider_session_id,
+        provider_turn_id,
+        revision,
+        page_depth ASC,
+        item_order ASC
+      )
+    ''');
   }
 
   static Future<void> _createHotConversationSchema(Database database) async {
