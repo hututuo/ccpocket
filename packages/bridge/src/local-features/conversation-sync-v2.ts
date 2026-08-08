@@ -470,7 +470,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     current: ReadonlyMap<ConversationKey, CatalogRecord>,
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
   private readonly historyReader: ConversationHistoryReader;
-  private readonly claudeHistoryWindowReader: typeof readClaudeSessionHistoryWindow;
+  private readonly claudeHistoryWindowReader?: typeof readClaudeSessionHistoryWindow;
   private readonly latestTurnHistoryReader: ConversationHistoryReader;
   private readonly providerHistoryRetryDelaysMs: readonly number[];
   private readonly statusWatchdogMs: number;
@@ -681,8 +681,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       options.historyReader ??
       ((target, request) =>
         this.readRecentConversationHistory(target, request));
-    this.claudeHistoryWindowReader =
-      options.claudeHistoryWindowReader ?? readClaudeSessionHistoryWindow;
+    this.claudeHistoryWindowReader = options.claudeHistoryWindowReader;
     this.latestTurnHistoryReader =
       options.latestTurnHistoryReader ??
       ((target) => this.readLatestCodexConversationHistory(target));
