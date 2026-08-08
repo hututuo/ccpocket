@@ -1193,6 +1193,101 @@ void main() {
   );
 
   test(
+    'stops a lightweight user index when the provider repeats a cursor',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      gateway.supportsConversationUserIndex = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-user-index-loop',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-user-index-loop',
+          statusState: 'status-user-index-loop',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final load = service.loadUserMessageIndex(
+        provider: 'codex',
+        providerSessionId: 'thread-user-index-loop',
+        revision: 'revision-user-index-loop',
+      );
+      final firstRequest = await gateway.nextOutgoing(
+        'conversation_turns_page',
+      );
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.turnsPageResponse,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-user-index-loop',
+          sequence: 2,
+          requestId: firstRequest['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-user-index-loop',
+          data: const [],
+          nextCursor: 'cursor-loop',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final secondRequest = await gateway.nextOutgoing(
+        'conversation_turns_page',
+      );
+      expect(secondRequest['cursor'], 'cursor-loop');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.turnsPageResponse,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-user-index-loop',
+          sequence: 3,
+          requestId: secondRequest['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-user-index-loop',
+          data: const [],
+          nextCursor: 'cursor-loop',
+        ),
+      );
+
+      await expectLater(
+        load,
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('repeated cursor'),
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      expect(
+        gateway.sentTypes
+            .where((type) => type == 'conversation_turns_page')
+            .length,
+        2,
+      );
+    },
+  );
+
+  test(
     'loads one provider turn by bounded item pages then serves SQLite',
     () async {
       await service.dispose();

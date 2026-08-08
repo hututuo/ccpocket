@@ -1901,6 +1901,17 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             userIndexRequest.targetFingerprint == target.fingerprint &&
             userIndexRequest.provider == event.provider &&
             userIndexRequest.providerSessionId == event.providerSessionId) {
+          if (event.nextCursor != null &&
+              event.nextCursor == userIndexRequest.cursor) {
+            if (!userIndexRequest.completer.isCompleted) {
+              userIndexRequest.completer.completeError(
+                StateError(
+                  'Conversation user index returned a repeated cursor.',
+                ),
+              );
+            }
+            break;
+          }
           final entries = <ConversationUserIndexPageEntry>[];
           for (final rawTurn in event.data) {
             if (rawTurn is! Map) continue;
