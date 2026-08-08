@@ -3903,25 +3903,22 @@ class AppLocalizationsJa extends AppLocalizations {
   String get locatingTurn => 'このターンを読み込んで移動しています…';
 
   @override
-  String fullHistoryUnavailable(int count) {
-    return '完全な履歴インデックスを利用できません。読み込み済みの $count ターンを表示しています。';
+  String userMessageIndexUnavailable(int count) {
+    return '軽量なユーザーメッセージ索引を利用できません。読み込み済みの $count ターンを表示しています。';
   }
 
   @override
-  String fullHistoryLoading(int count) {
-    return '完全な履歴インデックスを読み込み中です。先に $count ターンを表示しています。';
+  String userMessageIndexLoading(int count) {
+    return '軽量なユーザーメッセージ索引を同期中です。先に $count ターンを表示しています。';
   }
 
   @override
-  String fullHistoryNotReady(int count) {
-    return '読み込み済みの $count ターンを表示しています。完全な履歴インデックスはまだ準備中です。';
+  String userMessageIndexNotReady(int count) {
+    return '読み込み済みの $count ターンを表示しています。軽量なユーザーメッセージ索引を同期中です。';
   }
 
   @override
   String get downloading => 'ダウンロード中…';
-
-  @override
-  String get downloadAndKeepResident => 'すべてダウンロードして保持';
 
   @override
   String get loadingOlderToolDetails => '以前のツール詳細を読み込んでいます…';

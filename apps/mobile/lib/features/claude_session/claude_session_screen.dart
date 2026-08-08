@@ -2494,7 +2494,7 @@ void _showUserMessageHistory(
     builder: (_) => UserMessageHistoryLoaderSheet(
       loadMessages: cubit.loadAllUserMessagesForNavigation,
       // Claude history does not use the optional Codex phone mirror.
-      isComplete: () => true,
+      isUserMessageIndexComplete: () => true,
       onScrollToMessage: (msg) async {
         final loaded = await cubit.revealUserMessage(msg);
         if (loaded == null) return false;

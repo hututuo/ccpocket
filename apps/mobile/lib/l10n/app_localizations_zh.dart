@@ -3857,25 +3857,22 @@ class AppLocalizationsZh extends AppLocalizations {
   String get locatingTurn => '正在加载并定位这轮会话…';
 
   @override
-  String fullHistoryUnavailable(int count) {
-    return '完整历史索引暂时不可用，目前只显示已加载的 $count 轮。';
+  String userMessageIndexUnavailable(int count) {
+    return '轻量用户消息索引暂时不可用，目前仍显示已加载的 $count 轮。';
   }
 
   @override
-  String fullHistoryLoading(int count) {
-    return '正在读取完整历史索引，目前先显示 $count 轮。';
+  String userMessageIndexLoading(int count) {
+    return '正在同步轻量用户消息索引，目前先显示 $count 轮。';
   }
 
   @override
-  String fullHistoryNotReady(int count) {
-    return '目前显示已加载的 $count 轮；完整历史索引尚未就绪。';
+  String userMessageIndexNotReady(int count) {
+    return '目前显示已加载的 $count 轮；轻量用户消息索引仍在同步。';
   }
 
   @override
   String get downloading => '下载中…';
-
-  @override
-  String get downloadAndKeepResident => '完整下载并常驻';
 
   @override
   String get loadingOlderToolDetails => '正在读取较早工具详情…';

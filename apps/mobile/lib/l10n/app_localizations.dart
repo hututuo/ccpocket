@@ -6960,35 +6960,29 @@ abstract class AppLocalizations {
   /// **'このターンを読み込んで移動しています…'**
   String get locatingTurn;
 
-  /// No description provided for @fullHistoryUnavailable.
+  /// No description provided for @userMessageIndexUnavailable.
   ///
   /// In ja, this message translates to:
-  /// **'完全な履歴インデックスを利用できません。読み込み済みの {count} ターンを表示しています。'**
-  String fullHistoryUnavailable(int count);
+  /// **'軽量なユーザーメッセージ索引を利用できません。読み込み済みの {count} ターンを表示しています。'**
+  String userMessageIndexUnavailable(int count);
 
-  /// No description provided for @fullHistoryLoading.
+  /// No description provided for @userMessageIndexLoading.
   ///
   /// In ja, this message translates to:
-  /// **'完全な履歴インデックスを読み込み中です。先に {count} ターンを表示しています。'**
-  String fullHistoryLoading(int count);
+  /// **'軽量なユーザーメッセージ索引を同期中です。先に {count} ターンを表示しています。'**
+  String userMessageIndexLoading(int count);
 
-  /// No description provided for @fullHistoryNotReady.
+  /// No description provided for @userMessageIndexNotReady.
   ///
   /// In ja, this message translates to:
-  /// **'読み込み済みの {count} ターンを表示しています。完全な履歴インデックスはまだ準備中です。'**
-  String fullHistoryNotReady(int count);
+  /// **'読み込み済みの {count} ターンを表示しています。軽量なユーザーメッセージ索引を同期中です。'**
+  String userMessageIndexNotReady(int count);
 
   /// No description provided for @downloading.
   ///
   /// In ja, this message translates to:
   /// **'ダウンロード中…'**
   String get downloading;
-
-  /// No description provided for @downloadAndKeepResident.
-  ///
-  /// In ja, this message translates to:
-  /// **'すべてダウンロードして保持'**
-  String get downloadAndKeepResident;
 
   /// No description provided for @loadingOlderToolDetails.
   ///

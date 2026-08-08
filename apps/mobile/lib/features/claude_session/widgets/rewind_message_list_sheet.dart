@@ -9,18 +9,16 @@ import '../../../theme/app_theme.dart';
 
 class UserMessageHistoryLoaderSheet extends StatefulWidget {
   final Future<List<UserChatEntry>> Function() loadMessages;
-  final bool Function() isComplete;
+  final bool Function() isUserMessageIndexComplete;
   final ValueListenable<int>? refreshListenable;
-  final Future<void> Function()? onRequestFullHistory;
   final Future<bool> Function(UserChatEntry message) onScrollToMessage;
   final void Function(UserChatEntry message)? onRewindMessage;
 
   const UserMessageHistoryLoaderSheet({
     super.key,
     required this.loadMessages,
-    required this.isComplete,
+    required this.isUserMessageIndexComplete,
     this.refreshListenable,
-    this.onRequestFullHistory,
     required this.onScrollToMessage,
     this.onRewindMessage,
   });
@@ -34,9 +32,8 @@ class _UserMessageHistoryLoaderSheetState
     extends State<UserMessageHistoryLoaderSheet> {
   List<UserChatEntry>? _messages;
   Object? _loadError;
-  bool _complete = false;
+  bool _userMessageIndexComplete = false;
   bool _loading = false;
-  bool _requestingFullHistory = false;
   int _loadGeneration = 0;
 
   @override
@@ -75,11 +72,11 @@ class _UserMessageHistoryLoaderSheetState
     }
     try {
       final messages = await widget.loadMessages();
-      final complete = widget.isComplete();
+      final complete = widget.isUserMessageIndexComplete();
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _messages = messages;
-        _complete = complete;
+        _userMessageIndexComplete = complete;
         _loading = false;
       });
     } catch (error) {
@@ -87,23 +84,8 @@ class _UserMessageHistoryLoaderSheetState
       setState(() {
         _loading = false;
         _loadError = error;
-        _complete = false;
+        _userMessageIndexComplete = false;
       });
-    }
-  }
-
-  Future<void> _requestFullHistory() async {
-    final request = widget.onRequestFullHistory;
-    if (request == null || _requestingFullHistory) return;
-    setState(() => _requestingFullHistory = true);
-    try {
-      await request();
-      await _reload();
-    } catch (error) {
-      if (!mounted) return;
-      setState(() => _loadError = error);
-    } finally {
-      if (mounted) setState(() => _requestingFullHistory = false);
     }
   }
 
@@ -113,13 +95,10 @@ class _UserMessageHistoryLoaderSheetState
     if (messages != null) {
       return UserMessageHistorySheet(
         messages: messages,
-        historyComplete: _complete,
-        historyRefreshing: _loading,
-        historyLoadError: _loadError,
-        requestingFullHistory: _requestingFullHistory,
-        onRequestFullHistory: widget.onRequestFullHistory == null
-            ? null
-            : _requestFullHistory,
+        userMessageIndexComplete: _userMessageIndexComplete,
+        userMessageIndexRefreshing: _loading,
+        userMessageIndexLoadError: _loadError,
+        onRetryUserMessageIndex: _reload,
         onScrollToMessage: widget.onScrollToMessage,
         onRewindMessage: widget.onRewindMessage,
       );
@@ -134,10 +113,7 @@ class _UserMessageHistoryLoaderSheetState
             children: [
               Text(l.turnHistoryLoadFailed),
               const SizedBox(height: 12),
-              FilledButton.tonal(
-                onPressed: _reload,
-                child: Text(l.retry),
-              ),
+              FilledButton.tonal(onPressed: _reload, child: Text(l.retry)),
             ],
           ),
         ),
@@ -157,22 +133,20 @@ class _UserMessageHistoryLoaderSheetState
 /// - Tap rewind icon → [onRewindMessage] (only for messages with UUID)
 class UserMessageHistorySheet extends StatefulWidget {
   final List<UserChatEntry> messages;
-  final bool historyComplete;
-  final bool historyRefreshing;
-  final Object? historyLoadError;
-  final bool requestingFullHistory;
-  final VoidCallback? onRequestFullHistory;
+  final bool userMessageIndexComplete;
+  final bool userMessageIndexRefreshing;
+  final Object? userMessageIndexLoadError;
+  final VoidCallback? onRetryUserMessageIndex;
   final Future<bool> Function(UserChatEntry message) onScrollToMessage;
   final void Function(UserChatEntry message)? onRewindMessage;
 
   const UserMessageHistorySheet({
     super.key,
     required this.messages,
-    this.historyComplete = true,
-    this.historyRefreshing = false,
-    this.historyLoadError,
-    this.requestingFullHistory = false,
-    this.onRequestFullHistory,
+    this.userMessageIndexComplete = true,
+    this.userMessageIndexRefreshing = false,
+    this.userMessageIndexLoadError,
+    this.onRetryUserMessageIndex,
     required this.onScrollToMessage,
     this.onRewindMessage,
   });
@@ -201,9 +175,9 @@ class _UserMessageHistorySheetState extends State<UserMessageHistorySheet> {
     }
     setState(() => _loadingTarget = null);
     final l = AppLocalizations.of(context);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(l.turnLoadFailed)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(l.turnLoadFailed)));
   }
 
   @override
@@ -263,13 +237,12 @@ class _UserMessageHistorySheetState extends State<UserMessageHistorySheet> {
 
                 const Divider(height: 1),
 
-                if (!widget.historyComplete)
+                if (!widget.userMessageIndexComplete)
                   _PartialHistoryBanner(
                     visibleTurns: widget.messages.length,
-                    refreshing: widget.historyRefreshing,
-                    loadError: widget.historyLoadError,
-                    requestingFullHistory: widget.requestingFullHistory,
-                    onRequestFullHistory: widget.onRequestFullHistory,
+                    refreshing: widget.userMessageIndexRefreshing,
+                    loadError: widget.userMessageIndexLoadError,
+                    onRetry: widget.onRetryUserMessageIndex,
                   ),
 
                 // Message list
@@ -377,26 +350,24 @@ class _PartialHistoryBanner extends StatelessWidget {
     required this.visibleTurns,
     required this.refreshing,
     required this.loadError,
-    required this.requestingFullHistory,
-    required this.onRequestFullHistory,
+    required this.onRetry,
   });
 
   final int visibleTurns;
   final bool refreshing;
   final Object? loadError;
-  final bool requestingFullHistory;
-  final VoidCallback? onRequestFullHistory;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
     final colorScheme = Theme.of(context).colorScheme;
-    final busy = refreshing || requestingFullHistory;
+    final busy = refreshing;
     final status = loadError != null
-        ? l.fullHistoryUnavailable(visibleTurns)
+        ? l.userMessageIndexUnavailable(visibleTurns)
         : refreshing
-        ? l.fullHistoryLoading(visibleTurns)
-        : l.fullHistoryNotReady(visibleTurns);
+        ? l.userMessageIndexLoading(visibleTurns)
+        : l.userMessageIndexNotReady(visibleTurns);
 
     return Container(
       key: const ValueKey('partial_history_banner'),
@@ -425,16 +396,12 @@ class _PartialHistoryBanner extends StatelessWidget {
               ),
             ),
           ),
-          if (onRequestFullHistory != null) ...[
+          if (onRetry != null) ...[
             const SizedBox(width: 8),
             TextButton(
-              key: const ValueKey('download_full_history_button'),
-              onPressed: busy ? null : onRequestFullHistory,
-              child: Text(
-                requestingFullHistory
-                    ? l.downloading
-                    : l.downloadAndKeepResident,
-              ),
+              key: const ValueKey('retry_user_message_index_button'),
+              onPressed: busy ? null : onRetry,
+              child: Text(l.retry),
             ),
           ],
         ],
@@ -463,7 +430,7 @@ class _MessageTile extends StatelessWidget {
     final appColors = Theme.of(context).extension<AppColors>()!;
     final colorScheme = Theme.of(context).colorScheme;
 
-    final timeStr = _formatTime(message.timestamp);
+    final timeStr = _formatDateTime(message.timestamp);
 
     return ListTile(
       dense: true,
@@ -505,9 +472,16 @@ class _MessageTile extends StatelessWidget {
     );
   }
 
-  String _formatTime(DateTime dt) {
+  String _formatDateTime(DateTime timestamp) {
+    final dt = timestamp.toLocal();
+    final now = DateTime.now();
+    final month = dt.month.toString().padLeft(2, '0');
+    final day = dt.day.toString().padLeft(2, '0');
     final h = dt.hour.toString().padLeft(2, '0');
     final m = dt.minute.toString().padLeft(2, '0');
-    return '$h:$m';
+    final s = dt.second.toString().padLeft(2, '0');
+    if (dt.year == now.year) return '$month-$day $h:$m:$s';
+    final year = dt.year.toString().padLeft(4, '0');
+    return '$year-$month-$day $h:$m:$s';
   }
 }

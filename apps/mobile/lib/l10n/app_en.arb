@@ -1455,11 +1455,25 @@
   "noTurnsYet": "No turns yet",
   "turnHistoryHint": "Each turn start appears here after you send a message",
   "locatingTurn": "Loading and locating this turn…",
-  "fullHistoryUnavailable": "The full index is unavailable; showing {count} loaded turns.",
-  "fullHistoryLoading": "Loading the full index; showing {count} turns for now.",
-  "fullHistoryNotReady": "Showing {count} loaded turns; the full index is not ready.",
+  "userMessageIndexUnavailable": "The lightweight message index is unavailable; showing {count} loaded turns.",
+  "@userMessageIndexUnavailable": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "userMessageIndexLoading": "Syncing the lightweight message index; showing {count} turns for now.",
+  "@userMessageIndexLoading": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "userMessageIndexNotReady": "Showing {count} loaded turns while the lightweight message index syncs.",
+  "@userMessageIndexNotReady": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
   "downloading": "Downloading…",
-  "downloadAndKeepResident": "Download & keep resident",
   "loadingOlderToolDetails": "Loading older tool details…",
   "loadToolDetailsFailed": "Could not load details. Retry",
   "loadNextToolDetails": "Load the next {count} tool details",

@@ -26,10 +26,7 @@ void main() {
 
     expect(find.text('ターン履歴'), findsOneWidget);
     expect(find.text('ターンはまだありません'), findsOneWidget);
-    expect(
-      find.text('メッセージを送信すると、各ターンの先頭がここに表示されます'),
-      findsOneWidget,
-    );
+    expect(find.text('メッセージを送信すると、各ターンの先頭がここに表示されます'), findsOneWidget);
   });
 
   testWidgets(
@@ -56,7 +53,7 @@ void main() {
                   status: MessageStatus.sent,
                 ),
               ),
-              isComplete: () => complete,
+              isUserMessageIndexComplete: () => complete,
               refreshListenable: revision,
               onScrollToMessage: (_) async => true,
             ),
@@ -67,7 +64,11 @@ void main() {
 
       expect(find.byKey(const ValueKey('partial_history_banner')), findsOne);
       expect(find.text('4 轮'), findsOne);
-      expect(find.textContaining('完整历史索引尚未就绪'), findsOne);
+      expect(find.textContaining('轻量用户消息索引仍在同步'), findsOne);
+      expect(
+        find.byKey(const ValueKey('download_full_history_button')),
+        findsNothing,
+      );
 
       complete = true;
       turnCount = 8;
@@ -84,10 +85,10 @@ void main() {
   );
 
   testWidgets(
-    'offers a full-history download instead of presenting a partial list as complete',
+    'partial index keeps visible entries clickable and only offers index retry',
     (tester) async {
-      var complete = false;
-      var requestCount = 0;
+      UserChatEntry? selected;
+      var retryCount = 0;
 
       await tester.pumpWidget(
         MaterialApp(
@@ -96,40 +97,80 @@ void main() {
           locale: const Locale('zh'),
           theme: AppTheme.lightTheme,
           home: Scaffold(
-            body: UserMessageHistoryLoaderSheet(
-              loadMessages: () async => List.generate(
-                complete ? 6 : 4,
-                (index) => UserChatEntry(
-                  '下载轮次 $index',
-                  messageUuid: 'download-turn-$index',
+            body: UserMessageHistorySheet(
+              messages: [
+                UserChatEntry(
+                  '仍可定位的旧消息',
+                  messageUuid: 'partial-turn',
                   status: MessageStatus.sent,
                 ),
-              ),
-              isComplete: () => complete,
-              onRequestFullHistory: () async {
-                requestCount += 1;
-                complete = true;
+              ],
+              userMessageIndexComplete: false,
+              onRetryUserMessageIndex: () => retryCount += 1,
+              onScrollToMessage: (message) async {
+                selected = message;
+                return false;
               },
-              onScrollToMessage: (_) async => true,
             ),
           ),
         ),
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(
-        find.byKey(const ValueKey('download_full_history_button')),
-      );
-      await tester.pumpAndSettle();
-
-      expect(requestCount, 1);
-      expect(find.text('6 轮'), findsOne);
+      expect(find.byKey(const ValueKey('partial_history_banner')), findsOne);
       expect(
-        find.byKey(const ValueKey('partial_history_banner')),
+        find.byKey(const ValueKey('download_full_history_button')),
         findsNothing,
       );
+      expect(
+        find.byKey(const ValueKey('retry_user_message_index_button')),
+        findsOne,
+      );
+
+      await tester.tap(find.text('仍可定位的旧消息'));
+      await tester.pumpAndSettle();
+      expect(selected?.text, '仍可定位的旧消息');
+
+      await tester.tap(
+        find.byKey(const ValueKey('retry_user_message_index_button')),
+      );
+      expect(retryCount, 1);
     },
   );
+
+  testWidgets('shows message dates through seconds with a year when needed', (
+    tester,
+  ) async {
+    final now = DateTime.now();
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        locale: const Locale('zh'),
+        theme: AppTheme.lightTheme,
+        home: Scaffold(
+          body: UserMessageHistorySheet(
+            messages: [
+              UserChatEntry(
+                '同年消息',
+                timestamp: DateTime(now.year, 1, 2, 3, 4, 5),
+              ),
+              UserChatEntry(
+                '跨年消息',
+                timestamp: DateTime(now.year - 1, 12, 31, 23, 59, 58),
+              ),
+            ],
+            onScrollToMessage: (_) async => true,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('01-02 03:04:05'), findsOne);
+    expect(find.text('${now.year - 1}-12-31 23:59:58'), findsOne);
+    expect(find.text('03:04'), findsNothing);
+  });
 
   testWidgets(
     'keeps the turn picker open with a loading barrier while paging to history',

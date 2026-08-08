@@ -4034,25 +4034,22 @@ class AppLocalizationsEn extends AppLocalizations {
   String get locatingTurn => 'Loading and locating this turn…';
 
   @override
-  String fullHistoryUnavailable(int count) {
-    return 'The full index is unavailable; showing $count loaded turns.';
+  String userMessageIndexUnavailable(int count) {
+    return 'The lightweight message index is unavailable; showing $count loaded turns.';
   }
 
   @override
-  String fullHistoryLoading(int count) {
-    return 'Loading the full index; showing $count turns for now.';
+  String userMessageIndexLoading(int count) {
+    return 'Syncing the lightweight message index; showing $count turns for now.';
   }
 
   @override
-  String fullHistoryNotReady(int count) {
-    return 'Showing $count loaded turns; the full index is not ready.';
+  String userMessageIndexNotReady(int count) {
+    return 'Showing $count loaded turns while the lightweight message index syncs.';
   }
 
   @override
   String get downloading => 'Downloading…';
-
-  @override
-  String get downloadAndKeepResident => 'Download & keep resident';
 
   @override
   String get loadingOlderToolDetails => 'Loading older tool details…';

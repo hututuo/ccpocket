@@ -3931,25 +3931,22 @@ class AppLocalizationsKo extends AppLocalizations {
   String get locatingTurn => '이 턴을 불러와 위치를 찾는 중…';
 
   @override
-  String fullHistoryUnavailable(int count) {
-    return '전체 기록 인덱스를 사용할 수 없어 불러온 $count개 턴만 표시합니다.';
+  String userMessageIndexUnavailable(int count) {
+    return '경량 사용자 메시지 인덱스를 사용할 수 없어 불러온 $count개 턴만 표시합니다.';
   }
 
   @override
-  String fullHistoryLoading(int count) {
-    return '전체 기록 인덱스를 불러오는 중이며 우선 $count개 턴을 표시합니다.';
+  String userMessageIndexLoading(int count) {
+    return '경량 사용자 메시지 인덱스를 동기화하는 중이며 우선 $count개 턴을 표시합니다.';
   }
 
   @override
-  String fullHistoryNotReady(int count) {
-    return '불러온 $count개 턴을 표시 중이며 전체 기록 인덱스는 아직 준비되지 않았습니다.';
+  String userMessageIndexNotReady(int count) {
+    return '불러온 $count개 턴을 표시 중이며 경량 사용자 메시지 인덱스를 동기화하고 있습니다.';
   }
 
   @override
   String get downloading => '다운로드 중…';
-
-  @override
-  String get downloadAndKeepResident => '전체 다운로드 후 유지';
 
   @override
   String get loadingOlderToolDetails => '이전 도구 세부 정보를 불러오는 중…';

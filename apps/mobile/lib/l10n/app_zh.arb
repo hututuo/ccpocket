@@ -1434,11 +1434,25 @@
   "noTurnsYet": "暂无会话轮次",
   "turnHistoryHint": "发送消息后，每一轮的开头都会显示在这里",
   "locatingTurn": "正在加载并定位这轮会话…",
-  "fullHistoryUnavailable": "完整历史索引暂时不可用，目前只显示已加载的 {count} 轮。",
-  "fullHistoryLoading": "正在读取完整历史索引，目前先显示 {count} 轮。",
-  "fullHistoryNotReady": "目前显示已加载的 {count} 轮；完整历史索引尚未就绪。",
+  "userMessageIndexUnavailable": "轻量用户消息索引暂时不可用，目前仍显示已加载的 {count} 轮。",
+  "@userMessageIndexUnavailable": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "userMessageIndexLoading": "正在同步轻量用户消息索引，目前先显示 {count} 轮。",
+  "@userMessageIndexLoading": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "userMessageIndexNotReady": "目前显示已加载的 {count} 轮；轻量用户消息索引仍在同步。",
+  "@userMessageIndexNotReady": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
   "downloading": "下载中…",
-  "downloadAndKeepResident": "完整下载并常驻",
   "loadingOlderToolDetails": "正在读取较早工具详情…",
   "loadToolDetailsFailed": "读取失败，点此重试",
   "loadNextToolDetails": "加载接下来的 {count} 个工具详情",

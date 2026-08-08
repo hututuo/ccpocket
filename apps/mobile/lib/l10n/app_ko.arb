@@ -1414,11 +1414,25 @@
   "noTurnsYet": "아직 턴이 없습니다",
   "turnHistoryHint": "메시지를 보내면 각 턴의 시작이 여기에 표시됩니다",
   "locatingTurn": "이 턴을 불러와 위치를 찾는 중…",
-  "fullHistoryUnavailable": "전체 기록 인덱스를 사용할 수 없어 불러온 {count}개 턴만 표시합니다.",
-  "fullHistoryLoading": "전체 기록 인덱스를 불러오는 중이며 우선 {count}개 턴을 표시합니다.",
-  "fullHistoryNotReady": "불러온 {count}개 턴을 표시 중이며 전체 기록 인덱스는 아직 준비되지 않았습니다.",
+  "userMessageIndexUnavailable": "경량 사용자 메시지 인덱스를 사용할 수 없어 불러온 {count}개 턴만 표시합니다.",
+  "@userMessageIndexUnavailable": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "userMessageIndexLoading": "경량 사용자 메시지 인덱스를 동기화하는 중이며 우선 {count}개 턴을 표시합니다.",
+  "@userMessageIndexLoading": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "userMessageIndexNotReady": "불러온 {count}개 턴을 표시 중이며 경량 사용자 메시지 인덱스를 동기화하고 있습니다.",
+  "@userMessageIndexNotReady": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
   "downloading": "다운로드 중…",
-  "downloadAndKeepResident": "전체 다운로드 후 유지",
   "loadingOlderToolDetails": "이전 도구 세부 정보를 불러오는 중…",
   "loadToolDetailsFailed": "세부 정보를 불러오지 못했습니다. 다시 시도",
   "loadNextToolDetails": "다음 도구 세부 정보 {count}개 불러오기",
