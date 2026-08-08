@@ -185,6 +185,7 @@ import { ArtifactManager, ArtifactResolveError } from "./artifact-manager.js";
 import { validateFileTransferPeerBaseUrl } from "./file-transfer-utils.js";
 import { createPathArtifactCandidate } from "./artifact-candidates.js";
 import { createLocalFeaturesController } from "./local-features/registry.js";
+import { CodexBoundedHistoryReader } from "./local-features/codex-bounded-history.js";
 import type { LocalFeaturesController } from "./local-features/controller.js";
 import type {
   LocalFeatureAttentionKind,
@@ -316,6 +317,12 @@ type SharedCodexSettingsOperation = {
   promise: Promise<void>;
   createdAt: number;
   settledAt?: number;
+};
+type CodexProviderHistoryCursorState = {
+  threadId: string;
+  headToken?: string;
+  cursors: Map<string, string>;
+  tokenOrder: string[];
 };
 const RESUME_OPERATION_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const SHARED_CODEX_SETTINGS_OPERATION_TTL_MS = 10 * 60 * 1000;
@@ -460,6 +467,8 @@ const INPUT_DELIVERY_ACK_CAPABILITY = "input_delivery_ack_v1";
 const INPUT_DELIVERY_STATUS_MESSAGE = "input_delivery_status_v1";
 const CODEX_MULTI_INPUT_QUEUE_CAPABILITY = "codex_multi_input_queue_v1";
 const BOUNDED_HISTORY_WINDOW_ENTRIES = 200;
+const CODEX_CANONICAL_HISTORY_PAGE_TURNS = 5;
+const MAX_CODEX_PROVIDER_HISTORY_CURSORS = 64;
 const ARCHIVED_SESSION_LIST_LIMIT = 1_000;
 const CODEX_GOAL_RAW_STATUS_CAPABILITY = "goal_state_raw_status";
 const KNOWN_CODEX_GOAL_STATUSES = new Set([
@@ -1623,6 +1632,11 @@ export class BridgeWebSocketServer {
   private readonly codexCanonicalHistoryReads = new WeakMap<
     SessionInfo,
     Promise<HistoryEntry[] | null>
+  >();
+  private readonly codexBoundedHistoryReader = new CodexBoundedHistoryReader();
+  private readonly codexProviderHistoryCursors = new WeakMap<
+    SessionInfo,
+    CodexProviderHistoryCursorState
   >();
   private readonly sharedCodexSettingsOperations = new Map<
     string,
@@ -3596,13 +3610,22 @@ export class BridgeWebSocketServer {
     const threadId = this.codexThreadIdForSession(session);
     if (!threadId) return null;
 
-    const history = session.codexInitialHistoryPending
-      ? ((session.pastMessages ?? []) as SessionHistoryMessage[])
-      : await this.getCodexThreadHistoryFromRpc(
-          threadId,
-          session.projectPath,
-          session.process as CodexProcess,
-        );
+    let history: SessionHistoryMessage[];
+    if (session.codexInitialHistoryPending) {
+      history = (session.pastMessages ?? []) as SessionHistoryMessage[];
+    } else {
+      const page = await this.getCodexThreadHistoryPageFromRpc(
+        threadId,
+        session.projectPath,
+        session.process as CodexProcess,
+      );
+      history = page.history;
+      this.resetCodexProviderHistoryCursor(
+        session,
+        threadId,
+        page.nextCursor,
+      );
+    }
     session.claudeSessionId = threadId;
 
     const messages = await this.codexHistoryToServerMessages(session, history);
@@ -3915,6 +3938,7 @@ export class BridgeWebSocketServer {
         ws,
         entries,
         visibleEntries,
+        session,
       );
       this.send(ws, {
         type: "history_snapshot",
@@ -3957,6 +3981,7 @@ export class BridgeWebSocketServer {
         ws,
         entries,
         visibleEntries,
+        session,
       );
       this.send(ws, {
         type: "history",
@@ -4008,6 +4033,7 @@ export class BridgeWebSocketServer {
     ws: WebSocket,
     values: HistoryEntry[],
     visibleValues: HistoryEntry[],
+    session?: SessionInfo,
   ):
     | {
         capability: typeof TURN_AWARE_HISTORY_WINDOW_CAPABILITY;
@@ -4027,18 +4053,143 @@ export class BridgeWebSocketServer {
       visibleValues[0]?.seq ?? values.at(-1)?.seq ?? Number.MAX_SAFE_INTEGER;
     const firstVisibleIndex =
       visibleValues[0] === undefined ? -1 : values.indexOf(visibleValues[0]);
+    const providerCursor = session
+      ? this.codexProviderHistoryHeadToken(session)
+      : undefined;
+    const hasCachedHistory = firstVisibleIndex > 0;
+    const cursor = hasCachedHistory
+      ? this.historyPageCursor(visibleValues[0])
+      : providerCursor;
     return {
       capability: TURN_AWARE_HISTORY_WINDOW_CAPABILITY,
       fromSeq,
-      hasMore: firstVisibleIndex > 0,
-      ...(visibleValues[0]
-        ? { cursor: this.historyPageCursor(visibleValues[0]) }
-        : {}),
+      hasMore: hasCachedHistory || providerCursor !== undefined,
+      ...(cursor ? { cursor } : {}),
     };
   }
 
   private historyPageCursor(entry: HistoryEntry): string {
     return `v1:${entry.seq}:${this.historyPageIdentityDigest(entry)}`;
+  }
+
+  private resetCodexProviderHistoryCursor(
+    session: SessionInfo,
+    threadId: string,
+    providerCursor: string | null,
+  ): void {
+    const existing = this.codexProviderHistoryCursors.get(session);
+    const state: CodexProviderHistoryCursorState =
+      existing?.threadId === threadId
+        ? existing
+        : {
+            threadId,
+            cursors: new Map(),
+            tokenOrder: [],
+          };
+    this.codexProviderHistoryCursors.set(session, state);
+    state.headToken = providerCursor
+      ? this.registerCodexProviderHistoryCursor(
+          session,
+          state,
+          providerCursor,
+        )
+      : undefined;
+  }
+
+  private registerCodexProviderHistoryCursor(
+    session: SessionInfo,
+    state: CodexProviderHistoryCursorState,
+    providerCursor: string,
+  ): string {
+    const existing = [...state.cursors.entries()].find(
+      ([, cursor]) => cursor === providerCursor,
+    );
+    if (existing) return existing[0];
+    const token = `v2:${createHash("sha256")
+      .update(`${state.threadId}\0${providerCursor}\0${randomUUID()}`)
+      .digest("hex")
+      .slice(0, 32)}`;
+    state.cursors.set(token, providerCursor);
+    state.tokenOrder.push(token);
+    while (state.tokenOrder.length > MAX_CODEX_PROVIDER_HISTORY_CURSORS) {
+      const expiredIndex = state.tokenOrder.findIndex(
+        (candidate) => candidate !== state.headToken,
+      );
+      if (expiredIndex < 0) break;
+      const [expired] = state.tokenOrder.splice(expiredIndex, 1);
+      state.cursors.delete(expired);
+    }
+    this.codexProviderHistoryCursors.set(session, state);
+    return token;
+  }
+
+  private codexProviderHistoryHeadToken(
+    session: SessionInfo,
+  ): string | undefined {
+    const state = this.codexProviderHistoryCursors.get(session);
+    if (!state || state.threadId !== this.codexThreadIdForSession(session)) {
+      return undefined;
+    }
+    return state.headToken;
+  }
+
+  private codexProviderHistoryCursor(
+    session: SessionInfo,
+    token: string | undefined,
+  ): { state: CodexProviderHistoryCursorState; cursor: string } | null {
+    if (!token?.startsWith("v2:")) return null;
+    const state = this.codexProviderHistoryCursors.get(session);
+    if (!state || state.threadId !== this.codexThreadIdForSession(session)) {
+      return null;
+    }
+    const cursor = state.cursors.get(token);
+    return cursor ? { state, cursor } : null;
+  }
+
+  private async readCodexProviderHistoryPage(
+    session: SessionInfo,
+    token: string,
+    beforeSeq: number,
+  ): Promise<{
+    entries: HistoryEntry[];
+    nextBeforeSeq: number;
+    nextBeforeCursor?: string;
+    hasMore: boolean;
+  }> {
+    const provider = this.codexProviderHistoryCursor(session, token);
+    if (!provider) {
+      throw new Error("The Codex history page cursor is stale");
+    }
+    const page = await this.getCodexThreadHistoryPageFromRpc(
+      provider.state.threadId,
+      session.projectPath,
+      session.process as CodexProcess,
+      provider.cursor,
+    );
+    const messages = await this.codexHistoryToServerMessages(
+      session,
+      page.history,
+    );
+    const firstSeq = Math.max(1, beforeSeq - messages.length);
+    const entries = messages.map((message, index) => ({
+      seq: firstSeq + index,
+      message,
+    }));
+    const visibleEntries = selectTurnAwareHistoryWindow(entries);
+    const nextBeforeSeq = visibleEntries[0]?.seq ?? beforeSeq;
+    const nextBeforeCursor = page.nextCursor
+      ? this.registerCodexProviderHistoryCursor(
+          session,
+          provider.state,
+          page.nextCursor,
+        )
+      : undefined;
+    return {
+      entries: visibleEntries,
+      nextBeforeSeq,
+      ...(nextBeforeCursor ? { nextBeforeCursor } : {}),
+      hasMore: nextBeforeCursor !== undefined,
+    };
   }
 
   private historyPageIdentityDigest(entry: HistoryEntry): string {
@@ -4154,8 +4305,9 @@ export class BridgeWebSocketServer {
     const rawHistory = (session.pastMessages ?? []) as SessionHistoryMessage[];
     if (rawHistory.length === 0) return cachedDetails;
 
-    // A preceding get_history already populated pastMessages from thread/read.
-    // Reuse that canonical snapshot and convert only the requested envelopes:
+    // A preceding get_history already populated pastMessages from bounded
+    // provider reads. Reuse that snapshot and convert only the requested
+    // envelopes:
     // expanding each 8-row page must not issue another full provider read or
     // enrich every item in a long thread again.
     const requested = new Set(toolUseIds);
@@ -4617,13 +4769,12 @@ export class BridgeWebSocketServer {
     const isStandalone = process !== activeProcess;
     try {
       const [thread, desktopToolTimeline] = await Promise.all([
-        process.readThread(threadId, true),
+        this.codexBoundedHistoryReader.readAll(process, threadId, {
+          preference: "turns",
+        }),
         getCodexDesktopToolTimeline(threadId),
       ]);
       return codexThreadToSessionHistory(thread, { desktopToolTimeline });
-    } catch (err) {
-      if (this.isCodexThreadNotMaterializedError(err)) return [];
-      throw err;
     } finally {
       if (isStandalone) {
         process.stop();
@@ -4631,12 +4782,38 @@ export class BridgeWebSocketServer {
     }
   }
 
-  private isCodexThreadNotMaterializedError(err: unknown): boolean {
-    const message = err instanceof Error ? err.message : String(err);
-    return (
-      message.includes("is not materialized yet") &&
-      message.includes("includeTurns is unavailable before first user message")
-    );
+  private async getCodexThreadHistoryPageFromRpc(
+    threadId: string,
+    projectPath?: string,
+    preferredProcess?: CodexProcess,
+    cursor: string | null = null,
+  ): Promise<{
+    history: SessionHistoryMessage[];
+    nextCursor: string | null;
+  }> {
+    const activeProcess = preferredProcess ?? this.getActiveCodexProcess();
+    const process =
+      activeProcess ?? (await this.createStandaloneCodexProcess(projectPath));
+    const isStandalone = process !== activeProcess;
+    try {
+      const [page, desktopToolTimeline] = await Promise.all([
+        this.codexBoundedHistoryReader.readPage(process, threadId, {
+          cursor,
+          limit: CODEX_CANONICAL_HISTORY_PAGE_TURNS,
+          sortDirection: "desc",
+          preference: "turns",
+        }),
+        getCodexDesktopToolTimeline(threadId),
+      ]);
+      return {
+        history: codexThreadToSessionHistory(page.thread, {
+          desktopToolTimeline,
+        }),
+        nextCursor: page.nextCursor,
+      };
+    } finally {
+      if (isStandalone) process.stop();
+    }
   }
 
   private async getCodexThreadHistory(
@@ -8627,6 +8804,44 @@ export class BridgeWebSocketServer {
           });
           break;
         }
+        if (
+          session.provider === "codex" &&
+          msg.beforeCursor?.startsWith("v2:")
+        ) {
+          try {
+            const page = await this.readCodexProviderHistoryPage(
+              session,
+              msg.beforeCursor,
+              msg.beforeSeq,
+            );
+            this.send(ws, {
+              type: "history_page",
+              requestId: msg.requestId,
+              sessionId: msg.sessionId,
+              beforeSeq: msg.beforeSeq,
+              nextBeforeSeq: page.nextBeforeSeq,
+              ...(page.nextBeforeCursor
+                ? { nextBeforeCursor: page.nextBeforeCursor }
+                : {}),
+              hasMore: page.hasMore,
+              messages: page.entries,
+            });
+          } catch (error) {
+            this.send(ws, {
+              type: "history_page",
+              requestId: msg.requestId,
+              sessionId: msg.sessionId,
+              beforeSeq: msg.beforeSeq,
+              nextBeforeSeq: msg.beforeSeq,
+              hasMore: true,
+              messages: [],
+              error: `Failed to read history page: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            });
+          }
+          break;
+        }
         try {
           const entries =
             session.provider === "codex"
@@ -8658,16 +8873,22 @@ export class BridgeWebSocketServer {
             visibleEntries[0] === undefined
               ? -1
               : eligible.indexOf(visibleEntries[0]);
+          const providerCursor =
+            session.provider === "codex"
+              ? this.codexProviderHistoryHeadToken(session)
+              : undefined;
+          const hasCachedHistory = firstVisibleIndex > 0;
+          const nextBeforeCursor = hasCachedHistory
+            ? this.historyPageCursor(visibleEntries[0])
+            : providerCursor;
           this.send(ws, {
             type: "history_page",
             requestId: msg.requestId,
             sessionId: msg.sessionId,
             beforeSeq: msg.beforeSeq,
             nextBeforeSeq,
-            ...(visibleEntries[0]
-              ? { nextBeforeCursor: this.historyPageCursor(visibleEntries[0]) }
-              : {}),
-            hasMore: firstVisibleIndex > 0,
+            ...(nextBeforeCursor ? { nextBeforeCursor } : {}),
+            hasMore: hasCachedHistory || providerCursor !== undefined,
             messages: visibleEntries,
           });
         } catch (error) {

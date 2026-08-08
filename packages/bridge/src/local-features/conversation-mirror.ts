@@ -8,6 +8,7 @@ import {
   supplementCodexThreadWithDesktopTools,
   type SessionHistoryMessage,
 } from "../sessions-index.js";
+import { CodexBoundedHistoryReader } from "./codex-bounded-history.js";
 import type { CodexDesktopToolTimeline } from "./codex-tool-history.js";
 import type {
   ConversationMirrorClientMessage,
@@ -89,21 +90,12 @@ export interface ConversationMirrorReaderOptions {
   ) => Promise<CodexDesktopToolTimeline>;
 }
 
-type ConversationMirrorHistoryMode =
-  | "items"
-  | "turns"
-  | "turnsLegacy"
-  | "whole";
-
 /**
  * Provider reader kept separate from WebSocket lifecycle code so the mirror
  * feature can be removed or replaced without changing canonical sessions.
  */
 export class CodexConversationMirrorReader {
-  private readonly historyModeByProcess = new WeakMap<
-    object,
-    Map<string, ConversationMirrorHistoryMode>
-  >();
+  private readonly boundedHistoryReader: CodexBoundedHistoryReader;
   private readonly rpcTimeoutMs: number;
   private readonly maxPages: number;
   private readonly maxEntries: number;
@@ -129,6 +121,12 @@ export class CodexConversationMirrorReader {
       options.maxTotalBytes,
       MAX_CONVERSATION_MIRROR_TOTAL_BYTES,
     );
+    this.boundedHistoryReader = new CodexBoundedHistoryReader({
+      pageSize: HISTORY_PAGE_SIZE,
+      maxPages: this.maxPages,
+      maxEntries: this.maxEntries,
+      rpcTimeoutMs: this.rpcTimeoutMs,
+    });
     this.desktopToolTimelineReader =
       options.desktopToolTimelineReader ??
       (process.env.NODE_ENV === "test"
@@ -159,19 +157,13 @@ export class CodexConversationMirrorReader {
     try {
       const marker = await this.readMarker(process, threadId, signal);
       authorizeMarker?.(marker);
-      const [history, desktopToolTimeline] = await Promise.all([
-        this.readPaginatedOrFallback(process, threadId, signal),
+      const [thread, desktopToolTimeline] = await Promise.all([
+        this.boundedHistoryReader.readAll(process, threadId, { signal }),
         this.readDesktopToolTimeline(threadId),
       ]);
-      // Re-check a full-thread fallback response to close the cwd race between
-      // the lightweight marker read and the history read. Only the paginated
-      // adapter is synthetic and therefore legitimately has no cwd.
-      if (!history.paginated) {
-        authorizeMarker?.(markerFromThread(history.thread));
-      }
       return normalizeConversationMirrorSnapshot(
         supplementCodexThreadWithDesktopTools(
-          history.thread,
+          thread,
           desktopToolTimeline,
         ),
         marker,
@@ -183,9 +175,17 @@ export class CodexConversationMirrorReader {
     } catch (error) {
       if (error instanceof ConversationMirrorError) throw error;
       if (signal?.aborted) throw abortError(signal);
+      const message = errorMessage(error);
+      if (
+        /^Conversation exceeds \d+ (?:bounded history records|history pages)$/.test(
+          message,
+        )
+      ) {
+        throw new ConversationMirrorError("history_too_large", message, error);
+      }
       throw new ConversationMirrorError(
         "read_failed",
-        errorMessage(error),
+        message,
         error,
       );
     }
@@ -203,249 +203,10 @@ export class CodexConversationMirrorReader {
       return emptyDesktopToolTimeline();
     }
   }
-
-  private async readPaginatedOrFallback(
-    process: CodexProcess,
-    threadId: string,
-    signal?: AbortSignal,
-  ): Promise<{ thread: Record<string, unknown>; paginated: boolean }> {
-    const modes = this.historyModes(process);
-    let mode = modes.get(threadId) ?? "items";
-    if (mode === "items") {
-      try {
-        const thread = await this.readPaginatedHistory(
-          process,
-          "thread/items/list",
-          threadId,
-          signal,
-        );
-        modes.set(threadId, "items");
-        return { thread, paginated: true };
-      } catch (error) {
-        if (error instanceof ConversationMirrorError) throw error;
-        if (signal?.aborted) throw abortError(signal);
-        if (!isHistoryPaginationUnavailable(error, "thread/items/list")) {
-          throw error;
-        }
-        mode = "turns";
-        modes.set(threadId, mode);
-        console.warn(
-          `[conversation-mirror] thread/items/list unavailable for thread ${threadId}; trying thread/turns/list: ${errorMessage(error)}`,
-        );
-      }
-    }
-
-    if (mode === "turns" || mode === "turnsLegacy") {
-      let turnsError: unknown;
-      try {
-        const thread = await this.readPaginatedHistory(
-          process,
-          "thread/turns/list",
-          threadId,
-          signal,
-          { omitItemsView: mode === "turnsLegacy" },
-        );
-        modes.set(threadId, mode);
-        return { thread, paginated: true };
-      } catch (error) {
-        if (error instanceof ConversationMirrorError) throw error;
-        if (signal?.aborted) throw abortError(signal);
-        turnsError = error;
-      }
-
-      if (
-        mode === "turns" &&
-        isTurnsItemsViewParameterUnavailable(turnsError)
-      ) {
-        mode = "turnsLegacy";
-        modes.set(threadId, mode);
-        console.warn(
-          `[conversation-mirror] thread/turns/list itemsView is unavailable for thread ${threadId}; retrying the legacy request and validating a full response: ${errorMessage(turnsError)}`,
-        );
-        try {
-          const thread = await this.readPaginatedHistory(
-            process,
-            "thread/turns/list",
-            threadId,
-            signal,
-            { omitItemsView: true },
-          );
-          return { thread, paginated: true };
-        } catch (error) {
-          if (error instanceof ConversationMirrorError) throw error;
-          if (signal?.aborted) throw abortError(signal);
-          turnsError = error;
-        }
-      }
-
-      if (
-        !isHistoryPaginationUnavailable(
-          turnsError,
-          "thread/turns/list",
-        ) &&
-        !isNonFullTurnsResponseError(turnsError)
-      ) {
-        throw turnsError;
-      }
-      modes.set(threadId, "whole");
-      console.warn(
-        `[conversation-mirror] full paginated history unavailable for thread ${threadId}; using thread/read fallback: ${errorMessage(turnsError)}`,
-      );
-    }
-
-    return {
-      thread: await this.readWholeThread(process, threadId, signal),
-      paginated: false,
-    };
-  }
-
-  private historyModes(
-    process: CodexProcess,
-  ): Map<string, ConversationMirrorHistoryMode> {
-    const existing = this.historyModeByProcess.get(process);
-    if (existing) return existing;
-    const modes = new Map<string, ConversationMirrorHistoryMode>();
-    this.historyModeByProcess.set(process, modes);
-    return modes;
-  }
-
-  private async readPaginatedHistory(
-    process: CodexProcess,
-    method: "thread/items/list" | "thread/turns/list",
-    threadId: string,
-    signal?: AbortSignal,
-    options: { omitItemsView?: boolean } = {},
-  ): Promise<Record<string, unknown>> {
-    const newestFirst: Array<{
-      record: Record<string, unknown>;
-      turnId?: string;
-    }> = [];
-    const seenCursors = new Set<string>();
-    let cursor: string | null = null;
-
-    for (let pageIndex = 0; pageIndex < this.maxPages; pageIndex += 1) {
-      throwIfAborted(signal);
-      const response: { data?: unknown; nextCursor?: unknown } =
-        await process.requestReadOnlyRpc<{
-          data?: unknown;
-          nextCursor?: unknown;
-        }>(
-          method,
-          {
-            threadId,
-            ...(method === "thread/turns/list" && !options.omitItemsView
-              ? { itemsView: "full" }
-              : {}),
-            limit: HISTORY_PAGE_SIZE,
-            cursor,
-            sortDirection: "desc",
-          },
-          { timeoutMs: this.rpcTimeoutMs, ...(signal ? { signal } : {}) },
-        );
-      if (!Array.isArray(response.data)) {
-        throw new Error(`${method} returned invalid data`);
-      }
-      for (const value of response.data) {
-        const record = recordValue(value);
-        if (!record) throw new Error(`${method} returned invalid data`);
-        const historyRecord =
-          method === "thread/items/list"
-            ? (recordValue(record.item) ?? record)
-            : (recordValue(record.turn) ?? record);
-        if (method === "thread/turns/list") {
-          if (!Array.isArray(historyRecord.items)) {
-            throw new Error(`${method} returned a turn without items`);
-          }
-          const itemsView = historyRecord.itemsView;
-          if (itemsView !== undefined && itemsView !== "full") {
-            throw new Error(
-              `${method} returned non-full itemsView: ${String(itemsView)}`,
-            );
-          }
-        }
-        newestFirst.push({
-          record: historyRecord,
-          ...(method === "thread/items/list"
-            ? {
-                turnId:
-                  nonEmptyString(record.turnId) ??
-                  nonEmptyString(record.turn_id),
-              }
-            : {}),
-        });
-        if (newestFirst.length > this.maxEntries) {
-          throw new ConversationMirrorError(
-            "history_too_large",
-            `Conversation exceeds ${this.maxEntries} bounded history records`,
-          );
-        }
-      }
-
-      const nextCursor: string | null =
-        typeof response.nextCursor === "string" && response.nextCursor.length > 0
-          ? response.nextCursor
-          : null;
-      if (!nextCursor) {
-        const chronological = newestFirst.reverse();
-        return method === "thread/items/list"
-          ? {
-              id: threadId,
-              turns: groupPaginatedItemsByTurn(threadId, chronological),
-            }
-          : { id: threadId, turns: chronological.map((value) => value.record) };
-      }
-      if (nextCursor === cursor || seenCursors.has(nextCursor)) {
-        throw new Error(`${method} returned a repeated cursor`);
-      }
-      seenCursors.add(nextCursor);
-      cursor = nextCursor;
-    }
-
-    throw new ConversationMirrorError(
-      "history_too_large",
-      `Conversation exceeds ${this.maxPages} history pages`,
-    );
-  }
-
-  private async readWholeThread(
-    process: CodexProcess,
-    threadId: string,
-    signal?: AbortSignal,
-  ): Promise<Record<string, unknown>> {
-    const response = await process.requestReadOnlyRpc<unknown>(
-      "thread/read",
-      { threadId, includeTurns: true },
-      { timeoutMs: this.rpcTimeoutMs, ...(signal ? { signal } : {}) },
-    );
-    return responseThread(response);
-  }
 }
 
 function emptyDesktopToolTimeline(): CodexDesktopToolTimeline {
   return { events: [], callIds: new Set<string>() };
-}
-
-function groupPaginatedItemsByTurn(
-  threadId: string,
-  items: Array<{ record: Record<string, unknown>; turnId?: string }>,
-): Record<string, unknown>[] {
-  const fallbackTurnId = `${threadId}:mirror-items`;
-  const turns: Array<{ id: string; items: Record<string, unknown>[] }> = [];
-  const turnById = new Map<
-    string,
-    { id: string; items: Record<string, unknown>[] }
-  >();
-  for (const value of items) {
-    const turnId = value.turnId ?? fallbackTurnId;
-    let turn = turnById.get(turnId);
-    if (!turn) {
-      turn = { id: turnId, items: [] };
-      turnById.set(turnId, turn);
-      turns.push(turn);
-    }
-    turn.items.push(value.record);
-  }
-  return turns;
 }
 
 interface SnapshotLimits {
@@ -1865,64 +1626,6 @@ function isReaderTransportFailure(error: unknown): boolean {
   if (error.name === "AbortError") return false;
   return /(?:app-server|transport|connection|socket|pipe|econn|epipe).*(?:exit|stop|clos|reset|refus|fail|broken|down|not running)|(?:exit|stop|clos|reset|refus|fail|broken|down|not running).*(?:app-server|transport|connection|socket|pipe|econn|epipe)|(?:timed?\s*out|timeout)/i.test(
     error.message,
-  );
-}
-
-function isHistoryPaginationUnavailable(
-  error: unknown,
-  method: "thread/items/list" | "thread/turns/list",
-): boolean {
-  if (error instanceof CodexRpcError) {
-    let detail = error.message;
-    try {
-      detail += ` ${JSON.stringify(error.data)}`;
-    } catch {}
-    if (error.method === method && error.code === -32601) {
-      return true;
-    }
-    if (error.method === method && unsupportedOrInvalidMessage(detail)) {
-      return true;
-    }
-  }
-  const message = errorMessage(error);
-  const namesPagination =
-    method === "thread/items/list"
-      ? /thread\/items\/list|item\/list|items\/list|listthreaditems|item pagination/i.test(
-          message,
-        )
-      : /thread\/turns\/list|turn\/list|turns\/list|listthreadturns|turn pagination|itemsview|sortdirection/i.test(
-          message,
-        );
-  return namesPagination && unsupportedOrInvalidMessage(message);
-}
-
-function isTurnsItemsViewParameterUnavailable(error: unknown): boolean {
-  if (error instanceof CodexRpcError && error.method !== "thread/turns/list") {
-    return false;
-  }
-  let message = errorMessage(error);
-  if (error instanceof CodexRpcError) {
-    try {
-      message += ` ${JSON.stringify(error.data)}`;
-    } catch {}
-  }
-  return /itemsview|items_view|items view/i.test(message) &&
-    unsupportedOrInvalidMessage(message);
-}
-
-function isNonFullTurnsResponseError(error: unknown): boolean {
-  return /thread\/turns\/list returned (?:a turn without items|non-full itemsView:)/i.test(
-    errorMessage(error),
-  );
-}
-
-function unsupportedOrInvalidMessage(message: string): boolean {
-  const normalized = message.toLowerCase();
-  return (
-    /\b(unknown|unsupported|unrecognized|unexpected)\b/.test(normalized) ||
-    /\bnot supported\b/.test(normalized) ||
-    /\bmethod not found\b/.test(normalized) ||
-    /\binvalid (?:param(?:eter)?s?|argument|field)\b/.test(normalized)
   );
 }
 

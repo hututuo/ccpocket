@@ -314,6 +314,13 @@ vi.mock("./session.js", async () => {
         listAvailableModelMetadata: vi.fn(async () => []),
         readProfileConfig: vi.fn(async () => ({ profiles: [] })),
         readThread: vi.fn(async () => ({ id: "thread-read", turns: [] })),
+        requestReadOnlyRpc: vi.fn(
+          async (method: string) =>
+            method === "thread/turns/list" ||
+            method === "thread/items/list"
+              ? { data: [], nextCursor: null }
+              : { thread: { id: "thread-read", turns: [] } },
+        ),
         archiveThread: vi.fn(async () => {}),
         unarchiveThread: vi.fn(async () => {}),
         deleteThread: vi.fn(async () => {}),
@@ -3867,6 +3874,286 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("keeps compact accepted while bounded turns drive canonical history pages", async () => {
+    codexThreadToSessionHistoryMock.mockImplementation((thread: any) => {
+      const turnId = thread?.turns?.[0]?.id;
+      const text =
+        turnId === "turn-latest"
+          ? "latest after compact"
+          : turnId === "turn-older"
+            ? "older page"
+            : turnId === "turn-oldest"
+              ? "oldest page"
+              : undefined;
+      return text
+        ? [
+            {
+              role: "user",
+              uuid: `codex:user:${turnId}`,
+              content: [{ type: "text", text }],
+            },
+          ]
+        : [];
+    });
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    (bridge as any).localFeatures.hasExternalCodexActivityVerified = vi.fn(
+      async () => false,
+    );
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const sessionId = (bridge as any).sessionManager.create(
+      "/tmp/project-compact-history",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      { threadId: "thread-compact-history" },
+    );
+    const session = (bridge as any).sessionManager.get(sessionId);
+    session.process.compactThread = vi.fn(async () => {});
+    session.process.startInlineReview = vi.fn();
+    session.process.listMcpServerStatus = vi.fn();
+    session.process.readThread.mockRejectedValue(
+      new Error("thread/read includeTurns failed after compact"),
+    );
+    session.process.requestReadOnlyRpc.mockImplementation(
+      async (method: string, params: Record<string, unknown>) => {
+        expect(method).toBe("thread/turns/list");
+        const cursor = params.cursor;
+        if (cursor === null) {
+          return {
+            data: [{ id: "turn-latest", items: [] }],
+            nextCursor: "older-1",
+          };
+        }
+        if (cursor === "older-1") {
+          return {
+            data: [{ id: "turn-older", items: [] }],
+            nextCursor: "older-2",
+          };
+        }
+        if (cursor === "older-2") {
+          return {
+            data: [{ id: "turn-oldest", items: [] }],
+            nextCursor: null,
+          };
+        }
+        throw new Error(`unexpected cursor ${String(cursor)}`);
+      },
+    );
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: [
+          "codex_action_result",
+          "turn_aware_history_window_v1",
+          "history_page_v1",
+        ],
+      },
+      ws,
+    );
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "codex_compact_request",
+        sessionId,
+        requestId: "compact-history",
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      { type: "get_history", sessionId },
+      ws,
+    );
+
+    const initial = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(initial).toContainEqual(
+      expect.objectContaining({
+        type: "codex_action_result",
+        requestId: "compact-history",
+        action: "compact",
+        status: "accepted",
+      }),
+    );
+    expect(initial).not.toContainEqual(
+      expect.objectContaining({
+        type: "codex_action_result",
+        requestId: "compact-history",
+        status: "failed",
+      }),
+    );
+    const history = initial.find((message: any) => message.type === "history");
+    expect(history.messages).toEqual([
+      expect.objectContaining({
+        type: "user_input",
+        text: "latest after compact",
+      }),
+    ]);
+    expect(history.historyWindow).toMatchObject({
+      capability: "turn_aware_history_window_v1",
+      hasMore: true,
+    });
+    expect(history.historyWindow.cursor).toMatch(/^v2:[a-f0-9]{32}$/);
+    expect(session.process.readThread).not.toHaveBeenCalled();
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      { type: "get_history", sessionId },
+      ws,
+    );
+    const repeatedHistory = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "history");
+    expect(repeatedHistory.historyWindow.cursor).toBe(
+      history.historyWindow.cursor,
+    );
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "get_history_page",
+        requestId: "page-older",
+        sessionId,
+        beforeSeq: history.historyWindow.fromSeq,
+        beforeCursor: history.historyWindow.cursor,
+      },
+      ws,
+    );
+    const older = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "history_page");
+    expect(older.messages[0].message).toMatchObject({
+      type: "user_input",
+      text: "older page",
+    });
+    expect(older.hasMore).toBe(true);
+    expect(older.nextBeforeCursor).toMatch(/^v2:[a-f0-9]{32}$/);
+    expect(older.nextBeforeCursor).not.toBe(history.historyWindow.cursor);
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "get_history_page",
+        requestId: "page-oldest",
+        sessionId,
+        beforeSeq: older.nextBeforeSeq,
+        beforeCursor: older.nextBeforeCursor,
+      },
+      ws,
+    );
+    const oldest = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .find((message: any) => message.type === "history_page");
+    expect(oldest.messages[0].message).toMatchObject({
+      type: "user_input",
+      text: "oldest page",
+    });
+    expect(oldest.hasMore).toBe(false);
+    expect(oldest.nextBeforeCursor).toBeUndefined();
+    expect(
+      session.process.requestReadOnlyRpc.mock.calls.map(
+        (call: unknown[]) => (call[1] as Record<string, unknown>).cursor,
+      ),
+    ).toEqual([null, null, "older-1", "older-2"]);
+
+    bridge.close();
+  });
+
+  it("fails closed on old providers without clearing history or changing compact success", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    (bridge as any).localFeatures.hasExternalCodexActivityVerified = vi.fn(
+      async () => false,
+    );
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const sessionId = (bridge as any).sessionManager.create(
+      "/tmp/project-compact-history-old-provider",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+      { threadId: "thread-compact-old-provider" },
+    );
+    const manager = (bridge as any).sessionManager;
+    const session = manager.get(sessionId);
+    session.process.compactThread = vi.fn(async () => {});
+    session.process.startInlineReview = vi.fn();
+    session.process.listMcpServerStatus = vi.fn();
+    manager.appendHistory(sessionId, {
+      type: "user_input",
+      text: "keep committed history",
+      userMessageUuid: "committed-user",
+    });
+    const historyBefore = [...session.history];
+    const entriesBefore = [...session.historyEntries];
+    const revisionBefore = session.historyRevision;
+    session.process.readThread.mockRejectedValue(
+      new Error("unbounded read must not run"),
+    );
+    session.process.requestReadOnlyRpc.mockImplementation(
+      async (method: string) => {
+        throw new CodexRpcError(method, "Method not found", -32601);
+      },
+    );
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: ["codex_action_result"],
+      },
+      ws,
+    );
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(
+      {
+        type: "codex_compact_request",
+        sessionId,
+        requestId: "compact-old-provider",
+      },
+      ws,
+    );
+    await (bridge as any).handleClientMessage(
+      { type: "get_history", sessionId },
+      ws,
+    );
+
+    const sent = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        type: "codex_action_result",
+        requestId: "compact-old-provider",
+        status: "accepted",
+      }),
+    );
+    expect(sent).toContainEqual({
+      type: "error",
+      message: "Failed to read Codex thread history",
+      errorCode: "history_read_failed",
+      sessionId,
+    });
+    expect(sent).not.toContainEqual(
+      expect.objectContaining({
+        type: "codex_action_result",
+        requestId: "compact-old-provider",
+        status: "failed",
+      }),
+    );
+    expect(
+      session.process.requestReadOnlyRpc.mock.calls.map(
+        (call: unknown[]) => call[0],
+      ),
+    ).toEqual(["thread/turns/list", "thread/items/list"]);
+    expect(session.process.readThread).not.toHaveBeenCalled();
+    expect(session.history).toEqual(historyBefore);
+    expect(session.historyEntries).toEqual(entriesBefore);
+    expect(session.historyRevision).toBe(revisionBefore);
+
+    bridge.close();
+  });
+
   it("queues input and rejects a second action during the core-action ack window", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     (bridge as any).localFeatures.hasExternalCodexActivityVerified = vi.fn(
@@ -6672,7 +6959,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
-  it("serves codex history deltas from canonical thread/read", async () => {
+  it("serves codex history deltas from canonical bounded turns", async () => {
     const desktopToolTimeline = {
       callIds: new Set(["call-skill"]),
       events: [
@@ -6762,11 +7049,19 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ),
     ]);
 
-    expect(session.process.readThread).toHaveBeenCalledWith(
-      "thr_codex_1",
-      true,
+    expect(session.process.requestReadOnlyRpc).toHaveBeenCalledWith(
+      "thread/turns/list",
+      {
+        threadId: "thr_codex_1",
+        itemsView: "full",
+        limit: 5,
+        cursor: null,
+        sortDirection: "desc",
+      },
+      { timeoutMs: 15_000 },
     );
-    expect(session.process.readThread).toHaveBeenCalledTimes(1);
+    expect(session.process.requestReadOnlyRpc).toHaveBeenCalledTimes(1);
+    expect(session.process.readThread).not.toHaveBeenCalled();
     expect(getCodexDesktopToolTimelineMock).toHaveBeenCalledWith("thr_codex_1");
     expect(codexThreadToSessionHistoryMock).toHaveBeenCalledWith(
       { id: "thr_codex_1", turns: [] },
@@ -6854,7 +7149,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ws,
     );
 
-    expect(session.process.readThread).toHaveBeenCalledTimes(1);
+    expect(session.process.requestReadOnlyRpc).toHaveBeenCalledTimes(1);
     const deltaSends = ws.send.mock.calls.map((c: unknown[]) =>
       JSON.parse(c[0] as string),
     );
@@ -6887,7 +7182,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
-  it("serves codex get_history as legacy history from canonical thread/read", async () => {
+  it("serves codex get_history as legacy history from bounded turns", async () => {
     codexThreadToSessionHistoryMock.mockReturnValue([
       {
         role: "user",
@@ -6945,10 +7240,16 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ws,
     );
 
-    expect(session.process.readThread).toHaveBeenCalledWith(
-      "thr_codex_legacy",
-      true,
+    expect(session.process.requestReadOnlyRpc).toHaveBeenCalledWith(
+      "thread/turns/list",
+      expect.objectContaining({
+        threadId: "thr_codex_legacy",
+        limit: 5,
+        itemsView: "full",
+      }),
+      { timeoutMs: 15_000 },
     );
+    expect(session.process.readThread).not.toHaveBeenCalled();
     const sends = ws.send.mock.calls.map((c: unknown[]) =>
       JSON.parse(c[0] as string),
     );
@@ -7327,7 +7628,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       { type: "get_history", sessionId },
       ws,
     );
-    expect(session.process.readThread).toHaveBeenCalledTimes(1);
+    expect(session.process.requestReadOnlyRpc).toHaveBeenCalledTimes(1);
 
     ws.send.mockClear();
     await (bridge as any).handleClientMessage(
@@ -7343,7 +7644,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     const response = ws.send.mock.calls
       .map((call: unknown[]) => JSON.parse(call[0] as string))
       .find((message: any) => message.type === "history_tool_details");
-    expect(session.process.readThread).toHaveBeenCalledTimes(1);
+    expect(session.process.requestReadOnlyRpc).toHaveBeenCalledTimes(1);
     expect(response.details).toEqual([
       {
         toolUseId: "tool-cached",
@@ -7435,9 +7736,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     const sessionId = created.sessionId as string;
     const session = (bridge as any).sessionManager.get(sessionId);
     const unresolvedProcess = Object.create(CodexProcess.prototype) as any;
-    unresolvedProcess.readThread = vi.fn(async () => ({
-      id: "thread-unresolved",
-      turns: [],
+    unresolvedProcess.requestReadOnlyRpc = vi.fn(async () => ({
+      data: [],
+      nextCursor: null,
     }));
     session.process = unresolvedProcess;
     session.claudeSessionId = "thread-unresolved";
@@ -7572,7 +7873,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       firstCreated.sessionId,
     );
     firstSession.claudeSessionId = "thr_codex_first";
-    firstSession.process.readThread.mockRejectedValue(
+    firstSession.process.requestReadOnlyRpc.mockRejectedValue(
       new Error("thread not loaded: thr_codex_second"),
     );
 
@@ -7594,9 +7895,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     const secondSessionId = secondCreated.sessionId as string;
     const secondSession = (bridge as any).sessionManager.get(secondSessionId);
     secondSession.claudeSessionId = "thr_codex_second";
-    secondSession.process.readThread.mockResolvedValue({
-      id: "thr_codex_second",
-      turns: [],
+    secondSession.process.requestReadOnlyRpc.mockResolvedValue({
+      data: [],
+      nextCursor: null,
     });
 
     ws.send.mockClear();
@@ -7608,11 +7909,13 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ws,
     );
 
-    expect(firstSession.process.readThread).not.toHaveBeenCalled();
-    expect(secondSession.process.readThread).toHaveBeenCalledWith(
-      "thr_codex_second",
-      true,
+    expect(firstSession.process.requestReadOnlyRpc).not.toHaveBeenCalled();
+    expect(secondSession.process.requestReadOnlyRpc).toHaveBeenCalledWith(
+      "thread/turns/list",
+      expect.objectContaining({ threadId: "thr_codex_second", limit: 5 }),
+      { timeoutMs: 15_000 },
     );
+    expect(secondSession.process.readThread).not.toHaveBeenCalled();
     const sends = ws.send.mock.calls.map((c: unknown[]) =>
       JSON.parse(c[0] as string),
     );
@@ -9548,7 +9851,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     const sessionId = created.sessionId as string;
     const session = (bridge as any).sessionManager.get(sessionId);
     session.claudeSessionId = "thr_codex_error";
-    session.process.readThread.mockRejectedValue(new Error("rpc unavailable"));
+    session.process.requestReadOnlyRpc.mockRejectedValue(
+      new Error("rpc unavailable"),
+    );
 
     for (const request of [
       { type: "get_history", sessionId },
@@ -10609,10 +10914,12 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       { type: "get_history", sessionId: pendingSession.id },
       ws,
     );
-    expect(pendingSession.process.readThread).toHaveBeenCalledWith(
-      "codex-daemon-thread",
-      true,
+    expect(pendingSession.process.requestReadOnlyRpc).toHaveBeenCalledWith(
+      "thread/turns/list",
+      expect.objectContaining({ threadId: "codex-daemon-thread", limit: 5 }),
+      { timeoutMs: 15_000 },
     );
+    expect(pendingSession.process.readThread).not.toHaveBeenCalled();
 
     bridge.close();
   });
@@ -13938,7 +14245,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         status: "active",
         updatedAt: 4,
       });
-    oldSession.process.readThread.mockRejectedValueOnce(
+    oldSession.process.requestReadOnlyRpc.mockRejectedValueOnce(
       new Error("history unavailable"),
     );
 
@@ -14112,7 +14419,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       .mockResolvedValueOnce(activeGoal)
       .mockResolvedValueOnce(replacementGoal);
     oldSession.process.setGoal.mockResolvedValueOnce(pausedGoal);
-    oldSession.process.readThread.mockRejectedValueOnce(
+    oldSession.process.requestReadOnlyRpc.mockRejectedValueOnce(
       new Error("history unavailable"),
     );
 
@@ -17811,6 +18118,8 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       sandboxMode: "danger-full-access",
     });
     const readThread = child.process.readThread as ReturnType<typeof vi.fn>;
+    const requestReadOnlyRpc = child.process
+      .requestReadOnlyRpc as ReturnType<typeof vi.fn>;
     readThread.mockRejectedValue(
       new Error("ephemeral threads do not support includeTurns"),
     );
@@ -17853,6 +18162,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       historyMessages.find((message: any) => message.type === "error"),
     ).toBeUndefined();
     expect(readThread).not.toHaveBeenCalled();
+    expect(requestReadOnlyRpc).not.toHaveBeenCalled();
     expect(
       (bridge as any).sessionManager
         .list()

@@ -460,6 +460,33 @@ describe("CodexConversationMirrorReader", () => {
     warning.mockRestore();
   });
 
+  it("rejects a non-advancing provider cursor without a whole-thread read", async () => {
+    let wholeThreadReads = 0;
+    const process = fakeProcess(
+      async (method: string, params: Record<string, unknown>) => {
+        if (method === "thread/read" && params.includeTurns === false) {
+          return { thread: markerThread(2, "idle") };
+        }
+        if (method === "thread/read" && params.includeTurns === true) {
+          wholeThreadReads += 1;
+          throw new Error("whole-thread read must not run");
+        }
+        if (method === "thread/items/list") {
+          return {
+            data: [],
+            nextCursor: "same-cursor",
+          };
+        }
+        throw new Error(method);
+      },
+    );
+
+    await expect(
+      new CodexConversationMirrorReader().readSnapshot(process, "thread-1"),
+    ).rejects.toThrow("repeated cursor");
+    expect(wholeThreadReads).toBe(0);
+  });
+
   it("retries legacy turn pagination without itemsView and accepts only full-shaped turns", async () => {
     let itemCalls = 0;
     let fullTurnCalls = 0;
@@ -500,19 +527,15 @@ describe("CodexConversationMirrorReader", () => {
       },
     );
     const reader = new CodexConversationMirrorReader();
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-
     await reader.readSnapshot(process, "thread-1");
     await reader.readSnapshot(process, "thread-1");
 
     expect(itemCalls).toBe(1);
     expect(fullTurnCalls).toBe(1);
     expect(legacyTurnCalls).toBe(2);
-    expect(warning).toHaveBeenCalledTimes(2);
-    warning.mockRestore();
   });
 
-  it("does not commit summary-only turn pagination as a full mirror", async () => {
+  it("fails closed instead of committing summary-only turn pagination", async () => {
     let fullReads = 0;
     const process = fakeProcess(
       async (method: string, params: Record<string, unknown>) => {
@@ -555,19 +578,13 @@ describe("CodexConversationMirrorReader", () => {
         throw new Error(method);
       },
     );
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    const result = await new CodexConversationMirrorReader().readSnapshot(
-      process,
-      "thread-1",
-    );
-
-    expect(result.entries.map((value) => value.entryId)).toEqual(["full"]);
-    expect(fullReads).toBe(1);
-    warning.mockRestore();
+    await expect(
+      new CodexConversationMirrorReader().readSnapshot(process, "thread-1"),
+    ).rejects.toThrow("non-full itemsView");
+    expect(fullReads).toBe(0);
   });
 
-  it("caches whole-thread fallback per thread after both pagination adapters fail", async () => {
+  it("fails closed after both pagination adapters are unavailable", async () => {
     let itemCalls = 0;
     let turnCalls = 0;
     let fullReads = 0;
@@ -609,19 +626,19 @@ describe("CodexConversationMirrorReader", () => {
       },
     );
     const reader = new CodexConversationMirrorReader();
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    await reader.readSnapshot(process, "thread-1");
-    await reader.readSnapshot(process, "thread-1");
+    await expect(reader.readSnapshot(process, "thread-1")).rejects.toThrow(
+      "Method not found: thread/turns/list",
+    );
+    await expect(reader.readSnapshot(process, "thread-1")).rejects.toThrow(
+      "Method not found: thread/turns/list",
+    );
 
     expect(itemCalls).toBe(1);
-    expect(turnCalls).toBe(1);
-    expect(fullReads).toBe(2);
-    expect(warning).toHaveBeenCalledTimes(2);
-    warning.mockRestore();
+    expect(turnCalls).toBe(2);
+    expect(fullReads).toBe(0);
   });
 
-  it("caches whole-thread fallback when an older endpoint rejects pagination parameters", async () => {
+  it("fails closed when an older endpoint rejects pagination parameters", async () => {
     let itemCalls = 0;
     let turnCalls = 0;
     let fullReads = 0;
@@ -659,16 +676,16 @@ describe("CodexConversationMirrorReader", () => {
       },
     );
     const reader = new CodexConversationMirrorReader();
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    await reader.readSnapshot(process, "thread-1");
-    await reader.readSnapshot(process, "thread-1");
+    await expect(reader.readSnapshot(process, "thread-1")).rejects.toThrow(
+      "unknown field sortDirection",
+    );
+    await expect(reader.readSnapshot(process, "thread-1")).rejects.toThrow(
+      "unknown field sortDirection",
+    );
 
     expect(itemCalls).toBe(1);
-    expect(turnCalls).toBe(1);
-    expect(fullReads).toBe(2);
-    expect(warning).toHaveBeenCalledTimes(2);
-    warning.mockRestore();
+    expect(turnCalls).toBe(2);
+    expect(fullReads).toBe(0);
   });
 
   it("does not sticky-downgrade pagination after a transport failure", async () => {
@@ -752,8 +769,6 @@ describe("CodexConversationMirrorReader", () => {
       },
     );
     const reader = new CodexConversationMirrorReader();
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-
     await reader.readSnapshot(process, "legacy");
     await reader.readSnapshot(process, "paginated");
     await reader.readSnapshot(process, "legacy");
@@ -761,8 +776,6 @@ describe("CodexConversationMirrorReader", () => {
 
     expect(itemCalls).toEqual(["legacy", "paginated", "paginated"]);
     expect(turnCalls).toEqual(["legacy", "legacy"]);
-    expect(warning).toHaveBeenCalledTimes(1);
-    warning.mockRestore();
   });
 
   it("keeps pagination fallback state isolated between app-server processes", async () => {
@@ -792,14 +805,13 @@ describe("CodexConversationMirrorReader", () => {
       },
     );
     const reader = new CodexConversationMirrorReader();
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    await reader.readSnapshot(fakeProcess(oldRpc), "thread-1");
+    await expect(
+      reader.readSnapshot(fakeProcess(oldRpc), "thread-1"),
+    ).rejects.toThrow("Method not found: thread/turns/list");
     await reader.readSnapshot(fakeProcess(newRpc), "thread-1");
 
     expect(newRpc.mock.calls.some(([method]) => method === "thread/items/list"))
       .toBe(true);
-    warning.mockRestore();
   });
 
   it("reports explicit normalized entry and byte limits", () => {
