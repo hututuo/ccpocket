@@ -2065,11 +2065,29 @@ class ConversationMirrorService extends ChangeNotifier {
 
   String? _historyMessageStableKey(ServerMessage message) {
     switch (message) {
-      case UserInputMessage(:final userMessageUuid, :final clientMessageId):
-        final uuid = userMessageUuid?.trim();
-        if (uuid?.isNotEmpty == true) return 'user:uuid:$uuid';
+      case UserInputMessage(
+        :final providerItemId,
+        :final historyTurnId,
+        :final userMessageUuid,
+        :final clientMessageId,
+      ):
+        final providerId = providerItemId?.trim();
+        if (providerId?.isNotEmpty == true) return 'user:provider:$providerId';
+        final turnId = historyTurnId?.trim();
         final clientId = clientMessageId?.trim();
-        if (clientId?.isNotEmpty == true) return 'user:client:$clientId';
+        if (clientId?.isNotEmpty == true) {
+          if (turnId?.isNotEmpty == true) {
+            return 'user:turn:$turnId:client:$clientId';
+          }
+          return 'user:client:$clientId';
+        }
+        final uuid = userMessageUuid?.trim();
+        if (uuid?.isNotEmpty == true) {
+          if (turnId?.isNotEmpty == true) {
+            return 'user:turn:$turnId:uuid:$uuid';
+          }
+          return 'user:uuid:$uuid';
+        }
         return null;
       case AssistantServerMessage(:final messageUuid, :final message):
         final uuid = messageUuid?.trim();
@@ -2269,6 +2287,7 @@ class ConversationMirrorService extends ChangeNotifier {
             growable: false,
           ),
           userMessageUuid: message.userMessageUuid,
+          historyTurnId: message.historyTurnId,
           artifacts: message.artifacts.take(maximumAttachments).toList(
             growable: false,
           ),

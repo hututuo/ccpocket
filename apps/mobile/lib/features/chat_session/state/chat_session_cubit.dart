@@ -3859,11 +3859,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         final bothProviderIdsKnown =
             e.providerItemId?.isNotEmpty == true &&
             providerItemId?.isNotEmpty == true;
+        final historyTurnsCompatible =
+            e.historyTurnId?.isNotEmpty != true ||
+            historyTurnId?.isNotEmpty != true ||
+            e.historyTurnId == historyTurnId;
         final matches = bothProviderIdsKnown
             ? e.providerItemId == providerItemId
             : (clientMessageId != null &&
-                      e.clientMessageId == clientMessageId) ||
-                  (uuid != null && e.messageUuid == uuid);
+                      e.clientMessageId == clientMessageId &&
+                      historyTurnsCompatible) ||
+                  (uuid != null &&
+                      e.messageUuid == uuid &&
+                      historyTurnsCompatible);
         if (matches) {
           matchedIndex = i;
           break;
@@ -3880,7 +3887,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               entry.clientMessageId?.isNotEmpty == true &&
               entry.status != MessageStatus.sent &&
               entry.text == text &&
-              entry.imageCount == imageCount,
+              entry.imageCount == imageCount &&
+              (entry.historyTurnId?.isNotEmpty != true ||
+                  historyTurnId?.isNotEmpty != true ||
+                  entry.historyTurnId == historyTurnId),
         );
       }
       // Legacy Bridges can lack both provider and client identities. Keep the
@@ -3894,7 +3904,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               entry.providerItemId?.isNotEmpty != true &&
               entry.messageUuid == null &&
               entry.status != MessageStatus.sent &&
-              entry.text == text,
+              entry.text == text &&
+              (entry.historyTurnId?.isNotEmpty != true ||
+                  historyTurnId?.isNotEmpty != true ||
+                  entry.historyTurnId == historyTurnId),
         );
       }
       if (matchedIndex != -1) {
@@ -4038,9 +4051,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
           var matchIndex = -1;
           final incomingProviderItemId = incoming.providerItemId;
+          final incomingHistoryTurnId = incoming.historyTurnId;
+          bool historyTurnsCompatible(UserChatEntry candidate) =>
+              candidate.historyTurnId?.isNotEmpty != true ||
+              incomingHistoryTurnId?.isNotEmpty != true ||
+              candidate.historyTurnId == incomingHistoryTurnId;
           if (incomingProviderItemId?.isNotEmpty == true) {
             matchIndex = find(
-              (candidate) => candidate.providerItemId == incomingProviderItemId,
+              (candidate) =>
+                  candidate.providerItemId == incomingProviderItemId &&
+                  historyTurnsCompatible(candidate),
             );
           }
           final incomingUuid = incoming.messageUuid;
@@ -4052,13 +4072,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                   candidateProviderItemId != incomingProviderItemId) {
                 return false;
               }
-              return candidate.messageUuid == incomingUuid;
+              return candidate.messageUuid == incomingUuid &&
+                  historyTurnsCompatible(candidate);
             });
           }
           final incomingClientId = incoming.clientMessageId;
           if (matchIndex == -1 && incomingClientId?.isNotEmpty == true) {
             matchIndex = find(
-              (candidate) => candidate.clientMessageId == incomingClientId,
+              (candidate) =>
+                  candidate.clientMessageId == incomingClientId &&
+                  historyTurnsCompatible(candidate),
             );
           }
           if (matchIndex == -1) {
@@ -4079,7 +4102,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                   candidateClientId?.isNotEmpty == true) {
                 return false;
               }
-              return true;
+              return historyTurnsCompatible(candidate);
             });
           }
           if (matchIndex == -1) return null;
@@ -5058,6 +5081,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           bProviderItemId?.isNotEmpty == true) {
         return aProviderItemId == bProviderItemId;
       }
+      final aHistoryTurnId = a.historyTurnId;
+      final bHistoryTurnId = b.historyTurnId;
+      if (aHistoryTurnId?.isNotEmpty == true &&
+          bHistoryTurnId?.isNotEmpty == true &&
+          aHistoryTurnId != bHistoryTurnId) {
+        return false;
+      }
       final aUuid = a.messageUuid;
       final bUuid = b.messageUuid;
       if (aUuid?.isNotEmpty == true && bUuid?.isNotEmpty == true) {
@@ -5247,6 +5277,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           bProviderItemId?.isNotEmpty == true) {
         return aProviderItemId == bProviderItemId;
       }
+      final aHistoryTurnId = a.historyTurnId;
+      final bHistoryTurnId = b.historyTurnId;
+      if (aHistoryTurnId?.isNotEmpty == true &&
+          bHistoryTurnId?.isNotEmpty == true &&
+          aHistoryTurnId != bHistoryTurnId) {
+        return false;
+      }
       final aClientId = a.clientMessageId;
       final bClientId = b.clientMessageId;
       if (aClientId != null &&
@@ -5311,11 +5348,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (providerItemId != null && providerItemId.isNotEmpty) {
         return 'user:provider:$providerItemId';
       }
-      final uuid = entry.messageUuid;
-      if (uuid != null && uuid.isNotEmpty) return 'user:uuid:$uuid';
+      final historyTurnId = entry.historyTurnId;
       final clientMessageId = entry.clientMessageId;
       if (clientMessageId != null && clientMessageId.isNotEmpty) {
+        if (historyTurnId != null && historyTurnId.isNotEmpty) {
+          return 'user:turn:$historyTurnId:client:$clientMessageId';
+        }
         return 'user:client:$clientMessageId';
+      }
+      final uuid = entry.messageUuid;
+      if (uuid != null && uuid.isNotEmpty) {
+        if (historyTurnId != null && historyTurnId.isNotEmpty) {
+          return 'user:turn:$historyTurnId:uuid:$uuid';
+        }
+        return 'user:uuid:$uuid';
       }
       return null;
     }
@@ -5542,6 +5588,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                   : existingMessage.message.model,
             ),
             messageUuid: mergedUuid,
+            historyTurnId:
+                incomingMessage.historyTurnId ?? existingMessage.historyTurnId,
             artifacts: artifacts,
             historyToolDetailGaps: useIncomingContent
                 ? incomingMessage.historyToolDetailGaps
@@ -5565,6 +5613,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                 ? incomingMessage.content
                 : existingMessage.content,
             toolName: incomingMessage.toolName ?? existingMessage.toolName,
+            historyTurnId:
+                incomingMessage.historyTurnId ?? existingMessage.historyTurnId,
             images: _mergeImages(
               existingMessage.images,
               incomingMessage.images,

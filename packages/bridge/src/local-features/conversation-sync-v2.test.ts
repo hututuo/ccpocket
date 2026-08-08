@@ -1381,8 +1381,11 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(response.data).toHaveLength(1);
     expect(response.data[0]).toMatchObject({
       messages: [
-        { type: "user_input", text: "session-0" },
-        { type: "assistant" },
+        {
+          type: "user_input",
+          text: "session-0",
+          historyTurnId: "legacy-turn:user-session-0",
+        },
       ],
     });
     fixture.handler.close();

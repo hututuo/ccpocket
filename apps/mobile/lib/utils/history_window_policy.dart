@@ -133,7 +133,7 @@ List<ChatEntry> selectTurnAwareChatEntryWindow(
     for (var index = 0; index < entries.length; index++)
       switch (entries[index]) {
         ServerChatEntry(:final message) => message,
-        UserChatEntry(:final text) => UserInputMessage(text: text),
+        final UserChatEntry entry => _userChatEntryAsServerMessage(entry),
         StreamingChatEntry(:final text) => AssistantServerMessage(
           message: AssistantMessage(
             id: 'streaming-window-$index',
@@ -175,7 +175,7 @@ List<int> selectTurnAwareChatEntryWindowIndexes(
     for (var index = 0; index < entries.length; index++)
       switch (entries[index]) {
         ServerChatEntry(:final message) => message,
-        UserChatEntry(:final text) => UserInputMessage(text: text),
+        final UserChatEntry entry => _userChatEntryAsServerMessage(entry),
         StreamingChatEntry(:final text) => AssistantServerMessage(
           message: AssistantMessage(
             id: 'streaming-window-$index',
@@ -194,6 +194,17 @@ List<int> selectTurnAwareChatEntryWindowIndexes(
     maxRetainedEntries: maxRetainedEntries,
   );
 }
+
+UserInputMessage _userChatEntryAsServerMessage(UserChatEntry entry) =>
+    UserInputMessage(
+      text: entry.text,
+      clientMessageId: entry.clientMessageId,
+      providerItemId: entry.providerItemId,
+      historyTurnId: entry.historyTurnId,
+      userMessageUuid: entry.messageUuid,
+      imageCount: entry.imageCount,
+      imageUrls: entry.imageUrls,
+    );
 
 Set<String> _newestConcreteToolIds(
   List<ServerMessage> messages,
@@ -244,6 +255,7 @@ List<TurnAwareServerMessageProjection> _projectMessages(
 
   _GapHost createGapHost(int sourceIndex) {
     final source = messages[sourceIndex];
+    final historyTurnId = _historyTurnIdForMessage(source);
     final outputIndex = projected.length;
     projected.add(
       TurnAwareServerMessageProjection(
@@ -265,6 +277,7 @@ List<TurnAwareServerMessageProjection> _projectMessages(
           messageUuid: source is AssistantServerMessage
               ? source.messageUuid
               : null,
+          historyTurnId: historyTurnId,
         ),
       ),
     );
@@ -280,7 +293,7 @@ List<TurnAwareServerMessageProjection> _projectMessages(
     final host = gapHost ?? createGapHost(sourceIndex);
     var gap = host.gaps.lastOrNull;
     if (gap == null || gap.toolUseIds.length >= turnAwareHistoryGapToolIds) {
-      gap = _GapBuilder();
+      gap = _GapBuilder(turnId: _historyTurnIdForMessage(messages[sourceIndex]));
       host.gaps.add(gap);
     }
     gap.toolUseIds.add(id);
@@ -337,6 +350,7 @@ List<TurnAwareServerMessageProjection> _projectMessages(
                 model: message.message.model,
               ),
               messageUuid: message.messageUuid,
+              historyTurnId: message.historyTurnId,
               artifacts: message.artifacts,
               artifactContentIndexOffset: message.artifactContentIndexOffset,
             ),
@@ -401,10 +415,11 @@ List<TurnAwareServerMessageProjection> _projectMessages(
     final message = current.message as AssistantServerMessage;
     projected[host.outputIndex] = TurnAwareServerMessageProjection(
       sourceIndex: current.sourceIndex,
-      message: AssistantServerMessage(
-        message: message.message,
-        messageUuid: message.messageUuid,
-        artifacts: message.artifacts,
+        message: AssistantServerMessage(
+          message: message.message,
+          messageUuid: message.messageUuid,
+          historyTurnId: message.historyTurnId,
+          artifacts: message.artifacts,
         historyToolDetailGaps: [for (final gap in host.gaps) gap.build()],
         artifactContentIndexOffset: message.artifactContentIndexOffset,
       ),
@@ -504,6 +519,9 @@ class _GapHost {
 }
 
 class _GapBuilder {
+  _GapBuilder({this.turnId});
+
+  final String? turnId;
   final List<String> toolUseIds = [];
   final List<String> toolNames = [];
 
@@ -512,5 +530,13 @@ class _GapBuilder {
     toolUseIds: List.unmodifiable(toolUseIds),
     toolNames: List.unmodifiable(toolNames),
     toolCallCount: toolUseIds.length,
+    turnId: turnId,
   );
 }
+
+String? _historyTurnIdForMessage(ServerMessage message) => switch (message) {
+  UserInputMessage(:final historyTurnId) => historyTurnId,
+  AssistantServerMessage(:final historyTurnId) => historyTurnId,
+  ToolResultMessage(:final historyTurnId) => historyTurnId,
+  _ => null,
+};

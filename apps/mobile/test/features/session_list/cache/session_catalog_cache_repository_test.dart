@@ -2580,6 +2580,69 @@ void main() {
   );
 
   test(
+    'user index scopes legacy UUID fallback by provider turn without overwriting',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-user-index-turn-scope',
+        codexSourceId: 'source-user-index-turn-scope',
+      );
+      var stage = await repository.prepareConversationUserIndex(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-user-index-turn-scope',
+        revision: 'revision-turn-scope',
+      );
+      stage = await repository.commitConversationUserIndexPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-user-index-turn-scope',
+        revision: 'revision-turn-scope',
+        expectedCursor: stage!.cursor,
+        pageDepth: stage.pageDepth,
+        nextCursor: null,
+        entries: const [
+          ConversationUserIndexPageEntry(
+            providerTurnId: 'turn-a',
+            providerItemId: null,
+            rawMessage: {
+              'type': 'user_input',
+              'text': 'same legacy prompt A',
+              'userMessageUuid': 'codex:user-turn:1',
+            },
+          ),
+          ConversationUserIndexPageEntry(
+            providerTurnId: 'turn-b',
+            providerItemId: null,
+            rawMessage: {
+              'type': 'user_input',
+              'text': 'same legacy prompt B',
+              'userMessageUuid': 'codex:user-turn:1',
+            },
+          ),
+        ],
+      );
+      expect(stage?.complete, isTrue);
+
+      final snapshot = await repository.loadConversationUserIndex(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-user-index-turn-scope',
+      );
+      expect(snapshot?.entries, hasLength(2));
+      expect(snapshot?.entries.map((entry) => entry.providerTurnId), [
+        'turn-b',
+        'turn-a',
+      ]);
+      expect(snapshot?.entries.every((entry) => entry.providerItemId == null),
+          isTrue);
+      expect(
+        snapshot?.entries.map((entry) => entry.message.historyTurnId),
+        ['turn-b', 'turn-a'],
+      );
+    },
+  );
+
+  test(
     'turn detail pages persist in provider order and resume safely',
     () async {
       final target = SessionCatalogCacheTarget.fromBridge(

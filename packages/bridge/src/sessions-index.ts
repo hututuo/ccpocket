@@ -2576,6 +2576,10 @@ export interface SessionHistoryMessage {
   uuid?: string;
   /** Raw provider item id, when it differs from the display-safe UUID. */
   rawItemId?: string;
+  /** Provider turn identity used to scope legacy UUIDs across pages. */
+  historyTurnId?: string;
+  /** Client-supplied identity echoed by the provider, when available. */
+  clientMessageId?: string;
   timestamp?: string;
   /** True when timestamp came from the provider's individual event record. */
   timestampIsAuthoritative?: boolean;
@@ -2750,6 +2754,7 @@ export function codexThreadToSessionHistory(
   for (const rawTurn of turns) {
     const turn = asObject(rawTurn);
     if (!turn) continue;
+    const historyTurnId = stringValue(turn.id);
     const turnStartedAt = numberToIsoTimestamp(turn.startedAt);
     const turnCompletedAt = numberToIsoTimestamp(turn.completedAt);
 
@@ -2784,10 +2789,13 @@ export function codexThreadToSessionHistory(
                 : "";
           if (displayText.trim().length === 0) break;
           userTurnOrdinal += 1;
+          const clientMessageId =
+            stringValue(item.clientMessageId) ?? stringValue(item.clientId);
           messages.push({
             role: "user",
             uuid: codexUserTurnUuid(userTurnOrdinal),
             ...(rawItemId ? { rawItemId } : {}),
+            ...(clientMessageId ? { clientMessageId } : {}),
             content: [{ type: "text", text: displayText }],
             ...(imageCount > 0 ? { imageCount } : {}),
             ...(imagePaths.length > 0 ? { imagePaths } : {}),
@@ -3111,6 +3119,11 @@ export function codexThreadToSessionHistory(
 
         default:
           break;
+      }
+      if (historyTurnId) {
+        for (let index = historyStartIndex; index < messages.length; index += 1) {
+          messages[index]!.historyTurnId = historyTurnId;
+        }
       }
       applyCodexItemTimestamp(messages, historyStartIndex, itemTiming);
     }

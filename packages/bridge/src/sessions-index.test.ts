@@ -54,6 +54,57 @@ describe("pathToSlug", () => {
 });
 
 describe("codexThreadToSessionHistory", () => {
+  it("retains provider item and turn identity for every projected item", () => {
+    const history = codexThreadToSessionHistory({
+      turns: [
+        {
+          id: "turn-provider-1",
+          items: [
+            {
+              type: "userMessage",
+              id: "provider-user-1",
+              clientMessageId: "client-user-1",
+              content: [{ type: "text", text: "hello" }],
+            },
+            {
+              type: "agentMessage",
+              id: "provider-assistant-1",
+              text: "hi",
+            },
+            {
+              type: "commandExecution",
+              id: "provider-tool-1",
+              command: "pwd",
+              status: "completed",
+              aggregatedOutput: "/tmp",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(history).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          rawItemId: "provider-user-1",
+          clientMessageId: "client-user-1",
+          historyTurnId: "turn-provider-1",
+        }),
+        expect.objectContaining({
+          role: "assistant",
+          uuid: "provider-assistant-1",
+          historyTurnId: "turn-provider-1",
+        }),
+        expect.objectContaining({
+          role: "tool_result",
+          toolUseId: "provider-tool-1",
+          historyTurnId: "turn-provider-1",
+        }),
+      ]),
+    );
+  });
+
   it("converts official thread turns into display history", () => {
     const history = codexThreadToSessionHistory({
       turns: [

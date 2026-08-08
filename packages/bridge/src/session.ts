@@ -1887,6 +1887,18 @@ export class SessionManager {
       if (!this.isSameUserInput(session, current, msg)) continue;
 
       const mergedUuid = this.mergeUserMessageUuid(current, msg);
+      const currentProviderItemId =
+        "providerItemId" in current ? current.providerItemId : undefined;
+      const incomingProviderItemId =
+        "providerItemId" in msg ? msg.providerItemId : undefined;
+      const mergedProviderItemId =
+        currentProviderItemId || incomingProviderItemId;
+      const currentHistoryTurnId =
+        "historyTurnId" in current ? current.historyTurnId : undefined;
+      const incomingHistoryTurnId =
+        "historyTurnId" in msg ? msg.historyTurnId : undefined;
+      const mergedHistoryTurnId =
+        currentHistoryTurnId || incomingHistoryTurnId;
       const mergedReceivedAt = current.receivedAt ?? msg.receivedAt;
       const currentTimestamp =
         "timestamp" in current ? current.timestamp : undefined;
@@ -1897,11 +1909,17 @@ export class SessionManager {
       const mergedMsg = {
         ...current,
         userMessageUuid: mergedUuid,
+        ...(mergedProviderItemId
+          ? { providerItemId: mergedProviderItemId }
+          : {}),
+        ...(mergedHistoryTurnId ? { historyTurnId: mergedHistoryTurnId } : {}),
         receivedAt: mergedReceivedAt,
         timestamp: mergedTimestamp,
       } as ServerMessage;
       const historyChanged =
         mergedUuid !== currentUuid ||
+        mergedProviderItemId !== currentProviderItemId ||
+        mergedHistoryTurnId !== currentHistoryTurnId ||
         mergedReceivedAt !== current.receivedAt ||
         mergedTimestamp !== currentTimestamp;
 
@@ -2022,6 +2040,27 @@ export class SessionManager {
       "clientMessageId" in existing ? existing.clientMessageId : undefined;
     const incomingClientId =
       "clientMessageId" in incoming ? incoming.clientMessageId : undefined;
+
+    const existingProviderItemId =
+      "providerItemId" in existing ? existing.providerItemId : undefined;
+    const incomingProviderItemId =
+      "providerItemId" in incoming ? incoming.providerItemId : undefined;
+    if (existingProviderItemId && incomingProviderItemId) {
+      return existingProviderItemId === incomingProviderItemId;
+    }
+
+    const existingHistoryTurnId =
+      "historyTurnId" in existing ? existing.historyTurnId : undefined;
+    const incomingHistoryTurnId =
+      "historyTurnId" in incoming ? incoming.historyTurnId : undefined;
+    if (
+      existingHistoryTurnId &&
+      incomingHistoryTurnId &&
+      existingHistoryTurnId !== incomingHistoryTurnId
+    ) {
+      return false;
+    }
+
     if (existingClientId && incomingClientId) {
       return existingClientId === incomingClientId;
     }
@@ -2030,7 +2069,14 @@ export class SessionManager {
       "userMessageUuid" in existing ? existing.userMessageUuid : undefined;
     const incomingUuid =
       "userMessageUuid" in incoming ? incoming.userMessageUuid : undefined;
-    if (existingUuid && incomingUuid && existingUuid === incomingUuid) {
+    if (
+      existingUuid &&
+      incomingUuid &&
+      existingUuid === incomingUuid &&
+      (!existingHistoryTurnId ||
+        !incomingHistoryTurnId ||
+        existingHistoryTurnId === incomingHistoryTurnId)
+    ) {
       return true;
     }
 

@@ -1087,6 +1087,15 @@ function buildCodexHistoryPrefix(
       messages.push({
         role: "user",
         uuid: userInput.userMessageUuid,
+        ...(userInput.providerItemId
+          ? { rawItemId: userInput.providerItemId }
+          : {}),
+        ...(userInput.historyTurnId
+          ? { historyTurnId: userInput.historyTurnId }
+          : {}),
+        ...(userInput.clientMessageId
+          ? { clientMessageId: userInput.clientMessageId }
+          : {}),
         timestamp: userInput.timestamp,
         imageCount: userInput.imageCount,
         content: [{ type: "text", text: userInput.text }],
@@ -1099,6 +1108,9 @@ function buildCodexHistoryPrefix(
       messages.push({
         role: "assistant",
         uuid: message.messageUuid,
+        ...(message.historyTurnId
+          ? { historyTurnId: message.historyTurnId }
+          : {}),
         content: normalizeHistoryContent(message.message.content),
       });
     }
@@ -3887,7 +3899,20 @@ export class BridgeWebSocketServer {
 
   private codexHistoryMessageIdentityKeys(message: ServerMessage): string[] {
     if (message.type === "user_input") {
-      return message.userMessageUuid ? [`user:${message.userMessageUuid}`] : [];
+      const providerItemId = message.providerItemId?.trim();
+      if (providerItemId) return [`user:provider:${providerItemId}`];
+      const historyTurnId = message.historyTurnId?.trim();
+      const userMessageUuid = message.userMessageUuid?.trim();
+      const clientMessageId = message.clientMessageId?.trim();
+      if (historyTurnId && clientMessageId) {
+        return [`user:turn-client:${historyTurnId}:${clientMessageId}`];
+      }
+      if (historyTurnId && userMessageUuid) {
+        return [`user:turn:${historyTurnId}:${userMessageUuid}`];
+      }
+      if (clientMessageId) return [`user:client:${clientMessageId}`];
+      if (userMessageUuid) return [`user:legacy:${userMessageUuid}`];
+      return [];
     }
     if (message.type === "assistant") {
       const assistantId = message.messageUuid ?? message.message.id;
@@ -4462,6 +4487,11 @@ export class BridgeWebSocketServer {
       return {
         type: "user_input",
         text,
+        ...(item.rawItemId ? { providerItemId: item.rawItemId } : {}),
+        ...(item.historyTurnId ? { historyTurnId: item.historyTurnId } : {}),
+        ...(item.clientMessageId
+          ? { clientMessageId: item.clientMessageId }
+          : {}),
         ...(item.uuid ? { userMessageUuid: item.uuid } : {}),
         ...(item.isMeta ? { isMeta: true } : {}),
         ...(item.imageCount != null || images.length > 0
@@ -4492,6 +4522,7 @@ export class BridgeWebSocketServer {
           model: session.codexSettings?.model ?? "",
         },
         ...(item.uuid ? { messageUuid: item.uuid } : {}),
+        ...(item.historyTurnId ? { historyTurnId: item.historyTurnId } : {}),
         ...(item.timestamp ? { sourceTimestamp: item.timestamp } : {}),
         ...(item.timestamp && item.timestampIsAuthoritative
           ? { sourceTimestampIsAuthoritative: true }
@@ -4552,6 +4583,7 @@ export class BridgeWebSocketServer {
       toolUseId,
       content,
       ...(item.toolName ? { toolName: item.toolName } : {}),
+      ...(item.historyTurnId ? { historyTurnId: item.historyTurnId } : {}),
       ...(item.timestamp ? { sourceTimestamp: item.timestamp } : {}),
       ...(item.timestamp && item.timestampIsAuthoritative
         ? { sourceTimestampIsAuthoritative: true }

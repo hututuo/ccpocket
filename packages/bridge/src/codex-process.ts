@@ -6232,15 +6232,20 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       if (pendingItem.affectsActiveTurn) {
         this.lastResultText = pendingItem.text;
       }
-      this.emitMessage({
-        type: "assistant",
-        message: {
-          id: itemId,
-          role: "assistant",
-          content: [{ type: "text", text: pendingItem.text }],
-          model: this.getMessageModel(),
-        },
-      });
+      this.emitMessage(
+        withCodexHistoryTurn(
+          {
+            type: "assistant",
+            message: {
+              id: itemId,
+              role: "assistant",
+              content: [{ type: "text", text: pendingItem.text }],
+              model: this.getMessageModel(),
+            },
+          },
+          turnId,
+        ),
+      );
     }
   }
 
@@ -6267,7 +6272,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     turnId: string | null = null,
   ): void {
     if (!item || typeof item !== "object") return;
-    const itemId = typeof item.id === "string" ? item.id : randomUUID();
+    const rawItemId = stringOrNull(item.id);
+    const itemId = rawItemId ?? randomUUID();
     const itemType = normalizeItemType(item.type);
     const sourceTimestamp = codexItemSourceTimestamp(item, false);
     if (sourceTimestamp) {
@@ -6284,7 +6290,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
     const descriptor = describeCodexItemTool(item, itemType);
     if (descriptor) {
-      this.emitStartedToolUse(itemId, descriptor, sourceTimestamp);
+      this.emitStartedToolUse(itemId, descriptor, sourceTimestamp, turnId);
     }
   }
 
@@ -6292,35 +6298,40 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     itemId: string,
     descriptor: CodexItemToolDescriptor,
     sourceTimestamp?: string,
+    turnId?: string | null,
   ): void {
     if (this.startedToolItems.has(itemId)) return;
     this.startedToolItems.set(itemId, descriptor);
-    this.emitToolUse(itemId, descriptor, sourceTimestamp);
+    this.emitToolUse(itemId, descriptor, sourceTimestamp, turnId);
   }
 
   private emitToolUse(
     itemId: string,
     descriptor: CodexItemToolDescriptor,
     sourceTimestamp?: string,
+    turnId?: string | null,
   ): void {
     this.emitMessage(
       withCodexSourceTimestamp(
-        {
-          type: "assistant",
-          message: {
-            id: itemId,
-            role: "assistant",
-            content: [
-              {
-                type: "tool_use",
-                id: itemId,
-                name: descriptor.name,
-                input: descriptor.input,
-              },
-            ],
-            model: this.getMessageModel(),
+        withCodexHistoryTurn(
+          {
+            type: "assistant",
+            message: {
+              id: itemId,
+              role: "assistant",
+              content: [
+                {
+                  type: "tool_use",
+                  id: itemId,
+                  name: descriptor.name,
+                  input: descriptor.input,
+                },
+              ],
+              model: this.getMessageModel(),
+            },
           },
-        },
+          turnId,
+        ),
         sourceTimestamp,
       ),
     );
@@ -6330,11 +6341,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     itemId: string,
     descriptor: CodexItemToolDescriptor,
     sourceTimestamp?: string,
+    turnId?: string | null,
   ): void {
     const started = this.startedToolItems.get(itemId);
     this.startedToolItems.delete(itemId);
     if (!started) {
-      this.emitToolUse(itemId, descriptor, sourceTimestamp);
+      this.emitToolUse(itemId, descriptor, sourceTimestamp, turnId);
       return;
     }
 
@@ -6346,6 +6358,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         itemId,
         descriptor,
         this.startedItemSourceTimestamps.get(itemId) ?? sourceTimestamp,
+        turnId,
       );
     }
   }
@@ -6355,13 +6368,19 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     turnId: string | null = null,
   ): void {
     if (!item || typeof item !== "object") return;
-    const itemId = typeof item.id === "string" ? item.id : randomUUID();
+    const rawItemId = stringOrNull(item.id);
+    const itemId = rawItemId ?? randomUUID();
     const itemType = normalizeItemType(item.type);
     const sourceTimestamp =
       codexItemSourceTimestamp(item, true) ??
       this.startedItemSourceTimestamps.get(itemId);
     const emit = (message: ServerMessage): void =>
-      this.emitMessage(withCodexSourceTimestamp(message, sourceTimestamp));
+      this.emitMessage(
+        withCodexSourceTimestamp(
+          withCodexHistoryTurn(message, turnId),
+          sourceTimestamp,
+        ),
+      );
     this.startedItemSourceTimestamps.delete(itemId);
 
     const isManualCompaction =
@@ -6408,10 +6427,14 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       case "userinput": {
         const text = extractUserText(item);
         if (!text) return;
+        const clientMessageId =
+          stringOrNull(item.clientMessageId) ?? stringOrNull(item.clientId);
         emit({
           type: "user_input",
           text,
+          ...(rawItemId ? { providerItemId: rawItemId } : {}),
           userMessageUuid: itemId,
+          ...(clientMessageId ? { clientMessageId } : {}),
           ...(typeof item.timestamp === "string"
             ? { timestamp: item.timestamp }
             : {}),
@@ -6429,7 +6452,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
       case "commandexecution": {
         const descriptor = describeCodexItemTool(item, itemType)!;
-        this.ensureStartedToolUse(itemId, descriptor, sourceTimestamp);
+        this.ensureStartedToolUse(itemId, descriptor, sourceTimestamp, turnId);
         const output =
           typeof item.aggregatedOutput === "string"
             ? item.aggregatedOutput
@@ -6448,7 +6471,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
       case "filechange": {
         const descriptor = describeCodexItemTool(item, itemType)!;
-        this.ensureStartedToolUse(itemId, descriptor, sourceTimestamp);
+        this.ensureStartedToolUse(itemId, descriptor, sourceTimestamp, turnId);
         const content = formatFileChangesWithDiff(item.changes);
         emit({
           type: "tool_result",
@@ -6472,6 +6495,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
             input: toToolUseInput(item.arguments),
           },
           sourceTimestamp,
+          turnId,
         );
         emit({
           type: "tool_result",
@@ -6494,6 +6518,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
             input: toToolUseInput(item.arguments),
           },
           sourceTimestamp,
+          turnId,
         );
         const content = formatDynamicToolResult(item);
         emit({
@@ -6510,6 +6535,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           itemId,
           describeCodexItemTool(item, itemType)!,
           sourceTimestamp,
+          turnId,
         );
         const normalized = formatImageGenerationResult(item);
         emit({
@@ -6536,6 +6562,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
             input: query ? { query } : {},
           },
           sourceTimestamp,
+          turnId,
         );
         emit({
           type: "tool_result",
@@ -6548,7 +6575,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
       case "collabagenttoolcall": {
         const descriptor = describeCodexItemTool(item, itemType)!;
-        this.ensureStartedToolUse(itemId, descriptor, sourceTimestamp);
+        this.ensureStartedToolUse(itemId, descriptor, sourceTimestamp, turnId);
         const tool = typeof item.tool === "string" ? item.tool : "subagent";
         const status =
           typeof item.status === "string" ? item.status : "completed";
@@ -6576,7 +6603,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       case "contextcompaction":
       case "subagentactivity": {
         const descriptor = describeCodexItemTool(item, itemType)!;
-        this.ensureStartedToolUse(itemId, descriptor, sourceTimestamp);
+        this.ensureStartedToolUse(itemId, descriptor, sourceTimestamp, turnId);
         emit({
           type: "tool_result",
           toolUseId: itemId,
@@ -7729,6 +7756,21 @@ function withCodexSourceTimestamp(
     sourceTimestamp,
     sourceTimestampIsAuthoritative: true,
   };
+}
+
+function withCodexHistoryTurn(
+  message: ServerMessage,
+  turnId?: string | null,
+): ServerMessage {
+  if (
+    !turnId ||
+    (message.type !== "user_input" &&
+      message.type !== "assistant" &&
+      message.type !== "tool_result")
+  ) {
+    return message;
+  }
+  return { ...message, historyTurnId: turnId };
 }
 
 interface CodexItemToolDescriptor {

@@ -16,7 +16,7 @@ class SessionCatalogCacheDatabase {
   SessionCatalogCacheDatabase({this.databasePath, this.openDatabase});
 
   static const fileName = 'session_catalog_cache_v1.db';
-  static const schemaVersion = 6;
+  static const schemaVersion = 7;
 
   static const partitionsTable = 'session_catalog_partitions';
   static const aliasesTable = 'session_catalog_aliases';
@@ -157,6 +157,12 @@ class SessionCatalogCacheDatabase {
     if (oldVersion < 6) {
       await _createConversationUserIndexSchema(database);
     }
+    if (oldVersion < 7) {
+      // The user-index cache is rebuildable. Recreate only the entry table so
+      // its uniqueness scope includes the provider turn and fallback identity.
+      await database.execute('DROP TABLE IF EXISTS $userIndexEntriesTable');
+      await _createConversationUserIndexEntriesTable(database);
+    }
   }
 
   static Future<void> _createSchema(Database database, int version) async {
@@ -217,6 +223,52 @@ class SessionCatalogCacheDatabase {
     await _createConversationUserIndexSchema(database);
   }
 
+  static Future<void> _createConversationUserIndexEntriesTable(
+    Database database,
+  ) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $userIndexEntriesTable (
+        partition_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        provider_turn_id TEXT NOT NULL,
+        provider_item_id TEXT,
+        entry_identity TEXT NOT NULL,
+        page_depth INTEGER NOT NULL,
+        item_order INTEGER NOT NULL,
+        message_json TEXT NOT NULL,
+        timestamp_sort INTEGER NOT NULL,
+        PRIMARY KEY (
+          partition_id,
+          provider,
+          provider_session_id,
+          revision,
+          provider_turn_id,
+          entry_identity
+        ),
+        FOREIGN KEY (partition_id, provider, provider_session_id)
+          REFERENCES $userIndexStatesTable (
+            partition_id,
+            provider,
+            provider_session_id
+          )
+          ON DELETE CASCADE
+      )
+    ''');
+    await database.execute('''
+      CREATE INDEX IF NOT EXISTS conversation_user_index_order
+      ON $userIndexEntriesTable (
+        partition_id,
+        provider,
+        provider_session_id,
+        revision,
+        page_depth DESC,
+        item_order DESC
+      )
+    ''');
+  }
+
   static Future<void> _createConversationUserIndexSchema(
     Database database,
   ) async {
@@ -237,34 +289,7 @@ class SessionCatalogCacheDatabase {
           ON DELETE CASCADE
       )
     ''');
-    await database.execute('''
-      CREATE TABLE IF NOT EXISTS $userIndexEntriesTable (
-        partition_id TEXT NOT NULL,
-        provider TEXT NOT NULL,
-        provider_session_id TEXT NOT NULL,
-        revision TEXT NOT NULL,
-        provider_turn_id TEXT NOT NULL,
-        provider_item_id TEXT NOT NULL,
-        page_depth INTEGER NOT NULL,
-        item_order INTEGER NOT NULL,
-        message_json TEXT NOT NULL,
-        timestamp_sort INTEGER NOT NULL,
-        PRIMARY KEY (
-          partition_id,
-          provider,
-          provider_session_id,
-          revision,
-          provider_item_id
-        ),
-        FOREIGN KEY (partition_id, provider, provider_session_id)
-          REFERENCES $userIndexStatesTable (
-            partition_id,
-            provider,
-            provider_session_id
-          )
-          ON DELETE CASCADE
-      )
-    ''');
+    await _createConversationUserIndexEntriesTable(database);
     await database.execute('''
       CREATE INDEX IF NOT EXISTS conversation_user_index_order
       ON $userIndexEntriesTable (

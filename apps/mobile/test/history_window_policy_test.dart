@@ -88,6 +88,39 @@ void main() {
     expect(assistant.historyToolDetailGaps.single.toolUseIds, ['only-tool']);
   });
 
+  test('keeps provider turn identity on compacted assistant and tool gaps', () {
+    final selected = selectTurnAwareServerMessageWindow([
+      const UserInputMessage(
+        text: 'inspect',
+        providerItemId: 'provider-user-1',
+        historyTurnId: 'provider-turn-1',
+        userMessageUuid: 'codex:user-turn:1',
+      ),
+      const AssistantServerMessage(
+        message: AssistantMessage(
+          id: 'assistant-tools',
+          role: 'assistant',
+          model: 'codex',
+          content: [
+            TextContent(text: 'checking'),
+            ToolUseContent(
+              id: 'only-tool',
+              name: 'Read',
+              input: {'file_path': 'a.txt'},
+            ),
+          ],
+        ),
+        historyTurnId: 'provider-turn-1',
+      ),
+    ], toolCalls: 0);
+
+    final assistant = selected.last as AssistantServerMessage;
+    expect(assistant.historyTurnId, 'provider-turn-1');
+    expect(assistant.historyToolDetailGaps.single.turnId, 'provider-turn-1');
+    expect((selected.first as UserInputMessage).providerItemId,
+        'provider-user-1');
+  });
+
   test('drops anonymous tool payloads that have no stable detail identity', () {
     final largeInput = List.filled(1000, 'x').join();
     final selected = selectTurnAwareServerMessageWindow([

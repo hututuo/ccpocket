@@ -207,6 +207,7 @@ void main() {
       final update = handler.handle(
         const AssistantServerMessage(
           messageUuid: 'uuid-1',
+          historyTurnId: 'turn-1',
           message: AssistantMessage(
             id: 'message-1',
             role: 'assistant',
@@ -221,6 +222,7 @@ void main() {
       final entry = update.entriesToAdd.single as ServerChatEntry;
       final rebuilt = entry.message as AssistantServerMessage;
       expect(rebuilt.messageUuid, 'uuid-1');
+      expect(rebuilt.historyTurnId, 'turn-1');
       expect(rebuilt.artifacts, [artifact]);
       expect(rebuilt.artifactContentIndexOffset, 1);
       expect(rebuilt.message.content.first, isA<ThinkingContent>());

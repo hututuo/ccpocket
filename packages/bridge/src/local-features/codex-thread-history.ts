@@ -49,6 +49,12 @@ function sessionHistoryMessageToServerMessages(
         ...(history.rawItemId
           ? { providerItemId: history.rawItemId }
           : {}),
+        ...(history.historyTurnId
+          ? { historyTurnId: history.historyTurnId }
+          : {}),
+        ...(history.clientMessageId
+          ? { clientMessageId: history.clientMessageId }
+          : {}),
         ...(history.uuid ? { userMessageUuid: history.uuid } : {}),
         ...(history.isMeta ? { isMeta: true } : {}),
         ...(history.imageCount ? { imageCount: history.imageCount } : {}),
@@ -71,6 +77,9 @@ function sessionHistoryMessageToServerMessages(
           history.toolUseId ?? history.uuid ?? `${idPrefix}-tool-${index}`,
         content,
         ...(history.toolName ? { toolName: history.toolName } : {}),
+        ...(history.historyTurnId
+          ? { historyTurnId: history.historyTurnId }
+          : {}),
         ...(history.timestamp ? { sourceTimestamp: history.timestamp } : {}),
         ...(history.timestamp && history.timestampIsAuthoritative
           ? { sourceTimestampIsAuthoritative: true }
@@ -87,6 +96,9 @@ function sessionHistoryMessageToServerMessages(
       type: "assistant",
       message: { id, role: "assistant", content, model: "" },
       ...(history.uuid ? { messageUuid: history.uuid } : {}),
+      ...(history.historyTurnId
+        ? { historyTurnId: history.historyTurnId }
+        : {}),
       ...(history.timestamp ? { sourceTimestamp: history.timestamp } : {}),
       ...(history.timestamp && history.timestampIsAuthoritative
         ? { sourceTimestampIsAuthoritative: true }

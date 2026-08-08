@@ -132,7 +132,7 @@ class ConversationUserIndexEntry {
   });
 
   final String providerTurnId;
-  final String providerItemId;
+  final String? providerItemId;
   final UserInputMessage message;
 }
 
@@ -184,7 +184,7 @@ class ConversationUserIndexPageEntry {
   });
 
   final String providerTurnId;
-  final String providerItemId;
+  final String? providerItemId;
   final Map<String, dynamic> rawMessage;
 }
 
@@ -2595,7 +2595,7 @@ class SessionCatalogCacheRepository {
           entries.add(
             ConversationUserIndexEntry(
               providerTurnId: row['provider_turn_id']! as String,
-              providerItemId: row['provider_item_id']! as String,
+              providerItemId: (row['provider_item_id'] as String?)?.trim(),
               message: message,
             ),
           );
@@ -2784,11 +2784,21 @@ class SessionCatalogCacheRepository {
         for (var itemOrder = 0; itemOrder < entries.length; itemOrder++) {
           final entry = entries[itemOrder];
           final providerTurnId = entry.providerTurnId.trim();
-          final providerItemId = entry.providerItemId.trim();
-          if (providerTurnId.isEmpty || providerItemId.isEmpty) continue;
+          final providerItemId = entry.providerItemId?.trim() ?? '';
+          if (providerTurnId.isEmpty) continue;
           final raw = Map<String, dynamic>.from(entry.rawMessage);
-          raw['providerItemId'] = providerItemId;
+          if (providerItemId.isEmpty) {
+            raw.remove('providerItemId');
+          } else {
+            raw['providerItemId'] = providerItemId;
+          }
           raw['historyTurnId'] = providerTurnId;
+          final entryIdentity = _userIndexEntryIdentity(
+            providerItemId: providerItemId,
+            rawMessage: raw,
+            pageDepth: pageDepth,
+            itemOrder: itemOrder,
+          );
           final timestamp = DateTime.tryParse(
             (raw['receivedAt'] ?? raw['sourceTimestamp'] ?? raw['timestamp'])
                     as String? ??
@@ -2802,7 +2812,8 @@ class SessionCatalogCacheRepository {
               'provider_session_id': providerSessionId,
               'revision': revision,
               'provider_turn_id': providerTurnId,
-              'provider_item_id': providerItemId,
+              'provider_item_id': providerItemId.isEmpty ? null : providerItemId,
+              'entry_identity': entryIdentity,
               'page_depth': pageDepth,
               'item_order': itemOrder,
               'message_json': jsonEncode(raw),
@@ -3163,6 +3174,20 @@ class SessionCatalogCacheRepository {
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+  }
+
+  static String _userIndexEntryIdentity({
+    required String providerItemId,
+    required Map<String, dynamic> rawMessage,
+    required int pageDepth,
+    required int itemOrder,
+  }) {
+    if (providerItemId.isNotEmpty) return 'provider:$providerItemId';
+    final legacyUuid = (rawMessage['userMessageUuid'] as String?)?.trim();
+    if (legacyUuid != null && legacyUuid.isNotEmpty) {
+      return 'legacy:uuid:$legacyUuid:page:$pageDepth:item:$itemOrder';
+    }
+    return 'legacy:ordinal:page:$pageDepth:item:$itemOrder';
   }
 
   static ConversationContentWireEntry? _historyPageEntry(

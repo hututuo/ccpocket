@@ -5805,9 +5805,11 @@ describe("CodexProcess (app-server)", () => {
         method: "item/completed",
         params: {
           threadId: "thr_copresence",
+          turnId: "turn_copresence",
           item: {
             id: "user_1",
             type: "user_message",
+            clientMessageId: "client_1",
             content: [{ type: "text", text: "sent from terminal" }],
             timestamp: "2026-05-12T10:00:00.000Z",
           },
@@ -5819,6 +5821,9 @@ describe("CodexProcess (app-server)", () => {
     expect(messages).toContainEqual({
       type: "user_input",
       text: "sent from terminal",
+      providerItemId: "user_1",
+      historyTurnId: "turn_copresence",
+      clientMessageId: "client_1",
       userMessageUuid: "user_1",
       timestamp: "2026-05-12T10:00:00.000Z",
       sourceTimestamp: "2026-05-12T10:00:00.000Z",
@@ -5914,6 +5919,7 @@ describe("CodexProcess (app-server)", () => {
         method: "item/completed",
         params: {
           threadId: "thr_self",
+          turnId: "turn_self",
           item: {
             id: "user_self",
             type: "userMessage",
@@ -5927,6 +5933,8 @@ describe("CodexProcess (app-server)", () => {
     expect(messages).toContainEqual({
       type: "user_input",
       text: "own input",
+      providerItemId: "user_self",
+      historyTurnId: "turn_self",
       userMessageUuid: "user_self",
     });
 

@@ -326,9 +326,13 @@ class ChatMessageHandler {
             (timestamp == null
                 ? null
                 : DateTime.tryParse(timestamp)?.toLocal());
-        if (userMessageUuid != null || providerItemId != null) {
-          // SDK echoed user message with UUID — update existing entry's UUID
-          // so it becomes rewindable, instead of adding a duplicate.
+        if (
+          userMessageUuid != null ||
+          providerItemId != null ||
+          historyTurnId != null
+        ) {
+          // Provider identity is a backfill for the optimistic local entry;
+          // update it instead of adding a duplicate bubble.
           return ChatStateUpdate(
             userUuidUpdate: (
               text: text,
@@ -516,6 +520,7 @@ class ChatMessageHandler {
             model: message.model,
           ),
           messageUuid: msg.messageUuid,
+          historyTurnId: msg.historyTurnId,
           artifacts: msg.artifacts,
           historyToolDetailGaps: msg.historyToolDetailGaps,
           artifactContentIndexOffset: msg.artifactContentIndexOffset + 1,

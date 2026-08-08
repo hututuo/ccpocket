@@ -173,6 +173,8 @@ describe("CodexConversationMirrorReader", () => {
       type: "user_input",
       text: "old",
       clientMessageId: "client-message-1",
+      providerItemId: "user-1",
+      historyTurnId: "thread-1:mirror-items",
       userMessageUuid: "codex:user-turn:1",
     });
     expect(result.entries[0]?.contentHash).toBe(
@@ -884,11 +886,15 @@ describe("CodexConversationMirrorReader", () => {
       expect.objectContaining({
         type: "user_input",
         userMessageUuid: "codex:user-turn:1",
+        providerItemId: "raw-user-1",
+        historyTurnId: "turn-1",
         clientMessageId: "client-1",
       }),
       expect.objectContaining({
         type: "user_input",
         userMessageUuid: "codex:user-turn:2",
+        providerItemId: "raw-user-2",
+        historyTurnId: "turn-1",
         clientMessageId: "client-2",
       }),
     ]);

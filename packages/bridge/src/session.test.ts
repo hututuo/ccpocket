@@ -3567,6 +3567,71 @@ describe("SessionManager claude UUID backfill", () => {
     expect("userMessageUuid" in (broadcasts.at(-1)?.msg ?? {})).toBe(false);
   });
 
+  it("merges Codex live provider identity into one canonical user bubble", () => {
+    const manager = new SessionManager(() => {});
+    const sessionId = manager.create(
+      "/tmp/project-provider-identity-merge",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    manager.appendHistory(sessionId, {
+      type: "user_input",
+      text: "same prompt",
+      userMessageUuid: "codex:user-turn:1",
+      clientMessageId: "client-1",
+      historyTurnId: "turn-1",
+    } as ServerMessage);
+
+    codexInstances[0].emit("message", {
+      type: "user_input",
+      text: "same prompt",
+      providerItemId: "provider-item-1",
+      userMessageUuid: "provider-item-1",
+      historyTurnId: "turn-1",
+    } as ServerMessage);
+
+    const users = manager
+      .get(sessionId)!
+      .history.filter((message) => message.type === "user_input");
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({
+      providerItemId: "provider-item-1",
+      historyTurnId: "turn-1",
+      userMessageUuid: "codex:user-turn:1",
+    });
+  });
+
+  it("scopes legacy Codex UUID fallback by provider turn", () => {
+    const manager = new SessionManager(() => {});
+    const sessionId = manager.create(
+      "/tmp/project-provider-turn-scope",
+      undefined,
+      undefined,
+      undefined,
+      "codex",
+    );
+    manager.appendHistory(sessionId, {
+      type: "user_input",
+      text: "repeat prompt",
+      userMessageUuid: "legacy-user",
+      historyTurnId: "turn-a",
+    } as ServerMessage);
+    codexInstances[0].emit("message", {
+      type: "user_input",
+      text: "repeat prompt",
+      userMessageUuid: "legacy-user",
+      historyTurnId: "turn-b",
+    } as ServerMessage);
+
+    expect(
+      manager
+        .get(sessionId)!
+        .history.filter((message) => message.type === "user_input"),
+    ).toHaveLength(2);
+  });
+
   it("counts resumed Codex past messages when assigning remote user turn UUIDs", () => {
     const broadcasts: Array<{ id: string; msg: ServerMessage }> = [];
     const manager = new SessionManager((id, msg) => {

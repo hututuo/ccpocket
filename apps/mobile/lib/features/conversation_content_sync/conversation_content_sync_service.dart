@@ -1948,10 +1948,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               final message = Map<String, dynamic>.from(rawMessage);
               if (message['type'] != 'user_input') continue;
               final providerItemId =
-                  ((message['providerItemId'] ?? message['userMessageUuid'])
-                          as String?)
-                      ?.trim();
-              if (providerItemId == null || providerItemId.isEmpty) continue;
+                  (message['providerItemId'] as String?)?.trim();
               entries.add(
                 ConversationUserIndexPageEntry(
                   providerTurnId: turnId,

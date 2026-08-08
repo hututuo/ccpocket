@@ -7199,12 +7199,15 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         role: "user",
         uuid: "codex:user-turn:1",
         rawItemId: "raw-user-1",
+        historyTurnId: "turn-1",
+        clientMessageId: "client-user-1",
         timestamp: "2026-05-29T00:00:00.000Z",
         content: [{ type: "text", text: "sync this thread" }],
       },
       {
         role: "assistant",
         uuid: "assistant-1",
+        historyTurnId: "turn-1",
         content: [{ type: "text", text: "synced" }],
       },
     ]);
@@ -7303,6 +7306,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
           message: {
             type: "user_input",
             text: "sync this thread",
+            providerItemId: "raw-user-1",
+            historyTurnId: "turn-1",
+            clientMessageId: "client-user-1",
             userMessageUuid: "codex:user-turn:1",
             timestamp: "2026-05-29T00:00:00.000Z",
           },
@@ -7312,6 +7318,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
           message: {
             type: "assistant",
             messageUuid: "assistant-1",
+            historyTurnId: "turn-1",
             message: {
               role: "assistant",
               content: [{ type: "text", text: "synced" }],
@@ -7406,12 +7413,16 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       {
         role: "user",
         uuid: "codex:user-turn:1",
+        rawItemId: "raw-legacy-user-1",
+        historyTurnId: "turn-legacy-1",
+        clientMessageId: "client-legacy-user-1",
         timestamp: "2026-05-29T00:00:00.000Z",
         content: [{ type: "text", text: "restore legacy shape" }],
       },
       {
         role: "assistant",
         uuid: "assistant-legacy-1",
+        historyTurnId: "turn-legacy-1",
         content: [{ type: "text", text: "legacy history restored" }],
       },
     ]);
@@ -7480,12 +7491,16 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         {
           type: "user_input",
           text: "restore legacy shape",
+          providerItemId: "raw-legacy-user-1",
+          historyTurnId: "turn-legacy-1",
+          clientMessageId: "client-legacy-user-1",
           userMessageUuid: "codex:user-turn:1",
           timestamp: "2026-05-29T00:00:00.000Z",
         },
         {
           type: "assistant",
           messageUuid: "assistant-legacy-1",
+          historyTurnId: "turn-legacy-1",
           message: {
             role: "assistant",
             content: [{ type: "text", text: "legacy history restored" }],

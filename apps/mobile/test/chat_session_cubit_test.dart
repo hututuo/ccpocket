@@ -6179,6 +6179,7 @@ void main() {
               textContentIndex: 0,
             ),
           ],
+          historyTurnId: 'provider-turn-1',
           artifactContentIndexOffset: 2,
         );
         const historyAssistant = AssistantServerMessage(
@@ -6209,6 +6210,7 @@ void main() {
         expect(assistant.artifacts.single.id, 'artifact-live');
         expect(assistant.artifactMessageId, 'assistant-owner');
         expect(assistant.artifactContentIndexOffset, 2);
+        expect(assistant.historyTurnId, 'provider-turn-1');
       },
     );
 
@@ -6238,6 +6240,7 @@ void main() {
               source: 'structured_tool',
             ),
           ],
+          historyTurnId: 'provider-turn-1',
         );
         const historyResult = ToolResultMessage(
           toolUseId: 'tool-owner',
@@ -6261,6 +6264,7 @@ void main() {
         expect(result.toolName, 'Read');
         expect(result.images.single.id, 'image-live');
         expect(result.artifacts.single.id, 'artifact-tool-live');
+        expect(result.historyTurnId, 'provider-turn-1');
       },
     );
 

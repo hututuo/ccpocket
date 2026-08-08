@@ -268,6 +268,7 @@ export function normalizeConversationMirrorSnapshot(
             item,
             entryId,
             userMessageUuid,
+            turnIdentity,
           ),
         ) as ServerMessage;
         const serialized = jsonString(message);
@@ -320,27 +321,44 @@ function normalizeRawEnvelope(
   rawItem: Record<string, unknown>,
   stableId: string,
   userMessageUuid?: string,
+  fallbackTurnId?: string,
 ): ServerMessage {
-  if (source.type === "user_input") {
+  const sourceWithTurn =
+    fallbackTurnId &&
+    (source.type === "user_input" ||
+      source.type === "assistant" ||
+      source.type === "tool_result") &&
+    !source.historyTurnId
+      ? { ...source, historyTurnId: fallbackTurnId }
+      : source;
+  if (sourceWithTurn.type === "user_input") {
     const clientMessageId =
       nonEmptyString(rawItem.clientId) ??
       nonEmptyString(rawItem.client_id) ??
       nonEmptyString(rawItem.clientMessageId) ??
       nonEmptyString(rawItem.client_message_id);
     return {
-      ...source,
+      ...sourceWithTurn,
       ...(userMessageUuid ? { userMessageUuid } : {}),
+      ...(sourceWithTurn.providerItemId
+        ? { providerItemId: sourceWithTurn.providerItemId }
+        : nonEmptyString(rawItem.id)
+          ? { providerItemId: nonEmptyString(rawItem.id) }
+          : {}),
+      ...(sourceWithTurn.historyTurnId
+        ? { historyTurnId: sourceWithTurn.historyTurnId }
+        : {}),
       ...(clientMessageId ? { clientMessageId } : {}),
     };
   }
-  if (source.type === "assistant") {
+  if (sourceWithTurn.type === "assistant") {
     return {
-      ...source,
-      message: { ...source.message, id: stableId },
+      ...sourceWithTurn,
+      message: { ...sourceWithTurn.message, id: stableId },
       messageUuid: stableId,
     };
   }
-  return source;
+  return sourceWithTurn;
 }
 
 /**
@@ -366,6 +384,13 @@ function mirrorHistoryMessageToServerMessages(
       {
         type: "user_input",
         text,
+        ...(history.rawItemId ? { providerItemId: history.rawItemId } : {}),
+        ...(history.historyTurnId
+          ? { historyTurnId: history.historyTurnId }
+          : {}),
+        ...(history.clientMessageId
+          ? { clientMessageId: history.clientMessageId }
+          : {}),
         ...(history.uuid ? { userMessageUuid: history.uuid } : {}),
         ...(history.isMeta ? { isMeta: true } : {}),
         ...(history.imageCount ? { imageCount: history.imageCount } : {}),
@@ -388,6 +413,9 @@ function mirrorHistoryMessageToServerMessages(
           history.toolUseId ?? history.uuid ?? `mirror-history-tool-${index}`,
         content,
         ...(history.toolName ? { toolName: history.toolName } : {}),
+        ...(history.historyTurnId
+          ? { historyTurnId: history.historyTurnId }
+          : {}),
         ...(history.timestamp ? { sourceTimestamp: history.timestamp } : {}),
         ...(history.timestamp && history.timestampIsAuthoritative
           ? { sourceTimestampIsAuthoritative: true }
@@ -404,6 +432,9 @@ function mirrorHistoryMessageToServerMessages(
       type: "assistant",
       message: { id, role: "assistant", content, model: "" },
       ...(history.uuid ? { messageUuid: history.uuid } : {}),
+      ...(history.historyTurnId
+        ? { historyTurnId: history.historyTurnId }
+        : {}),
       ...(history.timestamp ? { sourceTimestamp: history.timestamp } : {}),
       ...(history.timestamp && history.timestampIsAuthoritative
         ? { sourceTimestampIsAuthoritative: true }
