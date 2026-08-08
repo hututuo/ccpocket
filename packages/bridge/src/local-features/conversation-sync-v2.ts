@@ -47,6 +47,7 @@ import { sessionHistoryToServerMessages } from "./codex-thread-history.js";
 import {
   APP_SERVER_STATUS_CAPABILITY,
   CONVERSATION_SYNC_V2_CAPABILITY,
+  CONVERSATION_USER_INDEX_CAPABILITY,
   type ConversationSyncCatalogEntry,
   type ConversationSyncClientMessage,
   type ConversationSyncReadWatermark,
@@ -833,6 +834,15 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         this.unsubscribe(context.client, message);
         return;
       case "conversation_turns_page":
+        if (
+          message.projection === "user_index" &&
+          !this.runtime.supports(
+            context.client,
+            CONVERSATION_USER_INDEX_CAPABILITY,
+          )
+        ) {
+          return;
+        }
         await this.sendTurnsPage(context.client, message, context.signal);
         return;
       case "conversation_items_page":
@@ -6313,7 +6323,10 @@ function projectTurnsPage(
     const turn = rawTurn as Record<string, unknown>;
     const messages = Array.isArray(turn.messages)
       ? (turn.messages as ServerMessage[]).filter(
-          (entry) => entry.type === "user_input",
+          (entry) =>
+            entry.type === "user_input" &&
+            entry.isSynthetic !== true &&
+            entry.isMeta !== true,
         )
       : [];
     if (messages.length === 0) return [];

@@ -22,6 +22,7 @@ import {
 import {
   APP_SERVER_STATUS_CAPABILITY,
   CONVERSATION_SYNC_V2_CAPABILITY,
+  CONVERSATION_USER_INDEX_CAPABILITY,
   conversationSyncV2ProtocolContribution,
   type ConversationSyncCatalogEntry,
   type ConversationSyncClientMessage,
@@ -1537,6 +1538,104 @@ describe("ConversationSyncV2FeatureHandler", () => {
       }),
     ).toEqual([["user_input"], ["user_input"]]);
     fixture.handler.close();
+  });
+
+  it("requires the additive user-index capability before serving its projection", async () => {
+    const listThreadTurns = vi.fn(async () => ({
+      data: [],
+      nextCursor: null,
+    }));
+    const fixture = createCodexPageFixture({ listThreadTurns });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+    fixture.runtime.supports = (_client: object, type: string) =>
+      type === CONVERSATION_SYNC_V2_CAPABILITY;
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "user-index-without-capability",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-without-capability",
+        limit: 5,
+        sortDirection: "desc",
+        itemsView: "summary",
+        projection: "user_index",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+
+    expect(listThreadTurns).not.toHaveBeenCalled();
+    expect(
+      events(fixture.sent, fixture.client, "turns_page_response"),
+    ).toHaveLength(0);
+    await fixture.handler.close();
+  });
+
+  it("excludes synthetic and meta user shells from the user index", async () => {
+    const historyReader = vi.fn(async () => [
+      ...history("visible-user"),
+      {
+        type: "user_input" as const,
+        text: "synthetic-user",
+        userMessageUuid: "synthetic-user",
+        isSynthetic: true,
+      },
+      {
+        type: "user_input" as const,
+        text: "meta-user",
+        userMessageUuid: "meta-user",
+        isMeta: true,
+      },
+    ]);
+    const fixture = createFixture([seed(0)], historyReader);
+    const client = {};
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "user-index-visible-only",
+        subscriptionId: subscription.requestId,
+        provider: "claude",
+        providerSessionId: "session-0",
+        limit: 20,
+        sortDirection: "desc",
+        itemsView: "summary",
+        projection: "user_index",
+      },
+      context(client, fixture.runtime),
+    );
+
+    const response = events(
+      fixture.sent,
+      client,
+      "turns_page_response",
+    ).at(-1)!;
+    expect(
+      response.data.flatMap((turn) =>
+        (turn as { messages?: ServerMessage[] }).messages ?? [],
+      ),
+    ).toMatchObject([{ type: "user_input", text: "visible-user" }]);
+    await fixture.handler.close();
   });
 
   it("projects one oversized Codex turn with stable identity and an explicit gap", async () => {
@@ -8412,7 +8511,8 @@ function createFixture(
     },
     isClientOpen: () => true,
     supports: (_client: object, type: string) =>
-      type === CONVERSATION_SYNC_V2_CAPABILITY,
+      type === CONVERSATION_SYNC_V2_CAPABILITY ||
+      type === CONVERSATION_USER_INDEX_CAPABILITY,
     ...runtimeOverrides,
   };
   return {
@@ -8475,7 +8575,8 @@ function createCodexPageFixture(
     },
     isClientOpen: () => true,
     supports: (_client: object, type: string) =>
-      type === CONVERSATION_SYNC_V2_CAPABILITY,
+      type === CONVERSATION_SYNC_V2_CAPABILITY ||
+      type === CONVERSATION_USER_INDEX_CAPABILITY,
   };
   return {
     client,
