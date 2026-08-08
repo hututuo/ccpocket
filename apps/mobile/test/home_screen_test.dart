@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/material.dart';
 
@@ -449,14 +450,14 @@ void main() {
           state: BridgeConnectionState.connecting,
           bootstrapPhase: BridgeConnectionBootstrapPhase.openingTransport,
         )?.percent,
-        5,
+        8,
       );
       expect(
         progress(
           state: BridgeConnectionState.connected,
           bootstrapPhase: BridgeConnectionBootstrapPhase.sessionListRequested,
         )?.percent,
-        30,
+        32,
       );
       expect(
         progress(
@@ -480,7 +481,7 @@ void main() {
           bootstrapPhase:
               BridgeConnectionBootstrapPhase.sessionListModelValidated,
         )?.percent,
-        58,
+        56,
       );
       expect(
         progress(
@@ -488,14 +489,14 @@ void main() {
           bootstrapPhase:
               BridgeConnectionBootstrapPhase.sessionListAuthorityAccepted,
         )?.percent,
-        68,
+        64,
       );
       expect(
         progress(
           state: BridgeConnectionState.connected,
           bootstrapPhase: BridgeConnectionBootstrapPhase.identityResolved,
         )?.percent,
-        74,
+        72,
       );
       expect(
         progress(
@@ -508,7 +509,7 @@ void main() {
             pageCount: 1,
           ),
         )?.percent,
-        90,
+        92,
       );
       expect(
         progress(
@@ -521,7 +522,7 @@ void main() {
             pageCount: 4,
           ),
         )?.percent,
-        90,
+        92,
       );
       expect(
         progress(
@@ -537,7 +538,7 @@ void main() {
             phase: 'priority',
           ),
         )?.percent,
-        92,
+        93,
       );
       expect(
         progress(
@@ -554,6 +555,27 @@ void main() {
           ),
         )?.percent,
         96,
+      );
+    });
+
+    test('spreads producer milestones monotonically across the full range', () {
+      final percentages = BridgeConnectionBootstrapPhase.values
+          .where(
+            (phase) =>
+                phase != BridgeConnectionBootstrapPhase.idle &&
+                phase != BridgeConnectionBootstrapPhase.reconnectScheduled,
+          )
+          .map((phase) => phase.percent)
+          .toList();
+
+      expect(percentages.first, 8);
+      expect(percentages.last, 96);
+      expect(
+        List.generate(
+          percentages.length - 1,
+          (index) => percentages[index + 1] - percentages[index],
+        ).every((gap) => gap == 8),
+        isTrue,
       );
     });
 
@@ -603,7 +625,126 @@ void main() {
       );
 
       expect(current?.stage, BridgeConnectionEntryStage.preparingCodexRuntime);
-      expect(current?.percent, 79);
+      expect(current?.percent, 84);
+    });
+  });
+
+  group('Bridge connection progress watchdog', () {
+    BridgeConnectionProgressWatchdogSnapshot snapshot({
+      int generation = 1,
+      BridgeConnectionEntryStage stage =
+          BridgeConnectionEntryStage.loadingConversationCatalog,
+      int percent = 84,
+      String progressKey = 'page:0',
+      String phaseKey = 'epoch:1:catalog',
+    }) => BridgeConnectionProgressWatchdogSnapshot(
+      generation: generation,
+      stage: stage,
+      percent: percent,
+      progressKey: progressKey,
+      phaseKey: phaseKey,
+    );
+
+    test('does not warn at nine seconds, then warns at ten', () {
+      fakeAsync((async) {
+        var stalls = 0;
+        final watchdog = BridgeConnectionProgressWatchdog(
+          onStalled: (_) => stalls += 1,
+        );
+        addTearDown(watchdog.dispose);
+
+        watchdog.observe(snapshot());
+        async.elapse(const Duration(seconds: 9));
+        expect(stalls, 0);
+        async.elapse(const Duration(seconds: 1));
+        expect(stalls, 1);
+      });
+    });
+
+    test('authoritative progress resets the idle window', () {
+      fakeAsync((async) {
+        var stalls = 0;
+        var recoveries = 0;
+        final watchdog = BridgeConnectionProgressWatchdog(
+          onStalled: (_) => stalls += 1,
+          onProgressed: (_) => recoveries += 1,
+        );
+        addTearDown(watchdog.dispose);
+
+        watchdog.observe(snapshot());
+        async.elapse(const Duration(seconds: 9));
+        watchdog.observe(snapshot(progressKey: 'page:1'));
+        async.elapse(const Duration(seconds: 9));
+        expect(stalls, 0);
+        expect(recoveries, 1);
+        async.elapse(const Duration(seconds: 1));
+        expect(stalls, 1);
+      });
+    });
+
+    test('a stage change resets the watchdog even at the same percent', () {
+      fakeAsync((async) {
+        var stalls = 0;
+        final watchdog = BridgeConnectionProgressWatchdog(
+          onStalled: (_) => stalls += 1,
+        );
+        addTearDown(watchdog.dispose);
+
+        watchdog.observe(snapshot());
+        async.elapse(const Duration(seconds: 9));
+        watchdog.observe(
+          snapshot(
+            stage: BridgeConnectionEntryStage.preparingCodexRuntime,
+            phaseKey: 'epoch:1:runtime',
+          ),
+        );
+        async.elapse(const Duration(seconds: 9));
+        expect(stalls, 0);
+        async.elapse(const Duration(seconds: 1));
+        expect(stalls, 1);
+      });
+    });
+
+    test('a reconnect generation cannot inherit the old timer', () {
+      fakeAsync((async) {
+        var stalls = 0;
+        final watchdog = BridgeConnectionProgressWatchdog(
+          onStalled: (_) => stalls += 1,
+        );
+        addTearDown(watchdog.dispose);
+
+        watchdog.observe(snapshot(generation: 1));
+        async.elapse(const Duration(seconds: 9));
+        watchdog.observe(snapshot(generation: 2, phaseKey: 'epoch:2:catalog'));
+        async.elapse(const Duration(seconds: 1));
+        expect(stalls, 0);
+        async.elapse(const Duration(seconds: 9));
+        expect(stalls, 1);
+      });
+    });
+
+    test('structured authentication failure cancels the generic warning', () {
+      fakeAsync((async) {
+        var stalls = 0;
+        final watchdog = BridgeConnectionProgressWatchdog(
+          onStalled: (_) => stalls += 1,
+        );
+        addTearDown(watchdog.dispose);
+
+        watchdog.observe(snapshot());
+        async.elapse(const Duration(seconds: 9));
+        expect(
+          isBridgeAuthenticationHandshakeError(
+            Exception('WebSocket upgrade failed with HTTP status 401'),
+          ),
+          isTrue,
+        );
+        // The connection-failure listener uses this same reset path before it
+        // presents the key prompt, so no generic 10-second notice can race it.
+        watchdog.reset();
+        async.elapse(const Duration(seconds: 1));
+        expect(stalls, 0);
+      });
     });
   });
 

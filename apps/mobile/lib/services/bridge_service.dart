@@ -43,18 +43,22 @@ const bridgeApplicationReadinessCapability = 'bridge_application_readiness_v1';
 /// corresponding protocol or local publication step has actually completed.
 enum BridgeConnectionBootstrapPhase {
   idle(0),
-  openingTransport(5),
-  transportReady(15),
-  capabilitiesSent(22),
-  sessionListRequested(30),
+  // Bootstrap milestones are deliberately spaced across the full range. The
+  // values are protocol facts, not a timer or an estimate of remaining work.
+  // Keeping the spacing regular prevents the UI from appearing idle until the
+  // final session/catalog phases, which can legitimately take the longest.
+  openingTransport(8),
+  transportReady(16),
+  capabilitiesSent(24),
+  sessionListRequested(32),
   sessionListFrameReceived(40),
   sessionListEnvelopeDecoded(48),
-  sessionListModelValidated(58),
-  sessionListAuthorityAccepted(68),
-  identityResolved(74),
-  sessionListPublished(78),
-  conversationCatalogRequested(80),
-  conversationCatalogReceived(94),
+  sessionListModelValidated(56),
+  sessionListAuthorityAccepted(64),
+  identityResolved(72),
+  sessionListPublished(80),
+  conversationCatalogRequested(88),
+  conversationCatalogReceived(96),
   reconnectScheduled(3);
 
   const BridgeConnectionBootstrapPhase(this.percent);

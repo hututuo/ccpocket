@@ -373,16 +373,168 @@ enum BridgeConnectionEntryStage {
   loadingConversationCatalog,
 }
 
+typedef BridgeConnectionProgressTimerFactory =
+    Timer Function(Duration duration, void Function() callback);
+
 class BridgeConnectionEntryProgress {
   final BridgeConnectionEntryStage stage;
   final double fraction;
 
+  /// A bounded, authoritative progress identity used by the stall watchdog.
+  /// It is deliberately separate from the visible fraction so a committed
+  /// page/count can renew the watchdog even when rounding leaves the same
+  /// percentage on screen.
+  final String? progressKey;
+
+  /// The producer phase is part of the watchdog identity. Two producer phases
+  /// may intentionally map to one visible percentage; that is still progress.
+  final String? phaseKey;
+
   const BridgeConnectionEntryProgress({
     required this.stage,
     required this.fraction,
+    this.progressKey,
+    this.phaseKey,
   });
 
   int get percent => (fraction * 100).round();
+}
+
+/// A snapshot of the facts that define one visible connection milestone.
+///
+/// The connection attempt and producer phase are included in addition to the
+/// coarse UI stage. This prevents a timer armed for an old socket or an old
+/// phase from firing after a reconnect, even when both happen to render the
+/// same percentage.
+class BridgeConnectionProgressWatchdogSnapshot {
+  const BridgeConnectionProgressWatchdogSnapshot({
+    required this.generation,
+    required this.stage,
+    required this.percent,
+    this.progressKey,
+    this.phaseKey,
+  });
+
+  final int generation;
+  final BridgeConnectionEntryStage stage;
+  final int percent;
+  final String? progressKey;
+  final String? phaseKey;
+
+  @override
+  bool operator ==(Object other) {
+    return other is BridgeConnectionProgressWatchdogSnapshot &&
+        other.generation == generation &&
+        other.stage == stage &&
+        other.percent == percent &&
+        other.progressKey == progressKey &&
+        other.phaseKey == phaseKey;
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(generation, stage, percent, progressKey, phaseKey);
+}
+
+/// Arms a warning only while one real connection milestone remains unchanged.
+///
+/// This is intentionally a small state machine rather than a total-connection
+/// timeout. A producer phase, visible percentage, committed-page key, or
+/// connection generation change cancels the old timer and starts a fresh
+/// ten-second idle window. Repeated identical observations do not renew it.
+class BridgeConnectionProgressWatchdog {
+  BridgeConnectionProgressWatchdog({
+    this.timeout = const Duration(seconds: 10),
+    BridgeConnectionProgressTimerFactory? timerFactory,
+    this.onStalled,
+    this.onProgressed,
+  }) : _timerFactory = timerFactory ?? _createTimer;
+
+  final Duration timeout;
+  final BridgeConnectionProgressTimerFactory _timerFactory;
+  final void Function(BridgeConnectionProgressWatchdogSnapshot snapshot)?
+  onStalled;
+  final void Function(BridgeConnectionProgressWatchdogSnapshot? snapshot)?
+  onProgressed;
+
+  Timer? _timer;
+  BridgeConnectionProgressWatchdogSnapshot? _snapshot;
+  bool _stalled = false;
+
+  BridgeConnectionProgressWatchdogSnapshot? get snapshot => _snapshot;
+
+  bool get isStalled => _stalled;
+
+  bool get isArmed => _timer?.isActive ?? false;
+
+  void observe(BridgeConnectionProgressWatchdogSnapshot? next) {
+    if (next == null) {
+      reset();
+      return;
+    }
+    if (_snapshot == next) return;
+
+    final hadSnapshot = _snapshot != null;
+    _timer?.cancel();
+    _snapshot = next;
+    _stalled = false;
+    _timer = _timerFactory(timeout, () {
+      // A cancelled Timer should not fire, but the equality check is required
+      // for deterministic fake timers and for callbacks already in the queue.
+      if (_snapshot != next || _stalled) return;
+      _timer = null;
+      _stalled = true;
+      onStalled?.call(next);
+    });
+    if (hadSnapshot) onProgressed?.call(next);
+  }
+
+  void reset() {
+    final hadProgress = _snapshot != null || _stalled;
+    _timer?.cancel();
+    _timer = null;
+    _snapshot = null;
+    _stalled = false;
+    if (hadProgress) onProgressed?.call(null);
+  }
+
+  void dispose() => reset();
+
+  static Timer _createTimer(Duration duration, void Function() callback) =>
+      Timer(duration, callback);
+}
+
+/// Encodes authoritative conversation-sync facts without retaining payloads.
+///
+/// Page/count/sequence/revision fields are enough to distinguish a newly
+/// committed unit from a duplicate heartbeat. Item bodies are intentionally not
+/// included because the key is only used to renew a UI timer.
+@visibleForTesting
+String bridgeConnectionProgressAuthorityKey(
+  ConversationSyncCacheUpdate? update, {
+  int committedSnapshotSerial = 0,
+}) {
+  if (update == null) return 'none:$committedSnapshotSerial';
+  return [
+    update.kind.name,
+    update.targetFingerprint,
+    update.codexSourceId,
+    update.provider,
+    update.providerSessionId,
+    update.revision,
+    update.sequence,
+    update.pageIndex,
+    update.pageCount,
+    update.timelineIndex,
+    update.timelineCount,
+    update.phase,
+    update.catalogUpserts.length,
+    update.catalogDestroyed.length,
+    update.statusChanges.length,
+    update.readWatermark?.readAt,
+    update.replaceExistingReadWatermark,
+    committedSnapshotSerial,
+  ].join('|');
 }
 
 /// Converts real connection milestones into deterministic, user-visible
@@ -399,18 +551,33 @@ BridgeConnectionEntryProgress? bridgeConnectionEntryProgressFor({
       BridgeConnectionBootstrapPhase.idle,
   ConversationSyncCacheUpdate? conversationSyncUpdate,
 }) {
-  if (selectionPending) {
-    return const BridgeConnectionEntryProgress(
-      stage: BridgeConnectionEntryStage.preparingTarget,
-      fraction: 0,
+  final phaseKey = bootstrapPhase.name;
+  final progressKey = bridgeConnectionProgressAuthorityKey(
+    conversationSyncUpdate,
+  );
+  BridgeConnectionEntryProgress milestone(
+    BridgeConnectionEntryStage stage,
+    double fraction,
+  ) {
+    return BridgeConnectionEntryProgress(
+      stage: stage,
+      fraction: fraction.clamp(0, 1).toDouble(),
+      progressKey: progressKey,
+      phaseKey: phaseKey,
     );
+  }
+
+  if (selectionPending) {
+    return milestone(BridgeConnectionEntryStage.preparingTarget, 0);
   }
   final bootstrapFraction = bootstrapPhase.percent / 100;
   return switch (transportState) {
     BridgeConnectionState.connecting ||
     BridgeConnectionState.reconnecting => BridgeConnectionEntryProgress(
       stage: BridgeConnectionEntryStage.connectingTransport,
-      fraction: bootstrapFraction.clamp(0.05, 0.25).toDouble(),
+      fraction: bootstrapFraction.clamp(0.08, 0.24).toDouble(),
+      progressKey: progressKey,
+      phaseKey: phaseKey,
     ),
     BridgeConnectionState.connected
         when !hasAuthoritativeSessionList &&
@@ -420,30 +587,34 @@ BridgeConnectionEntryProgress? bridgeConnectionEntryProgressFor({
                     .percent =>
       BridgeConnectionEntryProgress(
         stage: BridgeConnectionEntryStage.authenticatingBridge,
-        fraction: bootstrapFraction.clamp(0.25, 0.78).toDouble(),
+        fraction: bootstrapFraction.clamp(0.16, 0.56).toDouble(),
+        progressKey: progressKey,
+        phaseKey: phaseKey,
       ),
     BridgeConnectionState.connected when !hasAuthoritativeSessionList =>
       BridgeConnectionEntryProgress(
         stage: BridgeConnectionEntryStage.loadingSessionStatus,
-        fraction: bootstrapFraction.clamp(0.68, 0.78).toDouble(),
+        fraction: bootstrapFraction.clamp(0.64, 0.72).toDouble(),
+        progressKey: progressKey,
+        phaseKey: phaseKey,
       ),
     BridgeConnectionState.connected
         when !applicationReadiness.permitsApplicationEntry =>
-      const BridgeConnectionEntryProgress(
-        stage: BridgeConnectionEntryStage.preparingCodexRuntime,
-        fraction: 0.79,
+      milestone(
+        BridgeConnectionEntryStage.preparingCodexRuntime,
+        bootstrapFraction < 0.84 ? 0.84 : bootstrapFraction,
       ),
     BridgeConnectionState.connected when !hasAuthoritativeRecentSessions =>
-      BridgeConnectionEntryProgress(
-        stage: BridgeConnectionEntryStage.loadingConversationCatalog,
-        fraction: _conversationCatalogBootstrapFraction(
+      milestone(
+        BridgeConnectionEntryStage.loadingConversationCatalog,
+        _conversationCatalogBootstrapFraction(
           bootstrapFraction,
           conversationSyncUpdate,
         ),
       ),
-    _ when autoConnecting => const BridgeConnectionEntryProgress(
-      stage: BridgeConnectionEntryStage.preparingTarget,
-      fraction: 0,
+    _ when autoConnecting => milestone(
+      BridgeConnectionEntryStage.preparingTarget,
+      0,
     ),
     _ => null,
   };
@@ -467,28 +638,28 @@ double _conversationCatalogBootstrapFraction(
         timelineIndex == null ||
         timelineCount == null ||
         timelineCount <= 0) {
-      return 0.90;
+      return 0.92;
     }
     final pageIndex = update?.pageIndex ?? 0;
     final pageCount = update?.pageCount ?? 1;
     final withinTimeline = ((pageIndex + 1) / pageCount).clamp(0, 1);
     final completed = (timelineIndex + withinTimeline) / timelineCount;
-    return 0.90 + 0.06 * completed.clamp(0, 1);
+    return 0.92 + 0.04 * completed.clamp(0, 1);
   }
 
   final committedFraction = switch (update?.kind) {
-    ConversationSyncCacheUpdateKind.started => 0.82,
-    ConversationSyncCacheUpdateKind.catalog => pageFraction(0.82, 0.04),
-    ConversationSyncCacheUpdateKind.status => pageFraction(0.86, 0.04),
+    ConversationSyncCacheUpdateKind.started => 0.84,
+    ConversationSyncCacheUpdateKind.catalog => pageFraction(0.84, 0.04),
+    ConversationSyncCacheUpdateKind.status => pageFraction(0.88, 0.04),
     ConversationSyncCacheUpdateKind.timeline => timelineFraction(),
     ConversationSyncCacheUpdateKind.priorityReady => 0.97,
     ConversationSyncCacheUpdateKind.completed => 0.98,
-    ConversationSyncCacheUpdateKind.reset => 0.80,
-    ConversationSyncCacheUpdateKind.readWatermark || null => 0.78,
+    ConversationSyncCacheUpdateKind.reset => 0.84,
+    ConversationSyncCacheUpdateKind.readWatermark || null => 0.84,
   };
-  return [bootstrapFraction, committedFraction, 0.78]
+  return [bootstrapFraction, committedFraction, 0.80]
       .reduce((left, right) => left > right ? left : right)
-      .clamp(0.78, 0.98)
+      .clamp(0.80, 0.98)
       .toDouble();
 }
 
@@ -500,8 +671,15 @@ bool shouldAdvanceConversationCatalogBootstrapUpdate(
   if (next.kind == ConversationSyncCacheUpdateKind.reset || current == null) {
     return true;
   }
-  return _conversationCatalogBootstrapFraction(0, next) >=
-      _conversationCatalogBootstrapFraction(0, current);
+  final nextFraction = _conversationCatalogBootstrapFraction(0, next);
+  final currentFraction = _conversationCatalogBootstrapFraction(0, current);
+  if (nextFraction > currentFraction) return true;
+  if (nextFraction < currentFraction) return false;
+  // A page can commit additional rows without changing its rounded fraction;
+  // compare the bounded authority key so that real commits still renew the
+  // watchdog while duplicate heartbeats do not.
+  return bridgeConnectionProgressAuthorityKey(next) !=
+      bridgeConnectionProgressAuthorityKey(current);
 }
 
 Future<bool> showExternalBridgeConnectionConfirmation({
@@ -718,12 +896,12 @@ class SessionListScreen extends StatefulWidget {
 
 class _SessionListScreenState extends State<SessionListScreen>
     with WidgetsBindingObserver {
-  static const _connectionReadinessWarningDelay = Duration(seconds: 3);
-
   bool _isAutoConnecting = false;
   final _connectionUiGate = SessionHomeConnectionGate();
   final _connectionAttemptFence = ConnectionAttemptFence();
-  Timer? _connectionReadinessTimer;
+  late final BridgeConnectionProgressWatchdog _connectionProgressWatchdog;
+  int _committedSnapshotSerial = 0;
+  bool _isDisposing = false;
   Timer? _applicationReadinessPollTimer;
   final _applicationReadinessProbeFence =
       BridgeApplicationReadinessProbeFence();
@@ -819,6 +997,10 @@ class _SessionListScreenState extends State<SessionListScreen>
     _archivePendingRequests = SessionArchivePendingRequests(
       onResultUnknown: _handleArchiveResultUnknown,
     );
+    _connectionProgressWatchdog = BridgeConnectionProgressWatchdog(
+      onStalled: _handleConnectionProgressStalled,
+      onProgressed: (_) => _clearConnectionProgressNotice(),
+    );
     _archiveConnectionSub = bridge.connectionStatus.listen((status) {
       if (status != BridgeConnectionState.connected) {
         _resetApplicationReadinessPolling(resetReadiness: true);
@@ -834,6 +1016,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       }
       _syncConnectionUiGate(bridge, status);
       _refreshCatalogAfterAuthoritativeSessionList(bridge);
+      _observeConnectionProgress();
     });
     _connectionFailureSub = bridge.connectionFailures.listen((failure) {
       if (failure.kind == BridgeConnectionFailureKind.authenticationRejected) {
@@ -842,6 +1025,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     });
     _connectionBootstrapSub = bridge.connectionBootstrap.listen((_) {
       if (mounted) setState(() {});
+      _observeConnectionProgress();
     });
     _contentSyncProgressSub = context
         .read<ConversationContentSyncService?>()
@@ -867,12 +1051,15 @@ class _SessionListScreenState extends State<SessionListScreen>
             current,
             update,
           )) {
+            _committedSnapshotSerial += 1;
             setState(() => _contentSyncProgressUpdate = update);
           }
           _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
+          _observeConnectionProgress();
         });
     _catalogReadinessSub = bridge.recentSessionResponses.listen((_) {
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
+      _observeConnectionProgress();
     });
     _catalogCacheReadinessSub = sessionListCubit.catalogSnapshotChanges.listen((
       _,
@@ -889,14 +1076,17 @@ class _SessionListScreenState extends State<SessionListScreen>
           'generation=$generation progress=99',
         );
       }
+      _committedSnapshotSerial += 1;
       if (mounted) setState(() {});
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
+      _observeConnectionProgress();
     });
     _sessionListReadinessSub = bridge.sessionList.listen((_) {
       _bindCurrentBridgeIdentityIfAuthoritative(bridge);
       unawaited(_refreshApplicationReadiness(bridge));
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
       _refreshCatalogAfterAuthoritativeSessionList(bridge);
+      _observeConnectionProgress();
     });
     _bindCurrentBridgeIdentityIfAuthoritative(bridge);
     _messageSub = bridge.messages.listen((msg) {
@@ -1059,7 +1249,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     required bool autoConnecting,
   }) {
     final token = _connectionAttemptFence.begin();
-    _connectionReadinessTimer?.cancel();
+    _connectionProgressWatchdog.reset();
     _resetApplicationReadinessPolling(resetReadiness: true);
     _retryConnectionAttempt = retry;
     _retryWithConnectionKey = null;
@@ -1090,9 +1280,10 @@ class _SessionListScreenState extends State<SessionListScreen>
   }
 
   void _presentConnectionKeyPrompt({required bool rejectedSavedKey}) {
+    // Structured authentication failures are actionable immediately; they
+    // must never be delayed behind the generic progress watchdog.
+    _connectionProgressWatchdog.reset();
     if (!mounted || _connectionKeyDialogVisible) return;
-    _connectionReadinessTimer?.cancel();
-    _connectionReadinessTimer = null;
     _applicationReadinessPollTimer?.cancel();
     _applicationReadinessPollTimer = null;
     setState(() {
@@ -1148,7 +1339,6 @@ class _SessionListScreenState extends State<SessionListScreen>
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
       return;
     }
-    _connectionReadinessTimer?.cancel();
     setState(() {
       _connectionSelectionPending = false;
       _connectionAwaitingReadiness = true;
@@ -1156,14 +1346,82 @@ class _SessionListScreenState extends State<SessionListScreen>
       _connectionAttemptFailed = false;
     });
     _refreshCatalogAfterAuthoritativeSessionList(bridge);
-    _scheduleConnectionReadinessTimeout(token);
+    _observeConnectionProgress(token);
   }
 
-  void _scheduleConnectionReadinessTimeout(int token) {
-    _connectionReadinessTimer?.cancel();
-    _connectionReadinessTimer = Timer(
-      _connectionReadinessWarningDelay,
-      () => unawaited(_handleConnectionReadinessTimeout(token)),
+  void _handleConnectionProgressStalled(
+    BridgeConnectionProgressWatchdogSnapshot snapshot,
+  ) {
+    if (_isDisposing ||
+        !mounted ||
+        !_connectionAttemptFence.isCurrent(snapshot.generation)) {
+      return;
+    }
+    // A timer is only meaningful while this screen is actively entering a
+    // target. Authentication failures and ordinary disconnects cancel the
+    // watchdog before they can reach this callback.
+    if (!_connectionSelectionPending && !_connectionAwaitingReadiness) return;
+    if (!_connectionTakingLonger) {
+      setState(() {
+        _connectionTakingLonger = true;
+        _connectionAttemptFailed = false;
+      });
+    }
+    if (_connectionAwaitingReadiness) {
+      unawaited(_handleConnectionReadinessTimeout(snapshot.generation));
+    }
+  }
+
+  void _clearConnectionProgressNotice() {
+    if (_isDisposing || !mounted || !_connectionTakingLonger) return;
+    setState(() {
+      _connectionTakingLonger = false;
+      _connectionAttemptFailed = false;
+    });
+  }
+
+  void _observeConnectionProgress([int? attemptGeneration]) {
+    if (_isDisposing || !mounted || widget.debugRecentSessions != null) {
+      _connectionProgressWatchdog.reset();
+      return;
+    }
+    if (!_connectionSelectionPending && !_connectionAwaitingReadiness) {
+      _connectionProgressWatchdog.reset();
+      return;
+    }
+    final bridge = context.read<BridgeService>();
+    final sessionListCubit = context.read<SessionListCubit>();
+    final hasAuthoritativeSessionList =
+        !_connectionSelectionPending &&
+        bridge.hasAuthoritativeSessionListForCurrentConnection;
+    final hasAuthoritativeRecentSessions =
+        !_connectionSelectionPending &&
+        sessionListCubit.hasUsableCatalogForCurrentTarget;
+    final progress = bridgeConnectionEntryProgressFor(
+      transportState: bridge.currentBridgeConnectionState,
+      selectionPending: _connectionSelectionPending,
+      hasAuthoritativeSessionList: hasAuthoritativeSessionList,
+      hasAuthoritativeRecentSessions: hasAuthoritativeRecentSessions,
+      autoConnecting: _isAutoConnecting,
+      applicationReadiness: _applicationReadiness,
+      bootstrapPhase: bridge.currentConnectionBootstrap.phase,
+      conversationSyncUpdate: _contentSyncProgressUpdate,
+    );
+    if (progress == null) {
+      _connectionProgressWatchdog.reset();
+      return;
+    }
+    final epoch = bridge.currentConnectionBootstrap.connectionEpoch;
+    _connectionProgressWatchdog.observe(
+      BridgeConnectionProgressWatchdogSnapshot(
+        generation: attemptGeneration ?? _connectionAttemptFence.current,
+        stage: progress.stage,
+        percent: progress.percent,
+        progressKey:
+            '${progress.progressKey}|snapshot=$_committedSnapshotSerial',
+        phaseKey:
+            '$epoch:${progress.phaseKey}:readiness=${_applicationReadiness.name}',
+      ),
     );
   }
 
@@ -1177,7 +1435,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         bridge.currentBridgeConnectionState ==
             BridgeConnectionState.connected) {
       logger.info(
-        '[session_catalog] event=readiness_timeout '
+        '[session_catalog] event=progress_stalled '
         'action=wait_for_application_ready '
         'runtime=${_applicationReadiness.name}',
       );
@@ -1190,7 +1448,6 @@ class _SessionListScreenState extends State<SessionListScreen>
         _connectionTakingLonger = true;
         _connectionAttemptFailed = false;
       });
-      _scheduleConnectionReadinessTimeout(token);
       return;
     }
     final action = _catalogRecoveryPolicy.nextAction(
@@ -1201,7 +1458,7 @@ class _SessionListScreenState extends State<SessionListScreen>
           bridge.supportsSessionCatalogRequestCorrelation,
     );
     logger.info(
-      '[session_catalog] event=readiness_timeout '
+      '[session_catalog] event=progress_stalled '
       'action=${action.name} '
       'authority=${bridge.hasAuthoritativeSessionListForCurrentConnection} '
       'catalog=${sessionListCubit.hasUsableCatalogForCurrentTarget}',
@@ -1239,16 +1496,15 @@ class _SessionListScreenState extends State<SessionListScreen>
       _connectionTakingLonger = true;
       _connectionAttemptFailed = false;
     });
-    _scheduleConnectionReadinessTimeout(token);
   }
 
   void _markConnectionReadinessFailed(int token) {
-    _connectionReadinessTimer?.cancel();
-    _connectionReadinessTimer = null;
+    _connectionProgressWatchdog.reset();
     if (!_isCurrentConnectionAttempt(token) || !_connectionAwaitingReadiness) {
       return;
     }
     setState(() {
+      _connectionAwaitingReadiness = false;
       _connectionTakingLonger = false;
       _connectionAttemptFailed = true;
     });
@@ -1256,8 +1512,7 @@ class _SessionListScreenState extends State<SessionListScreen>
 
   void _invalidateConnectionAttempt() {
     _connectionAttemptFence.cancel();
-    _connectionReadinessTimer?.cancel();
-    _connectionReadinessTimer = null;
+    _connectionProgressWatchdog.reset();
     _resetApplicationReadinessPolling(resetReadiness: true);
     _retryConnectionAttempt = null;
     _catalogRecoveryPolicy.reset();
@@ -1300,8 +1555,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     final bridge = context.read<BridgeService>();
     final catalog = context.read<SessionListCubit>();
     if (!catalog.hasCachedCatalogForCurrentTarget) return;
-    _connectionReadinessTimer?.cancel();
-    _connectionReadinessTimer = null;
+    _connectionProgressWatchdog.reset();
     _connectionUiGate.acceptCachedTarget(_connectionUiTargetKey(bridge));
     setState(() {
       _isAutoConnecting = false;
@@ -1618,17 +1872,14 @@ class _SessionListScreenState extends State<SessionListScreen>
       final bridge = context.read<BridgeService>();
       bridge.ensureConnected();
       unawaited(_refreshApplicationReadiness(bridge));
-      if (_connectionAwaitingReadiness) {
-        _scheduleConnectionReadinessTimeout(_connectionAttemptFence.current);
-      }
+      _observeConnectionProgress();
       if (bridge.hasAuthoritativeSessionListForCurrentConnection) {
         unawaited(context.read<SessionListCubit>().refresh());
       }
       return;
     }
     _applicationReadinessPollingEnabled = false;
-    _connectionReadinessTimer?.cancel();
-    _connectionReadinessTimer = null;
+    _connectionProgressWatchdog.reset();
     _applicationReadinessPollTimer?.cancel();
     _applicationReadinessPollTimer = null;
     _applicationReadinessProbeFence.invalidate();
@@ -1636,9 +1887,10 @@ class _SessionListScreenState extends State<SessionListScreen>
 
   @override
   void dispose() {
+    _isDisposing = true;
     WidgetsBinding.instance.removeObserver(this);
     _connectionAttemptFence.cancel();
-    _connectionReadinessTimer?.cancel();
+    _connectionProgressWatchdog.dispose();
     _applicationReadinessPollTimer?.cancel();
     _applicationReadinessProbeFence.invalidate();
     widget.deepLinkNotifier?.removeListener(_onDeepLink);
@@ -1740,8 +1992,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         _isAutoConnecting &&
         (isApplicationReady || state == BridgeConnectionState.disconnected);
     if (readinessCompleted || readinessFailed) {
-      _connectionReadinessTimer?.cancel();
-      _connectionReadinessTimer = null;
+      _connectionProgressWatchdog.reset();
       _catalogRecoveryPolicy.reset();
       if (readinessFailed) {
         logger.warning(
@@ -1770,6 +2021,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         _connectionAttemptFailed = true;
       }
     });
+    _observeConnectionProgress();
   }
 
   Future<void> _refreshApplicationReadiness(BridgeService bridge) async {
@@ -1825,6 +2077,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         'epoch=$epoch status=${next.name}',
       );
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
+      _observeConnectionProgress();
     }
     _applicationReadinessPollTimer?.cancel();
     _applicationReadinessPollTimer = null;
