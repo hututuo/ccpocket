@@ -95,6 +95,24 @@ bool shouldShowForkForAssistant(
   return hasTerminalResult || transcriptTailComplete;
 }
 
+String chatMessageEntryStableKey(ChatEntry entry) {
+  return switch (entry) {
+    ServerChatEntry(:final message) => switch (message) {
+      ToolResultMessage(:final toolUseId) => 'tool_result:$toolUseId',
+      AssistantServerMessage() =>
+        'assistant:${chatAssistantEntryStableIdentity(message, entry.timestamp)}',
+      PermissionRequestMessage(:final toolUseId) => 'permission:$toolUseId',
+      ToolUseSummaryMessage(:final precedingToolUseIds) =>
+        precedingToolUseIds.isNotEmpty
+            ? 'tool_summary:${precedingToolUseIds.first}'
+            : 'tool_summary:${entry.timestamp.microsecondsSinceEpoch}',
+      _ => '${message.runtimeType}:${entry.timestamp.microsecondsSinceEpoch}',
+    },
+    UserChatEntry() => 'user:${chatUserEntryStableIdentity(entry)}',
+    StreamingChatEntry() => 'streaming',
+  };
+}
+
 @visibleForTesting
 bool shouldLoadOlderLocalHistory(
   ScrollMetrics metrics, {
@@ -1367,43 +1385,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
   }
 
   String _entryKey(ChatEntry entry) {
-    return switch (entry) {
-      ServerChatEntry(:final message) => switch (message) {
-        ToolResultMessage(:final toolUseId) => 'tool_result:$toolUseId',
-        AssistantServerMessage(:final messageUuid, :final message) =>
-          messageUuid != null && messageUuid.isNotEmpty
-              ? 'assistant_uuid:$messageUuid'
-              : message.id.isNotEmpty
-              ? 'assistant_id:${message.id}'
-              : switch (message.content
-                    .whereType<ToolUseContent>()
-                    .firstOrNull) {
-                  ToolUseContent(:final id) when id.isNotEmpty =>
-                    'assistant_tool:$id',
-                  _ => 'assistant_ts:${entry.timestamp.microsecondsSinceEpoch}',
-                },
-        PermissionRequestMessage(:final toolUseId) => 'permission:$toolUseId',
-        ToolUseSummaryMessage(:final precedingToolUseIds) =>
-          precedingToolUseIds.isNotEmpty
-              ? 'tool_summary:${precedingToolUseIds.first}'
-              : 'tool_summary:${entry.timestamp.microsecondsSinceEpoch}',
-        _ => '${message.runtimeType}:${entry.timestamp.microsecondsSinceEpoch}',
-      },
-      UserChatEntry(
-        :final providerItemId,
-        :final messageUuid,
-        :final clientMessageId,
-        :final text,
-      ) =>
-        providerItemId != null && providerItemId.isNotEmpty
-            ? 'user_provider:$providerItemId'
-            : messageUuid != null && messageUuid.isNotEmpty
-            ? 'user_uuid:$messageUuid'
-            : clientMessageId != null && clientMessageId.isNotEmpty
-            ? 'user_client:$clientMessageId'
-            : 'user_ts:${entry.timestamp.microsecondsSinceEpoch}:${text.hashCode}',
-      StreamingChatEntry() => 'streaming',
-    };
+    return chatMessageEntryStableKey(entry);
   }
 }
 

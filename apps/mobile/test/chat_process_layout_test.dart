@@ -1,4 +1,5 @@
 import 'package:ccpocket/features/chat_session/widgets/chat_process_layout.dart';
+import 'package:ccpocket/features/chat_session/widgets/chat_message_list.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -621,6 +622,86 @@ void main() {
 
     expect(restoredKey, 'client:paged-user-turn');
     expect(restoredLayout.turnKeyAliases[partialKey], restoredKey);
+  });
+
+  test('scopes repeated legacy user UUID and client ids by provider turn', () {
+    final first = UserChatEntry(
+      'first page prompt',
+      messageUuid: 'codex:user-turn:1',
+      clientMessageId: 'legacy-client',
+      historyTurnId: 'provider-turn-one',
+    );
+    final second = UserChatEntry(
+      'second page prompt',
+      messageUuid: 'codex:user-turn:1',
+      clientMessageId: 'legacy-client',
+      historyTurnId: 'provider-turn-two',
+    );
+    final entries = <ChatEntry>[
+      first,
+      ServerChatEntry(
+        _assistant('first-answer', const [TextContent(text: 'one')]),
+      ),
+      second,
+      ServerChatEntry(
+        _assistant('second-answer', const [TextContent(text: 'two')]),
+      ),
+    ];
+
+    final layout = buildChatProcessLayout(entries);
+    final firstKey = layout.turnForEntry(1)!.key;
+    final secondKey = layout.turnForEntry(3)!.key;
+
+    expect(firstKey, 'turn:provider-turn-one:uuid:codex:user-turn:1');
+    expect(secondKey, 'turn:provider-turn-two:uuid:codex:user-turn:1');
+    expect(firstKey, isNot(secondKey));
+    expect(
+      chatUserEntryStableIdentity(first),
+      isNot(chatUserEntryStableIdentity(second)),
+    );
+    expect(
+      chatMessageEntryStableKey(first),
+      isNot(chatMessageEntryStableKey(second)),
+    );
+  });
+
+  test('scopes repeated legacy assistant ids by provider turn', () {
+    final first = ServerChatEntry(
+      AssistantServerMessage(
+        messageUuid: 'codex-item-1',
+        historyTurnId: 'provider-turn-one',
+        message: const AssistantMessage(
+          id: 'codex-item-1',
+          role: 'assistant',
+          content: [TextContent(text: 'first page answer')],
+          model: 'codex',
+        ),
+      ),
+    );
+    final second = ServerChatEntry(
+      AssistantServerMessage(
+        messageUuid: 'codex-item-1',
+        historyTurnId: 'provider-turn-two',
+        message: const AssistantMessage(
+          id: 'codex-item-1',
+          role: 'assistant',
+          content: [TextContent(text: 'second page answer')],
+          model: 'codex',
+        ),
+      ),
+    );
+
+    expect(
+      chatAssistantEntryStableIdentity(
+        first.message as AssistantServerMessage,
+        first.timestamp,
+      ),
+      'turn:provider-turn-one:uuid:codex-item-1',
+    );
+    expect(
+      chatMessageEntryStableKey(first),
+      isNot(chatMessageEntryStableKey(second)),
+    );
   });
 }
 

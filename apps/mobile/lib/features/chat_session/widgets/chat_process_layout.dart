@@ -645,14 +645,34 @@ String _segmentIdentity(
 }
 
 String _turnKey(UserChatEntry entry) {
+  return chatUserEntryStableIdentity(entry);
+}
+
+/// Stable identity shared by the transcript row and process disclosure.
+///
+/// Legacy Codex pages can reuse a synthetic user UUID such as
+/// `codex:user-turn:1` on multiple provider turns. The provider turn must
+/// therefore scope UUID/client fallbacks whenever the authoritative item id is
+/// absent; otherwise Flutter row state and process expansion can alias across
+/// paged turns.
+String chatUserEntryStableIdentity(UserChatEntry entry) {
   final providerItemId = entry.providerItemId?.trim();
   if (providerItemId?.isNotEmpty == true) {
     return 'provider:$providerItemId';
   }
+  final historyTurnId = entry.historyTurnId?.trim();
   final messageUuid = entry.messageUuid?.trim();
-  if (messageUuid?.isNotEmpty == true) return 'uuid:$messageUuid';
+  if (messageUuid?.isNotEmpty == true) {
+    return historyTurnId?.isNotEmpty == true
+        ? 'turn:$historyTurnId:uuid:$messageUuid'
+        : 'uuid:$messageUuid';
+  }
   final clientId = entry.clientMessageId?.trim();
-  if (clientId?.isNotEmpty == true) return 'client:$clientId';
+  if (clientId?.isNotEmpty == true) {
+    return historyTurnId?.isNotEmpty == true
+        ? 'turn:$historyTurnId:client:$clientId'
+        : 'client:$clientId';
+  }
   return 'time:${entry.timestamp.microsecondsSinceEpoch}:${entry.text.length}';
 }
 
@@ -662,12 +682,7 @@ String _partialTurnKey(List<ChatEntry> entries, int start, int end) {
     if (entry is! ServerChatEntry) continue;
     final message = entry.message;
     if (message is AssistantServerMessage) {
-      final messageUuid = message.messageUuid?.trim();
-      if (messageUuid?.isNotEmpty == true) {
-        return 'partial:uuid:$messageUuid';
-      }
-      final messageId = message.message.id.trim();
-      if (messageId.isNotEmpty) return 'partial:id:$messageId';
+      return 'partial:${chatAssistantEntryStableIdentity(message, entry.timestamp)}';
     }
     if (message is ToolResultMessage) {
       final toolUseId = message.toolUseId.trim();
@@ -689,8 +704,10 @@ String _processEntryIdentity(ChatEntry entry) {
   if (entry is StreamingChatEntry) return 'streaming';
   final message = (entry as ServerChatEntry).message;
   return switch (message) {
-    AssistantServerMessage(:final messageUuid, :final message) =>
-      _assistantProcessIdentity(messageUuid, message, entry.timestamp),
+    AssistantServerMessage() => chatAssistantEntryStableIdentity(
+      message,
+      entry.timestamp,
+    ),
     ToolResultMessage(:final toolUseId) =>
       toolUseId.trim().isNotEmpty
           ? 'tool-result:${toolUseId.trim()}'
@@ -707,18 +724,22 @@ String _processEntryIdentity(ChatEntry entry) {
   };
 }
 
-String _assistantProcessIdentity(
-  String? messageUuid,
-  AssistantMessage message,
+String chatAssistantEntryStableIdentity(
+  AssistantServerMessage serverMessage,
   DateTime timestamp,
 ) {
-  final uuid = messageUuid?.trim();
-  if (uuid?.isNotEmpty == true) return 'uuid:$uuid';
+  final message = serverMessage.message;
+  final historyTurnId = serverMessage.historyTurnId?.trim();
+  String scoped(String kind, String value) => historyTurnId?.isNotEmpty == true
+      ? 'turn:$historyTurnId:$kind:$value'
+      : '$kind:$value';
+  final uuid = serverMessage.messageUuid?.trim();
+  if (uuid?.isNotEmpty == true) return scoped('uuid', uuid!);
   final messageId = message.id.trim();
-  if (messageId.isNotEmpty) return 'id:$messageId';
+  if (messageId.isNotEmpty) return scoped('id', messageId);
   for (final content in message.content) {
     if (content case ToolUseContent(:final id) when id.trim().isNotEmpty) {
-      return 'tool:${id.trim()}';
+      return scoped('tool', id.trim());
     }
   }
   final signature = message.content
@@ -733,9 +754,9 @@ String _assistantProcessIdentity(
       )
       .join('|');
   if (signature.isNotEmpty) {
-    return 'content:${_stableFingerprint(signature)}';
+    return scoped('content', _stableFingerprint(signature));
   }
-  return 'time:${timestamp.microsecondsSinceEpoch}';
+  return scoped('time', '${timestamp.microsecondsSinceEpoch}');
 }
 
 String _boundedIdentityText(String value) {
