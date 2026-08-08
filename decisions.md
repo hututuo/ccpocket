@@ -1,5 +1,38 @@
 # ccPocket Compatibility Decisions
 
+## 2026-08-08 provider identity and lightweight history are the only merge authority
+
+- A displayed message is reconciled by provider item id, provider turn id and
+  client submission id. Timestamp and text are not global identities and may
+  only support a bounded live-tail fallback when no strong identities conflict.
+- Assistant, thinking, tool use, tool result, disclosure state and tool-detail
+  requests inherit the exact provider turn scope. A fallback UUID or tool id
+  reused in another turn or source page is a different item.
+- History pages capture the expected source revision and cursor before the
+  request and compare again in the SQLite commit transaction. A late page may
+  be retried, but cannot rewind a newer cache or visible live tail.
+- User-message navigation no longer requires a complete local conversation
+  mirror. `conversation_user_index_v1` stores only rebuildable user shells and
+  locators; the selected turn and tool detail are fetched on demand.
+- The floating todo list is device-local and scoped by Bridge identity, Codex
+  source, provider and durable parent thread. It sends through the existing
+  composer path and never creates a second provider input channel.
+- A cold durable conversation becomes focused on open. Settings may begin as
+  unknown, but the mounted page must consume the authoritative focused update;
+  leaving and reopening is not a valid refresh mechanism.
+- Connection progress is derived from producer milestones. The stalled warning
+  is keyed by generation, stage, percent and progress identity and appears only
+  after ten seconds without effective progress.
+- Bridge-owned auto approval remains the only offline approval supervisor and
+  must hold the exact Action Broker writer lease/source generation. Mobile does
+  not run a parallel approval loop.
+- The accepted plan is
+  `plans/mobile-message-history-todo-reliability_v01_20260808-094120.md`; final
+  source evidence is
+  `notes/message-history-todo-reliability-audit_v01_20260808-133652.md`.
+  Runtime deployment, Mobile publication and device acceptance remain separate
+  gates.
+
 ## 2026-08-07 selective upstream adoption and independent product line
 
 - CC Pocket now evolves as an independent product line. Clean replay onto every

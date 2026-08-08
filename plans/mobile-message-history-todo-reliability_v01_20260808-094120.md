@@ -1,6 +1,6 @@
 # CC Pocket 消息身份、历史导航与悬浮待办可靠性方案
 
-状态：`active`
+状态：`accepted / source-verified / release-device-pending`
 
 分支：`feature/session-reliability-and-tasks-20260808`
 

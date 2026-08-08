@@ -1,5 +1,25 @@
 # CC Pocket Compatibility Fork Context
 
+## 2026-08-08 message identity, bounded history, user index and floating todo
+
+The source-verified reliability line is
+`feature/session-reliability-and-tasks-20260808` at `0f78670d`, based on
+`685e67cb`. It unifies provider item, provider turn and client submission
+identity across Bridge, v2, SQLite, Cubit and UI; rejects stale history pages;
+keeps compact recovery bounded; replaces full-history navigation dependency
+with the additive `conversation_user_index_v1`; adds source-scoped floating
+todos; refreshes cold-session settings in the mounted page; and makes entry
+progress event-backed with a per-stage ten-second stall watchdog.
+
+Final source gates passed: Bridge 114 files / 2,354 tests, Mobile 2,971 tests
+with four environment skips, analyze 0 errors / 0 warnings / 56 infos, and the
+10,000-entry sync benchmark completed at p95 95.71 ms with a 57,603-byte
+maximum frame. The final provider-to-UI audit reports 0 P0/P1/P2. Detailed
+evidence is in
+`notes/message-history-todo-reliability-audit_v01_20260808-133652.md`.
+Production Bridge, OTA/IPA, Cloud, Desktop, network and physical-device
+acceptance remain separate release gates.
+
 ## 2026-08-08 compact bounded-history compatibility correction
 
 The `fix/compact-bounded-history-20260808` line keeps Codex history on the
