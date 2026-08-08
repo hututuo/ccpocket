@@ -95,7 +95,7 @@ export const CONVERSATION_SYNC_PRIMARY_CODEX_SOURCE_KINDS = [
 const PRIORITY_RECENT_COUNT = 5;
 const PRIORITY_CODEX_SETTINGS_CONCURRENCY = 3;
 const MAX_PENDING_PRIORITY_CODEX_SETTINGS = 32;
-const CODEX_SETTINGS_HYDRATION_TIMEOUT_MS = 5_000;
+const CODEX_SETTINGS_HYDRATION_TIMEOUT_MS = 10_000;
 const MIN_RECENT_COUNT = 10;
 const RECENT_WINDOW_MS = 3 * 24 * 60 * 60_000;
 const STATUS_WATCHDOG_MS = 5_000;
@@ -159,6 +159,7 @@ const MAX_SHARED_OBSERVER_INLINE_IMAGES = 4;
 const MAX_SHARED_OBSERVER_INLINE_IMAGE_BASE64_BYTES = 8 * 1024 * 1024;
 const CATALOG_CONNECTION_REUSE_MS = 5_000;
 const FOCUSED_CODEX_SETTINGS_RETRY_MS = 5_000;
+const MAX_FOCUSED_CODEX_SETTINGS_RETRIES = 2;
 // The one-shot discovery already finds every currently running rollout.
 // Idle recent threads are attached lazily on an exact catalog change or focus,
 // avoiding ten redundant 8 MiB seed parses on every cold phone connection.
@@ -262,6 +263,8 @@ interface ConversationSyncV2Options {
     threadId: string,
   ) => Promise<CodexSessionIndexMetadata | undefined>;
   codexSettingsHydrationTimeoutMs?: number;
+  /** Deterministic test seam for focused settings retry cadence. */
+  focusedCodexSettingsRetryMs?: number;
   statusReader?: (
     current: ReadonlyMap<ConversationKey, CatalogRecord>,
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
@@ -462,6 +465,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     threadId: string,
   ) => Promise<CodexSessionIndexMetadata | undefined>;
   private readonly codexSettingsHydrationTimeoutMs: number;
+  private readonly focusedCodexSettingsRetryMs: number;
   private readonly statusReader: (
     current: ReadonlyMap<ConversationKey, CatalogRecord>,
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
@@ -609,6 +613,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     ConversationKey,
     { signature: string; attemptedAt: number; complete: boolean }
   >();
+  private readonly focusedCodexSettingsRetryTimers = new Map<
+    ConversationKey,
+    ReturnType<typeof setTimeout>
+  >();
+  private readonly focusedCodexSettingsRetryCounts = new Map<
+    ConversationKey,
+    number
+  >();
   private codexSettingsHydrationGeneration = 0;
   private readonly codexSettingsHydrationEpochs = new Map<
     ConversationKey,
@@ -656,6 +668,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.codexSettingsHydrationTimeoutMs =
       options.codexSettingsHydrationTimeoutMs ??
       CODEX_SETTINGS_HYDRATION_TIMEOUT_MS;
+    this.focusedCodexSettingsRetryMs =
+      options.focusedCodexSettingsRetryMs ?? FOCUSED_CODEX_SETTINGS_RETRY_MS;
     this.statusReader =
       options.statusReader ??
       ((current) =>
@@ -1745,6 +1759,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.subscriptions.delete(client);
     if (!this.hasInteractiveClients()) {
       this.priorityCodexSettingsQueue.clear();
+      this.clearAllFocusedCodexSettingsRetries();
       this.cancelTimers();
       this.clearExternalCodexMonitoring();
       this.requestSharedCodexReadProcessClose();
@@ -1784,6 +1799,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.sharedControlRecoveryTargets.clear();
     this.focusedCodexSettingsFlights.clear();
     this.focusedCodexSettingsAttempts.clear();
+    this.clearAllFocusedCodexSettingsRetries();
     this.codexSettingsHydrationGeneration += 1;
     this.codexSettingsHydrationEpochs.clear();
     this.codexSettingsFlightObservations.clear();
@@ -1850,6 +1866,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       capacityWaiters: new Set(),
     };
     this.subscriptions.set(client, subscription);
+    this.pruneFocusedCodexSettingsRetries();
     if (subscription.interactive || subscription.notificationOnly) {
       this.reconcileSharedContentObservers();
     }
@@ -1941,6 +1958,16 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     subscription.focusedKey = message.focused
       ? targetKey(message.focused)
       : undefined;
+    this.pruneFocusedCodexSettingsRetries();
+    if (message.focused?.provider === "codex") {
+      const focusedKey = targetKey(message.focused);
+      this.clearFocusedCodexSettingsRetry(focusedKey);
+      if (!this.focusedCodexSettingsFlights.has(focusedKey)) {
+        // An explicit open/retry is allowed to bypass the previous transient
+        // cooldown once; source and generation fences still apply below.
+        this.focusedCodexSettingsAttempts.delete(focusedKey);
+      }
+    }
     this.reconcileSharedContentObservers();
     this.sendEvent(client, subscription, {
       event: "focus_applied",
@@ -1993,6 +2020,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.subscriptions.delete(client);
     if (!this.hasInteractiveClients()) {
       this.priorityCodexSettingsQueue.clear();
+      this.clearAllFocusedCodexSettingsRetries();
       this.cancelTimers();
       this.clearExternalCodexMonitoring();
       this.requestSharedCodexReadProcessClose();
@@ -3117,6 +3145,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         for (const key of this.focusedCodexSettingsAttempts.keys()) {
           if (!next.has(key)) this.focusedCodexSettingsAttempts.delete(key);
         }
+        for (const key of this.focusedCodexSettingsRetryTimers.keys()) {
+          if (!next.has(key)) this.clearFocusedCodexSettingsRetry(key);
+        }
         for (const key of this.codexSettingsHydrationEpochs.keys()) {
           if (!next.has(key)) this.codexSettingsHydrationEpochs.delete(key);
         }
@@ -3210,9 +3241,68 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     return flight;
   }
 
+  private isFocusedCodexSettingsKey(key: ConversationKey): boolean {
+    return [...this.subscriptions.values()].some(
+      (subscription) =>
+        subscription.interactive && subscription.focusedKey === key,
+    );
+  }
+
+  private clearFocusedCodexSettingsRetry(
+    key: ConversationKey,
+    resetCount = true,
+  ): void {
+    const timer = this.focusedCodexSettingsRetryTimers.get(key);
+    if (timer) clearTimeout(timer);
+    this.focusedCodexSettingsRetryTimers.delete(key);
+    if (resetCount) this.focusedCodexSettingsRetryCounts.delete(key);
+  }
+
+  private clearAllFocusedCodexSettingsRetries(): void {
+    for (const timer of this.focusedCodexSettingsRetryTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.focusedCodexSettingsRetryTimers.clear();
+    this.focusedCodexSettingsRetryCounts.clear();
+  }
+
+  private pruneFocusedCodexSettingsRetries(): void {
+    for (const key of this.focusedCodexSettingsRetryTimers.keys()) {
+      if (!this.isFocusedCodexSettingsKey(key)) {
+        this.clearFocusedCodexSettingsRetry(key);
+      }
+    }
+    for (const key of this.focusedCodexSettingsRetryCounts.keys()) {
+      if (!this.isFocusedCodexSettingsKey(key)) {
+        this.focusedCodexSettingsRetryCounts.delete(key);
+      }
+    }
+  }
+
+  private scheduleFocusedCodexSettingsRetry(key: ConversationKey): void {
+    if (
+      this.closed ||
+      !this.isFocusedCodexSettingsKey(key) ||
+      this.focusedCodexSettingsRetryTimers.has(key)
+    ) {
+      return;
+    }
+    const retries = this.focusedCodexSettingsRetryCounts.get(key) ?? 0;
+    if (retries >= MAX_FOCUSED_CODEX_SETTINGS_RETRIES) return;
+    const timer = setTimeout(() => {
+      this.focusedCodexSettingsRetryTimers.delete(key);
+      if (this.closed || !this.isFocusedCodexSettingsKey(key)) return;
+      this.focusedCodexSettingsRetryCounts.set(key, retries + 1);
+      this.prioritizeCodexSettingsHydration(key);
+    }, this.focusedCodexSettingsRetryMs + 10);
+    timer.unref?.();
+    this.focusedCodexSettingsRetryTimers.set(key, timer);
+  }
+
   private invalidateAllCodexSettingsHydration(): void {
     this.codexSettingsHydrationGeneration += 1;
     this.focusedCodexSettingsAttempts.clear();
+    this.clearAllFocusedCodexSettingsRetries();
     this.codexSettingsRerunKeys.clear();
     this.priorityCodexSettingsQueue.clear();
   }
@@ -3223,6 +3313,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       (this.codexSettingsHydrationEpochs.get(key) ?? 0) + 1,
     );
     this.focusedCodexSettingsAttempts.delete(key);
+    this.clearFocusedCodexSettingsRetry(key);
     if (this.focusedCodexSettingsFlights.has(key)) {
       this.codexSettingsRerunKeys.add(key);
     }
@@ -3239,7 +3330,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       previousAttempt?.signature === signature &&
       (previousAttempt.complete ||
         Date.now() - previousAttempt.attemptedAt <
-          FOCUSED_CODEX_SETTINGS_RETRY_MS)
+          this.focusedCodexSettingsRetryMs)
     ) {
       return Promise.resolve(false);
     }
@@ -3257,11 +3348,21 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       generation: hydrationGeneration,
       epoch: hydrationEpoch,
     });
+    const hydrationStartedAt = Date.now();
+    const threadToken = hashState([key]).slice(0, 12);
     const flight = this.readCodexSettingsMetadataWithTimeout(
       target.providerSessionId,
     )
       .then((metadata) => {
-        if (this.closed || !metadata?.codexSettings) return false;
+        if (this.closed) return false;
+        if (!metadata?.codexSettings) {
+          this.scheduleFocusedCodexSettingsRetry(key);
+          console.warn(
+            `[conversation-sync-v2] Codex settings missing ` +
+              `thread=${threadToken} elapsedMs=${Date.now() - hydrationStartedAt}`,
+          );
+          return false;
+        }
         if (
           hydrationGeneration !== this.codexSettingsHydrationGeneration ||
           hydrationEpoch !== (this.codexSettingsHydrationEpochs.get(key) ?? 0)
@@ -3295,12 +3396,20 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           attemptedAt: Date.now(),
           complete: true,
         });
+        this.clearFocusedCodexSettingsRetry(key);
+        console.log(
+          `[conversation-sync-v2] Codex settings hydrated ` +
+            `thread=${threadToken} elapsedMs=${Date.now() - hydrationStartedAt} ` +
+            `changed=${changed}`,
+        );
         return changed;
       })
       .catch((error) => {
         const kind = error instanceof Error ? error.name : typeof error;
+        this.scheduleFocusedCodexSettingsRetry(key);
         console.warn(
-          `[conversation-sync-v2] Codex settings unavailable (${kind})`,
+          `[conversation-sync-v2] Codex settings unavailable (${kind}) ` +
+            `thread=${threadToken} elapsedMs=${Date.now() - hydrationStartedAt}`,
         );
         return false;
       })

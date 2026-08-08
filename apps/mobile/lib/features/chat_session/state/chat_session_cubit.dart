@@ -612,9 +612,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   final ValueNotifier<LocalHistoryPagingState> localHistoryPaging =
       ValueNotifier(const LocalHistoryPagingState());
   final DetachedHistoryPageLoader? _detachedHistoryPageLoader;
-  final DetachedHistoryToolDetailLoader? detachedHistoryToolDetailLoader;
-  final DetachedUserMessageIndexLoader? _detachedUserMessageIndexLoader;
-  final DetachedUserTurnLoader? _detachedUserTurnLoader;
+  DetachedHistoryToolDetailLoader? _detachedHistoryToolDetailLoader;
+  DetachedUserMessageIndexLoader? _detachedUserMessageIndexLoader;
+  DetachedUserTurnLoader? _detachedUserTurnLoader;
   final Map<String, int> _providerTurnOrderById = {};
   final ValueNotifier<bool> historySyncing = ValueNotifier(false);
   final ValueNotifier<int> historyToolDetailRevision = ValueNotifier(0);
@@ -624,6 +624,28 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool _localHistoryUserIndexComplete = false;
 
   bool get localHistoryUserIndexComplete => _localHistoryUserIndexComplete;
+
+  /// Rebinds source- and revision-scoped durable history loaders without
+  /// replacing the mounted chat Cubit.
+  ///
+  /// A durable route intentionally keeps one Cubit alive to preserve draft,
+  /// scroll and disclosure state. Consequently the closures captured by its
+  /// constructor must be refreshed when authentication canonicalizes the
+  /// source or a newer content revision commits; otherwise history navigation
+  /// keeps querying the revision that was current when the page first opened.
+  void updateDetachedHistoryLoaders({
+    DetachedHistoryToolDetailLoader? toolDetailLoader,
+    DetachedUserMessageIndexLoader? userMessageIndexLoader,
+    DetachedUserTurnLoader? userTurnLoader,
+  }) {
+    if (!detachedPreview || isClosed) return;
+    _detachedHistoryToolDetailLoader = toolDetailLoader;
+    _detachedUserMessageIndexLoader = userMessageIndexLoader;
+    _detachedUserTurnLoader = userTurnLoader;
+    _localHistoryUserIndexComplete = false;
+    _providerTurnOrderById.clear();
+    localHistoryIndexRevision.value += 1;
+  }
 
   /// Tool use IDs that have already been answered locally.
   static const _maxRespondedToolUseIds = 512;
@@ -818,13 +840,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     this.initialHistoryMessages = const [],
     String? initialLiveRuntimeSessionId,
     DetachedHistoryPageLoader? detachedHistoryPageLoader,
-    this.detachedHistoryToolDetailLoader,
+    DetachedHistoryToolDetailLoader? detachedHistoryToolDetailLoader,
     DetachedUserMessageIndexLoader? detachedUserMessageIndexLoader,
     DetachedUserTurnLoader? detachedUserTurnLoader,
     bool initialHistoryHasEarlier = false,
   }) : _bridge = bridge,
        _streamingCubit = streamingCubit,
        _detachedHistoryPageLoader = detachedHistoryPageLoader,
+       _detachedHistoryToolDetailLoader = detachedHistoryToolDetailLoader,
        _detachedUserMessageIndexLoader = detachedUserMessageIndexLoader,
        _detachedUserTurnLoader = detachedUserTurnLoader,
        _imagePayloadEncoder =
@@ -3042,12 +3065,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     );
     historyToolDetailRevision.value += 1;
     try {
-      final details = detachedHistoryToolDetailLoader == null
+      final details = _detachedHistoryToolDetailLoader == null
           ? await _bridge.requestHistoryToolDetails(
               runtimeSessionId: sessionId,
               toolUseIds: requestedIds,
             )
-          : await detachedHistoryToolDetailLoader!(gap, requestedIds);
+          : await _detachedHistoryToolDetailLoader!(gap, requestedIds);
       if (isClosed || !_historyToolDetailGapIsActive(gap.gapId)) {
         return false;
       }

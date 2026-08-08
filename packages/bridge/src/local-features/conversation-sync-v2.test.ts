@@ -631,6 +631,67 @@ describe("conversation_sync_v2 protocol", () => {
     fixture.handler.close();
   });
 
+  it("retries a focused settings timeout without requiring route re-entry", async () => {
+    const focused = codexSeed(0, "thread-focused-settings-retry");
+    let attempts = 0;
+    const focusedCodexMetadataReader = vi.fn(() => {
+      attempts += 1;
+      if (attempts === 1) return new Promise<undefined>(() => {});
+      return Promise.resolve({
+        codexSettings: {
+          model: "gpt-5.6-sol",
+          modelReasoningEffort: "ultra",
+          serviceTier: "standard",
+          approvalPolicy: "never",
+          approvalsReviewer: "user",
+          sandboxMode: "danger-full-access",
+          collaborationMode: "default" as const,
+        },
+      });
+    });
+    const fixture = createFixture(
+      [focused],
+      async (target) => history(target.providerSessionId),
+      {
+        focusedCodexMetadataReader,
+        codexSettingsHydrationTimeoutMs: 5,
+        focusedCodexSettingsRetryMs: 5,
+      },
+    );
+    const client = {};
+
+    await fixture.handler.handle(
+      {
+        ...subscribeMessage(),
+        focused: {
+          provider: "codex",
+          providerSessionId: focused.entry.providerSessionId,
+        },
+      },
+      context(client, fixture.runtime),
+    );
+
+    await vi.waitFor(() =>
+      expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(2),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "catalog_changes")
+          .flatMap((event) => [...event.created, ...event.updated])
+          .find(
+            (entry) =>
+              entry.providerSessionId === focused.entry.providerSessionId &&
+              entry.codexSettingsSnapshotComplete === true,
+          ),
+      ).toMatchObject({
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+        serviceTier: "standard",
+      }),
+    );
+    await fixture.handler.close();
+  });
+
   it("rejects settings hydration from an older shared-control generation", async () => {
     type SettingsMetadata = {
       codexSettings: {
@@ -1311,7 +1372,6 @@ describe("ConversationSyncV2FeatureHandler", () => {
         limit: 5,
         sortDirection: "desc",
         itemsView: "summary",
-        projection: "user_index",
       },
       context(client, fixture.runtime),
     );

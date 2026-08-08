@@ -25,6 +25,11 @@ class DurableSessionPreviewUpdater extends StatefulWidget {
   final String? expectedSourceFingerprint;
   final String? liveRuntimeSessionId;
   final LiveRuntimeReadyCallback? onLiveRuntimeReady;
+  final String durableHistoryLoaderRevision;
+  final String? durableHistoryLoaderSourceFingerprint;
+  final DetachedHistoryToolDetailLoader? detachedHistoryToolDetailLoader;
+  final DetachedUserMessageIndexLoader? detachedUserMessageIndexLoader;
+  final DetachedUserTurnLoader? detachedUserTurnLoader;
   final Widget child;
 
   const DurableSessionPreviewUpdater({
@@ -37,6 +42,11 @@ class DurableSessionPreviewUpdater extends StatefulWidget {
     this.expectedSourceFingerprint,
     this.liveRuntimeSessionId,
     this.onLiveRuntimeReady,
+    this.durableHistoryLoaderRevision = '',
+    this.durableHistoryLoaderSourceFingerprint,
+    this.detachedHistoryToolDetailLoader,
+    this.detachedUserMessageIndexLoader,
+    this.detachedUserTurnLoader,
     required this.child,
   });
 
@@ -207,8 +217,29 @@ class _DurableSessionPreviewUpdaterState
     super.didUpdateWidget(oldWidget);
     final liveRuntimeChanged =
         oldWidget.liveRuntimeSessionId != widget.liveRuntimeSessionId;
+    final durableHistoryLoaderChanged =
+        oldWidget.durableHistoryLoaderRevision !=
+            widget.durableHistoryLoaderRevision ||
+        oldWidget.durableHistoryLoaderSourceFingerprint !=
+            widget.durableHistoryLoaderSourceFingerprint;
     if (liveRuntimeChanged) {
       _bindLiveRuntime();
+    }
+    if (durableHistoryLoaderChanged) {
+      final revision = widget.durableHistoryLoaderRevision;
+      final sourceFingerprint = widget.durableHistoryLoaderSourceFingerprint;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted ||
+            widget.durableHistoryLoaderRevision != revision ||
+            widget.durableHistoryLoaderSourceFingerprint != sourceFingerprint) {
+          return;
+        }
+        context.read<ChatSessionCubit>().updateDetachedHistoryLoaders(
+          toolDetailLoader: widget.detachedHistoryToolDetailLoader,
+          userMessageIndexLoader: widget.detachedUserMessageIndexLoader,
+          userTurnLoader: widget.detachedUserTurnLoader,
+        );
+      });
     }
     if (liveRuntimeChanged ||
         oldWidget.statusProvider != widget.statusProvider ||

@@ -564,7 +564,16 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     final targetFingerprint = sync.cacheTargetFingerprintForDataSource(
       _dataSourceIdentity,
     );
-    _expectedCacheTargetFingerprint = targetFingerprint;
+    final expectedFingerprintChanged =
+        _expectedCacheTargetFingerprint != targetFingerprint;
+    if (expectedFingerprintChanged) {
+      // The chat Cubit is intentionally kept alive across route/IP identity
+      // canonicalization. Rebuild only the updater props so its source fence
+      // can accept the newly authenticated catalog in-place; assigning this
+      // field outside setState leaves a cold page pinned to the provisional
+      // fingerprint until the route is closed and opened again.
+      setState(() => _expectedCacheTargetFingerprint = targetFingerprint);
+    }
     if (sync.matchesCurrentDataSource(
       _dataSourceIdentity,
       provider: Provider.codex.value,
@@ -1512,6 +1521,48 @@ class _CodexProviders extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bridge = context.read<BridgeService>();
+    final DetachedHistoryToolDetailLoader? toolDetailLoader = detachedPreview
+        ? (gap, toolUseIds) =>
+              context.read<ConversationContentSyncService>().loadToolDetails(
+                provider: Provider.codex.value,
+                providerSessionId: sessionId,
+                gap: gap,
+                toolUseIds: toolUseIds,
+                expectedDataSourceIdentity: dataSourceIdentity,
+              )
+        : null;
+    final DetachedUserMessageIndexLoader? userMessageIndexLoader =
+        detachedPreview && historyRevision.isNotEmpty
+        ? () async {
+            final snapshot = await context
+                .read<ConversationContentSyncService>()
+                .loadUserMessageIndex(
+                  provider: Provider.codex.value,
+                  providerSessionId: sessionId,
+                  revision: historyRevision,
+                  expectedDataSourceIdentity: dataSourceIdentity,
+                );
+            if (snapshot == null) return null;
+            return (
+              messages: snapshot.entries
+                  .map((entry) => entry.message)
+                  .toList(growable: false),
+              complete:
+                  snapshot.complete && snapshot.revision == historyRevision,
+            );
+          }
+        : null;
+    final DetachedUserTurnLoader? userTurnLoader =
+        detachedPreview && historyRevision.isNotEmpty
+        ? (providerTurnId) =>
+              context.read<ConversationContentSyncService>().loadUserTurnWindow(
+                provider: Provider.codex.value,
+                providerSessionId: sessionId,
+                providerTurnId: providerTurnId,
+                revision: historyRevision,
+                expectedDataSourceIdentity: dataSourceIdentity,
+              )
+        : null;
     return MultiBlocProvider(
       providers: [
         BlocProvider(create: (_) => StreamingStateCubit()),
@@ -1534,51 +1585,9 @@ class _CodexProviders extends StatelessWidget {
               initialHistoryMessages: initialHistoryMessages,
               initialLiveRuntimeSessionId: liveRuntimeSessionId,
               detachedHistoryPageLoader: detachedHistoryPageLoader,
-              detachedHistoryToolDetailLoader: detachedPreview
-                  ? (gap, toolUseIds) => context
-                        .read<ConversationContentSyncService>()
-                        .loadToolDetails(
-                          provider: Provider.codex.value,
-                          providerSessionId: sessionId,
-                          gap: gap,
-                          toolUseIds: toolUseIds,
-                          expectedDataSourceIdentity: dataSourceIdentity,
-                        )
-                  : null,
-              detachedUserMessageIndexLoader:
-                  detachedPreview && historyRevision.isNotEmpty
-                  ? () async {
-                      final snapshot = await context
-                          .read<ConversationContentSyncService>()
-                          .loadUserMessageIndex(
-                            provider: Provider.codex.value,
-                            providerSessionId: sessionId,
-                            revision: historyRevision,
-                            expectedDataSourceIdentity: dataSourceIdentity,
-                          );
-                      if (snapshot == null) return null;
-                      return (
-                        messages: snapshot.entries
-                            .map((entry) => entry.message)
-                            .toList(growable: false),
-                        complete:
-                            snapshot.complete &&
-                            snapshot.revision == historyRevision,
-                      );
-                    }
-                  : null,
-              detachedUserTurnLoader:
-                  detachedPreview && historyRevision.isNotEmpty
-                  ? (providerTurnId) => context
-                        .read<ConversationContentSyncService>()
-                        .loadUserTurnWindow(
-                          provider: Provider.codex.value,
-                          providerSessionId: sessionId,
-                          providerTurnId: providerTurnId,
-                          revision: historyRevision,
-                          expectedDataSourceIdentity: dataSourceIdentity,
-                        )
-                  : null,
+              detachedHistoryToolDetailLoader: toolDetailLoader,
+              detachedUserMessageIndexLoader: userMessageIndexLoader,
+              detachedUserTurnLoader: userTurnLoader,
               initialHistoryHasEarlier: initialHistoryHasEarlier,
             );
             final submission = initialSubmission;
@@ -1627,6 +1636,11 @@ class _CodexProviders extends StatelessWidget {
                 }
                 return accepted;
               },
+        durableHistoryLoaderRevision: historyRevision,
+        durableHistoryLoaderSourceFingerprint: expectedSourceFingerprint,
+        detachedHistoryToolDetailLoader: toolDetailLoader,
+        detachedUserMessageIndexLoader: userMessageIndexLoader,
+        detachedUserTurnLoader: userTurnLoader,
         child: _CodexChatBody(
           sessionId: sessionId,
           liveRuntimeSessionId: detachedPreview

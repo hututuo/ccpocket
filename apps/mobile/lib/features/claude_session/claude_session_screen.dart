@@ -367,7 +367,14 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     final targetFingerprint = sync.cacheTargetFingerprintForDataSource(
       _dataSourceIdentity,
     );
-    _expectedCacheTargetFingerprint = targetFingerprint;
+    final expectedFingerprintChanged =
+        _expectedCacheTargetFingerprint != targetFingerprint;
+    if (expectedFingerprintChanged) {
+      // Preserve the mounted chat subtree while updating the source fence.
+      // Without a rebuild, a canonical catalog can finish in the background
+      // while the page keeps the provisional fingerprint until re-entry.
+      setState(() => _expectedCacheTargetFingerprint = targetFingerprint);
+    }
     if (sync.matchesCurrentDataSource(
       _dataSourceIdentity,
       provider: Provider.claude.value,
@@ -1103,6 +1110,48 @@ class _ChatScreenProviders extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bridge = context.read<BridgeService>();
+    final DetachedHistoryToolDetailLoader? toolDetailLoader = detachedPreview
+        ? (gap, toolUseIds) =>
+              context.read<ConversationContentSyncService>().loadToolDetails(
+                provider: Provider.claude.value,
+                providerSessionId: sessionId,
+                gap: gap,
+                toolUseIds: toolUseIds,
+                expectedDataSourceIdentity: dataSourceIdentity,
+              )
+        : null;
+    final DetachedUserMessageIndexLoader? userMessageIndexLoader =
+        detachedPreview && historyRevision.isNotEmpty
+        ? () async {
+            final snapshot = await context
+                .read<ConversationContentSyncService>()
+                .loadUserMessageIndex(
+                  provider: Provider.claude.value,
+                  providerSessionId: sessionId,
+                  revision: historyRevision,
+                  expectedDataSourceIdentity: dataSourceIdentity,
+                );
+            if (snapshot == null) return null;
+            return (
+              messages: snapshot.entries
+                  .map((entry) => entry.message)
+                  .toList(growable: false),
+              complete:
+                  snapshot.complete && snapshot.revision == historyRevision,
+            );
+          }
+        : null;
+    final DetachedUserTurnLoader? userTurnLoader =
+        detachedPreview && historyRevision.isNotEmpty
+        ? (providerTurnId) =>
+              context.read<ConversationContentSyncService>().loadUserTurnWindow(
+                provider: Provider.claude.value,
+                providerSessionId: sessionId,
+                providerTurnId: providerTurnId,
+                revision: historyRevision,
+                expectedDataSourceIdentity: dataSourceIdentity,
+              )
+        : null;
     return MultiBlocProvider(
       providers: [
         BlocProvider(create: (_) => StreamingStateCubit()),
@@ -1121,50 +1170,9 @@ class _ChatScreenProviders extends StatelessWidget {
               detachedPreview: detachedPreview,
               initialHistoryMessages: initialHistoryMessages,
               detachedHistoryPageLoader: detachedHistoryPageLoader,
-              detachedHistoryToolDetailLoader: detachedPreview
-                  ? (gap, toolUseIds) => context
-                        .read<ConversationContentSyncService>()
-                        .loadToolDetails(
-                          provider: Provider.claude.value,
-                          providerSessionId: sessionId,
-                          gap: gap,
-                          toolUseIds: toolUseIds,
-                        )
-                  : null,
-              detachedUserMessageIndexLoader:
-                  detachedPreview && historyRevision.isNotEmpty
-                  ? () async {
-                      final snapshot = await context
-                          .read<ConversationContentSyncService>()
-                          .loadUserMessageIndex(
-                            provider: Provider.claude.value,
-                            providerSessionId: sessionId,
-                            revision: historyRevision,
-                            expectedDataSourceIdentity: dataSourceIdentity,
-                          );
-                      if (snapshot == null) return null;
-                      return (
-                        messages: snapshot.entries
-                            .map((entry) => entry.message)
-                            .toList(growable: false),
-                        complete:
-                            snapshot.complete &&
-                            snapshot.revision == historyRevision,
-                      );
-                    }
-                  : null,
-              detachedUserTurnLoader:
-                  detachedPreview && historyRevision.isNotEmpty
-                  ? (providerTurnId) => context
-                        .read<ConversationContentSyncService>()
-                        .loadUserTurnWindow(
-                          provider: Provider.claude.value,
-                          providerSessionId: sessionId,
-                          providerTurnId: providerTurnId,
-                          revision: historyRevision,
-                          expectedDataSourceIdentity: dataSourceIdentity,
-                        )
-                  : null,
+              detachedHistoryToolDetailLoader: toolDetailLoader,
+              detachedUserMessageIndexLoader: userMessageIndexLoader,
+              detachedUserTurnLoader: userTurnLoader,
               initialHistoryHasEarlier: initialHistoryHasEarlier,
             );
             final submission = initialSubmission;
@@ -1196,6 +1204,11 @@ class _ChatScreenProviders extends StatelessWidget {
         expectedSourceFingerprint: detachedPreview
             ? expectedSourceFingerprint
             : null,
+        durableHistoryLoaderRevision: historyRevision,
+        durableHistoryLoaderSourceFingerprint: expectedSourceFingerprint,
+        detachedHistoryToolDetailLoader: toolDetailLoader,
+        detachedUserMessageIndexLoader: userMessageIndexLoader,
+        detachedUserTurnLoader: userTurnLoader,
         child: _ChatScreenBody(
           sessionId: sessionId,
           projectPath: projectPath,

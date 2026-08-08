@@ -549,6 +549,192 @@ void main() {
   );
 
   testWidgets(
+    'mounted durable page rebinds user history loaders for a new revision',
+    (tester) async {
+      final bridge = MockBridgeService();
+      final streaming = StreamingStateCubit();
+      Future<({List<UserInputMessage> messages, bool complete})?>
+      oldLoader() async => (
+        messages: const [
+          UserInputMessage(
+            text: 'old indexed prompt',
+            providerItemId: 'old-item',
+            historyTurnId: 'old-turn',
+          ),
+        ],
+        complete: true,
+      );
+      Future<({List<UserInputMessage> messages, bool complete})?>
+      newLoader() async => (
+        messages: const [
+          UserInputMessage(
+            text: 'new indexed prompt',
+            providerItemId: 'new-item',
+            historyTurnId: 'new-turn',
+          ),
+        ],
+        complete: true,
+      );
+      final cubit = ChatSessionCubit(
+        sessionId: 'loader-thread',
+        provider: Provider.codex,
+        bridge: bridge,
+        streamingCubit: streaming,
+        detachedPreview: true,
+        detachedUserMessageIndexLoader: oldLoader,
+      );
+      final revision = ValueNotifier('revision-old');
+      addTearDown(revision.dispose);
+      addTearDown(cubit.close);
+      addTearDown(streaming.close);
+      addTearDown(bridge.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: BlocProvider<ChatSessionCubit>.value(
+            value: cubit,
+            child: ValueListenableBuilder<String>(
+              valueListenable: revision,
+              builder: (context, value, _) => DurableSessionPreviewUpdater(
+                revision: 'preview',
+                messages: const [],
+                hasEarlier: false,
+                durableHistoryLoaderRevision: value,
+                durableHistoryLoaderSourceFingerprint: 'source-loader',
+                detachedUserMessageIndexLoader: value == 'revision-old'
+                    ? oldLoader
+                    : newLoader,
+                child: const SizedBox.shrink(),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(
+        (await cubit.loadAllUserMessagesForNavigation()).single.text,
+        'old indexed prompt',
+      );
+
+      revision.value = 'revision-new';
+      await tester.pump();
+      await tester.pump();
+
+      expect(
+        (await cubit.loadAllUserMessagesForNavigation()).single.text,
+        'new indexed prompt',
+      );
+    },
+  );
+
+  testWidgets(
+    'focused settings hydrate an already mounted cold Codex page in place',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..advertisedBridgeCapabilities = const {conversationSyncV2Capability};
+      final streaming = StreamingStateCubit();
+      final cubit = ChatSessionCubit(
+        sessionId: 'cold-thread',
+        provider: Provider.codex,
+        bridge: bridge,
+        streamingCubit: streaming,
+        detachedPreview: true,
+      );
+      final sessionList = _ProjectionSessionListCubit(
+        bridge: bridge,
+        sourceFingerprint: 'source-cold',
+        projectionReady: true,
+        metadataAvailable: false,
+        status: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'cold-thread',
+          activity: 'idle',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'notLoaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-08-08T01:00:00.000Z',
+          executionHost: 'unknown',
+          controlState: 'writable',
+          authorityGeneration: 'cold-authority',
+        ),
+        metadata: const RecentSession(
+          sessionId: 'cold-thread',
+          provider: 'codex',
+          firstPrompt: 'Cold thread',
+          created: '2026-07-26T01:00:00.000Z',
+          modified: '2026-07-26T01:00:00.000Z',
+          gitBranch: 'main',
+          projectPath: '/cold',
+          isSidechain: false,
+        ),
+      );
+      addTearDown(cubit.close);
+      addTearDown(streaming.close);
+      addTearDown(sessionList.close);
+      addTearDown(bridge.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MultiBlocProvider(
+            providers: [
+              BlocProvider<ChatSessionCubit>.value(value: cubit),
+              BlocProvider<SessionListCubit>.value(value: sessionList),
+            ],
+            child: const DurableSessionPreviewUpdater(
+              revision: 'cold-preview',
+              messages: [],
+              hasEarlier: false,
+              statusProvider: 'codex',
+              statusProviderSessionId: 'cold-thread',
+              expectedSourceFingerprint: 'source-cold',
+              child: SizedBox.shrink(),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(cubit.codexModelSettingsKnown, isFalse);
+      expect(cubit.state.codexPermissionStateKnown, isFalse);
+
+      sessionList.replace(
+        sourceFingerprint: 'source-cold',
+        status: sessionList.status,
+        metadataAvailable: true,
+        metadata: const RecentSession(
+          sessionId: 'cold-thread',
+          provider: 'codex',
+          firstPrompt: 'Cold thread',
+          created: '2026-07-26T01:00:00.000Z',
+          // Focused hydration adds settings without changing recency.
+          modified: '2026-07-26T01:00:00.000Z',
+          gitBranch: 'main',
+          projectPath: '/cold',
+          isSidechain: false,
+          codexModel: 'gpt-5.6-sol',
+          codexModelReasoningEffort: 'ultra',
+          codexServiceTier: 'standard',
+          codexApprovalPolicy: 'never',
+          codexApprovalsReviewer: 'user',
+          codexSandboxMode: 'danger-full-access',
+          codexCollaborationMode: 'plan',
+          codexSettingsSnapshotComplete: true,
+        ),
+      );
+      await tester.pump();
+
+      expect(cubit.codexModelSettingsKnown, isTrue);
+      expect(cubit.state.codexModel, 'gpt-5.6-sol');
+      expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
+      expect(cubit.state.codexPermissionStateKnown, isTrue);
+      expect(cubit.state.planMode, isTrue);
+    },
+  );
+
+  testWidgets(
     'detached projection rejects status and settings from another source',
     (tester) async {
       final bridge = MockBridgeService()
