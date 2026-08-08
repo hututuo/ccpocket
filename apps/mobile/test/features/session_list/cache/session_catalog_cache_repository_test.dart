@@ -2377,6 +2377,13 @@ void main() {
         ],
       );
       expect(stage?.complete, isTrue);
+      final firstState = await repository.loadConversationUserIndexState(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-user-index-stage',
+      );
+      expect(firstState?.revision, 'revision-1');
+      expect(firstState?.complete, isTrue);
 
       stage = await repository.prepareConversationUserIndex(
         target: target,
@@ -2420,6 +2427,13 @@ void main() {
       );
       expect(whileStaging?.revision, 'revision-1');
       expect(whileStaging?.entries.single.message.text, 'old active prompt');
+      final stagingState = await repository.loadConversationUserIndexState(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-user-index-stage',
+      );
+      expect(stagingState?.revision, 'revision-1');
+      expect(stagingState?.complete, isTrue);
 
       stage = await repository.commitConversationUserIndexPage(
         target: target,
@@ -2457,6 +2471,13 @@ void main() {
       );
       expect(completed?.revision, 'revision-2');
       expect(completed?.complete, isTrue);
+      final completedState = await repository.loadConversationUserIndexState(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-user-index-stage',
+      );
+      expect(completedState?.revision, 'revision-2');
+      expect(completedState?.complete, isTrue);
       expect(completed?.entries.map((entry) => entry.providerTurnId), [
         'turn-oldest',
         'turn-middle-old',

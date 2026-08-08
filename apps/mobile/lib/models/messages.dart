@@ -4947,6 +4947,13 @@ class RecentSession {
   final String created;
   final String modified;
 
+  /// Provider-owned content revision for bounded turns/items paging.
+  ///
+  /// Unlike [modified], this token changes with the canonical conversation
+  /// content and is safe to use as a cache generation. Legacy catalog rows do
+  /// not expose it and continue to fall back to their existing timestamp.
+  final String? contentRevision;
+
   /// Mobile-local checkpoint for the newest discrete assistant text output.
   ///
   /// This is derived from the committed bounded timeline and deliberately
@@ -4990,6 +4997,7 @@ class RecentSession {
     this.lastPrompt,
     required this.created,
     required this.modified,
+    this.contentRevision,
     this.lastAssistantOutputAt,
     required this.gitBranch,
     required this.projectPath,
@@ -5047,6 +5055,7 @@ class RecentSession {
       lastPrompt: json['lastPrompt'] as String?,
       created: json['created'] as String? ?? '',
       modified: json['modified'] as String? ?? '',
+      contentRevision: json['contentRevision'] as String?,
       lastAssistantOutputAt: json['lastAssistantOutputAt'] as String?,
       gitBranch: json['gitBranch'] as String? ?? '',
       projectPath: json['projectPath'] as String? ?? '',
@@ -5101,6 +5110,7 @@ class RecentSession {
     'lastPrompt': lastPrompt,
     'created': created,
     'modified': modified,
+    'contentRevision': contentRevision,
     'lastAssistantOutputAt': lastAssistantOutputAt,
     'gitBranch': gitBranch,
     'projectPath': projectPath,
@@ -5153,6 +5163,7 @@ class RecentSession {
       lastPrompt: lastPrompt,
       created: created,
       modified: modified,
+      contentRevision: contentRevision,
       lastAssistantOutputAt: value,
       gitBranch: gitBranch,
       projectPath: projectPath,
@@ -5192,6 +5203,7 @@ class RecentSession {
       lastPrompt: lastPrompt,
       created: created,
       modified: modified,
+      contentRevision: contentRevision,
       lastAssistantOutputAt: lastAssistantOutputAt,
       gitBranch: gitBranch,
       projectPath: projectPath,
@@ -5234,6 +5246,7 @@ class RecentSession {
       lastPrompt: lastPrompt,
       created: created,
       modified: modified,
+      contentRevision: contentRevision,
       lastAssistantOutputAt: lastAssistantOutputAt,
       gitBranch: gitBranch,
       projectPath: projectPath,

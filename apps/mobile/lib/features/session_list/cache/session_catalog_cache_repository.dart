@@ -150,6 +150,18 @@ class ConversationUserIndexSnapshot {
   final DateTime cachedAt;
 }
 
+class ConversationUserIndexState {
+  const ConversationUserIndexState({
+    required this.revision,
+    required this.complete,
+    required this.cachedAt,
+  });
+
+  final String revision;
+  final bool complete;
+  final DateTime cachedAt;
+}
+
 class ConversationUserIndexStage {
   const ConversationUserIndexStage({
     required this.revision,
@@ -2603,6 +2615,42 @@ class SessionCatalogCacheRepository {
     });
   }
 
+  /// Reads only the active user-index generation without decoding its rows.
+  ///
+  /// Background warmup uses this probe so an unchanged large index does not
+  /// materialize every user prompt in memory just to discover it is current.
+  Future<ConversationUserIndexState?> loadConversationUserIndexState({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) async {
+    if (!target.isValid) return null;
+    await _mutationTail;
+    final db = await database.database;
+    return db.transaction((transaction) async {
+      final partitionId = await _resolveReadablePartition(transaction, target);
+      if (partitionId == null) return null;
+      final states = await transaction.query(
+        SessionCatalogCacheDatabase.userIndexStatesTable,
+        columns: ['active_revision', 'active_complete', 'updated_at'],
+        where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+        whereArgs: [partitionId, provider, providerSessionId],
+        limit: 1,
+      );
+      if (states.isEmpty) return null;
+      final revision = states.single['active_revision'] as String?;
+      if (revision == null || revision.isEmpty) return null;
+      return ConversationUserIndexState(
+        revision: revision,
+        complete: states.single['active_complete'] == 1,
+        cachedAt: DateTime.fromMillisecondsSinceEpoch(
+          states.single['updated_at']! as int,
+          isUtc: true,
+        ),
+      );
+    });
+  }
+
   Future<ConversationUserIndexStage?> prepareConversationUserIndex({
     required SessionCatalogCacheTarget target,
     required String provider,
@@ -3416,6 +3464,7 @@ class SessionCatalogCacheRepository {
       lastPrompt: incoming.lastPrompt,
       created: incoming.created,
       modified: incoming.modified,
+      contentRevision: incoming.contentRevision ?? cached.contentRevision,
       lastAssistantOutputAt: incoming.lastAssistantOutputAt,
       gitBranch: incoming.gitBranch,
       projectPath: incoming.projectPath,

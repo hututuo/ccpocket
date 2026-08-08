@@ -201,6 +201,7 @@ void main() {
     final session = decoded.created.single.toRecentSession(
       codexSourceId: 'source-1',
     );
+    expect(session.contentRevision, 'revision-settings');
     expect(session.codexModel, 'gpt-5.6-sol');
     expect(session.codexModelReasoningEffort, 'ultra');
     expect(session.codexServiceTier, 'fast');
@@ -214,6 +215,7 @@ void main() {
     expect(session.codexSettingsSnapshotComplete, isTrue);
 
     final restored = RecentSession.fromJson(session.toJson());
+    expect(restored.contentRevision, 'revision-settings');
     expect(restored.codexCollaborationMode, 'plan');
     expect(restored.codexSettingsSnapshotComplete, isTrue);
   });

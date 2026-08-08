@@ -205,8 +205,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   final Map<String, Future<ConversationTurnsPageLoadResult>>
   _latestTurnRepairFlights = {};
   final Map<String, Future<void>> _historyOperationTails = {};
-  final Map<String, Future<ConversationUserIndexSnapshot?>> _userIndexFlights =
-      {};
+  final Map<String, Future<void>> _userIndexFlights = {};
   final Map<String, Future<List<ServerMessage>?>> _userTurnDetailFlights = {};
   final Set<Completer<void>> _subscriptionReadyWaiters = {};
 
@@ -551,30 +550,63 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     required String revision,
     BridgeDataSourceIdentity? expectedDataSourceIdentity,
     int maximumPages = 250,
-  }) {
+  }) async {
     if (expectedDataSourceIdentity != null &&
         !matchesCurrentDataSource(
           expectedDataSourceIdentity,
           provider: provider,
         )) {
-      return Future.value();
+      return null;
     }
+    final target = _cacheTarget;
+    await _ensureUserMessageIndexStored(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      revision: revision,
+      expectedDataSourceIdentity: expectedDataSourceIdentity,
+      maximumPages: maximumPages.clamp(1, 500),
+    );
+    if (target.fingerprint != _cacheTarget.fingerprint ||
+        (expectedDataSourceIdentity != null &&
+            !matchesCurrentDataSource(
+              expectedDataSourceIdentity,
+              provider: provider,
+            ))) {
+      return null;
+    }
+    return cache.loadConversationUserIndex(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
+  }
+
+  Future<void> _ensureUserMessageIndexStored({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String revision,
+    required BridgeDataSourceIdentity? expectedDataSourceIdentity,
+    required int maximumPages,
+  }) {
     final flightKey = [
-      _cacheTarget.fingerprint,
+      target.fingerprint,
       provider,
       providerSessionId,
       revision,
     ].join('\u0000');
     final existing = _userIndexFlights[flightKey];
     if (existing != null) return existing;
-    late final Future<ConversationUserIndexSnapshot?> flight;
+    late final Future<void> flight;
     flight =
-        _loadUserMessageIndex(
+        _storeUserMessageIndex(
+          target: target,
           provider: provider,
           providerSessionId: providerSessionId,
           revision: revision,
           expectedDataSourceIdentity: expectedDataSourceIdentity,
-          maximumPages: maximumPages.clamp(1, 500),
+          maximumPages: maximumPages,
         ).whenComplete(() {
           if (identical(_userIndexFlights[flightKey], flight)) {
             _userIndexFlights.remove(flightKey);
@@ -584,26 +616,26 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     return flight;
   }
 
-  Future<ConversationUserIndexSnapshot?> _loadUserMessageIndex({
+  Future<void> _storeUserMessageIndex({
+    required SessionCatalogCacheTarget target,
     required String provider,
     required String providerSessionId,
     required String revision,
     required BridgeDataSourceIdentity? expectedDataSourceIdentity,
     required int maximumPages,
   }) async {
-    final target = _cacheTarget;
-    final cached = await cache.loadConversationUserIndex(
+    final cached = await cache.loadConversationUserIndexState(
       target: target,
       provider: provider,
       providerSessionId: providerSessionId,
     );
     if (cached?.revision == revision && cached?.complete == true) {
-      return cached;
+      return;
     }
     if (!bridge.supportsConversationSyncV2 ||
         !bridge.supportsConversationUserIndex ||
         !_canProcessContent) {
-      return cached;
+      return;
     }
     var stage = await cache.prepareConversationUserIndex(
       target: target,
@@ -612,11 +644,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       revision: revision,
     );
     if (stage == null || stage.complete) {
-      return cache.loadConversationUserIndex(
-        target: target,
-        provider: provider,
-        providerSessionId: providerSessionId,
-      );
+      return;
     }
     final generation = _generation;
     for (var page = 0; page < maximumPages && !stage!.complete; page++) {
@@ -638,11 +666,6 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       );
       if (stage == null) break;
     }
-    return cache.loadConversationUserIndex(
-      target: target,
-      provider: provider,
-      providerSessionId: providerSessionId,
-    );
   }
 
   Future<ConversationUserIndexStage?> _requestUserIndexPage({
@@ -2568,12 +2591,17 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           continue;
         }
         try {
-          await loadUserMessageIndex(
+          final contentRevision = session.contentRevision?.trim();
+          await _ensureUserMessageIndexStored(
+            target: target,
             provider: provider,
             providerSessionId: session.sessionId,
-            revision: session.modified.isNotEmpty
+            revision: contentRevision?.isNotEmpty == true
+                ? contentRevision!
+                : session.modified.isNotEmpty
                 ? session.modified
                 : 'unknown:${session.sessionId}',
+            expectedDataSourceIdentity: null,
             maximumPages: 500,
           );
         } catch (error, stackTrace) {

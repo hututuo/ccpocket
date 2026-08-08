@@ -281,6 +281,7 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
         firstPrompt: firstPrompt ?? '',
         created: createdAt,
         modified: recencyAt,
+        contentRevision: revision,
         gitBranch: '',
         projectPath: projectPath,
         resumeCwd: projectPath,
