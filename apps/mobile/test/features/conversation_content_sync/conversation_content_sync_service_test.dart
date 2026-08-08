@@ -1299,21 +1299,154 @@ void main() {
       final requestsBeforeCacheHit = gateway.sentTypes
           .where((type) => type == 'conversation_items_page')
           .length;
-      final cacheHit = await service.loadUserTurnWindow(
+      final refresh = service.loadUserTurnWindow(
         provider: 'codex',
         providerSessionId: 'thread-user-turn',
         providerTurnId: 'turn-target',
         revision: 'newer-revision',
       );
-      expect(cacheHit, hasLength(2));
+      final refreshRequest = await gateway.nextOutgoing(
+        'conversation_items_page',
+      );
       expect(
         gateway.sentTypes
             .where((type) => type == 'conversation_items_page')
             .length,
-        requestsBeforeCacheHit,
+        requestsBeforeCacheHit + 1,
+      );
+      expect(
+        (await repository.loadConversationUserTurnDetail(
+          target: SessionCatalogCacheTarget.fromBridge(
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'codex-home-a',
+          ),
+          provider: 'codex',
+          providerSessionId: 'thread-user-turn',
+          providerTurnId: 'turn-target',
+        ))?.revision,
+        'revision-user-turn',
+      );
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.itemsPageResponse,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-user-turn',
+          sequence: 4,
+          requestId: refreshRequest['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-user-turn',
+          turnId: 'turn-target',
+          data: const [
+            {
+              'type': 'user_input',
+              'text': 'updated prompt',
+              'providerItemId': 'provider-target-user-new',
+            },
+          ],
+          nextCursor: null,
+        ),
+      );
+      final refreshed = await refresh;
+      expect(refreshed, hasLength(1));
+      expect((refreshed?.single as UserInputMessage).text, 'updated prompt');
+      expect(
+        (await repository.loadConversationUserTurnDetail(
+          target: SessionCatalogCacheTarget.fromBridge(
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'codex-home-a',
+          ),
+          provider: 'codex',
+          providerSessionId: 'thread-user-turn',
+          providerTurnId: 'turn-target',
+        ))?.revision,
+        'newer-revision',
       );
     },
   );
+
+  test('separates turn detail flights by content revision', () async {
+    await service.dispose();
+    gateway.supportsConversationSyncV2 = true;
+    service = ConversationContentSyncService(bridge: gateway, cache: repository)
+      ..start(initialLifecycleState: AppLifecycleState.resumed);
+
+    final subscribe = await gateway.nextOutgoing('conversation_sync_subscribe');
+    final subscriptionId = subscribe['requestId']! as String;
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.syncBegin,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-revision-flights',
+        sequence: 1,
+        requestId: subscriptionId,
+        catalogState: 'catalog-revision-flights',
+        statusState: 'status-revision-flights',
+      ),
+    );
+    await gateway.nextOutgoing('conversation_sync_ack');
+
+    final first = service.loadUserTurnWindow(
+      provider: 'codex',
+      providerSessionId: 'thread-revision-flights',
+      providerTurnId: 'turn-revision-flights',
+      revision: 'revision-a',
+    );
+    final firstRequest = await gateway.nextOutgoing('conversation_items_page');
+    final second = service.loadUserTurnWindow(
+      provider: 'codex',
+      providerSessionId: 'thread-revision-flights',
+      providerTurnId: 'turn-revision-flights',
+      revision: 'revision-b',
+    );
+    final secondRequest = await gateway
+        .nextOutgoing('conversation_items_page')
+        .timeout(const Duration(seconds: 2));
+    expect(secondRequest['requestId'], isNot(firstRequest['requestId']));
+
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.itemsPageResponse,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-revision-flights',
+        sequence: 2,
+        requestId: firstRequest['requestId']! as String,
+        provider: 'codex',
+        providerSessionId: 'thread-revision-flights',
+        turnId: 'turn-revision-flights',
+        data: const [
+          {'type': 'user_input', 'text': 'superseded revision'},
+        ],
+        nextCursor: null,
+      ),
+    );
+    expect(await first, isNull);
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.itemsPageResponse,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-revision-flights',
+        sequence: 3,
+        requestId: secondRequest['requestId']! as String,
+        provider: 'codex',
+        providerSessionId: 'thread-revision-flights',
+        turnId: 'turn-revision-flights',
+        data: const [
+          {'type': 'user_input', 'text': 'current revision'},
+        ],
+        nextCursor: null,
+      ),
+    );
+    final current = await second;
+    expect((current?.single as UserInputMessage).text, 'current revision');
+  });
 
   test(
     'serializes older paging and latest-turn repair without discarding prefix',

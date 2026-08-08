@@ -317,7 +317,10 @@ String? _bridgePartitionIdentity({
 }
 
 class SessionCatalogCacheRepository {
-  SessionCatalogCacheRepository(this.database);
+  SessionCatalogCacheRepository(
+    this.database, {
+    this.userCacheReadBarrierForTesting,
+  });
 
   static const maxEntriesPerPartition = 10_000;
   static const maxHotWindowEntries = 2_000;
@@ -329,6 +332,7 @@ class SessionCatalogCacheRepository {
   static const _maxKnownRevisionValidationEntries = 1_000;
 
   final SessionCatalogCacheDatabase database;
+  final Future<void> Function()? userCacheReadBarrierForTesting;
   Future<void> _mutationTail = Future<void>.value();
   bool _closed = false;
 
@@ -2538,62 +2542,65 @@ class SessionCatalogCacheRepository {
     if (!target.isValid) return null;
     await _mutationTail;
     final db = await database.database;
-    final partitionId = await _resolveReadablePartition(db, target);
-    if (partitionId == null) return null;
-    final states = await db.query(
-      SessionCatalogCacheDatabase.userIndexStatesTable,
-      columns: ['active_revision', 'active_complete', 'updated_at'],
-      where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
-      whereArgs: [partitionId, provider, providerSessionId],
-      limit: 1,
-    );
-    if (states.isEmpty) return null;
-    final revision = states.single['active_revision'] as String?;
-    if (revision == null || revision.isEmpty) return null;
-    final rows = await db.query(
-      SessionCatalogCacheDatabase.userIndexEntriesTable,
-      columns: ['provider_turn_id', 'provider_item_id', 'message_json'],
-      where:
-          'partition_id = ? AND provider = ? AND provider_session_id = ? '
-          'AND revision = ?',
-      whereArgs: [partitionId, provider, providerSessionId, revision],
-      // Bridge pages are requested descending (newest first). Read older
-      // pages first and reverse each page so navigation is chronological.
-      orderBy: 'page_depth DESC, item_order DESC',
-    );
-    final entries = <ConversationUserIndexEntry>[];
-    for (final row in rows) {
-      try {
-        final decoded = jsonDecode(row['message_json']! as String);
-        if (decoded is! Map) continue;
-        final message = ServerMessage.fromJson(
-          Map<String, dynamic>.from(decoded),
-        );
-        if (message is! UserInputMessage ||
-            message.isSynthetic ||
-            message.isMeta) {
-          continue;
+    return db.transaction((transaction) async {
+      final partitionId = await _resolveReadablePartition(transaction, target);
+      if (partitionId == null) return null;
+      final states = await transaction.query(
+        SessionCatalogCacheDatabase.userIndexStatesTable,
+        columns: ['active_revision', 'active_complete', 'updated_at'],
+        where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+        whereArgs: [partitionId, provider, providerSessionId],
+        limit: 1,
+      );
+      if (states.isEmpty) return null;
+      final revision = states.single['active_revision'] as String?;
+      if (revision == null || revision.isEmpty) return null;
+      await userCacheReadBarrierForTesting?.call();
+      final rows = await transaction.query(
+        SessionCatalogCacheDatabase.userIndexEntriesTable,
+        columns: ['provider_turn_id', 'provider_item_id', 'message_json'],
+        where:
+            'partition_id = ? AND provider = ? AND provider_session_id = ? '
+            'AND revision = ?',
+        whereArgs: [partitionId, provider, providerSessionId, revision],
+        // Bridge pages are requested descending (newest first). Read older
+        // pages first and reverse each page so navigation is chronological.
+        orderBy: 'page_depth DESC, item_order DESC',
+      );
+      final entries = <ConversationUserIndexEntry>[];
+      for (final row in rows) {
+        try {
+          final decoded = jsonDecode(row['message_json']! as String);
+          if (decoded is! Map) continue;
+          final message = ServerMessage.fromJson(
+            Map<String, dynamic>.from(decoded),
+          );
+          if (message is! UserInputMessage ||
+              message.isSynthetic ||
+              message.isMeta) {
+            continue;
+          }
+          entries.add(
+            ConversationUserIndexEntry(
+              providerTurnId: row['provider_turn_id']! as String,
+              providerItemId: row['provider_item_id']! as String,
+              message: message,
+            ),
+          );
+        } catch (_) {
+          // One rebuildable row must not hide the remaining usable index.
         }
-        entries.add(
-          ConversationUserIndexEntry(
-            providerTurnId: row['provider_turn_id']! as String,
-            providerItemId: row['provider_item_id']! as String,
-            message: message,
-          ),
-        );
-      } catch (_) {
-        // One rebuildable row must not hide the remaining usable index.
       }
-    }
-    return ConversationUserIndexSnapshot(
-      revision: revision,
-      entries: List.unmodifiable(entries),
-      complete: states.single['active_complete'] == 1,
-      cachedAt: DateTime.fromMillisecondsSinceEpoch(
-        states.single['updated_at']! as int,
-        isUtc: true,
-      ),
-    );
+      return ConversationUserIndexSnapshot(
+        revision: revision,
+        entries: List.unmodifiable(entries),
+        complete: states.single['active_complete'] == 1,
+        cachedAt: DateTime.fromMillisecondsSinceEpoch(
+          states.single['updated_at']! as int,
+          isUtc: true,
+        ),
+      );
+    });
   }
 
   Future<ConversationUserIndexStage?> prepareConversationUserIndex({
@@ -2636,6 +2643,19 @@ class SessionCatalogCacheRepository {
             cursor: current?['staging_cursor'] as String?,
             pageDepth: current?['staging_page_depth'] as int? ?? 0,
             complete: false,
+          );
+        }
+        if (activeRevision == null) {
+          await transaction.delete(
+            SessionCatalogCacheDatabase.userIndexEntriesTable,
+            where: '$where AND revision != ?',
+            whereArgs: [...whereArgs, revision],
+          );
+        } else {
+          await transaction.delete(
+            SessionCatalogCacheDatabase.userIndexEntriesTable,
+            where: '$where AND revision != ? AND revision != ?',
+            whereArgs: [...whereArgs, activeRevision, revision],
           );
         }
         final now = DateTime.now().toUtc().millisecondsSinceEpoch;
@@ -2790,55 +2810,59 @@ class SessionCatalogCacheRepository {
     if (!target.isValid || providerTurnId.trim().isEmpty) return null;
     await _mutationTail;
     final db = await database.database;
-    final partitionId = await _resolveReadablePartition(db, target);
-    if (partitionId == null) return null;
-    final where =
-        'partition_id = ? AND provider = ? AND provider_session_id = ? '
-        'AND provider_turn_id = ?';
-    final whereArgs = [
-      partitionId,
-      provider,
-      providerSessionId,
-      providerTurnId,
-    ];
-    final states = await db.query(
-      SessionCatalogCacheDatabase.userTurnDetailsTable,
-      columns: ['revision', 'complete', 'updated_at'],
-      where: where,
-      whereArgs: whereArgs,
-      limit: 1,
-    );
-    if (states.isEmpty) return null;
-    final revision = states.single['revision']! as String;
-    final rows = await db.query(
-      SessionCatalogCacheDatabase.userTurnDetailItemsTable,
-      columns: ['message_json'],
-      where: '$where AND revision = ?',
-      whereArgs: [...whereArgs, revision],
-      orderBy: 'page_depth ASC, item_order ASC',
-    );
-    final messages = <ServerMessage>[];
-    for (final row in rows) {
-      try {
-        final decoded = jsonDecode(row['message_json']! as String);
-        if (decoded is! Map) continue;
-        messages.add(
-          ServerMessage.fromJson(Map<String, dynamic>.from(decoded)),
-        );
-      } catch (_) {
-        // Detail pages are rebuildable. Skip one malformed row and keep the
-        // remaining bounded turn usable.
+    return db.transaction((transaction) async {
+      final partitionId = await _resolveReadablePartition(transaction, target);
+      if (partitionId == null) return null;
+      final where =
+          'partition_id = ? AND provider = ? AND provider_session_id = ? '
+          'AND provider_turn_id = ?';
+      final whereArgs = [
+        partitionId,
+        provider,
+        providerSessionId,
+        providerTurnId,
+      ];
+      final states = await transaction.query(
+        SessionCatalogCacheDatabase.userTurnDetailsTable,
+        columns: ['revision', 'complete', 'updated_at'],
+        where: where,
+        whereArgs: whereArgs,
+        orderBy: 'complete DESC, updated_at DESC',
+        limit: 1,
+      );
+      if (states.isEmpty) return null;
+      final revision = states.single['revision']! as String;
+      await userCacheReadBarrierForTesting?.call();
+      final rows = await transaction.query(
+        SessionCatalogCacheDatabase.userTurnDetailItemsTable,
+        columns: ['message_json'],
+        where: '$where AND revision = ?',
+        whereArgs: [...whereArgs, revision],
+        orderBy: 'page_depth ASC, item_order ASC',
+      );
+      final messages = <ServerMessage>[];
+      for (final row in rows) {
+        try {
+          final decoded = jsonDecode(row['message_json']! as String);
+          if (decoded is! Map) continue;
+          messages.add(
+            ServerMessage.fromJson(Map<String, dynamic>.from(decoded)),
+          );
+        } catch (_) {
+          // Detail pages are rebuildable. Skip one malformed row and keep the
+          // remaining bounded turn usable.
+        }
       }
-    }
-    return ConversationUserTurnDetailSnapshot(
-      revision: revision,
-      messages: List.unmodifiable(messages),
-      complete: states.single['complete'] == 1,
-      cachedAt: DateTime.fromMillisecondsSinceEpoch(
-        states.single['updated_at']! as int,
-        isUtc: true,
-      ),
-    );
+      return ConversationUserTurnDetailSnapshot(
+        revision: revision,
+        messages: List.unmodifiable(messages),
+        complete: states.single['complete'] == 1,
+        cachedAt: DateTime.fromMillisecondsSinceEpoch(
+          states.single['updated_at']! as int,
+          isUtc: true,
+        ),
+      );
+    });
   }
 
   Future<ConversationUserTurnDetailStage?> prepareConversationUserTurnDetail({
@@ -2874,14 +2898,23 @@ class SessionCatalogCacheRepository {
           },
           conflictAlgorithm: ConflictAlgorithm.ignore,
         );
+        final threadWhere =
+            'partition_id = ? AND provider = ? AND provider_session_id = ?';
+        final threadWhereArgs = [partitionId, provider, providerSessionId];
+        await transaction.delete(
+          SessionCatalogCacheDatabase.userTurnDetailsTable,
+          where: '$threadWhere AND complete = 0 AND revision != ?',
+          whereArgs: [...threadWhereArgs, revision],
+        );
         final where =
             'partition_id = ? AND provider = ? AND provider_session_id = ? '
-            'AND provider_turn_id = ?';
+            'AND provider_turn_id = ? AND revision = ?';
         final whereArgs = [
           partitionId,
           provider,
           providerSessionId,
           normalizedTurnId,
+          revision,
         ];
         final rows = await transaction.query(
           SessionCatalogCacheDatabase.userTurnDetailsTable,
@@ -2899,18 +2932,11 @@ class SessionCatalogCacheRepository {
               complete: true,
             );
           }
-          if (current['revision'] == revision) {
-            return ConversationUserTurnDetailStage(
-              revision: revision,
-              cursor: current['next_cursor'] as String?,
-              pageDepth: current['page_depth']! as int,
-              complete: false,
-            );
-          }
-          await transaction.delete(
-            SessionCatalogCacheDatabase.userTurnDetailsTable,
-            where: where,
-            whereArgs: whereArgs,
+          return ConversationUserTurnDetailStage(
+            revision: revision,
+            cursor: current['next_cursor'] as String?,
+            pageDepth: current['page_depth']! as int,
+            complete: false,
           );
         }
         await transaction
@@ -2958,12 +2984,13 @@ class SessionCatalogCacheRepository {
         if (partitionId == null) return null;
         final where =
             'partition_id = ? AND provider = ? AND provider_session_id = ? '
-            'AND provider_turn_id = ?';
+            'AND provider_turn_id = ? AND revision = ?';
         final whereArgs = [
           partitionId,
           provider,
           providerSessionId,
           providerTurnId,
+          revision,
         ];
         final rows = await transaction.query(
           SessionCatalogCacheDatabase.userTurnDetailsTable,
@@ -2973,8 +3000,7 @@ class SessionCatalogCacheRepository {
         );
         if (rows.isEmpty) return null;
         final state = rows.single;
-        if (state['revision'] != revision ||
-            state['next_cursor'] != expectedCursor ||
+        if (state['next_cursor'] != expectedCursor ||
             state['page_depth'] != pageDepth ||
             state['complete'] == 1) {
           return null;
@@ -3010,6 +3036,22 @@ class SessionCatalogCacheRepository {
           where: where,
           whereArgs: whereArgs,
         );
+        if (complete) {
+          await transaction.delete(
+            SessionCatalogCacheDatabase.userTurnDetailsTable,
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ? AND provider_turn_id = ? '
+                'AND revision != ?',
+            whereArgs: [
+              partitionId,
+              provider,
+              providerSessionId,
+              providerTurnId,
+              revision,
+            ],
+          );
+        }
         return ConversationUserTurnDetailStage(
           revision: revision,
           cursor: nextCursor,
@@ -3764,6 +3806,13 @@ class SessionCatalogCacheRepository {
       );
     }
 
+    await _mergeConversationUserCaches(
+      transaction,
+      sourcePartitionId: sourcePartitionId,
+      targetPartitionId: targetPartitionId,
+      now: now,
+    );
+
     final targetMetadata = await _partitionMetadata(
       transaction,
       targetPartitionId,
@@ -3797,6 +3846,148 @@ class SessionCatalogCacheRepository {
       targetPartitionId,
       now,
     );
+  }
+
+  static Future<void> _mergeConversationUserCaches(
+    Transaction transaction, {
+    required String sourcePartitionId,
+    required String targetPartitionId,
+    required int now,
+  }) async {
+    final sourceStates = await transaction.query(
+      SessionCatalogCacheDatabase.userIndexStatesTable,
+      where: 'partition_id = ?',
+      whereArgs: [sourcePartitionId],
+    );
+    for (final sourceState in sourceStates) {
+      final provider = sourceState['provider']! as String;
+      final providerSessionId = sourceState['provider_session_id']! as String;
+      final threadWhere =
+          'partition_id = ? AND provider = ? AND provider_session_id = ?';
+      final sourceThreadArgs = [sourcePartitionId, provider, providerSessionId];
+      final targetThreadArgs = [targetPartitionId, provider, providerSessionId];
+      final sourceActiveRevision = sourceState['active_revision'] as String?;
+      final sourceHasCompleteIndex =
+          sourceState['active_complete'] == 1 &&
+          sourceActiveRevision != null &&
+          sourceActiveRevision.isNotEmpty;
+      final sourceCompleteDetails = await transaction.query(
+        SessionCatalogCacheDatabase.userTurnDetailsTable,
+        where: '$threadWhere AND complete = 1',
+        whereArgs: sourceThreadArgs,
+        orderBy: 'updated_at DESC',
+      );
+      if (!sourceHasCompleteIndex && sourceCompleteDetails.isEmpty) {
+        // Provisional staging cursors are connection-scoped and are discarded
+        // rather than being resumed after source authentication changes.
+        continue;
+      }
+
+      final targetStates = await transaction.query(
+        SessionCatalogCacheDatabase.userIndexStatesTable,
+        where: threadWhere,
+        whereArgs: targetThreadArgs,
+        limit: 1,
+      );
+      final targetState = targetStates.isEmpty ? null : targetStates.single;
+      final targetActiveRevision = targetState?['active_revision'] as String?;
+      final targetHasCompleteIndex =
+          targetState?['active_complete'] == 1 &&
+          targetActiveRevision != null &&
+          targetActiveRevision.isNotEmpty;
+      final sourceUpdatedAt = sourceState['updated_at']! as int;
+      final useSourceIndex = sourceHasCompleteIndex && !targetHasCompleteIndex;
+
+      if (targetState == null) {
+        await transaction
+            .insert(SessionCatalogCacheDatabase.userIndexStatesTable, {
+              'partition_id': targetPartitionId,
+              'provider': provider,
+              'provider_session_id': providerSessionId,
+              'active_revision': useSourceIndex ? sourceActiveRevision : null,
+              'active_complete': useSourceIndex ? 1 : 0,
+              'staging_revision': null,
+              'staging_cursor': null,
+              'staging_page_depth': 0,
+              'updated_at': useSourceIndex ? sourceUpdatedAt : now,
+            });
+      } else if (useSourceIndex) {
+        await transaction.update(
+          SessionCatalogCacheDatabase.userIndexStatesTable,
+          {
+            'active_revision': sourceActiveRevision,
+            'active_complete': 1,
+            'staging_revision': null,
+            'staging_cursor': null,
+            'staging_page_depth': 0,
+            'updated_at': sourceUpdatedAt,
+          },
+          where: threadWhere,
+          whereArgs: targetThreadArgs,
+        );
+      }
+
+      if (useSourceIndex) {
+        await transaction.delete(
+          SessionCatalogCacheDatabase.userIndexEntriesTable,
+          where: threadWhere,
+          whereArgs: targetThreadArgs,
+        );
+        final sourceEntries = await transaction.query(
+          SessionCatalogCacheDatabase.userIndexEntriesTable,
+          where: '$threadWhere AND revision = ?',
+          whereArgs: [...sourceThreadArgs, sourceActiveRevision],
+        );
+        for (final sourceEntry in sourceEntries) {
+          await transaction.insert(
+            SessionCatalogCacheDatabase.userIndexEntriesTable,
+            {...sourceEntry, 'partition_id': targetPartitionId},
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+      }
+
+      for (final sourceDetail in sourceCompleteDetails) {
+        final providerTurnId = sourceDetail['provider_turn_id']! as String;
+        final revision = sourceDetail['revision']! as String;
+        final sourceDetailUpdatedAt = sourceDetail['updated_at']! as int;
+        final targetDetails = await transaction.query(
+          SessionCatalogCacheDatabase.userTurnDetailsTable,
+          columns: ['updated_at'],
+          where: '$threadWhere AND provider_turn_id = ? AND complete = 1',
+          whereArgs: [...targetThreadArgs, providerTurnId],
+          orderBy: 'updated_at DESC',
+          limit: 1,
+        );
+        if (targetDetails.isNotEmpty &&
+            (targetDetails.single['updated_at']! as int) >=
+                sourceDetailUpdatedAt) {
+          continue;
+        }
+        await transaction.insert(
+          SessionCatalogCacheDatabase.userTurnDetailsTable,
+          {...sourceDetail, 'partition_id': targetPartitionId},
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        final sourceItems = await transaction.query(
+          SessionCatalogCacheDatabase.userTurnDetailItemsTable,
+          where: '$threadWhere AND provider_turn_id = ? AND revision = ?',
+          whereArgs: [...sourceThreadArgs, providerTurnId, revision],
+        );
+        for (final sourceItem in sourceItems) {
+          await transaction.insert(
+            SessionCatalogCacheDatabase.userTurnDetailItemsTable,
+            {...sourceItem, 'partition_id': targetPartitionId},
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+        await transaction.delete(
+          SessionCatalogCacheDatabase.userTurnDetailsTable,
+          where: '$threadWhere AND provider_turn_id = ? AND revision != ?',
+          whereArgs: [...targetThreadArgs, providerTurnId, revision],
+        );
+      }
+    }
   }
 
   static Future<void> _updatePartitionMetadata(

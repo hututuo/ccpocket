@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:ccpocket/features/session_list/cache/session_catalog_cache_database.dart';
@@ -196,6 +197,89 @@ void main() {
         ),
       );
       await repository.markConversationPriorityReady(provisional);
+      var userIndexStage = await repository.prepareConversationUserIndex(
+        target: provisional,
+        provider: 'codex',
+        providerSessionId: 'thread-1',
+        revision: 'user-index-complete',
+      );
+      userIndexStage = await repository.commitConversationUserIndexPage(
+        target: provisional,
+        provider: 'codex',
+        providerSessionId: 'thread-1',
+        revision: 'user-index-complete',
+        expectedCursor: userIndexStage!.cursor,
+        pageDepth: userIndexStage.pageDepth,
+        nextCursor: null,
+        entries: const [
+          ConversationUserIndexPageEntry(
+            providerTurnId: 'turn-1',
+            providerItemId: 'user-item-1',
+            rawMessage: {'type': 'user_input', 'text': 'partition-safe prompt'},
+          ),
+        ],
+      );
+      expect(userIndexStage?.complete, isTrue);
+      var detailStage = await repository.prepareConversationUserTurnDetail(
+        target: provisional,
+        provider: 'codex',
+        providerSessionId: 'thread-1',
+        providerTurnId: 'turn-1',
+        revision: 'detail-complete',
+      );
+      detailStage = await repository.commitConversationUserTurnDetailPage(
+        target: provisional,
+        provider: 'codex',
+        providerSessionId: 'thread-1',
+        providerTurnId: 'turn-1',
+        revision: 'detail-complete',
+        expectedCursor: detailStage!.cursor,
+        pageDepth: detailStage.pageDepth,
+        nextCursor: null,
+        rawMessages: const [
+          {
+            'type': 'user_input',
+            'text': 'partition-safe prompt',
+            'providerItemId': 'user-item-1',
+          },
+        ],
+      );
+      expect(detailStage?.complete, isTrue);
+
+      userIndexStage = await repository.prepareConversationUserIndex(
+        target: provisional,
+        provider: 'codex',
+        providerSessionId: 'thread-1',
+        revision: 'user-index-interrupted',
+      );
+      await repository.commitConversationUserIndexPage(
+        target: provisional,
+        provider: 'codex',
+        providerSessionId: 'thread-1',
+        revision: 'user-index-interrupted',
+        expectedCursor: userIndexStage!.cursor,
+        pageDepth: userIndexStage.pageDepth,
+        nextCursor: 'not-finished',
+        entries: const [],
+      );
+      detailStage = await repository.prepareConversationUserTurnDetail(
+        target: provisional,
+        provider: 'codex',
+        providerSessionId: 'thread-1',
+        providerTurnId: 'turn-interrupted',
+        revision: 'detail-interrupted',
+      );
+      await repository.commitConversationUserTurnDetailPage(
+        target: provisional,
+        provider: 'codex',
+        providerSessionId: 'thread-1',
+        providerTurnId: 'turn-interrupted',
+        revision: 'detail-interrupted',
+        expectedCursor: detailStage!.cursor,
+        pageDepth: detailStage.pageDepth,
+        nextCursor: 'not-finished',
+        rawMessages: const [],
+      );
 
       final canonical = SessionCatalogCacheTarget.fromBridge(
         bridgeInstanceId: 'bridge-a',
@@ -240,7 +324,42 @@ void main() {
           '2026-07-30T00:03:00.000Z',
         ),
       ]);
+      final migratedIndex = await repository.loadConversationUserIndex(
+        target: canonical,
+        provider: 'codex',
+        providerSessionId: 'thread-1',
+      );
+      expect(migratedIndex?.revision, 'user-index-complete');
+      expect(migratedIndex?.complete, isTrue);
+      expect(
+        migratedIndex?.entries.single.message.text,
+        'partition-safe prompt',
+      );
+      final migratedDetail = await repository.loadConversationUserTurnDetail(
+        target: canonical,
+        provider: 'codex',
+        providerSessionId: 'thread-1',
+        providerTurnId: 'turn-1',
+      );
+      expect(migratedDetail?.revision, 'detail-complete');
+      expect(migratedDetail?.complete, isTrue);
+      expect(migratedDetail?.messages, hasLength(1));
+      expect(
+        await repository.loadConversationUserTurnDetail(
+          target: canonical,
+          provider: 'codex',
+          providerSessionId: 'thread-1',
+          providerTurnId: 'turn-interrupted',
+        ),
+        isNull,
+      );
       final db = await database.database;
+      final migratedState = await db.query(
+        SessionCatalogCacheDatabase.userIndexStatesTable,
+        columns: ['active_revision', 'staging_revision'],
+      );
+      expect(migratedState.single['active_revision'], 'user-index-complete');
+      expect(migratedState.single['staging_revision'], isNull);
       final partitionCount = Sqflite.firstIntValue(
         await db.rawQuery(
           'SELECT COUNT(*) FROM '
@@ -248,6 +367,7 @@ void main() {
         ),
       );
       expect(partitionCount, 1);
+      expect(await db.rawQuery('PRAGMA foreign_key_check'), isEmpty);
     },
   );
 
@@ -1624,6 +1744,341 @@ void main() {
   );
 
   test(
+    'migrates v5 user caches and preserves them across close and reopen',
+    () async {
+      await repository.close();
+      if (await File(databasePath).exists()) {
+        await File(databasePath).delete();
+      }
+      final legacy = await databaseFactoryFfi.openDatabase(
+        databasePath,
+        options: OpenDatabaseOptions(
+          version: 5,
+          onCreate: (db, _) async {
+            await db.execute('''
+              CREATE TABLE ${SessionCatalogCacheDatabase.partitionsTable} (
+                partition_id TEXT PRIMARY KEY,
+                canonical_key TEXT UNIQUE,
+                last_server_revision INTEGER,
+                complete_revision INTEGER,
+                updated_at INTEGER NOT NULL
+              )
+            ''');
+            await db.execute('''
+              CREATE TABLE ${SessionCatalogCacheDatabase.aliasesTable} (
+                alias_key TEXT PRIMARY KEY,
+                partition_id TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (partition_id)
+                  REFERENCES ${SessionCatalogCacheDatabase.partitionsTable}
+                    (partition_id)
+                  ON DELETE CASCADE
+              )
+            ''');
+            await db.insert(SessionCatalogCacheDatabase.partitionsTable, {
+              'partition_id': 'legacy-v5-partition',
+              'canonical_key': 'legacy-v5-partition',
+              'updated_at': 1,
+            });
+          },
+        ),
+      );
+      await legacy.close();
+
+      database = SessionCatalogCacheDatabase(
+        databasePath: databasePath,
+        openDatabase: openFfi,
+      );
+      repository = SessionCatalogCacheRepository(database);
+      final upgraded = await database.database;
+      expect(await upgraded.getVersion(), 6);
+      expect(
+        await upgraded.query(
+          SessionCatalogCacheDatabase.partitionsTable,
+          where: 'partition_id = ?',
+          whereArgs: ['legacy-v5-partition'],
+        ),
+        hasLength(1),
+      );
+      final tableNames = (await upgraded.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'table'",
+      )).map((row) => row['name']);
+      expect(
+        tableNames,
+        containsAll([
+          SessionCatalogCacheDatabase.userIndexStatesTable,
+          SessionCatalogCacheDatabase.userIndexEntriesTable,
+          SessionCatalogCacheDatabase.userTurnDetailsTable,
+          SessionCatalogCacheDatabase.userTurnDetailItemsTable,
+        ]),
+      );
+      final itemForeignKeys = await upgraded.rawQuery(
+        'PRAGMA foreign_key_list('
+        '${SessionCatalogCacheDatabase.userTurnDetailItemsTable})',
+      );
+      expect(
+        itemForeignKeys.where(
+          (row) => row['from'] == 'revision' && row['to'] == 'revision',
+        ),
+        isNotEmpty,
+      );
+
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-v5-upgrade',
+      );
+      var indexStage = await repository.prepareConversationUserIndex(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-v5-upgrade',
+        revision: 'index-v6',
+      );
+      await repository.commitConversationUserIndexPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-v5-upgrade',
+        revision: 'index-v6',
+        expectedCursor: indexStage!.cursor,
+        pageDepth: indexStage.pageDepth,
+        nextCursor: null,
+        entries: const [
+          ConversationUserIndexPageEntry(
+            providerTurnId: 'turn-v5-upgrade',
+            providerItemId: 'item-v5-upgrade',
+            rawMessage: {'type': 'user_input', 'text': 'survives reopen'},
+          ),
+        ],
+      );
+      var detailStage = await repository.prepareConversationUserTurnDetail(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-v5-upgrade',
+        providerTurnId: 'turn-v5-upgrade',
+        revision: 'detail-v6',
+      );
+      await repository.commitConversationUserTurnDetailPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-v5-upgrade',
+        providerTurnId: 'turn-v5-upgrade',
+        revision: 'detail-v6',
+        expectedCursor: detailStage!.cursor,
+        pageDepth: detailStage.pageDepth,
+        nextCursor: null,
+        rawMessages: const [
+          {'type': 'user_input', 'text': 'survives reopen'},
+        ],
+      );
+
+      await repository.close();
+      database = SessionCatalogCacheDatabase(
+        databasePath: databasePath,
+        openDatabase: openFfi,
+      );
+      repository = SessionCatalogCacheRepository(database);
+      final reopenedIndex = await repository.loadConversationUserIndex(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-v5-upgrade',
+      );
+      final reopenedDetail = await repository.loadConversationUserTurnDetail(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-v5-upgrade',
+        providerTurnId: 'turn-v5-upgrade',
+      );
+      expect(reopenedIndex?.revision, 'index-v6');
+      expect(reopenedIndex?.entries.single.message.text, 'survives reopen');
+      expect(reopenedDetail?.revision, 'detail-v6');
+      expect(reopenedDetail?.complete, isTrue);
+      expect(
+        await (await database.database).rawQuery('PRAGMA foreign_key_check'),
+        isEmpty,
+      );
+    },
+  );
+
+  test('repairs the legacy v6 turn-detail key without losing rows', () async {
+    await repository.close();
+    if (await File(databasePath).exists()) {
+      await File(databasePath).delete();
+    }
+    final legacy = await databaseFactoryFfi.openDatabase(
+      databasePath,
+      options: OpenDatabaseOptions(
+        version: 6,
+        onCreate: (db, _) async {
+          await db.execute('PRAGMA foreign_keys = ON');
+          await db.execute('''
+            CREATE TABLE ${SessionCatalogCacheDatabase.partitionsTable} (
+              partition_id TEXT PRIMARY KEY,
+              canonical_key TEXT UNIQUE,
+              last_server_revision INTEGER,
+              complete_revision INTEGER,
+              updated_at INTEGER NOT NULL
+            )
+          ''');
+          await db.execute('''
+            CREATE TABLE ${SessionCatalogCacheDatabase.userIndexStatesTable} (
+              partition_id TEXT NOT NULL,
+              provider TEXT NOT NULL,
+              provider_session_id TEXT NOT NULL,
+              active_revision TEXT,
+              active_complete INTEGER NOT NULL DEFAULT 0,
+              staging_revision TEXT,
+              staging_cursor TEXT,
+              staging_page_depth INTEGER NOT NULL DEFAULT 0,
+              updated_at INTEGER NOT NULL,
+              PRIMARY KEY (partition_id, provider, provider_session_id),
+              FOREIGN KEY (partition_id)
+                REFERENCES ${SessionCatalogCacheDatabase.partitionsTable}
+                  (partition_id)
+                ON DELETE CASCADE
+            )
+          ''');
+          await db.execute('''
+            CREATE TABLE ${SessionCatalogCacheDatabase.userTurnDetailsTable} (
+              partition_id TEXT NOT NULL,
+              provider TEXT NOT NULL,
+              provider_session_id TEXT NOT NULL,
+              provider_turn_id TEXT NOT NULL,
+              revision TEXT NOT NULL,
+              next_cursor TEXT,
+              page_depth INTEGER NOT NULL DEFAULT 0,
+              complete INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              PRIMARY KEY (
+                partition_id,
+                provider,
+                provider_session_id,
+                provider_turn_id
+              ),
+              FOREIGN KEY (partition_id, provider, provider_session_id)
+                REFERENCES ${SessionCatalogCacheDatabase.userIndexStatesTable} (
+                  partition_id,
+                  provider,
+                  provider_session_id
+                )
+                ON DELETE CASCADE
+            )
+          ''');
+          await db.execute('''
+            CREATE TABLE ${SessionCatalogCacheDatabase.userTurnDetailItemsTable} (
+              partition_id TEXT NOT NULL,
+              provider TEXT NOT NULL,
+              provider_session_id TEXT NOT NULL,
+              provider_turn_id TEXT NOT NULL,
+              revision TEXT NOT NULL,
+              page_depth INTEGER NOT NULL,
+              item_order INTEGER NOT NULL,
+              message_json TEXT NOT NULL,
+              PRIMARY KEY (
+                partition_id,
+                provider,
+                provider_session_id,
+                provider_turn_id,
+                revision,
+                page_depth,
+                item_order
+              ),
+              FOREIGN KEY (
+                partition_id,
+                provider,
+                provider_session_id,
+                provider_turn_id
+              ) REFERENCES ${SessionCatalogCacheDatabase.userTurnDetailsTable} (
+                partition_id,
+                provider,
+                provider_session_id,
+                provider_turn_id
+              ) ON DELETE CASCADE
+            )
+          ''');
+          await db.insert(SessionCatalogCacheDatabase.partitionsTable, {
+            'partition_id': 'legacy-v6-partition',
+            'canonical_key': 'legacy-v6-partition',
+            'updated_at': 1,
+          });
+          await db.insert(SessionCatalogCacheDatabase.userIndexStatesTable, {
+            'partition_id': 'legacy-v6-partition',
+            'provider': 'codex',
+            'provider_session_id': 'legacy-v6-thread',
+            'active_revision': null,
+            'active_complete': 0,
+            'staging_revision': null,
+            'staging_cursor': null,
+            'staging_page_depth': 0,
+            'updated_at': 1,
+          });
+          await db.insert(SessionCatalogCacheDatabase.userTurnDetailsTable, {
+            'partition_id': 'legacy-v6-partition',
+            'provider': 'codex',
+            'provider_session_id': 'legacy-v6-thread',
+            'provider_turn_id': 'legacy-v6-turn',
+            'revision': 'legacy-v6-revision',
+            'next_cursor': null,
+            'page_depth': 1,
+            'complete': 1,
+            'updated_at': 1,
+          });
+          await db
+              .insert(SessionCatalogCacheDatabase.userTurnDetailItemsTable, {
+                'partition_id': 'legacy-v6-partition',
+                'provider': 'codex',
+                'provider_session_id': 'legacy-v6-thread',
+                'provider_turn_id': 'legacy-v6-turn',
+                'revision': 'legacy-v6-revision',
+                'page_depth': 0,
+                'item_order': 0,
+                'message_json': '{"type":"user_input","text":"legacy"}',
+              });
+        },
+      ),
+    );
+    await legacy.close();
+
+    database = SessionCatalogCacheDatabase(
+      databasePath: databasePath,
+      openDatabase: openFfi,
+    );
+    repository = SessionCatalogCacheRepository(database);
+    final repaired = await database.database;
+    expect(await repaired.getVersion(), 6);
+    final detailColumns = await repaired.rawQuery(
+      'PRAGMA table_info(${SessionCatalogCacheDatabase.userTurnDetailsTable})',
+    );
+    expect(
+      detailColumns.singleWhere((column) => column['name'] == 'revision')['pk'],
+      5,
+    );
+    expect(
+      await repaired.query(SessionCatalogCacheDatabase.userTurnDetailsTable),
+      hasLength(1),
+    );
+    expect(
+      await repaired.query(
+        SessionCatalogCacheDatabase.userTurnDetailItemsTable,
+      ),
+      hasLength(1),
+    );
+    await repaired.insert(SessionCatalogCacheDatabase.userTurnDetailsTable, {
+      'partition_id': 'legacy-v6-partition',
+      'provider': 'codex',
+      'provider_session_id': 'legacy-v6-thread',
+      'provider_turn_id': 'legacy-v6-turn',
+      'revision': 'second-v6-revision',
+      'next_cursor': null,
+      'page_depth': 0,
+      'complete': 0,
+      'updated_at': 2,
+    });
+    expect(
+      await repaired.query(SessionCatalogCacheDatabase.userTurnDetailsTable),
+      hasLength(2),
+    );
+    expect(await repaired.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+  });
+
+  test(
     'rebuilds an incomplete latest turn with a separate resumable cursor',
     () async {
       final target = SessionCatalogCacheTarget.fromBridge(
@@ -2018,6 +2473,92 @@ void main() {
   );
 
   test(
+    'new revisions discard interrupted staging rows for one thread',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-staging-cleanup',
+        codexSourceId: 'source-staging-cleanup',
+      );
+      var indexStage = await repository.prepareConversationUserIndex(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-staging-cleanup',
+        revision: 'index-interrupted',
+      );
+      await repository.commitConversationUserIndexPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-staging-cleanup',
+        revision: 'index-interrupted',
+        expectedCursor: indexStage!.cursor,
+        pageDepth: indexStage.pageDepth,
+        nextCursor: 'older-index-page',
+        entries: const [
+          ConversationUserIndexPageEntry(
+            providerTurnId: 'turn-interrupted',
+            providerItemId: 'item-interrupted',
+            rawMessage: {'type': 'user_input', 'text': 'interrupted index'},
+          ),
+        ],
+      );
+      var detailStage = await repository.prepareConversationUserTurnDetail(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-staging-cleanup',
+        providerTurnId: 'turn-interrupted',
+        revision: 'detail-interrupted',
+      );
+      await repository.commitConversationUserTurnDetailPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-staging-cleanup',
+        providerTurnId: 'turn-interrupted',
+        revision: 'detail-interrupted',
+        expectedCursor: detailStage!.cursor,
+        pageDepth: detailStage.pageDepth,
+        nextCursor: 'older-detail-page',
+        rawMessages: const [
+          {'type': 'user_input', 'text': 'interrupted detail'},
+        ],
+      );
+
+      indexStage = await repository.prepareConversationUserIndex(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-staging-cleanup',
+        revision: 'index-current',
+      );
+      detailStage = await repository.prepareConversationUserTurnDetail(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-staging-cleanup',
+        providerTurnId: 'turn-current',
+        revision: 'detail-current',
+      );
+      expect(indexStage?.revision, 'index-current');
+      expect(detailStage?.revision, 'detail-current');
+
+      final db = await database.database;
+      for (final table in [
+        SessionCatalogCacheDatabase.userIndexEntriesTable,
+        SessionCatalogCacheDatabase.userTurnDetailsTable,
+        SessionCatalogCacheDatabase.userTurnDetailItemsTable,
+      ]) {
+        expect(
+          Sqflite.firstIntValue(
+            await db.rawQuery(
+              'SELECT COUNT(*) FROM $table WHERE revision LIKE ?',
+              ['%-interrupted'],
+            ),
+          ),
+          0,
+        );
+      }
+      expect(await db.rawQuery('PRAGMA foreign_key_check'), isEmpty);
+    },
+  );
+
+  test(
     'turn detail pages persist in provider order and resume safely',
     () async {
       final target = SessionCatalogCacheTarget.fromBridge(
@@ -2089,15 +2630,292 @@ void main() {
         'turn-target',
       );
 
-      final reused = await repository.prepareConversationUserTurnDetail(
+      var replacement = await repository.prepareConversationUserTurnDetail(
         target: target,
         provider: 'codex',
         providerSessionId: 'thread-turn-detail',
         providerTurnId: 'turn-target',
         revision: 'newer-catalog-revision',
       );
-      expect(reused?.complete, isTrue);
-      expect(reused?.revision, 'revision-detail');
+      expect(replacement?.complete, isFalse);
+      expect(replacement?.revision, 'newer-catalog-revision');
+      expect(
+        (await repository.loadConversationUserTurnDetail(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-turn-detail',
+          providerTurnId: 'turn-target',
+        ))?.revision,
+        'revision-detail',
+      );
+
+      replacement = await repository.commitConversationUserTurnDetailPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-turn-detail',
+        providerTurnId: 'turn-target',
+        revision: 'newer-catalog-revision',
+        expectedCursor: replacement!.cursor,
+        pageDepth: replacement.pageDepth,
+        nextCursor: 'newer-page-2',
+        rawMessages: const [
+          {'type': 'user_input', 'text': 'newer prompt'},
+        ],
+      );
+      expect(
+        (await repository.loadConversationUserTurnDetail(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-turn-detail',
+          providerTurnId: 'turn-target',
+        ))?.revision,
+        'revision-detail',
+      );
+      replacement = await repository.commitConversationUserTurnDetailPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-turn-detail',
+        providerTurnId: 'turn-target',
+        revision: 'newer-catalog-revision',
+        expectedCursor: replacement!.cursor,
+        pageDepth: replacement.pageDepth,
+        nextCursor: null,
+        rawMessages: const [
+          {
+            'type': 'assistant',
+            'message': {
+              'id': 'assistant-newer',
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'newer answer'},
+              ],
+            },
+          },
+        ],
+      );
+      expect(replacement?.complete, isTrue);
+      final replaced = await repository.loadConversationUserTurnDetail(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-turn-detail',
+        providerTurnId: 'turn-target',
+      );
+      expect(replaced?.revision, 'newer-catalog-revision');
+      expect(
+        (replaced?.messages.first as UserInputMessage).text,
+        'newer prompt',
+      );
+      final db = await database.database;
+      expect(
+        Sqflite.firstIntValue(
+          await db.rawQuery(
+            'SELECT COUNT(*) FROM '
+            '${SessionCatalogCacheDatabase.userTurnDetailsTable} '
+            'WHERE provider_turn_id = ?',
+            ['turn-target'],
+          ),
+        ),
+        1,
+      );
+    },
+  );
+
+  test(
+    'user cache readers keep one SQLite snapshot during revision publish',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-read-snapshot',
+        codexSourceId: 'source-read-snapshot',
+      );
+      var indexStage = await repository.prepareConversationUserIndex(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-read-snapshot',
+        revision: 'index-old',
+      );
+      indexStage = await repository.commitConversationUserIndexPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-read-snapshot',
+        revision: 'index-old',
+        expectedCursor: indexStage!.cursor,
+        pageDepth: indexStage.pageDepth,
+        nextCursor: null,
+        entries: const [
+          ConversationUserIndexPageEntry(
+            providerTurnId: 'turn-read-snapshot',
+            providerItemId: 'item-index-old',
+            rawMessage: {'type': 'user_input', 'text': 'old index'},
+          ),
+        ],
+      );
+      indexStage = await repository.prepareConversationUserIndex(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-read-snapshot',
+        revision: 'index-new',
+      );
+      indexStage = await repository.commitConversationUserIndexPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-read-snapshot',
+        revision: 'index-new',
+        expectedCursor: indexStage!.cursor,
+        pageDepth: indexStage.pageDepth,
+        nextCursor: 'index-page-2',
+        entries: const [
+          ConversationUserIndexPageEntry(
+            providerTurnId: 'turn-read-snapshot',
+            providerItemId: 'item-index-new',
+            rawMessage: {'type': 'user_input', 'text': 'new index'},
+          ),
+        ],
+      );
+
+      var detailStage = await repository.prepareConversationUserTurnDetail(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-read-snapshot',
+        providerTurnId: 'turn-read-snapshot',
+        revision: 'detail-old',
+      );
+      detailStage = await repository.commitConversationUserTurnDetailPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-read-snapshot',
+        providerTurnId: 'turn-read-snapshot',
+        revision: 'detail-old',
+        expectedCursor: detailStage!.cursor,
+        pageDepth: detailStage.pageDepth,
+        nextCursor: null,
+        rawMessages: const [
+          {'type': 'user_input', 'text': 'old detail'},
+        ],
+      );
+      detailStage = await repository.prepareConversationUserTurnDetail(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-read-snapshot',
+        providerTurnId: 'turn-read-snapshot',
+        revision: 'detail-new',
+      );
+      detailStage = await repository.commitConversationUserTurnDetailPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-read-snapshot',
+        providerTurnId: 'turn-read-snapshot',
+        revision: 'detail-new',
+        expectedCursor: detailStage!.cursor,
+        pageDepth: detailStage.pageDepth,
+        nextCursor: 'detail-page-2',
+        rawMessages: const [
+          {'type': 'user_input', 'text': 'new detail'},
+        ],
+      );
+
+      await repository.close();
+      Future<void> Function()? readBarrier;
+      database = SessionCatalogCacheDatabase(
+        databasePath: databasePath,
+        openDatabase: openFfi,
+      );
+      repository = SessionCatalogCacheRepository(
+        database,
+        userCacheReadBarrierForTesting: () async {
+          await readBarrier?.call();
+        },
+      );
+
+      final indexReadReached = Completer<void>();
+      final releaseIndexRead = Completer<void>();
+      readBarrier = () async {
+        indexReadReached.complete();
+        await releaseIndexRead.future;
+      };
+      final oldIndexRead = repository.loadConversationUserIndex(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-read-snapshot',
+      );
+      await indexReadReached.future;
+      readBarrier = null;
+      var indexPublishCompleted = false;
+      final indexPublish = repository
+          .commitConversationUserIndexPage(
+            target: target,
+            provider: 'codex',
+            providerSessionId: 'thread-read-snapshot',
+            revision: 'index-new',
+            expectedCursor: indexStage!.cursor,
+            pageDepth: indexStage.pageDepth,
+            nextCursor: null,
+            entries: const [],
+          )
+          .whenComplete(() => indexPublishCompleted = true);
+      await Future<void>.delayed(Duration.zero);
+      expect(indexPublishCompleted, isFalse);
+      releaseIndexRead.complete();
+      final oldIndex = await oldIndexRead;
+      expect(oldIndex?.revision, 'index-old');
+      expect(oldIndex?.entries.single.message.text, 'old index');
+      await indexPublish;
+      final newIndex = await repository.loadConversationUserIndex(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-read-snapshot',
+      );
+      expect(newIndex?.revision, 'index-new');
+      expect(newIndex?.entries.single.message.text, 'new index');
+
+      final detailReadReached = Completer<void>();
+      final releaseDetailRead = Completer<void>();
+      readBarrier = () async {
+        detailReadReached.complete();
+        await releaseDetailRead.future;
+      };
+      final oldDetailRead = repository.loadConversationUserTurnDetail(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-read-snapshot',
+        providerTurnId: 'turn-read-snapshot',
+      );
+      await detailReadReached.future;
+      readBarrier = null;
+      var detailPublishCompleted = false;
+      final detailPublish = repository
+          .commitConversationUserTurnDetailPage(
+            target: target,
+            provider: 'codex',
+            providerSessionId: 'thread-read-snapshot',
+            providerTurnId: 'turn-read-snapshot',
+            revision: 'detail-new',
+            expectedCursor: detailStage!.cursor,
+            pageDepth: detailStage.pageDepth,
+            nextCursor: null,
+            rawMessages: const [],
+          )
+          .whenComplete(() => detailPublishCompleted = true);
+      await Future<void>.delayed(Duration.zero);
+      expect(detailPublishCompleted, isFalse);
+      releaseDetailRead.complete();
+      final oldDetail = await oldDetailRead;
+      expect(oldDetail?.revision, 'detail-old');
+      expect(
+        (oldDetail?.messages.single as UserInputMessage).text,
+        'old detail',
+      );
+      await detailPublish;
+      final newDetail = await repository.loadConversationUserTurnDetail(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-read-snapshot',
+        providerTurnId: 'turn-read-snapshot',
+      );
+      expect(newDetail?.revision, 'detail-new');
+      expect(
+        (newDetail?.messages.single as UserInputMessage).text,
+        'new detail',
+      );
     },
   );
 

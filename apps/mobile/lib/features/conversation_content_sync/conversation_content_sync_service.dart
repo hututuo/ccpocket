@@ -718,6 +718,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       provider,
       providerSessionId,
       normalizedTurnId,
+      revision,
     ].join('\u0000');
     final existing = _userTurnDetailFlights[flightKey];
     if (existing != null) return existing;
@@ -754,7 +755,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       providerSessionId: providerSessionId,
       providerTurnId: providerTurnId,
     );
-    if (cached?.complete == true) return cached!.messages;
+    if (cached?.revision == revision && cached?.complete == true) {
+      return cached!.messages;
+    }
     if (!bridge.supportsConversationSyncV2 || !_canProcessContent) return null;
     var stage = await cache.prepareConversationUserTurnDetail(
       target: target,
@@ -765,12 +768,15 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     );
     if (stage == null) return null;
     if (stage.complete) {
-      return (await cache.loadConversationUserTurnDetail(
+      final completed = await cache.loadConversationUserTurnDetail(
         target: target,
         provider: provider,
         providerSessionId: providerSessionId,
         providerTurnId: providerTurnId,
-      ))?.messages;
+      );
+      return completed?.revision == revision && completed?.complete == true
+          ? completed!.messages
+          : null;
     }
     final generation = _generation;
     final cursors = <String?>{};
@@ -806,7 +812,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       providerSessionId: providerSessionId,
       providerTurnId: providerTurnId,
     );
-    return result?.complete == true ? result!.messages : null;
+    return result?.revision == revision && result?.complete == true
+        ? result!.messages
+        : null;
   }
 
   Future<ConversationUserTurnDetailStage?> _requestUserTurnDetailPage({

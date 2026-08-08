@@ -89,6 +89,7 @@ class SessionCatalogCacheDatabase {
       }
     }
     await database.execute('PRAGMA foreign_keys = ON');
+    await _ensureConversationUserTurnDetailRevisionSchema(database);
     return database;
   }
 
@@ -290,7 +291,8 @@ class SessionCatalogCacheDatabase {
           partition_id,
           provider,
           provider_session_id,
-          provider_turn_id
+          provider_turn_id,
+          revision
         ),
         FOREIGN KEY (partition_id, provider, provider_session_id)
           REFERENCES $userIndexStatesTable (
@@ -324,12 +326,14 @@ class SessionCatalogCacheDatabase {
           partition_id,
           provider,
           provider_session_id,
-          provider_turn_id
+          provider_turn_id,
+          revision
         ) REFERENCES $userTurnDetailsTable (
           partition_id,
           provider,
           provider_session_id,
-          provider_turn_id
+          provider_turn_id,
+          revision
         ) ON DELETE CASCADE
       )
     ''');
@@ -345,6 +349,170 @@ class SessionCatalogCacheDatabase {
         item_order ASC
       )
     ''');
+  }
+
+  static Future<void> _ensureConversationUserTurnDetailRevisionSchema(
+    Database database,
+  ) async {
+    final columns = await database.rawQuery(
+      'PRAGMA table_info($userTurnDetailsTable)',
+    );
+    if (columns.isEmpty) {
+      await _createConversationUserIndexSchema(database);
+      return;
+    }
+    final revisionColumns = columns.where(
+      (column) => column['name'] == 'revision',
+    );
+    if (revisionColumns.length == 1 && revisionColumns.single['pk'] == 5) {
+      return;
+    }
+
+    const replacementDetailsTable =
+        'conversation_user_turn_details_revision_rebuild';
+    const replacementItemsTable =
+        'conversation_user_turn_detail_items_revision_rebuild';
+    await database.transaction((transaction) async {
+      await transaction.execute('DROP TABLE IF EXISTS $replacementItemsTable');
+      await transaction.execute(
+        'DROP TABLE IF EXISTS $replacementDetailsTable',
+      );
+      await transaction.execute('''
+        CREATE TABLE $replacementDetailsTable (
+          partition_id TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          provider_session_id TEXT NOT NULL,
+          provider_turn_id TEXT NOT NULL,
+          revision TEXT NOT NULL,
+          next_cursor TEXT,
+          page_depth INTEGER NOT NULL DEFAULT 0,
+          complete INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (
+            partition_id,
+            provider,
+            provider_session_id,
+            provider_turn_id,
+            revision
+          ),
+          FOREIGN KEY (partition_id, provider, provider_session_id)
+            REFERENCES $userIndexStatesTable (
+              partition_id,
+              provider,
+              provider_session_id
+            )
+            ON DELETE CASCADE
+        )
+      ''');
+      await transaction.execute('''
+        CREATE TABLE $replacementItemsTable (
+          partition_id TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          provider_session_id TEXT NOT NULL,
+          provider_turn_id TEXT NOT NULL,
+          revision TEXT NOT NULL,
+          page_depth INTEGER NOT NULL,
+          item_order INTEGER NOT NULL,
+          message_json TEXT NOT NULL,
+          PRIMARY KEY (
+            partition_id,
+            provider,
+            provider_session_id,
+            provider_turn_id,
+            revision,
+            page_depth,
+            item_order
+          ),
+          FOREIGN KEY (
+            partition_id,
+            provider,
+            provider_session_id,
+            provider_turn_id,
+            revision
+          ) REFERENCES $replacementDetailsTable (
+            partition_id,
+            provider,
+            provider_session_id,
+            provider_turn_id,
+            revision
+          ) ON DELETE CASCADE
+        )
+      ''');
+      await transaction.execute('''
+        INSERT INTO $replacementDetailsTable (
+          partition_id,
+          provider,
+          provider_session_id,
+          provider_turn_id,
+          revision,
+          next_cursor,
+          page_depth,
+          complete,
+          updated_at
+        )
+        SELECT
+          partition_id,
+          provider,
+          provider_session_id,
+          provider_turn_id,
+          revision,
+          next_cursor,
+          page_depth,
+          complete,
+          updated_at
+        FROM $userTurnDetailsTable
+      ''');
+      await transaction.execute('''
+        INSERT INTO $replacementItemsTable (
+          partition_id,
+          provider,
+          provider_session_id,
+          provider_turn_id,
+          revision,
+          page_depth,
+          item_order,
+          message_json
+        )
+        SELECT
+          items.partition_id,
+          items.provider,
+          items.provider_session_id,
+          items.provider_turn_id,
+          items.revision,
+          items.page_depth,
+          items.item_order,
+          items.message_json
+        FROM $userTurnDetailItemsTable AS items
+        INNER JOIN $userTurnDetailsTable AS details
+          ON details.partition_id = items.partition_id
+          AND details.provider = items.provider
+          AND details.provider_session_id = items.provider_session_id
+          AND details.provider_turn_id = items.provider_turn_id
+          AND details.revision = items.revision
+      ''');
+      await transaction.execute('DROP TABLE $userTurnDetailItemsTable');
+      await transaction.execute('DROP TABLE $userTurnDetailsTable');
+      await transaction.execute(
+        'ALTER TABLE $replacementDetailsTable '
+        'RENAME TO $userTurnDetailsTable',
+      );
+      await transaction.execute(
+        'ALTER TABLE $replacementItemsTable '
+        'RENAME TO $userTurnDetailItemsTable',
+      );
+      await transaction.execute('''
+        CREATE INDEX IF NOT EXISTS conversation_user_turn_detail_order
+        ON $userTurnDetailItemsTable (
+          partition_id,
+          provider,
+          provider_session_id,
+          provider_turn_id,
+          revision,
+          page_depth ASC,
+          item_order ASC
+        )
+      ''');
+    });
   }
 
   static Future<void> _createHotConversationSchema(Database database) async {
