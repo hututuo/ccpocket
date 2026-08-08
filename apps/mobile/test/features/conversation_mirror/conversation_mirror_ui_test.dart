@@ -22,7 +22,6 @@ class _FakeConversationMirrorService extends ConversationMirrorService {
   _FakeConversationMirrorService({
     required this.unsupported,
     required this.localCopy,
-    this.downloadResult,
     this.resident = false,
     this.metadata = const [],
   }) : super(
@@ -33,7 +32,6 @@ class _FakeConversationMirrorService extends ConversationMirrorService {
 
   final bool unsupported;
   final bool localCopy;
-  final ConversationMirrorSyncResult? downloadResult;
   final bool resident;
   final List<ConversationMirrorMetadata> metadata;
 
@@ -61,9 +59,7 @@ class _FakeConversationMirrorService extends ConversationMirrorService {
   @override
   Future<ConversationMirrorSyncResult> downloadAndWatch(
     RecentSession session,
-  ) async =>
-      downloadResult ??
-      const ConversationMirrorSyncResult(success: true, changed: false);
+  ) async => const ConversationMirrorSyncResult(success: true, changed: false);
 }
 
 class _UiBridge extends BridgeService {
