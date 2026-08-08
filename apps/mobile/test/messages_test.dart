@@ -3,6 +3,20 @@ import 'package:ccpocket/models/messages.dart';
 import 'dart:convert';
 
 void main() {
+  test('preserves the provider turn for a manual compaction marker', () {
+    final message =
+        ServerMessage.fromJson({
+              'type': 'system',
+              'subtype': 'tip',
+              'tipCode': 'manual_context_compacted',
+              'historyTurnId': 'turn-manual-compact',
+            })
+            as SystemMessage;
+
+    expect(message.tipCode, 'manual_context_compacted');
+    expect(message.historyTurnId, 'turn-manual-compact');
+  });
+
   test(
     'preserves future process status values without treating them as idle',
     () {

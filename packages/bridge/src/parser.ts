@@ -753,6 +753,8 @@ export type ServerMessage = (
       sessionLinkGeneration?: number;
       errorMessage?: string;
       tipCode?: string;
+      /** Provider turn identity for timeline-bound system markers. */
+      historyTurnId?: string;
       permissionChangeId?: string;
       codexCliJoin?: CodexCliJoinTarget;
     }

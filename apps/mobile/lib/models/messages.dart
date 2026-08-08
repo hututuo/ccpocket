@@ -1339,6 +1339,7 @@ sealed class ServerMessage {
         sessionLinkGeneration: (json['sessionLinkGeneration'] as num?)?.toInt(),
         errorMessage: json['errorMessage'] as String?,
         tipCode: json['tipCode'] as String?,
+        historyTurnId: json['historyTurnId'] as String?,
         permissionChangeId: json['permissionChangeId'] as String?,
         codexCliJoin: json['codexCliJoin'] is Map<String, dynamic>
             ? CodexCliJoinTarget.fromJson(
@@ -2207,6 +2208,7 @@ class SystemMessage implements ServerMessage {
   final int? sessionLinkGeneration;
   final String? errorMessage;
   final String? tipCode;
+  final String? historyTurnId;
   final String? permissionChangeId;
   final CodexCliJoinTarget? codexCliJoin;
   const SystemMessage({
@@ -2246,6 +2248,7 @@ class SystemMessage implements ServerMessage {
     this.sessionLinkGeneration,
     this.errorMessage,
     this.tipCode,
+    this.historyTurnId,
     this.permissionChangeId,
     this.codexCliJoin,
   });

@@ -4,6 +4,44 @@ import 'package:ccpocket/models/messages.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('keeps manual compaction outside the preceding tool disclosure', () {
+    final entries = <ChatEntry>[
+      UserChatEntry('inspect', clientMessageId: 'turn-before-compact'),
+      ServerChatEntry(
+        _assistant('work', const [
+          ToolUseContent(
+            id: 'tool-before-compact',
+            name: 'Read',
+            input: {'file_path': 'a.txt'},
+          ),
+        ]),
+      ),
+      ServerChatEntry(
+        const ToolResultMessage(
+          toolUseId: 'tool-before-compact',
+          toolName: 'Read',
+          content: 'done',
+        ),
+      ),
+      ServerChatEntry(
+        const SystemMessage(
+          subtype: 'tip',
+          tipCode: 'manual_context_compacted',
+          historyTurnId: 'turn-manual-compact',
+        ),
+      ),
+      UserChatEntry('continue', clientMessageId: 'turn-after-compact'),
+    ];
+
+    final layout = buildChatProcessLayout(entries);
+    final turn = layout.turnForEntry(1)!;
+
+    expect(turn.intermediateEntryIndices, isNot(contains(3)));
+    expect(layout.turnForEntry(3), isNull);
+    expect(layout.segmentForEntry(3), isNull);
+    expect(layout.segmentForEntry(2)?.toolResults, 1);
+  });
+
   test('folds every historical output and tool before the completed reply', () {
     final entries = <ChatEntry>[
       UserChatEntry('inspect', clientMessageId: 'turn-1'),

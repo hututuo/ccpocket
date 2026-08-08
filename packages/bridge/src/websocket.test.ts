@@ -8363,6 +8363,21 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       },
       messageUuid: "live-assistant-1",
     });
+    manager.appendHistory(sessionId, {
+      type: "system",
+      subtype: "tip",
+      tipCode: "manual_context_compacted",
+      historyTurnId: "turn-manual-compact",
+      sessionId: "thr_codex_live",
+      provider: "codex",
+    });
+    manager.appendHistory(sessionId, {
+      type: "system",
+      subtype: "tip",
+      tipCode: "git_not_available",
+      sessionId: "thr_codex_live",
+      provider: "codex",
+    });
 
     ws.send.mockClear();
     await (bridge as any).handleClientMessage(
@@ -8401,10 +8416,18 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
             },
           },
         },
+        {
+          message: {
+            type: "system",
+            subtype: "tip",
+            tipCode: "manual_context_compacted",
+            historyTurnId: "turn-manual-compact",
+          },
+        },
       ],
     });
     expect(sends[0].fromSeq).toBe(sends[0].messages[0].seq);
-    expect(sends[0].toSeq).toBe(sends[0].messages[1].seq);
+    expect(sends[0].toSeq).toBe(sends[0].messages[2].seq);
     expect(sends[0].fromSeq).toBeGreaterThan(1);
     expect(session.codexCanonicalHistoryRevision).toBe(
       sends[0].messages[0].seq,
@@ -8415,6 +8438,15 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         message: {
           type: "assistant",
           messageUuid: "live-assistant-1",
+        },
+      },
+      {
+        seq: sends[0].messages[2].seq,
+        message: {
+          type: "system",
+          subtype: "tip",
+          tipCode: "manual_context_compacted",
+          historyTurnId: "turn-manual-compact",
         },
       },
     ]);

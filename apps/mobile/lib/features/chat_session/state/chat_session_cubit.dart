@@ -5392,6 +5392,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return null;
     }
     if (entry is ServerChatEntry) {
+      if (entry.message case SystemMessage(
+        subtype: 'tip',
+        tipCode: 'manual_context_compacted',
+        :final historyTurnId,
+      )) {
+        final turnId = historyTurnId?.trim();
+        return turnId?.isNotEmpty == true
+            ? 'system:manual_context_compacted:turn:$turnId'
+            : 'system:manual_context_compacted:'
+                  '${entry.timestamp.microsecondsSinceEpoch}';
+      }
       return _serverMessageStableKey(entry.message);
     }
     return null;
@@ -5474,6 +5485,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         :final settingsPersistence,
         :final sourceSessionId,
         :final tipCode,
+        :final historyTurnId,
       ):
         return [
           'system',
@@ -5493,6 +5505,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           settingsPersistence,
           sourceSessionId,
           tipCode,
+          historyTurnId,
         ].join('\u0001');
       case AssistantServerMessage(:final message):
         return 'assistant:content:${_assistantContentSignature(message)}';

@@ -3880,13 +3880,29 @@ export class BridgeWebSocketServer {
   }
 
   private shouldRetainCodexLiveHistoryMessage(message: ServerMessage): boolean {
-    return !(
+    if (
       message.type === "system" &&
       (message as Record<string, unknown>).subtype === "tip"
-    );
+    ) {
+      return (
+        (message as Record<string, unknown>).tipCode ===
+        "manual_context_compacted"
+      );
+    }
+    return true;
   }
 
   private codexHistoryMessageIdentityKeys(message: ServerMessage): string[] {
+    if (
+      message.type === "system" &&
+      message.subtype === "tip" &&
+      message.tipCode === "manual_context_compacted"
+    ) {
+      const historyTurnId = message.historyTurnId?.trim();
+      return historyTurnId
+        ? [`manual-context-compacted:${historyTurnId}`]
+        : [];
+    }
     if (message.type === "user_input") {
       const providerItemId = message.providerItemId?.trim();
       if (providerItemId) return [`user:provider:${providerItemId}`];

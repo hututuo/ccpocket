@@ -6057,7 +6057,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       const tipAlreadyEmitted = turnId
         ? this.manualCompactionTipTurnIds.has(turnId)
         : false;
-      if (!tipAlreadyEmitted) this.emitManualCompactionTip();
+      if (!tipAlreadyEmitted) this.emitManualCompactionTip(undefined, turnId);
       if (turnId) this.rememberManualCompactionTip(turnId);
       if (turnId) {
         this.lastCompletedTurn = { turnId, status };
@@ -6392,7 +6392,9 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       const tipAlreadyEmitted = turnId
         ? this.manualCompactionTipTurnIds.has(turnId)
         : false;
-      if (!tipAlreadyEmitted) this.emitManualCompactionTip(sourceTimestamp);
+      if (!tipAlreadyEmitted) {
+        this.emitManualCompactionTip(sourceTimestamp, turnId);
+      }
       if (turnId) this.rememberManualCompactionTip(turnId);
       return;
     }
@@ -7016,7 +7018,10 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     });
   }
 
-  private emitManualCompactionTip(sourceTimestamp?: string): void {
+  private emitManualCompactionTip(
+    sourceTimestamp?: string,
+    historyTurnId?: string | null,
+  ): void {
     this.emitMessage(
       withCodexSourceTimestamp(
         {
@@ -7025,6 +7030,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           tipCode: "manual_context_compacted",
           sessionId: this._threadId ?? undefined,
           provider: "codex",
+          ...(historyTurnId ? { historyTurnId } : {}),
         },
         sourceTimestamp,
       ),

@@ -1462,6 +1462,114 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("projects only standalone manual compaction as a timeline divider", async () => {
+    const listThreadTurns = vi.fn(async () => ({
+      data: [
+        {
+          id: "turn-manual-compact",
+          startedAt: 1_786_100_000,
+          completedAt: 1_786_100_001,
+          items: [{ type: "contextCompaction", id: "manual-compact" }],
+        },
+        {
+          id: "turn-manual-compact-legacy-shape",
+          items: [
+            { type: "context_compaction", id: "manual-compact-legacy" },
+          ],
+        },
+        {
+          id: "turn-auto-compact",
+          items: [
+            {
+              type: "userMessage",
+              id: "user-auto-compact",
+              content: [{ type: "text", text: "continue working" }],
+            },
+            { type: "contextCompaction", id: "auto-compact" },
+            { type: "agentMessage", id: "agent-auto", text: "done" },
+          ],
+        },
+      ],
+      nextCursor: null,
+    }));
+    const fixture = createCodexPageFixture({ listThreadTurns });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "manual-compact-divider",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-compact-divider",
+        limit: 3,
+        sortDirection: "desc",
+        itemsView: "full",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+
+    const response = events(
+      fixture.sent,
+      fixture.client,
+      "turns_page_response",
+    ).find((event) => event.requestId === "manual-compact-divider")!;
+    const manualTurn = response.data.find(
+      (turn: { turnId?: string }) => turn.turnId === "turn-manual-compact",
+    )!;
+    const automaticTurn = response.data.find(
+      (turn: { turnId?: string }) => turn.turnId === "turn-auto-compact",
+    )!;
+    const legacyShapeTurn = response.data.find(
+      (turn: { turnId?: string }) =>
+        turn.turnId === "turn-manual-compact-legacy-shape",
+    )!;
+    expect(manualTurn).toMatchObject({
+      turnId: "turn-manual-compact",
+      messages: [
+        {
+          type: "system",
+          subtype: "tip",
+          tipCode: "manual_context_compacted",
+          historyTurnId: "turn-manual-compact",
+        },
+      ],
+    });
+    expect(automaticTurn).toMatchObject({
+      turnId: "turn-auto-compact",
+    });
+    expect(legacyShapeTurn).toMatchObject({
+      messages: [
+        {
+          type: "system",
+          tipCode: "manual_context_compacted",
+          historyTurnId: "turn-manual-compact-legacy-shape",
+        },
+      ],
+    });
+    expect(
+      automaticTurn.messages.some(
+        (message: Record<string, unknown>) =>
+          message.type === "system" &&
+          message.tipCode === "manual_context_compacted",
+      ),
+    ).toBe(false);
+    expect(JSON.stringify(automaticTurn.messages)).toContain(
+      "ContextCompaction",
+    );
+    fixture.handler.close();
+  });
+
   it("preserves provider user item and turn identities across one Codex page", async () => {
     const fixture = createCodexPageFixture({
       listThreadTurns: vi.fn(async () => ({

@@ -7047,6 +7047,46 @@ function codexTurnMessages(
   threadId: string,
   desktopToolTimeline?: CodexDesktopToolTimeline,
 ): ServerMessage[] {
+  const items = Array.isArray(turn.items) ? turn.items : [];
+  const itemTypes = items
+    .filter(
+      (item): item is Record<string, unknown> =>
+        item !== null && typeof item === "object" && !Array.isArray(item),
+    )
+    .map((item) => item.type);
+  // app-server represents an explicit thread/compact/start as a standalone
+  // turn containing only contextCompaction. Automatic compaction occurs
+  // inside an ordinary agent turn alongside user/assistant items and must
+  // remain in that turn's process disclosure.
+  if (
+    itemTypes.length > 0 &&
+    itemTypes.every(isContextCompactionItemType)
+  ) {
+    const timestamp =
+      typeof turn.completedAt === "number"
+        ? new Date(turn.completedAt * 1000).toISOString()
+        : typeof turn.startedAt === "number"
+          ? new Date(turn.startedAt * 1000).toISOString()
+          : undefined;
+    return [
+      {
+        type: "system",
+        subtype: "tip",
+        tipCode: "manual_context_compacted",
+        sessionId: threadId,
+        provider: "codex",
+        ...(typeof turn.id === "string" && turn.id.trim()
+          ? { historyTurnId: turn.id.trim() }
+          : {}),
+        ...(timestamp
+          ? {
+              sourceTimestamp: timestamp,
+              sourceTimestampIsAuthoritative: true,
+            }
+          : {}),
+      },
+    ];
+  }
   const history = codexThreadToSessionHistory(
     {
       id: threadId,
@@ -7057,6 +7097,13 @@ function codexTurnMessages(
   return sessionHistoryToServerMessages(history, {
     idPrefix: `conversation-sync-v2-page-${threadId}`,
   });
+}
+
+function isContextCompactionItemType(type: unknown): boolean {
+  return (
+    typeof type === "string" &&
+    type.replace(/[_-]/g, "").toLowerCase() === "contextcompaction"
+  );
 }
 
 function annotateTurnMessages(

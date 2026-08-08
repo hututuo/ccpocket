@@ -24,6 +24,33 @@ class TipChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final appColors = Theme.of(context).extension<AppColors>()!;
     final l = AppLocalizations.of(context);
+    if (message.tipCode == 'manual_context_compacted') {
+      return Padding(
+        key: const ValueKey('manual_context_compaction_divider'),
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Row(
+          children: [
+            Expanded(
+              child: Divider(
+                color: appColors.subtleText.withValues(alpha: 0.35),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: Text(
+                _text(l),
+                style: TextStyle(fontSize: 12, color: appColors.subtleText),
+              ),
+            ),
+            Expanded(
+              child: Divider(
+                color: appColors.subtleText.withValues(alpha: 0.35),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),

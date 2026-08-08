@@ -229,13 +229,22 @@ ChatProcessLayout buildChatProcessLayout(
 
   var cursor = 0;
   while (cursor < entries.length) {
+    // An explicit compaction is a timeline boundary, not part of the previous
+    // turn's thought/tool disclosure. Leave the entry unmapped so the normal
+    // transcript renderer can show its dedicated divider.
+    if (_isManualContextCompactionEntry(entries[cursor])) {
+      cursor++;
+      continue;
+    }
     final turnStart = cursor;
     final userEntry = entries[turnStart] is UserChatEntry
         ? entries[turnStart] as UserChatEntry
         : null;
     final turnContentStart = userEntry == null ? turnStart : turnStart + 1;
     var turnEnd = turnContentStart;
-    while (turnEnd < entries.length && entries[turnEnd] is! UserChatEntry) {
+    while (turnEnd < entries.length &&
+        entries[turnEnd] is! UserChatEntry &&
+        !_isManualContextCompactionEntry(entries[turnEnd])) {
       turnEnd++;
     }
 
@@ -604,6 +613,12 @@ ChatProcessLayout buildChatProcessLayout(
     turnKeyAliases: Map.unmodifiable(turnKeyAliases),
   );
 }
+
+bool _isManualContextCompactionEntry(ChatEntry entry) =>
+    entry is ServerChatEntry &&
+    entry.message is SystemMessage &&
+    (entry.message as SystemMessage).subtype == 'tip' &&
+    (entry.message as SystemMessage).tipCode == 'manual_context_compacted';
 
 class _SegmentAccumulator {
   _SegmentAccumulator({required this.assistantEntryIndex});

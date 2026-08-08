@@ -365,7 +365,7 @@
   "applyPermissionsRestartNowTitle": "立即重启",
   "applyPermissionsRestartNowDescription": "中断当前小轮并撤下当前审批，再以新权限恢复同一对话。",
   "permissionModeNextTurnAppliedTip": "权限已保存，将从下一个尚未开始的轮次生效；当前审批仍按原权限处理。",
-  "manualContextCompactedTip": "已手动压缩上下文。",
+  "manualContextCompactedTip": "已压缩上下文",
   "permissionChipAcceptEdits": "编辑",
   "permissionChipBypass": "绕过",
   "executionDefaultDescription": "标准权限提示",

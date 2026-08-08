@@ -5186,6 +5186,7 @@ describe("CodexProcess (app-server)", () => {
         type: "system",
         subtype: "tip",
         tipCode: "manual_context_compacted",
+        historyTurnId: "turn-manual-compact",
       }),
     );
     expect(
