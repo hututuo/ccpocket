@@ -5920,6 +5920,29 @@ function equivalentObservedUserMessage(
   if (canonical.type !== "user_input" || live.type !== "user_input") {
     return false;
   }
+  const canonicalProviderItemId = canonical.providerItemId?.trim();
+  const liveProviderItemId = live.providerItemId?.trim();
+  if (
+    canonicalProviderItemId &&
+    liveProviderItemId &&
+    canonicalProviderItemId !== liveProviderItemId
+  ) {
+    return false;
+  }
+  const canonicalTurnId = canonical.historyTurnId?.trim();
+  const liveTurnId = live.historyTurnId?.trim();
+  if (canonicalTurnId && liveTurnId && canonicalTurnId !== liveTurnId) {
+    return false;
+  }
+  const canonicalClientMessageId = canonical.clientMessageId?.trim();
+  const liveClientMessageId = live.clientMessageId?.trim();
+  if (
+    canonicalClientMessageId &&
+    liveClientMessageId &&
+    canonicalClientMessageId !== liveClientMessageId
+  ) {
+    return false;
+  }
   if (
     canonical.text !== live.text ||
     (canonical.imageCount ?? 0) !== (live.imageCount ?? 0)

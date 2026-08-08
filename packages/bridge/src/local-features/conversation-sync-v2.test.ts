@@ -4384,6 +4384,80 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("does not collapse rapid equal-text users from different provider turns", async () => {
+    type HandlerOptions = NonNullable<
+      ConstructorParameters<typeof ConversationSyncV2FeatureHandler>[1]
+    >;
+    type ObserverCallback = Parameters<
+      NonNullable<HandlerOptions["observeCodexThread"]>
+    >[1];
+    let callback: ObserverCallback | undefined;
+    const timestamp = "2026-07-30T02:00:00.000Z";
+    const fixture = createFixture(
+      [codexSeed(0, "thread-equal-users")],
+      async () => [
+        {
+          type: "user_input",
+          text: "继续",
+          historyTurnId: "provider-turn-one",
+          userMessageUuid: "reused-user",
+          timestamp,
+          sourceTimestamp: timestamp,
+          sourceTimestampIsAuthoritative: true,
+        },
+      ],
+      {
+        initialExternalCodexMonitors: 1,
+        observeCodexThread: async (_threadId, onEvent) => {
+          callback = onEvent;
+          return {
+            snapshot: { state: "running" as const },
+            refreshNow: async () => {},
+            close: () => {},
+          };
+        },
+      },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() => expect(callback).toBeDefined());
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    callback!({
+      kind: "message",
+      itemKey: "user:reused-user",
+      turnId: "provider-turn-two",
+      timestamp,
+      message: {
+        type: "user_input",
+        text: "继续",
+        userMessageUuid: "reused-user",
+        timestamp,
+      },
+    });
+
+    await vi.waitFor(() => {
+      const pagesByBatch = new Map<string, string>();
+      for (const page of events(fixture.sent, client, "timeline_page")) {
+        pagesByBatch.set(
+          page.batchId,
+          `${pagesByBatch.get(page.batchId) ?? ""}${JSON.stringify(page)}`,
+        );
+      }
+      expect(
+        [...pagesByBatch.values()].some(
+          (serialized) => (serialized.match(/继续/g) ?? []).length === 2,
+        ),
+      ).toBe(true);
+    });
+    fixture.handler.close();
+  });
+
   it("reads Desktop item timestamps only when v2 content is requested and marks them authoritative", async () => {
     const sourceTimestamps = {
       user: "2026-07-30T02:00:00.000Z",
