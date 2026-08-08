@@ -22,16 +22,18 @@ class _ConversationMirrorUiSlot extends LocalSessionFeatureSlot {
     final target = _targetForRuntime(context.bridge, context.sessionId);
     if (service == null ||
         !service.isAvailable ||
-        session?.provider != Provider.codex.value) {
+        session?.provider != Provider.codex.value ||
+        target == null ||
+        !service.hasLocalCopyTarget(target)) {
       return const [];
     }
     return [
       SessionMenuAction(
         featureId: featureId,
         label: ConversationMirrorStrings.of(context.context).manageResident,
-        icon: target != null && service.isResidentTarget(target)
+        icon: service.isResidentTarget(target)
             ? Icons.offline_pin
-            : Icons.download_for_offline_outlined,
+            : Icons.check_circle_outline,
         order: 28,
       ),
     ];
@@ -98,37 +100,7 @@ class _ConversationMirrorResidentPanelState
   bool _busy = false;
   String? _error;
 
-  Future<void> _setResident(
-    ConversationMirrorService service,
-    ConversationMirrorTarget target,
-    bool enabled,
-  ) async {
-    if (_busy) return;
-    final strings = ConversationMirrorStrings.of(context);
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      if (enabled) {
-        final result = await service.makeResidentTarget(target);
-        if (!result.success) {
-          if (mounted) {
-            setState(() => _error = _syncErrorMessage(strings, result));
-          }
-          return;
-        }
-      } else {
-        await service.stopBeingResidentTarget(target);
-      }
-    } catch (error) {
-      if (mounted) setState(() => _error = strings.failed('$error'));
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _sync(
+  Future<void> _stopResident(
     ConversationMirrorService service,
     ConversationMirrorTarget target,
   ) async {
@@ -139,14 +111,7 @@ class _ConversationMirrorResidentPanelState
       _error = null;
     });
     try {
-      final result = await service.syncTargetNow(target);
-      if (!result.success) {
-        if (mounted) {
-          setState(() {
-            _error = _syncErrorMessage(strings, result);
-          });
-        }
-      }
+      await service.stopBeingResidentTarget(target);
     } catch (error) {
       if (mounted) setState(() => _error = strings.failed('$error'));
     } finally {
@@ -210,23 +175,19 @@ class _ConversationMirrorResidentPanelState
     final metadata = service.cachedMetadataForTarget(target);
     final isResident = metadata?.autoSync == true;
     final hasLocalCopy = metadata?.hasLocalCopy == true;
+    if (!hasLocalCopy) {
+      return Center(child: Text(strings.noLocalCopy));
+    }
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       children: [
-        SwitchListTile.adaptive(
-          key: const ValueKey('conversation_resident_switch'),
-          value: isResident,
-          onChanged: _busy || (service.featureUnsupported && !isResident)
-              ? null
-              : (enabled) => _setResident(service, target, enabled),
-          secondary: Icon(
-            isResident
-                ? Icons.offline_pin
-                : Icons.download_for_offline_outlined,
-          ),
-          title: Text(strings.residentTitle),
-          subtitle: Text(strings.residentSubtitle),
+        ListTile(
           contentPadding: EdgeInsets.zero,
+          leading: Icon(
+            isResident ? Icons.offline_pin : Icons.check_circle_outline,
+          ),
+          title: Text(strings.savedCopyTitle),
+          subtitle: Text(strings.savedCopyTooltip),
         ),
         if (_busy) const LinearProgressIndicator(minHeight: 2),
         if (metadata != null) ...[
@@ -246,12 +207,12 @@ class _ConversationMirrorResidentPanelState
           ),
         ],
         const SizedBox(height: 12),
-        if (hasLocalCopy)
+        if (isResident)
           FilledButton.tonalIcon(
-            key: const ValueKey('conversation_resident_sync_now'),
-            onPressed: _busy ? null : () => _sync(service, target),
-            icon: const Icon(Icons.sync),
-            label: Text(strings.syncNow),
+            key: const ValueKey('conversation_resident_stop'),
+            onPressed: _busy ? null : () => _stopResident(service, target),
+            icon: const Icon(Icons.pause_circle_outline),
+            label: Text(strings.stopResident),
           ),
         if (hasLocalCopy) ...[
           const SizedBox(height: 8),
@@ -267,20 +228,5 @@ class _ConversationMirrorResidentPanelState
         ],
       ],
     );
-  }
-
-  String _syncErrorMessage(
-    ConversationMirrorStrings strings,
-    ConversationMirrorSyncResult result,
-  ) {
-    return switch (result.errorCode) {
-      'resident_limit_reached' => strings.residentLimitReached,
-      'unsupported_capability' ||
-      'unsupported_message' ||
-      'capability_not_negotiated' => strings.bridgeUpdateRequired,
-      'bridge_disconnected' => strings.connectToDownload,
-      'path_not_allowed' => strings.projectOutsideAllowedDirectories,
-      _ => strings.failed(result.error ?? result.errorCode ?? 'unknown error'),
-    };
   }
 }

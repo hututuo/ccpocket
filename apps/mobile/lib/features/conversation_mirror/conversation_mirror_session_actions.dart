@@ -7,8 +7,6 @@ import 'conversation_mirror_service.dart';
 import 'conversation_mirror_strings.dart';
 import 'conversation_mirror_target.dart';
 
-const conversationMirrorDownloadAction = 'conversation_mirror_download';
-const conversationMirrorSyncAction = 'conversation_mirror_sync';
 const conversationMirrorStopResidentAction =
     'conversation_mirror_stop_resident';
 const conversationMirrorRemoveAction = 'conversation_mirror_remove';
@@ -47,15 +45,11 @@ List<AdaptiveActionMenuItem<String>> conversationMirrorTargetActionItems(
   final strings = ConversationMirrorStrings.of(context);
   final hasLocalCopy = service.hasLocalCopyTarget(target);
   final isResident = service.isResidentTarget(target);
+  // Existing legacy copies remain removable, but the former opt-in full
+  // download/sync workflow is retired. Recent history is now obtained through
+  // bounded paging and the ordinary rebuildable cache.
   if (!isResident) {
     return [
-      if (!service.featureUnsupported)
-        AdaptiveActionMenuItem(
-          key: const ValueKey('conversation_mirror_download_action'),
-          value: conversationMirrorDownloadAction,
-          icon: Icons.download_for_offline_outlined,
-          label: strings.downloadAndSync,
-        ),
       if (hasLocalCopy)
         AdaptiveActionMenuItem(
           key: const ValueKey('conversation_mirror_remove_action'),
@@ -67,13 +61,6 @@ List<AdaptiveActionMenuItem<String>> conversationMirrorTargetActionItems(
     ];
   }
   return [
-    if (!service.featureUnsupported)
-      AdaptiveActionMenuItem(
-        key: const ValueKey('conversation_mirror_sync_action'),
-        value: conversationMirrorSyncAction,
-        icon: Icons.sync,
-        label: strings.syncNow,
-      ),
     AdaptiveActionMenuItem(
       key: const ValueKey('conversation_mirror_stop_resident_action'),
       value: conversationMirrorStopResidentAction,
@@ -117,8 +104,6 @@ Future<bool> handleConversationMirrorTargetAction(
   String action,
 ) async {
   if (!const {
-    conversationMirrorDownloadAction,
-    conversationMirrorSyncAction,
     conversationMirrorStopResidentAction,
     conversationMirrorRemoveAction,
   }.contains(action)) {
@@ -138,44 +123,10 @@ Future<bool> handleConversationMirrorTargetAction(
       return true;
     }
 
-    if (action == conversationMirrorStopResidentAction) {
-      await service.stopBeingResidentTarget(target);
-      if (context.mounted) {
-        messenger.showSnackBar(
-          SnackBar(content: Text(strings.residencyStopped)),
-        );
-      }
-      return true;
+    await service.stopBeingResidentTarget(target);
+    if (context.mounted) {
+      messenger.showSnackBar(SnackBar(content: Text(strings.residencyStopped)));
     }
-
-    messenger.showSnackBar(
-      SnackBar(
-        content: Text(
-          action == conversationMirrorDownloadAction
-              ? strings.downloading
-              : strings.syncing,
-        ),
-      ),
-    );
-    final result = action == conversationMirrorDownloadAction
-        ? await service.makeResidentTarget(target)
-        : await service.syncTargetNow(target);
-    if (!context.mounted) return true;
-    messenger.hideCurrentSnackBar();
-    final message = result.success
-        ? (result.changed
-              ? strings.downloaded(result.entryCount)
-              : strings.upToDate)
-        : result.errorCode == 'resident_limit_reached'
-        ? strings.residentLimitReached
-        : result.errorCode == 'unsupported_capability' ||
-              result.errorCode == 'unsupported_message' ||
-              result.errorCode == 'capability_not_negotiated'
-        ? strings.bridgeUpdateRequired
-        : result.errorCode == 'path_not_allowed'
-        ? strings.projectOutsideAllowedDirectories
-        : strings.failed(result.error ?? result.errorCode ?? 'unknown error');
-    messenger.showSnackBar(SnackBar(content: Text(message)));
   } catch (error) {
     if (context.mounted) {
       messenger.showSnackBar(SnackBar(content: Text(strings.failed('$error'))));

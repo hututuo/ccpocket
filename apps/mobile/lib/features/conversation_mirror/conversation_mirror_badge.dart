@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart' hide Provider;
 
 import '../../models/messages.dart';
-import 'conversation_mirror_session_actions.dart';
 import 'conversation_mirror_service.dart';
 import 'conversation_mirror_strings.dart';
 import 'conversation_mirror_target.dart';
@@ -52,7 +51,10 @@ class ConversationMirrorTargetBadge extends StatelessWidget {
     final syncing = service.isSyncingTarget(target);
     final hasLocalCopy = service.hasLocalCopyTarget(target);
     final isResident = service.isResidentTarget(target);
-    if (service.featureUnsupported && !hasLocalCopy) {
+    // Full-conversation download is no longer a user-facing workflow. Keep a
+    // passive check for legacy copies so people can still see what is already
+    // stored, but never turn an empty cache into a download button.
+    if (!hasLocalCopy) {
       return const SizedBox.shrink();
     }
     final color = Theme.of(context).colorScheme.primary;
@@ -63,9 +65,7 @@ class ConversationMirrorTargetBadge extends StatelessWidget {
             ? ConversationMirrorStrings.of(context).syncingTooltip
             : isResident
             ? ConversationMirrorStrings.of(context).localCopyTooltip
-            : hasLocalCopy
-            ? ConversationMirrorStrings.of(context).savedCopyTooltip
-            : ConversationMirrorStrings.of(context).downloadAndSync,
+            : ConversationMirrorStrings.of(context).savedCopyTooltip,
         child: SizedBox.square(
           dimension: 32,
           child: Center(
@@ -78,37 +78,17 @@ class ConversationMirrorTargetBadge extends StatelessWidget {
                       color: color,
                     ),
                   )
-                : IconButton(
+                : Icon(
                     key: ValueKey(
-                      hasLocalCopy
-                          ? isResident
-                                ? 'conversation_mirror_resident_badge'
-                                : 'conversation_mirror_saved_badge'
-                          : 'conversation_mirror_download_badge',
-                    ),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints.tightFor(
-                      width: 32,
-                      height: 32,
-                    ),
-                    iconSize: 19,
-                    color: color,
-                    icon: Icon(
                       isResident
-                          ? Icons.offline_pin_outlined
-                          : hasLocalCopy
-                          ? Icons.check_circle_outline
-                          : Icons.download_for_offline_outlined,
+                          ? 'conversation_mirror_resident_badge'
+                          : 'conversation_mirror_saved_badge',
                     ),
-                    onPressed: service.featureUnsupported
-                        ? null
-                        : () => handleConversationMirrorTargetAction(
-                            context,
-                            target,
-                            isResident
-                                ? conversationMirrorSyncAction
-                                : conversationMirrorDownloadAction,
-                          ),
+                    size: 19,
+                    color: color,
+                    isResident
+                        ? Icons.offline_pin_outlined
+                        : Icons.check_circle_outline,
                   ),
           ),
         ),

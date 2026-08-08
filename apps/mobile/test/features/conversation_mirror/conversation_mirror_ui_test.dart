@@ -172,57 +172,50 @@ void main() {
       ),
     );
 
-    final savedButton = tester.widget<IconButton>(
+    expect(
       find.byKey(const ValueKey('conversation_mirror_saved_badge')),
+      findsOneWidget,
     );
-    expect(savedButton.onPressed, isNull);
+    expect(find.byType(IconButton), findsNothing);
     expect(actions.map((action) => action.value), [
       conversationMirrorRemoveAction,
     ]);
   });
 
-  testWidgets('pre-feature Bridge timeout uses the friendly fallback message', (
+  testWidgets('retired full-history actions are no longer handled', (
     tester,
   ) async {
     final service = _FakeConversationMirrorService(
       unsupported: false,
       localCopy: false,
-      downloadResult: const ConversationMirrorSyncResult(
-        success: false,
-        changed: false,
-        errorCode: 'capability_not_negotiated',
-        error: 'technical handshake detail',
-      ),
     );
+    bool? handled;
 
     await tester.pumpWidget(
       _wrap(
         service,
         Builder(
           builder: (context) => TextButton(
-            onPressed: () => handleConversationMirrorAction(
-              context,
-              _session,
-              conversationMirrorDownloadAction,
-            ),
-            child: const Text('download'),
+            onPressed: () async {
+              handled = await handleConversationMirrorAction(
+                context,
+                _session,
+                'conversation_mirror_download',
+              );
+            },
+            child: const Text('retired-action'),
           ),
         ),
       ),
     );
-    await tester.tap(find.text('download'));
+    await tester.tap(find.text('retired-action'));
     await tester.pumpAndSettle();
 
-    expect(
-      find.text(
-        'This Bridge does not support conversation mirrors; existing loading remains active',
-      ),
-      findsOneWidget,
-    );
-    expect(find.textContaining('technical handshake detail'), findsNothing);
+    expect(handled, isFalse);
+    expect(find.byType(SnackBar), findsNothing);
   });
 
-  testWidgets('running card actions can make an active Codex chat resident', (
+  testWidgets('running card does not offer a new full-history download', (
     tester,
   ) async {
     final service = _FakeConversationMirrorService(
@@ -246,12 +239,10 @@ void main() {
       ),
     );
 
-    expect(actions.map((action) => action.value), [
-      conversationMirrorDownloadAction,
-    ]);
+    expect(actions, isEmpty);
   });
 
-  testWidgets('session More keeps residency entry before durable id arrives', (
+  testWidgets('session More hides residency before a legacy copy exists', (
     tester,
   ) async {
     SharedPreferences.setMockInitialValues({});
@@ -297,8 +288,7 @@ void main() {
       ),
     );
 
-    expect(actions.single.featureId, 'conversation_mirror_resident');
-    expect(actions.single.label, 'Residency and full sync');
+    expect(actions, isEmpty);
     expect(
       LocalSessionFeatureHost.paneDescriptor('conversation_mirror_resident'),
       isNotNull,

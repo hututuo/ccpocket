@@ -36,10 +36,24 @@ class ConversationMirrorStrings {
   }
 
   String get manageResident {
-    if (_zh) return '常驻与完整同步';
-    if (_ja) return '常駐と完全同期';
-    if (_ko) return '상주 및 전체 동기화';
-    return 'Residency and full sync';
+    if (_zh) return '管理旧版手机副本';
+    if (_ja) return '以前のモバイルコピーを管理';
+    if (_ko) return '기존 휴대폰 사본 관리';
+    return 'Manage legacy phone copy';
+  }
+
+  String get savedCopyTitle {
+    if (_zh) return '手机中已有旧版完整副本';
+    if (_ja) return '以前の完全コピーが端末にあります';
+    if (_ko) return '휴대폰에 기존 전체 사본이 있음';
+    return 'A legacy full copy is stored on this phone';
+  }
+
+  String get noLocalCopy {
+    if (_zh) return '当前没有需要管理的旧版手机副本';
+    if (_ja) return '管理する以前のモバイルコピーはありません';
+    if (_ko) return '관리할 기존 휴대폰 사본이 없음';
+    return 'There is no legacy phone copy to manage';
   }
 
   String get waitingForConversationIdentity {
@@ -202,10 +216,10 @@ class ConversationMirrorStrings {
   }
 
   String get savedCopyTooltip {
-    if (_zh) return '手机中有完整副本；当前未常驻';
+    if (_zh) return '旧版完整副本仅用于兼容，可在这里取消常驻或删除';
     if (_ja) return 'モバイルに完全なコピーがあります。現在は常駐していません';
     if (_ko) return '휴대폰에 전체 사본이 있지만 현재 상주하지 않음';
-    return 'A full phone copy exists but is not currently resident';
+    return 'This legacy full copy remains for compatibility and can be stopped or removed';
   }
 
   String get syncingTooltip {
