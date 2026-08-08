@@ -2432,6 +2432,86 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("namespaces repeated Claude fallback user ids across bounded source pages", async () => {
+    const claudeHistoryWindowReader = vi.fn(
+      async (_sessionId: string, options: { cursor?: string } = {}) => {
+        const isOlderPage = options.cursor === "opaque-claude-page-2";
+        return {
+          messages: [
+            {
+              role: "user" as const,
+              uuid: "reused-across-claude-pages",
+              content: isOlderPage ? "older prompt" : "newer prompt",
+            },
+            {
+              role: "assistant" as const,
+              uuid: isOlderPage ? "older-answer" : "newer-answer",
+              content: isOlderPage ? "older answer" : "newer answer",
+            },
+          ],
+          nextCursor: isOlderPage ? null : "opaque-claude-page-2",
+          hasMore: !isOlderPage,
+          bytesRead: 128,
+          userTurnCount: 1,
+        };
+      },
+    );
+    const fixture = createFixture([seed(0)], undefined, {
+      claudeHistoryWindowReader,
+    });
+    const client = {};
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    const requestPage = async (requestId: string, cursor?: string) => {
+      await fixture.handler.handle(
+        {
+          type: "conversation_turns_page",
+          protocolVersion: 2,
+          requestId,
+          subscriptionId: subscription.requestId,
+          provider: "claude",
+          providerSessionId: "session-0",
+          ...(cursor ? { cursor } : {}),
+          limit: 1,
+          sortDirection: "desc",
+          itemsView: "summary",
+        },
+        context(client, fixture.runtime),
+      );
+      return events(fixture.sent, client, "turns_page_response").find(
+        (event) => event.requestId === requestId,
+      )!;
+    };
+
+    const first = await requestPage("claude-page-1");
+    expect(first.data).toEqual([
+      expect.objectContaining({
+        turnId: "legacy-turn:reused-across-claude-pages",
+      }),
+    ]);
+    expect(first.nextCursor).toMatch(/^ccp-legacy-window-v1:/);
+
+    const second = await requestPage("claude-page-2", first.nextCursor!);
+    const secondTurnId = (second.data[0] as { turnId: string }).turnId;
+    expect(secondTurnId).toMatch(
+      /^legacy-turn:reused-across-claude-pages:source:[A-Za-z0-9_-]{12}$/,
+    );
+    expect(secondTurnId).not.toBe("legacy-turn:reused-across-claude-pages");
+    expect(second.nextCursor).toBeNull();
+    expect(claudeHistoryWindowReader.mock.calls.slice(-2)).toEqual([
+      ["session-0", { maxUserTurns: 1 }],
+      ["session-0", { cursor: "opaque-claude-page-2", maxUserTurns: 1 }],
+    ]);
+    fixture.handler.close();
+  });
+
   it("refuses an unsupported Codex page instead of scanning full durable history", async () => {
     const listThreadTurns = vi.fn(async () => {
       throw new Error("Method not found");
@@ -8753,13 +8833,15 @@ function createFixture(
     entry: ConversationSyncCatalogEntry;
     status: ConversationSyncStatus;
   }>,
-  historyReader: (target: {
-    provider: "claude" | "codex";
-    providerSessionId: string;
-  }) => Promise<
-    | ServerMessage[]
-    | { messages: ServerMessage[]; nextTurnCursor: string | null }
-  >,
+  historyReader:
+    | ((target: {
+        provider: "claude" | "codex";
+        providerSessionId: string;
+      }) => Promise<
+        | ServerMessage[]
+        | { messages: ServerMessage[]; nextTurnCursor: string | null }
+      >)
+    | undefined,
   handlerOptions: NonNullable<
     ConstructorParameters<typeof ConversationSyncV2FeatureHandler>[1]
   > = {},
@@ -8795,7 +8877,7 @@ function createFixture(
     handler: new ConversationSyncV2FeatureHandler(runtime, {
       catalogReader,
       statusReader: async () => new Map(),
-      historyReader,
+      ...(historyReader ? { historyReader } : {}),
       statusWatchdogMs: 60_000,
       coldReconcileMs: 60_000,
       daemonMode: false,

@@ -267,6 +267,8 @@ interface ConversationSyncV2Options {
     current: ReadonlyMap<ConversationKey, CatalogRecord>,
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
   historyReader?: ConversationHistoryReader;
+  /** Deterministic test seam for Claude's bounded JSONL history pages. */
+  claudeHistoryWindowReader?: typeof readClaudeSessionHistoryWindow;
   latestTurnHistoryReader?: ConversationHistoryReader;
   /** Deterministic test seam for canonical-history failure backoff. */
   providerHistoryRetryDelaysMs?: readonly number[];
@@ -468,6 +470,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     current: ReadonlyMap<ConversationKey, CatalogRecord>,
   ) => Promise<Map<ConversationKey, ConversationSyncStatus>>;
   private readonly historyReader: ConversationHistoryReader;
+  private readonly claudeHistoryWindowReader: typeof readClaudeSessionHistoryWindow;
   private readonly latestTurnHistoryReader: ConversationHistoryReader;
   private readonly providerHistoryRetryDelaysMs: readonly number[];
   private readonly statusWatchdogMs: number;
@@ -678,6 +681,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       options.historyReader ??
       ((target, request) =>
         this.readRecentConversationHistory(target, request));
+    this.claudeHistoryWindowReader =
+      options.claudeHistoryWindowReader ?? readClaudeSessionHistoryWindow;
     this.latestTurnHistoryReader =
       options.latestTurnHistoryReader ??
       ((target) => this.readLatestCodexConversationHistory(target));
@@ -3816,7 +3821,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     request?: ConversationHistoryReadRequest,
   ): Promise<ConversationHistoryWindow> {
     if (target.provider === "claude") {
-      return readRecentClaudeConversationHistory(target, request);
+      return readRecentClaudeConversationHistory(
+        target,
+        request,
+        this.claudeHistoryWindowReader,
+      );
     }
     if (target.provider !== "codex") {
       throw boundedLegacyPageUnavailable(target.provider);
@@ -6165,15 +6174,19 @@ async function readLatestCodexTurnHistory(
 async function readRecentClaudeConversationHistory(
   target: ConversationSyncTarget,
   request?: ConversationHistoryReadRequest,
+  historyWindowReader: typeof readClaudeSessionHistoryWindow = readClaudeSessionHistoryWindow,
 ): Promise<ConversationHistoryWindow> {
-  const page = await readClaudeSessionHistoryWindow(target.providerSessionId, {
+  const page = await historyWindowReader(target.providerSessionId, {
     ...(request?.cursor ? { cursor: request.cursor } : {}),
     maxUserTurns: request?.limit ?? PRIORITY_RECENT_COUNT,
   });
   const messages = sessionHistoryToServerMessages(page.messages, {
     idPrefix: `claude-history-${target.providerSessionId}`,
   });
-  const turns = groupLegacyTurns(messages);
+  const turns = groupLegacyTurns(
+    messages,
+    legacyFallbackNamespace(request?.cursor ?? null),
+  );
   const fullStart = Math.max(0, turns.length - FULL_RECENT_TURNS);
   const normalizedMessages = turns.flatMap((turn, index) => {
     const annotated = annotateTurnMessages(turn.items, turn.id);
@@ -6291,7 +6304,8 @@ async function readLegacyTurnsPage(
   const cachedDetailsByTurn = new Map(
     (history.turnDetails ?? []).map((turn) => [turn.turnId, turn.details]),
   );
-  const turns = groupLegacyTurns(history.messages);
+  const fallbackNamespace = legacyFallbackNamespace(cursor.sourceCursor);
+  const turns = groupLegacyTurns(history.messages, fallbackNamespace);
   let lastPage: ConversationTurnsPage | undefined;
   for (const limit of decreasingPageLimits(message.limit ?? 5)) {
     const rawPage = paginateArray(
@@ -8358,7 +8372,10 @@ function chunkByJsonBytes<T>(values: readonly T[], maxBytes: number): T[][] {
   return pages;
 }
 
-function groupLegacyTurns(messages: readonly ServerMessage[]): Array<{
+function groupLegacyTurns(
+  messages: readonly ServerMessage[],
+  fallbackNamespace?: string,
+): Array<{
   id: string;
   items: ServerMessage[];
 }> {
@@ -8377,7 +8394,7 @@ function groupLegacyTurns(messages: readonly ServerMessage[]): Array<{
         } else {
           const fallbackId = `legacy-turn:${
             message.userMessageUuid ?? turns.length
-          }`;
+          }${fallbackNamespace ? `:source:${fallbackNamespace}` : ""}`;
           const occurrence = fallbackOccurrences.get(fallbackId) ?? 0;
           fallbackOccurrences.set(fallbackId, occurrence + 1);
           id =
@@ -8403,6 +8420,14 @@ function groupLegacyTurns(messages: readonly ServerMessage[]): Array<{
     turns.at(-1)!.items.push(message);
   }
   return turns;
+}
+
+function legacyFallbackNamespace(
+  sourceCursor: string | null,
+): string | undefined {
+  return sourceCursor
+    ? createHash("sha256").update(sourceCursor).digest("base64url").slice(0, 12)
+    : undefined;
 }
 
 function paginateArray<T>(
