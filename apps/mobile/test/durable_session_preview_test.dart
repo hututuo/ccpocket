@@ -7,6 +7,7 @@ import 'package:ccpocket/features/chat_session/state/chat_session_state.dart';
 import 'package:ccpocket/features/chat_session/state/streaming_state_cubit.dart';
 import 'package:ccpocket/features/chat_session/widgets/durable_session_preview.dart';
 import 'package:ccpocket/features/chat_session/widgets/chat_input_with_overlays.dart';
+import 'package:ccpocket/features/chat_session/widgets/session_mode_bar.dart';
 import 'package:ccpocket/features/codex_action_broker/codex_action_broker_interaction_frame.dart';
 import 'package:ccpocket/features/codex_action_broker/codex_action_broker_service.dart';
 import 'package:ccpocket/features/codex_session/codex_session_screen.dart';
@@ -18,6 +19,7 @@ import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/draft_service.dart';
+import 'package:ccpocket/theme/app_theme.dart';
 import 'package:ccpocket/widgets/bubbles/ask_user_question_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -678,19 +680,25 @@ void main() {
 
       await tester.pumpWidget(
         MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          locale: const Locale('en'),
+          theme: AppTheme.lightTheme,
           home: MultiBlocProvider(
             providers: [
               BlocProvider<ChatSessionCubit>.value(value: cubit),
               BlocProvider<SessionListCubit>.value(value: sessionList),
             ],
-            child: const DurableSessionPreviewUpdater(
-              revision: 'cold-preview',
-              messages: [],
-              hasEarlier: false,
-              statusProvider: 'codex',
-              statusProviderSessionId: 'cold-thread',
-              expectedSourceFingerprint: 'source-cold',
-              child: SizedBox.shrink(),
+            child: const Scaffold(
+              body: DurableSessionPreviewUpdater(
+                revision: 'cold-preview',
+                messages: [],
+                hasEarlier: false,
+                statusProvider: 'codex',
+                statusProviderSessionId: 'cold-thread',
+                expectedSourceFingerprint: 'source-cold',
+                child: SessionModeBar(),
+              ),
             ),
           ),
         ),
@@ -699,6 +707,7 @@ void main() {
 
       expect(cubit.codexModelSettingsKnown, isFalse);
       expect(cubit.state.codexPermissionStateKnown, isFalse);
+      expect(find.text('Unknown · waiting for sync'), findsNWidgets(2));
 
       sessionList.replace(
         sourceFingerprint: 'source-cold',
@@ -725,12 +734,23 @@ void main() {
         ),
       );
       await tester.pump();
+      // The catalog event applies Cubit state during this frame; render the
+      // following scheduled frame to prove the still-mounted toolbar updates.
+      await tester.pump();
 
       expect(cubit.codexModelSettingsKnown, isTrue);
       expect(cubit.state.codexModel, 'gpt-5.6-sol');
       expect(cubit.state.codexModelReasoningEffort, ReasoningEffort.ultra);
       expect(cubit.state.codexPermissionStateKnown, isTrue);
       expect(cubit.state.planMode, isTrue);
+      final modelChip = tester.widget<CodexModelChip>(
+        find.byType(CodexModelChip),
+      );
+      expect(modelChip.model, 'gpt-5.6-sol');
+      expect(modelChip.reasoningEffort, ReasoningEffort.ultra);
+      expect(modelChip.settingsKnown, isTrue);
+      expect(find.text('Plan On'), findsOneWidget);
+      expect(find.text('Unknown · waiting for sync'), findsNothing);
     },
   );
 

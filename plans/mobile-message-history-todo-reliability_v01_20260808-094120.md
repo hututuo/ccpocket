@@ -17,6 +17,8 @@
 - 移除“完整下载并常驻”作为用户消息导航前提。近期活跃会话持久保存轻量用户轮次索引，点击后只补目标附近的历史页和工具详情。
 - 现有非模态悬浮窗增加当前主会话专属待办列表，复用现有发送路径。
 - 自动批准继续由 Bridge 托管；本轮验证现有实现及运行时，不另造手机端审批循环。
+- 冷/非活跃会话首次打开后立即提升为 focused conversation：顶部模型、思考强度、Plan 和权限允许短暂显示“未同步”，但权威设置到达后必须在当前页面原地刷新，不能要求退出再进入。
+- 连接进度按真实阶段均匀映射到 0–100；只有同一阶段和同一百分比连续停滞约 10 秒才提示超时，阶段推进必须重新计时。
 - 保持旧 Mobile/新 Bridge、新 Mobile/旧 Bridge、Codex/Claude 的加法兼容；未知字段可忽略，旧协议继续有界回退。
 
 ## 已确认根因
@@ -40,6 +42,10 @@ Mobile 还会按“当前可见用户消息数 + 1”自行伪造 `codex:user-tu
 ### 已实现但需验证：Bridge 自动批准
 
 当前源码已经存在 Bridge-owned `auto-approval`、持久设置、Action Broker 订阅、writer lease/authority fencing 和 allowlist。Mobile 只是配置入口。实现阶段只补回归和运行时证据；除非审计发现真实缺口，不重写此模块。
+
+### P1：冷会话 focused settings 只在重新进入后可见
+
+冷会话目录快照可以先于权威 settings hydration 到达，这是允许的；不允许的是当前页面丢失后续提交。必须逐段验证：Bridge focused hydration/dirty fanout、Mobile SQLite 原子提交、`SessionListCubit.catalogSnapshotChanges`、已挂载 `DurableSessionPreviewUpdater`、`ChatSessionCubit` 字段投影和 `SessionModeBar` rebuild。来源指纹或 generation 不匹配时只能拒绝迟到写入，不得吞掉当前来源随后到达的完整快照，也不得用旧缓存覆盖新设置。
 
 ## 实施设计
 
@@ -96,6 +102,21 @@ Bridge 对近期活跃会话使用官方 `thread/turns/list(itemsView=summary)` 
 - 使用版本化本地持久化，旧数据损坏时安全回退为空；
 - 不改 Swift、Cloud、Bridge schema。
 
+### 6. 冷会话设置原地刷新
+
+- 打开 durable 会话时立即登记 source-scoped focused conversation，不通过 resume/取得写入权来读取设置；
+- Bridge 将 focused settings 作为同一 thread 的增量 catalog upsert 发出，并在 timeout 时对仍处于 focused 的同一 source/generation 做有界重试；
+- Mobile 只有在 SQLite commit 成功后推进投影，并为已挂载页面发出 source/thread 精确的变更通知；
+- 当前页面保留同一个 `ChatSessionCubit`、草稿、滚动和展开状态，只更新设置事实及对应 loader；
+- 模型、effort、speed、Plan 和权限逐字段判断 known，某个字段暂缺不得清空已经确认的其他字段；
+- source/thread/revision/generation 发生变化时拒绝旧结果，且不得放宽设置 mutation 的 authority 门禁。
+
+### 7. 连接进度与停滞提示
+
+- 百分比只来自可观测阶段，不用固定延时伪造；各阶段映射覆盖完整 0–100 区间并保持单调；
+- watchdog 的键至少包含连接 generation、阶段和当前百分比；任一项前进即重置停滞计时；
+- 同一步骤连续约 10 秒无进展才显示“超过预期”，错误、认证失败和密钥错误走明确错误分支，不伪装成超时。
+
 ## 验证门禁
 
 ### Bridge
@@ -115,6 +136,8 @@ Bridge 对近期活跃会话使用官方 `thread/turns/list(itemsView=summary)` 
 - 按需旧页插入不移动 live tail，thinking/tool/result 保持所属 turn；
 - 用户索引跨重启持久，目标页失败可重试，成功后无需再次下载；
 - 悬浮待办会话隔离、一键发送和持久化；
+- 冷会话同页完成 `unknown -> known` 设置刷新，退出/重进不是验收步骤；迟到的其他 source/thread 设置不得污染当前页；
+- 连接进度阶段分布均匀、单调，只有同阶段/同百分比停滞约 10 秒才提示；
 - Flutter 定向、全量测试和 analyze。
 
 ### 性能与审计
