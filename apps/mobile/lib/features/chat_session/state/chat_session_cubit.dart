@@ -4972,10 +4972,23 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (entry case ServerChatEntry(
       message: AssistantServerMessage(:final messageUuid, :final message),
     )) {
-      if (message.id.isNotEmpty) yield 'assistant:id:${message.id}';
+      final keys = <String>{};
+      if (message.id.isNotEmpty) keys.add('assistant:id:${message.id}');
       if (messageUuid?.isNotEmpty == true) {
-        yield 'assistant:uuid:$messageUuid';
+        keys.add('assistant:uuid:$messageUuid');
       }
+      final stableKey = _serverMessageStableKey(entry.message);
+      if (stableKey != null) keys.add(stableKey);
+      yield* keys;
+      return;
+    }
+    if (entry case ServerChatEntry(
+      message: ToolResultMessage(:final toolUseId),
+    )) {
+      final keys = <String>{'tool_result:$toolUseId'};
+      final stableKey = _serverMessageStableKey(entry.message);
+      if (stableKey != null) keys.add(stableKey);
+      yield* keys;
       return;
     }
     final stableKey = _entryStableKey(entry);
@@ -5304,6 +5317,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (a is ServerChatEntry && b is ServerChatEntry) {
       final aMessage = a.message;
       final bMessage = b.message;
+      final aHistoryTurnId = _serverMessageHistoryTurnId(aMessage);
+      final bHistoryTurnId = _serverMessageHistoryTurnId(bMessage);
+      if (aHistoryTurnId?.isNotEmpty == true &&
+          bHistoryTurnId?.isNotEmpty == true &&
+          aHistoryTurnId != bHistoryTurnId) {
+        return false;
+      }
       if (aMessage is AssistantServerMessage &&
           bMessage is AssistantServerMessage) {
         final aId = aMessage.message.id;
@@ -5317,6 +5337,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             aUuid == bUuid) {
           return true;
         }
+      }
+      if (aMessage is ToolResultMessage && bMessage is ToolResultMessage) {
+        final aToolUseId = aMessage.toolUseId.trim();
+        final bToolUseId = bMessage.toolUseId.trim();
+        if (aToolUseId.isNotEmpty && aToolUseId == bToolUseId) return true;
       }
     }
     final aKey = _entryStableKey(a);
@@ -5383,14 +5408,29 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   String? _serverMessageStableKey(ServerMessage message) {
     switch (message) {
-      case AssistantServerMessage(:final messageUuid, :final message):
+      case AssistantServerMessage(
+        :final messageUuid,
+        :final historyTurnId,
+        :final message,
+      ):
         if (messageUuid != null && messageUuid.isNotEmpty) {
-          return 'assistant:uuid:$messageUuid';
+          return _scopeServerMessageIdentity(
+            'assistant:uuid:$messageUuid',
+            historyTurnId,
+          );
         }
-        if (message.id.isNotEmpty) return 'assistant:id:${message.id}';
+        if (message.id.isNotEmpty) {
+          return _scopeServerMessageIdentity(
+            'assistant:id:${message.id}',
+            historyTurnId,
+          );
+        }
         return null;
-      case ToolResultMessage(:final toolUseId):
-        return 'tool_result:$toolUseId';
+      case ToolResultMessage(:final toolUseId, :final historyTurnId):
+        return _scopeServerMessageIdentity(
+          'tool_result:$toolUseId',
+          historyTurnId,
+        );
       case PermissionRequestMessage(:final toolUseId):
         return 'permission_request:$toolUseId';
       case PermissionResolvedMessage(:final toolUseId):
@@ -5399,6 +5439,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         return null;
     }
   }
+
+  String _scopeServerMessageIdentity(String identity, String? historyTurnId) {
+    final turnId = historyTurnId?.trim();
+    return turnId?.isNotEmpty == true
+        ? '$identity\u0000turn:$turnId'
+        : identity;
+  }
+
+  String? _serverMessageHistoryTurnId(ServerMessage message) =>
+      switch (message) {
+        AssistantServerMessage(:final historyTurnId) => historyTurnId,
+        ToolResultMessage(:final historyTurnId) => historyTurnId,
+        _ => null,
+      };
 
   String? _serverMessageWeakKey(ServerMessage message) {
     switch (message) {

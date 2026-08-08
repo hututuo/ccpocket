@@ -1867,15 +1867,22 @@ function messageIdentity(
   serialized: string,
 ): string {
   if (message.type === "user_input") {
-    return `user:${
-      message.providerItemId ?? message.userMessageUuid ?? sha256(serialized)
-    }`;
+    if (message.providerItemId) return `user:${message.providerItemId}`;
+    const fallback = message.userMessageUuid ?? sha256(serialized);
+    return message.historyTurnId
+      ? `turn:${message.historyTurnId}:user:${fallback}`
+      : `user:${fallback}`;
   }
   if (message.type === "assistant") {
-    return `assistant:${message.messageUuid ?? message.message.id}`;
+    const fallback = message.messageUuid ?? message.message.id;
+    return message.historyTurnId
+      ? `turn:${message.historyTurnId}:assistant:${fallback}`
+      : `assistant:${fallback}`;
   }
   if (message.type === "tool_result") {
-    return `tool-result:${message.toolUseId}`;
+    return message.historyTurnId
+      ? `turn:${message.historyTurnId}:tool-result:${message.toolUseId}`
+      : `tool-result:${message.toolUseId}`;
   }
   return `message:${message.type}:${index}`;
 }

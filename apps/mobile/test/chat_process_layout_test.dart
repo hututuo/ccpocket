@@ -703,6 +703,28 @@ void main() {
       isNot(chatMessageEntryStableKey(second)),
     );
   });
+
+  test('scopes repeated legacy tool result ids by provider turn', () {
+    final first = ServerChatEntry(
+      const ToolResultMessage(
+        toolUseId: 'codex-item-2',
+        content: 'first result',
+        historyTurnId: 'provider-turn-one',
+      ),
+    );
+    final second = ServerChatEntry(
+      const ToolResultMessage(
+        toolUseId: 'codex-item-2',
+        content: 'second result',
+        historyTurnId: 'provider-turn-two',
+      ),
+    );
+
+    expect(
+      chatMessageEntryStableKey(first),
+      isNot(chatMessageEntryStableKey(second)),
+    );
+  });
 }
 
 AssistantServerMessage _assistant(String id, List<AssistantContent> content) =>

@@ -90,6 +90,84 @@ describe("conversation content protocol", () => {
 });
 
 describe("ConversationContentSyncFeatureHandler", () => {
+  it("keeps legacy fallback identities stable and scoped to provider turns", () => {
+    const firstUser: ServerMessage = {
+      type: "user_input",
+      text: "first prompt",
+      userMessageUuid: "codex:user-turn:1",
+      historyTurnId: "provider-turn-first",
+    };
+    const secondUser: ServerMessage = {
+      type: "user_input",
+      text: "second prompt",
+      userMessageUuid: "codex:user-turn:1",
+      historyTurnId: "provider-turn-second",
+    };
+    const firstAssistant: ServerMessage = {
+      type: "assistant",
+      messageUuid: "codex-item-1",
+      historyTurnId: "provider-turn-first",
+      message: {
+        id: "codex-item-1",
+        role: "assistant",
+        model: "",
+        content: [{ type: "text", text: "first answer" }],
+      },
+    };
+    const secondAssistant: ServerMessage = {
+      type: "assistant",
+      messageUuid: "codex-item-1",
+      historyTurnId: "provider-turn-second",
+      message: {
+        id: "codex-item-1",
+        role: "assistant",
+        model: "",
+        content: [{ type: "text", text: "second answer" }],
+      },
+    };
+    const firstTool: ServerMessage = {
+      type: "tool_result",
+      toolUseId: "codex-item-2",
+      content: "first result",
+      historyTurnId: "provider-turn-first",
+    };
+    const secondTool: ServerMessage = {
+      type: "tool_result",
+      toolUseId: "codex-item-2",
+      content: "second result",
+      historyTurnId: "provider-turn-second",
+    };
+    const firstSnapshot = buildConversationContentSnapshot(
+      { provider: "codex", providerSessionId: "thread-legacy-turns" },
+      [
+        firstUser,
+        firstAssistant,
+        firstTool,
+        secondUser,
+        secondAssistant,
+        secondTool,
+      ],
+      { maxMessageTextBytes: 64 * 1024, maxSnapshotBytes: 512 * 1024 },
+    );
+    const secondSnapshot = buildConversationContentSnapshot(
+      { provider: "codex", providerSessionId: "thread-legacy-turns" },
+      [secondUser, secondAssistant, secondTool],
+      { maxMessageTextBytes: 64 * 1024, maxSnapshotBytes: 512 * 1024 },
+    );
+
+    expect(firstSnapshot.entries.map((entry) => entry.entryId)).toEqual([
+      "turn:provider-turn-first:user:codex:user-turn:1",
+      "turn:provider-turn-first:assistant:codex-item-1",
+      "turn:provider-turn-first:tool-result:codex-item-2",
+      "turn:provider-turn-second:user:codex:user-turn:1",
+      "turn:provider-turn-second:assistant:codex-item-1",
+      "turn:provider-turn-second:tool-result:codex-item-2",
+    ]);
+    expect(secondSnapshot.entries.map((entry) => entry.entryId)).toEqual(
+      firstSnapshot.entries.slice(3).map((entry) => entry.entryId),
+    );
+  });
+
   it("does not advertise a synthetic user UUID as an app-server turn id", () => {
     const messages: ServerMessage[] = [
       {

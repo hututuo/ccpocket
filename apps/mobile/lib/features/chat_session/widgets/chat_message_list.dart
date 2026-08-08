@@ -98,7 +98,8 @@ bool shouldShowForkForAssistant(
 String chatMessageEntryStableKey(ChatEntry entry) {
   return switch (entry) {
     ServerChatEntry(:final message) => switch (message) {
-      ToolResultMessage(:final toolUseId) => 'tool_result:$toolUseId',
+      ToolResultMessage() =>
+        'tool:${chatToolResultEntryStableIdentity(message, entry.timestamp)}',
       AssistantServerMessage() =>
         'assistant:${chatAssistantEntryStableIdentity(message, entry.timestamp)}',
       PermissionRequestMessage(:final toolUseId) => 'permission:$toolUseId',

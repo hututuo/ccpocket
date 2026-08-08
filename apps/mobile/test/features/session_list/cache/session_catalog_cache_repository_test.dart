@@ -2351,6 +2351,87 @@ void main() {
   );
 
   test(
+    'prepends legacy page identities separately for distinct provider turns',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-legacy-turn-pages',
+        codexSourceId: 'source-legacy-turn-pages',
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-legacy-turn-pages',
+        provider: 'codex',
+        providerSessionId: 'thread-legacy-turn-pages',
+        revision: 'revision-legacy-turn-pages',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [_entry('current-entry', 0, 'idle')],
+        deletes: const [],
+        hasEarlier: true,
+        turnsNextCursor: 'cursor-legacy-turn-pages',
+        sourceEntryCount: 3,
+      );
+
+      final snapshot = await repository.prependConversationTurnsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-legacy-turn-pages',
+        rawMessages: const [
+          {
+            'type': 'user_input',
+            'text': 'first prompt',
+            'userMessageUuid': 'codex:user-turn:1',
+            'historyTurnId': 'provider-turn-first',
+          },
+          {
+            'type': 'user_input',
+            'text': 'second prompt',
+            'userMessageUuid': 'codex:user-turn:1',
+            'historyTurnId': 'provider-turn-second',
+          },
+          {
+            'type': 'assistant',
+            'messageUuid': 'codex-item-1',
+            'historyTurnId': 'provider-turn-first',
+            'message': {
+              'id': 'codex-item-1',
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'first answer'},
+              ],
+              'model': '',
+            },
+          },
+          {
+            'type': 'assistant',
+            'messageUuid': 'codex-item-1',
+            'historyTurnId': 'provider-turn-second',
+            'message': {
+              'id': 'codex-item-1',
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'second answer'},
+              ],
+              'model': '',
+            },
+          },
+        ],
+        nextCursor: null,
+      );
+
+      expect(snapshot?.entries.map((entry) => entry.entryId), [
+        'turn:provider-turn-first:user:codex:user-turn:1',
+        'turn:provider-turn-second:user:codex:user-turn:1',
+        'turn:provider-turn-first:assistant:codex-item-1',
+        'turn:provider-turn-second:assistant:codex-item-1',
+        'current-entry',
+      ]);
+    },
+  );
+
+  test(
     'user index keeps the active revision visible until staging completes',
     () async {
       final target = SessionCatalogCacheTarget.fromBridge(

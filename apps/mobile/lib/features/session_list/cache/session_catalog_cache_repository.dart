@@ -3201,6 +3201,10 @@ class SessionCatalogCacheRepository {
       final encoded = jsonEncode(rawMessage);
       final contentHash = sha256.convert(utf8.encode(encoded)).toString();
       final type = rawMessage['type'] as String? ?? 'unknown';
+      final historyTurnId = (rawMessage['historyTurnId'] as String?)?.trim();
+      String scoped(String identity) => historyTurnId?.isNotEmpty == true
+          ? 'turn:$historyTurnId:$identity'
+          : identity;
       String? identity;
       if (type == 'user_input') {
         final providerItemId = (rawMessage['providerItemId'] as String?)
@@ -3209,7 +3213,7 @@ class SessionCatalogCacheRepository {
         identity = providerItemId?.isNotEmpty == true
             ? 'user-provider:$providerItemId'
             : legacyUuid?.isNotEmpty == true
-            ? 'user:$legacyUuid'
+            ? scoped('user:$legacyUuid')
             : 'user:$contentHash';
       } else if (type == 'assistant') {
         final nested = rawMessage['message'];
@@ -3219,12 +3223,12 @@ class SessionCatalogCacheRepository {
             ? rawMessage['messageUuid'] as String
             : messageId;
         identity = stableId?.trim().isNotEmpty == true
-            ? 'assistant:$stableId'
+            ? scoped('assistant:$stableId')
             : 'assistant:$contentHash';
       } else if (type == 'tool_result') {
         final toolUseId = rawMessage['toolUseId'] as String?;
         identity = toolUseId?.trim().isNotEmpty == true
-            ? 'tool-result:$toolUseId'
+            ? scoped('tool-result:$toolUseId')
             : 'tool-result:$contentHash';
       }
       return ConversationContentWireEntry(

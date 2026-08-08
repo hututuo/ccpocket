@@ -685,8 +685,7 @@ String _partialTurnKey(List<ChatEntry> entries, int start, int end) {
       return 'partial:${chatAssistantEntryStableIdentity(message, entry.timestamp)}';
     }
     if (message is ToolResultMessage) {
-      final toolUseId = message.toolUseId.trim();
-      if (toolUseId.isNotEmpty) return 'partial:tool:$toolUseId';
+      return 'partial:${chatToolResultEntryStableIdentity(message, entry.timestamp)}';
     }
     if (message is ToolUseSummaryMessage &&
         message.precedingToolUseIds.isNotEmpty) {
@@ -708,10 +707,10 @@ String _processEntryIdentity(ChatEntry entry) {
       message,
       entry.timestamp,
     ),
-    ToolResultMessage(:final toolUseId) =>
-      toolUseId.trim().isNotEmpty
-          ? 'tool-result:${toolUseId.trim()}'
-          : 'tool-result:${entry.timestamp.microsecondsSinceEpoch}',
+    ToolResultMessage() => chatToolResultEntryStableIdentity(
+      message,
+      entry.timestamp,
+    ),
     PermissionRequestMessage(:final toolUseId) =>
       toolUseId.trim().isNotEmpty
           ? 'permission:${toolUseId.trim()}'
@@ -757,6 +756,23 @@ String chatAssistantEntryStableIdentity(
     return scoped('content', _stableFingerprint(signature));
   }
   return scoped('time', '${timestamp.microsecondsSinceEpoch}');
+}
+
+String chatToolResultEntryStableIdentity(
+  ToolResultMessage message,
+  DateTime timestamp,
+) {
+  final toolUseId = message.toolUseId.trim();
+  final historyTurnId = message.historyTurnId?.trim();
+  if (toolUseId.isNotEmpty) {
+    return historyTurnId?.isNotEmpty == true
+        ? 'turn:$historyTurnId:tool-result:$toolUseId'
+        : 'tool-result:$toolUseId';
+  }
+  return historyTurnId?.isNotEmpty == true
+      ? 'turn:$historyTurnId:tool-result-time:'
+            '${timestamp.microsecondsSinceEpoch}'
+      : 'tool-result-time:${timestamp.microsecondsSinceEpoch}';
 }
 
 String _boundedIdentityText(String value) {

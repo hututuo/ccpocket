@@ -5679,6 +5679,139 @@ void main() {
     );
 
     test(
+      'assistant and tool ids reused by legacy pages stay in their provider turns',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+
+        for (final message in <ServerMessage>[
+          const UserInputMessage(
+            text: 'first prompt',
+            providerItemId: 'provider-user-first',
+            historyTurnId: 'provider-turn-first',
+          ),
+          const AssistantServerMessage(
+            messageUuid: 'codex-item-1',
+            historyTurnId: 'provider-turn-first',
+            message: AssistantMessage(
+              id: 'codex-item-1',
+              role: 'assistant',
+              content: [TextContent(text: 'first answer')],
+              model: '',
+            ),
+          ),
+          const ToolResultMessage(
+            toolUseId: 'codex-item-2',
+            content: 'first result',
+            historyTurnId: 'provider-turn-first',
+          ),
+          const UserInputMessage(
+            text: 'second prompt',
+            providerItemId: 'provider-user-second',
+            historyTurnId: 'provider-turn-second',
+          ),
+          const AssistantServerMessage(
+            messageUuid: 'codex-item-1',
+            historyTurnId: 'provider-turn-second',
+            message: AssistantMessage(
+              id: 'codex-item-1',
+              role: 'assistant',
+              content: [TextContent(text: 'second answer')],
+              model: '',
+            ),
+          ),
+          const ToolResultMessage(
+            toolUseId: 'codex-item-2',
+            content: 'second result',
+            historyTurnId: 'provider-turn-second',
+          ),
+        ]) {
+          mockBridge.emitMessage(message, sessionId: 's1');
+        }
+        await pumpEventQueue();
+
+        final assistants = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .whereType<AssistantServerMessage>()
+            .toList();
+        final results = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .whereType<ToolResultMessage>()
+            .toList();
+        expect(assistants.map((entry) => entry.historyTurnId), [
+          'provider-turn-first',
+          'provider-turn-second',
+        ]);
+        expect(results.map((entry) => entry.historyTurnId), [
+          'provider-turn-first',
+          'provider-turn-second',
+        ]);
+      },
+    );
+
+    test(
+      'turn provenance enriches legacy assistant and tool rows in place',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        const legacyAssistant = AssistantServerMessage(
+          messageUuid: 'legacy-assistant',
+          message: AssistantMessage(
+            id: 'legacy-assistant',
+            role: 'assistant',
+            content: [TextContent(text: 'answer')],
+            model: '',
+          ),
+        );
+        const legacyTool = ToolResultMessage(
+          toolUseId: 'legacy-tool',
+          content: 'result',
+        );
+        mockBridge.emitMessage(legacyAssistant, sessionId: 's1');
+        mockBridge.emitMessage(legacyTool, sessionId: 's1');
+        mockBridge.emitMessage(
+          const AssistantServerMessage(
+            messageUuid: 'legacy-assistant',
+            historyTurnId: 'provider-turn',
+            message: AssistantMessage(
+              id: 'legacy-assistant',
+              role: 'assistant',
+              content: [TextContent(text: 'answer')],
+              model: '',
+            ),
+          ),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const ToolResultMessage(
+            toolUseId: 'legacy-tool',
+            content: 'result',
+            historyTurnId: 'provider-turn',
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final assistants = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .whereType<AssistantServerMessage>()
+            .toList();
+        final tools = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .whereType<ToolResultMessage>()
+            .toList();
+        expect(assistants, hasLength(1));
+        expect(assistants.single.historyTurnId, 'provider-turn');
+        expect(tools, hasLength(1));
+        expect(tools.single.historyTurnId, 'provider-turn');
+      },
+    );
+
+    test(
       'targeted provider turn fills its indexed gap without rewinding live tail',
       () async {
         var detailLoads = 0;
