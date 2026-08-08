@@ -262,9 +262,7 @@ class ConversationMirrorService extends ChangeNotifier {
       invalidate: _removeRuntimePageCursor,
     );
     _bridge.configureSessionHistoryUserIndex(_loadRuntimeUserIndex);
-    _bridge.configureSessionHistoryToolDetails(
-      _loadRuntimeHistoryToolDetails,
-    );
+    _bridge.configureSessionHistoryToolDetails(_loadRuntimeHistoryToolDetails);
     if (kIsWeb) return;
     try {
       // Opening also removes interrupted shadow generations while preserving
@@ -1056,8 +1054,7 @@ class ConversationMirrorService extends ChangeNotifier {
     }
     if (message is ConversationMirrorEventMessage) {
       if (!_acceptedRequestIds.contains(message.requestId)) return;
-      if (message.malformedEntryCount > 0 ||
-          message.malformedDeleteCount > 0) {
+      if (message.malformedEntryCount > 0 || message.malformedDeleteCount > 0) {
         // Keep diagnostics bounded and privacy-safe: never include the
         // malformed item, path, or provider thread identity.
         debugPrint(
@@ -1283,8 +1280,7 @@ class ConversationMirrorService extends ChangeNotifier {
           );
           break;
         case ConversationMirrorEventKind.patch:
-          if (event.malformedEntryCount > 0 ||
-              event.malformedDeleteCount > 0) {
+          if (event.malformedEntryCount > 0 || event.malformedDeleteCount > 0) {
             // A patch revision covers the complete mutation set. Applying
             // only the surviving items would advance the local revision while
             // silently losing the dropped mutations, so fail closed and
@@ -1316,8 +1312,7 @@ class ConversationMirrorService extends ChangeNotifier {
           await _publishTransferToBoundRuntimes(
             key,
             _transferGuardsByRequestId[event.requestId],
-            onlyIfCursorStale:
-                event.entries.isEmpty && event.deletes.isEmpty,
+            onlyIfCursorStale: event.entries.isEmpty && event.deletes.isEmpty,
           );
           _finishPending(
             event.requestId,
@@ -1653,11 +1648,7 @@ class ConversationMirrorService extends ChangeNotifier {
     required int entryCount,
   }) {
     final sourceId = key == null ? codexSourceId : key.codexSourceId;
-    final logicalKey = _logicalWatchKey(
-      provider,
-      providerSessionId,
-      sourceId,
-    );
+    final logicalKey = _logicalWatchKey(provider, providerSessionId, sourceId);
     final requestId =
         _watchRequestIdsByConversation[logicalKey] ??
         (key == null ? null : _watchRequestIds[key]);
@@ -1694,11 +1685,7 @@ class ConversationMirrorService extends ChangeNotifier {
   }) {
     var owned = false;
     final sourceId = key == null ? codexSourceId : key.codexSourceId;
-    final logicalKey = _logicalWatchKey(
-      provider,
-      providerSessionId,
-      sourceId,
-    );
+    final logicalKey = _logicalWatchKey(provider, providerSessionId, sourceId);
     if (_watchRequestIdsByConversation[logicalKey] == requestId) {
       _watchRequestIdsByConversation.remove(logicalKey);
       owned = true;
@@ -1972,9 +1959,7 @@ class ConversationMirrorService extends ChangeNotifier {
     }
     for (final canonical in canonicalMessages) {
       final stableKey = _historyMessageStableKey(canonical);
-      final ordinal = stableKey == null
-          ? null
-          : mirrorOrdinalByKey[stableKey];
+      final ordinal = stableKey == null ? null : mirrorOrdinalByKey[stableKey];
       if (ordinal != null) return ordinal;
     }
     // No overlap normally means the canonical cache begins after the last
@@ -2254,10 +2239,7 @@ class ConversationMirrorService extends ChangeNotifier {
           details[content.id] = HistoryToolDetail(
             toolUseId: content.id,
             toolName: content.name,
-            input: _boundedHistoryToolInput(
-              content.input,
-              maximumFieldBytes,
-            ),
+            input: _boundedHistoryToolInput(content.input, maximumFieldBytes),
             result: existing?.result,
           );
         }
@@ -2278,25 +2260,20 @@ class ConversationMirrorService extends ChangeNotifier {
         input: existing?.input ?? const {},
         result: ToolResultMessage(
           toolUseId: message.toolUseId,
-          content: _boundedHistoryToolText(
-            message.content,
-            maximumFieldBytes,
-          ),
+          content: _boundedHistoryToolText(message.content, maximumFieldBytes),
           toolName: message.toolName,
-          images: message.images.take(maximumAttachments).toList(
-            growable: false,
-          ),
+          images: message.images
+              .take(maximumAttachments)
+              .toList(growable: false),
           userMessageUuid: message.userMessageUuid,
           historyTurnId: message.historyTurnId,
-          artifacts: message.artifacts.take(maximumAttachments).toList(
-            growable: false,
-          ),
+          artifacts: message.artifacts
+              .take(maximumAttachments)
+              .toList(growable: false),
         ),
       );
     }
-    return [
-      for (final toolUseId in toolUseIds) ?details[toolUseId],
-    ];
+    return [for (final toolUseId in toolUseIds) ?details[toolUseId]];
   }
 
   Map<String, dynamic> _boundedHistoryToolInput(
@@ -2322,10 +2299,7 @@ class ConversationMirrorService extends ChangeNotifier {
   String _boundedHistoryToolText(String value, int maximumBytes) {
     final encoded = utf8.encode(value);
     if (encoded.length <= maximumBytes) return value;
-    return '${utf8.decode(
-      encoded.sublist(0, maximumBytes),
-      allowMalformed: true,
-    )}\n…[truncated by local mirror]';
+    return '${utf8.decode(encoded.sublist(0, maximumBytes), allowMalformed: true)}\n…[truncated by local mirror]';
   }
 
   Future<List<LocalSessionUserIndexEntry>?> _loadRuntimeUserIndex({

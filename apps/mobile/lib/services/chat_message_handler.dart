@@ -326,11 +326,9 @@ class ChatMessageHandler {
             (timestamp == null
                 ? null
                 : DateTime.tryParse(timestamp)?.toLocal());
-        if (
-          userMessageUuid != null ||
-          providerItemId != null ||
-          historyTurnId != null
-        ) {
+        if (userMessageUuid != null ||
+            providerItemId != null ||
+            historyTurnId != null) {
           // Provider identity is a backfill for the optimistic local entry;
           // update it instead of adding a duplicate bubble.
           return ChatStateUpdate(

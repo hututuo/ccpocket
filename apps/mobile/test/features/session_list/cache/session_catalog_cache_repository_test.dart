@@ -1791,7 +1791,7 @@ void main() {
       );
       repository = SessionCatalogCacheRepository(database);
       final upgraded = await database.database;
-      expect(await upgraded.getVersion(), 6);
+      expect(await upgraded.getVersion(), 7);
       expect(
         await upgraded.query(
           SessionCatalogCacheDatabase.partitionsTable,
@@ -2002,8 +2002,8 @@ void main() {
             'partition_id': 'legacy-v6-partition',
             'provider': 'codex',
             'provider_session_id': 'legacy-v6-thread',
-            'active_revision': null,
-            'active_complete': 0,
+            'active_revision': 'legacy-v6-index',
+            'active_complete': 1,
             'staging_revision': null,
             'staging_cursor': null,
             'staging_page_depth': 0,
@@ -2042,7 +2042,7 @@ void main() {
     );
     repository = SessionCatalogCacheRepository(database);
     final repaired = await database.database;
-    expect(await repaired.getVersion(), 6);
+    expect(await repaired.getVersion(), 7);
     final detailColumns = await repaired.rawQuery(
       'PRAGMA table_info(${SessionCatalogCacheDatabase.userTurnDetailsTable})',
     );
@@ -2060,6 +2060,13 @@ void main() {
       ),
       hasLength(1),
     );
+    final repairedIndexState = await repaired.query(
+      SessionCatalogCacheDatabase.userIndexStatesTable,
+      columns: ['active_revision', 'active_complete', 'staging_revision'],
+    );
+    expect(repairedIndexState.single['active_revision'], isNull);
+    expect(repairedIndexState.single['active_complete'], 0);
+    expect(repairedIndexState.single['staging_revision'], isNull);
     await repaired.insert(SessionCatalogCacheDatabase.userTurnDetailsTable, {
       'partition_id': 'legacy-v6-partition',
       'provider': 'codex',
@@ -2633,12 +2640,14 @@ void main() {
         'turn-b',
         'turn-a',
       ]);
-      expect(snapshot?.entries.every((entry) => entry.providerItemId == null),
-          isTrue);
       expect(
-        snapshot?.entries.map((entry) => entry.message.historyTurnId),
-        ['turn-b', 'turn-a'],
+        snapshot?.entries.every((entry) => entry.providerItemId == null),
+        isTrue,
       );
+      expect(snapshot?.entries.map((entry) => entry.message.historyTurnId), [
+        'turn-b',
+        'turn-a',
+      ]);
     },
   );
 

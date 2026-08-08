@@ -117,8 +117,10 @@ void main() {
     final assistant = selected.last as AssistantServerMessage;
     expect(assistant.historyTurnId, 'provider-turn-1');
     expect(assistant.historyToolDetailGaps.single.turnId, 'provider-turn-1');
-    expect((selected.first as UserInputMessage).providerItemId,
-        'provider-user-1');
+    expect(
+      (selected.first as UserInputMessage).providerItemId,
+      'provider-user-1',
+    );
   });
 
   test('drops anonymous tool payloads that have no stable detail identity', () {

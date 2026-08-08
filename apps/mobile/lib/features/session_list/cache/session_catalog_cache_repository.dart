@@ -2812,7 +2812,9 @@ class SessionCatalogCacheRepository {
               'provider_session_id': providerSessionId,
               'revision': revision,
               'provider_turn_id': providerTurnId,
-              'provider_item_id': providerItemId.isEmpty ? null : providerItemId,
+              'provider_item_id': providerItemId.isEmpty
+                  ? null
+                  : providerItemId,
               'entry_identity': entryIdentity,
               'page_depth': pageDepth,
               'item_order': itemOrder,

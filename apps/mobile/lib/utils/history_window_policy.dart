@@ -293,7 +293,9 @@ List<TurnAwareServerMessageProjection> _projectMessages(
     final host = gapHost ?? createGapHost(sourceIndex);
     var gap = host.gaps.lastOrNull;
     if (gap == null || gap.toolUseIds.length >= turnAwareHistoryGapToolIds) {
-      gap = _GapBuilder(turnId: _historyTurnIdForMessage(messages[sourceIndex]));
+      gap = _GapBuilder(
+        turnId: _historyTurnIdForMessage(messages[sourceIndex]),
+      );
       host.gaps.add(gap);
     }
     gap.toolUseIds.add(id);
@@ -415,11 +417,11 @@ List<TurnAwareServerMessageProjection> _projectMessages(
     final message = current.message as AssistantServerMessage;
     projected[host.outputIndex] = TurnAwareServerMessageProjection(
       sourceIndex: current.sourceIndex,
-        message: AssistantServerMessage(
-          message: message.message,
-          messageUuid: message.messageUuid,
-          historyTurnId: message.historyTurnId,
-          artifacts: message.artifacts,
+      message: AssistantServerMessage(
+        message: message.message,
+        messageUuid: message.messageUuid,
+        historyTurnId: message.historyTurnId,
+        artifacts: message.artifacts,
         historyToolDetailGaps: [for (final gap in host.gaps) gap.build()],
         artifactContentIndexOffset: message.artifactContentIndexOffset,
       ),

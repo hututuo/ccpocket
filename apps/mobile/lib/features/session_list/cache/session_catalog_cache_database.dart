@@ -162,6 +162,18 @@ class SessionCatalogCacheDatabase {
       // its uniqueness scope includes the provider turn and fallback identity.
       await database.execute('DROP TABLE IF EXISTS $userIndexEntriesTable');
       await _createConversationUserIndexEntriesTable(database);
+      // Dropping the old entry rows invalidates the previously published
+      // active revision. Leaving active_complete=1 would make warmup treat an
+      // empty table as current forever, so preserve the per-turn detail cache
+      // but explicitly require the lightweight index to be rebuilt.
+      await database.update(userIndexStatesTable, {
+        'active_revision': null,
+        'active_complete': 0,
+        'staging_revision': null,
+        'staging_cursor': null,
+        'staging_page_depth': 0,
+        'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
+      });
     }
   }
 
