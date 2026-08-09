@@ -37,3 +37,17 @@ test("returns undefined when no private external IPv4 is available", () => {
     undefined,
   );
 });
+
+test("does not fall back from the configured LAN interface to a virtual interface", () => {
+  const interfaces = {
+    en0: [],
+    feth4921: [
+      { address: "192.168.192.243", family: "IPv4", internal: false },
+    ],
+    utun0: [
+      { address: "10.0.0.8", family: "IPv4", internal: false },
+    ],
+  };
+
+  assert.equal(selectLanIpv4(interfaces, "en0"), undefined);
+});

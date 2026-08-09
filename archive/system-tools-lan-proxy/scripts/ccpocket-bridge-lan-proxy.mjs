@@ -54,13 +54,12 @@ export function selectLanIpv4(
   interfaces,
   preferredInterface = "en0",
 ) {
-  const candidates = [];
-  const preferred = interfaces[preferredInterface] ?? [];
-  for (const entry of preferred) candidates.push(entry);
-  for (const [name, entries] of Object.entries(interfaces)) {
-    if (name === preferredInterface) continue;
-    for (const entry of entries ?? []) candidates.push(entry);
-  }
+  // A configured LAN interface is an authority boundary, not a preference.
+  // Falling back to another private-looking interface can publish a VM,
+  // container, hotspot or VPN address and repeatedly tear down the real Wi-Fi
+  // listener while macOS refreshes its interface list. If the interface is
+  // temporarily unavailable, wait for it to return instead.
+  const candidates = interfaces[preferredInterface] ?? [];
   for (const entry of candidates) {
     const family = entry?.family;
     if (
