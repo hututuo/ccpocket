@@ -17,6 +17,10 @@ import { isAutoRenamePromptText } from "./auto-rename.js";
 import { resolveCodexHome, resolveCodexSessionsDir } from "./codex-home.js";
 import { normalizeCodexServiceTierForClient } from "./codex-service-tier.js";
 import {
+  readCodexDesktopProjectCatalog,
+  type CodexDesktopProjectGroupKind,
+} from "./codex-desktop-project-catalog.js";
+import {
   CodexDesktopToolTimelineBuilder,
   codexDesktopToolImagePaths,
   codexDesktopToolOutputText,
@@ -46,6 +50,12 @@ export interface SessionIndexEntry {
   projectPath: string;
   /** Raw cwd used to resume this session (worktree path for codex, if any). */
   resumeCwd?: string;
+  /** Desktop-owned presentation grouping. Never replaces projectPath/resumeCwd. */
+  projectGroupKind?: CodexDesktopProjectGroupKind;
+  projectGroupId?: string;
+  projectGroupName?: string;
+  projectGroupPath?: string;
+  projectGroupingSnapshotComplete?: boolean;
   /** Permission mode from the first user message (Claude sessions only). */
   permissionMode?: string;
   isSidechain: boolean;
@@ -1155,15 +1165,24 @@ export async function getAllRecentSessions(
       filesRead: 0,
       entriesReturned: 0,
     };
-    const codexEntries = await getAllRecentCodexSessions({
-      projectPath: filterProjectPath,
-      perfStats: codexPerf,
-    });
+    const [codexEntries, desktopProjects] = await Promise.all([
+      getAllRecentCodexSessions({
+        projectPath: filterProjectPath,
+        perfStats: codexPerf,
+      }),
+      readCodexDesktopProjectCatalog(),
+    ]);
     perfStats.codexFilesTotal = codexPerf.filesTotal;
     perfStats.codexFilesRead = codexPerf.filesRead;
     perfStats.codexEntries = codexPerf.entriesReturned;
     reportProgress();
-    return codexEntries;
+    return codexEntries.map((entry) => ({
+      ...entry,
+      ...(desktopProjects.groupingFor(
+        entry.sessionId,
+        entry.resumeCwd ?? entry.projectPath,
+      ) ?? {}),
+    }));
   })();
 
   // Wait for both Claude and Codex loading to complete in parallel
@@ -1244,7 +1263,8 @@ export async function getAllRecentSessions(
         e.name?.toLowerCase().includes(q) ||
         e.firstPrompt?.toLowerCase().includes(q) ||
         e.lastPrompt?.toLowerCase().includes(q) ||
-        e.summary?.toLowerCase().includes(q),
+        e.summary?.toLowerCase().includes(q) ||
+        e.projectGroupName?.toLowerCase().includes(q),
     );
   }
   perfStats.counts.afterSearch = filtered.length;
@@ -2198,9 +2218,16 @@ export async function loadCodexSessionNames(): Promise<Map<string, string>> {
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
     try {
-      const entry = JSON.parse(line) as { id?: string; thread_name?: string };
-      if (entry.id && entry.thread_name) {
-        names.set(entry.id, entry.thread_name);
+      const entry = JSON.parse(line) as { id?: string; thread_name?: unknown };
+      if (entry.id && typeof entry.thread_name === "string") {
+        const normalizedName = entry.thread_name.trim();
+        if (normalizedName) {
+          names.set(entry.id, normalizedName);
+        } else {
+          // An append-only empty marker is an authoritative title clear. It
+          // must remove an earlier value instead of being ignored.
+          names.delete(entry.id);
+        }
       }
     } catch {
       // skip malformed

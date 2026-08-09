@@ -57,6 +57,10 @@ import {
   type CodexThreadSummary,
 } from "./codex-process.js";
 import { codexSourceIdentity } from "./codex-home.js";
+import {
+  readCodexDesktopProjectCatalog,
+  type CodexDesktopProjectGrouping,
+} from "./codex-desktop-project-catalog.js";
 import { readCodexAppServerMode } from "./codex-app-server-config.js";
 import type {
   CodexSharedRuntimeControl,
@@ -1397,6 +1401,7 @@ function normalizeNonNegativeLimit(
 function codexThreadToRecentSession(
   thread: CodexThreadSummary,
   indexed?: CodexSessionIndexMetadata,
+  projectGrouping?: CodexDesktopProjectGrouping,
 ): Record<string, unknown> {
   const projectPath = normalizeWorktreePath(thread.cwd);
   const resumeCwd =
@@ -1424,9 +1429,30 @@ function codexThreadToRecentSession(
     gitBranch: thread.gitBranch ?? "",
     projectPath,
     ...(resumeCwd ? { resumeCwd } : {}),
+    ...(projectGrouping ?? {}),
     isSidechain: false,
     ...(indexed?.codexSettings ? { codexSettings: indexed.codexSettings } : {}),
   };
+}
+
+function codexThreadMatchesRecentSearch(
+  thread: CodexThreadSummary,
+  projectGrouping: CodexDesktopProjectGrouping | undefined,
+  normalizedQuery: string,
+): boolean {
+  return [
+    thread.name,
+    thread.preview,
+    thread.cwd,
+    thread.gitBranch,
+    thread.agentNickname,
+    thread.agentRole,
+    projectGrouping?.projectGroupName,
+  ].some(
+    (value) =>
+      typeof value === "string" &&
+      value.toLocaleLowerCase().includes(normalizedQuery),
+  );
 }
 
 function canonicalRecentProjectPath(
@@ -15038,13 +15064,22 @@ export class BridgeWebSocketServer {
       const requestedProjectPath = msg.projectPath
         ? canonicalRecentProjectPath(msg.projectPath, this.platform)
         : null;
+      const desktopProjects = await readCodexDesktopProjectCatalog();
+      const normalizedSearchQuery = msg.searchQuery?.trim().toLocaleLowerCase();
+      const searchesDesktopProjectName =
+        normalizedSearchQuery !== undefined &&
+        normalizedSearchQuery.length > 0 &&
+        desktopProjects.matchesProjectName(normalizedSearchQuery);
 
       do {
         const remainingScanBudget =
           CODEX_RECENT_THREAD_MAX_SCANNED_THREADS - scannedThreads;
         const request: Parameters<CodexProcess["listThreads"]>[0] = {
           limit: Math.min(serverPageSize, remainingScanBudget),
-          searchTerm: msg.searchQuery,
+          // app-server cannot see Desktop's presentation-only project names.
+          // When the query matches one, scan a bounded unfiltered catalog and
+          // apply the combined thread/project search locally.
+          searchTerm: searchesDesktopProjectName ? undefined : msg.searchQuery,
           sourceKinds: CODEX_RECENT_THREAD_SOURCE_KINDS,
         };
         if (cursor != null) request.cursor = cursor;
@@ -15064,6 +15099,17 @@ export class BridgeWebSocketServer {
           }
           if (archivedIds.has(thread.id)) continue;
           if (msg.namedOnly && !thread.name) continue;
+          if (
+            searchesDesktopProjectName &&
+            normalizedSearchQuery &&
+            !codexThreadMatchesRecentSearch(
+              thread,
+              desktopProjects.groupingFor(thread.id, thread.cwd),
+              normalizedSearchQuery,
+            )
+          ) {
+            continue;
+          }
           visibleThreads.push(thread);
         }
         cursor = result.nextCursor;
@@ -15081,7 +15127,11 @@ export class BridgeWebSocketServer {
         pageThreads.map((thread) => thread.id),
       );
       const sessions = pageThreads.map((thread) =>
-        codexThreadToRecentSession(thread, indexedById.get(thread.id)),
+        codexThreadToRecentSession(
+          thread,
+          indexedById.get(thread.id),
+          desktopProjects.groupingFor(thread.id, thread.cwd),
+        ),
       );
       return {
         sessions,

@@ -6,6 +6,10 @@ import {
   type CodexThreadSourceKind,
   type CodexThreadSummary,
 } from "../codex-process.js";
+import {
+  readCodexDesktopProjectCatalog,
+  type CodexDesktopProjectGrouping,
+} from "../codex-desktop-project-catalog.js";
 import { readCodexAppServerMode } from "../codex-app-server-config.js";
 import {
   SharedCodexContentObserverCoordinator,
@@ -1198,6 +1202,15 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       }
       return;
     }
+    if (event.method === "thread/name/updated") {
+      // The shared control stream deliberately strips the title payload, but
+      // the exact thread identity is enough to invalidate the provider-owned
+      // catalog row. Re-read thread/list so Desktop and Mobile converge on the
+      // same persisted name without waiting for a filesystem watcher.
+      this.catalogDirty = true;
+      this.requestSharedControlReconcile({ catalog: true, status: false });
+      return;
+    }
     const previous =
       this.sharedRuntimeStatuses.get(key) ??
       this.catalog.get(key)?.status ??
@@ -1479,11 +1492,13 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         providerSessionId: input.threadId,
       }),
     )?.entry;
-    const projectLabel = entry?.projectPath
-      ?.replace(/[\\/]+$/, "")
-      .split(/[\\/]/)
-      .filter(Boolean)
-      .at(-1);
+    const projectLabel =
+      entry?.projectGroupName ??
+      entry?.projectPath
+        ?.replace(/[\\/]+$/, "")
+        .split(/[\\/]/)
+        .filter(Boolean)
+        .at(-1);
     const name = entry?.name?.trim();
     const label = name
       ? projectLabel
@@ -6029,14 +6044,21 @@ async function readCodexCatalog(
       }
 
       // thread/list is the fast authority for identity, recency and runtime
-      // status, but it does not currently expose the selected model, effort
-      // or service tier. Resolve those three facts in one bounded rollout
-      // metadata pass; a failure only leaves the optional settings unknown.
-      const metadata = await getCodexSessionIndexMetadata(
-        threads.map((thread) => thread.id),
-      ).catch(() => new Map<string, CodexSessionIndexMetadata>());
+      // status, but it does not expose durable settings or Desktop's local
+      // project presentation. Resolve both optional projections in bounded,
+      // cached reads; either may fail without making the catalog unavailable.
+      const [metadata, desktopProjects] = await Promise.all([
+        getCodexSessionIndexMetadata(threads.map((thread) => thread.id)).catch(
+          () => new Map<string, CodexSessionIndexMetadata>(),
+        ),
+        readCodexDesktopProjectCatalog(),
+      ]);
       return threads.map((thread) =>
-        buildConversationSyncCodexCatalogSeed(thread, metadata.get(thread.id)),
+        buildConversationSyncCodexCatalogSeed(
+          thread,
+          metadata.get(thread.id),
+          desktopProjects.groupingFor(thread.id, thread.cwd),
+        ),
       );
     });
   } catch (error) {
@@ -7346,6 +7368,24 @@ function sessionSeed(session: SessionIndexEntry): ConversationSyncCatalogSeed {
       ...target,
       revision: providerRevision(target, session.modified),
       projectPath: session.projectPath,
+      ...(session.projectGroupKind
+        ? { projectGroupKind: session.projectGroupKind }
+        : {}),
+      ...(session.projectGroupId
+        ? { projectGroupId: session.projectGroupId }
+        : {}),
+      ...(session.projectGroupName
+        ? { projectGroupName: session.projectGroupName }
+        : {}),
+      ...(session.projectGroupPath
+        ? { projectGroupPath: session.projectGroupPath }
+        : {}),
+      ...(session.projectGroupingSnapshotComplete !== undefined
+        ? {
+            projectGroupingSnapshotComplete:
+              session.projectGroupingSnapshotComplete,
+          }
+        : {}),
       ...(session.name ? { name: session.name } : {}),
       ...(session.summary ? { summary: session.summary } : {}),
       ...(session.firstPrompt ? { firstPrompt: session.firstPrompt } : {}),
@@ -7373,6 +7413,26 @@ function normalizeCatalogEntry(
   );
   const forkedFromThreadId = validCatalogLineageId(entry.forkedFromThreadId);
   const parentThreadId = validCatalogLineageId(entry.parentThreadId);
+  const projectGroupId = validCatalogLineageId(entry.projectGroupId);
+  const projectGroupName = truncateCatalogText(
+    entry.projectGroupName,
+    MAX_CATALOG_NAME_LENGTH,
+  );
+  const projectGroupPath = truncateCatalogText(
+    entry.projectGroupPath,
+    MAX_CATALOG_PATH_LENGTH,
+  );
+  const projectGroupKind =
+    entry.projectGroupKind === "projectless"
+      ? entry.projectGroupKind
+      : entry.projectGroupKind === "desktopProject" &&
+          projectGroupId &&
+          projectGroupName
+        ? entry.projectGroupKind
+        : undefined;
+  const projectGroupingSnapshotComplete =
+    entry.projectGroupingSnapshotComplete === true &&
+    projectGroupKind !== undefined;
   const model = validCatalogSetting(entry.model, MAX_CATALOG_MODEL_LENGTH);
   const modelReasoningEffort = validCatalogSetting(
     entry.modelReasoningEffort,
@@ -7408,6 +7468,21 @@ function normalizeCatalogEntry(
     revision: entry.revision,
     projectPath:
       truncateCatalogText(entry.projectPath, MAX_CATALOG_PATH_LENGTH) ?? "",
+    ...(projectGroupKind ? { projectGroupKind } : {}),
+    ...(projectGroupKind === "desktopProject" && projectGroupId
+      ? { projectGroupId }
+      : {}),
+    ...(projectGroupKind === "desktopProject" && projectGroupName
+      ? { projectGroupName }
+      : {}),
+    ...(projectGroupKind === "desktopProject" && projectGroupPath
+      ? { projectGroupPath }
+      : {}),
+    ...(projectGroupingSnapshotComplete
+      ? { projectGroupingSnapshotComplete: true }
+      : entry.projectGroupingSnapshotComplete === false
+        ? { projectGroupingSnapshotComplete: false }
+        : {}),
     ...(name ? { name } : {}),
     ...(summary ? { summary } : {}),
     ...(firstPrompt ? { firstPrompt } : {}),
@@ -7571,6 +7646,24 @@ function mergeIncompleteCodexCatalogSettings(
   }
   return {
     ...incoming,
+    ...(incoming.projectGroupingSnapshotComplete !== true &&
+    previous.projectGroupingSnapshotComplete === true
+      ? {
+          ...(previous.projectGroupKind
+            ? { projectGroupKind: previous.projectGroupKind }
+            : {}),
+          ...(previous.projectGroupId
+            ? { projectGroupId: previous.projectGroupId }
+            : {}),
+          ...(previous.projectGroupName
+            ? { projectGroupName: previous.projectGroupName }
+            : {}),
+          ...(previous.projectGroupPath
+            ? { projectGroupPath: previous.projectGroupPath }
+            : {}),
+          projectGroupingSnapshotComplete: true,
+        }
+      : {}),
     ...(incoming.model === undefined && previous.model !== undefined
       ? { model: previous.model }
       : {}),
@@ -7621,6 +7714,7 @@ function isLowSurrogate(value: number): boolean {
 export function buildConversationSyncCodexCatalogSeed(
   thread: CodexThreadSummary,
   metadata?: CodexSessionIndexMetadata,
+  projectGrouping?: CodexDesktopProjectGrouping,
 ): ConversationSyncCatalogSeed {
   const target = {
     provider: "codex" as const,
@@ -7637,6 +7731,7 @@ export function buildConversationSyncCodexCatalogSeed(
         String(thread.recencyAt ?? thread.updatedAt),
       ),
       projectPath: thread.cwd,
+      ...(projectGrouping ?? {}),
       ...(thread.name ? { name: thread.name } : {}),
       ...(metadata?.summary ? { summary: metadata.summary } : {}),
       ...(metadata?.firstPrompt ? { firstPrompt: metadata.firstPrompt } : {}),

@@ -162,6 +162,46 @@ describe("conversation_sync_v2 protocol", () => {
     });
   });
 
+  it("projects Desktop project identity without replacing the runtime cwd", () => {
+    const seed = buildConversationSyncCodexCatalogSeed(
+      {
+        id: "thread-project",
+        sessionId: "thread-project",
+        parentThreadId: null,
+        preview: "Preview",
+        ephemeral: false,
+        createdAt: 1,
+        updatedAt: 2,
+        recencyAt: 3,
+        cwd: "/private/worktrees/ccpocket-feature",
+        modelProvider: "openai",
+        status: { type: "idle" },
+        canAcceptDirectInput: true,
+        agentNickname: null,
+        agentRole: null,
+        gitBranch: "feature/project-sync",
+        name: "Project thread",
+      },
+      undefined,
+      {
+        projectGroupKind: "desktopProject",
+        projectGroupId: "project-ccpocket",
+        projectGroupName: "CC Pocket",
+        projectGroupPath: "/workspace/ccpocket",
+        projectGroupingSnapshotComplete: true,
+      },
+    );
+
+    expect(seed.entry).toMatchObject({
+      projectPath: "/private/worktrees/ccpocket-feature",
+      projectGroupKind: "desktopProject",
+      projectGroupId: "project-ccpocket",
+      projectGroupName: "CC Pocket",
+      projectGroupPath: "/workspace/ccpocket",
+      projectGroupingSnapshotComplete: true,
+    });
+  });
+
   it("hydrates the focused Codex thread and prewarms priority settings", async () => {
     const focused = codexSeed(0, "thread-focused-settings");
     Object.assign(focused.entry, {
@@ -7039,6 +7079,74 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(focusedCodexMetadataReader).toHaveBeenCalledTimes(2);
     expect(focusedCodexMetadataReader).toHaveBeenLastCalledWith(threadId);
     expect(fixture.catalogReader).toHaveBeenCalledTimes(initialCatalogReads);
+    expect(historyReader).toHaveBeenCalledTimes(initialHistoryReads);
+    fixture.handler.close();
+  });
+
+  it("refreshes a Desktop rename through the shared catalog without history", async () => {
+    const threadId = "thread-name-invalidated";
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 1,
+    });
+    const seed = codexSeed(0, threadId);
+    seed.entry.name = "Before rename";
+    const seeds = [seed];
+    const historyReader = vi.fn(async () => history(threadId));
+    const fixture = createFixture(
+      seeds,
+      historyReader,
+      { daemonMode: true, sharedControlReconcileMs: 1 },
+      { subscribeSharedRuntimeControl: control.subscribe },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "sync_complete").length,
+      ).toBeGreaterThan(0),
+    );
+    const initialComplete = events(fixture.sent, client, "sync_complete").at(
+      -1,
+    )!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: initialComplete.subscriptionId,
+        sequence: initialComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+    const initialCatalogReads = fixture.catalogReader.mock.calls.length;
+    const initialHistoryReads = historyReader.mock.calls.length;
+
+    seeds[0] = {
+      ...seed,
+      entry: { ...seed.entry, name: "After rename" },
+    };
+    control.emit({
+      kind: "event",
+      event: {
+        sequence: 1,
+        observedAt: "2026-08-09T10:00:00.000Z",
+        connectionGeneration: 1,
+        method: "thread/name/updated",
+        threadId,
+      },
+    });
+
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "catalog_changes")
+          .flatMap((event) => event.updated)
+          .find((entry) => entry.name === "After rename"),
+      ).toMatchObject({ providerSessionId: threadId }),
+    );
+    expect(fixture.catalogReader).toHaveBeenCalledTimes(initialCatalogReads + 1);
     expect(historyReader).toHaveBeenCalledTimes(initialHistoryReads);
     fixture.handler.close();
   });

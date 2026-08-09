@@ -89,6 +89,11 @@ export type ConversationSyncClientMessage =
 export interface ConversationSyncCatalogEntry extends ConversationSyncTarget {
   revision: string;
   projectPath: string;
+  projectGroupKind?: "desktopProject" | "projectless";
+  projectGroupId?: string;
+  projectGroupName?: string;
+  projectGroupPath?: string;
+  projectGroupingSnapshotComplete?: boolean;
   name?: string;
   summary?: string;
   firstPrompt?: string;

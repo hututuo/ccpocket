@@ -384,6 +384,7 @@ export class SessionCatalogMonitor {
     if (root.kind === "codexRoot") {
       return (
         filename === "session_index.jsonl" ||
+        filename === ".codex-global-state.json" ||
         filename === "ccpocket-session-profiles.json" ||
         filename === "ccpocket-session-additional-writable-roots.json" ||
         (eventType === "rename" && filename === "sessions")

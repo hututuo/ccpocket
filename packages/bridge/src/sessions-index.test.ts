@@ -16,6 +16,7 @@ import {
   scanJsonlDir,
   getAllRecentSessions,
   getCodexSessionIndexMetadata,
+  loadCodexSessionNames,
   getCodexSessionHistory,
   resolveCodexSessionJsonlPath,
   readClaudeJsonlHistoryWindow,
@@ -1221,6 +1222,25 @@ describe("codex sessions integration", () => {
       process.env.CODEX_HOME = oldCodexHome;
     }
     rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  it("treats the latest empty Codex thread name as an authoritative clear", async () => {
+    const isolatedHome = join(tempHome, "clear-name-codex-home");
+    mkdirSync(isolatedHome, { recursive: true });
+    process.env.CODEX_HOME = isolatedHome;
+    writeFileSync(
+      join(isolatedHome, "session_index.jsonl"),
+      [
+        JSON.stringify({ id: "thread-clear", thread_name: "Before" }),
+        JSON.stringify({ id: "thread-other", thread_name: "Keep" }),
+        JSON.stringify({ id: "thread-clear", thread_name: "" }),
+      ].join("\n"),
+    );
+
+    const names = await loadCodexSessionNames();
+
+    expect(names.has("thread-clear")).toBe(false);
+    expect(names.get("thread-other")).toBe("Keep");
   });
 
   it("uses CODEX_HOME instead of mixing an isolated app-server with ~/.codex", async () => {

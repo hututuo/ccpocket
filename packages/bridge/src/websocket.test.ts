@@ -22,6 +22,7 @@ const {
   getAllRecentSessionsMock,
   getCodexSessionIndexMetadataMock,
   saveCodexSessionProfileMock,
+  renameCodexSessionMock,
   generateCommitMessageMock,
   gitCommitMock,
 } = vi.hoisted(() => ({
@@ -33,6 +34,7 @@ const {
   getAllRecentSessionsMock: vi.fn(),
   getCodexSessionIndexMetadataMock: vi.fn(),
   saveCodexSessionProfileMock: vi.fn(),
+  renameCodexSessionMock: vi.fn(),
   generateCommitMessageMock: vi.fn(),
   gitCommitMock: vi.fn(),
 }));
@@ -52,7 +54,7 @@ vi.mock("./sessions-index.js", () => ({
   },
   saveCodexSessionProfile: saveCodexSessionProfileMock,
   renameClaudeSession: vi.fn().mockResolvedValue(true),
-  renameCodexSession: vi.fn().mockResolvedValue(true),
+  renameCodexSession: renameCodexSessionMock,
 }));
 
 vi.mock("./debug-trace-store.js", () => ({
@@ -869,6 +871,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     getAllRecentSessionsMock.mockReset();
     getCodexSessionIndexMetadataMock.mockReset();
     saveCodexSessionProfileMock.mockReset();
+    renameCodexSessionMock.mockReset();
     generateCommitMessageMock.mockReset();
     gitCommitMock.mockReset();
     getAllRecentSessionsMock.mockResolvedValue({
@@ -884,6 +887,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     codexThreadToSessionHistoryMock.mockReturnValue([]);
     extractMessageImagesMock.mockResolvedValue([]);
     saveCodexSessionProfileMock.mockResolvedValue(undefined);
+    renameCodexSessionMock.mockResolvedValue(true);
   });
 
   afterEach(() => {
@@ -3005,6 +3009,78 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       success: false,
       errorCode: "provider_rpc_failed",
       error: "provider rename rejected",
+    });
+    await bridge.close();
+  });
+
+  it("clears a detached private Codex title through the provider index", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+
+    await (bridge as any).handleRenameSession(
+      ws,
+      "detached-private-thread",
+      null,
+      {
+        type: "rename_session",
+        sessionId: "detached-private-thread",
+        provider: "codex",
+        providerSessionId: "detached-private-thread",
+        projectPath: "/tmp/private-project",
+      },
+    );
+
+    expect(renameCodexSessionMock).toHaveBeenCalledWith(
+      "detached-private-thread",
+      null,
+    );
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "rename_result",
+      sessionId: "detached-private-thread",
+      name: null,
+      success: true,
+    });
+    await bridge.close();
+  });
+
+  it("clears a detached shared Codex title through thread/name/set", async () => {
+    vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      codexActionBrokerRuntime: writableCodexActionBrokerRuntime(),
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const renameThreadById = vi.fn(async () => {});
+    vi.spyOn(bridge as any, "resolveLifecycleProjectPath").mockReturnValue(
+      "/tmp/shared-project",
+    );
+    vi.spyOn(bridge as any, "withCodexLifecycleProcess").mockImplementation(
+      async (_projectPath: string, operation: (process: unknown) => unknown) =>
+        operation({ renameThreadById }),
+    );
+
+    await (bridge as any).handleRenameSession(
+      ws,
+      "detached-shared-thread",
+      null,
+      {
+        type: "rename_session",
+        sessionId: "detached-shared-thread",
+        provider: "codex",
+        providerSessionId: "detached-shared-thread",
+        projectPath: "/tmp/shared-project",
+      },
+    );
+
+    expect(renameThreadById).toHaveBeenCalledWith(
+      "detached-shared-thread",
+      "",
+    );
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "rename_result",
+      sessionId: "detached-shared-thread",
+      name: null,
+      success: true,
     });
     await bridge.close();
   });
@@ -19739,6 +19815,84 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(stop).toHaveBeenCalledTimes(1);
 
     bridge.close();
+  });
+
+  it("searches Desktop project names without sending them to app-server", async () => {
+    const codexHome = mkdtempSync(join(tmpdir(), "ccpocket-project-search-"));
+    vi.stubEnv("CODEX_HOME", codexHome);
+    writeFileSync(
+      join(codexHome, ".codex-global-state.json"),
+      JSON.stringify({
+        "local-projects": {
+          "project-mobile": {
+            id: "project-mobile",
+            name: "Mobile Workspace",
+            rootPaths: ["/workspace/mobile"],
+          },
+        },
+        "thread-project-assignments": {
+          "thread-mobile": { projectId: "project-mobile" },
+        },
+        "projectless-thread-ids": [],
+      }),
+    );
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const stop = vi.fn();
+    const listThreads = vi.fn(async () => ({
+      data: [
+        {
+          id: "thread-mobile",
+          preview: "Unrelated prompt",
+          createdAt: 1771492643,
+          updatedAt: 1771496243,
+          cwd: "/private/worktrees/mobile-feature",
+          agentNickname: null,
+          agentRole: null,
+          gitBranch: null,
+          name: null,
+        },
+        {
+          id: "thread-other",
+          preview: "Another prompt",
+          createdAt: 1771492643,
+          updatedAt: 1771496242,
+          cwd: "/private/tmp/other",
+          agentNickname: null,
+          agentRole: null,
+          gitBranch: null,
+          name: null,
+        },
+      ],
+      nextCursor: null,
+    }));
+    (bridge as any).createStandaloneCodexProcess = vi.fn(async () => ({
+      listThreads,
+      stop,
+    }));
+
+    try {
+      const payload = await (bridge as any).listRecentCodexThreads({
+        type: "list_recent_sessions",
+        provider: "codex",
+        searchQuery: "mobile workspace",
+        limit: 20,
+      });
+
+      expect(listThreads).toHaveBeenCalledWith({
+        limit: 20,
+        searchTerm: undefined,
+        sourceKinds: ["cli", "vscode", "exec", "appServer"],
+      });
+      expect(payload.sessions).toHaveLength(1);
+      expect(payload.sessions[0]).toMatchObject({
+        sessionId: "thread-mobile",
+        projectGroupId: "project-mobile",
+        projectGroupName: "Mobile Workspace",
+      });
+    } finally {
+      bridge.close();
+      rmSync(codexHome, { recursive: true, force: true });
+    }
   });
 
   it("uses standalone codex app-server for codex recent sessions when no active session exists", async () => {

@@ -316,4 +316,29 @@ describe("SessionCatalogMonitor", () => {
     expect(monitor.currentRevision).toBeLessThanOrEqual(Date.now());
     monitor.close();
   });
+
+  it("invalidates the catalog when Desktop project assignments change", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ccpocket-catalog-monitor-"));
+    temporaryDirectories.push(root);
+    const globalState = join(root, ".codex-global-state.json");
+    await writeFile(globalState, '{"local-projects":{}}');
+    const changes: number[] = [];
+    const monitor = new SessionCatalogMonitor({
+      roots: [{ path: root, kind: "codexRoot", maxDepth: 0 }],
+      initialRevision: 0,
+      debounceMs: 10,
+      minIntervalMs: 20,
+      onChanged: (revision) => changes.push(revision),
+    });
+    await monitor.start();
+
+    await writeFile(
+      globalState,
+      '{"local-projects":{"project":{"name":"Renamed"}}}',
+    );
+    await vi.waitFor(() => expect(changes).toEqual([1]), {
+      timeout: WATCH_EVENT_TIMEOUT_MS,
+    });
+    monitor.close();
+  });
 });
