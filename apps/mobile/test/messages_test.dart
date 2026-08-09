@@ -3,6 +3,21 @@ import 'package:ccpocket/models/messages.dart';
 import 'dart:convert';
 
 void main() {
+  test('preserves the source session for a failed Codex message edit', () {
+    final message =
+        ServerMessage.fromJson({
+              'type': 'rewind_result',
+              'success': false,
+              'mode': 'conversation',
+              'sessionId': 'thread-1',
+              'error': 'editing failed',
+            })
+            as RewindResultMessage;
+
+    expect(message.sessionId, 'thread-1');
+    expect(message.error, 'editing failed');
+  });
+
   test('preserves the provider turn for a manual compaction marker', () {
     final message =
         ServerMessage.fromJson({
@@ -1648,18 +1663,34 @@ void main() {
 
   group('Codex turn-boundary actions', () {
     test('rewind serializes the exact provider turn', () {
+      final message = ClientMessage.rewind(
+        'runtime-1',
+        'codex:user-turn:3',
+        'conversation',
+        historyTurnId: 'provider-turn-3',
+      );
+      final json = jsonDecode(message.toJson()) as Map<String, dynamic>;
+
+      expect(json, containsPair('historyTurnId', 'provider-turn-3'));
+      expect(message.delivery, ClientMessageDelivery.ephemeral);
+    });
+
+    test('detached Codex edit serializes its durable source', () {
       final json =
           jsonDecode(
                 ClientMessage.rewind(
-                  'runtime-1',
+                  'thread-1',
                   'codex:user-turn:3',
                   'conversation',
                   historyTurnId: 'provider-turn-3',
+                  projectPath: '/tmp/project',
+                  codexSourceId: 'source-1',
                 ).toJson(),
               )
               as Map<String, dynamic>;
 
-      expect(json, containsPair('historyTurnId', 'provider-turn-3'));
+      expect(json, containsPair('projectPath', '/tmp/project'));
+      expect(json, containsPair('codexSourceId', 'source-1'));
     });
 
     test('fork serializes the exact provider turn', () {

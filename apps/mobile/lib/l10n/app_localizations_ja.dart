@@ -1546,11 +1546,15 @@ class AppLocalizationsJa extends AppLocalizations {
   String get rewindCannotRewindFiles => 'ファイルを巻き戻せません';
 
   @override
-  String get codexRewindConfirmTitle => '会話を巻き戻しますか？';
+  String get codexEditMessageConfirmTitle => 'このメッセージを編集しますか？';
 
   @override
-  String get codexRewindConfirmBody =>
-      'このメッセージの直前までチャットを戻し、メッセージを入力欄に戻します。ファイル変更はそのまま残ります。';
+  String get codexEditMessageConfirmBody =>
+      'Codex はこのメッセージの直前から新しいブランチを作成します。元のブランチとファイル変更は保持され、このメッセージは編集して再送できるよう入力欄に戻ります。';
+
+  @override
+  String get codexEditMessageUnavailable =>
+      '会話を同期中のため、まだ編集できません。更新してからもう一度お試しください。';
 
   @override
   String get fork => '分岐';

@@ -18217,18 +18217,13 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         content: [{ type: "text", text: "edit me" }],
       },
     ];
-    session.process.forkThreadById
-      .mockRejectedValueOnce(
-        new CodexRpcError(
-          "thread/fork",
-          "Invalid params: unknown field beforeTurnId",
-          -32602,
-        ),
-      )
-      .mockResolvedValueOnce({
-        threadId: "thread-legacy-child",
-        thread: { id: "thread-legacy-child", turns: [] },
-      });
+    session.process.forkThreadById.mockRejectedValueOnce(
+      new CodexRpcError(
+        "thread/fork",
+        "Invalid params: unknown field beforeTurnId",
+        -32602,
+      ),
+    );
 
     ws.send.mockClear();
     await (bridge as any).handleClientMessage(
@@ -18242,12 +18237,19 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ws,
     );
     await vi.waitFor(() => {
-      expect(session.process.rollbackThreadById).toHaveBeenCalledWith(
-        "thread-legacy-child",
-        1,
-      );
+      expect(
+        ws.send.mock.calls
+          .map((call: unknown[]) => JSON.parse(call[0] as string))
+          .find((message: any) => message.type === "rewind_result"),
+      ).toMatchObject({
+        success: false,
+        sessionId: created.sessionId,
+        error: expect.stringContaining("does not support message editing"),
+      });
     });
+    expect(session.process.forkThreadById).toHaveBeenCalledTimes(1);
     expect(session.process.rollbackThread).not.toHaveBeenCalled();
+    expect(session.process.rollbackThreadById).not.toHaveBeenCalled();
     expect(
       (bridge as any).sessionManager.get(created.sessionId),
     ).toBeDefined();
@@ -18733,6 +18735,97 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+  it("edits a detached durable Codex message by forking before its provider turn", async () => {
+    const sourceHistory = [
+      {
+        role: "user" as const,
+        uuid: "codex:user-turn:1",
+        historyTurnId: "turn-first",
+        content: [{ type: "text" as const, text: "first prompt" }],
+      },
+      {
+        role: "assistant" as const,
+        content: [{ type: "text" as const, text: "first answer" }],
+      },
+      {
+        role: "user" as const,
+        uuid: "codex:user-turn:2",
+        historyTurnId: "turn-edit-target",
+        content: [{ type: "text" as const, text: "edit this prompt" }],
+      },
+    ];
+    codexThreadToSessionHistoryMock.mockImplementation((thread: any) =>
+      thread?.id === "thread-persisted-edit" ? sourceHistory : [],
+    );
+    const readThread = vi.fn(async () => ({
+      id: "thread-persisted-edit",
+      cwd: "/tmp/project-codex-canonical",
+      status: { type: "idle" },
+      turns: [],
+    }));
+    const forkThreadById = vi.fn(async () => ({
+      threadId: "thread-edited-child",
+      thread: { id: "thread-edited-child", turns: [] },
+    }));
+    const rollbackThreadById = vi.fn();
+    const stop = vi.fn();
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    vi.spyOn(bridge as any, "createStandaloneCodexProcess").mockResolvedValue({
+      readThread,
+      forkThreadById,
+      rollbackThreadById,
+      stop,
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+
+    await (bridge as any).handleClientMessage(
+      {
+        type: "rewind",
+        sessionId: "thread-persisted-edit",
+        targetUuid: "codex:user-turn:2",
+        historyTurnId: "turn-edit-target",
+        projectPath: "/tmp/project-codex",
+        mode: "conversation",
+      },
+      ws,
+    );
+
+    await vi.waitFor(() => {
+      expect(forkThreadById).toHaveBeenCalledWith("thread-persisted-edit", {
+        beforeTurnId: "turn-edit-target",
+      });
+    });
+    expect(rollbackThreadById).not.toHaveBeenCalled();
+    const messages = ws.send.mock.calls.map((call: unknown[]) =>
+      JSON.parse(call[0] as string),
+    );
+    expect(
+      messages.find((message: any) => message.type === "rewind_result"),
+    ).toMatchObject({
+      success: true,
+      sessionId: "thread-persisted-edit",
+    });
+    const created = messages.find(
+      (message: any) =>
+        message.type === "system" && message.subtype === "session_created",
+    );
+    expect(created).toMatchObject({
+      provider: "codex",
+      claudeSessionId: "thread-edited-child",
+      projectPath: resolve("/tmp/project-codex-canonical"),
+      sourceSessionId: "thread-persisted-edit",
+      forkedFromThreadId: "thread-persisted-edit",
+    });
+    const child = (bridge as any).sessionManager.get(created.sessionId);
+    expect(child.pastMessages).toEqual(sourceHistory.slice(0, 2));
+    expect(child.codexOptions).toMatchObject({
+      threadId: "thread-edited-child",
+    });
+    expect(stop).toHaveBeenCalledTimes(1);
+
+    bridge.close();
+  });
+
   it("registers a durable side chat as an ordinary Codex child session", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const parentSessionId = (bridge as any).sessionManager.create(
@@ -19098,7 +19191,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(result).toMatchObject({
       success: false,
       mode: "code",
-      error: "Codex only supports conversation rewind",
+      error: "Codex message editing does not restore files",
     });
 
     bridge.close();

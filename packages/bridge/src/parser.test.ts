@@ -1664,6 +1664,19 @@ describe("parseClientMessage", () => {
     ).toBeNull();
   });
 
+  it("parses a detached durable Codex edit target", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"rewind","sessionId":"thread-1","targetUuid":"codex:user-turn:2","historyTurnId":"turn-provider-2","projectPath":"/tmp/project","codexSourceId":"source-1","mode":"conversation"}',
+      ),
+    ).toMatchObject({
+      type: "rewind",
+      sessionId: "thread-1",
+      projectPath: "/tmp/project",
+      codexSourceId: "source-1",
+    });
+  });
+
   it("parses rewind with mode=code", () => {
     const msg = parseClientMessage(
       '{"type":"rewind","sessionId":"s1","targetUuid":"uuid-abc","mode":"code"}',

@@ -702,6 +702,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
       resolvedPlanText: _resolvePlanText(entry),
       hiddenToolUseIds: hiddenToolUseIds,
       onArtifactOpen: _openArtifact,
+      isCodex: widget.isCodex,
       onFileTap: fileRoot?.isNotEmpty == true
           ? (filePath) {
               openFilePeek(
@@ -734,7 +735,6 @@ class _ChatMessageListState extends State<ChatMessageList> {
           ),
         );
       },
-      isCodex: widget.isCodex,
     );
   }
 

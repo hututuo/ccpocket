@@ -16,6 +16,7 @@ class UserBubble extends StatelessWidget {
   final ChatMessageTimestampData? timestamp;
   final VoidCallback? onRetry;
   final VoidCallback? onRewind;
+  final bool rewindAsEdit;
   final List<String> imageUrls;
   final String? httpBaseUrl;
   final List<Uint8List> imageBytesList;
@@ -30,6 +31,7 @@ class UserBubble extends StatelessWidget {
     this.timestamp,
     this.onRetry,
     this.onRewind,
+    this.rewindAsEdit = false,
     this.imageUrls = const [],
     this.httpBaseUrl,
     this.imageBytesList = const [],
@@ -80,8 +82,10 @@ class UserBubble extends StatelessWidget {
         if (onRewind != null)
           AdaptiveActionMenuItem(
             value: 'rewind',
-            icon: Icons.history,
-            label: AppLocalizations.of(context).rewindToHere,
+            icon: rewindAsEdit ? Icons.edit_outlined : Icons.history,
+            label: rewindAsEdit
+                ? AppLocalizations.of(context).edit
+                : AppLocalizations.of(context).rewindToHere,
           ),
       ],
     );

@@ -1614,11 +1614,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get rewindCannotRewindFiles => 'Cannot rewind files';
 
   @override
-  String get codexRewindConfirmTitle => 'Rewind conversation?';
+  String get codexEditMessageConfirmTitle => 'Edit this message?';
 
   @override
-  String get codexRewindConfirmBody =>
-      'Restore the chat to just before this message and put the message back in the composer. File changes stay untouched.';
+  String get codexEditMessageConfirmBody =>
+      'Codex will create a new branch before this message. The original branch and file changes stay intact. This message returns to the composer so you can edit and send it again.';
+
+  @override
+  String get codexEditMessageUnavailable =>
+      'This conversation is still syncing and cannot be edited yet. Refresh it and try again.';
 
   @override
   String get fork => 'Fork';

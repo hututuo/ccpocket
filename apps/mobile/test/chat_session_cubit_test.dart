@@ -239,6 +239,7 @@ void main() {
     Provider? provider,
     String? initialProjectPath,
     ChatImagePayloadEncoder? imagePayloadEncoder,
+    bool detachedPreview = false,
   }) {
     return ChatSessionCubit(
       sessionId: sessionId,
@@ -247,10 +248,80 @@ void main() {
       streamingCubit: streamingCubit,
       initialProjectPath: initialProjectPath,
       imagePayloadEncoder: imagePayloadEncoder,
+      detachedPreview: detachedPreview,
     );
   }
 
   group('ChatSessionCubit', () {
+    test('Codex message edit uses the attached runtime when available', () {
+      final cubit = createCubit('runtime-1', provider: Provider.codex);
+      addTearDown(cubit.close);
+
+      expect(
+        cubit.editCodexMessage('codex:user-turn:2', historyTurnId: 'turn-2'),
+        isTrue,
+      );
+      expect(jsonDecode(mockBridge.sentMessages.single.toJson()), {
+        'type': 'rewind',
+        'sessionId': 'runtime-1',
+        'targetUuid': 'codex:user-turn:2',
+        'historyTurnId': 'turn-2',
+        'mode': 'conversation',
+      });
+    });
+
+    test('Codex message edit supports a detached durable thread', () {
+      final cubit = createCubit(
+        'thread-1',
+        provider: Provider.codex,
+        initialProjectPath: '/tmp/project',
+        detachedPreview: true,
+      );
+      addTearDown(cubit.close);
+
+      expect(
+        cubit.editCodexMessage('codex:user-turn:2', historyTurnId: 'turn-2'),
+        isTrue,
+      );
+      expect(jsonDecode(mockBridge.sentMessages.single.toJson()), {
+        'type': 'rewind',
+        'sessionId': 'thread-1',
+        'targetUuid': 'codex:user-turn:2',
+        'historyTurnId': 'turn-2',
+        'projectPath': '/tmp/project',
+        'codexSourceId': 'source-a',
+        'mode': 'conversation',
+      });
+    });
+
+    test('message edit is unavailable for Claude', () {
+      final cubit = createCubit('claude-1', provider: Provider.claude);
+      addTearDown(cubit.close);
+
+      expect(
+        cubit.editCodexMessage('user-1', historyTurnId: 'turn-1'),
+        isFalse,
+      );
+      expect(mockBridge.sentMessages, isEmpty);
+    });
+
+    test('message edit is never queued while the Bridge is offline', () {
+      final cubit = createCubit(
+        'thread-1',
+        provider: Provider.codex,
+        initialProjectPath: '/tmp/project',
+        detachedPreview: true,
+      );
+      addTearDown(cubit.close);
+      mockBridge.connected = false;
+
+      expect(
+        cubit.editCodexMessage('codex:user-turn:2', historyTurnId: 'turn-2'),
+        isFalse,
+      );
+      expect(mockBridge.sentMessages, isEmpty);
+    });
+
     test(
       'dismissed Codex warning stays hidden across canonical history replay',
       () async {

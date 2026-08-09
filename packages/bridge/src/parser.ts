@@ -521,6 +521,9 @@ export type ClientMessage =
       targetUuid: string;
       /** Exact provider turn used by modern app-server fork boundaries. */
       historyTurnId?: string;
+      /** Present when editing a detached durable Codex thread. */
+      projectPath?: string;
+      codexSourceId?: string;
       mode: "conversation" | "code" | "both";
     }
   | { type: "rewind_dry_run"; sessionId: string; targetUuid: string }
@@ -1074,6 +1077,7 @@ export type ServerMessage = (
       type: "rewind_result";
       success: boolean;
       mode: "conversation" | "code" | "both";
+      sessionId?: string;
       error?: string;
     }
   | {
@@ -2657,6 +2661,13 @@ export function parseClientMessage(data: string): ClientMessage | null {
         if (
           msg.historyTurnId !== undefined &&
           !isValidWireIdentifier(msg.historyTurnId, 256)
+        )
+          return null;
+        if (
+          (msg.projectPath !== undefined &&
+            !isValidWireIdentifier(msg.projectPath, 16_384)) ||
+          (msg.codexSourceId !== undefined &&
+            !isValidWireIdentifier(msg.codexSourceId, 512))
         )
           return null;
         break;

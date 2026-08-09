@@ -1523,10 +1523,14 @@ class AppLocalizationsZh extends AppLocalizations {
   String get rewindCannotRewindFiles => '无法回退文件';
 
   @override
-  String get codexRewindConfirmTitle => '回退对话？';
+  String get codexEditMessageConfirmTitle => '编辑这条消息？';
 
   @override
-  String get codexRewindConfirmBody => '将聊天恢复到此消息之前，并把该消息放回输入框。文件更改会保留。';
+  String get codexEditMessageConfirmBody =>
+      'Codex 会在这条消息之前创建一个新分支。原分支和文件更改会保留；这条消息会回到输入框，修改后可以重新发送。';
+
+  @override
+  String get codexEditMessageUnavailable => '会话仍在同步，暂时不能编辑。请刷新后重试。';
 
   @override
   String get fork => '分叉';

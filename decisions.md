@@ -808,6 +808,17 @@
   it in the session-list context menu or the conversation-level overflow menu.
   Keep the additive persisted-fork wire contract for old/new peer compatibility
   even though Mobile no longer presents a session-level entry.
+- Codex user-message history uses Desktop's pencil/edit semantics, not a
+  destructive "rewind" promise. Current app-server has no in-place edit RPC:
+  Mobile requests the exact durable thread, user item and provider turn;
+  Bridge verifies their relationship and calls `thread/fork(beforeTurnId)`.
+  The source branch and filesystem changes remain intact, the child replaces
+  the open route, and the selected text returns to the composer for editing and
+  resubmission. Detached cached threads use their durable thread/source/project
+  identity and must not silently require an already attached Bridge runtime.
+  `thread/rollback` is deprecated and is not an edit fallback; an old
+  app-server without turn-boundary fork support fails closed with an update
+  instruction. Claude conversation/code rewind remains a separate feature.
 - Completion detection must cover both transcript shapes: a live Bridge turn
   normally ends with `ResultMessage`, while Desktop/app-server history may omit
   that synthetic marker. In the latter shape, the next user turn closes the

@@ -2910,17 +2910,23 @@ abstract class AppLocalizations {
   /// **'ファイルを巻き戻せません'**
   String get rewindCannotRewindFiles;
 
-  /// No description provided for @codexRewindConfirmTitle.
+  /// No description provided for @codexEditMessageConfirmTitle.
   ///
   /// In ja, this message translates to:
-  /// **'会話を巻き戻しますか？'**
-  String get codexRewindConfirmTitle;
+  /// **'このメッセージを編集しますか？'**
+  String get codexEditMessageConfirmTitle;
 
-  /// No description provided for @codexRewindConfirmBody.
+  /// No description provided for @codexEditMessageConfirmBody.
   ///
   /// In ja, this message translates to:
-  /// **'このメッセージの直前までチャットを戻し、メッセージを入力欄に戻します。ファイル変更はそのまま残ります。'**
-  String get codexRewindConfirmBody;
+  /// **'Codex はこのメッセージの直前から新しいブランチを作成します。元のブランチとファイル変更は保持され、このメッセージは編集して再送できるよう入力欄に戻ります。'**
+  String get codexEditMessageConfirmBody;
+
+  /// No description provided for @codexEditMessageUnavailable.
+  ///
+  /// In ja, this message translates to:
+  /// **'会話を同期中のため、まだ編集できません。更新してからもう一度お試しください。'**
+  String get codexEditMessageUnavailable;
 
   /// No description provided for @fork.
   ///

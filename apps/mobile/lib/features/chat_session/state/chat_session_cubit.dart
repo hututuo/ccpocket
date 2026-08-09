@@ -7944,18 +7944,85 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// Execute a rewind operation.
   /// [mode] is one of: "conversation", "code", "both".
   void rewind(String targetUuid, String mode, {String? historyTurnId}) {
+    if (!_bridge.isConnected) return;
     final runtimeSessionId = _runtimeSessionIdForMutation(
       allowSteerable: false,
     );
     if (runtimeSessionId == null) return;
-    _bridge.send(
-      ClientMessage.rewind(
-        runtimeSessionId,
-        targetUuid,
-        mode,
-        historyTurnId: historyTurnId,
-      ),
+    try {
+      _bridge.send(
+        ClientMessage.rewind(
+          runtimeSessionId,
+          targetUuid,
+          mode,
+          historyTurnId: historyTurnId,
+        ),
+      );
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[session:$sessionId] rewind was not sent on the live socket',
+        error,
+        stackTrace,
+      );
+    }
+  }
+
+  /// Starts the same edit flow as Codex Desktop's pencil action.
+  ///
+  /// Codex has no in-place message mutation RPC. The Bridge forks the durable
+  /// thread immediately before the selected provider turn, then the screen
+  /// moves the original text back into the composer. A detached cached thread
+  /// therefore uses its durable identity instead of silently requiring an
+  /// already attached runtime.
+  bool editCodexMessage(String targetUuid, {String? historyTurnId}) {
+    if (!isCodex || !_bridge.isConnected) return false;
+    final runtimeSessionId = _runtimeSessionIdForMutation(
+      allowSteerable: false,
     );
+    if (runtimeSessionId != null) {
+      try {
+        _bridge.send(
+          ClientMessage.rewind(
+            runtimeSessionId,
+            targetUuid,
+            'conversation',
+            historyTurnId: historyTurnId,
+          ),
+        );
+        return true;
+      } catch (error, stackTrace) {
+        logger.warning(
+          '[session:$sessionId] Codex message edit was not sent',
+          error,
+          stackTrace,
+        );
+        return false;
+      }
+    }
+    final projectPath = state.projectPath?.trim();
+    if (!detachedPreview || projectPath == null || projectPath.isEmpty) {
+      return false;
+    }
+    try {
+      _bridge.send(
+        ClientMessage.rewind(
+          sessionId,
+          targetUuid,
+          'conversation',
+          historyTurnId: historyTurnId,
+          projectPath: projectPath,
+          codexSourceId: _bridge.codexSourceId,
+        ),
+      );
+      return true;
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[session:$sessionId] detached Codex message edit was not sent',
+        error,
+        stackTrace,
+      );
+      return false;
+    }
   }
 
   void forkSession(String targetUuid, {String? historyTurnId}) {

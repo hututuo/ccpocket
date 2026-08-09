@@ -1043,6 +1043,24 @@ function codexHistoryTurnIdsForUser(
   return [...turnIds];
 }
 
+function codexHistoryTurnIdsForPersistedUser(
+  history: SessionHistoryMessage[],
+  targetUuid: string,
+): string[] {
+  const turnIds = new Set<string>();
+  for (const message of history) {
+    if (
+      message.role === "user" &&
+      message.uuid === targetUuid &&
+      typeof message.historyTurnId === "string" &&
+      message.historyTurnId.trim()
+    ) {
+      turnIds.add(message.historyTurnId.trim());
+    }
+  }
+  return [...turnIds];
+}
+
 function exactCodexForkBoundaryTurnId(
   value: string | undefined,
 ): string | undefined {
@@ -1067,7 +1085,28 @@ function resolveCodexForkBoundaryTurnId(
   targetUuid: string,
   requestedTurnId?: string,
 ): CodexForkBoundaryResolution {
-  const observedTurnIds = codexHistoryTurnIdsForUser(session, targetUuid)
+  return resolveCodexForkBoundaryFromObservedTurns(
+    codexHistoryTurnIdsForUser(session, targetUuid),
+    requestedTurnId,
+  );
+}
+
+function resolveCodexForkBoundaryFromPersistedHistory(
+  history: SessionHistoryMessage[],
+  targetUuid: string,
+  requestedTurnId?: string,
+): CodexForkBoundaryResolution {
+  return resolveCodexForkBoundaryFromObservedTurns(
+    codexHistoryTurnIdsForPersistedUser(history, targetUuid),
+    requestedTurnId,
+  );
+}
+
+function resolveCodexForkBoundaryFromObservedTurns(
+  observedValues: string[],
+  requestedTurnId?: string,
+): CodexForkBoundaryResolution {
+  const observedTurnIds = observedValues
     .map(exactCodexForkBoundaryTurnId)
     .filter((turnId): turnId is string => turnId !== undefined);
   const requestedExactTurnId = exactCodexForkBoundaryTurnId(requestedTurnId);
@@ -2846,13 +2885,15 @@ export class BridgeWebSocketServer {
     targetUuid: string,
     mode: "conversation" | "code" | "both",
     historyTurnId?: string,
+    sourceSessionIdForClient = sessionId,
   ): Promise<void> {
     if (mode !== "conversation") {
       this.send(ws, {
         type: "rewind_result",
         success: false,
         mode,
-        error: "Codex only supports conversation rewind",
+        sessionId: sourceSessionIdForClient,
+        error: "Codex message editing does not restore files",
       });
       return;
     }
@@ -2863,6 +2904,7 @@ export class BridgeWebSocketServer {
         type: "rewind_result",
         success: false,
         mode,
+        sessionId: sourceSessionIdForClient,
         error: `Session ${sessionId} not found`,
       });
       return;
@@ -2876,19 +2918,21 @@ export class BridgeWebSocketServer {
         type: "rewind_result",
         success: false,
         mode,
+        sessionId: sourceSessionIdForClient,
         error: "Session is not a Codex session",
       });
       return;
     }
     const mutationBlock = await this.codexThreadMutationBlock(
       session,
-      "rewind this conversation",
+      "edit this message",
     );
     if (mutationBlock) {
       this.send(ws, {
         type: "rewind_result",
         success: false,
         mode,
+        sessionId: sourceSessionIdForClient,
         error: mutationBlock.message,
       });
       return;
@@ -2901,7 +2945,8 @@ export class BridgeWebSocketServer {
         type: "rewind_result",
         success: false,
         mode,
-        error: "Cannot rewind while Codex is running",
+        sessionId: sourceSessionIdForClient,
+        error: "Cannot edit a message while Codex is running",
       });
       return;
     }
@@ -2910,7 +2955,8 @@ export class BridgeWebSocketServer {
         type: "rewind_result",
         success: false,
         mode,
-        error: "Cannot rewind while Codex has queued input",
+        sessionId: sourceSessionIdForClient,
+        error: "Cannot edit a message while Codex has queued input",
       });
       return;
     }
@@ -2922,18 +2968,8 @@ export class BridgeWebSocketServer {
         type: "rewind_result",
         success: false,
         mode,
-        error: "Invalid Codex rewind target",
-      });
-      return;
-    }
-
-    const numTurns = totalUserTurns - targetOrdinal + 1;
-    if (numTurns <= 0) {
-      this.send(ws, {
-        type: "rewind_result",
-        success: false,
-        mode,
-        error: "Invalid Codex rewind target",
+        sessionId: sourceSessionIdForClient,
+        error: "Invalid Codex edit target",
       });
       return;
     }
@@ -2944,7 +2980,8 @@ export class BridgeWebSocketServer {
         type: "rewind_result",
         success: false,
         mode,
-        error: "No Codex thread ID available for rewind",
+        sessionId: sourceSessionIdForClient,
+        error: "No Codex thread ID available for editing",
       });
       return;
     }
@@ -2968,6 +3005,7 @@ export class BridgeWebSocketServer {
         type: "rewind_result",
         success: false,
         mode,
+        sessionId: sourceSessionIdForClient,
         error: boundary.error,
       });
       return;
@@ -2983,16 +3021,9 @@ export class BridgeWebSocketServer {
       });
     } catch (error) {
       if (!isUnsupportedCodexForkBoundary(error)) throw error;
-      // Old app-servers do not understand turn boundaries. Preserve the
-      // source thread by narrowing a fresh child with the deprecated API.
-      forked = await codexProcess.forkThreadById(threadId);
-      forked = {
-        threadId: forked.threadId,
-        thread: await codexProcess.rollbackThreadById(
-          forked.threadId,
-          numTurns,
-        ),
-      };
+      throw new Error(
+        "This Codex app-server does not support message editing. Update Codex and try again.",
+      );
     }
 
     const pastMessages = this.codexHistoryFromThreadOrFallback({
@@ -3021,6 +3052,7 @@ export class BridgeWebSocketServer {
       type: "rewind_result",
       success: true,
       mode,
+      sessionId: sourceSessionIdForClient,
     });
     this.send(
       ws,
@@ -3031,10 +3063,207 @@ export class BridgeWebSocketServer {
         session: newSession,
         approvalsReviewer: newSession?.codexSettings?.approvalsReviewer,
         sandboxMode: newSession?.codexSettings?.sandboxMode,
-        sourceSessionId: sessionId,
+        sourceSessionId: sourceSessionIdForClient,
       }),
     );
     this.sendSessionList(ws);
+  }
+
+  /**
+   * Implements Codex Desktop's pencil semantics for a durable thread that has
+   * no Bridge runtime: fork before the selected user turn, preserve the source
+   * branch, and register the child as the replacement conversation.
+   */
+  private async editPersistedCodexConversation(
+    ws: WebSocket,
+    threadId: string,
+    targetUuid: string,
+    rawProjectPath: string,
+    codexSourceId?: string,
+    historyTurnId?: string,
+  ): Promise<void> {
+    this.assertCodexSourceMatches("codex", codexSourceId);
+    this.assertSharedCodexWriterAvailable("edit a Codex message");
+
+    const releaseThreadOperation =
+      await this.acquireCodexThreadOperation(threadId);
+    try {
+      const runningSession = this.findRunningCodexSession(threadId);
+      if (runningSession) {
+        await this.rewindCodexConversation(
+          ws,
+          runningSession.id,
+          targetUuid,
+          "conversation",
+          historyTurnId,
+          threadId,
+        );
+        return;
+      }
+
+      await this.requireArchiveStoreReady();
+      if (this.archiveStore.isArchived(threadId, "codex", this.codexSourceId)) {
+        throw new Error(
+          "The Codex thread is archived. Restore it before editing a message.",
+        );
+      }
+      if (
+        this.localFeatures.conversationActivity("codex", threadId) ===
+        "active"
+      ) {
+        throw new Error("Cannot edit a message while Codex is running");
+      }
+
+      const requestedProjectPath = resolvePlatformPath(
+        rawProjectPath,
+        this.platform,
+      );
+      const worktreeMapping = this.worktreeStore.get(threadId);
+      const projectPath = resolvePlatformPath(
+        worktreeMapping?.projectPath ?? requestedProjectPath,
+        this.platform,
+      );
+      if (!this.isExistingProjectPathAllowed(projectPath)) {
+        this.send(ws, this.buildPathNotAllowedError(rawProjectPath));
+        return;
+      }
+
+      let worktreeOpts: WorktreeOptions | undefined;
+      if (worktreeMapping) {
+        worktreeOpts = worktreeExists(worktreeMapping.worktreePath)
+          ? {
+              existingWorktreePath: worktreeMapping.worktreePath,
+              worktreeBranch: worktreeMapping.worktreeBranch,
+            }
+          : {
+              useWorktree: true,
+              worktreeBranch: worktreeMapping.worktreeBranch,
+            };
+      }
+
+      let sourceHistory: SessionHistoryMessage[] = [];
+      let targetIndex = -1;
+      let childProjectPath = projectPath;
+      let forked:
+        | { threadId: string; thread: Record<string, unknown> }
+        | undefined;
+      await this.withCodexLifecycleProcess(projectPath, async (process) => {
+        const thread = await process.readThread(threadId, true);
+        const threadCwd =
+          typeof thread.cwd === "string" ? thread.cwd.trim() : "";
+        if (!worktreeMapping && threadCwd) {
+          childProjectPath = resolvePlatformPath(
+            normalizeWorktreePath(threadCwd),
+            this.platform,
+          );
+          if (!this.isExistingProjectPathAllowed(childProjectPath)) {
+            throw new SessionLifecycleError(
+              "path_not_allowed",
+              "The Codex thread belongs to a project outside the Bridge allowed directories.",
+            );
+          }
+        }
+        const rawStatus = isRecord(thread.status)
+          ? thread.status.type
+          : undefined;
+        if (rawStatus === "active") {
+          throw new Error("Cannot edit a message while Codex is running");
+        }
+        if (
+          rawStatus !== "idle" &&
+          rawStatus !== "notLoaded" &&
+          rawStatus !== "systemError"
+        ) {
+          throw new Error(
+            "Codex thread status is not confirmed; refresh and try again before editing.",
+          );
+        }
+
+        sourceHistory = codexThreadToSessionHistory(thread);
+        const boundary = resolveCodexForkBoundaryFromPersistedHistory(
+          sourceHistory,
+          targetUuid,
+          historyTurnId,
+        );
+        if (boundary.error) throw new Error(boundary.error);
+        targetIndex = sourceHistory.findIndex(
+          (message) =>
+            message.role === "user" &&
+            message.uuid === targetUuid &&
+            exactCodexForkBoundaryTurnId(message.historyTurnId) ===
+              boundary.turnId,
+        );
+        if (targetIndex < 0) {
+          throw new Error(
+            "Selected Codex message is no longer present; refresh and try again.",
+          );
+        }
+        try {
+          forked = await process.forkThreadById(threadId, {
+            beforeTurnId: boundary.turnId,
+          });
+        } catch (error) {
+          if (!isUnsupportedCodexForkBoundary(error)) throw error;
+          throw new Error(
+            "This Codex app-server does not support message editing. Update Codex and try again.",
+          );
+        }
+      });
+      if (!forked || targetIndex < 0) {
+        throw new Error("Codex did not create the edited conversation branch");
+      }
+
+      const prefix = sourceHistory.slice(0, targetIndex);
+      const expectedUserTurns = countCodexHistoryUserTurns(prefix);
+      const pastMessages = this.codexHistoryFromThreadOrFallback({
+        thread: forked.thread,
+        expectedUserTurns,
+        fallback: prefix,
+      });
+      const indexedMetadata = (
+        await getCodexSessionIndexMetadata([threadId], {
+          authoritativeCodexSettings: true,
+        })
+      ).get(threadId);
+      const newSessionId = this.sessionManager.create(
+        childProjectPath,
+        undefined,
+        pastMessages,
+        worktreeOpts,
+        "codex",
+        this.withCodexAutoReviewPolicy({
+          ...(indexedMetadata?.codexSettings ?? {}),
+          threadId: forked.threadId,
+        } as CodexStartOptions),
+      );
+      const newSession = this.sessionManager.get(newSessionId);
+      if (newSession) {
+        newSession.forkedFromThreadId = threadId;
+      }
+
+      this.send(ws, {
+        type: "rewind_result",
+        success: true,
+        mode: "conversation",
+        sessionId: threadId,
+      });
+      this.send(
+        ws,
+        this.buildSessionCreatedMessage({
+          sessionId: newSessionId,
+          provider: "codex",
+          projectPath: childProjectPath,
+          session: newSession,
+          approvalsReviewer: newSession?.codexSettings?.approvalsReviewer,
+          sandboxMode: newSession?.codexSettings?.sandboxMode,
+          sourceSessionId: threadId,
+        }),
+      );
+      this.sendSessionList(ws);
+      this.projectHistory?.addProject(childProjectPath);
+    } finally {
+      releaseThreadOperation();
+    }
   }
 
   private async forkCodexSession(
@@ -11720,34 +11949,52 @@ export class BridgeWebSocketServer {
       }
 
       case "rewind": {
-        const session = this.sessionManager.get(msg.sessionId);
-        if (!session) {
-          this.send(ws, {
-            type: "rewind_result",
-            success: false,
-            mode: msg.mode,
-            error: `Session ${msg.sessionId} not found`,
-          });
-          return;
-        }
-
         const handleError = (err: unknown) => {
           const errMsg = err instanceof Error ? err.message : String(err);
           this.send(ws, {
             type: "rewind_result",
             success: false,
             mode: msg.mode,
+            sessionId: msg.sessionId,
             error: errMsg,
           });
         };
+        const requestedPersistedEdit = msg.projectPath !== undefined;
+        const session =
+          this.sessionManager.get(msg.sessionId) ??
+          (requestedPersistedEdit
+            ? this.findRunningCodexSession(msg.sessionId)
+            : undefined);
+        if (!session) {
+          if (requestedPersistedEdit && msg.mode === "conversation") {
+            this.editPersistedCodexConversation(
+              ws,
+              msg.sessionId,
+              msg.targetUuid,
+              msg.projectPath!,
+              msg.codexSourceId,
+              msg.historyTurnId,
+            ).catch(handleError);
+            break;
+          }
+          this.send(ws, {
+            type: "rewind_result",
+            success: false,
+            mode: msg.mode,
+            sessionId: msg.sessionId,
+            error: `Session ${msg.sessionId} not found`,
+          });
+          return;
+        }
 
         if (session.provider === "codex") {
           this.rewindCodexConversation(
             ws,
-            msg.sessionId,
+            session.id,
             msg.targetUuid,
             msg.mode,
             msg.historyTurnId,
+            requestedPersistedEdit ? msg.sessionId : session.id,
           ).catch(handleError);
           break;
         }

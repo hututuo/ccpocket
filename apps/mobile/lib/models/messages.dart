@@ -1685,6 +1685,7 @@ sealed class ServerMessage {
       'rewind_result' => RewindResultMessage(
         success: json['success'] as bool? ?? false,
         mode: json['mode'] as String? ?? 'both',
+        sessionId: json['sessionId'] as String?,
         error: json['error'] as String?,
       ),
       'input_ack' => InputAckMessage(
@@ -4054,10 +4055,12 @@ class RewindPreviewMessage implements ServerMessage {
 class RewindResultMessage implements ServerMessage {
   final bool success;
   final String mode;
+  final String? sessionId;
   final String? error;
   const RewindResultMessage({
     required this.success,
     required this.mode,
+    this.sessionId,
     this.error,
   });
 }
@@ -6529,13 +6532,22 @@ class ClientMessage {
     String targetUuid,
     String mode, {
     String? historyTurnId,
-  }) => ClientMessage._({
-    'type': 'rewind',
-    'sessionId': sessionId,
-    'targetUuid': targetUuid,
-    'historyTurnId': ?historyTurnId,
-    'mode': mode,
-  });
+    String? projectPath,
+    String? codexSourceId,
+  }) => ClientMessage._(
+    {
+      'type': 'rewind',
+      'sessionId': sessionId,
+      'targetUuid': targetUuid,
+      'historyTurnId': ?historyTurnId,
+      'projectPath': ?projectPath,
+      'codexSourceId': ?codexSourceId,
+      'mode': mode,
+    },
+    // A rewind/edit changes provider history. Replaying it after reconnect
+    // could target a different revision, so it must remain live-socket only.
+    delivery: ClientMessageDelivery.ephemeral,
+  );
 
   factory ClientMessage.rewindDryRun(String sessionId, String targetUuid) =>
       ClientMessage._({

@@ -1563,11 +1563,15 @@ class AppLocalizationsKo extends AppLocalizations {
   String get rewindCannotRewindFiles => '파일을 되돌릴 수 없습니다';
 
   @override
-  String get codexRewindConfirmTitle => '대화를 되돌릴까요?';
+  String get codexEditMessageConfirmTitle => '이 메시지를 편집할까요?';
 
   @override
-  String get codexRewindConfirmBody =>
-      '채팅을 이 메시지 직전으로 복원하고, 메시지를 입력창에 다시 넣습니다. 파일 변경 사항은 그대로 유지됩니다.';
+  String get codexEditMessageConfirmBody =>
+      'Codex가 이 메시지 직전에서 새 분기를 만듭니다. 기존 분기와 파일 변경은 유지되며, 이 메시지는 수정 후 다시 보낼 수 있도록 입력창으로 돌아갑니다.';
+
+  @override
+  String get codexEditMessageUnavailable =>
+      '대화를 동기화하는 중이라 아직 편집할 수 없습니다. 새로고침한 뒤 다시 시도하세요.';
 
   @override
   String get fork => '분기';

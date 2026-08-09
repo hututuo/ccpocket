@@ -76,7 +76,7 @@ import '../claude_session/widgets/rewind_message_list_sheet.dart'
 import 'state/codex_session_cubit.dart';
 import 'widgets/codex_goal_card.dart';
 import 'widgets/codex_goal_management.dart';
-import 'widgets/codex_rewind_dialog.dart';
+import 'widgets/codex_edit_message_dialog.dart';
 import 'widgets/tool_suggestion_card.dart';
 
 const _fileListRefreshToolNames = {
@@ -1096,6 +1096,26 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   void _listenForSandboxRestart() {
     final bridge = context.read<BridgeService>();
     _sandboxRestartSub = bridge.messages.listen((msg) {
+      if (msg
+          case RewindResultMessage(
+            success: false,
+            :final sessionId,
+            :final error,
+          )
+          when mounted &&
+              (sessionId == null ||
+                  sessionId == _sessionId ||
+                  sessionId == widget.durableProviderSessionId)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              error?.trim().isNotEmpty == true
+                  ? error!.trim()
+                  : AppLocalizations.of(context).codexEditMessageUnavailable,
+            ),
+          ),
+        );
+      }
       final localBinding = _localAttachmentBinding;
       if (msg is SystemMessage &&
           localBinding != null &&
@@ -3327,7 +3347,7 @@ class _CodexChatBody extends HookWidget {
                               );
                             },
                             onRewindMessage: (entry) {
-                              _showCodexRewindDialog(
+                              _showCodexEditMessageDialog(
                                 context,
                                 entry,
                                 sessionId: sessionId,
@@ -3914,7 +3934,8 @@ void _showUserMessageHistory(
         scrollToUserEntry.value = loaded;
         return true;
       },
-      onRewindMessage: (msg) => _showCodexRewindDialog(
+      rewindAsEdit: true,
+      onRewindMessage: (msg) => _showCodexEditMessageDialog(
         context,
         msg,
         sessionId: sessionId,
@@ -3925,7 +3946,7 @@ void _showUserMessageHistory(
   );
 }
 
-void _showCodexRewindDialog(
+void _showCodexEditMessageDialog(
   BuildContext context,
   UserChatEntry message, {
   required String sessionId,
@@ -3939,20 +3960,29 @@ void _showCodexRewindDialog(
   showDialog<void>(
     context: context,
     builder: (dialogContext) {
-      return CodexRewindDialog(
+      return CodexEditMessageDialog(
         messageText: message.text,
         onConfirm: () {
           Navigator.of(dialogContext).pop();
+          final accepted = cubit.editCodexMessage(
+            message.messageUuid!,
+            historyTurnId: message.historyTurnId,
+          );
+          if (!accepted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  AppLocalizations.of(context).codexEditMessageUnavailable,
+                ),
+              ),
+            );
+            return;
+          }
           _restoreRewindMessageToComposer(
             inputController: inputController,
             draftService: draftService,
             sessionId: sessionId,
             text: message.text,
-          );
-          cubit.rewind(
-            message.messageUuid!,
-            'conversation',
-            historyTurnId: message.historyTurnId,
           );
         },
       );
