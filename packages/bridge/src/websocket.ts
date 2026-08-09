@@ -1009,6 +1009,108 @@ function countCodexUserTurnsInSession(session: SessionInfo): number {
   return Math.max(count, maxOrdinal);
 }
 
+function codexHistoryTurnIdsForUser(
+  session: SessionInfo,
+  targetUuid: string,
+): string[] {
+  const turnIds = new Set<string>();
+  if (Array.isArray(session.pastMessages)) {
+    for (const rawMessage of session.pastMessages) {
+      if (!isRecord(rawMessage)) continue;
+      const message = rawMessage as Partial<SessionHistoryMessage>;
+      if (
+        message.role === "user" &&
+        message.uuid === targetUuid &&
+        typeof message.historyTurnId === "string" &&
+        message.historyTurnId.trim()
+      ) {
+        turnIds.add(message.historyTurnId.trim());
+      }
+    }
+  }
+  for (const message of session.history) {
+    if (
+      message.type === "user_input" &&
+      message.userMessageUuid === targetUuid &&
+      typeof message.historyTurnId === "string" &&
+      message.historyTurnId.trim()
+    ) {
+      turnIds.add(message.historyTurnId.trim());
+    }
+  }
+  return [...turnIds];
+}
+
+function exactCodexForkBoundaryTurnId(
+  value: string | undefined,
+): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) return undefined;
+  // These are Bridge pagination fallbacks, not app-server turn identities.
+  if (
+    normalized.startsWith("legacy-turn:") ||
+    normalized.startsWith("codex:user-turn:")
+  ) {
+    return undefined;
+  }
+  return normalized;
+}
+
+type CodexForkBoundaryResolution =
+  | { turnId: string; error?: never }
+  | { turnId?: never; error: string };
+
+function resolveCodexForkBoundaryTurnId(
+  session: SessionInfo,
+  targetUuid: string,
+  requestedTurnId?: string,
+): CodexForkBoundaryResolution {
+  const observedTurnIds = codexHistoryTurnIdsForUser(session, targetUuid)
+    .map(exactCodexForkBoundaryTurnId)
+    .filter((turnId): turnId is string => turnId !== undefined);
+  const requestedExactTurnId = exactCodexForkBoundaryTurnId(requestedTurnId);
+
+  // A legacy/page-local id is not an app-server boundary. Prefer the
+  // provider turn already observed for this exact user message instead of
+  // falling back to ordinal rollback.
+  if (!requestedExactTurnId) {
+    if (observedTurnIds.length === 1) return { turnId: observedTurnIds[0] };
+    if (observedTurnIds.length > 1) {
+      return {
+        error:
+          "Selected Codex message has an ambiguous turn boundary; refresh and retry",
+      };
+    }
+    return {
+      error:
+        "Exact Codex turn boundary is unavailable; refresh the conversation and retry",
+    };
+  }
+
+  // A client-provided provider turn is accepted only when the Bridge can
+  // prove that it belongs to the selected user message. This prevents a stale
+  // Mobile cache from forking at a different, otherwise valid turn id.
+  if (observedTurnIds.length === 0) {
+    return {
+      error:
+        "Codex turn boundary is not confirmed by the current conversation; refresh and retry",
+    };
+  }
+  if (observedTurnIds.length > 1) {
+    return {
+      error:
+        "Selected Codex message has an ambiguous turn boundary; refresh and retry",
+    };
+  }
+  if (!observedTurnIds.includes(requestedExactTurnId)) {
+    return {
+      error:
+        "Codex turn boundary does not match the selected message; refresh and retry",
+    };
+  }
+  return { turnId: requestedExactTurnId };
+}
+
 function nextCodexUserTurnUuid(session: SessionInfo): string {
   return codexUserTurnUuid(countCodexUserTurnsInSession(session) + 1);
 }
@@ -1228,6 +1330,20 @@ function isUnsupportedCodexRpc(err: unknown): boolean {
   return (
     (err instanceof CodexRpcError && err.code === -32601) ||
     /method not found|unsupported method/i.test(errorMessageOf(err))
+  );
+}
+
+function isUnsupportedCodexForkBoundary(err: unknown): boolean {
+  if (!(err instanceof CodexRpcError) || err.method !== "thread/fork") {
+    return false;
+  }
+  const detail = `${err.message} ${JSON.stringify(err.data ?? "")}`;
+  return (
+    (err.code === -32602 || /invalid params/i.test(detail)) &&
+    /beforeTurnId|lastTurnId/i.test(detail) &&
+    /unknown|unexpected|unsupported|invalid (?:field|parameter|params)/i.test(
+      detail,
+    )
   );
 }
 
@@ -2727,6 +2843,7 @@ export class BridgeWebSocketServer {
     sessionId: string,
     targetUuid: string,
     mode: "conversation" | "code" | "both",
+    historyTurnId?: string,
   ): Promise<void> {
     if (mode !== "conversation") {
       this.send(ws, {
@@ -2751,7 +2868,7 @@ export class BridgeWebSocketServer {
     const codexProcess = session.process as CodexProcess;
     if (
       session.provider !== "codex" ||
-      typeof codexProcess.rollbackThread !== "function"
+      typeof codexProcess.forkThreadById !== "function"
     ) {
       this.send(ws, {
         type: "rewind_result",
@@ -2839,14 +2956,48 @@ export class BridgeWebSocketServer {
         }
       : undefined;
 
-    const rolledBackThread = await codexProcess.rollbackThread(numTurns);
+    const boundary = resolveCodexForkBoundaryTurnId(
+      session,
+      targetUuid,
+      historyTurnId,
+    );
+    if (boundary.error) {
+      this.send(ws, {
+        type: "rewind_result",
+        success: false,
+        mode,
+        error: boundary.error,
+      });
+      return;
+    }
+    const exactTurnId = boundary.turnId;
+    let forked: {
+      threadId: string;
+      thread: Record<string, unknown>;
+    };
+    try {
+      forked = await codexProcess.forkThreadById(threadId, {
+        beforeTurnId: exactTurnId,
+      });
+    } catch (error) {
+      if (!isUnsupportedCodexForkBoundary(error)) throw error;
+      // Old app-servers do not understand turn boundaries. Preserve the
+      // source thread by narrowing a fresh child with the deprecated API.
+      forked = await codexProcess.forkThreadById(threadId);
+      forked = {
+        threadId: forked.threadId,
+        thread: await codexProcess.rollbackThreadById(
+          forked.threadId,
+          numTurns,
+        ),
+      };
+    }
 
     const pastMessages = this.codexHistoryFromThreadOrFallback({
-      thread: rolledBackThread,
+      thread: forked.thread,
       expectedUserTurns: targetOrdinal - 1,
       fallback: buildCodexHistoryPrefix(session, targetOrdinal - 1),
     });
-    this.destroySession(sessionId);
     const newSessionId = this.sessionManager.create(
       projectPath,
       undefined,
@@ -2855,10 +3006,14 @@ export class BridgeWebSocketServer {
       "codex",
       this.withCodexAutoReviewPolicy({
         ...(codexSettings ?? {}),
-        threadId,
+        threadId: forked.threadId,
       } as CodexStartOptions),
     );
     const newSession = this.sessionManager.get(newSessionId);
+    if (newSession) {
+      newSession.forkedFromSessionId = session.id;
+      newSession.forkedFromThreadId = threadId;
+    }
 
     this.send(ws, {
       type: "rewind_result",
@@ -2886,6 +3041,7 @@ export class BridgeWebSocketServer {
     targetUuid: string,
     persistedProjectPath?: string,
     codexSourceId?: string,
+    historyTurnId?: string,
   ): Promise<void> {
     this.assertCodexSourceMatches("codex", codexSourceId);
     if (
@@ -2918,7 +3074,7 @@ export class BridgeWebSocketServer {
     const codexProcess = session.process as CodexProcess;
     if (
       session.provider !== "codex" ||
-      typeof codexProcess.forkThread !== "function"
+      typeof codexProcess.forkThreadById !== "function"
     ) {
       this.send(ws, {
         type: "error",
@@ -2983,19 +3139,66 @@ export class BridgeWebSocketServer {
         }
       : undefined;
 
-    const forked = await codexProcess.forkThread();
-    const forkedThreadId = forked.threadId;
-    const turnsToDrop = totalUserTurns - targetOrdinal;
-    let forkedThread: unknown = forked.thread;
-    if (turnsToDrop > 0) {
-      forkedThread = await codexProcess.rollbackThreadById(
-        forkedThreadId,
-        turnsToDrop,
-      );
+    const parentThreadId = codexProcess.sessionId ?? session.claudeSessionId;
+    if (!parentThreadId) {
+      throw new Error("No Codex thread ID available for fork");
     }
+    const turnsToDrop = totalUserTurns - targetOrdinal;
+    // `latest` is a complete fork and needs no turn boundary. Older targets
+    // must be proven against the current session before any mutation.
+    const boundary =
+      turnsToDrop > 0
+        ? resolveCodexForkBoundaryTurnId(
+            session,
+            targetUuid,
+            historyTurnId,
+          )
+        : undefined;
+    if (boundary?.error) {
+      this.send(ws, {
+        type: "error",
+        message: boundary.error,
+        errorCode: "fork_failed",
+      });
+      return;
+    }
+    const exactTurnId = boundary?.turnId;
+    let forked: {
+      threadId: string;
+      thread: Record<string, unknown>;
+    };
+    if (turnsToDrop > 0 && exactTurnId) {
+      try {
+        forked = await codexProcess.forkThreadById(parentThreadId, {
+          lastTurnId: exactTurnId,
+        });
+      } catch (error) {
+        if (!isUnsupportedCodexForkBoundary(error)) throw error;
+        forked = await codexProcess.forkThreadById(parentThreadId);
+        forked = {
+          threadId: forked.threadId,
+          thread: await codexProcess.rollbackThreadById(
+            forked.threadId,
+            turnsToDrop,
+          ),
+        };
+      }
+    } else {
+      forked = await codexProcess.forkThreadById(parentThreadId);
+      if (turnsToDrop > 0) {
+        forked = {
+          threadId: forked.threadId,
+          thread: await codexProcess.rollbackThreadById(
+            forked.threadId,
+            turnsToDrop,
+          ),
+        };
+      }
+    }
+    const forkedThreadId = forked.threadId;
 
     const pastMessages = this.codexHistoryFromThreadOrFallback({
-      thread: forkedThread,
+      thread: forked.thread,
       expectedUserTurns: targetOrdinal,
       fallback: buildCodexHistoryPrefix(session, targetOrdinal),
     });
@@ -3013,8 +3216,7 @@ export class BridgeWebSocketServer {
     const newSession = this.sessionManager.get(newSessionId);
     if (newSession) {
       newSession.forkedFromSessionId = session.id;
-      newSession.forkedFromThreadId =
-        session.claudeSessionId ?? codexProcess.sessionId ?? undefined;
+      newSession.forkedFromThreadId = parentThreadId;
     }
 
     this.send(
@@ -11543,6 +11745,7 @@ export class BridgeWebSocketServer {
             msg.sessionId,
             msg.targetUuid,
             msg.mode,
+            msg.historyTurnId,
           ).catch(handleError);
           break;
         }
@@ -11664,6 +11867,7 @@ export class BridgeWebSocketServer {
           msg.targetUuid,
           msg.projectPath,
           msg.codexSourceId,
+          msg.historyTurnId,
         ).catch((err) => {
           const lifecycleFailure =
             err instanceof SessionLifecycleError

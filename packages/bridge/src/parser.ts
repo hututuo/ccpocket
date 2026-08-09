@@ -518,6 +518,8 @@ export type ClientMessage =
       type: "rewind";
       sessionId: string;
       targetUuid: string;
+      /** Exact provider turn used by modern app-server fork boundaries. */
+      historyTurnId?: string;
       mode: "conversation" | "code" | "both";
     }
   | { type: "rewind_dry_run"; sessionId: string; targetUuid: string }
@@ -526,6 +528,8 @@ export type ClientMessage =
       /** Bridge runtime id, or a durable Codex thread id with projectPath. */
       sessionId: string;
       targetUuid: string;
+      /** Exact provider turn used by modern app-server fork boundaries. */
+      historyTurnId?: string;
       /** Present only when forking a persisted conversation from the list. */
       projectPath?: string;
       codexSourceId?: string;
@@ -2640,6 +2644,11 @@ export function parseClientMessage(data: string): ClientMessage | null {
           msg.mode !== "both"
         )
           return null;
+        if (
+          msg.historyTurnId !== undefined &&
+          !isValidWireIdentifier(msg.historyTurnId, 256)
+        )
+          return null;
         break;
       case "rewind_dry_run":
         if (
@@ -2658,6 +2667,11 @@ export function parseClientMessage(data: string): ClientMessage | null {
         if (
           msg.codexSourceId !== undefined &&
           !isValidWireIdentifier(msg.codexSourceId, 128)
+        )
+          return null;
+        if (
+          msg.historyTurnId !== undefined &&
+          !isValidWireIdentifier(msg.historyTurnId, 256)
         )
           return null;
         break;

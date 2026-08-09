@@ -1634,6 +1634,22 @@ describe("parseClientMessage", () => {
     });
   });
 
+  it("parses an exact provider turn for rewind", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"rewind","sessionId":"s1","targetUuid":"uuid-abc","historyTurnId":"turn-provider-1","mode":"conversation"}',
+      ),
+    ).toMatchObject({
+      type: "rewind",
+      historyTurnId: "turn-provider-1",
+    });
+    expect(
+      parseClientMessage(
+        '{"type":"rewind","sessionId":"s1","targetUuid":"uuid-abc","historyTurnId":" ","mode":"conversation"}',
+      ),
+    ).toBeNull();
+  });
+
   it("parses rewind with mode=code", () => {
     const msg = parseClientMessage(
       '{"type":"rewind","sessionId":"s1","targetUuid":"uuid-abc","mode":"code"}',
@@ -1702,6 +1718,17 @@ describe("parseClientMessage", () => {
       type: "fork",
       sessionId: "s1",
       targetUuid: "codex:user-turn:1",
+    });
+  });
+
+  it("parses an exact provider turn for fork", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"fork","sessionId":"s1","targetUuid":"codex:user-turn:1","historyTurnId":"turn-provider-1"}',
+      ),
+    ).toMatchObject({
+      type: "fork",
+      historyTurnId: "turn-provider-1",
     });
   });
 

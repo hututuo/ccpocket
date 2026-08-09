@@ -1433,6 +1433,37 @@ describe("CodexProcess (app-server)", () => {
     expect(internal.sharedRuntimeOwnedForkThreadIds.size).toBe(0);
   });
 
+  it("forks an exact thread boundary without rebinding the parent", async () => {
+    const proc = new CodexProcess("linux", () => true);
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+    const internal = proc as any;
+    internal.stopped = false;
+    internal._threadId = "thread-parent";
+
+    const fork = proc.forkThreadById("thread-parent", {
+      beforeTurnId: "turn-edit-target",
+    });
+    const request = nextOutgoingRequest(child);
+    expect(request).toMatchObject({
+      method: "thread/fork",
+      params: {
+        threadId: "thread-parent",
+        beforeTurnId: "turn-edit-target",
+        persistExtendedHistory: true,
+      },
+    });
+    internal.handleRpcResponse({
+      id: request.id,
+      result: { thread: { id: "thread-before-target" } },
+    });
+
+    await expect(fork).resolves.toMatchObject({
+      threadId: "thread-before-target",
+    });
+    expect(proc.sessionId).toBe("thread-parent");
+  });
+
   it("rechecks the shared writer lease at the provider mutation boundary", async () => {
     let writerAvailable = true;
     const proc = new CodexProcess("linux", () => writerAvailable);

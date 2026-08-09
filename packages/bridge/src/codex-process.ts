@@ -2420,23 +2420,41 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!this._threadId) {
       throw new Error("No thread ID available for fork");
     }
+    return this.forkThreadById(this._threadId);
+  }
+
+  async forkThreadById(
+    threadId: string,
+    boundary: { beforeTurnId?: string; lastTurnId?: string } = {},
+  ): Promise<{
+    threadId: string;
+    thread: Record<string, unknown>;
+  }> {
+    if (boundary.beforeTurnId && boundary.lastTurnId) {
+      throw new Error("Codex fork accepts only one turn boundary");
+    }
     const response = (await this.request(
       "thread/fork",
       {
-        threadId: this._threadId,
+        threadId,
         persistExtendedHistory: true,
+        ...(boundary.beforeTurnId
+          ? { beforeTurnId: boundary.beforeTurnId }
+          : {}),
+        ...(boundary.lastTurnId ? { lastTurnId: boundary.lastTurnId } : {}),
       },
       { bindThreadResult: false },
     )) as Record<string, unknown>;
     const thread = response.thread as Record<string, unknown> | undefined;
-    const threadId = typeof thread?.id === "string" ? thread.id : undefined;
-    if (!thread || !threadId) {
+    const childThreadId =
+      typeof thread?.id === "string" ? thread.id : undefined;
+    if (!thread || !childThreadId) {
       throw new Error("thread/fork returned no thread id");
     }
     if (this.isSharedRuntimeTopology()) {
-      this.sharedRuntimeOwnedForkThreadIds.add(threadId);
+      this.sharedRuntimeOwnedForkThreadIds.add(childThreadId);
     }
-    return { threadId, thread };
+    return { threadId: childThreadId, thread };
   }
 
   async listThreads(
