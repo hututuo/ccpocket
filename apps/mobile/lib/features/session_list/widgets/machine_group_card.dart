@@ -59,12 +59,19 @@ class MachineGroupCard extends StatelessWidget {
         title: Row(
           children: [
             Expanded(
-              child: Text(
-                group.displayName,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
+              child: GestureDetector(
+                key: ValueKey('machine_group_delete_gesture_${group.id}'),
+                behavior: HitTestBehavior.opaque,
+                onLongPress: group.routes.length == 1
+                    ? () => onDelete(preferred)
+                    : null,
+                child: Text(
+                  group.displayName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
             ),
@@ -202,7 +209,6 @@ class _MachineRouteTile extends StatelessWidget {
         : AppConstants.expectedBridgeVersion;
     final needsUpdate = route.needsUpdate(updateTargetVersion);
     final isOnline = route.status == MachineStatus.online;
-    final isIdentityChanged = route.status == MachineStatus.identityChanged;
 
     return Padding(
       key: ValueKey('machine_route_${machine.id}'),
@@ -216,22 +222,26 @@ class _MachineRouteTile extends StatelessWidget {
         clipBehavior: Clip.antiAlias,
         child: ListTile(
           dense: true,
-          enabled: !isIdentityChanged,
           onTap: isOnline ? onConnect : null,
           leading: _MachineStatusDot(status: route.status, size: 9),
-          title: Row(
-            children: [
-              Flexible(
-                child: Text(
-                  formatHostPort(machine.host, machine.port),
-                  overflow: TextOverflow.ellipsis,
+          title: GestureDetector(
+            key: ValueKey('machine_route_delete_gesture_${machine.id}'),
+            behavior: HitTestBehavior.opaque,
+            onLongPress: onDelete,
+            child: Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    formatHostPort(machine.host, machine.port),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-              ),
-              if (isPreferred) ...[
-                const SizedBox(width: 8),
-                _RouteBadge(label: l.machinePreferredRoute),
+                if (isPreferred) ...[
+                  const SizedBox(width: 8),
+                  _RouteBadge(label: l.machinePreferredRoute),
+                ],
               ],
-            ],
+            ),
           ),
           subtitle: Text(
             _routeSubtitle(l),
