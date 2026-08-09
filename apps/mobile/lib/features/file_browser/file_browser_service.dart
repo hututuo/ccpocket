@@ -11,7 +11,10 @@ import '../../services/bridge_service.dart';
 import 'file_mutation_auth_host.dart';
 
 const _fileBrowserPinsPreference = 'file_browser_v1_pins';
+const _fileBrowserCommonPinsSeededPreference =
+    'file_browser_v1_common_pins_seeded_scopes';
 const _fileBrowserMaxPins = 64;
+const _fileBrowserMaxSeededScopes = 128;
 const _fileBrowserDirectoryCacheLimit = 20;
 const _fileBrowserDirectoryCacheNodeBudget = 5000;
 const _fileBrowserVisibleNodeBudget = 5000;
@@ -222,6 +225,7 @@ class FileBrowserService extends ChangeNotifier {
     requestIdGenerator ?? _newRequestId,
     requestTimeout,
     _readPins(preferences),
+    _readCommonPinSeededScopes(preferences),
     fileTransferClientSupported,
     biometricHost,
   );
@@ -233,6 +237,7 @@ class FileBrowserService extends ChangeNotifier {
     this._requestIdGenerator,
     this._requestTimeout,
     this._pins,
+    this._commonPinSeededScopes,
     this._fileTransferClientSupported,
     this._biometricHost,
   ) {
@@ -258,6 +263,7 @@ class FileBrowserService extends ChangeNotifier {
   final String Function() _requestIdGenerator;
   final Duration _requestTimeout;
   final List<FileBrowserPin> _pins;
+  final LinkedHashSet<String> _commonPinSeededScopes;
   final bool _fileTransferClientSupported;
   final FileMutationBiometricHost _biometricHost;
   final Map<String, _PendingFileBrowserRequest> _pending = {};
@@ -287,6 +293,8 @@ class FileBrowserService extends ChangeNotifier {
   int _nextDirectoryMutationEpoch = 0;
   int _directoryCacheNodeCount = 0;
   Future<void>? _rootsRefreshInFlight;
+  final Map<String, Future<void>> _commonPinSeedsInFlight = {};
+  Future<void>? _pinMutationTail;
   bool _disposed = false;
 
   FileBrowserAvailability get availability => _availability;
@@ -385,6 +393,13 @@ class FileBrowserService extends ChangeNotifier {
       _lastErrorCode = null;
       _lastError = null;
       _setAvailability(FileBrowserAvailability.ready);
+      unawaited(
+        _ensureCommonPinsSeeded().catchError((Object error) {
+          // Shortcuts are presentation state. Keep the file browser usable and
+          // retry seeding on the next roots refresh if persistence fails.
+          debugPrint('[FileBrowser] Common shortcut seed failed: $error');
+        }),
+      );
     } on FileBrowserException catch (error) {
       _lastErrorCode = error.code;
       _lastError = error.message;
@@ -766,42 +781,177 @@ class FileBrowserService extends ChangeNotifier {
     if (identity == null || bridgeId == null) {
       throw const FileBrowserException('stable_bridge_identity_required');
     }
-    final key =
-        '$identity\u0000$bridgeId\u0000${root.rootId}\u0000$relativePath';
-    final existing = _pins.indexWhere((pin) => pin.key == key);
-    if (existing >= 0) {
-      _pins.removeAt(existing);
-    } else {
-      final displayLabel = label?.trim().isNotEmpty == true
-          ? label!.trim()
-          : relativePath.isEmpty
-          ? root.label
-          : relativePath.split('/').last;
-      _pins.add(
-        FileBrowserPin(
-          logicalConnectionIdentity: identity,
-          bridgeInstanceId: bridgeId,
-          rootId: root.rootId,
-          relativePath: relativePath,
-          rootLabel: root.label,
-          label: displayLabel,
-          addedAt: _clock().toUtc(),
-        ),
-      );
-      if (_pins.length > _fileBrowserMaxPins) {
-        _pins.sort((a, b) => a.addedAt.compareTo(b.addedAt));
-        _pins.removeRange(0, _pins.length - _fileBrowserMaxPins);
+    await _serializePinMutation(() async {
+      final before = List<FileBrowserPin>.from(_pins);
+      try {
+        final key =
+            '$identity\u0000$bridgeId\u0000${root.rootId}\u0000$relativePath';
+        final existing = _pins.indexWhere((pin) => pin.key == key);
+        if (existing >= 0) {
+          _pins.removeAt(existing);
+        } else {
+          final displayLabel = label?.trim().isNotEmpty == true
+              ? label!.trim()
+              : relativePath.isEmpty
+              ? root.label
+              : relativePath.split('/').last;
+          _pins.add(
+            FileBrowserPin(
+              logicalConnectionIdentity: identity,
+              bridgeInstanceId: bridgeId,
+              rootId: root.rootId,
+              relativePath: relativePath,
+              rootLabel: root.label,
+              label: displayLabel,
+              addedAt: _clock().toUtc(),
+            ),
+          );
+          if (_pins.length > _fileBrowserMaxPins) {
+            _pins.sort((a, b) => a.addedAt.compareTo(b.addedAt));
+            _pins.removeRange(0, _pins.length - _fileBrowserMaxPins);
+          }
+        }
+        await _savePins();
+      } catch (_) {
+        _pins
+          ..clear()
+          ..addAll(before);
+        rethrow;
       }
-    }
-    await _savePins();
-    _notify();
+      _notify();
+    });
   }
 
   Future<void> removePin(FileBrowserPin pin) async {
-    final index = _pins.indexWhere((candidate) => candidate.key == pin.key);
-    if (index < 0) return;
-    _pins.removeAt(index);
-    await _savePins();
+    await _serializePinMutation(() async {
+      final index = _pins.indexWhere((candidate) => candidate.key == pin.key);
+      if (index < 0) return;
+      final before = List<FileBrowserPin>.from(_pins);
+      try {
+        _pins.removeAt(index);
+        await _savePins();
+      } catch (_) {
+        _pins
+          ..clear()
+          ..addAll(before);
+        rethrow;
+      }
+      _notify();
+    });
+  }
+
+  Future<void> _ensureCommonPinsSeeded() {
+    final identity = _stableLogicalIdentity;
+    final bridgeId = _bridgeInstanceId;
+    if (identity == null || bridgeId == null) return Future<void>.value();
+    FileBrowserRoot? homeRoot;
+    for (final root in _roots) {
+      if (root.displayPath.trim() == '~') {
+        homeRoot = root;
+        break;
+      }
+    }
+    if (homeRoot == null) return Future<void>.value();
+
+    final scopeKey = jsonEncode(<Object>[identity, bridgeId, 1]);
+    if (_commonPinSeededScopes.contains(scopeKey)) {
+      return Future<void>.value();
+    }
+    final existing = _commonPinSeedsInFlight[scopeKey];
+    if (existing != null) return existing;
+
+    final operation = _serializePinMutation(
+      () => _seedCommonPins(
+        scopeKey: scopeKey,
+        identity: identity,
+        bridgeId: bridgeId,
+        homeRoot: homeRoot!,
+      ),
+    );
+    late final Future<void> tracked;
+    tracked = operation.whenComplete(() {
+      if (identical(_commonPinSeedsInFlight[scopeKey], tracked)) {
+        _commonPinSeedsInFlight.remove(scopeKey);
+      }
+    });
+    _commonPinSeedsInFlight[scopeKey] = tracked;
+    return tracked;
+  }
+
+  Future<void> _serializePinMutation(Future<void> Function() operation) {
+    final previous = _pinMutationTail;
+    final result = previous == null
+        ? Future<void>.sync(operation)
+        : previous.then((_) => operation());
+    late final Future<void> settled;
+    settled = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    _pinMutationTail = settled;
+    unawaited(
+      settled.whenComplete(() {
+        if (identical(_pinMutationTail, settled)) _pinMutationTail = null;
+      }),
+    );
+    return result;
+  }
+
+  Future<void> _seedCommonPins({
+    required String scopeKey,
+    required String identity,
+    required String bridgeId,
+    required FileBrowserRoot homeRoot,
+  }) async {
+    if (_commonPinSeededScopes.contains(scopeKey)) return;
+
+    final candidates = <FileBrowserPin>[
+      for (final path in const <String>['Desktop', 'Downloads', 'Documents'])
+        FileBrowserPin(
+          logicalConnectionIdentity: identity,
+          bridgeInstanceId: bridgeId,
+          rootId: homeRoot.rootId,
+          relativePath: path,
+          rootLabel: homeRoot.label,
+          label: path,
+          addedAt: _clock().toUtc(),
+        ),
+    ];
+
+    final nextPins = List<FileBrowserPin>.from(_pins);
+    final baseTime = _clock().toUtc();
+    for (var index = 0; index < candidates.length; index++) {
+      final candidate = candidates[index];
+      if (nextPins.any((pin) => pin.key == candidate.key)) continue;
+      nextPins.add(
+        FileBrowserPin(
+          logicalConnectionIdentity: candidate.logicalConnectionIdentity,
+          bridgeInstanceId: candidate.bridgeInstanceId,
+          rootId: candidate.rootId,
+          relativePath: candidate.relativePath,
+          rootLabel: candidate.rootLabel,
+          label: candidate.label,
+          addedAt: baseTime.subtract(Duration(milliseconds: index)),
+        ),
+      );
+    }
+    if (nextPins.length > _fileBrowserMaxPins) {
+      nextPins.sort((a, b) => a.addedAt.compareTo(b.addedAt));
+      nextPins.removeRange(0, nextPins.length - _fileBrowserMaxPins);
+    }
+    final nextSeededScopes = LinkedHashSet<String>.from(_commonPinSeededScopes)
+      ..add(scopeKey);
+    while (nextSeededScopes.length > _fileBrowserMaxSeededScopes) {
+      nextSeededScopes.remove(nextSeededScopes.first);
+    }
+    // Persist both halves before publishing them in memory. If the marker
+    // write fails, the shortcuts are not exposed for an explicit unpin; a
+    // later retry sees the already-persisted pin rows and completes safely.
+    await _savePinsSnapshot(nextPins);
+    await _saveCommonPinSeededScopes(nextSeededScopes);
+    _pins
+      ..clear()
+      ..addAll(nextPins);
+    _commonPinSeededScopes
+      ..clear()
+      ..addAll(nextSeededScopes);
     _notify();
   }
 
@@ -1141,10 +1291,25 @@ class FileBrowserService extends ChangeNotifier {
   }
 
   Future<void> _savePins() async {
-    await _preferences.setString(
+    await _savePinsSnapshot(_pins);
+  }
+
+  Future<void> _savePinsSnapshot(Iterable<FileBrowserPin> pins) async {
+    final saved = await _preferences.setString(
       _fileBrowserPinsPreference,
-      jsonEncode(_pins.map((pin) => pin.toJson()).toList(growable: false)),
+      jsonEncode(pins.map((pin) => pin.toJson()).toList(growable: false)),
     );
+    if (!saved) throw StateError('Unable to persist file browser pins');
+  }
+
+  Future<void> _saveCommonPinSeededScopes(Iterable<String> scopes) async {
+    final saved = await _preferences.setStringList(
+      _fileBrowserCommonPinsSeededPreference,
+      scopes.toList(growable: false),
+    );
+    if (!saved) {
+      throw StateError('Unable to persist common file browser pin state');
+    }
   }
 
   void _setAvailability(FileBrowserAvailability value) {
@@ -1221,6 +1386,20 @@ List<FileBrowserPin> _readPins(SharedPreferences preferences) {
   } catch (_) {
     return <FileBrowserPin>[];
   }
+}
+
+LinkedHashSet<String> _readCommonPinSeededScopes(
+  SharedPreferences preferences,
+) {
+  final values = preferences.getStringList(
+    _fileBrowserCommonPinsSeededPreference,
+  );
+  if (values == null) return LinkedHashSet<String>();
+  return LinkedHashSet<String>.from(
+    values
+        .where((value) => value.isNotEmpty && value.length <= 1024)
+        .take(_fileBrowserMaxSeededScopes),
+  );
 }
 
 String? _boundedText(Object? value, int maxLength) {

@@ -34,6 +34,36 @@ class FileBrowserStrings {
     return 'Pinned';
   }
 
+  String commonFolderLabel(String relativePath) {
+    return switch (relativePath) {
+      'Desktop' =>
+        _zh
+            ? '桌面'
+            : _ja
+            ? 'デスクトップ'
+            : _ko
+            ? '데스크톱'
+            : 'Desktop',
+      'Downloads' =>
+        _zh
+            ? '下载'
+            : _ja
+            ? 'ダウンロード'
+            : _ko
+            ? '다운로드'
+            : 'Downloads',
+      'Documents' =>
+        _zh
+            ? '文稿'
+            : _ja
+            ? '書類'
+            : _ko
+            ? '문서'
+            : 'Documents',
+      _ => relativePath,
+    };
+  }
+
   String get pinFolder {
     if (_zh) return '固定文件夹';
     if (_ja) return 'フォルダをピン留め';

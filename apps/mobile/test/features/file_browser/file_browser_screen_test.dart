@@ -70,6 +70,27 @@ void main() {
     expect(bridge.countRequests('file_browser_roots_v1'), 1);
   });
 
+  testWidgets('shows Desktop, Downloads, and Documents shortcuts', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_testApp(service, const FileBrowserScreen()));
+    await tester.pump();
+    final rootsRequest = bridge.take('file_browser_roots_v1');
+    bridge.messageEvents.add(_screenRoots(rootsRequest));
+    await tester.pumpAndSettle();
+    expect(service.roots, hasLength(1));
+    expect(service.bridgeInstanceId, 'bridge-screen');
+    await tester.runAsync(
+      () => _waitForPins(service, (pins) => pins.length == 3),
+    );
+    await tester.pump();
+
+    expect(find.text('Pinned'), findsOneWidget);
+    expect(find.text('Desktop'), findsOneWidget);
+    expect(find.text('Downloads'), findsOneWidget);
+    expect(find.text('Documents'), findsOneWidget);
+  });
+
   testWidgets('browses a root, pins folders, and queues a file download', (
     tester,
   ) async {
@@ -91,7 +112,7 @@ void main() {
         downloadAvailable: true,
       ),
     );
-    await tester.pump();
+    await tester.pumpAndSettle();
 
     expect(find.text('Locations'), findsOneWidget);
     expect(find.text('Home'), findsOneWidget);
@@ -136,8 +157,17 @@ void main() {
     );
     await tester.pump();
     await tester.tap(find.byKey(const ValueKey('file_browser_pin_button')));
+    await tester.runAsync(
+      () => _waitForPins(
+        service,
+        (pins) => pins.any((pin) => pin.relativePath == 'Projects'),
+      ),
+    );
     await tester.pump();
-    expect(service.currentPins.single.relativePath, 'Projects');
+    expect(
+      service.currentPins.any((pin) => pin.relativePath == 'Projects'),
+      isTrue,
+    );
 
     await tester.tap(find.byKey(const ValueKey('file_browser_back_button')));
     await tester.pump();
@@ -538,7 +568,11 @@ void main() {
     expect(unpin, findsOneWidget);
     await tester.tap(unpin);
     await tester.pump();
-    expect(service.currentPins, isEmpty);
+    expect(
+      service.currentPins.any((pin) => pin.relativePath == 'Projects'),
+      isFalse,
+    );
+    expect(service.currentPins, hasLength(3));
   });
 
   for (final width in <double>[320, 375]) {
@@ -584,6 +618,17 @@ void main() {
       expect(find.text('Disconnect'), findsOneWidget);
     });
   }
+}
+
+Future<void> _waitForPins(
+  FileBrowserService service,
+  bool Function(List<FileBrowserPin> pins) predicate,
+) async {
+  for (var attempt = 0; attempt < 100; attempt++) {
+    if (predicate(service.currentPins)) return;
+    await Future<void>.delayed(const Duration(milliseconds: 1));
+  }
+  throw StateError('Timed out waiting for file browser pins');
 }
 
 FileBrowserRootsResultMessage _screenRoots(
