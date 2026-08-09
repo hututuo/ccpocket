@@ -11,6 +11,10 @@ linked checkout is retained only because the fixed release task still owns its
 legacy cwd; it now runs `release/ccpocket-local` at the current source, not the
 old architecture-review branch.
 
+Codex Desktop now registers this root as project
+`2feff566-9790-4adc-925a-01b2e5907182` (`ccpocket-compat`) and reports
+`isGitRepository=true`.
+
 Twenty old linked worktrees and twenty ordinary task branches were removed
 after ancestry and patch-id review. Their exact tips, the dirty 2026-08-03
 audit snapshot, and the former standalone operations repository remain under

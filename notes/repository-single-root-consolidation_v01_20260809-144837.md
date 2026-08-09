@@ -89,6 +89,15 @@ git branch recover/<name> refs/archive/ccpocket/consolidation-20260809/branches/
 
 第二个路径名称保留是为了不让既有固定发布任务失去 cwd；它已切到当前代码，不再承载旧 architecture-review 分支。发布任务仍须按每次授权重新核对 `main`/release HEAD、生产 runtime、回滚点和发布渠道。
 
+通过 `codex app <repository-root>` 登记后，Codex 项目清单返回：
+
+- project ID：`2feff566-9790-4adc-925a-01b2e5907182`
+- label：`ccpocket-compat`
+- path：上述唯一 Git 根
+- `isGitRepository=true`
+
+因此后续应从这个项目的新任务页选择本地或 Worktree 环境，而不是继续在总工作区项目里手工寻找 CC Pocket 子目录。
+
 其余 20 个 linked worktree 和 20 个任务分支已移除。收束前 `ccpocket-worktrees` 为 4,146,184 KiB，收束后为 138,728 KiB，释放约 3.82 GiB 的重复检出和可重建依赖材料。
 
 Git 对象目录另有 5 个被 `git count-objects` 明确判定为 garbage 的 `tmp_pack_*` 中断临时包，共 55,816,187 bytes；精确删除后 `garbage: 0`。连同旧独立仓库，整轮实际收束约 3.87 GiB，不对仍被归档引用保护的 Git 对象执行 `gc --prune`。
