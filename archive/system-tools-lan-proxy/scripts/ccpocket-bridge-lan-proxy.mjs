@@ -121,6 +121,16 @@ function forwardedHeaders(req) {
 }
 
 const server = http.createServer((req, res) => {
+  const requestPath = (() => {
+    try {
+      return new URL(req.url ?? "/", "http://bridge.invalid").pathname;
+    } catch {
+      return undefined;
+    }
+  })();
+  const logsReadinessProbe =
+    requestPath === "/health" || requestPath === "/readyz";
+  const peer = req.socket.remoteAddress ?? "unknown";
   const upstream = http.request(
     {
       host: upstreamHost,
@@ -130,6 +140,11 @@ const server = http.createServer((req, res) => {
       headers: forwardedHeaders(req),
     },
     (upstreamResponse) => {
+      if (logsReadinessProbe) {
+        console.log(
+          `[lan-proxy] HTTP ${requestPath} status=${upstreamResponse.statusCode ?? "unknown"} peer=${peer}`,
+        );
+      }
       res.writeHead(
         upstreamResponse.statusCode ?? 502,
         upstreamResponse.statusMessage,
@@ -144,6 +159,11 @@ const server = http.createServer((req, res) => {
       res.writeHead(502, { "Content-Type": "application/json" });
     }
     res.end(JSON.stringify({ error: "Bridge unavailable" }));
+    if (logsReadinessProbe) {
+      console.error(
+        `[lan-proxy] HTTP ${requestPath} status=upstream_error peer=${peer}`,
+      );
+    }
     console.error(`[lan-proxy] upstream HTTP error: ${error.message}`);
   });
   req.on("aborted", () => upstream.destroy());
