@@ -1672,6 +1672,7 @@ class _ChatScreenBody extends HookWidget {
                       SessionNameTitle(
                         sessionId: sessionId,
                         projectPath: effectiveProjectPath,
+                        provider: Provider.claude.value,
                       ),
                     ),
                     flexibleSpace: StatusLineFlexibleSpace(

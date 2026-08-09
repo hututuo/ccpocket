@@ -131,6 +131,11 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
     required this.modifiedAt,
     required this.recencyAt,
     required this.availability,
+    this.projectGroupKind,
+    this.projectGroupId,
+    this.projectGroupName,
+    this.projectGroupPath,
+    this.projectGroupingSnapshotComplete = false,
     this.name,
     this.summary,
     this.firstPrompt,
@@ -154,6 +159,11 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
   final String modifiedAt;
   final String recencyAt;
   final String availability;
+  final String? projectGroupKind;
+  final String? projectGroupId;
+  final String? projectGroupName;
+  final String? projectGroupPath;
+  final bool projectGroupingSnapshotComplete;
   final String? name;
   final String? summary;
   final String? firstPrompt;
@@ -183,6 +193,25 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
         'Unsupported conversation availability: $availability',
       );
     }
+    final projectGroupKind = _conversationSyncProjectGroupKind(
+      json['projectGroupKind'],
+    );
+    final projectGroupId = _conversationSyncOptionalString(
+      json,
+      'projectGroupId',
+      maximumLength: 256,
+    );
+    final projectGroupName = _conversationSyncOptionalDisplayString(
+      json,
+      'projectGroupName',
+      maximumLength: 512,
+    );
+    final projectGroupingSnapshotComplete =
+        json['projectGroupingSnapshotComplete'] == true &&
+        (projectGroupKind == 'projectless' ||
+            (projectGroupKind == 'desktopProject' &&
+                projectGroupId != null &&
+                projectGroupName != null));
     return ConversationSyncV2CatalogEntry(
       provider: _conversationSyncProvider(json['provider']),
       providerSessionId: _conversationSyncString(
@@ -201,6 +230,15 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
       modifiedAt: _conversationSyncIsoDate(json, 'modifiedAt'),
       recencyAt: _conversationSyncIsoDate(json, 'recencyAt'),
       availability: availability,
+      projectGroupKind: projectGroupKind,
+      projectGroupId: projectGroupId,
+      projectGroupName: projectGroupName,
+      projectGroupPath: _conversationSyncOptionalString(
+        json,
+        'projectGroupPath',
+        maximumLength: 4096,
+      ),
+      projectGroupingSnapshotComplete: projectGroupingSnapshotComplete,
       name: _conversationSyncOptionalDisplayString(
         json,
         'name',
@@ -285,6 +323,11 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
         gitBranch: '',
         projectPath: projectPath,
         resumeCwd: projectPath,
+        projectGroupKind: projectGroupKind,
+        projectGroupId: projectGroupId,
+        projectGroupName: projectGroupName,
+        projectGroupPath: projectGroupPath,
+        projectGroupingSnapshotComplete: projectGroupingSnapshotComplete,
         isSidechain: false,
         codexModel: model,
         codexModelReasoningEffort: modelReasoningEffort,
@@ -302,6 +345,11 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
 
 String? _conversationSyncCollaborationMode(Object? value) =>
     value == 'plan' || value == 'default' ? value as String : null;
+
+String? _conversationSyncProjectGroupKind(Object? value) =>
+    value == 'desktopProject' || value == 'projectless'
+    ? value as String
+    : null;
 
 class ConversationSyncV2Status extends ConversationSyncV2Target {
   const ConversationSyncV2Status({

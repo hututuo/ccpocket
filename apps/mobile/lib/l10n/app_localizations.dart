@@ -1428,6 +1428,12 @@ abstract class AppLocalizations {
   /// **'すべてのプロジェクト'**
   String get allProjects;
 
+  /// No description provided for @unassignedProject.
+  ///
+  /// In ja, this message translates to:
+  /// **'プロジェクト未分類'**
+  String get unassignedProject;
+
   /// No description provided for @named.
   ///
   /// In ja, this message translates to:

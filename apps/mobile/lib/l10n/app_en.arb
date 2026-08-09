@@ -263,6 +263,7 @@
   "sessionDisplayModeSummary": "Summary",
   "allAiTools": "All AI Tools",
   "allProjects": "All Projects",
+  "unassignedProject": "Not in a project",
   "named": "Named",
   "machines": "Machines",
   "machineRoutes": "Connection routes",

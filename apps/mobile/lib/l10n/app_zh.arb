@@ -239,6 +239,7 @@
   "sessionDisplayModeSummary": "摘要",
   "allAiTools": "全部 AI 工具",
   "allProjects": "全部项目",
+  "unassignedProject": "未归入项目",
   "named": "已命名",
   "machines": "机器",
   "machineRoutes": "连接路线",

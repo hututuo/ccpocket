@@ -39,13 +39,19 @@ import 'session_reconnect_banner.dart';
 import 'support_banner.dart';
 
 class _ProjectSessionGroup {
+  final String key;
   final String projectPath;
   final String projectName;
+  final Set<String> legacyProjectPaths;
+  final bool canLoadFromBridge;
   final List<UnifiedSessionListItem> sessions;
 
   const _ProjectSessionGroup({
+    required this.key,
     required this.projectPath,
     required this.projectName,
+    required this.legacyProjectPaths,
+    required this.canLoadFromBridge,
     required this.sessions,
   });
 }
@@ -54,25 +60,61 @@ ValueKey<String> _conversationRowKey(String identityKey) =>
     ValueKey('conversation_$identityKey');
 
 List<_ProjectSessionGroup> _groupSessionsByProject({
-  required Iterable<String> projectPaths,
+  required Iterable<String> projectKeys,
   required List<UnifiedSessionListItem> sessions,
+  required String projectlessName,
 }) {
-  final grouped = <String, List<UnifiedSessionListItem>>{
-    for (final path in projectPaths)
-      if (path.isNotEmpty) path: <UnifiedSessionListItem>[],
-  };
+  final sessionsByKey = <String, List<UnifiedSessionListItem>>{};
+  final pathByKey = <String, String>{};
+  final nameByKey = <String, String>{};
+  final legacyPathsByKey = <String, Set<String>>{};
+  final bridgePagingByKey = <String, bool>{};
   for (final session in sessions) {
-    grouped.putIfAbsent(session.projectPath, () => <UnifiedSessionListItem>[]);
-    grouped[session.projectPath]!.add(session);
+    final key = session.projectGroupingKey;
+    if (key.isEmpty) continue;
+    sessionsByKey
+        .putIfAbsent(key, () => <UnifiedSessionListItem>[])
+        .add(session);
+    pathByKey.putIfAbsent(key, () => session.effectiveProjectGroupPath);
+    nameByKey.putIfAbsent(
+      key,
+      () => session.isDesktopProjectless
+          ? projectlessName
+          : session.projectGroupingName,
+    );
+    final legacyPaths = legacyPathsByKey.putIfAbsent(key, () => <String>{});
+    if (session.projectPath.isNotEmpty) legacyPaths.add(session.projectPath);
+    if (session.effectiveProjectGroupPath.isNotEmpty) {
+      legacyPaths.add(session.effectiveProjectGroupPath);
+    }
+    bridgePagingByKey.putIfAbsent(key, () => key == session.projectPath);
   }
   return [
-    for (final entry in grouped.entries)
-      _ProjectSessionGroup(
-        projectPath: entry.key,
-        projectName: pathBasename(entry.key),
-        sessions: entry.value,
-      ),
+    for (final key in projectKeys)
+      if (key.isNotEmpty && (sessionsByKey[key]?.isNotEmpty ?? false))
+        _ProjectSessionGroup(
+          key: key,
+          projectPath: pathByKey[key] ?? key,
+          projectName: nameByKey[key] ?? pathBasename(key),
+          legacyProjectPaths: Set.unmodifiable(
+            legacyPathsByKey[key] ?? const <String>{},
+          ),
+          canLoadFromBridge: bridgePagingByKey[key] ?? true,
+          sessions: sessionsByKey[key] ?? const [],
+        ),
   ];
+}
+
+bool _groupContainsProjectKey(Set<String> values, _ProjectSessionGroup group) =>
+    values.contains(group.key) || group.legacyProjectPaths.any(values.contains);
+
+int _groupDisplayLimit(Map<String, int> limits, _ProjectSessionGroup group) {
+  var result = limits[group.key] ?? 5;
+  for (final path in group.legacyProjectPaths) {
+    final legacy = limits[path];
+    if (legacy != null && legacy > result) result = legacy;
+  }
+  return result;
 }
 
 String _recentSessionCardText(
@@ -147,7 +189,10 @@ SessionInfo _sessionInfoForUnifiedCard(
     forkedFromSessionId: runtime?.forkedFromSessionId,
     forkedFromThreadId:
         runtime?.forkedFromThreadId ?? catalog.forkedFromThreadId,
-    name: preferOptional(runtime?.name, catalog.name),
+    // The catalog is provider-owned metadata. Its nullable name is also an
+    // authoritative clear, so a stale runtime attachment must not win after a
+    // Desktop rename or clear.
+    name: catalog.name,
     agentNickname: preferOptional(
       runtime?.agentNickname,
       catalog.agentNickname,
@@ -696,7 +741,7 @@ class HomeContentState extends State<HomeContent> {
           (session) => recentSessionMatchesListFilters(
             session,
             providerFilter: widget.providerFilter,
-            projectPath: widget.currentProjectFilter,
+            projectPath: null,
             namedOnly: widget.namedOnly,
             searchQuery: widget.searchQuery,
           ),
@@ -705,12 +750,12 @@ class HomeContentState extends State<HomeContent> {
       (session) => runningSessionMatchesListFilters(
         session,
         providerFilter: widget.providerFilter,
-        projectPath: widget.currentProjectFilter,
+        projectPath: null,
         namedOnly: widget.namedOnly,
         searchQuery: widget.searchQuery,
       ),
     );
-    final unifiedSessions = buildUnifiedSessionList(
+    final allUnifiedSessions = buildUnifiedSessionList(
       runningSessions: runningSessions,
       recentSessions: catalogSessions,
       pinnedSessionKeys: widget.pinnedSessionKeys,
@@ -718,6 +763,14 @@ class HomeContentState extends State<HomeContent> {
       conversationStatuses: widget.conversationStatuses,
       unreadConversationKeys: widget.unreadConversationKeys,
     );
+    final unifiedSessions = widget.currentProjectFilter == null
+        ? allUnifiedSessions
+        : allUnifiedSessions
+              .where(
+                (session) =>
+                    session.projectGroupingKey == widget.currentProjectFilter,
+              )
+              .toList(growable: false);
     final alwaysVisibleSessionKeys = {
       for (final item in unifiedSessions)
         if (sessionListItemBypassesDisplayLimit(
@@ -727,21 +780,40 @@ class HomeContentState extends State<HomeContent> {
           item.identityKey,
     };
     final hasConversationSessions = unifiedSessions.isNotEmpty;
-    final allProjectPaths = orderProjectPathsForGroupedView(
+    final representedProjectPaths = {
+      for (final session in allUnifiedSessions) session.projectPath,
+    };
+    final effectivePinnedProjectKeys = {
+      ...widget.pinnedProjectPaths,
+      for (final session in allUnifiedSessions)
+        if (widget.pinnedProjectPaths.contains(session.projectPath) ||
+            widget.pinnedProjectPaths.contains(
+              session.effectiveProjectGroupPath,
+            ))
+          session.projectGroupingKey,
+    };
+    final allProjectKeys = orderProjectPathsForGroupedView(
       knownProjectPaths: <String>[
         if (widget.currentProjectFilter != null) widget.currentProjectFilter!,
-        if (widget.currentProjectFilter == null)
-          ...widget.accumulatedProjectPaths,
+        ...widget.accumulatedProjectPaths.where(
+          (path) => !representedProjectPaths.contains(path),
+        ),
       ],
-      sessions: unifiedSessions,
+      sessions: allUnifiedSessions,
       pinnedSessionKeys: widget.pinnedSessionKeys,
-      pinnedProjectPaths: widget.pinnedProjectPaths,
+      pinnedProjectPaths: effectivePinnedProjectKeys,
       unseenSessionIds: widget.unseenSessionIds,
     );
-    final groupedSessions = _groupSessionsByProject(
-      projectPaths: allProjectPaths,
-      sessions: unifiedSessions,
+    final allGroupedSessions = _groupSessionsByProject(
+      projectKeys: allProjectKeys,
+      sessions: allUnifiedSessions,
+      projectlessName: l.unassignedProject,
     );
+    final groupedSessions = widget.currentProjectFilter == null
+        ? allGroupedSessions
+        : allGroupedSessions
+              .where((group) => group.key == widget.currentProjectFilter)
+              .toList(growable: false);
 
     final hasActiveFilter =
         widget.currentProjectFilter != null ||
@@ -1018,13 +1090,9 @@ class HomeContentState extends State<HomeContent> {
           onToggleSessionListMode: _toggleSessionListMode,
           providerFilter: widget.providerFilter,
           onToggleProviderFilter: widget.onToggleProvider,
-          projects:
-              prioritizePinned(
-                widget.accumulatedProjectPaths,
-                isPinned: widget.pinnedProjectPaths.contains,
-              ).map((path) {
-                return (path: path, name: pathBasename(path));
-              }).toList(),
+          projects: allGroupedSessions
+              .map((group) => (path: group.key, name: group.projectName))
+              .toList(growable: false),
           currentProjectFilter: widget.currentProjectFilter,
           onProjectFilterChanged: widget.onSelectProject,
           namedOnly: widget.namedOnly,
@@ -1069,29 +1137,37 @@ class HomeContentState extends State<HomeContent> {
             for (final group in groupedSessions)
               _ProjectRecentSessionGroup(
                 group: group,
-                isCollapsed: widget.collapsedProjectPaths.contains(
-                  group.projectPath,
+                isCollapsed: _groupContainsProjectKey(
+                  widget.collapsedProjectPaths,
+                  group,
                 ),
-                isLoadingMore: widget.loadingProjectPaths.contains(
-                  group.projectPath,
+                isLoadingMore: _groupContainsProjectKey(
+                  widget.loadingProjectPaths,
+                  group,
                 ),
-                displayLimit:
-                    widget.projectSessionDisplayLimits[group.projectPath] ?? 5,
+                displayLimit: _groupDisplayLimit(
+                  widget.projectSessionDisplayLimits,
+                  group,
+                ),
                 alwaysVisibleSessionKeys: alwaysVisibleSessionKeys,
                 canLoadFromBridge:
+                    group.canLoadFromBridge &&
                     widget.currentProjectFilter == null &&
-                    !widget.exhaustedProjectPaths.contains(group.projectPath),
-                isPinned: widget.pinnedProjectPaths.contains(group.projectPath),
+                    !widget.exhaustedProjectPaths.contains(group.key),
+                isPinned: _groupContainsProjectKey(
+                  widget.pinnedProjectPaths,
+                  group,
+                ),
                 onToggleCollapsed: () =>
-                    widget.onToggleProjectCollapsed?.call(group.projectPath),
+                    widget.onToggleProjectCollapsed?.call(group.key),
                 onTogglePinned: widget.onToggleProjectPinned == null
                     ? null
-                    : () => widget.onToggleProjectPinned!(group.projectPath),
-                onLoadMore: () =>
-                    widget.onLoadMoreProject?.call(group.projectPath),
+                    : () => widget.onToggleProjectPinned!(group.key),
+                onLoadMore: () => widget.onLoadMoreProject?.call(group.key),
                 itemBuilder: buildUnifiedSessionRow,
               ),
           if (widget.currentProjectFilter != null &&
+              !isDesktopProjectGroupingKey(widget.currentProjectFilter) &&
               widget.hasMoreSessions) ...[
             const SizedBox(height: 8),
             _LoadMoreRecentSessionsButton(
@@ -1250,7 +1326,7 @@ class _ProjectRecentSessionGroup extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _ProjectRecentSessionHeader(
-            projectPath: group.projectPath,
+            projectPath: group.key,
             projectName: group.projectName,
             isCollapsed: isCollapsed,
             isPinned: isPinned,
@@ -1277,7 +1353,7 @@ class _ProjectRecentSessionGroup extends StatelessWidget {
                 child: Padding(
                   padding: const EdgeInsets.only(left: 28, top: 2, bottom: 4),
                   child: InkWell(
-                    key: ValueKey('project_show_more_${group.projectPath}'),
+                    key: ValueKey('project_show_more_${group.key}'),
                     borderRadius: BorderRadius.circular(6),
                     onTap: onLoadMore,
                     child: Padding(

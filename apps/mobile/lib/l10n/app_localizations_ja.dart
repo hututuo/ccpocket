@@ -731,6 +731,9 @@ class AppLocalizationsJa extends AppLocalizations {
   String get allProjects => 'すべてのプロジェクト';
 
   @override
+  String get unassignedProject => 'プロジェクト未分類';
+
+  @override
   String get named => '名前付き';
 
   @override

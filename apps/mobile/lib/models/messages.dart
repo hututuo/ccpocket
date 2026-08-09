@@ -281,6 +281,12 @@ enum Provider {
 String providerSessionIdentityKey(String provider, String sessionId) =>
     '$provider\u0000$sessionId';
 
+const desktopProjectlessGroupingKey = 'desktop-projectless';
+
+bool isDesktopProjectGroupingKey(String? value) =>
+    value == desktopProjectlessGroupingKey ||
+    (value?.startsWith('desktop-project:') ?? false);
+
 String? sanitizeCodexModelName(String? model) {
   final normalized = model?.trim();
   if (normalized == null || normalized.isEmpty || normalized == 'codex') {
@@ -4965,6 +4971,11 @@ class RecentSession {
   final String gitBranch;
   final String projectPath;
   final String? resumeCwd;
+  final String? projectGroupKind;
+  final String? projectGroupId;
+  final String? projectGroupName;
+  final String? projectGroupPath;
+  final bool projectGroupingSnapshotComplete;
   final bool isSidechain;
   final String? codexApprovalPolicy;
   final String? codexApprovalsReviewer;
@@ -5005,6 +5016,11 @@ class RecentSession {
     required this.gitBranch,
     required this.projectPath,
     this.resumeCwd,
+    this.projectGroupKind,
+    this.projectGroupId,
+    this.projectGroupName,
+    this.projectGroupPath,
+    this.projectGroupingSnapshotComplete = false,
     required this.isSidechain,
     this.codexApprovalPolicy,
     this.codexApprovalsReviewer,
@@ -5044,6 +5060,29 @@ class RecentSession {
 
   factory RecentSession.fromJson(Map<String, dynamic> json) {
     final codexSettings = json['codexSettings'] as Map<String, dynamic>?;
+    String? boundedProjectString(String key, int maximumLength) {
+      final raw = json[key];
+      if (raw is! String) return null;
+      final normalized = raw.trim();
+      return normalized.isNotEmpty && normalized.length <= maximumLength
+          ? normalized
+          : null;
+    }
+
+    final projectGroupKind =
+        json['projectGroupKind'] == 'desktopProject' ||
+            json['projectGroupKind'] == 'projectless'
+        ? json['projectGroupKind'] as String
+        : null;
+    final projectGroupId = boundedProjectString('projectGroupId', 256);
+    final projectGroupName = boundedProjectString('projectGroupName', 512);
+    final projectGroupPath = boundedProjectString('projectGroupPath', 4096);
+    final projectGroupingSnapshotComplete =
+        json['projectGroupingSnapshotComplete'] == true &&
+        (projectGroupKind == 'projectless' ||
+            (projectGroupKind == 'desktopProject' &&
+                projectGroupId?.trim().isNotEmpty == true &&
+                projectGroupName?.trim().isNotEmpty == true));
     return RecentSession(
       sessionId: json['sessionId'] as String,
       provider: json['provider'] as String?,
@@ -5063,6 +5102,11 @@ class RecentSession {
       gitBranch: json['gitBranch'] as String? ?? '',
       projectPath: json['projectPath'] as String? ?? '',
       resumeCwd: json['resumeCwd'] as String?,
+      projectGroupKind: projectGroupKind,
+      projectGroupId: projectGroupId,
+      projectGroupName: projectGroupName,
+      projectGroupPath: projectGroupPath,
+      projectGroupingSnapshotComplete: projectGroupingSnapshotComplete,
       isSidechain: json['isSidechain'] as bool? ?? false,
       codexApprovalPolicy: resolveCodexApprovalPolicy(
         approvalPolicy: codexSettings?['approvalPolicy'] as String?,
@@ -5118,6 +5162,11 @@ class RecentSession {
     'gitBranch': gitBranch,
     'projectPath': projectPath,
     'resumeCwd': resumeCwd,
+    'projectGroupKind': projectGroupKind,
+    'projectGroupId': projectGroupId,
+    'projectGroupName': projectGroupName,
+    'projectGroupPath': projectGroupPath,
+    'projectGroupingSnapshotComplete': projectGroupingSnapshotComplete,
     'isSidechain': isSidechain,
     'executionMode': executionMode,
     'planMode': planMode,
@@ -5138,10 +5187,28 @@ class RecentSession {
     'codexSettingsSnapshotComplete': codexSettingsSnapshotComplete,
   };
 
-  /// Extract project name from path (last segment)
-  String get projectName {
-    return pathBasename(projectPath);
+  bool get hasDesktopProjectGroup =>
+      projectGroupKind == 'desktopProject' &&
+      projectGroupId?.trim().isNotEmpty == true &&
+      projectGroupName?.trim().isNotEmpty == true;
+
+  bool get isDesktopProjectless => projectGroupKind == 'projectless';
+
+  String get projectGroupingKey {
+    if (hasDesktopProjectGroup) return 'desktop-project:$projectGroupId';
+    if (isDesktopProjectless) return desktopProjectlessGroupingKey;
+    return projectPath;
   }
+
+  String get effectiveProjectGroupPath =>
+      hasDesktopProjectGroup && projectGroupPath?.trim().isNotEmpty == true
+      ? projectGroupPath!
+      : projectPath;
+
+  /// Desktop's user-facing project name wins over a filesystem basename.
+  String get projectName => hasDesktopProjectGroup
+      ? projectGroupName!.trim()
+      : pathBasename(projectPath);
 
   /// Display text: summary if available, otherwise firstPrompt
   String get displayText {
@@ -5171,6 +5238,11 @@ class RecentSession {
       gitBranch: gitBranch,
       projectPath: projectPath,
       resumeCwd: resumeCwd,
+      projectGroupKind: projectGroupKind,
+      projectGroupId: projectGroupId,
+      projectGroupName: projectGroupName,
+      projectGroupPath: projectGroupPath,
+      projectGroupingSnapshotComplete: projectGroupingSnapshotComplete,
       isSidechain: isSidechain,
       codexApprovalPolicy: codexApprovalPolicy,
       codexApprovalsReviewer: codexApprovalsReviewer,
@@ -5211,6 +5283,11 @@ class RecentSession {
       gitBranch: gitBranch,
       projectPath: projectPath,
       resumeCwd: resumeCwd,
+      projectGroupKind: projectGroupKind,
+      projectGroupId: projectGroupId,
+      projectGroupName: projectGroupName,
+      projectGroupPath: projectGroupPath,
+      projectGroupingSnapshotComplete: projectGroupingSnapshotComplete,
       isSidechain: isSidechain,
       codexApprovalPolicy: codexApprovalPolicy,
       codexApprovalsReviewer: codexApprovalsReviewer,
@@ -5254,6 +5331,11 @@ class RecentSession {
       gitBranch: gitBranch,
       projectPath: projectPath,
       resumeCwd: resumeCwd,
+      projectGroupKind: projectGroupKind,
+      projectGroupId: projectGroupId,
+      projectGroupName: projectGroupName,
+      projectGroupPath: projectGroupPath,
+      projectGroupingSnapshotComplete: projectGroupingSnapshotComplete,
       isSidechain: isSidechain,
       codexApprovalPolicy: approvalPolicy,
       codexApprovalsReviewer: approvalsReviewer,

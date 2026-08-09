@@ -1209,6 +1209,93 @@ void main() {
     },
   );
 
+  test(
+    'persists Desktop project identity across sparse refreshes and moves',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-project-groups',
+        codexSourceId: 'source-project-groups',
+      );
+      await repository.applyConversationCatalogBatch(
+        target: target,
+        codexSourceId: 'source-project-groups',
+        catalogState: 'catalog-project-1',
+        created: const [
+          ConversationSyncV2CatalogEntry(
+            provider: 'codex',
+            providerSessionId: 'thread-project',
+            revision: 'revision-project-1',
+            projectPath: '/private/worktrees/feature-a',
+            projectGroupKind: 'desktopProject',
+            projectGroupId: 'project-ccpocket',
+            projectGroupName: 'CC Pocket Mobile',
+            projectGroupPath: '/workspace/ccpocket',
+            projectGroupingSnapshotComplete: true,
+            createdAt: '2026-08-09T00:00:00.000Z',
+            modifiedAt: '2026-08-09T00:01:00.000Z',
+            recencyAt: '2026-08-09T00:01:00.000Z',
+            availability: 'durable',
+          ),
+        ],
+        updated: const [],
+        destroyed: const [],
+      );
+
+      await repository.upsertResponse(
+        target: target,
+        response: const RecentSessionsMessage(
+          requestScope: 'catalog',
+          sessions: [
+            RecentSession(
+              sessionId: 'thread-project',
+              provider: 'codex',
+              firstPrompt: 'Sparse refresh',
+              created: '2026-08-09T00:00:00.000Z',
+              modified: '2026-08-09T00:02:00.000Z',
+              gitBranch: 'main',
+              projectPath: '/private/worktrees/feature-a',
+              isSidechain: false,
+            ),
+          ],
+        ),
+      );
+
+      var session = (await repository.load(target))!.sessions.single;
+      expect(session.projectGroupingKey, 'desktop-project:project-ccpocket');
+      expect(session.projectName, 'CC Pocket Mobile');
+      expect(session.effectiveProjectGroupPath, '/workspace/ccpocket');
+      expect(session.projectGroupingSnapshotComplete, isTrue);
+
+      await repository.applyConversationCatalogBatch(
+        target: target,
+        codexSourceId: 'source-project-groups',
+        catalogState: 'catalog-project-2',
+        created: const [],
+        updated: const [
+          ConversationSyncV2CatalogEntry(
+            provider: 'codex',
+            providerSessionId: 'thread-project',
+            revision: 'revision-project-2',
+            projectPath: '/private/worktrees/feature-a',
+            projectGroupKind: 'projectless',
+            projectGroupingSnapshotComplete: true,
+            createdAt: '2026-08-09T00:00:00.000Z',
+            modifiedAt: '2026-08-09T00:03:00.000Z',
+            recencyAt: '2026-08-09T00:03:00.000Z',
+            availability: 'durable',
+          ),
+        ],
+        destroyed: const [],
+      );
+
+      session = (await repository.load(target))!.sessions.single;
+      expect(session.projectGroupingKey, desktopProjectlessGroupingKey);
+      expect(session.projectGroupId, isNull);
+      expect(session.projectGroupName, isNull);
+      expect(session.projectGroupingSnapshotComplete, isTrue);
+    },
+  );
+
   test('rejects direct partial catalog and status page mutations', () async {
     final target = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-partial-pages',

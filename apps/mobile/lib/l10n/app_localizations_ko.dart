@@ -730,6 +730,9 @@ class AppLocalizationsKo extends AppLocalizations {
   String get allProjects => '모든 프로젝트';
 
   @override
+  String get unassignedProject => '프로젝트 미분류';
+
+  @override
   String get named => '이름 있음';
 
   @override

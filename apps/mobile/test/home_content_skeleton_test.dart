@@ -78,22 +78,37 @@ class _MockBridgeService extends BridgeService {
 
 RecentSession _session({
   required String id,
+  String? name,
   String projectPath = '/home/user/project-a',
   String modified = '2025-01-01T00:00:00Z',
+  String? projectGroupId,
+  String? projectGroupName,
+  bool projectless = false,
 }) {
   return RecentSession(
     sessionId: id,
+    name: name,
     firstPrompt: 'test prompt for $id',
     created: '2025-01-01T00:00:00Z',
     modified: modified,
     gitBranch: 'main',
     projectPath: projectPath,
+    projectGroupKind: projectless
+        ? 'projectless'
+        : projectGroupId == null
+        ? null
+        : 'desktopProject',
+    projectGroupId: projectGroupId,
+    projectGroupName: projectGroupName,
+    projectGroupPath: projectGroupId == null ? null : '/workspace/ccpocket',
+    projectGroupingSnapshotComplete: projectless || projectGroupId != null,
     isSidechain: false,
   );
 }
 
 SessionInfo _runningSession({
   required String id,
+  String? name,
   String? providerSessionId,
   String projectPath = '/home/user/project-a',
   String status = 'running',
@@ -101,6 +116,7 @@ SessionInfo _runningSession({
 }) {
   return SessionInfo.fromJson({
     'id': id,
+    'name': ?name,
     'projectPath': projectPath,
     'status': status,
     'createdAt': '2025-01-01T12:00:00Z',
@@ -135,6 +151,8 @@ Widget _buildHomeContent({
   List<RecentSession> recentSessions = const [],
   Set<String> exhaustedProjectPaths = const {},
   Map<String, int> projectSessionDisplayLimits = const {},
+  Set<String> collapsedProjectPaths = const {},
+  Set<String> pinnedProjectPaths = const {},
   Set<String> unseenSessionIds = const {},
   Map<String, ConversationSyncV2Status> conversationStatuses = const {},
   Set<String> unreadConversationKeys = const {},
@@ -174,6 +192,8 @@ Widget _buildHomeContent({
             accumulatedProjectPaths: const {},
             exhaustedProjectPaths: exhaustedProjectPaths,
             projectSessionDisplayLimits: projectSessionDisplayLimits,
+            collapsedProjectPaths: collapsedProjectPaths,
+            pinnedProjectPaths: pinnedProjectPaths,
             unseenSessionIds: unseenSessionIds,
             conversationStatuses: conversationStatuses,
             unreadConversationKeys: unreadConversationKeys,
@@ -762,6 +782,148 @@ void main() {
       expect(find.text('project-b'), findsOneWidget);
     });
 
+    testWidgets(
+      'grouped mode uses Desktop project names across worktree paths',
+      (tester) async {
+        await tester.pumpWidget(
+          _buildHomeContent(
+            recentSessions: [
+              _session(
+                id: 'desktop-main',
+                projectPath: '/workspace/ccpocket',
+                projectGroupId: 'project-ccpocket',
+                projectGroupName: 'CC Pocket Mobile',
+              ),
+              _session(
+                id: 'desktop-worktree',
+                projectPath: '/private/worktrees/feature-a',
+                projectGroupId: 'project-ccpocket',
+                projectGroupName: 'CC Pocket Mobile',
+              ),
+              _session(
+                id: 'desktop-projectless',
+                projectPath: '/private/tmp/scratch',
+                projectless: true,
+              ),
+            ],
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byKey(
+            const ValueKey('project_header_desktop-project:project-ccpocket'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('project_header_desktop-projectless')),
+          findsOneWidget,
+        );
+        expect(find.text('CC Pocket Mobile'), findsOneWidget);
+        expect(find.text('Not in a project'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'Desktop grouping honors legacy collapse and display-limit keys',
+      (tester) async {
+        final sessions = [
+          for (var index = 0; index < 7; index++)
+            _session(
+              id: 'desktop-$index',
+              projectPath: '/private/worktrees/feature-a',
+              projectGroupId: 'project-ccpocket',
+              projectGroupName: 'CC Pocket Mobile',
+            ),
+        ];
+        await tester.pumpWidget(
+          _buildHomeContent(
+            recentSessions: sessions,
+            collapsedProjectPaths: const {'/private/worktrees/feature-a'},
+            projectSessionDisplayLimits: const {
+              '/private/worktrees/feature-a': 25,
+            },
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.byType(RunningSessionCard), findsNothing);
+
+        await tester.pumpWidget(
+          _buildHomeContent(
+            recentSessions: sessions,
+            projectSessionDisplayLimits: const {
+              '/private/worktrees/feature-a': 25,
+            },
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.byType(RunningSessionCard), findsNWidgets(7));
+      },
+    );
+
+    testWidgets('legacy worktree pin keeps its Desktop project group first', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(
+              id: 'older-pinned',
+              projectPath: '/private/worktrees/pinned',
+              projectGroupId: 'project-pinned',
+              projectGroupName: 'Pinned project',
+              modified: '2025-01-01T00:00:00Z',
+            ),
+            _session(
+              id: 'newer-ordinary',
+              projectPath: '/private/worktrees/ordinary',
+              projectGroupId: 'project-ordinary',
+              projectGroupName: 'Ordinary project',
+              modified: '2025-01-02T00:00:00Z',
+            ),
+          ],
+          pinnedProjectPaths: const {'/private/worktrees/pinned'},
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final pinnedHeader = find.byKey(
+        const ValueKey('project_header_desktop-project:project-pinned'),
+      );
+      final ordinaryHeader = find.byKey(
+        const ValueKey('project_header_desktop-project:project-ordinary'),
+      );
+      expect(pinnedHeader, findsOneWidget);
+      expect(ordinaryHeader, findsOneWidget);
+      expect(
+        tester.getTopLeft(pinnedHeader).dy,
+        lessThan(tester.getTopLeft(ordinaryHeader).dy),
+      );
+    });
+
     testWidgets('recent chats mode uses global load more pagination', (
       tester,
     ) async {
@@ -905,6 +1067,40 @@ void main() {
       );
       expect(find.byType(RunningSessionCard), findsNWidgets(2));
     });
+
+    testWidgets(
+      'provider catalog rename and clear override stale runtime title',
+      (tester) async {
+        Future<void> pumpWithName(String? catalogName) async {
+          await tester.pumpWidget(
+            _buildHomeContent(
+              sessions: [
+                _runningSession(
+                  id: 'runtime-1',
+                  providerSessionId: 'thread-1',
+                  name: 'Stale runtime title',
+                ),
+              ],
+              recentSessions: [_session(id: 'thread-1', name: catalogName)],
+              isInitialLoading: false,
+              cubit: cubit,
+              draftService: draftService,
+              revenueCatService: revenueCatService,
+              supportBannerService: supportBannerService,
+            ),
+          );
+          await tester.pump();
+        }
+
+        await pumpWithName('Desktop renamed');
+        expect(find.text('Desktop renamed'), findsOneWidget);
+        expect(find.text('Stale runtime title'), findsNothing);
+
+        await pumpWithName(null);
+        expect(find.text('Desktop renamed'), findsNothing);
+        expect(find.text('Stale runtime title'), findsNothing);
+      },
+    );
 
     testWidgets(
       'keeps one row element when a durable conversation gains a runtime',

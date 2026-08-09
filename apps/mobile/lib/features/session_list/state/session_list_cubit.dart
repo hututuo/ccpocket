@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -18,6 +17,7 @@ const _pinnedSessionKeysKey = 'session_list_pinned_session_keys_v1';
 const _pinnedProjectPathsKey = 'session_list_pinned_project_paths_v1';
 const _projectInitialSessionDisplayLimit = 5;
 const _projectSessionDisplayPageSize = 20;
+const _maximumCatalogExpansionLimit = 1000;
 
 class SessionCatalogQuery {
   const SessionCatalogQuery({
@@ -97,9 +97,9 @@ List<T> prioritizePinned<T>(
 /// Manages session list state: sessions, filters, pagination, and
 /// accumulated project paths.
 ///
-/// All filters (project, provider, namedOnly, searchQuery) are applied
-/// server-side. Filter changes trigger a re-fetch from offset 0 with
-/// a skeleton loading state.
+/// Provider, named and search filters are applied server-side. Legacy path
+/// filters remain server-side; Desktop-owned project IDs are presentation
+/// keys and are applied locally to the complete catalog projection.
 class SessionListCubit extends Cubit<SessionListState> {
   final BridgeService _bridge;
   final SessionCatalogCacheRepository? _catalogCache;
@@ -204,9 +204,31 @@ class SessionListCubit extends Cubit<SessionListState> {
     _query = _queryForState();
   }
 
-  String? get currentProjectFilter => _query.projectPath;
+  String? get currentProjectFilter => state.selectedProjectKey;
 
   Stream<void> get catalogSnapshotChanges => _catalogSnapshotChanges.stream;
+
+  /// Returns the latest committed provider-owned metadata even when the home
+  /// list is currently filtered to another project.
+  RecentSession? catalogSessionFor(
+    String providerSessionId, {
+    String? provider,
+  }) {
+    RecentSession? findIn(Iterable<RecentSession> sessions) {
+      for (final session in sessions) {
+        if (session.sessionId != providerSessionId) continue;
+        final sessionProvider = session.provider ?? Provider.claude.value;
+        if (provider == null || sessionProvider == provider) return session;
+      }
+      return null;
+    }
+
+    // A network catalog page is committed to [state.sessions] before the
+    // rebuildable disk snapshot is necessarily rewritten. Prefer that newer
+    // projection for visible threads, then fall back to the complete cache for
+    // threads hidden by the current home filter.
+    return findIn(state.sessions) ?? findIn(_cachedSessions);
+  }
 
   /// Opaque authenticated Bridge/source partition for detached projections.
   /// A route/IP change that resolves to the same Bridge/source keeps the same
@@ -721,19 +743,16 @@ class SessionListCubit extends Cubit<SessionListState> {
 
   // ---- Filter commands (all trigger server re-fetch) ----
 
-  /// Switch project filter. Resets sessions on the server side and fetches
-  /// from offset 0 for the selected project.
-  void selectProject(String? projectPath) {
+  /// Switch project filter. Desktop project IDs stay client-side; only legacy
+  /// filesystem groups are sent to the Bridge as projectPath filters.
+  void selectProject(String? projectKey) {
     _filterMutationRevision++;
-    _query = SessionCatalogQuery(
-      projectPath: projectPath,
-      provider: _providerToString(state.providerFilter),
-      namedOnly: state.namedOnly ? true : null,
-      searchQuery: state.searchQuery.isNotEmpty ? state.searchQuery : null,
-    );
+    final requiresServerRefresh =
+        projectKey == null || !isDesktopProjectGroupingKey(projectKey);
     emit(
       state.copyWith(
-        isInitialLoading: true,
+        selectedProjectKey: projectKey,
+        isInitialLoading: requiresServerRefresh,
         loadingProjectPaths: const {},
         exhaustedProjectPaths: const {},
       ),
@@ -826,39 +845,44 @@ class SessionListCubit extends Cubit<SessionListState> {
   }
 
   /// Load the next project-scoped page without replacing other projects.
-  void loadMoreProject(String projectPath) {
-    if (projectPath.isEmpty ||
-        state.loadingProjectPaths.contains(projectPath)) {
+  void loadMoreProject(String projectKey) {
+    if (projectKey.isEmpty || state.loadingProjectPaths.contains(projectKey)) {
       return;
     }
-    final projectKey = _normalizedProjectPath(projectPath);
+    final isDesktopGroup = isDesktopProjectGroupingKey(projectKey);
+    final normalizedProjectKey = isDesktopGroup
+        ? projectKey
+        : _normalizedProjectPath(projectKey);
     final loadedCount = state.sessions
         .where(
-          (session) =>
-              _normalizedProjectPath(session.projectPath) == projectKey,
+          (session) => isDesktopGroup
+              ? session.projectGroupingKey == projectKey
+              : _normalizedProjectPath(session.projectPath) ==
+                    normalizedProjectKey,
         )
         .length;
     final currentLimit =
-        state.projectSessionDisplayLimits[projectPath] ??
+        state.projectSessionDisplayLimits[projectKey] ??
         _projectInitialSessionDisplayLimit;
     final nextLimit = currentLimit + _projectSessionDisplayPageSize;
     final shouldFetch =
+        !isDesktopGroup &&
         nextLimit > loadedCount &&
-        !state.exhaustedProjectPaths.contains(projectPath);
+        !state.exhaustedProjectPaths.contains(projectKey);
     emit(
       state.copyWith(
         projectSessionDisplayLimits: {
           ...state.projectSessionDisplayLimits,
-          projectPath: nextLimit,
+          projectKey: nextLimit,
         },
         loadingProjectPaths: shouldFetch
-            ? {...state.loadingProjectPaths, projectPath}
+            ? {...state.loadingProjectPaths, projectKey}
             : state.loadingProjectPaths,
       ),
     );
     if (!shouldFetch) return;
     _bridge.loadMoreRecentSessions(
-      projectPath: projectPath,
+      projectPath: projectKey,
       offset: loadedCount,
       pageSize: _projectSessionDisplayPageSize,
       requestScope: 'project',
@@ -870,7 +894,10 @@ class SessionListCubit extends Cubit<SessionListState> {
     await _preferencesLoaded;
     if (isClosed) return;
     final next = {...state.collapsedProjectPaths};
-    if (!next.remove(projectPath)) {
+    final aliases = _projectPresentationAliases(projectPath);
+    final wasCollapsed = aliases.any(next.contains);
+    next.removeAll(aliases);
+    if (!wasCollapsed) {
       next.add(projectPath);
     }
     emit(state.copyWith(collapsedProjectPaths: next));
@@ -917,9 +944,25 @@ class SessionListCubit extends Cubit<SessionListState> {
     await _preferencesLoaded;
     if (isClosed) return;
     final next = {...state.pinnedProjectPaths};
-    if (!next.remove(projectPath)) next.add(projectPath);
+    final aliases = _projectPresentationAliases(projectPath);
+    final wasPinned = aliases.any(next.contains);
+    next.removeAll(aliases);
+    if (!wasPinned) next.add(projectPath);
     emit(state.copyWith(pinnedProjectPaths: next));
     await _persistStringSet(_pinnedProjectPathsKey, next);
+  }
+
+  Set<String> _projectPresentationAliases(String projectKey) {
+    final aliases = <String>{projectKey};
+    if (!isDesktopProjectGroupingKey(projectKey)) return aliases;
+    for (final session in [..._cachedSessions, ...state.sessions]) {
+      if (session.projectGroupingKey != projectKey) continue;
+      if (session.projectPath.isNotEmpty) aliases.add(session.projectPath);
+      if (session.effectiveProjectGroupPath.isNotEmpty) {
+        aliases.add(session.effectiveProjectGroupPath);
+      }
+    }
+    return aliases;
   }
 
   Future<void> _persistStringSet(String key, Set<String> values) async {
@@ -1147,18 +1190,23 @@ class SessionListCubit extends Cubit<SessionListState> {
   }
 
   List<RecentSession> _filterCachedSessions(Iterable<RecentSession> sessions) {
-    final projectPath = _query.projectPath;
-    final projectKey = projectPath == null
-        ? null
-        : _normalizedProjectPath(projectPath);
+    final selectedProjectKey = state.selectedProjectKey;
+    final normalizedProjectKey =
+        selectedProjectKey == null ||
+            isDesktopProjectGroupingKey(selectedProjectKey)
+        ? selectedProjectKey
+        : _normalizedProjectPath(selectedProjectKey);
     final provider = _query.provider;
     final namedOnly = _query.namedOnly == true;
     final searchQuery = _query.searchQuery?.trim().toLowerCase();
     return sessions
         .where((session) {
-          if (projectKey != null &&
-              _normalizedProjectPath(session.projectPath) != projectKey) {
-            return false;
+          if (normalizedProjectKey != null) {
+            final sessionProjectKey =
+                isDesktopProjectGroupingKey(normalizedProjectKey)
+                ? session.projectGroupingKey
+                : _normalizedProjectPath(session.projectPath);
+            if (sessionProjectKey != normalizedProjectKey) return false;
           }
           if (provider != null && session.provider != provider) return false;
           if (namedOnly &&
@@ -1171,6 +1219,7 @@ class SessionListCubit extends Cubit<SessionListState> {
             session.summary,
             session.firstPrompt,
             session.lastPrompt,
+            session.projectGroupName,
             session.projectPath,
             session.sessionId,
           ].whereType<String>().any(
@@ -1310,14 +1359,17 @@ class SessionListCubit extends Cubit<SessionListState> {
     }
     final currentLimit = response.limit ?? response.sessions.length;
     final expansionLimit = isCatalogResponse
-        ? max(1000, max(currentLimit, response.sessions.length) * 2)
-        : null;
+        ? currentLimit < _maximumCatalogExpansionLimit
+              ? _maximumCatalogExpansionLimit
+              : null
+        : _maximumCatalogExpansionLimit;
+    if (expansionLimit == null) return;
     final requestKey = [
       _bridge.authoritativeSessionListGeneration,
       response.catalogRevision ?? -1,
       response.queryGeneration ?? -1,
       requestScope ?? '',
-      expansionLimit ?? 1000,
+      expansionLimit,
       response.provider ?? '',
       response.namedOnly == true ? 1 : 0,
       response.searchQuery ?? '',
@@ -1325,11 +1377,7 @@ class SessionListCubit extends Cubit<SessionListState> {
     ].join('\n');
     if (_catalogExpansionRequestKey == requestKey) return;
     _catalogExpansionRequestKey = requestKey;
-    if (expansionLimit == null) {
-      _bridge.requestRecentSessionsCatalog();
-    } else {
-      _bridge.requestRecentSessionsCatalog(limit: expansionLimit);
-    }
+    _bridge.requestRecentSessionsCatalog(limit: expansionLimit);
   }
 
   /// Send a re-fetch request with all current filters applied.
@@ -1368,7 +1416,9 @@ class SessionListCubit extends Cubit<SessionListState> {
   }
 
   SessionCatalogQuery _queryForState() => SessionCatalogQuery(
-    projectPath: _query.projectPath,
+    projectPath: isDesktopProjectGroupingKey(state.selectedProjectKey)
+        ? null
+        : state.selectedProjectKey,
     provider: _providerToString(state.providerFilter),
     namedOnly: state.namedOnly ? true : null,
     searchQuery: state.searchQuery.isNotEmpty ? state.searchQuery : null,

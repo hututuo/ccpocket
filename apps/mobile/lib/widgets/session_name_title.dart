@@ -3,6 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../models/messages.dart';
 import '../services/bridge_service.dart';
+import '../features/session_list/state/session_list_cubit.dart';
 import 'rename_session_dialog.dart';
 
 /// Tappable session name in the AppBar. Shows session name or project name.
@@ -10,24 +11,37 @@ import 'rename_session_dialog.dart';
 class SessionNameTitle extends StatelessWidget {
   final String sessionId;
   final String? projectPath;
+  final String? provider;
 
   const SessionNameTitle({
     super.key,
     required this.sessionId,
     this.projectPath,
+    this.provider,
   });
 
   @override
   Widget build(BuildContext context) {
     final bridge = context.read<BridgeService>();
-    return StreamBuilder<List<SessionInfo>>(
+    final catalog = context.read<SessionListCubit?>();
+
+    Widget buildRuntimeTitle() => StreamBuilder<List<SessionInfo>>(
       stream: bridge.sessionList,
       initialData: bridge.sessions,
       builder: (context, snapshot) {
         final sessions = snapshot.data ?? [];
         final session = sessions.where((s) => s.id == sessionId).firstOrNull;
-        final name = session?.name;
-        final fallback = projectPath?.split('/').last ?? '';
+        final durableId = session?.claudeSessionId?.trim();
+        final recent = catalog?.catalogSessionFor(
+          durableId?.isNotEmpty == true ? durableId! : sessionId,
+          provider: session?.provider ?? provider,
+        );
+        // A committed provider row may intentionally clear a stale runtime
+        // title, so its nullable value is authoritative when the row exists.
+        final name = recent != null ? recent.name : session?.name;
+        final fallback = recent?.projectName.isNotEmpty == true
+            ? recent!.projectName
+            : projectPath?.split('/').last ?? '';
 
         return GestureDetector(
           onTap: () async {
@@ -36,10 +50,19 @@ class SessionNameTitle extends StatelessWidget {
               currentName: name,
             );
             if (newName == null || !context.mounted) return;
-            bridge.renameSession(
-              sessionId: sessionId,
-              name: newName.isEmpty ? null : newName,
-            );
+            final effectiveName = newName.isEmpty ? null : newName;
+            if (session != null || recent == null) {
+              bridge.renameSession(sessionId: sessionId, name: effectiveName);
+            } else {
+              bridge.renameSession(
+                sessionId: recent.sessionId,
+                name: effectiveName,
+                provider: recent.provider,
+                providerSessionId: recent.sessionId,
+                projectPath: recent.projectPath,
+                codexSourceId: recent.codexSourceId,
+              );
+            }
           },
           child: Text(
             name != null && name.isNotEmpty ? name : fallback,
@@ -56,6 +79,16 @@ class SessionNameTitle extends StatelessWidget {
           ),
         );
       },
+    );
+
+    // SessionNameTitle is also used by focused widget tests and embedders that
+    // intentionally mount a chat without the Home catalog. Keep the original
+    // runtime-title path valid there; the catalog is an additive live-update
+    // source, not a hard page dependency.
+    if (catalog == null) return buildRuntimeTitle();
+    return StreamBuilder<void>(
+      stream: catalog.catalogSnapshotChanges,
+      builder: (context, _) => buildRuntimeTitle(),
     );
   }
 }

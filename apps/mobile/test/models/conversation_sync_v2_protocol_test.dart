@@ -176,6 +176,11 @@ void main() {
                   'providerSessionId': 'thread-settings',
                   'revision': 'revision-settings',
                   'projectPath': '/workspace',
+                  'projectGroupKind': 'desktopProject',
+                  'projectGroupId': 'project-ccpocket',
+                  'projectGroupName': 'CC Pocket',
+                  'projectGroupPath': '/workspace/ccpocket',
+                  'projectGroupingSnapshotComplete': true,
                   'firstPrompt': 'Prompt',
                   'model': 'gpt-5.6-sol',
                   'modelReasoningEffort': 'ultra',
@@ -202,6 +207,10 @@ void main() {
       codexSourceId: 'source-1',
     );
     expect(session.contentRevision, 'revision-settings');
+    expect(session.projectGroupingKey, 'desktop-project:project-ccpocket');
+    expect(session.projectName, 'CC Pocket');
+    expect(session.effectiveProjectGroupPath, '/workspace/ccpocket');
+    expect(session.projectGroupingSnapshotComplete, isTrue);
     expect(session.codexModel, 'gpt-5.6-sol');
     expect(session.codexModelReasoningEffort, 'ultra');
     expect(session.codexServiceTier, 'fast');
@@ -216,6 +225,8 @@ void main() {
 
     final restored = RecentSession.fromJson(session.toJson());
     expect(restored.contentRevision, 'revision-settings');
+    expect(restored.projectGroupingKey, 'desktop-project:project-ccpocket');
+    expect(restored.projectName, 'CC Pocket');
     expect(restored.codexCollaborationMode, 'plan');
     expect(restored.codexSettingsSnapshotComplete, isTrue);
   });
@@ -236,6 +247,43 @@ void main() {
     final session = entry.toRecentSession(codexSourceId: 'source-1');
     expect(session.codexModel, 'gpt-5.6-sol');
     expect(session.codexSettingsSnapshotComplete, isFalse);
+  });
+
+  test('does not treat malformed Desktop grouping as a complete clear', () {
+    final entry = ConversationSyncV2CatalogEntry.fromJson(<String, dynamic>{
+      'provider': 'codex',
+      'providerSessionId': 'thread-malformed-project',
+      'revision': 'revision-malformed-project',
+      'projectPath': '/workspace',
+      'projectGroupKind': 'desktopProject',
+      'projectGroupingSnapshotComplete': true,
+      'createdAt': '2026-07-30T00:00:00.000Z',
+      'modifiedAt': '2026-07-30T00:01:00.000Z',
+      'recencyAt': '2026-07-30T00:02:00.000Z',
+      'availability': 'durable',
+    });
+
+    expect(entry.projectGroupingSnapshotComplete, isFalse);
+    expect(
+      RecentSession.fromJson({
+        ...entry.toRecentSession(codexSourceId: 'source-1').toJson(),
+        'projectGroupingSnapshotComplete': true,
+      }).projectGroupingSnapshotComplete,
+      isFalse,
+    );
+
+    final legacy = RecentSession.fromJson({
+      ...entry.toRecentSession(codexSourceId: 'source-1').toJson(),
+      'projectGroupKind': 'desktopProject',
+      'projectGroupId': 7,
+      'projectGroupName': ['not', 'a', 'string'],
+      'projectGroupPath': {'path': '/workspace'},
+      'projectGroupingSnapshotComplete': true,
+    });
+    expect(legacy.projectGroupId, isNull);
+    expect(legacy.projectGroupName, isNull);
+    expect(legacy.projectGroupPath, isNull);
+    expect(legacy.projectGroupingSnapshotComplete, isFalse);
   });
 
   test('builds a bounded subscription without endpoint identity', () {

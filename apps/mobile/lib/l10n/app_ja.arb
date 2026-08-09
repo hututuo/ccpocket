@@ -289,6 +289,7 @@
   "sessionDisplayModeSummary": "要約",
   "allAiTools": "すべての AI ツール",
   "allProjects": "すべてのプロジェクト",
+  "unassignedProject": "プロジェクト未分類",
   "named": "名前付き",
   "machines": "マシン",
   "machineRoutes": "接続ルート",

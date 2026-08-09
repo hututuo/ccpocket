@@ -233,6 +233,7 @@
   "sessionDisplayModeSummary": "요약",
   "allAiTools": "모든 AI 도구",
   "allProjects": "모든 프로젝트",
+  "unassignedProject": "프로젝트 미분류",
   "named": "이름 있음",
   "machines": "컴퓨터",
   "machineRoutes": "연결 경로",

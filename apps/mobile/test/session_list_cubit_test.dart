@@ -309,6 +309,9 @@ RecentSession _session({
   String modified = '2025-01-01T00:00:00Z',
   String? provider,
   String? codexSourceId,
+  String? projectGroupId,
+  String? projectGroupName,
+  bool projectless = false,
 }) {
   return RecentSession(
     sessionId: id,
@@ -319,6 +322,15 @@ RecentSession _session({
     modified: modified,
     gitBranch: 'main',
     projectPath: projectPath,
+    projectGroupKind: projectless
+        ? 'projectless'
+        : projectGroupId == null
+        ? null
+        : 'desktopProject',
+    projectGroupId: projectGroupId,
+    projectGroupName: projectGroupName,
+    projectGroupPath: projectGroupId == null ? null : '/workspace/project',
+    projectGroupingSnapshotComplete: projectless || projectGroupId != null,
     isSidechain: false,
   );
 }
@@ -1742,7 +1754,7 @@ void main() {
     });
 
     test(
-      'incomplete catalog refreshes expand until the snapshot is complete',
+      'incomplete catalog refresh expands once to the bounded catalog window',
       () async {
         mockBridge.emitResponse(
           RecentSessionsMessage(
@@ -1780,7 +1792,7 @@ void main() {
         );
         await pumpEventQueue();
 
-        expect(mockBridge.catalogRequestLimits, [1000, 2200]);
+        expect(mockBridge.catalogRequestLimits, [1000]);
       },
     );
 
@@ -1805,6 +1817,143 @@ void main() {
       expect(cubit.state.isInitialLoading, isTrue);
       expect(mockBridge.sentMessages, isNotEmpty);
     });
+
+    test(
+      'Desktop project selection stays local and never becomes a path',
+      () async {
+        mockBridge.emitSessions([
+          _session(
+            id: 'thread-1',
+            projectPath: '/private/worktrees/a',
+            projectGroupId: 'project-1',
+            projectGroupName: 'Mobile',
+          ),
+        ]);
+        await Future.microtask(() {});
+        mockBridge.sentMessages.clear();
+
+        cubit.selectProject('desktop-project:project-1');
+        await Future.microtask(() {});
+
+        expect(cubit.currentProjectFilter, 'desktop-project:project-1');
+        expect(cubit.state.isInitialLoading, isFalse);
+        expect(mockBridge.currentProjectFilter, isNull);
+        expect(
+          mockBridge.sentMessages.last.toJson(),
+          isNot(contains('desktop-project:project-1')),
+        );
+      },
+    );
+
+    test(
+      'Desktop project toggles migrate legacy path presentation state',
+      () async {
+        await cubit.toggleProjectCollapsed('/private/worktrees/a');
+        await cubit.toggleProjectPinned('/private/worktrees/a');
+        mockBridge.emitSessions([
+          _session(
+            id: 'thread-1',
+            projectPath: '/private/worktrees/a',
+            projectGroupId: 'project-1',
+            projectGroupName: 'Mobile',
+          ),
+        ]);
+        await Future.microtask(() {});
+
+        await cubit.toggleProjectCollapsed('desktop-project:project-1');
+        await cubit.toggleProjectPinned('desktop-project:project-1');
+
+        expect(cubit.state.collapsedProjectPaths, isEmpty);
+        expect(cubit.state.pinnedProjectPaths, isEmpty);
+      },
+    );
+
+    test(
+      'catalog lookup keeps a renamed thread available outside filters',
+      () async {
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            requestScope: 'catalog',
+            sessions: [
+              _session(
+                id: 'thread-visible',
+                projectPath: '/workspace/visible',
+                projectGroupId: 'project-visible',
+                projectGroupName: 'Visible',
+              ),
+              RecentSession(
+                sessionId: 'thread-renamed',
+                provider: Provider.codex.value,
+                name: 'Desktop renamed',
+                firstPrompt: 'Renamed thread',
+                created: '2025-01-01T00:00:00Z',
+                modified: '2025-01-01T01:00:00Z',
+                gitBranch: 'main',
+                projectPath: '/workspace/hidden',
+                isSidechain: false,
+              ),
+            ],
+          ),
+        );
+        await Future.microtask(() {});
+
+        cubit.selectProject('desktop-project:project-visible');
+        await Future.microtask(() {});
+
+        expect(
+          cubit
+              .catalogSessionFor(
+                'thread-renamed',
+                provider: Provider.codex.value,
+              )
+              ?.name,
+          'Desktop renamed',
+        );
+      },
+    );
+
+    test(
+      'catalog lookup prefers a newer visible rename over disk cache',
+      () async {
+        RecentSession named(String name) => RecentSession(
+          sessionId: 'thread-renamed',
+          provider: Provider.codex.value,
+          name: name,
+          firstPrompt: 'Renamed thread',
+          created: '2025-01-01T00:00:00Z',
+          modified: '2025-01-01T01:00:00Z',
+          gitBranch: 'main',
+          projectPath: '/workspace/project',
+          isSidechain: false,
+        );
+
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            requestScope: 'catalog',
+            sessions: [named('Cached title')],
+          ),
+        );
+        await Future.microtask(() {});
+
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            requestScope: 'list',
+            sessions: [named('Desktop renamed')],
+          ),
+        );
+        await Future.microtask(() {});
+
+        expect(
+          cubit
+              .catalogSessionFor(
+                'thread-renamed',
+                provider: Provider.codex.value,
+              )
+              ?.name,
+          'Desktop renamed',
+        );
+      },
+    );
 
     test('setSearchQuery updates query', () {
       cubit.setSearchQuery('hello');
@@ -1981,6 +2130,29 @@ void main() {
         expect(mockBridge.sentMessages, isEmpty);
       },
     );
+
+    test('Desktop project Show more only reveals cached rows', () async {
+      mockBridge.emitSessions([
+        for (var i = 0; i < 7; i++)
+          _session(
+            id: 's$i',
+            projectPath: '/private/worktrees/$i',
+            projectGroupId: 'project-1',
+            projectGroupName: 'Mobile',
+          ),
+      ]);
+      await Future.microtask(() {});
+      mockBridge.sentMessages.clear();
+
+      cubit.loadMoreProject('desktop-project:project-1');
+
+      expect(
+        cubit.state.projectSessionDisplayLimits['desktop-project:project-1'],
+        25,
+      );
+      expect(cubit.state.loadingProjectPaths, isEmpty);
+      expect(mockBridge.sentMessages, isEmpty);
+    });
 
     test(
       'offset-zero refresh preserves expanded project display limit',

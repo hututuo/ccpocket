@@ -2744,6 +2744,7 @@ class _CodexChatBody extends HookWidget {
                       SessionNameTitle(
                         sessionId: sessionId,
                         projectPath: effectiveProjectPath,
+                        provider: Provider.codex.value,
                       ),
                     ),
                     flexibleSpace: StatusLineFlexibleSpace(

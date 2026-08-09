@@ -3466,22 +3466,26 @@ class SessionCatalogCacheRepository {
     return sessions;
   }
 
-  /// Applies the same sparse Codex-settings semantics to persistent and
-  /// in-memory catalog projections.
+  /// Applies the same sparse Codex settings/project semantics to persistent
+  /// and in-memory catalog projections.
   ///
   /// A regular catalog refresh is intentionally allowed to omit expensive
-  /// settings fields. Once a focused authoritative snapshot has been
-  /// committed, a later sparse refresh must not erase it. A complete incoming
-  /// snapshot is authoritative and may explicitly clear or replace fields.
+  /// settings fields or Desktop project metadata. Once an authoritative
+  /// snapshot has been committed, a later sparse refresh must not erase it.
+  /// A complete incoming snapshot is authoritative and may explicitly clear
+  /// or replace fields.
   static RecentSession mergeIncompleteCodexSettings({
     required RecentSession incoming,
     required RecentSession? cached,
   }) {
-    if (incoming.provider != Provider.codex.value ||
-        incoming.codexSettingsSnapshotComplete ||
-        cached == null) {
+    if (incoming.provider != Provider.codex.value || cached == null) {
       return incoming;
     }
+    final preserveSettings = !incoming.codexSettingsSnapshotComplete;
+    final preserveProjectGrouping =
+        !incoming.projectGroupingSnapshotComplete &&
+        cached.projectGroupingSnapshotComplete;
+    if (!preserveSettings && !preserveProjectGrouping) return incoming;
     final collaborationKnown = incoming.codexCollaborationMode != null;
     final incomingHasPermissionFacts =
         incoming.codexApprovalPolicy != null ||
@@ -3494,7 +3498,9 @@ class SessionCatalogCacheRepository {
       codexSourceId: incoming.codexSourceId,
       rawPermissionMode:
           incoming.rawPermissionMode ??
-          (incomingHasPermissionFacts ? null : cached.rawPermissionMode),
+          (preserveSettings && !incomingHasPermissionFacts
+              ? cached.rawPermissionMode
+              : null),
       forkedFromThreadId: incoming.forkedFromThreadId,
       name: incoming.name,
       agentNickname: incoming.agentNickname,
@@ -3509,37 +3515,70 @@ class SessionCatalogCacheRepository {
       gitBranch: incoming.gitBranch,
       projectPath: incoming.projectPath,
       resumeCwd: incoming.resumeCwd,
+      projectGroupKind: preserveProjectGrouping
+          ? incoming.projectGroupKind ?? cached.projectGroupKind
+          : incoming.projectGroupKind,
+      projectGroupId: preserveProjectGrouping
+          ? incoming.projectGroupId ?? cached.projectGroupId
+          : incoming.projectGroupId,
+      projectGroupName: preserveProjectGrouping
+          ? incoming.projectGroupName ?? cached.projectGroupName
+          : incoming.projectGroupName,
+      projectGroupPath: preserveProjectGrouping
+          ? incoming.projectGroupPath ?? cached.projectGroupPath
+          : incoming.projectGroupPath,
+      projectGroupingSnapshotComplete:
+          incoming.projectGroupingSnapshotComplete || preserveProjectGrouping,
       isSidechain: incoming.isSidechain,
       codexApprovalPolicy:
-          incoming.codexApprovalPolicy ?? cached.codexApprovalPolicy,
+          incoming.codexApprovalPolicy ??
+          (preserveSettings ? cached.codexApprovalPolicy : null),
       codexApprovalsReviewer:
-          incoming.codexApprovalsReviewer ?? cached.codexApprovalsReviewer,
+          incoming.codexApprovalsReviewer ??
+          (preserveSettings ? cached.codexApprovalsReviewer : null),
       codexPermissionsMode:
           incoming.codexPermissionsMode ??
-          (incomingHasPermissionFacts ? null : cached.codexPermissionsMode),
+          (preserveSettings && !incomingHasPermissionFacts
+              ? cached.codexPermissionsMode
+              : null),
       executionMode:
           incoming.executionMode ??
-          (incoming.codexApprovalPolicy != null ? null : cached.executionMode),
-      planMode: collaborationKnown ? incoming.planMode : cached.planMode,
-      codexSandboxMode: incoming.codexSandboxMode ?? cached.codexSandboxMode,
+          (preserveSettings && incoming.codexApprovalPolicy == null
+              ? cached.executionMode
+              : null),
+      planMode: collaborationKnown || !preserveSettings
+          ? incoming.planMode
+          : cached.planMode,
+      codexSandboxMode:
+          incoming.codexSandboxMode ??
+          (preserveSettings ? cached.codexSandboxMode : null),
       codexCollaborationMode:
-          incoming.codexCollaborationMode ?? cached.codexCollaborationMode,
-      codexModel: incoming.codexModel ?? cached.codexModel,
-      codexProfile: incoming.codexProfile ?? cached.codexProfile,
+          incoming.codexCollaborationMode ??
+          (preserveSettings ? cached.codexCollaborationMode : null),
+      codexModel:
+          incoming.codexModel ?? (preserveSettings ? cached.codexModel : null),
+      codexProfile:
+          incoming.codexProfile ??
+          (preserveSettings ? cached.codexProfile : null),
       codexModelReasoningEffort:
           incoming.codexModelReasoningEffort ??
-          cached.codexModelReasoningEffort,
-      codexServiceTier: incoming.codexServiceTier ?? cached.codexServiceTier,
+          (preserveSettings ? cached.codexModelReasoningEffort : null),
+      codexServiceTier:
+          incoming.codexServiceTier ??
+          (preserveSettings ? cached.codexServiceTier : null),
       codexNetworkAccessEnabled:
           incoming.codexNetworkAccessEnabled ??
-          cached.codexNetworkAccessEnabled,
+          (preserveSettings ? cached.codexNetworkAccessEnabled : null),
       codexWebSearchMode:
-          incoming.codexWebSearchMode ?? cached.codexWebSearchMode,
+          incoming.codexWebSearchMode ??
+          (preserveSettings ? cached.codexWebSearchMode : null),
       codexAdditionalWritableRoots:
-          incoming.codexAdditionalWritableRoots.isNotEmpty
+          incoming.codexAdditionalWritableRoots.isNotEmpty || !preserveSettings
           ? incoming.codexAdditionalWritableRoots
           : cached.codexAdditionalWritableRoots,
-      codexSettingsSnapshotComplete: cached.codexSettingsSnapshotComplete,
+      codexSettingsSnapshotComplete:
+          incoming.codexSettingsSnapshotComplete ||
+          (preserveSettings && cached.codexSettingsSnapshotComplete),
     );
   }
 

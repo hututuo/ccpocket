@@ -721,6 +721,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get allProjects => '全部项目';
 
   @override
+  String get unassignedProject => '未归入项目';
+
+  @override
   String get named => '已命名';
 
   @override

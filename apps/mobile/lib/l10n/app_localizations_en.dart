@@ -746,6 +746,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get allProjects => 'All Projects';
 
   @override
+  String get unassignedProject => 'Not in a project';
+
+  @override
   String get named => 'Named';
 
   @override
