@@ -1107,6 +1107,62 @@ void main() {
   );
 
   testWidgets(
+    'latest tool control stays fixed while expanded process details scroll',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final bridge = _Bridge();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
+      final cubit = ChatSessionCubit(
+        sessionId: 'session-active-many',
+        bridge: bridge,
+        streamingCubit: streaming,
+        provider: Provider.codex,
+      );
+      final scrollController = ReadingPositionAutoScrollController();
+      addTearDown(bridge.dispose);
+      addTearDown(streaming.close);
+      addTearDown(scrollController.dispose);
+      addTearDown(() async {
+        if (!cubit.isClosed) await cubit.close();
+      });
+
+      await tester.pumpWidget(
+        _chatHarness(
+          bridge: bridge,
+          cubit: cubit,
+          streaming: streaming,
+          scrollController: scrollController,
+          sessionId: 'session-active-many',
+        ),
+      );
+      bridge.emit(
+        HistoryMessage(messages: _activeHistoryWithManyDetails()),
+        'session-active-many',
+      );
+      await tester.pump();
+
+      final toolLine = find.byType(ChatCurrentToolActivityLine);
+      await tester.tap(toolLine);
+      await tester.pump();
+      final details = find.byKey(const ValueKey('process_details_scroll_view'));
+      expect(details, findsOneWidget);
+
+      final before = tester.getTopLeft(toolLine).dy;
+      await tester.drag(details, const Offset(0, -500));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ChatCurrentToolActivityLine), findsOneWidget);
+      expect(tester.getTopLeft(toolLine).dy, closeTo(before, 0.5));
+      await tester.tap(toolLine);
+      await tester.pump();
+      expect(details, findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'current Guardian review appears once below its tool and hides after three seconds',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(430, 900));
@@ -1611,6 +1667,34 @@ List<ServerMessage> _activeHistory() => [
       model: 'codex',
     ),
   ),
+  const StatusMessage(status: ProcessStatus.running),
+];
+
+List<ServerMessage> _activeHistoryWithManyDetails() => [
+  const UserInputMessage(text: 'investigate', clientMessageId: 'turn-active'),
+  AssistantServerMessage(
+    message: AssistantMessage(
+      id: 'current-many',
+      role: 'assistant',
+      content: [
+        const ThinkingContent(thinking: 'current thought'),
+        const TextContent(text: 'Checking the current files.'),
+        for (var index = 0; index < 12; index++)
+          ToolUseContent(
+            id: 'many-active-tool-$index',
+            name: 'Read',
+            input: {'file_path': 'file-$index.txt'},
+          ),
+      ],
+      model: 'codex',
+    ),
+  ),
+  for (var index = 0; index < 11; index++)
+    ToolResultMessage(
+      toolUseId: 'many-active-tool-$index',
+      toolName: 'Read',
+      content: 'result $index',
+    ),
   const StatusMessage(status: ProcessStatus.running),
 ];
 

@@ -912,17 +912,18 @@ class _ChatMessageListState extends State<ChatMessageList> {
           key: ValueKey('process_details_viewport_current_$progressKey'),
           expanded: expanded,
           transientGuardianReview: currentTool?.guardianReview,
-          children: [
-            if (currentTool != null)
-              ChatCurrentToolActivityLine(
-                activity: currentTool,
-                expanded: expanded,
-                onTap: () => _toggleCurrentProgress(progressKey),
-                timestamp: _timestampForEntryIndex(
-                  entries,
-                  currentTool.entryIndex,
+          pinnedHeader: currentTool == null
+              ? null
+              : ChatCurrentToolActivityLine(
+                  activity: currentTool,
+                  expanded: expanded,
+                  onTap: () => _toggleCurrentProgress(progressKey),
+                  timestamp: _timestampForEntryIndex(
+                    entries,
+                    currentTool.entryIndex,
+                  ),
                 ),
-              ),
+          children: [
             if (expanded)
               ..._buildProcessSegmentDetails(
                 segment: segment,
@@ -1115,18 +1116,19 @@ class _ChatMessageListState extends State<ChatMessageList> {
                             expanded: expanded,
                             transientGuardianReview:
                                 currentTool?.guardianReview,
-                            children: [
-                              if (currentTool != null)
-                                ChatCurrentToolActivityLine(
-                                  activity: currentTool,
-                                  expanded: expanded,
-                                  onTap: () =>
-                                      _toggleCurrentProgress(progressKey),
-                                  timestamp: _timestampForEntryIndex(
-                                    allEntries,
-                                    currentTool.entryIndex,
+                            pinnedHeader: currentTool == null
+                                ? null
+                                : ChatCurrentToolActivityLine(
+                                    activity: currentTool,
+                                    expanded: expanded,
+                                    onTap: () =>
+                                        _toggleCurrentProgress(progressKey),
+                                    timestamp: _timestampForEntryIndex(
+                                      allEntries,
+                                      currentTool.entryIndex,
+                                    ),
                                   ),
-                                ),
+                            children: [
                               if (expanded)
                                 BlocSelector<
                                   StreamingStateCubit,
@@ -1423,11 +1425,13 @@ class _ProcessDetailsViewport extends StatefulWidget {
     super.key,
     required this.expanded,
     required this.children,
+    this.pinnedHeader,
     this.transientGuardianReview,
   });
 
   final bool expanded;
   final List<Widget> children;
+  final Widget? pinnedHeader;
   final GuardianApprovalMessage? transientGuardianReview;
 
   @override
@@ -1477,7 +1481,7 @@ class _ProcessDetailsViewportState extends State<_ProcessDetailsViewport> {
     });
   }
 
-  List<Widget> get _visibleChildren {
+  List<Widget> get _visibleScrollableChildren {
     final review = widget.transientGuardianReview;
     return [
       ...widget.children,
@@ -1496,7 +1500,7 @@ class _ProcessDetailsViewportState extends State<_ProcessDetailsViewport> {
     if (!widget.expanded) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: _visibleChildren,
+        children: [?widget.pinnedHeader, ..._visibleScrollableChildren],
       );
     }
     final media = MediaQuery.of(context);
@@ -1522,23 +1526,34 @@ class _ProcessDetailsViewportState extends State<_ProcessDetailsViewport> {
           borderRadius: BorderRadius.circular(11),
           child: ConstrainedBox(
             constraints: BoxConstraints(maxHeight: maximumHeight),
-            child: NotificationListener<ScrollNotification>(
-              // This nested viewport owns its vertical gesture. Do not let its
-              // metrics trigger the transcript's older-history pagination.
-              onNotification: (_) => true,
-              child: Scrollbar(
-                controller: _controller,
-                child: SingleChildScrollView(
-                  key: const ValueKey('process_details_scroll_view'),
-                  controller: _controller,
-                  primary: false,
-                  padding: const EdgeInsets.symmetric(vertical: 5),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: _visibleChildren,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ?widget.pinnedHeader,
+                if (_visibleScrollableChildren.isNotEmpty)
+                  Flexible(
+                    fit: FlexFit.loose,
+                    child: NotificationListener<ScrollNotification>(
+                      // This nested viewport owns its vertical gesture. Do not
+                      // let its metrics trigger older-history pagination.
+                      onNotification: (_) => true,
+                      child: Scrollbar(
+                        controller: _controller,
+                        child: SingleChildScrollView(
+                          key: const ValueKey('process_details_scroll_view'),
+                          controller: _controller,
+                          primary: false,
+                          padding: const EdgeInsets.symmetric(vertical: 5),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: _visibleScrollableChildren,
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
-                ),
-              ),
+              ],
             ),
           ),
         ),

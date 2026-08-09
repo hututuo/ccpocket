@@ -2973,6 +2973,11 @@ export function codexThreadToSessionHistory(
             itemId,
             tool,
             {
+              // App-server dynamic tools carry their semantic arguments in
+              // `arguments`. Promote only a bounded summary allowlist to the
+              // stable ToolUse input level so Mobile can render Desktop-like
+              // Read/Search summaries without duplicating arbitrary payloads.
+              ...dynamicToolSummaryInput(toolInput),
               arguments: item.arguments ?? {},
               ...(typeof item.status === "string"
                 ? { status: item.status }
@@ -3532,6 +3537,33 @@ function parseObjectLike(value: unknown): Record<string, unknown> {
     }
   }
   return asObject(value) ?? {};
+}
+
+const DYNAMIC_TOOL_SUMMARY_LIMITS = Object.freeze({
+  file_path: 4_096,
+  notebook_path: 4_096,
+  path: 4_096,
+  cwd: 4_096,
+  glob: 512,
+  pattern: 512,
+  query: 512,
+  url: 2_048,
+});
+
+function dynamicToolSummaryInput(
+  input: Record<string, unknown>,
+): Record<string, string> {
+  const summary: Record<string, string> = {};
+  for (const [key, maximumLength] of Object.entries(
+    DYNAMIC_TOOL_SUMMARY_LIMITS,
+  )) {
+    const value = input[key];
+    if (typeof value !== "string") continue;
+    const normalized = value.trim();
+    if (!normalized) continue;
+    summary[key] = normalized.slice(0, maximumLength);
+  }
+  return summary;
 }
 
 function appendTextMessage(
