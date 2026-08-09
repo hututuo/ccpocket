@@ -5724,9 +5724,35 @@ class CodexSettingsMutationTarget {
         };
 }
 
+/// Exact durable-thread target for Codex Goal RPCs.
+///
+/// [sessionId] remains on the outer message for legacy response routing. New
+/// Bridges use this envelope to address the provider thread directly without
+/// resuming it or creating a Bridge runtime. Mutations reuse their
+/// [operationId] as an idempotency key; reads intentionally omit it.
+class CodexGoalRequestTarget {
+  const CodexGoalRequestTarget.durableThread({
+    required this.codexSourceId,
+    required this.threadId,
+    this.operationId,
+  });
+
+  final String codexSourceId;
+  final String threadId;
+  final String? operationId;
+
+  Map<String, dynamic> get wireFields => <String, dynamic>{
+    'goalTarget': 'durable_thread',
+    'codexSourceId': codexSourceId,
+    'threadId': threadId,
+    if (operationId != null) 'operationId': operationId,
+  };
+}
+
 const turnAwareHistoryWindowCapability = 'turn_aware_history_window_v1';
 const codexRuntimeDetachCapability = 'codex_runtime_detach_v1';
 const codexDurableThreadSettingsCapability = 'codex_durable_thread_settings_v1';
+const codexDurableThreadGoalsCapability = 'codex_durable_thread_goals_v1';
 const historyPageCapability = 'history_page_v1';
 const historyToolDetailCapability = 'history_tool_detail_v1';
 const sessionActivityAtCapability = 'session_activity_at_v1';
@@ -6102,9 +6128,13 @@ class ClientMessage {
     );
   }
 
-  factory ClientMessage.getGoal(String sessionId) => ClientMessage._({
+  factory ClientMessage.getGoal(
+    String sessionId, {
+    CodexGoalRequestTarget? durableTarget,
+  }) => ClientMessage._({
     'type': 'get_goal',
     'sessionId': sessionId,
+    ...?durableTarget?.wireFields,
   }, delivery: ClientMessageDelivery.ephemeral);
 
   factory ClientMessage.setGoal({
@@ -6115,6 +6145,13 @@ class ClientMessage {
     bool includeTokenBudget = false,
     String? goalChangeId,
     int? expectedGoalOperationSequence,
+    bool? expectedGoalPresent,
+    String? expectedGoalObjective,
+    CodexThreadGoalStatus? expectedGoalStatus,
+    int? expectedGoalTokenBudget,
+    bool includeExpectedGoalTokenBudget = false,
+    int? expectedGoalCreatedAt,
+    CodexGoalRequestTarget? durableTarget,
   }) => ClientMessage._({
     'type': 'set_goal',
     'sessionId': sessionId,
@@ -6123,17 +6160,40 @@ class ClientMessage {
     if (includeTokenBudget) 'tokenBudget': tokenBudget,
     'goalChangeId': ?goalChangeId,
     'expectedGoalOperationSequence': ?expectedGoalOperationSequence,
+    'expectedGoalPresent': ?expectedGoalPresent,
+    'expectedGoalObjective': ?expectedGoalObjective,
+    if (expectedGoalStatus != null)
+      'expectedGoalStatus': expectedGoalStatus.value,
+    if (includeExpectedGoalTokenBudget)
+      'expectedGoalTokenBudget': expectedGoalTokenBudget,
+    'expectedGoalCreatedAt': ?expectedGoalCreatedAt,
+    ...?durableTarget?.wireFields,
   }, delivery: ClientMessageDelivery.ephemeral);
 
   factory ClientMessage.clearGoal(
     String sessionId, {
     String? goalChangeId,
     int? expectedGoalOperationSequence,
+    bool? expectedGoalPresent,
+    String? expectedGoalObjective,
+    CodexThreadGoalStatus? expectedGoalStatus,
+    int? expectedGoalTokenBudget,
+    bool includeExpectedGoalTokenBudget = false,
+    int? expectedGoalCreatedAt,
+    CodexGoalRequestTarget? durableTarget,
   }) => ClientMessage._({
     'type': 'clear_goal',
     'sessionId': sessionId,
     'goalChangeId': ?goalChangeId,
     'expectedGoalOperationSequence': ?expectedGoalOperationSequence,
+    'expectedGoalPresent': ?expectedGoalPresent,
+    'expectedGoalObjective': ?expectedGoalObjective,
+    if (expectedGoalStatus != null)
+      'expectedGoalStatus': expectedGoalStatus.value,
+    if (includeExpectedGoalTokenBudget)
+      'expectedGoalTokenBudget': expectedGoalTokenBudget,
+    'expectedGoalCreatedAt': ?expectedGoalCreatedAt,
+    ...?durableTarget?.wireFields,
   }, delivery: ClientMessageDelivery.ephemeral);
 
   factory ClientMessage.setSandboxMode(

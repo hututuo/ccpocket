@@ -408,6 +408,62 @@ describe("CodexProcess (app-server)", () => {
     });
   });
 
+  it("addresses a durable goal by thread id without resuming the thread", async () => {
+    const proc = new CodexProcess("linux");
+    const goal = {
+      threadId: "thread-durable",
+      objective: "Durable Goal",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 10,
+      updatedAt: 11,
+    };
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValueOnce({ goal: null })
+      .mockResolvedValueOnce({ goal: null })
+      .mockResolvedValueOnce({ goal })
+      .mockResolvedValueOnce({ goal })
+      .mockResolvedValueOnce({ cleared: true });
+
+    await expect(proc.getGoalSnapshotById("thread-durable")).resolves.toEqual({
+      goal: null,
+      stable: true,
+    });
+    await expect(
+      proc.setGoalById(
+        "thread-durable",
+        { objective: "Durable Goal", status: "active" },
+        { validateCurrentGoal: (current) => expect(current).toBeNull() },
+      ),
+    ).resolves.toEqual(goal);
+    await expect(
+      proc.clearGoalById("thread-durable", {
+        validateCurrentGoal: (current) => expect(current).toEqual(goal),
+      }),
+    ).resolves.toBe(true);
+
+    expect(request).toHaveBeenNthCalledWith(1, "thread/goal/get", {
+      threadId: "thread-durable",
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "thread/goal/get", {
+      threadId: "thread-durable",
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "thread/goal/set", {
+      threadId: "thread-durable",
+      objective: "Durable Goal",
+      status: "active",
+    });
+    expect(request).toHaveBeenNthCalledWith(4, "thread/goal/get", {
+      threadId: "thread-durable",
+    });
+    expect(request).toHaveBeenNthCalledWith(5, "thread/goal/clear", {
+      threadId: "thread-durable",
+    });
+  });
+
   it("persists next-turn permissions before resuming an active goal", async () => {
     const proc = new CodexProcess("linux");
     (proc as any)._threadId = "thread-next-turn";

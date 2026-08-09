@@ -953,6 +953,27 @@ describe("parseClientMessage", () => {
       goalChangeId: "goal-2",
       expectedGoalOperationSequence: 8,
     });
+    expect(
+      parseClientMessage(
+        '{"type":"get_goal","sessionId":"thread-1","goalTarget":"durable_thread","codexSourceId":"source-1","threadId":"thread-1"}',
+      ),
+    ).toEqual({
+      type: "get_goal",
+      sessionId: "thread-1",
+      goalTarget: "durable_thread",
+      codexSourceId: "source-1",
+      threadId: "thread-1",
+    });
+    expect(
+      parseClientMessage(
+        '{"type":"set_goal","sessionId":"thread-1","objective":"Durable Goal","goalTarget":"durable_thread","codexSourceId":"source-1","threadId":"thread-1","operationId":"goal-op-1","expectedGoalPresent":false}',
+      ),
+    ).toMatchObject({
+      type: "set_goal",
+      sessionId: "thread-1",
+      operationId: "goal-op-1",
+      expectedGoalPresent: false,
+    });
   });
 
   it("rejects invalid Codex goal messages", () => {
@@ -988,6 +1009,21 @@ describe("parseClientMessage", () => {
       ),
     ).toBeNull();
     expect(parseClientMessage('{"type":"clear_goal"}')).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"get_goal","sessionId":"thread-1","goalTarget":"durable_thread","codexSourceId":"source-1","threadId":"other"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"set_goal","sessionId":"thread-1","status":"paused","goalTarget":"durable_thread","codexSourceId":"source-1","threadId":"thread-1"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"clear_goal","sessionId":"thread-1","goalTarget":"durable_thread","codexSourceId":"source-1","threadId":"thread-1","operationId":"op","expectedGoalPresent":false,"expectedGoalObjective":"stale"}',
+      ),
+    ).toBeNull();
     for (const expectedGoalOperationSequence of [-1, 1.5, "1"]) {
       expect(
         parseClientMessage(

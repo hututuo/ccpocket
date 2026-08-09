@@ -354,7 +354,13 @@ export type ClientMessage =
       serviceTier: string;
       sessionId?: string;
     } & CodexSettingsMutationEnvelope)
-  | { type: "get_goal"; sessionId: string }
+  | {
+      type: "get_goal";
+      sessionId: string;
+      goalTarget?: "durable_thread";
+      codexSourceId?: string;
+      threadId?: string;
+    }
   | {
       type: "set_goal";
       sessionId: string;
@@ -363,12 +369,30 @@ export type ClientMessage =
       tokenBudget?: number | null;
       goalChangeId?: string;
       expectedGoalOperationSequence?: number;
+      expectedGoalPresent?: boolean;
+      expectedGoalObjective?: string;
+      expectedGoalStatus?: CodexGoalWritableStatus;
+      expectedGoalTokenBudget?: number | null;
+      expectedGoalCreatedAt?: number;
+      goalTarget?: "durable_thread";
+      codexSourceId?: string;
+      threadId?: string;
+      operationId?: string;
     }
   | {
       type: "clear_goal";
       sessionId: string;
       goalChangeId?: string;
       expectedGoalOperationSequence?: number;
+      expectedGoalPresent?: boolean;
+      expectedGoalObjective?: string;
+      expectedGoalStatus?: CodexGoalWritableStatus;
+      expectedGoalTokenBudget?: number | null;
+      expectedGoalCreatedAt?: number;
+      goalTarget?: "durable_thread";
+      codexSourceId?: string;
+      threadId?: string;
+      operationId?: string;
     }
   | ({
       type: "set_sandbox_mode";
@@ -1447,6 +1471,97 @@ function hasValidCodexSettingsMutationEnvelope(
   );
 }
 
+function hasValidCodexGoalEnvelope(
+  msg: Record<string, unknown>,
+  mutation: boolean,
+): boolean {
+  if (msg.goalTarget === undefined) {
+    return (
+      msg.codexSourceId === undefined &&
+      msg.threadId === undefined &&
+      msg.operationId === undefined
+    );
+  }
+  return (
+    msg.goalTarget === "durable_thread" &&
+    isValidWireIdentifier(msg.sessionId) &&
+    isValidWireIdentifier(msg.codexSourceId, 128) &&
+    isValidWireIdentifier(msg.threadId) &&
+    msg.sessionId === msg.threadId &&
+    (mutation
+      ? isValidWireIdentifier(msg.operationId, 128)
+      : msg.operationId === undefined)
+  );
+}
+
+function hasValidCodexGoalExpectation(msg: Record<string, unknown>): boolean {
+  if (
+    msg.expectedGoalPresent !== undefined &&
+    typeof msg.expectedGoalPresent !== "boolean"
+  ) {
+    return false;
+  }
+  const versionFields = [
+    msg.expectedGoalObjective,
+    msg.expectedGoalStatus,
+    msg.expectedGoalTokenBudget,
+    msg.expectedGoalCreatedAt,
+  ];
+  const hasVersionField = versionFields.some((value) => value !== undefined);
+  if (msg.expectedGoalPresent === false && hasVersionField) return false;
+  if (msg.goalTarget === "durable_thread") {
+    if (typeof msg.expectedGoalPresent !== "boolean") return false;
+    if (
+      msg.expectedGoalPresent === true &&
+      (msg.expectedGoalObjective === undefined ||
+        msg.expectedGoalStatus === undefined ||
+        !("expectedGoalTokenBudget" in msg) ||
+        msg.expectedGoalCreatedAt === undefined)
+    ) {
+      return false;
+    }
+  }
+  if (
+    msg.expectedGoalObjective !== undefined &&
+    (typeof msg.expectedGoalObjective !== "string" ||
+      msg.expectedGoalObjective.length === 0 ||
+      msg.expectedGoalObjective.length > 4000)
+  ) {
+    return false;
+  }
+  if (
+    msg.expectedGoalStatus !== undefined &&
+    ![
+      "active",
+      "paused",
+      "blocked",
+      "usageLimited",
+      "budgetLimited",
+      "complete",
+    ].includes(String(msg.expectedGoalStatus))
+  ) {
+    return false;
+  }
+  if (
+    msg.expectedGoalTokenBudget !== undefined &&
+    msg.expectedGoalTokenBudget !== null &&
+    (typeof msg.expectedGoalTokenBudget !== "number" ||
+      !Number.isSafeInteger(msg.expectedGoalTokenBudget) ||
+      msg.expectedGoalTokenBudget <= 0)
+  ) {
+    return false;
+  }
+  if (
+    msg.expectedGoalCreatedAt !== undefined &&
+    (typeof msg.expectedGoalCreatedAt !== "number" ||
+      !Number.isSafeInteger(msg.expectedGoalCreatedAt) ||
+      msg.expectedGoalCreatedAt < 0)
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export function parseClientMessage(data: string): ClientMessage | null {
   try {
     const msg = JSON.parse(data) as Record<string, unknown>;
@@ -2104,9 +2219,12 @@ export function parseClientMessage(data: string): ClientMessage | null {
         break;
       case "get_goal":
         if (typeof msg.sessionId !== "string") return null;
+        if (!hasValidCodexGoalEnvelope(msg, false)) return null;
         break;
       case "clear_goal":
         if (typeof msg.sessionId !== "string") return null;
+        if (!hasValidCodexGoalEnvelope(msg, true)) return null;
+        if (!hasValidCodexGoalExpectation(msg)) return null;
         if (
           msg.goalChangeId !== undefined &&
           (typeof msg.goalChangeId !== "string" ||
@@ -2123,6 +2241,8 @@ export function parseClientMessage(data: string): ClientMessage | null {
         break;
       case "set_goal": {
         if (typeof msg.sessionId !== "string") return null;
+        if (!hasValidCodexGoalEnvelope(msg, true)) return null;
+        if (!hasValidCodexGoalExpectation(msg)) return null;
         const hasObjective = msg.objective !== undefined;
         const hasStatus = msg.status !== undefined;
         const hasTokenBudget = msg.tokenBudget !== undefined;

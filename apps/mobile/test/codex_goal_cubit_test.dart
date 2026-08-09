@@ -15,6 +15,8 @@ class _GoalBridge extends BridgeService {
   final sentMessages = <ClientMessage>[];
   bool connected = true;
   List<SessionInfo> sessionSnapshot = const [];
+  Set<String> capabilities = const {};
+  String? sourceId;
 
   void emitMessage(ServerMessage message, {String? sessionId}) {
     _messages.add((message, sessionId));
@@ -50,6 +52,12 @@ class _GoalBridge extends BridgeService {
 
   @override
   bool get isConnected => connected;
+
+  @override
+  Set<String> get bridgeCapabilities => capabilities;
+
+  @override
+  String? get codexSourceId => sourceId;
 
   @override
   void requestSessionHistory(String sessionId) {}
@@ -149,10 +157,10 @@ void main() {
           (message) => message.type == 'get_goal',
         );
         expect(requests, hasLength(1));
-        expect(
-          jsonDecode(requests.single.toJson()),
-          {'type': 'get_goal', 'sessionId': 's-new'},
-        );
+        expect(jsonDecode(requests.single.toJson()), {
+          'type': 'get_goal',
+          'sessionId': 's-new',
+        });
       },
     );
 
@@ -230,6 +238,78 @@ void main() {
           mockBridge.sentMessages.single.delivery,
           ClientMessageDelivery.ephemeral,
         );
+      },
+    );
+
+    test(
+      'detached durable Goal loads and /goal objective uses the native Goal target',
+      () async {
+        mockBridge.capabilities = const {codexDurableThreadGoalsCapability};
+        mockBridge.sourceId = 'source-1';
+        final cubit = ChatSessionCubit(
+          sessionId: 'thread-durable',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+        );
+        addTearDown(cubit.close);
+
+        final initialRequest =
+            jsonDecode(mockBridge.sentMessages.single.toJson())
+                as Map<String, dynamic>;
+        expect(initialRequest, {
+          'type': 'get_goal',
+          'sessionId': 'thread-durable',
+          'goalTarget': 'durable_thread',
+          'codexSourceId': 'source-1',
+          'threadId': 'thread-durable',
+        });
+
+        mockBridge.emitMessage(
+          const GoalStateMessage(sessionId: 'thread-durable', goal: null),
+          sessionId: 'thread-durable',
+        );
+        await pumpEventQueue();
+        expect(cubit.state.goalStateLoaded, isTrue);
+        expect(cubit.state.goalSupport, CodexGoalSupport.supported);
+
+        mockBridge.sentMessages.clear();
+        expect(cubit.sendMessage('/goal Ship durable Goal support'), isTrue);
+        expect(cubit.state.entries, isEmpty);
+        final mutation =
+            jsonDecode(mockBridge.sentMessages.single.toJson())
+                as Map<String, dynamic>;
+        expect(mutation, containsPair('type', 'set_goal'));
+        expect(mutation, containsPair('sessionId', 'thread-durable'));
+        expect(mutation, containsPair('goalTarget', 'durable_thread'));
+        expect(
+          mutation,
+          containsPair('objective', 'Ship durable Goal support'),
+        );
+        expect(mutation, containsPair('expectedGoalPresent', false));
+        expect(mutation['operationId'], isNotEmpty);
+      },
+    );
+
+    test(
+      'detached legacy Goal request fails visibly instead of loading forever',
+      () {
+        final cubit = ChatSessionCubit(
+          sessionId: 'thread-legacy',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+        );
+        addTearDown(cubit.close);
+
+        cubit.requestGoal(userInitiated: true);
+
+        expect(cubit.state.goalStateLoaded, isFalse);
+        expect(cubit.state.goalLoadErrorKind, CodexGoalErrorKind.readFailed);
+        expect(cubit.state.goalMutationError, isNotNull);
+        expect(mockBridge.sentMessages, isEmpty);
       },
     );
 

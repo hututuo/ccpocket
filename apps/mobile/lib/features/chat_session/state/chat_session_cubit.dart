@@ -436,6 +436,26 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         sourceFingerprint.isNotEmpty;
   }
 
+  bool get _canUseDurableGoalTarget {
+    final codexSourceId = _bridge.codexSourceId?.trim();
+    return detachedPreview &&
+        _bridge.isConnected &&
+        _bridge.bridgeCapabilities.contains(
+          codexDurableThreadGoalsCapability,
+        ) &&
+        codexSourceId != null &&
+        codexSourceId.isNotEmpty;
+  }
+
+  CodexGoalRequestTarget? _durableGoalTarget({String? operationId}) {
+    if (!_canUseDurableGoalTarget) return null;
+    return CodexGoalRequestTarget.durableThread(
+      codexSourceId: _bridge.codexSourceId!.trim(),
+      threadId: sessionId,
+      operationId: operationId,
+    );
+  }
+
   String? _runtimeSessionIdForSettingsMutation() {
     if (!detachedPreview) return sessionId;
     if (_canBuildDurableSettingsMutationTarget) return sessionId;
@@ -922,15 +942,23 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (isCodex) {
         _detachedSettingsSubscription = _bridge
             .messagesForSession(sessionId)
-            .where(_isDetachedSettingsResponse)
+            .where(_isDetachedControlResponse)
             .listen(_onMessage);
+        _goalConnectionSubscription = _bridge.connectionStatus.listen(
+          _onGoalConnectionState,
+        );
         codexModelCatalogRevision.value = _bridge.codexModelCatalogRevision;
         _codexModelCatalogSubscription = _bridge.codexModelCatalogChanges
             .listen((revision) => codexModelCatalogRevision.value = revision);
         _runtimeSnapshotSubscription = _bridge.sessionList.listen(
           _synchronizeDetachedCodexRuntimeSnapshot,
         );
+        _goalSessionListSubscription = _bridge.sessionList.listen(
+          _updateCodexRuntimeSupportFromSessions,
+        );
         _synchronizeDetachedCodexRuntimeSnapshot(_bridge.sessions);
+        _updateCodexRuntimeSupportFromSessions(_bridge.sessions);
+        requestGoal();
       }
       return;
     }
@@ -1014,7 +1042,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _startStatusRefreshTimer();
   }
 
-  bool _isDetachedSettingsResponse(ServerMessage message) {
+  bool _isDetachedControlResponse(ServerMessage message) {
+    if (message is GoalStateMessage) {
+      return message.sessionId == sessionId;
+    }
     if (message is SystemMessage) {
       return message.sessionId == sessionId &&
           message.provider == Provider.codex.value &&
@@ -1026,6 +1057,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return false;
     }
     final code = message.errorCode;
+    if ((code?.startsWith('goal_') ?? false) ||
+        message.goalChangeId?.trim().isNotEmpty == true) {
+      return true;
+    }
     return code == 'set_permission_mode_rejected' ||
         code == 'set_sandbox_mode_rejected' ||
         code == 'set_codex_model_rejected' ||
@@ -2783,6 +2818,26 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   void _updateGoalSupportFromSessions(List<SessionInfo> sessions) {
     if (!isCodex || isClosed) return;
+    if (detachedPreview &&
+        _bridge.bridgeCapabilities.contains(
+          codexDurableThreadGoalsCapability,
+        )) {
+      final shouldRequest =
+          !state.goalStateLoaded &&
+          state.goalMutation == null &&
+          !_goalReadPending;
+      if (state.goalSupport != CodexGoalSupport.supported ||
+          !state.advancedGoalControlSupported) {
+        emit(
+          state.copyWith(
+            goalSupport: CodexGoalSupport.supported,
+            advancedGoalControlSupported: true,
+          ),
+        );
+      }
+      if (shouldRequest) scheduleMicrotask(requestGoal);
+      return;
+    }
     final runtimeSessionId = runtimeSessionIdForRead;
     bool? supported;
     for (final session in sessions) {
@@ -3583,6 +3638,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         goal: incoming,
         goalStateLoaded: true,
         goalSupport: CodexGoalSupport.supported,
+        advancedGoalControlSupported:
+            state.advancedGoalControlSupported ||
+            _bridge.bridgeCapabilities.contains(
+              codexDurableThreadGoalsCapability,
+            ),
         goalLoadErrorKind: null,
         goalOperationSequence: incomingSequence ?? state.goalOperationSequence,
         goalMutation: acknowledgesPending ? null : state.goalMutation,
@@ -6067,9 +6127,6 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     Iterable<String>? mentionablePaths,
     Iterable<Map<String, String>>? additionalMentions,
   }) {
-    final runtimeLease = _captureRuntimeMutationLease();
-    if (runtimeLease == null) return false;
-    final bridgeSessionId = runtimeLease.sessionId;
     final explicitMentions =
         additionalMentions?.toList(growable: false) ??
         const <Map<String, String>>[];
@@ -6105,6 +6162,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           }
       }
     }
+    final runtimeLease = _captureRuntimeMutationLease();
+    if (runtimeLease == null) return false;
+    final bridgeSessionId = runtimeLease.sessionId;
     final isOffline = !_bridge.isConnected;
     if (isCodex) {
       if (isOffline && state.queuedInput != null) return false;
@@ -6378,9 +6438,25 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void requestGoal({bool userInitiated = false}) {
-    final runtimeSessionId = runtimeSessionIdForRead;
-    if (runtimeSessionId == null) return;
     if (!isCodex || state.goalMutation != null) return;
+    final durableTarget = _durableGoalTarget();
+    final targetSessionId = durableTarget?.threadId ?? runtimeSessionIdForRead;
+    if (targetSessionId == null) {
+      if (userInitiated) {
+        _setGoalOperationError(
+          'This conversation is not attached to a Goal-capable Bridge yet.',
+          kind: CodexGoalErrorKind.readFailed,
+        );
+        emit(
+          state.copyWith(
+            goalStateLoaded: false,
+            goalSupport: CodexGoalSupport.unknown,
+            goalLoadErrorKind: CodexGoalErrorKind.readFailed,
+          ),
+        );
+      }
+      return;
+    }
     final effectiveUserInitiated =
         userInitiated || (_goalReadAwaitingThread && _goalUserRefreshPending);
     if (state.goalSupport == CodexGoalSupport.unsupported &&
@@ -6410,8 +6486,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
       return;
     }
-    if (!_codexGoalThreadReady ||
-        state.claudeSessionId?.trim().isNotEmpty != true) {
+    if (durableTarget == null &&
+        (!_codexGoalThreadReady ||
+            state.claudeSessionId?.trim().isNotEmpty != true)) {
       // A resumed session can publish its durable id before app-server has
       // actually bound that thread. Keep one coalesced read intent and retry
       // only after system/init or a non-starting authoritative SessionInfo.
@@ -6453,7 +6530,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           ),
         );
       }
-      _bridge.send(ClientMessage.getGoal(runtimeSessionId));
+      _bridge.send(
+        ClientMessage.getGoal(targetSessionId, durableTarget: durableTarget),
+      );
     } catch (error) {
       _completeGoalRead();
       emit(
@@ -6487,14 +6566,21 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         tokenBudget: tokenBudget,
         expectedOperationSequence: state.goalOperationSequence,
       ),
-      (changeId, runtimeSessionId) => ClientMessage.setGoal(
-        sessionId: runtimeSessionId,
+      (changeId, targetSessionId, durableTarget) => ClientMessage.setGoal(
+        sessionId: targetSessionId,
         objective: normalized,
         status: CodexThreadGoalStatus.active,
         tokenBudget: tokenBudget,
         includeTokenBudget: includeTokenBudget,
         goalChangeId: changeId,
         expectedGoalOperationSequence: state.goalOperationSequence,
+        expectedGoalPresent: state.goal != null,
+        expectedGoalObjective: state.goal?.objective,
+        expectedGoalStatus: state.goal?.status,
+        expectedGoalTokenBudget: state.goal?.tokenBudget,
+        includeExpectedGoalTokenBudget: state.goal != null,
+        expectedGoalCreatedAt: state.goal?.createdAt,
+        durableTarget: durableTarget,
       ),
     );
   }
@@ -6526,13 +6612,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         tokenBudget: tokenBudget,
         expectedOperationSequence: state.goalOperationSequence,
       ),
-      (changeId, runtimeSessionId) => ClientMessage.setGoal(
-        sessionId: runtimeSessionId,
+      (changeId, targetSessionId, durableTarget) => ClientMessage.setGoal(
+        sessionId: targetSessionId,
         objective: includeObjective ? normalized : null,
         tokenBudget: tokenBudget,
         includeTokenBudget: includeTokenBudget,
         goalChangeId: changeId,
         expectedGoalOperationSequence: state.goalOperationSequence,
+        expectedGoalPresent: state.goal != null,
+        expectedGoalObjective: state.goal?.objective,
+        expectedGoalStatus: state.goal?.status,
+        expectedGoalTokenBudget: state.goal?.tokenBudget,
+        includeExpectedGoalTokenBudget: state.goal != null,
+        expectedGoalCreatedAt: state.goal?.createdAt,
+        durableTarget: durableTarget,
       ),
     );
   }
@@ -6578,14 +6671,21 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         tokenBudget: tokenBudget,
         expectedOperationSequence: state.goalOperationSequence,
       ),
-      (changeId, runtimeSessionId) => ClientMessage.setGoal(
-        sessionId: runtimeSessionId,
+      (changeId, targetSessionId, durableTarget) => ClientMessage.setGoal(
+        sessionId: targetSessionId,
         objective: normalizedObjective,
         status: CodexThreadGoalStatus.active,
         tokenBudget: tokenBudget,
         includeTokenBudget: includeTokenBudget,
         goalChangeId: changeId,
         expectedGoalOperationSequence: state.goalOperationSequence,
+        expectedGoalPresent: state.goal != null,
+        expectedGoalObjective: state.goal?.objective,
+        expectedGoalStatus: state.goal?.status,
+        expectedGoalTokenBudget: state.goal?.tokenBudget,
+        includeExpectedGoalTokenBudget: state.goal != null,
+        expectedGoalCreatedAt: state.goal?.createdAt,
+        durableTarget: durableTarget,
       ),
     );
   }
@@ -6604,11 +6704,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         status: status,
         expectedOperationSequence: state.goalOperationSequence,
       ),
-      (changeId, runtimeSessionId) => ClientMessage.setGoal(
-        sessionId: runtimeSessionId,
+      (changeId, targetSessionId, durableTarget) => ClientMessage.setGoal(
+        sessionId: targetSessionId,
         status: status,
         goalChangeId: changeId,
         expectedGoalOperationSequence: state.goalOperationSequence,
+        expectedGoalPresent: state.goal != null,
+        expectedGoalObjective: state.goal?.objective,
+        expectedGoalStatus: state.goal?.status,
+        expectedGoalTokenBudget: state.goal?.tokenBudget,
+        includeExpectedGoalTokenBudget: state.goal != null,
+        expectedGoalCreatedAt: state.goal?.createdAt,
+        durableTarget: durableTarget,
       ),
     );
   }
@@ -6621,24 +6728,42 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         kind: CodexGoalMutationKind.clear,
         expectedOperationSequence: state.goalOperationSequence,
       ),
-      (changeId, runtimeSessionId) => ClientMessage.clearGoal(
-        runtimeSessionId,
+      (changeId, targetSessionId, durableTarget) => ClientMessage.clearGoal(
+        targetSessionId,
         goalChangeId: changeId,
         expectedGoalOperationSequence: state.goalOperationSequence,
+        expectedGoalPresent: state.goal != null,
+        expectedGoalObjective: state.goal?.objective,
+        expectedGoalStatus: state.goal?.status,
+        expectedGoalTokenBudget: state.goal?.tokenBudget,
+        includeExpectedGoalTokenBudget: state.goal != null,
+        expectedGoalCreatedAt: state.goal?.createdAt,
+        durableTarget: durableTarget,
       ),
     );
   }
 
   bool _beginGoalMutation(
     CodexGoalMutation mutation,
-    ClientMessage Function(String changeId, String runtimeSessionId)
+    ClientMessage Function(
+      String changeId,
+      String targetSessionId,
+      CodexGoalRequestTarget? durableTarget,
+    )
     buildMessage,
   ) {
     if (!isCodex || state.goalMutation != null) return false;
-    final runtimeSessionId = _runtimeSessionIdForMutation(
-      allowSteerable: false,
-    );
-    if (runtimeSessionId == null) return false;
+    final durableTarget = _durableGoalTarget(operationId: mutation.id);
+    final targetSessionId =
+        durableTarget?.threadId ??
+        _runtimeSessionIdForMutation(allowSteerable: false);
+    if (targetSessionId == null) {
+      _setGoalOperationError(
+        'This conversation is not attached to a writable Goal target.',
+        kind: CodexGoalErrorKind.readFailed,
+      );
+      return false;
+    }
     if (state.goalSupport == CodexGoalSupport.unsupported) {
       _setGoalOperationError(
         'This Codex runtime does not support Goal controls.',
@@ -6695,7 +6820,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       requestGoal();
     });
     try {
-      _bridge.send(buildMessage(mutation.id, runtimeSessionId));
+      _bridge.send(buildMessage(mutation.id, targetSessionId, durableTarget));
       return true;
     } catch (error) {
       if (state.goalMutation?.id == mutation.id) {

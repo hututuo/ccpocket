@@ -13070,6 +13070,126 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     await bridge.close();
   });
 
+  it("reads and updates a durable Goal without creating a runtime session", async () => {
+    vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
+    const sharedRuntimeControl = {
+      ready: true,
+      connectionGeneration: 1,
+      pilotGates: { allowTurnStart: true },
+      on: vi.fn(),
+      off: vi.fn(),
+      recordThreadSettingsUpdated: vi.fn(),
+    } as any;
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      codexActionBrokerRuntime: writableCodexActionBrokerRuntime(),
+      sharedRuntimeControl,
+    });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    (bridge as any).wss.clients.add(ws);
+    const sendMessage = vi.spyOn(bridge as any, "send");
+    const broadcast = vi.spyOn(bridge as any, "broadcast");
+    const goal = {
+      threadId: "thread-durable-goal",
+      objective: "Ship durable Goals",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 10,
+      updatedAt: 11,
+    } as const;
+    const getGoalSnapshotById = vi.fn(async () => ({
+      goal: null,
+      stable: true,
+    }));
+    const setGoalById = vi.fn(
+      async (
+        _threadId: string,
+        _update: unknown,
+        options: { validateCurrentGoal?: (goal: null) => void },
+      ) => {
+        options.validateCurrentGoal?.(null);
+        return goal;
+      },
+    );
+    const stop = vi.fn();
+    vi.spyOn(bridge as any, "createStandaloneCodexProcess").mockResolvedValue({
+      getGoalSnapshotById,
+      setGoalById,
+      stop,
+    });
+    const target = {
+      sessionId: goal.threadId,
+      goalTarget: "durable_thread",
+      codexSourceId: (bridge as any).codexSourceId,
+      threadId: goal.threadId,
+    } as const;
+
+    await (bridge as any).handleClientMessage(
+      { type: "get_goal", ...target },
+      ws,
+    );
+    expect(getGoalSnapshotById).toHaveBeenCalledWith(goal.threadId);
+    expect(sendMessage).toHaveBeenCalledWith(
+      ws,
+      expect.objectContaining({
+        type: "goal_state",
+        sessionId: goal.threadId,
+        goal: null,
+      }),
+    );
+
+    ws.send.mockClear();
+    const mutation = {
+      type: "set_goal",
+      ...target,
+      objective: goal.objective,
+      status: "active",
+      operationId: "goal-op-1",
+      goalChangeId: "change-1",
+      expectedGoalPresent: false,
+    } as const;
+    await (bridge as any).handleClientMessage(mutation, ws);
+    await (bridge as any).handleClientMessage(mutation, ws);
+
+    expect(setGoalById).toHaveBeenCalledOnce();
+    expect(setGoalById).toHaveBeenCalledWith(
+      goal.threadId,
+      { objective: goal.objective, status: "active" },
+      expect.objectContaining({ validateCurrentGoal: expect.any(Function) }),
+    );
+    expect(() =>
+      (bridge as any).assertDurableCodexGoalExpectation(
+        {
+          type: "set_goal",
+          sessionId: goal.threadId,
+          objective: "Edited",
+          expectedGoalPresent: true,
+          expectedGoalObjective: goal.objective,
+          expectedGoalStatus: goal.status,
+          expectedGoalTokenBudget: goal.tokenBudget,
+          expectedGoalCreatedAt: goal.createdAt,
+        },
+        {
+          ...goal,
+          tokensUsed: 500,
+          timeUsedSeconds: 60,
+          updatedAt: 999,
+        },
+      ),
+    ).not.toThrow();
+    expect(
+      broadcast.mock.calls.filter(
+        ([message]: unknown[]) =>
+          (message as { type?: string }).type === "goal_state",
+      ),
+    ).toHaveLength(2);
+    expect((bridge as any).sessionManager.list()).toEqual([]);
+
+    await bridge.close();
+  });
+
   it("updates durable thread settings without a runtime target or Desktop ownership downgrade", async () => {
     vi.stubEnv("BRIDGE_CODEX_APP_SERVER_MODE", "daemon");
     const actionRuntime = writableCodexActionBrokerRuntime();
@@ -13133,6 +13253,12 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         .find((message: any) => message.type === "session_list")
         .bridgeCapabilities,
     ).toContain("codex_durable_thread_settings_v1");
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .find((message: any) => message.type === "session_list")
+        .bridgeCapabilities,
+    ).toContain("codex_durable_thread_goals_v1");
 
     ws.send.mockClear();
     const planRequest = {

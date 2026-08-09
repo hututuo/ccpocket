@@ -2412,10 +2412,7 @@ class _CodexChatBody extends HookWidget {
         return null;
       }
       chatSessionCubit.requestGoal();
-      final timer = Timer.periodic(const Duration(seconds: 5), (_) {
-        chatSessionCubit.requestGoal();
-      });
-      return timer.cancel;
+      return null;
     }, [sessionId, isBackground, bridgeState]);
 
     useEffect(

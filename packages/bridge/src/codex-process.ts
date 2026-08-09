@@ -788,6 +788,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private emittedGuardianReviewIdOrder: string[] = [];
   private goalOperationSequence = 0;
   private goalOrderingGeneration = 0;
+  /** Thread scope for initialize-only durable Goal RPCs. */
+  private directGoalThreadId: string | null = null;
   private _lastGoalRpcSequence: number | undefined;
   private expectedGoalNotifications: Array<{
     sequence: number;
@@ -1942,10 +1944,16 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!this._threadId) {
       throw new Error("No thread ID available for goal lookup");
     }
+    return this.getGoalSnapshotById(this._threadId);
+  }
+
+  /** Read Goal state for an exact durable thread without resuming it. */
+  async getGoalSnapshotById(threadId: string): Promise<CodexGoalSnapshot> {
+    const targetThreadId = this.bindDirectGoalThread(threadId);
     this.beginGoalRpc();
     const orderingGeneration = this.goalOrderingGeneration;
     const response = (await this.request("thread/goal/get", {
-      threadId: this._threadId,
+      threadId: targetThreadId,
     })) as Record<string, unknown>;
     return {
       goal: response.goal == null ? null : parseCodexGoal(response.goal),
@@ -1965,9 +1973,23 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!this._threadId) {
       throw new Error("No thread ID available for goal update");
     }
+    return this.setGoalById(this._threadId, update, options);
+  }
+
+  /** Create or update Goal state for an exact durable thread. */
+  async setGoalById(
+    threadId: string,
+    update: {
+      objective?: string;
+      status?: CodexGoalWritableStatus;
+      tokenBudget?: number | null;
+    },
+    options: CodexGoalMutationOptions = {},
+  ): Promise<CodexGoal> {
+    const targetThreadId = this.bindDirectGoalThread(threadId);
     await this.waitForPendingThreadSettingsUpdates();
     if (options.validateCurrentGoal) {
-      const snapshot = await this.getGoalSnapshot();
+      const snapshot = await this.getGoalSnapshotById(targetThreadId);
       if (!snapshot.stable) throw new CodexGoalSnapshotConflictError();
       // Intentionally synchronous: no notification can interleave between the
       // validated app-server snapshot and registering the mutation RPC.
@@ -1975,7 +1997,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     }
     this.beginGoalRpc();
     const response = (await this.request("thread/goal/set", {
-      threadId: this._threadId,
+      threadId: targetThreadId,
       ...(update.objective !== undefined
         ? { objective: update.objective.trim() }
         : {}),
@@ -1992,20 +2014,47 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!this._threadId) {
       throw new Error("No thread ID available for goal clear");
     }
+    return this.clearGoalById(this._threadId, options);
+  }
+
+  /** Remove Goal state from an exact durable thread. */
+  async clearGoalById(
+    threadId: string,
+    options: CodexGoalMutationOptions = {},
+  ): Promise<boolean> {
+    const targetThreadId = this.bindDirectGoalThread(threadId);
     await this.waitForPendingThreadSettingsUpdates();
     if (options.validateCurrentGoal) {
-      const snapshot = await this.getGoalSnapshot();
+      const snapshot = await this.getGoalSnapshotById(targetThreadId);
       if (!snapshot.stable) throw new CodexGoalSnapshotConflictError();
       options.validateCurrentGoal(snapshot.goal);
     }
     this.beginGoalRpc();
     const response = (await this.request("thread/goal/clear", {
-      threadId: this._threadId,
+      threadId: targetThreadId,
     })) as Record<string, unknown>;
     if (typeof response.cleared !== "boolean") {
       throw new Error("thread/goal/clear returned an invalid response");
     }
     return response.cleared;
+  }
+
+  private bindDirectGoalThread(threadId: string): string {
+    const normalized = threadId.trim();
+    if (!normalized) throw new Error("Goal RPC requires a thread ID");
+    if (this._threadId !== null && this._threadId !== normalized) {
+      throw new Error("Goal RPC target does not match the attached thread");
+    }
+    if (
+      this.directGoalThreadId !== null &&
+      this.directGoalThreadId !== normalized
+    ) {
+      throw new Error(
+        "This Goal RPC process is already scoped to another thread",
+      );
+    }
+    this.directGoalThreadId = normalized;
+    return normalized;
   }
 
   private nextGoalOperationSequence(): number {
@@ -2866,6 +2915,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this._sharedRuntimePilotGates = snapshotSharedRuntimePilotGates();
     this.setStatus("starting");
     this._threadId = null;
+    this.directGoalThreadId = null;
     this._sharedRuntimeAttachMode = options?.sharedRuntimeAttach ?? null;
     this._attachmentRuntimeGeneration = null;
     this._authoritativeThreadStatus = { type: "unknown" };
@@ -6036,8 +6086,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     // In shared app-server modes, early notifications can belong to another
     // client, so explicit-thread notifications are ignored until this process
     // has its own authoritative thread id.
-    if (!this._threadId) return true;
-    return threadId !== this._threadId;
+    const boundThreadId =
+      method.startsWith("thread/goal/") && this.directGoalThreadId !== null
+        ? this.directGoalThreadId
+        : this._threadId;
+    if (!boundThreadId) return true;
+    return threadId !== boundThreadId;
   }
 
   private handleTurnCompleted(turn: Record<string, unknown> | undefined): void {

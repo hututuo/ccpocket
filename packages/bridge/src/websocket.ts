@@ -333,6 +333,22 @@ type SharedCodexSettingsOperation = {
   createdAt: number;
   settledAt?: number;
 };
+type DurableCodexGoalMessage = Extract<
+  ClientMessage,
+  { type: "get_goal" | "set_goal" | "clear_goal" }
+>;
+type DurableCodexGoalEnvelope = {
+  goalTarget: "durable_thread";
+  codexSourceId: string;
+  threadId: string;
+  operationId?: string;
+};
+type DurableCodexGoalOperation = {
+  fingerprint: string;
+  promise: Promise<CodexGoal | null>;
+  createdAt: number;
+  settledAt?: number;
+};
 type CodexProviderHistoryCursorState = {
   threadId: string;
   headToken?: string;
@@ -453,6 +469,8 @@ const CODEX_HOME_IDENTITY_CAPABILITY = "codex_home_identity_v1";
 const CODEX_RUNTIME_DETACH_CAPABILITY = "codex_runtime_detach_v1";
 const CODEX_DURABLE_THREAD_SETTINGS_CAPABILITY =
   "codex_durable_thread_settings_v1";
+const CODEX_DURABLE_THREAD_GOALS_CAPABILITY =
+  "codex_durable_thread_goals_v1";
 const BRIDGE_APPLICATION_READINESS_CAPABILITY =
   "bridge_application_readiness_v1";
 const PUSH_NOTIFICATION_PREFERENCES_CAPABILITY =
@@ -1866,6 +1884,10 @@ export class BridgeWebSocketServer {
     string,
     SharedCodexSettingsOperation
   >();
+  private readonly durableCodexGoalOperations = new Map<
+    string,
+    DurableCodexGoalOperation
+  >();
   private backgroundActivityBroadcastScheduled = false;
   private readonly sessionCatalogMonitor: SessionCatalogMonitorControl;
   private resumeOperations = new Map<string, ResumeOperation>();
@@ -1875,6 +1897,10 @@ export class BridgeWebSocketServer {
       this.sharedRuntimeControl?.pilotGates.allowTurnStart === true &&
       this.codexActionBrokerRuntime !== null
     );
+  }
+
+  private get durableCodexThreadGoalsSupported(): boolean {
+    return this.durableCodexThreadSettingsSupported;
   }
 
   constructor(options: BridgeServerOptions) {
@@ -6038,6 +6064,16 @@ export class BridgeWebSocketServer {
         ws,
         msg as SharedCodexSettingsMessage,
         durableSettingsEnvelope,
+      );
+      return;
+    }
+
+    const durableGoalEnvelope = this.durableCodexGoalEnvelope(msg);
+    if (durableGoalEnvelope) {
+      await this.handleDurableCodexGoal(
+        ws,
+        msg as DurableCodexGoalMessage,
+        durableGoalEnvelope,
       );
       return;
     }
@@ -13137,6 +13173,305 @@ export class BridgeWebSocketServer {
     };
   }
 
+  private durableCodexGoalEnvelope(
+    msg: ClientMessage,
+  ): DurableCodexGoalEnvelope | null {
+    if (
+      msg.type !== "get_goal" &&
+      msg.type !== "set_goal" &&
+      msg.type !== "clear_goal"
+    ) {
+      return null;
+    }
+    if (msg.goalTarget !== "durable_thread") return null;
+    const codexSourceId = msg.codexSourceId?.trim();
+    const threadId = msg.threadId?.trim();
+    const operationId =
+      msg.type === "get_goal" ? undefined : msg.operationId?.trim();
+    if (!codexSourceId || !threadId || msg.sessionId !== threadId) return null;
+    if (msg.type !== "get_goal" && !operationId) return null;
+    return {
+      goalTarget: "durable_thread",
+      codexSourceId,
+      threadId,
+      ...(operationId ? { operationId } : {}),
+    };
+  }
+
+  private assertDurableCodexGoalSource(
+    envelope: DurableCodexGoalEnvelope,
+  ): void {
+    if (envelope.codexSourceId !== this.codexSourceId) {
+      throw new SessionLifecycleError(
+        "archive_identity_mismatch",
+        "This Goal belongs to a different configured Codex source.",
+      );
+    }
+  }
+
+  private assertDurableCodexGoalWriter(): void {
+    if (
+      !this.durableCodexThreadGoalsSupported ||
+      this.sharedRuntimeControl?.ready !== true ||
+      this.codexActionBrokerRuntime?.health.ready !== true ||
+      this.codexActionBrokerRuntime.health.writerLeaseHeld !== true
+    ) {
+      throw new SharedCodexSettingsRejectedError(
+        "codex_durable_thread_goals_unavailable",
+        "Durable Codex Goal updates are unavailable until the shared writer is ready.",
+      );
+    }
+  }
+
+  private assertDurableCodexGoalExpectation(
+    message: Extract<
+      DurableCodexGoalMessage,
+      { type: "set_goal" | "clear_goal" }
+    >,
+    current: CodexGoal | null,
+  ): void {
+    if (
+      message.expectedGoalPresent !== undefined &&
+      message.expectedGoalPresent !== (current !== null)
+    ) {
+      throw new CodexGoalConflictError(
+        message.expectedGoalOperationSequence,
+        undefined,
+      );
+    }
+    if (
+      current !== null &&
+      (message.expectedGoalObjective !== current.objective ||
+        message.expectedGoalStatus !== current.status ||
+        message.expectedGoalTokenBudget !== current.tokenBudget ||
+        message.expectedGoalCreatedAt !== current.createdAt)
+    ) {
+      throw new CodexGoalConflictError(
+        message.expectedGoalOperationSequence,
+        undefined,
+      );
+    }
+  }
+
+  private durableCodexGoalFingerprint(
+    message: Extract<
+      DurableCodexGoalMessage,
+      { type: "set_goal" | "clear_goal" }
+    >,
+  ): string {
+    return JSON.stringify({
+      type: message.type,
+      goalChangeId: message.goalChangeId,
+      objective: message.type === "set_goal" ? message.objective : undefined,
+      status: message.type === "set_goal" ? message.status : undefined,
+      tokenBudget:
+        message.type === "set_goal" ? message.tokenBudget : undefined,
+      expectedGoalPresent: message.expectedGoalPresent,
+      expectedGoalObjective: message.expectedGoalObjective,
+      expectedGoalStatus: message.expectedGoalStatus,
+      expectedGoalTokenBudget: message.expectedGoalTokenBudget,
+      expectedGoalCreatedAt: message.expectedGoalCreatedAt,
+    });
+  }
+
+  private pruneDurableCodexGoalOperations(now = Date.now()): void {
+    for (const [key, operation] of this.durableCodexGoalOperations) {
+      if (
+        operation.settledAt !== undefined &&
+        now - operation.settledAt > SHARED_CODEX_SETTINGS_OPERATION_TTL_MS
+      ) {
+        this.durableCodexGoalOperations.delete(key);
+      }
+    }
+    while (
+      this.durableCodexGoalOperations.size >=
+      SHARED_CODEX_SETTINGS_OPERATION_MAX
+    ) {
+      const oldest = [...this.durableCodexGoalOperations].find(
+        ([, operation]) => operation.settledAt !== undefined,
+      )?.[0];
+      if (oldest === undefined) break;
+      this.durableCodexGoalOperations.delete(oldest);
+    }
+  }
+
+  private async readDurableCodexGoal(threadId: string): Promise<CodexGoal | null> {
+    const process = await this.createStandaloneCodexProcess();
+    try {
+      return (await process.getGoalSnapshotById(threadId)).goal;
+    } finally {
+      process.stop();
+    }
+  }
+
+  private runDurableCodexGoalMutation(
+    message: Extract<
+      DurableCodexGoalMessage,
+      { type: "set_goal" | "clear_goal" }
+    >,
+    envelope: DurableCodexGoalEnvelope,
+  ): Promise<CodexGoal | null> {
+    this.assertDurableCodexGoalSource(envelope);
+    this.assertDurableCodexGoalWriter();
+    this.pruneDurableCodexGoalOperations();
+    const operationId = envelope.operationId!;
+    const key = [envelope.codexSourceId, envelope.threadId, operationId].join(
+      "\u0000",
+    );
+    const fingerprint = this.durableCodexGoalFingerprint(message);
+    const existing = this.durableCodexGoalOperations.get(key);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) {
+        throw new SharedCodexSettingsRejectedError(
+          "codex_durable_thread_goal_operation_conflict",
+          "This Goal operation ID was already used for a different update.",
+        );
+      }
+      return existing.promise;
+    }
+    if (
+      this.durableCodexGoalOperations.size >=
+      SHARED_CODEX_SETTINGS_OPERATION_MAX
+    ) {
+      throw new SharedCodexSettingsRejectedError(
+        "codex_durable_thread_goals_busy",
+        "Too many durable Goal operations are still pending.",
+      );
+    }
+
+    const promise = (async () => {
+      const release = await this.acquireCodexThreadOperation(envelope.threadId);
+      try {
+        this.assertDurableCodexGoalWriter();
+        const process = await this.createStandaloneCodexProcess();
+        try {
+          if (message.type === "set_goal") {
+            return await process.setGoalById(
+              envelope.threadId,
+              {
+                ...(message.objective !== undefined
+                  ? { objective: message.objective }
+                  : {}),
+                ...(message.status !== undefined
+                  ? { status: message.status }
+                  : {}),
+                ...(message.tokenBudget !== undefined
+                  ? { tokenBudget: message.tokenBudget }
+                  : {}),
+              },
+              {
+                validateCurrentGoal: (current) => {
+                  this.assertDurableCodexGoalWriter();
+                  this.assertDurableCodexGoalExpectation(message, current);
+                },
+              },
+            );
+          }
+          await process.clearGoalById(envelope.threadId, {
+            validateCurrentGoal: (current) => {
+              this.assertDurableCodexGoalWriter();
+              this.assertDurableCodexGoalExpectation(message, current);
+            },
+          });
+          return null;
+        } finally {
+          process.stop();
+        }
+      } finally {
+        release();
+      }
+    })();
+    const operation: DurableCodexGoalOperation = {
+      fingerprint,
+      promise,
+      createdAt: Date.now(),
+    };
+    this.durableCodexGoalOperations.set(key, operation);
+    void promise.then(
+      () => {
+        operation.settledAt = Date.now();
+      },
+      () => {
+        operation.settledAt = Date.now();
+      },
+    );
+    return promise;
+  }
+
+  private async handleDurableCodexGoal(
+    ws: WebSocket,
+    message: DurableCodexGoalMessage,
+    envelope: DurableCodexGoalEnvelope,
+  ): Promise<void> {
+    try {
+      this.assertDurableCodexGoalSource(envelope);
+      if (!this.durableCodexThreadGoalsSupported) {
+        throw new SharedCodexSettingsRejectedError(
+          "codex_durable_thread_goals_unavailable",
+          "This Bridge cannot address Goals on detached Codex threads.",
+        );
+      }
+      if (message.type === "get_goal") {
+        const goal = await this.readDurableCodexGoal(envelope.threadId);
+        if (!this.clientSupportsRawCodexGoalStatus(ws, goal)) {
+          this.sendGoalStatusUnsupported(ws, envelope.threadId);
+          return;
+        }
+        this.send(ws, {
+          type: "goal_state",
+          sessionId: envelope.threadId,
+          goal,
+        });
+        return;
+      }
+
+      const goal = await this.runDurableCodexGoalMutation(message, envelope);
+      if (!this.clientSupportsRawCodexGoalStatus(ws, goal)) {
+        this.sendGoalStatusUnsupported(
+          ws,
+          envelope.threadId,
+          message.goalChangeId,
+        );
+        return;
+      }
+      const response = {
+        type: "goal_state",
+        sessionId: envelope.threadId,
+        goal,
+        ...(message.goalChangeId
+          ? { goalChangeId: message.goalChangeId }
+          : {}),
+      };
+      this.broadcast(response);
+      if (!this.wss.clients.has(ws)) this.send(ws, response);
+    } catch (error) {
+      const conflict = error instanceof CodexGoalConflictError;
+      this.send(ws, {
+        type: "error",
+        sessionId: envelope.threadId,
+        message: conflict
+          ? "The Goal changed before this update could be applied. Refresh and try again."
+          : errorMessageOf(error),
+        errorCode: conflict
+          ? "goal_conflict"
+          : message.type === "get_goal"
+            ? isUnsupportedCodexGoalRpc(error)
+              ? "goal_get_unsupported"
+              : "goal_get_failed"
+            : message.type === "set_goal"
+              ? isUnsupportedCodexGoalRpc(error)
+                ? "goal_set_unsupported"
+                : "goal_set_failed"
+              : isUnsupportedCodexGoalRpc(error)
+                ? "goal_clear_unsupported"
+                : "goal_clear_failed",
+        ...(message.type !== "get_goal" && message.goalChangeId
+          ? { goalChangeId: message.goalChangeId }
+          : {}),
+      });
+    }
+  }
+
   private async resolveDurableCodexSettingsContext(
     threadId: string,
   ): Promise<DurableCodexSettingsContext> {
@@ -14078,6 +14413,9 @@ export class BridgeWebSocketServer {
         ...(this.durableCodexThreadSettingsSupported
           ? [CODEX_DURABLE_THREAD_SETTINGS_CAPABILITY]
           : []),
+        ...(this.durableCodexThreadGoalsSupported
+          ? [CODEX_DURABLE_THREAD_GOALS_CAPABILITY]
+          : []),
         BRIDGE_APPLICATION_READINESS_CAPABILITY,
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
         PUSH_REGISTRATION_STATUS_CAPABILITY,
@@ -14185,6 +14523,9 @@ export class BridgeWebSocketServer {
         CODEX_RUNTIME_DETACH_CAPABILITY,
         ...(this.durableCodexThreadSettingsSupported
           ? [CODEX_DURABLE_THREAD_SETTINGS_CAPABILITY]
+          : []),
+        ...(this.durableCodexThreadGoalsSupported
+          ? [CODEX_DURABLE_THREAD_GOALS_CAPABILITY]
           : []),
         BRIDGE_APPLICATION_READINESS_CAPABILITY,
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
