@@ -169,6 +169,21 @@ describe("BridgeApiKeyAuthenticator", () => {
       ),
     ).toBe(false);
   });
+
+  it("keeps a paired-device bearer valid for the WebSocket lifetime", () => {
+    const auth = new BridgeApiKeyAuthenticator();
+    const release = auth.registerDeviceSession("socket-device-bearer", {
+      remoteAddress: "100.64.0.2",
+      ttlMs: null,
+    });
+    const requestFromDevice = request({
+      remoteAddress: "100.64.0.2",
+      authorization: "Bearer socket-device-bearer",
+    });
+    expect(auth.acceptsPrivateHttpRequest(requestFromDevice)).toBe(true);
+    release();
+    expect(auth.acceptsPrivateHttpRequest(requestFromDevice)).toBe(false);
+  });
 });
 
 describe("Bridge private HTTP route classification", () => {

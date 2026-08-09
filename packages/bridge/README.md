@@ -83,28 +83,37 @@ variables are required.
 Every Bridge creates an Ed25519 key on first start and stores the private key
 atomically at `$HOME/.ccpocket/bridge-identity-v1.json` (`0600`) inside the
 `0700` state directory. The public-key SHA-256 fingerprint is
-`bridge_` + SHA-256(raw public key) is `bridgeIdentityId`; hardware serial numbers, MAC addresses, and
-`IOPlatformUUID` are never read. `GET /bridge/identity?nonce=<base64url>` is
+`bridge_` + SHA-256(raw public key). Hardware serial numbers, MAC addresses,
+and `IOPlatformUUID` are never read. `GET /bridge/identity?nonce=<base64url>` is
 unauthenticated and returns a no-store signed proof containing the nonce,
 `bridgeIdentityId`, the existing `bridgeInstanceId`, display-only computer
 name, and authentication methods.
 
 Set `BRIDGE_AUTH_MODE=paired_or_key` to allow a socket without an API key to
-enter a ten-second authentication-only state. It receives only a challenge
-until a trusted mobile Ed25519 key signs that challenge. The trusted-device
+enter an authentication-only state. It receives only a challenge until a
+trusted mobile Ed25519 key signs that challenge. A Mac-local approval request
+extends that state only until the five-minute pairing request expires; once
+approved, Bridge issues a fresh short-lived challenge. The trusted-device
 table is `$HOME/.ccpocket/trusted-mobile-devices-v1.json`; pairing state and
 one-time token hashes are stored separately in
 `$HOME/.ccpocket/pairing-state-v1.json`, both `0600` and atomically replaced.
 Legacy API-key sockets remain immediately usable and can enroll their current
 device for a no-interruption migration. Device-authenticated peers receive a
-short-lived HTTP bearer bound to the socket peer; the existing mutation
-password/Face ID step-up remains independent.
+private-HTTP bearer bound to that authenticated WebSocket and network peer;
+closing the socket revokes it. The existing mutation password/Face ID step-up
+remains independent.
+
+Identity, trust, and pending-pairing files fail closed if they are malformed,
+unreadable, or replaced by a symlink. Bridge creates a new identity only when
+the identity file does not yet exist; it never silently rotates a saved
+identity after corruption.
 
 Use the local CLI for pairing approval (the six-digit code is not a remote
 secret):
 
 ```bash
-ccpocket-bridge pair qr             # one-time token and QR/deep link
+ccpocket-bridge pair qr --public-ws-url ws://192.168.1.10:8765
+                                    # one-time token and QR/deep link
 ccpocket-bridge pair list --json
 ccpocket-bridge pair approve 123456
 ccpocket-bridge pair reject 123456

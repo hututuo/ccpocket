@@ -72,7 +72,7 @@ export class BridgeApiKeyAuthenticator {
   private readonly authenticatedPeers = new Map<string, number>();
   private readonly deviceSessions = new Map<
     string,
-    { digest: Buffer; remoteAddress?: string; expiresAt: number }
+    { digest: Buffer; remoteAddress?: string; expiresAt?: number }
   >();
 
   constructor(apiKey?: string) {
@@ -106,12 +106,22 @@ export class BridgeApiKeyAuthenticator {
     const bearer = bearerCredential(req);
     if (bearer !== undefined) {
       if (this.matches(bearer)) return true;
-      const session = this.deviceSessions.get(digestCredential(bearer).toString("hex"));
-      if (!session || session.expiresAt <= Date.now()) {
-        if (session) this.deviceSessions.delete(digestCredential(bearer).toString("hex"));
+      const session = this.deviceSessions.get(
+        digestCredential(bearer).toString("hex"),
+      );
+      if (
+        !session ||
+        (session.expiresAt !== undefined && session.expiresAt <= Date.now())
+      ) {
+        if (session)
+          this.deviceSessions.delete(digestCredential(bearer).toString("hex"));
         return false;
       }
-      if (session.remoteAddress && session.remoteAddress !== directPeerAddress(req)) return false;
+      if (
+        session.remoteAddress &&
+        session.remoteAddress !== directPeerAddress(req)
+      )
+        return false;
       return true;
     }
     if (!this.expectedDigest || req.headers.origin) return false;
@@ -124,7 +134,7 @@ export class BridgeApiKeyAuthenticator {
   /** Register a short-lived bearer issued after Ed25519 device authentication. */
   registerDeviceSession(
     token: string,
-    options: { remoteAddress?: string; ttlMs?: number } = {},
+    options: { remoteAddress?: string; ttlMs?: number | null } = {},
   ): () => void {
     if (!token || token.length > MAX_API_KEY_BYTES) return () => undefined;
     const digest = digestCredential(token);
@@ -132,7 +142,12 @@ export class BridgeApiKeyAuthenticator {
     this.deviceSessions.set(key, {
       digest,
       remoteAddress: options.remoteAddress,
-      expiresAt: Date.now() + Math.max(1_000, options.ttlMs ?? 10 * 60_000),
+      ...(options.ttlMs === null
+        ? {}
+        : {
+            expiresAt:
+              Date.now() + Math.max(1_000, options.ttlMs ?? 10 * 60_000),
+          }),
     });
     let released = false;
     return () => {

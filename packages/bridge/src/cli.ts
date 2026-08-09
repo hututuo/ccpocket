@@ -5,6 +5,7 @@ import { startServer } from "./index.js";
 import { getPackageVersion } from "./version.js";
 import { hasFlag, parseCliArgs, parseFlag } from "./cli-args.js";
 import { parseBridgePort } from "./bridge-port.js";
+import { validatePublicWsUrl } from "./startup-info.js";
 import { BridgeIdentityStore } from "./bridge-identity.js";
 import { BridgeDevicePairing } from "./bridge-device-pairing.js";
 import {
@@ -265,7 +266,10 @@ if (parsed.helpRequested) {
   const runPairingCommand = async (): Promise<void> => {
     const identity = await BridgeIdentityStore.load();
     const history = new PromptHistoryStore(
-      promptHistoryStoreFileForPort(port, process.env.BRIDGE_PROMPT_HISTORY_FILE),
+      promptHistoryStoreFileForPort(
+        port,
+        process.env.BRIDGE_PROMPT_HISTORY_FILE,
+      ),
     );
     await history.init();
     const pairing = new BridgeDevicePairing({
@@ -275,19 +279,35 @@ if (parsed.helpRequested) {
     await pairing.init();
     if (action === "list") {
       const snapshot = await pairing.snapshot();
-      console.log(hasFlag(parsed, "json") ? JSON.stringify(snapshot) : JSON.stringify(snapshot, null, 2));
+      console.log(
+        hasFlag(parsed, "json")
+          ? JSON.stringify(snapshot)
+          : JSON.stringify(snapshot, null, 2),
+      );
       return;
     }
     if (action === "approve" || action === "reject") {
       const code = parsed.positionals[2];
-      if (!code) throw new Error(`pair ${action} requires a six-digit confirmation code`);
+      if (!code)
+        throw new Error(
+          `pair ${action} requires a six-digit confirmation code`,
+        );
       if (action === "approve") {
         const device = await pairing.approve(code);
-        console.log(hasFlag(parsed, "json") ? JSON.stringify(device) : `Paired ${device.deviceId}`);
+        console.log(
+          hasFlag(parsed, "json")
+            ? JSON.stringify(device)
+            : `Paired ${device.deviceId}`,
+        );
       } else {
         const changed = await pairing.reject(code);
-        if (!changed) throw new Error("Pairing confirmation code is invalid or expired");
-        console.log(hasFlag(parsed, "json") ? JSON.stringify({ rejected: true }) : "Pairing request rejected");
+        if (!changed)
+          throw new Error("Pairing confirmation code is invalid or expired");
+        console.log(
+          hasFlag(parsed, "json")
+            ? JSON.stringify({ rejected: true })
+            : "Pairing request rejected",
+        );
       }
       return;
     }
@@ -296,11 +316,22 @@ if (parsed.helpRequested) {
       if (!deviceId) throw new Error("pair revoke requires a deviceId");
       const changed = await pairing.revoke(deviceId);
       if (!changed) throw new Error("Trusted device not found");
-      console.log(hasFlag(parsed, "json") ? JSON.stringify({ revoked: true, deviceId }) : `Revoked ${deviceId}`);
+      console.log(
+        hasFlag(parsed, "json")
+          ? JSON.stringify({ revoked: true, deviceId })
+          : `Revoked ${deviceId}`,
+      );
       return;
     }
     if (action === "qr") {
-      const bridgeUrl = process.env.BRIDGE_PUBLIC_WS_URL?.trim() || `ws://127.0.0.1:${port}`;
+      const rawBridgeUrl =
+        parseFlag(parsed, "public-ws-url") ??
+        process.env.BRIDGE_PUBLIC_WS_URL ??
+        `ws://127.0.0.1:${port}`;
+      const bridgeUrl = validatePublicWsUrl(rawBridgeUrl);
+      if (!bridgeUrl) {
+        throw new Error("pair qr requires a valid ws:// or wss:// public URL");
+      }
       const qr = await pairing.createPairingToken({ bridgeUrl });
       if (hasFlag(parsed, "json")) {
         console.log(JSON.stringify(qr));
@@ -308,14 +339,21 @@ if (parsed.helpRequested) {
         console.log(`Pairing link (expires ${qr.expiresAt}): ${qr.deepLink}`);
         try {
           const { default: QRCode } = await import("qrcode");
-          console.log(await QRCode.toString(qr.deepLink, { type: "terminal", small: true }));
+          console.log(
+            await QRCode.toString(qr.deepLink, {
+              type: "terminal",
+              small: true,
+            }),
+          );
         } catch {
           console.log("(QR rendering unavailable; use the deep link above)");
         }
       }
       return;
     }
-    throw new Error("pair command requires list, approve, reject, revoke, or qr");
+    throw new Error(
+      "pair command requires list, approve, reject, revoke, or qr",
+    );
   };
   runPairingCommand().catch((error) => {
     console.error(`Pair command failed: ${startupErrorMessage(error)}`);

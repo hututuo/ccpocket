@@ -32,6 +32,7 @@ const TRUSTED_FILE = "trusted-mobile-devices-v1.json";
 const PAIRING_FILE = "pairing-state-v1.json";
 const MAX_ID_LENGTH = 128;
 const MAX_PUBLIC_KEY_LENGTH = 512;
+const MAX_STATE_FILE_BYTES = 1024 * 1024;
 const RAW_ED25519_PUBLIC_KEY_BYTES = 32;
 const SPKI_ED25519_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
@@ -172,15 +173,23 @@ function validatePublicKey(value: unknown): string {
 
 function publicKeyObject(value: string) {
   const raw = Buffer.from(value, "base64url");
-  const der = raw.length === RAW_ED25519_PUBLIC_KEY_BYTES
-    ? Buffer.concat([SPKI_ED25519_PREFIX, raw])
-    : raw;
+  const der =
+    raw.length === RAW_ED25519_PUBLIC_KEY_BYTES
+      ? Buffer.concat([SPKI_ED25519_PREFIX, raw])
+      : raw;
   return createPublicKey({ key: der, format: "der", type: "spki" });
 }
 
 function normalizeScopes(scopes: string[] | undefined): string[] {
   const values = scopes ?? ["owner"];
-  return [...new Set(values.filter((value) => typeof value === "string" && /^[\x21-\x7e]{1,64}$/.test(value)))].slice(0, 16);
+  return [
+    ...new Set(
+      values.filter(
+        (value) =>
+          typeof value === "string" && /^[\x21-\x7e]{1,64}$/.test(value),
+      ),
+    ),
+  ].slice(0, 16);
 }
 
 function cloneDevice(device: TrustedMobileDevice): TrustedMobileDevice {
@@ -191,7 +200,10 @@ function clonePending(value: PendingPairing): PendingPairing {
   return { ...value, scopes: [...value.scopes] };
 }
 
-async function ensurePrivatePath(path: string, directoryMode: 0o700 | 0o600): Promise<void> {
+async function ensurePrivatePath(
+  path: string,
+  directoryMode: 0o700 | 0o600,
+): Promise<void> {
   const parent = dirname(path);
   await mkdir(parent, { recursive: true, mode: 0o700 });
   await chmod(parent, 0o700).catch(() => undefined);
@@ -217,13 +229,26 @@ async function atomicJsonWrite(path: string, value: unknown): Promise<void> {
   }
 }
 
-async function readJson<T>(path: string, fallback: T): Promise<T> {
+async function readJsonIfPresent(path: string): Promise<unknown | undefined> {
   try {
     const stats = await lstat(path);
-    if (stats.isSymbolicLink() || !stats.isFile()) throw new Error("not regular");
-    return JSON.parse(await readFile(path, "utf8")) as T;
-  } catch {
-    return fallback;
+    if (stats.isSymbolicLink() || !stats.isFile()) {
+      throw new Error(`Bridge pairing state is not a regular file: ${path}`);
+    }
+    if (stats.size > MAX_STATE_FILE_BYTES) {
+      throw new Error(`Bridge pairing state is too large: ${path}`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as unknown;
+  } catch (error) {
+    throw new Error(
+      `Bridge pairing state is unreadable or malformed: ${path}`,
+      { cause: error },
+    );
   }
 }
 
@@ -251,12 +276,109 @@ async function withLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
 
 function validState(value: unknown): value is TrustedState {
   const state = value as Partial<TrustedState>;
-  return state?.version === DEVICE_PAIRING_VERSION && Number.isInteger(state.revision) && Array.isArray(state.devices);
+  if (!(
+    state?.version === DEVICE_PAIRING_VERSION &&
+    Number.isInteger(state.revision) &&
+    (state.revision ?? -1) >= 0 &&
+    Array.isArray(state.devices) &&
+    state.devices.length <= 512
+  )) {
+    return false;
+  }
+  const ids = new Set<string>();
+  return state.devices.every((device) => {
+    if (!device || typeof device !== "object") return false;
+    try {
+      validateId(device.deviceId, "deviceId");
+      validatePublicKey(device.publicKey);
+    } catch {
+      return false;
+    }
+    if (ids.has(device.deviceId)) return false;
+    ids.add(device.deviceId);
+    return (
+      validLabel(device.label) &&
+      validIsoDate(device.createdAt) &&
+      validIsoDate(device.lastSeenAt) &&
+      (device.revokedAt === undefined || validIsoDate(device.revokedAt)) &&
+      validScopes(device.scopes)
+    );
+  });
 }
 
 function validPairingState(value: unknown): value is PairingState {
   const state = value as Partial<PairingState>;
-  return state?.version === DEVICE_PAIRING_VERSION && Number.isInteger(state.revision) && Array.isArray(state.tokens) && Array.isArray(state.pending);
+  if (!(
+    state?.version === DEVICE_PAIRING_VERSION &&
+    Number.isInteger(state.revision) &&
+    (state.revision ?? -1) >= 0 &&
+    Array.isArray(state.tokens) &&
+    state.tokens.length <= 64 &&
+    Array.isArray(state.pending) &&
+    state.pending.length <= 128
+  )) {
+    return false;
+  }
+  const requestIds = new Set<string>();
+  return (
+    state.tokens.every(
+      (token) =>
+        token != null &&
+        typeof token === "object" &&
+        typeof token.tokenHash === "string" &&
+        /^[a-f0-9]{64}$/.test(token.tokenHash) &&
+        validIsoDate(token.createdAt) &&
+        validIsoDate(token.expiresAt) &&
+        (token.usedAt === undefined || validIsoDate(token.usedAt)),
+    ) &&
+    state.pending.every((request) => {
+      if (!request || typeof request !== "object") return false;
+      try {
+        validateId(request.requestId, "requestId");
+        validateId(request.deviceId, "deviceId");
+        validatePublicKey(request.publicKey);
+      } catch {
+        return false;
+      }
+      if (requestIds.has(request.requestId)) return false;
+      requestIds.add(request.requestId);
+      return (
+        /^\d{6}$/.test(request.confirmationCode) &&
+        validLabel(request.label) &&
+        validScopes(request.scopes) &&
+        validIsoDate(request.createdAt) &&
+        validIsoDate(request.expiresAt) &&
+        (request.approvedAt === undefined ||
+          validIsoDate(request.approvedAt)) &&
+        (request.rejectedAt === undefined ||
+          validIsoDate(request.rejectedAt)) &&
+        !(request.approvedAt && request.rejectedAt)
+      );
+    })
+  );
+}
+
+function validIsoDate(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function validLabel(value: unknown): value is string | undefined {
+  return (
+    value === undefined ||
+    (typeof value === "string" &&
+      value.length <= 80 &&
+      !/[\u0000-\u001f\u007f]/.test(value))
+  );
+}
+
+function validScopes(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= 16 &&
+    value.every(
+      (scope) => typeof scope === "string" && /^[\x21-\x7e]{1,64}$/.test(scope),
+    )
+  );
 }
 
 function canonicalDeviceChallengePayload(input: {
@@ -290,30 +412,60 @@ export class BridgeDevicePairing {
   private readonly challenges = new Map<string, ChallengeRecord>();
 
   constructor(options: DevicePairingOptions) {
-    this.stateDir = options.stateDir ?? process.env.CCPOCKET_STATE_DIR ?? DEFAULT_STATE_DIR;
+    this.stateDir =
+      options.stateDir ?? process.env.CCPOCKET_STATE_DIR ?? DEFAULT_STATE_DIR;
     this.trustedFile = options.trustedFile ?? join(this.stateDir, TRUSTED_FILE);
     this.pairingFile = options.pairingFile ?? join(this.stateDir, PAIRING_FILE);
-    this.bridgeInstanceId = validateId(options.bridgeInstanceId, "bridgeInstanceId");
+    this.bridgeInstanceId = validateId(
+      options.bridgeInstanceId,
+      "bridgeInstanceId",
+    );
     this.bridgeIdentity = options.bridgeIdentity;
     this.now = options.now ?? Date.now;
-    this.maxDevices = Math.min(Math.max(options.maxDevices ?? MAX_TRUSTED_DEVICES, 1), MAX_TRUSTED_DEVICES);
+    this.maxDevices = Math.min(
+      Math.max(options.maxDevices ?? MAX_TRUSTED_DEVICES, 1),
+      MAX_TRUSTED_DEVICES,
+    );
   }
 
   async init(): Promise<void> {
     await mkdir(this.stateDir, { recursive: true, mode: 0o700 });
     const stateStats = await lstat(this.stateDir);
     if (stateStats.isSymbolicLink() || !stateStats.isDirectory()) {
-      throw new Error("Bridge pairing state directory must be a real directory");
+      throw new Error(
+        "Bridge pairing state directory must be a real directory",
+      );
     }
     await chmod(this.stateDir, 0o700).catch(() => undefined);
-    const trusted = await readJson<unknown>(this.trustedFile, undefined);
-    if (!validState(trusted)) {
-      await atomicJsonWrite(this.trustedFile, { version: DEVICE_PAIRING_VERSION, revision: 0, devices: [] } satisfies TrustedState);
-    } else await chmod(this.trustedFile, 0o600).catch(() => undefined);
-    const pairing = await readJson<unknown>(this.pairingFile, undefined);
-    if (!validPairingState(pairing)) {
-      await atomicJsonWrite(this.pairingFile, { version: DEVICE_PAIRING_VERSION, revision: 0, tokens: [], pending: [] } satisfies PairingState);
-    } else await chmod(this.pairingFile, 0o600).catch(() => undefined);
+    const trusted = await readJsonIfPresent(this.trustedFile);
+    if (trusted === undefined) {
+      await atomicJsonWrite(this.trustedFile, {
+        version: DEVICE_PAIRING_VERSION,
+        revision: 0,
+        devices: [],
+      } satisfies TrustedState);
+    } else {
+      if (!validState(trusted)) {
+        throw new Error(
+          `Bridge trusted-device state is invalid: ${this.trustedFile}`,
+        );
+      }
+      await chmod(this.trustedFile, 0o600);
+    }
+    const pairing = await readJsonIfPresent(this.pairingFile);
+    if (pairing === undefined) {
+      await atomicJsonWrite(this.pairingFile, {
+        version: DEVICE_PAIRING_VERSION,
+        revision: 0,
+        tokens: [],
+        pending: [],
+      } satisfies PairingState);
+    } else {
+      if (!validPairingState(pairing)) {
+        throw new Error(`Bridge pairing state is invalid: ${this.pairingFile}`);
+      }
+      await chmod(this.pairingFile, 0o600);
+    }
   }
 
   get pairingAvailable(): boolean {
@@ -321,40 +473,49 @@ export class BridgeDevicePairing {
   }
 
   async snapshot(): Promise<PairingSnapshot> {
-    const [trustedRaw, pairingRaw] = await Promise.all([
-      readJson<unknown>(this.trustedFile, undefined),
-      readJson<unknown>(this.pairingFile, undefined),
+    const [trusted, pairing] = await Promise.all([
+      this.readTrustedState(),
+      this.readPairingState(),
     ]);
-    const trusted = validState(trustedRaw) ? trustedRaw : { version: DEVICE_PAIRING_VERSION, revision: 0, devices: [] } satisfies TrustedState;
-    const pairing = validPairingState(pairingRaw) ? pairingRaw : { version: DEVICE_PAIRING_VERSION, revision: 0, tokens: [], pending: [] } satisfies PairingState;
     const now = this.now();
     return {
       trustedRevision: trusted.revision,
       pairingRevision: pairing.revision,
       devices: trusted.devices.map(cloneDevice),
-      pending: pairing.pending.filter((request) => Date.parse(request.expiresAt) > now).map(clonePending),
+      pending: pairing.pending
+        .filter((request) => Date.parse(request.expiresAt) > now)
+        .map(clonePending),
     };
   }
 
-  async trustedDevice(deviceId: string): Promise<TrustedMobileDevice | undefined> {
-    const state = await readJson<unknown>(this.trustedFile, undefined);
-    if (!validState(state)) return undefined;
-    const found = state.devices.find((device) => device.deviceId === deviceId && !device.revokedAt);
+  async trustedDevice(
+    deviceId: string,
+  ): Promise<TrustedMobileDevice | undefined> {
+    const state = await this.readTrustedState();
+    const found = state.devices.find(
+      (device) => device.deviceId === deviceId && !device.revokedAt,
+    );
     return found ? cloneDevice(found) : undefined;
   }
 
-  async createPairingToken(input: { baseUrl?: string; bridgeUrl?: string } = {}): Promise<PairingQrInfo> {
+  async createPairingToken(
+    input: { baseUrl?: string; bridgeUrl?: string } = {},
+  ): Promise<PairingQrInfo> {
     return withLock(this.pairingFile, async () => {
-      const raw = await readJson<unknown>(this.pairingFile, undefined);
-      const state: PairingState = validPairingState(raw)
-        ? raw
-        : { version: DEVICE_PAIRING_VERSION, revision: 0, tokens: [], pending: [] };
+      const state = await this.readPairingState();
       const now = this.now();
-      state.tokens = state.tokens.filter((entry) => !entry.usedAt && Date.parse(entry.expiresAt) > now);
-      if (state.tokens.length >= MAX_PAIRING_TOKENS) throw new Error("Pairing token limit reached");
+      state.tokens = state.tokens.filter(
+        (entry) => !entry.usedAt && Date.parse(entry.expiresAt) > now,
+      );
+      if (state.tokens.length >= MAX_PAIRING_TOKENS)
+        throw new Error("Pairing token limit reached");
       const token = randomToken();
       const expiresAt = new Date(now + PAIRING_TOKEN_TTL_MS).toISOString();
-      state.tokens.push({ tokenHash: tokenHash(token), createdAt: new Date(now).toISOString(), expiresAt });
+      state.tokens.push({
+        tokenHash: tokenHash(token),
+        createdAt: new Date(now).toISOString(),
+        expiresAt,
+      });
       state.revision += 1;
       await atomicJsonWrite(this.pairingFile, state);
       const params = new URLSearchParams({
@@ -364,18 +525,41 @@ export class BridgeDevicePairing {
       });
       const bridgeUrl = input.bridgeUrl?.trim() || input.baseUrl?.trim();
       if (bridgeUrl) params.set("url", bridgeUrl);
-      return { token, expiresAt, deepLink: `ccpocket://pair?${params.toString()}` };
+      return {
+        token,
+        expiresAt,
+        deepLink: `ccpocket://pair?${params.toString()}`,
+      };
     });
   }
 
-  async requestPairing(input: DevicePairingRequest): Promise<
+  async requestPairing(
+    input: DevicePairingRequest,
+  ): Promise<
     | { status: "paired"; device: TrustedMobileDevice }
     | { status: "pending"; request: PendingPairing }
+    | { status: "rejected"; request: PendingPairing }
   > {
     const deviceId = validateId(input.deviceId, "deviceId");
     const publicKey = validatePublicKey(input.publicKey);
-    const label = input.label?.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 80) || undefined;
+    const label =
+      input.label
+        ?.replace(/[\u0000-\u001f\u007f]/g, " ")
+        .trim()
+        .slice(0, 80) || undefined;
     const scopes = normalizeScopes(input.scopes);
+    const trusted = await this.trustedDevice(deviceId);
+    if (trusted) {
+      if (trusted.publicKey !== publicKey) {
+        throw new Error(
+          "Device identity is already trusted with a different key",
+        );
+      }
+      // Best-effort consume a fresh QR token, while keeping retries after a
+      // lost response recoverable through the already-bound device key.
+      if (input.token) await this.consumeToken(input.token);
+      return { status: "paired", device: trusted };
+    }
     if (input.token) {
       const paired = await this.consumeToken(input.token);
       if (!paired) throw new Error("Pairing token is invalid or expired");
@@ -386,17 +570,38 @@ export class BridgeDevicePairing {
     return withLock(this.pairingFile, async () => {
       const state = await this.readPairingState();
       const now = this.now();
-      state.pending = state.pending.filter((request) => Date.parse(request.expiresAt) > now && !request.rejectedAt);
-      const existing = state.pending.find((request) => request.deviceId === deviceId && request.publicKey === publicKey);
-      if (existing) return { status: "pending", request: clonePending(existing) };
-      if (state.pending.filter((request) => !request.approvedAt).length >= MAX_PENDING_PAIRINGS) throw new Error("Pending pairing limit reached");
-      const usedCodes = new Set(state.pending.map((request) => request.confirmationCode));
+      state.pending = state.pending.filter(
+        (request) => Date.parse(request.expiresAt) > now,
+      );
+      const existing = state.pending.find(
+        (request) =>
+          request.deviceId === deviceId && request.publicKey === publicKey,
+      );
+      if (existing?.rejectedAt) {
+        return { status: "rejected" as const, request: clonePending(existing) };
+      }
+      if (existing)
+        return { status: "pending", request: clonePending(existing) };
+      if (
+        state.pending.filter((request) => !request.approvedAt).length >=
+        MAX_PENDING_PAIRINGS
+      )
+        throw new Error("Pending pairing limit reached");
+      const usedCodes = new Set(
+        state.pending.map((request) => request.confirmationCode),
+      );
       let confirmationCode = "";
       for (let attempt = 0; attempt < 32; attempt += 1) {
-        const candidate = String(100000 + randomBytes(4).readUInt32BE(0) % 900000);
-        if (!usedCodes.has(candidate)) { confirmationCode = candidate; break; }
+        const candidate = String(
+          100000 + (randomBytes(4).readUInt32BE(0) % 900000),
+        );
+        if (!usedCodes.has(candidate)) {
+          confirmationCode = candidate;
+          break;
+        }
       }
-      if (!confirmationCode) throw new Error("Could not allocate a pairing confirmation code");
+      if (!confirmationCode)
+        throw new Error("Could not allocate a pairing confirmation code");
       const request: PendingPairing = {
         requestId: randomUUID(),
         confirmationCode,
@@ -418,19 +623,36 @@ export class BridgeDevicePairing {
     return withLock(this.pairingFile, async () => {
       const state = await this.readPairingState();
       const now = this.now();
-      const request = state.pending.find((entry) => entry.confirmationCode === code && !entry.rejectedAt && !entry.approvedAt && Date.parse(entry.expiresAt) > now);
-      if (!request) throw new Error("Pairing confirmation code is invalid or expired");
+      const request = state.pending.find(
+        (entry) =>
+          entry.confirmationCode === code &&
+          !entry.rejectedAt &&
+          !entry.approvedAt &&
+          Date.parse(entry.expiresAt) > now,
+      );
+      if (!request)
+        throw new Error("Pairing confirmation code is invalid or expired");
       request.approvedAt = new Date(now).toISOString();
       state.revision += 1;
       await this.writePairingState(state);
-      return this.enroll({ deviceId: request.deviceId, publicKey: request.publicKey, label: request.label, scopes: request.scopes });
+      return this.enroll({
+        deviceId: request.deviceId,
+        publicKey: request.publicKey,
+        label: request.label,
+        scopes: request.scopes,
+      });
     });
   }
 
   async reject(code: string): Promise<boolean> {
     return withLock(this.pairingFile, async () => {
       const state = await this.readPairingState();
-      const request = state.pending.find((entry) => entry.confirmationCode === code && !entry.approvedAt && !entry.rejectedAt);
+      const request = state.pending.find(
+        (entry) =>
+          entry.confirmationCode === code &&
+          !entry.approvedAt &&
+          !entry.rejectedAt,
+      );
       if (!request || Date.parse(request.expiresAt) <= this.now()) return false;
       request.rejectedAt = isoNow(this.now);
       state.revision += 1;
@@ -443,7 +665,9 @@ export class BridgeDevicePairing {
     validateId(deviceId, "deviceId");
     return withLock(this.trustedFile, async () => {
       const state = await this.readTrustedState();
-      const device = state.devices.find((entry) => entry.deviceId === deviceId && !entry.revokedAt);
+      const device = state.devices.find(
+        (entry) => entry.deviceId === deviceId && !entry.revokedAt,
+      );
       if (!device) return false;
       device.revokedAt = isoNow(this.now);
       state.revision += 1;
@@ -452,17 +676,31 @@ export class BridgeDevicePairing {
     });
   }
 
-  async enroll(input: { deviceId: string; publicKey: string; label?: string; scopes?: string[] }): Promise<TrustedMobileDevice> {
+  async enroll(input: {
+    deviceId: string;
+    publicKey: string;
+    label?: string;
+    scopes?: string[];
+  }): Promise<TrustedMobileDevice> {
     const deviceId = validateId(input.deviceId, "deviceId");
     const publicKey = validatePublicKey(input.publicKey);
-    const label = input.label?.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 80) || undefined;
+    const label =
+      input.label
+        ?.replace(/[\u0000-\u001f\u007f]/g, " ")
+        .trim()
+        .slice(0, 80) || undefined;
     const scopes = normalizeScopes(input.scopes);
     return withLock(this.trustedFile, async () => {
       const state = await this.readTrustedState();
       const now = isoNow(this.now);
-      const existing = state.devices.find((entry) => entry.deviceId === deviceId);
+      const existing = state.devices.find(
+        (entry) => entry.deviceId === deviceId,
+      );
       if (existing) {
-        if (existing.publicKey !== publicKey && !existing.revokedAt) throw new Error("Device identity is already trusted with a different key");
+        if (existing.publicKey !== publicKey && !existing.revokedAt)
+          throw new Error(
+            "Device identity is already trusted with a different key",
+          );
         existing.publicKey = publicKey;
         existing.label = label;
         existing.scopes = scopes;
@@ -472,8 +710,11 @@ export class BridgeDevicePairing {
         await this.writeTrustedState(state);
         return cloneDevice(existing);
       }
-      const activeCount = state.devices.filter((entry) => !entry.revokedAt).length;
-      if (activeCount >= this.maxDevices) throw new Error("Trusted device limit reached");
+      const activeCount = state.devices.filter(
+        (entry) => !entry.revokedAt,
+      ).length;
+      if (activeCount >= this.maxDevices)
+        throw new Error("Trusted device limit reached");
       const device: TrustedMobileDevice = {
         deviceId,
         publicKey,
@@ -500,18 +741,31 @@ export class BridgeDevicePairing {
       used: false,
     };
     this.challenges.set(challenge.challengeId, challenge);
-    while (this.challenges.size > 256) this.challenges.delete(this.challenges.keys().next().value!);
+    while (this.challenges.size > 256)
+      this.challenges.delete(this.challenges.keys().next().value!);
     return { ...challenge };
   }
 
   async authenticate(input: DeviceAuthRequest): Promise<TrustedMobileDevice> {
     const challenge = this.challenges.get(input.challengeId);
-    if (!challenge || challenge.used || Date.parse(challenge.expiresAt) <= this.now()) throw new Error("Device challenge is invalid or expired");
+    if (
+      !challenge ||
+      challenge.used ||
+      Date.parse(challenge.expiresAt) <= this.now()
+    )
+      throw new Error("Device challenge is invalid or expired");
     const deviceId = validateId(input.deviceId, "deviceId");
     const publicKey = validatePublicKey(input.publicKey);
-    if (input.nonce !== challenge.nonce || input.expiresAt !== challenge.expiresAt || input.bridgeIdentityId !== challenge.bridgeIdentityId || input.bridgeInstanceId !== challenge.bridgeInstanceId) throw new Error("Device challenge binding is invalid");
+    if (
+      input.nonce !== challenge.nonce ||
+      input.expiresAt !== challenge.expiresAt ||
+      input.bridgeIdentityId !== challenge.bridgeIdentityId ||
+      input.bridgeInstanceId !== challenge.bridgeInstanceId
+    )
+      throw new Error("Device challenge binding is invalid");
     const trusted = await this.trustedDevice(deviceId);
-    if (!trusted || trusted.publicKey !== publicKey || trusted.revokedAt) throw new Error("Device is not trusted");
+    if (!trusted || trusted.publicKey !== publicKey || trusted.revokedAt)
+      throw new Error("Device is not trusted");
     const payload = canonicalDeviceChallengePayload({
       challengeId: challenge.challengeId,
       nonce: challenge.nonce,
@@ -522,7 +776,12 @@ export class BridgeDevicePairing {
     });
     let valid = false;
     try {
-      valid = verify(null, Buffer.from(payload, "utf8"), publicKeyObject(publicKey), Buffer.from(input.signature, "base64url"));
+      valid = verify(
+        null,
+        Buffer.from(payload, "utf8"),
+        publicKeyObject(publicKey),
+        Buffer.from(input.signature, "base64url"),
+      );
     } catch {
       valid = false;
     }
@@ -531,8 +790,11 @@ export class BridgeDevicePairing {
     this.challenges.delete(challenge.challengeId);
     await withLock(this.trustedFile, async () => {
       const state = await this.readTrustedState();
-      const current = state.devices.find((entry) => entry.deviceId === deviceId && !entry.revokedAt);
-      if (!current || current.publicKey !== publicKey) throw new Error("Device is no longer trusted");
+      const current = state.devices.find(
+        (entry) => entry.deviceId === deviceId && !entry.revokedAt,
+      );
+      if (!current || current.publicKey !== publicKey)
+        throw new Error("Device is no longer trusted");
       current.lastSeenAt = isoNow(this.now);
       state.revision += 1;
       await this.writeTrustedState(state);
@@ -541,10 +803,18 @@ export class BridgeDevicePairing {
   }
 
   private async consumeToken(token: string): Promise<boolean> {
-    if (typeof token !== "string" || token.length < 40 || !/^[A-Za-z0-9_-]+$/.test(token)) return false;
+    if (
+      typeof token !== "string" ||
+      token.length < 40 ||
+      !/^[A-Za-z0-9_-]+$/.test(token)
+    )
+      return false;
     return withLock(this.pairingFile, async () => {
       const state = await this.readPairingState();
-      const entry = state.tokens.find((candidate) => candidate.tokenHash === tokenHash(token) && !candidate.usedAt);
+      const entry = state.tokens.find(
+        (candidate) =>
+          candidate.tokenHash === tokenHash(token) && !candidate.usedAt,
+      );
       if (!entry || Date.parse(entry.expiresAt) <= this.now()) return false;
       entry.usedAt = isoNow(this.now);
       state.revision += 1;
@@ -554,8 +824,13 @@ export class BridgeDevicePairing {
   }
 
   private async readTrustedState(): Promise<TrustedState> {
-    const raw = await readJson<unknown>(this.trustedFile, undefined);
-    return validState(raw) ? raw : { version: DEVICE_PAIRING_VERSION, revision: 0, devices: [] };
+    const raw = await readJsonIfPresent(this.trustedFile);
+    if (!validState(raw)) {
+      throw new Error(
+        `Bridge trusted-device state is invalid: ${this.trustedFile}`,
+      );
+    }
+    return raw;
   }
 
   private async writeTrustedState(state: TrustedState): Promise<void> {
@@ -563,8 +838,11 @@ export class BridgeDevicePairing {
   }
 
   private async readPairingState(): Promise<PairingState> {
-    const raw = await readJson<unknown>(this.pairingFile, undefined);
-    return validPairingState(raw) ? raw : { version: DEVICE_PAIRING_VERSION, revision: 0, tokens: [], pending: [] };
+    const raw = await readJsonIfPresent(this.pairingFile);
+    if (!validPairingState(raw)) {
+      throw new Error(`Bridge pairing state is invalid: ${this.pairingFile}`);
+    }
+    return raw;
   }
 
   private async writePairingState(state: PairingState): Promise<void> {

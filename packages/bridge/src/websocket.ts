@@ -227,8 +227,8 @@ import {
 import { BridgeApiKeyAuthenticator } from "./bridge-http-auth.js";
 import {
   BridgeDevicePairing,
-  DEVICE_AUTH_TIMEOUT_MS,
   type BridgeAuthMode,
+  type PairingChallenge,
 } from "./bridge-device-pairing.js";
 import {
   BridgeIdentityStore,
@@ -1549,9 +1549,16 @@ export class BridgeWebSocketServer {
   private readonly ownerFullDiskRead: boolean;
   private readonly connectionAuth = new WeakMap<
     WebSocket,
-    { kind: "api_key" | "device" | "open" | "pending"; deviceId?: string; releaseHttpSession?: () => void }
+    {
+      kind: "api_key" | "device" | "open" | "pending";
+      deviceId?: string;
+      releaseHttpSession?: () => void;
+    }
   >();
-  private readonly connectionAuthTimeouts = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>();
+  private readonly connectionAuthTimeouts = new WeakMap<
+    WebSocket,
+    ReturnType<typeof setTimeout>
+  >();
   private allowedDirs: string[];
   private imageStore: ImageStore | null;
   private galleryStore: GalleryStore | null;
@@ -1723,7 +1730,8 @@ export class BridgeWebSocketServer {
     } = options;
     this.apiKeyAuthenticator =
       apiKeyAuthenticator ?? new BridgeApiKeyAuthenticator(apiKey);
-    this.authMode = authMode ?? (this.apiKeyAuthenticator.isConfigured ? "key" : "open");
+    this.authMode =
+      authMode ?? (this.apiKeyAuthenticator.isConfigured ? "key" : "open");
     this.bridgeIdentity = bridgeIdentity ?? null;
     this.devicePairing = devicePairing ?? null;
     this.ownerFullDiskRead = ownerFullDiskRead === true;
@@ -1844,7 +1852,10 @@ export class BridgeWebSocketServer {
           this.apiKeyAuthenticator.acceptsWebSocketRequest(info.req);
         let tokenPresent = false;
         try {
-          tokenPresent = new URL(info.req.url ?? "/", "http://bridge.invalid").searchParams.has("token");
+          tokenPresent = new URL(
+            info.req.url ?? "/",
+            "http://bridge.invalid",
+          ).searchParams.has("token");
         } catch {
           tokenPresent = false;
         }
@@ -2201,7 +2212,10 @@ export class BridgeWebSocketServer {
         this.apiKeyAuthenticator.acceptsWebSocketRequest(req);
       let tokenPresent = false;
       try {
-        tokenPresent = new URL(req.url ?? "/", "http://bridge.invalid").searchParams.has("token");
+        tokenPresent = new URL(
+          req.url ?? "/",
+          "http://bridge.invalid",
+        ).searchParams.has("token");
       } catch {
         tokenPresent = false;
       }
@@ -3985,9 +3999,7 @@ export class BridgeWebSocketServer {
       message.tipCode === "manual_context_compacted"
     ) {
       const historyTurnId = message.historyTurnId?.trim();
-      return historyTurnId
-        ? [`manual-context-compacted:${historyTurnId}`]
-        : [];
+      return historyTurnId ? [`manual-context-compacted:${historyTurnId}`] : [];
     }
     if (message.type === "user_input") {
       const providerItemId = message.providerItemId?.trim();
@@ -5131,7 +5143,8 @@ export class BridgeWebSocketServer {
 
   /** Backward-compatible test/host entry point for an already-open legacy socket. */
   private handleConnection(ws: WebSocket, request?: IncomingMessage): void {
-    if (!this.connectionAuth.has(ws)) this.connectionAuth.set(ws, { kind: "open" });
+    if (!this.connectionAuth.has(ws))
+      this.connectionAuth.set(ws, { kind: "open" });
     this.activateConnection(ws, request);
   }
 
@@ -5142,13 +5155,30 @@ export class BridgeWebSocketServer {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
   }
 
-  private beginDeviceAuthentication(ws: WebSocket, request: IncomingMessage): void {
+  private armDeviceAuthenticationTimeout(
+    ws: WebSocket,
+    expiresAt: string,
+  ): void {
+    const existing = this.connectionAuthTimeouts.get(ws);
+    if (existing) clearTimeout(existing);
+    const delay = Math.max(1, Date.parse(expiresAt) - Date.now());
+    const timeout = setTimeout(() => {
+      if (
+        !this.connectionAuth.get(ws)?.deviceId &&
+        ws.readyState === WebSocket.OPEN
+      ) {
+        ws.close(4003, "Device authentication timeout");
+      }
+    }, delay);
+    timeout.unref?.();
+    this.connectionAuthTimeouts.set(ws, timeout);
+  }
+
+  private issueDeviceAuthenticationChallenge(
+    ws: WebSocket,
+  ): PairingChallenge | undefined {
     const challenge = this.devicePairing?.createChallenge();
-    if (!challenge) {
-      ws.close(4003, "Device pairing unavailable");
-      return;
-    }
-    this.connectionAuth.set(ws, { kind: "pending" });
+    if (!challenge) return undefined;
     this.sendAuthenticationMessage(ws, {
       type: "bridge_device_challenge",
       challengeId: challenge.challengeId,
@@ -5157,13 +5187,20 @@ export class BridgeWebSocketServer {
       bridgeIdentityId: challenge.bridgeIdentityId,
       bridgeInstanceId: challenge.bridgeInstanceId,
     });
-    const timeout = setTimeout(() => {
-      if (!this.connectionAuth.get(ws)?.deviceId && ws.readyState === WebSocket.OPEN) {
-        ws.close(4003, "Device authentication timeout");
-      }
-    }, DEVICE_AUTH_TIMEOUT_MS);
-    timeout.unref?.();
-    this.connectionAuthTimeouts.set(ws, timeout);
+    this.armDeviceAuthenticationTimeout(ws, challenge.expiresAt);
+    return challenge;
+  }
+
+  private beginDeviceAuthentication(
+    ws: WebSocket,
+    request: IncomingMessage,
+  ): void {
+    const challenge = this.issueDeviceAuthenticationChallenge(ws);
+    if (!challenge) {
+      ws.close(4003, "Device pairing unavailable");
+      return;
+    }
+    this.connectionAuth.set(ws, { kind: "pending" });
     ws.once("close", () => {
       const current = this.connectionAuthTimeouts.get(ws);
       if (current) clearTimeout(current);
@@ -5177,23 +5214,31 @@ export class BridgeWebSocketServer {
         this.sendAuthenticationMessage(ws, {
           type: "error",
           errorCode: "authentication_required",
-          message: "Only device pairing/authentication is allowed before authentication.",
+          message:
+            "Only device pairing/authentication is allowed before authentication.",
         });
         return;
       }
       if (msg.type === "client_capabilities") {
-        this.clientSupportedServerMessages.set(ws, new Set(msg.supportedServerMessages ?? []));
-        if (msg.mobileRuntime) this.clientMobileRuntime.set(ws, msg.mobileRuntime);
+        this.clientSupportedServerMessages.set(
+          ws,
+          new Set(msg.supportedServerMessages ?? []),
+        );
+        if (msg.mobileRuntime)
+          this.clientMobileRuntime.set(ws, msg.mobileRuntime);
         return;
       }
       if (msg.type === "device_pairing_request") {
-        void this.handleDevicePairingRequest(ws, request, msg).catch((error) => {
-          this.sendAuthenticationMessage(ws, {
-            type: "error",
-            errorCode: "pairing_failed",
-            message: error instanceof Error ? error.message : "Pairing failed",
-          });
-        });
+        void this.handleDevicePairingRequest(ws, request, msg).catch(
+          (error) => {
+            this.sendAuthenticationMessage(ws, {
+              type: "error",
+              errorCode: "pairing_failed",
+              message:
+                error instanceof Error ? error.message : "Pairing failed",
+            });
+          },
+        );
         return;
       }
       if (msg.type === "device_auth") {
@@ -5201,7 +5246,10 @@ export class BridgeWebSocketServer {
           this.sendAuthenticationMessage(ws, {
             type: "error",
             errorCode: "device_auth_failed",
-            message: error instanceof Error ? error.message : "Device authentication failed",
+            message:
+              error instanceof Error
+                ? error.message
+                : "Device authentication failed",
           });
         });
         return;
@@ -5222,14 +5270,24 @@ export class BridgeWebSocketServer {
     if (!this.devicePairing) throw new Error("Device pairing unavailable");
     const result = await this.devicePairing.requestPairing(msg);
     if (result.status === "paired") {
+      const challenge = this.devicePairing.createChallenge();
       this.sendAuthenticationMessage(ws, {
         type: "bridge_pairing_pending",
         requestId: msg.deviceId,
-        expiresAt: result.device.lastSeenAt,
+        expiresAt: challenge.expiresAt,
         status: "paired",
         deviceId: result.device.deviceId,
       });
-    } else {
+      this.sendAuthenticationMessage(ws, {
+        type: "bridge_device_challenge",
+        challengeId: challenge.challengeId,
+        nonce: challenge.nonce,
+        expiresAt: challenge.expiresAt,
+        bridgeIdentityId: challenge.bridgeIdentityId,
+        bridgeInstanceId: challenge.bridgeInstanceId,
+      });
+      this.armDeviceAuthenticationTimeout(ws, challenge.expiresAt);
+    } else if (result.status === "pending") {
       this.sendAuthenticationMessage(ws, {
         type: "bridge_pairing_pending",
         requestId: result.request.requestId,
@@ -5238,6 +5296,20 @@ export class BridgeWebSocketServer {
         status: "pending",
         deviceId: result.request.deviceId,
       });
+      this.armDeviceAuthenticationTimeout(ws, result.request.expiresAt);
+    } else {
+      this.sendAuthenticationMessage(ws, {
+        type: "bridge_pairing_pending",
+        requestId: result.request.requestId,
+        confirmationCode: result.request.confirmationCode,
+        expiresAt: result.request.expiresAt,
+        status: "rejected",
+        deviceId: result.request.deviceId,
+      });
+      this.armDeviceAuthenticationTimeout(
+        ws,
+        new Date(Date.now() + 250).toISOString(),
+      );
     }
   }
 
@@ -5251,7 +5323,7 @@ export class BridgeWebSocketServer {
     const httpToken = randomBytes(32).toString("base64url");
     const releaseHttpSession = this.apiKeyAuthenticator.registerDeviceSession(
       httpToken,
-      { remoteAddress: request.socket.remoteAddress },
+      { remoteAddress: request.socket.remoteAddress, ttlMs: null },
     );
     const timeout = this.connectionAuthTimeouts.get(ws);
     if (timeout) clearTimeout(timeout);
@@ -5265,9 +5337,9 @@ export class BridgeWebSocketServer {
     this.sendAuthenticationMessage(ws, {
       type: "bridge_device_authenticated",
       deviceId: device.deviceId,
-      bridgeIdentityId: this.bridgeIdentity?.bridgeIdentityId ?? msg.bridgeIdentityId,
+      bridgeIdentityId:
+        this.bridgeIdentity?.bridgeIdentityId ?? msg.bridgeIdentityId,
       httpSessionToken: httpToken,
-      expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
     });
     this.activateConnection(ws, request);
   }
@@ -5416,7 +5488,8 @@ export class BridgeWebSocketServer {
         this.sendAuthenticationMessage(ws, {
           type: "error",
           errorCode: "pairing_requires_api_key",
-          message: "Device enrollment requires a valid API key or pairing mode.",
+          message:
+            "Device enrollment requires a valid API key or pairing mode.",
         });
         return;
       }

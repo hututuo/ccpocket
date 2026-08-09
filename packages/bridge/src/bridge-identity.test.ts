@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
+import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -15,7 +15,9 @@ import {
 describe("Bridge Ed25519 identity", () => {
   const roots: string[] = [];
   afterEach(async () => {
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+    await Promise.all(
+      roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+    );
   });
 
   it("persists one key across reloads with private permissions and signs canonical proofs", async () => {
@@ -27,7 +29,11 @@ describe("Bridge Ed25519 identity", () => {
       hostnameValue: "host-one",
       displayName: "ignored",
     });
-    const second = await BridgeIdentityStore.load({ stateDir: root, platform: "linux", hostnameValue: "host-two" });
+    const second = await BridgeIdentityStore.load({
+      stateDir: root,
+      platform: "linux",
+      hostnameValue: "host-two",
+    });
     expect(second.bridgeIdentityId).toBe(first.bridgeIdentityId);
     expect(second.publicKey).toBe(first.publicKey);
     expect(first.publicKey.length).toBe(43);
@@ -49,24 +55,32 @@ describe("Bridge Ed25519 identity", () => {
     expect(proof.version).toBe(BRIDGE_IDENTITY_VERSION);
   });
 
-  it("recovers atomically from corrupt identity state without exposing private data", async () => {
+  it("fails closed instead of silently changing identity when state is corrupt", async () => {
     const root = await mkdtemp(join(tmpdir(), "ccpocket-identity-recovery-"));
     roots.push(root);
     const path = join(root, "bridge-identity-v1.json");
-    await import("node:fs/promises").then(({ writeFile }) => writeFile(path, "{broken", { mode: 0o600 }));
-    const identity = await BridgeIdentityStore.load({ stateDir: root, platform: "linux", hostnameValue: "fallback" });
-    const persisted = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
-    expect(persisted.version).toBe(1);
-    expect(typeof persisted.publicKey).toBe("string");
-    expect(typeof persisted.privateKey).toBe("string");
-    expect(persisted.privateKey).not.toContain(identity.bridgeIdentityId);
+    await writeFile(path, "{broken", { mode: 0o600 });
+    await expect(
+      BridgeIdentityStore.load({
+        stateDir: root,
+        platform: "linux",
+        hostnameValue: "fallback",
+      }),
+    ).rejects.toThrow(/unreadable or malformed/);
   });
 
   it("normalizes display names and uses hostname fallback off macOS", () => {
     expect(normalizeBridgeDisplayName("  a\u0000\n b ")).toBe("a b");
     expect(normalizeBridgeDisplayName("x".repeat(120))).toHaveLength(80);
-    expect(readBridgeComputerName({ platform: "linux", hostnameValue: "linux-host" })).toBe("linux-host");
-    expect(readBridgeComputerName({ platform: "linux", hostnameValue: "\u0000" })).toBe("Bridge");
+    expect(
+      readBridgeComputerName({
+        platform: "linux",
+        hostnameValue: "linux-host",
+      }),
+    ).toBe("linux-host");
+    expect(
+      readBridgeComputerName({ platform: "linux", hostnameValue: "\u0000" }),
+    ).toBe("Bridge");
     expect(isValidIdentityNonce("A_b-123456789012")).toBe(true);
     expect(isValidIdentityNonce("short")).toBe(false);
   });
