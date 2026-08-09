@@ -4,12 +4,9 @@ import 'package:ccpocket/features/session_list/session_list_screen.dart';
 import 'package:ccpocket/models/machine.dart';
 import 'package:ccpocket/providers/machine_manager_cubit.dart';
 import 'package:ccpocket/services/bridge_device_identity_service.dart';
-import 'package:ccpocket/services/bridge_latest_version_service.dart';
 import 'package:ccpocket/services/machine_manager_service.dart';
 import 'package:ccpocket/services/ssh_startup_service.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 
 import 'helpers/bridge_version_test_values.dart';
 
@@ -364,24 +361,12 @@ void main() {
 
   MachineManagerCubit createCubit({
     bool withSsh = true,
-    String? latestBridgeVersion,
-    BridgeLatestVersionService? latestVersionService,
     Duration? healthTimeout,
     Duration? healthRetryDelay,
   }) {
     return MachineManagerCubit(
       mockService,
       withSsh ? mockSsh : null,
-      latestVersionService:
-          latestVersionService ??
-          BridgeLatestVersionService(
-            httpClient: MockClient(
-              (_) async => http.Response(
-                '{"version":"${latestBridgeVersion ?? recommendedBridgeVersion}"}',
-                200,
-              ),
-            ),
-          ),
       healthTimeout: healthTimeout ?? const Duration(seconds: 30),
       healthRetryDelay: healthRetryDelay ?? const Duration(seconds: 1),
     );
@@ -744,7 +729,10 @@ void main() {
         MachineWithStatus(
           machine: Machine(id: 'm1', host: '10.0.0.1'),
           status: MachineStatus.online,
-          versionInfo: BridgeVersionInfo(version: recommendedBridgeVersion),
+          versionInfo: BridgeVersionInfo(
+            version: recommendedBridgeVersion,
+            clientBridgeCompatibilityRevision: 1,
+          ),
         ),
       ];
       final cubit = createCubit();
@@ -802,6 +790,7 @@ void main() {
           status: MachineStatus.online,
           versionInfo: BridgeVersionInfo(
             version: olderThanRecommendedBridgeVersion,
+            clientBridgeCompatibilityRevision: null,
           ),
         ),
       ];
@@ -814,77 +803,8 @@ void main() {
       expect(result, false);
       expect(
         cubit.state.error,
-        'Bridge Server restarted but version is still older than $recommendedBridgeVersion',
+        'Bridge Server restarted but is still older than this IPA',
       );
-    });
-
-    test('validates updated bridge against npm latest when available', () async {
-      mockService.machineStatuses = [
-        MachineWithStatus(
-          machine: Machine(id: 'm1', host: '10.0.0.1'),
-          status: MachineStatus.online,
-          versionInfo: BridgeVersionInfo(version: recommendedBridgeVersion),
-        ),
-      ];
-      final cubit = createCubit(
-        latestBridgeVersion: newerThanRecommendedBridgeVersion,
-      );
-      addTearDown(cubit.close);
-      await Future.microtask(() {});
-      await cubit.refreshLatestBridgeVersion();
-
-      final result = await cubit.updateBridge('m1');
-
-      expect(result, false);
-      expect(
-        cubit.state.error,
-        'Bridge Server restarted but version is still older than $newerThanRecommendedBridgeVersion',
-      );
-    });
-  });
-
-  group('MachineManagerCubit - latest Bridge version auto refresh', () {
-    test('skips automatic refresh while cache is fresh', () async {
-      var calls = 0;
-      final latestVersionService = BridgeLatestVersionService(
-        httpClient: MockClient((_) async {
-          calls++;
-          return http.Response('{"version":"$recommendedBridgeVersion"}', 200);
-        }),
-      );
-      final cubit = createCubit(latestVersionService: latestVersionService);
-      addTearDown(cubit.close);
-      await Future.microtask(() {});
-
-      await cubit.refreshLatestBridgeVersionIfStale();
-      await cubit.refreshLatestBridgeVersionIfStale();
-
-      expect(calls, 1);
-      expect(cubit.state.latestBridgeVersion, recommendedBridgeVersion);
-    });
-
-    test('deduplicates overlapping automatic refresh requests', () async {
-      var calls = 0;
-      final completer = Completer<http.Response>();
-      final latestVersionService = BridgeLatestVersionService(
-        httpClient: MockClient((_) {
-          calls++;
-          return completer.future;
-        }),
-      );
-      final cubit = createCubit(latestVersionService: latestVersionService);
-      addTearDown(cubit.close);
-      await Future.microtask(() {});
-
-      final first = cubit.refreshLatestBridgeVersionIfStale();
-      final second = cubit.refreshLatestBridgeVersionIfStale();
-      completer.complete(
-        http.Response('{"version":"$recommendedBridgeVersion"}', 200),
-      );
-      await Future.wait([first, second]);
-
-      expect(calls, 1);
-      expect(cubit.state.latestBridgeVersion, recommendedBridgeVersion);
     });
   });
 

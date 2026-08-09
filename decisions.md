@@ -1847,3 +1847,21 @@
 - Mobile 不以假进度或缓存绕过 readiness。Bridge 仍从真实 shared runtime、Action
   Broker、terminal result 与 input delivery 状态计算 200/503；本变更只修正开放模式
   下只读 readiness 状态无法穿过 LAN 代理的鉴权矛盾。
+
+## 2026-08-10 更新提示只比较本地 Mobile/Bridge 兼容修订
+
+- 本地兼容 fork 的连接页、首页和设置页不再请求 npm registry 或用官方
+  `@ccpocket/bridge` 最新版本号决定更新提示。公开版本号、compat 后缀和 IPA build
+  号仍用于诊断与发布记录，但不再承担 Mobile 与 Bridge 能否协同工作的判定。
+- Mobile 与 Bridge 分别内置单调递增的 `clientBridgeCompatibilityRevision`。Bridge 在
+  `/version` 和 `session_list` 中声明自己的修订，Mobile 在
+  `client_capabilities.mobileRuntime` 中声明自己的修订；所有字段均为加法字段，旧端
+  可以忽略。
+- 两端修订相同不提示；Bridge 修订缺失或较低时提示“Bridge 较旧”，Bridge 修订较高时
+  提示“手机 App 较旧”。提示只说明哪一端需要更新，不自动运行 npm 安装、不自动切换
+  Bridge runtime，也不自动发布或安装 IPA。
+- 兼容修订只在一端的新增行为需要另一端配合、旧组合应主动提醒时递增。纯 UI、纯性能、
+  文档、日志或保持 wire 兼容的修复不得为了追随 build 而递增，避免把版本号重新变成
+  虚假的兼容信号。
+- Shorebird owner/stable 通道和手动 Mobile 更新页继续作为本地 IPA/OTA 的交付机制；
+  它们不是官方 CC Pocket 版本比较，也不得覆盖本节的端到端兼容修订判断。

@@ -71,11 +71,15 @@ class MobileHostSnapshot {
         (capabilities[capability.id] ?? 0) >= minimumVersion;
   }
 
-  Map<String, dynamic> toClientCapabilitiesJson({int? patchNumber}) {
+  Map<String, dynamic> toClientCapabilitiesJson({
+    int? patchNumber,
+    int? clientBridgeCompatibilityRevision,
+  }) {
     return <String, dynamic>{
       if (baseVersion != null) 'baseVersion': baseVersion,
       if (buildNumber != null) 'buildNumber': buildNumber,
       'patchNumber': ?patchNumber,
+      'clientBridgeCompatibilityRevision': ?clientBridgeCompatibilityRevision,
       'hostSchemaVersion': schemaVersion,
       'nativeCapabilities': capabilities,
     };

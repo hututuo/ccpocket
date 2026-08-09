@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { CLIENT_BRIDGE_COMPATIBILITY_REVISION } from "./client-bridge-compatibility.js";
 
 // Read package.json version at module load time
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,7 @@ const gitInfo = getGitInfo();
 
 export interface VersionInfo {
   version: string;
+  clientBridgeCompatibilityRevision: number;
   nodeVersion: string;
   platform: NodeJS.Platform;
   arch: NodeJS.Architecture;
@@ -46,6 +48,8 @@ export function getPackageVersion(): string {
 export function getVersionInfo(serverStartedAt: number): VersionInfo {
   return {
     version: packageJson.version,
+    clientBridgeCompatibilityRevision:
+      CLIENT_BRIDGE_COMPATIBILITY_REVISION,
     nodeVersion: process.version,
     platform: process.platform,
     arch: process.arch,

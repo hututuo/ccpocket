@@ -18,6 +18,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'helpers/bridge_version_test_values.dart';
+
 class _MockBridgeService extends BridgeService {
   final _recentSessionsController =
       StreamController<List<RecentSession>>.broadcast();
@@ -84,6 +86,7 @@ Widget _buildHomeContent({
   required RevenueCatService revenueCatService,
   required SupportBannerService supportBannerService,
   String? bridgeVersion,
+  int? bridgeCompatibilityRevision = 1,
   VoidCallback? onOpenBridgeSettings,
 }) {
   return MultiRepositoryProvider(
@@ -105,6 +108,7 @@ Widget _buildHomeContent({
           child: HomeContent(
             connectionState: BridgeConnectionState.connected,
             bridgeVersion: bridgeVersion,
+            bridgeCompatibilityRevision: bridgeCompatibilityRevision,
             sessions: const [],
             recentSessions: [_session(id: 's1')],
             accumulatedProjectPaths: const {},
@@ -201,7 +205,7 @@ void main() {
     expect(find.text('CC Pocketが役に立っていたら'), findsOneWidget);
   });
 
-  testWidgets('does not offer an official downgrade to a compat Bridge', (
+  testWidgets('does not show a reminder when the local pair revisions match', (
     tester,
   ) async {
     final reviewService = InAppReviewService(
@@ -220,7 +224,9 @@ void main() {
         draftService: draftService,
         revenueCatService: _FakeRevenueCatService(catalog: _inactiveCatalog),
         supportBannerService: supportBannerService,
-        bridgeVersion: '${AppConstants.expectedBridgeVersion}-compat.3',
+        bridgeVersion: '$recommendedBridgeVersion-compat.3',
+        bridgeCompatibilityRevision:
+            AppConstants.clientBridgeCompatibilityRevision,
       ),
     );
     await tester.pumpAndSettle();
@@ -249,12 +255,13 @@ void main() {
         revenueCatService: _FakeRevenueCatService(catalog: _inactiveCatalog),
         supportBannerService: supportBannerService,
         bridgeVersion: '0.1.0',
+        bridgeCompatibilityRevision: 0,
       ),
     );
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('support_banner')), findsNothing);
-    expect(find.textContaining('Bridge Server v0.1.0'), findsOneWidget);
+    expect(find.byKey(const ValueKey('bridge_update_banner')), findsOneWidget);
   });
 
   testWidgets('opens bridge settings when bridge update banner is tapped', (
@@ -278,6 +285,7 @@ void main() {
         revenueCatService: _FakeRevenueCatService(catalog: _inactiveCatalog),
         supportBannerService: supportBannerService,
         bridgeVersion: '0.1.0',
+        bridgeCompatibilityRevision: 0,
         onOpenBridgeSettings: () => opened = true,
       ),
     );

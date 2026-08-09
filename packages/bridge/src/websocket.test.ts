@@ -3548,6 +3548,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       .find((msg: any) => msg.type === "session_list");
 
     expect(sessionList.bridgeInstanceId).toBe((bridge as any).bridgeInstanceId);
+    expect(sessionList.clientBridgeCompatibilityRevision).toBe(1);
     expect(sessionList.codexSourceId).toMatch(/^codex-home-[0-9a-f]{24}$/);
     expect(sessionList.bridgeCapabilities).toContain(
       "session_catalog_request_correlation_v1",
@@ -3569,6 +3570,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(broadcastSessionList.bridgeCapabilities).toContain(
       "conversation_sync_focus_refresh_v1",
     );
+    expect(broadcastSessionList.clientBridgeCompatibilityRevision).toBe(1);
     expect(sessionList.codexModels).toEqual([
       "gpt-5.6-sol",
       "gpt-5.6-terra",

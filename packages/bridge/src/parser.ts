@@ -198,6 +198,7 @@ export interface MobileRuntimeCapabilities {
   baseVersion?: string;
   buildNumber?: string;
   patchNumber?: number;
+  clientBridgeCompatibilityRevision?: number;
   hostSchemaVersion: number;
   nativeCapabilities: Record<string, number>;
 }
@@ -1028,6 +1029,7 @@ export type ServerMessage = (
       codexSourceId: string;
       allowedDirs: string[];
       bridgeCapabilities: string[];
+      clientBridgeCompatibilityRevision?: number;
       [key: string]: unknown;
     }
   | {
@@ -1659,6 +1661,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
                 "baseVersion",
                 "buildNumber",
                 "patchNumber",
+                "clientBridgeCompatibilityRevision",
                 "hostSchemaVersion",
                 "nativeCapabilities",
               ].includes(key),
@@ -1680,6 +1683,13 @@ export function parseClientMessage(data: string): ClientMessage | null {
             (!Number.isInteger(runtime.patchNumber) ||
               Number(runtime.patchNumber) < 0 ||
               Number(runtime.patchNumber) > 1_000_000)
+          )
+            return null;
+          if (
+            runtime.clientBridgeCompatibilityRevision !== undefined &&
+            (!Number.isInteger(runtime.clientBridgeCompatibilityRevision) ||
+              Number(runtime.clientBridgeCompatibilityRevision) < 1 ||
+              Number(runtime.clientBridgeCompatibilityRevision) > 1_000_000)
           )
             return null;
           if (

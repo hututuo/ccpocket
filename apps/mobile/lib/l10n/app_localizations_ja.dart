@@ -833,6 +833,21 @@ class AppLocalizationsJa extends AppLocalizations {
   String get bridgeUpdateAvailable => '更新があります';
 
   @override
+  String get clientBridgeMatched => 'モバイル IPA と Bridge は一致しています';
+
+  @override
+  String get clientBridgeBridgeOlder => 'Bridge が古いため、この IPA に合わせて更新してください';
+
+  @override
+  String get clientBridgeMobileOlder =>
+      'モバイル IPA が古いため、この Bridge に合わせて更新してください';
+
+  @override
+  String clientBridgeCompatibilityDetail(String bridgeVersion) {
+    return '現在の Bridge v$bridgeVersion';
+  }
+
+  @override
   String get bridgeUpdateRequiresSetup => 'SSH と Bridge の自動起動セットアップが必要です';
 
   @override

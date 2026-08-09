@@ -613,6 +613,7 @@ class BridgeService implements BridgeServiceBase {
   String? _defaultCodexProfile;
   bool _codexAutoReviewDisabled = false;
   String? _bridgeVersion;
+  int? _clientBridgeCompatibilityRevision;
   Set<String> _bridgeCapabilities = const {};
   int _backgroundActiveWorkCount = 0;
   BridgeClientDeliveryMode _desiredClientDeliveryMode =
@@ -1025,6 +1026,8 @@ class BridgeService implements BridgeServiceBase {
   String? get defaultCodexProfile => _defaultCodexProfile;
   bool get codexAutoReviewDisabled => _codexAutoReviewDisabled;
   String? get bridgeVersion => _bridgeVersion;
+  int? get clientBridgeCompatibilityRevision =>
+      _clientBridgeCompatibilityRevision;
   Set<String> get bridgeCapabilities => _bridgeCapabilities;
   bool get supportsBackgroundNotificationDelivery => _bridgeCapabilities
       .contains(backgroundNotificationDeliveryBridgeCapability);
@@ -2289,6 +2292,7 @@ class BridgeService implements BridgeServiceBase {
                 :final defaultCodexProfile,
                 :final codexAutoReviewDisabled,
                 :final bridgeVersion,
+                :final clientBridgeCompatibilityRevision,
                 :final bridgeCapabilities,
               ):
                 final requestStartedAtMs = _sessionListRequestStartedAtMs;
@@ -2405,6 +2409,8 @@ class BridgeService implements BridgeServiceBase {
                 _codexAutoReviewDisabled = codexAutoReviewDisabled;
                 _codexAutoReviewPolicyController.add(codexAutoReviewDisabled);
                 _bridgeVersion = bridgeVersion;
+                _clientBridgeCompatibilityRevision =
+                    clientBridgeCompatibilityRevision;
                 _bridgeCapabilities = bridgeCapabilities.toSet();
                 _sendNextLegacyRecentSessionsRequest();
                 // Catalog metadata belongs to the same authoritative
@@ -3603,6 +3609,7 @@ class BridgeService implements BridgeServiceBase {
     _defaultCodexProfile = null;
     _codexAutoReviewDisabled = false;
     _bridgeVersion = null;
+    _clientBridgeCompatibilityRevision = null;
     _bridgeCapabilities = const {};
     _backgroundActiveWorkCount = 0;
     _promptHistoryBridgeId = null;

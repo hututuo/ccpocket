@@ -33,6 +33,25 @@ List<int?> _semanticVersionCore(String version) {
   return officialCore.split('.').map(int.tryParse).toList();
 }
 
+/// Which side of the locally distributed Mobile/Bridge pair is older.
+///
+/// A missing Bridge revision means the Bridge predates this additive
+/// handshake, so a current Mobile can safely classify it as the older side.
+enum ClientBridgeCompatibility { matched, bridgeOlder, mobileOlder }
+
+ClientBridgeCompatibility compareClientBridgeCompatibility({
+  required int? bridgeRevision,
+  required int mobileRevision,
+}) {
+  if (bridgeRevision == null || bridgeRevision < mobileRevision) {
+    return ClientBridgeCompatibility.bridgeOlder;
+  }
+  if (bridgeRevision > mobileRevision) {
+    return ClientBridgeCompatibility.mobileOlder;
+  }
+  return ClientBridgeCompatibility.matched;
+}
+
 /// Status of a machine's Bridge Server
 enum MachineStatus {
   /// Not checked yet
@@ -71,6 +90,7 @@ abstract class BridgeVersionInfo with _$BridgeVersionInfo {
 
   const factory BridgeVersionInfo({
     required String version,
+    int? clientBridgeCompatibilityRevision,
     String? nodeVersion,
     String? platform,
     String? arch,

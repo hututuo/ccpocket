@@ -157,6 +157,7 @@ describe("parseClientMessage", () => {
           baseVersion: "1.107.2",
           buildNumber: "198",
           patchNumber: 7,
+          clientBridgeCompatibilityRevision: 1,
           hostSchemaVersion: 1,
           nativeCapabilities: { fileTransfer: 2, quickLook: 1 },
         },
@@ -167,6 +168,7 @@ describe("parseClientMessage", () => {
       type: "client_capabilities",
       mobileRuntime: {
         patchNumber: 7,
+        clientBridgeCompatibilityRevision: 1,
         hostSchemaVersion: 1,
         nativeCapabilities: { fileTransfer: 2, quickLook: 1 },
       },
@@ -181,6 +183,18 @@ describe("parseClientMessage", () => {
           mobileRuntime: {
             hostSchemaVersion: 1,
             nativeCapabilities: { fileTransfer: 0 },
+          },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "client_capabilities",
+          mobileRuntime: {
+            clientBridgeCompatibilityRevision: 0,
+            hostSchemaVersion: 1,
+            nativeCapabilities: {},
           },
         }),
       ),

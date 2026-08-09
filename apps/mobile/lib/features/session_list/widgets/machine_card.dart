@@ -17,9 +17,7 @@ class MachineCard extends StatelessWidget {
   final VoidCallback onEdit;
   final VoidCallback onDelete;
   final VoidCallback? onToggleFavorite;
-  final VoidCallback? onUpdate;
   final VoidCallback? onStop;
-  final String? latestBridgeVersion;
   final bool isStarting;
   final bool isUpdating;
 
@@ -31,9 +29,7 @@ class MachineCard extends StatelessWidget {
     required this.onEdit,
     required this.onDelete,
     this.onToggleFavorite,
-    this.onUpdate,
     this.onStop,
-    this.latestBridgeVersion,
     this.isStarting = false,
     this.isUpdating = false,
   });
@@ -46,16 +42,14 @@ class MachineCard extends StatelessWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    final updateTargetVersion =
-        latestBridgeVersion != null &&
-            compareSemanticVersions(
-                  latestBridgeVersion!,
-                  AppConstants.expectedBridgeVersion,
-                ) >
-                0
-        ? latestBridgeVersion!
-        : AppConstants.expectedBridgeVersion;
-    final needsUpdate = machineWithStatus.needsUpdate(updateTargetVersion);
+    final compatibility = machineWithStatus.versionInfo == null
+        ? null
+        : compareClientBridgeCompatibility(
+            bridgeRevision: machineWithStatus
+                .versionInfo!
+                .clientBridgeCompatibilityRevision,
+            mobileRevision: AppConstants.clientBridgeCompatibilityRevision,
+          );
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -107,7 +101,7 @@ class MachineCard extends StatelessWidget {
                     child: _MetadataLine(
                       machine: machine,
                       versionInfo: machineWithStatus.versionInfo,
-                      needsUpdate: needsUpdate,
+                      compatibility: compatibility,
                       lastError: machineWithStatus.lastError,
                       status: status,
                     ),
@@ -116,12 +110,10 @@ class MachineCard extends StatelessWidget {
                   _MenuButton(
                     machine: machine,
                     status: status,
-                    needsUpdate: needsUpdate,
                     colorScheme: colorScheme,
                     onEdit: onEdit,
                     onDelete: onDelete,
                     onToggleFavorite: onToggleFavorite,
-                    onUpdate: onUpdate,
                     onStop: onStop,
                   ),
                 ],
@@ -176,14 +168,14 @@ class _StatusDot extends StatelessWidget {
 class _MetadataLine extends StatelessWidget {
   final Machine machine;
   final BridgeVersionInfo? versionInfo;
-  final bool needsUpdate;
+  final ClientBridgeCompatibility? compatibility;
   final String? lastError;
   final MachineStatus status;
 
   const _MetadataLine({
     required this.machine,
     this.versionInfo,
-    required this.needsUpdate,
+    required this.compatibility,
     this.lastError,
     required this.status,
   });
@@ -229,7 +221,8 @@ class _MetadataLine extends StatelessWidget {
     // Version (if available)
     if (versionInfo != null) {
       parts.add(const TextSpan(text: ' · '));
-      if (needsUpdate) {
+      final mismatch = compatibility != ClientBridgeCompatibility.matched;
+      if (mismatch) {
         parts.add(
           WidgetSpan(
             alignment: PlaceholderAlignment.middle,
@@ -243,7 +236,7 @@ class _MetadataLine extends StatelessWidget {
       parts.add(
         TextSpan(
           text: 'v${versionInfo!.version}',
-          style: needsUpdate ? TextStyle(color: colorScheme.tertiary) : null,
+          style: mismatch ? TextStyle(color: colorScheme.tertiary) : null,
         ),
       );
     }
@@ -303,23 +296,19 @@ class _MetadataLine extends StatelessWidget {
 class _MenuButton extends StatelessWidget {
   final Machine machine;
   final MachineStatus status;
-  final bool needsUpdate;
   final ColorScheme colorScheme;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
   final VoidCallback? onToggleFavorite;
-  final VoidCallback? onUpdate;
   final VoidCallback? onStop;
 
   const _MenuButton({
     required this.machine,
     required this.status,
-    required this.needsUpdate,
     required this.colorScheme,
     required this.onEdit,
     required this.onDelete,
     this.onToggleFavorite,
-    this.onUpdate,
     this.onStop,
   });
 
@@ -337,7 +326,6 @@ class _MenuButton extends StatelessWidget {
           if (value == 'edit') onEdit();
           if (value == 'delete') onDelete();
           if (value == 'favorite') onToggleFavorite?.call();
-          if (value == 'update') onUpdate?.call();
           if (value == 'stop') onStop?.call();
         },
         itemBuilder: (context) => [
@@ -367,19 +355,6 @@ class _MenuButton extends StatelessWidget {
               ],
             ),
           ),
-          if (status == MachineStatus.online &&
-              needsUpdate &&
-              machine.canStartRemotely)
-            PopupMenuItem(
-              value: 'update',
-              child: Row(
-                children: [
-                  const Icon(Icons.system_update, size: 20),
-                  const SizedBox(width: 8),
-                  Text(l.updateBridge),
-                ],
-              ),
-            ),
           if (status == MachineStatus.online && machine.canStartRemotely)
             PopupMenuItem(
               value: 'stop',

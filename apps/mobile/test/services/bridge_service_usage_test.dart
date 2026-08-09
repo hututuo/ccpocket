@@ -212,6 +212,7 @@ void main() {
             'codexProfiles': ['old-profile'],
             'defaultCodexProfile': 'old-profile',
             'bridgeVersion': '1.2.3',
+            'clientBridgeCompatibilityRevision': 3,
           }),
         );
         socket.add(
@@ -233,6 +234,7 @@ void main() {
       expect(bridge.projectHistory, ['/old-bridge/project']);
       expect(bridge.codexProfiles, ['old-profile']);
       expect(bridge.bridgeVersion, '1.2.3');
+      expect(bridge.clientBridgeCompatibilityRevision, 3);
 
       bridge.disconnect();
 
@@ -240,6 +242,7 @@ void main() {
       expect(bridge.projectHistory, isEmpty);
       expect(bridge.codexProfiles, isEmpty);
       expect(bridge.bridgeVersion, isNull);
+      expect(bridge.clientBridgeCompatibilityRevision, isNull);
 
       for (final socket in sockets) {
         await socket.close();

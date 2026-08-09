@@ -1007,6 +1007,9 @@ SessionListMessage _sessionListFromJson(Map<String, dynamic> json) {
     defaultCodexProfile: json['defaultCodexProfile'] as String?,
     codexAutoReviewDisabled: json['codexAutoReviewDisabled'] as bool? ?? false,
     bridgeVersion: json['bridgeVersion'] as String?,
+    clientBridgeCompatibilityRevision: _intFromJson(
+      json['clientBridgeCompatibilityRevision'],
+    ),
     bridgeCapabilities:
         (json['bridgeCapabilities'] as List?)?.whereType<String>().toList() ??
         const [],
@@ -3572,6 +3575,7 @@ class SessionListMessage implements ServerMessage {
   final String? defaultCodexProfile;
   final bool codexAutoReviewDisabled;
   final String? bridgeVersion;
+  final int? clientBridgeCompatibilityRevision;
   final List<String> bridgeCapabilities;
   const SessionListMessage({
     required this.sessions,
@@ -3588,6 +3592,7 @@ class SessionListMessage implements ServerMessage {
     this.defaultCodexProfile,
     this.codexAutoReviewDisabled = false,
     this.bridgeVersion,
+    this.clientBridgeCompatibilityRevision,
     this.bridgeCapabilities = const [],
   });
 }

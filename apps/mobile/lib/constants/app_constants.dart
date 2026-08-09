@@ -2,9 +2,12 @@
 class AppConstants {
   AppConstants._();
 
-  /// Expected Bridge Server version (from packages/bridge/package.json)
-  /// Used to check if the server needs updating
-  static const String expectedBridgeVersion = '1.69.6';
+  /// Local Mobile/Bridge release-train revision.
+  ///
+  /// This replaces public npm "latest" checks for this compatibility fork.
+  /// Bump it in Mobile and Bridge together only when an older counterpart
+  /// should show a compatibility reminder.
+  static const int clientBridgeCompatibilityRevision = 1;
 
   /// Maximum number of machines to keep in history
   /// Favorites are always kept, non-favorites are pruned by lastConnected

@@ -831,6 +831,21 @@ class AppLocalizationsKo extends AppLocalizations {
   String get bridgeUpdateAvailable => '업데이트 사용 가능';
 
   @override
+  String get clientBridgeMatched => '모바일 IPA와 Bridge가 일치합니다';
+
+  @override
+  String get clientBridgeBridgeOlder => 'Bridge가 오래되었습니다. 현재 IPA에 맞게 업데이트하세요';
+
+  @override
+  String get clientBridgeMobileOlder =>
+      '모바일 IPA가 오래되었습니다. 현재 Bridge에 맞게 업데이트하세요';
+
+  @override
+  String clientBridgeCompatibilityDetail(String bridgeVersion) {
+    return '현재 Bridge v$bridgeVersion';
+  }
+
+  @override
   String get bridgeUpdateRequiresSetup => 'SSH 및 Bridge 자동 시작 설정이 필요합니다';
 
   @override

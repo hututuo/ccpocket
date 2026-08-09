@@ -1608,6 +1608,30 @@ abstract class AppLocalizations {
   /// **'更新があります'**
   String get bridgeUpdateAvailable;
 
+  /// No description provided for @clientBridgeMatched.
+  ///
+  /// In ja, this message translates to:
+  /// **'モバイル IPA と Bridge は一致しています'**
+  String get clientBridgeMatched;
+
+  /// No description provided for @clientBridgeBridgeOlder.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge が古いため、この IPA に合わせて更新してください'**
+  String get clientBridgeBridgeOlder;
+
+  /// No description provided for @clientBridgeMobileOlder.
+  ///
+  /// In ja, this message translates to:
+  /// **'モバイル IPA が古いため、この Bridge に合わせて更新してください'**
+  String get clientBridgeMobileOlder;
+
+  /// No description provided for @clientBridgeCompatibilityDetail.
+  ///
+  /// In ja, this message translates to:
+  /// **'現在の Bridge v{bridgeVersion}'**
+  String clientBridgeCompatibilityDetail(String bridgeVersion);
+
   /// No description provided for @bridgeUpdateRequiresSetup.
   ///
   /// In ja, this message translates to:
@@ -2391,7 +2415,7 @@ abstract class AppLocalizations {
   /// No description provided for @manualContextCompactedTip.
   ///
   /// In ja, this message translates to:
-  /// **'コンテキストを手動で圧縮しました。'**
+  /// **'コンテキストを圧縮しました'**
   String get manualContextCompactedTip;
 
   /// No description provided for @codexApprovalUntrustedDescription.

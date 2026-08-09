@@ -1661,9 +1661,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     final machineManagerCubit = context.read<MachineManagerCubit?>();
     final tunnelService = context.read<SshBridgeTunnelService?>();
     final bridge = context.read<BridgeService>();
-    if (machineManagerCubit != null) {
-      unawaited(machineManagerCubit.refreshLatestBridgeVersionIfStale());
-    }
+    if (machineManagerCubit != null) {}
     final messenger = ScaffoldMessenger.of(context);
 
     // Health check before connecting
@@ -2400,9 +2398,7 @@ class _SessionListScreenState extends State<SessionListScreen>
           waitForResponse: true,
         );
       }
-      if (machineManagerCubit != null) {
-        unawaited(machineManagerCubit.refreshLatestBridgeVersionIfStale());
-      }
+      if (machineManagerCubit != null) {}
     } finally {
       if (mounted) setState(() => _manualCatalogRefreshRunning = false);
     }
@@ -4037,7 +4033,8 @@ class _SessionListScreenState extends State<SessionListScreen>
               key: _homeContentKey,
               connectionState: connectionState,
               bridgeVersion: bridge.bridgeVersion,
-              latestBridgeVersion: machineState?.latestBridgeVersion,
+              bridgeCompatibilityRevision:
+                  bridge.clientBridgeCompatibilityRevision,
               sessions: sessions,
               offlinePendingActions: offlinePendingActions,
               recentSessions: recentSessionsList,
@@ -4208,7 +4205,6 @@ class _SessionListScreenState extends State<SessionListScreen>
       machines: machineState?.machines ?? [],
       startingMachineId: machineState?.startingMachineId,
       updatingMachineId: machineState?.updatingMachineId,
-      latestBridgeVersion: machineState?.latestBridgeVersion,
       isRefreshingMachines: machineState?.isLoading ?? false,
       onScanQrCode: _scanQrCode,
       onViewSetupGuide: () {
@@ -4225,7 +4221,6 @@ class _SessionListScreenState extends State<SessionListScreen>
       onEditMachine: _editMachine,
       onDeleteMachine: _deleteMachine,
       onToggleFavorite: _toggleFavorite,
-      onUpdateMachine: _updateMachine,
       onStopMachine: _stopMachine,
       onRenameMachineGroup: _renameMachineGroup,
       onAddMachine: _addMachine,
@@ -4354,7 +4349,6 @@ class _SessionListScreenState extends State<SessionListScreen>
     final bridge = context.read<BridgeService>();
     final tunnelService = context.read<SshBridgeTunnelService?>();
     final messenger = ScaffoldMessenger.of(context);
-    unawaited(cubit.refreshLatestBridgeVersionIfStale());
     late final String wsUrl;
     try {
       wsUrl = await cubit.buildWsUrl(
@@ -4431,34 +4425,6 @@ class _SessionListScreenState extends State<SessionListScreen>
 
   void _toggleFavorite(MachineWithStatus m) {
     context.read<MachineManagerCubit>().toggleFavorite(m.machine.id);
-  }
-
-  void _updateMachine(MachineWithStatus m) async {
-    final cubit = context.read<MachineManagerCubit>();
-    final l = AppLocalizations.of(context);
-
-    String? password;
-    if (m.machine.sshAuthType == SshAuthType.password) {
-      final savedPassword = await cubit.getSshPassword(m.machine.id);
-      password = savedPassword;
-      if (password == null || password.isEmpty) {
-        password = await _promptForPassword(m.machine.displayName);
-        if (password == null) return; // User cancelled
-      }
-    }
-
-    final success = await cubit.updateBridge(m.machine.id, password: password);
-
-    if (success && mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(l.bridgeServerUpdated)));
-    } else if (mounted) {
-      final error = cubit.state.error;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(error ?? l.failedToUpdateServer)));
-    }
   }
 
   void _startMachine(MachineWithStatus m) async {
@@ -4812,7 +4778,6 @@ class _ConnectFormWidget extends StatelessWidget {
   final List<MachineWithStatus> machines;
   final String? startingMachineId;
   final String? updatingMachineId;
-  final String? latestBridgeVersion;
   final bool isRefreshingMachines;
   final VoidCallback onScanQrCode;
   final VoidCallback onViewSetupGuide;
@@ -4822,7 +4787,6 @@ class _ConnectFormWidget extends StatelessWidget {
   final ValueChanged<MachineWithStatus> onEditMachine;
   final ValueChanged<MachineWithStatus> onDeleteMachine;
   final ValueChanged<MachineWithStatus> onToggleFavorite;
-  final ValueChanged<MachineWithStatus> onUpdateMachine;
   final ValueChanged<MachineWithStatus> onStopMachine;
   final ValueChanged<BridgeMachineGroup> onRenameMachineGroup;
   final VoidCallback onAddMachine;
@@ -4839,7 +4803,6 @@ class _ConnectFormWidget extends StatelessWidget {
     required this.machines,
     this.startingMachineId,
     this.updatingMachineId,
-    this.latestBridgeVersion,
     this.isRefreshingMachines = false,
     required this.onScanQrCode,
     required this.onViewSetupGuide,
@@ -4849,7 +4812,6 @@ class _ConnectFormWidget extends StatelessWidget {
     required this.onEditMachine,
     required this.onDeleteMachine,
     required this.onToggleFavorite,
-    required this.onUpdateMachine,
     required this.onStopMachine,
     required this.onRenameMachineGroup,
     required this.onAddMachine,
@@ -4873,14 +4835,12 @@ class _ConnectFormWidget extends StatelessWidget {
       machines: machines,
       startingMachineId: startingMachineId,
       updatingMachineId: updatingMachineId,
-      latestBridgeVersion: latestBridgeVersion,
       isRefreshingMachines: isRefreshingMachines,
       onConnectToMachine: onConnectToMachine,
       onStartMachine: onStartMachine,
       onEditMachine: onEditMachine,
       onDeleteMachine: onDeleteMachine,
       onToggleFavorite: onToggleFavorite,
-      onUpdateMachine: onUpdateMachine,
       onStopMachine: onStopMachine,
       onRenameMachineGroup: onRenameMachineGroup,
       onAddMachine: onAddMachine,

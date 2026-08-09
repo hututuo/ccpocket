@@ -338,6 +338,15 @@
   "updateBridge": "Bridge を更新",
   "bridgeIsUpToDate": "Bridge は最新です",
   "bridgeUpdateAvailable": "更新があります",
+  "clientBridgeMatched": "モバイル IPA と Bridge は一致しています",
+  "clientBridgeBridgeOlder": "Bridge が古いため、この IPA に合わせて更新してください",
+  "clientBridgeMobileOlder": "モバイル IPA が古いため、この Bridge に合わせて更新してください",
+  "clientBridgeCompatibilityDetail": "現在の Bridge v{bridgeVersion}",
+  "@clientBridgeCompatibilityDetail": {
+    "placeholders": {
+      "bridgeVersion": { "type": "String" }
+    }
+  },
   "bridgeUpdateRequiresSetup": "SSH と Bridge の自動起動セットアップが必要です",
   "bridgeVersionUnknown": "Bridge のバージョンを確認できません",
   "bridgeVersionCurrentExpected": "現在 v{current}、推奨 v{expected}以上",

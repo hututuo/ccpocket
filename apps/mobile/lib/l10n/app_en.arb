@@ -297,6 +297,15 @@
   "updateBridge": "Update Bridge",
   "bridgeIsUpToDate": "Bridge is up to date",
   "bridgeUpdateAvailable": "Update available",
+  "clientBridgeMatched": "The mobile IPA and Bridge match",
+  "clientBridgeBridgeOlder": "Bridge is older; update it to match this IPA",
+  "clientBridgeMobileOlder": "The mobile IPA is older; update it to match this Bridge",
+  "clientBridgeCompatibilityDetail": "Current Bridge v{bridgeVersion}",
+  "@clientBridgeCompatibilityDetail": {
+    "placeholders": {
+      "bridgeVersion": { "type": "String" }
+    }
+  },
   "bridgeUpdateRequiresSetup": "Requires SSH and Bridge auto-start setup",
   "bridgeVersionUnknown": "Bridge version unknown",
   "bridgeVersionCurrentExpected": "Current v{current}, recommended v{expected}+",

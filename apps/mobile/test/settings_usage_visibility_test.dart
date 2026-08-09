@@ -10,22 +10,18 @@ import 'package:ccpocket/models/machine.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/models/new_session_tab.dart';
 import 'package:ccpocket/providers/machine_manager_cubit.dart';
-import 'package:ccpocket/services/bridge_latest_version_service.dart';
 import 'package:ccpocket/services/bridge_device_identity_service.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:ccpocket/services/database_service.dart';
 import 'package:ccpocket/services/in_app_review_service.dart';
 import 'package:ccpocket/services/machine_manager_service.dart';
 import 'package:ccpocket/services/revenuecat_service.dart';
-import 'package:ccpocket/services/ssh_startup_service.dart';
 import 'package:ccpocket/services/support_banner_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -39,19 +35,27 @@ class _FakeBridgeService extends BridgeService {
   bool _connected;
   final UsageResultMessage? cachedUsage;
   final String? fakeLastUrl;
+  final int? fakeBridgeCompatibilityRevision;
   bool disconnectCalled = false;
 
   _FakeBridgeService({
-    required bool connected,
+    required this._connected,
     this.cachedUsage,
     this.fakeLastUrl,
-  }) : _connected = connected;
+    this.fakeBridgeCompatibilityRevision = 1,
+  });
 
   @override
   bool get isConnected => _connected;
 
   @override
   String? get lastUrl => fakeLastUrl;
+
+  @override
+  String? get bridgeVersion => recommendedBridgeVersion;
+
+  @override
+  int? get clientBridgeCompatibilityRevision => fakeBridgeCompatibilityRevision;
 
   @override
   Stream<BridgeConnectionState> get connectionStatus =>
@@ -119,27 +123,11 @@ class _FakeSecureStorage extends Fake implements FlutterSecureStorage {
   }) async => null;
 }
 
-class _FakeSshStartupService extends SshStartupService {
-  final Completer<SshResult> updateCompleter = Completer<SshResult>();
-
-  _FakeSshStartupService(super.machineManager);
-
-  @override
-  Future<SshResult> updateBridgeServer(
-    String machineId, {
-    String? password,
-    Future<String?> Function()? promptForPassword,
-  }) {
-    return updateCompleter.future;
-  }
-}
-
 class _StaticMachineManagerService implements MachineManagerService {
   final _controller = StreamController<List<MachineWithStatus>>.broadcast();
   List<MachineWithStatus> _statuses;
-  final String? sshPassword;
 
-  _StaticMachineManagerService(this._statuses, {this.sshPassword});
+  _StaticMachineManagerService(this._statuses);
 
   @override
   Stream<List<MachineWithStatus>> get machines => _controller.stream;
@@ -250,7 +238,7 @@ class _StaticMachineManagerService implements MachineManagerService {
   Future<String?> getApiKey(String machineId) async => null;
 
   @override
-  Future<String?> getSshPassword(String machineId) async => sshPassword;
+  Future<String?> getSshPassword(String machineId) async => null;
 
   @override
   Future<String?> getSshPrivateKey(String machineId) async => null;
@@ -381,21 +369,8 @@ Future<Widget> _buildScreen({
   );
 }
 
-BridgeLatestVersionService _recommendedLatestVersionService() {
-  return BridgeLatestVersionService(
-    httpClient: MockClient(
-      (_) async =>
-          http.Response('{"version":"$recommendedBridgeVersion"}', 200),
-    ),
-  );
-}
-
 MachineManagerCubit _createMachineManagerCubit(MachineManagerService service) {
-  return MachineManagerCubit(
-    service,
-    null,
-    latestVersionService: _recommendedLatestVersionService(),
-  );
+  return MachineManagerCubit(service, null);
 }
 
 void main() {
@@ -418,7 +393,7 @@ void main() {
 
   group('Settings usage visibility', () {
     testWidgets(
-      'shows bridge update button only when connected machine is old',
+      'shows a Bridge-old compatibility reminder without an npm update button',
       (tester) async {
         SharedPreferences.setMockInitialValues({});
         final prefs = await SharedPreferences.getInstance();
@@ -447,6 +422,7 @@ void main() {
         final bridge = _FakeBridgeService(
           connected: true,
           fakeLastUrl: 'ws://100.64.0.1:8765',
+          fakeBridgeCompatibilityRevision: 0,
         );
 
         await tester.pumpWidget(
@@ -459,10 +435,10 @@ void main() {
         await tester.pumpAndSettle();
         final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
 
-        expect(find.text(l.bridgeUpdateAvailable), findsOneWidget);
+        expect(find.text(l.clientBridgeBridgeOlder), findsOneWidget);
         expect(
           find.byKey(const ValueKey('settings_update_bridge_button')),
-          findsOneWidget,
+          findsNothing,
         );
 
         await settingsCubit.close();
@@ -472,7 +448,7 @@ void main() {
       },
     );
 
-    testWidgets('disconnects and marks machine updating when update starts', (
+    testWidgets('compatibility reminders never disconnect the active Bridge', (
       tester,
     ) async {
       SharedPreferences.setMockInitialValues({});
@@ -481,31 +457,27 @@ void main() {
         prefs,
         activeMachineId: 'machine-1',
       );
-      final machine = Machine(
-        id: 'machine-1',
-        name: 'Remote Mac',
-        host: '100.64.0.1',
-        sshEnabled: true,
-        sshUsername: 'k9i',
-      );
       final machineManagerService = _StaticMachineManagerService([
         MachineWithStatus(
-          machine: machine,
+          machine: const Machine(
+            id: 'machine-1',
+            name: 'Remote Mac',
+            host: '100.64.0.1',
+          ),
           status: MachineStatus.online,
           versionInfo: BridgeVersionInfo(
-            version: olderThanRecommendedBridgeVersion,
+            version: recommendedBridgeVersion,
+            clientBridgeCompatibilityRevision: 1,
           ),
         ),
-      ], sshPassword: 'secret');
-      final sshService = _FakeSshStartupService(machineManagerService);
-      final machineManagerCubit = MachineManagerCubit(
+      ]);
+      final machineManagerCubit = _createMachineManagerCubit(
         machineManagerService,
-        sshService,
-        latestVersionService: _recommendedLatestVersionService(),
       );
       final bridge = _FakeBridgeService(
         connected: true,
         fakeLastUrl: 'ws://100.64.0.1:8765',
+        fakeBridgeCompatibilityRevision: 2,
       );
 
       await tester.pumpWidget(
@@ -513,29 +485,15 @@ void main() {
           bridge: bridge,
           settingsCubit: settingsCubit,
           machineManagerCubit: machineManagerCubit,
-          embedded: true,
         ),
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(
+      expect(bridge.disconnectCalled, isFalse);
+      expect(
         find.byKey(const ValueKey('settings_update_bridge_button')),
+        findsNothing,
       );
-      await tester.pump();
-
-      expect(bridge.disconnectCalled, isTrue);
-      expect(machineManagerCubit.state.updatingMachineId, 'machine-1');
-
-      machineManagerService.replaceStatuses([
-        MachineWithStatus(
-          machine: machine,
-          status: MachineStatus.online,
-          versionInfo: BridgeVersionInfo(version: recommendedBridgeVersion),
-        ),
-      ]);
-      sshService.updateCompleter.complete(SshResult.success());
-      await tester.pump();
-      await tester.pump();
 
       await settingsCubit.close();
       await machineManagerCubit.close();
@@ -544,83 +502,7 @@ void main() {
     });
 
     testWidgets(
-      'does not prompt for SSH password when updating with private key',
-      (tester) async {
-        SharedPreferences.setMockInitialValues({});
-        final prefs = await SharedPreferences.getInstance();
-        final settingsCubit = _SeededSettingsCubit(
-          prefs,
-          activeMachineId: 'machine-1',
-        );
-        final machine = Machine(
-          id: 'machine-1',
-          name: 'Remote Mac',
-          host: '100.64.0.1',
-          sshEnabled: true,
-          sshUsername: 'k9i',
-          sshAuthType: SshAuthType.privateKey,
-          hasCredentials: true,
-        );
-        final machineManagerService = _StaticMachineManagerService([
-          MachineWithStatus(
-            machine: machine,
-            status: MachineStatus.online,
-            versionInfo: BridgeVersionInfo(
-              version: olderThanRecommendedBridgeVersion,
-            ),
-          ),
-        ]);
-        final sshService = _FakeSshStartupService(machineManagerService);
-        final machineManagerCubit = MachineManagerCubit(
-          machineManagerService,
-          sshService,
-          latestVersionService: _recommendedLatestVersionService(),
-        );
-        final bridge = _FakeBridgeService(
-          connected: true,
-          fakeLastUrl: 'ws://100.64.0.1:8765',
-        );
-
-        await tester.pumpWidget(
-          await _buildScreen(
-            bridge: bridge,
-            settingsCubit: settingsCubit,
-            machineManagerCubit: machineManagerCubit,
-            embedded: true,
-          ),
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(
-          find.byKey(const ValueKey('settings_update_bridge_button')),
-        );
-        await tester.pump();
-
-        final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
-        expect(find.text(l.sshPassword), findsNothing);
-        expect(bridge.disconnectCalled, isTrue);
-        expect(machineManagerCubit.state.updatingMachineId, 'machine-1');
-
-        machineManagerService.replaceStatuses([
-          MachineWithStatus(
-            machine: machine,
-            status: MachineStatus.online,
-            versionInfo: BridgeVersionInfo(version: recommendedBridgeVersion),
-          ),
-        ]);
-        sshService.updateCompleter.complete(SshResult.success());
-        await tester.pump();
-        await tester.pump();
-
-        await settingsCubit.close();
-        await machineManagerCubit.close();
-        machineManagerService.dispose();
-        bridge.dispose();
-      },
-    );
-
-    testWidgets(
-      'shows bridge update button when npm latest is newer than required version',
+      'shows a Mobile-old reminder when the connected Bridge revision is newer',
       (tester) async {
         SharedPreferences.setMockInitialValues({});
         final prefs = await SharedPreferences.getInstance();
@@ -644,19 +526,11 @@ void main() {
         final machineManagerCubit = MachineManagerCubit(
           machineManagerService,
           null,
-          latestVersionService: BridgeLatestVersionService(
-            httpClient: MockClient(
-              (_) async => http.Response(
-                '{"version":"$newerThanRecommendedBridgeVersion"}',
-                200,
-              ),
-            ),
-          ),
         );
-        await machineManagerCubit.refreshLatestBridgeVersion();
         final bridge = _FakeBridgeService(
           connected: true,
           fakeLastUrl: 'ws://100.64.0.1:8765',
+          fakeBridgeCompatibilityRevision: 2,
         );
 
         await tester.pumpWidget(
@@ -669,19 +543,16 @@ void main() {
         await tester.pumpAndSettle();
         final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
 
-        expect(find.text(l.bridgeUpdateAvailable), findsOneWidget);
+        expect(find.text(l.clientBridgeMobileOlder), findsOneWidget);
         expect(
           find.text(
-            l.bridgeVersionCurrentLatest(
-              recommendedBridgeVersion,
-              newerThanRecommendedBridgeVersion,
-            ),
+            l.clientBridgeCompatibilityDetail(recommendedBridgeVersion),
           ),
           findsOneWidget,
         );
         expect(
           find.byKey(const ValueKey('settings_update_bridge_button')),
-          findsOneWidget,
+          findsNothing,
         );
 
         await settingsCubit.close();
@@ -691,7 +562,7 @@ void main() {
       },
     );
 
-    testWidgets('hides bridge update button when latest or SSH is missing', (
+    testWidgets('uses pair compatibility without depending on SSH setup', (
       tester,
     ) async {
       SharedPreferences.setMockInitialValues({});
@@ -729,7 +600,7 @@ void main() {
       await tester.pumpAndSettle();
       final l = AppLocalizations.of(tester.element(find.byType(Scaffold)));
 
-      expect(find.text(l.bridgeIsUpToDate), findsOneWidget);
+      expect(find.text(l.clientBridgeMatched), findsOneWidget);
       expect(
         find.byKey(const ValueKey('settings_update_bridge_button')),
         findsNothing,
@@ -773,14 +644,9 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text(l.bridgeIsUpToDate), findsOneWidget);
+      expect(find.text(l.clientBridgeMatched), findsOneWidget);
       expect(
-        find.text(
-          l.bridgeVersionCurrentExpected(
-            recommendedBridgeVersion,
-            recommendedBridgeVersion,
-          ),
-        ),
+        find.text(l.clientBridgeCompatibilityDetail(recommendedBridgeVersion)),
         findsOneWidget,
       );
       expect(
@@ -815,6 +681,7 @@ void main() {
       final missingSshBridge = _FakeBridgeService(
         connected: true,
         fakeLastUrl: 'ws://100.64.0.1:8765',
+        fakeBridgeCompatibilityRevision: 0,
       );
 
       await tester.pumpWidget(
@@ -826,24 +693,15 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text(l.bridgeUpdateRequiresSetup), findsOneWidget);
+      expect(find.text(l.clientBridgeBridgeOlder), findsOneWidget);
       expect(
         find.byKey(const ValueKey('settings_update_bridge_button')),
         findsNothing,
       );
       expect(
         find.byKey(const ValueKey('settings_bridge_update_setup_tile')),
-        findsOneWidget,
+        findsNothing,
       );
-
-      await tester.tap(
-        find.byKey(const ValueKey('settings_bridge_update_setup_tile')),
-      );
-      await tester.pumpAndSettle();
-
-      expect(find.text(l.bridgeUpdateSetupTitle), findsOneWidget);
-      expect(find.text(l.bridgeUpdateSetupEnableSsh), findsOneWidget);
-      expect(find.text(l.bridgeUpdateSetupCommand), findsOneWidget);
 
       await missingSshSettingsCubit.close();
       await missingSshCubit.close();

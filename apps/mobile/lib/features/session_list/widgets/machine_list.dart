@@ -9,14 +9,12 @@ class MachineList extends StatelessWidget {
   final List<MachineWithStatus> machines;
   final String? startingMachineId;
   final String? updatingMachineId;
-  final String? latestBridgeVersion;
   final bool isRefreshing;
   final ValueChanged<MachineWithStatus> onConnect;
   final ValueChanged<MachineWithStatus> onStart;
   final ValueChanged<MachineWithStatus> onEdit;
   final ValueChanged<MachineWithStatus> onDelete;
   final ValueChanged<MachineWithStatus>? onToggleFavorite;
-  final ValueChanged<MachineWithStatus>? onUpdate;
   final ValueChanged<MachineWithStatus>? onStop;
   final ValueChanged<BridgeMachineGroup>? onRenameGroup;
   final VoidCallback onAddMachine;
@@ -27,14 +25,12 @@ class MachineList extends StatelessWidget {
     required this.machines,
     this.startingMachineId,
     this.updatingMachineId,
-    this.latestBridgeVersion,
     this.isRefreshing = false,
     required this.onConnect,
     required this.onStart,
     required this.onEdit,
     required this.onDelete,
     this.onToggleFavorite,
-    this.onUpdate,
     this.onStop,
     this.onRenameGroup,
     required this.onAddMachine,
@@ -155,7 +151,6 @@ class MachineList extends StatelessWidget {
               group: group,
               startingMachineId: startingMachineId,
               updatingMachineId: updatingMachineId,
-              latestBridgeVersion: latestBridgeVersion,
               onConnect: onConnect,
               onStart: onStart,
               onEdit: onEdit,
@@ -164,7 +159,6 @@ class MachineList extends StatelessWidget {
                   ? null
                   : () => onRenameGroup!(group),
               onToggleFavorite: onToggleFavorite,
-              onUpdate: onUpdate,
               onStop: onStop,
             ),
           ),

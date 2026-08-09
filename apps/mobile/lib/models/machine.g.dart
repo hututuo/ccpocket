@@ -9,6 +9,8 @@ part of 'machine.dart';
 _BridgeVersionInfo _$BridgeVersionInfoFromJson(Map<String, dynamic> json) =>
     _BridgeVersionInfo(
       version: json['version'] as String,
+      clientBridgeCompatibilityRevision:
+          (json['clientBridgeCompatibilityRevision'] as num?)?.toInt(),
       nodeVersion: json['nodeVersion'] as String?,
       platform: json['platform'] as String?,
       arch: json['arch'] as String?,
@@ -19,6 +21,8 @@ _BridgeVersionInfo _$BridgeVersionInfoFromJson(Map<String, dynamic> json) =>
 Map<String, dynamic> _$BridgeVersionInfoToJson(_BridgeVersionInfo instance) =>
     <String, dynamic>{
       'version': instance.version,
+      'clientBridgeCompatibilityRevision':
+          instance.clientBridgeCompatibilityRevision,
       'nodeVersion': instance.nodeVersion,
       'platform': instance.platform,
       'arch': instance.arch,

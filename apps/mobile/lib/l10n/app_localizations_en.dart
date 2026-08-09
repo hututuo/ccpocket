@@ -848,6 +848,22 @@ class AppLocalizationsEn extends AppLocalizations {
   String get bridgeUpdateAvailable => 'Update available';
 
   @override
+  String get clientBridgeMatched => 'The mobile IPA and Bridge match';
+
+  @override
+  String get clientBridgeBridgeOlder =>
+      'Bridge is older; update it to match this IPA';
+
+  @override
+  String get clientBridgeMobileOlder =>
+      'The mobile IPA is older; update it to match this Bridge';
+
+  @override
+  String clientBridgeCompatibilityDetail(String bridgeVersion) {
+    return 'Current Bridge v$bridgeVersion';
+  }
+
+  @override
   String get bridgeUpdateRequiresSetup =>
       'Requires SSH and Bridge auto-start setup';
 

@@ -6,7 +6,7 @@ import '../../../models/machine.dart';
 import '../../../theme/app_theme.dart';
 import '../../../utils/network_endpoint.dart';
 
-enum _RouteAction { edit, favorite, update, stop, delete }
+enum _RouteAction { edit, favorite, stop, delete }
 
 /// Compact computer card that keeps transport routes explicit but secondary.
 class MachineGroupCard extends StatelessWidget {
@@ -19,11 +19,9 @@ class MachineGroupCard extends StatelessWidget {
     required this.onDelete,
     this.onRename,
     this.onToggleFavorite,
-    this.onUpdate,
     this.onStop,
     this.startingMachineId,
     this.updatingMachineId,
-    this.latestBridgeVersion,
   });
 
   final BridgeMachineGroup group;
@@ -33,11 +31,9 @@ class MachineGroupCard extends StatelessWidget {
   final ValueChanged<MachineWithStatus> onDelete;
   final VoidCallback? onRename;
   final ValueChanged<MachineWithStatus>? onToggleFavorite;
-  final ValueChanged<MachineWithStatus>? onUpdate;
   final ValueChanged<MachineWithStatus>? onStop;
   final String? startingMachineId;
   final String? updatingMachineId;
-  final String? latestBridgeVersion;
 
   @override
   Widget build(BuildContext context) {
@@ -118,7 +114,6 @@ class MachineGroupCard extends StatelessWidget {
               isPreferred: route.machine.id == preferred.machine.id,
               isStarting: startingMachineId == route.machine.id,
               isUpdating: updatingMachineId == route.machine.id,
-              latestBridgeVersion: latestBridgeVersion,
               onConnect: () => onConnect(route),
               onStart: () => onStart(route),
               onEdit: () => onEdit(route),
@@ -126,7 +121,6 @@ class MachineGroupCard extends StatelessWidget {
               onToggleFavorite: onToggleFavorite == null
                   ? null
                   : () => onToggleFavorite!(route),
-              onUpdate: onUpdate == null ? null : () => onUpdate!(route),
               onStop: onStop == null ? null : () => onStop!(route),
             ),
           ),
@@ -167,9 +161,7 @@ class _MachineRouteTile extends StatelessWidget {
     required this.onStart,
     required this.onEdit,
     required this.onDelete,
-    required this.latestBridgeVersion,
     this.onToggleFavorite,
-    this.onUpdate,
     this.onStop,
   });
 
@@ -182,25 +174,13 @@ class _MachineRouteTile extends StatelessWidget {
   final VoidCallback onEdit;
   final VoidCallback onDelete;
   final VoidCallback? onToggleFavorite;
-  final VoidCallback? onUpdate;
   final VoidCallback? onStop;
-  final String? latestBridgeVersion;
 
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
     final theme = Theme.of(context);
     final machine = route.machine;
-    final updateTargetVersion =
-        latestBridgeVersion != null &&
-            compareSemanticVersions(
-                  latestBridgeVersion!,
-                  AppConstants.expectedBridgeVersion,
-                ) >
-                0
-        ? latestBridgeVersion!
-        : AppConstants.expectedBridgeVersion;
-    final needsUpdate = route.needsUpdate(updateTargetVersion);
     final isOnline = route.status == MachineStatus.online;
     final isIdentityChanged = route.status == MachineStatus.identityChanged;
 
@@ -270,9 +250,6 @@ class _MachineRouteTile extends StatelessWidget {
                     case _RouteAction.favorite:
                       onToggleFavorite?.call();
                       return;
-                    case _RouteAction.update:
-                      onUpdate?.call();
-                      return;
                     case _RouteAction.stop:
                       onStop?.call();
                       return;
@@ -289,14 +266,6 @@ class _MachineRouteTile extends StatelessWidget {
                       child: Text(
                         machine.isFavorite ? l.unfavorite : l.favorite,
                       ),
-                    ),
-                  if (isOnline &&
-                      needsUpdate &&
-                      machine.canStartRemotely &&
-                      onUpdate != null)
-                    PopupMenuItem(
-                      value: _RouteAction.update,
-                      child: Text(l.updateBridge),
                     ),
                   if (isOnline && onStop != null)
                     PopupMenuItem(
@@ -331,6 +300,15 @@ class _MachineRouteTile extends StatelessWidget {
     }
     if (route.versionInfo case final version?) {
       parts.add('v${version.version}');
+      final compatibility = compareClientBridgeCompatibility(
+        bridgeRevision: version.clientBridgeCompatibilityRevision,
+        mobileRevision: AppConstants.clientBridgeCompatibilityRevision,
+      );
+      if (compatibility == ClientBridgeCompatibility.bridgeOlder) {
+        parts.add(l.clientBridgeBridgeOlder);
+      } else if (compatibility == ClientBridgeCompatibility.mobileOlder) {
+        parts.add(l.clientBridgeMobileOlder);
+      }
     }
     return parts.join(' · ');
   }

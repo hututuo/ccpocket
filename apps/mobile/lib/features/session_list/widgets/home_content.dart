@@ -8,6 +8,7 @@ import 'package:skeletonizer/skeletonizer.dart';
 
 import '../../../constants/app_constants.dart';
 import '../../../l10n/app_localizations.dart';
+import '../../../models/machine.dart';
 import '../../../models/messages.dart';
 import '../../../models/offline_pending_action.dart';
 import '../../../services/app_update_service.dart';
@@ -25,6 +26,7 @@ import '../../conversation_mirror/conversation_mirror_service.dart';
 import '../../conversation_mirror/conversation_mirror_target.dart';
 import '../../file_transfer/file_transfer_service.dart';
 import '../../file_transfer/received_file_inbox_banner.dart';
+import '../../mobile_update/mobile_update_screen.dart';
 import '../session_list_projection.dart';
 import '../state/session_list_cubit.dart';
 import '../state/session_list_state.dart';
@@ -256,7 +258,7 @@ SessionInfo _sessionInfoForUnifiedCard(
 class HomeContent extends StatefulWidget {
   final BridgeConnectionState connectionState;
   final String? bridgeVersion;
-  final String? latestBridgeVersion;
+  final int? bridgeCompatibilityRevision;
   final List<SessionInfo> sessions;
   final List<OfflinePendingAction> offlinePendingActions;
   final List<RecentSession> recentSessions;
@@ -330,7 +332,7 @@ class HomeContent extends StatefulWidget {
     super.key,
     required this.connectionState,
     this.bridgeVersion,
-    this.latestBridgeVersion,
+    this.bridgeCompatibilityRevision,
     required this.sessions,
     this.offlinePendingActions = const [],
     required this.recentSessions,
@@ -536,18 +538,25 @@ class HomeContentState extends State<HomeContent> {
     if (_updateBannerDismissed) return null;
     if (!BridgeUpdateBanner.shouldShow(
       widget.bridgeVersion,
-      AppConstants.expectedBridgeVersion,
-      latestBridgeVersion: widget.latestBridgeVersion,
+      bridgeCompatibilityRevision: widget.bridgeCompatibilityRevision,
     )) {
       return null;
     }
+    final compatibility = compareClientBridgeCompatibility(
+      bridgeRevision: widget.bridgeCompatibilityRevision,
+      mobileRevision: AppConstants.clientBridgeCompatibilityRevision,
+    );
     return BridgeUpdateBanner(
       currentVersion: widget.bridgeVersion!,
-      expectedVersion: AppConstants.expectedBridgeVersion,
-      latestBridgeVersion: widget.latestBridgeVersion,
-      onTap:
-          widget.onOpenBridgeSettings ??
-          () => context.pushRoute(SettingsRoute(focusConnection: true)),
+      bridgeCompatibilityRevision: widget.bridgeCompatibilityRevision,
+      onTap: compatibility == ClientBridgeCompatibility.mobileOlder
+          ? () => Navigator.of(context).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) => const MobileUpdateScreen(),
+              ),
+            )
+          : widget.onOpenBridgeSettings ??
+                () => context.pushRoute(SettingsRoute(focusConnection: true)),
       onDismiss: () => setState(() => _updateBannerDismissed = true),
     );
   }
@@ -556,8 +565,7 @@ class HomeContentState extends State<HomeContent> {
     return !_updateBannerDismissed &&
         BridgeUpdateBanner.shouldShow(
           widget.bridgeVersion,
-          AppConstants.expectedBridgeVersion,
-          latestBridgeVersion: widget.latestBridgeVersion,
+          bridgeCompatibilityRevision: widget.bridgeCompatibilityRevision,
         );
   }
 

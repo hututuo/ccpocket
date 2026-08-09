@@ -175,6 +175,7 @@ import { fetchAllUsage } from "./usage.js";
 import type { PromptHistoryBackupStore } from "./prompt-history-backup.js";
 import type { PromptHistoryStore } from "./prompt-history-store.js";
 import { getPackageVersion } from "./version.js";
+import { CLIENT_BRIDGE_COMPATIBILITY_REVISION } from "./client-bridge-compatibility.js";
 import {
   isPathWithinAllowedDirectory,
   resolvePlatformPath,
@@ -13816,6 +13817,8 @@ export class BridgeWebSocketServer {
       defaultCodexProfile: this.defaultCodexProfile,
       codexAutoReviewDisabled: this.codexAutoReviewDisabled,
       bridgeVersion: getPackageVersion(),
+      clientBridgeCompatibilityRevision:
+        CLIENT_BRIDGE_COMPATIBILITY_REVISION,
       bridgeCapabilities: [
         CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
@@ -13922,6 +13925,8 @@ export class BridgeWebSocketServer {
       defaultCodexProfile: this.defaultCodexProfile,
       codexAutoReviewDisabled: this.codexAutoReviewDisabled,
       bridgeVersion: getPackageVersion(),
+      clientBridgeCompatibilityRevision:
+        CLIENT_BRIDGE_COMPATIBILITY_REVISION,
       bridgeCapabilities: [
         CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
         CODEX_SESSION_LIFECYCLE_CAPABILITY,

@@ -276,6 +276,15 @@
   "updateBridge": "更新 Bridge",
   "bridgeIsUpToDate": "Bridge 已是最新",
   "bridgeUpdateAvailable": "有可用更新",
+  "clientBridgeMatched": "手机 IPA 与 Bridge 已匹配",
+  "clientBridgeBridgeOlder": "Bridge 较旧，请更新以匹配当前 IPA",
+  "clientBridgeMobileOlder": "手机 IPA 较旧，请更新以匹配当前 Bridge",
+  "clientBridgeCompatibilityDetail": "当前 Bridge v{bridgeVersion}",
+  "@clientBridgeCompatibilityDetail": {
+    "placeholders": {
+      "bridgeVersion": { "type": "String" }
+    }
+  },
   "bridgeUpdateRequiresSetup": "需要 SSH 和 Bridge 自动启动设置",
   "bridgeVersionUnknown": "无法确认 Bridge 版本",
   "bridgeVersionCurrentExpected": "当前 v{current}，推荐 v{expected} 以上",

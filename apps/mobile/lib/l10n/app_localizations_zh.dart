@@ -822,6 +822,20 @@ class AppLocalizationsZh extends AppLocalizations {
   String get bridgeUpdateAvailable => '有可用更新';
 
   @override
+  String get clientBridgeMatched => '手机 IPA 与 Bridge 已匹配';
+
+  @override
+  String get clientBridgeBridgeOlder => 'Bridge 较旧，请更新以匹配当前 IPA';
+
+  @override
+  String get clientBridgeMobileOlder => '手机 IPA 较旧，请更新以匹配当前 Bridge';
+
+  @override
+  String clientBridgeCompatibilityDetail(String bridgeVersion) {
+    return '当前 Bridge v$bridgeVersion';
+  }
+
+  @override
   String get bridgeUpdateRequiresSetup => '需要 SSH 和 Bridge 自动启动设置';
 
   @override

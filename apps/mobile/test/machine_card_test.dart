@@ -32,7 +32,7 @@ Future<void> _pumpCard(
   WidgetTester tester, {
   required MachineStatus status,
   String? version,
-  String? latestBridgeVersion,
+  int? compatibilityRevision,
   bool sshEnabled = true,
   String? sshUsername = 'k9i',
   VoidCallback? onConnect,
@@ -47,15 +47,16 @@ Future<void> _pumpCard(
           status: status,
           versionInfo: version == null
               ? null
-              : BridgeVersionInfo(version: version),
+              : BridgeVersionInfo(
+                  version: version,
+                  clientBridgeCompatibilityRevision: compatibilityRevision,
+                ),
         ),
         onConnect: onConnect ?? () {},
         onStart: () {},
         onEdit: onEdit ?? () {},
         onDelete: onDelete ?? () {},
-        onUpdate: () {},
         onStop: () {},
-        latestBridgeVersion: latestBridgeVersion,
       ),
     ),
   );
@@ -122,23 +123,9 @@ void main() {
       expect(find.text('Stop Server'), findsOneWidget);
     });
 
-    testWidgets('shows update menu only for online old bridge with SSH', (
+    testWidgets('does not offer the public npm updater for an old bridge', (
       tester,
     ) async {
-      await _pumpCard(
-        tester,
-        status: MachineStatus.offline,
-        version: olderThanRecommendedBridgeVersion,
-      );
-
-      await tester.tap(find.byKey(const ValueKey('machine_menu_m1')));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Update Bridge'), findsNothing);
-
-      await tester.tapAt(Offset.zero);
-      await tester.pumpAndSettle();
-
       await _pumpCard(
         tester,
         status: MachineStatus.online,
@@ -148,7 +135,7 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('machine_menu_m1')));
       await tester.pumpAndSettle();
 
-      expect(find.text('Update Bridge'), findsOneWidget);
+      expect(find.text('Update Bridge'), findsNothing);
     });
   });
 
@@ -215,25 +202,34 @@ void main() {
         );
       },
     );
+  });
 
-    testWidgets('uses latest bridge version for update metadata', (
-      tester,
-    ) async {
-      await _pumpCard(
-        tester,
-        status: MachineStatus.online,
-        version: recommendedBridgeVersion,
-        latestBridgeVersion: newerThanRecommendedBridgeVersion,
-      );
-
-      await tester.tap(find.byKey(const ValueKey('machine_menu_m1')));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Update Bridge'), findsOneWidget);
-      expect(
-        find.byKey(const ValueKey('machine_connect_button')),
-        findsOneWidget,
-      );
-    });
+  group('client/Bridge compatibility', () {
+    test(
+      'classifies both older directions without a public version lookup',
+      () {
+        expect(
+          compareClientBridgeCompatibility(
+            bridgeRevision: null,
+            mobileRevision: 2,
+          ),
+          ClientBridgeCompatibility.bridgeOlder,
+        );
+        expect(
+          compareClientBridgeCompatibility(
+            bridgeRevision: 3,
+            mobileRevision: 2,
+          ),
+          ClientBridgeCompatibility.mobileOlder,
+        );
+        expect(
+          compareClientBridgeCompatibility(
+            bridgeRevision: 2,
+            mobileRevision: 2,
+          ),
+          ClientBridgeCompatibility.matched,
+        );
+      },
+    );
   });
 }

@@ -29,6 +29,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:talker_bloc_logger/talker_bloc_logger.dart';
 
 import 'core/logger.dart';
+import 'constants/app_constants.dart';
 import 'l10n/app_localizations.dart';
 import 'features/auto_approval/auto_approval_service.dart';
 import 'features/background_sync/background_location_keep_alive_host.dart';
@@ -214,6 +215,8 @@ void main() async {
         fileTransferPlatformSupport.appVersion,
     clientMobileRuntime: mobileHostSnapshot.toClientCapabilitiesJson(
       patchNumber: mobileUpdateService.state.currentPatchNumber,
+      clientBridgeCompatibilityRevision:
+          AppConstants.clientBridgeCompatibilityRevision,
     ),
     deviceIdentityService: bridgeDeviceIdentityService,
   );
@@ -517,11 +520,8 @@ void main() async {
             ),
           ),
           BlocProvider(
-            create: (_) => MachineManagerCubit(
-              machineManagerService,
-              sshStartupService,
-              refreshLatestBridgeVersionOnInit: true,
-            ),
+            create: (_) =>
+                MachineManagerCubit(machineManagerService, sshStartupService),
           ),
           BlocProvider<SettingsCubit>(
             create: (_) => settingsCubit,

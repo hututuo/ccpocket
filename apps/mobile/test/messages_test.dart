@@ -1394,6 +1394,7 @@ void main() {
         },
         'codexProfiles': ['ccpocket', 'research'],
         'defaultCodexProfile': 'ccpocket',
+        'clientBridgeCompatibilityRevision': 4,
         'bridgeCapabilities': ['codex_permission_apply_strategy_v1'],
         'codexAutoReviewDisabled': true,
       });
@@ -1431,6 +1432,7 @@ void main() {
       );
       expect(sessionList.sessions.single.codexNativePlanModeSupported, isTrue);
       expect(sessionList.defaultCodexProfile, 'ccpocket');
+      expect(sessionList.clientBridgeCompatibilityRevision, 4);
       expect(sessionList.codexAutoReviewDisabled, isTrue);
     });
 
