@@ -1,5 +1,28 @@
 # ccPocket Compatibility Decisions
 
+## 2026-08-09 one repository root and one canonical development branch
+
+- The only CC Pocket source project root is
+  `/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-compat`.
+- Local `main` is the canonical independent product line. The non-Git parent
+  workspace, dated worktrees, release-task cwd and upstream branch are not
+  source authority.
+- Ordinary task branches are short-lived. Once their semantics are verified on
+  `main`, remove their worktree and branch; retain an archive ref only when it
+  carries unique recovery or audit value.
+- The fixed release task may keep one linked checkout on
+  `release/ccpocket-local`, but that branch must be fast-forwarded to the exact
+  authorized source before every release and must never become a parallel
+  development line.
+- A historical branch that is not an ancestor may be closed only after
+  patch-id or semantic comparison and a recoverable ref. Branch names and
+  identical commit subjects are not merge evidence.
+- Project-specific operational records may be archived in this repository;
+  installed daemons, global skills and cross-project system tooling keep their
+  own system-tools ownership and release gates.
+- The convergence record is
+  `notes/repository-single-root-consolidation_v01_20260809-144837.md`.
+
 ## 2026-08-08 provider identity and lightweight history are the only merge authority
 
 - A displayed message is reconciled by provider item id, provider turn id and

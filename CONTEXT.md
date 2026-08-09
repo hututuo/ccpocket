@@ -1,5 +1,25 @@
 # CC Pocket Compatibility Fork Context
 
+## 2026-08-09 single Git root and canonical main
+
+CC Pocket now has one source Git root:
+`/Users/huyiyang/AI agent/Codex/_keep/projects/ccpocket-compat`.
+The root checkout is the canonical local `main`; Codex Desktop must add this
+exact directory as the CC Pocket project so branch/worktree features operate
+on the repository rather than the non-Git parent workspace. One additional
+linked checkout is retained only because the fixed release task still owns its
+legacy cwd; it now runs `release/ccpocket-local` at the current source, not the
+old architecture-review branch.
+
+Twenty old linked worktrees and twenty ordinary task branches were removed
+after ancestry and patch-id review. Their exact tips, the dirty 2026-08-03
+audit snapshot, and the former standalone operations repository remain under
+`refs/archive/ccpocket/consolidation-20260809/*`. The former standalone
+`_keep/projects/ccpocket` repository was imported under
+`archive/legacy-ops-repository/` and removed. Full evidence and recovery rules
+are in
+`notes/repository-single-root-consolidation_v01_20260809-144837.md`.
+
 ## 2026-08-08 retired full-download UI and manual-compaction boundary
 
 The current source line is `feature/session-reliability-and-tasks-20260808`
