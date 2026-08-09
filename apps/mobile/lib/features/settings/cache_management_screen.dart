@@ -6,6 +6,7 @@ import 'package:provider/provider.dart' hide Provider;
 import '../../models/messages.dart';
 import '../../models/machine.dart';
 import '../../providers/machine_manager_cubit.dart';
+import '../../utils/network_endpoint.dart';
 import '../conversation_mirror/conversation_mirror_service.dart';
 import '../conversation_mirror/storage/conversation_mirror_models.dart';
 import '../session_list/cache/session_catalog_cache_repository.dart';
@@ -15,19 +16,189 @@ import 'cache_management_strings.dart';
 class CacheManagementDataSource {
   const CacheManagementDataSource({
     required this.target,
-    required this.displayName,
+    required this.bridgeInstanceId,
     required this.codexSourceId,
     required this.routeCount,
+    required this.usesStableIdentity,
     required this.stats,
     required this.conversations,
+    this.legacyRouteLabel,
   });
 
   final SessionCatalogCacheTarget target;
-  final String displayName;
+  final String? bridgeInstanceId;
   final String? codexSourceId;
   final int routeCount;
+  final bool usesStableIdentity;
   final SessionCatalogCacheStats stats;
   final List<SessionCatalogCachedConversation> conversations;
+  final String? legacyRouteLabel;
+}
+
+class CacheManagementMachine {
+  const CacheManagementMachine({
+    required this.id,
+    required this.displayName,
+    required this.routeCount,
+    required this.hasStableIdentity,
+    required this.dataSources,
+  });
+
+  final String id;
+  final String displayName;
+  final int routeCount;
+  final bool hasStableIdentity;
+  final List<CacheManagementDataSource> dataSources;
+
+  SessionCatalogCacheStats get stats => SessionCatalogCacheStats(
+    sessionSummaries: dataSources.fold(
+      0,
+      (total, source) => total + source.stats.sessionSummaries,
+    ),
+    conversationWindows: dataSources.fold(
+      0,
+      (total, source) => total + source.stats.conversationWindows,
+    ),
+  );
+}
+
+class CacheManagementDataSourceTarget {
+  const CacheManagementDataSourceTarget({
+    required this.target,
+    required this.bridgeInstanceId,
+    required this.codexSourceId,
+    required this.routeCount,
+    required this.usesStableIdentity,
+    this.legacyRouteLabel,
+  });
+
+  final SessionCatalogCacheTarget target;
+  final String? bridgeInstanceId;
+  final String? codexSourceId;
+  final int routeCount;
+  final bool usesStableIdentity;
+  final String? legacyRouteLabel;
+}
+
+typedef CacheManagementMachineTargetGroup = ({
+  BridgeMachineGroup machine,
+  List<CacheManagementDataSourceTarget> sources,
+});
+
+/// Projects saved connection routes into the same computer-first hierarchy
+/// used by the connection screen, while preserving exact cache partitions.
+///
+/// A signed Bridge identity wins, an authenticated legacy Bridge falls back to
+/// its random installation ID, and unproven endpoints remain isolated. A
+/// computer may still expose multiple Codex data sources, which must never be
+/// merged because `(bridgeInstanceId, codexSourceId)` is the cache authority.
+List<CacheManagementMachineTargetGroup> groupCacheManagementRoutes(
+  Iterable<MachineWithStatus> routes,
+) {
+  final result = <CacheManagementMachineTargetGroup>[];
+  for (final machineGroup in groupBridgeMachineRoutes(routes)) {
+    final orderedRoutes = List<MachineWithStatus>.of(machineGroup.routes)
+      ..sort((left, right) {
+        if (left.machine.id == machineGroup.preferredRoute.machine.id) {
+          return -1;
+        }
+        if (right.machine.id == machineGroup.preferredRoute.machine.id) {
+          return 1;
+        }
+        final leftTime =
+            left.machine.lastConnected?.millisecondsSinceEpoch ?? 0;
+        final rightTime =
+            right.machine.lastConnected?.millisecondsSinceEpoch ?? 0;
+        final recency = rightTime.compareTo(leftTime);
+        if (recency != 0) return recency;
+        return left.machine.uniqueKey.compareTo(right.machine.uniqueKey);
+      });
+    final bridgeIds = orderedRoutes
+        .map((route) => route.machine.bridgeInstanceId?.trim())
+        .whereType<String>()
+        .where((value) => value.isNotEmpty)
+        .toSet();
+    final sharedBridgeId = bridgeIds.length == 1 ? bridgeIds.single : null;
+    final groupedSources =
+        <
+          String,
+          ({
+            SessionCatalogCacheTarget target,
+            String? bridgeId,
+            String? sourceId,
+            int routeCount,
+            bool stable,
+            String? legacyRouteLabel,
+          })
+        >{};
+
+    for (final route in orderedRoutes) {
+      final machine = route.machine;
+      final directBridgeId = machine.bridgeInstanceId?.trim();
+      final bridgeId = directBridgeId?.isNotEmpty == true
+          ? directBridgeId
+          : sharedBridgeId;
+      final directSourceId = machine.codexSourceId?.trim();
+      final sourceId = directSourceId?.isNotEmpty == true
+          ? directSourceId
+          : null;
+      final stable = bridgeId != null && bridgeId.isNotEmpty;
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridgeId,
+        codexSourceId: sourceId,
+        logicalConnectionIdentity: 'machine:${machine.id}',
+        websocketUrl: machine.wsUrl,
+      );
+      if (!target.isValid) continue;
+      final existing = groupedSources[target.fingerprint];
+      if (existing == null) {
+        groupedSources[target.fingerprint] = (
+          target: target,
+          bridgeId: bridgeId,
+          sourceId: sourceId,
+          routeCount: 1,
+          stable: stable,
+          legacyRouteLabel: stable
+              ? null
+              : formatHostPort(machine.host, machine.port),
+        );
+      } else {
+        groupedSources[target.fingerprint] = (
+          target: existing.target,
+          bridgeId: existing.bridgeId,
+          sourceId: existing.sourceId,
+          routeCount: existing.routeCount + 1,
+          stable: existing.stable,
+          legacyRouteLabel: existing.legacyRouteLabel,
+        );
+      }
+    }
+
+    final sources =
+        groupedSources.values
+            .map(
+              (source) => CacheManagementDataSourceTarget(
+                target: source.target,
+                bridgeInstanceId: source.bridgeId,
+                codexSourceId: source.sourceId,
+                routeCount: source.routeCount,
+                usesStableIdentity: source.stable,
+                legacyRouteLabel: source.legacyRouteLabel,
+              ),
+            )
+            .toList()
+          ..sort((left, right) {
+            if (left.usesStableIdentity != right.usesStableIdentity) {
+              return left.usesStableIdentity ? -1 : 1;
+            }
+            return (left.codexSourceId ?? left.legacyRouteLabel ?? '')
+                .compareTo(right.codexSourceId ?? right.legacyRouteLabel ?? '');
+          });
+    if (sources.isNotEmpty) {
+      result.add((machine: machineGroup, sources: List.unmodifiable(sources)));
+    }
+  }
+  return List.unmodifiable(result);
 }
 
 abstract interface class CacheManagementBackend {
@@ -35,7 +206,7 @@ abstract interface class CacheManagementBackend {
 
   Future<SessionCatalogCacheStats> temporaryCacheStats();
 
-  Future<List<CacheManagementDataSource>> dataSourceCaches();
+  Future<List<CacheManagementMachine>> machineCaches();
 
   Future<Map<ConversationMirrorKey, String>> localCopyDisplayNames();
 
@@ -67,6 +238,7 @@ class _AppCacheManagementBackend implements CacheManagementBackend {
   final SessionListCubit? sessionListCubit;
   final ConversationMirrorService? conversationMirror;
   final MachineManagerCubit? machineManager;
+  StreamSubscription<Object?>? _machineSubscription;
 
   @override
   List<ConversationMirrorMetadata> get localCopies =>
@@ -80,54 +252,40 @@ class _AppCacheManagementBackend implements CacheManagementBackend {
       );
 
   @override
-  Future<List<CacheManagementDataSource>> dataSourceCaches() async {
+  Future<List<CacheManagementMachine>> machineCaches() async {
     final cache = catalogCache;
     if (cache == null) return const [];
-    final groups =
-        <String, ({SessionCatalogCacheTarget target, List<Machine> routes})>{};
-    for (final machineWithStatus
-        in machineManager?.state.machines ?? const []) {
-      final machine = machineWithStatus.machine;
-      final target = SessionCatalogCacheTarget.fromBridge(
-        bridgeInstanceId: machine.bridgeInstanceId,
-        codexSourceId: machine.codexSourceId,
-        websocketUrl: machine.wsUrl,
+    final targetGroups = groupCacheManagementRoutes(
+      machineManager?.state.machines ?? const [],
+    );
+    final result = <CacheManagementMachine>[];
+    for (final targetGroup in targetGroups) {
+      final dataSources = await Future.wait(
+        targetGroup.sources.map(
+          (source) async => CacheManagementDataSource(
+            target: source.target,
+            bridgeInstanceId: source.bridgeInstanceId,
+            codexSourceId: source.codexSourceId,
+            routeCount: source.routeCount,
+            usesStableIdentity: source.usesStableIdentity,
+            legacyRouteLabel: source.legacyRouteLabel,
+            stats: await cache.cacheStatsForTarget(source.target),
+            conversations: await cache.cachedConversations(source.target),
+          ),
+        ),
       );
-      if (!target.isValid) continue;
-      final existing = groups[target.fingerprint];
-      if (existing == null) {
-        groups[target.fingerprint] = (target: target, routes: [machine]);
-      } else {
-        existing.routes.add(machine);
-      }
-    }
-    final result = <CacheManagementDataSource>[];
-    for (final group in groups.values) {
-      group.routes.sort(
-        (left, right) =>
-            (right.lastConnected ?? DateTime.fromMillisecondsSinceEpoch(0))
-                .compareTo(
-                  left.lastConnected ?? DateTime.fromMillisecondsSinceEpoch(0),
-                ),
-      );
-      final namedRoutes = group.routes
-          .where((route) => route.name?.trim().isNotEmpty == true)
-          .toList(growable: false);
-      final preferred = namedRoutes.isEmpty
-          ? group.routes.first
-          : namedRoutes.first;
       result.add(
-        CacheManagementDataSource(
-          target: group.target,
-          displayName: preferred.displayName,
-          codexSourceId: preferred.codexSourceId,
-          routeCount: group.routes.length,
-          stats: await cache.cacheStatsForTarget(group.target),
-          conversations: await cache.cachedConversations(group.target),
+        CacheManagementMachine(
+          id: targetGroup.machine.id,
+          displayName: targetGroup.machine.displayName,
+          routeCount: targetGroup.machine.routes.length,
+          hasStableIdentity:
+              targetGroup.machine.bridgeIdentityId != null ||
+              targetGroup.machine.bridgeInstanceId != null,
+          dataSources: List.unmodifiable(dataSources),
         ),
       );
     }
-    result.sort((left, right) => left.displayName.compareTo(right.displayName));
     return List.unmodifiable(result);
   }
 
@@ -193,11 +351,15 @@ class _AppCacheManagementBackend implements CacheManagementBackend {
   @override
   void addListener(VoidCallback listener) {
     conversationMirror?.addListener(listener);
+    _machineSubscription?.cancel();
+    _machineSubscription = machineManager?.stream.listen((_) => listener());
   }
 
   @override
   void removeListener(VoidCallback listener) {
     conversationMirror?.removeListener(listener);
+    unawaited(_machineSubscription?.cancel());
+    _machineSubscription = null;
   }
 }
 
@@ -238,7 +400,7 @@ class _CacheManagementScreenState extends State<CacheManagementScreen> {
   CacheManagementBackend? _backend;
   SessionCatalogCacheStats _cacheStats = const SessionCatalogCacheStats.empty();
   Map<ConversationMirrorKey, String> _localCopyDisplayNames = const {};
-  List<CacheManagementDataSource> _dataSources = const [];
+  List<CacheManagementMachine> _machines = const [];
   int _loadGeneration = 0;
   bool _isLoadingCacheStats = true;
   bool _isClearingCatalog = false;
@@ -272,12 +434,12 @@ class _CacheManagementScreenState extends State<CacheManagementScreen> {
     try {
       final stats = await _backend!.temporaryCacheStats();
       final displayNames = await _backend!.localCopyDisplayNames();
-      final dataSources = await _backend!.dataSourceCaches();
+      final machines = await _backend!.machineCaches();
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _cacheStats = stats;
         _localCopyDisplayNames = displayNames;
-        _dataSources = dataSources;
+        _machines = machines;
         _isLoadingCacheStats = false;
       });
     } catch (error) {
@@ -287,7 +449,10 @@ class _CacheManagementScreenState extends State<CacheManagementScreen> {
     }
   }
 
-  Future<void> _clearDataSource(CacheManagementDataSource dataSource) async {
+  Future<void> _clearDataSource(
+    CacheManagementMachine machine,
+    CacheManagementDataSource dataSource,
+  ) async {
     final key = dataSource.target.fingerprint;
     if (_clearingDataSources.contains(key)) return;
     setState(() => _clearingDataSources.add(key));
@@ -300,7 +465,7 @@ class _CacheManagementScreenState extends State<CacheManagementScreen> {
           content: Text(
             CacheManagementStrings.of(
               context,
-            ).dataSourceCleared(dataSource.displayName),
+            ).dataSourceCleared(machine.displayName),
           ),
         ),
       );
@@ -462,17 +627,16 @@ class _CacheManagementScreenState extends State<CacheManagementScreen> {
                     ),
             ),
           ),
-          if (_dataSources.isNotEmpty) ...[
+          if (_machines.isNotEmpty) ...[
             _CacheSectionHeader(strings.byDataSourceSection),
-            for (final dataSource in _dataSources)
-              _DataSourceCacheCard(
-                dataSource: dataSource,
-                isClearing: _clearingDataSources.contains(
-                  dataSource.target.fingerprint,
-                ),
+            for (final machine in _machines)
+              _MachineCacheCard(
+                machine: machine,
+                clearingDataSourceKeys: _clearingDataSources,
                 removingConversationKeys: _removingCachedConversations,
-                onClear: () => _clearDataSource(dataSource),
-                onRemoveConversation: (conversation) =>
+                onClearDataSource: (dataSource) =>
+                    _clearDataSource(machine, dataSource),
+                onRemoveConversation: (dataSource, conversation) =>
                     _confirmRemoveCachedConversation(dataSource, conversation),
               ),
           ],
@@ -512,9 +676,73 @@ class _CacheManagementScreenState extends State<CacheManagementScreen> {
   }
 }
 
-class _DataSourceCacheCard extends StatelessWidget {
-  const _DataSourceCacheCard({
+class _MachineCacheCard extends StatelessWidget {
+  const _MachineCacheCard({
+    required this.machine,
+    required this.clearingDataSourceKeys,
+    required this.removingConversationKeys,
+    required this.onClearDataSource,
+    required this.onRemoveConversation,
+  });
+
+  final CacheManagementMachine machine;
+  final Set<String> clearingDataSourceKeys;
+  final Set<String> removingConversationKeys;
+  final ValueChanged<CacheManagementDataSource> onClearDataSource;
+  final void Function(
+    CacheManagementDataSource,
+    SessionCatalogCachedConversation,
+  )
+  onRemoveConversation;
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = CacheManagementStrings.of(context);
+    final stats = machine.stats;
+    return Card(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: ExpansionTile(
+        key: ValueKey('cache_machine_${machine.id}'),
+        tilePadding: const EdgeInsets.fromLTRB(16, 6, 12, 6),
+        childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        leading: const Icon(Icons.computer_outlined),
+        title: Text(
+          machine.displayName,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          strings.machineCacheSubtitle(
+            routes: machine.routeCount,
+            sources: machine.dataSources.length,
+            summaries: stats.sessionSummaries,
+            windows: stats.conversationWindows,
+            stableIdentity: machine.hasStableIdentity,
+          ),
+        ),
+        children: [
+          for (final dataSource in machine.dataSources)
+            _DataSourceCacheSection(
+              dataSource: dataSource,
+              initiallyExpanded: machine.dataSources.length == 1,
+              isClearing: clearingDataSourceKeys.contains(
+                dataSource.target.fingerprint,
+              ),
+              removingConversationKeys: removingConversationKeys,
+              onClear: () => onClearDataSource(dataSource),
+              onRemoveConversation: (conversation) =>
+                  onRemoveConversation(dataSource, conversation),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DataSourceCacheSection extends StatelessWidget {
+  const _DataSourceCacheSection({
     required this.dataSource,
+    required this.initiallyExpanded,
     required this.isClearing,
     required this.removingConversationKeys,
     required this.onClear,
@@ -522,6 +750,7 @@ class _DataSourceCacheCard extends StatelessWidget {
   });
 
   final CacheManagementDataSource dataSource;
+  final bool initiallyExpanded;
   final bool isClearing;
   final Set<String> removingConversationKeys;
   final VoidCallback onClear;
@@ -531,65 +760,83 @@ class _DataSourceCacheCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final strings = CacheManagementStrings.of(context);
     final source = dataSource.codexSourceId;
-    return Card(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      child: ExpansionTile(
-        key: ValueKey('cache_data_source_${dataSource.target.fingerprint}'),
-        leading: const Icon(Icons.computer_outlined),
-        title: Text(
-          dataSource.displayName,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Material(
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
         ),
-        subtitle: Text(
-          strings.dataSourceSubtitle(
-            routes: dataSource.routeCount,
-            source: source == null ? null : _shortIdentity(source),
-            summaries: dataSource.stats.sessionSummaries,
-            windows: dataSource.stats.conversationWindows,
+        clipBehavior: Clip.antiAlias,
+        child: ExpansionTile(
+          key: ValueKey('cache_data_source_${dataSource.target.fingerprint}'),
+          initiallyExpanded: initiallyExpanded,
+          leading: Icon(
+            dataSource.usesStableIdentity
+                ? Icons.dns_outlined
+                : Icons.link_outlined,
+            size: 20,
           ),
-        ),
-        children: [
-          Align(
-            alignment: Alignment.centerRight,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: TextButton.icon(
-                key: ValueKey(
-                  'clear_cache_data_source_${dataSource.target.fingerprint}',
-                ),
-                onPressed: isClearing ? null : onClear,
-                icon: isClearing
-                    ? const SizedBox.square(
-                        dimension: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.cleaning_services_outlined),
-                label: Text(strings.clearThisDataSource),
-              ),
+          title: Text(
+            strings.dataSourceTitle(
+              source: source == null ? null : _shortIdentity(source),
+              bridge: dataSource.bridgeInstanceId == null
+                  ? null
+                  : _shortIdentity(dataSource.bridgeInstanceId!),
+              legacyRoute: !dataSource.usesStableIdentity,
             ),
           ),
-          if (dataSource.conversations.isEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(strings.noRecentWindows),
-              ),
-            )
-          else
-            for (final conversation in dataSource.conversations)
-              _CachedConversationTile(
-                dataSource: dataSource,
-                conversation: conversation,
-                isRemoving: removingConversationKeys.contains(
-                  '${dataSource.target.fingerprint}\n'
-                  '${conversation.provider}\n'
-                  '${conversation.providerSessionId}',
+          subtitle: Text(
+            strings.dataSourceSubtitle(
+              routes: dataSource.routeCount,
+              legacyRouteLabel: dataSource.legacyRouteLabel,
+              summaries: dataSource.stats.sessionSummaries,
+              windows: dataSource.stats.conversationWindows,
+            ),
+          ),
+          children: [
+            Align(
+              alignment: Alignment.centerRight,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: TextButton.icon(
+                  key: ValueKey(
+                    'clear_cache_data_source_${dataSource.target.fingerprint}',
+                  ),
+                  onPressed: isClearing ? null : onClear,
+                  icon: isClearing
+                      ? const SizedBox.square(
+                          dimension: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.cleaning_services_outlined),
+                  label: Text(strings.clearThisDataSource),
                 ),
-                onRemove: () => onRemoveConversation(conversation),
               ),
-        ],
+            ),
+            if (dataSource.conversations.isEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(strings.noRecentWindows),
+                ),
+              )
+            else
+              for (final conversation in dataSource.conversations)
+                _CachedConversationTile(
+                  dataSource: dataSource,
+                  conversation: conversation,
+                  isRemoving: removingConversationKeys.contains(
+                    '${dataSource.target.fingerprint}\n'
+                    '${conversation.provider}\n'
+                    '${conversation.providerSessionId}',
+                  ),
+                  onRemove: () => onRemoveConversation(conversation),
+                ),
+          ],
+        ),
       ),
     );
   }
@@ -667,10 +914,7 @@ class _DownloadedHistoryTile extends StatelessWidget {
     final strings = CacheManagementStrings.of(context);
     final title = displayName ?? _fallbackDisplayName(metadata);
     return ListTile(
-      key: ValueKey(
-        'downloaded_history_${metadata.key.bridgeInstanceId}_'
-        '${metadata.key.providerSessionId}',
-      ),
+      key: ValueKey<Object>(('downloaded_history', metadata.key)),
       leading: Icon(
         metadata.autoSync ? Icons.offline_pin : Icons.download_done_outlined,
         color: Theme.of(context).colorScheme.primary,
@@ -689,10 +933,10 @@ class _DownloadedHistoryTile extends StatelessWidget {
               child: CircularProgressIndicator(strokeWidth: 2),
             )
           : IconButton(
-              key: ValueKey(
-                'remove_downloaded_history_${metadata.key.bridgeInstanceId}_'
-                '${metadata.key.providerSessionId}',
-              ),
+              key: ValueKey<Object>((
+                'remove_downloaded_history',
+                metadata.key,
+              )),
               tooltip: strings.removeCopy,
               onPressed: onRemove,
               icon: const Icon(Icons.delete_outline),
