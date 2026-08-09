@@ -1733,3 +1733,14 @@
 - 较老的 summary 分页若 provider 本身省略 compaction item，可以不为补一个分割线而
   退化成无界 full-history 读取；实时路径、近期五轮 full 窗口和显式 full items 页必须
   保留该标记。发布、Bridge runtime、OTA、IPA 和真机视觉验收仍是独立门禁。
+
+## 2026-08-09 发布流程采用按差异分流和阶段化续跑
+
+- 固定发布任务先比较当前生产 Bridge、Mobile/IPA 基线与目标 HEAD 的真实产品 tree，
+  只执行受影响层；仓库总 HEAD 变化不自动要求所有 runtime 和产物升级。
+- 发布级全量测试仍由固定发布任务负责，但每个受影响层只跑一次。出现失败时直接回报
+  协调任务；修复后从第一个失效阶段续跑，不重复仍有效的全量测试、候选或生产快照。
+- 无 Bridge 产品差异时禁止为了 runtime 名称追随总 HEAD 而重建、smoke 或重启 Bridge。
+  无 Mobile 交付输入差异时同样禁止生成新 OTA/IPA。
+- 当前机器的正式发布不得临时试验新的 LaunchAgent 或 wire 探针。使用最近已验证流程，
+  并遵守 `docs/local-release-fast-path.md` 的时间目标、主动超时回报和 fingerprint 证据合同。

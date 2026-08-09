@@ -13,6 +13,7 @@
 | 长期产品决策 | `decisions.md` | 已采纳、废弃和待迁移的项目决策 |
 | 本手册 | `docs/PROJECT_HANDOFF.md` | Agent 分工、兼容、发布、验证和核心产品约束 |
 | Bridge 本地生产发布 SOP | `docs/bridge-local-production-release-sop.md` | 强制的 Bridge-only 本机候选、切换、回滚和验收流程；不授权其他发布层 |
+| 本地发布快速通道 | `docs/local-release-fast-path.md` | 按 Bridge/Mobile/native/Cloud/测试文档的真实 tree diff 分流；全量测试由固定发布任务按受影响层只跑一次，阻断后阶段化续跑 |
 | owner 文件、统一会话与本地翻译实施参考 | `docs/owner-file-access-preview-and-local-translation-plan.md` | 合并全盘只读、统一预览、文件变更二次授权、固定中文化、Apple 本地翻译，以及统一会话列表和前台全会话轻量增量同步；内容完整但实现前必须重新核对源码 |
 | 全面修复与性能收束主方案 | `plans/mobile-comprehensive-remediation_v02_20260726-004125.md` | 当前权威方案；v01 已被它取代。源码行为已收束到 `fa3aa6db`，其后仅有台账/交接文档提交；物理设备、Bridge/Cloud 部署、签名 IPA 与 owner/stable 仍是独立门槛 |
 | 本轮源码收束报告 | `reviews/SOURCE_CLOSURE_REPORT_20260728.md` | 记录 `3fb83d12..fa3aa6db` 的 29 个行为提交、最终源码门禁、兼容边界和仍未越过的设备/部署门槛 |
@@ -35,6 +36,9 @@
   也不能用来推断当前源码；该旧 worktree 已清理，实际命令必须使用交接中的当前绝对
   worktree。若会话仍无法切换 cwd，应停止并报告，不能重建旧目录或从其他 checkout 猜基线。
 - 该会话只负责用户当次授权的机械发布、发布前后通道快照和发布证据，不负责复杂语义合并。
+- 该会话必须先按 `docs/local-release-fast-path.md` 做差异分类。无 Bridge 产品差异时不得
+  重建或重启 Bridge；无 Mobile 交付输入差异时不得生成新 OTA/IPA。全量测试由发布会话
+  负责，但每个受影响层只运行一次，失败后直接回报协调任务并从失效阶段续跑。
 - 源码与验证完成后，协调 Agent 应一次性发送包含全部允许/禁止边界、精确 HEAD、提交、
   Bridge SOP、OTA lineage 和回滚条件的完整任务，然后停止自行部署和逐步纠正。发布会话
   自己执行门禁、构建、切换、回滚与证据记录；只有遇到真实阻断或需要新增授权时才回报。
