@@ -14,6 +14,7 @@ import 'package:ccpocket/providers/bridge_cubits.dart';
 import 'package:ccpocket/providers/machine_manager_cubit.dart';
 import 'package:ccpocket/providers/server_discovery_cubit.dart';
 import 'package:ccpocket/services/app_icon_service.dart';
+import 'package:ccpocket/services/bridge_device_identity_service.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:ccpocket/services/draft_service.dart';
 import 'package:ccpocket/services/in_app_review_service.dart';
@@ -329,6 +330,27 @@ class _StaticMachineManagerService implements MachineManagerService {
   }) async => getMachine(
     machineId,
   )?.copyWith(bridgeInstanceId: bridgeInstanceId, codexSourceId: codexSourceId);
+
+  @override
+  Future<Machine?> bindSignedBridgeIdentity({
+    required String machineId,
+    required BridgeIdentityDocument identity,
+  }) async => getMachine(machineId)?.copyWith(
+    bridgeInstanceId: identity.bridgeInstanceId,
+    bridgeIdentityId: identity.bridgeIdentityId,
+    bridgeIdentityPublicKey: identity.publicKey,
+    bridgeComputerName: identity.computerName,
+    bridgeAuthMode: identity.authMode,
+  );
+
+  @override
+  Future<Machine?> verifyRouteIdentity(
+    String machineId, {
+    Duration timeout = const Duration(seconds: 3),
+  }) async => getMachine(machineId);
+
+  @override
+  Future<void> renameMachineGroup(String groupId, String? name) async {}
 
   @override
   Future<Machine?> clearBridgeIdentity(String machineId) async => getMachine(
