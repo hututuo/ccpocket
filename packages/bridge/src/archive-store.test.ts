@@ -248,6 +248,127 @@ describe("ArchiveStore", () => {
     expect(reloaded.list()).toEqual([]);
   });
 
+  it("reconciles a complete Codex provider archive without crossing sources", async () => {
+    const { store, dir } = await createStore();
+    await store.archive(
+      "stale-source-a",
+      "codex",
+      "/project/stale",
+      {},
+      "source-a",
+    );
+    await store.archive("confirmed-legacy", "codex", "/project/legacy", {
+      name: "Old local title",
+    });
+    await store.archive(
+      "unrelated-legacy",
+      "codex",
+      "/project/unknown-home",
+    );
+    await store.archive(
+      "other-source",
+      "codex",
+      "/project/other",
+      {},
+      "source-b",
+    );
+    await store.archive("claude-archive", "claude", "/project/claude");
+    const legacyArchivedAt = store
+      .list()
+      .find((entry) => entry.sessionId === "confirmed-legacy")!.archivedAt;
+
+    await store.reconcileCodexSourceSnapshot(
+      {
+        complete: true,
+        entries: [
+          {
+            sessionId: "confirmed-legacy",
+            provider: "codex",
+            codexSourceId: "source-a",
+            projectPath: "/project/current",
+            archivedAt: "2030-01-02T00:00:00.000Z",
+            name: "Desktop title",
+          },
+          {
+            sessionId: "desktop-only",
+            provider: "codex",
+            codexSourceId: "source-a",
+            projectPath: "/project/new",
+            archivedAt: "2030-01-03T00:00:00.000Z",
+          },
+        ],
+      },
+      "source-a",
+    );
+
+    expect(store.isArchived("stale-source-a", "codex", "source-a")).toBe(
+      false,
+    );
+    expect(store.isArchived("other-source", "codex", "source-b")).toBe(true);
+    expect(store.isArchived("unrelated-legacy", "codex")).toBe(true);
+    expect(store.isArchived("claude-archive", "claude")).toBe(true);
+    expect(
+      store.list().find((entry) => entry.sessionId === "confirmed-legacy"),
+    ).toMatchObject({
+      codexSourceId: "source-a",
+      projectPath: "/project/current",
+      name: "Desktop title",
+      archivedAt: legacyArchivedAt,
+    });
+    expect(store.isArchived("desktop-only", "codex", "source-a")).toBe(true);
+
+    const reloaded = new ArchiveStore(dir);
+    await reloaded.init();
+    expect(reloaded.isArchived("desktop-only", "codex", "source-a")).toBe(
+      true,
+    );
+  });
+
+  it("keeps unseen source rows when the Codex archive scan is partial", async () => {
+    const { store } = await createStore();
+    await store.archive(
+      "unseen",
+      "codex",
+      "/project/unseen",
+      {},
+      "source-a",
+    );
+
+    await store.reconcileCodexSourceSnapshot(
+      {
+        complete: false,
+        entries: [
+          {
+            sessionId: "visible",
+            provider: "codex",
+            codexSourceId: "source-a",
+            projectPath: "/project/visible",
+            archivedAt: "2030-01-03T00:00:00.000Z",
+          },
+        ],
+      },
+      "source-a",
+    );
+
+    expect(store.isArchived("unseen", "codex", "source-a")).toBe(true);
+    expect(store.isArchived("visible", "codex", "source-a")).toBe(true);
+  });
+
+  it("rejects a provider snapshot after a newer local mutation", async () => {
+    const { store } = await createStore();
+    const revision = store.revision;
+    await store.archive("newer-local", "codex", "/project/local", {}, "source-a");
+
+    await expect(
+      store.reconcileCodexSourceSnapshot(
+        { complete: true, entries: [] },
+        "source-a",
+        revision,
+      ),
+    ).resolves.toBe(false);
+    expect(store.isArchived("newer-local", "codex", "source-a")).toBe(true);
+  });
+
   it("does not publish an in-memory mutation when atomic save fails", async () => {
     const { store } = await createStore();
     vi.spyOn(store as any, "save").mockRejectedValueOnce(new Error("disk full"));

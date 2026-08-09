@@ -383,20 +383,95 @@ void main() {
       );
 
       await service.togglePin(root: root, relativePath: 'Documents/Research');
-      expect(service.currentPins, hasLength(1));
-      expect(service.currentPins.single.label, 'Research');
-      expect(service.currentPins.single.relativePath, 'Documents/Research');
+      expect(service.currentPins, hasLength(4));
+      final research = service.currentPins.firstWhere(
+        (pin) => pin.relativePath == 'Documents/Research',
+      );
+      expect(research.label, 'Research');
+      final desktopForMachineOne = service.currentPins.firstWhere(
+        (pin) => pin.relativePath == 'Desktop',
+      );
 
       bridge.logicalConnectionIdentity = 'machine:other';
       bridge.capabilityEvents.add(null);
       await Future<void>.delayed(Duration.zero);
       expect(service.currentPins, isEmpty);
+      await _loadRoots(service, bridge);
+      await Future<void>.delayed(Duration.zero);
+      expect(service.currentPins.map((pin) => pin.relativePath), <String>[
+        'Desktop',
+        'Downloads',
+        'Documents',
+      ]);
+      // This mutation targets source A while source B's background seed may
+      // still be persisting. The shared mutation serial must keep the stale
+      // seed snapshot from resurrecting the explicit unpin.
+      await service.removePin(desktopForMachineOne);
 
       bridge.logicalConnectionIdentity = 'machine:one';
       bridge.capabilityEvents.add(null);
       await Future<void>.delayed(Duration.zero);
       await _loadRoots(service, bridge);
-      expect(service.currentPins, hasLength(1));
+      expect(service.currentPins.map((pin) => pin.relativePath), <String>[
+        'Documents/Research',
+        'Downloads',
+        'Documents',
+      ]);
+    },
+  );
+
+  test(
+    'seeds common folder shortcuts once and preserves an explicit unpin',
+    () async {
+      final rootsFuture = service.refreshRoots();
+      final rootsRequest = bridge.takeRequest('file_browser_roots_v1');
+      bridge.messageEvents.add(
+        FileBrowserRootsResultMessage(
+          requestId: rootsRequest['requestId'] as String,
+          success: true,
+          bridgeInstanceId: 'bridge-one',
+          rootSetRevision: 'roots-r1',
+          roots: const <FileBrowserRoot>[
+            FileBrowserRoot(
+              rootId: 'root-one',
+              label: 'Home',
+              displayPath: '~',
+            ),
+          ],
+          previewMaxBytes: maxFileBrowserPreviewBytes,
+          downloadMaxBytes: maxFileBrowserDownloadBytes,
+          downloadAvailable: true,
+        ),
+      );
+      await rootsFuture;
+
+      await Future<void>.delayed(Duration.zero);
+      expect(service.currentPins.map((pin) => pin.relativePath), <String>[
+        'Desktop',
+        'Downloads',
+        'Documents',
+      ]);
+
+      final desktop = service.currentPins.firstWhere(
+        (pin) => pin.relativePath == 'Desktop',
+      );
+      await service.removePin(desktop);
+      service.dispose();
+      service = FileBrowserService(
+        bridge: bridge,
+        preferences: preferences,
+        clock: () => now,
+        requestIdGenerator: () => 'request-${++requestSequence}',
+        requestTimeout: const Duration(seconds: 2),
+      );
+      await _loadRoots(service, bridge);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(bridge.countRequests('file_browser_stat_v1'), 0);
+      expect(service.currentPins.map((pin) => pin.relativePath), <String>[
+        'Downloads',
+        'Documents',
+      ]);
     },
   );
 

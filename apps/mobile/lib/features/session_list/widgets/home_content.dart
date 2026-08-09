@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -265,10 +268,11 @@ SessionInfo _sessionInfoForUnifiedCard(
     lastAssistantOutputAt:
         runtime?.lastAssistantOutputAt ?? catalog.lastAssistantOutputAt,
     gitBranch: preferRuntime(runtime?.gitBranch, catalog.gitBranch),
-    lastMessage: preferRuntime(
-      runtime?.lastMessage,
-      _recentSessionCardText(catalog, displayMode),
-    ),
+    // The display-mode chip is an explicit request to view provider catalog
+    // metadata (first prompt, last prompt, or summary). A transient runtime
+    // attachment often carries its own latest text; letting that value win
+    // made the chip appear to do nothing for watched/running conversations.
+    lastMessage: _recentSessionCardText(catalog, displayMode),
     worktreePath: runtime?.worktreePath,
     worktreeBranch: runtime?.worktreeBranch,
     permissionMode: runtime?.permissionMode ?? catalog.rawPermissionMode,
@@ -321,6 +325,7 @@ class HomeContent extends StatefulWidget {
   final Map<String, int> projectSessionDisplayLimits;
   final Set<String> pinnedSessionKeys;
   final Set<String> pinnedProjectPaths;
+  final String projectOrderScope;
   final String searchQuery;
   final bool isLoadingMore;
   final bool isInitialLoading;
@@ -395,6 +400,7 @@ class HomeContent extends StatefulWidget {
     this.projectSessionDisplayLimits = const {},
     this.pinnedSessionKeys = const {},
     this.pinnedProjectPaths = const {},
+    this.projectOrderScope = 'unknown-bridge',
     required this.searchQuery,
     required this.isLoadingMore,
     required this.isInitialLoading,
@@ -447,6 +453,12 @@ class HomeContentState extends State<HomeContent> {
   // Keep the established key so existing users retain their chosen layout.
   static const _groupRecentSessionsPreferenceKey =
       'session_list_group_recent_sessions';
+  static const _projectOrderPreferenceKey =
+      'session_list_project_order_by_source_v1';
+  static const _maximumStoredProjectScopes = 64;
+  static const _maximumStoredProjectsPerScope = 2048;
+  static const _maximumProjectOrderBytes = 1024 * 1024;
+  static Future<void>? _projectOrderGlobalWriteTail;
 
   bool _isSearching = false;
   bool _updateBannerDismissed = false;
@@ -454,6 +466,9 @@ class HomeContentState extends State<HomeContent> {
   bool _groupByProject = true;
   final _searchController = TextEditingController();
   SessionDisplayMode _displayMode = SessionDisplayMode.first;
+  List<String> _projectOrder = const [];
+  ({String scope, List<String> order})? _pendingProjectOrder;
+  String? _loadedProjectOrderScope;
   RevenueCatService? _revenueCatService;
   VoidCallback? _catalogStateListener;
   SupportBannerService? _supportBannerService;
@@ -470,7 +485,13 @@ class HomeContentState extends State<HomeContent> {
     final modeStr = prefs.getString(_displayModePreferenceKey);
     final groupByProject =
         prefs.getBool(_groupRecentSessionsPreferenceKey) ?? true;
+    final projectOrders = _readProjectOrders(prefs);
+    final scope = _normalizedProjectOrderScope(widget.projectOrderScope);
     if (!mounted) return;
+    if (scope != _normalizedProjectOrderScope(widget.projectOrderScope)) {
+      unawaited(_loadProjectOrderForCurrentScope());
+      return;
+    }
     setState(() {
       if (modeStr != null) {
         _displayMode = SessionDisplayMode.values.firstWhere(
@@ -479,6 +500,8 @@ class HomeContentState extends State<HomeContent> {
         );
       }
       _groupByProject = groupByProject;
+      _loadedProjectOrderScope = scope;
+      _projectOrder = List.unmodifiable(projectOrders[scope] ?? const []);
     });
   }
 
@@ -539,6 +562,225 @@ class HomeContentState extends State<HomeContent> {
       _updateBannerDismissed = false;
       _refreshSupportBannerVisibility();
     }
+    if (widget.projectOrderScope != oldWidget.projectOrderScope) {
+      unawaited(_loadProjectOrderForCurrentScope());
+    }
+  }
+
+  Future<void> _loadProjectOrderForCurrentScope() async {
+    final scope = _normalizedProjectOrderScope(widget.projectOrderScope);
+    if (_loadedProjectOrderScope == scope) return;
+    final prefs = await SharedPreferences.getInstance();
+    final orders = _readProjectOrders(prefs);
+    if (!mounted ||
+        scope != _normalizedProjectOrderScope(widget.projectOrderScope)) {
+      return;
+    }
+    setState(() {
+      _loadedProjectOrderScope = scope;
+      _projectOrder = List.unmodifiable(orders[scope] ?? const []);
+      _pendingProjectOrder = null;
+    });
+  }
+
+  List<String> _applyProjectOrder(List<String> naturalOrder) {
+    final currentScope = _normalizedProjectOrderScope(widget.projectOrderScope);
+    // A scope change can render once before SharedPreferences finishes
+    // loading. Never project the previous Bridge/source's manual order into
+    // that interim frame; use the new source's natural order until its own
+    // persisted order is available.
+    final persistedOrder = _loadedProjectOrderScope == currentScope
+        ? _projectOrder
+        : const <String>[];
+    final available = naturalOrder.toSet();
+    final result = <String>[
+      for (final key in persistedOrder)
+        if (available.remove(key)) key,
+      ...naturalOrder.where(available.contains),
+    ];
+    if (_loadedProjectOrderScope == currentScope) {
+      _ensureProjectOrderPersisted(result);
+    }
+    return List.unmodifiable(result);
+  }
+
+  void _ensureProjectOrderPersisted(List<String> order) {
+    final scope = _normalizedProjectOrderScope(widget.projectOrderScope);
+    if (_loadedProjectOrderScope != scope ||
+        _sameStringList(_projectOrder, order) ||
+        (_pendingProjectOrder?.scope == scope &&
+            _sameStringList(_pendingProjectOrder?.order, order))) {
+      return;
+    }
+    _pendingProjectOrder = (scope: scope, order: List.unmodifiable(order));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final pending = _pendingProjectOrder;
+      if (!mounted ||
+          pending == null ||
+          pending.scope != scope ||
+          _loadedProjectOrderScope != scope ||
+          _normalizedProjectOrderScope(widget.projectOrderScope) != scope) {
+        return;
+      }
+      _pendingProjectOrder = null;
+      // The current frame already rendered this exact natural order. Adopt it
+      // without another rebuild so stable conversation elements are not
+      // detached merely because presentation order was first persisted.
+      _projectOrder = pending.order;
+      unawaited(_persistProjectOrder(pending.order, scope: scope));
+    });
+  }
+
+  void _moveProject(
+    List<String> visibleOrder,
+    String source,
+    String target,
+    bool placeAfter,
+  ) {
+    if (_loadedProjectOrderScope !=
+        _normalizedProjectOrderScope(widget.projectOrderScope)) {
+      return;
+    }
+    if (source == target) return;
+    final order = <String>[
+      ..._projectOrder,
+      for (final key in visibleOrder)
+        if (!_projectOrder.contains(key)) key,
+    ];
+    if (!order.remove(source)) return;
+    var targetIndex = order.indexOf(target);
+    if (targetIndex < 0) return;
+    if (placeAfter) targetIndex += 1;
+    order.insert(targetIndex.clamp(0, order.length).toInt(), source);
+    setState(() {
+      _pendingProjectOrder = null;
+      _projectOrder = List.unmodifiable(order);
+    });
+    unawaited(
+      _persistProjectOrder(
+        order,
+        scope: _normalizedProjectOrderScope(widget.projectOrderScope),
+      ),
+    );
+  }
+
+  Future<void> _persistProjectOrder(
+    List<String> order, {
+    required String scope,
+  }) async {
+    final snapshot = order
+        .take(_maximumStoredProjectsPerScope)
+        .toList(growable: false);
+    Future<void> write() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final orders = _readProjectOrders(prefs);
+        orders.remove(scope);
+        orders[scope] = snapshot;
+        while (orders.length > _maximumStoredProjectScopes) {
+          orders.remove(orders.keys.first);
+        }
+        final encoded = _encodeProjectOrdersWithinBudget(
+          orders,
+          currentScope: scope,
+        );
+        await prefs.setString(_projectOrderPreferenceKey, encoded);
+      } catch (_) {
+        // Ordering is rebuildable presentation state. Keep the in-memory order
+        // usable and allow the next reorder to retry persistence.
+      }
+    }
+
+    final previous = _projectOrderGlobalWriteTail;
+    final operation = previous == null
+        ? Future<void>.sync(write)
+        : previous.then((_) => write());
+    late final Future<void> settled;
+    settled = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    _projectOrderGlobalWriteTail = settled;
+    unawaited(
+      settled.whenComplete(() {
+        if (identical(_projectOrderGlobalWriteTail, settled)) {
+          _projectOrderGlobalWriteTail = null;
+        }
+      }),
+    );
+    await operation;
+  }
+
+  static String _encodeProjectOrdersWithinBudget(
+    Map<String, List<String>> orders, {
+    required String currentScope,
+  }) {
+    while (true) {
+      final encoded = jsonEncode(orders);
+      if (utf8.encode(encoded).length <= _maximumProjectOrderBytes) {
+        return encoded;
+      }
+      if (orders.length > 1) {
+        orders.remove(orders.keys.first);
+        continue;
+      }
+      final current = orders[currentScope] ?? const <String>[];
+      if (current.isEmpty) return jsonEncode(<String, List<String>>{});
+      orders[currentScope] = current
+          .take(current.length ~/ 2)
+          .toList(growable: false);
+    }
+  }
+
+  static Map<String, List<String>> _readProjectOrders(
+    SharedPreferences preferences,
+  ) {
+    final raw = preferences.getString(_projectOrderPreferenceKey);
+    if (raw == null || raw.length > _maximumProjectOrderBytes) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return {};
+      final result = <String, List<String>>{};
+      for (final entry in decoded.entries.take(_maximumStoredProjectScopes)) {
+        final scope = _validProjectOrderValue(entry.key);
+        final values = entry.value;
+        if (scope == null || values is! List) continue;
+        final unique = <String>{};
+        for (final value in values.take(_maximumStoredProjectsPerScope)) {
+          final key = _validProjectOrderValue(value);
+          if (key != null) unique.add(key);
+        }
+        result[scope] = unique.toList(growable: false);
+      }
+      return result;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  static String _normalizedProjectOrderScope(String value) =>
+      _validProjectOrderValue(value) ?? 'unknown-bridge';
+
+  static String? _validProjectOrderValue(Object? value) {
+    if (value is! String) return null;
+    final normalized = value.trim();
+    if (normalized.isEmpty ||
+        normalized.length > 4096 ||
+        RegExp(r'[\x00-\x1f\x7f]').hasMatch(normalized)) {
+      return null;
+    }
+    return normalized;
+  }
+
+  static bool _sameStringList(List<String>? left, List<String>? right) {
+    if (identical(left, right)) return true;
+    if (left == null || right == null || left.length != right.length) {
+      return false;
+    }
+    for (var index = 0; index < left.length; index++) {
+      if (left[index] != right[index]) return false;
+    }
+    return true;
   }
 
   @override
@@ -863,7 +1105,7 @@ class HomeContentState extends State<HomeContent> {
             widget.pinnedProjectPaths.contains(entry.key))
           entry.value.single,
     };
-    final allProjectKeys = orderProjectPathsForGroupedView(
+    final naturalProjectKeys = orderProjectPathsForGroupedView(
       knownProjectPaths: <String>[
         if (widget.currentProjectFilter != null) widget.currentProjectFilter!,
         ...widget.accumulatedProjectPaths.where(
@@ -875,6 +1117,7 @@ class HomeContentState extends State<HomeContent> {
       pinnedProjectPaths: effectivePinnedProjectKeys,
       unseenSessionIds: widget.unseenSessionIds,
     );
+    final allProjectKeys = _applyProjectOrder(naturalProjectKeys);
     final allGroupedSessions = _groupSessionsByProject(
       projectKeys: allProjectKeys,
       sessions: allUnifiedSessions,
@@ -1207,6 +1450,7 @@ class HomeContentState extends State<HomeContent> {
           ] else
             for (final group in groupedSessions)
               _ProjectRecentSessionGroup(
+                key: ValueKey('project_group_${group.key}'),
                 group: group,
                 isCollapsed: _groupContainsProjectKey(
                   widget.collapsedProjectPaths,
@@ -1239,6 +1483,15 @@ class HomeContentState extends State<HomeContent> {
                     ? null
                     : () => widget.onToggleProjectPinned!(group.key),
                 onLoadMore: () => widget.onLoadMoreProject?.call(group.key),
+                reorderEnabled:
+                    widget.currentProjectFilter == null &&
+                    _loadedProjectOrderScope ==
+                        _normalizedProjectOrderScope(
+                          widget.projectOrderScope,
+                        ) &&
+                    groupedSessions.length > 1,
+                onMoveProject: (source, target, placeAfter) =>
+                    _moveProject(allProjectKeys, source, target, placeAfter),
                 itemBuilder: buildUnifiedSessionRow,
               ),
           if (widget.currentProjectFilter != null &&
@@ -1255,11 +1508,15 @@ class HomeContentState extends State<HomeContent> {
       ],
     ];
 
-    final childIndexByKey = <Key, int>{
-      for (var index = 0; index < contentEntries.length; index++)
-        if (contentEntries[index] case final UnifiedSessionListItem item)
-          _conversationRowKey(item.identityKey): index,
-    };
+    final childIndexByKey = <Key, int>{};
+    for (var index = 0; index < contentEntries.length; index++) {
+      final entry = contentEntries[index];
+      if (entry case final UnifiedSessionListItem item) {
+        childIndexByKey[_conversationRowKey(item.identityKey)] = index;
+      } else if (entry case final Widget widget when widget.key != null) {
+        childIndexByKey[widget.key!] = index;
+      }
+    }
 
     return ListView.builder(
       key: const ValueKey('session_list'),
@@ -1366,9 +1623,13 @@ class _ProjectRecentSessionGroup extends StatelessWidget {
   final VoidCallback onToggleCollapsed;
   final VoidCallback? onTogglePinned;
   final VoidCallback onLoadMore;
+  final bool reorderEnabled;
+  final void Function(String source, String target, bool placeAfter)
+  onMoveProject;
   final Widget Function(UnifiedSessionListItem item) itemBuilder;
 
   const _ProjectRecentSessionGroup({
+    super.key,
     required this.group,
     required this.isCollapsed,
     required this.isLoadingMore,
@@ -1379,6 +1640,8 @@ class _ProjectRecentSessionGroup extends StatelessWidget {
     required this.onToggleCollapsed,
     required this.onTogglePinned,
     required this.onLoadMore,
+    required this.reorderEnabled,
+    required this.onMoveProject,
     required this.itemBuilder,
   });
 
@@ -1395,7 +1658,7 @@ class _ProjectRecentSessionGroup extends StatelessWidget {
     final hasHiddenLoadedSessions =
         group.sessions.length > effectiveDisplayLimit;
     final canShowMore = hasHiddenLoadedSessions || canLoadFromBridge;
-    return Padding(
+    final content = Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1407,6 +1670,7 @@ class _ProjectRecentSessionGroup extends StatelessWidget {
             isPinned: isPinned,
             onTap: onToggleCollapsed,
             onTogglePinned: onTogglePinned,
+            reorderEnabled: reorderEnabled,
           ),
           if (!isCollapsed) ...[
             const SizedBox(height: 4),
@@ -1460,6 +1724,32 @@ class _ProjectRecentSessionGroup extends StatelessWidget {
         ],
       ),
     );
+    if (!reorderEnabled) return content;
+    return Builder(
+      builder: (dropTargetContext) => DragTarget<String>(
+        key: ValueKey('project_drop_${group.key}'),
+        onWillAcceptWithDetails: (details) => details.data != group.key,
+        onAcceptWithDetails: (details) {
+          final renderObject = dropTargetContext.findRenderObject();
+          final box = renderObject is RenderBox ? renderObject : null;
+          final localOffset = box?.globalToLocal(details.offset);
+          final placeAfter =
+              box != null &&
+              localOffset != null &&
+              localOffset.dy > box.size.height / 2;
+          onMoveProject(details.data, group.key, placeAfter);
+        },
+        builder: (context, candidates, _) => DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: candidates.isEmpty
+                ? null
+                : Border.all(color: Theme.of(context).colorScheme.primary),
+          ),
+          child: content,
+        ),
+      ),
+    );
   }
 }
 
@@ -1470,6 +1760,7 @@ class _ProjectRecentSessionHeader extends StatelessWidget {
   final bool isPinned;
   final VoidCallback onTap;
   final VoidCallback? onTogglePinned;
+  final bool reorderEnabled;
 
   const _ProjectRecentSessionHeader({
     required this.projectPath,
@@ -1478,13 +1769,14 @@ class _ProjectRecentSessionHeader extends StatelessWidget {
     required this.isPinned,
     required this.onTap,
     required this.onTogglePinned,
+    required this.reorderEnabled,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    return Material(
+    final header = Material(
       color: Colors.transparent,
       child: InkWell(
         key: ValueKey('project_header_$projectPath'),
@@ -1525,6 +1817,33 @@ class _ProjectRecentSessionHeader extends StatelessWidget {
           ),
         ),
       ),
+    );
+    if (!reorderEnabled) return header;
+    return LongPressDraggable<String>(
+      key: ValueKey('project_drag_$projectPath'),
+      data: projectPath,
+      dragAnchorStrategy: pointerDragAnchorStrategy,
+      feedback: Material(
+        elevation: 6,
+        borderRadius: BorderRadius.circular(10),
+        color: colorScheme.surface,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 280),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: Text(
+              projectName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ),
+      ),
+      childWhenDragging: Opacity(opacity: 0.45, child: header),
+      child: header,
     );
   }
 }

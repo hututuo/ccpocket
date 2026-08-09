@@ -4045,6 +4045,7 @@ class _SessionListScreenState extends State<SessionListScreen>
               projectSessionDisplayLimits: slState.projectSessionDisplayLimits,
               pinnedSessionKeys: slState.pinnedSessionKeys,
               pinnedProjectPaths: slState.pinnedProjectPaths,
+              projectOrderScope: bridge.dataSourceIdentity.connectionScopeKey,
               searchQuery: slState.searchQuery,
               isLoadingMore: slState.isLoadingMore,
               isInitialLoading: slState.isInitialLoading,

@@ -503,6 +503,8 @@ const BOUNDED_HISTORY_WINDOW_ENTRIES = 200;
 const CODEX_CANONICAL_HISTORY_PAGE_TURNS = 5;
 const MAX_CODEX_PROVIDER_HISTORY_CURSORS = 64;
 const ARCHIVED_SESSION_LIST_LIMIT = 1_000;
+const CODEX_ARCHIVE_SCAN_PAGE_SIZE = 100;
+const CODEX_ARCHIVE_SCAN_MAX_PAGES = 20;
 const CODEX_GOAL_RAW_STATUS_CAPABILITY = "goal_state_raw_status";
 const KNOWN_CODEX_GOAL_STATUSES = new Set([
   "active",
@@ -1784,6 +1786,7 @@ export class BridgeWebSocketServer {
   private archiveStore: ArchiveStore;
   private archiveStoreReady: Promise<void>;
   private archiveStoreInitializationError: Error | null = null;
+  private codexArchiveRefreshInFlight: Promise<void> | null = null;
   private codexLifecycleMutations = new Map<string, Promise<void>>();
   private codexProfiles: string[] = [];
   private defaultCodexProfile: string | undefined;
@@ -15205,6 +15208,16 @@ export class BridgeWebSocketServer {
   ): Promise<void> {
     try {
       await this.requireArchiveStoreReady();
+      try {
+        await this.refreshCodexArchiveStoreFromProvider();
+      } catch (error) {
+        // Older app-server versions do not expose archived thread/list. Keep
+        // the last durable local projection instead of turning a read-only
+        // provider compatibility failure into an empty/error screen.
+        console.warn(
+          `[archive-store] Failed to refresh Codex archives: ${errorMessageOf(error)}`,
+        );
+      }
       const sessions = this.archiveStore.list(
         ARCHIVED_SESSION_LIST_LIMIT + 1,
         this.codexSourceId,
@@ -15227,6 +15240,120 @@ export class BridgeWebSocketServer {
         error: errorMessageOf(error),
         errorCode: "local_store_failed",
       });
+    }
+  }
+
+  private refreshCodexArchiveStoreFromProvider(): Promise<void> {
+    const existing = this.codexArchiveRefreshInFlight;
+    if (existing) return existing;
+    const operation = this.refreshCodexArchiveStoreFromProviderOnce();
+    let tracked!: Promise<void>;
+    tracked = operation.finally(() => {
+      if (this.codexArchiveRefreshInFlight === tracked) {
+        this.codexArchiveRefreshInFlight = null;
+      }
+    });
+    this.codexArchiveRefreshInFlight = tracked;
+    return tracked;
+  }
+
+  private async refreshCodexArchiveStoreFromProviderOnce(): Promise<void> {
+    const expectedArchiveRevision = this.archiveStore.revision;
+    const activeProcess = this.getActiveCodexProcess();
+    const process = activeProcess ?? (await this.createStandaloneCodexProcess());
+    const isStandalone = activeProcess === null;
+    const entries = [] as Array<{
+      sessionId: string;
+      provider: "codex";
+      codexSourceId: string;
+      projectPath: string;
+      archivedAt: string;
+      name?: string;
+      firstPrompt?: string;
+      modified?: string;
+    }>;
+    let cursor: string | null | undefined;
+    let complete = true;
+    let pages = 0;
+    try {
+      do {
+        const remaining = ARCHIVED_SESSION_LIST_LIMIT + 1 - entries.length;
+        if (remaining <= 0 || pages >= CODEX_ARCHIVE_SCAN_MAX_PAGES) {
+          complete = false;
+          break;
+        }
+        const pageLimit = Math.min(CODEX_ARCHIVE_SCAN_PAGE_SIZE, remaining);
+        const page = await process.listThreads({
+          archived: true,
+          limit: pageLimit,
+          ...(cursor != null ? { cursor } : {}),
+          sourceKinds: CODEX_RECENT_THREAD_SOURCE_KINDS,
+          requireCanonicalResultShape: true,
+        });
+        pages += 1;
+        if (page.nextCursor == null && page.data.length >= pageLimit) {
+          // Some compatibility servers cap a full page but omit the cursor.
+          // Treat that shape as partial so unseen local rows are never
+          // destructively reconciled away.
+          complete = false;
+        }
+        for (const thread of page.data) {
+          const projectPath = thread.cwd.trim();
+          if (!projectPath) {
+            complete = false;
+            continue;
+          }
+          const modified = threadTimestampToIso(thread.updatedAt);
+          const created = threadTimestampToIso(thread.createdAt);
+          entries.push({
+            sessionId: thread.id,
+            provider: "codex",
+            codexSourceId: this.codexSourceId,
+            projectPath,
+            archivedAt: modified || created || new Date(0).toISOString(),
+            ...(thread.name ? { name: thread.name } : {}),
+            ...(thread.preview ? { firstPrompt: thread.preview } : {}),
+            ...(modified ? { modified } : {}),
+          });
+          if (entries.length > ARCHIVED_SESSION_LIST_LIMIT) {
+            complete = false;
+            break;
+          }
+        }
+        cursor = page.nextCursor;
+        if (entries.length > ARCHIVED_SESSION_LIST_LIMIT) break;
+      } while (cursor != null);
+      if (cursor != null) complete = false;
+      // A legacy server that ignores the archived filter returns the same
+      // leading IDs for archived and active thread/list. Reject that shape
+      // instead of importing active conversations as archives.
+      if (entries.length > 0) {
+        const activePage = await process.listThreads({
+          archived: false,
+          limit: CODEX_ARCHIVE_SCAN_PAGE_SIZE,
+          sourceKinds: CODEX_RECENT_THREAD_SOURCE_KINDS,
+          requireCanonicalResultShape: true,
+        });
+        const activeIds = new Set(activePage.data.map((thread) => thread.id));
+        if (entries.some((entry) => activeIds.has(entry.sessionId))) {
+          throw new Error("thread/list archived filter is unsupported");
+        }
+      } else {
+        // An empty result cannot distinguish a genuinely empty archive from a
+        // compatibility server that silently omitted list data. Preserve the
+        // durable local projection; explicit unarchive still removes rows.
+        complete = false;
+      }
+      await this.archiveStore.reconcileCodexSourceSnapshot(
+        {
+          entries: entries.slice(0, ARCHIVED_SESSION_LIST_LIMIT + 1),
+          complete,
+        },
+        this.codexSourceId,
+        expectedArchiveRevision,
+      );
+    } finally {
+      if (isStandalone) process.stop();
     }
   }
 

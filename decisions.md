@@ -19,6 +19,41 @@
 - This is Mobile/cache behavior only. It does not alter provider history,
   Bridge wire schema, canonical session files, deployment, OTA or IPA state.
 
+## 2026-08-10 Mobile project order and Desktop project mutation boundary
+
+- Mobile project sections use a persisted order scoped by
+  `bridgeInstanceId + codexSourceId`. The first complete order is adopted once;
+  activity, Working/Need You changes, catalog refreshes, pins and project
+  renames do not move existing sections. New sections append, and only an
+  explicit long-press drag changes the saved order.
+- Project groups and conversation rows keep stable keys while ordering changes,
+  so a refresh or runtime attachment must not destroy mounted row state.
+- Durable conversation names remain bidirectional through app-server
+  `thread/name/set` and `thread/name/updated`.
+- Desktop project names are not currently bidirectional. The inspected Desktop
+  build exposes rename only through its process-internal `localProjects` host
+  object and keeps the whole global-state map in memory. Bridge must not rewrite
+  `.codex-global-state.json`: such a write is not live, is overwritten by the
+  next Desktop persistence, and can lose unrelated concurrent state. A future
+  Mobile-to-Desktop rename requires a supported Desktop RPC or an explicitly
+  installed companion integration.
+- Archived Codex sessions are reconciled from official
+  `thread/list(archived:true)` into the source-bound archive projection. A
+  complete scan may remove stale rows for that exact source; partial/unsupported
+  scans preserve the prior projection and never cross source identities. A
+  legacy source-less row is bound only when the provider confirms the exact
+  durable thread ID; unmatched legacy rows are retained.
+- The file manager seeds Desktop, Downloads and Documents through the existing
+  per-Bridge pin store exactly once. Explicit unpin remains authoritative.
+- Connection refusal/non-success health checks are presented as “Mac or Bridge
+  offline”; a probe deadline is “Connection timed out”. These are diagnostic
+  outcomes, not claims that an IP address does or does not exist.
+- The live latest-tool row stays outside the bounded nested process scroller,
+  while only bounded structured Read/Search metadata is promoted into collapsed
+  Desktop-like activity summaries.
+- These are source and test changes only. They do not authorize Bridge
+  deployment, OTA/IPA publication, device installation or stable promotion.
+
 ## 2026-08-09 Codex Desktop project identity is presentation authority
 
 - Codex app-server `cwd` remains the canonical provider/resume path, but it is

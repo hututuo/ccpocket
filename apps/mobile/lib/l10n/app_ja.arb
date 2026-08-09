@@ -388,8 +388,8 @@
   "supportBannerTitle": "CC Pocketが役に立っていたら",
   "supportBannerSubtitle": "サポートで継続開発を後押しできます",
   "supportBannerAction": "サポートを見る",
-  "offline": "オフライン",
-  "unreachable": "接続不可",
+  "offline": "Mac または Bridge がオフライン",
+  "unreachable": "接続がタイムアウト",
   "checking": "確認中...",
 
   "recentProjects": "最近のプロジェクト",

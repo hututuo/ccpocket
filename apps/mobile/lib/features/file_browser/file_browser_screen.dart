@@ -868,8 +868,12 @@ class _PinnedTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ListTile(
-    leading: const _RoundedLeadingIcon(icon: Icons.folder_outlined),
-    title: Text(pin.label, maxLines: 1, overflow: TextOverflow.ellipsis),
+    leading: _RoundedLeadingIcon(icon: _commonPinIcon(pin.relativePath)),
+    title: Text(
+      _pinDisplayLabel(context, pin),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    ),
     subtitle: Text(
       pin.relativePath.isEmpty
           ? pin.rootLabel
@@ -892,6 +896,20 @@ class _PinnedTile extends StatelessWidget {
     ),
   );
 }
+
+String _pinDisplayLabel(BuildContext context, FileBrowserPin pin) {
+  if (pin.label == pin.relativePath) {
+    return FileBrowserStrings.of(context).commonFolderLabel(pin.relativePath);
+  }
+  return pin.label;
+}
+
+IconData _commonPinIcon(String relativePath) => switch (relativePath) {
+  'Desktop' => Icons.desktop_mac_outlined,
+  'Downloads' => Icons.download_outlined,
+  'Documents' => Icons.description_outlined,
+  _ => Icons.folder_outlined,
+};
 
 class _FileNodeTile extends StatelessWidget {
   final FileBrowserNode node;

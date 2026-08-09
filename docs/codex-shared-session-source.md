@@ -70,6 +70,9 @@ CC Pocket 只接受来源声明，不负责证明两个 Cockpit 实例真的共�
 - `codexSourceId` 的现有 wire 字段继续使用，没有新增破坏性协议字段。
 - 同一 `bridgeInstanceId + codexSourceId` 的目录缓存、最近消息热窗口、
   source-bound archive 和 Mirror 继续落在同一来源分区。
+- 打开“已归档会话”时，新 Bridge 会用官方 `thread/list(archived:true)` 对当前
+  `codexSourceId` 做有界对账。完整扫描可移除该来源的陈旧本地投影；达到安全上限
+  或旧 app-server 不支持时只合并已确认结果并保留旧投影，不跨来源删数据。
 - 来源切换会结束旧的内容订阅并建立新订阅；旧订阅的迟到帧仍受 connection
   generation、subscription ID 和 Bridge instance 检查拒绝。
 - source-aware 新客户端发起的 resume、fork、rename、archive、unarchive、
@@ -77,7 +80,9 @@ CC Pocket 只接受来源声明，不负责证明两个 Cockpit 实例真的共�
   检查。旧 Mobile 不发送 source，legacy 无 source archive 也保留既有
   best-effort 兼容，它们不构成 source 认证。破坏性操作仍受 provider、
   project-path、archived identity 等现有校验约束。
-- 新随机 ID 会创建新分区。旧数据不会删除，但本阶段也不会自动迁移。
+- 新随机 ID 会创建新分区。旧数据不会批量删除或迁移；只有当前官方归档目录
+  明确返回同一个 durable thread ID 时，才会把该条 legacy archive 绑定到当前
+  source，未命中的 legacy 条目保持原样。
 - 不同 `bridgeInstanceId` 仍不会仅凭相同 source ID 自动合并机器级缓存。
 
 ## 兼容矩阵

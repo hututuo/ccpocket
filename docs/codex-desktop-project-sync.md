@@ -36,9 +36,13 @@ collapse state, and project pin state.
 For every catalog row returned by the Bridge, membership and names match
 Desktop. This projection covers Codex app-server rows and Claude/legacy recent
 rows: a non-Codex row under a registered Desktop root joins the same stable
-project, while an unmatched row joins the shared projectless section. Section
-order remains CC Pocket's existing local rule (explicit pins, then latest
-project activity) rather than copying Desktop's sidebar order.
+project, while an unmatched row joins the shared projectless section. Mobile
+persists its first complete section order per
+`bridgeInstanceId + codexSourceId`; subsequent activity, status refreshes,
+pins, and project renames do not move existing sections. Newly discovered
+projects append to that order. A long press on a project header starts an
+explicit drag reorder, which is the only operation that changes the persisted
+Mobile section order.
 
 ## Additive fields
 
@@ -101,9 +105,18 @@ For a durable Codex thread in shared-daemon mode:
 - concurrent renames use app-server ordering; the newest persisted provider
   value wins. Mobile does not maintain a competing title database.
 
-This makes durable conversation names bidirectional in shared mode. Project
-names remain Desktop-owned and flow from Desktop to Mobile only; Mobile does not
-rewrite Desktop's project configuration.
+This makes durable conversation names bidirectional in shared mode.
+
+Project names remain Desktop-owned and flow from Desktop to Mobile only. The
+current Desktop build implements project rename through a process-internal
+`localProjects.rename` host object; it is not an app-server or external IPC
+contract. Desktop also keeps the complete global-state object in memory and
+atomically rewrites the whole file on ordinary preference changes. An external
+Bridge rewrite of `.codex-global-state.json` would therefore neither update the
+live Desktop model nor survive the next Desktop write, and could discard an
+unrelated concurrent change. CC Pocket deliberately does not expose a fake
+Mobile-to-Desktop project rename until Desktop provides a supported host RPC or
+a separately installed companion owns that mutation boundary.
 
 ## Compatibility and failure behavior
 

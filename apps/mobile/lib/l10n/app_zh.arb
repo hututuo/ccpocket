@@ -326,9 +326,9 @@
   "supportBannerTitle": "如果 CC Pocket 对你有帮助",
   "supportBannerSubtitle": "你的支持可以帮助持续开发。",
   "supportBannerAction": "查看支持",
-  "offline": "离线",
+  "offline": "电脑或 Bridge 未在线",
   "reconnecting": "Bridge 连接暂时中断。正在自动重新连接...",
-  "unreachable": "不可达",
+  "unreachable": "连接超时",
   "checking": "检查中...",
 
   "recentProjects": "最近项目",

@@ -238,7 +238,10 @@ describe("codexThreadToSessionHistory", () => {
                 type: "dynamicToolCall",
                 id: "tool-time",
                 tool: "Read",
-                arguments: { path: "/tmp/example.txt" },
+                arguments: {
+                  path: "/tmp/example.txt",
+                  privatePayload: "stays behind the disclosure",
+                },
                 status: "completed",
                 contentItems: [{ type: "inputText", text: "contents" }],
               },
@@ -316,6 +319,24 @@ describe("codexThreadToSessionHistory", () => {
         authoritative: true,
       },
     ]);
+    expect(history[2]).toMatchObject({
+      role: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          name: "Read",
+          input: {
+            path: "/tmp/example.txt",
+            arguments: { path: "/tmp/example.txt" },
+            status: "completed",
+          },
+        },
+      ],
+    });
+    expect(
+      (history[2] as { content: Array<{ input: Record<string, unknown> }> })
+        .content[0]?.input.privatePayload,
+    ).toBeUndefined();
   });
 
   it("keeps exact event time when a mirror consumes a supplemented thread", () => {

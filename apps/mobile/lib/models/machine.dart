@@ -60,10 +60,11 @@ enum MachineStatus {
   /// Health check passed (Bridge Server running)
   online,
 
-  /// Health check failed (Bridge Server not running)
+  /// The route failed immediately or returned a non-success health response.
+  /// This usually means the Mac or Bridge is not running on that address.
   offline,
 
-  /// Network unreachable or connection refused
+  /// The route did not answer before the health-check deadline.
   unreachable,
 
   /// The endpoint answered, but its signed Bridge identity no longer matches

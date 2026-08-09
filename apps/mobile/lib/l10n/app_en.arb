@@ -347,8 +347,8 @@
   "supportBannerTitle": "CC Pocket has been useful",
   "supportBannerSubtitle": "Support can help keep development moving.",
   "supportBannerAction": "View support",
-  "offline": "Offline",
-  "unreachable": "Unreachable",
+  "offline": "Mac or Bridge offline",
+  "unreachable": "Connection timed out",
   "checking": "Checking...",
 
   "recentProjects": "Recent Projects",

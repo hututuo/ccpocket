@@ -4916,6 +4916,20 @@ describe("CodexProcess (app-server)", () => {
     proc.stop();
   });
 
+  it("fails closed on a malformed strict thread/list response", async () => {
+    const proc = new CodexProcess("linux");
+    vi.spyOn(proc as any, "request").mockResolvedValue({ nextCursor: null });
+
+    await expect(
+      proc.listThreads({ requireCanonicalResultShape: true }),
+    ).rejects.toThrow("thread/list returned a non-canonical result");
+    await expect(proc.listThreads()).resolves.toEqual({
+      data: [],
+      nextCursor: null,
+    });
+    proc.stop();
+  });
+
   it("lists loaded threads through the bounded read-only RPC", async () => {
     const proc = new CodexProcess("linux");
     const request = vi.spyOn(proc as any, "request").mockResolvedValue({

@@ -1779,13 +1779,13 @@ abstract class AppLocalizations {
   /// No description provided for @offline.
   ///
   /// In ja, this message translates to:
-  /// **'オフライン'**
+  /// **'Mac または Bridge がオフライン'**
   String get offline;
 
   /// No description provided for @unreachable.
   ///
   /// In ja, this message translates to:
-  /// **'接続不可'**
+  /// **'接続がタイムアウト'**
   String get unreachable;
 
   /// No description provided for @checking.

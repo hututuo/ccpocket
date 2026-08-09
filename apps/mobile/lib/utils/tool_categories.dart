@@ -89,23 +89,52 @@ String getToolSummary(ToolCategory category, Map<String, dynamic> input) {
 
 /// Extract metadata that is safe and cheap to show before a tool is expanded.
 ///
-/// Commands, search queries, prompts, and arbitrary object keys are deliberately
-/// omitted here. They can be large and may contain code; the transcript only
-/// builds those details after the user opens the disclosure.
+/// Only bounded, structured metadata is used here. Arbitrary payloads stay
+/// behind the disclosure, while provider-supplied file/search metadata remains
+/// visible so the compact activity feed matches Codex Desktop's useful
+/// "read X" / "searched Y in Z" summaries.
 String getToolCollapsedSummary(
   ToolCategory category,
   Map<String, dynamic> input,
 ) {
   return switch (category) {
-    ToolCategory.read || ToolCategory.write => _fileSummary(input),
+    ToolCategory.read || ToolCategory.write => _collapsedFileSummary(input),
+    ToolCategory.search => _collapsedSearchSummary(input),
     ToolCategory.subagent => _agentIdentitySummary(input),
     ToolCategory.wait => _waitSummary(input),
     ToolCategory.image => _imageStatusSummary(input),
-    ToolCategory.bash ||
-    ToolCategory.search ||
-    ToolCategory.compact ||
-    ToolCategory.other => '',
+    ToolCategory.bash || ToolCategory.compact || ToolCategory.other => '',
   };
+}
+
+String _collapsedFileSummary(Map<String, dynamic> input) {
+  final direct = _boundedFileName(
+    input['file_path'] ?? input['path'] ?? input['notebook_path'],
+  );
+  if (direct.isNotEmpty) return direct;
+
+  final changes = input['changes'];
+  if (changes is! List || changes.isEmpty || changes.first is! Map) return '';
+  final first = changes.first as Map;
+  final name = _boundedFileName(first['path']);
+  if (name.isEmpty) return '';
+  if (changes.length == 1) return name;
+  return _boundedInlineText('$name +${changes.length - 1} files', 80);
+}
+
+String _boundedFileName(Object? value) {
+  if (value is! String || value.isEmpty) return '';
+  // Keep only a bounded suffix before finding the basename. This avoids
+  // scanning an arbitrarily large path supplied by a provider.
+  const suffixLimit = 4096;
+  final suffix = value.length <= suffixLimit
+      ? value
+      : value.substring(value.length - suffixLimit);
+  final slash = suffix.lastIndexOf('/');
+  final backslash = suffix.lastIndexOf('\\');
+  final separator = slash > backslash ? slash : backslash;
+  final name = separator >= 0 ? suffix.substring(separator + 1) : suffix;
+  return _boundedInlineText(name, 64);
 }
 
 /// Icon for each tool category.
@@ -296,6 +325,33 @@ String _searchSummary(Map<String, dynamic> input) {
   return '"$truncated"';
 }
 
+String _collapsedSearchSummary(Map<String, dynamic> input) {
+  final rawQuery =
+      input['pattern'] ?? input['query'] ?? input['url'] ?? input['glob'];
+  final rawPath = input['path'] ?? input['cwd'];
+  final query = _boundedInlineText(rawQuery, 50);
+  final path = _boundedInlineText(rawPath, 48);
+  if (query.isNotEmpty && path.isNotEmpty) return '"$query" · $path';
+  if (query.isNotEmpty) return '"$query"';
+  if (path.isNotEmpty) return path;
+  return '';
+}
+
+String _boundedInlineText(Object? value, int maximumLength) {
+  if (value is! String) return '';
+  // Provider payloads are untrusted and can be much larger than the compact
+  // summary. Bound the work before running the whitespace expression so a
+  // collapsed row never scans an arbitrarily large argument.
+  final scanLimit = maximumLength * 4;
+  final boundedInput = value.length <= scanLimit
+      ? value
+      : value.substring(0, scanLimit);
+  final normalized = boundedInput.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (normalized.isEmpty) return '';
+  if (normalized.length <= maximumLength) return normalized;
+  return '${normalized.substring(0, maximumLength - 3)}...';
+}
+
 String _otherSummary(Map<String, dynamic> input) {
   // Task agent: use description
   final desc = input['description'] ?? input['prompt'] ?? input['skill'];
@@ -312,7 +368,7 @@ String _agentIdentitySummary(Map<String, dynamic> input) {
       input['agentName'] ??
       input['agent_id'] ??
       input['agentId'];
-  return value?.toString().trim() ?? '';
+  return _boundedInlineText(value, 64);
 }
 
 String _waitSummary(Map<String, dynamic> input) {
@@ -321,11 +377,12 @@ String _waitSummary(Map<String, dynamic> input) {
       input['duration_ms'] ??
       input['timeout'] ??
       input['timeout_ms'];
-  return value?.toString().trim() ?? '';
+  if (value is num) return _boundedInlineText(value.toString(), 32);
+  return _boundedInlineText(value, 32);
 }
 
 String _imageStatusSummary(Map<String, dynamic> input) =>
-    input['status']?.toString().replaceAll('_', ' ').trim() ?? '';
+    _boundedInlineText(input['status'], 48).replaceAll('_', ' ');
 
 String _fallbackSummary(Map<String, dynamic> input) {
   final keys = input.keys.take(3).join(', ');

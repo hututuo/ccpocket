@@ -80,6 +80,7 @@ class SessionFilterBar extends StatelessWidget {
     };
 
     return _ActionChip(
+      key: const ValueKey('recent_display_mode_toggle'),
       icon: Icons.visibility_outlined,
       label: label,
       tooltip: l.tooltipDisplayMode,
