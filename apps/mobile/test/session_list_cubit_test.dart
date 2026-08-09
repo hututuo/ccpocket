@@ -587,6 +587,43 @@ void main() {
     });
 
     test(
+      'manual catalog refresh waits for a matching network response',
+      () async {
+        var completed = false;
+        final refresh = cubit
+            .refreshCatalog(
+              waitForResponse: true,
+              responseTimeout: const Duration(seconds: 1),
+            )
+            .whenComplete(() => completed = true);
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+        expect(completed, isFalse);
+
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            sessions: [_session(id: 'manual-refresh')],
+            hasMore: false,
+            requestScope: 'list',
+            queryGeneration: 1,
+          ),
+        );
+
+        expect(await refresh, isTrue);
+        expect(completed, isTrue);
+      },
+    );
+
+    test('manual catalog refresh has a bounded response timeout', () async {
+      expect(
+        await cubit.refreshCatalog(
+          waitForResponse: true,
+          responseTimeout: const Duration(milliseconds: 40),
+        ),
+        isFalse,
+      );
+    });
+
+    test(
       'catalog bootstrap rechecks its connection fence before send',
       () async {
         var isCurrentConnection = true;

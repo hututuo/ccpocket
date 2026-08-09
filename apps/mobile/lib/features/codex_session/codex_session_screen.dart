@@ -58,6 +58,7 @@ import '../chat_session/state/chat_session_cubit.dart';
 import '../chat_session/state/chat_session_state.dart';
 import '../../theme/app_theme.dart';
 import '../chat_session/state/streaming_state_cubit.dart';
+import '../chat_session/session_manual_refresh.dart';
 import '../chat_session/widgets/chat_input_with_overlays.dart';
 import '../chat_session/widgets/bottom_overlay_layout.dart';
 import '../chat_session/widgets/chat_message_list.dart';
@@ -1833,6 +1834,31 @@ class _CodexChatBody extends HookWidget {
     final bridgeRuntimeSessionId = detachedPreview
         ? liveRuntimeSessionId
         : sessionId;
+    final manualRefreshRunning = useState(false);
+
+    Future<void> refreshConversation() async {
+      if (manualRefreshRunning.value) return;
+      manualRefreshRunning.value = true;
+      ConversationContentSyncService? contentSync;
+      try {
+        contentSync = context.read<ConversationContentSyncService>();
+      } catch (_) {}
+      try {
+        await refreshSessionFromBridge(
+          bridge: bridge,
+          chatSession: context.read<ChatSessionCubit>(),
+          contentSync: contentSync,
+          provider: Provider.codex.value,
+          pageSessionId: sessionId,
+          expectedDataSourceIdentity: dataSourceIdentity,
+          runtimeSessionId: bridgeRuntimeSessionId,
+          detachedPreview: detachedPreview,
+        );
+      } finally {
+        if (context.mounted) manualRefreshRunning.value = false;
+      }
+    }
+
     final workspaceStateKey = workspaceSessionStateKey(
       provider: Provider.codex.value,
       durableSessionId: sessionId,
@@ -2837,6 +2863,28 @@ class _CodexChatBody extends HookWidget {
                       inPlanMode: inPlanMode,
                     ),
                     actions: [
+                      IconButton(
+                        key: const ValueKey(
+                          'appbar_refresh_conversation_button',
+                        ),
+                        icon: manualRefreshRunning.value
+                            ? const SizedBox.square(
+                                dimension: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.refresh, size: 18),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 32,
+                          minHeight: 32,
+                        ),
+                        tooltip: l.refresh,
+                        onPressed: manualRefreshRunning.value
+                            ? null
+                            : () => unawaited(refreshConversation()),
+                      ),
                       if (effectiveProjectPath != null)
                         IconButton(
                           key: const ValueKey('appbar_explore_button'),

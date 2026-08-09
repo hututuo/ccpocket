@@ -3556,6 +3556,19 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(sessionList.bridgeCapabilities).toContain(
       "conversation_mirror_source_identity_v1",
     );
+    expect(sessionList.bridgeCapabilities).toContain(
+      "conversation_sync_focus_refresh_v1",
+    );
+    (bridge as any).wss.clients.add(ws);
+    (bridge as any).connectionAuth.set(ws, { kind: "open" });
+    (bridge as any).broadcastSessionList();
+    const broadcastSessionList = ws.send.mock.calls
+      .map((c: unknown[]) => JSON.parse(c[0] as string))
+      .filter((msg: any) => msg.type === "session_list")
+      .at(-1);
+    expect(broadcastSessionList.bridgeCapabilities).toContain(
+      "conversation_sync_focus_refresh_v1",
+    );
     expect(sessionList.codexModels).toEqual([
       "gpt-5.6-sol",
       "gpt-5.6-terra",

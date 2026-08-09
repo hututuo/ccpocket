@@ -4,6 +4,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
+  advanceLanRebindCandidate,
+  destroyLanProxyTunnels,
   isPrivateLanIpv4,
   selectLanIpv4,
 } from "./ccpocket-bridge-lan-proxy.mjs";
@@ -53,6 +55,73 @@ test("does not fall back from the configured LAN interface to a virtual interfac
   };
 
   assert.equal(selectLanIpv4(interfaces, "en0"), undefined);
+});
+
+test("does not replace a bound listener after a transient missing address", () => {
+  const observation = advanceLanRebindCandidate({
+    boundHost: "192.168.124.219",
+    desiredHost: undefined,
+    candidateHost: "192.168.124.220",
+    candidateObservations: 1,
+    requiredObservations: 2,
+  });
+
+  assert.deepEqual(observation, {
+    candidateHost: undefined,
+    candidateObservations: 0,
+    confirmedHost: undefined,
+  });
+});
+
+test("requires consecutive observations before rebinding to a new address", () => {
+  const first = advanceLanRebindCandidate({
+    boundHost: "192.168.124.219",
+    desiredHost: "192.168.124.220",
+    requiredObservations: 2,
+  });
+  assert.deepEqual(first, {
+    candidateHost: "192.168.124.220",
+    candidateObservations: 1,
+    confirmedHost: undefined,
+  });
+
+  const second = advanceLanRebindCandidate({
+    boundHost: "192.168.124.219",
+    desiredHost: "192.168.124.220",
+    candidateHost: first.candidateHost,
+    candidateObservations: first.candidateObservations,
+    requiredObservations: 2,
+  });
+  assert.equal(second.confirmedHost, "192.168.124.220");
+});
+
+test("confirmed rebind destroys upgraded tunnels before closing the listener", () => {
+  const destroyed = [];
+  const tunnels = new Map([
+    [
+      1,
+      {
+        clientSocket: { destroy: () => destroyed.push("client-1") },
+        upstreamSocket: { destroy: () => destroyed.push("upstream-1") },
+      },
+    ],
+    [
+      2,
+      {
+        clientSocket: { destroy: () => destroyed.push("client-2") },
+        upstreamSocket: { destroy: () => destroyed.push("upstream-2") },
+      },
+    ],
+  ]);
+
+  assert.equal(destroyLanProxyTunnels(tunnels), 2);
+  assert.deepEqual(destroyed, [
+    "client-1",
+    "upstream-1",
+    "client-2",
+    "upstream-2",
+  ]);
+  assert.equal(tunnels.size, 0);
 });
 
 test(

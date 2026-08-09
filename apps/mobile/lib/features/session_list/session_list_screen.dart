@@ -650,6 +650,7 @@ double _conversationCatalogBootstrapFraction(
 
   final committedFraction = switch (update?.kind) {
     ConversationSyncCacheUpdateKind.started => 0.84,
+    ConversationSyncCacheUpdateKind.focusApplied => 0.84,
     ConversationSyncCacheUpdateKind.catalog => pageFraction(0.84, 0.04),
     ConversationSyncCacheUpdateKind.status => pageFraction(0.88, 0.04),
     ConversationSyncCacheUpdateKind.timeline => timelineFraction(),
@@ -916,6 +917,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   bool _connectionTakingLonger = false;
   bool _connectionAttemptFailed = false;
   bool _connectionSelectionPending = false;
+  bool _manualCatalogRefreshRunning = false;
 
   /// Key to access HomeContent state for programmatic search (Cmd+K).
   final _homeContentKey = GlobalKey<HomeContentState>();
@@ -2387,10 +2389,22 @@ class _SessionListScreenState extends State<SessionListScreen>
   }
 
   Future<void> _refresh() async {
+    if (_manualCatalogRefreshRunning) return;
+    setState(() => _manualCatalogRefreshRunning = true);
+    final bridge = context.read<BridgeService>();
     final machineManagerCubit = context.read<MachineManagerCubit?>();
-    await context.read<SessionListCubit>().refresh();
-    if (machineManagerCubit != null) {
-      unawaited(machineManagerCubit.refreshLatestBridgeVersionIfStale());
+    try {
+      final authoritative = await bridge.refreshAuthoritativeSessionList();
+      if (authoritative && mounted) {
+        await context.read<SessionListCubit>().refreshCatalog(
+          waitForResponse: true,
+        );
+      }
+      if (machineManagerCubit != null) {
+        unawaited(machineManagerCubit.refreshLatestBridgeVersionIfStale());
+      }
+    } finally {
+      if (mounted) setState(() => _manualCatalogRefreshRunning = false);
     }
   }
 
@@ -3908,6 +3922,8 @@ class _SessionListScreenState extends State<SessionListScreen>
                         : null,
                     onDisconnect: showConnectedUI ? _disconnect : null,
                     onTogglePaneVisibility: widget.onTogglePaneVisibility,
+                    onRefresh: showConnectedUI ? _refresh : null,
+                    isRefreshing: _manualCatalogRefreshRunning,
                     bridgeLabel: connectedBridgeLabel,
                   ),
                   Expanded(child: body),
@@ -4176,6 +4192,8 @@ class _SessionListScreenState extends State<SessionListScreen>
                 )
                 ? _openArchivedSessions
                 : null,
+            onRefresh: _refresh,
+            isRefreshing: _manualCatalogRefreshRunning,
             forceElevated: innerBoxIsScrolled,
             toolbarHeight: chrome.toolbarHeight,
             bridgeLabel: connectedBridgeLabel,

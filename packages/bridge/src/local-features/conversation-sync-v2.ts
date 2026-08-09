@@ -255,6 +255,7 @@ interface SyncSubscription {
   dirty: boolean;
   fullSyncRequested: boolean;
   dirtyThreadKeys: Set<ConversationKey>;
+  pendingFocusRefreshRequestId?: string;
   capacityWaiters: Set<() => void>;
 }
 
@@ -1983,6 +1984,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     subscription.focusedKey = message.focused
       ? targetKey(message.focused)
       : undefined;
+    if (message.refresh === true && message.focused) {
+      subscription.pendingFocusRefreshRequestId = message.requestId;
+    }
     this.pruneFocusedCodexSettingsRetries();
     if (message.focused?.provider === "codex") {
       const focusedKey = targetKey(message.focused);
@@ -2107,6 +2111,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     client: object,
     subscription: SyncSubscription,
   ): Promise<void> {
+    const focusRefreshRequestId = subscription.pendingFocusRefreshRequestId;
     const fullSyncRequested = subscription.fullSyncRequested;
     subscription.fullSyncRequested = false;
     const dirtyThreadKeys = new Set(subscription.dirtyThreadKeys);
@@ -2242,6 +2247,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
     this.sendEvent(client, subscription, {
       event: "sync_complete",
+      ...(focusRefreshRequestId
+        ? { requestId: focusRefreshRequestId }
+        : {}),
       nextState: {
         catalogState: this.catalogState,
         statusState,
@@ -2253,6 +2261,12 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           })),
       },
     });
+    if (
+      focusRefreshRequestId &&
+      subscription.pendingFocusRefreshRequestId === focusRefreshRequestId
+    ) {
+      subscription.pendingFocusRefreshRequestId = undefined;
+    }
   }
 
   private async sendCatalogChanges(

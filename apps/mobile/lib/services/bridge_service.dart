@@ -1044,6 +1044,8 @@ class BridgeService implements BridgeServiceBase {
       _bridgeCapabilities.contains(conversationContentEventCapability);
   bool get supportsConversationSyncV2 =>
       _bridgeCapabilities.contains(conversationSyncV2Capability);
+  bool get supportsConversationSyncFocusRefresh =>
+      _bridgeCapabilities.contains(conversationSyncFocusRefreshCapability);
   bool get supportsConversationItemsById =>
       _bridgeCapabilities.contains(conversationItemsByIdCapability);
   bool get supportsConversationUserIndex =>
@@ -2849,6 +2851,7 @@ class BridgeService implements BridgeServiceBase {
             'socket_error',
             epoch: epoch,
             errorKind: _diagnosticToken(error.runtimeType.toString()),
+            elapsedMs: _connectionDiagnosticStopwatch?.elapsedMilliseconds,
             warning: true,
           );
           _failPendingHistoryRequests(clearCursors: false);
@@ -2884,7 +2887,12 @@ class BridgeService implements BridgeServiceBase {
             return;
           }
           _cancelAuthoritativeSessionListWatchdog();
-          _logConnectionDiagnostic('socket_done', epoch: epoch);
+          _logConnectionDiagnostic(
+            'socket_done',
+            epoch: epoch,
+            reason: 'close_${channel.closeCode ?? 'none'}',
+            elapsedMs: _connectionDiagnosticStopwatch?.elapsedMilliseconds,
+          );
           _channel = null;
           _failPendingHistoryRequests(clearCursors: false);
           _clearPendingLocalFeatureRequests();
@@ -5541,6 +5549,69 @@ class BridgeService implements BridgeServiceBase {
       return;
     }
     send(ClientMessage.listSessions());
+  }
+
+  /// Requests and waits for a fresh authoritative runtime/session snapshot on
+  /// the exact current socket generation.
+  ///
+  /// Public refresh surfaces use this instead of treating message dispatch as
+  /// completion. A stale socket is reconnected first, and a response from a
+  /// replacement generation cannot satisfy the old waiter.
+  Future<bool> refreshAuthoritativeSessionList({
+    Duration timeout = const Duration(seconds: 12),
+  }) async {
+    if (!isTransportHealthy) {
+      ensureConnected();
+      final deadline = DateTime.now().add(timeout);
+      while (!isTransportHealthy && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+      }
+    }
+    if (!isTransportHealthy) return false;
+
+    final epoch = _connectionEpoch;
+    final previousGeneration = _authoritativeSessionListGeneration;
+    final completer = Completer<bool>();
+    late final StreamSubscription<List<SessionInfo>> sessionSubscription;
+    late final StreamSubscription<BridgeConnectionState> connectionSubscription;
+    final timer = Timer(timeout, () {
+      if (!completer.isCompleted) completer.complete(false);
+    });
+    sessionSubscription = sessionList.listen(
+      (_) {
+        if (!completer.isCompleted &&
+            epoch == _connectionEpoch &&
+            isTransportHealthy &&
+            _hasAuthoritativeSessionListForCurrentConnection &&
+            _authoritativeSessionListGeneration > previousGeneration) {
+          completer.complete(true);
+        }
+      },
+      onError: (Object _, StackTrace _) {
+        if (!completer.isCompleted) completer.complete(false);
+      },
+    );
+    connectionSubscription = connectionStatus.listen(
+      (_) {
+        if (!completer.isCompleted &&
+            (epoch != _connectionEpoch || !isTransportHealthy)) {
+          completer.complete(false);
+        }
+      },
+      onError: (Object _, StackTrace _) {
+        if (!completer.isCompleted) completer.complete(false);
+      },
+    );
+    try {
+      requestSessionList();
+      return await completer.future;
+    } finally {
+      timer.cancel();
+      await Future.wait([
+        sessionSubscription.cancel(),
+        connectionSubscription.cancel(),
+      ]);
+    }
   }
 
   Future<SessionLinkResolveResult> resolveSessionLink(

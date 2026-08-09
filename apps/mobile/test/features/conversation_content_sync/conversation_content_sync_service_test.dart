@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:ccpocket/features/conversation_content_sync/conversation_content_sync_service.dart';
 import 'package:ccpocket/features/session_list/cache/session_catalog_cache_database.dart';
 import 'package:ccpocket/features/session_list/cache/session_catalog_cache_repository.dart';
+import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -2883,6 +2884,308 @@ void main() {
   );
 
   test(
+    'manual focused refresh re-sends an unchanged focus and waits for commit',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      gateway.supportsConversationSyncFocusRefresh = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-initial',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-refresh',
+          statusState: 'status-refresh',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncComplete,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-initial',
+          sequence: 2,
+          requestId: subscriptionId,
+          nextState: const ConversationSyncV2NextState(
+            catalogState: 'catalog-refresh',
+            statusState: 'status-refresh',
+            threadContentStates: [],
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      var completed = false;
+      final refresh = service
+          .refreshFocusedConversation(
+            provider: 'codex',
+            providerSessionId: 'thread-manual-refresh',
+            expectedDataSourceIdentity: const BridgeDataSourceIdentity(
+              bridgeInstanceId: 'bridge-1',
+              codexSourceId: 'codex-home-a',
+            ),
+          )
+          .whenComplete(() => completed = true);
+      final duplicateRefresh = service.refreshFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'thread-manual-refresh',
+        expectedDataSourceIdentity: const BridgeDataSourceIdentity(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+        ),
+      );
+      final repeatedFocus = await gateway.nextOutgoing(
+        'conversation_sync_focus',
+      );
+      expect(repeatedFocus['focused'], {
+        'provider': 'codex',
+        'providerSessionId': 'thread-manual-refresh',
+      });
+      expect(repeatedFocus['refresh'], isTrue);
+      expect(
+        gateway.sent.where(
+          (message) => message['type'] == 'conversation_sync_focus',
+        ),
+        hasLength(1),
+      );
+      final requestId = repeatedFocus['requestId']! as String;
+      expect(completed, isFalse);
+
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.focusApplied,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-manual-refresh',
+          sequence: 3,
+          requestId: requestId,
+          focused: const ConversationSyncV2Target(
+            provider: 'codex',
+            providerSessionId: 'thread-manual-refresh',
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      // An older in-flight batch may finish after focus_applied. It must not
+      // complete the user-visible refresh flight.
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-unrelated',
+          sequence: 4,
+          requestId: subscriptionId,
+          catalogState: 'catalog-refresh',
+          statusState: 'status-refresh',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncComplete,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-unrelated',
+          sequence: 5,
+          nextState: const ConversationSyncV2NextState(
+            catalogState: 'catalog-refresh',
+            statusState: 'status-refresh',
+            threadContentStates: [],
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      expect(completed, isFalse);
+
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-manual-refresh',
+          sequence: 6,
+          requestId: subscriptionId,
+          catalogState: 'catalog-refresh',
+          statusState: 'status-refresh',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncComplete,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-manual-refresh',
+          sequence: 7,
+          requestId: requestId,
+          nextState: const ConversationSyncV2NextState(
+            catalogState: 'catalog-refresh',
+            statusState: 'status-refresh',
+            threadContentStates: [],
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await refresh;
+      await duplicateRefresh;
+      expect(completed, isTrue);
+    },
+  );
+
+  test('manual focused refresh rejects a different data source', () async {
+    final before = gateway.sent
+        .where((message) => message['type'] == 'conversation_sync_focus')
+        .length;
+    await expectLater(
+      service.refreshFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'thread-wrong-source',
+        expectedDataSourceIdentity: const BridgeDataSourceIdentity(
+          bridgeInstanceId: 'other-bridge',
+          codexSourceId: 'codex-home-a',
+        ),
+      ),
+      throwsA(isA<Object>()),
+    );
+    expect(
+      gateway.sent.where(
+        (message) => message['type'] == 'conversation_sync_focus',
+      ),
+      hasLength(before),
+    );
+  });
+
+  test(
+    'manual focused refresh falls back to exact v2 focus acknowledgement',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      gateway.supportsConversationSyncFocusRefresh = false;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-legacy-focus',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-legacy-focus',
+          statusState: 'status-legacy-focus',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncComplete,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-legacy-focus',
+          sequence: 2,
+          nextState: const ConversationSyncV2NextState(
+            catalogState: 'catalog-legacy-focus',
+            statusState: 'status-legacy-focus',
+            threadContentStates: [],
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final refresh = service.refreshFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'thread-legacy-focus',
+        expectedDataSourceIdentity: const BridgeDataSourceIdentity(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+        ),
+      );
+      final focus = await gateway.nextOutgoing('conversation_sync_focus');
+      expect(focus, isNot(contains('refresh')));
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.focusApplied,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-legacy-focus',
+          sequence: 3,
+          requestId: focus['requestId']! as String,
+          focused: const ConversationSyncV2Target(
+            provider: 'codex',
+            providerSessionId: 'thread-legacy-focus',
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await refresh;
+    },
+  );
+
+  test('manual focused refresh keeps the v1 content-focus fallback', () async {
+    final subscribe = await gateway.nextOutgoing(
+      'conversation_content_subscribe',
+    );
+    final subscriptionId = subscribe['requestId']! as String;
+    gateway.addEvent(
+      ConversationContentEventMessage(
+        event: ConversationContentEventKind.subscribed,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        requestId: subscriptionId,
+        hotConversationLimit: 10,
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    await service.refreshFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-v1-focus',
+      expectedDataSourceIdentity: const BridgeDataSourceIdentity(
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+      ),
+    );
+    final focus = await gateway.nextOutgoing('conversation_content_focus');
+    expect(focus['subscriptionId'], subscriptionId);
+    expect(focus['focused'], {
+      'provider': 'codex',
+      'providerSessionId': 'thread-v1-focus',
+    });
+  });
+
+  test(
     'durable focus marks read on entry and again on exit after a newer status',
     () async {
       await service.dispose();
@@ -3533,6 +3836,9 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
 
   @override
   bool supportsConversationSyncV2 = false;
+
+  @override
+  bool supportsConversationSyncFocusRefresh = false;
 
   @override
   bool supportsConversationItemsById = true;

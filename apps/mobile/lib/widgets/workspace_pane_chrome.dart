@@ -139,6 +139,7 @@ class WorkspacePaneChrome {
   ButtonStyle compactButtonStyle() {
     return IconButton.styleFrom(
       visualDensity: VisualDensity.compact,
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       padding: EdgeInsets.zero,
       minimumSize: const Size.square(kWorkspaceMacOSToolbarButtonExtent),
       maximumSize: const Size.square(kWorkspaceMacOSToolbarButtonExtent),

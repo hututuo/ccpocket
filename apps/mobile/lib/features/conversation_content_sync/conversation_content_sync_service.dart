@@ -22,6 +22,7 @@ abstract interface class ConversationContentSyncGateway {
   String? get lastUrl;
   bool get supportsConversationContentEvents;
   bool get supportsConversationSyncV2;
+  bool get supportsConversationSyncFocusRefresh;
   bool get supportsConversationItemsById;
   bool get supportsConversationUserIndex;
   BridgeClientDeliveryMode get desiredClientDeliveryMode;
@@ -73,6 +74,10 @@ class BridgeServiceConversationContentSyncGateway
   bool get supportsConversationSyncV2 => bridge.supportsConversationSyncV2;
 
   @override
+  bool get supportsConversationSyncFocusRefresh =>
+      bridge.supportsConversationSyncFocusRefresh;
+
+  @override
   bool get supportsConversationItemsById =>
       bridge.supportsConversationItemsById;
 
@@ -104,6 +109,7 @@ class ConversationContentCacheUpdate {
 
 enum ConversationSyncCacheUpdateKind {
   started,
+  focusApplied,
   catalog,
   status,
   timeline,
@@ -133,6 +139,7 @@ class ConversationSyncCacheUpdate {
     this.timelineIndex,
     this.timelineCount,
     this.phase,
+    this.requestId,
   });
 
   final ConversationSyncCacheUpdateKind kind;
@@ -142,6 +149,7 @@ class ConversationSyncCacheUpdate {
   final String? providerSessionId;
   final String? revision;
   final String? lastAssistantOutputAt;
+  final String? requestId;
   final List<ConversationSyncV2CatalogEntry> catalogUpserts;
   final List<ConversationSyncV2Target> catalogDestroyed;
   final List<ConversationSyncV2Status> statusChanges;
@@ -204,6 +212,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   _historyPageFlights = {};
   final Map<String, Future<ConversationTurnsPageLoadResult>>
   _latestTurnRepairFlights = {};
+  String? _focusedRefreshFlightKey;
+  Future<void>? _focusedRefreshFlight;
   final Map<String, Future<void>> _historyOperationTails = {};
   final Map<String, Future<void>> _userIndexFlights = {};
   final Map<String, Future<List<ServerMessage>?>> _userTurnDetailFlights = {};
@@ -376,6 +386,181 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       );
     } catch (_) {
       _handleTransportLoss();
+    }
+  }
+
+  /// Re-dispatches the current conversation focus as an explicit recovery
+  /// request and waits for the authoritative v2 batch to commit locally.
+  ///
+  /// Normal focus changes are intentionally deduplicated. A user-initiated
+  /// refresh is different: it must be able to ask the Bridge to re-read the
+  /// focused thread even when the route identity did not change. Reusing the
+  /// existing focus message keeps settings hydration, status and timeline
+  /// reconciliation on the same generation-fenced protocol path.
+  Future<void> refreshFocusedConversation({
+    required String provider,
+    required String providerSessionId,
+    required BridgeDataSourceIdentity expectedDataSourceIdentity,
+    Duration timeout = const Duration(seconds: 12),
+  }) {
+    final flightKey =
+        '${_cacheTarget.fingerprint}\u0000$provider\u0000$providerSessionId';
+    final existing = _focusedRefreshFlight;
+    if (existing != null) {
+      if (_focusedRefreshFlightKey == flightKey) return existing;
+      return Future<void>.error(const _ConversationPagingInterrupted());
+    }
+    late final Future<void> flight;
+    flight =
+        _refreshFocusedConversation(
+          provider: provider,
+          providerSessionId: providerSessionId,
+          expectedDataSourceIdentity: expectedDataSourceIdentity,
+          timeout: timeout,
+        ).whenComplete(() {
+          if (identical(_focusedRefreshFlight, flight)) {
+            _focusedRefreshFlight = null;
+            _focusedRefreshFlightKey = null;
+          }
+        });
+    _focusedRefreshFlightKey = flightKey;
+    _focusedRefreshFlight = flight;
+    return flight;
+  }
+
+  Future<void> _refreshFocusedConversation({
+    required String provider,
+    required String providerSessionId,
+    required BridgeDataSourceIdentity expectedDataSourceIdentity,
+    required Duration timeout,
+  }) async {
+    if (_disposed || !_canProcessContent) {
+      throw const _ConversationPagingInterrupted();
+    }
+    if (!matchesCurrentDataSource(
+      expectedDataSourceIdentity,
+      provider: provider,
+    )) {
+      throw const _ConversationPagingInterrupted();
+    }
+    final next = ConversationContentTarget(
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
+    final targetFingerprint = _cacheTarget.fingerprint;
+    if (!_sameTarget(_focused, next)) {
+      final previous = _focused;
+      if (previous != null) _markConversationReadBestEffort(previous);
+      _focused = next;
+      _markConversationReadBestEffort(next);
+    }
+    if (_activeSubscriptionId == null) {
+      _retryTimer?.cancel();
+      _retryTimer = null;
+      _ensureSubscribed();
+      await _waitForActiveSubscription(timeout);
+    }
+    if (!matchesCurrentDataSource(
+          expectedDataSourceIdentity,
+          provider: provider,
+        ) ||
+        targetFingerprint != _cacheTarget.fingerprint ||
+        !_sameTarget(_focused, next)) {
+      throw const _ConversationPagingInterrupted();
+    }
+    final subscriptionId = _activeSubscriptionId;
+    if (subscriptionId == null) throw const _ConversationPagingInterrupted();
+
+    final requestId = _nextRequestId('manual-focus');
+    final supportsV2 = bridge.supportsConversationSyncV2;
+    final focusRefreshSupported =
+        supportsV2 && bridge.supportsConversationSyncFocusRefresh;
+    Future<ConversationSyncCacheUpdate>? completion;
+    final completionSubscriptions = <StreamSubscription<Object?>>[];
+    Timer? completionTimeout;
+    if (supportsV2) {
+      final expectedKind = focusRefreshSupported
+          ? ConversationSyncCacheUpdateKind.completed
+          : ConversationSyncCacheUpdateKind.focusApplied;
+      final completer = Completer<ConversationSyncCacheUpdate>();
+      void fail(Object error, StackTrace stackTrace) {
+        if (!completer.isCompleted) {
+          completer.completeError(error, stackTrace);
+        }
+      }
+
+      void interrupt() {
+        fail(const _ConversationPagingInterrupted(), StackTrace.current);
+      }
+
+      completionSubscriptions.add(
+        syncUpdates.listen((update) {
+          if (!completer.isCompleted &&
+              update.kind == expectedKind &&
+              update.targetFingerprint == targetFingerprint &&
+              update.requestId == requestId) {
+            completer.complete(update);
+          }
+        }, onError: fail),
+      );
+      completionSubscriptions.add(
+        bridge.connectionStatus.listen((state) {
+          if (state != BridgeConnectionState.connected) interrupt();
+        }, onError: fail),
+      );
+      completionSubscriptions.add(
+        bridge.sessionList.listen((_) {
+          if (!matchesCurrentDataSource(
+                expectedDataSourceIdentity,
+                provider: provider,
+              ) ||
+              targetFingerprint != _cacheTarget.fingerprint) {
+            interrupt();
+          }
+        }, onError: fail),
+      );
+      completionTimeout = Timer(timeout, () {
+        if (!completer.isCompleted) {
+          completer.completeError(
+            TimeoutException('Focused refresh timed out.'),
+            StackTrace.current,
+          );
+        }
+      });
+      completion = completer.future;
+    }
+    try {
+      bridge.send(
+        supportsV2
+            ? conversationSyncV2Focus(
+                requestId: requestId,
+                subscriptionId: subscriptionId,
+                refresh: focusRefreshSupported,
+                focused: ConversationSyncV2Target(
+                  provider: provider,
+                  providerSessionId: providerSessionId,
+                ),
+              )
+            : conversationContentFocus(
+                requestId: requestId,
+                subscriptionId: subscriptionId,
+                focused: next,
+              ),
+      );
+      if (completion != null) await completion;
+      if (!matchesCurrentDataSource(
+            expectedDataSourceIdentity,
+            provider: provider,
+          ) ||
+          targetFingerprint != _cacheTarget.fingerprint ||
+          !_sameTarget(_focused, next)) {
+        throw const _ConversationPagingInterrupted();
+      }
+    } finally {
+      completionTimeout?.cancel();
+      await Future.wait(
+        completionSubscriptions.map((subscription) => subscription.cancel()),
+      );
     }
   }
 
@@ -1902,6 +2087,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         publish = ConversationSyncCacheUpdate(
           kind: ConversationSyncCacheUpdateKind.completed,
           targetFingerprint: target.fingerprint,
+          requestId: event.requestId,
         );
         _scheduleUserIndexWarmup(generation, target);
       case ConversationSyncV2EventKind.syncReset:
@@ -2220,6 +2406,13 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           }
         }
       case ConversationSyncV2EventKind.focusApplied:
+        publish = ConversationSyncCacheUpdate(
+          kind: ConversationSyncCacheUpdateKind.focusApplied,
+          targetFingerprint: target.fingerprint,
+          provider: event.focused?.provider,
+          providerSessionId: event.focused?.providerSessionId,
+          requestId: event.requestId,
+        );
       case ConversationSyncV2EventKind.unsubscribed:
       // These responses do not mutate the hot cache in this service. Their
       // sequence still participates in cumulative flow control.
@@ -2331,6 +2524,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           timelineIndex: event.timelineIndex,
           timelineCount: event.timelineCount,
           phase: event.phase,
+          requestId: progressUpdate.requestId ?? event.requestId,
         ),
       );
     }

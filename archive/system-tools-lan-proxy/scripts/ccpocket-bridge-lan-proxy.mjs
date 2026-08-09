@@ -22,6 +22,9 @@ const expectedTokenDigest = process.env.CCPOCKET_LAN_PROXY_TOKEN_SHA256
 const rebindIntervalMs = Number(
   process.env.CCPOCKET_LAN_PROXY_REBIND_INTERVAL_MS ?? "5000",
 );
+const rebindConfirmationCount = Number(
+  process.env.CCPOCKET_LAN_PROXY_REBIND_CONFIRMATIONS ?? "2",
+);
 
 if (
   !Number.isInteger(listenPort) ||
@@ -31,9 +34,13 @@ if (
   upstreamPort < 1 ||
   upstreamPort > 65535 ||
   !Number.isInteger(rebindIntervalMs) ||
-  rebindIntervalMs < 1000
+  rebindIntervalMs < 1000 ||
+  !Number.isInteger(rebindConfirmationCount) ||
+  rebindConfirmationCount < 1
 ) {
-  throw new Error("LAN proxy ports and rebind interval are invalid");
+  throw new Error(
+    "LAN proxy ports, rebind interval, and confirmation count are invalid",
+  );
 }
 if (expectedTokenDigest && !/^[a-f0-9]{64}$/.test(expectedTokenDigest)) {
   throw new Error("LAN proxy token digest must be a SHA-256 hex value");
@@ -72,6 +79,49 @@ export function selectLanIpv4(
     }
   }
   return undefined;
+}
+
+export function advanceLanRebindCandidate({
+  boundHost,
+  desiredHost,
+  candidateHost,
+  candidateObservations = 0,
+  requiredObservations = 2,
+}) {
+  if (!desiredHost || desiredHost === boundHost) {
+    return {
+      candidateHost: undefined,
+      candidateObservations: 0,
+      confirmedHost: undefined,
+    };
+  }
+  const nextObservations =
+    candidateHost === desiredHost ? candidateObservations + 1 : 1;
+  return {
+    candidateHost: desiredHost,
+    candidateObservations: nextObservations,
+    confirmedHost:
+      nextObservations >= requiredObservations ? desiredHost : undefined,
+  };
+}
+
+export function destroyLanProxyTunnels(tunnels) {
+  let destroyed = 0;
+  for (const [id, tunnel] of [...tunnels]) {
+    tunnels.delete(id);
+    destroyed += 1;
+    tunnel.clientSocket.destroy();
+    tunnel.upstreamSocket.destroy();
+  }
+  return destroyed;
+}
+
+function logInfo(message) {
+  console.log(`${new Date().toISOString()} ${message}`);
+}
+
+function logError(message) {
+  console.error(`${new Date().toISOString()} ${message}`);
 }
 
 function desiredListenHost() {
@@ -141,7 +191,7 @@ const server = http.createServer((req, res) => {
     },
     (upstreamResponse) => {
       if (logsReadinessProbe) {
-        console.log(
+        logInfo(
           `[lan-proxy] HTTP ${requestPath} status=${upstreamResponse.statusCode ?? "unknown"} peer=${peer}`,
         );
       }
@@ -160,20 +210,24 @@ const server = http.createServer((req, res) => {
     }
     res.end(JSON.stringify({ error: "Bridge unavailable" }));
     if (logsReadinessProbe) {
-      console.error(
+      logError(
         `[lan-proxy] HTTP ${requestPath} status=upstream_error peer=${peer}`,
       );
     }
-    console.error(`[lan-proxy] upstream HTTP error: ${error.message}`);
+    logError(`[lan-proxy] upstream HTTP error: ${error.message}`);
   });
   req.on("aborted", () => upstream.destroy());
   req.pipe(upstream);
 });
 
+let nextTunnelId = 0;
+const activeTunnels = new Map();
+
 server.on("upgrade", (req, clientSocket, head) => {
+  const tunnelId = ++nextTunnelId;
   const credential = websocketCredentialStatus(req);
-  console.log(
-    `[lan-proxy] WebSocket credential ${credential.status} length=${credential.length} peer=${req.socket.remoteAddress ?? "unknown"}`,
+  logInfo(
+    `[lan-proxy] tunnel=${tunnelId} WebSocket credential ${credential.status} length=${credential.length} peer=${req.socket.remoteAddress ?? "unknown"}`,
   );
   if (expectedTokenDigest && credential.status !== "match") {
     clientSocket.end(
@@ -200,15 +254,28 @@ server.on("upgrade", (req, clientSocket, head) => {
     },
   );
 
+  activeTunnels.set(tunnelId, { clientSocket, upstreamSocket });
+
   const closeBoth = (error) => {
+    if (!activeTunnels.delete(tunnelId)) return;
     if (error) {
-      console.error(`[lan-proxy] WebSocket tunnel error: ${error.message}`);
+      logError(
+        `[lan-proxy] tunnel=${tunnelId} WebSocket tunnel error: ${error.code ?? error.message}`,
+      );
     }
     clientSocket.destroy();
     upstreamSocket.destroy();
   };
   clientSocket.on("error", closeBoth);
   upstreamSocket.on("error", closeBoth);
+  clientSocket.once("close", () => {
+    logInfo(`[lan-proxy] tunnel=${tunnelId} client closed`);
+    closeBoth();
+  });
+  upstreamSocket.once("close", () => {
+    logInfo(`[lan-proxy] tunnel=${tunnelId} upstream closed`);
+    closeBoth();
+  });
 });
 
 server.on("clientError", (_error, socket) => {
@@ -220,6 +287,9 @@ let binding = false;
 let retryTimer;
 let unavailableLogged = false;
 let shuttingDown = false;
+let pendingRebindHost;
+let pendingRebindObservations = 0;
+let forcedRebindCloseTimer;
 
 function scheduleRetry() {
   if (shuttingDown || retryTimer !== undefined) return;
@@ -236,7 +306,7 @@ function beginListen(host) {
     server.off("listening", onListening);
     binding = false;
     boundHost = undefined;
-    console.error(
+    logError(
       `[lan-proxy] unable to listen on ${host}:${listenPort}: ${error.code ?? error.message}`,
     );
     scheduleRetry();
@@ -246,7 +316,7 @@ function beginListen(host) {
     binding = false;
     boundHost = host;
     unavailableLogged = false;
-    console.log(
+    logInfo(
       `[lan-proxy] listening on ${host}:${listenPort} -> ${upstreamHost}:${upstreamPort}`,
     );
   };
@@ -261,37 +331,86 @@ function reconcileBinding() {
   try {
     desired = desiredListenHost();
   } catch (error) {
-    console.error(`[lan-proxy] invalid listen configuration: ${error.message}`);
+    logError(`[lan-proxy] invalid listen configuration: ${error.message}`);
     return;
   }
   if (!desired) {
+    pendingRebindHost = undefined;
+    pendingRebindObservations = 0;
     if (!unavailableLogged) {
-      console.error(
-        `[lan-proxy] no private IPv4 is available on ${listenInterface}; waiting`,
+      logError(
+        `[lan-proxy] no private IPv4 is available on ${listenInterface}; ` +
+          (server.listening
+            ? `retaining ${boundHost}:${listenPort} while waiting`
+            : "waiting"),
       );
       unavailableLogged = true;
     }
-    if (server.listening) {
-      binding = true;
-      server.close(() => {
-        binding = false;
-        boundHost = undefined;
-        scheduleRetry();
-      });
-    } else {
-      scheduleRetry();
-    }
+    // networkInterfaces() can briefly omit en0 while macOS renews DHCP or
+    // switches Wi-Fi state. Closing a healthy listener on one empty sample
+    // turns that harmless observation into a guaranteed phone disconnect.
+    // Keep the existing listener and its upgraded WebSocket tunnels alive;
+    // only a repeatedly observed replacement address is allowed to rebind.
+    if (!server.listening) scheduleRetry();
     return;
   }
-  if (server.listening && boundHost === desired) return;
+  unavailableLogged = false;
+  if (server.listening && boundHost === desired) {
+    pendingRebindHost = undefined;
+    pendingRebindObservations = 0;
+    return;
+  }
   if (server.listening) {
+    const observation = advanceLanRebindCandidate({
+      boundHost,
+      desiredHost: desired,
+      candidateHost: pendingRebindHost,
+      candidateObservations: pendingRebindObservations,
+      requiredObservations: rebindConfirmationCount,
+    });
+    pendingRebindHost = observation.candidateHost;
+    pendingRebindObservations = observation.candidateObservations;
+    if (!observation.confirmedHost) {
+      logInfo(
+        `[lan-proxy] observed candidate LAN address ${desired} ` +
+          `(${pendingRebindObservations}/${rebindConfirmationCount}); ` +
+          `retaining ${boundHost}:${listenPort}`,
+      );
+      return;
+    }
     const previous = boundHost;
     binding = true;
+    const destroyedTunnels = destroyLanProxyTunnels(activeTunnels);
+    if (destroyedTunnels > 0) {
+      logInfo(
+        `[lan-proxy] closing ${destroyedTunnels} tunnel(s) for confirmed ` +
+          `LAN address change ${previous} -> ${observation.confirmedHost}`,
+      );
+    }
+    // Upgraded WebSockets are destroyed above. A short bound also prevents a
+    // long-lived HTTP request from leaving the proxy closed-but-never-rebound.
+    forcedRebindCloseTimer = setTimeout(() => {
+      forcedRebindCloseTimer = undefined;
+      logError(
+        `[lan-proxy] forcing remaining HTTP connections closed during ` +
+          `LAN rebind ${previous} -> ${observation.confirmedHost}`,
+      );
+      server.closeAllConnections?.();
+    }, 1_000);
+    forcedRebindCloseTimer.unref();
     server.close(() => {
+      if (forcedRebindCloseTimer !== undefined) {
+        clearTimeout(forcedRebindCloseTimer);
+        forcedRebindCloseTimer = undefined;
+      }
       binding = false;
       boundHost = undefined;
-      console.log(`[lan-proxy] LAN address changed ${previous} -> ${desired}`);
-      beginListen(desired);
+      pendingRebindHost = undefined;
+      pendingRebindObservations = 0;
+      logInfo(
+        `[lan-proxy] LAN address changed ${previous} -> ${observation.confirmedHost}`,
+      );
+      beginListen(observation.confirmedHost);
     });
     return;
   }
@@ -304,6 +423,8 @@ function shutdown() {
   shuttingDown = true;
   if (monitor !== undefined) clearInterval(monitor);
   if (retryTimer !== undefined) clearTimeout(retryTimer);
+  if (forcedRebindCloseTimer !== undefined) clearTimeout(forcedRebindCloseTimer);
+  destroyLanProxyTunnels(activeTunnels);
   if (!server.listening) process.exit(0);
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 5_000).unref();

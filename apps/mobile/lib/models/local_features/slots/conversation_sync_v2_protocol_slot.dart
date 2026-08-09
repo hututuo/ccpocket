@@ -1,6 +1,8 @@
 part of '../../messages.dart';
 
 const conversationSyncV2Capability = 'conversation_sync_v2';
+const conversationSyncFocusRefreshCapability =
+    'conversation_sync_focus_refresh_v1';
 const conversationItemsByIdCapability = 'conversation_items_by_id_v1';
 const conversationUserIndexCapability = 'conversation_user_index_v1';
 const appServerStatusV1Capability = 'app_server_status_v1';
@@ -948,12 +950,14 @@ ClientMessage conversationSyncV2Focus({
   required String requestId,
   required String subscriptionId,
   ConversationSyncV2Target? focused,
+  bool refresh = false,
 }) => ClientMessage._(<String, dynamic>{
   'type': 'conversation_sync_focus',
   'protocolVersion': 2,
   'requestId': requestId,
   'subscriptionId': subscriptionId,
   'focused': ?focused?.toJson(),
+  if (refresh) 'refresh': true,
 }, delivery: ClientMessageDelivery.ephemeral);
 
 ClientMessage conversationSyncV2Unsubscribe({

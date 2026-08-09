@@ -1101,9 +1101,92 @@ describe("conversation_sync_v2 protocol", () => {
       }),
     ).toBeNull();
   });
+
+  it("accepts only a boolean opt-in for focused refresh correlation", () => {
+    const base = {
+      type: "conversation_sync_focus" as const,
+      protocolVersion: 2 as const,
+      requestId: "manual-focus-1",
+      subscriptionId: "sync-1",
+      focused: {
+        provider: "codex" as const,
+        providerSessionId: "thread-1",
+      },
+    };
+    expect(
+      conversationSyncV2ProtocolContribution.parseClient({
+        ...base,
+        refresh: true,
+      }),
+    ).toMatchObject({ refresh: true });
+    expect(
+      conversationSyncV2ProtocolContribution.parseClient({
+        ...base,
+        refresh: "yes",
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("ConversationSyncV2FeatureHandler", () => {
+  it("correlates only explicit refresh completion and preserves sync begin identity", async () => {
+    const fixture = createFixture([seed(0)], async (target) =>
+      history(target.providerSessionId),
+    );
+    const client = {};
+    const subscription = subscribeMessage();
+
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "ordinary-focus",
+        subscriptionId: subscription.requestId,
+        focused: { provider: "claude", providerSessionId: "session-0" },
+      },
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(2),
+    );
+    expect(events(fixture.sent, client, "sync_begin").at(-1)?.requestId).toBe(
+      subscription.requestId,
+    );
+    expect(
+      events(fixture.sent, client, "sync_complete").at(-1)?.requestId,
+    ).toBeUndefined();
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "manual-focus",
+        subscriptionId: subscription.requestId,
+        refresh: true,
+        focused: { provider: "claude", providerSessionId: "session-0" },
+      },
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(3),
+    );
+    expect(events(fixture.sent, client, "sync_begin").at(-1)?.requestId).toBe(
+      subscription.requestId,
+    );
+    expect(
+      events(fixture.sent, client, "sync_complete").at(-1)?.requestId,
+    ).toBe("manual-focus");
+    fixture.handler.close();
+  });
+
   it("keeps one subscription across later sync batches", async () => {
     const fixture = createFixture([seed(0)], async (target) =>
       history(target.providerSessionId),

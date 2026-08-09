@@ -390,7 +390,8 @@ class SessionListCubit extends Cubit<SessionListState> {
             update.lastAssistantOutputAt != null) {
           _applyCommittedAssistantOutputCheckpoint(update);
         }
-      case ConversationSyncCacheUpdateKind.completed:
+      case ConversationSyncCacheUpdateKind.focusApplied ||
+          ConversationSyncCacheUpdateKind.completed:
         break;
     }
     if (reloadCache) {
@@ -980,16 +981,37 @@ class SessionListCubit extends Cubit<SessionListState> {
 
   /// Refresh catalog metadata without recursively requesting another
   /// authoritative session-list snapshot.
-  Future<bool> refreshCatalog({bool Function()? isCurrentConnection}) async {
+  Future<bool> refreshCatalog({
+    bool Function()? isCurrentConnection,
+    bool waitForResponse = false,
+    Duration responseTimeout = const Duration(seconds: 12),
+  }) async {
     try {
       await _preferencesLoaded;
       if (isClosed || isCurrentConnection?.call() == false) return false;
       _bridge.requestProjectHistory();
       final requestRevision = ++_queryRequestRevision;
-      return await _requestWithCurrentFiltersAfterPreferences(
+      final previousNetworkSerial = _networkCatalogSerial;
+      final dispatched = await _requestWithCurrentFiltersAfterPreferences(
         requestRevision,
         isCurrentConnection: isCurrentConnection,
       );
+      if (!dispatched) return false;
+      if (waitForResponse && _networkCatalogSerial <= previousNetworkSerial) {
+        final deadline = DateTime.now().add(responseTimeout);
+        while (!isClosed &&
+            isCurrentConnection?.call() != false &&
+            _networkCatalogSerial <= previousNetworkSerial &&
+            DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 25));
+        }
+        if (isClosed ||
+            isCurrentConnection?.call() == false ||
+            _networkCatalogSerial <= previousNetworkSerial) {
+          return false;
+        }
+      }
+      return true;
     } catch (error, stackTrace) {
       logger.warning(
         '[SessionListCubit] Failed to dispatch session catalog refresh',

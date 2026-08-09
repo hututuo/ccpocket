@@ -47,6 +47,7 @@ import '../../widgets/workspace_pane_chrome.dart';
 import '../chat_session/state/chat_session_cubit.dart';
 import '../chat_session/state/chat_session_state.dart';
 import '../chat_session/state/streaming_state_cubit.dart';
+import '../chat_session/session_manual_refresh.dart';
 import '../chat_session/widgets/bottom_overlay_layout.dart';
 import '../chat_session/widgets/chat_input_with_overlays.dart';
 import '../chat_session/widgets/chat_message_list.dart';
@@ -1261,6 +1262,7 @@ class _ChatScreenBody extends HookWidget {
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
     final appColors = Theme.of(context).extension<AppColors>()!;
+    final bridge = context.read<BridgeService>();
     final shell = WorkspaceShellScreen.maybeOf(context);
     final presentationListenable = shell?.presentationListenable;
     final workspaceStateKey = workspaceSessionStateKey(
@@ -1291,6 +1293,30 @@ class _ChatScreenBody extends HookWidget {
     final chatInputController = useMemoized(ComposerTextEditingController.new);
     useEffect(() => chatInputController.dispose, [chatInputController]);
     final draftService = context.read<DraftService>();
+    final manualRefreshRunning = useState(false);
+
+    Future<void> refreshConversation() async {
+      if (manualRefreshRunning.value) return;
+      manualRefreshRunning.value = true;
+      ConversationContentSyncService? contentSync;
+      try {
+        contentSync = context.read<ConversationContentSyncService>();
+      } catch (_) {}
+      try {
+        await refreshSessionFromBridge(
+          bridge: bridge,
+          chatSession: context.read<ChatSessionCubit>(),
+          contentSync: contentSync,
+          provider: Provider.claude.value,
+          pageSessionId: sessionId,
+          expectedDataSourceIdentity: dataSourceIdentity,
+          runtimeSessionId: detachedPreview ? null : sessionId,
+          detachedPreview: detachedPreview,
+        );
+      } finally {
+        if (context.mounted) manualRefreshRunning.value = false;
+      }
+    }
 
     // --- Draft persistence: restore on mount, auto-save on change ---
     useEffect(() {
@@ -1680,6 +1706,28 @@ class _ChatScreenBody extends HookWidget {
                       inPlanMode: inPlanMode,
                     ),
                     actions: [
+                      IconButton(
+                        key: const ValueKey(
+                          'appbar_refresh_conversation_button',
+                        ),
+                        icon: manualRefreshRunning.value
+                            ? const SizedBox.square(
+                                dimension: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.refresh, size: 18),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 32,
+                          minHeight: 32,
+                        ),
+                        tooltip: l.refresh,
+                        onPressed: manualRefreshRunning.value
+                            ? null
+                            : () => unawaited(refreshConversation()),
+                      ),
                       if (effectiveProjectPath != null)
                         IconButton(
                           key: const ValueKey('appbar_explore_button'),

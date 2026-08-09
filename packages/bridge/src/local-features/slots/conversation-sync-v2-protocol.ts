@@ -6,6 +6,8 @@ import {
 } from "../protocol-slot.js";
 
 export const CONVERSATION_SYNC_V2_CAPABILITY = "conversation_sync_v2" as const;
+export const CONVERSATION_SYNC_FOCUS_REFRESH_CAPABILITY =
+  "conversation_sync_focus_refresh_v1" as const;
 export const CONVERSATION_ITEMS_BY_ID_CAPABILITY =
   "conversation_items_by_id_v1" as const;
 export const CONVERSATION_USER_INDEX_CAPABILITY =
@@ -56,6 +58,7 @@ export type ConversationSyncClientMessage =
       requestId: string;
       subscriptionId: string;
       focused?: ConversationSyncTarget;
+      refresh?: boolean;
     }
   | {
       type: "conversation_sync_unsubscribe";
@@ -172,6 +175,7 @@ interface ConversationSyncEventBase {
   codexSourceId: string;
   batchId: string;
   sequence: number;
+  requestId?: string;
 }
 
 export type ConversationSyncServerMessage =
@@ -520,11 +524,18 @@ export const conversationSyncV2ProtocolContribution: LocalFeatureProtocolContrib
                 "requestId",
                 "subscriptionId",
                 "focused",
+                "refresh",
               ]
             : ["type", "protocolVersion", "requestId", "subscriptionId"],
         ) ||
         !validLocalFeatureId(message.requestId, 128) ||
         !validLocalFeatureId(message.subscriptionId, 128) ||
+        (message.type === "conversation_sync_focus" &&
+          message.refresh !== undefined &&
+          typeof message.refresh !== "boolean") ||
+        (message.type === "conversation_sync_focus" &&
+          message.refresh === true &&
+          !focused) ||
         focused === null
       ) {
         return null;
@@ -543,6 +554,7 @@ export const conversationSyncV2ProtocolContribution: LocalFeatureProtocolContrib
         requestId: message.requestId,
         subscriptionId: message.subscriptionId,
         ...(focused ? { focused } : {}),
+        ...(message.refresh === true ? { refresh: true } : {}),
       };
     }
 
