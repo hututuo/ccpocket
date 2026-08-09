@@ -14,6 +14,17 @@
   ID and current name. Explicitly projectless or unmatched Codex threads share
   one localized projectless group rather than creating fake projects from temp
   path basenames.
+- Desktop presentation grouping applies to every provider row, not only Codex
+  app-server rows. A Claude or legacy row whose path belongs to a Desktop
+  project joins that stable project ID; when the Desktop catalog is available,
+  unmatched rows join the single projectless bucket. If the catalog is
+  unavailable, Bridge keeps the legacy path grouping for compatibility.
+- A raw path is only a migration alias for collapse, pin and display-limit
+  preferences when exactly one current stable Desktop project owns it. Shared
+  parent roots and old worktree paths cannot control several project sections.
+- Project-scoped pagination merges into the committed catalog. It must never
+  replace sessions from unrelated projects or make their counts jump while one
+  section loads more rows.
 - Desktop project renames/reassignments invalidate the Bridge catalog without
   reading conversation history. Mobile preserves a complete cached grouping
   across sparse legacy refreshes, while a newer complete snapshot can rename,

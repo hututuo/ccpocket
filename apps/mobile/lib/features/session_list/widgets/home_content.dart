@@ -107,12 +107,64 @@ List<_ProjectSessionGroup> _groupSessionsByProject({
   ];
 }
 
-bool _groupContainsProjectKey(Set<String> values, _ProjectSessionGroup group) =>
-    values.contains(group.key) || group.legacyProjectPaths.any(values.contains);
+Map<String, Set<String>> _projectLegacyAliasOwners(
+  Iterable<UnifiedSessionListItem> sessions,
+) {
+  final owners = <String, Set<String>>{};
+  for (final session in sessions) {
+    final projectKey = session.projectGroupingKey;
+    if (projectKey.isEmpty) continue;
+    if (_isStableDesktopProjectKey(projectKey) &&
+        session.recent?.projectGroupingSnapshotComplete != true) {
+      continue;
+    }
+    for (final alias in {
+      session.projectPath,
+      session.effectiveProjectGroupPath,
+    }) {
+      if (alias.isEmpty) continue;
+      owners.putIfAbsent(alias, () => <String>{}).add(projectKey);
+    }
+  }
+  return owners;
+}
 
-int _groupDisplayLimit(Map<String, int> limits, _ProjectSessionGroup group) {
+bool _isStableDesktopProjectKey(String key) =>
+    key.startsWith('desktop-project:');
+
+bool _legacyAliasBelongsOnlyToGroup(
+  String alias,
+  _ProjectSessionGroup group,
+  Map<String, Set<String>> legacyAliasOwners,
+) {
+  final owners = legacyAliasOwners[alias];
+  return _isStableDesktopProjectKey(group.key) &&
+      owners?.length == 1 &&
+      owners?.single == group.key;
+}
+
+bool _groupContainsProjectKey(
+  Set<String> values,
+  _ProjectSessionGroup group,
+  Map<String, Set<String>> legacyAliasOwners,
+) =>
+    values.contains(group.key) ||
+    group.legacyProjectPaths.any(
+      (alias) =>
+          values.contains(alias) &&
+          _legacyAliasBelongsOnlyToGroup(alias, group, legacyAliasOwners),
+    );
+
+int _groupDisplayLimit(
+  Map<String, int> limits,
+  _ProjectSessionGroup group,
+  Map<String, Set<String>> legacyAliasOwners,
+) {
   var result = limits[group.key] ?? 5;
   for (final path in group.legacyProjectPaths) {
+    if (!_legacyAliasBelongsOnlyToGroup(path, group, legacyAliasOwners)) {
+      continue;
+    }
     final legacy = limits[path];
     if (legacy != null && legacy > result) result = legacy;
   }
@@ -771,12 +823,24 @@ class HomeContentState extends State<HomeContent> {
       conversationStatuses: widget.conversationStatuses,
       unreadConversationKeys: widget.unreadConversationKeys,
     );
+    final hasActiveFilter =
+        widget.currentProjectFilter != null ||
+        widget.providerFilter != ProviderFilter.all ||
+        widget.namedOnly ||
+        widget.searchQuery.isNotEmpty;
+    final canUseLegacyProjectAliases =
+        !hasActiveFilter && !widget.isInitialLoading && !widget.hasMoreSessions;
+    final legacyAliasOwners = canUseLegacyProjectAliases
+        ? _projectLegacyAliasOwners(allUnifiedSessions)
+        : const <String, Set<String>>{};
     final unifiedSessions = widget.currentProjectFilter == null
         ? allUnifiedSessions
         : allUnifiedSessions
               .where(
                 (session) =>
-                    session.projectGroupingKey == widget.currentProjectFilter,
+                    isDesktopProjectGroupingKey(widget.currentProjectFilter)
+                    ? session.projectGroupingKey == widget.currentProjectFilter
+                    : session.projectPath == widget.currentProjectFilter,
               )
               .toList(growable: false);
     final alwaysVisibleSessionKeys = {
@@ -793,12 +857,11 @@ class HomeContentState extends State<HomeContent> {
     };
     final effectivePinnedProjectKeys = {
       ...widget.pinnedProjectPaths,
-      for (final session in allUnifiedSessions)
-        if (widget.pinnedProjectPaths.contains(session.projectPath) ||
-            widget.pinnedProjectPaths.contains(
-              session.effectiveProjectGroupPath,
-            ))
-          session.projectGroupingKey,
+      for (final entry in legacyAliasOwners.entries)
+        if (entry.value.length == 1 &&
+            _isStableDesktopProjectKey(entry.value.single) &&
+            widget.pinnedProjectPaths.contains(entry.key))
+          entry.value.single,
     };
     final allProjectKeys = orderProjectPathsForGroupedView(
       knownProjectPaths: <String>[
@@ -819,15 +882,15 @@ class HomeContentState extends State<HomeContent> {
     );
     final groupedSessions = widget.currentProjectFilter == null
         ? allGroupedSessions
+        : !isDesktopProjectGroupingKey(widget.currentProjectFilter)
+        ? _groupSessionsByProject(
+            projectKeys: allProjectKeys,
+            sessions: unifiedSessions,
+            projectlessName: l.unassignedProject,
+          )
         : allGroupedSessions
               .where((group) => group.key == widget.currentProjectFilter)
               .toList(growable: false);
-
-    final hasActiveFilter =
-        widget.currentProjectFilter != null ||
-        widget.providerFilter != ProviderFilter.all ||
-        widget.namedOnly ||
-        widget.searchQuery.isNotEmpty;
 
     Widget buildUnifiedSessionRow(UnifiedSessionListItem item) {
       final running = item.running;
@@ -1148,14 +1211,17 @@ class HomeContentState extends State<HomeContent> {
                 isCollapsed: _groupContainsProjectKey(
                   widget.collapsedProjectPaths,
                   group,
+                  legacyAliasOwners,
                 ),
                 isLoadingMore: _groupContainsProjectKey(
                   widget.loadingProjectPaths,
                   group,
+                  legacyAliasOwners,
                 ),
                 displayLimit: _groupDisplayLimit(
                   widget.projectSessionDisplayLimits,
                   group,
+                  legacyAliasOwners,
                 ),
                 alwaysVisibleSessionKeys: alwaysVisibleSessionKeys,
                 canLoadFromBridge:
@@ -1165,6 +1231,7 @@ class HomeContentState extends State<HomeContent> {
                 isPinned: _groupContainsProjectKey(
                   widget.pinnedProjectPaths,
                   group,
+                  legacyAliasOwners,
                 ),
                 onToggleCollapsed: () =>
                     widget.onToggleProjectCollapsed?.call(group.key),

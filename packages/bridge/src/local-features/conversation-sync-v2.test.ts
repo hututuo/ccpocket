@@ -983,6 +983,56 @@ describe("conversation_sync_v2 protocol", () => {
     fixture.handler.close();
   });
 
+  it("preserves Claude Desktop grouping across a sparse catalog refresh", async () => {
+    const original = seed(0);
+    Object.assign(original.entry, {
+      projectGroupKind: "desktopProject",
+      projectGroupId: "project-shared",
+      projectGroupName: "Shared Workspace",
+      projectGroupPath: "/workspace/shared",
+      projectGroupingSnapshotComplete: true,
+    });
+    const seeds = [original];
+    const fixture = createFixture(seeds, async (target) =>
+      history(target.providerSessionId),
+    );
+    const client = {};
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    const sparse = seed(0);
+    sparse.entry.modifiedAt = "2026-08-09T00:02:00.000Z";
+    sparse.entry.recencyAt = original.entry.recencyAt;
+    sparse.entry.revision = original.entry.revision;
+    seeds[0] = sparse;
+    fixture.handler.sessionCatalogChanged();
+
+    await vi.waitFor(() =>
+      expect(fixture.catalogReader).toHaveBeenCalledTimes(2),
+    );
+    const internal = fixture.handler as unknown as {
+      catalog: Map<
+        string,
+        { entry: ConversationSyncCatalogEntry; status: ConversationSyncStatus }
+      >;
+    };
+    expect(internal.catalog.get("claude\0session-0")?.entry).toMatchObject({
+      projectGroupKind: "desktopProject",
+      projectGroupId: "project-shared",
+      projectGroupName: "Shared Workspace",
+      projectGroupPath: "/workspace/shared",
+      projectGroupingSnapshotComplete: true,
+      modifiedAt: "2026-08-09T00:02:00.000Z",
+    });
+    fixture.handler.close();
+  });
+
   it("accepts bounded state cursors and rejects duplicate thread identities", () => {
     expect(
       conversationSyncV2ProtocolContribution.parseClient(

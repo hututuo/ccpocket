@@ -7651,17 +7651,17 @@ function mergeIncompleteCodexCatalogSettings(
   incoming: ConversationSyncCatalogEntry,
   previous: ConversationSyncCatalogEntry,
 ): ConversationSyncCatalogEntry {
-  if (
-    incoming.provider !== "codex" ||
-    previous.provider !== "codex" ||
-    incoming.codexSettingsSnapshotComplete === true
-  ) {
-    return incoming;
-  }
+  if (incoming.provider !== previous.provider) return incoming;
+  const preserveCodexSettings =
+    incoming.provider === "codex" &&
+    incoming.codexSettingsSnapshotComplete !== true;
+  const preserveProjectGrouping =
+    incoming.projectGroupingSnapshotComplete !== true &&
+    previous.projectGroupingSnapshotComplete === true;
+  if (!preserveCodexSettings && !preserveProjectGrouping) return incoming;
   return {
     ...incoming,
-    ...(incoming.projectGroupingSnapshotComplete !== true &&
-    previous.projectGroupingSnapshotComplete === true
+    ...(preserveProjectGrouping
       ? {
           ...(previous.projectGroupKind
             ? { projectGroupKind: previous.projectGroupKind }
@@ -7678,40 +7678,53 @@ function mergeIncompleteCodexCatalogSettings(
           projectGroupingSnapshotComplete: true,
         }
       : {}),
-    ...(incoming.model === undefined && previous.model !== undefined
+    ...(preserveCodexSettings &&
+    incoming.model === undefined &&
+    previous.model !== undefined
       ? { model: previous.model }
       : {}),
-    ...(incoming.modelReasoningEffort === undefined &&
+    ...(preserveCodexSettings &&
+    incoming.modelReasoningEffort === undefined &&
     previous.modelReasoningEffort !== undefined
       ? { modelReasoningEffort: previous.modelReasoningEffort }
       : {}),
-    ...(incoming.serviceTier === undefined && previous.serviceTier !== undefined
+    ...(preserveCodexSettings &&
+    incoming.serviceTier === undefined &&
+    previous.serviceTier !== undefined
       ? { serviceTier: previous.serviceTier }
       : {}),
-    ...(incoming.approvalPolicy === undefined &&
+    ...(preserveCodexSettings &&
+    incoming.approvalPolicy === undefined &&
     previous.approvalPolicy !== undefined
       ? { approvalPolicy: previous.approvalPolicy }
       : {}),
-    ...(incoming.approvalsReviewer === undefined &&
+    ...(preserveCodexSettings &&
+    incoming.approvalsReviewer === undefined &&
     previous.approvalsReviewer !== undefined
       ? { approvalsReviewer: previous.approvalsReviewer }
       : {}),
-    ...(incoming.sandboxMode === undefined && previous.sandboxMode !== undefined
+    ...(preserveCodexSettings &&
+    incoming.sandboxMode === undefined &&
+    previous.sandboxMode !== undefined
       ? { sandboxMode: previous.sandboxMode }
       : {}),
-    ...(incoming.collaborationMode === undefined &&
+    ...(preserveCodexSettings &&
+    incoming.collaborationMode === undefined &&
     previous.collaborationMode !== undefined
       ? { collaborationMode: previous.collaborationMode }
       : {}),
-    ...(incoming.networkAccessEnabled === undefined &&
+    ...(preserveCodexSettings &&
+    incoming.networkAccessEnabled === undefined &&
     previous.networkAccessEnabled !== undefined
       ? { networkAccessEnabled: previous.networkAccessEnabled }
       : {}),
-    ...(incoming.webSearchMode === undefined &&
+    ...(preserveCodexSettings &&
+    incoming.webSearchMode === undefined &&
     previous.webSearchMode !== undefined
       ? { webSearchMode: previous.webSearchMode }
       : {}),
-    ...(previous.codexSettingsSnapshotComplete === true
+    ...(preserveCodexSettings &&
+    previous.codexSettingsSnapshotComplete === true
       ? { codexSettingsSnapshotComplete: true }
       : {}),
   };

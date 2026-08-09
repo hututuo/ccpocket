@@ -1296,6 +1296,92 @@ void main() {
     },
   );
 
+  test(
+    'preserves Claude Desktop grouping across sparse legacy refreshes',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-claude-project-groups',
+        codexSourceId: 'source-claude-project-groups',
+      );
+      await repository.applyConversationCatalogBatch(
+        target: target,
+        codexSourceId: 'source-claude-project-groups',
+        catalogState: 'catalog-claude-project-1',
+        created: const [
+          ConversationSyncV2CatalogEntry(
+            provider: 'claude',
+            providerSessionId: 'claude-project-thread',
+            revision: 'revision-claude-project-1',
+            projectPath: '/workspace/claude-project',
+            projectGroupKind: 'desktopProject',
+            projectGroupId: 'project-shared',
+            projectGroupName: 'Shared Workspace',
+            projectGroupPath: '/workspace/shared',
+            projectGroupingSnapshotComplete: true,
+            createdAt: '2026-08-09T00:00:00.000Z',
+            modifiedAt: '2026-08-09T00:01:00.000Z',
+            recencyAt: '2026-08-09T00:01:00.000Z',
+            availability: 'durable',
+          ),
+        ],
+        updated: const [],
+        destroyed: const [],
+      );
+
+      await repository.upsertResponse(
+        target: target,
+        response: const RecentSessionsMessage(
+          requestScope: 'catalog',
+          sessions: [
+            RecentSession(
+              sessionId: 'claude-project-thread',
+              provider: 'claude',
+              firstPrompt: 'Sparse Claude refresh',
+              created: '2026-08-09T00:00:00.000Z',
+              modified: '2026-08-09T00:02:00.000Z',
+              gitBranch: 'main',
+              projectPath: '/workspace/claude-project',
+              isSidechain: false,
+            ),
+          ],
+        ),
+      );
+
+      var session = (await repository.load(target))!.sessions.single;
+      expect(session.projectGroupingKey, 'desktop-project:project-shared');
+      expect(session.projectName, 'Shared Workspace');
+      expect(session.effectiveProjectGroupPath, '/workspace/shared');
+      expect(session.projectGroupingSnapshotComplete, isTrue);
+
+      await repository.applyConversationCatalogBatch(
+        target: target,
+        codexSourceId: 'source-claude-project-groups',
+        catalogState: 'catalog-claude-project-2',
+        created: const [],
+        updated: const [
+          ConversationSyncV2CatalogEntry(
+            provider: 'claude',
+            providerSessionId: 'claude-project-thread',
+            revision: 'revision-claude-project-2',
+            projectPath: '/workspace/claude-project',
+            projectGroupKind: 'projectless',
+            projectGroupingSnapshotComplete: true,
+            createdAt: '2026-08-09T00:00:00.000Z',
+            modifiedAt: '2026-08-09T00:03:00.000Z',
+            recencyAt: '2026-08-09T00:03:00.000Z',
+            availability: 'durable',
+          ),
+        ],
+        destroyed: const [],
+      );
+
+      session = (await repository.load(target))!.sessions.single;
+      expect(session.projectGroupingKey, desktopProjectlessGroupingKey);
+      expect(session.projectGroupId, isNull);
+      expect(session.projectGroupingSnapshotComplete, isTrue);
+    },
+  );
+
   test('rejects direct partial catalog and status page mutations', () async {
     final target = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-partial-pages',

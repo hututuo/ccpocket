@@ -678,9 +678,11 @@ class SessionListCubit extends Cubit<SessionListState> {
     final merged = {..._authoritativeProjectHistory, ...newPaths};
 
     if (isProjectPage) {
+      final mergedProjectPage = _mergeCachedSessions(state.sessions, sessions);
+      _cachedSessions = _mergeCachedSessions(_cachedSessions, sessions);
       emit(
         state.copyWith(
-          sessions: sessions,
+          sessions: mergedProjectPage,
           isInitialLoading: false,
           accumulatedProjectPaths: merged,
           loadingProjectPaths: {...state.loadingProjectPaths}
@@ -955,12 +957,45 @@ class SessionListCubit extends Cubit<SessionListState> {
 
   Set<String> _projectPresentationAliases(String projectKey) {
     final aliases = <String>{projectKey};
-    if (!isDesktopProjectGroupingKey(projectKey)) return aliases;
-    for (final session in [..._cachedSessions, ...state.sessions]) {
+    if (!projectKey.startsWith('desktop-project:')) return aliases;
+    final hasActiveFilter =
+        state.selectedProjectKey != null ||
+        state.providerFilter != ProviderFilter.all ||
+        state.namedOnly ||
+        state.searchQuery.isNotEmpty;
+    if (!_loadedCacheComplete &&
+        (hasActiveFilter ||
+            state.isInitialLoading ||
+            state.hasMore ||
+            state.sessions.isEmpty)) {
+      return aliases;
+    }
+    final allSessions = [..._cachedSessions, ...state.sessions];
+    final owners = <String, Set<String>>{};
+    for (final session in allSessions) {
+      final ownerKey = session.projectGroupingKey;
+      if (ownerKey.isEmpty) continue;
+      if (ownerKey.startsWith('desktop-project:') &&
+          !session.projectGroupingSnapshotComplete) {
+        continue;
+      }
+      for (final alias in {
+        session.projectPath,
+        session.effectiveProjectGroupPath,
+      }) {
+        if (alias.isEmpty) continue;
+        owners.putIfAbsent(alias, () => <String>{}).add(ownerKey);
+      }
+    }
+    for (final session in allSessions) {
       if (session.projectGroupingKey != projectKey) continue;
-      if (session.projectPath.isNotEmpty) aliases.add(session.projectPath);
-      if (session.effectiveProjectGroupPath.isNotEmpty) {
-        aliases.add(session.effectiveProjectGroupPath);
+      for (final alias in {
+        session.projectPath,
+        session.effectiveProjectGroupPath,
+      }) {
+        if (owners[alias]?.length == 1 && owners[alias]?.single == projectKey) {
+          aliases.add(alias);
+        }
       }
     }
     return aliases;

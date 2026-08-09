@@ -18,6 +18,7 @@ import { resolveCodexHome, resolveCodexSessionsDir } from "./codex-home.js";
 import { normalizeCodexServiceTierForClient } from "./codex-service-tier.js";
 import {
   readCodexDesktopProjectCatalog,
+  type CodexDesktopProjectCatalog,
   type CodexDesktopProjectGroupKind,
 } from "./codex-desktop-project-catalog.js";
 import {
@@ -129,6 +130,22 @@ export interface GetRecentSessionsOptions {
 export interface GetRecentSessionsResult {
   sessions: SessionIndexEntry[];
   hasMore: boolean;
+}
+
+function attachDesktopProjectGrouping(
+  entries: SessionIndexEntry[],
+  desktopProjects: CodexDesktopProjectCatalog,
+): SessionIndexEntry[] {
+  if (!desktopProjects.available) return entries;
+  return entries.map((entry) => ({
+    ...entry,
+    ...(desktopProjects.groupingFor(
+      // Desktop assignments and projectless IDs belong only to Codex
+      // threads. Claude rows participate through their filesystem path.
+      entry.provider === "codex" ? entry.sessionId : "",
+      entry.resumeCwd ?? entry.projectPath,
+    ) ?? {}),
+  }));
 }
 
 interface JsonlScanStats {
@@ -1031,6 +1048,8 @@ export async function getAllRecentSessions(
 
   // --- Load Claude and Codex sessions in parallel ---
 
+  const desktopProjectsPromise = readCodexDesktopProjectCatalog();
+
   const loadClaudeStartedAt = process.hrtime.bigint();
   const claudeEntriesPromise = (async (): Promise<SessionIndexEntry[]> => {
     if (!shouldLoadClaude) return [];
@@ -1165,31 +1184,32 @@ export async function getAllRecentSessions(
       filesRead: 0,
       entriesReturned: 0,
     };
-    const [codexEntries, desktopProjects] = await Promise.all([
-      getAllRecentCodexSessions({
-        projectPath: filterProjectPath,
-        perfStats: codexPerf,
-      }),
-      readCodexDesktopProjectCatalog(),
-    ]);
+    const codexEntries = await getAllRecentCodexSessions({
+      projectPath: filterProjectPath,
+      perfStats: codexPerf,
+    });
     perfStats.codexFilesTotal = codexPerf.filesTotal;
     perfStats.codexFilesRead = codexPerf.filesRead;
     perfStats.codexEntries = codexPerf.entriesReturned;
     reportProgress();
-    return codexEntries.map((entry) => ({
-      ...entry,
-      ...(desktopProjects.groupingFor(
-        entry.sessionId,
-        entry.resumeCwd ?? entry.projectPath,
-      ) ?? {}),
-    }));
+    return codexEntries;
   })();
 
   // Wait for both Claude and Codex loading to complete in parallel
-  const [claudeEntries, codexEntries] = await Promise.all([
-    claudeEntriesPromise,
-    codexEntriesPromise,
-  ]);
+  const [rawClaudeEntries, rawCodexEntries, desktopProjects] =
+    await Promise.all([
+      claudeEntriesPromise,
+      codexEntriesPromise,
+      desktopProjectsPromise,
+    ]);
+  const claudeEntries = attachDesktopProjectGrouping(
+    rawClaudeEntries,
+    desktopProjects,
+  );
+  const codexEntries = attachDesktopProjectGrouping(
+    rawCodexEntries,
+    desktopProjects,
+  );
   markDuration(durations, "loadClaudeSessions", loadClaudeStartedAt);
   markDuration(durations, "loadCodexSessions", loadCodexStartedAt);
 

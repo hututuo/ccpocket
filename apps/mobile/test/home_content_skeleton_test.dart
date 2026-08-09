@@ -79,15 +79,18 @@ class _MockBridgeService extends BridgeService {
 RecentSession _session({
   required String id,
   String? name,
+  String? provider,
   String projectPath = '/home/user/project-a',
   String modified = '2025-01-01T00:00:00Z',
   String? projectGroupId,
   String? projectGroupName,
+  bool? projectGroupingSnapshotComplete,
   bool projectless = false,
 }) {
   return RecentSession(
     sessionId: id,
     name: name,
+    provider: provider,
     firstPrompt: 'test prompt for $id',
     created: '2025-01-01T00:00:00Z',
     modified: modified,
@@ -101,7 +104,9 @@ RecentSession _session({
     projectGroupId: projectGroupId,
     projectGroupName: projectGroupName,
     projectGroupPath: projectGroupId == null ? null : '/workspace/ccpocket',
-    projectGroupingSnapshotComplete: projectless || projectGroupId != null,
+    projectGroupingSnapshotComplete:
+        projectGroupingSnapshotComplete ??
+        (projectless || projectGroupId != null),
     isSidechain: false,
   );
 }
@@ -157,6 +162,7 @@ Widget _buildHomeContent({
   Map<String, ConversationSyncV2Status> conversationStatuses = const {},
   Set<String> unreadConversationKeys = const {},
   String? currentProjectFilter,
+  ProviderFilter providerFilter = ProviderFilter.all,
   bool hasMoreSessions = false,
   bool isInitialLoading = false,
   bool showMacOSNativeAppBanner = false,
@@ -226,7 +232,7 @@ Widget _buildHomeContent({
             onSelectProject: (_) {},
             onLoadMore: () {},
             onLoadMoreProject: (_) {},
-            providerFilter: ProviderFilter.all,
+            providerFilter: providerFilter,
             namedOnly: false,
             onToggleProvider: () {},
             onToggleNamed: () {},
@@ -878,6 +884,207 @@ void main() {
         expect(find.byType(RunningSessionCard), findsNWidgets(7));
       },
     );
+
+    testWidgets(
+      'ambiguous legacy path does not collapse or expand two Desktop groups',
+      (tester) async {
+        tester.view.physicalSize = const Size(1200, 4000);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        const sharedPath = '/private/worktrees/shared';
+        final sessions = [
+          for (final project in ['project-a', 'project-b'])
+            for (var index = 0; index < 7; index++)
+              _session(
+                id: '$project-$index',
+                projectPath: sharedPath,
+                projectGroupId: project,
+                projectGroupName: project == 'project-a'
+                    ? 'Project A'
+                    : 'Project B',
+              ),
+        ];
+
+        await tester.pumpWidget(
+          _buildHomeContent(
+            recentSessions: sessions,
+            collapsedProjectPaths: const {sharedPath},
+            projectSessionDisplayLimits: const {sharedPath: 25},
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byKey(
+            const ValueKey('project_header_desktop-project:project-a'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(
+            const ValueKey('project_header_desktop-project:project-b'),
+          ),
+          findsOneWidget,
+        );
+        expect(find.byType(RunningSessionCard), findsNWidgets(10));
+      },
+    );
+
+    testWidgets('projectless group ignores legacy path presentation state', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(
+              id: 'projectless-a',
+              projectPath: '/private/tmp/projectless-a',
+              projectless: true,
+            ),
+            _session(
+              id: 'projectless-b',
+              projectPath: '/private/tmp/projectless-b',
+              projectless: true,
+            ),
+          ],
+          collapsedProjectPaths: const {'/private/tmp/projectless-a'},
+          projectSessionDisplayLimits: const {'/private/tmp/projectless-a': 25},
+          pinnedProjectPaths: const {'/private/tmp/projectless-a'},
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('project_header_desktop-projectless')),
+        findsOneWidget,
+      );
+      expect(find.byType(RunningSessionCard), findsNWidgets(2));
+    });
+
+    testWidgets('filtered catalog never resolves a partial legacy alias', (
+      tester,
+    ) async {
+      const sharedPath = '/private/worktrees/provider-shared';
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(
+              id: 'claude-visible',
+              provider: 'claude',
+              projectPath: sharedPath,
+              projectGroupId: 'project-a',
+              projectGroupName: 'Project A',
+            ),
+            _session(
+              id: 'codex-hidden',
+              provider: 'codex',
+              projectPath: sharedPath,
+              projectGroupId: 'project-b',
+              projectGroupName: 'Project B',
+            ),
+          ],
+          providerFilter: ProviderFilter.claude,
+          collapsedProjectPaths: const {sharedPath},
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('project_header_desktop-project:project-a')),
+        findsOneWidget,
+      );
+      expect(find.byType(RunningSessionCard), findsOneWidget);
+    });
+
+    testWidgets('incomplete Desktop grouping never claims a legacy alias', (
+      tester,
+    ) async {
+      const legacyPath = '/private/worktrees/incomplete-grouping';
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(
+              id: 'incomplete-grouping-session',
+              projectPath: legacyPath,
+              projectGroupId: 'project-incomplete',
+              projectGroupName: 'Incomplete Project',
+              projectGroupingSnapshotComplete: false,
+            ),
+          ],
+          collapsedProjectPaths: const {legacyPath},
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(
+          const ValueKey('project_header_desktop-project:project-incomplete'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.byType(RunningSessionCard), findsOneWidget);
+    });
+
+    testWidgets('raw project filter survives a Desktop projectless regroup', (
+      tester,
+    ) async {
+      const legacyPath = '/private/tmp/legacy-filter';
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(
+              id: 'legacy-filter-session',
+              projectPath: legacyPath,
+              projectless: true,
+            ),
+            _session(
+              id: 'unrelated-projectless-session',
+              projectPath: '/private/tmp/unrelated',
+              projectless: true,
+            ),
+          ],
+          currentProjectFilter: legacyPath,
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('project_header_desktop-projectless')),
+        findsOneWidget,
+      );
+      expect(find.byType(RunningSessionCard), findsOneWidget);
+      expect(find.textContaining('legacy-filter-session'), findsOneWidget);
+      expect(
+        find.textContaining('unrelated-projectless-session'),
+        findsNothing,
+      );
+    });
 
     testWidgets('legacy worktree pin keeps its Desktop project group first', (
       tester,

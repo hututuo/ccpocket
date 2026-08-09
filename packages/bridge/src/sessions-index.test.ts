@@ -1436,6 +1436,113 @@ describe("codex sessions integration", () => {
     ]);
   });
 
+  it("applies Desktop project grouping and project-name search to Claude rows", async () => {
+    const sharedSessionId = "claude-desktop-shared";
+    const unmatchedSessionId = "claude-desktop-unmatched";
+    const sharedDir = join(
+      tempHome,
+      ".claude",
+      "projects",
+      "-tmp-desktop-shared",
+    );
+    const unmatchedDir = join(
+      tempHome,
+      ".claude",
+      "projects",
+      "-private-tmp-desktop-unmatched",
+    );
+    const codexHome = join(tempHome, ".codex");
+    const globalStatePath = join(codexHome, ".codex-global-state.json");
+    mkdirSync(codexHome, { recursive: true });
+    mkdirSync(sharedDir, { recursive: true });
+    mkdirSync(unmatchedDir, { recursive: true });
+    writeFileSync(
+      globalStatePath,
+      JSON.stringify({
+        "local-projects": {
+          "project-shared": {
+            id: "project-shared",
+            name: "Shared Workspace",
+            rootPaths: ["/tmp/desktop-shared"],
+          },
+          "project-other": {
+            id: "project-other",
+            name: "Other Workspace",
+            rootPaths: ["/tmp/desktop-other"],
+          },
+        },
+        "thread-project-assignments": {
+          // Desktop assignments are Codex-only even when a Claude-local ID
+          // happens to contain the same text.
+          [sharedSessionId]: { projectId: "project-other" },
+        },
+        "projectless-thread-ids": [],
+      }),
+    );
+    writeFileSync(
+      join(sharedDir, `${sharedSessionId}.jsonl`),
+      JSON.stringify({
+        type: "user",
+        uuid: "claude-desktop-shared-user",
+        cwd: "/tmp/desktop-shared",
+        timestamp: "2026-03-01T00:00:00.000Z",
+        message: { role: "user", content: "shared Claude conversation" },
+      }),
+    );
+    writeFileSync(
+      join(unmatchedDir, `${unmatchedSessionId}.jsonl`),
+      JSON.stringify({
+        type: "user",
+        uuid: "claude-desktop-unmatched-user",
+        cwd: "/private/tmp/desktop-unmatched",
+        timestamp: "2026-03-01T00:00:01.000Z",
+        message: { role: "user", content: "unmatched Claude conversation" },
+      }),
+    );
+
+    try {
+      const { sessions } = await getAllRecentSessions({
+        provider: "claude",
+        limit: 200,
+        metadataOnly: true,
+      });
+      const shared = sessions.find(
+        (session) => session.sessionId === sharedSessionId,
+      );
+      const unmatched = sessions.find(
+        (session) => session.sessionId === unmatchedSessionId,
+      );
+
+      expect(shared).toMatchObject({
+        provider: "claude",
+        projectGroupKind: "desktopProject",
+        projectGroupingSnapshotComplete: true,
+        projectGroupId: "project-shared",
+        projectGroupName: "Shared Workspace",
+        projectGroupPath: "/tmp/desktop-shared",
+      });
+      expect(unmatched).toMatchObject({
+        provider: "claude",
+        projectGroupKind: "projectless",
+        projectGroupingSnapshotComplete: true,
+      });
+
+      const searched = await getAllRecentSessions({
+        provider: "claude",
+        searchQuery: "shared workspace",
+        limit: 20,
+        metadataOnly: true,
+      });
+      expect(searched.sessions.map((session) => session.sessionId)).toContain(
+        sharedSessionId,
+      );
+    } finally {
+      rmSync(globalStatePath, { force: true });
+      rmSync(sharedDir, { recursive: true, force: true });
+      rmSync(unmatchedDir, { recursive: true, force: true });
+    }
+  });
+
   it("includes codex sessions in getAllRecentSessions", async () => {
     const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68010";
     const parentThreadId = "019c56c0-d4d8-7b22-9e3c-200664d68000";

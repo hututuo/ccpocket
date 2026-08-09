@@ -34,8 +34,11 @@ Desktop project metadata only controls grouping, labels, local filtering,
 collapse state, and project pin state.
 
 For every catalog row returned by the Bridge, membership and names match
-Desktop. Section order remains CC Pocket's existing local rule (explicit pins,
-then latest project activity) rather than copying Desktop's sidebar order.
+Desktop. This projection covers Codex app-server rows and Claude/legacy recent
+rows: a non-Codex row under a registered Desktop root joins the same stable
+project, while an unmatched row joins the shared projectless section. Section
+order remains CC Pocket's existing local rule (explicit pins, then latest
+project activity) rather than copying Desktop's sidebar order.
 
 ## Additive fields
 
@@ -69,6 +72,12 @@ therefore share one Mobile section.
   projection; when no good snapshot exists, Mobile keeps legacy path grouping.
 - Desktop project IDs are never sent to a legacy filesystem `projectPath`
   filter. Mobile applies those selections locally to the complete catalog.
+- Legacy path-based collapse, pin, and display-limit preferences migrate to a
+  stable Desktop project only when exactly one project in a complete,
+  unfiltered catalog owns that path. A shared parent root, projectless row,
+  incomplete projection, or reused worktree path cannot control two sections.
+- A project-scoped pagination response is merged into the existing catalog and
+  cache. Loading more rows in one project never replaces unrelated projects.
 - A search that matches a Desktop-only project name is evaluated by the Bridge
   against its bounded project projection instead of forwarding that label to
   app-server as if it were conversation text.

@@ -3466,8 +3466,8 @@ class SessionCatalogCacheRepository {
     return sessions;
   }
 
-  /// Applies the same sparse Codex settings/project semantics to persistent
-  /// and in-memory catalog projections.
+  /// Applies sparse Codex settings and provider-independent Desktop project
+  /// semantics to persistent and in-memory catalog projections.
   ///
   /// A regular catalog refresh is intentionally allowed to omit expensive
   /// settings fields or Desktop project metadata. Once an authoritative
@@ -3478,10 +3478,10 @@ class SessionCatalogCacheRepository {
     required RecentSession incoming,
     required RecentSession? cached,
   }) {
-    if (incoming.provider != Provider.codex.value || cached == null) {
-      return incoming;
-    }
-    final preserveSettings = !incoming.codexSettingsSnapshotComplete;
+    if (cached == null) return incoming;
+    final preserveSettings =
+        incoming.provider == Provider.codex.value &&
+        !incoming.codexSettingsSnapshotComplete;
     final preserveProjectGrouping =
         !incoming.projectGroupingSnapshotComplete &&
         cached.projectGroupingSnapshotComplete;

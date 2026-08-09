@@ -1906,6 +1906,56 @@ void main() {
     );
 
     test(
+      'ambiguous legacy paths do not control multiple Desktop projects',
+      () async {
+        const sharedPath = '/private/worktrees/shared';
+        await cubit.toggleProjectCollapsed(sharedPath);
+        await cubit.toggleProjectPinned(sharedPath);
+        mockBridge.emitSessions([
+          _session(
+            id: 'thread-a',
+            projectPath: sharedPath,
+            projectGroupId: 'project-a',
+            projectGroupName: 'Project A',
+          ),
+          _session(
+            id: 'thread-b',
+            projectPath: sharedPath,
+            projectGroupId: 'project-b',
+            projectGroupName: 'Project B',
+          ),
+        ]);
+        await Future.microtask(() {});
+
+        await cubit.toggleProjectCollapsed('desktop-project:project-a');
+        await cubit.toggleProjectPinned('desktop-project:project-a');
+
+        expect(cubit.state.collapsedProjectPaths, {
+          sharedPath,
+          'desktop-project:project-a',
+        });
+        expect(cubit.state.pinnedProjectPaths, {
+          sharedPath,
+          'desktop-project:project-a',
+        });
+
+        await cubit.toggleProjectCollapsed('desktop-project:project-b');
+        await cubit.toggleProjectPinned('desktop-project:project-b');
+        await cubit.toggleProjectCollapsed('desktop-project:project-a');
+        await cubit.toggleProjectPinned('desktop-project:project-a');
+
+        expect(cubit.state.collapsedProjectPaths, {
+          sharedPath,
+          'desktop-project:project-b',
+        });
+        expect(cubit.state.pinnedProjectPaths, {
+          sharedPath,
+          'desktop-project:project-b',
+        });
+      },
+    );
+
+    test(
       'catalog lookup keeps a renamed thread available outside filters',
       () async {
         mockBridge.emitResponse(
@@ -2236,6 +2286,26 @@ void main() {
         expect(cubit.state.exhaustedProjectPaths, contains('/a/proj1'));
       },
     );
+
+    test('project-scoped response preserves every other project', () async {
+      mockBridge.emitSessions([
+        _session(id: 'project-a-first', projectPath: '/a/proj1'),
+        _session(id: 'project-b-first', projectPath: '/b/proj2'),
+      ], hasMore: true);
+      await Future.microtask(() {});
+
+      cubit.loadMoreProject('/a/proj1');
+      mockBridge.emitProjectSessions('/a/proj1', [
+        _session(id: 'project-a-next', projectPath: '/a/proj1'),
+      ]);
+      await Future.microtask(() {});
+
+      expect(cubit.state.sessions.map((session) => session.sessionId).toSet(), {
+        'project-a-first',
+        'project-a-next',
+        'project-b-first',
+      });
+    });
 
     test('toggleProjectCollapsed persists collapsed project path', () async {
       await cubit.toggleProjectCollapsed('/a/proj1');
