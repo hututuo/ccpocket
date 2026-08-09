@@ -136,6 +136,39 @@ describe("BridgeApiKeyAuthenticator", () => {
       auth.acceptsPrivateHttpRequest(request({ remoteAddress: "100.64.0.2" })),
     ).toBe(false);
   });
+
+  it("accepts a short-lived device bearer only from the authenticated peer", () => {
+    const auth = new BridgeApiKeyAuthenticator();
+    const release = auth.registerDeviceSession("device-bearer", {
+      remoteAddress: "100.64.0.2",
+      ttlMs: 30_000,
+    });
+    expect(
+      auth.acceptsPrivateHttpRequest(
+        request({
+          remoteAddress: "100.64.0.2",
+          authorization: "Bearer device-bearer",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      auth.acceptsPrivateHttpRequest(
+        request({
+          remoteAddress: "100.64.0.3",
+          authorization: "Bearer device-bearer",
+        }),
+      ),
+    ).toBe(false);
+    release();
+    expect(
+      auth.acceptsPrivateHttpRequest(
+        request({
+          remoteAddress: "100.64.0.2",
+          authorization: "Bearer device-bearer",
+        }),
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("Bridge private HTTP route classification", () => {

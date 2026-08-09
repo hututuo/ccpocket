@@ -92,10 +92,12 @@ export function resolveOwnerFileAccessPolicy(
   apiKey: string | undefined,
   platform: NodeJS.Platform = process.platform,
   defaultDirs: string[] = [],
+  deviceAuthenticationAvailable = false,
 ): OwnerFileAccessPolicy {
   const fullDiskReadRequested = input?.trim() === "*";
   const ownerFullDiskRead =
-    fullDiskReadRequested && Boolean(apiKey?.trim());
+    fullDiskReadRequested &&
+    (Boolean(apiKey?.trim()) || deviceAuthenticationAvailable);
   const effectiveInput =
     fullDiskReadRequested && !ownerFullDiskRead ? undefined : input;
   return {

@@ -5,6 +5,12 @@ import { startServer } from "./index.js";
 import { getPackageVersion } from "./version.js";
 import { hasFlag, parseCliArgs, parseFlag } from "./cli-args.js";
 import { parseBridgePort } from "./bridge-port.js";
+import { BridgeIdentityStore } from "./bridge-identity.js";
+import { BridgeDevicePairing } from "./bridge-device-pairing.js";
+import {
+  promptHistoryStoreFileForPort,
+  PromptHistoryStore,
+} from "./prompt-history-store.js";
 import {
   readCodexAppServerMode,
   readCodexDaemonConfig,
@@ -36,6 +42,12 @@ Commands:
   file-access status    Show whether mutation step-up is configured
   file-access set-password
                         Configure the Bridge-side mutation password
+  pair list             List trusted devices and pending requests
+  pair approve <code>   Approve a pending Mac-local pairing request
+  pair reject <code>    Reject a pending Mac-local pairing request
+  pair revoke <deviceId>
+                        Revoke a trusted device
+  pair qr               Create a one-time pairing QR/deep link
 
 Options:
   -h, --help            Show this help
@@ -43,6 +55,7 @@ Options:
       --port <port>     WebSocket port (default: 8765)
       --host <host>     Bind address (default: 0.0.0.0)
       --api-key <key>   Set the saved Bridge connection key
+      --auth-mode <mode> Authentication mode: key, paired_or_key, or open
       --require-api-key Require the configured Bridge connection key
       --no-require-api-key
                          Disable connection-key authentication while retaining the key
@@ -92,7 +105,7 @@ Setup options:
       BRIDGE_CODEX_ASSIST_MODEL / BRIDGE_CODEX_ASSIST_REASONING_EFFORT
 
 Configuration can also be provided with BRIDGE_PORT, BRIDGE_HOST,
-BRIDGE_API_KEY, BRIDGE_REQUIRE_API_KEY, BRIDGE_ALLOWED_DIRS,
+BRIDGE_API_KEY, BRIDGE_REQUIRE_API_KEY, BRIDGE_AUTH_MODE, BRIDGE_ALLOWED_DIRS,
 BRIDGE_PUBLIC_WS_URL, and
 BRIDGE_ARTIFACT_BASE_URL, BRIDGE_AUTO_ARTIFACTS,
 BRIDGE_ARTIFACT_REGISTRY_FILE, and BRIDGE_DISABLE_MDNS.
@@ -246,6 +259,68 @@ if (parsed.helpRequested) {
         process.exitCode = 1;
       });
   }
+} else if (parsed.command === "pair") {
+  const action = parsed.positionals[1];
+  const port = parseBridgePort(parseFlag(parsed, "port"));
+  const runPairingCommand = async (): Promise<void> => {
+    const identity = await BridgeIdentityStore.load();
+    const history = new PromptHistoryStore(
+      promptHistoryStoreFileForPort(port, process.env.BRIDGE_PROMPT_HISTORY_FILE),
+    );
+    await history.init();
+    const pairing = new BridgeDevicePairing({
+      bridgeIdentity: identity,
+      bridgeInstanceId: history.bridgeInstanceId,
+    });
+    await pairing.init();
+    if (action === "list") {
+      const snapshot = await pairing.snapshot();
+      console.log(hasFlag(parsed, "json") ? JSON.stringify(snapshot) : JSON.stringify(snapshot, null, 2));
+      return;
+    }
+    if (action === "approve" || action === "reject") {
+      const code = parsed.positionals[2];
+      if (!code) throw new Error(`pair ${action} requires a six-digit confirmation code`);
+      if (action === "approve") {
+        const device = await pairing.approve(code);
+        console.log(hasFlag(parsed, "json") ? JSON.stringify(device) : `Paired ${device.deviceId}`);
+      } else {
+        const changed = await pairing.reject(code);
+        if (!changed) throw new Error("Pairing confirmation code is invalid or expired");
+        console.log(hasFlag(parsed, "json") ? JSON.stringify({ rejected: true }) : "Pairing request rejected");
+      }
+      return;
+    }
+    if (action === "revoke") {
+      const deviceId = parsed.positionals[2];
+      if (!deviceId) throw new Error("pair revoke requires a deviceId");
+      const changed = await pairing.revoke(deviceId);
+      if (!changed) throw new Error("Trusted device not found");
+      console.log(hasFlag(parsed, "json") ? JSON.stringify({ revoked: true, deviceId }) : `Revoked ${deviceId}`);
+      return;
+    }
+    if (action === "qr") {
+      const bridgeUrl = process.env.BRIDGE_PUBLIC_WS_URL?.trim() || `ws://127.0.0.1:${port}`;
+      const qr = await pairing.createPairingToken({ bridgeUrl });
+      if (hasFlag(parsed, "json")) {
+        console.log(JSON.stringify(qr));
+      } else {
+        console.log(`Pairing link (expires ${qr.expiresAt}): ${qr.deepLink}`);
+        try {
+          const { default: QRCode } = await import("qrcode");
+          console.log(await QRCode.toString(qr.deepLink, { type: "terminal", small: true }));
+        } catch {
+          console.log("(QR rendering unavailable; use the deep link above)");
+        }
+      }
+      return;
+    }
+    throw new Error("pair command requires list, approve, reject, revoke, or qr");
+  };
+  runPairingCommand().catch((error) => {
+    console.error(`Pair command failed: ${startupErrorMessage(error)}`);
+    process.exitCode = 1;
+  });
 } else if (parsed.command === "file-access") {
   const action = parsed.positionals[1];
   if (action !== "status" && action !== "set-password") {
@@ -356,6 +431,7 @@ if (parsed.helpRequested) {
   const port = parseFlag(parsed, "port");
   const host = parseFlag(parsed, "host");
   const apiKey = parseFlag(parsed, "api-key");
+  const authMode = parseFlag(parsed, "auth-mode");
   const requireApiKeyFlag = hasFlag(parsed, "require-api-key");
   const noRequireApiKeyFlag = hasFlag(parsed, "no-require-api-key");
   const publicWsUrl = parseFlag(parsed, "public-ws-url");
@@ -379,6 +455,7 @@ if (parsed.helpRequested) {
   if (port !== undefined) process.env.BRIDGE_PORT = port;
   if (host) process.env.BRIDGE_HOST = host;
   if (apiKey) process.env.BRIDGE_API_KEY = apiKey;
+  if (authMode) process.env.BRIDGE_AUTH_MODE = authMode;
   if (requireApiKeyFlag && noRequireApiKeyFlag) {
     console.error(
       "[bridge] Failed to start: --require-api-key and --no-require-api-key cannot be used together",

@@ -74,7 +74,10 @@ function parseControlObject(body: string): Record<string, unknown> {
 }
 
 export class ArtifactHttpHandler {
-  constructor(private readonly store: ArtifactStore) {}
+  constructor(
+    private readonly store: ArtifactStore,
+    private readonly authorizeBearerControl?: (req: IncomingMessage) => boolean,
+  ) {}
 
   handleRequest(req: IncomingMessage, res: ServerResponse): boolean {
     const rawUrl = req.url ?? "";
@@ -154,7 +157,10 @@ export class ArtifactHttpHandler {
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
-    if (!isDirectLoopbackRequest(req)) {
+    const bearerAuthorized = Boolean(
+      req.headers.authorization && this.authorizeBearerControl?.(req),
+    );
+    if (!bearerAuthorized && !isDirectLoopbackRequest(req)) {
       req.resume();
       sendArtifactJson(res, 403, {
         error: "Forbidden",
@@ -170,7 +176,7 @@ export class ArtifactHttpHandler {
       });
       return;
     }
-    if (req.headers["x-ccpocket-control"] !== "1") {
+    if (!bearerAuthorized && req.headers["x-ccpocket-control"] !== "1") {
       req.resume();
       sendArtifactJson(res, 403, {
         error: "Forbidden",

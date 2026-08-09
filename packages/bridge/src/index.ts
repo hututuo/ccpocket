@@ -64,6 +64,8 @@ import {
   DEFAULT_BRIDGE_HOST,
 } from "./bridge-bind-security.js";
 import { resolveBridgeConnectionAuthentication } from "./bridge-connection-auth.js";
+import { BridgeIdentityStore, isValidIdentityNonce } from "./bridge-identity.js";
+import { BridgeDevicePairing } from "./bridge-device-pairing.js";
 
 function startupErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -76,11 +78,14 @@ export async function startServer() {
   const connectionAuthentication = resolveBridgeConnectionAuthentication({
     apiKey: process.env.BRIDGE_API_KEY,
     requireApiKey: process.env.BRIDGE_REQUIRE_API_KEY,
+    authMode: process.env.BRIDGE_AUTH_MODE,
   });
   const API_KEY = connectionAuthentication.effectiveApiKey;
+  const bridgeIdentity = await BridgeIdentityStore.load();
   assertSecureBridgeBinding({
     host: HOST,
     apiKey: API_KEY,
+    authMode: connectionAuthentication.mode,
     allowUnauthenticatedRemote:
       process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE === "1" ||
       (connectionAuthentication.explicitlyConfigured &&
@@ -96,6 +101,7 @@ export async function startServer() {
     API_KEY,
     process.platform,
     [homedir()],
+    connectionAuthentication.mode === "paired_or_key",
   );
   const MDNS_ENABLED = shouldAdvertiseMdns(
     process.platform,
@@ -146,9 +152,7 @@ export async function startServer() {
   }
 
   console.log(
-    connectionAuthentication.required
-      ? "[bridge] Connection key authentication enabled"
-      : "[bridge] Connection key authentication disabled",
+    `[bridge] Connection authentication mode: ${connectionAuthentication.mode}`,
   );
   if (FULL_DISK_READ_REQUESTED && !OWNER_FULL_DISK_READ) {
     console.warn(
@@ -224,7 +228,10 @@ export async function startServer() {
   } else {
     console.log("[bridge] Automatic artifact links disabled by configuration");
   }
-  const artifactHttp = new ArtifactHttpHandler(artifactStore);
+  const artifactHttp = new ArtifactHttpHandler(
+    artifactStore,
+    (req) => bridgeAuthenticator.acceptsPrivateHttpRequest(req),
+  );
   if (artifactBaseUrl) {
     console.log(
       `[bridge] Artifact previews: ${artifactBaseUrl}/artifacts/<token>`,
@@ -346,6 +353,22 @@ export async function startServer() {
     .catch((err) => {
       console.error("[bridge] Failed to initialize prompt history store:", err);
     });
+
+  let devicePairing: BridgeDevicePairing | undefined;
+  if (promptHistoryStoreReady && connectionAuthentication.mode === "paired_or_key") {
+    try {
+      devicePairing = new BridgeDevicePairing({
+        bridgeIdentity,
+        bridgeInstanceId: promptHistoryStore.bridgeInstanceId,
+      });
+      await devicePairing.init();
+      console.log("[bridge] Ed25519 device pairing enabled");
+    } catch (error) {
+      console.warn(
+        `[bridge] Device pairing unavailable: ${startupErrorMessage(error)}`,
+      );
+    }
+  }
 
   const inputDeliveryLedger = new InputDeliveryLedger({
     filePath: inputDeliveryLedgerFileForPort(
@@ -491,6 +514,41 @@ export async function startServer() {
       return;
     }
 
+    if (req.url?.split("?", 1)[0] === "/bridge/identity" && req.method === "GET") {
+      let nonce: string | null = null;
+      try {
+        nonce = new URL(req.url, "http://bridge.invalid").searchParams.get("nonce");
+      } catch {
+        nonce = null;
+      }
+      if (!nonce || !isValidIdentityNonce(nonce) || !promptHistoryStoreReady) {
+        res.writeHead(400, {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        });
+        res.end(JSON.stringify({ error: "invalid_nonce" }));
+        return;
+      }
+      const methods = [
+        ...(API_KEY ? ["api_key"] : []),
+        ...(devicePairing ? ["device_signature", "pairing_token"] : []),
+        ...(connectionAuthentication.mode === "open" ? ["none"] : []),
+      ];
+      const proof = bridgeIdentity.response({
+        nonce,
+        bridgeInstanceId: promptHistoryStore.bridgeInstanceId,
+        authMode: connectionAuthentication.mode,
+        methods,
+      });
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        Pragma: "no-cache",
+      });
+      res.end(JSON.stringify({ ...proof, pairingAvailable: !!devicePairing }));
+      return;
+    }
+
     if (
       requiresPrivateHttpAuthorization(req.method, req.url) &&
       !bridgeAuthenticator.acceptsPrivateHttpRequest(req)
@@ -506,7 +564,19 @@ export async function startServer() {
         status: "ok",
         bridgeAuthentication: {
           required: connectionAuthentication.required,
-          scheme: connectionAuthentication.required ? "api_key" : "none",
+          scheme:
+            connectionAuthentication.mode === "paired_or_key"
+              ? "api_key_or_device_signature"
+              : connectionAuthentication.required
+                ? "api_key"
+                : "none",
+          mode: connectionAuthentication.mode,
+          methods: [
+            ...(API_KEY ? ["api_key"] : []),
+            ...(devicePairing ? ["device_signature", "pairing_token"] : []),
+            ...(connectionAuthentication.mode === "open" ? ["none"] : []),
+          ],
+          pairingAvailable: !!devicePairing,
         },
         applicationReady: readiness.ready,
         degradedReasons: readiness.reasons,
@@ -662,6 +732,10 @@ export async function startServer() {
       server: httpServer,
       apiKey: API_KEY,
       apiKeyAuthenticator: bridgeAuthenticator,
+      authMode: connectionAuthentication.mode,
+      bridgeIdentity,
+      devicePairing,
+      ownerFullDiskRead: OWNER_FULL_DISK_READ,
       allowedDirs: ALLOWED_DIRS,
       imageStore,
       galleryStore,
@@ -727,7 +801,9 @@ export async function startServer() {
     `[bridge] Ready. Listening on http://${HOST}:${PORT} (HTTP + WebSocket)`,
   );
   mdns?.start(PORT, API_KEY);
-  printStartupInfo(PORT, HOST, API_KEY);
+  printStartupInfo(PORT, HOST, API_KEY, {
+    pairingAvailable: !!devicePairing,
+  });
 
   process.on("SIGINT", () => {
     void shutdown();

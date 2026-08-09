@@ -2,6 +2,7 @@ const VALUE_FLAGS = new Set([
   "port",
   "host",
   "api-key",
+  "auth-mode",
   "public-ws-url",
   "artifact-base-url",
   "codex-app-server-mode",

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  parseBridgeAuthMode,
   parseBridgeRequireApiKey,
   resolveBridgeConnectionAuthentication,
 } from "./bridge-connection-auth.js";
@@ -9,11 +10,13 @@ describe("Bridge connection authentication configuration", () => {
     expect(
       resolveBridgeConnectionAuthentication({ apiKey: "owner-key" }),
     ).toMatchObject({
+      mode: "key",
       required: true,
       effectiveApiKey: "owner-key",
       explicitlyConfigured: false,
     });
     expect(resolveBridgeConnectionAuthentication({})).toMatchObject({
+      mode: "open",
       required: false,
       effectiveApiKey: undefined,
       explicitlyConfigured: false,
@@ -27,6 +30,7 @@ describe("Bridge connection authentication configuration", () => {
         requireApiKey: false,
       }),
     ).toEqual({
+      mode: "key",
       required: false,
       configuredApiKey: "owner-key",
       effectiveApiKey: undefined,
@@ -55,5 +59,20 @@ describe("Bridge connection authentication configuration", () => {
     expect(() => parseBridgeRequireApiKey("sometimes")).toThrow(
       /Invalid BRIDGE_REQUIRE_API_KEY/,
     );
+  });
+
+  it("supports paired-or-key and explicit open modes without changing legacy key semantics", () => {
+    expect(resolveBridgeConnectionAuthentication({ authMode: "paired_or_key" })).toMatchObject({
+      mode: "paired_or_key",
+      required: true,
+      effectiveApiKey: undefined,
+    });
+    expect(resolveBridgeConnectionAuthentication({ authMode: "open", apiKey: "legacy" })).toMatchObject({
+      mode: "open",
+      required: false,
+      effectiveApiKey: undefined,
+    });
+    expect(parseBridgeAuthMode("PAIRed_or_key")).toBe("paired_or_key");
+    expect(() => parseBridgeAuthMode("maybe")).toThrow(/BRIDGE_AUTH_MODE/);
   });
 });

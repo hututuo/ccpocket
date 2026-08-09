@@ -223,6 +223,31 @@ export interface ClientHunkRef {
 export type ClientMessage =
   | BackgroundDeliveryClientMessage
   | {
+      type: "device_pairing_request";
+      deviceId: string;
+      publicKey: string;
+      label?: string;
+      scopes?: string[];
+      token?: string;
+      challengeId?: string;
+      nonce?: string;
+      expiresAt?: string;
+      bridgeIdentityId?: string;
+      bridgeInstanceId?: string;
+      signature?: string;
+    }
+  | {
+      type: "device_auth";
+      challengeId: string;
+      nonce: string;
+      expiresAt: string;
+      bridgeIdentityId: string;
+      bridgeInstanceId: string;
+      deviceId: string;
+      publicKey: string;
+      signature: string;
+    }
+  | {
       type: "client_capabilities";
       appVersion?: string;
       protocolVersion?: number;
@@ -680,6 +705,29 @@ export type ServerMessage = (
   | BackgroundDeliveryServerMessage
   | PushRegistrationStateMessage
   | {
+      type: "bridge_device_challenge";
+      challengeId: string;
+      nonce: string;
+      expiresAt: string;
+      bridgeIdentityId: string;
+      bridgeInstanceId: string;
+    }
+  | {
+      type: "bridge_pairing_pending";
+      requestId: string;
+      confirmationCode?: string;
+      expiresAt: string;
+      status: "pending" | "paired" | "rejected";
+      deviceId: string;
+    }
+  | {
+      type: "bridge_device_authenticated";
+      deviceId: string;
+      bridgeIdentityId: string;
+      httpSessionToken?: string;
+      expiresAt?: string;
+    }
+  | {
       type: "system";
       subtype: string;
       sessionId?: string;
@@ -967,6 +1015,17 @@ export type ServerMessage = (
       errorCode?: string;
     }
   | { type: "project_history"; projects: string[] }
+  | {
+      type: "session_list";
+      sessions: unknown[];
+      bridgeInstanceId?: string;
+      bridgeIdentityId?: string;
+      computerName?: string;
+      codexSourceId: string;
+      allowedDirs: string[];
+      bridgeCapabilities: string[];
+      [key: string]: unknown;
+    }
   | {
       type: "session_catalog_changed_v1";
       revision: number;
@@ -1480,6 +1539,80 @@ export function parseClientMessage(data: string): ClientMessage | null {
     };
 
     switch (msg.type) {
+      case "device_pairing_request":
+        if (
+          typeof msg.deviceId !== "string" ||
+          msg.deviceId.length === 0 ||
+          msg.deviceId.length > 128 ||
+          typeof msg.publicKey !== "string" ||
+          msg.publicKey.length < 32 ||
+          msg.publicKey.length > 512 ||
+          !/^[A-Za-z0-9_-]+$/.test(msg.publicKey)
+        )
+          return null;
+        for (const key of [
+          "deviceId",
+          "publicKey",
+          "label",
+          "scopes",
+          "token",
+          "challengeId",
+          "nonce",
+          "expiresAt",
+          "bridgeIdentityId",
+          "bridgeInstanceId",
+          "signature",
+        ]) {
+          if (!(key in msg)) continue;
+          const value = msg[key];
+          if (key === "scopes") {
+            if (
+              !Array.isArray(value) ||
+              value.length > 16 ||
+              value.some(
+                (scope) =>
+                  typeof scope !== "string" ||
+                  scope.length === 0 ||
+                  scope.length > 64,
+              )
+            )
+              return null;
+          } else if (typeof value !== "string" || value.length === 0 || value.length > 512) {
+            return null;
+          }
+        }
+        return msg as unknown as ClientMessage;
+      case "device_auth":
+        if (
+          typeof msg.challengeId !== "string" ||
+          msg.challengeId.length === 0 ||
+          msg.challengeId.length > 128 ||
+          typeof msg.nonce !== "string" ||
+          msg.nonce.length < 16 ||
+          msg.nonce.length > 96 ||
+          !/^[A-Za-z0-9_-]+$/.test(msg.nonce) ||
+          typeof msg.expiresAt !== "string" ||
+          msg.expiresAt.length > 64 ||
+          typeof msg.bridgeIdentityId !== "string" ||
+          msg.bridgeIdentityId.length === 0 ||
+          msg.bridgeIdentityId.length > 128 ||
+          typeof msg.bridgeInstanceId !== "string" ||
+          msg.bridgeInstanceId.length === 0 ||
+          msg.bridgeInstanceId.length > 128 ||
+          typeof msg.deviceId !== "string" ||
+          msg.deviceId.length === 0 ||
+          msg.deviceId.length > 128 ||
+          typeof msg.publicKey !== "string" ||
+          msg.publicKey.length < 32 ||
+          msg.publicKey.length > 512 ||
+          !/^[A-Za-z0-9_-]+$/.test(msg.publicKey) ||
+          typeof msg.signature !== "string" ||
+          msg.signature.length < 32 ||
+          msg.signature.length > 256 ||
+          !/^[A-Za-z0-9_-]+$/.test(msg.signature)
+        )
+          return null;
+        return msg as unknown as ClientMessage;
       case "client_capabilities":
         if (
           msg.appVersion !== undefined &&

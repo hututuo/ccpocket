@@ -60,10 +60,27 @@ export function buildConnectionUrl(
   return `ccpocket://connect?${params.toString()}`;
 }
 
+/** Build a pairing deep link without embedding the long-lived API key. */
+export function buildPairingConnectionUrl(input: {
+  wsUrl: string;
+  token: string;
+  bridgeIdentityId: string;
+  bridgeInstanceId: string;
+}): string {
+  const params = new URLSearchParams({
+    url: input.wsUrl,
+    token: input.token,
+    bridgeIdentityId: input.bridgeIdentityId,
+    bridgeInstanceId: input.bridgeInstanceId,
+  });
+  return `ccpocket://pair?${params.toString()}`;
+}
+
 export async function printStartupInfo(
   port: number,
   _host: string,
   apiKey?: string,
+  options: { pairingAvailable?: boolean; pairingDeepLink?: string } = {},
 ): Promise<void> {
   const addresses = getReachableAddresses();
   const demoMode = !!process.env.BRIDGE_DEMO_MODE;
@@ -122,6 +139,10 @@ export async function printStartupInfo(
 
   lines.push("");
   lines.push(`[bridge]   Deep Link: ${deepLink}`);
+  if (options.pairingAvailable) {
+    lines.push("[bridge]   Pairing: available via `ccpocket-bridge pair qr`");
+    if (options.pairingDeepLink) lines.push(`[bridge]   Pairing Deep Link: ${options.pairingDeepLink}`);
+  }
   lines.push("");
   lines.push("[bridge]   Scan QR code with ccpocket app:");
 

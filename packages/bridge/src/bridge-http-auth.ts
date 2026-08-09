@@ -70,6 +70,10 @@ export function requiresPrivateHttpAuthorization(
 export class BridgeApiKeyAuthenticator {
   private readonly expectedDigest?: Buffer;
   private readonly authenticatedPeers = new Map<string, number>();
+  private readonly deviceSessions = new Map<
+    string,
+    { digest: Buffer; remoteAddress?: string; expiresAt: number }
+  >();
 
   constructor(apiKey?: string) {
     if (apiKey && apiKey.trim()) {
@@ -100,12 +104,43 @@ export class BridgeApiKeyAuthenticator {
   acceptsPrivateHttpRequest(req: IncomingMessage): boolean {
     if (isDirectLoopbackRequest(req)) return true;
     const bearer = bearerCredential(req);
-    if (bearer !== undefined) return this.matches(bearer);
+    if (bearer !== undefined) {
+      if (this.matches(bearer)) return true;
+      const session = this.deviceSessions.get(digestCredential(bearer).toString("hex"));
+      if (!session || session.expiresAt <= Date.now()) {
+        if (session) this.deviceSessions.delete(digestCredential(bearer).toString("hex"));
+        return false;
+      }
+      if (session.remoteAddress && session.remoteAddress !== directPeerAddress(req)) return false;
+      return true;
+    }
     if (!this.expectedDigest || req.headers.origin) return false;
     const address = directPeerAddress(req);
     return (
       address !== undefined && (this.authenticatedPeers.get(address) ?? 0) > 0
     );
+  }
+
+  /** Register a short-lived bearer issued after Ed25519 device authentication. */
+  registerDeviceSession(
+    token: string,
+    options: { remoteAddress?: string; ttlMs?: number } = {},
+  ): () => void {
+    if (!token || token.length > MAX_API_KEY_BYTES) return () => undefined;
+    const digest = digestCredential(token);
+    const key = digest.toString("hex");
+    this.deviceSessions.set(key, {
+      digest,
+      remoteAddress: options.remoteAddress,
+      expiresAt: Date.now() + Math.max(1_000, options.ttlMs ?? 10 * 60_000),
+    });
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const current = this.deviceSessions.get(key);
+      if (current?.digest.equals(digest)) this.deviceSessions.delete(key);
+    };
   }
 
   trackAuthenticatedWebSocketPeer(req: IncomingMessage): () => void {

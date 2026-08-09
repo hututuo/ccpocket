@@ -39,6 +39,7 @@ ccpocket-bridge --version
 | `BRIDGE_HOST` | `127.0.0.1` | Bind address; non-loopback requires `BRIDGE_API_KEY` unless the legacy insecure opt-in below is set |
 | `BRIDGE_API_KEY` | (none) | Saved Bridge connection key; retained when authentication is toggled off |
 | `BRIDGE_REQUIRE_API_KEY` | inferred | `1` requires `BRIDGE_API_KEY`; `0` disables connection-key authentication; when unset, existing installs keep the legacy “key present = enabled” behavior |
+| `BRIDGE_AUTH_MODE` | inferred | `key` keeps legacy key behavior, `paired_or_key` permits API-key fallback or Ed25519 device pairing, and `open` explicitly retains unauthenticated legacy access |
 | `BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE` | `0` | Legacy compatibility escape hatch for installs that leave `BRIDGE_REQUIRE_API_KEY` unset; an explicit `BRIDGE_REQUIRE_API_KEY=0` is the modern opt-out and also acknowledges unauthenticated LAN exposure |
 | `BRIDGE_PERSIST_DEBUG_TRACES` | `0` | Persist bounded diagnostic trace summaries to disk; disabled by default because traces can contain conversation-adjacent metadata |
 | `BRIDGE_ALLOWED_DIRS` | `$HOME` | Comma-separated list of project directories the Bridge may access; set exactly to `*` to allow any directory |
@@ -76,6 +77,39 @@ supported. When `BRIDGE_PROMPT_HISTORY_FILE` is not set and `BRIDGE_PORT` is not
 
 Push relay uses Firebase Anonymous Auth automatically; no FCM environment
 variables are required.
+
+### Bridge identity and device pairing
+
+Every Bridge creates an Ed25519 key on first start and stores the private key
+atomically at `$HOME/.ccpocket/bridge-identity-v1.json` (`0600`) inside the
+`0700` state directory. The public-key SHA-256 fingerprint is
+`bridge_` + SHA-256(raw public key) is `bridgeIdentityId`; hardware serial numbers, MAC addresses, and
+`IOPlatformUUID` are never read. `GET /bridge/identity?nonce=<base64url>` is
+unauthenticated and returns a no-store signed proof containing the nonce,
+`bridgeIdentityId`, the existing `bridgeInstanceId`, display-only computer
+name, and authentication methods.
+
+Set `BRIDGE_AUTH_MODE=paired_or_key` to allow a socket without an API key to
+enter a ten-second authentication-only state. It receives only a challenge
+until a trusted mobile Ed25519 key signs that challenge. The trusted-device
+table is `$HOME/.ccpocket/trusted-mobile-devices-v1.json`; pairing state and
+one-time token hashes are stored separately in
+`$HOME/.ccpocket/pairing-state-v1.json`, both `0600` and atomically replaced.
+Legacy API-key sockets remain immediately usable and can enroll their current
+device for a no-interruption migration. Device-authenticated peers receive a
+short-lived HTTP bearer bound to the socket peer; the existing mutation
+password/Face ID step-up remains independent.
+
+Use the local CLI for pairing approval (the six-digit code is not a remote
+secret):
+
+```bash
+ccpocket-bridge pair qr             # one-time token and QR/deep link
+ccpocket-bridge pair list --json
+ccpocket-bridge pair approve 123456
+ccpocket-bridge pair reject 123456
+ccpocket-bridge pair revoke <deviceId>
+```
 
 ```bash
 # Example: custom port with connection-key authentication enabled
