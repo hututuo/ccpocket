@@ -2114,6 +2114,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     (bridge as any).archiveStore = {
       list: vi.fn(() => entries),
     };
+    const refresh = vi
+      .spyOn(bridge as any, "refreshCodexArchiveStoreFromProvider")
+      .mockResolvedValue(undefined);
 
     (bridge as any).handleClientMessage(
       { type: "list_archived_sessions", requestId: "list-request" },
@@ -2128,6 +2131,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       1_001,
       expect.stringMatching(/^codex-home-[0-9a-f]{24}$/),
     );
+    expect(refresh).toHaveBeenCalledOnce();
     expect(result).toMatchObject({
       type: "archived_sessions_result",
       requestId: "list-request",
@@ -2135,6 +2139,176 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       truncated: true,
     });
     expect(result.sessions).toHaveLength(1_000);
+    bridge.close();
+  });
+
+  it("imports Codex Desktop archives from the official thread list", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const stop = vi.fn();
+    const listThreads = vi.fn(async (params: { archived?: boolean }) => ({
+      data: params.archived
+        ? [
+            {
+              id: "desktop-archived",
+              sessionId: null,
+              parentThreadId: null,
+              preview: "Archived from Desktop",
+              ephemeral: false,
+              createdAt: 1_700_000_000,
+              updatedAt: 1_700_000_100,
+              recencyAt: 1_700_000_100,
+              cwd: "/project/desktop",
+              modelProvider: null,
+              status: { type: "notLoaded" },
+              canAcceptDirectInput: null,
+              agentNickname: null,
+              agentRole: null,
+              gitBranch: null,
+              name: "Desktop archive",
+            },
+          ]
+        : [],
+      nextCursor: null,
+    }));
+    let reconciled: any[] = [];
+    const reconcileCodexSourceSnapshot = vi.fn(async (snapshot: any) => {
+      reconciled = snapshot.entries;
+    });
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = {
+      reconcileCodexSourceSnapshot,
+      list: vi.fn(() => reconciled),
+    };
+    vi.spyOn(bridge as any, "createStandaloneCodexProcess").mockResolvedValue({
+      listThreads,
+      stop,
+    });
+
+    (bridge as any).handleClientMessage(
+      { type: "list_archived_sessions", requestId: "desktop-list" },
+      ws,
+    );
+
+    await vi.waitFor(() => {
+      expect(reconcileCodexSourceSnapshot).toHaveBeenCalledOnce();
+    });
+    expect(listThreads).toHaveBeenCalledWith({
+      archived: true,
+      limit: 100,
+      sourceKinds: ["cli", "vscode", "exec", "appServer"],
+      requireCanonicalResultShape: true,
+    });
+    expect(stop).toHaveBeenCalledOnce();
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "archived_sessions_result",
+      requestId: "desktop-list",
+      success: true,
+      sessions: [
+        {
+          sessionId: "desktop-archived",
+          provider: "codex",
+          projectPath: "/project/desktop",
+          name: "Desktop archive",
+          firstPrompt: "Archived from Desktop",
+        },
+      ],
+    });
+    bridge.close();
+  });
+
+  it("keeps the local archive projection when official listing is unavailable", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const localEntry = {
+      sessionId: "local-archive",
+      provider: "codex",
+      projectPath: "/project/local",
+      archivedAt: "2026-07-18T00:00:00Z",
+    };
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = {
+      list: vi.fn(() => [localEntry]),
+    };
+    vi.spyOn(bridge as any, "createStandaloneCodexProcess").mockRejectedValue(
+      new Error("archived thread/list unsupported"),
+    );
+
+    (bridge as any).handleClientMessage(
+      { type: "list_archived_sessions", requestId: "legacy-list" },
+      ws,
+    );
+
+    await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "archived_sessions_result",
+      requestId: "legacy-list",
+      success: true,
+      sessions: [localEntry],
+    });
+    bridge.close();
+  });
+
+  it("rejects an app-server that ignores the archived thread filter", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = { readyState: OPEN_STATE, send: vi.fn() } as any;
+    const localEntry = {
+      sessionId: "local-archive",
+      provider: "codex",
+      projectPath: "/project/local",
+      archivedAt: "2026-07-18T00:00:00Z",
+    };
+    const ignoredFilterThread = {
+      id: "ordinary-active-thread",
+      sessionId: null,
+      parentThreadId: null,
+      preview: "Active thread",
+      ephemeral: false,
+      createdAt: 1_700_000_000,
+      updatedAt: 1_700_000_100,
+      recencyAt: 1_700_000_100,
+      cwd: "/project/active",
+      modelProvider: null,
+      status: { type: "notLoaded" },
+      canAcceptDirectInput: null,
+      agentNickname: null,
+      agentRole: null,
+      gitBranch: null,
+      name: null,
+    };
+    const reconcileCodexSourceSnapshot = vi.fn();
+    const stop = vi.fn();
+    (bridge as any).archiveStoreReady = Promise.resolve();
+    (bridge as any).archiveStoreInitializationError = null;
+    (bridge as any).archiveStore = {
+      revision: 0,
+      reconcileCodexSourceSnapshot,
+      list: vi.fn(() => [localEntry]),
+    };
+    vi.spyOn(bridge as any, "createStandaloneCodexProcess").mockResolvedValue({
+      listThreads: vi.fn(async () => ({
+        data: [ignoredFilterThread],
+        nextCursor: null,
+      })),
+      stop,
+    });
+
+    (bridge as any).handleClientMessage(
+      { type: "list_archived_sessions", requestId: "ignored-filter" },
+      ws,
+    );
+
+    await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
+    expect(reconcileCodexSourceSnapshot).not.toHaveBeenCalled();
+    expect(JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
+      type: "archived_sessions_result",
+      requestId: "ignored-filter",
+      success: true,
+      sessions: [localEntry],
+    });
+    expect(stop).toHaveBeenCalledOnce();
     bridge.close();
   });
 

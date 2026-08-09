@@ -42,6 +42,12 @@ export interface ArchiveCapacityReservation {
   readonly alreadyArchived: boolean;
 }
 
+export interface CodexArchiveSnapshot {
+  readonly entries: readonly ArchivedSession[];
+  /** False when the provider scan hit its safety bound or continuation gap. */
+  readonly complete: boolean;
+}
+
 interface PendingArchiveReservation {
   readonly token: symbol;
   readonly released: Promise<void>;
@@ -58,6 +64,7 @@ export class ArchiveStore {
   /** In-memory cache of archived session IDs for O(1) lookup. */
   private cache = new Set<string>();
   private data: ArchiveStoreData = { version: 1, archivedSessions: [] };
+  private mutationRevision = 0;
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly archiveReservations = new Map<
     string,
@@ -67,6 +74,11 @@ export class ArchiveStore {
   constructor(dirPath = join(homedir(), ".ccpocket")) {
     this.dirPath = dirPath;
     this.filePath = join(this.dirPath, "archived-sessions.json");
+  }
+
+  /** Monotonic in-process revision for stale provider snapshot fencing. */
+  get revision(): number {
+    return this.mutationRevision;
   }
 
   /** Initialise the store: create directory if needed and load existing data. */
@@ -341,6 +353,105 @@ export class ArchiveStore {
       .slice(0, Math.max(0, limit));
   }
 
+  /**
+   * Reconcile the selected Codex Home with app-server's archived thread list.
+   *
+   * Source-bound rows are removed only after a complete provider scan. Legacy
+   * source-less rows are migrated when the provider confirms the same thread
+   * id, but otherwise remain untouched because their original Home is
+   * unknowable. A bounded partial scan therefore only upserts confirmed rows.
+   */
+  async reconcileCodexSourceSnapshot(
+    snapshot: CodexArchiveSnapshot,
+    codexSourceId: string,
+    expectedRevision?: number,
+  ): Promise<boolean> {
+    const sourceId = boundedString(
+      codexSourceId,
+      MAX_CODEX_SOURCE_ID_LENGTH,
+    );
+    if (!sourceId || sourceId.trim() !== sourceId) {
+      throw new Error("Invalid Codex archive source identity");
+    }
+    if (snapshot.entries.length > MAX_ARCHIVED_SESSIONS) {
+      throw new Error(
+        "Codex archive snapshot exceeds the supported entry limit",
+      );
+    }
+    const officialById = new Map<string, ArchivedSession>();
+    for (const entry of snapshot.entries) {
+      if (
+        entry.provider !== "codex" ||
+        entry.codexSourceId !== sourceId ||
+        !boundedString(entry.sessionId, MAX_SESSION_ID_LENGTH) ||
+        !boundedString(entry.projectPath, MAX_PROJECT_PATH_LENGTH) ||
+        !boundedString(entry.archivedAt, 64)
+      ) {
+        throw new Error("Invalid Codex archive snapshot entry");
+      }
+      if (officialById.has(entry.sessionId)) {
+        throw new Error("Duplicate Codex archive snapshot entry");
+      }
+      officialById.set(entry.sessionId, {
+        ...entry,
+        ...sanitizeDisplayMetadata(entry),
+      });
+    }
+
+    return this.mutate(async () => {
+      if (
+        expectedRevision !== undefined &&
+        this.mutationRevision !== expectedRevision
+      ) {
+        return false;
+      }
+      const existingExact = new Map<string, ArchivedSession>();
+      const existingLegacy = new Map<string, ArchivedSession>();
+      for (const entry of this.data.archivedSessions) {
+        if (entry.provider !== "codex") continue;
+        if (entry.codexSourceId === sourceId) {
+          existingExact.set(entry.sessionId, entry);
+        } else if (entry.codexSourceId === undefined) {
+          existingLegacy.set(entry.sessionId, entry);
+        }
+      }
+
+      const next = this.data.archivedSessions.filter((entry) => {
+        if (entry.provider !== "codex") return true;
+        if (entry.codexSourceId === sourceId) {
+          return !snapshot.complete && !officialById.has(entry.sessionId);
+        }
+        if (entry.codexSourceId === undefined) {
+          return !officialById.has(entry.sessionId);
+        }
+        return true;
+      });
+      for (const official of officialById.values()) {
+        const previous =
+          existingExact.get(official.sessionId) ??
+          existingLegacy.get(official.sessionId);
+        next.push({
+          ...previous,
+          ...official,
+          provider: "codex",
+          codexSourceId: sourceId,
+          archivedAt: previous?.archivedAt ?? official.archivedAt,
+          ...sanitizeDisplayMetadata({ ...previous, ...official }),
+        });
+      }
+      if (
+        next.length + this.uncommittedReservationCount() >
+        MAX_ARCHIVED_SESSIONS
+      ) {
+        throw new Error(
+          `Archive store has reached the supported ${MAX_ARCHIVED_SESSIONS}-entry limit`,
+        );
+      }
+      await this.commit(next);
+      return true;
+    });
+  }
+
   /** Restore an archived entry to the normal recent-session list. */
   async unarchive(
     sessionId: string,
@@ -433,6 +544,7 @@ export class ArchiveStore {
         ),
       ),
     );
+    this.mutationRevision += 1;
   }
 
   private uncommittedReservationCount(): number {

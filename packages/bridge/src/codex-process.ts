@@ -2453,10 +2453,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       useStateDbOnly?: boolean;
       parentThreadId?: string;
       ancestorThreadId?: string;
+      /** Fail closed when a compatibility server returns a non-canonical list. */
+      requireCanonicalResultShape?: boolean;
     } = {},
     options: CodexRpcRequestOptions = {},
   ): Promise<{ data: CodexThreadSummary[]; nextCursor: string | null }> {
-    const result = (await this.requestReadOnlyRpc(
+    const rawResult = (await this.requestReadOnlyRpc(
       "thread/list",
       {
         sortKey: params.sortKey ?? "updated_at",
@@ -2483,7 +2485,20 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           : {}),
       },
       options,
-    )) as { data?: unknown[]; nextCursor?: unknown };
+    )) as unknown;
+    const result =
+      rawResult && typeof rawResult === "object"
+        ? (rawResult as { data?: unknown[]; nextCursor?: unknown })
+        : {};
+    if (
+      params.requireCanonicalResultShape &&
+      (!Array.isArray(result.data) ||
+        (result.nextCursor !== undefined &&
+          result.nextCursor !== null &&
+          typeof result.nextCursor !== "string"))
+    ) {
+      throw new Error("thread/list returned a non-canonical result");
+    }
 
     const data = Array.isArray(result.data)
       ? result.data.map((entry) => toCodexThreadSummary(entry))
