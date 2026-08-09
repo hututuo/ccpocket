@@ -1835,3 +1835,15 @@
   `key` 或持有 API key 的 `paired_or_key` 模式下保持原行为。`bridge_identity_v3`、
   配对消息和模型字段全部为加法能力。本节是源码与自动验证决定，不授权切换当前生产
   `BRIDGE_AUTH_MODE`、重启 Bridge、发布 OTA/IPA、安装设备或晋级 stable。
+
+## 2026-08-09 开放模式的应用就绪门禁
+
+- 显式 `BRIDGE_AUTH_MODE=open` 已经表示用户选择可信局域网无连接密钥开发模式。
+  在该模式下，Mobile 必须能够读取只读 `GET /readyz`，否则 WebSocket、目录和 v2
+  时间线即使全部成功提交，首页仍会被私有 HTTP 的 403 永久锁在应用就绪阶段。
+- 免鉴权例外只适用于 open 模式的 `GET /readyz`。`key`、`paired_or_key` 继续要求
+  既有 Bearer/设备会话；`/usage`、`/doctor`、`/pilot/diagnostics`、Gallery 写入和
+  其他私有 HTTP 表面不因本例外放宽。
+- Mobile 不以假进度或缓存绕过 readiness。Bridge 仍从真实 shared runtime、Action
+  Broker、terminal result 与 input delivery 状态计算 200/503；本变更只修正开放模式
+  下只读 readiness 状态无法穿过 LAN 代理的鉴权矛盾。

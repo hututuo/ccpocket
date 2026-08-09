@@ -550,7 +550,12 @@ export async function startServer() {
     }
 
     if (
-      requiresPrivateHttpAuthorization(req.method, req.url) &&
+      requiresPrivateHttpAuthorization(req.method, req.url, {
+        // Open mode is an explicit trusted-LAN development choice. Mobile
+        // still needs the read-only readiness contract before entering the
+        // application, while every other private HTTP surface remains closed.
+        allowOpenModeReadiness: connectionAuthentication.mode === "open",
+      }) &&
       !bridgeAuthenticator.acceptsPrivateHttpRequest(req)
     ) {
       bridgeAuthenticator.rejectPrivateHttpRequest(req, res);

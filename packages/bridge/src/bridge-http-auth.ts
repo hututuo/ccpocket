@@ -53,8 +53,16 @@ export function isDirectLoopbackRequest(req: IncomingMessage): boolean {
 export function requiresPrivateHttpAuthorization(
   method: string | undefined,
   rawUrl: string | undefined,
+  options: { allowOpenModeReadiness?: boolean } = {},
 ): boolean {
   const path = (rawUrl ?? "").split("?", 1)[0];
+  if (
+    options.allowOpenModeReadiness === true &&
+    method === "GET" &&
+    path === "/readyz"
+  ) {
+    return false;
+  }
   if (
     path === "/usage" ||
     path === "/doctor" ||

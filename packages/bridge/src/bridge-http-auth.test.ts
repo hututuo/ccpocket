@@ -208,6 +208,26 @@ describe("Bridge private HTTP route classification", () => {
   ])("keeps capability-style read route %s %s public", (method, url) => {
     expect(requiresPrivateHttpAuthorization(method, url)).toBe(false);
   });
+
+  it("allows only GET /readyz when open-mode readiness is explicit", () => {
+    const options = { allowOpenModeReadiness: true };
+
+    expect(requiresPrivateHttpAuthorization("GET", "/readyz", options)).toBe(
+      false,
+    );
+    expect(
+      requiresPrivateHttpAuthorization("GET", "/readyz?probe=1", options),
+    ).toBe(false);
+    expect(requiresPrivateHttpAuthorization("POST", "/readyz", options)).toBe(
+      true,
+    );
+    expect(requiresPrivateHttpAuthorization("GET", "/usage", options)).toBe(
+      true,
+    );
+    expect(
+      requiresPrivateHttpAuthorization("GET", "/pilot/diagnostics", options),
+    ).toBe(true);
+  });
 });
 
 describe("isLoopbackAddress", () => {
