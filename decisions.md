@@ -1,5 +1,39 @@
 # ccPocket Compatibility Decisions
 
+## 2026-08-09 Codex Desktop project identity is presentation authority
+
+- Codex app-server `cwd` remains the canonical provider/resume path, but it is
+  not Codex Desktop's project identity or user-facing project name.
+- Bridge reads `$CODEX_HOME/.codex-global-state.json` read-only and with bounded
+  caching. `local-projects`, `thread-project-assignments`, registered roots and
+  `projectless-thread-ids` provide Desktop-compatible grouping and names.
+- The additive `projectGroup*` projection never replaces `projectPath` or
+  `resumeCwd`. It only controls Mobile grouping, labels, local project filters,
+  collapse state and pins.
+- Different worktrees assigned to one Desktop project share its stable project
+  ID and current name. Explicitly projectless or unmatched Codex threads share
+  one localized projectless group rather than creating fake projects from temp
+  path basenames.
+- Desktop project renames/reassignments invalidate the Bridge catalog without
+  reading conversation history. Mobile preserves a complete cached grouping
+  across sparse legacy refreshes, while a newer complete snapshot can rename,
+  move or clear the assignment.
+- Durable conversation titles are separate provider metadata. In shared mode,
+  Mobile writes through app-server `thread/name/set`; Desktop and Mobile both
+  consume `thread/name/updated` and the refreshed catalog, so either side's
+  rename converges without maintaining a second title authority. Project names
+  remain Desktop-owned and are not rewritten by Mobile.
+- Old Mobile ignores the fields; new Mobile with old/malformed/missing Desktop
+  state falls back to legacy path grouping. Bridge never writes Desktop global
+  state.
+- The current Bridge catalog retains its existing 1,000-thread scan bound.
+  Mobile must not repeatedly expand beyond that bound. True paging beyond it is
+  a separate cursor-protocol change and must not be represented as a complete
+  snapshot in the meantime.
+- The implementation contract is documented in
+  `docs/codex-desktop-project-sync.md`. Source completion does not authorize
+  Bridge deployment, OTA, IPA construction, device installation or stable.
+
 ## 2026-08-09 one repository root and one canonical development branch
 
 - The only CC Pocket source project root is
