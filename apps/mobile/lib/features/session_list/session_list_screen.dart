@@ -54,6 +54,7 @@ import 'services/session_resume_coordinator.dart';
 import 'state/session_list_cubit.dart';
 import 'state/session_list_state.dart';
 import 'widgets/bridge_connection_key_dialog.dart';
+import 'widgets/bridge_device_pairing_dialog.dart';
 import 'widgets/connect_form.dart';
 import 'widgets/home_content.dart';
 import 'widgets/machine_edit_sheet.dart';
@@ -936,6 +937,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   StreamSubscription<void>? _catalogCacheReadinessSub;
   StreamSubscription<BridgeConnectionBootstrapSnapshot>?
   _connectionBootstrapSub;
+  StreamSubscription<BridgeDevicePairingSnapshot>? _devicePairingSub;
   StreamSubscription<ConversationSyncCacheUpdate>? _contentSyncProgressSub;
   ConversationSyncCacheUpdate? _contentSyncProgressUpdate;
   int _lastBoundBridgeIdentityGeneration = 0;
@@ -949,6 +951,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   final _catalogRecoveryPolicy = SessionCatalogRecoveryPolicy();
   Future<void> Function(String connectionKey)? _retryWithConnectionKey;
   bool _connectionKeyDialogVisible = false;
+  bool _devicePairingDialogVisible = false;
 
   // macOS app update
   AppUpdateInfo? _appUpdateInfo;
@@ -961,7 +964,6 @@ class _SessionListScreenState extends State<SessionListScreen>
   StreamSubscription<List<SessionInfo>>? _activeSessionsSub;
   late final DesktopSessionListContinuityTracker _desktopContinuityTracker;
 
-  static const _prefKeyUrl = 'bridge_url';
   static const _prefKeyMacOSNativeAppBannerDismissed =
       'macos_native_app_banner.dismissed';
   static const _prefKeySessionStartDefaults = 'session_start_defaults_v1';
@@ -1026,6 +1028,33 @@ class _SessionListScreenState extends State<SessionListScreen>
     _connectionBootstrapSub = bridge.connectionBootstrap.listen((_) {
       if (mounted) setState(() {});
       _observeConnectionProgress();
+    });
+    _devicePairingSub = bridge.devicePairingChanges.listen((snapshot) {
+      if (!mounted) return;
+      if (snapshot.needsMacApproval) {
+        _connectionProgressWatchdog.reset();
+        if (!_devicePairingDialogVisible) {
+          _devicePairingDialogVisible = true;
+          unawaited(
+            showBridgeDevicePairingDialog(
+              context: context,
+              bridge: bridge,
+              initial: snapshot,
+            ).whenComplete(() => _devicePairingDialogVisible = false),
+          );
+        }
+      } else if (!_devicePairingDialogVisible &&
+          (snapshot.phase == BridgeDevicePairingPhase.failed ||
+              snapshot.phase == BridgeDevicePairingPhase.rejected)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              snapshot.message ??
+                  AppLocalizations.of(context).bridgePairingFailed,
+            ),
+          ),
+        );
+      }
     });
     _contentSyncProgressSub = context
         .read<ConversationContentSyncService?>()
@@ -1140,7 +1169,10 @@ class _SessionListScreenState extends State<SessionListScreen>
     NotificationService.instance.addListener(
       _handleActiveNotificationSessionChanged,
     );
-    _loadPreferencesAndAutoConnect();
+    // Cold start only discovers saved routes. A green health probe is not a
+    // user request to open a WebSocket, so the app must remain on this screen
+    // until the user taps a reachable computer or route. BridgeService keeps
+    // its existing automatic reconnect behavior after that explicit choice.
 
     // Feed active session updates to the unseen tracker.
     final activeCubit = context.read<ActiveSessionsCubit>();
@@ -1582,93 +1614,42 @@ class _SessionListScreenState extends State<SessionListScreen>
       target: target,
     );
     if (!mounted || !confirmed) return;
-    await _connectWithParams(params.serverUrl, params.token);
+    await _connectWithParams(
+      params.serverUrl,
+      params.token,
+      pairingToken: params.pairingToken,
+      pairingBridgeIdentityId: params.bridgeIdentityId,
+      pairingBridgeInstanceId: params.bridgeInstanceId,
+    );
   }
 
-  Future<void> _loadPreferencesAndAutoConnect() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (!mounted) return;
-    final url = prefs.getString(_prefKeyUrl);
-    if (url != null && url.isNotEmpty) {
-      final attempt = _beginConnectionAttempt(
-        retry: _loadPreferencesAndAutoConnect,
-        autoConnecting: true,
-      );
-      _setConnectionKeyRetry(
-        (connectionKey) => _connectWithParams(url, connectionKey),
-      );
-      final bridge = context.read<BridgeService>();
-      // Try to get API key from SecureStorage via MachineManagerCubit.
-      String? apiKey;
-      String? logicalConnectionIdentity;
-      String? expectedBridgeInstanceId;
-      String? expectedCodexSourceId;
-      try {
-        final uri = Uri.tryParse(url);
-        if (uri != null) {
-          final cubit = context.read<MachineManagerCubit?>();
-          final machine = await findAutoConnectMachine(cubit, uri);
-          if (!_isCurrentConnectionAttempt(attempt)) return;
-          if (machine != null) {
-            logicalConnectionIdentity = 'machine:${machine.id}';
-            expectedBridgeInstanceId = machine.bridgeInstanceId;
-            expectedCodexSourceId = machine.codexSourceId;
-            apiKey = await cubit?.getApiKey(machine.id);
-            if (!_isCurrentConnectionAttempt(attempt)) return;
-            if (cubit != null) {
-              _setConnectionKeyRetry((connectionKey) async {
-                await cubit.updateMachine(machine, apiKey: connectionKey);
-                await _loadPreferencesAndAutoConnect();
-              });
-            }
-            if (machine.sshJumpHost?.trim().isNotEmpty == true) {
-              if (!_isCurrentConnectionAttempt(attempt)) return;
-              await _connectToMachineConfig(machine, autoConnecting: true);
-              return;
-            }
-          }
-        }
-      } catch (_) {
-        // Ignore — autoConnect falls back to legacy SharedPreferences.
-      }
-      if (!_isCurrentConnectionAttempt(attempt)) return;
-      final health = await BridgeService.checkHealth(url);
-      if (!_isCurrentConnectionAttempt(attempt)) return;
-      if (bridgeHealthRequiresConnectionKey(health) &&
-          (apiKey == null || apiKey.isEmpty)) {
-        _presentConnectionKeyPrompt(rejectedSavedKey: false);
-        return;
-      }
-      late final bool attempted;
-      try {
-        attempted = await bridge.autoConnect(
-          apiKey: apiKey,
-          logicalConnectionIdentity: logicalConnectionIdentity,
-          expectedBridgeInstanceId: expectedBridgeInstanceId,
-          expectedCodexSourceId: expectedCodexSourceId,
-        );
-      } catch (_) {
-        _failConnectionAttemptAndRestore(attempt);
-        return;
-      }
-      if (!_isCurrentConnectionAttempt(attempt)) return;
-      if (attempted) {
-        _armConnectionReadinessWarning(attempt);
-      } else {
-        _failConnectionAttemptAndRestore(attempt);
-      }
-    }
-  }
-
-  Future<void> _connectWithParams(String rawUrl, String? apiKey) async {
+  Future<void> _connectWithParams(
+    String rawUrl,
+    String? apiKey, {
+    String? pairingToken,
+    String? pairingBridgeIdentityId,
+    String? pairingBridgeInstanceId,
+  }) async {
     var url = rawUrl.trim();
     if (url.isEmpty) return;
     final attempt = _beginConnectionAttempt(
-      retry: () => _connectWithParams(rawUrl, apiKey),
+      retry: () => _connectWithParams(
+        rawUrl,
+        apiKey,
+        pairingToken: pairingToken,
+        pairingBridgeIdentityId: pairingBridgeIdentityId,
+        pairingBridgeInstanceId: pairingBridgeInstanceId,
+      ),
       autoConnecting: false,
     );
     _setConnectionKeyRetry(
-      (connectionKey) => _connectWithParams(rawUrl, connectionKey),
+      (connectionKey) => _connectWithParams(
+        rawUrl,
+        connectionKey,
+        pairingToken: pairingToken,
+        pairingBridgeIdentityId: pairingBridgeIdentityId,
+        pairingBridgeInstanceId: pairingBridgeInstanceId,
+      ),
     );
     // Allow shorthand: just IP or host:port without ws:// prefix
     if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
@@ -1711,7 +1692,22 @@ class _SessionListScreenState extends State<SessionListScreen>
     String? logicalConnectionIdentity;
     String? expectedBridgeInstanceId;
     String? expectedCodexSourceId;
+    String? expectedBridgeIdentityId = pairingBridgeIdentityId;
+    final supportsDevicePairing = bridgeHealthSupportsDevicePairing(health);
+    final supportsDeviceEnrollment = bridgeHealthSupportsDeviceEnrollment(
+      health,
+    );
+    final identityRequired =
+        supportsDevicePairing ||
+        supportsDeviceEnrollment ||
+        pairingBridgeIdentityId != null ||
+        pairingBridgeInstanceId != null;
     try {
+      if (identityRequired && machineManagerCubit == null) {
+        throw StateError(
+          'This client cannot verify the Bridge signing identity.',
+        );
+      }
       if (machineManagerCubit != null) {
         // Parse host and port from URL
         final uri = Uri.tryParse(
@@ -1720,16 +1716,41 @@ class _SessionListScreenState extends State<SessionListScreen>
               .replaceFirst('wss://', 'https://'),
         );
         if (uri != null) {
-          final machine = await machineManagerCubit.recordConnection(
+          var machine = await machineManagerCubit.recordConnection(
             host: uri.host,
             port: uri.port != 0 ? uri.port : 8765,
             apiKey: trimmedApiKey.isNotEmpty ? trimmedApiKey : null,
             useSsl: uri.scheme == 'https',
           );
           if (!_isCurrentConnectionAttempt(attempt)) return;
+          if (identityRequired) {
+            final verifiedMachine = await machineManagerCubit
+                .verifyRouteIdentity(machine.id);
+            if (verifiedMachine != null) machine = verifiedMachine;
+            if (!_isCurrentConnectionAttempt(attempt)) return;
+            if (verifiedMachine == null ||
+                verifiedMachine.bridgeIdentityId == null) {
+              throw StateError(
+                'Could not verify the Bridge signing identity for this route.',
+              );
+            }
+          }
+          if (pairingBridgeIdentityId != null &&
+              machine.bridgeIdentityId != pairingBridgeIdentityId) {
+            throw StateError(
+              'The scanned Bridge identity does not match this route.',
+            );
+          }
+          if (pairingBridgeInstanceId != null &&
+              machine.bridgeInstanceId != pairingBridgeInstanceId) {
+            throw StateError(
+              'The scanned Bridge data identity does not match this route.',
+            );
+          }
           logicalConnectionIdentity = 'machine:${machine.id}';
           expectedBridgeInstanceId = machine.bridgeInstanceId;
           expectedCodexSourceId = machine.codexSourceId;
+          expectedBridgeIdentityId = machine.bridgeIdentityId;
           effectiveApiKey = await resolveBridgeConnectionApiKey(
             providedApiKey: effectiveApiKey,
             savedMachineId: machine.id,
@@ -1740,6 +1761,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       }
 
       if (bridgeHealthRequiresConnectionKey(health) &&
+          !supportsDevicePairing &&
           effectiveApiKey == null) {
         _presentConnectionKeyPrompt(rejectedSavedKey: false);
         return;
@@ -1759,6 +1781,10 @@ class _SessionListScreenState extends State<SessionListScreen>
         logicalConnectionIdentity: logicalConnectionIdentity,
         expectedBridgeInstanceId: expectedBridgeInstanceId,
         expectedCodexSourceId: expectedCodexSourceId,
+        devicePairingSupported: supportsDevicePairing,
+        deviceEnrollmentSupported: supportsDeviceEnrollment,
+        pairingToken: pairingToken,
+        expectedBridgeIdentityId: expectedBridgeIdentityId,
       );
     } catch (error) {
       if (_isCurrentConnectionAttempt(attempt)) {
@@ -1860,7 +1886,13 @@ class _SessionListScreenState extends State<SessionListScreen>
       const QrScanRoute(),
     );
     if (result != null && mounted) {
-      _connectWithParams(result.serverUrl, result.token);
+      _connectWithParams(
+        result.serverUrl,
+        result.token,
+        pairingToken: result.pairingToken,
+        pairingBridgeIdentityId: result.bridgeIdentityId,
+        pairingBridgeInstanceId: result.bridgeInstanceId,
+      );
     }
   }
 
@@ -1904,6 +1936,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     _sessionListReadinessSub?.cancel();
     _catalogCacheReadinessSub?.cancel();
     _connectionBootstrapSub?.cancel();
+    _devicePairingSub?.cancel();
     _contentSyncProgressSub?.cancel();
     _promptHistorySyncTimer?.cancel();
     _archivePendingRequests.dispose();
@@ -2052,7 +2085,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     }
     final token = _applicationReadinessProbeFence.begin(key);
     if (token == null) return;
-    final observed = await BridgeService.checkApplicationReadiness(url);
+    final observed = await bridge.checkCurrentApplicationReadiness();
     if (!_applicationReadinessProbeFence.complete(token)) return;
     if (!mounted ||
         !_applicationReadinessPollingEnabled ||
@@ -4176,6 +4209,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       onToggleFavorite: _toggleFavorite,
       onUpdateMachine: _updateMachine,
       onStopMachine: _stopMachine,
+      onRenameMachineGroup: _renameMachineGroup,
       onAddMachine: _addMachine,
       onRefreshMachines: () => machineManagerCubit?.refreshAll(),
       connectionProgressLabel: connectionProgressLabel,
@@ -4322,10 +4356,27 @@ class _SessionListScreenState extends State<SessionListScreen>
       if (!_isCurrentConnectionAttempt(attempt)) return;
       final health = await BridgeService.checkHealth(machine.wsUrl);
       if (!_isCurrentConnectionAttempt(attempt)) return;
+      final supportsDevicePairing = bridgeHealthSupportsDevicePairing(health);
+      final supportsDeviceEnrollment = bridgeHealthSupportsDeviceEnrollment(
+        health,
+      );
       if (bridgeHealthRequiresConnectionKey(health) &&
+          !supportsDevicePairing &&
           (apiKey == null || apiKey.isEmpty)) {
         _presentConnectionKeyPrompt(rejectedSavedKey: false);
         return;
+      }
+
+      var verifiedMachine = machine;
+      if (supportsDevicePairing || supportsDeviceEnrollment) {
+        final verified = await cubit.verifyRouteIdentity(machine.id);
+        if (!_isCurrentConnectionAttempt(attempt)) return;
+        if (verified == null || verified.bridgeIdentityId == null) {
+          throw StateError(
+            'Could not verify the Bridge signing identity for this route.',
+          );
+        }
+        verifiedMachine = verified;
       }
 
       // Record connection to update lastConnected
@@ -4340,8 +4391,11 @@ class _SessionListScreenState extends State<SessionListScreen>
       bridge.connect(
         wsUrl,
         logicalConnectionIdentity: 'machine:${machine.id}',
-        expectedBridgeInstanceId: machine.bridgeInstanceId,
-        expectedCodexSourceId: machine.codexSourceId,
+        expectedBridgeInstanceId: verifiedMachine.bridgeInstanceId,
+        expectedCodexSourceId: verifiedMachine.codexSourceId,
+        devicePairingSupported: supportsDevicePairing,
+        deviceEnrollmentSupported: supportsDeviceEnrollment,
+        expectedBridgeIdentityId: verifiedMachine.bridgeIdentityId,
       );
     } catch (e) {
       if (_isCurrentConnectionAttempt(attempt)) {
@@ -4481,6 +4535,46 @@ class _SessionListScreenState extends State<SessionListScreen>
         ],
       ),
     );
+  }
+
+  Future<void> _renameMachineGroup(BridgeMachineGroup group) async {
+    final l = AppLocalizations.of(context);
+    final controller = TextEditingController(text: group.displayName);
+    try {
+      final name = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(l.renameMachineGroup),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            maxLength: 128,
+            decoration: InputDecoration(
+              labelText: l.machineGroupName,
+              border: const OutlineInputBorder(),
+            ),
+            onSubmitted: (value) => Navigator.pop(dialogContext, value),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: Text(l.cancel),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, controller.text),
+              child: Text(l.save),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || name == null) return;
+      await context.read<MachineManagerCubit>().renameMachineGroup(
+        group.id,
+        name,
+      );
+    } finally {
+      controller.dispose();
+    }
   }
 
   void _editMachine(MachineWithStatus m) async {
@@ -4712,6 +4806,7 @@ class _ConnectFormWidget extends StatelessWidget {
   final ValueChanged<MachineWithStatus> onToggleFavorite;
   final ValueChanged<MachineWithStatus> onUpdateMachine;
   final ValueChanged<MachineWithStatus> onStopMachine;
+  final ValueChanged<BridgeMachineGroup> onRenameMachineGroup;
   final VoidCallback onAddMachine;
   final VoidCallback? onRefreshMachines;
   final String? connectionProgressLabel;
@@ -4738,6 +4833,7 @@ class _ConnectFormWidget extends StatelessWidget {
     required this.onToggleFavorite,
     required this.onUpdateMachine,
     required this.onStopMachine,
+    required this.onRenameMachineGroup,
     required this.onAddMachine,
     this.onRefreshMachines,
     this.connectionProgressLabel,
@@ -4768,6 +4864,7 @@ class _ConnectFormWidget extends StatelessWidget {
       onToggleFavorite: onToggleFavorite,
       onUpdateMachine: onUpdateMachine,
       onStopMachine: onStopMachine,
+      onRenameMachineGroup: onRenameMachineGroup,
       onAddMachine: onAddMachine,
       onRefreshMachines: onRefreshMachines,
       connectionProgressLabel: connectionProgressLabel,

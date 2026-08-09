@@ -18,6 +18,7 @@ import '../utils/codex_plan_update.dart';
 import '../utils/history_window_policy.dart';
 import '../utils/network_endpoint.dart';
 import 'bridge_service_base.dart';
+import 'bridge_device_identity_service.dart';
 import 'codex_goal_request_router.dart';
 import 'desktop_continuity_backlog.dart';
 import 'session_runtime_store.dart';
@@ -97,6 +98,40 @@ enum BridgeApplicationReadiness {
 
 enum BridgeConnectionFailureKind { authenticationRejected }
 
+enum BridgeDevicePairingPhase {
+  idle,
+  enrolling,
+  waitingForMacApproval,
+  authenticating,
+  authenticated,
+  rejected,
+  failed,
+}
+
+class BridgeDevicePairingSnapshot {
+  const BridgeDevicePairingSnapshot({
+    required this.phase,
+    required this.connectionEpoch,
+    this.bridgeIdentityId,
+    this.confirmationCode,
+    this.expiresAt,
+    this.message,
+  });
+
+  const BridgeDevicePairingSnapshot.idle()
+    : this(phase: BridgeDevicePairingPhase.idle, connectionEpoch: 0);
+
+  final BridgeDevicePairingPhase phase;
+  final int connectionEpoch;
+  final String? bridgeIdentityId;
+  final String? confirmationCode;
+  final DateTime? expiresAt;
+  final String? message;
+
+  bool get needsMacApproval =>
+      phase == BridgeDevicePairingPhase.waitingForMacApproval;
+}
+
 class BridgeConnectionFailure {
   const BridgeConnectionFailure({
     required this.kind,
@@ -110,6 +145,26 @@ class BridgeConnectionFailure {
 bool bridgeHealthRequiresConnectionKey(Map<String, dynamic>? health) {
   final authentication = health?['bridgeAuthentication'];
   return authentication is Map && authentication['required'] == true;
+}
+
+bool bridgeHealthSupportsDevicePairing(Map<String, dynamic>? health) {
+  final authentication = health?['bridgeAuthentication'];
+  if (authentication is! Map) return false;
+  final scheme = authentication['scheme'];
+  return scheme == 'api_key_or_device_signature' ||
+      scheme == 'device_signature' ||
+      authentication['mode'] == 'paired_or_key';
+}
+
+bool bridgeHealthSupportsDeviceEnrollment(Map<String, dynamic>? health) {
+  final authentication = health?['bridgeAuthentication'];
+  if (authentication is! Map) return false;
+  if (authentication['pairingAvailable'] == true) return true;
+  final methods = authentication['methods'];
+  return methods is List &&
+      methods.any(
+        (method) => method == 'device_ed25519' || method == 'device_signature',
+      );
 }
 
 @visibleForTesting
@@ -426,6 +481,8 @@ class BridgeService implements BridgeServiceBase {
       StreamController<BridgeConnectionFailure>.broadcast();
   final _connectionBootstrapController =
       StreamController<BridgeConnectionBootstrapSnapshot>.broadcast();
+  final _devicePairingController =
+      StreamController<BridgeDevicePairingSnapshot>.broadcast();
   final _clientDeliveryModeStateController =
       StreamController<ClientDeliveryModeStateMessage>.broadcast();
   final _backgroundNotificationController =
@@ -671,6 +728,23 @@ class BridgeService implements BridgeServiceBase {
   String? _logicalConnectionIdentity;
   String? _cacheBridgeInstanceIdHint;
   String? _cacheCodexSourceIdHint;
+  final BridgeDeviceIdentityService? deviceIdentityService;
+  BridgeDevicePairingSnapshot _devicePairing =
+      const BridgeDevicePairingSnapshot.idle();
+  Timer? _devicePairingPollTimer;
+  bool _devicePairingSupported = false;
+  bool _deviceEnrollmentSupported = false;
+  bool _deviceAuthenticationPending = false;
+  bool _deviceEnrollmentConfirmed = false;
+  bool _deviceAuthFallbackAttempted = false;
+  bool _transportHandshakeReady = false;
+  bool _applicationHandshakeCompleted = false;
+  String? _devicePairingToken;
+  String? _expectedBridgeIdentityId;
+  String? _currentBridgeIdentityId;
+  String? _deviceHttpSessionToken;
+  DateTime? _deviceHttpSessionExpiresAt;
+  String? _currentLegacyApiKey;
   int _connectionEpoch = 0;
   Timer? _reconnectTimer;
   Timer? _authoritativeSessionListWatchdog;
@@ -702,6 +776,9 @@ class BridgeService implements BridgeServiceBase {
       _connectionFailureController.stream;
   Stream<BridgeConnectionBootstrapSnapshot> get connectionBootstrap =>
       _connectionBootstrapController.stream;
+  Stream<BridgeDevicePairingSnapshot> get devicePairingChanges =>
+      _devicePairingController.stream;
+  BridgeDevicePairingSnapshot get currentDevicePairing => _devicePairing;
   BridgeConnectionBootstrapSnapshot get currentConnectionBootstrap =>
       _connectionBootstrap;
   @override
@@ -1051,6 +1128,7 @@ class BridgeService implements BridgeServiceBase {
     this.fileTransferClientSupported = false,
     this.clientAppVersion,
     this.clientMobileRuntime,
+    this.deviceIdentityService,
   }) {
     unawaited(_ensureOfflineQueueRestored());
   }
@@ -1893,6 +1971,10 @@ class BridgeService implements BridgeServiceBase {
     String? logicalConnectionIdentity,
     String? expectedBridgeInstanceId,
     String? expectedCodexSourceId,
+    bool devicePairingSupported = false,
+    bool deviceEnrollmentSupported = false,
+    String? pairingToken,
+    String? expectedBridgeIdentityId,
   }) {
     _cancelAuthoritativeSessionListWatchdog();
     _failPendingPermissionChanges(
@@ -1934,6 +2016,25 @@ class BridgeService implements BridgeServiceBase {
     _connectionEpoch++;
     _authenticationBlocked = false;
     _reportedAuthenticationFailureEpoch = null;
+    _devicePairingPollTimer?.cancel();
+    _devicePairingPollTimer = null;
+    _devicePairingSupported =
+        devicePairingSupported && deviceIdentityService != null;
+    _deviceEnrollmentSupported =
+        deviceEnrollmentSupported && deviceIdentityService != null;
+    _devicePairingToken = pairingToken?.trim().isEmpty == true
+        ? null
+        : pairingToken?.trim();
+    _expectedBridgeIdentityId = expectedBridgeIdentityId?.trim().isEmpty == true
+        ? null
+        : expectedBridgeIdentityId?.trim();
+    _currentBridgeIdentityId = null;
+    _deviceEnrollmentConfirmed = false;
+    _deviceAuthFallbackAttempted = false;
+    _transportHandshakeReady = false;
+    _applicationHandshakeCompleted = false;
+    _deviceHttpSessionToken = null;
+    _deviceHttpSessionExpiresAt = null;
     _resetLegacyRecentSessionsTransport();
     _failPendingHistoryRequests(clearCursors: false);
     // Legacy history responses in flight on the old socket can never arrive
@@ -1979,6 +2080,20 @@ class BridgeService implements BridgeServiceBase {
     _setBridgeConnectionState(BridgeConnectionState.connecting);
     final connectionKeyWasSupplied =
         Uri.tryParse(url)?.queryParameters['token']?.isNotEmpty == true;
+    _currentLegacyApiKey = connectionKeyWasSupplied
+        ? Uri.tryParse(url)?.queryParameters['token']
+        : null;
+    _deviceAuthenticationPending =
+        _devicePairingSupported && !connectionKeyWasSupplied;
+    _setDevicePairingSnapshot(
+      BridgeDevicePairingSnapshot(
+        phase: _deviceAuthenticationPending
+            ? BridgeDevicePairingPhase.authenticating
+            : BridgeDevicePairingPhase.idle,
+        connectionEpoch: epoch,
+        bridgeIdentityId: _expectedBridgeIdentityId,
+      ),
+    );
     try {
       final channel = WebSocketChannel.connect(Uri.parse(url));
       _channel = channel;
@@ -2001,6 +2116,9 @@ class BridgeService implements BridgeServiceBase {
           try {
             final json = jsonDecode(data as String) as Map<String, dynamic>;
             diagnosticType = _diagnosticToken(json['type']);
+            if (_consumeDeviceAuthenticationFrame(json, channel, epoch)) {
+              return;
+            }
             final rawSessionId = json['sessionId'];
             if (rawSessionId is String && rawSessionId.isNotEmpty) {
               diagnosticSessionId = rawSessionId;
@@ -2757,6 +2875,14 @@ class BridgeService implements BridgeServiceBase {
             _stopForAuthenticationFailure(channel, epoch);
             return;
           }
+          if (channel.closeCode == 4003 && _deviceAuthenticationPending) {
+            _stopForDeviceAuthenticationFailure(
+              channel,
+              epoch,
+              'Bridge device pairing or authentication did not complete.',
+            );
+            return;
+          }
           _cancelAuthoritativeSessionListWatchdog();
           _logConnectionDiagnostic('socket_done', epoch: epoch);
           _channel = null;
@@ -2845,6 +2971,23 @@ class BridgeService implements BridgeServiceBase {
       BridgeConnectionBootstrapPhase.transportReady,
       epoch: epoch,
     );
+    _transportHandshakeReady = true;
+    if (_deviceAuthenticationPending) return;
+    await _completeApplicationHandshake(channel, epoch);
+  }
+
+  Future<void> _completeApplicationHandshake(
+    WebSocketChannel channel,
+    int epoch,
+  ) async {
+    if (_applicationHandshakeCompleted ||
+        _deviceAuthenticationPending ||
+        epoch != _connectionEpoch ||
+        !identical(_channel, channel) ||
+        _intentionalDisconnect) {
+      return;
+    }
+    _applicationHandshakeCompleted = true;
     _setBridgeConnectionState(BridgeConnectionState.connected);
     send(
       ClientMessage.clientCapabilities(
@@ -2886,6 +3029,446 @@ class BridgeService implements BridgeServiceBase {
         BridgeClientDeliveryMode.notificationsOnly) {
       unawaited(_reassertDesiredClientDeliveryMode());
     }
+    if (_deviceEnrollmentSupported && _currentLegacyApiKey != null) {
+      unawaited(_sendDevicePairingRequest(channel, epoch));
+    }
+  }
+
+  bool _consumeDeviceAuthenticationFrame(
+    Map<String, dynamic> json,
+    WebSocketChannel channel,
+    int epoch,
+  ) {
+    switch (json['type']) {
+      case 'bridge_device_challenge':
+        unawaited(_handleDeviceChallenge(json, channel, epoch));
+        return true;
+      case 'bridge_pairing_pending':
+        _handleDevicePairingStatus(json, channel, epoch);
+        return true;
+      case 'bridge_device_authenticated':
+        _handleDeviceAuthenticated(json, channel, epoch);
+        return true;
+      case 'error':
+        final errorCode = json['errorCode'];
+        if (errorCode == 'device_auth_failed') {
+          unawaited(_recoverFromDeviceAuthenticationFailure(channel, epoch));
+          return true;
+        }
+        if (errorCode == 'pairing_failed' ||
+            errorCode == 'authentication_required') {
+          _stopForDeviceAuthenticationFailure(
+            channel,
+            epoch,
+            json['message'] is String
+                ? json['message'] as String
+                : 'Bridge device authentication failed.',
+          );
+          return true;
+        }
+    }
+    return false;
+  }
+
+  String? _authenticationString(Object? value, {int maximumLength = 512}) {
+    if (value is! String) return null;
+    final normalized = value.trim();
+    if (normalized.isEmpty || normalized.length > maximumLength) return null;
+    return normalized;
+  }
+
+  Future<void> _handleDeviceChallenge(
+    Map<String, dynamic> json,
+    WebSocketChannel channel,
+    int epoch,
+  ) async {
+    if (epoch != _connectionEpoch || !identical(_channel, channel)) return;
+    final challengeId = _authenticationString(json['challengeId']);
+    final nonce = _authenticationString(json['nonce']);
+    final expiresAtText = _authenticationString(json['expiresAt']);
+    final bridgeIdentityId = _authenticationString(json['bridgeIdentityId']);
+    final bridgeInstanceId = _authenticationString(json['bridgeInstanceId']);
+    final expiresAt = expiresAtText == null
+        ? null
+        : DateTime.tryParse(expiresAtText)?.toUtc();
+    if (challengeId == null ||
+        nonce == null ||
+        expiresAtText == null ||
+        expiresAt == null ||
+        !expiresAt.isAfter(DateTime.now().toUtc()) ||
+        bridgeIdentityId == null ||
+        bridgeInstanceId == null) {
+      _stopForDeviceAuthenticationFailure(
+        channel,
+        epoch,
+        'Bridge sent an invalid device-authentication challenge.',
+      );
+      return;
+    }
+    if (_expectedBridgeIdentityId != null &&
+        _expectedBridgeIdentityId != bridgeIdentityId) {
+      _stopForDeviceAuthenticationFailure(
+        channel,
+        epoch,
+        'The Bridge signing identity changed for this saved computer.',
+      );
+      return;
+    }
+    _currentBridgeIdentityId = bridgeIdentityId;
+    _expectedBridgeIdentityId ??= bridgeIdentityId;
+    _setDevicePairingSnapshot(
+      BridgeDevicePairingSnapshot(
+        phase: BridgeDevicePairingPhase.authenticating,
+        connectionEpoch: epoch,
+        bridgeIdentityId: bridgeIdentityId,
+        expiresAt: expiresAt,
+      ),
+    );
+    final identityService = deviceIdentityService;
+    if (identityService == null) {
+      _stopForDeviceAuthenticationFailure(
+        channel,
+        epoch,
+        'This client cannot create a Bridge device identity.',
+      );
+      return;
+    }
+    try {
+      final paired =
+          _deviceEnrollmentConfirmed ||
+          await identityService.isPairedWith(bridgeIdentityId);
+      if (epoch != _connectionEpoch || !identical(_channel, channel)) return;
+      if (!paired) {
+        await _sendDevicePairingRequest(channel, epoch);
+        return;
+      }
+      final credential = await identityService.loadOrCreate();
+      final payload = jsonEncode({
+        'challengeId': challengeId,
+        'nonce': nonce,
+        'expiresAt': expiresAtText,
+        'bridgeIdentityId': bridgeIdentityId,
+        'bridgeInstanceId': bridgeInstanceId,
+        'deviceId': credential.deviceId,
+      });
+      final proof = await identityService.sign(payload);
+      _sendRawAuthenticationFrame(channel, epoch, {
+        'type': 'device_auth',
+        'challengeId': challengeId,
+        'nonce': nonce,
+        'expiresAt': expiresAtText,
+        'bridgeIdentityId': bridgeIdentityId,
+        'bridgeInstanceId': bridgeInstanceId,
+        ...proof.toJson(),
+      });
+    } catch (error, stackTrace) {
+      logger.warning(
+        'Bridge device authentication failed locally',
+        error,
+        stackTrace,
+      );
+      _stopForDeviceAuthenticationFailure(
+        channel,
+        epoch,
+        'The phone could not sign the Bridge authentication challenge.',
+      );
+    }
+  }
+
+  Future<void> _sendDevicePairingRequest(
+    WebSocketChannel channel,
+    int epoch, {
+    bool publishEnrolling = true,
+  }) async {
+    final identityService = deviceIdentityService;
+    if (identityService == null ||
+        epoch != _connectionEpoch ||
+        !identical(_channel, channel)) {
+      return;
+    }
+    try {
+      final credential = await identityService.loadOrCreate();
+      if (publishEnrolling) {
+        _setDevicePairingSnapshot(
+          BridgeDevicePairingSnapshot(
+            phase: BridgeDevicePairingPhase.enrolling,
+            connectionEpoch: epoch,
+            bridgeIdentityId:
+                _currentBridgeIdentityId ?? _expectedBridgeIdentityId,
+          ),
+        );
+      }
+      _sendRawAuthenticationFrame(channel, epoch, {
+        'type': 'device_pairing_request',
+        'deviceId': credential.deviceId,
+        'publicKey': credential.publicKey,
+        'label': clientAppVersion == null
+            ? 'CC Pocket'
+            : 'CC Pocket $clientAppVersion',
+        'scopes': const ['owner'],
+        if (_devicePairingToken != null) 'token': _devicePairingToken,
+      });
+    } catch (error, stackTrace) {
+      logger.warning(
+        'Bridge device enrollment failed locally',
+        error,
+        stackTrace,
+      );
+      if (_deviceAuthenticationPending) {
+        _stopForDeviceAuthenticationFailure(
+          channel,
+          epoch,
+          'The phone could not prepare its Bridge device identity.',
+        );
+      } else {
+        _setDevicePairingSnapshot(
+          BridgeDevicePairingSnapshot(
+            phase: BridgeDevicePairingPhase.failed,
+            connectionEpoch: epoch,
+            bridgeIdentityId:
+                _currentBridgeIdentityId ?? _expectedBridgeIdentityId,
+            message: 'Could not enroll this phone for passwordless reconnect.',
+          ),
+        );
+      }
+    }
+  }
+
+  void _handleDevicePairingStatus(
+    Map<String, dynamic> json,
+    WebSocketChannel channel,
+    int epoch,
+  ) {
+    if (epoch != _connectionEpoch || !identical(_channel, channel)) return;
+    final status = _authenticationString(json['status'], maximumLength: 32);
+    final confirmationCode = _authenticationString(
+      json['confirmationCode'],
+      maximumLength: 16,
+    );
+    final expiresAtText = _authenticationString(json['expiresAt']);
+    final expiresAt = expiresAtText == null
+        ? null
+        : DateTime.tryParse(expiresAtText)?.toUtc();
+    _devicePairingToken = null;
+    switch (status) {
+      case 'pending':
+        if (confirmationCode == null || expiresAt == null) {
+          _stopForDeviceAuthenticationFailure(
+            channel,
+            epoch,
+            'Bridge pairing approval data is incomplete.',
+          );
+          return;
+        }
+        _setDevicePairingSnapshot(
+          BridgeDevicePairingSnapshot(
+            phase: BridgeDevicePairingPhase.waitingForMacApproval,
+            connectionEpoch: epoch,
+            bridgeIdentityId:
+                _currentBridgeIdentityId ?? _expectedBridgeIdentityId,
+            confirmationCode: confirmationCode,
+            expiresAt: expiresAt,
+          ),
+        );
+        _scheduleDevicePairingPoll(channel, epoch, expiresAt);
+        return;
+      case 'paired':
+        _devicePairingPollTimer?.cancel();
+        _devicePairingPollTimer = null;
+        _deviceEnrollmentConfirmed = true;
+        if (!_deviceAuthenticationPending) {
+          final bridgeIdentityId =
+              _currentBridgeIdentityId ?? _expectedBridgeIdentityId;
+          if (bridgeIdentityId != null) {
+            unawaited(deviceIdentityService?.markPairedWith(bridgeIdentityId));
+          }
+          if (_devicePairingSupported) {
+            _sanitizeLastUrlAfterDeviceEnrollment();
+          }
+          _setDevicePairingSnapshot(
+            BridgeDevicePairingSnapshot(
+              phase: BridgeDevicePairingPhase.authenticated,
+              connectionEpoch: epoch,
+              bridgeIdentityId: bridgeIdentityId,
+            ),
+          );
+        }
+        return;
+      case 'rejected':
+        _setDevicePairingSnapshot(
+          BridgeDevicePairingSnapshot(
+            phase: BridgeDevicePairingPhase.rejected,
+            connectionEpoch: epoch,
+            bridgeIdentityId:
+                _currentBridgeIdentityId ?? _expectedBridgeIdentityId,
+            confirmationCode: confirmationCode,
+            expiresAt: expiresAt,
+          ),
+        );
+        _stopForDeviceAuthenticationFailure(
+          channel,
+          epoch,
+          'Pairing was rejected on the Mac.',
+          preservePairingSnapshot: true,
+        );
+        return;
+      default:
+        _stopForDeviceAuthenticationFailure(
+          channel,
+          epoch,
+          'Bridge sent an invalid pairing status.',
+        );
+    }
+  }
+
+  void _scheduleDevicePairingPoll(
+    WebSocketChannel channel,
+    int epoch,
+    DateTime expiresAt,
+  ) {
+    _devicePairingPollTimer?.cancel();
+    if (!expiresAt.isAfter(DateTime.now().toUtc())) {
+      _stopForDeviceAuthenticationFailure(
+        channel,
+        epoch,
+        'The pairing request expired.',
+      );
+      return;
+    }
+    _devicePairingPollTimer = Timer(const Duration(seconds: 1), () {
+      if (epoch != _connectionEpoch || !identical(_channel, channel)) return;
+      unawaited(
+        _sendDevicePairingRequest(channel, epoch, publishEnrolling: false),
+      );
+    });
+  }
+
+  void _handleDeviceAuthenticated(
+    Map<String, dynamic> json,
+    WebSocketChannel channel,
+    int epoch,
+  ) {
+    if (epoch != _connectionEpoch || !identical(_channel, channel)) return;
+    final bridgeIdentityId = _authenticationString(json['bridgeIdentityId']);
+    if (bridgeIdentityId == null ||
+        (_expectedBridgeIdentityId != null &&
+            _expectedBridgeIdentityId != bridgeIdentityId)) {
+      _stopForDeviceAuthenticationFailure(
+        channel,
+        epoch,
+        'Bridge authenticated with an unexpected signing identity.',
+      );
+      return;
+    }
+    _devicePairingPollTimer?.cancel();
+    _devicePairingPollTimer = null;
+    _deviceAuthenticationPending = false;
+    _deviceEnrollmentConfirmed = true;
+    _currentBridgeIdentityId = bridgeIdentityId;
+    _expectedBridgeIdentityId ??= bridgeIdentityId;
+    _deviceHttpSessionToken = _authenticationString(
+      json['httpSessionToken'],
+      maximumLength: 4096,
+    );
+    final expiresAtText = _authenticationString(json['expiresAt']);
+    _deviceHttpSessionExpiresAt = expiresAtText == null
+        ? null
+        : DateTime.tryParse(expiresAtText)?.toUtc();
+    unawaited(deviceIdentityService?.markPairedWith(bridgeIdentityId));
+    _sanitizeLastUrlAfterDeviceEnrollment();
+    _setDevicePairingSnapshot(
+      BridgeDevicePairingSnapshot(
+        phase: BridgeDevicePairingPhase.authenticated,
+        connectionEpoch: epoch,
+        bridgeIdentityId: bridgeIdentityId,
+        expiresAt: _deviceHttpSessionExpiresAt,
+      ),
+    );
+    if (_transportHandshakeReady) {
+      unawaited(_completeApplicationHandshake(channel, epoch));
+    }
+  }
+
+  Future<void> _recoverFromDeviceAuthenticationFailure(
+    WebSocketChannel channel,
+    int epoch,
+  ) async {
+    if (epoch != _connectionEpoch || !identical(_channel, channel)) return;
+    final bridgeIdentityId =
+        _currentBridgeIdentityId ?? _expectedBridgeIdentityId;
+    if (_deviceAuthFallbackAttempted || bridgeIdentityId == null) {
+      _stopForDeviceAuthenticationFailure(
+        channel,
+        epoch,
+        'Bridge rejected the phone device signature.',
+      );
+      return;
+    }
+    _deviceAuthFallbackAttempted = true;
+    _deviceEnrollmentConfirmed = false;
+    await deviceIdentityService?.forgetPairing(bridgeIdentityId);
+    await _sendDevicePairingRequest(channel, epoch);
+  }
+
+  void _sendRawAuthenticationFrame(
+    WebSocketChannel channel,
+    int epoch,
+    Map<String, dynamic> message,
+  ) {
+    if (epoch != _connectionEpoch ||
+        !identical(_channel, channel) ||
+        _intentionalDisconnect) {
+      return;
+    }
+    channel.sink.add(jsonEncode(message));
+  }
+
+  void _sanitizeLastUrlAfterDeviceEnrollment() {
+    final uri = _lastUrl == null ? null : Uri.tryParse(_lastUrl!);
+    if (uri == null || !uri.queryParameters.containsKey('token')) return;
+    final query = Map<String, String>.from(uri.queryParameters)
+      ..remove('token');
+    _lastUrl = uri.replace(queryParameters: query).toString();
+  }
+
+  void _setDevicePairingSnapshot(BridgeDevicePairingSnapshot snapshot) {
+    _devicePairing = snapshot;
+    if (!_devicePairingController.isClosed) {
+      _devicePairingController.add(snapshot);
+    }
+  }
+
+  void _stopForDeviceAuthenticationFailure(
+    WebSocketChannel channel,
+    int epoch,
+    String message, {
+    bool preservePairingSnapshot = false,
+  }) {
+    if (epoch != _connectionEpoch || _intentionalDisconnect) return;
+    _authenticationBlocked = true;
+    _deviceAuthenticationPending = false;
+    _devicePairingPollTimer?.cancel();
+    _devicePairingPollTimer = null;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    if (!preservePairingSnapshot) {
+      _setDevicePairingSnapshot(
+        BridgeDevicePairingSnapshot(
+          phase: BridgeDevicePairingPhase.failed,
+          connectionEpoch: epoch,
+          bridgeIdentityId:
+              _currentBridgeIdentityId ?? _expectedBridgeIdentityId,
+          message: message,
+        ),
+      );
+    }
+    _setConnectionBootstrapPhase(
+      BridgeConnectionBootstrapPhase.idle,
+      epoch: epoch,
+    );
+    if (identical(_channel, channel)) _channel = null;
+    channel.sink.close();
+    _setBridgeConnectionState(BridgeConnectionState.disconnected);
   }
 
   void _stopForAuthenticationFailure(WebSocketChannel channel, int epoch) {
@@ -3634,6 +4217,10 @@ class BridgeService implements BridgeServiceBase {
           logicalConnectionIdentity: _logicalConnectionIdentity,
           expectedBridgeInstanceId: _cacheBridgeInstanceIdHint,
           expectedCodexSourceId: _cacheCodexSourceIdHint,
+          devicePairingSupported: _devicePairingSupported,
+          deviceEnrollmentSupported: _deviceEnrollmentSupported,
+          pairingToken: _devicePairingToken,
+          expectedBridgeIdentityId: _expectedBridgeIdentityId,
         );
       }
     });
@@ -7078,8 +7665,9 @@ class BridgeService implements BridgeServiceBase {
   /// an explicit 404 so transient HTTP failures cannot masquerade as support
   /// for the old readiness contract.
   static Future<BridgeApplicationReadiness> checkApplicationReadiness(
-    String wsUrl,
-  ) async {
+    String wsUrl, {
+    String? authorizationToken,
+  }) async {
     try {
       final uri = Uri.tryParse(wsUrl);
       if (uri == null) return BridgeApplicationReadiness.unreachable;
@@ -7089,7 +7677,9 @@ class BridgeService implements BridgeServiceBase {
       final response = await http
           .get(
             Uri.parse(readinessUrl),
-            headers: bridgePrivateHttpHeaders(wsUrl),
+            headers: authorizationToken == null
+                ? bridgePrivateHttpHeaders(wsUrl)
+                : {'Authorization': 'Bearer $authorizationToken'},
           )
           .timeout(const Duration(seconds: 3));
       return parseBridgeApplicationReadiness(
@@ -7099,6 +7689,32 @@ class BridgeService implements BridgeServiceBase {
     } catch (_) {
       return BridgeApplicationReadiness.unreachable;
     }
+  }
+
+  Future<BridgeApplicationReadiness> checkCurrentApplicationReadiness() {
+    final url = _lastUrl;
+    if (url == null) {
+      return Future.value(BridgeApplicationReadiness.unreachable);
+    }
+    return checkApplicationReadiness(
+      url,
+      authorizationToken: _activePrivateHttpBearer,
+    );
+  }
+
+  String? get _activePrivateHttpBearer {
+    final deviceToken = _deviceHttpSessionToken;
+    final expiresAt = _deviceHttpSessionExpiresAt;
+    if (deviceToken != null &&
+        (expiresAt == null || expiresAt.isAfter(DateTime.now().toUtc()))) {
+      return deviceToken;
+    }
+    return _currentLegacyApiKey;
+  }
+
+  Map<String, String> _privateHttpHeaders() {
+    final bearer = _activePrivateHttpBearer;
+    return bearer == null ? const {} : {'Authorization': 'Bearer $bearer'};
   }
 
   /// Upload an image to the gallery from base64 data.
@@ -7118,7 +7734,7 @@ class BridgeService implements BridgeServiceBase {
             Uri.parse('$baseUrl/api/gallery/upload'),
             headers: {
               'Content-Type': 'application/json',
-              ...bridgePrivateHttpHeaders(_lastUrl),
+              ..._privateHttpHeaders(),
             },
             body: jsonEncode({
               'base64': base64Data,
@@ -7152,7 +7768,7 @@ class BridgeService implements BridgeServiceBase {
       final response = await http
           .delete(
             Uri.parse('$baseUrl/api/gallery/$id'),
-            headers: bridgePrivateHttpHeaders(_lastUrl),
+            headers: _privateHttpHeaders(),
           )
           .timeout(const Duration(seconds: 10));
 
@@ -7188,6 +7804,10 @@ class BridgeService implements BridgeServiceBase {
         logicalConnectionIdentity: _logicalConnectionIdentity,
         expectedBridgeInstanceId: _cacheBridgeInstanceIdHint,
         expectedCodexSourceId: _cacheCodexSourceIdHint,
+        devicePairingSupported: _devicePairingSupported,
+        deviceEnrollmentSupported: _deviceEnrollmentSupported,
+        pairingToken: _devicePairingToken,
+        expectedBridgeIdentityId: _expectedBridgeIdentityId,
       );
     }
     // If reconnecting, do nothing — already in progress.
@@ -7206,6 +7826,13 @@ class BridgeService implements BridgeServiceBase {
     _channelSub = null;
     _channel?.sink.close();
     _channel = null;
+    _devicePairingPollTimer?.cancel();
+    _devicePairingPollTimer = null;
+    _deviceAuthenticationPending = false;
+    _deviceHttpSessionToken = null;
+    _deviceHttpSessionExpiresAt = null;
+    _currentLegacyApiKey = null;
+    _setDevicePairingSnapshot(const BridgeDevicePairingSnapshot.idle());
     _setConnectionBootstrapPhase(BridgeConnectionBootstrapPhase.idle);
     _setBridgeConnectionState(BridgeConnectionState.disconnected);
     _clearBridgeScopedState(clearOfflineQueue: true);
@@ -7272,6 +7899,8 @@ class BridgeService implements BridgeServiceBase {
     _connectionController.close();
     _connectionFailureController.close();
     _connectionBootstrapController.close();
+    _devicePairingPollTimer?.cancel();
+    _devicePairingController.close();
     _clientDeliveryModeStateController.close();
     _backgroundNotificationController.close();
     _backgroundActivityStateController.close();

@@ -291,6 +291,19 @@
   "allProjects": "すべてのプロジェクト",
   "named": "名前付き",
   "machines": "マシン",
+  "machineRoutes": "接続ルート",
+  "machineRoutesCount": "{count} 件のルート",
+  "@machineRoutesCount": { "placeholders": { "count": { "type": "int" } } },
+  "machinePreferredRoute": "優先",
+  "machineLatency": "{milliseconds} ms",
+  "@machineLatency": { "placeholders": { "milliseconds": { "type": "int" } } },
+  "machineOnline": "オンライン",
+  "machineChecking": "確認中",
+  "machineIdentityChanged": "Bridge の識別情報が変更されました",
+  "renameMachineGroup": "コンピュータ名を変更",
+  "machineGroupName": "コンピュータ名",
+  "machinePair": "ペアリング",
+  "machinePairingRequired": "ペアリングが必要です",
   "refreshStatus": "状態を更新",
   "add": "追加",
   "noSavedMachinesDescription": "保存済みのマシンはありません。\n追加すると、すばやく接続したり Bridge Server をリモート起動したりできます。",
@@ -1647,5 +1660,12 @@
     "placeholders": {
       "subtype": {"type": "String"}
     }
-  }
+  },
+  "bridgePairingTitle": "この iPhone をペアリング",
+  "bridgePairingBody": "CC Pocket Bridge を実行している Mac で、この一度限りの要求を承認してください。以後は接続キーなしで再接続できます。",
+  "bridgePairingCodeLabel": "確認コード",
+  "bridgePairingCommandHint": "その Mac で次を実行：",
+  "bridgePairingCopyCommand": "コマンドをコピー",
+  "bridgePairingWaiting": "Mac での承認を待っています…",
+  "bridgePairingFailed": "Bridge のペアリングを完了できませんでした。"
 }

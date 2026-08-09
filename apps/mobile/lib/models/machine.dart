@@ -46,6 +46,13 @@ enum MachineStatus {
 
   /// Network unreachable or connection refused
   unreachable,
+
+  /// The endpoint answered, but its signed Bridge identity no longer matches
+  /// the identity previously pinned to this route.
+  ///
+  /// This is intentionally distinct from [offline]: connecting would risk
+  /// opening a different computer through a reused IP or DNS name.
+  identityChanged,
 }
 
 /// SSH authentication type
@@ -119,6 +126,25 @@ abstract class Machine with _$Machine {
     /// This is a cache/data-source hint, not a credential. Different LAN,
     /// Tailscale, DNS, or tunnel routes may legitimately share this value.
     String? bridgeInstanceId,
+
+    /// Stable cryptographic installation identity advertised by a modern
+    /// Bridge before WebSocket authentication.
+    ///
+    /// The value is derived from a Bridge-owned signing key. It is not a Mac
+    /// serial number, MAC address, or other hardware identifier.
+    String? bridgeIdentityId,
+
+    /// Base64url-encoded Ed25519 public key used to pin [bridgeIdentityId].
+    String? bridgeIdentityPublicKey,
+
+    /// Computer name signed by the Bridge identity document.
+    String? bridgeComputerName,
+
+    /// Last advertised authentication mode (`key`, `paired_or_key`, `open`).
+    String? bridgeAuthMode,
+
+    /// Last time this route produced a valid signed identity document.
+    DateTime? bridgeIdentityVerifiedAt,
 
     /// Last authoritative Codex Home identity observed on this route.
     ///
@@ -201,6 +227,9 @@ abstract class MachineWithStatus with _$MachineWithStatus {
     DateTime? lastChecked,
     String? lastError,
 
+    /// Round-trip time of the latest successful HTTP health probe.
+    int? latencyMs,
+
     /// Bridge version info (fetched during health check)
     BridgeVersionInfo? versionInfo,
   }) = _MachineWithStatus;
@@ -210,4 +239,153 @@ abstract class MachineWithStatus with _$MachineWithStatus {
     if (versionInfo == null) return false;
     return versionInfo!.needsUpdate(expectedVersion);
   }
+}
+
+/// One user-visible computer with one or more transport routes.
+///
+/// Existing [Machine] records remain the durable route model so their API
+/// keys, SSH credentials and tunnel configuration keep independent lifetimes.
+/// This projection only groups routes after Bridge identity has been proven.
+class BridgeMachineGroup {
+  const BridgeMachineGroup({
+    required this.id,
+    required this.routes,
+    this.bridgeIdentityId,
+    this.bridgeInstanceId,
+    this.computerName,
+  });
+
+  final String id;
+  final List<MachineWithStatus> routes;
+  final String? bridgeIdentityId;
+  final String? bridgeInstanceId;
+  final String? computerName;
+
+  MachineWithStatus get preferredRoute {
+    final online = routes
+        .where((route) => route.status == MachineStatus.online)
+        .toList(growable: false);
+    final candidates = online.isEmpty ? routes : online;
+    final sorted = List<MachineWithStatus>.of(candidates)
+      ..sort(_comparePreferredRoutes);
+    return sorted.first;
+  }
+
+  bool get hasOnlineRoute =>
+      routes.any((route) => route.status == MachineStatus.online);
+
+  bool get hasIdentityConflict =>
+      routes.any((route) => route.status == MachineStatus.identityChanged);
+
+  bool get isFavorite => routes.any((route) => route.machine.isFavorite);
+
+  String get displayName {
+    final explicitNames = routes
+        .map((route) => route.machine.name?.trim())
+        .whereType<String>()
+        .where((name) => name.isNotEmpty)
+        .toSet();
+    if (explicitNames.length == 1) return explicitNames.single;
+    final signedName = computerName?.trim();
+    if (signedName != null && signedName.isNotEmpty) return signedName;
+    if (explicitNames.isNotEmpty) return explicitNames.first;
+    return preferredRoute.machine.displayName;
+  }
+
+  DateTime? get lastConnected {
+    DateTime? result;
+    for (final route in routes) {
+      final candidate = route.machine.lastConnected;
+      if (candidate != null && (result == null || candidate.isAfter(result))) {
+        result = candidate;
+      }
+    }
+    return result;
+  }
+
+  MachineStatus get status {
+    if (hasIdentityConflict) return MachineStatus.identityChanged;
+    if (hasOnlineRoute) return MachineStatus.online;
+    if (routes.any((route) => route.status == MachineStatus.unknown)) {
+      return MachineStatus.unknown;
+    }
+    if (routes.any((route) => route.status == MachineStatus.unreachable)) {
+      return MachineStatus.unreachable;
+    }
+    return MachineStatus.offline;
+  }
+
+  static int _comparePreferredRoutes(
+    MachineWithStatus left,
+    MachineWithStatus right,
+  ) {
+    final leftLatency = left.latencyMs;
+    final rightLatency = right.latencyMs;
+    if (leftLatency != null || rightLatency != null) {
+      if (leftLatency == null) return 1;
+      if (rightLatency == null) return -1;
+      final latencyOrder = leftLatency.compareTo(rightLatency);
+      if (latencyOrder != 0) return latencyOrder;
+    }
+    final leftConnected =
+        left.machine.lastConnected?.millisecondsSinceEpoch ?? 0;
+    final rightConnected =
+        right.machine.lastConnected?.millisecondsSinceEpoch ?? 0;
+    final recencyOrder = rightConnected.compareTo(leftConnected);
+    if (recencyOrder != 0) return recencyOrder;
+    return left.machine.uniqueKey.compareTo(right.machine.uniqueKey);
+  }
+}
+
+/// Groups saved connection routes by proven Bridge identity.
+///
+/// Signed identity wins. Older authenticated Bridges fall back to their
+/// existing random [Machine.bridgeInstanceId]. Unproven legacy endpoints stay
+/// isolated so a reused IP can never merge caches from two computers.
+List<BridgeMachineGroup> groupBridgeMachineRoutes(
+  Iterable<MachineWithStatus> routes,
+) {
+  final grouped = <String, List<MachineWithStatus>>{};
+  for (final route in routes) {
+    final machine = route.machine;
+    final signedId = machine.bridgeIdentityId?.trim();
+    final legacyId = machine.bridgeInstanceId?.trim();
+    final key = signedId != null && signedId.isNotEmpty
+        ? 'signed:$signedId'
+        : legacyId != null && legacyId.isNotEmpty
+        ? 'legacy:$legacyId'
+        : 'route:${machine.id}';
+    grouped.putIfAbsent(key, () => []).add(route);
+  }
+
+  final result = grouped.entries.map((entry) {
+    final groupRoutes = List<MachineWithStatus>.of(entry.value);
+    final first = groupRoutes.first.machine;
+    final signedId = first.bridgeIdentityId?.trim();
+    final legacyId = first.bridgeInstanceId?.trim();
+    final computerNames = groupRoutes
+        .map((route) => route.machine.bridgeComputerName?.trim())
+        .whereType<String>()
+        .where((name) => name.isNotEmpty)
+        .toSet();
+    return BridgeMachineGroup(
+      id: entry.key,
+      routes: groupRoutes,
+      bridgeIdentityId: signedId?.isEmpty == true ? null : signedId,
+      bridgeInstanceId: legacyId?.isEmpty == true ? null : legacyId,
+      computerName: computerNames.length == 1 ? computerNames.single : null,
+    );
+  }).toList();
+
+  result.sort((left, right) {
+    if (left.isFavorite != right.isFavorite) {
+      return left.isFavorite ? -1 : 1;
+    }
+    final leftTime = left.lastConnected?.millisecondsSinceEpoch ?? 0;
+    final rightTime = right.lastConnected?.millisecondsSinceEpoch ?? 0;
+    final recency = rightTime.compareTo(leftTime);
+    if (recency != 0) return recency;
+    return left.displayName.compareTo(right.displayName);
+  });
+  return result;
 }

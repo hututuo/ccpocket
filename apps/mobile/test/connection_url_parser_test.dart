@@ -161,6 +161,36 @@ void main() {
       });
     });
 
+    group('deep link - pairing (ccpocket://pair)', () {
+      test('keeps the one-time pairing token separate from an API key', () {
+        final encodedUrl = Uri.encodeQueryComponent('ws://192.168.1.10:8765');
+        final result =
+            ConnectionUrlParser.parse(
+                  'ccpocket://pair?url=$encodedUrl'
+                  '&token=one-time-token'
+                  '&bridgeIdentityId=bridge_signed_identity'
+                  '&bridgeInstanceId=bridge-data-source',
+                )
+                as ConnectionParams?;
+
+        expect(result, isNotNull);
+        expect(result!.serverUrl, 'ws://192.168.1.10:8765');
+        expect(result.token, isNull);
+        expect(result.pairingToken, 'one-time-token');
+        expect(result.bridgeIdentityId, 'bridge_signed_identity');
+        expect(result.bridgeInstanceId, 'bridge-data-source');
+      });
+
+      test('requires route, token and both Bridge identities', () {
+        expect(
+          ConnectionUrlParser.parse(
+            'ccpocket://pair?url=ws://127.0.0.1:8765&token=x',
+          ),
+          isNull,
+        );
+      });
+    });
+
     group('deep link - session (ccpocket://session)', () {
       test('parses session link with sessionId', () {
         final result =

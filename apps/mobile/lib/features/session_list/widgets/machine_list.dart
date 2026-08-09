@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../l10n/app_localizations.dart';
 import '../../../models/machine.dart';
-import 'machine_card.dart';
+import 'machine_group_card.dart';
 
 /// List of saved remote machines with status indicators.
 class MachineList extends StatelessWidget {
@@ -18,6 +18,7 @@ class MachineList extends StatelessWidget {
   final ValueChanged<MachineWithStatus>? onToggleFavorite;
   final ValueChanged<MachineWithStatus>? onUpdate;
   final ValueChanged<MachineWithStatus>? onStop;
+  final ValueChanged<BridgeMachineGroup>? onRenameGroup;
   final VoidCallback onAddMachine;
   final VoidCallback? onRefresh;
 
@@ -35,6 +36,7 @@ class MachineList extends StatelessWidget {
     this.onToggleFavorite,
     this.onUpdate,
     this.onStop,
+    this.onRenameGroup,
     required this.onAddMachine,
     this.onRefresh,
   });
@@ -44,6 +46,7 @@ class MachineList extends StatelessWidget {
     final l = AppLocalizations.of(context);
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final groups = groupBridgeMachineRoutes(machines);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -147,21 +150,22 @@ class MachineList extends StatelessWidget {
           ),
         ] else ...[
           const SizedBox(height: 8),
-          ...machines.map(
-            (m) => MachineCard(
-              machineWithStatus: m,
-              isStarting: startingMachineId == m.machine.id,
-              isUpdating: updatingMachineId == m.machine.id,
+          ...groups.map(
+            (group) => MachineGroupCard(
+              group: group,
+              startingMachineId: startingMachineId,
+              updatingMachineId: updatingMachineId,
               latestBridgeVersion: latestBridgeVersion,
-              onConnect: () => onConnect(m),
-              onStart: () => onStart(m),
-              onEdit: () => onEdit(m),
-              onDelete: () => onDelete(m),
-              onToggleFavorite: onToggleFavorite != null
-                  ? () => onToggleFavorite!(m)
-                  : null,
-              onUpdate: onUpdate != null ? () => onUpdate!(m) : null,
-              onStop: onStop != null ? () => onStop!(m) : null,
+              onConnect: onConnect,
+              onStart: onStart,
+              onEdit: onEdit,
+              onDelete: onDelete,
+              onRename: onRenameGroup == null
+                  ? null
+                  : () => onRenameGroup!(group),
+              onToggleFavorite: onToggleFavorite,
+              onUpdate: onUpdate,
+              onStop: onStop,
             ),
           ),
         ],

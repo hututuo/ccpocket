@@ -3,8 +3,17 @@ sealed class DeepLinkParams {}
 class ConnectionParams extends DeepLinkParams {
   final String serverUrl;
   final String? token;
+  final String? pairingToken;
+  final String? bridgeIdentityId;
+  final String? bridgeInstanceId;
 
-  ConnectionParams({required this.serverUrl, this.token});
+  ConnectionParams({
+    required this.serverUrl,
+    this.token,
+    this.pairingToken,
+    this.bridgeIdentityId,
+    this.bridgeInstanceId,
+  });
 }
 
 class SessionLinkParams extends DeepLinkParams {
@@ -91,6 +100,35 @@ class ConnectionUrlParser {
         return ConnectionParams(
           serverUrl: url,
           token: (token != null && token.isNotEmpty) ? token : null,
+        );
+      }
+
+      // ccpocket://pair?url=...&token=...&bridgeIdentityId=...
+      if (uri.host == 'pair') {
+        final url = uri.queryParameters['url'];
+        final pairingToken = _boundedQueryParameter(uri, 'token', 256);
+        final bridgeIdentityId = _boundedQueryParameter(
+          uri,
+          'bridgeIdentityId',
+          128,
+        );
+        final bridgeInstanceId = _boundedQueryParameter(
+          uri,
+          'bridgeInstanceId',
+          256,
+        );
+        if (url == null ||
+            !_isValidWebSocketUrl(url) ||
+            pairingToken == null ||
+            bridgeIdentityId == null ||
+            bridgeInstanceId == null) {
+          return null;
+        }
+        return ConnectionParams(
+          serverUrl: url,
+          pairingToken: pairingToken,
+          bridgeIdentityId: bridgeIdentityId,
+          bridgeInstanceId: bridgeInstanceId,
         );
       }
 

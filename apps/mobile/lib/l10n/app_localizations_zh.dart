@@ -727,6 +727,43 @@ class AppLocalizationsZh extends AppLocalizations {
   String get machines => '机器';
 
   @override
+  String get machineRoutes => '连接路线';
+
+  @override
+  String machineRoutesCount(int count) {
+    return '$count 条路线';
+  }
+
+  @override
+  String get machinePreferredRoute => '优选';
+
+  @override
+  String machineLatency(int milliseconds) {
+    return '$milliseconds ms';
+  }
+
+  @override
+  String get machineOnline => '在线';
+
+  @override
+  String get machineChecking => '正在探测';
+
+  @override
+  String get machineIdentityChanged => 'Bridge 身份已变化';
+
+  @override
+  String get renameMachineGroup => '重命名电脑';
+
+  @override
+  String get machineGroupName => '电脑名称';
+
+  @override
+  String get machinePair => '配对';
+
+  @override
+  String get machinePairingRequired => '需要配对';
+
+  @override
   String get refreshStatus => '刷新状态';
 
   @override
@@ -3904,4 +3941,26 @@ class AppLocalizationsZh extends AppLocalizations {
   String systemMessageLabel(String subtype) {
     return '系统：$subtype';
   }
+
+  @override
+  String get bridgePairingTitle => '配对这台 iPhone';
+
+  @override
+  String get bridgePairingBody =>
+      '请在运行 CC Pocket Bridge 的 Mac 上批准这次一次性请求。完成后，手机无需连接密钥即可重连。';
+
+  @override
+  String get bridgePairingCodeLabel => '确认码';
+
+  @override
+  String get bridgePairingCommandHint => '在该 Mac 上运行：';
+
+  @override
+  String get bridgePairingCopyCommand => '复制命令';
+
+  @override
+  String get bridgePairingWaiting => '正在等待 Mac 批准…';
+
+  @override
+  String get bridgePairingFailed => 'Bridge 配对未能完成。';
 }

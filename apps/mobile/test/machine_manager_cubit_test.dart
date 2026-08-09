@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:ccpocket/features/session_list/session_list_screen.dart';
 import 'package:ccpocket/models/machine.dart';
 import 'package:ccpocket/providers/machine_manager_cubit.dart';
+import 'package:ccpocket/services/bridge_device_identity_service.dart';
 import 'package:ccpocket/services/bridge_latest_version_service.dart';
 import 'package:ccpocket/services/machine_manager_service.dart';
 import 'package:ccpocket/services/ssh_startup_service.dart';
@@ -99,6 +100,52 @@ class MockMachineManagerService implements MachineManagerService {
     );
     _machines[machineId] = updated;
     return updated;
+  }
+
+  @override
+  Future<Machine?> bindSignedBridgeIdentity({
+    required String machineId,
+    required BridgeIdentityDocument identity,
+  }) async {
+    calls.add(
+      'bindSignedBridgeIdentity:$machineId:${identity.bridgeIdentityId}',
+    );
+    final machine = _machines[machineId];
+    if (machine == null) return null;
+    final updated = machine.copyWith(
+      bridgeInstanceId: identity.bridgeInstanceId,
+      bridgeIdentityId: identity.bridgeIdentityId,
+      bridgeIdentityPublicKey: identity.publicKey,
+      bridgeComputerName: identity.computerName,
+      bridgeAuthMode: identity.authMode,
+    );
+    _machines[machineId] = updated;
+    return updated;
+  }
+
+  @override
+  Future<Machine?> verifyRouteIdentity(
+    String machineId, {
+    Duration timeout = const Duration(seconds: 3),
+  }) async {
+    calls.add('verifyRouteIdentity:$machineId');
+    return _machines[machineId];
+  }
+
+  @override
+  Future<void> renameMachineGroup(String groupId, String? name) async {
+    calls.add('renameMachineGroup:$groupId');
+    final routeIds = groupBridgeMachineRoutes(machinesWithStatus)
+        .where((group) => group.id == groupId)
+        .expand((group) => group.routes)
+        .map((route) => route.machine.id)
+        .toSet();
+    for (final routeId in routeIds) {
+      final machine = _machines[routeId];
+      if (machine != null) {
+        _machines[routeId] = machine.copyWith(name: name?.trim());
+      }
+    }
   }
 
   @override

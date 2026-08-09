@@ -736,6 +736,43 @@ class AppLocalizationsKo extends AppLocalizations {
   String get machines => '컴퓨터';
 
   @override
+  String get machineRoutes => '연결 경로';
+
+  @override
+  String machineRoutesCount(int count) {
+    return '경로 $count개';
+  }
+
+  @override
+  String get machinePreferredRoute => '우선';
+
+  @override
+  String machineLatency(int milliseconds) {
+    return '$milliseconds ms';
+  }
+
+  @override
+  String get machineOnline => '온라인';
+
+  @override
+  String get machineChecking => '확인 중';
+
+  @override
+  String get machineIdentityChanged => 'Bridge ID가 변경됨';
+
+  @override
+  String get renameMachineGroup => '컴퓨터 이름 변경';
+
+  @override
+  String get machineGroupName => '컴퓨터 이름';
+
+  @override
+  String get machinePair => '페어링';
+
+  @override
+  String get machinePairingRequired => '페어링 필요';
+
+  @override
   String get refreshStatus => '상태 새로고침';
 
   @override
@@ -3978,4 +4015,26 @@ class AppLocalizationsKo extends AppLocalizations {
   String systemMessageLabel(String subtype) {
     return '시스템: $subtype';
   }
+
+  @override
+  String get bridgePairingTitle => '이 iPhone 페어링';
+
+  @override
+  String get bridgePairingBody =>
+      'CC Pocket Bridge가 실행 중인 Mac에서 이 일회성 요청을 승인하세요. 이후에는 연결 키 없이 다시 연결할 수 있습니다.';
+
+  @override
+  String get bridgePairingCodeLabel => '확인 코드';
+
+  @override
+  String get bridgePairingCommandHint => '해당 Mac에서 다음 명령을 실행하세요:';
+
+  @override
+  String get bridgePairingCopyCommand => '명령 복사';
+
+  @override
+  String get bridgePairingWaiting => 'Mac 승인을 기다리는 중…';
+
+  @override
+  String get bridgePairingFailed => 'Bridge 페어링을 완료하지 못했습니다.';
 }

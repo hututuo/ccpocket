@@ -1440,6 +1440,72 @@ abstract class AppLocalizations {
   /// **'マシン'**
   String get machines;
 
+  /// No description provided for @machineRoutes.
+  ///
+  /// In ja, this message translates to:
+  /// **'接続ルート'**
+  String get machineRoutes;
+
+  /// No description provided for @machineRoutesCount.
+  ///
+  /// In ja, this message translates to:
+  /// **'{count} 件のルート'**
+  String machineRoutesCount(int count);
+
+  /// No description provided for @machinePreferredRoute.
+  ///
+  /// In ja, this message translates to:
+  /// **'優先'**
+  String get machinePreferredRoute;
+
+  /// No description provided for @machineLatency.
+  ///
+  /// In ja, this message translates to:
+  /// **'{milliseconds} ms'**
+  String machineLatency(int milliseconds);
+
+  /// No description provided for @machineOnline.
+  ///
+  /// In ja, this message translates to:
+  /// **'オンライン'**
+  String get machineOnline;
+
+  /// No description provided for @machineChecking.
+  ///
+  /// In ja, this message translates to:
+  /// **'確認中'**
+  String get machineChecking;
+
+  /// No description provided for @machineIdentityChanged.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge の識別情報が変更されました'**
+  String get machineIdentityChanged;
+
+  /// No description provided for @renameMachineGroup.
+  ///
+  /// In ja, this message translates to:
+  /// **'コンピュータ名を変更'**
+  String get renameMachineGroup;
+
+  /// No description provided for @machineGroupName.
+  ///
+  /// In ja, this message translates to:
+  /// **'コンピュータ名'**
+  String get machineGroupName;
+
+  /// No description provided for @machinePair.
+  ///
+  /// In ja, this message translates to:
+  /// **'ペアリング'**
+  String get machinePair;
+
+  /// No description provided for @machinePairingRequired.
+  ///
+  /// In ja, this message translates to:
+  /// **'ペアリングが必要です'**
+  String get machinePairingRequired;
+
   /// No description provided for @refreshStatus.
   ///
   /// In ja, this message translates to:
@@ -7037,6 +7103,48 @@ abstract class AppLocalizations {
   /// In ja, this message translates to:
   /// **'システム：{subtype}'**
   String systemMessageLabel(String subtype);
+
+  /// No description provided for @bridgePairingTitle.
+  ///
+  /// In ja, this message translates to:
+  /// **'この iPhone をペアリング'**
+  String get bridgePairingTitle;
+
+  /// No description provided for @bridgePairingBody.
+  ///
+  /// In ja, this message translates to:
+  /// **'CC Pocket Bridge を実行している Mac で、この一度限りの要求を承認してください。以後は接続キーなしで再接続できます。'**
+  String get bridgePairingBody;
+
+  /// No description provided for @bridgePairingCodeLabel.
+  ///
+  /// In ja, this message translates to:
+  /// **'確認コード'**
+  String get bridgePairingCodeLabel;
+
+  /// No description provided for @bridgePairingCommandHint.
+  ///
+  /// In ja, this message translates to:
+  /// **'その Mac で次を実行：'**
+  String get bridgePairingCommandHint;
+
+  /// No description provided for @bridgePairingCopyCommand.
+  ///
+  /// In ja, this message translates to:
+  /// **'コマンドをコピー'**
+  String get bridgePairingCopyCommand;
+
+  /// No description provided for @bridgePairingWaiting.
+  ///
+  /// In ja, this message translates to:
+  /// **'Mac での承認を待っています…'**
+  String get bridgePairingWaiting;
+
+  /// No description provided for @bridgePairingFailed.
+  ///
+  /// In ja, this message translates to:
+  /// **'Bridge のペアリングを完了できませんでした。'**
+  String get bridgePairingFailed;
 }
 
 class _AppLocalizationsDelegate

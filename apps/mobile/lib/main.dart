@@ -67,6 +67,7 @@ import 'router/app_router.dart';
 import 'router/session_route_observer.dart';
 import 'router/session_stack_navigation.dart';
 import 'services/app_icon_service.dart';
+import 'services/bridge_device_identity_service.dart';
 import 'services/bridge_service.dart';
 import 'services/connection_url_parser.dart';
 import 'services/database_service.dart';
@@ -153,6 +154,16 @@ void main() async {
       synchronizable: false,
     ),
   );
+  const bridgeDeviceIdentitySecureStorage = FlutterSecureStorage(
+    iOptions: IOSOptions(
+      accountName: 'ccpocket_bridge_device_identity_v1',
+      accessibility: KeychainAccessibility.first_unlock_this_device,
+      synchronizable: false,
+    ),
+  );
+  final bridgeDeviceIdentityService = BridgeDeviceIdentityService(
+    bridgeDeviceIdentitySecureStorage,
+  );
   final mobileHostService = MobileHostService();
   final mobileHostSnapshot = !kIsWeb && isMobilePlatform
       ? await mobileHostService.loadSnapshot()
@@ -204,6 +215,7 @@ void main() async {
     clientMobileRuntime: mobileHostSnapshot.toClientCapabilitiesJson(
       patchNumber: mobileUpdateService.state.currentPatchNumber,
     ),
+    deviceIdentityService: bridgeDeviceIdentityService,
   );
   bridge.onDisconnect = sshBridgeTunnelService?.closeAll;
   final fileTransferService = FileTransferService(

@@ -206,6 +206,11 @@ class MachineManagerCubit extends Cubit<MachineManagerState> {
     await _service.checkHealth(machineId);
   }
 
+  /// Refresh and return the route after its signed Bridge identity probe.
+  Future<Machine?> verifyRouteIdentity(String machineId) async {
+    return _service.verifyRouteIdentity(machineId);
+  }
+
   /// Record a connection (auto-save on connect)
   Future<Machine> recordConnection({
     required String host,
@@ -236,6 +241,9 @@ class MachineManagerCubit extends Cubit<MachineManagerState> {
       codexSourceId: codexSourceId,
     );
   }
+
+  Future<void> renameMachineGroup(String groupId, String? name) =>
+      _service.renameMachineGroup(groupId, name);
 
   Future<Machine?> clearBridgeIdentity(String machineId) {
     return _service.clearBridgeIdentity(machineId);

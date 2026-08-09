@@ -34,6 +34,13 @@ _Machine _$MachineFromJson(Map<String, dynamic> json) => _Machine(
   useSsl: json['useSsl'] as bool? ?? false,
   hasApiKey: json['hasApiKey'] as bool? ?? false,
   bridgeInstanceId: json['bridgeInstanceId'] as String?,
+  bridgeIdentityId: json['bridgeIdentityId'] as String?,
+  bridgeIdentityPublicKey: json['bridgeIdentityPublicKey'] as String?,
+  bridgeComputerName: json['bridgeComputerName'] as String?,
+  bridgeAuthMode: json['bridgeAuthMode'] as String?,
+  bridgeIdentityVerifiedAt: json['bridgeIdentityVerifiedAt'] == null
+      ? null
+      : DateTime.parse(json['bridgeIdentityVerifiedAt'] as String),
   codexSourceId: json['codexSourceId'] as String?,
   lastConnected: json['lastConnected'] == null
       ? null
@@ -63,6 +70,12 @@ Map<String, dynamic> _$MachineToJson(_Machine instance) => <String, dynamic>{
   'useSsl': instance.useSsl,
   'hasApiKey': instance.hasApiKey,
   'bridgeInstanceId': instance.bridgeInstanceId,
+  'bridgeIdentityId': instance.bridgeIdentityId,
+  'bridgeIdentityPublicKey': instance.bridgeIdentityPublicKey,
+  'bridgeComputerName': instance.bridgeComputerName,
+  'bridgeAuthMode': instance.bridgeAuthMode,
+  'bridgeIdentityVerifiedAt': instance.bridgeIdentityVerifiedAt
+      ?.toIso8601String(),
   'codexSourceId': instance.codexSourceId,
   'lastConnected': instance.lastConnected?.toIso8601String(),
   'isFavorite': instance.isFavorite,

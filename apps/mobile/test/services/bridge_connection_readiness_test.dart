@@ -70,6 +70,57 @@ void main() {
       isFalse,
     );
     expect(bridgeHealthRequiresConnectionKey({'status': 'ok'}), isFalse);
+    expect(
+      bridgeHealthSupportsDevicePairing({
+        'bridgeAuthentication': {
+          'required': true,
+          'scheme': 'api_key_or_device_signature',
+        },
+      }),
+      isTrue,
+    );
+    expect(
+      bridgeHealthSupportsDevicePairing({
+        'bridgeAuthentication': {'required': true, 'scheme': 'api_key'},
+      }),
+      isFalse,
+    );
+    expect(
+      bridgeHealthSupportsDeviceEnrollment({
+        'bridgeAuthentication': {
+          'required': true,
+          'scheme': 'api_key',
+          'mode': 'key',
+          'methods': ['api_key', 'device_signature', 'pairing_token'],
+          'pairingAvailable': true,
+        },
+      }),
+      isTrue,
+    );
+    expect(
+      bridgeHealthSupportsDevicePairing({
+        'bridgeAuthentication': {
+          'required': true,
+          'scheme': 'api_key',
+          'mode': 'key',
+          'methods': ['api_key', 'device_signature', 'pairing_token'],
+          'pairingAvailable': true,
+        },
+      }),
+      isFalse,
+    );
+    expect(
+      bridgeHealthSupportsDeviceEnrollment({
+        'bridgeAuthentication': {
+          'required': true,
+          'scheme': 'api_key',
+          'mode': 'key',
+          'methods': ['api_key'],
+          'pairingAvailable': false,
+        },
+      }),
+      isFalse,
+    );
   });
 
   test('recognizes sanitized authentication handshake errors', () {

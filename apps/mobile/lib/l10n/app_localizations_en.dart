@@ -752,6 +752,43 @@ class AppLocalizationsEn extends AppLocalizations {
   String get machines => 'Machines';
 
   @override
+  String get machineRoutes => 'Connection routes';
+
+  @override
+  String machineRoutesCount(int count) {
+    return '$count routes';
+  }
+
+  @override
+  String get machinePreferredRoute => 'Preferred';
+
+  @override
+  String machineLatency(int milliseconds) {
+    return '$milliseconds ms';
+  }
+
+  @override
+  String get machineOnline => 'Online';
+
+  @override
+  String get machineChecking => 'Probing';
+
+  @override
+  String get machineIdentityChanged => 'Bridge identity changed';
+
+  @override
+  String get renameMachineGroup => 'Rename computer';
+
+  @override
+  String get machineGroupName => 'Computer name';
+
+  @override
+  String get machinePair => 'Pair';
+
+  @override
+  String get machinePairingRequired => 'Pairing required';
+
+  @override
   String get refreshStatus => 'Refresh status';
 
   @override
@@ -4081,4 +4118,26 @@ class AppLocalizationsEn extends AppLocalizations {
   String systemMessageLabel(String subtype) {
     return 'System: $subtype';
   }
+
+  @override
+  String get bridgePairingTitle => 'Pair this iPhone';
+
+  @override
+  String get bridgePairingBody =>
+      'Approve this one-time request on the Mac running CC Pocket Bridge. The phone will reconnect without a connection key afterward.';
+
+  @override
+  String get bridgePairingCodeLabel => 'Confirmation code';
+
+  @override
+  String get bridgePairingCommandHint => 'Run this command on that Mac:';
+
+  @override
+  String get bridgePairingCopyCommand => 'Copy command';
+
+  @override
+  String get bridgePairingWaiting => 'Waiting for approval on the Mac…';
+
+  @override
+  String get bridgePairingFailed => 'Bridge pairing could not be completed.';
 }

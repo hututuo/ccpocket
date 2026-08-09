@@ -303,7 +303,16 @@ mixin _$Machine {
 ///
 /// This is a cache/data-source hint, not a credential. Different LAN,
 /// Tailscale, DNS, or tunnel routes may legitimately share this value.
- String? get bridgeInstanceId;/// Last authoritative Codex Home identity observed on this route.
+ String? get bridgeInstanceId;/// Stable cryptographic installation identity advertised by a modern
+/// Bridge before WebSocket authentication.
+///
+/// The value is derived from a Bridge-owned signing key. It is not a Mac
+/// serial number, MAC address, or other hardware identifier.
+ String? get bridgeIdentityId;/// Base64url-encoded Ed25519 public key used to pin [bridgeIdentityId].
+ String? get bridgeIdentityPublicKey;/// Computer name signed by the Bridge identity document.
+ String? get bridgeComputerName;/// Last advertised authentication mode (`key`, `paired_or_key`, `open`).
+ String? get bridgeAuthMode;/// Last time this route produced a valid signed identity document.
+ DateTime? get bridgeIdentityVerifiedAt;/// Last authoritative Codex Home identity observed on this route.
 ///
 /// A single Bridge installation may be restarted against another
 /// CODEX_HOME, so cache reuse is scoped by both identities.
@@ -333,16 +342,16 @@ $MachineCopyWith<Machine> get copyWith => _$MachineCopyWithImpl<Machine>(this as
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is Machine&&(identical(other.id, id) || other.id == id)&&(identical(other.name, name) || other.name == name)&&(identical(other.host, host) || other.host == host)&&(identical(other.port, port) || other.port == port)&&(identical(other.useSsl, useSsl) || other.useSsl == useSsl)&&(identical(other.hasApiKey, hasApiKey) || other.hasApiKey == hasApiKey)&&(identical(other.bridgeInstanceId, bridgeInstanceId) || other.bridgeInstanceId == bridgeInstanceId)&&(identical(other.codexSourceId, codexSourceId) || other.codexSourceId == codexSourceId)&&(identical(other.lastConnected, lastConnected) || other.lastConnected == lastConnected)&&(identical(other.isFavorite, isFavorite) || other.isFavorite == isFavorite)&&(identical(other.sshEnabled, sshEnabled) || other.sshEnabled == sshEnabled)&&(identical(other.sshUsername, sshUsername) || other.sshUsername == sshUsername)&&(identical(other.sshPort, sshPort) || other.sshPort == sshPort)&&(identical(other.sshAuthType, sshAuthType) || other.sshAuthType == sshAuthType)&&(identical(other.sshJumpHost, sshJumpHost) || other.sshJumpHost == sshJumpHost)&&(identical(other.sshJumpPort, sshJumpPort) || other.sshJumpPort == sshJumpPort)&&(identical(other.sshJumpUsername, sshJumpUsername) || other.sshJumpUsername == sshJumpUsername)&&(identical(other.sshJumpAuthType, sshJumpAuthType) || other.sshJumpAuthType == sshJumpAuthType)&&(identical(other.hasCredentials, hasCredentials) || other.hasCredentials == hasCredentials)&&(identical(other.hasJumpCredentials, hasJumpCredentials) || other.hasJumpCredentials == hasJumpCredentials));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is Machine&&(identical(other.id, id) || other.id == id)&&(identical(other.name, name) || other.name == name)&&(identical(other.host, host) || other.host == host)&&(identical(other.port, port) || other.port == port)&&(identical(other.useSsl, useSsl) || other.useSsl == useSsl)&&(identical(other.hasApiKey, hasApiKey) || other.hasApiKey == hasApiKey)&&(identical(other.bridgeInstanceId, bridgeInstanceId) || other.bridgeInstanceId == bridgeInstanceId)&&(identical(other.bridgeIdentityId, bridgeIdentityId) || other.bridgeIdentityId == bridgeIdentityId)&&(identical(other.bridgeIdentityPublicKey, bridgeIdentityPublicKey) || other.bridgeIdentityPublicKey == bridgeIdentityPublicKey)&&(identical(other.bridgeComputerName, bridgeComputerName) || other.bridgeComputerName == bridgeComputerName)&&(identical(other.bridgeAuthMode, bridgeAuthMode) || other.bridgeAuthMode == bridgeAuthMode)&&(identical(other.bridgeIdentityVerifiedAt, bridgeIdentityVerifiedAt) || other.bridgeIdentityVerifiedAt == bridgeIdentityVerifiedAt)&&(identical(other.codexSourceId, codexSourceId) || other.codexSourceId == codexSourceId)&&(identical(other.lastConnected, lastConnected) || other.lastConnected == lastConnected)&&(identical(other.isFavorite, isFavorite) || other.isFavorite == isFavorite)&&(identical(other.sshEnabled, sshEnabled) || other.sshEnabled == sshEnabled)&&(identical(other.sshUsername, sshUsername) || other.sshUsername == sshUsername)&&(identical(other.sshPort, sshPort) || other.sshPort == sshPort)&&(identical(other.sshAuthType, sshAuthType) || other.sshAuthType == sshAuthType)&&(identical(other.sshJumpHost, sshJumpHost) || other.sshJumpHost == sshJumpHost)&&(identical(other.sshJumpPort, sshJumpPort) || other.sshJumpPort == sshJumpPort)&&(identical(other.sshJumpUsername, sshJumpUsername) || other.sshJumpUsername == sshJumpUsername)&&(identical(other.sshJumpAuthType, sshJumpAuthType) || other.sshJumpAuthType == sshJumpAuthType)&&(identical(other.hasCredentials, hasCredentials) || other.hasCredentials == hasCredentials)&&(identical(other.hasJumpCredentials, hasJumpCredentials) || other.hasJumpCredentials == hasJumpCredentials));
 }
 
 @JsonKey(includeFromJson: false, includeToJson: false)
 @override
-int get hashCode => Object.hashAll([runtimeType,id,name,host,port,useSsl,hasApiKey,bridgeInstanceId,codexSourceId,lastConnected,isFavorite,sshEnabled,sshUsername,sshPort,sshAuthType,sshJumpHost,sshJumpPort,sshJumpUsername,sshJumpAuthType,hasCredentials,hasJumpCredentials]);
+int get hashCode => Object.hashAll([runtimeType,id,name,host,port,useSsl,hasApiKey,bridgeInstanceId,bridgeIdentityId,bridgeIdentityPublicKey,bridgeComputerName,bridgeAuthMode,bridgeIdentityVerifiedAt,codexSourceId,lastConnected,isFavorite,sshEnabled,sshUsername,sshPort,sshAuthType,sshJumpHost,sshJumpPort,sshJumpUsername,sshJumpAuthType,hasCredentials,hasJumpCredentials]);
 
 @override
 String toString() {
-  return 'Machine(id: $id, name: $name, host: $host, port: $port, useSsl: $useSsl, hasApiKey: $hasApiKey, bridgeInstanceId: $bridgeInstanceId, codexSourceId: $codexSourceId, lastConnected: $lastConnected, isFavorite: $isFavorite, sshEnabled: $sshEnabled, sshUsername: $sshUsername, sshPort: $sshPort, sshAuthType: $sshAuthType, sshJumpHost: $sshJumpHost, sshJumpPort: $sshJumpPort, sshJumpUsername: $sshJumpUsername, sshJumpAuthType: $sshJumpAuthType, hasCredentials: $hasCredentials, hasJumpCredentials: $hasJumpCredentials)';
+  return 'Machine(id: $id, name: $name, host: $host, port: $port, useSsl: $useSsl, hasApiKey: $hasApiKey, bridgeInstanceId: $bridgeInstanceId, bridgeIdentityId: $bridgeIdentityId, bridgeIdentityPublicKey: $bridgeIdentityPublicKey, bridgeComputerName: $bridgeComputerName, bridgeAuthMode: $bridgeAuthMode, bridgeIdentityVerifiedAt: $bridgeIdentityVerifiedAt, codexSourceId: $codexSourceId, lastConnected: $lastConnected, isFavorite: $isFavorite, sshEnabled: $sshEnabled, sshUsername: $sshUsername, sshPort: $sshPort, sshAuthType: $sshAuthType, sshJumpHost: $sshJumpHost, sshJumpPort: $sshJumpPort, sshJumpUsername: $sshJumpUsername, sshJumpAuthType: $sshJumpAuthType, hasCredentials: $hasCredentials, hasJumpCredentials: $hasJumpCredentials)';
 }
 
 
@@ -353,7 +362,7 @@ abstract mixin class $MachineCopyWith<$Res>  {
   factory $MachineCopyWith(Machine value, $Res Function(Machine) _then) = _$MachineCopyWithImpl;
 @useResult
 $Res call({
- String id, String? name, String host, int port, bool useSsl, bool hasApiKey, String? bridgeInstanceId, String? codexSourceId, DateTime? lastConnected, bool isFavorite, bool sshEnabled, String? sshUsername, int sshPort, SshAuthType sshAuthType, String? sshJumpHost, int sshJumpPort, String? sshJumpUsername, SshAuthType sshJumpAuthType, bool hasCredentials, bool hasJumpCredentials
+ String id, String? name, String host, int port, bool useSsl, bool hasApiKey, String? bridgeInstanceId, String? bridgeIdentityId, String? bridgeIdentityPublicKey, String? bridgeComputerName, String? bridgeAuthMode, DateTime? bridgeIdentityVerifiedAt, String? codexSourceId, DateTime? lastConnected, bool isFavorite, bool sshEnabled, String? sshUsername, int sshPort, SshAuthType sshAuthType, String? sshJumpHost, int sshJumpPort, String? sshJumpUsername, SshAuthType sshJumpAuthType, bool hasCredentials, bool hasJumpCredentials
 });
 
 
@@ -370,7 +379,7 @@ class _$MachineCopyWithImpl<$Res>
 
 /// Create a copy of Machine
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? name = freezed,Object? host = null,Object? port = null,Object? useSsl = null,Object? hasApiKey = null,Object? bridgeInstanceId = freezed,Object? codexSourceId = freezed,Object? lastConnected = freezed,Object? isFavorite = null,Object? sshEnabled = null,Object? sshUsername = freezed,Object? sshPort = null,Object? sshAuthType = null,Object? sshJumpHost = freezed,Object? sshJumpPort = null,Object? sshJumpUsername = freezed,Object? sshJumpAuthType = null,Object? hasCredentials = null,Object? hasJumpCredentials = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? name = freezed,Object? host = null,Object? port = null,Object? useSsl = null,Object? hasApiKey = null,Object? bridgeInstanceId = freezed,Object? bridgeIdentityId = freezed,Object? bridgeIdentityPublicKey = freezed,Object? bridgeComputerName = freezed,Object? bridgeAuthMode = freezed,Object? bridgeIdentityVerifiedAt = freezed,Object? codexSourceId = freezed,Object? lastConnected = freezed,Object? isFavorite = null,Object? sshEnabled = null,Object? sshUsername = freezed,Object? sshPort = null,Object? sshAuthType = null,Object? sshJumpHost = freezed,Object? sshJumpPort = null,Object? sshJumpUsername = freezed,Object? sshJumpAuthType = null,Object? hasCredentials = null,Object? hasJumpCredentials = null,}) {
   return _then(_self.copyWith(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,name: freezed == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
@@ -379,7 +388,12 @@ as String,port: null == port ? _self.port : port // ignore: cast_nullable_to_non
 as int,useSsl: null == useSsl ? _self.useSsl : useSsl // ignore: cast_nullable_to_non_nullable
 as bool,hasApiKey: null == hasApiKey ? _self.hasApiKey : hasApiKey // ignore: cast_nullable_to_non_nullable
 as bool,bridgeInstanceId: freezed == bridgeInstanceId ? _self.bridgeInstanceId : bridgeInstanceId // ignore: cast_nullable_to_non_nullable
-as String?,codexSourceId: freezed == codexSourceId ? _self.codexSourceId : codexSourceId // ignore: cast_nullable_to_non_nullable
+as String?,bridgeIdentityId: freezed == bridgeIdentityId ? _self.bridgeIdentityId : bridgeIdentityId // ignore: cast_nullable_to_non_nullable
+as String?,bridgeIdentityPublicKey: freezed == bridgeIdentityPublicKey ? _self.bridgeIdentityPublicKey : bridgeIdentityPublicKey // ignore: cast_nullable_to_non_nullable
+as String?,bridgeComputerName: freezed == bridgeComputerName ? _self.bridgeComputerName : bridgeComputerName // ignore: cast_nullable_to_non_nullable
+as String?,bridgeAuthMode: freezed == bridgeAuthMode ? _self.bridgeAuthMode : bridgeAuthMode // ignore: cast_nullable_to_non_nullable
+as String?,bridgeIdentityVerifiedAt: freezed == bridgeIdentityVerifiedAt ? _self.bridgeIdentityVerifiedAt : bridgeIdentityVerifiedAt // ignore: cast_nullable_to_non_nullable
+as DateTime?,codexSourceId: freezed == codexSourceId ? _self.codexSourceId : codexSourceId // ignore: cast_nullable_to_non_nullable
 as String?,lastConnected: freezed == lastConnected ? _self.lastConnected : lastConnected // ignore: cast_nullable_to_non_nullable
 as DateTime?,isFavorite: null == isFavorite ? _self.isFavorite : isFavorite // ignore: cast_nullable_to_non_nullable
 as bool,sshEnabled: null == sshEnabled ? _self.sshEnabled : sshEnabled // ignore: cast_nullable_to_non_nullable
@@ -477,10 +491,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String? name,  String host,  int port,  bool useSsl,  bool hasApiKey,  String? bridgeInstanceId,  String? codexSourceId,  DateTime? lastConnected,  bool isFavorite,  bool sshEnabled,  String? sshUsername,  int sshPort,  SshAuthType sshAuthType,  String? sshJumpHost,  int sshJumpPort,  String? sshJumpUsername,  SshAuthType sshJumpAuthType,  bool hasCredentials,  bool hasJumpCredentials)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String? name,  String host,  int port,  bool useSsl,  bool hasApiKey,  String? bridgeInstanceId,  String? bridgeIdentityId,  String? bridgeIdentityPublicKey,  String? bridgeComputerName,  String? bridgeAuthMode,  DateTime? bridgeIdentityVerifiedAt,  String? codexSourceId,  DateTime? lastConnected,  bool isFavorite,  bool sshEnabled,  String? sshUsername,  int sshPort,  SshAuthType sshAuthType,  String? sshJumpHost,  int sshJumpPort,  String? sshJumpUsername,  SshAuthType sshJumpAuthType,  bool hasCredentials,  bool hasJumpCredentials)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _Machine() when $default != null:
-return $default(_that.id,_that.name,_that.host,_that.port,_that.useSsl,_that.hasApiKey,_that.bridgeInstanceId,_that.codexSourceId,_that.lastConnected,_that.isFavorite,_that.sshEnabled,_that.sshUsername,_that.sshPort,_that.sshAuthType,_that.sshJumpHost,_that.sshJumpPort,_that.sshJumpUsername,_that.sshJumpAuthType,_that.hasCredentials,_that.hasJumpCredentials);case _:
+return $default(_that.id,_that.name,_that.host,_that.port,_that.useSsl,_that.hasApiKey,_that.bridgeInstanceId,_that.bridgeIdentityId,_that.bridgeIdentityPublicKey,_that.bridgeComputerName,_that.bridgeAuthMode,_that.bridgeIdentityVerifiedAt,_that.codexSourceId,_that.lastConnected,_that.isFavorite,_that.sshEnabled,_that.sshUsername,_that.sshPort,_that.sshAuthType,_that.sshJumpHost,_that.sshJumpPort,_that.sshJumpUsername,_that.sshJumpAuthType,_that.hasCredentials,_that.hasJumpCredentials);case _:
   return orElse();
 
 }
@@ -498,10 +512,10 @@ return $default(_that.id,_that.name,_that.host,_that.port,_that.useSsl,_that.has
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String? name,  String host,  int port,  bool useSsl,  bool hasApiKey,  String? bridgeInstanceId,  String? codexSourceId,  DateTime? lastConnected,  bool isFavorite,  bool sshEnabled,  String? sshUsername,  int sshPort,  SshAuthType sshAuthType,  String? sshJumpHost,  int sshJumpPort,  String? sshJumpUsername,  SshAuthType sshJumpAuthType,  bool hasCredentials,  bool hasJumpCredentials)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String? name,  String host,  int port,  bool useSsl,  bool hasApiKey,  String? bridgeInstanceId,  String? bridgeIdentityId,  String? bridgeIdentityPublicKey,  String? bridgeComputerName,  String? bridgeAuthMode,  DateTime? bridgeIdentityVerifiedAt,  String? codexSourceId,  DateTime? lastConnected,  bool isFavorite,  bool sshEnabled,  String? sshUsername,  int sshPort,  SshAuthType sshAuthType,  String? sshJumpHost,  int sshJumpPort,  String? sshJumpUsername,  SshAuthType sshJumpAuthType,  bool hasCredentials,  bool hasJumpCredentials)  $default,) {final _that = this;
 switch (_that) {
 case _Machine():
-return $default(_that.id,_that.name,_that.host,_that.port,_that.useSsl,_that.hasApiKey,_that.bridgeInstanceId,_that.codexSourceId,_that.lastConnected,_that.isFavorite,_that.sshEnabled,_that.sshUsername,_that.sshPort,_that.sshAuthType,_that.sshJumpHost,_that.sshJumpPort,_that.sshJumpUsername,_that.sshJumpAuthType,_that.hasCredentials,_that.hasJumpCredentials);case _:
+return $default(_that.id,_that.name,_that.host,_that.port,_that.useSsl,_that.hasApiKey,_that.bridgeInstanceId,_that.bridgeIdentityId,_that.bridgeIdentityPublicKey,_that.bridgeComputerName,_that.bridgeAuthMode,_that.bridgeIdentityVerifiedAt,_that.codexSourceId,_that.lastConnected,_that.isFavorite,_that.sshEnabled,_that.sshUsername,_that.sshPort,_that.sshAuthType,_that.sshJumpHost,_that.sshJumpPort,_that.sshJumpUsername,_that.sshJumpAuthType,_that.hasCredentials,_that.hasJumpCredentials);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -518,10 +532,10 @@ return $default(_that.id,_that.name,_that.host,_that.port,_that.useSsl,_that.has
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String? name,  String host,  int port,  bool useSsl,  bool hasApiKey,  String? bridgeInstanceId,  String? codexSourceId,  DateTime? lastConnected,  bool isFavorite,  bool sshEnabled,  String? sshUsername,  int sshPort,  SshAuthType sshAuthType,  String? sshJumpHost,  int sshJumpPort,  String? sshJumpUsername,  SshAuthType sshJumpAuthType,  bool hasCredentials,  bool hasJumpCredentials)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String? name,  String host,  int port,  bool useSsl,  bool hasApiKey,  String? bridgeInstanceId,  String? bridgeIdentityId,  String? bridgeIdentityPublicKey,  String? bridgeComputerName,  String? bridgeAuthMode,  DateTime? bridgeIdentityVerifiedAt,  String? codexSourceId,  DateTime? lastConnected,  bool isFavorite,  bool sshEnabled,  String? sshUsername,  int sshPort,  SshAuthType sshAuthType,  String? sshJumpHost,  int sshJumpPort,  String? sshJumpUsername,  SshAuthType sshJumpAuthType,  bool hasCredentials,  bool hasJumpCredentials)?  $default,) {final _that = this;
 switch (_that) {
 case _Machine() when $default != null:
-return $default(_that.id,_that.name,_that.host,_that.port,_that.useSsl,_that.hasApiKey,_that.bridgeInstanceId,_that.codexSourceId,_that.lastConnected,_that.isFavorite,_that.sshEnabled,_that.sshUsername,_that.sshPort,_that.sshAuthType,_that.sshJumpHost,_that.sshJumpPort,_that.sshJumpUsername,_that.sshJumpAuthType,_that.hasCredentials,_that.hasJumpCredentials);case _:
+return $default(_that.id,_that.name,_that.host,_that.port,_that.useSsl,_that.hasApiKey,_that.bridgeInstanceId,_that.bridgeIdentityId,_that.bridgeIdentityPublicKey,_that.bridgeComputerName,_that.bridgeAuthMode,_that.bridgeIdentityVerifiedAt,_that.codexSourceId,_that.lastConnected,_that.isFavorite,_that.sshEnabled,_that.sshUsername,_that.sshPort,_that.sshAuthType,_that.sshJumpHost,_that.sshJumpPort,_that.sshJumpUsername,_that.sshJumpAuthType,_that.hasCredentials,_that.hasJumpCredentials);case _:
   return null;
 
 }
@@ -533,7 +547,7 @@ return $default(_that.id,_that.name,_that.host,_that.port,_that.useSsl,_that.has
 @JsonSerializable()
 
 class _Machine extends Machine {
-  const _Machine({required this.id, this.name, required this.host, this.port = 8765, this.useSsl = false, this.hasApiKey = false, this.bridgeInstanceId, this.codexSourceId, this.lastConnected, this.isFavorite = false, this.sshEnabled = false, this.sshUsername, this.sshPort = 22, this.sshAuthType = SshAuthType.password, this.sshJumpHost, this.sshJumpPort = 22, this.sshJumpUsername, this.sshJumpAuthType = SshAuthType.password, this.hasCredentials = false, this.hasJumpCredentials = false}): super._();
+  const _Machine({required this.id, this.name, required this.host, this.port = 8765, this.useSsl = false, this.hasApiKey = false, this.bridgeInstanceId, this.bridgeIdentityId, this.bridgeIdentityPublicKey, this.bridgeComputerName, this.bridgeAuthMode, this.bridgeIdentityVerifiedAt, this.codexSourceId, this.lastConnected, this.isFavorite = false, this.sshEnabled = false, this.sshUsername, this.sshPort = 22, this.sshAuthType = SshAuthType.password, this.sshJumpHost, this.sshJumpPort = 22, this.sshJumpUsername, this.sshJumpAuthType = SshAuthType.password, this.hasCredentials = false, this.hasJumpCredentials = false}): super._();
   factory _Machine.fromJson(Map<String, dynamic> json) => _$MachineFromJson(json);
 
 /// Unique identifier (UUID)
@@ -553,6 +567,20 @@ class _Machine extends Machine {
 /// This is a cache/data-source hint, not a credential. Different LAN,
 /// Tailscale, DNS, or tunnel routes may legitimately share this value.
 @override final  String? bridgeInstanceId;
+/// Stable cryptographic installation identity advertised by a modern
+/// Bridge before WebSocket authentication.
+///
+/// The value is derived from a Bridge-owned signing key. It is not a Mac
+/// serial number, MAC address, or other hardware identifier.
+@override final  String? bridgeIdentityId;
+/// Base64url-encoded Ed25519 public key used to pin [bridgeIdentityId].
+@override final  String? bridgeIdentityPublicKey;
+/// Computer name signed by the Bridge identity document.
+@override final  String? bridgeComputerName;
+/// Last advertised authentication mode (`key`, `paired_or_key`, `open`).
+@override final  String? bridgeAuthMode;
+/// Last time this route produced a valid signed identity document.
+@override final  DateTime? bridgeIdentityVerifiedAt;
 /// Last authoritative Codex Home identity observed on this route.
 ///
 /// A single Bridge installation may be restarted against another
@@ -597,16 +625,16 @@ Map<String, dynamic> toJson() {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is _Machine&&(identical(other.id, id) || other.id == id)&&(identical(other.name, name) || other.name == name)&&(identical(other.host, host) || other.host == host)&&(identical(other.port, port) || other.port == port)&&(identical(other.useSsl, useSsl) || other.useSsl == useSsl)&&(identical(other.hasApiKey, hasApiKey) || other.hasApiKey == hasApiKey)&&(identical(other.bridgeInstanceId, bridgeInstanceId) || other.bridgeInstanceId == bridgeInstanceId)&&(identical(other.codexSourceId, codexSourceId) || other.codexSourceId == codexSourceId)&&(identical(other.lastConnected, lastConnected) || other.lastConnected == lastConnected)&&(identical(other.isFavorite, isFavorite) || other.isFavorite == isFavorite)&&(identical(other.sshEnabled, sshEnabled) || other.sshEnabled == sshEnabled)&&(identical(other.sshUsername, sshUsername) || other.sshUsername == sshUsername)&&(identical(other.sshPort, sshPort) || other.sshPort == sshPort)&&(identical(other.sshAuthType, sshAuthType) || other.sshAuthType == sshAuthType)&&(identical(other.sshJumpHost, sshJumpHost) || other.sshJumpHost == sshJumpHost)&&(identical(other.sshJumpPort, sshJumpPort) || other.sshJumpPort == sshJumpPort)&&(identical(other.sshJumpUsername, sshJumpUsername) || other.sshJumpUsername == sshJumpUsername)&&(identical(other.sshJumpAuthType, sshJumpAuthType) || other.sshJumpAuthType == sshJumpAuthType)&&(identical(other.hasCredentials, hasCredentials) || other.hasCredentials == hasCredentials)&&(identical(other.hasJumpCredentials, hasJumpCredentials) || other.hasJumpCredentials == hasJumpCredentials));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is _Machine&&(identical(other.id, id) || other.id == id)&&(identical(other.name, name) || other.name == name)&&(identical(other.host, host) || other.host == host)&&(identical(other.port, port) || other.port == port)&&(identical(other.useSsl, useSsl) || other.useSsl == useSsl)&&(identical(other.hasApiKey, hasApiKey) || other.hasApiKey == hasApiKey)&&(identical(other.bridgeInstanceId, bridgeInstanceId) || other.bridgeInstanceId == bridgeInstanceId)&&(identical(other.bridgeIdentityId, bridgeIdentityId) || other.bridgeIdentityId == bridgeIdentityId)&&(identical(other.bridgeIdentityPublicKey, bridgeIdentityPublicKey) || other.bridgeIdentityPublicKey == bridgeIdentityPublicKey)&&(identical(other.bridgeComputerName, bridgeComputerName) || other.bridgeComputerName == bridgeComputerName)&&(identical(other.bridgeAuthMode, bridgeAuthMode) || other.bridgeAuthMode == bridgeAuthMode)&&(identical(other.bridgeIdentityVerifiedAt, bridgeIdentityVerifiedAt) || other.bridgeIdentityVerifiedAt == bridgeIdentityVerifiedAt)&&(identical(other.codexSourceId, codexSourceId) || other.codexSourceId == codexSourceId)&&(identical(other.lastConnected, lastConnected) || other.lastConnected == lastConnected)&&(identical(other.isFavorite, isFavorite) || other.isFavorite == isFavorite)&&(identical(other.sshEnabled, sshEnabled) || other.sshEnabled == sshEnabled)&&(identical(other.sshUsername, sshUsername) || other.sshUsername == sshUsername)&&(identical(other.sshPort, sshPort) || other.sshPort == sshPort)&&(identical(other.sshAuthType, sshAuthType) || other.sshAuthType == sshAuthType)&&(identical(other.sshJumpHost, sshJumpHost) || other.sshJumpHost == sshJumpHost)&&(identical(other.sshJumpPort, sshJumpPort) || other.sshJumpPort == sshJumpPort)&&(identical(other.sshJumpUsername, sshJumpUsername) || other.sshJumpUsername == sshJumpUsername)&&(identical(other.sshJumpAuthType, sshJumpAuthType) || other.sshJumpAuthType == sshJumpAuthType)&&(identical(other.hasCredentials, hasCredentials) || other.hasCredentials == hasCredentials)&&(identical(other.hasJumpCredentials, hasJumpCredentials) || other.hasJumpCredentials == hasJumpCredentials));
 }
 
 @JsonKey(includeFromJson: false, includeToJson: false)
 @override
-int get hashCode => Object.hashAll([runtimeType,id,name,host,port,useSsl,hasApiKey,bridgeInstanceId,codexSourceId,lastConnected,isFavorite,sshEnabled,sshUsername,sshPort,sshAuthType,sshJumpHost,sshJumpPort,sshJumpUsername,sshJumpAuthType,hasCredentials,hasJumpCredentials]);
+int get hashCode => Object.hashAll([runtimeType,id,name,host,port,useSsl,hasApiKey,bridgeInstanceId,bridgeIdentityId,bridgeIdentityPublicKey,bridgeComputerName,bridgeAuthMode,bridgeIdentityVerifiedAt,codexSourceId,lastConnected,isFavorite,sshEnabled,sshUsername,sshPort,sshAuthType,sshJumpHost,sshJumpPort,sshJumpUsername,sshJumpAuthType,hasCredentials,hasJumpCredentials]);
 
 @override
 String toString() {
-  return 'Machine(id: $id, name: $name, host: $host, port: $port, useSsl: $useSsl, hasApiKey: $hasApiKey, bridgeInstanceId: $bridgeInstanceId, codexSourceId: $codexSourceId, lastConnected: $lastConnected, isFavorite: $isFavorite, sshEnabled: $sshEnabled, sshUsername: $sshUsername, sshPort: $sshPort, sshAuthType: $sshAuthType, sshJumpHost: $sshJumpHost, sshJumpPort: $sshJumpPort, sshJumpUsername: $sshJumpUsername, sshJumpAuthType: $sshJumpAuthType, hasCredentials: $hasCredentials, hasJumpCredentials: $hasJumpCredentials)';
+  return 'Machine(id: $id, name: $name, host: $host, port: $port, useSsl: $useSsl, hasApiKey: $hasApiKey, bridgeInstanceId: $bridgeInstanceId, bridgeIdentityId: $bridgeIdentityId, bridgeIdentityPublicKey: $bridgeIdentityPublicKey, bridgeComputerName: $bridgeComputerName, bridgeAuthMode: $bridgeAuthMode, bridgeIdentityVerifiedAt: $bridgeIdentityVerifiedAt, codexSourceId: $codexSourceId, lastConnected: $lastConnected, isFavorite: $isFavorite, sshEnabled: $sshEnabled, sshUsername: $sshUsername, sshPort: $sshPort, sshAuthType: $sshAuthType, sshJumpHost: $sshJumpHost, sshJumpPort: $sshJumpPort, sshJumpUsername: $sshJumpUsername, sshJumpAuthType: $sshJumpAuthType, hasCredentials: $hasCredentials, hasJumpCredentials: $hasJumpCredentials)';
 }
 
 
@@ -617,7 +645,7 @@ abstract mixin class _$MachineCopyWith<$Res> implements $MachineCopyWith<$Res> {
   factory _$MachineCopyWith(_Machine value, $Res Function(_Machine) _then) = __$MachineCopyWithImpl;
 @override @useResult
 $Res call({
- String id, String? name, String host, int port, bool useSsl, bool hasApiKey, String? bridgeInstanceId, String? codexSourceId, DateTime? lastConnected, bool isFavorite, bool sshEnabled, String? sshUsername, int sshPort, SshAuthType sshAuthType, String? sshJumpHost, int sshJumpPort, String? sshJumpUsername, SshAuthType sshJumpAuthType, bool hasCredentials, bool hasJumpCredentials
+ String id, String? name, String host, int port, bool useSsl, bool hasApiKey, String? bridgeInstanceId, String? bridgeIdentityId, String? bridgeIdentityPublicKey, String? bridgeComputerName, String? bridgeAuthMode, DateTime? bridgeIdentityVerifiedAt, String? codexSourceId, DateTime? lastConnected, bool isFavorite, bool sshEnabled, String? sshUsername, int sshPort, SshAuthType sshAuthType, String? sshJumpHost, int sshJumpPort, String? sshJumpUsername, SshAuthType sshJumpAuthType, bool hasCredentials, bool hasJumpCredentials
 });
 
 
@@ -634,7 +662,7 @@ class __$MachineCopyWithImpl<$Res>
 
 /// Create a copy of Machine
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? name = freezed,Object? host = null,Object? port = null,Object? useSsl = null,Object? hasApiKey = null,Object? bridgeInstanceId = freezed,Object? codexSourceId = freezed,Object? lastConnected = freezed,Object? isFavorite = null,Object? sshEnabled = null,Object? sshUsername = freezed,Object? sshPort = null,Object? sshAuthType = null,Object? sshJumpHost = freezed,Object? sshJumpPort = null,Object? sshJumpUsername = freezed,Object? sshJumpAuthType = null,Object? hasCredentials = null,Object? hasJumpCredentials = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? name = freezed,Object? host = null,Object? port = null,Object? useSsl = null,Object? hasApiKey = null,Object? bridgeInstanceId = freezed,Object? bridgeIdentityId = freezed,Object? bridgeIdentityPublicKey = freezed,Object? bridgeComputerName = freezed,Object? bridgeAuthMode = freezed,Object? bridgeIdentityVerifiedAt = freezed,Object? codexSourceId = freezed,Object? lastConnected = freezed,Object? isFavorite = null,Object? sshEnabled = null,Object? sshUsername = freezed,Object? sshPort = null,Object? sshAuthType = null,Object? sshJumpHost = freezed,Object? sshJumpPort = null,Object? sshJumpUsername = freezed,Object? sshJumpAuthType = null,Object? hasCredentials = null,Object? hasJumpCredentials = null,}) {
   return _then(_Machine(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,name: freezed == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
@@ -643,7 +671,12 @@ as String,port: null == port ? _self.port : port // ignore: cast_nullable_to_non
 as int,useSsl: null == useSsl ? _self.useSsl : useSsl // ignore: cast_nullable_to_non_nullable
 as bool,hasApiKey: null == hasApiKey ? _self.hasApiKey : hasApiKey // ignore: cast_nullable_to_non_nullable
 as bool,bridgeInstanceId: freezed == bridgeInstanceId ? _self.bridgeInstanceId : bridgeInstanceId // ignore: cast_nullable_to_non_nullable
-as String?,codexSourceId: freezed == codexSourceId ? _self.codexSourceId : codexSourceId // ignore: cast_nullable_to_non_nullable
+as String?,bridgeIdentityId: freezed == bridgeIdentityId ? _self.bridgeIdentityId : bridgeIdentityId // ignore: cast_nullable_to_non_nullable
+as String?,bridgeIdentityPublicKey: freezed == bridgeIdentityPublicKey ? _self.bridgeIdentityPublicKey : bridgeIdentityPublicKey // ignore: cast_nullable_to_non_nullable
+as String?,bridgeComputerName: freezed == bridgeComputerName ? _self.bridgeComputerName : bridgeComputerName // ignore: cast_nullable_to_non_nullable
+as String?,bridgeAuthMode: freezed == bridgeAuthMode ? _self.bridgeAuthMode : bridgeAuthMode // ignore: cast_nullable_to_non_nullable
+as String?,bridgeIdentityVerifiedAt: freezed == bridgeIdentityVerifiedAt ? _self.bridgeIdentityVerifiedAt : bridgeIdentityVerifiedAt // ignore: cast_nullable_to_non_nullable
+as DateTime?,codexSourceId: freezed == codexSourceId ? _self.codexSourceId : codexSourceId // ignore: cast_nullable_to_non_nullable
 as String?,lastConnected: freezed == lastConnected ? _self.lastConnected : lastConnected // ignore: cast_nullable_to_non_nullable
 as DateTime?,isFavorite: null == isFavorite ? _self.isFavorite : isFavorite // ignore: cast_nullable_to_non_nullable
 as bool,sshEnabled: null == sshEnabled ? _self.sshEnabled : sshEnabled // ignore: cast_nullable_to_non_nullable
@@ -666,7 +699,8 @@ as bool,
 /// @nodoc
 mixin _$MachineWithStatus {
 
- Machine get machine; MachineStatus get status; DateTime? get lastChecked; String? get lastError;/// Bridge version info (fetched during health check)
+ Machine get machine; MachineStatus get status; DateTime? get lastChecked; String? get lastError;/// Round-trip time of the latest successful HTTP health probe.
+ int? get latencyMs;/// Bridge version info (fetched during health check)
  BridgeVersionInfo? get versionInfo;
 /// Create a copy of MachineWithStatus
 /// with the given fields replaced by the non-null parameter values.
@@ -678,16 +712,16 @@ $MachineWithStatusCopyWith<MachineWithStatus> get copyWith => _$MachineWithStatu
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is MachineWithStatus&&(identical(other.machine, machine) || other.machine == machine)&&(identical(other.status, status) || other.status == status)&&(identical(other.lastChecked, lastChecked) || other.lastChecked == lastChecked)&&(identical(other.lastError, lastError) || other.lastError == lastError)&&(identical(other.versionInfo, versionInfo) || other.versionInfo == versionInfo));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is MachineWithStatus&&(identical(other.machine, machine) || other.machine == machine)&&(identical(other.status, status) || other.status == status)&&(identical(other.lastChecked, lastChecked) || other.lastChecked == lastChecked)&&(identical(other.lastError, lastError) || other.lastError == lastError)&&(identical(other.latencyMs, latencyMs) || other.latencyMs == latencyMs)&&(identical(other.versionInfo, versionInfo) || other.versionInfo == versionInfo));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,machine,status,lastChecked,lastError,versionInfo);
+int get hashCode => Object.hash(runtimeType,machine,status,lastChecked,lastError,latencyMs,versionInfo);
 
 @override
 String toString() {
-  return 'MachineWithStatus(machine: $machine, status: $status, lastChecked: $lastChecked, lastError: $lastError, versionInfo: $versionInfo)';
+  return 'MachineWithStatus(machine: $machine, status: $status, lastChecked: $lastChecked, lastError: $lastError, latencyMs: $latencyMs, versionInfo: $versionInfo)';
 }
 
 
@@ -698,7 +732,7 @@ abstract mixin class $MachineWithStatusCopyWith<$Res>  {
   factory $MachineWithStatusCopyWith(MachineWithStatus value, $Res Function(MachineWithStatus) _then) = _$MachineWithStatusCopyWithImpl;
 @useResult
 $Res call({
- Machine machine, MachineStatus status, DateTime? lastChecked, String? lastError, BridgeVersionInfo? versionInfo
+ Machine machine, MachineStatus status, DateTime? lastChecked, String? lastError, int? latencyMs, BridgeVersionInfo? versionInfo
 });
 
 
@@ -715,13 +749,14 @@ class _$MachineWithStatusCopyWithImpl<$Res>
 
 /// Create a copy of MachineWithStatus
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? machine = null,Object? status = null,Object? lastChecked = freezed,Object? lastError = freezed,Object? versionInfo = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? machine = null,Object? status = null,Object? lastChecked = freezed,Object? lastError = freezed,Object? latencyMs = freezed,Object? versionInfo = freezed,}) {
   return _then(_self.copyWith(
 machine: null == machine ? _self.machine : machine // ignore: cast_nullable_to_non_nullable
 as Machine,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
 as MachineStatus,lastChecked: freezed == lastChecked ? _self.lastChecked : lastChecked // ignore: cast_nullable_to_non_nullable
 as DateTime?,lastError: freezed == lastError ? _self.lastError : lastError // ignore: cast_nullable_to_non_nullable
-as String?,versionInfo: freezed == versionInfo ? _self.versionInfo : versionInfo // ignore: cast_nullable_to_non_nullable
+as String?,latencyMs: freezed == latencyMs ? _self.latencyMs : latencyMs // ignore: cast_nullable_to_non_nullable
+as int?,versionInfo: freezed == versionInfo ? _self.versionInfo : versionInfo // ignore: cast_nullable_to_non_nullable
 as BridgeVersionInfo?,
   ));
 }
@@ -828,10 +863,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( Machine machine,  MachineStatus status,  DateTime? lastChecked,  String? lastError,  BridgeVersionInfo? versionInfo)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( Machine machine,  MachineStatus status,  DateTime? lastChecked,  String? lastError,  int? latencyMs,  BridgeVersionInfo? versionInfo)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _MachineWithStatus() when $default != null:
-return $default(_that.machine,_that.status,_that.lastChecked,_that.lastError,_that.versionInfo);case _:
+return $default(_that.machine,_that.status,_that.lastChecked,_that.lastError,_that.latencyMs,_that.versionInfo);case _:
   return orElse();
 
 }
@@ -849,10 +884,10 @@ return $default(_that.machine,_that.status,_that.lastChecked,_that.lastError,_th
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( Machine machine,  MachineStatus status,  DateTime? lastChecked,  String? lastError,  BridgeVersionInfo? versionInfo)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( Machine machine,  MachineStatus status,  DateTime? lastChecked,  String? lastError,  int? latencyMs,  BridgeVersionInfo? versionInfo)  $default,) {final _that = this;
 switch (_that) {
 case _MachineWithStatus():
-return $default(_that.machine,_that.status,_that.lastChecked,_that.lastError,_that.versionInfo);case _:
+return $default(_that.machine,_that.status,_that.lastChecked,_that.lastError,_that.latencyMs,_that.versionInfo);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -869,10 +904,10 @@ return $default(_that.machine,_that.status,_that.lastChecked,_that.lastError,_th
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( Machine machine,  MachineStatus status,  DateTime? lastChecked,  String? lastError,  BridgeVersionInfo? versionInfo)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( Machine machine,  MachineStatus status,  DateTime? lastChecked,  String? lastError,  int? latencyMs,  BridgeVersionInfo? versionInfo)?  $default,) {final _that = this;
 switch (_that) {
 case _MachineWithStatus() when $default != null:
-return $default(_that.machine,_that.status,_that.lastChecked,_that.lastError,_that.versionInfo);case _:
+return $default(_that.machine,_that.status,_that.lastChecked,_that.lastError,_that.latencyMs,_that.versionInfo);case _:
   return null;
 
 }
@@ -884,13 +919,15 @@ return $default(_that.machine,_that.status,_that.lastChecked,_that.lastError,_th
 
 
 class _MachineWithStatus extends MachineWithStatus {
-  const _MachineWithStatus({required this.machine, this.status = MachineStatus.unknown, this.lastChecked, this.lastError, this.versionInfo}): super._();
+  const _MachineWithStatus({required this.machine, this.status = MachineStatus.unknown, this.lastChecked, this.lastError, this.latencyMs, this.versionInfo}): super._();
   
 
 @override final  Machine machine;
 @override@JsonKey() final  MachineStatus status;
 @override final  DateTime? lastChecked;
 @override final  String? lastError;
+/// Round-trip time of the latest successful HTTP health probe.
+@override final  int? latencyMs;
 /// Bridge version info (fetched during health check)
 @override final  BridgeVersionInfo? versionInfo;
 
@@ -904,16 +941,16 @@ _$MachineWithStatusCopyWith<_MachineWithStatus> get copyWith => __$MachineWithSt
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is _MachineWithStatus&&(identical(other.machine, machine) || other.machine == machine)&&(identical(other.status, status) || other.status == status)&&(identical(other.lastChecked, lastChecked) || other.lastChecked == lastChecked)&&(identical(other.lastError, lastError) || other.lastError == lastError)&&(identical(other.versionInfo, versionInfo) || other.versionInfo == versionInfo));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is _MachineWithStatus&&(identical(other.machine, machine) || other.machine == machine)&&(identical(other.status, status) || other.status == status)&&(identical(other.lastChecked, lastChecked) || other.lastChecked == lastChecked)&&(identical(other.lastError, lastError) || other.lastError == lastError)&&(identical(other.latencyMs, latencyMs) || other.latencyMs == latencyMs)&&(identical(other.versionInfo, versionInfo) || other.versionInfo == versionInfo));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,machine,status,lastChecked,lastError,versionInfo);
+int get hashCode => Object.hash(runtimeType,machine,status,lastChecked,lastError,latencyMs,versionInfo);
 
 @override
 String toString() {
-  return 'MachineWithStatus(machine: $machine, status: $status, lastChecked: $lastChecked, lastError: $lastError, versionInfo: $versionInfo)';
+  return 'MachineWithStatus(machine: $machine, status: $status, lastChecked: $lastChecked, lastError: $lastError, latencyMs: $latencyMs, versionInfo: $versionInfo)';
 }
 
 
@@ -924,7 +961,7 @@ abstract mixin class _$MachineWithStatusCopyWith<$Res> implements $MachineWithSt
   factory _$MachineWithStatusCopyWith(_MachineWithStatus value, $Res Function(_MachineWithStatus) _then) = __$MachineWithStatusCopyWithImpl;
 @override @useResult
 $Res call({
- Machine machine, MachineStatus status, DateTime? lastChecked, String? lastError, BridgeVersionInfo? versionInfo
+ Machine machine, MachineStatus status, DateTime? lastChecked, String? lastError, int? latencyMs, BridgeVersionInfo? versionInfo
 });
 
 
@@ -941,13 +978,14 @@ class __$MachineWithStatusCopyWithImpl<$Res>
 
 /// Create a copy of MachineWithStatus
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? machine = null,Object? status = null,Object? lastChecked = freezed,Object? lastError = freezed,Object? versionInfo = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? machine = null,Object? status = null,Object? lastChecked = freezed,Object? lastError = freezed,Object? latencyMs = freezed,Object? versionInfo = freezed,}) {
   return _then(_MachineWithStatus(
 machine: null == machine ? _self.machine : machine // ignore: cast_nullable_to_non_nullable
 as Machine,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
 as MachineStatus,lastChecked: freezed == lastChecked ? _self.lastChecked : lastChecked // ignore: cast_nullable_to_non_nullable
 as DateTime?,lastError: freezed == lastError ? _self.lastError : lastError // ignore: cast_nullable_to_non_nullable
-as String?,versionInfo: freezed == versionInfo ? _self.versionInfo : versionInfo // ignore: cast_nullable_to_non_nullable
+as String?,latencyMs: freezed == latencyMs ? _self.latencyMs : latencyMs // ignore: cast_nullable_to_non_nullable
+as int?,versionInfo: freezed == versionInfo ? _self.versionInfo : versionInfo // ignore: cast_nullable_to_non_nullable
 as BridgeVersionInfo?,
   ));
 }

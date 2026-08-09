@@ -148,6 +148,7 @@ class _StatusDot extends StatelessWidget {
       MachineStatus.online => appColors.statusOnline,
       MachineStatus.offline => colorScheme.error,
       MachineStatus.unreachable => appColors.statusApproval,
+      MachineStatus.identityChanged => colorScheme.error,
       MachineStatus.unknown => appColors.statusIdle,
     };
 
@@ -500,6 +501,7 @@ class _ActionButton extends StatelessWidget {
     return switch (status) {
       MachineStatus.offline => l.offline,
       MachineStatus.unreachable => l.unreachable,
+      MachineStatus.identityChanged => l.machineIdentityChanged,
       MachineStatus.unknown => l.checking,
       MachineStatus.online => '',
     };

@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 import '../constants/app_constants.dart';
 import '../models/machine.dart';
 import '../utils/network_endpoint.dart';
+import 'bridge_device_identity_service.dart';
 
 typedef BridgeWsUrlResolver =
     Future<String> Function(
@@ -45,6 +46,8 @@ class MachineManagerService {
 
   final SharedPreferences _prefs;
   final FlutterSecureStorage _secureStorage;
+  final BridgeIdentityProbe _identityProbe;
+  final bool _ownsIdentityProbe;
 
   final _machinesController =
       StreamController<List<MachineWithStatus>>.broadcast();
@@ -53,11 +56,19 @@ class MachineManagerService {
   final Map<String, DateTime> _lastChecked = {};
   final Map<String, String> _lastErrors = {};
   final Map<String, BridgeVersionInfo> _versionCache = {};
+  final Map<String, int> _latencyCache = {};
   BridgeWsUrlResolver? _bridgeWsUrlResolver;
   BridgeHttpBaseUrlResolver? _bridgeHttpBaseUrlResolver;
   Timer? _healthCheckTimer;
+  Future<void>? _healthRefresh;
+  bool _disposed = false;
 
-  MachineManagerService(this._prefs, this._secureStorage);
+  MachineManagerService(
+    this._prefs,
+    this._secureStorage, {
+    BridgeIdentityProbe? identityProbe,
+  }) : _identityProbe = identityProbe ?? BridgeIdentityProbe(),
+       _ownsIdentityProbe = identityProbe == null;
 
   void configureBridgeTunnelResolvers({
     BridgeWsUrlResolver? wsUrlResolver,
@@ -81,6 +92,7 @@ class MachineManagerService {
         status: _statusCache[m.id] ?? MachineStatus.unknown,
         lastChecked: _lastChecked[m.id],
         lastError: _lastErrors[m.id],
+        latencyMs: _latencyCache[m.id],
         versionInfo: _versionCache[m.id],
       );
     }).toList();
@@ -92,8 +104,9 @@ class MachineManagerService {
     _machines = await _loadFromPrefs();
     _sortMachines();
     _notifyListeners();
-    // Start health check after loading
-    await checkAllHealth();
+    // Route discovery is deliberately background-only. Merely opening the app
+    // must not be represented as an active Bridge connection attempt.
+    unawaited(checkAllHealth());
   }
 
   /// Migrate from old RemoteMachine + UrlHistoryEntry to new Machine format
@@ -277,6 +290,14 @@ class MachineManagerService {
       final commonBridgeInstanceId = _commonIdentity(
         machines.map((machine) => machine.bridgeInstanceId),
       );
+      final commonBridgeIdentityId = _commonIdentity(
+        machines.map((machine) => machine.bridgeIdentityId),
+      );
+      final commonBridgeIdentityPublicKey = commonBridgeIdentityId == null
+          ? null
+          : _commonIdentity(
+              machines.map((machine) => machine.bridgeIdentityPublicKey),
+            );
       final commonCodexSourceId = commonBridgeInstanceId == null
           ? null
           : _commonIdentity(machines.map((machine) => machine.codexSourceId));
@@ -289,6 +310,18 @@ class MachineManagerService {
             (sshJumpPassword != null && sshJumpPassword.isNotEmpty) ||
             (sshJumpPrivateKey != null && sshJumpPrivateKey.isNotEmpty),
         bridgeInstanceId: commonBridgeInstanceId,
+        bridgeIdentityId: commonBridgeIdentityId,
+        bridgeIdentityPublicKey: commonBridgeIdentityPublicKey,
+        bridgeComputerName: commonBridgeIdentityId == null
+            ? null
+            : _commonIdentity(
+                machines.map((machine) => machine.bridgeComputerName),
+              ),
+        bridgeAuthMode: commonBridgeIdentityId == null
+            ? null
+            : _commonIdentity(
+                machines.map((machine) => machine.bridgeAuthMode),
+              ),
         codexSourceId: commonCodexSourceId,
       );
     } catch (error) {
@@ -367,6 +400,7 @@ class MachineManagerService {
 
   /// Notify listeners of updated machine list
   void _notifyListeners() {
+    if (_disposed) return;
     _machinesController.add(machinesWithStatus);
   }
 
@@ -425,6 +459,63 @@ class MachineManagerService {
     return updated;
   }
 
+  /// Persist a verified, public Bridge signing identity for one route.
+  ///
+  /// A previously pinned route is never silently rebound. A changed key is a
+  /// security event that must be resolved by deleting or explicitly editing
+  /// the route.
+  Future<Machine?> bindSignedBridgeIdentity({
+    required String machineId,
+    required BridgeIdentityDocument identity,
+  }) async {
+    final index = _machines.indexWhere((machine) => machine.id == machineId);
+    if (index == -1) return null;
+    final current = _machines[index];
+    final pinnedKey = current.bridgeIdentityPublicKey?.trim();
+    if (pinnedKey != null &&
+        pinnedKey.isNotEmpty &&
+        pinnedKey != identity.publicKey) {
+      _statusCache[machineId] = MachineStatus.identityChanged;
+      _lastErrors[machineId] =
+          'Bridge identity changed. Verify this connection route.';
+      _notifyListeners();
+      return null;
+    }
+    final updated = current.copyWith(
+      bridgeIdentityId: identity.bridgeIdentityId,
+      bridgeIdentityPublicKey: identity.publicKey,
+      bridgeComputerName: identity.computerName,
+      bridgeAuthMode: identity.authMode,
+      bridgeIdentityVerifiedAt: DateTime.now().toUtc(),
+      bridgeInstanceId: identity.bridgeInstanceId,
+    );
+    _machines[index] = updated;
+    await _saveToPrefs();
+    _notifyListeners();
+    return updated;
+  }
+
+  /// Rename a user-visible computer without collapsing its route records.
+  Future<void> renameMachineGroup(String groupId, String? name) async {
+    final normalizedName = name?.trim();
+    final routeIds = groupBridgeMachineRoutes(machinesWithStatus)
+        .where((group) => group.id == groupId)
+        .expand((group) => group.routes)
+        .map((route) => route.machine.id)
+        .toSet();
+    if (routeIds.isEmpty) return;
+    for (var index = 0; index < _machines.length; index++) {
+      final machine = _machines[index];
+      if (routeIds.contains(machine.id)) {
+        _machines[index] = machine.copyWith(
+          name: normalizedName?.isEmpty == true ? null : normalizedName,
+        );
+      }
+    }
+    await _saveToPrefs();
+    _notifyListeners();
+  }
+
   /// Forget a stale cache identity after an authoritative legacy handshake
   /// omits Bridge identity support. Route credentials remain untouched.
   Future<Machine?> clearBridgeIdentity(String machineId) async {
@@ -478,6 +569,17 @@ class MachineManagerService {
         name: name ?? machine.name,
         useSsl: nextUseSsl,
         bridgeInstanceId: transportChanged ? null : machine.bridgeInstanceId,
+        bridgeIdentityId: transportChanged ? null : machine.bridgeIdentityId,
+        bridgeIdentityPublicKey: transportChanged
+            ? null
+            : machine.bridgeIdentityPublicKey,
+        bridgeComputerName: transportChanged
+            ? null
+            : machine.bridgeComputerName,
+        bridgeAuthMode: transportChanged ? null : machine.bridgeAuthMode,
+        bridgeIdentityVerifiedAt: transportChanged
+            ? null
+            : machine.bridgeIdentityVerifiedAt,
         codexSourceId: transportChanged ? null : machine.codexSourceId,
       );
       final index = _machines.indexWhere((m) => m.id == machine!.id);
@@ -567,6 +669,21 @@ class MachineManagerService {
             bridgeInstanceId:
                 normalizedMachine.bridgeInstanceId ??
                 (transportChanged ? null : existing.bridgeInstanceId),
+            bridgeIdentityId:
+                normalizedMachine.bridgeIdentityId ??
+                (transportChanged ? null : existing.bridgeIdentityId),
+            bridgeIdentityPublicKey:
+                normalizedMachine.bridgeIdentityPublicKey ??
+                (transportChanged ? null : existing.bridgeIdentityPublicKey),
+            bridgeComputerName:
+                normalizedMachine.bridgeComputerName ??
+                (transportChanged ? null : existing.bridgeComputerName),
+            bridgeAuthMode:
+                normalizedMachine.bridgeAuthMode ??
+                (transportChanged ? null : existing.bridgeAuthMode),
+            bridgeIdentityVerifiedAt:
+                normalizedMachine.bridgeIdentityVerifiedAt ??
+                (transportChanged ? null : existing.bridgeIdentityVerifiedAt),
             codexSourceId:
                 normalizedMachine.codexSourceId ??
                 (transportChanged ? null : existing.codexSourceId),
@@ -650,6 +767,23 @@ class MachineManagerService {
       bridgeInstanceId: endpointChanged
           ? null
           : (machine.bridgeInstanceId ?? current.bridgeInstanceId),
+      bridgeIdentityId: endpointChanged
+          ? null
+          : (machine.bridgeIdentityId ?? current.bridgeIdentityId),
+      bridgeIdentityPublicKey: endpointChanged
+          ? null
+          : (machine.bridgeIdentityPublicKey ??
+                current.bridgeIdentityPublicKey),
+      bridgeComputerName: endpointChanged
+          ? null
+          : (machine.bridgeComputerName ?? current.bridgeComputerName),
+      bridgeAuthMode: endpointChanged
+          ? null
+          : (machine.bridgeAuthMode ?? current.bridgeAuthMode),
+      bridgeIdentityVerifiedAt: endpointChanged
+          ? null
+          : (machine.bridgeIdentityVerifiedAt ??
+                current.bridgeIdentityVerifiedAt),
       codexSourceId: endpointChanged
           ? null
           : (machine.codexSourceId ?? current.codexSourceId),
@@ -737,6 +871,7 @@ class MachineManagerService {
     _lastChecked.remove(id);
     _lastErrors.remove(id);
     _versionCache.remove(id);
+    _latencyCache.remove(id);
     await _saveToPrefs();
     _notifyListeners();
   }
@@ -756,6 +891,34 @@ class MachineManagerService {
 
   // ---- Health Check ----
 
+  /// Verify only the signed Bridge identity needed for an explicit connect.
+  ///
+  /// The general background probe also fetches version metadata. Keeping this
+  /// path narrow avoids repeating that unrelated work after the user taps an
+  /// already-online route.
+  Future<Machine?> verifyRouteIdentity(
+    String machineId, {
+    Duration timeout = const Duration(seconds: 3),
+  }) async {
+    final machine = getMachine(machineId);
+    if (machine == null) return null;
+    final httpBaseUrl = await _buildHttpBaseUrl(machine);
+    final result = await _identityProbe.probe(httpBaseUrl, timeout: timeout);
+    final identity = result.document;
+    if (identity == null) {
+      if (machine.bridgeIdentityPublicKey?.isNotEmpty == true) {
+        _statusCache[machineId] = MachineStatus.identityChanged;
+        _lastErrors[machineId] =
+            'Bridge identity is no longer available on this route.';
+        _notifyListeners();
+        return null;
+      }
+      return machine;
+    }
+    _latencyCache[machineId] = result.latencyMs;
+    return bindSignedBridgeIdentity(machineId: machineId, identity: identity);
+  }
+
   /// Check health of a specific machine and fetch version info
   Future<MachineStatus> checkHealth(
     String machineId, {
@@ -767,6 +930,7 @@ class MachineManagerService {
     if (machine == null) return MachineStatus.unknown;
 
     try {
+      final stopwatch = Stopwatch()..start();
       final httpBaseUrl = await _buildHttpBaseUrl(
         machine,
         password: password,
@@ -774,14 +938,47 @@ class MachineManagerService {
       );
       final healthUrl = '$httpBaseUrl/health';
       final response = await http.get(Uri.parse(healthUrl)).timeout(timeout);
+      stopwatch.stop();
 
       if (response.statusCode == 200) {
         _statusCache[machineId] = MachineStatus.online;
+        _latencyCache[machineId] = stopwatch.elapsedMilliseconds;
         _lastErrors.remove(machineId);
+
+        try {
+          final identityResult = await _identityProbe.probe(
+            httpBaseUrl,
+            timeout: timeout,
+          );
+          final identity = identityResult.document;
+          if (identity == null) {
+            if (machine.bridgeIdentityPublicKey?.isNotEmpty == true) {
+              _statusCache[machineId] = MachineStatus.identityChanged;
+              _lastErrors[machineId] =
+                  'Bridge identity is no longer available on this route.';
+            }
+          } else {
+            _latencyCache[machineId] = identityResult.latencyMs;
+            await bindSignedBridgeIdentity(
+              machineId: machineId,
+              identity: identity,
+            );
+          }
+        } on FormatException catch (error) {
+          _statusCache[machineId] = MachineStatus.identityChanged;
+          _lastErrors[machineId] = error.message;
+        } catch (error) {
+          // Identity discovery is additive. A transient failure must not make
+          // a reachable legacy/key-authenticated Bridge appear offline.
+          logger.warning(
+            '[MachineManager] Signed identity probe failed for $machineId',
+            error,
+          );
+        }
 
         // Fetch version info for online machines
         await _fetchVersionInfo(
-          machine,
+          getMachine(machineId) ?? machine,
           password: password,
           promptForPassword: promptForPassword,
         );
@@ -795,14 +992,17 @@ class MachineManagerService {
       _statusCache[machineId] = MachineStatus.offline;
       _lastErrors[machineId] = e.message;
       _versionCache.remove(machineId);
+      _latencyCache.remove(machineId);
     } on TimeoutException {
       _statusCache[machineId] = MachineStatus.unreachable;
       _lastErrors[machineId] = 'Connection timeout';
       _versionCache.remove(machineId);
+      _latencyCache.remove(machineId);
     } catch (e) {
       _statusCache[machineId] = MachineStatus.offline;
       _lastErrors[machineId] = e.toString();
       _versionCache.remove(machineId);
+      _latencyCache.remove(machineId);
     }
 
     _lastChecked[machineId] = DateTime.now();
@@ -841,8 +1041,30 @@ class MachineManagerService {
   }
 
   /// Check health of all machines
-  Future<void> checkAllHealth() async {
-    await Future.wait(_machines.map((m) => checkHealth(m.id)));
+  Future<void> checkAllHealth() {
+    final active = _healthRefresh;
+    if (active != null) return active;
+    late final Future<void> tracked;
+    tracked = _checkAllHealth().whenComplete(() {
+      if (identical(_healthRefresh, tracked)) _healthRefresh = null;
+    });
+    _healthRefresh = tracked;
+    return tracked;
+  }
+
+  Future<void> _checkAllHealth() async {
+    final ids = _machines.map((machine) => machine.id).toList(growable: false);
+    if (ids.isEmpty) return;
+    var next = 0;
+    Future<void> worker() async {
+      while (next < ids.length) {
+        final index = next++;
+        await checkHealth(ids[index]);
+      }
+    }
+
+    final concurrency = ids.length < 4 ? ids.length : 4;
+    await Future.wait(List.generate(concurrency, (_) => worker()));
   }
 
   /// Start periodic health check
@@ -915,8 +1137,36 @@ class MachineManagerService {
 
   /// Get API key for a machine
   Future<String?> getApiKey(String machineId) async {
-    return await _secureStorage.read(key: '$_secureKeyPrefix${machineId}_api');
+    final direct = await _readApiKey(machineId);
+    if (direct != null && direct.isNotEmpty) return direct;
+    final machine = getMachine(machineId);
+    if (machine == null) return null;
+    final signedId = machine.bridgeIdentityId?.trim();
+    final legacyId = machine.bridgeInstanceId?.trim();
+    if ((signedId == null || signedId.isEmpty) &&
+        (legacyId == null || legacyId.isEmpty)) {
+      return null;
+    }
+    for (final candidate in _machines) {
+      if (candidate.id == machineId) continue;
+      final sameSignedIdentity =
+          signedId != null &&
+          signedId.isNotEmpty &&
+          candidate.bridgeIdentityId == signedId;
+      final sameLegacyIdentity =
+          (signedId == null || signedId.isEmpty) &&
+          legacyId != null &&
+          legacyId.isNotEmpty &&
+          candidate.bridgeInstanceId == legacyId;
+      if (!sameSignedIdentity && !sameLegacyIdentity) continue;
+      final shared = await _readApiKey(candidate.id);
+      if (shared != null && shared.isNotEmpty) return shared;
+    }
+    return null;
   }
+
+  Future<String?> _readApiKey(String machineId) =>
+      _secureStorage.read(key: '$_secureKeyPrefix${machineId}_api');
 
   /// Get SSH password for a machine
   Future<String?> getSshPassword(String machineId) async {
@@ -1009,7 +1259,10 @@ class MachineManagerService {
 
   /// Dispose resources
   void dispose() {
+    if (_disposed) return;
+    _disposed = true;
     stopPeriodicHealthCheck();
+    if (_ownsIdentityProbe) _identityProbe.dispose();
     _machinesController.close();
   }
 }

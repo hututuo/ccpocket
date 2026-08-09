@@ -27,6 +27,7 @@ class ConnectForm extends StatelessWidget {
   final ValueChanged<MachineWithStatus>? onToggleFavorite;
   final ValueChanged<MachineWithStatus>? onUpdateMachine;
   final ValueChanged<MachineWithStatus>? onStopMachine;
+  final ValueChanged<BridgeMachineGroup>? onRenameMachineGroup;
   final VoidCallback? onAddMachine;
   final VoidCallback? onRefreshMachines;
   final String? connectionProgressLabel;
@@ -55,6 +56,7 @@ class ConnectForm extends StatelessWidget {
     this.onToggleFavorite,
     this.onUpdateMachine,
     this.onStopMachine,
+    this.onRenameMachineGroup,
     this.onAddMachine,
     this.onRefreshMachines,
     this.connectionProgressLabel,
@@ -289,6 +291,7 @@ class ConnectForm extends StatelessWidget {
               onToggleFavorite: onToggleFavorite,
               onUpdate: onUpdateMachine,
               onStop: onStopMachine,
+              onRenameGroup: onRenameMachineGroup,
               onAddMachine: onAddMachine!,
               onRefresh: onRefreshMachines,
             ),

@@ -1744,3 +1744,37 @@
   无 Mobile 交付输入差异时同样禁止生成新 OTA/IPA。
 - 当前机器的正式发布不得临时试验新的 LaunchAgent 或 wire 探针。使用最近已验证流程，
   并遵守 `docs/local-release-fast-path.md` 的时间目标、主动超时回报和 fingerprint 证据合同。
+
+## 2026-08-09 Bridge 签名身份、设备配对与机器路线归并
+
+- `Machine.id` 仍表示一条可独立编辑、删除和排序的 IP、Tailnet、DNS 或 SSH 连接路线；
+  多条路线只在界面中按经过 Ed25519 签名证明的 `bridgeIdentityId` 归为同一台电脑，
+  不物理合并路线记录。无签名能力的旧 Bridge 仅在已认证
+  `bridgeInstanceId` 一致时兼容归组；完全未证明的 endpoint 继续隔离。
+- Bridge 首次运行生成随机 Ed25519 身份，私钥只存于当前用户的 `0700` 状态目录和
+  `0600` 文件。身份不读取 Mac 序列号、MAC、`IOPlatformUUID` 或其他硬件标识，
+  也不把这些值用作鉴权。身份、信任或配对文件只在不存在时创建；损坏、无权限、
+  非普通文件或密钥不匹配全部 fail closed，不静默换身份或清空受信设备。
+- `BRIDGE_AUTH_MODE` 明确区分 `key`、`paired_or_key` 和 `open`。旧 API key 永久保留
+  为兼容/恢复入口；`paired_or_key` 允许已配对手机用设备签名连接，也允许 key
+  客户端无中断登记设备。二维码使用一次性 256-bit token；无二维码时手机显示六位
+  确认码，由用户在 Mac 本机执行 `ccpocket-bridge pair approve <code>`。本机批准等待
+  最长五分钟，批准后必须重新挑战，业务消息在设备认证完成前不得发送。
+- Mobile 必须把“允许登记设备”和“允许设备签名免 key 登录”作为两个独立能力判断。
+  `key` 模式始终要求连接 key，并在设备登记后保留该 key；只有明确声明
+  `paired_or_key` / `device_signature` 的 Bridge 才能跳过 key 输入，并在登记成功后
+  从后续重连 URL 中移除旧 key。不能仅凭 pairing methods 就推断无 key 可连接。
+- 设备认证成功后，Bridge 签发只在该 WebSocket 存活期间有效、且绑定直接网络 peer
+  的随机 HTTP bearer；断开即撤销。它只替代连接密钥，不替代文件修改/删除使用的
+  Face ID 或 Bridge 口令 step-up。两套授权的存储、UI 和日志保持分离。
+- Mobile 冷启动只并发、有界地探测已保存路线的 health 与签名身份，不自动建立
+  WebSocket，也不展示“正在连接”进度。只有用户点选在线电脑或具体路线后才连接；
+  该次显式连接成功后的前后台恢复和断线自动重连继续保留。电脑卡片显示系统电脑名
+  或用户别名，展开后显示全部路线，并优先选择在线且延迟最低的路线。
+- 签名身份只负责机器/路线归并和身份固定；会话目录、SQLite 缓存、未读和离线 mutation
+  的 canonical 数据分区仍以权威 `bridgeInstanceId + codexSourceId` 为准。不同 IP
+  连到同一 Bridge 时复用同一数据分区，身份不匹配时禁止写入或队列重放。
+- 新 Mobile + 旧 Bridge 继续走 endpoint/key 兼容路径；旧 Mobile + 新 Bridge 在
+  `key` 或持有 API key 的 `paired_or_key` 模式下保持原行为。`bridge_identity_v3`、
+  配对消息和模型字段全部为加法能力。本节是源码与自动验证决定，不授权切换当前生产
+  `BRIDGE_AUTH_MODE`、重启 Bridge、发布 OTA/IPA、安装设备或晋级 stable。

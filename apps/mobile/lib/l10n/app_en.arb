@@ -265,6 +265,19 @@
   "allProjects": "All Projects",
   "named": "Named",
   "machines": "Machines",
+  "machineRoutes": "Connection routes",
+  "machineRoutesCount": "{count} routes",
+  "@machineRoutesCount": { "placeholders": { "count": { "type": "int" } } },
+  "machinePreferredRoute": "Preferred",
+  "machineLatency": "{milliseconds} ms",
+  "@machineLatency": { "placeholders": { "milliseconds": { "type": "int" } } },
+  "machineOnline": "Online",
+  "machineChecking": "Probing",
+  "machineIdentityChanged": "Bridge identity changed",
+  "renameMachineGroup": "Rename computer",
+  "machineGroupName": "Computer name",
+  "machinePair": "Pair",
+  "machinePairingRequired": "Pairing required",
   "refreshStatus": "Refresh status",
   "add": "Add",
   "noSavedMachinesDescription": "No saved machines.\nAdd one to quickly connect or remotely start the Bridge Server.",
@@ -1487,5 +1500,12 @@
     "placeholders": {
       "subtype": {"type": "String"}
     }
-  }
+  },
+  "bridgePairingTitle": "Pair this iPhone",
+  "bridgePairingBody": "Approve this one-time request on the Mac running CC Pocket Bridge. The phone will reconnect without a connection key afterward.",
+  "bridgePairingCodeLabel": "Confirmation code",
+  "bridgePairingCommandHint": "Run this command on that Mac:",
+  "bridgePairingCopyCommand": "Copy command",
+  "bridgePairingWaiting": "Waiting for approval on the Mac…",
+  "bridgePairingFailed": "Bridge pairing could not be completed."
 }
