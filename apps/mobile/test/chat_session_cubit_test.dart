@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
 import 'package:ccpocket/features/chat_session/state/chat_session_state.dart';
 import 'package:ccpocket/features/chat_session/state/streaming_state_cubit.dart';
+import 'package:ccpocket/features/chat_session/widgets/chat_process_layout.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -5622,6 +5623,305 @@ void main() {
         expect(users.single.providerItemId, 'provider-user-item-1');
       },
     );
+
+    test(
+      'provider echo upgrades an already sent optimistic bubble in place',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        cubit.sendMessage('One visible prompt');
+        mockBridge.emitMessage(
+          AssistantServerMessage(
+            message: const AssistantMessage(
+              id: 'assistant-before-user-echo',
+              role: 'assistant',
+              content: [TextContent(text: 'Provider accepted the turn')],
+              model: 'codex',
+            ),
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().single.status,
+          MessageStatus.sent,
+        );
+
+        mockBridge.emitMessage(
+          const UserInputMessage(
+            text: 'One visible prompt',
+            providerItemId: 'provider-user-after-ack',
+            historyTurnId: 'provider-turn-after-ack',
+            userMessageUuid: 'codex:user-turn:1',
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(1));
+        expect(users.single.providerItemId, 'provider-user-after-ack');
+        expect(users.single.historyTurnId, 'provider-turn-after-ack');
+        expect(users.single.messageUuid, 'codex:user-turn:1');
+      },
+    );
+
+    test(
+      'canonical cache keeps the mobile bubble identity and delivery state',
+      () async {
+        const clientId = '011848d7-cd43-4f6e-ba7b-3fcd8af165dc';
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        cubit.sendMessage('stable turn', clientMessageId: clientId);
+        mockBridge.emitMessage(
+          const UserInputMessage(
+            text: 'stable turn',
+            clientMessageId: clientId,
+            historyTurnId: 'turn-stable',
+            userMessageUuid: 'codex:user-turn:7',
+          ),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const InputAckMessage(
+            queued: false,
+            clientMessageId: clientId,
+            stage: InputAckStage.bridgeAccepted,
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+        final before = cubit.state.entries.whereType<UserChatEntry>().single;
+        expect(before.clientMessageId, clientId);
+
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              UserInputMessage(
+                text: 'stable turn',
+                historyTurnId: 'turn-stable',
+                userMessageUuid: 'codex:user-turn:7',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final after = cubit.state.entries.whereType<UserChatEntry>().single;
+        expect(after.clientMessageId, clientId);
+        expect(after.status, MessageStatus.bridgeAccepted);
+        expect(
+          chatUserEntryStableIdentity(after),
+          chatUserEntryStableIdentity(before),
+        );
+      },
+    );
+
+    test(
+      'canonical cache keeps the whole turn presentation identity',
+      () async {
+        const clientId = '111848d7-cd43-4f6e-ba7b-3fcd8af165dc';
+        const assistantId = 'msg_019fe754-99d6-78d0-9a89-a43a24cd64de';
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: 's1',
+        );
+        await Future.microtask(() {});
+
+        cubit.sendMessage('stable layout', clientMessageId: clientId);
+        mockBridge.emitMessage(
+          const UserInputMessage(
+            text: 'stable layout',
+            clientMessageId: clientId,
+            userMessageUuid: 'codex:user-turn:8',
+          ),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          AssistantServerMessage(
+            message: const AssistantMessage(
+              id: assistantId,
+              role: 'assistant',
+              content: [TextContent(text: 'stable progress')],
+              model: 'codex',
+            ),
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final before = buildChatProcessLayout(cubit.state.entries);
+        final beforeTurnKey = before.latestTurnKey;
+        final beforeSegmentKeys = before.latestTurn!.segments
+            .map((segment) => segment.key)
+            .toList();
+
+        mockBridge.emitMessage(
+          HistoryMessage(
+            messages: [
+              const UserInputMessage(
+                text: 'stable layout',
+                historyTurnId: 'turn-layout',
+                userMessageUuid: 'codex:user-turn:8',
+              ),
+              AssistantServerMessage(
+                message: const AssistantMessage(
+                  id: assistantId,
+                  role: 'assistant',
+                  content: [TextContent(text: 'stable progress')],
+                  model: 'codex',
+                ),
+                historyTurnId: 'turn-layout',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final after = buildChatProcessLayout(cubit.state.entries);
+        expect(cubit.state.entries.whereType<UserChatEntry>(), hasLength(1));
+        expect(cubit.state.entries.whereType<ServerChatEntry>(), hasLength(1));
+        expect(after.latestTurnKey, beforeTurnKey);
+        expect(
+          after.latestTurn!.segments.map((segment) => segment.key),
+          beforeSegmentKeys,
+        );
+      },
+    );
+
+    test(
+      'identity-free canonical text never borrows another turn identity',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              UserInputMessage(
+                text: 'repeated prompt',
+                providerItemId: 'provider-existing',
+                historyTurnId: 'turn-existing',
+                userMessageUuid: 'codex:user-turn:1',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [UserInputMessage(text: 'repeated prompt')],
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final identityFree = cubit.state.entries
+            .whereType<UserChatEntry>()
+            .where((entry) => entry.providerItemId == null)
+            .single;
+        expect(identityFree.clientMessageId, isNull);
+        expect(identityFree.historyTurnId, isNull);
+        expect(identityFree.messageUuid, isNull);
+      },
+    );
+
+    test('late replay stays inside its provider turn', () async {
+      final cubit = createCubit(
+        'durable-ordering-thread',
+        provider: Provider.codex,
+      );
+      addTearDown(cubit.close);
+      mockBridge.emitMessage(
+        HistoryMessage(
+          messages: [
+            const UserInputMessage(
+              text: 'older prompt',
+              providerItemId: 'provider-user-older',
+              historyTurnId: 'turn-older',
+            ),
+            AssistantServerMessage(
+              message: const AssistantMessage(
+                id: 'older-final',
+                role: 'assistant',
+                content: [TextContent(text: 'older final')],
+                model: 'codex',
+              ),
+              historyTurnId: 'turn-older',
+            ),
+            const UserInputMessage(
+              text: 'newer prompt',
+              providerItemId: 'provider-user-newer',
+              historyTurnId: 'turn-newer',
+            ),
+            AssistantServerMessage(
+              message: const AssistantMessage(
+                id: 'newer-progress',
+                role: 'assistant',
+                content: [TextContent(text: 'newer progress')],
+                model: 'codex',
+              ),
+              historyTurnId: 'turn-newer',
+            ),
+          ],
+        ),
+        sessionId: 'durable-ordering-thread',
+      );
+      await pumpEventQueue();
+
+      final late = AssistantServerMessage(
+        message: const AssistantMessage(
+          id: 'older-late-replay',
+          role: 'assistant',
+          content: [TextContent(text: 'older replay')],
+          model: 'codex',
+        ),
+        historyTurnId: 'turn-older',
+      );
+      attachServerMessageTimestamp(
+        late,
+        value: DateTime.parse('2026-08-09T15:43:33.874Z'),
+        isAuthoritative: true,
+      );
+      mockBridge.emitMessage(late, sessionId: 'durable-ordering-thread');
+      await pumpEventQueue();
+
+      expect(
+        cubit.state.entries.map((entry) {
+          if (entry is UserChatEntry) return 'user:${entry.text}';
+          if (entry case ServerChatEntry(
+            message: AssistantServerMessage(:final message),
+          )) {
+            return 'assistant:${message.content.whereType<TextContent>().single.text}';
+          }
+          return entry.runtimeType.toString();
+        }),
+        [
+          'user:older prompt',
+          'assistant:older final',
+          'assistant:older replay',
+          'user:newer prompt',
+          'assistant:newer progress',
+        ],
+      );
+    });
 
     test(
       'different provider users survive a repeated legacy page UUID in order',

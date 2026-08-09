@@ -3666,6 +3666,36 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     };
   }
 
+  bool _canCarryUserIdentityAcrossCanonicalMerge(
+    UserChatEntry existing,
+    UserChatEntry incoming,
+  ) {
+    bool sameKnown(String? left, String? right) =>
+        left?.isNotEmpty == true && right?.isNotEmpty == true && left == right;
+
+    if (sameKnown(existing.providerItemId, incoming.providerItemId) ||
+        sameKnown(existing.messageUuid, incoming.messageUuid) ||
+        sameKnown(existing.clientMessageId, incoming.clientMessageId) ||
+        sameKnown(existing.historyTurnId, incoming.historyTurnId)) {
+      return true;
+    }
+
+    // The only safe one-way enrichment is a Mobile-created envelope that has
+    // not acquired any provider identity yet, paired with a canonical row that
+    // does have provider/turn evidence. A text-only historical row must never
+    // inherit durable identity from an arbitrary repeated prompt.
+    final existingIsLocalEnvelope =
+        existing.clientMessageId?.isNotEmpty == true &&
+        existing.providerItemId?.isNotEmpty != true &&
+        existing.messageUuid?.isNotEmpty != true &&
+        existing.historyTurnId?.isNotEmpty != true;
+    final incomingHasProviderEvidence =
+        incoming.providerItemId?.isNotEmpty == true ||
+        incoming.messageUuid?.isNotEmpty == true ||
+        incoming.historyTurnId?.isNotEmpty == true;
+    return existingIsLocalEnvelope && incomingHasProviderEvidence;
+  }
+
   void _applyUpdate(
     ChatStateUpdate update,
     ServerMessage originalMsg, {
@@ -3886,7 +3916,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               entry is UserChatEntry &&
               entry.providerItemId?.isNotEmpty != true &&
               entry.clientMessageId?.isNotEmpty == true &&
-              entry.status != MessageStatus.sent &&
+              entry.messageUuid?.isNotEmpty != true &&
               entry.text == text &&
               entry.imageCount == imageCount &&
               (entry.historyTurnId?.isNotEmpty != true ||
@@ -4041,7 +4071,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           growable: false,
         );
         final consumedExistingUserIndexes = <int>{};
-        UserChatEntry? takeExistingUserData(UserChatEntry incoming) {
+        ({UserChatEntry entry, bool carryIdentity})? takeExistingUserData(
+          UserChatEntry incoming,
+        ) {
           int find(bool Function(UserChatEntry candidate) matches) {
             for (var index = 0; index < existingUsers.length; index++) {
               if (consumedExistingUserIndexes.contains(index)) continue;
@@ -4108,17 +4140,47 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           }
           if (matchIndex == -1) return null;
           consumedExistingUserIndexes.add(matchIndex);
-          return existingUsers[matchIndex];
+          final existing = existingUsers[matchIndex];
+          return (
+            entry: existing,
+            carryIdentity: _canCarryUserIdentityAcrossCanonicalMerge(
+              existing,
+              incoming,
+            ),
+          );
         }
 
         if (existingUsers.isNotEmpty) {
           for (int i = 0; i < entries.length; i++) {
             final e = entries[i];
             if (e is! UserChatEntry) continue;
-            final existing = takeExistingUserData(e);
-            if (existing == null) continue;
+            final match = takeExistingUserData(e);
+            if (match == null) continue;
+            final existing = match.entry;
+            final carryIdentity = match.carryIdentity;
             final needsImages =
                 e.imageBytesList.isEmpty && existing.imageBytesList.isNotEmpty;
+            final needsImageUrls =
+                e.imageUrls.isEmpty && existing.imageUrls.isNotEmpty;
+            final needsClientMessageId =
+                carryIdentity &&
+                e.clientMessageId?.isNotEmpty != true &&
+                existing.clientMessageId?.isNotEmpty == true;
+            final needsProviderItemId =
+                carryIdentity &&
+                e.providerItemId?.isNotEmpty != true &&
+                existing.providerItemId?.isNotEmpty == true;
+            final needsHistoryTurnId =
+                carryIdentity &&
+                e.historyTurnId?.isNotEmpty != true &&
+                existing.historyTurnId?.isNotEmpty == true;
+            final needsMessageUuid =
+                carryIdentity &&
+                e.messageUuid?.isNotEmpty != true &&
+                existing.messageUuid?.isNotEmpty == true;
+            final mergedStatus = carryIdentity
+                ? _mergeUserDeliveryStatus(existing.status, e.status)
+                : e.status;
             final existingTimestampIsPreferred =
                 existing.timestampIsAuthoritative &&
                 !e.timestampIsAuthoritative;
@@ -4126,20 +4188,35 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                 existingTimestampIsPreferred ||
                 (!e.timestampIsAuthoritative &&
                     existing.timestamp != e.timestamp);
-            if (needsImages || needsTimestamp) {
+            if (needsImages ||
+                needsImageUrls ||
+                needsClientMessageId ||
+                needsProviderItemId ||
+                needsHistoryTurnId ||
+                needsMessageUuid ||
+                mergedStatus != e.status ||
+                needsTimestamp) {
               entries[i] = UserChatEntry(
                 e.text,
                 sessionId: e.sessionId,
-                clientMessageId: e.clientMessageId,
-                providerItemId: e.providerItemId,
-                historyTurnId: e.historyTurnId,
+                clientMessageId: carryIdentity
+                    ? (e.clientMessageId ?? existing.clientMessageId)
+                    : e.clientMessageId,
+                providerItemId: carryIdentity
+                    ? (e.providerItemId ?? existing.providerItemId)
+                    : e.providerItemId,
+                historyTurnId: carryIdentity
+                    ? (e.historyTurnId ?? existing.historyTurnId)
+                    : e.historyTurnId,
                 imageBytesList: needsImages
                     ? existing.imageBytesList
                     : e.imageBytesList,
-                imageUrls: e.imageUrls,
+                imageUrls: needsImageUrls ? existing.imageUrls : e.imageUrls,
                 imageCount: e.imageCount,
-                status: e.status,
-                messageUuid: e.messageUuid,
+                status: mergedStatus,
+                messageUuid: carryIdentity
+                    ? (e.messageUuid ?? existing.messageUuid)
+                    : e.messageUuid,
                 timestamp: needsTimestamp ? existing.timestamp : e.timestamp,
                 timestampIsAuthoritative: needsTimestamp
                     ? existing.timestampIsAuthoritative
@@ -4211,6 +4288,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       nextEntries = nextEntries
           .where((entry) => !_isDismissedCodexWarningEntry(entry))
           .toList(growable: false);
+    }
+    if (didModifyEntries) {
+      nextEntries = _repairKnownTurnPlacement(nextEntries);
     }
     if (didModifyEntries && _historyToolDetailStates.isNotEmpty) {
       _pruneHistoryToolDetailStates(nextEntries);
@@ -4854,6 +4934,30 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     );
     if (exactMatch != -1) return exactMatch;
 
+    // A Mobile-created envelope can receive a page-local provider UUID before
+    // SQLite backfills the authoritative turn. Match only that one-way shape,
+    // and choose the latest canonical occurrence because preserved live
+    // candidates begin at the latest local user turn.
+    if (existing is UserChatEntry &&
+        existing.clientMessageId?.isNotEmpty == true &&
+        existing.providerItemId?.isNotEmpty != true &&
+        existing.historyTurnId?.isNotEmpty != true &&
+        existing.messageUuid?.isNotEmpty == true) {
+      for (var index = end - 1; index >= start; index--) {
+        if (excludedIndexes.contains(index)) continue;
+        final candidate = canonicalEntries[index];
+        if (candidate is! UserChatEntry) continue;
+        if (candidate.text != existing.text ||
+            candidate.imageCount != existing.imageCount ||
+            candidate.messageUuid != existing.messageUuid ||
+            candidate.historyTurnId?.isNotEmpty != true ||
+            !_canCarryUserIdentityAcrossCanonicalMerge(existing, candidate)) {
+          continue;
+        }
+        return index;
+      }
+    }
+
     // Older history can omit one side of a pending user message's stable
     // correlation. Restrict that fallback to the same text/image signature
     // before applying the original equivalence predicate.
@@ -4970,6 +5074,27 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   Iterable<String> _entryExactAliasKeys(ChatEntry entry) sync* {
+    if (entry is UserChatEntry) {
+      final providerItemId = entry.providerItemId?.trim();
+      if (providerItemId?.isNotEmpty == true) {
+        yield 'user:provider:$providerItemId';
+      }
+      final clientMessageId = entry.clientMessageId?.trim();
+      if (clientMessageId?.isNotEmpty == true) {
+        yield 'user:client:$clientMessageId';
+      }
+      final messageUuid = entry.messageUuid?.trim();
+      final historyTurnId = entry.historyTurnId?.trim();
+      if (messageUuid?.isNotEmpty == true) {
+        if (historyTurnId?.isNotEmpty == true) {
+          yield 'user:turn:$historyTurnId:uuid:$messageUuid';
+        }
+        if (!_isPageLocalUserMessageUuid(messageUuid!)) {
+          yield 'user:uuid:$messageUuid';
+        }
+      }
+      return;
+    }
     if (entry case ServerChatEntry(
       message: AssistantServerMessage(:final messageUuid, :final message),
     )) {
@@ -5026,6 +5151,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   String _scopedWeakAliasKey(String scope, String weakKey) =>
       '$scope\u0000$weakKey';
+
+  bool _isPageLocalUserMessageUuid(String value) =>
+      value.startsWith('codex:user-turn:') || value.startsWith('legacy-turn:');
 
   int _firstIndexedAliasMatch(
     Map<String, _CanonicalAliasBucket> indexByKey,
@@ -5197,6 +5325,87 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
 
     return (entries: next, didChange: didChange);
+  }
+
+  /// Repairs only entries whose provider turn identity proves that they sit
+  /// outside their user-turn interval. This is intentionally not a global
+  /// timestamp sort: provider order remains canonical, while an authoritative
+  /// timestamp is used only to place a late replay inside its already-known
+  /// turn.
+  List<ChatEntry> _repairKnownTurnPlacement(List<ChatEntry> entries) {
+    if (entries.length < 3) return entries;
+
+    final ranges = <String, ({int start, int end})>{};
+    String? openTurnId;
+    var openTurnStart = -1;
+    for (var index = 0; index < entries.length; index++) {
+      final entry = entries[index];
+      if (entry is! UserChatEntry) continue;
+      if (openTurnId != null) {
+        ranges[openTurnId] = (start: openTurnStart, end: index);
+      }
+      final turnId = entry.historyTurnId?.trim();
+      openTurnId = turnId?.isNotEmpty == true ? turnId : null;
+      openTurnStart = index;
+    }
+    if (openTurnId != null) {
+      ranges[openTurnId] = (start: openTurnStart, end: entries.length);
+    }
+    if (ranges.isEmpty) return entries;
+
+    final movedIndexes = <int>{};
+    final movedByTurn = <String, List<ChatEntry>>{};
+    for (var index = 0; index < entries.length; index++) {
+      final entry = entries[index];
+      if (entry is UserChatEntry) continue;
+      final turnId = _explicitHistoryTurnId(entry);
+      if (turnId == null) continue;
+      final range = ranges[turnId];
+      if (range == null || (index > range.start && index < range.end)) {
+        continue;
+      }
+      movedIndexes.add(index);
+      (movedByTurn[turnId] ??= <ChatEntry>[]).add(entry);
+    }
+    if (movedIndexes.isEmpty) return entries;
+
+    final retained = <ChatEntry>[
+      for (var index = 0; index < entries.length; index++)
+        if (!movedIndexes.contains(index)) entries[index],
+    ];
+    final repaired = <ChatEntry>[];
+    var cursor = 0;
+    while (cursor < retained.length) {
+      final entry = retained[cursor];
+      repaired.add(entry);
+      cursor += 1;
+      if (entry is! UserChatEntry) continue;
+      final turnId = entry.historyTurnId?.trim();
+      final moved = turnId?.isNotEmpty == true ? movedByTurn[turnId] : null;
+      if (moved == null || moved.isEmpty) continue;
+
+      final interval = <ChatEntry>[];
+      while (cursor < retained.length && retained[cursor] is! UserChatEntry) {
+        interval.add(retained[cursor]);
+        cursor += 1;
+      }
+      for (final lateEntry in moved) {
+        var insertionIndex = interval.length;
+        if (lateEntry.timestampIsAuthoritative) {
+          for (var index = 0; index < interval.length; index++) {
+            final existing = interval[index];
+            if (existing.timestampIsAuthoritative &&
+                existing.timestamp.isAfter(lateEntry.timestamp)) {
+              insertionIndex = index;
+              break;
+            }
+          }
+        }
+        interval.insert(insertionIndex, lateEntry);
+      }
+      repaired.addAll(interval);
+    }
+    return repaired;
   }
 
   bool _canWeakMatchAppendedEntry(ChatEntry entry) {
@@ -7734,20 +7943,33 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Execute a rewind operation.
   /// [mode] is one of: "conversation", "code", "both".
-  void rewind(String targetUuid, String mode) {
+  void rewind(String targetUuid, String mode, {String? historyTurnId}) {
     final runtimeSessionId = _runtimeSessionIdForMutation(
       allowSteerable: false,
     );
     if (runtimeSessionId == null) return;
-    _bridge.send(ClientMessage.rewind(runtimeSessionId, targetUuid, mode));
+    _bridge.send(
+      ClientMessage.rewind(
+        runtimeSessionId,
+        targetUuid,
+        mode,
+        historyTurnId: historyTurnId,
+      ),
+    );
   }
 
-  void forkSession(String targetUuid) {
+  void forkSession(String targetUuid, {String? historyTurnId}) {
     final runtimeSessionId = _runtimeSessionIdForMutation(
       allowSteerable: false,
     );
     if (runtimeSessionId == null) return;
-    _bridge.send(ClientMessage.forkSession(runtimeSessionId, targetUuid));
+    _bridge.send(
+      ClientMessage.forkSession(
+        runtimeSessionId,
+        targetUuid,
+        historyTurnId: historyTurnId,
+      ),
+    );
   }
 
   /// Hides one warning text for the lifetime of this open session screen.
@@ -7838,6 +8060,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final result = <UserChatEntry>[];
     for (final indexedEntry in indexed) {
       final entry = _userEntryFromHistoryIndex(indexedEntry.message);
+      final turnId = indexedEntry.message.historyTurnId?.trim();
+      if (turnId != null && turnId.isNotEmpty) {
+        _providerTurnOrderById.putIfAbsent(turnId, () => indexedEntry.ordinal);
+      }
       _localHistoryOrdinalByNavigationEntry[entry] = indexedEntry.ordinal;
       result.add(entry);
     }

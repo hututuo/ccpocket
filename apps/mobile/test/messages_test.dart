@@ -1644,6 +1644,37 @@ void main() {
     });
   });
 
+  group('Codex turn-boundary actions', () {
+    test('rewind serializes the exact provider turn', () {
+      final json =
+          jsonDecode(
+                ClientMessage.rewind(
+                  'runtime-1',
+                  'codex:user-turn:3',
+                  'conversation',
+                  historyTurnId: 'provider-turn-3',
+                ).toJson(),
+              )
+              as Map<String, dynamic>;
+
+      expect(json, containsPair('historyTurnId', 'provider-turn-3'));
+    });
+
+    test('fork serializes the exact provider turn', () {
+      final json =
+          jsonDecode(
+                ClientMessage.forkSession(
+                  'runtime-1',
+                  'codex:user-turn:3',
+                  historyTurnId: 'provider-turn-3',
+                ).toJson(),
+              )
+              as Map<String, dynamic>;
+
+      expect(json, containsPair('historyTurnId', 'provider-turn-3'));
+    });
+  });
+
   group('Result message parsing', () {
     test('parses token and tool usage fields', () {
       final msg = ServerMessage.fromJson({

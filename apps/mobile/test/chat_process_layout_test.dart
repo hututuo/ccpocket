@@ -703,6 +703,106 @@ void main() {
     );
   });
 
+  test('mobile UUID client key survives provider identity backfill', () {
+    const clientId = '011848d7-cd43-4f6e-ba7b-3fcd8af165dc';
+    final optimistic = UserChatEntry('same bubble', clientMessageId: clientId);
+    final canonical = UserChatEntry(
+      'same bubble',
+      clientMessageId: clientId,
+      providerItemId: 'provider-user-item',
+      historyTurnId: 'provider-turn',
+      messageUuid: 'codex:user-turn:596',
+    );
+
+    expect(chatUserEntryStableIdentity(optimistic), 'client:$clientId');
+    expect(
+      chatUserEntryStableIdentity(canonical),
+      chatUserEntryStableIdentity(optimistic),
+    );
+    expect(
+      chatMessageEntryStableKey(canonical),
+      chatMessageEntryStableKey(optimistic),
+    );
+  });
+
+  test('provider-global assistant key survives turn provenance backfill', () {
+    const providerId = 'msg_019fe754-99d6-78d0-9a89-a43a24cd64de';
+    final live = AssistantServerMessage(
+      message: const AssistantMessage(
+        id: providerId,
+        role: 'assistant',
+        content: [TextContent(text: 'stable progress')],
+        model: 'codex',
+      ),
+    );
+    final hydrated = AssistantServerMessage(
+      message: const AssistantMessage(
+        id: providerId,
+        role: 'assistant',
+        content: [TextContent(text: 'stable progress')],
+        model: 'codex',
+      ),
+      historyTurnId: 'provider-turn',
+    );
+
+    expect(
+      chatAssistantEntryStableIdentity(live, DateTime(2026)),
+      chatAssistantEntryStableIdentity(hydrated, DateTime(2026)),
+    );
+  });
+
+  test('provider-global tool key survives turn provenance backfill', () {
+    const toolId = 'call_kE8JWc9WSFkIsllwRIYtIZXK';
+    const live = ToolResultMessage(toolUseId: toolId, content: 'done');
+    const hydrated = ToolResultMessage(
+      toolUseId: toolId,
+      content: 'done',
+      historyTurnId: 'provider-turn',
+    );
+
+    expect(
+      chatToolResultEntryStableIdentity(live, DateTime(2026)),
+      chatToolResultEntryStableIdentity(hydrated, DateTime(2026)),
+    );
+  });
+
+  test('arbitrary provider ids survive turn provenance backfill', () {
+    const assistantId = 'assistant-runtime-opaque-id';
+    const toolId = 'tool-runtime-opaque-id';
+    final liveAssistant = AssistantServerMessage(
+      message: const AssistantMessage(
+        id: assistantId,
+        role: 'assistant',
+        content: [TextContent(text: 'stable progress')],
+        model: 'codex',
+      ),
+    );
+    final hydratedAssistant = AssistantServerMessage(
+      historyTurnId: 'provider-turn',
+      message: const AssistantMessage(
+        id: assistantId,
+        role: 'assistant',
+        content: [TextContent(text: 'stable progress')],
+        model: 'codex',
+      ),
+    );
+    const liveTool = ToolResultMessage(toolUseId: toolId, content: 'done');
+    const hydratedTool = ToolResultMessage(
+      toolUseId: toolId,
+      content: 'done',
+      historyTurnId: 'provider-turn',
+    );
+
+    expect(
+      chatAssistantEntryStableIdentity(liveAssistant, DateTime(2026)),
+      chatAssistantEntryStableIdentity(hydratedAssistant, DateTime(2026)),
+    );
+    expect(
+      chatToolResultEntryStableIdentity(liveTool, DateTime(2026)),
+      chatToolResultEntryStableIdentity(hydratedTool, DateTime(2026)),
+    );
+  });
+
   test('scopes repeated legacy assistant ids by provider turn', () {
     final first = ServerChatEntry(
       AssistantServerMessage(

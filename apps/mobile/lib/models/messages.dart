@@ -6522,11 +6522,13 @@ class ClientMessage {
   factory ClientMessage.rewind(
     String sessionId,
     String targetUuid,
-    String mode,
-  ) => ClientMessage._({
+    String mode, {
+    String? historyTurnId,
+  }) => ClientMessage._({
     'type': 'rewind',
     'sessionId': sessionId,
     'targetUuid': targetUuid,
+    'historyTurnId': ?historyTurnId,
     'mode': mode,
   });
 
@@ -6537,12 +6539,16 @@ class ClientMessage {
         'targetUuid': targetUuid,
       });
 
-  factory ClientMessage.forkSession(String sessionId, String targetUuid) =>
-      ClientMessage._({
-        'type': 'fork',
-        'sessionId': sessionId,
-        'targetUuid': targetUuid,
-      });
+  factory ClientMessage.forkSession(
+    String sessionId,
+    String targetUuid, {
+    String? historyTurnId,
+  }) => ClientMessage._({
+    'type': 'fork',
+    'sessionId': sessionId,
+    'targetUuid': targetUuid,
+    'historyTurnId': ?historyTurnId,
+  });
 
   /// Fork a persisted Codex thread that is not currently a Bridge runtime.
   /// Older apps keep using [forkSession]; a newer Bridge recognizes the

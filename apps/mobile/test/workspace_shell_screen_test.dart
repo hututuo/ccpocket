@@ -165,6 +165,10 @@ class _MockBridgeService extends BridgeService {
     _stoppedSessionsController.add(sessionId);
   }
 
+  void emitMessage(ServerMessage message) {
+    _messageController.add(message);
+  }
+
   void setGalleryImages(List<GalleryImage> images) {
     _images = images;
     _galleryController.add(images);
@@ -647,6 +651,62 @@ void main() {
       expect(sourceA.workspaceStateKey, isNot(sourceB.workspaceStateKey));
     },
   );
+
+  testWidgets('rewind child replaces the selected durable Codex route', (
+    tester,
+  ) async {
+    final bridge = _MockBridgeService();
+    final settingsCubit = await _createSettingsCubit(bridge);
+    final draftService = DraftService(await SharedPreferences.getInstance());
+    final revenueCatService = _FakeRevenueCatService();
+    final supportBannerService = await _createSupportBannerService();
+    final shellKey = GlobalKey<WorkspaceShellScreenState>();
+
+    await tester.pumpWidget(
+      _buildWorkspaceApp(
+        bridge: bridge,
+        settingsCubit: settingsCubit,
+        draftService: draftService,
+        revenueCatService: revenueCatService,
+        supportBannerService: supportBannerService,
+        shellKey: shellKey,
+      ),
+    );
+    await _pumpUi(tester);
+
+    shellKey.currentState!.selectSession(
+      const WorkspaceSessionSelection(
+        sessionId: 'original-runtime',
+        durableProviderSessionId: 'original-thread',
+        projectPath: '/Users/demo/project',
+        provider: Provider.codex,
+      ),
+    );
+    await _pumpUi(tester);
+
+    bridge.emitMessage(
+      const SystemMessage(
+        subtype: 'session_created',
+        sessionId: 'child-runtime',
+        claudeSessionId: 'child-thread',
+        provider: 'codex',
+        projectPath: '/Users/demo/project',
+        sourceSessionId: 'original-runtime',
+      ),
+    );
+    await _pumpUi(tester);
+
+    expect(shellKey.currentState!.selectedSession?.sessionId, 'child-runtime');
+    expect(
+      shellKey.currentState!.selectedSession?.durableProviderSessionId,
+      'child-thread',
+    );
+    final visible = tester.widget<CodexSessionScreen>(
+      find.byType(CodexSessionScreen),
+    );
+    expect(visible.sessionId, 'child-runtime');
+    expect(visible.durableProviderSessionId, 'child-thread');
+  });
 
   testWidgets(
     'canonical identity migrates pane state without rebuilding the session',

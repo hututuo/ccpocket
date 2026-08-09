@@ -1116,10 +1116,34 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   void _switchSession(SystemMessage msg) {
     final oldId = _sessionId;
     final newId = msg.sessionId!;
+    final currentDurableId = widget.durableProviderSessionId?.trim();
+    final nextDurableId = msg.claudeSessionId?.trim();
     final draftService = _draftService;
     final bridge = context.read<BridgeService>();
     bridge.migrateExplorerHistory(oldId, newId);
     final explorerHistory = bridge.getExplorerHistory(newId);
+    final switchesDurableBranch =
+        currentDurableId?.isNotEmpty == true &&
+        nextDurableId?.isNotEmpty == true &&
+        nextDurableId != currentDurableId;
+    if (switchesDurableBranch) {
+      draftService.migrateDraft(currentDurableId!, nextDurableId!);
+      draftService.migrateImageDraft(currentDurableId, nextDurableId);
+      if (oldId != currentDurableId) {
+        if (draftService.getDraft(nextDurableId) == null) {
+          draftService.migrateDraft(oldId, nextDurableId);
+        }
+        if (draftService.getImageDraft(nextDurableId) == null) {
+          draftService.migrateImageDraft(oldId, nextDurableId);
+        }
+      }
+      _openReplacementDurableSession(
+        msg: msg,
+        runtimeSessionId: newId,
+        durableSessionId: nextDurableId,
+      );
+      return;
+    }
     draftService.migrateDraft(oldId, newId);
     draftService.migrateImageDraft(oldId, newId);
     setState(() {
@@ -1143,6 +1167,67 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       _recentPeekedFiles = explorerHistory.recentPeekedFiles;
     });
     _syncSessionRouteIdentity();
+  }
+
+  void _openReplacementDurableSession({
+    required SystemMessage msg,
+    required String runtimeSessionId,
+    required String durableSessionId,
+  }) {
+    final projectPath = msg.projectPath ?? _projectPath;
+    final gitBranch = msg.worktreeBranch ?? _gitBranch;
+    final worktreePath = msg.worktreePath ?? _worktreePath;
+    final permissionMode =
+        msg.permissionMode ??
+        widget.initialPermissionMode ??
+        _permissionMode?.value;
+    final sandboxMode =
+        msg.sandboxMode ?? widget.initialSandboxMode ?? _sandboxMode?.value;
+    final approvalPolicy =
+        msg.approvalPolicy ??
+        widget.initialApprovalPolicy ??
+        _codexApprovalPolicy?.value;
+    final approvalsReviewer =
+        msg.approvalsReviewer ??
+        widget.initialApprovalsReviewer ??
+        _codexApprovalsReviewer;
+    final shell = WorkspaceShellScreen.maybeOf(context);
+    if (shell != null) {
+      shell.selectSession(
+        WorkspaceSessionSelection(
+          sessionId: runtimeSessionId,
+          durableProviderSessionId: durableSessionId,
+          projectPath: projectPath,
+          gitBranch: gitBranch,
+          worktreePath: worktreePath,
+          provider: Provider.codex,
+          permissionMode: permissionMode,
+          sandboxMode: sandboxMode,
+          approvalPolicy: approvalPolicy,
+          approvalsReviewer: approvalsReviewer,
+          dataSourceIdentity: _dataSourceIdentity,
+        ),
+      );
+      return;
+    }
+    context.router.replace(
+      CodexSessionRoute(
+        sessionId: runtimeSessionId,
+        durableProviderSessionId: durableSessionId,
+        projectPath: projectPath,
+        gitBranch: gitBranch,
+        worktreePath: worktreePath,
+        initialPermissionMode: permissionMode,
+        initialSandboxMode: sandboxMode,
+        initialApprovalPolicy: approvalPolicy,
+        initialApprovalsReviewer: approvalsReviewer,
+        onBackToSessions: widget.onBackToSessions,
+        hideSessionBackButton: widget.hideSessionBackButton,
+        hideAuxiliaryDock: widget.hideAuxiliaryDock,
+        allowMessageFork: widget.allowMessageFork,
+        dataSourceIdentity: _dataSourceIdentity,
+      ),
+    );
   }
 
   void _resolveSession(SystemMessage msg) {
@@ -3817,7 +3902,11 @@ void _showCodexRewindDialog(
             sessionId: sessionId,
             text: message.text,
           );
-          cubit.rewind(message.messageUuid!, 'conversation');
+          cubit.rewind(
+            message.messageUuid!,
+            'conversation',
+            historyTurnId: message.historyTurnId,
+          );
         },
       );
     },
@@ -3830,11 +3919,8 @@ Future<void> _forkCodexFromAssistant(
 ) async {
   final cubit = context.read<ChatSessionCubit>();
   final l = AppLocalizations.of(context);
-  final targetUuid = _previousUserUuidForAssistant(
-    cubit.state.entries,
-    message,
-  );
-  if (targetUuid == null) {
+  final target = _previousUserForAssistant(cubit.state.entries, message);
+  if (target == null) {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(l.forkTargetNotFound)));
@@ -3862,10 +3948,10 @@ Future<void> _forkCodexFromAssistant(
   );
   if (confirmed != true || !context.mounted) return;
 
-  cubit.forkSession(targetUuid);
+  cubit.forkSession(target.messageUuid!, historyTurnId: target.historyTurnId);
 }
 
-String? _previousUserUuidForAssistant(
+UserChatEntry? _previousUserForAssistant(
   List<ChatEntry> entries,
   AssistantServerMessage message,
 ) {
@@ -3879,7 +3965,7 @@ String? _previousUserUuidForAssistant(
     if (entry is UserChatEntry &&
         entry.messageUuid != null &&
         entry.messageUuid!.isNotEmpty) {
-      return entry.messageUuid;
+      return entry;
     }
   }
   return null;
