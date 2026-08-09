@@ -6225,6 +6225,24 @@ void main() {
           ),
           detachedUserTurnLoader: (turnId) async {
             detailLoads += 1;
+            if (turnId == 'turn-newer') {
+              return [
+                const UserInputMessage(
+                  text: 'newer prompt',
+                  providerItemId: 'provider-user-newer',
+                  historyTurnId: 'turn-newer',
+                ),
+                AssistantServerMessage(
+                  message: const AssistantMessage(
+                    id: 'assistant-newer',
+                    role: 'assistant',
+                    content: [TextContent(text: 'newer answer')],
+                    model: '',
+                  ),
+                  historyTurnId: 'turn-newer',
+                ),
+              ];
+            }
             expect(turnId, 'turn-older');
             return [
               const UserInputMessage(
@@ -6255,9 +6273,9 @@ void main() {
         final loaded = await cubit.revealUserMessage(index.first);
 
         expect(loaded?.providerItemId, 'provider-user-older');
-        expect(detailLoads, 1);
+        expect(detailLoads, 2);
         expect(
-          cubit.state.entries.map((entry) {
+          cubit.visibleEntries.map((entry) {
             if (entry is UserChatEntry) return 'user:${entry.text}';
             if (entry case ServerChatEntry(
               message: AssistantServerMessage(:final message),
@@ -6273,6 +6291,101 @@ void main() {
             'user:newer prompt',
             'assistant:newer answer',
           ],
+        );
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().map(
+            (entry) => entry.text,
+          ),
+          ['newer prompt'],
+        );
+        cubit.exitHistoryNavigation();
+        expect(cubit.historyNavigationActive, isFalse);
+        expect(cubit.visibleEntries, orderedEquals(cubit.state.entries));
+      },
+    );
+
+    test(
+      'provider history navigation pages in both directions around the target',
+      () async {
+        List<ServerMessage> turnMessages(int order) => [
+          UserInputMessage(
+            text: 'prompt-$order',
+            providerItemId: 'user-$order',
+            historyTurnId: 'turn-$order',
+          ),
+          AssistantServerMessage(
+            message: AssistantMessage(
+              id: 'assistant-$order',
+              role: 'assistant',
+              content: [TextContent(text: 'answer-$order')],
+              model: '',
+            ),
+            historyTurnId: 'turn-$order',
+          ),
+        ];
+        Future<({List<UserInputMessage> messages, bool complete})?>
+        indexLoader() async => (
+          messages: [
+            for (var order = 0; order < 8; order++)
+              UserInputMessage(
+                text: 'prompt-$order',
+                providerItemId: 'user-$order',
+                historyTurnId: 'turn-$order',
+              ),
+          ],
+          complete: true,
+        );
+        Future<List<ServerMessage>?> turnLoader(String turnId) async {
+          final order = int.parse(turnId.substring('turn-'.length));
+          return turnMessages(order);
+        }
+
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-history-neighborhood',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialHistoryMessages: turnMessages(7),
+          detachedUserMessageIndexLoader: indexLoader,
+          detachedUserTurnLoader: turnLoader,
+        );
+        addTearDown(cubit.close);
+        await pumpEventQueue();
+
+        final index = await cubit.loadAllUserMessagesForNavigation();
+        final target = index.singleWhere(
+          (entry) => entry.historyTurnId == 'turn-4',
+        );
+        expect(await cubit.revealUserMessage(target), isNotNull);
+        expect(
+          cubit.visibleEntries.whereType<UserChatEntry>().map(
+            (entry) => entry.text,
+          ),
+          ['prompt-2', 'prompt-3', 'prompt-4', 'prompt-5', 'prompt-6'],
+        );
+        expect(cubit.localHistoryPaging.value.hasMore, isTrue);
+        expect(cubit.localHistoryPaging.value.hasLater, isTrue);
+
+        cubit.updateDetachedHistoryLoaders(
+          userMessageIndexLoader: indexLoader,
+          userTurnLoader: turnLoader,
+        );
+        expect(cubit.historyNavigationActive, isTrue);
+
+        expect(await cubit.loadOlderLocalHistory(), isTrue);
+        expect(await cubit.loadNewerLocalHistory(), isTrue);
+        expect(
+          cubit.visibleEntries.whereType<UserChatEntry>().map(
+            (entry) => entry.text,
+          ),
+          [for (var order = 0; order < 8; order++) 'prompt-$order'],
+        );
+        expect(cubit.localHistoryPaging.value.hasMore, isFalse);
+        expect(cubit.localHistoryPaging.value.hasLater, isFalse);
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().single.text,
+          'prompt-7',
         );
       },
     );

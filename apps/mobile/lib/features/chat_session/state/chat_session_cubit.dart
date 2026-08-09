@@ -45,27 +45,56 @@ class LocalHistoryPagingState {
   const LocalHistoryPagingState({
     this.enabled = false,
     this.hasMore = false,
+    this.hasLater = false,
     this.loading = false,
+    this.loadingLater = false,
     this.error,
+    this.laterError,
   });
 
   final bool enabled;
   final bool hasMore;
+  final bool hasLater;
   final bool loading;
+  final bool loadingLater;
   final Object? error;
+  final Object? laterError;
 
   LocalHistoryPagingState copyWith({
     bool? enabled,
     bool? hasMore,
+    bool? hasLater,
     bool? loading,
+    bool? loadingLater,
     Object? error,
+    Object? laterError,
     bool clearError = false,
+    bool clearLaterError = false,
   }) => LocalHistoryPagingState(
     enabled: enabled ?? this.enabled,
     hasMore: hasMore ?? this.hasMore,
+    hasLater: hasLater ?? this.hasLater,
     loading: loading ?? this.loading,
+    loadingLater: loadingLater ?? this.loadingLater,
     error: clearError ? null : (error ?? this.error),
+    laterError: clearLaterError ? null : (laterError ?? this.laterError),
   );
+}
+
+class HistoryNavigationWindow {
+  const HistoryNavigationWindow({
+    required this.entries,
+    this.startTurnOrder,
+    this.endTurnOrderExclusive,
+    this.startOrdinal,
+    this.endOrdinalExclusive,
+  });
+
+  final List<ChatEntry> entries;
+  final int? startTurnOrder;
+  final int? endTurnOrderExclusive;
+  final int? startOrdinal;
+  final int? endOrdinalExclusive;
 }
 
 typedef DetachedHistoryPageLoader =
@@ -636,6 +665,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   DetachedUserMessageIndexLoader? _detachedUserMessageIndexLoader;
   DetachedUserTurnLoader? _detachedUserTurnLoader;
   final Map<String, int> _providerTurnOrderById = {};
+  final List<String> _providerTurnIdsByOrder = [];
+  final ValueNotifier<HistoryNavigationWindow?> historyNavigation =
+      ValueNotifier(null);
+  LocalHistoryPagingState? _historyNavigationReturnPaging;
   final ValueNotifier<bool> historySyncing = ValueNotifier(false);
   final ValueNotifier<int> historyToolDetailRevision = ValueNotifier(0);
   final Map<String, HistoryToolDetailLoadState> _historyToolDetailStates = {};
@@ -644,6 +677,25 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool _localHistoryUserIndexComplete = false;
 
   bool get localHistoryUserIndexComplete => _localHistoryUserIndexComplete;
+  bool get historyNavigationActive => historyNavigation.value != null;
+  List<ChatEntry> get visibleEntries =>
+      historyNavigation.value?.entries ?? state.entries;
+
+  void exitHistoryNavigation() {
+    final navigation = historyNavigation.value;
+    if (navigation == null) return;
+    historyNavigation.value = null;
+    localHistoryPaging.value =
+        (navigation.startOrdinal != null
+            ? _currentLocalHistoryPagingState()
+            : _historyNavigationReturnPaging) ??
+        (detachedPreview
+            ? LocalHistoryPagingState(
+                enabled: _detachedHistoryPageLoader != null,
+              )
+            : _currentLocalHistoryPagingState());
+    _historyNavigationReturnPaging = null;
+  }
 
   /// Rebinds source- and revision-scoped durable history loaders without
   /// replacing the mounted chat Cubit.
@@ -663,7 +715,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _detachedUserMessageIndexLoader = userMessageIndexLoader;
     _detachedUserTurnLoader = userTurnLoader;
     _localHistoryUserIndexComplete = false;
-    _providerTurnOrderById.clear();
+    // A new content revision updates the live cache behind the historical
+    // viewport. Keep the mounted navigation window and its last complete
+    // index until the refreshed index commits, otherwise every live delta
+    // ejects the user back to the newest message mid-read.
     localHistoryIndexRevision.value += 1;
   }
 
@@ -2925,10 +2980,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     LocalSessionHistoryAvailabilityChange change,
   ) {
     if (isClosed || change.runtimeSessionId != sessionId) return;
+    if (!change.available) {
+      historyNavigation.value = null;
+      _historyNavigationReturnPaging = null;
+    }
     _localHistoryUserIndexComplete = false;
-    localHistoryPaging.value = change.available
-        ? _currentLocalHistoryPagingState()
-        : const LocalHistoryPagingState();
+    // A fresh Mirror revision updates the live cache behind an isolated
+    // history viewport. Keep the viewport's two independent edges intact;
+    // replacing them with the live-tail cursor would make a new message
+    // silently disable forward paging while the user is reading history.
+    if (!change.available || !historyNavigationActive) {
+      localHistoryPaging.value = change.available
+          ? _currentLocalHistoryPagingState()
+          : const LocalHistoryPagingState();
+    }
     localHistoryIndexRevision.value += 1;
   }
 
@@ -2972,11 +3037,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       localHistoryIndexRevision.value += 1;
     }
     _localHistoryPagingGeneration += 1;
+    historyNavigation.value = null;
+    _historyNavigationReturnPaging = null;
     localHistoryPaging.value = const LocalHistoryPagingState();
     _bridge.invalidateLocalSessionHistoryPaging(sessionId);
   }
 
   Future<bool> loadOlderLocalHistory() async {
+    if (historyNavigationActive) {
+      return _loadOlderHistoryNavigation();
+    }
     if (detachedPreview) {
       return _loadOlderDetachedHistory();
     }
@@ -3032,6 +3102,185 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
       logger.warning(
         '[session:$sessionId] Failed to load older local history',
+        error,
+        stackTrace,
+      );
+      localHistoryPaging.value = localHistoryPaging.value.copyWith(
+        loading: false,
+        error: error,
+      );
+      return false;
+    }
+  }
+
+  Future<bool> loadNewerLocalHistory() async {
+    if (!historyNavigationActive) return false;
+    final currentPaging = localHistoryPaging.value;
+    if (isClosed ||
+        !currentPaging.enabled ||
+        !currentPaging.hasLater ||
+        currentPaging.loading ||
+        currentPaging.loadingLater) {
+      return false;
+    }
+    final window = historyNavigation.value!;
+    localHistoryPaging.value = currentPaging.copyWith(
+      loadingLater: true,
+      clearLaterError: true,
+    );
+    try {
+      final endOrder = window.endTurnOrderExclusive;
+      if (endOrder != null) {
+        final requestedEnd = endOrder + _historyNavigationPageTurns;
+        final nextEnd = requestedEnd < _providerTurnIdsByOrder.length
+            ? requestedEnd
+            : _providerTurnIdsByOrder.length;
+        final loaded = await _loadDetachedTurnRange(endOrder, nextEnd);
+        if (isClosed || historyNavigation.value != window) return false;
+        final appended = <ChatEntry>[];
+        var committedEnd = endOrder;
+        while (committedEnd < nextEnd && loaded[committedEnd] != null) {
+          appended.addAll(loaded[committedEnd]!);
+          committedEnd += 1;
+        }
+        if (committedEnd == endOrder) {
+          throw StateError('Newer conversation history made no progress.');
+        }
+        historyNavigation.value = HistoryNavigationWindow(
+          entries: List.unmodifiable(
+            _mergeAdjacentHistoryEntries(window.entries, appended),
+          ),
+          startTurnOrder: window.startTurnOrder,
+          endTurnOrderExclusive: committedEnd,
+        );
+        localHistoryPaging.value = LocalHistoryPagingState(
+          enabled: true,
+          hasMore: currentPaging.hasMore,
+          hasLater: committedEnd < _providerTurnIdsByOrder.length,
+        );
+        return true;
+      }
+
+      final endOrdinal = window.endOrdinalExclusive;
+      if (endOrdinal == null || !_bridge.hasSessionHistoryWindowLoading) {
+        throw StateError('Newer history window is unavailable.');
+      }
+      final page = await _bridge.tryLoadLocalSessionHistoryWindow(
+        runtimeSessionId: sessionId,
+        startOrdinal: endOrdinal,
+      );
+      if (isClosed || historyNavigation.value != window) return false;
+      if (page == null || page.messages.isEmpty) {
+        throw StateError('Newer conversation history made no progress.');
+      }
+      final appended = _decodeLocalHistoryPage(page);
+      historyNavigation.value = HistoryNavigationWindow(
+        entries: List.unmodifiable(
+          _mergeAdjacentHistoryEntries(window.entries, appended),
+        ),
+        startOrdinal: window.startOrdinal,
+        endOrdinalExclusive: page.endOrdinalExclusive,
+      );
+      localHistoryPaging.value = LocalHistoryPagingState(
+        enabled: true,
+        hasMore: currentPaging.hasMore,
+        hasLater: page.hasLater,
+      );
+      return true;
+    } catch (error, stackTrace) {
+      if (isClosed || historyNavigation.value != window) return false;
+      logger.warning(
+        '[session:$sessionId] Failed to load newer history context',
+        error,
+        stackTrace,
+      );
+      localHistoryPaging.value = localHistoryPaging.value.copyWith(
+        loadingLater: false,
+        laterError: error,
+      );
+      return false;
+    }
+  }
+
+  Future<bool> _loadOlderHistoryNavigation() async {
+    final currentPaging = localHistoryPaging.value;
+    if (isClosed ||
+        !currentPaging.enabled ||
+        !currentPaging.hasMore ||
+        currentPaging.loading ||
+        currentPaging.loadingLater) {
+      return false;
+    }
+    final window = historyNavigation.value!;
+    localHistoryPaging.value = currentPaging.copyWith(
+      loading: true,
+      clearError: true,
+    );
+    try {
+      final startOrder = window.startTurnOrder;
+      if (startOrder != null) {
+        final requestedStart = startOrder - _historyNavigationPageTurns;
+        final nextStart = requestedStart > 0 ? requestedStart : 0;
+        final loaded = await _loadDetachedTurnRange(nextStart, startOrder);
+        if (isClosed || historyNavigation.value != window) return false;
+        final prepended = <ChatEntry>[];
+        var committedStart = startOrder;
+        for (var order = startOrder - 1; order >= nextStart; order--) {
+          final turn = loaded[order];
+          if (turn == null) break;
+          prepended.insertAll(0, turn);
+          committedStart = order;
+        }
+        if (committedStart == startOrder) {
+          throw StateError('Older conversation history made no progress.');
+        }
+        historyNavigation.value = HistoryNavigationWindow(
+          entries: List.unmodifiable(
+            _mergeAdjacentHistoryEntries(prepended, window.entries),
+          ),
+          startTurnOrder: committedStart,
+          endTurnOrderExclusive: window.endTurnOrderExclusive,
+        );
+        localHistoryPaging.value = LocalHistoryPagingState(
+          enabled: true,
+          hasMore: committedStart > 0,
+          hasLater: currentPaging.hasLater,
+        );
+        return true;
+      }
+
+      final startOrdinal = window.startOrdinal;
+      if (startOrdinal == null || !_bridge.hasSessionHistoryWindowLoading) {
+        throw StateError('Older history window is unavailable.');
+      }
+      final nextStart = startOrdinal > 200 ? startOrdinal - 200 : 0;
+      final page = await _bridge.tryLoadLocalSessionHistoryWindow(
+        runtimeSessionId: sessionId,
+        startOrdinal: nextStart,
+        limit: startOrdinal - nextStart,
+      );
+      if (isClosed || historyNavigation.value != window) return false;
+      if (page == null || page.messages.isEmpty) {
+        throw StateError('Older conversation history made no progress.');
+      }
+      final prepended = _decodeLocalHistoryPage(page);
+      historyNavigation.value = HistoryNavigationWindow(
+        entries: List.unmodifiable(
+          _mergeAdjacentHistoryEntries(prepended, window.entries),
+        ),
+        startOrdinal: page.startOrdinal,
+        endOrdinalExclusive: window.endOrdinalExclusive,
+      );
+      localHistoryPaging.value = LocalHistoryPagingState(
+        enabled: true,
+        hasMore: page.hasMore,
+        hasLater: currentPaging.hasLater,
+      );
+      return true;
+    } catch (error, stackTrace) {
+      if (isClosed || historyNavigation.value != window) return false;
+      logger.warning(
+        '[session:$sessionId] Failed to load older history context',
         error,
         stackTrace,
       );
@@ -8215,12 +8464,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         if (index != null) {
           _localHistoryUserIndexComplete = index.complete;
           _providerTurnOrderById.clear();
+          _providerTurnIdsByOrder.clear();
           final entries = <UserChatEntry>[];
           for (var order = 0; order < index.messages.length; order++) {
             final message = index.messages[order];
             final turnId = message.historyTurnId?.trim();
             if (turnId != null && turnId.isNotEmpty) {
-              _providerTurnOrderById.putIfAbsent(turnId, () => order);
+              if (!_providerTurnOrderById.containsKey(turnId)) {
+                _providerTurnOrderById[turnId] = _providerTurnIdsByOrder.length;
+                _providerTurnIdsByOrder.add(turnId);
+              }
             }
             entries.add(_userEntryFromHistoryIndex(message));
           }
@@ -8249,12 +8502,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _localHistoryUserIndexComplete = indexed != null;
     if (indexed == null) return allUserMessages;
     _providerTurnOrderById.clear();
+    _providerTurnIdsByOrder.clear();
     final result = <UserChatEntry>[];
     for (final indexedEntry in indexed) {
       final entry = _userEntryFromHistoryIndex(indexedEntry.message);
       final turnId = indexedEntry.message.historyTurnId?.trim();
       if (turnId != null && turnId.isNotEmpty) {
-        _providerTurnOrderById.putIfAbsent(turnId, () => indexedEntry.ordinal);
+        if (!_providerTurnOrderById.containsKey(turnId)) {
+          _providerTurnOrderById[turnId] = _providerTurnIdsByOrder.length;
+          _providerTurnIdsByOrder.add(turnId);
+        }
       }
       _localHistoryOrdinalByNavigationEntry[entry] = indexedEntry.ordinal;
       result.add(entry);
@@ -8307,26 +8564,36 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   Future<UserChatEntry?> revealUserMessage(UserChatEntry target) async {
-    UserChatEntry? findLoaded() {
-      for (final entry in state.entries.whereType<UserChatEntry>()) {
+    UserChatEntry? findLoaded(Iterable<ChatEntry> entries) {
+      for (final entry in entries.whereType<UserChatEntry>()) {
         if (_entriesEquivalentForTurnBoundary(entry, target)) return entry;
       }
       return null;
     }
 
-    var loaded = findLoaded();
+    var loaded = findLoaded(visibleEntries);
     if (loaded != null) return loaded;
+    loaded = findLoaded(state.entries);
+    if (loaded != null) {
+      exitHistoryNavigation();
+      return loaded;
+    }
     final providerTurnId = target.historyTurnId?.trim();
     final detachedTurnLoader = _detachedUserTurnLoader;
     if (providerTurnId != null &&
         providerTurnId.isNotEmpty &&
         detachedTurnLoader != null) {
       try {
-        final messages = await detachedTurnLoader(providerTurnId);
-        if (messages != null && messages.isNotEmpty && !isClosed) {
-          _mergeLoadedProviderTurn(providerTurnId, messages);
-          loaded = findLoaded();
+        if (_providerTurnOrderById.containsKey(providerTurnId)) {
+          loaded = await _openDetachedHistoryNavigation(providerTurnId, target);
           if (loaded != null) return loaded;
+        } else {
+          final messages = await detachedTurnLoader(providerTurnId);
+          if (messages != null && messages.isNotEmpty && !isClosed) {
+            _mergeLoadedProviderTurn(providerTurnId, messages);
+            loaded = findLoaded(state.entries);
+            if (loaded != null) return loaded;
+          }
         }
       } catch (error, stackTrace) {
         logger.warning(
@@ -8357,7 +8624,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       try {
         final page = await _bridge.tryLoadLocalSessionHistoryWindow(
           runtimeSessionId: sessionId,
-          startOrdinal: targetOrdinal,
+          startOrdinal: targetOrdinal > 100 ? targetOrdinal - 100 : 0,
         );
         if (isClosed || generation != _localHistoryPagingGeneration) {
           return null;
@@ -8366,11 +8633,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           localHistoryPaging.value = _currentLocalHistoryPagingState();
           return null;
         }
-        _replaceLocalMirrorWindow(page);
-        loaded = findLoaded();
+        _openLocalHistoryNavigation(page, returnPaging: currentPaging);
+        loaded = findLoaded(visibleEntries);
         localHistoryPaging.value = LocalHistoryPagingState(
           enabled: true,
           hasMore: page.hasMore,
+          hasLater: page.hasLater,
         );
         return loaded;
       } catch (error, stackTrace) {
@@ -8444,7 +8712,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
 
       publishBufferedPages();
-      loaded = findLoaded();
+      loaded = findLoaded(state.entries);
       localHistoryPaging.value = LocalHistoryPagingState(
         enabled: true,
         hasMore: hasMore,
@@ -8455,7 +8723,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
       try {
         publishBufferedPages();
-        loaded = findLoaded();
+        loaded = findLoaded(state.entries);
       } catch (_) {
         // Preserve the original read/decode error below.
       }
@@ -8470,6 +8738,158 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       );
     }
     return loaded;
+  }
+
+  static const _historyNavigationInitialRadius = 2;
+  static const _historyNavigationPageTurns = 3;
+
+  Future<UserChatEntry?> _openDetachedHistoryNavigation(
+    String providerTurnId,
+    UserChatEntry target,
+  ) async {
+    final targetOrder = _providerTurnOrderById[providerTurnId];
+    if (targetOrder == null || _providerTurnIdsByOrder.isEmpty) return null;
+    final start = targetOrder > _historyNavigationInitialRadius
+        ? targetOrder - _historyNavigationInitialRadius
+        : 0;
+    final desiredEnd = targetOrder + _historyNavigationInitialRadius + 1;
+    final end = desiredEnd < _providerTurnIdsByOrder.length
+        ? desiredEnd
+        : _providerTurnIdsByOrder.length;
+    final loaded = await _loadDetachedTurnRange(start, end);
+    if (isClosed || loaded[targetOrder] == null) return null;
+
+    var contiguousStart = targetOrder;
+    while (contiguousStart > start && loaded[contiguousStart - 1] != null) {
+      contiguousStart -= 1;
+    }
+    var contiguousEnd = targetOrder + 1;
+    while (contiguousEnd < end && loaded[contiguousEnd] != null) {
+      contiguousEnd += 1;
+    }
+    final entries = <ChatEntry>[
+      for (var order = contiguousStart; order < contiguousEnd; order++)
+        ...loaded[order]!,
+    ];
+    historyNavigation.value = HistoryNavigationWindow(
+      entries: List.unmodifiable(entries),
+      startTurnOrder: contiguousStart,
+      endTurnOrderExclusive: contiguousEnd,
+    );
+    _historyNavigationReturnPaging ??= localHistoryPaging.value;
+    localHistoryPaging.value = LocalHistoryPagingState(
+      enabled: true,
+      hasMore: contiguousStart > 0,
+      hasLater: contiguousEnd < _providerTurnIdsByOrder.length,
+    );
+    for (final entry in entries.whereType<UserChatEntry>()) {
+      if (_entriesEquivalentForTurnBoundary(entry, target)) return entry;
+    }
+    return null;
+  }
+
+  Future<Map<int, List<ChatEntry>?>> _loadDetachedTurnRange(
+    int start,
+    int end,
+  ) async {
+    final loader = _detachedUserTurnLoader;
+    if (loader == null || start >= end) return const {};
+    final results = <int, List<ServerMessage>?>{};
+    var nextOrder = start;
+
+    Future<void> worker() async {
+      while (!isClosed) {
+        final order = nextOrder;
+        if (order >= end) return;
+        nextOrder += 1;
+        final turnId = _providerTurnIdsByOrder[order];
+        try {
+          results[order] = await loader(turnId);
+        } catch (error, stackTrace) {
+          logger.warning(
+            '[session:$sessionId] Failed to load adjacent provider turn',
+            error,
+            stackTrace,
+          );
+          results[order] = null;
+        }
+      }
+    }
+
+    final workerCount = end - start > 1 ? 2 : 1;
+    await Future.wait(List.generate(workerCount, (_) => worker()));
+    final decoded = <int, List<ChatEntry>?>{};
+    for (var order = start; order < end; order++) {
+      final messages = results[order];
+      decoded[order] = messages == null || messages.isEmpty
+          ? null
+          : _decodeProviderTurn(_providerTurnIdsByOrder[order], messages);
+    }
+    return decoded;
+  }
+
+  List<ChatEntry> _decodeProviderTurn(
+    String providerTurnId,
+    List<ServerMessage> messages,
+  ) {
+    final decoded = _handler.handle(
+      HistoryMessage(messages: messages),
+      isBackground: true,
+      isCodex: isCodex,
+      ignoredToolUseIds: _respondedToolUseIds,
+    );
+    final entries = decoded.entriesToAdd
+        .where((entry) => entry is! StreamingChatEntry)
+        .toList(growable: false);
+    for (final entry in entries) {
+      _targetHistoryTurnByEntry[entry] = providerTurnId;
+    }
+    return entries;
+  }
+
+  void _openLocalHistoryNavigation(
+    LocalSessionHistoryPage page, {
+    required LocalHistoryPagingState returnPaging,
+  }) {
+    final entries = _decodeLocalHistoryPage(page);
+    if (entries.isEmpty) return;
+    _historyNavigationReturnPaging ??= returnPaging;
+    historyNavigation.value = HistoryNavigationWindow(
+      entries: List.unmodifiable(entries),
+      startOrdinal: page.startOrdinal,
+      endOrdinalExclusive: page.endOrdinalExclusive,
+    );
+  }
+
+  List<ChatEntry> _decodeLocalHistoryPage(LocalSessionHistoryPage page) {
+    if (page.messages.isEmpty) return const [];
+    final history = HistoryMessage(messages: page.messages);
+    final decoded = _handler.handle(
+      history,
+      isBackground: true,
+      isCodex: isCodex,
+      ignoredToolUseIds: _respondedToolUseIds,
+      historyTimestampAnchor: page.timestampAnchor,
+    );
+    return decoded.entriesToAdd
+        .where((entry) => entry is! StreamingChatEntry)
+        .toList(growable: false);
+  }
+
+  List<ChatEntry> _mergeAdjacentHistoryEntries(
+    List<ChatEntry> older,
+    List<ChatEntry> newer,
+  ) {
+    final merged = List<ChatEntry>.from(older);
+    for (final incoming in newer) {
+      final index = _indexOfEquivalentEntry(merged, incoming);
+      if (index == -1) {
+        merged.add(incoming);
+      } else {
+        merged[index] = _mergeCanonicalMirrorEntry(merged[index], incoming);
+      }
+    }
+    return merged;
   }
 
   void _mergeLoadedProviderTurn(
@@ -8553,59 +8973,6 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return value == null || value.isEmpty ? null : value;
     }
     return null;
-  }
-
-  void _replaceLocalMirrorWindow(LocalSessionHistoryPage page) {
-    if (page.messages.isEmpty) return;
-    final history = HistoryMessage(messages: page.messages);
-    final decoded = _handler.handle(
-      history,
-      isBackground: true,
-      isCodex: isCodex,
-      ignoredToolUseIds: _respondedToolUseIds,
-      historyTimestampAnchor: page.timestampAnchor,
-    );
-    final mirrorEntries = decoded.entriesToAdd
-        .where((entry) => entry is! StreamingChatEntry)
-        .toList(growable: false);
-    if (mirrorEntries.isEmpty) return;
-
-    final pastEntries = state.entries
-        .take(_pastEntryCount)
-        .toList(growable: false);
-    final allExistingNonPast = state.entries
-        .skip(_pastEntryCount)
-        .toList(growable: false);
-    final existingMirrorPrefix = _localMirrorEntryCount.clamp(
-      0,
-      allExistingNonPast.length,
-    );
-    final canonicalTail = allExistingNonPast
-        .skip(existingMirrorPrefix)
-        .toList(growable: false);
-    final merged = _mergeCanonicalHistoryIntoPagedEntries(
-      existingEntries: mirrorEntries,
-      canonicalEntries: canonicalTail,
-    );
-    _localMirrorEntryCount = _mirrorPrefixExtent(
-      mergedEntries: merged,
-      mirrorEntries: mirrorEntries,
-    );
-    var nextEntries = <ChatEntry>[...pastEntries, ...merged];
-    if (_dismissedCodexWarningKeys.isNotEmpty) {
-      nextEntries = nextEntries
-          .where((entry) => !_isDismissedCodexWarningEntry(entry))
-          .toList(growable: false);
-    }
-    emit(
-      state.copyWith(
-        entries: nextEntries,
-        hiddenToolUseIds: {
-          ...state.hiddenToolUseIds,
-          ...decoded.toolUseIdsToHide,
-        },
-      ),
-    );
   }
 
   /// Re-fetch session history from the bridge server.
@@ -8867,6 +9234,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _historyToolDetailStates.clear();
     _historyToolDetailFlights.clear();
     localHistoryPaging.dispose();
+    historyNavigation.dispose();
     historySyncing.dispose();
     return super.close();
   }

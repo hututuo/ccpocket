@@ -287,11 +287,23 @@ class LocalSessionHistoryPage {
   const LocalSessionHistoryPage({
     required this.messages,
     required this.hasMore,
+    this.hasLater = false,
+    this.startOrdinal,
+    this.endOrdinalExclusive,
+    this.totalEntries,
     this.timestampAnchor,
   });
 
   final List<ServerMessage> messages;
+
+  /// Whether entries immediately before this page are still available.
   final bool hasMore;
+
+  /// Whether entries immediately after this page are still available.
+  final bool hasLater;
+  final int? startOrdinal;
+  final int? endOrdinalExclusive;
+  final int? totalEntries;
   final DateTime? timestampAnchor;
 }
 

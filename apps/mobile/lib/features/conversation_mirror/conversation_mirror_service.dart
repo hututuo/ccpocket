@@ -2188,13 +2188,14 @@ class ConversationMirrorService extends ChangeNotifier {
         _removeRuntimePageCursor(runtimeSessionId, expected: cursor);
         return null;
       }
-      // The displayed mirror prefix now begins at this target. Ordinary
-      // upward paging continues immediately before it instead of walking
-      // through every skipped page.
-      cursor.nextOffset = startOrdinal;
+      final endOrdinalExclusive = startOrdinal + entries.length;
       return LocalSessionHistoryPage(
         messages: List.unmodifiable(_decodeRenderableEntries(entries)),
         hasMore: startOrdinal > 0,
+        hasLater: endOrdinalExclusive < cursor.entryCount,
+        startOrdinal: startOrdinal,
+        endOrdinalExclusive: endOrdinalExclusive,
+        totalEntries: cursor.entryCount,
         timestampAnchor: timestampAnchor,
       );
     } finally {

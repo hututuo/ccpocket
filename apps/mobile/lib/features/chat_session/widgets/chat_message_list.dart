@@ -123,6 +123,12 @@ bool shouldLoadOlderLocalHistory(
     metrics.pixels >= metrics.maxScrollExtent - threshold;
 
 @visibleForTesting
+bool shouldLoadNewerLocalHistory(
+  ScrollMetrics metrics, {
+  double threshold = 480,
+}) => metrics.maxScrollExtent > 0 && metrics.pixels <= threshold;
+
+@visibleForTesting
 Set<int> forkableAssistantEntryIndices(
   List<ChatEntry> entries, {
   bool transcriptTailComplete = false,
@@ -248,8 +254,10 @@ class _ChatMessageListState extends State<ChatMessageList> {
     final nextCubit = context.read<ChatSessionCubit>();
     if (identical(nextCubit, _pagingCubit)) return;
     _pagingCubit?.localHistoryPaging.removeListener(_onPagingChanged);
+    _pagingCubit?.historyNavigation.removeListener(_onHistoryNavigationChanged);
     _pagingCubit = nextCubit;
     nextCubit.localHistoryPaging.addListener(_onPagingChanged);
+    nextCubit.historyNavigation.addListener(_onHistoryNavigationChanged);
   }
 
   @override
@@ -271,6 +279,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
     widget.scrollToUserEntry?.removeListener(_onScrollToUserEntry);
     widget.collapseToolResults?.removeListener(_onCollapseSignal);
     _pagingCubit?.localHistoryPaging.removeListener(_onPagingChanged);
+    _pagingCubit?.historyNavigation.removeListener(_onHistoryNavigationChanged);
     super.dispose();
   }
 
@@ -294,12 +303,26 @@ class _ChatMessageListState extends State<ChatMessageList> {
     if (mounted) setState(() {});
   }
 
+  void _onHistoryNavigationChanged() {
+    _processLayoutEntries = null;
+    _cachedProcessLayout = null;
+    _derivedEntries = null;
+    _derivedData = null;
+    if (mounted) setState(() {});
+  }
+
   void _onScrollToUserEntry() {
     final entry = widget.scrollToUserEntry?.value;
     if (entry == null) return;
     // Reset the notifier
     widget.scrollToUserEntry?.value = null;
-    _scrollToUserEntry(entry);
+    // A history reveal may have switched the list to an isolated viewport in
+    // the same microtask. Wait until its AutoScrollTags are mounted before
+    // resolving the target index; otherwise the old live list can win the
+    // race and leave the user at the wrong position.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _scrollToUserEntry(entry);
+    });
   }
 
   GlobalKey _anchorKey(String id) =>
@@ -607,7 +630,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
   /// Uses [AutoScrollController.scrollToIndex] which handles both on-screen
   /// and off-screen items correctly with variable-height widgets.
   void _scrollToUserEntry(UserChatEntry entry) {
-    final entries = context.read<ChatSessionCubit>().state.entries;
+    final entries = context.read<ChatSessionCubit>().visibleEntries;
     final idx = entries.indexOf(entry);
     if (idx < 0) return;
     widget.scrollController.scrollToIndex(
@@ -636,7 +659,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
 
   /// Search all entries in reverse for a Write tool targeting `.claude/plans/`.
   String? _findPlanFromWriteTool() {
-    final entries = context.read<ChatSessionCubit>().state.entries;
+    final entries = context.read<ChatSessionCubit>().visibleEntries;
     for (var i = entries.length - 1; i >= 0; i--) {
       final entry = entries[i];
       if (entry is! ServerChatEntry) continue;
@@ -955,21 +978,24 @@ class _ChatMessageListState extends State<ChatMessageList> {
     final chatCubit = context.watch<ChatSessionCubit>();
     final chatState = chatCubit.state;
     final hiddenToolUseIds = chatState.hiddenToolUseIds;
-    final allEntries = chatState.entries;
+    final historyBrowsing = chatCubit.historyNavigationActive;
+    final allEntries = chatCubit.visibleEntries;
 
     // Watch only the isStreaming flag (not the full streaming text) so the
     // list rebuilds when streaming starts/stops (to adjust itemCount) but NOT
     // on every text delta. The actual streaming text is rendered inside a
     // scoped BlocBuilder on the streaming item only.
-    final hasStreaming = context.select<StreamingStateCubit, bool>(
+    final streamingActive = context.select<StreamingStateCubit, bool>(
       (cubit) => cubit.state.isStreaming,
     );
+    final hasStreaming = !historyBrowsing && streamingActive;
     final latestTurnIsActive =
-        chatState.status == ProcessStatus.running ||
-        chatState.status == ProcessStatus.waitingApproval ||
-        chatState.status == ProcessStatus.compacting ||
-        chatState.externalDesktopTurnActive ||
-        hasStreaming;
+        !historyBrowsing &&
+        (chatState.status == ProcessStatus.running ||
+            chatState.status == ProcessStatus.waitingApproval ||
+            chatState.status == ProcessStatus.compacting ||
+            chatState.externalDesktopTurnActive ||
+            hasStreaming);
     final processLayout = _processLayoutFor(
       allEntries,
       latestTurnIsActive: latestTurnIsActive,
@@ -1009,6 +1035,13 @@ class _ChatMessageListState extends State<ChatMessageList> {
             shouldLoadOlderLocalHistory(notification.metrics)) {
           unawaited(chatCubit.loadOlderLocalHistory());
         }
+        if (paging.enabled &&
+            paging.hasLater &&
+            notification is ScrollUpdateNotification &&
+            notification.dragDetails != null &&
+            shouldLoadNewerLocalHistory(notification.metrics)) {
+          unawaited(chatCubit.loadNewerLocalHistory());
+        }
         return false;
       },
       child: ListView.builder(
@@ -1028,9 +1061,28 @@ class _ChatMessageListState extends State<ChatMessageList> {
             ((paging.enabled &&
                     (paging.hasMore || paging.loading || paging.error != null))
                 ? 1
-                : 0),
+                : 0) +
+            (historyBrowsing ? 1 : 0),
         itemBuilder: (context, index) {
-          if (index == messageCount) {
+          if (historyBrowsing && index == 0) {
+            return _LocalHistoryNewerPageIndicator(
+              paging: paging,
+              onRetry: chatCubit.loadNewerLocalHistory,
+              onReturnToLatest: () {
+                chatCubit.exitHistoryNavigation();
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted || !widget.scrollController.hasClients) return;
+                  widget.scrollController.animateTo(
+                    widget.scrollController.position.minScrollExtent,
+                    duration: const Duration(milliseconds: 250),
+                    curve: Curves.easeOut,
+                  );
+                });
+              },
+            );
+          }
+          final transcriptIndex = index - (historyBrowsing ? 1 : 0);
+          if (transcriptIndex == messageCount) {
             if (paging.hasMore && !paging.loading && paging.error == null) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (mounted) unawaited(chatCubit.loadOlderLocalHistory());
@@ -1045,7 +1097,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
           }
           // index 0 = newest entry (bottom of chat)
           // Map to actual entry index:
-          final entryIndex = messageCount - 1 - index;
+          final entryIndex = messageCount - 1 - transcriptIndex;
 
           // Streaming entry is at messageCount - 1 (index 0 in reverse)
           if (hasStreaming && entryIndex == allEntries.length) {
@@ -1759,6 +1811,69 @@ class _LocalHistoryPageIndicator extends StatelessWidget {
           child: CircularProgressIndicator(strokeWidth: 2),
         ),
       ),
+    );
+  }
+}
+
+class _LocalHistoryNewerPageIndicator extends StatelessWidget {
+  const _LocalHistoryNewerPageIndicator({
+    required this.paging,
+    required this.onRetry,
+    required this.onReturnToLatest,
+  });
+
+  final LocalHistoryPagingState paging;
+  final Future<bool> Function() onRetry;
+  final VoidCallback onReturnToLatest;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    if (paging.loadingLater) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Wrap(
+          alignment: WrapAlignment.center,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 8,
+          children: [
+            const SizedBox.square(
+              key: ValueKey('local_history_newer_loading'),
+              dimension: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            _returnToLatestButton(l),
+          ],
+        ),
+      );
+    }
+    if (paging.laterError != null || paging.hasLater) {
+      return Wrap(
+        alignment: WrapAlignment.center,
+        spacing: 8,
+        children: [
+          TextButton.icon(
+            key: const ValueKey('local_history_newer_retry'),
+            onPressed: () => unawaited(onRetry()),
+            icon: Icon(
+              paging.laterError == null ? Icons.expand_more : Icons.refresh,
+              size: 18,
+            ),
+            label: Text(paging.laterError == null ? l.loadMore : l.retry),
+          ),
+          _returnToLatestButton(l),
+        ],
+      );
+    }
+    return Center(child: _returnToLatestButton(l));
+  }
+
+  Widget _returnToLatestButton(AppLocalizations l) {
+    return TextButton.icon(
+      key: const ValueKey('local_history_return_latest'),
+      onPressed: onReturnToLatest,
+      icon: const Icon(Icons.vertical_align_bottom, size: 18),
+      label: Text(l.scrollToBottom),
     );
   }
 }

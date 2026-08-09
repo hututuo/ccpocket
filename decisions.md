@@ -1,5 +1,24 @@
 # ccPocket Compatibility Decisions
 
+## 2026-08-10 historical message jumps use an isolated two-way viewport
+
+- Selecting a distant user message must not replace, truncate or rewind the
+  mounted conversation cache. The live/current timeline continues accepting
+  cache and socket updates behind an independent historical viewport.
+- The first reveal loads a bounded neighborhood around the target. Provider v2
+  uses the lightweight user-turn index and at most two concurrent exact-turn
+  reads; the legacy local mirror uses a centered random-access entry window.
+- The historical viewport has independent earlier and later boundaries.
+  Approaching either edge loads the adjacent bounded page, while failures stay
+  retryable at that edge. Returning to the latest timeline discards only the
+  viewport, not the cached conversation or its original paging cursor.
+- A live content revision may rebind source/revision-scoped loaders, but it
+  cannot close the historical viewport or move the reader. Provider identity,
+  revision and cache source fences remain authoritative; timestamps do not
+  order or merge history.
+- This is Mobile/cache behavior only. It does not alter provider history,
+  Bridge wire schema, canonical session files, deployment, OTA or IPA state.
+
 ## 2026-08-09 Codex Desktop project identity is presentation authority
 
 - Codex app-server `cwd` remains the canonical provider/resume path, but it is
@@ -1079,11 +1098,12 @@
   carries its stored ordinal internally so selecting a distant turn can read
   the 200-entry window beginning at that turn directly.
 - A distant selection keeps the picker visible behind a blocking loading
-  indicator. Mobile swaps in the target window only after the database read
-  completes, then performs the scroll; it must not progressively mount every
-  intervening page. Older drag paging continues immediately before the newly
-  selected window, and another History selection may jump to any newer or
-  older turn even when `hasMore` is false at the current window.
+  indicator. Mobile opens an isolated target-centered viewport only after the
+  database read completes, then performs the scroll; it must not progressively
+  mount every intervening page or replace the live cache. Earlier and later
+  drag paging continue immediately beside that viewport, and another History
+  selection may jump to any newer or older turn regardless of its current
+  boundary state.
 - `bounded_history_window_v1` is an additive client capability. A new Bridge
   sends only the latest 200 canonical entries to an opting-in Mobile; legacy
   clients continue receiving the prior full response. A new Mobile also bounds
