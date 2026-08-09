@@ -14,6 +14,7 @@ import 'package:ccpocket/services/support_banner_service.dart';
 import 'package:ccpocket/theme/app_theme.dart';
 import 'package:ccpocket/widgets/session_card.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -79,6 +80,9 @@ class _MockBridgeService extends BridgeService {
 RecentSession _session({
   required String id,
   String? name,
+  String? firstPrompt,
+  String? lastPrompt,
+  String? summary,
   String projectPath = '/home/user/project-a',
   String modified = '2025-01-01T00:00:00Z',
   String? projectGroupId,
@@ -88,7 +92,9 @@ RecentSession _session({
   return RecentSession(
     sessionId: id,
     name: name,
-    firstPrompt: 'test prompt for $id',
+    firstPrompt: firstPrompt ?? 'test prompt for $id',
+    lastPrompt: lastPrompt,
+    summary: summary,
     created: '2025-01-01T00:00:00Z',
     modified: modified,
     gitBranch: 'main',
@@ -156,6 +162,7 @@ Widget _buildHomeContent({
   Set<String> unseenSessionIds = const {},
   Map<String, ConversationSyncV2Status> conversationStatuses = const {},
   Set<String> unreadConversationKeys = const {},
+  String projectOrderScope = 'test-bridge-source',
   String? currentProjectFilter,
   bool hasMoreSessions = false,
   bool isInitialLoading = false,
@@ -194,6 +201,7 @@ Widget _buildHomeContent({
             projectSessionDisplayLimits: projectSessionDisplayLimits,
             collapsedProjectPaths: collapsedProjectPaths,
             pinnedProjectPaths: pinnedProjectPaths,
+            projectOrderScope: projectOrderScope,
             unseenSessionIds: unseenSessionIds,
             conversationStatuses: conversationStatuses,
             unreadConversationKeys: unreadConversationKeys,
@@ -783,6 +791,51 @@ void main() {
     });
 
     testWidgets(
+      'display mode uses catalog text even while a runtime is attached',
+      (tester) async {
+        await tester.pumpWidget(
+          _buildHomeContent(
+            sessions: [
+              _runningSession(
+                id: 'runtime-display-mode',
+                providerSessionId: 'thread-display-mode',
+              ),
+            ],
+            recentSessions: [
+              _session(
+                id: 'thread-display-mode',
+                firstPrompt: 'catalog first prompt',
+                lastPrompt: 'catalog last prompt',
+                summary: 'catalog summary',
+              ),
+            ],
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+        await tester.pump();
+
+        expect(find.text('catalog first prompt'), findsOneWidget);
+        expect(find.text('Working on something'), findsNothing);
+
+        await tester.tap(
+          find.byKey(const ValueKey('recent_display_mode_toggle')),
+        );
+        await tester.pump();
+        expect(find.text('catalog last prompt'), findsOneWidget);
+
+        await tester.tap(
+          find.byKey(const ValueKey('recent_display_mode_toggle')),
+        );
+        await tester.pump();
+        expect(find.text('catalog summary'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
       'grouped mode uses Desktop project names across worktree paths',
       (tester) async {
         await tester.pumpWidget(
@@ -829,6 +882,204 @@ void main() {
         expect(find.text('Not in a project'), findsOneWidget);
       },
     );
+
+    testWidgets(
+      'project sections keep their first persisted order on refresh',
+      (tester) async {
+        Future<void> pumpProjects({
+          required String projectAModified,
+          required String projectBModified,
+        }) => tester.pumpWidget(
+          _buildHomeContent(
+            recentSessions: [
+              _session(id: 'project-a-order', modified: projectAModified),
+              _session(
+                id: 'project-b-order',
+                projectPath: '/home/user/project-b',
+                modified: projectBModified,
+              ),
+            ],
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+
+        await pumpProjects(
+          projectAModified: '2025-01-02T00:00:00Z',
+          projectBModified: '2025-01-01T00:00:00Z',
+        );
+        await tester.pumpAndSettle();
+        final projectA = find.byKey(
+          const ValueKey('project_header_/home/user/project-a'),
+        );
+        final projectB = find.byKey(
+          const ValueKey('project_header_/home/user/project-b'),
+        );
+        expect(
+          tester.getTopLeft(projectA).dy,
+          lessThan(tester.getTopLeft(projectB).dy),
+        );
+
+        await pumpProjects(
+          projectAModified: '2025-01-02T00:00:00Z',
+          projectBModified: '2025-01-03T00:00:00Z',
+        );
+        await tester.pump();
+        expect(
+          tester.getTopLeft(projectA).dy,
+          lessThan(tester.getTopLeft(projectB).dy),
+        );
+      },
+    );
+
+    testWidgets('long press drag persists a manual project order', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(id: 'drag-a', modified: '2025-01-02T00:00:00Z'),
+            _session(
+              id: 'drag-b',
+              projectPath: '/home/user/project-b',
+              modified: '2025-01-01T00:00:00Z',
+            ),
+          ],
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          projectOrderScope: 'bridge-a|codex-a',
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final dragA = find.byKey(
+        const ValueKey('project_drag_/home/user/project-a'),
+      );
+      final dropB = find.byKey(
+        const ValueKey('project_drop_/home/user/project-b'),
+      );
+      final rowA = find.byKey(
+        const ValueKey('conversation_claude\u0000drag-a'),
+      );
+      final rowAElement = tester.element(rowA);
+      final gesture = await tester.startGesture(tester.getCenter(dragA));
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
+      await gesture.moveTo(
+        tester.getRect(dropB).bottomCenter - const Offset(0, 2),
+      );
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      final projectA = find.byKey(
+        const ValueKey('project_header_/home/user/project-a'),
+      );
+      final projectB = find.byKey(
+        const ValueKey('project_header_/home/user/project-b'),
+      );
+      expect(
+        tester.getTopLeft(projectB).dy,
+        lessThan(tester.getTopLeft(projectA).dy),
+      );
+      expect(tester.element(rowA), same(rowAElement));
+      final prefs = await SharedPreferences.getInstance();
+      await tester.runAsync(() async {
+        for (var attempt = 0; attempt < 20; attempt++) {
+          if (prefs.getString('session_list_project_order_by_source_v1') !=
+              null) {
+            return;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 1));
+        }
+      });
+      expect(
+        prefs.getString('session_list_project_order_by_source_v1'),
+        contains('/home/user/project-b'),
+      );
+
+      // Reusing the mounted HomeContent for another authenticated source must
+      // not show source A's saved order while source B's preferences load.
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(id: 'drag-a', modified: '2025-01-02T00:00:00Z'),
+            _session(
+              id: 'drag-b',
+              projectPath: '/home/user/project-b',
+              modified: '2025-01-01T00:00:00Z',
+            ),
+          ],
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          projectOrderScope: 'bridge-b|codex-b',
+        ),
+      );
+      expect(
+        tester.getTopLeft(projectA).dy,
+        lessThan(tester.getTopLeft(projectB).dy),
+      );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(id: 'drag-a', modified: '2025-01-02T00:00:00Z'),
+            _session(
+              id: 'drag-b',
+              projectPath: '/home/user/project-b',
+              modified: '2025-01-01T00:00:00Z',
+            ),
+          ],
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          projectOrderScope: 'bridge-a|codex-a',
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        tester.getTopLeft(projectB).dy,
+        lessThan(tester.getTopLeft(projectA).dy),
+      );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(id: 'drag-a', modified: '2025-01-02T00:00:00Z'),
+            _session(
+              id: 'drag-b',
+              projectPath: '/home/user/project-b',
+              modified: '2025-01-01T00:00:00Z',
+            ),
+          ],
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          projectOrderScope: 'bridge-b|codex-b',
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        tester.getTopLeft(projectA).dy,
+        lessThan(tester.getTopLeft(projectB).dy),
+      );
+    });
 
     testWidgets(
       'Desktop grouping honors legacy collapse and display-limit keys',
