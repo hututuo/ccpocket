@@ -91,6 +91,8 @@ git branch recover/<name> refs/archive/ccpocket/consolidation-20260809/branches/
 
 其余 20 个 linked worktree 和 20 个任务分支已移除。收束前 `ccpocket-worktrees` 为 4,146,184 KiB，收束后为 138,728 KiB，释放约 3.82 GiB 的重复检出和可重建依赖材料。
 
+Git 对象目录另有 5 个被 `git count-objects` 明确判定为 garbage 的 `tmp_pack_*` 中断临时包，共 55,816,187 bytes；精确删除后 `garbage: 0`。连同旧独立仓库，整轮实际收束约 3.87 GiB，不对仍被归档引用保护的 Git 对象执行 `gc --prune`。
+
 ## 后续规则
 
 - Codex Desktop 只添加 `ccpocket-compat` 这个 Git 根作为 CC Pocket 项目。
