@@ -52,6 +52,40 @@ Widget _wrap(
 );
 
 void main() {
+  testWidgets('explains immediate offline and timeout states distinctly', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _wrap(
+        BridgeMachineGroup(
+          id: 'offline-group',
+          routes: [_route('offline-route', '192.168.1.10')],
+        ),
+        onDelete: (_) {},
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Mac or Bridge offline'), findsOneWidget);
+
+    await tester.pumpWidget(
+      _wrap(
+        BridgeMachineGroup(
+          id: 'timeout-group',
+          routes: [
+            _route(
+              'timeout-route',
+              '100.64.0.10',
+              status: MachineStatus.unreachable,
+            ),
+          ],
+        ),
+        onDelete: (_) {},
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Connection timed out'), findsOneWidget);
+  });
+
   testWidgets('long press deletes a single-route group', (tester) async {
     final route = _route('route-1', '192.168.1.10');
     final deleted = <String>[];

@@ -912,10 +912,10 @@ class AppLocalizationsKo extends AppLocalizations {
   String get supportBannerAction => '후원 보기';
 
   @override
-  String get offline => '오프라인';
+  String get offline => 'Mac 또는 Bridge 오프라인';
 
   @override
-  String get unreachable => '연결 불가';
+  String get unreachable => '연결 시간 초과';
 
   @override
   String get checking => '확인 중...';

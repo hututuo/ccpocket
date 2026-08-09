@@ -914,10 +914,10 @@ class AppLocalizationsJa extends AppLocalizations {
   String get supportBannerAction => 'サポートを見る';
 
   @override
-  String get offline => 'オフライン';
+  String get offline => 'Mac または Bridge がオフライン';
 
   @override
-  String get unreachable => '接続不可';
+  String get unreachable => '接続がタイムアウト';
 
   @override
   String get checking => '確認中...';

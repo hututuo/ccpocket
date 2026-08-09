@@ -902,10 +902,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get supportBannerAction => '查看支持';
 
   @override
-  String get offline => '离线';
+  String get offline => '电脑或 Bridge 未在线';
 
   @override
-  String get unreachable => '不可达';
+  String get unreachable => '连接超时';
 
   @override
   String get checking => '检查中...';

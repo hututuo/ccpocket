@@ -934,10 +934,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get supportBannerAction => 'View support';
 
   @override
-  String get offline => 'Offline';
+  String get offline => 'Mac or Bridge offline';
 
   @override
-  String get unreachable => 'Unreachable';
+  String get unreachable => 'Connection timed out';
 
   @override
   String get checking => 'Checking...';
