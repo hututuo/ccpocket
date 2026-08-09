@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   isPrivateLanIpv4,
@@ -51,3 +54,36 @@ test("does not fall back from the configured LAN interface to a virtual interfac
 
   assert.equal(selectLanIpv4(interfaces, "en0"), undefined);
 });
+
+test(
+  "stays alive while the configured interface is temporarily unavailable",
+  async () => {
+    const helper = new URL("./ccpocket-bridge-lan-proxy.mjs", import.meta.url);
+    const child = spawn(process.execPath, [fileURLToPath(helper)], {
+      env: {
+        ...process.env,
+        CCPOCKET_LAN_PROXY_HOST: "auto",
+        CCPOCKET_LAN_PROXY_INTERFACE: "ccpocket-test-missing-interface",
+        CCPOCKET_LAN_PROXY_PORT: "18771",
+        CCPOCKET_LAN_PROXY_UPSTREAM_PORT: "18772",
+        CCPOCKET_LAN_PROXY_REBIND_INTERVAL_MS: "1000",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    const stderr = [];
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      assert.equal(
+        child.exitCode,
+        null,
+        `helper exited while waiting for en0: ${stderr.join("")}`,
+      );
+    } finally {
+      if (child.exitCode === null) child.kill("SIGTERM");
+      if (child.exitCode === null) await once(child, "exit");
+    }
+  },
+);

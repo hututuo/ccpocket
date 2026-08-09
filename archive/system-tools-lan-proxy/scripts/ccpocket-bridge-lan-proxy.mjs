@@ -207,7 +207,6 @@ function scheduleRetry() {
     retryTimer = undefined;
     reconcileBinding();
   }, rebindIntervalMs);
-  retryTimer.unref?.();
 }
 
 function beginListen(host) {
@@ -295,7 +294,10 @@ const isMain =
   import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
   monitor = setInterval(reconcileBinding, rebindIntervalMs);
-  monitor.unref?.();
+  // Keep the helper alive while en0 temporarily has no usable address or the
+  // server is between close() and listen(). If both timers are unref'ed, Node
+  // can exit successfully in that gap; LaunchAgent's SuccessfulExit=false
+  // then deliberately leaves the LAN route down until a manual restart.
   reconcileBinding();
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
