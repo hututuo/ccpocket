@@ -70,6 +70,59 @@ void main() {
     expect(first.aliasKeys.join(), isNot(contains('codex-home-a')));
   });
 
+  test('presentation revision ignores metadata-only cache commits', () {
+    ConversationHotWindowSnapshot snapshot({
+      required String revision,
+      required String contentHash,
+      required DateTime cachedAt,
+    }) => ConversationHotWindowSnapshot(
+      partitionId: 'partition',
+      provider: Provider.codex.value,
+      providerSessionId: 'thread',
+      revision: revision,
+      entries: [
+        ConversationContentWireEntry(
+          entryId: 'user-1',
+          index: 0,
+          contentHash: contentHash,
+          rawMessage: const {'type': 'user_input', 'text': 'Cached prompt'},
+        ),
+      ],
+      hasEarlier: false,
+      turnsNextCursor: null,
+      latestTurnComplete: true,
+      latestTurnGap: null,
+      latestTurnGapCursor: null,
+      sourceEntryCount: 1,
+      cachedAt: cachedAt,
+    );
+
+    final first = snapshot(
+      revision: 'revision-1',
+      contentHash: 'content-1',
+      cachedAt: DateTime.utc(2026, 8, 10, 1),
+    );
+    final metadataOnly = snapshot(
+      revision: 'revision-2',
+      contentHash: 'content-1',
+      cachedAt: DateTime.utc(2026, 8, 10, 2),
+    );
+    final changed = snapshot(
+      revision: 'revision-3',
+      contentHash: 'content-2',
+      cachedAt: DateTime.utc(2026, 8, 10, 3),
+    );
+
+    expect(
+      conversationPresentationRevision(metadataOnly),
+      conversationPresentationRevision(first),
+    );
+    expect(
+      conversationPresentationRevision(changed),
+      isNot(conversationPresentationRevision(first)),
+    );
+  });
+
   test('keeps display lookups isolated by Codex source', () async {
     final sourceATarget = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-shared',
@@ -1624,6 +1677,40 @@ void main() {
       );
       expect(finalWindow?.revision, 'revision-2');
       expect(finalWindow?.entries.map((entry) => entry.entryId), [
+        'entry-2',
+        'entry-3',
+      ]);
+
+      final incompleteRefresh = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-1',
+        provider: 'codex',
+        providerSessionId: 'thread-stage',
+        revision: 'revision-3',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: const [],
+        deletes: const [],
+        hasEarlier: true,
+        latestTurnComplete: false,
+        latestTurnGap: const ConversationSyncV2LatestTurnGap(
+          missingEntryCount: 1,
+          payloadOmitted: false,
+          repair: 'turns_page',
+        ),
+        sourceEntryCount: 2,
+      );
+      expect(incompleteRefresh.windowCommitted, isTrue);
+      final preservedWindow = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-stage',
+      );
+      expect(preservedWindow?.revision, 'revision-3');
+      expect(preservedWindow?.latestTurnComplete, isFalse);
+      expect(preservedWindow?.entries.map((entry) => entry.entryId), [
         'entry-2',
         'entry-3',
       ]);

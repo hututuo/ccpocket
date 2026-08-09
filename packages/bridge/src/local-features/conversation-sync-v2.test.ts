@@ -3664,6 +3664,110 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("preserves a known phone window when a refresh is empty and incomplete", async () => {
+    const codex = codexSeed(0, "thread-refresh-empty-history");
+    codex.entry.firstPrompt = "already cached user prompt";
+    const fixture = createFixture(
+      [codex],
+      vi.fn(async () => []),
+    );
+    const client = {};
+
+    await fixture.handler.handle(
+      subscribeMessage([
+        {
+          provider: "codex",
+          providerSessionId: "thread-refresh-empty-history",
+          revision: "phone-complete-window",
+        },
+      ]),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    expect(events(fixture.sent, client, "timeline_page")).toEqual([
+      expect.objectContaining({
+        providerSessionId: "thread-refresh-empty-history",
+        mode: "patch",
+        baseRevision: "phone-complete-window",
+        entries: [],
+        deletes: [],
+        hasEarlier: true,
+        latestTurnComplete: false,
+        latestTurnGap: {
+          missingEntryCount: 1,
+          payloadOmitted: false,
+          repair: "turns_page",
+        },
+      }),
+    ]);
+    fixture.handler.close();
+  });
+
+  it("does not delete a retained Bridge base when a refresh becomes empty and incomplete", async () => {
+    const codex = codexSeed(0, "thread-refresh-retained-base");
+    codex.entry.firstPrompt = "cached prompt with a retained Bridge base";
+    let returnEmptyHistory = false;
+    const fixture = createFixture(
+      [codex],
+      vi.fn(async (target) =>
+        returnEmptyHistory ? [] : history(target.providerSessionId),
+      ),
+    );
+    const client = {};
+    const subscription = subscribeMessage();
+
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const initialPage = events(fixture.sent, client, "timeline_page")[0]!;
+    expect(initialPage.entries.length).toBeGreaterThan(0);
+    const initialComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    )[0]!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: initialComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+
+    returnEmptyHistory = true;
+    codex.entry.revision = "revision-refresh-empty";
+    codex.entry.modifiedAt = "2026-08-10T01:02:03.000Z";
+    codex.entry.recencyAt = codex.entry.modifiedAt;
+    fixture.handler.sessionCatalogChanged();
+
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(2),
+    );
+    expect(events(fixture.sent, client, "timeline_page").at(-1)).toMatchObject({
+      providerSessionId: "thread-refresh-retained-base",
+      mode: "patch",
+      baseRevision: initialPage.revision,
+      entries: [],
+      deletes: [],
+      latestTurnComplete: false,
+      latestTurnGap: {
+        missingEntryCount: 1,
+        payloadOmitted: false,
+        repair: "turns_page",
+      },
+    });
+    fixture.handler.close();
+  });
+
   it("keeps a genuinely new empty Codex thread complete", async () => {
     const codex = codexSeed(0, "thread-new-empty");
     delete codex.entry.firstPrompt;

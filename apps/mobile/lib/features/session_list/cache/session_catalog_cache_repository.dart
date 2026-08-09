@@ -124,6 +124,34 @@ class ConversationHotWindowSnapshot {
   final DateTime cachedAt;
 }
 
+final Expando<String> _conversationPresentationRevisions = Expando<String>();
+
+/// Stable identity for the rendered message window.
+///
+/// SQLite commit time and provider revision can advance for metadata-only
+/// reconciliation. Replaying the same decoded messages for those commits makes
+/// a cached conversation look as if it was torn down and loaded again. Cache
+/// this bounded content fingerprint on the immutable snapshot instead.
+String conversationPresentationRevision(
+  ConversationHotWindowSnapshot snapshot,
+) {
+  final cached = _conversationPresentationRevisions[snapshot];
+  if (cached != null) return cached;
+  final hash = sha256.convert(
+    utf8.encode(
+      jsonEncode([
+        for (final entry in snapshot.entries)
+          [entry.entryId, entry.index, entry.contentHash],
+      ]),
+    ),
+  );
+  final revision =
+      '${snapshot.entries.length}:'
+      '$hash';
+  _conversationPresentationRevisions[snapshot] = revision;
+  return revision;
+}
+
 class ConversationUserIndexEntry {
   const ConversationUserIndexEntry({
     required this.providerTurnId,
@@ -1615,6 +1643,21 @@ class SessionCatalogCacheRepository {
         if (entryCount > maxHotWindowEntries) {
           throw StateError('Conversation timeline exceeds the local bound.');
         }
+        var preserveExistingIncompleteSnapshot = false;
+        if (mode == 'snapshot' && entryCount == 0 && !latestTurnComplete) {
+          final existingWindows = await transaction.query(
+            SessionCatalogCacheDatabase.hotWindowsTable,
+            columns: ['entry_count'],
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, provider, providerSessionId],
+            limit: 1,
+          );
+          preserveExistingIncompleteSnapshot =
+              existingWindows.isNotEmpty &&
+              (existingWindows.single['entry_count'] as int? ?? 0) > 0;
+        }
         if (mode == 'patch') {
           final windows = await transaction.query(
             SessionCatalogCacheDatabase.hotWindowsTable,
@@ -1652,31 +1695,33 @@ class SessionCatalogCacheRepository {
             [partitionId, provider, providerSessionId, ...keyArgs],
           );
         } else if (mode == 'snapshot') {
-          await transaction.delete(
-            SessionCatalogCacheDatabase.hotEntriesTable,
-            where:
-                'partition_id = ? AND provider = ? '
-                'AND provider_session_id = ?',
-            whereArgs: [partitionId, provider, providerSessionId],
-          );
-          await transaction.insert(
-            SessionCatalogCacheDatabase.hotWindowsTable,
-            {
-              'partition_id': partitionId,
-              'provider': provider,
-              'provider_session_id': providerSessionId,
-              'revision': revision,
-              'entry_count': 0,
-              'has_earlier': hasEarlier ? 1 : 0,
-              'turns_next_cursor': turnsNextCursor,
-              'latest_turn_complete': latestTurnComplete ? 1 : 0,
-              'latest_turn_gap_json': latestTurnGapJson,
-              'latest_turn_gap_cursor': null,
-              'source_entry_count': sourceEntryCount,
-              'updated_at': now,
-            },
-            conflictAlgorithm: ConflictAlgorithm.replace,
-          );
+          if (!preserveExistingIncompleteSnapshot) {
+            await transaction.delete(
+              SessionCatalogCacheDatabase.hotEntriesTable,
+              where:
+                  'partition_id = ? AND provider = ? '
+                  'AND provider_session_id = ?',
+              whereArgs: [partitionId, provider, providerSessionId],
+            );
+            await transaction.insert(
+              SessionCatalogCacheDatabase.hotWindowsTable,
+              {
+                'partition_id': partitionId,
+                'provider': provider,
+                'provider_session_id': providerSessionId,
+                'revision': revision,
+                'entry_count': 0,
+                'has_earlier': hasEarlier ? 1 : 0,
+                'turns_next_cursor': turnsNextCursor,
+                'latest_turn_complete': latestTurnComplete ? 1 : 0,
+                'latest_turn_gap_json': latestTurnGapJson,
+                'latest_turn_gap_cursor': null,
+                'source_entry_count': sourceEntryCount,
+                'updated_at': now,
+              },
+              conflictAlgorithm: ConflictAlgorithm.replace,
+            );
+          }
         } else {
           throw StateError('Unsupported conversation timeline mode: $mode');
         }

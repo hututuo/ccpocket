@@ -135,6 +135,15 @@
   startup-era snapshot. Accepted live content must be persisted promptly; an
   older snapshot/history page can fill a gap but cannot replace newer live or
   committed content.
+- A refresh that temporarily produces an empty, incomplete provider window is
+  additive whenever Mobile already has a committed window, even if the bounded
+  subscription cursor list did not declare that revision. It may publish a
+  repair gap and advance the revision, but it cannot delete the readable phone
+  window or replace it with a loading surface.
+- Cache commit time and provider metadata are not presentation revisions.
+  Mobile replays a durable timeline into the chat Cubit only when ordered entry
+  IDs, indexes or content hashes change, and retains the last visible window
+  while an authenticated route is canonicalized to the same Bridge/source.
 - Mutation authority and visual continuity are separate. An uncertain runtime
   generation revokes writes immediately, but it does not clear already shown
   messages, streaming output, durable identity or the reading anchor.

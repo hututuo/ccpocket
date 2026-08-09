@@ -2759,21 +2759,25 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           .get(key)
           ?.find((candidate) => candidate.revision === known)
       : undefined;
-    const sent = base
-      ? this.sendTimelinePatch(
+    const preserveKnownWindow =
+      known !== undefined &&
+      (snapshot.providerHistoryUnavailable ||
+        (!snapshot.latestTurnComplete && snapshot.entries.length === 0));
+    const sent = preserveKnownWindow
+      ? this.sendTimelineAdditivePatch(
           client,
           subscription,
-          base,
+          known,
           snapshot,
           phase,
           timelineIndex,
           timelineCount,
         )
-      : known && snapshot.providerHistoryUnavailable
-        ? this.sendTimelineAdditivePatch(
+      : base
+        ? this.sendTimelinePatch(
             client,
             subscription,
-            known,
+            base,
             snapshot,
             phase,
             timelineIndex,

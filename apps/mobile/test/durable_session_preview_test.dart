@@ -1361,24 +1361,31 @@ void main() {
         bridgeInstanceId: 'bridge-authenticated-upgrade',
         codexSourceId: 'source-authenticated-upgrade',
       );
+      final provisionalSnapshot = _previewSnapshot(
+        partitionId: provisionalTarget.fingerprint,
+        providerSessionId: 'durable-upgrade-thread',
+        revision: 'provisional-revision',
+        entryId: 'provisional-entry',
+        text: 'Provisional cached turn',
+      );
+      final authenticatedSnapshot = _previewSnapshot(
+        partitionId: authenticatedTarget.fingerprint,
+        providerSessionId: 'durable-upgrade-thread',
+        revision: 'authenticated-revision',
+        entryId: 'authenticated-entry',
+        text: 'Authenticated cached turn',
+      );
+      final authenticatedRead = Completer<ConversationHotWindowSnapshot?>();
       final repository = _CountingSessionCatalogCacheRepository(
         SessionCatalogCacheDatabase(databasePath: 'unused-upgrade-cache.db'),
         snapshots: {
-          provisionalTarget.fingerprint: _previewSnapshot(
-            partitionId: provisionalTarget.fingerprint,
-            providerSessionId: 'durable-upgrade-thread',
-            revision: 'provisional-revision',
-            entryId: 'provisional-entry',
-            text: 'Provisional cached turn',
-          ),
-          authenticatedTarget.fingerprint: _previewSnapshot(
-            partitionId: authenticatedTarget.fingerprint,
-            providerSessionId: 'durable-upgrade-thread',
-            revision: 'authenticated-revision',
-            entryId: 'authenticated-entry',
-            text: 'Authenticated cached turn',
-          ),
+          provisionalTarget.fingerprint: provisionalSnapshot,
+          authenticatedTarget.fingerprint: authenticatedSnapshot,
         },
+        queuedReads: [
+          Future.value(provisionalSnapshot),
+          authenticatedRead.future,
+        ],
       );
       final sync = _ControllableConversationContentSyncService(
         bridge: BridgeServiceConversationContentSyncGateway(bridge),
@@ -1423,6 +1430,15 @@ void main() {
           ),
         ]);
         await tester.pump();
+
+        // The stable identity read is deliberately still blocked. The route
+        // and authenticated source have already been confirmed, so the last
+        // committed route-keyed cache must stay visible rather than flashing a
+        // loader or an empty latest turn.
+        expect(find.text('Provisional cached turn'), findsOneWidget);
+        expect(find.text('Authenticated cached turn'), findsNothing);
+
+        authenticatedRead.complete(authenticatedSnapshot);
         await tester.pump();
         await tester.pump();
 
@@ -2136,7 +2152,10 @@ ConversationHotWindowSnapshot _previewSnapshot({
       ConversationContentWireEntry(
         entryId: entryId,
         index: 0,
-        contentHash: 'hash-$entryId',
+        // The wire contract advances contentHash whenever the normalized
+        // message changes. Keep the fixture faithful so metadata-only commits
+        // can be distinguished from actual presentation updates.
+        contentHash: 'hash-$entryId-${text.hashCode}',
         rawMessage: {
           'type': 'user_input',
           'text': text,

@@ -587,10 +587,11 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
             _loadingCachedPreviewTargetFingerprint == targetFingerprint)) {
       return;
     }
-    if (_cachedPreview != null &&
-        _cachedPreviewTargetFingerprint != targetFingerprint) {
-      setState(() => _cachedPreview = null);
-    }
+    // Authentication can canonicalize an IP/route cache key to the stable
+    // Bridge + Codex source without changing the visible conversation. Keep
+    // the last committed window on screen until the confirmed target finishes
+    // loading; the source-conflict fence above still rejects a different
+    // machine or Codex source.
     _loadDurablePreview();
   }
 
@@ -1434,9 +1435,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
           hideAuxiliaryDock: widget.hideAuxiliaryDock,
           previewRevision: cachedPreview == null
               ? ''
-              : '${cachedPreview.revision}:'
-                    '${cachedPreview.entries.length}:'
-                    '${cachedPreview.cachedAt.microsecondsSinceEpoch}',
+              : conversationPresentationRevision(cachedPreview),
           historyRevision: cachedPreview?.revision ?? '',
           initialHistoryMessages:
               cachedPreview?.entries

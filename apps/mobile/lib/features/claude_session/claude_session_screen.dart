@@ -390,10 +390,10 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
             _loadingCachedPreviewTargetFingerprint == targetFingerprint)) {
       return;
     }
-    if (_cachedPreview != null &&
-        _cachedPreviewTargetFingerprint != targetFingerprint) {
-      setState(() => _cachedPreview = null);
-    }
+    // Authentication can canonicalize an IP/route cache key to the stable
+    // Bridge identity without changing the visible conversation. Retain the
+    // last committed window until the confirmed target finishes loading; the
+    // source-conflict fence above still rejects a different machine.
     _loadDurablePreview();
   }
 
@@ -965,9 +965,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
           detachedPreview: true,
           previewRevision: cachedPreview == null
               ? ''
-              : '${cachedPreview.revision}:'
-                    '${cachedPreview.entries.length}:'
-                    '${cachedPreview.cachedAt.microsecondsSinceEpoch}',
+              : conversationPresentationRevision(cachedPreview),
           historyRevision: cachedPreview?.revision ?? '',
           initialHistoryMessages:
               cachedPreview?.entries
