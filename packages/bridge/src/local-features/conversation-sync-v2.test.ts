@@ -75,6 +75,51 @@ describe("conversation_sync_v2 protocol", () => {
     ]);
   });
 
+  it("logs an accurate bounded lifecycle summary without thread metadata", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fixture = createFixture(
+      [codexSeed(0, "thread-secret-for-log-test")],
+      async (target) => history(target.providerSessionId),
+    );
+    const client = {};
+    const subscribe = subscribeMessage();
+
+    try {
+      await fixture.handler.handle(subscribe, context(client, fixture.runtime));
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+      );
+      const lastSequence = (fixture.sent.get(client) ?? []).at(-1)!.sequence;
+
+      await fixture.handler.handle(
+        {
+          type: "conversation_sync_unsubscribe",
+          protocolVersion: 2,
+          requestId: "unsubscribe-log-test",
+          subscriptionId: subscribe.requestId,
+        },
+        context(client, fixture.runtime),
+      );
+
+      const lifecycleLine = [...log.mock.calls, ...warn.mock.calls]
+        .flatMap((call) => call)
+        .find(
+          (value) =>
+            typeof value === "string" &&
+            value.includes("subscription ended reason=client_unsubscribe"),
+        );
+      expect(lifecycleLine).toContain(`lastSequence=${lastSequence}`);
+      expect(lifecycleLine).toContain("bootstrapEnqueued=true");
+      expect(lifecycleLine).not.toContain("thread-secret-for-log-test");
+      expect(lifecycleLine).not.toContain("/project/");
+    } finally {
+      await fixture.handler.close();
+      log.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it("omits opaque Codex previews and uses rollout-visible metadata", () => {
     const thread: CodexThreadSummary = {
       id: "thread-private-preview",

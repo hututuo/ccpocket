@@ -5883,7 +5883,14 @@ export class BridgeWebSocketServer {
         return;
       }
 
-      console.log(`[ws] Received: ${msg.type}`);
+      // Cumulative sync ACKs can arrive hundreds of times during one bounded
+      // bootstrap. Logging each frame adds synchronous stdout pressure and
+      // hides the lifecycle messages needed to diagnose a real disconnect.
+      // ConversationSyncV2 emits one sanitized subscribe/checkpoint/complete/
+      // unsubscribe summary instead.
+      if (msg.type !== "conversation_sync_ack") {
+        console.log(`[ws] Received: ${msg.type}`);
+      }
       void this.handleClientMessage(msg, ws).catch((error) => {
         console.error(
           `[ws] Failed to handle ${msg.type}:`,

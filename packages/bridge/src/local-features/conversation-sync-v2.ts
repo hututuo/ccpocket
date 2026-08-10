@@ -257,6 +257,8 @@ interface SyncSubscription {
   dirtyThreadKeys: Set<ConversationKey>;
   pendingFocusRefreshRequestId?: string;
   capacityWaiters: Set<() => void>;
+  startedAtMs: number;
+  bootstrapEnqueued: boolean;
 }
 
 interface ConversationSyncV2Options {
@@ -1781,7 +1783,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
 
   disconnect(client: object): void {
     const subscription = this.subscriptions.get(client);
-    if (subscription) this.wakeCapacityWaiters(subscription);
+    if (subscription) {
+      this.logSubscriptionEnd(subscription, "socket_disconnect");
+      this.wakeCapacityWaiters(subscription);
+    }
     this.subscriptions.delete(client);
     if (!this.hasInteractiveClients()) {
       this.priorityCodexSettingsQueue.clear();
@@ -1890,8 +1895,15 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       fullSyncRequested: true,
       dirtyThreadKeys: new Set(),
       capacityWaiters: new Set(),
+      startedAtMs: Date.now(),
+      bootstrapEnqueued: false,
     };
     this.subscriptions.set(client, subscription);
+    console.log(
+      `[conversation-sync-v2] client subscribed ` +
+        `threadStates=${threadStates.size} readWatermarks=${readWatermarks.size} ` +
+        `delivery=${deliveryMode}`,
+    );
     this.pruneFocusedCodexSettingsRetries();
     if (subscription.interactive || subscription.notificationOnly) {
       this.reconcileSharedContentObservers();
@@ -2040,6 +2052,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   ): void {
     const subscription = this.subscriptions.get(client);
     if (!subscription || subscription.id !== message.subscriptionId) return;
+    this.logSubscriptionEnd(subscription, "client_unsubscribe");
     this.sendEvent(client, subscription, {
       event: "unsubscribed",
       requestId: message.requestId,
@@ -2055,6 +2068,25 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       this.requestSharedCodexReadProcessClose();
     }
     this.reconcileSharedContentObservers();
+  }
+
+  private logSubscriptionEnd(
+    subscription: SyncSubscription,
+    reason: "client_unsubscribe" | "socket_disconnect",
+  ): void {
+    const message =
+      `[conversation-sync-v2] subscription ended reason=${reason} ` +
+      `ageMs=${Math.max(0, Date.now() - subscription.startedAtMs)} ` +
+      `lastSequence=${Math.max(0, subscription.nextSequence)} ` +
+      `outstandingFrames=${subscription.outstanding.size} ` +
+      `outstandingBytes=${subscription.outstandingBytes} ` +
+      `queuedFrames=${subscription.outbound.length} ` +
+      `bootstrapEnqueued=${subscription.bootstrapEnqueued}`;
+    if (subscription.bootstrapEnqueued) {
+      console.log(message);
+    } else {
+      console.warn(message);
+    }
   }
 
   private scheduleSync(
@@ -2177,11 +2209,17 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         priority,
         "priority",
       );
-      this.sendEvent(client, subscription, {
+      const priorityCheckpointSequence = this.sendEvent(client, subscription, {
         event: "sync_checkpoint",
         phase: "priority",
         hasMore: !priorityComplete || ordered.length > priority.length,
       });
+      console.log(
+        `[conversation-sync-v2] priority checkpoint ` +
+          `sequence=${priorityCheckpointSequence} timelines=${priority.length} ` +
+          `complete=${priorityComplete} ` +
+          `elapsedMs=${Math.max(0, Date.now() - subscription.startedAtMs)}`,
+      );
       if (!priorityComplete) {
         subscription.fullSyncRequested = true;
         subscription.dirty = true;
@@ -2245,7 +2283,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     for (const [key, revision] of subscription.pendingThreadStates) {
       desiredThreadStates.set(key, revision);
     }
-    this.sendEvent(client, subscription, {
+    const completeSequence = this.sendEvent(client, subscription, {
       event: "sync_complete",
       ...(focusRefreshRequestId
         ? { requestId: focusRefreshRequestId }
@@ -2261,6 +2299,16 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           })),
       },
     });
+    if (fullSyncRequested && !subscription.bootstrapEnqueued) {
+      subscription.bootstrapEnqueued = true;
+      console.log(
+        `[conversation-sync-v2] bootstrap complete ` +
+          `sequence=${completeSequence} elapsedMs=${Math.max(
+            0,
+            Date.now() - subscription.startedAtMs,
+          )}`,
+      );
+    }
     if (
       focusRefreshRequestId &&
       subscription.pendingFocusRefreshRequestId === focusRefreshRequestId
