@@ -1306,12 +1306,18 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         )
         .map((subscription) => subscription.focusedKey!),
     );
-    const alreadyObservedRuntimeThreads = new Set(
+    const directlyStreamedRuntimeThreads = new Set(
       (this.runtime.listRuntimeConversationStates?.() ?? [])
         .filter(
           (state) =>
             state.provider === "codex" &&
             state.providerSessionId &&
+            // A usable formal attachment forwards app-server notifications
+            // through SessionManager regardless of whether the active turn
+            // was initiated by Bridge or Desktop. Detached catalog entries
+            // have no controlState and must not suppress the read-only content
+            // observer merely because a SessionInfo record still exists.
+            state.controlState !== undefined &&
             state.controlState !== "unavailable" &&
             state.controlState !== "reconciling",
         )
@@ -1322,7 +1328,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         .filter(
           ([, record]) =>
             record.entry.provider === "codex" &&
-            !alreadyObservedRuntimeThreads.has(record.entry.providerSessionId),
+            !directlyStreamedRuntimeThreads.has(
+              record.entry.providerSessionId,
+            ),
         )
         .map(([key, record]) => {
           const status = this.sharedRuntimeStatuses.get(key) ?? record.status;

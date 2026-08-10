@@ -8166,12 +8166,12 @@ describe("ConversationSyncV2FeatureHandler", () => {
     await fixture.handler.close();
   });
 
-  it("keeps Bridge-owned shared turns on the existing session stream without a duplicate observer", async () => {
+  it("keeps detached Codex session records on the content observer", async () => {
     const control = createSharedControlSource({
       kind: "ready",
       connectionGeneration: 4,
     });
-    const codex = codexSeed(0, "thread-bridge-owned-content");
+    const codex = codexSeed(0, "thread-desktop-hosted-content");
     codex.status = {
       ...codex.status,
       activity: "working",
@@ -8179,10 +8179,10 @@ describe("ConversationSyncV2FeatureHandler", () => {
       confidence: "authoritative",
     };
     const observers: FakeSharedContentObserverProcess[] = [];
-    let canonicalHistory = history("bridge-before-live");
+    const historyReader = vi.fn(async () => history("desktop-before-live"));
     const fixture = createFixture(
       [codex],
-      async () => canonicalHistory,
+      historyReader,
       {
         daemonMode: true,
         createSharedContentObserverProcess: () => {
@@ -8190,38 +8190,50 @@ describe("ConversationSyncV2FeatureHandler", () => {
           observers.push(process);
           return process.asObserver();
         },
+        sharedContentObserverUnfocusGraceMs: 0,
       },
       {
         subscribeSharedRuntimeControl: control.subscribe,
         listRuntimeConversationStates: () => [
           {
-            bridgeSessionId: "runtime-bridge-owned",
+            bridgeSessionId: "detached-desktop-catalog-entry",
             provider: "codex",
-            providerSessionId: "thread-bridge-owned-content",
+            providerSessionId: "thread-desktop-hosted-content",
             projectPath: "/project/0",
-            processStatus: "running",
-            executionHost: "bridge",
-            activeTurnId: "turn-bridge-owned",
-            controlState: "steerable",
-            authorityGeneration: "bridge-authority",
-            observedAt: "2026-08-01T05:30:00.000Z",
+            processStatus: "idle",
+            observedAt: "2026-08-01T05:29:00.000Z",
           },
         ],
-        getProviderSessionId: () => "thread-bridge-owned-content",
+        getProviderSessionId: () => "thread-desktop-hosted-content",
       },
     );
     const client = {};
-    const subscription = subscribeMessage();
+    const subscription = {
+      ...subscribeMessage(),
+      focused: {
+        provider: "codex" as const,
+        providerSessionId: "thread-desktop-hosted-content",
+      },
+    };
     await fixture.handler.handle(
       subscription,
       context(client, fixture.runtime),
     );
-    await vi.waitFor(() =>
+    await vi.waitFor(() => {
       expect(
         events(fixture.sent, client, "sync_complete").length,
-      ).toBeGreaterThan(0),
-    );
-    expect(observers).toHaveLength(0);
+      ).toBeGreaterThan(0);
+      expect(observers).toHaveLength(1);
+    });
+    expect(observers[0]!.starts).toMatchObject([
+      {
+        projectPath: codex.entry.projectPath,
+        options: {
+          threadId: "thread-desktop-hosted-content",
+          sharedRuntimeAttach: "observer",
+        },
+      },
+    ]);
     const complete = events(fixture.sent, client, "sync_complete").at(-1)!;
     await fixture.handler.handle(
       {
@@ -8232,29 +8244,17 @@ describe("ConversationSyncV2FeatureHandler", () => {
       },
       context(client, fixture.runtime),
     );
-    canonicalHistory = [
-      ...canonicalHistory,
-      {
-        type: "assistant",
-        historyTurnId: "turn-bridge-owned",
-        messageUuid: "bridge-live-answer",
-        message: {
-          id: "bridge-live-answer",
-          role: "assistant",
-          model: "test",
-          content: [{ type: "text", text: "Bridge live answer" }],
-        },
+
+    observers[0]!.message({
+      type: "assistant",
+      messageUuid: "desktop-live-answer",
+      message: {
+        id: "desktop-live-answer",
+        role: "assistant",
+        model: "test",
+        content: [{ type: "text", text: "Desktop live answer" }],
       },
-    ];
-    fixture.handler.sessionMessage(
-      {
-        id: "runtime-bridge-owned",
-        provider: "codex",
-        process: {},
-        projectPath: "/project/0",
-      },
-      canonicalHistory.at(-1)!,
-    );
+    });
     await vi.waitFor(() =>
       expect(
         events(fixture.sent, client, "timeline_page")
@@ -8262,13 +8262,149 @@ describe("ConversationSyncV2FeatureHandler", () => {
           .some(
             (entry) =>
               entry.message.type === "assistant" &&
-              entry.message.message.id === "bridge-live-answer",
+              entry.message.message.id === "desktop-live-answer",
           ),
       ).toBe(true),
     );
-    expect(observers).toHaveLength(0);
+    expect(historyReader).toHaveBeenCalledTimes(1);
     await fixture.handler.close();
   });
+
+  it.each([
+    {
+      label: "Bridge-owned",
+      threadId: "thread-bridge-owned-content",
+      bridgeSessionId: "runtime-bridge-owned",
+      executionHost: "bridge" as const,
+      activeTurnId: "turn-bridge-owned",
+      authorityGeneration: "bridge-authority",
+      answerId: "bridge-live-answer",
+      answerText: "Bridge live answer",
+    },
+    {
+      label: "Desktop-hosted formal",
+      threadId: "thread-desktop-formal-content",
+      bridgeSessionId: "runtime-desktop-formal",
+      executionHost: "desktopAppServer" as const,
+      activeTurnId: "turn-desktop-formal",
+      authorityGeneration: "desktop-authority",
+      answerId: "desktop-formal-live-answer",
+      answerText: "Desktop formal live answer",
+    },
+  ])(
+    "keeps $label shared turns on the existing session stream without a duplicate observer",
+    async ({
+      threadId,
+      bridgeSessionId,
+      executionHost,
+      activeTurnId,
+      authorityGeneration,
+      answerId,
+      answerText,
+    }) => {
+      const control = createSharedControlSource({
+        kind: "ready",
+        connectionGeneration: 4,
+      });
+      const codex = codexSeed(0, threadId);
+      codex.status = {
+        ...codex.status,
+        activity: "working",
+        runtimeAttachment: "loaded",
+        confidence: "authoritative",
+      };
+      const observers: FakeSharedContentObserverProcess[] = [];
+      let canonicalHistory = history(`${threadId}-before-live`);
+      const fixture = createFixture(
+        [codex],
+        async () => canonicalHistory,
+        {
+          daemonMode: true,
+          createSharedContentObserverProcess: () => {
+            const process = new FakeSharedContentObserverProcess();
+            observers.push(process);
+            return process.asObserver();
+          },
+        },
+        {
+          subscribeSharedRuntimeControl: control.subscribe,
+          listRuntimeConversationStates: () => [
+            {
+              bridgeSessionId,
+              provider: "codex",
+              providerSessionId: threadId,
+              projectPath: "/project/0",
+              processStatus: "running",
+              executionHost,
+              activeTurnId,
+              controlState: "steerable",
+              authorityGeneration,
+              observedAt: "2026-08-01T05:30:00.000Z",
+            },
+          ],
+          getProviderSessionId: () => threadId,
+        },
+      );
+      const client = {};
+      const subscription = subscribeMessage();
+      await fixture.handler.handle(
+        subscription,
+        context(client, fixture.runtime),
+      );
+      await vi.waitFor(() =>
+        expect(
+          events(fixture.sent, client, "sync_complete").length,
+        ).toBeGreaterThan(0),
+      );
+      expect(observers).toHaveLength(0);
+      const complete = events(fixture.sent, client, "sync_complete").at(-1)!;
+      await fixture.handler.handle(
+        {
+          type: "conversation_sync_ack",
+          protocolVersion: 2,
+          subscriptionId: subscription.requestId,
+          sequence: complete.sequence,
+        },
+        context(client, fixture.runtime),
+      );
+      canonicalHistory = [
+        ...canonicalHistory,
+        {
+          type: "assistant",
+          historyTurnId: activeTurnId,
+          messageUuid: answerId,
+          message: {
+            id: answerId,
+            role: "assistant",
+            model: "test",
+            content: [{ type: "text", text: answerText }],
+          },
+        },
+      ];
+      fixture.handler.sessionMessage(
+        {
+          id: bridgeSessionId,
+          provider: "codex",
+          process: {},
+          projectPath: "/project/0",
+        },
+        canonicalHistory.at(-1)!,
+      );
+      await vi.waitFor(() =>
+        expect(
+          events(fixture.sent, client, "timeline_page")
+            .flatMap((event) => event.entries)
+            .some(
+              (entry) =>
+                entry.message.type === "assistant" &&
+                entry.message.message.id === answerId,
+            ),
+        ).toBe(true),
+      );
+      expect(observers).toHaveLength(0);
+      await fixture.handler.close();
+    },
+  );
 
   it("reconciles once on daemon ready and not after 128 known-thread events", async () => {
     const control = createSharedControlSource({

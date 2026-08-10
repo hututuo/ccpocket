@@ -337,15 +337,19 @@ describe.runIf(process.platform !== "win32")("CodexDaemonSupervisor", () => {
     ).toThrow("audited pid backend");
   });
 
-  it("uses only a short burst cache and invalidates it on in-place CLI changes", async () => {
+  it("reuses exact identities and invalidates on an in-place CLI change", async () => {
     const fixture = await createFixture();
-    let nowMs = 10_000;
     const runVersion = vi.fn(fixture.dependencies.runVersion!);
     const dependencies: CodexDaemonSupervisorDependencies = {
       runVersion,
-      now: () => nowMs,
     };
 
+    verifyCodexDaemon(fixture.config, dependencies);
+    verifyCodexDaemon(fixture.config, dependencies);
+    expect(runVersion).toHaveBeenCalledTimes(1);
+
+    // Time alone is not an identity change. This prevents high-frequency
+    // history readers from synchronously spawning the daemon CLI again.
     verifyCodexDaemon(fixture.config, dependencies);
     verifyCodexDaemon(fixture.config, dependencies);
     expect(runVersion).toHaveBeenCalledTimes(1);
@@ -353,9 +357,26 @@ describe.runIf(process.platform !== "win32")("CodexDaemonSupervisor", () => {
     await appendFile(fixture.cliPath, "# changed in place\n");
     verifyCodexDaemon(fixture.config, dependencies);
     expect(runVersion).toHaveBeenCalledTimes(2);
+  });
 
-    nowMs += 2_001;
+  it("invalidates exact verification when the daemon socket is replaced", async () => {
+    const fixture = await createFixture();
+    const runVersion = vi.fn(fixture.dependencies.runVersion!);
+    const dependencies: CodexDaemonSupervisorDependencies = {
+      runVersion,
+    };
+
     verifyCodexDaemon(fixture.config, dependencies);
-    expect(runVersion).toHaveBeenCalledTimes(3);
+    verifyCodexDaemon(fixture.config, dependencies);
+    expect(runVersion).toHaveBeenCalledTimes(1);
+
+    await close(fixture.server);
+    await rm(fixture.socketPath, { force: true });
+    const replacementServer = createServer();
+    fixture.server = replacementServer;
+    await listen(replacementServer, fixture.socketPath);
+
+    verifyCodexDaemon(fixture.config, dependencies);
+    expect(runVersion).toHaveBeenCalledTimes(2);
   });
 });
