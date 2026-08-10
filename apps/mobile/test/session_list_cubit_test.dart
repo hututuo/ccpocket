@@ -290,11 +290,20 @@ class FakeConversationContentSyncService
   });
 
   final _updates = StreamController<ConversationSyncCacheUpdate>.broadcast();
+  int retryBootstrapCalls = 0;
+  String? lastRetryBootstrapReason;
 
   @override
   Stream<ConversationSyncCacheUpdate> get syncUpdates => _updates.stream;
 
   void emit(ConversationSyncCacheUpdate update) => _updates.add(update);
+
+  @override
+  bool retryBootstrap({String reason = 'manual_retry'}) {
+    retryBootstrapCalls += 1;
+    lastRetryBootstrapReason = reason;
+    return true;
+  }
 
   @override
   Future<void> dispose() async {
@@ -643,6 +652,63 @@ void main() {
       },
     );
 
+    test(
+      'v2 manual refresh restarts sync instead of duplicating legacy reads',
+      () async {
+        await cubit.close();
+        var projectHistoryRequested = false;
+        mockBridge
+          ..testSupportsConversationSyncV2 = true
+          ..onRequestProjectHistory = () => projectHistoryRequested = true;
+        final cache = FakeSessionCatalogCacheRepository();
+        final sync = FakeConversationContentSyncService(
+          bridge: BridgeServiceConversationContentSyncGateway(mockBridge),
+          cache: cache,
+        );
+        addTearDown(sync.dispose);
+        cubit = SessionListCubit(
+          bridge: mockBridge,
+          catalogCache: cache,
+          conversationSync: sync,
+        );
+
+        await cubit.refresh();
+
+        expect(mockBridge.sessionListRequestCount, 1);
+        expect(projectHistoryRequested, isTrue);
+        expect(mockBridge.sentMessages, isEmpty);
+        expect(sync.retryBootstrapCalls, 1);
+        expect(sync.lastRetryBootstrapReason, 'manual_catalog_refresh');
+      },
+    );
+
+    test(
+      'v2 lifecycle refresh leaves the service-owned resume subscription intact',
+      () async {
+        await cubit.close();
+        mockBridge
+          ..testSupportsConversationSyncV2 = true
+          ..onRequestProjectHistory = () {};
+        final cache = FakeSessionCatalogCacheRepository();
+        final sync = FakeConversationContentSyncService(
+          bridge: BridgeServiceConversationContentSyncGateway(mockBridge),
+          cache: cache,
+        );
+        addTearDown(sync.dispose);
+        cubit = SessionListCubit(
+          bridge: mockBridge,
+          catalogCache: cache,
+          conversationSync: sync,
+        );
+
+        await cubit.refresh(restartConversationSync: false);
+
+        expect(mockBridge.sessionListRequestCount, 1);
+        expect(mockBridge.sentMessages, isEmpty);
+        expect(sync.retryBootstrapCalls, 0);
+      },
+    );
+
     test('legacy startup bootstrap keeps the catalog request', () async {
       var projectHistoryRequested = false;
       mockBridge
@@ -893,6 +959,24 @@ void main() {
           const ConversationSyncCacheUpdate(
             kind: ConversationSyncCacheUpdateKind.started,
             targetFingerprint: 'another-data-source',
+          ),
+        );
+        await pumpEventQueue();
+        expect(cubit.hasUsableCatalogForCurrentTarget, isTrue);
+
+        sync.emit(
+          ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.started,
+            targetFingerprint: target.fingerprint,
+          ),
+        );
+        await pumpEventQueue();
+        expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
+
+        sync.emit(
+          ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.priorityReady,
+            targetFingerprint: target.fingerprint,
           ),
         );
         await pumpEventQueue();

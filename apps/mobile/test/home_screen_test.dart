@@ -688,7 +688,7 @@ void main() {
       );
     });
 
-    test('keeps progress monotonic across repeated sync begin markers', () {
+    test('a replacement subscription truthfully restarts content progress', () {
       const current = ConversationSyncCacheUpdate(
         kind: ConversationSyncCacheUpdateKind.timeline,
         pageIndex: 0,
@@ -706,7 +706,7 @@ void main() {
 
       expect(
         shouldAdvanceConversationCatalogBootstrapUpdate(current, continued),
-        isFalse,
+        isTrue,
       );
       expect(
         shouldAdvanceConversationCatalogBootstrapUpdate(current, reset),

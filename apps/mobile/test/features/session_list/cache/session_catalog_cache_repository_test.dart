@@ -844,6 +844,27 @@ void main() {
     expect(retained?.entries.single.entryId, 'visible-before-reset');
   });
 
+  test(
+    'starting a refresh preserves the last committed priority cache',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-priority-refresh',
+        codexSourceId: 'source-priority-refresh',
+      );
+      await repository.markConversationPriorityReady(target);
+
+      await repository.beginConversationSync(
+        target: target,
+        subscriptionId: 'subscription-refresh',
+      );
+
+      expect(
+        (await repository.loadConversationSyncState(target)).priorityReady,
+        isTrue,
+      );
+    },
+  );
+
   test('advertises only readable complete hot-window revisions', () async {
     final target = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-readable-revisions',

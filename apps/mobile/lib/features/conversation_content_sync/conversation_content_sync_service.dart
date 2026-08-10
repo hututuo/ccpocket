@@ -241,6 +241,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   int _cacheCommitEpoch = 0;
   bool _v2PriorityBootstrapComplete = false;
   String? _v2RecoveryTargetFingerprint;
+  String? _forcedSnapshotTargetFingerprint;
+  final Set<String> _forcedSnapshotThreadKeys = {};
   Future<void> _v2MutationTail = Future<void>.value();
   Future<void>? _userIndexWarmup;
 
@@ -335,8 +337,26 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
       _foreground = false;
-      _stopSubscription(sendUnsubscribe: true);
+      _stopSubscription(
+        sendUnsubscribe: true,
+        reason: 'lifecycle_${state.name}',
+      );
     }
+  }
+
+  /// Restarts only the conversation-sync subscription on the current socket.
+  ///
+  /// This is the recovery path for a stalled v2 bootstrap or an explicit
+  /// refresh. It intentionally preserves the authenticated transport, session
+  /// authority, the last committed SQLite projection and any thread that has
+  /// already been marked for a replacement snapshot.
+  bool retryBootstrap({String reason = 'manual_retry'}) {
+    if (_disposed || !_canProcessContent) return false;
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _stopSubscription(sendUnsubscribe: true, reason: reason);
+    _ensureSubscribed();
+    return true;
   }
 
   void setFocusedConversation({String? provider, String? providerSessionId}) {
@@ -1580,7 +1600,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       _ensureSubscribed();
       return;
     }
-    _stopSubscription(sendUnsubscribe: true);
+    _stopSubscription(sendUnsubscribe: true, reason: 'delivery_mode_changed');
   }
 
   void _handleTransportLoss() {
@@ -1619,7 +1639,10 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       final sameBridge =
           _subscriptionBridgeInstanceId != null &&
           _subscriptionBridgeInstanceId == bridgeInstanceId;
-      _stopSubscription(sendUnsubscribe: sameBridge);
+      _stopSubscription(
+        sendUnsubscribe: sameBridge,
+        reason: 'data_source_changed',
+      );
     }
     if (_disposed ||
         !_canProcessContent ||
@@ -1627,6 +1650,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         _activeSubscriptionId != null) {
       return;
     }
+    _bindForcedSnapshotScope(targetFingerprint);
     _retryTimer?.cancel();
     _retryTimer = null;
     final generation = ++_generation;
@@ -1636,6 +1660,18 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _subscriptionTargetFingerprint = targetFingerprint;
     _subscriptionBridgeInstanceId = bridgeInstanceId;
     if (bridge.supportsConversationSyncV2) {
+      // Revoke only the current socket generation's live readiness before any
+      // asynchronous cache reads or Bridge frames. The last committed SQLite
+      // snapshot remains readable through the explicit cached-entry path, but
+      // cannot masquerade as a checkpoint from this replacement subscription
+      // if subscribe fails before sync_begin.
+      _syncUpdatesController.add(
+        ConversationSyncCacheUpdate(
+          kind: ConversationSyncCacheUpdateKind.started,
+          targetFingerprint: targetFingerprint,
+          requestId: requestId,
+        ),
+      );
       unawaited(_subscribeV2(generation, requestId, target));
       return;
     }
@@ -1699,12 +1735,23 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       final state = values[0] as ConversationSyncCacheState;
       final revisions = values[1] as List<ConversationContentCursor>;
       final watermarks = values[2] as List<ConversationSyncV2ReadWatermark>;
+      final forcedSnapshotKeys =
+          _forcedSnapshotTargetFingerprint == target.fingerprint
+          ? Set<String>.of(_forcedSnapshotThreadKeys)
+          : const <String>{};
+      final resumableRevisions = revisions
+          .where(
+            (cursor) => !forcedSnapshotKeys.contains(
+              _conversationThreadKey(cursor.provider, cursor.providerSessionId),
+            ),
+          )
+          .toList(growable: false);
       bridge.send(
         conversationSyncV2Subscribe(
           requestId: requestId,
           catalogState: state.catalogState,
           statusState: state.statusState,
-          threadContentStates: revisions
+          threadContentStates: resumableRevisions
               .map(
                 (cursor) => ConversationSyncV2ThreadState(
                   provider: cursor.provider,
@@ -1725,7 +1772,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       logger.info(
         '[conversation_sync_v2] event=subscribe_sent '
         'generation=$generation progress=80 '
-        'knownRevisions=${revisions.length} '
+        'knownRevisions=${resumableRevisions.length} '
+        'forcedSnapshots=${forcedSnapshotKeys.length} '
         'readWatermarks=${watermarks.length}',
       );
     } catch (error) {
@@ -1810,12 +1858,36 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         error is _ConversationSyncBeginMismatch ||
         error is _ConversationSyncPageBatchMismatch;
     var recovery = threadRevisionMismatch
-        ? 'thread_reset'
+        ? 'thread_snapshot_retry'
         : streamContinuityFailure
         ? 'stream_retry'
         : 'retry';
 
-    if (!threadRevisionMismatch &&
+    if (threadRevisionMismatch &&
+        event.provider != null &&
+        event.providerSessionId != null) {
+      final thread = ConversationSyncV2Target(
+        provider: event.provider!,
+        providerSessionId: event.providerSessionId!,
+      );
+      _markThreadForForcedSnapshot(target, thread);
+      await cache.resetConversationSyncScope(
+        target: target,
+        scope: 'thread',
+        thread: thread,
+      );
+      if (_isV2Current(event, generation, target)) {
+        _syncUpdatesController.add(
+          ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.reset,
+            targetFingerprint: target.fingerprint,
+            provider: thread.provider,
+            providerSessionId: thread.providerSessionId,
+            requestId: event.requestId,
+          ),
+        );
+      }
+    } else if (!threadRevisionMismatch &&
         !streamContinuityFailure &&
         _v2RecoveryTargetFingerprint != target.fingerprint) {
       // A transient SQLite/decode failure is not proof that the last committed
@@ -1832,7 +1904,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       'target=$targetToken error=${error.runtimeType} recovery=$recovery',
     );
     if (_isV2Current(event, generation, target)) {
-      _restartSubscription();
+      _restartSubscription(reason: recovery);
     }
   }
 
@@ -2052,6 +2124,13 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           throw const _ConversationTimelineBaseRevisionMismatch();
         }
         if (committed.windowCommitted) {
+          if (event.mode == 'snapshot') {
+            _clearForcedSnapshotThread(
+              target,
+              event.provider!,
+              event.providerSessionId!,
+            );
+          }
           _publishCacheUpdate(
             ConversationContentCacheUpdate(
               targetFingerprint: target.fingerprint,
@@ -2644,14 +2723,14 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         stage.hasEarlier != event.hasEarlier ||
         stage.sourceEntryCount != event.sourceEntryCount ||
         stage.pages.length != stage.pageCount) {
-      _restartSubscription();
+      _restartSubscription(reason: 'v1_snapshot_metadata_invalid');
       return;
     }
     final entries = <ConversationContentWireEntry>[];
     for (var page = 0; page < stage.pageCount; page++) {
       final pageEntries = stage.pages[page];
       if (pageEntries == null) {
-        _restartSubscription();
+        _restartSubscription(reason: 'v1_snapshot_page_missing');
         return;
       }
       entries.addAll(pageEntries);
@@ -2660,7 +2739,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         entries.map((entry) => entry.entryId).toSet().length !=
             entries.length ||
         entries.map((entry) => entry.index).toSet().length != entries.length) {
-      _restartSubscription();
+      _restartSubscription(reason: 'v1_snapshot_identity_invalid');
       return;
     }
     entries.sort((left, right) => left.index.compareTo(right.index));
@@ -2677,7 +2756,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     } catch (error) {
       debugPrint('Conversation content snapshot cache failed: $error');
       if (_isCurrent(generation, subscriptionId, target)) {
-        _restartSubscription();
+        _restartSubscription(reason: 'v1_snapshot_cache_failed');
       }
       return;
     }
@@ -2722,7 +2801,10 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         providerSessionId: providerSessionId,
       );
       if (_isCurrent(generation, subscriptionId, target)) {
-        _stopSubscription(sendUnsubscribe: true);
+        _stopSubscription(
+          sendUnsubscribe: true,
+          reason: 'v1_patch_base_mismatch',
+        );
         _ensureSubscribed();
       }
       return;
@@ -2879,8 +2961,17 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         _canProcessContent;
   }
 
-  void _stopSubscription({required bool sendUnsubscribe}) {
+  void _stopSubscription({
+    required bool sendUnsubscribe,
+    String reason = 'unspecified',
+  }) {
     final subscriptionId = _activeSubscriptionId ?? _pendingSubscriptionId;
+    logger.info(
+      '[conversation_sync_v2] event=subscription_stop '
+      'generation=$_generation reason=$reason '
+      'hadSubscription=${subscriptionId != null} '
+      'sendUnsubscribe=$sendUnsubscribe',
+    );
     _generation += 1;
     _activeSubscriptionId = null;
     _pendingSubscriptionId = null;
@@ -2937,10 +3028,45 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     });
   }
 
-  void _restartSubscription() {
-    _stopSubscription(sendUnsubscribe: true);
+  void _restartSubscription({required String reason}) {
+    _stopSubscription(sendUnsubscribe: true, reason: reason);
     _scheduleRetry();
   }
+
+  void _bindForcedSnapshotScope(String targetFingerprint) {
+    if (_forcedSnapshotTargetFingerprint == targetFingerprint) return;
+    _forcedSnapshotTargetFingerprint = targetFingerprint;
+    _forcedSnapshotThreadKeys.clear();
+  }
+
+  void _markThreadForForcedSnapshot(
+    SessionCatalogCacheTarget target,
+    ConversationSyncV2Target thread,
+  ) {
+    _bindForcedSnapshotScope(target.fingerprint);
+    _forcedSnapshotThreadKeys.add(
+      _conversationThreadKey(thread.provider, thread.providerSessionId),
+    );
+    while (_forcedSnapshotThreadKeys.length > 512) {
+      _forcedSnapshotThreadKeys.remove(_forcedSnapshotThreadKeys.first);
+    }
+  }
+
+  void _clearForcedSnapshotThread(
+    SessionCatalogCacheTarget target,
+    String provider,
+    String providerSessionId,
+  ) {
+    if (_forcedSnapshotTargetFingerprint != target.fingerprint) return;
+    _forcedSnapshotThreadKeys.remove(
+      _conversationThreadKey(provider, providerSessionId),
+    );
+  }
+
+  static String _conversationThreadKey(
+    String provider,
+    String providerSessionId,
+  ) => '$provider\u0000$providerSessionId';
 
   String _nextRequestId(String operation) {
     _requestSequence += 1;
@@ -3058,7 +3184,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       StateError('Conversation content sync was disposed.'),
     );
     WidgetsBinding.instance.removeObserver(this);
-    _stopSubscription(sendUnsubscribe: true);
+    _stopSubscription(sendUnsubscribe: true, reason: 'service_disposed');
     await Future.wait([
       if (_connectionSubscription != null) _connectionSubscription!.cancel(),
       if (_sessionListSubscription != null) _sessionListSubscription!.cancel(),

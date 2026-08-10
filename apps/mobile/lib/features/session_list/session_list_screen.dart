@@ -848,7 +848,9 @@ bool shouldAdvanceConversationCatalogBootstrapUpdate(
   ConversationSyncCacheUpdate? current,
   ConversationSyncCacheUpdate next,
 ) {
-  if (next.kind == ConversationSyncCacheUpdateKind.reset || current == null) {
+  if (next.kind == ConversationSyncCacheUpdateKind.reset ||
+      next.kind == ConversationSyncCacheUpdateKind.started ||
+      current == null) {
     return true;
   }
   final nextFraction = _conversationCatalogBootstrapFraction(0, next);
@@ -1262,17 +1264,21 @@ class _SessionListScreenState extends State<SessionListScreen>
                   BridgeConnectionState.connected) {
             return;
           }
-          if (bridge.hasAuthoritativeSessionListForCurrentConnection &&
+          final startsReplacementSubscription =
+              update.kind == ConversationSyncCacheUpdateKind.started ||
+              update.kind == ConversationSyncCacheUpdateKind.reset;
+          if (!startsReplacementSubscription &&
+              bridge.hasAuthoritativeSessionListForCurrentConnection &&
               sessionListCubit.hasUsableCatalogForCurrentTarget) {
             return;
           }
           final current = _contentSyncProgressUpdate;
-          // A Bridge may emit another sync_begin while continuing the same
-          // back-pressured subscription. The sync service suppresses that
-          // duplicate `started`, and this monotonic guard also prevents a
-          // delayed/replayed marker from moving the visible progress backward.
-          // A transport change clears the current update above; only an
-          // authoritative reset may rewind within one connected generation.
+          // The sync service emits `started` once before each replacement
+          // subscription and suppresses later sync_begin markers from that
+          // same subscription. It may therefore rewind a completed/stalled
+          // attempt to the truthful 80% start, while all events inside one
+          // subscription remain monotonic. Transport and authority changes
+          // still clear the current update through their dedicated fences.
           if (shouldAdvanceConversationCatalogBootstrapUpdate(
             current,
             update,
@@ -1789,6 +1795,16 @@ class _SessionListScreenState extends State<SessionListScreen>
         _catalogRecoveryPolicy.recordSessionListRetry();
         break;
       case SessionCatalogRecoveryAction.retryCatalog:
+        final conversationSync = context
+            .read<ConversationContentSyncService?>();
+        if (bridge.supportsConversationSyncV2 &&
+            conversationSync?.retryBootstrap(
+                  reason: 'startup_progress_stalled',
+                ) ==
+                true) {
+          _catalogRecoveryPolicy.recordCatalogRetry();
+          break;
+        }
         final generation = bridge.authoritativeSessionListGeneration;
         _catalogBootstrapGate.prepareRetry(generation);
         if (_refreshCatalogAfterAuthoritativeSessionList(bridge)) {
@@ -2183,7 +2199,15 @@ class _SessionListScreenState extends State<SessionListScreen>
       unawaited(_refreshApplicationReadiness(bridge));
       _observeConnectionProgress();
       if (bridge.hasAuthoritativeSessionListForCurrentConnection) {
-        unawaited(context.read<SessionListCubit>().refresh());
+        // ConversationContentSyncService already resumes its v2 subscription
+        // from the same lifecycle event. Refresh Bridge-owned metadata here,
+        // but do not immediately tear down that fresh subscription and start a
+        // second one on the same socket.
+        unawaited(
+          context.read<SessionListCubit>().refresh(
+            restartConversationSync: false,
+          ),
+        );
       }
       return;
     }
@@ -2672,9 +2696,17 @@ class _SessionListScreenState extends State<SessionListScreen>
     try {
       final authoritative = await bridge.refreshAuthoritativeSessionList();
       if (authoritative && mounted) {
-        await context.read<SessionListCubit>().refreshCatalog(
-          waitForResponse: true,
-        );
+        final sessionList = context.read<SessionListCubit>();
+        if (bridge.supportsConversationSyncV2) {
+          await sessionList.refreshCatalog(startupBootstrap: true);
+          if (mounted) {
+            context.read<ConversationContentSyncService?>()?.retryBootstrap(
+              reason: 'manual_home_refresh',
+            );
+          }
+        } else {
+          await sessionList.refreshCatalog(waitForResponse: true);
+        }
       }
       if (machineManagerCubit != null) {}
     } finally {

@@ -233,6 +233,76 @@ void main() {
   });
 
   test(
+    'retry revokes live readiness before the replacement subscribe can fail',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      );
+      final updates = <ConversationSyncCacheUpdate>[];
+      final updatesSubscription = service.syncUpdates.listen(updates.add);
+      addTearDown(updatesSubscription.cancel);
+      service.start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final firstSubscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final firstSubscriptionId = firstSubscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: firstSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-retry-ready',
+          sequence: 1,
+          requestId: firstSubscriptionId,
+          catalogState: 'catalog-retry-ready',
+          statusState: 'status-retry-ready',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncCheckpoint,
+          subscriptionId: firstSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-retry-ready',
+          sequence: 2,
+          phase: 'priority',
+          hasMore: true,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await pumpEventQueue();
+      expect(
+        updates.where(
+          (update) =>
+              update.kind == ConversationSyncCacheUpdateKind.priorityReady,
+        ),
+        isNotEmpty,
+      );
+
+      updates.clear();
+      expect(service.retryBootstrap(reason: 'test_retry'), isTrue);
+      await pumpEventQueue();
+      expect(updates.single.kind, ConversationSyncCacheUpdateKind.started);
+      await gateway.nextOutgoing('conversation_sync_unsubscribe');
+      await gateway.nextOutgoing('conversation_sync_subscribe');
+      expect(
+        updates.where(
+          (update) =>
+              update.kind == ConversationSyncCacheUpdateKind.priorityReady,
+        ),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
     'publishes catalog and status only after the complete logical batch commits',
     () async {
       final target = SessionCatalogCacheTarget.fromBridge(
@@ -749,6 +819,186 @@ void main() {
 
       await gateway.nextOutgoing('conversation_sync_unsubscribe');
       expect(trackingRepository.clearTargetCalls, 0);
+    },
+  );
+
+  test(
+    'base revision mismatch retries one thread as a snapshot without blanking cache',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        logicalConnectionIdentity: 'machine:1',
+        websocketUrl: 'wss://bridge.example/socket?token=secret',
+      );
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-mismatch',
+        revision: 'revision-local',
+        entries: [_wireEntry('entry-local', 0)],
+        hasEarlier: true,
+        sourceEntryCount: 1,
+      );
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-unaffected',
+        revision: 'revision-unaffected',
+        entries: [_wireEntry('entry-unaffected', 0)],
+        hasEarlier: true,
+        sourceEntryCount: 1,
+      );
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+        retryBaseDelay: const Duration(milliseconds: 1),
+        retryMaxDelay: const Duration(milliseconds: 1),
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final firstSubscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      expect(
+        firstSubscribe['threadContentStates'],
+        contains(containsPair('providerSessionId', 'thread-mismatch')),
+      );
+      final firstSubscriptionId = firstSubscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: firstSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-mismatch-1',
+          sequence: 1,
+          requestId: firstSubscriptionId,
+          catalogState: 'catalog-mismatch',
+          statusState: 'status-mismatch',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: firstSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-mismatch-1',
+          sequence: 2,
+          provider: 'codex',
+          providerSessionId: 'thread-mismatch',
+          revision: 'revision-next',
+          baseRevision: 'revision-bridge-base',
+          mode: 'patch',
+          phase: 'priority',
+          timelineIndex: 0,
+          timelineCount: 1,
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('entry-next', 1)],
+          hasEarlier: true,
+          sourceEntryCount: 2,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_unsubscribe');
+
+      final retained = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-mismatch',
+      );
+      expect(retained?.revision, 'revision-local');
+      expect(retained?.entries.single.entryId, 'entry-local');
+
+      final secondSubscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      expect(
+        secondSubscribe['threadContentStates'],
+        isNot(contains(containsPair('providerSessionId', 'thread-mismatch'))),
+      );
+      expect(
+        secondSubscribe['threadContentStates'],
+        contains(containsPair('providerSessionId', 'thread-unaffected')),
+      );
+      final unaffected = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-unaffected',
+      );
+      expect(unaffected?.revision, 'revision-unaffected');
+      expect(unaffected?.entries.single.entryId, 'entry-unaffected');
+      final secondSubscriptionId = secondSubscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: secondSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-mismatch-2',
+          sequence: 1,
+          requestId: secondSubscriptionId,
+          catalogState: 'catalog-mismatch',
+          statusState: 'status-mismatch',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: secondSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-mismatch-2',
+          sequence: 2,
+          provider: 'codex',
+          providerSessionId: 'thread-mismatch',
+          revision: 'revision-next',
+          mode: 'snapshot',
+          phase: 'priority',
+          timelineIndex: 0,
+          timelineCount: 1,
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('entry-next', 0)],
+          hasEarlier: true,
+          sourceEntryCount: 1,
+        ),
+      );
+      expect(
+        (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+        2,
+      );
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncCheckpoint,
+          subscriptionId: secondSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-mismatch-2',
+          sequence: 3,
+          phase: 'priority',
+          hasMore: false,
+        ),
+      );
+      expect(
+        (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+        3,
+      );
+
+      final repaired = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-mismatch',
+      );
+      expect(repaired?.revision, 'revision-next');
+      expect(repaired?.entries.single.entryId, 'entry-next');
+      expect(
+        gateway.sentTypes
+            .where((type) => type == 'conversation_sync_unsubscribe')
+            .length,
+        1,
+      );
     },
   );
 

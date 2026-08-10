@@ -1117,12 +1117,12 @@ class SessionCatalogCacheRepository {
           {'partition_id': partitionId, 'priority_ready': 0, 'updated_at': now},
           conflictAlgorithm: ConflictAlgorithm.ignore,
         );
-        await transaction.update(
-          SessionCatalogCacheDatabase.syncStatesTable,
-          {'priority_ready': 0, 'updated_at': now},
-          where: 'partition_id = ?',
-          whereArgs: [partitionId],
-        );
+        // `priority_ready` describes the last atomically committed cache, not
+        // the in-flight subscription. SessionListCubit separately clears its
+        // live readiness when it receives `started`. Keeping the durable bit
+        // here means a failed refresh cannot erase the only readable fallback
+        // or make the next launch pretend that an already committed catalog is
+        // incomplete.
         await transaction.delete(
           SessionCatalogCacheDatabase.timelineStagesTable,
           where: 'partition_id = ? AND subscription_id <> ?',

@@ -1007,10 +1007,19 @@ class SessionListCubit extends Cubit<SessionListState> {
   }
 
   /// Request fresh data from the server.
-  Future<void> refresh() async {
+  Future<void> refresh({bool restartConversationSync = true}) async {
     await _preferencesLoaded;
     if (isClosed) return;
     _bridge.requestSessionList();
+    if (_bridge.supportsConversationSyncV2 &&
+        _conversationSync != null &&
+        _catalogCache != null) {
+      await refreshCatalog(startupBootstrap: true);
+      if (restartConversationSync) {
+        _conversationSync.retryBootstrap(reason: 'manual_catalog_refresh');
+      }
+      return;
+    }
     await refreshCatalog();
   }
 
@@ -1033,10 +1042,10 @@ class SessionListCubit extends Cubit<SessionListState> {
           _bridge.supportsConversationSyncV2 &&
           _conversationSync != null &&
           _catalogCache != null) {
-        // ConversationContentSyncService already owns the authoritative v2
-        // startup subscription. Sending list_recent_sessions here duplicates
-        // the same bounded catalog work and competes with priority timeline
-        // reads. Manual refreshes and filtered queries still use the legacy
+        // ConversationContentSyncService owns authoritative v2 startup and
+        // explicit retry subscriptions. Sending list_recent_sessions here
+        // duplicates the same bounded catalog work and competes with priority
+        // timeline reads. Filtered queries and pagination still use the legacy
         // catalog request path below.
         logger.info(
           '[SessionListCubit] Startup catalog is owned by conversation_sync_v2',
