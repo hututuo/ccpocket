@@ -1991,3 +1991,26 @@
   虚假的兼容信号。
 - Shorebird owner/stable 通道和手动 Mobile 更新页继续作为本地 IPA/OTA 的交付机制；
   它们不是官方 CC Pocket 版本比较，也不得覆盖本节的端到端兼容修订判断。
+
+## 2026-08-10 v2 同步恢复必须保留已提交缓存并缩小重置范围
+
+- `conversation_sync_v2` 的 patch 若与 Mobile 已提交 hot window 的
+  `baseRevision` 不一致，不得清空可见会话，也不得继续广告同一错误 revision 形成
+  `subscribe → patch reject → unsubscribe` 死循环。Mobile 保留旧窗口，只清理该 thread
+  的 staging，并在下一次订阅中仅省略该 thread 的 revision，要求 Bridge 返回完整
+  snapshot；snapshot 原子提交后再解除强制状态。
+- SQLite 的 `priority_ready` 表示上一份已经原子提交的可用缓存，不表示当前 WebSocket
+  同步是否完成。开始新订阅不得清零该持久位；当前连接的自动首页门禁继续只认内存中的
+  本代 `priorityReady` checkpoint，旧缓存只能通过用户显式选择进入。
+- v2 的手动刷新和停滞恢复只重启当前 conversation-sync subscription，不重连已认证
+  WebSocket、不重建 Bridge/source authority、不清空 SQLite、不重放 mutation，也不并行
+  发起 legacy `list_recent_sessions`。每次订阅尝试在异步读缓存前先撤销上一代 live
+  readiness；重试次数只在 priority checkpoint 或 sync-complete 后归零，watchdog 不得
+  重置指数退避。目录身份仍可单独刷新，代次隔离继续拒绝旧帧。
+- App 从后台恢复时，ConversationContentSyncService 自己恢复 v2 subscription；首页只刷新
+  session-list/项目元数据，不得再立刻拆掉该 subscription 做第二次重订阅。用户显式点击
+  刷新时才允许在同一 socket 上重启一次 v2。
+- Bridge 日志使用脱敏的 subscribe/checkpoint/complete/end 生命周期摘要，区分客户端主动
+  unsubscribe 与 socket disconnect；不逐条记录累计 ACK，也不记录 thread ID、标题、路径
+  或正文。LAN proxy 的暂时网卡空观测不得关闭健康 listener；只有连续确认的新地址才允许
+  rebind。
