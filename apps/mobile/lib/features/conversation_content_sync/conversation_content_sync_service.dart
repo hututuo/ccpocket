@@ -183,6 +183,7 @@ class ConversationTurnsPageLoadResult {
 /// in-memory stage remains only for old Bridges. Background lifecycle states
 /// reject body events and unsubscribe, preserving notification-only behavior.
 class ConversationContentSyncService with WidgetsBindingObserver {
+  static const int _maxCacheCommitEpochKeys = 4096;
   ConversationContentSyncService({
     required this.bridge,
     required this.cache,
@@ -243,6 +244,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   int _retryAttempt = 0;
   int _highestV2CommittedSequence = 0;
   int _cacheCommitEpoch = 0;
+  int _cacheCommitEpochFloor = 0;
+  final Map<String, int> _cacheCommitEpochsByConversation = {};
   bool _v2PriorityBootstrapComplete = false;
   String? _v2RecoveryTargetFingerprint;
   String? _forcedSnapshotTargetFingerprint;
@@ -253,6 +256,17 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   Stream<ConversationContentCacheUpdate> get updates =>
       _updatesController.stream;
   int get cacheCommitEpoch => _cacheCommitEpoch;
+  int cacheCommitEpochFor({
+    required String targetFingerprint,
+    required String provider,
+    required String providerSessionId,
+  }) =>
+      _cacheCommitEpochsByConversation[_cacheCommitEpochKey(
+        targetFingerprint: targetFingerprint,
+        provider: provider,
+        providerSessionId: providerSessionId,
+      )] ??
+      _cacheCommitEpochFloor;
   Stream<ConversationSyncCacheUpdate> get syncUpdates =>
       _syncUpdatesController.stream;
 
@@ -1966,6 +1980,16 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         scope: 'thread',
         thread: thread,
       );
+      // The SQLite mutation belongs to this cache partition even if a newer
+      // socket generation won the race while it was awaiting disk. Advance
+      // that partition's fence unconditionally; only transport-facing state
+      // remains gated by the old subscription identity.
+      _publishCacheInvalidation(
+        targetFingerprint: target.fingerprint,
+        provider: thread.provider,
+        providerSessionId: thread.providerSessionId,
+        reason: 'revision_mismatch_reset',
+      );
       if (_isV2Current(event, generation, target)) {
         _syncUpdatesController.add(
           ConversationSyncCacheUpdate(
@@ -2294,6 +2318,14 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           scope: event.scope!,
           thread: event.target,
         );
+        if (event.scope == 'thread' && event.target != null) {
+          _publishCacheInvalidation(
+            targetFingerprint: target.fingerprint,
+            provider: event.target!.provider,
+            providerSessionId: event.target!.providerSessionId,
+            reason: 'bridge_thread_reset',
+          );
+        }
         publish = ConversationSyncCacheUpdate(
           kind: ConversationSyncCacheUpdateKind.reset,
           targetFingerprint: target.fingerprint,
@@ -2920,6 +2952,12 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         provider: provider,
         providerSessionId: providerSessionId,
       );
+      _publishCacheInvalidation(
+        targetFingerprint: target.fingerprint,
+        provider: provider,
+        providerSessionId: providerSessionId,
+        reason: 'v1_patch_base_mismatch',
+      );
       if (_isCurrent(generation, subscriptionId, target)) {
         _stopSubscription(
           sendUnsubscribe: true,
@@ -3030,6 +3068,17 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   }) {
     final subscriptionId = _activeSubscriptionId;
     if (subscriptionId == null || !_canProcessContent) return;
+    // SQLite is already authoritative at this point. Publish the local cache
+    // generation before the transport ACK so a socket failure cannot leave an
+    // in-flight preview accepting the pre-commit read.
+    _publishCacheUpdate(
+      ConversationContentCacheUpdate(
+        targetFingerprint: targetFingerprint,
+        provider: provider,
+        providerSessionId: providerSessionId,
+        revision: revision,
+      ),
+    );
     try {
       bridge.send(
         conversationContentAck(
@@ -3045,21 +3094,70 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       _handleTransportLoss();
       return;
     }
+    _retryAttempt = 0;
+  }
+
+  void _publishCacheUpdate(ConversationContentCacheUpdate update) {
+    if (_disposed || _updatesController.isClosed) return;
+    _advanceCacheCommitEpoch(
+      targetFingerprint: update.targetFingerprint,
+      provider: update.provider,
+      providerSessionId: update.providerSessionId,
+    );
+    _updatesController.add(update);
+  }
+
+  void _publishCacheInvalidation({
+    required String targetFingerprint,
+    required String provider,
+    required String providerSessionId,
+    required String reason,
+  }) {
     _publishCacheUpdate(
       ConversationContentCacheUpdate(
         targetFingerprint: targetFingerprint,
         provider: provider,
         providerSessionId: providerSessionId,
-        revision: revision,
+        // This is a local cache-observer token, never a wire/provider
+        // revision. It forces an already visible or in-flight preview to
+        // re-read after a scoped reset/delete without blanking the last
+        // committed hot window.
+        revision: 'invalidated:$reason:${_cacheCommitEpoch + 1}',
       ),
     );
-    _retryAttempt = 0;
   }
 
-  void _publishCacheUpdate(ConversationContentCacheUpdate update) {
+  void _advanceCacheCommitEpoch({
+    required String targetFingerprint,
+    required String provider,
+    required String providerSessionId,
+  }) {
     _cacheCommitEpoch += 1;
-    _updatesController.add(update);
+    final key = _cacheCommitEpochKey(
+      targetFingerprint: targetFingerprint,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
+    // Refresh insertion order so the bounded map behaves as an LRU of active
+    // conversations. Values are global epochs; an evicted key falls back to
+    // the monotonic floor and therefore cannot accidentally validate a read
+    // that began before its commit.
+    _cacheCommitEpochsByConversation.remove(key);
+    _cacheCommitEpochsByConversation[key] = _cacheCommitEpoch;
+    while (_cacheCommitEpochsByConversation.length > _maxCacheCommitEpochKeys) {
+      final oldestKey = _cacheCommitEpochsByConversation.keys.first;
+      final removed = _cacheCommitEpochsByConversation.remove(oldestKey);
+      if (removed != null && removed > _cacheCommitEpochFloor) {
+        _cacheCommitEpochFloor = removed;
+      }
+    }
   }
+
+  static String _cacheCommitEpochKey({
+    required String targetFingerprint,
+    required String provider,
+    required String providerSessionId,
+  }) => '$targetFingerprint\u0000$provider\u0000$providerSessionId';
 
   void _handleError(ConversationContentEventMessage event) {
     if (event.requestId == _pendingSubscriptionId) {

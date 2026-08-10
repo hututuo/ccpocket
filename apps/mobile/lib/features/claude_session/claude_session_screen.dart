@@ -199,6 +199,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   bool _cachedPreviewErrorSnackbarVisible = false;
   bool _loadingCachedPreview = false;
   bool _cachedPreviewDirty = false;
+  int _cachedPreviewLoadGeneration = 0;
   String? _expectedCacheTargetFingerprint;
   String? _cachedPreviewTargetFingerprint;
   String? _loadingCachedPreviewTargetFingerprint;
@@ -228,8 +229,8 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
 
     if (_isPending) {
       _listenForSessionCreated();
+      _startDurablePreview();
     }
-    _startDurablePreview();
     _listenForSessionSwitch();
     _listenForSessionStopped();
     _listenForAuthoritativeDataSourceIdentity(bridge);
@@ -335,6 +336,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   }
 
   void _startDurablePreview() {
+    if (!_isPending || _cachedPreviewSub != null) return;
     final durableId = widget.durableProviderSessionId;
     if (durableId == null || durableId.isEmpty) return;
     try {
@@ -364,6 +366,20 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     }
   }
 
+  void _invalidateDurablePreviewLoad() {
+    _cachedPreviewLoadGeneration += 1;
+    _loadingCachedPreview = false;
+    _loadingCachedPreviewTargetFingerprint = null;
+    _cachedPreviewDirty = false;
+  }
+
+  void _restartDurablePreview() {
+    unawaited(_cachedPreviewSub?.cancel());
+    _cachedPreviewSub = null;
+    _invalidateDurablePreviewLoad();
+    _startDurablePreview();
+  }
+
   void _restoreDurableConversationFocusIfCurrentSource() {
     final durableId = widget.durableProviderSessionId?.trim();
     if (durableId == null || durableId.isEmpty) return;
@@ -385,6 +401,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   }
 
   void _reloadDurablePreviewForCurrentTarget() {
+    if (!_isPending) return;
     final durableId = widget.durableProviderSessionId;
     if (durableId == null || durableId.isEmpty) return;
     ConversationContentSyncService sync;
@@ -409,6 +426,8 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       // Without a rebuild, a canonical catalog can finish in the background
       // while the page keeps the provisional fingerprint until re-entry.
       setState(() => _expectedCacheTargetFingerprint = targetFingerprint);
+      _restartDurablePreview();
+      return;
     }
     if (sync.matchesCurrentDataSource(
       _dataSourceIdentity,
@@ -432,6 +451,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   }
 
   void _loadDurablePreview() {
+    if (!_isPending) return;
     final durableId = widget.durableProviderSessionId;
     if (durableId == null) return;
     ConversationContentSyncService sync;
@@ -461,7 +481,13 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     _loadingCachedPreview = true;
     _loadingCachedPreviewTargetFingerprint = targetFingerprint;
     _cachedPreviewDirty = false;
-    final cacheCommitEpoch = sync.cacheCommitEpoch;
+    final loadGeneration = ++_cachedPreviewLoadGeneration;
+    int currentCacheCommitEpoch() => sync.cacheCommitEpochFor(
+      targetFingerprint: targetFingerprint,
+      provider: Provider.claude.value,
+      providerSessionId: durableId,
+    );
+    final cacheCommitEpoch = currentCacheCommitEpoch();
     unawaited(
       sync
           .loadCachedWindow(
@@ -470,6 +496,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
             expectedDataSourceIdentity: _dataSourceIdentity,
           )
           .then((snapshot) {
+            if (loadGeneration != _cachedPreviewLoadGeneration) return;
             if (!mounted ||
                 widget.durableProviderSessionId != durableId ||
                 !_isPending ||
@@ -477,12 +504,14 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
                   _dataSourceIdentity,
                   provider: Provider.claude.value,
                 )) {
-              if (mounted && widget.durableProviderSessionId == durableId) {
+              if (mounted &&
+                  _isPending &&
+                  widget.durableProviderSessionId == durableId) {
                 _cachedPreviewDirty = true;
               }
               return;
             }
-            if (sync.cacheCommitEpoch != cacheCommitEpoch) {
+            if (currentCacheCommitEpoch() != cacheCommitEpoch) {
               _cachedPreviewDirty = true;
               return;
             }
@@ -503,10 +532,13 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
           })
           .catchError((Object error) {
             debugPrint('Failed to load cached Claude preview: $error');
-            if (!mounted || widget.durableProviderSessionId != durableId) {
+            if (loadGeneration != _cachedPreviewLoadGeneration) return;
+            if (!mounted ||
+                !_isPending ||
+                widget.durableProviderSessionId != durableId) {
               return;
             }
-            if (sync.cacheCommitEpoch != cacheCommitEpoch) {
+            if (currentCacheCommitEpoch() != cacheCommitEpoch) {
               _cachedPreviewDirty = true;
               return;
             }
@@ -529,9 +561,15 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
                 .whenComplete(() => _cachedPreviewErrorSnackbarVisible = false);
           })
           .whenComplete(() {
-            if (mounted && widget.durableProviderSessionId == durableId) {
+            if (mounted &&
+                loadGeneration == _cachedPreviewLoadGeneration &&
+                widget.durableProviderSessionId == durableId) {
               _loadingCachedPreview = false;
               _loadingCachedPreviewTargetFingerprint = null;
+              if (!_isPending) {
+                _cachedPreviewDirty = false;
+                return;
+              }
               if (sync.hasAuthoritativeDataSourceConflict(
                 _dataSourceIdentity,
                 provider: Provider.claude.value,
@@ -841,6 +879,9 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       _sandboxMode = sandboxModeFromRaw(msg.sandboxMode) ?? _sandboxMode;
       _isPending = false;
     });
+    unawaited(_cachedPreviewSub?.cancel());
+    _cachedPreviewSub = null;
+    _invalidateDurablePreviewLoad();
     _syncSessionRouteIdentity();
   }
 
@@ -905,6 +946,8 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       provider: Provider.claude.value,
     );
     final identityChanged = nextIdentity != _dataSourceIdentity;
+    final durableProviderSessionChanged =
+        oldWidget.durableProviderSessionId != widget.durableProviderSessionId;
     final pendingLifecycleChanged =
         oldWidget.pendingSessionCreated != widget.pendingSessionCreated ||
         oldWidget.isPending != widget.isPending;
@@ -936,13 +979,25 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       _sandboxMode = sandboxModeFromRaw(widget.initialSandboxMode);
       _explorerCurrentPath = explorerHistory.currentPath;
       _recentPeekedFiles = explorerHistory.recentPeekedFiles;
+      if (durableProviderSessionChanged) {
+        _cachedPreview = null;
+        _cachedPreviewTargetFingerprint = null;
+        _cachedPreviewLoadError = null;
+      }
     });
     _syncSessionRouteIdentity();
-    if (identityChanged) {
-      _reloadDurablePreviewForCurrentTarget();
+    if (_isPending && (identityChanged || durableProviderSessionChanged)) {
+      _restartDurablePreview();
     }
     if (_isPending && pendingLifecycleChanged) {
       _listenForSessionCreated();
+      if (!identityChanged && !durableProviderSessionChanged) {
+        _startDurablePreview();
+      }
+    } else if (!_isPending && pendingLifecycleChanged) {
+      unawaited(_cachedPreviewSub?.cancel());
+      _cachedPreviewSub = null;
+      _invalidateDurablePreviewLoad();
     }
   }
 

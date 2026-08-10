@@ -113,6 +113,7 @@ void main() {
       (update) => update.kind == ConversationSyncCacheUpdateKind.catalog,
     );
     expect(catalogUpdate.targetFingerprint, isNotEmpty);
+    final catalogTargetFingerprint = catalogUpdate.targetFingerprint!;
     expect(catalogUpdate.codexSourceId, 'codex-home-a');
     expect(catalogUpdate.catalogUpserts.single.providerSessionId, 'thread-v2');
     expect(catalogUpdate.catalogDestroyed, isEmpty);
@@ -147,6 +148,14 @@ void main() {
         providerSessionId: 'thread-v2',
       ),
       isNull,
+    );
+    expect(
+      service.cacheCommitEpochFor(
+        targetFingerprint: catalogTargetFingerprint,
+        provider: 'codex',
+        providerSessionId: 'thread-v2',
+      ),
+      0,
     );
 
     gateway.addEvent(
@@ -188,6 +197,22 @@ void main() {
       'entry-2',
     ]);
     expect(cached?.turnsNextCursor, 'older-turns-1');
+    expect(
+      service.cacheCommitEpochFor(
+        targetFingerprint: catalogTargetFingerprint,
+        provider: 'codex',
+        providerSessionId: 'thread-v2',
+      ),
+      1,
+    );
+    expect(
+      service.cacheCommitEpochFor(
+        targetFingerprint: catalogTargetFingerprint,
+        provider: 'codex',
+        providerSessionId: 'unrelated-thread',
+      ),
+      0,
+    );
     await pumpEventQueue();
     expect(
       syncUpdates
@@ -1135,6 +1160,113 @@ void main() {
   );
 
   test(
+    'thread reset advances only its cache fence and publishes a reread',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        logicalConnectionIdentity: 'machine:1',
+        websocketUrl: 'wss://bridge.example/socket',
+      );
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-reset-fence',
+        revision: 'revision-before-reset',
+        entries: [_wireEntry('entry-before-reset', 0)],
+        hasEarlier: true,
+        sourceEntryCount: 12,
+      );
+
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-thread-reset-fence',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-reset-fence',
+          statusState: 'status-reset-fence',
+        ),
+      );
+      expect(
+        (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+        1,
+      );
+
+      final beforeEpoch = service.cacheCommitEpochFor(
+        targetFingerprint: target.fingerprint,
+        provider: 'codex',
+        providerSessionId: 'thread-reset-fence',
+      );
+      final unrelatedBefore = service.cacheCommitEpochFor(
+        targetFingerprint: target.fingerprint,
+        provider: 'codex',
+        providerSessionId: 'thread-unrelated',
+      );
+      final invalidation = service.updates.firstWhere(
+        (update) => update.providerSessionId == 'thread-reset-fence',
+      );
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncReset,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-thread-reset-fence',
+          sequence: 2,
+          scope: 'thread',
+          reason: 'base_revision_mismatch',
+          target: const ConversationSyncV2Target(
+            provider: 'codex',
+            providerSessionId: 'thread-reset-fence',
+          ),
+        ),
+      );
+      expect(
+        (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+        2,
+      );
+      expect((await invalidation).revision, startsWith('invalidated:'));
+      expect(
+        service.cacheCommitEpochFor(
+          targetFingerprint: target.fingerprint,
+          provider: 'codex',
+          providerSessionId: 'thread-reset-fence',
+        ),
+        greaterThan(beforeEpoch),
+      );
+      expect(
+        service.cacheCommitEpochFor(
+          targetFingerprint: target.fingerprint,
+          provider: 'codex',
+          providerSessionId: 'thread-unrelated',
+        ),
+        unrelatedBefore,
+      );
+      final retained = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-reset-fence',
+      );
+      expect(retained?.revision, 'revision-before-reset');
+      expect(retained?.entries.single.entryId, 'entry-before-reset');
+    },
+  );
+
+  test(
     'preserves readable cache and retry backoff after partial progress',
     () async {
       await service.dispose();
@@ -1230,25 +1362,24 @@ void main() {
           catalogState: 'catalog-recovery-2',
         ),
       );
+      final secondRetryDelay = Stopwatch()..start();
       await gateway.nextOutgoing('conversation_sync_unsubscribe');
       expect(failingRepository.clearTargetCalls, 0);
 
       final subscribeCount = gateway.sentTypes
           .where((type) => type == 'conversation_sync_subscribe')
           .length;
-      await Future<void>.delayed(const Duration(milliseconds: 45));
-      expect(
-        gateway.sentTypes
-            .where((type) => type == 'conversation_sync_subscribe')
-            .length,
-        subscribeCount,
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await gateway.nextOutgoing('conversation_sync_subscribe');
+      secondRetryDelay.stop();
       expect(
         gateway.sentTypes
             .where((type) => type == 'conversation_sync_subscribe')
             .length,
         subscribeCount + 1,
+      );
+      expect(
+        secondRetryDelay.elapsed,
+        greaterThanOrEqualTo(const Duration(milliseconds: 70)),
       );
     },
   );
@@ -3936,6 +4067,84 @@ void main() {
     );
   });
 
+  test(
+    'publishes a committed snapshot even when its ACK write fails',
+    () async {
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_content_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationContentEventMessage(
+          event: ConversationContentEventKind.subscribed,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          requestId: subscriptionId,
+          hotConversationLimit: 10,
+        ),
+      );
+      gateway.addEvent(
+        ConversationContentEventMessage(
+          event: ConversationContentEventKind.snapshotBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          provider: 'codex',
+          providerSessionId: 'thread-ack-failure',
+          revision: 'revision-ack-failure',
+          entryCount: 1,
+          pageCount: 1,
+          hasEarlier: false,
+          sourceEntryCount: 1,
+        ),
+      );
+      gateway.addEvent(
+        ConversationContentEventMessage(
+          event: ConversationContentEventKind.snapshotPage,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          provider: 'codex',
+          providerSessionId: 'thread-ack-failure',
+          revision: 'revision-ack-failure',
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('entry-ack-failure', 0)],
+        ),
+      );
+      final committedUpdate = service.updates.firstWhere(
+        (update) => update.providerSessionId == 'thread-ack-failure',
+      );
+      gateway.throwOnConversationContentAck = true;
+      gateway.addEvent(
+        ConversationContentEventMessage(
+          event: ConversationContentEventKind.snapshotComplete,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          provider: 'codex',
+          providerSessionId: 'thread-ack-failure',
+          revision: 'revision-ack-failure',
+          entryCount: 1,
+          hasEarlier: false,
+          sourceEntryCount: 1,
+        ),
+      );
+
+      expect((await committedUpdate).revision, 'revision-ack-failure');
+      expect(
+        service.cacheCommitEpochFor(
+          targetFingerprint: SessionCatalogCacheTarget.fromBridge(
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'codex-home-a',
+            logicalConnectionIdentity: 'machine:1',
+            websocketUrl: 'wss://bridge.example/socket',
+          ).fingerprint,
+          provider: 'codex',
+          providerSessionId: 'thread-ack-failure',
+        ),
+        greaterThan(0),
+      );
+    },
+  );
+
   test('isolates hot windows by Codex source on the same Bridge', () async {
     gateway.codexSourceId = 'codex-home-a';
     final subscribe = await gateway.nextOutgoing(
@@ -4446,6 +4655,7 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
   final StreamController<Map<String, dynamic>> _outgoing =
       StreamController<Map<String, dynamic>>.broadcast();
   final List<Map<String, dynamic>> sent = [];
+  bool throwOnConversationContentAck = false;
 
   List<String> get sentTypes =>
       sent.map((message) => message['type']! as String).toList();
@@ -4502,6 +4712,10 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
   @override
   void send(ClientMessage message) {
     final json = jsonDecode(message.toJson()) as Map<String, dynamic>;
+    if (throwOnConversationContentAck &&
+        json['type'] == 'conversation_content_ack') {
+      throw StateError('injected conversation content ACK failure');
+    }
     sent.add(json);
     _outgoing.add(json);
   }

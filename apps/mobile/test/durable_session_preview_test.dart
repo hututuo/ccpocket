@@ -1937,7 +1937,11 @@ void main() {
 
         // The database commit epoch advances before its broadcast listener is
         // delivered. The in-flight stale read must still be rejected.
-        sync.advanceCacheCommitEpoch();
+        sync.advanceCacheCommitEpoch(
+          targetFingerprint: target.fingerprint,
+          provider: Provider.codex.value,
+          providerSessionId: 'durable-thread-race',
+        );
         firstRead.complete(staleSnapshot);
         await tester.pump();
         expect(find.text('Stale cached turn'), findsNothing);
@@ -1963,6 +1967,359 @@ void main() {
 
         expect(find.text('Committed cached turn'), findsOneWidget);
         expect(find.text('Stale cached turn'), findsNothing);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'unrelated timeline commits do not starve a focused cache preview read',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-unrelated-commit'
+        ..authenticatedCodexSourceId = 'codex-source-unrelated-commit'
+        ..mockLogicalConnectionIdentity = 'machine:unrelated-commit'
+        ..mockLastUrl = 'wss://unrelated-commit.test/socket';
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+        codexSourceId: bridge.authenticatedCodexSourceId,
+      );
+      final focusedRead = Completer<ConversationHotWindowSnapshot?>();
+      final focusedSnapshot = _previewSnapshot(
+        partitionId: target.fingerprint,
+        providerSessionId: 'focused-thread',
+        revision: 'focused-revision',
+        entryId: 'focused-entry',
+        text: 'Focused cached turn remains visible',
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(databasePath: 'unused-unrelated-cache.db'),
+        snapshots: const {},
+        queuedReads: [focusedRead.future],
+      );
+      final sync = _ControllableConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+
+      try {
+        await tester.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-focused-runtime',
+            isPending: true,
+            durableProviderSessionId: 'focused-thread',
+            dataSourceIdentity: bridge.dataSourceIdentity,
+            conversationContentSync: sync,
+          ),
+        );
+        await tester.pump();
+        expect(repository.loadConversationWindowCalls, 1);
+
+        for (var index = 0; index < 20; index += 1) {
+          sync.emitTimelineCommit(
+            provider: Provider.codex.value,
+            providerSessionId: 'background-thread-$index',
+            revision: 'background-revision-$index',
+            targetFingerprint: target.fingerprint,
+          );
+        }
+        focusedRead.complete(focusedSnapshot);
+        for (
+          var attempt = 0;
+          attempt < 10 &&
+              find
+                  .text('Focused cached turn remains visible')
+                  .evaluate()
+                  .isEmpty;
+          attempt++
+        ) {
+          await tester.pump();
+        }
+
+        expect(
+          find.text('Focused cached turn remains visible'),
+          findsOneWidget,
+        );
+        expect(repository.loadConversationWindowCalls, 1);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'switching durable targets rebinds the preview while the old read is in flight',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-target-switch'
+        ..authenticatedCodexSourceId = 'codex-source-target-switch'
+        ..mockLogicalConnectionIdentity = 'machine:target-switch'
+        ..mockLastUrl = 'wss://target-switch.test/socket';
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+        codexSourceId: bridge.authenticatedCodexSourceId,
+      );
+      final oldRead = Completer<ConversationHotWindowSnapshot?>();
+      final oldSnapshot = _previewSnapshot(
+        partitionId: target.fingerprint,
+        providerSessionId: 'old-thread',
+        revision: 'old-revision',
+        entryId: 'old-entry',
+        text: 'Old target must stay hidden',
+      );
+      final newSnapshot = _previewSnapshot(
+        partitionId: target.fingerprint,
+        providerSessionId: 'new-thread',
+        revision: 'new-revision',
+        entryId: 'new-entry',
+        text: 'New target is visible',
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(databasePath: 'unused-target-switch.db'),
+        snapshots: const {},
+        queuedReads: [oldRead.future, Future.value(newSnapshot)],
+      );
+      final sync = _ControllableConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+
+      Future<Widget> build(String durableId) => buildTestCodexSessionScreen(
+        bridge: bridge,
+        sessionId: 'pending-$durableId',
+        isPending: true,
+        durableProviderSessionId: durableId,
+        dataSourceIdentity: bridge.dataSourceIdentity,
+        conversationContentSync: sync,
+      );
+
+      try {
+        await tester.pumpWidget(await build('old-thread'));
+        await tester.pump();
+        expect(repository.loadConversationWindowCalls, 1);
+
+        await tester.pumpWidget(await build('new-thread'));
+        for (
+          var attempt = 0;
+          attempt < 10 && find.text('New target is visible').evaluate().isEmpty;
+          attempt++
+        ) {
+          await tester.pump();
+        }
+        expect(repository.loadConversationWindowCalls, 2);
+        expect(find.text('New target is visible'), findsOneWidget);
+
+        oldRead.complete(oldSnapshot);
+        await tester.pump();
+        await tester.pump();
+        expect(find.text('Old target must stay hidden'), findsNothing);
+        expect(find.text('New target is visible'), findsOneWidget);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'a pending Codex preview cannot apply after the runtime attaches',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-codex-attach-race'
+        ..authenticatedCodexSourceId = 'codex-source-attach-race'
+        ..mockLogicalConnectionIdentity = 'machine:codex-attach-race'
+        ..mockLastUrl = 'wss://codex-attach-race.test/socket';
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+        codexSourceId: bridge.authenticatedCodexSourceId,
+      );
+      final pendingRead = Completer<ConversationHotWindowSnapshot?>();
+      final staleSnapshot = _previewSnapshot(
+        partitionId: target.fingerprint,
+        providerSessionId: 'codex-attach-thread',
+        revision: 'codex-stale-revision',
+        entryId: 'codex-stale-entry',
+        text: 'Detached Codex preview must not overwrite attached runtime',
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(databasePath: 'unused-codex-attach.db'),
+        snapshots: const {},
+        queuedReads: [pendingRead.future],
+      );
+      final sync = _ControllableConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+      final pendingSessionCreated = ValueNotifier<SystemMessage?>(null);
+
+      Future<Widget> build() => buildTestCodexSessionScreen(
+        bridge: bridge,
+        sessionId: 'pending-codex-runtime',
+        isPending: true,
+        durableProviderSessionId: 'codex-attach-thread',
+        pendingSessionCreated: pendingSessionCreated,
+        dataSourceIdentity: bridge.dataSourceIdentity,
+        conversationContentSync: sync,
+      );
+
+      try {
+        await tester.pumpWidget(await build());
+        await tester.pump();
+        expect(repository.loadConversationWindowCalls, 1);
+
+        pendingSessionCreated.value = const SystemMessage(
+          subtype: 'session_created',
+          sessionId: 'attached-runtime',
+        );
+        await tester.pump();
+        pendingRead.complete(staleSnapshot);
+        await tester.pump();
+        await tester.pump();
+
+        expect(repository.loadConversationWindowCalls, 1);
+        expect(
+          find.text(
+            'Detached Codex preview must not overwrite attached runtime',
+          ),
+          findsNothing,
+        );
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        pendingSessionCreated.dispose();
+        bridge.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'an attached Claude runtime does not start the detached cache preview loop',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-active-claude'
+        ..mockLogicalConnectionIdentity = 'machine:active-claude'
+        ..mockLastUrl = 'wss://active-claude.test/socket';
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(databasePath: 'unused-active-claude.db'),
+        snapshots: {
+          target.fingerprint: _previewSnapshot(
+            partitionId: target.fingerprint,
+            provider: Provider.claude.value,
+            providerSessionId: 'active-claude-thread',
+            revision: 'active-claude-cache',
+            entryId: 'active-claude-entry',
+            text: 'Detached cache must not replace the attached runtime',
+          ),
+        },
+      );
+      final sync = _ControllableConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+
+      try {
+        await tester.pumpWidget(
+          await buildTestClaudeSessionScreen(
+            bridge: bridge,
+            sessionId: 'active-claude-runtime',
+            isPending: false,
+            durableProviderSessionId: 'active-claude-thread',
+            dataSourceIdentity: bridge.dataSourceIdentity,
+            conversationContentSync: sync,
+          ),
+        );
+        for (var index = 0; index < 5; index += 1) {
+          await tester.pump();
+        }
+
+        expect(repository.loadConversationWindowCalls, 0);
+        expect(
+          find.text('Detached cache must not replace the attached runtime'),
+          findsNothing,
+        );
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'a pending Claude preview cannot apply after the runtime attaches',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-claude-attach-race'
+        ..mockLogicalConnectionIdentity = 'machine:claude-attach-race'
+        ..mockLastUrl = 'wss://claude-attach-race.test/socket';
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+      );
+      final pendingRead = Completer<ConversationHotWindowSnapshot?>();
+      final staleSnapshot = _previewSnapshot(
+        partitionId: target.fingerprint,
+        provider: Provider.claude.value,
+        providerSessionId: 'claude-attach-thread',
+        revision: 'claude-stale-revision',
+        entryId: 'claude-stale-entry',
+        text: 'Detached preview must not overwrite attached runtime',
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(databasePath: 'unused-claude-attach.db'),
+        snapshots: const {},
+        queuedReads: [pendingRead.future],
+      );
+      final sync = _ControllableConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+
+      Future<Widget> build({required bool pending}) =>
+          buildTestClaudeSessionScreen(
+            bridge: bridge,
+            sessionId: pending ? 'pending-claude-runtime' : 'attached-runtime',
+            isPending: pending,
+            durableProviderSessionId: 'claude-attach-thread',
+            dataSourceIdentity: bridge.dataSourceIdentity,
+            conversationContentSync: sync,
+          );
+
+      try {
+        await tester.pumpWidget(await build(pending: true));
+        await tester.pump();
+        expect(repository.loadConversationWindowCalls, 1);
+
+        await tester.pumpWidget(await build(pending: false));
+        await tester.pump();
+        pendingRead.complete(staleSnapshot);
+        await tester.pump();
+        await tester.pump();
+
+        expect(repository.loadConversationWindowCalls, 1);
+        expect(
+          find.text('Detached preview must not overwrite attached runtime'),
+          findsNothing,
+        );
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
@@ -2354,6 +2711,7 @@ class _ControllableConversationContentSyncService
       StreamController<ConversationContentCacheUpdate>.broadcast();
   final List<ConversationContentTarget?> focusedTargets = [];
   int _testCacheCommitEpoch = 0;
+  final Map<String, int> _testCacheCommitEpochsByConversation = {};
 
   @override
   Stream<ConversationContentCacheUpdate> get updates => _testUpdates.stream;
@@ -2361,8 +2719,24 @@ class _ControllableConversationContentSyncService
   @override
   int get cacheCommitEpoch => _testCacheCommitEpoch;
 
-  void advanceCacheCommitEpoch() {
+  @override
+  int cacheCommitEpochFor({
+    required String targetFingerprint,
+    required String provider,
+    required String providerSessionId,
+  }) =>
+      _testCacheCommitEpochsByConversation['$targetFingerprint\u0000$provider\u0000$providerSessionId'] ??
+      0;
+
+  void advanceCacheCommitEpoch({
+    required String targetFingerprint,
+    required String provider,
+    required String providerSessionId,
+  }) {
     _testCacheCommitEpoch += 1;
+    final key = '$targetFingerprint\u0000$provider\u0000$providerSessionId';
+    _testCacheCommitEpochsByConversation[key] =
+        (_testCacheCommitEpochsByConversation[key] ?? 0) + 1;
   }
 
   @override
@@ -2387,10 +2761,15 @@ class _ControllableConversationContentSyncService
     required String revision,
     String? targetFingerprint,
   }) {
-    advanceCacheCommitEpoch();
+    final fingerprint = targetFingerprint ?? currentCacheTargetFingerprint;
+    advanceCacheCommitEpoch(
+      targetFingerprint: fingerprint,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
     _testUpdates.add(
       ConversationContentCacheUpdate(
-        targetFingerprint: targetFingerprint ?? currentCacheTargetFingerprint,
+        targetFingerprint: fingerprint,
         provider: provider,
         providerSessionId: providerSessionId,
         revision: revision,
