@@ -50,11 +50,13 @@ import type { CodexDesktopToolTimeline } from "./codex-tool-history.js";
 import { sessionHistoryToServerMessages } from "./codex-thread-history.js";
 import {
   APP_SERVER_STATUS_CAPABILITY,
+  CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
   CONVERSATION_SYNC_V2_CAPABILITY,
   CONVERSATION_USER_INDEX_CAPABILITY,
   type ConversationSyncCatalogEntry,
   type ConversationSyncClientMessage,
   type ConversationSyncReadWatermark,
+  type ConversationRuntimeOverlayMessage,
   type ConversationSyncServerMessage,
   type ConversationSyncStatus,
   type ConversationSyncTarget,
@@ -161,6 +163,7 @@ const MAX_SHARED_OBSERVER_LIVE_MESSAGES = 256;
 const MAX_SHARED_OBSERVER_LIVE_BYTES_PER_THREAD = 512 * 1024;
 const MAX_SHARED_OBSERVER_LIVE_THREADS = 64;
 const MAX_SHARED_OBSERVER_LIVE_BYTES_TOTAL = 8 * 1024 * 1024;
+const MAX_RUNTIME_OVERLAY_IDS_PER_SUBSCRIPTION = 128;
 const MAX_SHARED_OBSERVER_INLINE_IMAGES = 4;
 const MAX_SHARED_OBSERVER_INLINE_IMAGE_BASE64_BYTES = 8 * 1024 * 1024;
 const CATALOG_CONNECTION_REUSE_MS = 5_000;
@@ -270,6 +273,7 @@ interface SyncSubscription {
   pendingThreadStates: Map<ConversationKey, string>;
   pendingThreadSequences: Map<ConversationKey, number>;
   readWatermarks: Map<ConversationKey, string>;
+  runtimeOverlayIds: Set<string>;
   nextSequence: number;
   outstandingBytes: number;
   outstanding: Map<number, number>;
@@ -477,6 +481,18 @@ interface ExternalCodexLiveMessage {
   message: ServerMessage;
   observedAt: string;
   bytes: number;
+  /**
+   * Independent producer of this projection. Runtime session fanout and the
+   * shared app-server observer can report the same provider item with
+   * different temporary ids; keeping their provenance lets the canonical
+   * merge reconcile them without treating two events from one producer as
+   * aliases.
+   */
+  projectionSource:
+    | "runtime"
+    | "sharedObserver"
+    | "externalObserver"
+    | "providerRefresh";
   /** Internal per-turn identity when the provider omits a durable turn id. */
   identityScope?: string;
 }
@@ -1016,6 +1032,29 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     } else if (message.type === "user_input") {
       this.clearTerminalResult(target, observedAt);
     }
+    if (
+      target.provider === "codex" &&
+      isConversationRuntimeOverlayMessage(message)
+    ) {
+      const runtimeState = (
+        this.runtime.listRuntimeConversationStates?.() ?? []
+      ).find(
+        (state) =>
+          state.bridgeSessionId === session.id &&
+          state.provider === target.provider &&
+          state.providerSessionId === target.providerSessionId,
+      );
+      const turnId = message.historyTurnId ?? runtimeState?.activeTurnId;
+      const authorityGeneration = runtimeState?.authorityGeneration;
+      this.publishRuntimeOverlay(target, {
+        message,
+        observedAt,
+        ...(turnId ? { turnId } : {}),
+        originGeneration: `runtime:${session.id}:${authorityGeneration ?? "unknown"}`,
+        runtimeSessionId: session.id,
+        ...(authorityGeneration ? { authorityGeneration } : {}),
+      });
+    }
     if (!this.hasInteractiveClients()) return;
 
     if (isStreamingConversationDelta(message)) {
@@ -1033,6 +1072,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           `runtime:${identity}`,
           message,
           observedAt,
+          "runtime",
         );
       }
       this.publishLiveContent(
@@ -1408,6 +1448,21 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       event.observedAt,
       false,
     );
+    if (isConversationRuntimeOverlayMessage(message)) {
+      const key = targetKey(target);
+      const projectedTurnId =
+        event.turnId ?? this.sharedRuntimeStatuses.get(key)?.activeTurnId;
+      this.publishRuntimeOverlay(target, {
+        message,
+        observedAt: event.observedAt,
+        ...(projectedTurnId ? { turnId: projectedTurnId } : {}),
+        originGeneration:
+          `observer:${event.connectionGeneration}:${event.observerGeneration}`,
+        authorityGeneration: sharedControlAuthorityGeneration(
+          event.connectionGeneration,
+        ),
+      });
+    }
     if (message.type === "result") {
       const terminal = terminalResultFromServerMessage(message);
       if (terminal) {
@@ -1438,6 +1493,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       `${event.turnId ?? event.anonymousTurnScope ?? `observer:${event.observerGeneration}:turn-unknown`}:${identity}`,
       message,
       event.observedAt,
+      "sharedObserver",
       event.turnId ? undefined : event.anonymousTurnScope,
     );
     if (!remembered) {
@@ -1459,6 +1515,80 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       assistantTextCatalogActivity(message, event.observedAt),
       "direct",
     );
+  }
+
+  private publishRuntimeOverlay(
+    target: ConversationSyncTarget,
+    input: {
+      message: ConversationRuntimeOverlayMessage;
+      observedAt: string;
+      turnId?: string;
+      originGeneration: string;
+      runtimeSessionId?: string;
+      authorityGeneration?: string;
+    },
+  ): void {
+    const key = targetKey(target);
+    const turnScope = input.turnId ?? "turnless";
+    const overlayId = createHash("sha256")
+      .update(
+        stableJson({
+          source: this.runtime.codexSourceId ?? "legacy",
+          key,
+          turnScope,
+          message: stableObservedMessagePayload(input.message),
+        }),
+      )
+      .digest("hex");
+    for (const [client, subscription] of this.subscriptions) {
+      if (
+        !subscription.interactive ||
+        subscription.focusedKey !== key ||
+        !this.runtime.supports(
+          client,
+          CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
+        ) ||
+        subscription.runtimeOverlayIds.has(overlayId)
+      ) {
+        continue;
+      }
+      const payload: ConversationSyncEventPayload = {
+        event: "runtime_overlay",
+        ...target,
+        overlayId,
+        observedAt: input.observedAt,
+        originGeneration: input.originGeneration,
+        ...(input.runtimeSessionId
+          ? { runtimeSessionId: input.runtimeSessionId }
+          : {}),
+        ...(input.authorityGeneration
+          ? { authorityGeneration: input.authorityGeneration }
+          : {}),
+        ...(input.turnId ? { turnId: input.turnId } : {}),
+        message: input.message,
+      };
+      const bytes = this.eventPayloadBytes(subscription, payload);
+      if (
+        bytes > MAX_FRAME_BYTES ||
+        subscription.queuedBytes + bytes > MAX_QUEUED_BYTES
+      ) {
+        console.warn(
+          `[conversation-sync-v2] runtime overlay dropped ` +
+            `target=${traceTarget(key)} reason=backpressure_or_size`,
+        );
+        continue;
+      }
+      this.sendEvent(client, subscription, payload);
+      subscription.runtimeOverlayIds.add(overlayId);
+      while (
+        subscription.runtimeOverlayIds.size >
+        MAX_RUNTIME_OVERLAY_IDS_PER_SUBSCRIPTION
+      ) {
+        subscription.runtimeOverlayIds.delete(
+          subscription.runtimeOverlayIds.values().next().value!,
+        );
+      }
+    }
   }
 
   private forwardSharedObserverContextUsage(
@@ -1563,6 +1693,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     itemKey: string,
     message: ServerMessage,
     observedAt: string,
+    projectionSource: "runtime" | "sharedObserver",
     identityScope?: string,
   ): boolean {
     const key = targetKey(target);
@@ -1579,6 +1710,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       message,
       observedAt,
       bytes,
+      projectionSource,
       ...(identityScope ? { identityScope } : {}),
     });
     totalBytes += bytes;
@@ -1952,6 +2084,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       pendingThreadStates: new Map(),
       pendingThreadSequences: new Map(),
       readWatermarks,
+      runtimeOverlayIds: new Set(),
       nextSequence: 0,
       outstandingBytes: 0,
       outstanding: new Map(),
@@ -2813,6 +2946,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             };
           })
         : target.provider === "codex" &&
+      options.forceProviderRead !== true &&
       sharedMessagesAtReadStart &&
       previousSnapshot &&
       liveAtReadStart?.readScope === "direct"
@@ -2859,6 +2993,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       .then(({ window, canonicalMessages }) => {
         const externalMessages = this.externalCodexLiveMessages.get(key);
         const sharedMessages = this.sharedObserverLiveMessages.get(key);
+        const externalSources = observedMessageSources(
+          "external",
+          externalMessages?.values() ?? [],
+        );
+        const sharedSources = observedMessageSources(
+          "shared",
+          sharedMessages?.values() ?? [],
+        );
         const providerWindowIncomplete =
           canonicalMessages !== undefined && window.latestTurnComplete === false;
         const effectiveWindow =
@@ -2867,16 +3009,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             : window;
         const mergedMessages = mergeObservedMessageSources(
           effectiveWindow.messages,
-          [
-            {
-              source: "external",
-              observed: externalMessages?.values() ?? [],
-            },
-            {
-              source: "shared",
-              observed: sharedMessages?.values() ?? [],
-            },
-          ],
+          [...externalSources, ...sharedSources],
           preferNonRegressiveLatestTurnMessage,
         );
         const canonicalHistoryCoversExternalMessages =
@@ -2884,18 +3017,35 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           (canonicalMessages !== undefined &&
             !providerWindowIncomplete &&
             !this.liveContentRevisions.has(key) &&
-            canonicalHistoryCoversDurableExternalMessages(
+            canonicalHistoryCoversObservedSources(
               canonicalMessages,
-              externalMessages.values(),
+              externalSources,
             ));
         const canonicalHistoryCoversSharedMessages =
           sharedMessages === undefined ||
           (canonicalMessages !== undefined &&
             !providerWindowIncomplete &&
-            canonicalHistoryCoversDurableExternalMessages(
+            canonicalHistoryCoversObservedSources(
               canonicalMessages,
-              sharedMessages.values(),
+              sharedSources,
             ));
+        if (
+          options.forceProviderRead === true &&
+          (externalSources.length > 0 || sharedSources.length > 0)
+        ) {
+          traceConversationSync(
+            `[conversation-sync-v2] timeline reconcile ` +
+              `target=${traceTarget(key)} ` +
+              `canonical=${effectiveWindow.messages.length} ` +
+              `observed=${observedMessageSourceSummary([
+                ...externalSources,
+                ...sharedSources,
+              ])} ` +
+              `merged=${mergedMessages.length} ` +
+              `externalCovered=${canonicalHistoryCoversExternalMessages} ` +
+              `sharedCovered=${canonicalHistoryCoversSharedMessages}`,
+          );
+        }
         const messages =
           canonicalHistoryCoversExternalMessages &&
           canonicalHistoryCoversSharedMessages
@@ -3017,8 +3167,12 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           !catalogContentMissing &&
           !providerWindowIncomplete &&
           canonicalHistoryCoversExternalMessages &&
-          (canonicalHistoryCoversSharedMessages || sharedMessages !== undefined)
+          canonicalHistoryCoversSharedMessages
         ) {
+          // Never promote an observer/runtime-only projection into the next
+          // snapshot's canonical base. Snapshot entries do not persist their
+          // producer/scope metadata, so doing so would erase the provenance
+          // needed to keep repeated anonymous turns distinct.
           this.rememberSnapshot(key, snapshot);
         }
         if (
@@ -5016,6 +5170,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       message,
       observedAt,
       bytes,
+      projectionSource: "externalObserver",
       ...(!event.turnId && event.anonymousTurnScope
         ? { identityScope: event.anonymousTurnScope }
         : {}),
@@ -6078,14 +6233,45 @@ function mergeObservedMessagesReplacingStable(
 ): ServerMessage[] {
   return mergeObservedMessageSources(
     history,
-    [{ source: "observed", observed }],
+    [{ source: "observed", observed: [...observed] }],
     selectReplacement,
   );
 }
 
 interface ObservedMessageSource {
   source: string;
-  observed: Iterable<ExternalCodexLiveMessage>;
+  /** Repeatable by merge, coverage and diagnostic passes. */
+  observed: readonly ExternalCodexLiveMessage[];
+}
+
+function observedMessageSources(
+  fallbackSource: string,
+  observed: Iterable<ExternalCodexLiveMessage>,
+): ObservedMessageSource[] {
+  const grouped = new Map<string, ExternalCodexLiveMessage[]>();
+  for (const entry of observed) {
+    const source = entry.projectionSource;
+    const entries = grouped.get(source) ?? [];
+    entries.push(entry);
+    grouped.set(source, entries);
+  }
+  return [...grouped].map(([source, entries]) => ({
+    source: `${fallbackSource}:${source}`,
+    observed: entries,
+  }));
+}
+
+function observedMessageSourceSummary(
+  sources: readonly ObservedMessageSource[],
+): string {
+  if (sources.length === 0) return "none";
+  return sources
+    .map((source) => {
+      let count = 0;
+      for (const _entry of source.observed) count += 1;
+      return `${source.source}:${count}`;
+    })
+    .join(",");
 }
 
 interface ObservedMessageAliasGroup {
@@ -6126,6 +6312,33 @@ function mergeObservedMessageSources(
     string,
     ReadonlyMap<string, number>
   >();
+  const replaceGroupOutput = (
+    group: ObservedMessageAliasGroup,
+    incoming: ServerMessage,
+  ): void => {
+    const previous = group.output;
+    const replacement = selectReplacement(previous, incoming);
+    if (
+      group.sources.has("canonical") &&
+      previous.type === "user_input" &&
+      replacement.type === "user_input"
+    ) {
+      // A live observer may carry a richer payload, but provider item and turn
+      // identities from the canonical app-server window remain authoritative.
+      group.output = {
+        ...previous,
+        ...replacement,
+        providerItemId: previous.providerItemId ?? replacement.providerItemId,
+        historyTurnId: previous.historyTurnId ?? replacement.historyTurnId,
+        clientMessageId:
+          previous.clientMessageId ?? replacement.clientMessageId,
+        userMessageUuid:
+          previous.userMessageUuid ?? replacement.userMessageUuid,
+      };
+      return;
+    }
+    group.output = replacement;
+  };
   const countAssistantAliases = (
     messages: Iterable<ServerMessage>,
   ): Map<string, number> => {
@@ -6200,7 +6413,14 @@ function mergeObservedMessageSources(
         ? scopedObservedMessageIdentity(baseIdentity, entry.identityScope)
         : baseIdentity;
       const exactCandidates = identity
-        ? [...(identities.get(identity) ?? [])]
+        ? [...(identities.get(identity) ?? [])].filter((index) =>
+            projectionSourceMayAlias(
+              groups[index]!,
+              source.source,
+              message,
+              entry.identityScope,
+            ),
+          )
         : [];
       if (exactCandidates.length === 1) {
         const index = exactCandidates[0]!;
@@ -6212,7 +6432,7 @@ function mergeObservedMessageSources(
             )
           : observedMessageIdentity(group.output);
         if (groupIdentity === identity) {
-          group.output = selectReplacement(group.output, message);
+          replaceGroupOutput(group, message);
         }
         group.aliases.push({
           source: source.source,
@@ -6238,7 +6458,12 @@ function mergeObservedMessageSources(
             (index) => {
               const group = groups[index]!;
               return (
-                !group.sources.has(source.source) &&
+                projectionSourceMayAlias(
+                  group,
+                  source.source,
+                  message,
+                  entry.identityScope,
+                ) &&
                 anonymousScopesMayAlias(
                   group.aliases,
                   message,
@@ -6252,7 +6477,7 @@ function mergeObservedMessageSources(
         const index = crossSourceStableCandidates[0]!;
         const group = groups[index]!;
         if (observedMessageIdentity(group.output) === baseIdentity) {
-          group.output = selectReplacement(group.output, message);
+          replaceGroupOutput(group, message);
         }
         group.aliases.push({
           source: source.source,
@@ -6277,7 +6502,12 @@ function mergeObservedMessageSources(
             (index) => {
               const group = groups[index]!;
               return (
-                !group.sources.has(source.source) &&
+                projectionSourceMayAlias(
+                  group,
+                  source.source,
+                  message,
+                  entry.identityScope,
+                ) &&
                 group.aliases.some((candidate) =>
                   equivalentTurnlessStableMessage(candidate.message, message),
                 )
@@ -6325,7 +6555,12 @@ function mergeObservedMessageSources(
             );
           });
         return (
-          !group.sources.has(source.source) &&
+          projectionSourceMayAlias(
+            group,
+            source.source,
+            message,
+            entry.identityScope,
+          ) &&
           assistantCardinalityMatches &&
           group.aliases.some((candidate) =>
             equivalentObservedMessageAlias(candidate.message, message),
@@ -6387,6 +6622,74 @@ function scopedObservedMessageIdentity(
   return `scope:${scope}:${identity}`;
 }
 
+function projectionSourceMayAlias(
+  group: ObservedMessageAliasGroup,
+  source: string,
+  incoming: ServerMessage,
+  incomingScope: string | undefined,
+): boolean {
+  if (!group.sources.has(source)) return true;
+  return group.aliases.some((alias) => {
+    if (alias.source !== source) return false;
+    if (
+      alias.identityScope &&
+      incomingScope &&
+      alias.identityScope !== incomingScope
+    ) {
+      return false;
+    }
+    return equivalentStrongSameProjectionAlias(alias.message, incoming);
+  });
+}
+
+function equivalentStrongSameProjectionAlias(
+  first: ServerMessage,
+  second: ServerMessage,
+): boolean {
+  const firstTurn =
+    first.type === "user_input" ||
+    first.type === "assistant" ||
+    first.type === "tool_result"
+      ? first.historyTurnId?.trim()
+      : undefined;
+  const secondTurn =
+    second.type === "user_input" ||
+    second.type === "assistant" ||
+    second.type === "tool_result"
+      ? second.historyTurnId?.trim()
+      : undefined;
+  if (firstTurn && secondTurn && firstTurn !== secondTurn) return false;
+  if (first.type === "user_input" && second.type === "user_input") {
+    if (!equivalentObservedUserMessage(first, second)) return false;
+    const firstProvider = first.providerItemId?.trim();
+    const secondProvider = second.providerItemId?.trim();
+    if (firstProvider && secondProvider && firstProvider === secondProvider) {
+      return true;
+    }
+    const firstClient = first.clientMessageId?.trim();
+    const secondClient = second.clientMessageId?.trim();
+    const firstUuid = first.userMessageUuid?.trim();
+    const secondUuid = second.userMessageUuid?.trim();
+    return Boolean(
+      firstClient &&
+        secondClient &&
+        firstClient === secondClient &&
+        firstUuid &&
+        secondUuid &&
+        firstUuid === secondUuid,
+    );
+  }
+  if (first.type === "assistant" && second.type === "assistant") {
+    const firstId = (first.messageUuid ?? first.message.id)?.trim();
+    const secondId = (second.messageUuid ?? second.message.id)?.trim();
+    return Boolean(firstId && secondId && firstId === secondId);
+  }
+  if (first.type === "tool_result" && second.type === "tool_result") {
+    return first.toolUseId.trim() === second.toolUseId.trim();
+  }
+  return false;
+}
+
 function anonymousScopesMayAlias(
   aliases: ReadonlyArray<{
     message: ServerMessage;
@@ -6434,12 +6737,12 @@ function turnlessObservedMessageIdentity(
   message: ServerMessage,
 ): string | null {
   if (message.type === "user_input") {
+    const clientMessageId = message.clientMessageId?.trim();
+    if (clientMessageId) return `user:client:${clientMessageId}`;
     const providerItemId = message.providerItemId?.trim();
     if (providerItemId) return `user:provider:${providerItemId}`;
     const userMessageUuid = message.userMessageUuid?.trim();
     if (userMessageUuid) return `user:uuid:${userMessageUuid}`;
-    const clientMessageId = message.clientMessageId?.trim();
-    if (clientMessageId) return `user:client:${clientMessageId}`;
     return null;
   }
   if (message.type === "assistant") {
@@ -6528,6 +6831,7 @@ function mergeSnapshotWithLatestTurn(
       message,
       observedAt: "",
       bytes: 0,
+      projectionSource: "providerRefresh" as const,
     })),
     preferNonRegressiveLatestTurnMessage,
   );
@@ -6674,11 +6978,11 @@ function mergeLiveReadScope(
   return rank[first] >= rank[second] ? first : second;
 }
 
-function canonicalHistoryCoversDurableExternalMessages(
+function canonicalHistoryCoversObservedSources(
   history: readonly ServerMessage[],
-  observed: Iterable<ExternalCodexLiveMessage>,
+  sources: readonly ObservedMessageSource[],
 ): boolean {
-  const entries = [...observed];
+  const entries = sources.flatMap((source) => [...source.observed]);
   const durable = entries.filter(
     (entry) =>
       entry.message.type !== "thinking_delta" &&
@@ -6689,9 +6993,17 @@ function canonicalHistoryCoversDurableExternalMessages(
   // provider items. Keep them while canonical history is wholly empty, then
   // require only stable user/assistant/tool identities to be represented.
   if (hasTransient && history.length === 0) return false;
+  const durableEntries = new Set(durable);
   const merged = mergeObservedMessageSources(
     history,
-    [{ source: "external", observed: durable }],
+    sources
+      .map((source) => ({
+        source: source.source,
+        observed: [...source.observed].filter((entry) =>
+          durableEntries.has(entry),
+        ),
+      }))
+      .filter((source) => source.observed.length > 0),
     preferNonRegressiveLatestTurnMessage,
   );
   return (
@@ -6708,15 +7020,15 @@ function observedMessageIdentity(message: ServerMessage): string | null {
   if (message.type === "user_input") {
     const turnId = message.historyTurnId?.trim();
     const turnScope = turnId ? `turn:${turnId}:` : "";
+    const clientMessageId = message.clientMessageId?.trim();
+    if (clientMessageId) {
+      return `user:${turnScope}client:${clientMessageId}`;
+    }
     const providerItemId = message.providerItemId?.trim();
     if (providerItemId) return `user:${turnScope}provider:${providerItemId}`;
     const userMessageUuid = message.userMessageUuid?.trim();
     if (userMessageUuid) {
       return `user:${turnScope}uuid:${userMessageUuid}`;
-    }
-    const clientMessageId = message.clientMessageId?.trim();
-    if (clientMessageId) {
-      return `user:${turnScope}client:${clientMessageId}`;
     }
     return `user:${turnScope}hash:${createHash("sha256")
       .update(stableJson(message))
@@ -9387,6 +9699,17 @@ function isConversationTimelineMessage(message: ServerMessage): boolean {
     message.type === "history_snapshot" ||
     message.type === "tool_use_summary" ||
     message.type === "user_input"
+  );
+}
+
+function isConversationRuntimeOverlayMessage(
+  message: ServerMessage,
+): message is ConversationRuntimeOverlayMessage {
+  return (
+    message.type === "result" ||
+    message.type === "error" ||
+    message.type === "guardian_approval" ||
+    message.type === "tool_use_summary"
   );
 }
 

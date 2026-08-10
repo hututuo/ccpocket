@@ -884,6 +884,8 @@ export type ServerMessage = (
       outputTokens?: number;
       toolCalls?: number;
       fileEdits?: number;
+      /** Bridge-internal provider turn fence for transient runtime UI. */
+      historyTurnId?: string;
     }
   | {
       type: "guardian_approval";
@@ -894,6 +896,8 @@ export type ServerMessage = (
       reviewId?: string;
       targetItemId?: string;
       action?: Record<string, unknown>;
+      /** Bridge-internal provider turn fence for transient runtime UI. */
+      historyTurnId?: string;
     }
   | {
       type: "error";
@@ -908,6 +912,8 @@ export type ServerMessage = (
        * remain backward compatible.
        */
       guardianReview?: GuardianReviewDetails;
+      /** Bridge-internal provider turn fence for transient runtime UI. */
+      historyTurnId?: string;
     }
   | {
       type: "session_link_resolution";
@@ -1088,7 +1094,13 @@ export type ServerMessage = (
     }
   | { type: "worktree_list"; worktrees: WorktreeInfo[]; mainBranch?: string }
   | { type: "worktree_removed"; worktreePath: string }
-  | { type: "tool_use_summary"; summary: string; precedingToolUseIds: string[] }
+  | {
+      type: "tool_use_summary";
+      summary: string;
+      precedingToolUseIds: string[];
+      /** Bridge-internal provider turn fence for transient runtime UI. */
+      historyTurnId?: string;
+    }
   | {
       type: "rewind_preview";
       canRewind: boolean;

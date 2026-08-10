@@ -21,6 +21,7 @@ import {
 } from "./conversation-sync-v2.js";
 import {
   APP_SERVER_STATUS_CAPABILITY,
+  CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
   CONVERSATION_SYNC_V2_CAPABILITY,
   CONVERSATION_USER_INDEX_CAPABILITY,
   conversationSyncV2ProtocolContribution,
@@ -389,6 +390,519 @@ describe("conversation_sync_v2 protocol", () => {
       expect(
         assistantTexts.filter((text) => text === ambiguousStableText),
       ).toHaveLength(3);
+    } finally {
+      await fixture.handler.close();
+    }
+  });
+
+  it.each(["runtime-first", "observer-first"] as const)(
+    "reconciles runtime and shared-observer aliases from the same Codex turn (%s)",
+    async (order) => {
+      const threadId = `thread-dual-live-${order}`;
+      const turnId = "turn-shared-live";
+      const clientMessageId = "8cc81087-39db-4fe5-ac86-6ff87594cc8f";
+      const timestamp = "2026-08-10T16:53:34.202Z";
+      const userText = "1";
+      const assistantText = "one authoritative answer";
+      const control = createSharedControlSource({
+        kind: "ready",
+        connectionGeneration: 9,
+      });
+      const codex = codexSeed(0, threadId);
+      codex.status = {
+        ...codex.status,
+        activity: "working",
+        runtimeAttachment: "loaded",
+        confidence: "authoritative",
+      };
+      const canonicalHistory: ServerMessage[] = [
+        {
+          type: "user_input",
+          text: userText,
+          providerItemId: "canonical-user-item",
+          historyTurnId: turnId,
+          userMessageUuid: "codex:user-turn:1",
+          clientMessageId,
+          timestamp,
+          receivedAt: timestamp,
+        },
+        {
+          type: "assistant",
+          historyTurnId: turnId,
+          messageUuid: "canonical-assistant-item",
+          sourceTimestamp: "2026-08-10T16:53:42.000Z",
+          message: {
+            id: "canonical-assistant-item",
+            role: "assistant",
+            model: "gpt-5.6-sol",
+            content: [{ type: "text", text: assistantText }],
+          },
+        },
+      ];
+      const observers: FakeSharedContentObserverProcess[] = [];
+      const fixture = createFixture(
+        [codex],
+        async () => canonicalHistory,
+        {
+          daemonMode: true,
+          createSharedContentObserverProcess: () => {
+            const process = new FakeSharedContentObserverProcess();
+            observers.push(process);
+            return process.asObserver();
+          },
+          sharedContentObserverUnfocusGraceMs: 0,
+          latestTurnHistoryReader: async () => ({
+            messages: canonicalHistory,
+            nextTurnCursor: null,
+            latestTurnComplete: true,
+          }),
+        },
+        {
+          subscribeSharedRuntimeControl: control.subscribe,
+          getProviderSessionId: () => threadId,
+        },
+      );
+      const liveClient = {};
+      const subscription = {
+        ...subscribeMessage(),
+        focused: { provider: "codex" as const, providerSessionId: threadId },
+      };
+      const runtimeSession: LocalFeatureSession = {
+        id: `runtime-${order}`,
+        provider: "codex",
+        process: {},
+        projectPath: "/project/0",
+      };
+      const runtimeMessages: ServerMessage[] = [
+        {
+          type: "user_input",
+          text: userText,
+          userMessageUuid: "codex:user-turn:1",
+          clientMessageId,
+          timestamp,
+          receivedAt: timestamp,
+          historySeq: 3,
+        },
+        {
+          type: "user_input",
+          text: userText,
+          providerItemId: "runtime-user-item",
+          historyTurnId: turnId,
+          userMessageUuid: "codex:user-turn:1",
+          clientMessageId,
+          timestamp,
+          receivedAt: timestamp,
+          historySeq: 4,
+        },
+        {
+          type: "assistant",
+          historyTurnId: turnId,
+          messageUuid: "runtime-assistant-item",
+          sourceTimestamp: "2026-08-10T16:53:42.000Z",
+          message: {
+            id: "runtime-assistant-item",
+            role: "assistant",
+            model: "",
+            content: [{ type: "text", text: assistantText }],
+          },
+        },
+      ];
+      const observerMessages: ServerMessage[] = [
+        {
+          type: "user_input",
+          text: userText,
+          providerItemId: "observer-user-item",
+          userMessageUuid: "codex:user-turn:1",
+          clientMessageId,
+          timestamp,
+        },
+        {
+          type: "assistant",
+          messageUuid: "observer-assistant-item",
+          sourceTimestamp: "2026-08-10T16:53:42.000Z",
+          message: {
+            id: "observer-assistant-item",
+            role: "assistant",
+            model: "",
+            content: [{ type: "text", text: assistantText }],
+          },
+        },
+      ];
+
+      try {
+        await fixture.handler.handle(
+          subscription,
+          context(liveClient, fixture.runtime),
+        );
+        await vi.waitFor(() => {
+          expect(observers).toHaveLength(1);
+          expect(
+            events(fixture.sent, liveClient, "sync_complete").length,
+          ).toBeGreaterThan(0);
+        });
+        const initialComplete = events(
+          fixture.sent,
+          liveClient,
+          "sync_complete",
+        ).at(-1)!;
+        await fixture.handler.handle(
+          {
+            type: "conversation_sync_ack",
+            protocolVersion: 2,
+            subscriptionId: subscription.requestId,
+            sequence: initialComplete.sequence,
+          },
+          context(liveClient, fixture.runtime),
+        );
+
+        const publishRuntime = () => {
+          for (const message of runtimeMessages) {
+            fixture.handler.sessionMessage(runtimeSession, message);
+          }
+        };
+        const publishObserver = () => {
+          for (const message of observerMessages) observers[0]!.message(message);
+        };
+        if (order === "runtime-first") {
+          publishRuntime();
+          publishObserver();
+        } else {
+          publishObserver();
+          publishRuntime();
+        }
+
+        const completeCountBeforeLive = events(
+          fixture.sent,
+          liveClient,
+          "sync_complete",
+        ).length;
+        await vi.waitFor(
+          () =>
+            expect(
+              events(fixture.sent, liveClient, "sync_complete").length,
+            ).toBeGreaterThan(completeCountBeforeLive),
+          { timeout: 3_000 },
+        );
+
+        const snapshotClient = {};
+        await fixture.handler.handle(
+          { ...subscription, requestId: `${subscription.requestId}-snapshot` },
+          context(snapshotClient, fixture.runtime),
+        );
+        await vi.waitFor(() =>
+          expect(
+            events(fixture.sent, snapshotClient, "sync_complete"),
+          ).toHaveLength(1),
+        );
+        const messages = events(
+          fixture.sent,
+          snapshotClient,
+          "timeline_page",
+        ).flatMap((page) => page.entries.map((entry) => entry.message));
+        const users = messages.filter(
+          (message) => message.type === "user_input" && message.text === userText,
+        );
+        const assistants = messages.filter(
+          (message) =>
+            message.type === "assistant" &&
+            message.message.content.some(
+              (content) => content.type === "text" && content.text === assistantText,
+            ),
+        );
+        expect(users).toHaveLength(1);
+        expect(assistants).toHaveLength(1);
+        expect(users[0]).toMatchObject({
+          providerItemId: "canonical-user-item",
+          historyTurnId: turnId,
+        });
+        expect(assistants[0]).toMatchObject({
+          historyTurnId: turnId,
+          messageUuid: "canonical-assistant-item",
+        });
+        const internal = fixture.handler as unknown as {
+          sharedObserverLiveMessages: Map<string, Map<string, unknown>>;
+        };
+        await vi.waitFor(() =>
+          expect(
+            internal.sharedObserverLiveMessages.has(`codex\0${threadId}`),
+          ).toBe(false),
+        );
+      } finally {
+        await fixture.handler.close();
+      }
+    },
+  );
+
+  it("keeps distinct turnless runtime users that reuse a provider UUID", async () => {
+    const threadId = "thread-turnless-runtime-users";
+    const fixture = createFixture(
+      [codexSeed(0, threadId)],
+      async () => [],
+      {},
+      { getProviderSessionId: () => threadId },
+    );
+    const client = {};
+    const subscription = {
+      ...subscribeMessage(),
+      focused: { provider: "codex" as const, providerSessionId: threadId },
+    };
+    const runtimeSession: LocalFeatureSession = {
+      id: "runtime-turnless-users",
+      provider: "codex",
+      process: {},
+      projectPath: "/project/0",
+    };
+    try {
+      await fixture.handler.handle(
+        subscription,
+        context(client, fixture.runtime),
+      );
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+      );
+      const initialCompleteCount = events(
+        fixture.sent,
+        client,
+        "sync_complete",
+      ).length;
+
+      for (const [index, clientMessageId] of ["client-one", "client-two"].entries()) {
+        fixture.handler.sessionMessage(runtimeSession, {
+          type: "user_input",
+          text: "same visible prompt",
+          providerItemId: "provider-item-reused-across-turns",
+          userMessageUuid: "codex:user-turn:1",
+          clientMessageId,
+          timestamp: `2026-08-10T16:53:3${index}.000Z`,
+        });
+      }
+
+      await vi.waitFor(() => {
+        expect(
+          events(fixture.sent, client, "sync_complete").length,
+        ).toBeGreaterThan(initialCompleteCount);
+        const snapshots = events(fixture.sent, client, "timeline_page")
+          .map((page) =>
+            page.entries
+              .map((entry) => entry.message)
+              .filter((message) => message.type === "user_input"),
+          )
+          .filter((users) => users.length > 0);
+        expect(
+          snapshots.map((users) =>
+            users.map((message) => message.clientMessageId),
+          ),
+        ).toContainEqual(["client-one", "client-two"]);
+      });
+    } finally {
+      await fixture.handler.close();
+    }
+  });
+
+  it("delivers shared-observer runtime overlays only to capable focused clients", async () => {
+    const threadId = "thread-shared-runtime-overlay";
+    const control = createSharedControlSource({
+      kind: "ready",
+      connectionGeneration: 21,
+    });
+    const codex = codexSeed(0, threadId);
+    codex.status = {
+      ...codex.status,
+      activity: "working",
+      runtimeAttachment: "loaded",
+      confidence: "authoritative",
+    };
+    const observers: FakeSharedContentObserverProcess[] = [];
+    const capableClient = {};
+    const legacyClient = {};
+    const fixture = createFixture(
+      [codex],
+      async () => [],
+      {
+        daemonMode: true,
+        createSharedContentObserverProcess: () => {
+          const process = new FakeSharedContentObserverProcess();
+          observers.push(process);
+          return process.asObserver();
+        },
+        sharedContentObserverUnfocusGraceMs: 0,
+      },
+      {
+        subscribeSharedRuntimeControl: control.subscribe,
+        getProviderSessionId: () => threadId,
+        supports: (client, capability) =>
+          capability === CONVERSATION_SYNC_V2_CAPABILITY ||
+          capability === CONVERSATION_USER_INDEX_CAPABILITY ||
+          (client === capableClient &&
+            capability === CONVERSATION_RUNTIME_OVERLAY_CAPABILITY),
+      },
+    );
+    const focused = {
+      ...subscribeMessage(),
+      focused: { provider: "codex" as const, providerSessionId: threadId },
+    };
+    try {
+      await fixture.handler.handle(
+        focused,
+        context(capableClient, fixture.runtime),
+      );
+      await fixture.handler.handle(
+        { ...focused, requestId: `${focused.requestId}-legacy` },
+        context(legacyClient, fixture.runtime),
+      );
+      await vi.waitFor(() => expect(observers).toHaveLength(1));
+      await vi.waitFor(() =>
+        expect(
+          events(fixture.sent, capableClient, "sync_complete").length,
+        ).toBeGreaterThan(0),
+      );
+
+      const overlay = {
+        type: "error" as const,
+        message: "shared observer runtime warning",
+        errorCode: "runtime_warning",
+      };
+      observers[0]!.message(overlay);
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, capableClient, "runtime_overlay")).toHaveLength(
+          1,
+        ),
+      );
+      expect(events(fixture.sent, capableClient, "runtime_overlay")[0]).toMatchObject({
+        provider: "codex",
+        providerSessionId: threadId,
+        turnId: "turn-shared-live",
+        authorityGeneration: "daemon:21",
+        message: overlay,
+      });
+      expect(
+        events(fixture.sent, capableClient, "runtime_overlay")[0]
+          ?.originGeneration,
+      ).toMatch(/^observer:21:\d+$/);
+      expect(events(fixture.sent, legacyClient, "runtime_overlay")).toEqual([]);
+
+      // Observer reconnects may replay an identical terminal/control frame.
+      // The per-subscription overlay identity keeps it idempotent.
+      observers[0]!.message(overlay);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(events(fixture.sent, capableClient, "runtime_overlay")).toHaveLength(
+        1,
+      );
+    } finally {
+      await fixture.handler.close();
+    }
+  });
+
+  it("routes formal runtime overlays through the turn-fenced capability channel", async () => {
+    const threadId = "thread-formal-runtime-overlay";
+    const runtimeSession: LocalFeatureSession = {
+      id: "runtime-formal-overlay",
+      provider: "codex",
+      process: {},
+      projectPath: "/project/formal-overlay",
+    };
+    const client = {};
+    const fixture = createFixture(
+      [codexSeed(0, threadId)],
+      async () => [],
+      {},
+      {
+        getProviderSessionId: () => threadId,
+        listRuntimeConversationStates: () => [
+          {
+            bridgeSessionId: runtimeSession.id,
+            provider: "codex",
+            providerSessionId: threadId,
+            projectPath: "/project/formal-overlay",
+            processStatus: "running",
+            executionHost: "bridge",
+            activeTurnId: "turn-formal-live",
+            controlState: "steerable",
+            authorityGeneration: "runtime-authority-7",
+            observedAt: "2026-08-10T01:00:00.000Z",
+          },
+        ],
+        supports: (_target, capability) =>
+          capability === CONVERSATION_SYNC_V2_CAPABILITY ||
+          capability === CONVERSATION_USER_INDEX_CAPABILITY ||
+          capability === CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
+      },
+    );
+    const focused = {
+      ...subscribeMessage(),
+      focused: { provider: "codex" as const, providerSessionId: threadId },
+    };
+    try {
+      await fixture.handler.handle(focused, context(client, fixture.runtime));
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+      );
+      fixture.handler.sessionMessage(runtimeSession, {
+        type: "error",
+        message: "formal runtime warning",
+        errorCode: "runtime_warning",
+        historyTurnId: "turn-formal-live",
+      });
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, client, "runtime_overlay")).toHaveLength(1),
+      );
+      expect(events(fixture.sent, client, "runtime_overlay")[0]).toMatchObject({
+        provider: "codex",
+        providerSessionId: threadId,
+        turnId: "turn-formal-live",
+        originGeneration:
+          "runtime:runtime-formal-overlay:runtime-authority-7",
+        runtimeSessionId: "runtime-formal-overlay",
+        authorityGeneration: "runtime-authority-7",
+        message: {
+          type: "error",
+          message: "formal runtime warning",
+        },
+      });
+    } finally {
+      await fixture.handler.close();
+    }
+  });
+
+  it("does not emit the Codex-only runtime overlay event for Claude sessions", async () => {
+    const runtimeSession: LocalFeatureSession = {
+      id: "runtime-claude-overlay",
+      provider: "claude",
+      process: {},
+      projectPath: "/project/0",
+    };
+    const client = {};
+    const fixture = createFixture(
+      [seed(0)],
+      async () => [],
+      {},
+      {
+        getProviderSessionId: () => "session-0",
+        supports: (_target, capability) =>
+          capability === CONVERSATION_SYNC_V2_CAPABILITY ||
+          capability === CONVERSATION_USER_INDEX_CAPABILITY ||
+          capability === CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
+      },
+    );
+    const focused = {
+      ...subscribeMessage(),
+      focused: {
+        provider: "claude" as const,
+        providerSessionId: "session-0",
+      },
+    };
+    try {
+      await fixture.handler.handle(focused, context(client, fixture.runtime));
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+      );
+      fixture.handler.sessionMessage(runtimeSession, {
+        type: "error",
+        message: "claude runtime warning",
+        errorCode: "runtime_warning",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(events(fixture.sent, client, "runtime_overlay")).toEqual([]);
     } finally {
       await fixture.handler.close();
     }

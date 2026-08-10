@@ -588,6 +588,7 @@ export interface CodexServerActionProjection {
 interface PendingGuardianReviewWarning {
   review: GuardianReviewDetails;
   message: string;
+  historyTurnId?: string;
   timeout: ReturnType<typeof setTimeout>;
 }
 
@@ -5500,6 +5501,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     review: GuardianReviewDetails,
     message: string,
   ): void {
+    const historyTurnId = this.activeTurnId;
     const key = guardianReviewSignature(review);
     let pending!: PendingGuardianReviewWarning;
     const timeout = setTimeout(() => {
@@ -5511,10 +5513,15 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       if (queued.length === 0) {
         this.pendingGuardianReviewWarnings.delete(key);
       }
-      this.emitGuardianReview(review, message);
+      this.emitGuardianReview(review, message, pending.historyTurnId);
     }, GUARDIAN_REVIEW_ENRICHMENT_DELAY_MS);
     timeout.unref?.();
-    pending = { review, message, timeout };
+    pending = {
+      review,
+      message,
+      ...(historyTurnId ? { historyTurnId } : {}),
+      timeout,
+    };
     const queued = this.pendingGuardianReviewWarnings.get(key);
     if (queued) {
       queued.push(pending);
@@ -5567,6 +5574,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private emitGuardianReview(
     review: GuardianReviewDetails,
     legacyMessage?: string,
+    historyTurnId?: string,
   ): void {
     if (review.reviewId && this.emittedGuardianReviewIds.has(review.reviewId)) {
       return;
@@ -5585,27 +5593,39 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       review.status === "approved" &&
       (review.risk === "medium" || review.risk === "high")
     ) {
-      this.emitMessage({
-        type: "guardian_approval",
-        risk: review.risk,
-        reason: review.reason,
-        ...(review.authorization
-          ? { authorization: review.authorization }
-          : {}),
-        status: "approved",
-        ...(review.reviewId ? { reviewId: review.reviewId } : {}),
-        ...(review.targetItemId ? { targetItemId: review.targetItemId } : {}),
-        ...(review.action ? { action: review.action } : {}),
-      });
+      this.emitMessage(
+        withCodexHistoryTurn(
+          {
+            type: "guardian_approval",
+            risk: review.risk,
+            reason: review.reason,
+            ...(review.authorization
+              ? { authorization: review.authorization }
+              : {}),
+            status: "approved",
+            ...(review.reviewId ? { reviewId: review.reviewId } : {}),
+            ...(review.targetItemId
+              ? { targetItemId: review.targetItemId }
+              : {}),
+            ...(review.action ? { action: review.action } : {}),
+          },
+          historyTurnId,
+        ),
+      );
       return;
     }
 
-    this.emitMessage({
-      type: "error",
-      errorCode: "codex_warning",
-      message: legacyMessage ?? formatGuardianReviewWarning(review),
-      guardianReview: review,
-    });
+    this.emitMessage(
+      withCodexHistoryTurn(
+        {
+          type: "error",
+          errorCode: "codex_warning",
+          message: legacyMessage ?? formatGuardianReviewWarning(review),
+          guardianReview: review,
+        },
+        historyTurnId,
+      ),
+    );
   }
 
   private rememberGuardianReviewId(reviewId: string | undefined): void {
@@ -6022,7 +6042,13 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         const review = pending
           ? mergeGuardianReviewDetails(pending.review, completed)
           : completed;
-        this.emitGuardianReview(review, pending?.message);
+        this.emitGuardianReview(
+          review,
+          pending?.message,
+          pending?.historyTurnId ??
+            stringOrNull(params.turnId) ??
+            this.activeTurnId,
+        );
         break;
       }
 
@@ -6188,30 +6214,45 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         typeof errorObj?.message === "string"
           ? errorObj.message
           : "Turn failed";
-      this.emitMessage({
-        type: "result",
-        subtype: "error",
-        error: message,
-        sessionId: this._threadId ?? undefined,
-      });
+      this.emitMessage(
+        withCodexHistoryTurn(
+          {
+            type: "result",
+            subtype: "error",
+            error: message,
+            sessionId: this._threadId ?? undefined,
+          },
+          turnId,
+        ),
+      );
     } else if (status === "interrupted") {
-      this.emitMessage({
-        type: "result",
-        subtype: "interrupted",
-        sessionId: this._threadId ?? undefined,
-      });
+      this.emitMessage(
+        withCodexHistoryTurn(
+          {
+            type: "result",
+            subtype: "interrupted",
+            sessionId: this._threadId ?? undefined,
+          },
+          turnId,
+        ),
+      );
     } else {
-      this.emitMessage({
-        type: "result",
-        subtype: "success",
-        sessionId: this._threadId ?? undefined,
-        ...(this.lastResultText ? { result: this.lastResultText } : {}),
-        ...(usage?.input != null ? { inputTokens: usage.input } : {}),
-        ...(usage?.cachedInput != null
-          ? { cachedInputTokens: usage.cachedInput }
-          : {}),
-        ...(usage?.output != null ? { outputTokens: usage.output } : {}),
-      });
+      this.emitMessage(
+        withCodexHistoryTurn(
+          {
+            type: "result",
+            subtype: "success",
+            sessionId: this._threadId ?? undefined,
+            ...(this.lastResultText ? { result: this.lastResultText } : {}),
+            ...(usage?.input != null ? { inputTokens: usage.input } : {}),
+            ...(usage?.cachedInput != null
+              ? { cachedInputTokens: usage.cachedInput }
+              : {}),
+            ...(usage?.output != null ? { outputTokens: usage.output } : {}),
+          },
+          turnId,
+        ),
+      );
     }
 
     if (!turnId || this.pendingTurnId === turnId) {
@@ -7859,7 +7900,11 @@ function withCodexHistoryTurn(
     !turnId ||
     (message.type !== "user_input" &&
       message.type !== "assistant" &&
-      message.type !== "tool_result")
+      message.type !== "tool_result" &&
+      message.type !== "result" &&
+      message.type !== "error" &&
+      message.type !== "guardian_approval" &&
+      message.type !== "tool_use_summary")
   ) {
     return message;
   }

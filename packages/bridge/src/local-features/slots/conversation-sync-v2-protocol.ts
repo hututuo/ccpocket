@@ -1,4 +1,5 @@
 import type { ConversationContentEntry } from "./conversation-content-protocol.js";
+import type { ServerMessage } from "../../parser.js";
 import {
   hasOnlyLocalFeatureKeys,
   validLocalFeatureId,
@@ -14,6 +15,15 @@ export const CONVERSATION_USER_INDEX_CAPABILITY =
   "conversation_user_index_v1" as const;
 export const APP_SERVER_STATUS_CAPABILITY = "app_server_status_v1" as const;
 export const BRIDGE_IDENTITY_V2_CAPABILITY = "bridge_identity_v2" as const;
+export const CONVERSATION_RUNTIME_OVERLAY_CAPABILITY =
+  "conversation_runtime_overlay_v1" as const;
+
+export type ConversationRuntimeOverlayMessage = Extract<
+  ServerMessage,
+  {
+    type: "result" | "error" | "guardian_approval" | "tool_use_summary";
+  }
+>;
 
 export type ConversationSyncProvider = "claude" | "codex";
 
@@ -219,6 +229,20 @@ export type ConversationSyncServerMessage =
         latestTurnComplete?: boolean;
         latestTurnGap?: ConversationSyncLatestTurnGap;
         sourceEntryCount: number;
+      })
+  | (ConversationSyncEventBase &
+      ConversationSyncTarget & {
+        event: "runtime_overlay";
+        overlayId: string;
+        observedAt: string;
+        /** Producer lifecycle fence; changes when observer/runtime is replaced. */
+        originGeneration: string;
+        /** Exact runtime attachment when the overlay came from SessionManager. */
+        runtimeSessionId?: string;
+        /** Authority fence shared with the status projection when available. */
+        authorityGeneration?: string;
+        turnId?: string;
+        message: ConversationRuntimeOverlayMessage;
       })
   | (ConversationSyncEventBase & {
       event: "sync_checkpoint";
