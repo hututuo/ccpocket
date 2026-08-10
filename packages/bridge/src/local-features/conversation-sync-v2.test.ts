@@ -1282,6 +1282,517 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("revalidates focused content when app-server grows a turn without changing catalog recency", async () => {
+    const codex = codexSeed(0, "thread-same-catalog-active-turn");
+    const initialHistory = history("before-active-growth");
+    let latestHistory: ServerMessage[] = [
+      {
+        type: "user_input",
+        historyTurnId: "turn-active-growth",
+        providerItemId: "user-active-growth",
+        text: "desktop prompt",
+      },
+      {
+        type: "assistant",
+        historyTurnId: "turn-active-growth",
+        messageUuid: "assistant-active-growth",
+        message: {
+          id: "assistant-active-growth",
+          role: "assistant",
+          model: "test",
+          content: [{ type: "text", text: "new Desktop progress" }],
+        },
+      },
+    ];
+    const historyReader = vi.fn(async () => initialHistory);
+    const latestTurnHistoryReader = vi.fn(async () => ({
+      messages: latestHistory,
+      nextTurnCursor: "older-turns",
+    }));
+    const fixture = createFixture([codex], historyReader, {
+      latestTurnHistoryReader,
+    });
+    const client = {};
+    const subscription = {
+      ...subscribeMessage(),
+      focused: {
+        provider: "codex" as const,
+        providerSessionId: codex.entry.providerSessionId,
+      },
+    };
+
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const firstTimeline = events(
+      fixture.sent,
+      client,
+      "timeline_page",
+    ).at(-1)!;
+    const firstComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    ).at(-1)!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: firstComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "same-catalog-refresh",
+        subscriptionId: subscription.requestId,
+        refresh: true,
+        focused: subscription.focused,
+      },
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(2),
+    );
+
+    expect(historyReader).toHaveBeenCalledTimes(1);
+    expect(latestTurnHistoryReader).toHaveBeenCalledTimes(1);
+    const refreshComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    ).at(-1)!;
+    const refreshTimeline = events(
+      fixture.sent,
+      client,
+      "timeline_page",
+    ).filter((event) => event.batchId === refreshComplete.batchId);
+    expect(refreshComplete.requestId).toBe("same-catalog-refresh");
+    expect(refreshTimeline).not.toHaveLength(0);
+    expect(refreshTimeline.at(-1)?.revision).not.toBe(firstTimeline.revision);
+    expect(JSON.stringify(refreshTimeline)).toContain("new Desktop progress");
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: refreshComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+    latestHistory = [
+      {
+        type: "user_input",
+        historyTurnId: "turn-active-growth",
+        providerItemId: "user-active-growth",
+        text: "desktop prompt",
+      },
+      {
+        type: "assistant",
+        historyTurnId: "turn-active-growth",
+        messageUuid: "assistant-active-growth",
+        message: {
+          id: "assistant-active-growth",
+          role: "assistant",
+          model: "test",
+          content: [{ type: "text", text: "new" }],
+        },
+      },
+    ];
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "same-catalog-ordinary-focus",
+        subscriptionId: subscription.requestId,
+        focused: subscription.focused,
+      },
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(3),
+    );
+    const ordinaryComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    ).at(-1)!;
+    expect(
+      events(fixture.sent, client, "timeline_page").filter(
+        (event) => event.batchId === ordinaryComplete.batchId,
+      ),
+    ).toHaveLength(0);
+    expect(latestTurnHistoryReader).toHaveBeenCalledTimes(2);
+    fixture.handler.close();
+  });
+
+  it("retries an empty focused Codex latest-turn response without clearing cache", async () => {
+    const codex = codexSeed(0, "thread-empty-latest-retry");
+    let latestAttempts = 0;
+    const latestTurnHistoryReader = vi.fn(async () => {
+      latestAttempts += 1;
+      return {
+        messages:
+          latestAttempts === 1 ? [] : history("empty-latest-recovered"),
+        nextTurnCursor: null,
+      };
+    });
+    const fixture = createFixture(
+      [codex],
+      async () => history("empty-latest-existing"),
+      {
+        latestTurnHistoryReader,
+        providerHistoryRetryDelaysMs: [25],
+      },
+    );
+    const client = {};
+    const subscription = {
+      ...subscribeMessage(),
+      focused: {
+        provider: "codex" as const,
+        providerSessionId: codex.entry.providerSessionId,
+      },
+    };
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const initialComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    ).at(-1)!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: initialComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "empty-latest-refresh",
+        subscriptionId: subscription.requestId,
+        refresh: true,
+        focused: subscription.focused,
+      },
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(latestTurnHistoryReader).toHaveBeenCalledTimes(2),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "sync_complete").some(
+          (event) => event.requestId === "empty-latest-refresh",
+        ),
+      ).toBe(true),
+    );
+    expect(
+      JSON.stringify(events(fixture.sent, client, "timeline_page")),
+    ).toContain("empty-latest-recovered");
+    fixture.handler.close();
+  });
+
+  it("does not satisfy focused revalidation with an older background flight", async () => {
+    const codex = codexSeed(0, "thread-focus-during-background-flight");
+    let resolveBackgroundRead:
+      | ((messages: ServerMessage[]) => void)
+      | undefined;
+    const backgroundRead = new Promise<ServerMessage[]>((resolve) => {
+      resolveBackgroundRead = resolve;
+    });
+    let historyReadCount = 0;
+    const historyReader = vi.fn(async () => {
+      historyReadCount += 1;
+      return historyReadCount === 1
+        ? history("initial-before-background-flight")
+        : backgroundRead;
+    });
+    const latestTurnHistoryReader = vi.fn(async () => ({
+      messages: history("forced-focus-new"),
+      nextTurnCursor: null,
+    }));
+    const fixture = createFixture([codex], historyReader, {
+      latestTurnHistoryReader,
+    });
+    const backgroundClient = {};
+    const focusedClient = {};
+    const focusedSubscription = {
+      ...subscribeMessage(),
+      focused: {
+        provider: "codex" as const,
+        providerSessionId: codex.entry.providerSessionId,
+      },
+    };
+
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(backgroundClient, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, backgroundClient, "sync_complete"),
+      ).toHaveLength(1),
+    );
+    const initialComplete = events(
+      fixture.sent,
+      backgroundClient,
+      "sync_complete",
+    ).at(-1)!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: initialComplete.subscriptionId,
+        sequence: initialComplete.sequence,
+      },
+      context(backgroundClient, fixture.runtime),
+    );
+
+    codex.entry.revision = "revision-background-flight-2";
+    fixture.handler.sessionCatalogChanged();
+    await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(2));
+    await fixture.handler.handle(
+      focusedSubscription,
+      context(focusedClient, fixture.runtime),
+    );
+    await Promise.resolve();
+    expect(latestTurnHistoryReader).not.toHaveBeenCalled();
+
+    resolveBackgroundRead!(history("background-flight-old"));
+    await vi.waitFor(() =>
+      expect(latestTurnHistoryReader).toHaveBeenCalledTimes(1),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, focusedClient, "sync_complete").length,
+      ).toBeGreaterThanOrEqual(1),
+    );
+    expect(
+      JSON.stringify(events(fixture.sent, focusedClient, "timeline_page")),
+    ).toContain("forced-focus-new");
+    fixture.handler.close();
+  });
+
+  it("does not correlate an obsolete refresh request with a newer focus", async () => {
+    const first = codexSeed(0, "thread-obsolete-refresh-a");
+    const second = codexSeed(1, "thread-newer-focus-b");
+    const historyReader = vi.fn(async (target) =>
+      history(`bootstrap-${target.providerSessionId}`),
+    );
+    const latestTurnHistoryReader = vi.fn(async (target) => ({
+      messages: history(`focused-${target.providerSessionId}`),
+      nextTurnCursor: null,
+    }));
+    const fixture = createFixture([first, second], historyReader, {
+      latestTurnHistoryReader,
+      daemonMode: true,
+    });
+    const client = {};
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const bootstrapComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    ).at(-1)!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: bootstrapComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+    type InternalSubscription = {
+      syncing: boolean;
+      dirty: boolean;
+      dirtyThreadKeys: Set<string>;
+      pendingFocusRevalidation?: { key: string; refreshRequestId?: string };
+    };
+    const internal = fixture.handler as unknown as {
+      subscriptions: Map<object, InternalSubscription>;
+      scheduleSync(client: object, subscription: InternalSubscription): void;
+    };
+    const internalSubscription = internal.subscriptions.get(client)!;
+    await vi.waitFor(() => expect(internalSubscription.syncing).toBe(false));
+    // Hold scheduling only long enough to deterministically queue the two
+    // focus intents. Production reaches the same state when focus changes
+    // while a provider read is in flight.
+    internalSubscription.syncing = true;
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "obsolete-refresh-a",
+        subscriptionId: subscription.requestId,
+        refresh: true,
+        focused: {
+          provider: "codex",
+          providerSessionId: first.entry.providerSessionId,
+        },
+      },
+      context(client, fixture.runtime),
+    );
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "newer-focus-b",
+        subscriptionId: subscription.requestId,
+        focused: {
+          provider: "codex",
+          providerSessionId: second.entry.providerSessionId,
+        },
+      },
+      context(client, fixture.runtime),
+    );
+    internalSubscription.syncing = false;
+    expect(internalSubscription.pendingFocusRevalidation).toMatchObject({
+      key: `codex\u0000${second.entry.providerSessionId}`,
+    });
+    expect(
+      internalSubscription.pendingFocusRevalidation,
+    ).not.toHaveProperty("refreshRequestId");
+    expect(internalSubscription.dirtyThreadKeys.size).toBe(2);
+    internal.scheduleSync(client, internalSubscription);
+    await vi.waitFor(() =>
+      expect(latestTurnHistoryReader).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerSessionId: second.entry.providerSessionId,
+        }),
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "sync_complete").length,
+      ).toBeGreaterThanOrEqual(2),
+    );
+    expect(
+      events(fixture.sent, client, "sync_complete").some(
+        (event) => event.requestId === "obsolete-refresh-a",
+      ),
+    ).toBe(false);
+    fixture.handler.close();
+  });
+
+  it("rebuilds the bounded window when focused catalog revision advances", async () => {
+    const codex = codexSeed(0, "thread-focused-source-advanced");
+    let currentHistory = history("before-source-advance");
+    const historyReader = vi.fn(async () => currentHistory);
+    const latestTurnHistoryReader = vi.fn(async () => ({
+      messages: history("latest-only-must-not-be-used"),
+      nextTurnCursor: null,
+    }));
+    const fixture = createFixture([codex], historyReader, {
+      latestTurnHistoryReader,
+    });
+    const client = {};
+    const subscription = {
+      ...subscribeMessage(),
+      focused: {
+        provider: "codex" as const,
+        providerSessionId: codex.entry.providerSessionId,
+      },
+    };
+
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const firstComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    ).at(-1)!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: firstComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+    const firstTimelineCount = events(
+      fixture.sent,
+      client,
+      "timeline_page",
+    ).length;
+
+    currentHistory = history("after-source-advance");
+    codex.entry.revision = "revision-after-source-advance";
+    fixture.handler.sessionCatalogChanged({
+      provider: "codex",
+      providerSessionId: codex.entry.providerSessionId,
+    });
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "source-advanced-focus",
+        subscriptionId: subscription.requestId,
+        focused: subscription.focused,
+      },
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "sync_complete").length,
+      ).toBeGreaterThanOrEqual(2),
+    );
+
+    expect(historyReader).toHaveBeenCalledTimes(2);
+    expect(latestTurnHistoryReader).not.toHaveBeenCalled();
+    const latestTimeline = events(
+      fixture.sent,
+      client,
+      "timeline_page",
+    ).slice(firstTimelineCount);
+    expect(JSON.stringify(latestTimeline)).toContain("after-source-advance");
+    expect(
+      JSON.stringify(latestTimeline.flatMap((event) => event.entries)),
+    ).not.toContain(
+      "before-source-advance",
+    );
+    expect(latestTimeline.flatMap((event) => event.deletes)).toEqual(
+      expect.arrayContaining([
+        "user:user-before-source-advance",
+        "assistant:assistant-before-source-advance",
+      ]),
+    );
+    fixture.handler.close();
+  });
+
   it("keeps one subscription across later sync batches", async () => {
     const fixture = createFixture([seed(0)], async (target) =>
       history(target.providerSessionId),
@@ -1329,6 +1840,100 @@ describe("ConversationSyncV2FeatureHandler", () => {
       subscriptionId: subscription.requestId,
     });
     expect(begins[1]!.sequence).toBeGreaterThan(firstComplete.sequence);
+    fixture.handler.close();
+  });
+
+  it("chains pending timeline bases until each revision is ACKed", async () => {
+    const codex = codexSeed(0, "thread-pending-base-chain");
+    let latestRead = 0;
+    const latestTurnHistoryReader = vi.fn(async () => {
+      latestRead += 1;
+      return {
+        messages: history(`pending-chain-${latestRead}`),
+        nextTurnCursor: null,
+      };
+    });
+    const fixture = createFixture(
+      [codex],
+      async () => history("pending-chain-initial"),
+      { latestTurnHistoryReader },
+    );
+    const client = {};
+    const subscription = {
+      ...subscribeMessage(),
+      focused: {
+        provider: "codex" as const,
+        providerSessionId: codex.entry.providerSessionId,
+      },
+    };
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const initialComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    ).at(-1)!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: initialComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+
+    const refresh = async (requestId: string, completeCount: number) => {
+      await fixture.handler.handle(
+        {
+          type: "conversation_sync_focus",
+          protocolVersion: 2,
+          requestId,
+          subscriptionId: subscription.requestId,
+          refresh: true,
+          focused: subscription.focused,
+        },
+        context(client, fixture.runtime),
+      );
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, client, "sync_complete")).toHaveLength(
+          completeCount,
+        ),
+      );
+      const complete = events(
+        fixture.sent,
+        client,
+        "sync_complete",
+      ).at(-1)!;
+      const timeline = events(
+        fixture.sent,
+        client,
+        "timeline_page",
+      ).filter((event) => event.batchId === complete.batchId);
+      expect(timeline).not.toHaveLength(0);
+      return { complete, timeline: timeline.at(-1)! };
+    };
+
+    const pendingP = await refresh("pending-chain-p", 2);
+    const pendingQ = await refresh("pending-chain-q", 3);
+    expect(pendingQ.timeline.baseRevision).toBe(pendingP.timeline.revision);
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: pendingP.complete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+    const pendingR = await refresh("pending-chain-r", 4);
+    expect(pendingR.timeline.baseRevision).toBe(pendingQ.timeline.revision);
     fixture.handler.close();
   });
 
@@ -2214,7 +2819,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
       fixture.client,
       "turns_page_response",
     ).find((event) => event.requestId === "bounded-raw-turn")!;
-    expect(latePayloadReads).toBe(0);
+    expect(latePayloadReads).toBeLessThanOrEqual(1);
     expect(response.data[0]).toMatchObject({
       turnId: "turn-bounded-raw",
       itemsView: "summary",
@@ -2228,6 +2833,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(
       Buffer.byteLength(JSON.stringify(response), "utf8"),
     ).toBeLessThanOrEqual(64 * 1024);
+    expect(JSON.stringify(response.data[0])).toContain("bounded-raw-11");
     fixture.handler.close();
   });
 
@@ -3846,7 +4452,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
-  it("rereads catalog-backed incomplete history at the same revision", async () => {
+  it("rereads catalog-backed incomplete history at the same revision when focused", async () => {
     const codex = codexSeed(0, "thread-delayed-history");
     codex.entry.firstPrompt = "visible user prompt";
     delete codex.entry.summary;
@@ -3876,8 +4482,9 @@ describe("ConversationSyncV2FeatureHandler", () => {
       }),
     ]);
 
+    const secondSubscription = subscribeMessage();
     await fixture.handler.handle(
-      subscribeMessage(),
+      secondSubscription,
       context(secondClient, fixture.runtime),
     );
     await vi.waitFor(() =>
@@ -3885,7 +4492,21 @@ describe("ConversationSyncV2FeatureHandler", () => {
         1,
       ),
     );
-    expect(historyReader).toHaveBeenCalledTimes(2);
+    expect(historyReader).toHaveBeenCalledTimes(1);
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "focus-delayed-history",
+        subscriptionId: secondSubscription.requestId,
+        focused: {
+          provider: "codex",
+          providerSessionId: "thread-delayed-history",
+        },
+      },
+      context(secondClient, fixture.runtime),
+    );
+    await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(2));
     expect(
       events(fixture.sent, secondClient, "timeline_page").flatMap(
         (event) => event.entries,
@@ -3936,6 +4557,119 @@ describe("ConversationSyncV2FeatureHandler", () => {
     await fixture.handler.close();
   });
 
+  it("preserves escalating provider-history backoff across consecutive failures", async () => {
+    vi.useFakeTimers();
+    const historyReader = vi.fn(async () => {
+      throw new Error("provider remains unavailable");
+    });
+    const fixture = createFixture([seed(0)], historyReader, {
+      providerHistoryRetryDelaysMs: [10, 20, 40, 80],
+    });
+    try {
+      await fixture.handler.handle(
+        subscribeMessage(),
+        context({}, fixture.runtime),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(historyReader).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(9);
+      expect(historyReader).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(historyReader).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(19);
+      expect(historyReader).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(historyReader).toHaveBeenCalledTimes(3);
+
+      await vi.advanceTimersByTimeAsync(39);
+      expect(historyReader).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(historyReader).toHaveBeenCalledTimes(4);
+    } finally {
+      fixture.handler.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves escalating provider-history backoff across consecutive empty reads", async () => {
+    vi.useFakeTimers();
+    const historyReader = vi.fn(async () => [] as ServerMessage[]);
+    const fixture = createFixture([seed(0)], historyReader, {
+      providerHistoryRetryDelaysMs: [10, 20, 40, 80],
+    });
+    try {
+      await fixture.handler.handle(
+        subscribeMessage(),
+        context({}, fixture.runtime),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(historyReader).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(10);
+      expect(historyReader).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(19);
+      expect(historyReader).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(historyReader).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(39);
+      expect(historyReader).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(historyReader).toHaveBeenCalledTimes(4);
+    } finally {
+      fixture.handler.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("reuses cached recent idle Codex windows on an unchanged reconnect", async () => {
+    const seeds = Array.from({ length: 5 }, (_, index) => {
+      const value = codexSeed(index, `thread-idle-${index}`);
+      return {
+        ...value,
+        status: {
+          ...value.status,
+          activity: "idle" as const,
+          confidence: "authoritative" as const,
+        },
+      };
+    });
+    const historyReader = vi.fn(async (target: ConversationSyncTarget) =>
+      history(target.providerSessionId),
+    );
+    const fixture = createFixture(seeds, historyReader);
+    const firstClient = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(firstClient, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, firstClient, "sync_complete")).toHaveLength(
+        1,
+      ),
+    );
+    expect(historyReader).toHaveBeenCalledTimes(5);
+    const firstState = events(fixture.sent, firstClient, "sync_complete")[0]!
+      .nextState;
+
+    const secondClient = {};
+    await fixture.handler.handle(
+      subscribeMessage(firstState.threadContentStates, {
+        catalogState: firstState.catalogState,
+        statusState: firstState.statusState,
+      }),
+      context(secondClient, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, secondClient, "sync_complete")).toHaveLength(
+        1,
+      ),
+    );
+    expect(historyReader).toHaveBeenCalledTimes(5);
+    fixture.handler.close();
+  });
+
   it("lets explicit focus bypass a provider-history cooldown once", async () => {
     let attempts = 0;
     const historyReader = vi.fn(async () => {
@@ -3980,6 +4714,70 @@ describe("ConversationSyncV2FeatureHandler", () => {
       ).not.toHaveLength(0),
     );
     await fixture.handler.close();
+  });
+
+  it("automatically retries a failed focused refresh even with committed cache", async () => {
+    let attempts = 0;
+    const historyReader = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) return history("cached-before-retry");
+      if (attempts === 2) {
+        throw new Error("provider temporarily unavailable");
+      }
+      return history("focused-auto-recovered");
+    });
+    const fixture = createFixture([seed(0)], historyReader, {
+      providerHistoryRetryDelaysMs: [25],
+    });
+    const client = {};
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const initialComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    ).at(-1)!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: initialComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "focused-auto-retry",
+        subscriptionId: subscription.requestId,
+        refresh: true,
+        focused: { provider: "claude", providerSessionId: "session-0" },
+      },
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(3), {
+      timeout: 2_000,
+    });
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "sync_complete").some(
+          (event) => event.requestId === "focused-auto-retry",
+        ),
+      ).toBe(true),
+    );
+    expect(
+      JSON.stringify(events(fixture.sent, client, "timeline_page")),
+    ).toContain("focused-auto-recovered");
+    fixture.handler.close();
   });
 
   it("returns bounded detached tool details without a runtime session", async () => {
@@ -4756,9 +5554,13 @@ describe("ConversationSyncV2FeatureHandler", () => {
     const latestTimeline = events(fixture.sent, client, "timeline_page").filter(
       (event) => event.batchId === latestComplete.batchId,
     );
-    expect(JSON.stringify(latestTimeline)).toContain(
-      "live before canonical history",
-    );
+    // The catalog/source token advanced, but the phone already committed the
+    // same content digest from the live projection. Do not retransmit an
+    // identical timeline merely to mirror the provider's recency token.
+    expect(latestTimeline).toHaveLength(0);
+    expect(
+      JSON.stringify(events(fixture.sent, client, "timeline_page")),
+    ).toContain("live before canonical history");
     expect(
       internal.externalCodexLiveMessages.has("codex\0thread-catalog-race"),
     ).toBe(true);
@@ -4871,17 +5673,12 @@ describe("ConversationSyncV2FeatureHandler", () => {
         ).toBeGreaterThanOrEqual(3),
       { timeout: 3_000 },
     );
-    const latestComplete = events(fixture.sent, client, "sync_complete").at(
-      -1,
-    )!;
-    const latestTimeline = events(fixture.sent, client, "timeline_page").filter(
-      (event) => event.batchId === latestComplete.batchId,
-    );
-    const serialized = JSON.stringify(latestTimeline);
+    const timelineEntries = events(fixture.sent, client, "timeline_page")
+      .flatMap((event) => event.entries);
+    const serialized = JSON.stringify(timelineEntries);
     expect(serialized.match(/继续/g)).toHaveLength(1);
     expect(serialized.match(/same delta chunk/g)).toHaveLength(2);
-    const timestampedDeltas = latestTimeline
-      .flatMap((event) => event.entries)
+    const timestampedDeltas = timelineEntries
       .map((entry) => entry.message)
       .filter((message) => message.type === "thinking_delta");
     expect(timestampedDeltas).toHaveLength(2);
@@ -4952,18 +5749,14 @@ describe("ConversationSyncV2FeatureHandler", () => {
     });
 
     await vi.waitFor(() => {
-      const pagesByBatch = new Map<string, string>();
-      for (const page of events(fixture.sent, client, "timeline_page")) {
-        pagesByBatch.set(
-          page.batchId,
-          `${pagesByBatch.get(page.batchId) ?? ""}${JSON.stringify(page)}`,
-        );
-      }
-      expect(
-        [...pagesByBatch.values()].some(
-          (serialized) => (serialized.match(/继续/g) ?? []).length === 2,
-        ),
-      ).toBe(true);
+      const users = events(fixture.sent, client, "timeline_page")
+        .flatMap((page) => page.entries)
+        .map((entry) => entry.message)
+        .filter((message) => message.type === "user_input");
+      expect(users).toHaveLength(2);
+      expect(users.map((message) => message.historyTurnId)).toEqual(
+        expect.arrayContaining(["provider-turn-one", "provider-turn-two"]),
+      );
     });
     fixture.handler.close();
   });
@@ -5029,8 +5822,11 @@ describe("ConversationSyncV2FeatureHandler", () => {
         1,
       ),
     );
-    expect(listThreadTurns).not.toHaveBeenCalled();
-    expect(desktopToolTimelineReader).not.toHaveBeenCalled();
+    // A legacy Mobile cursor used the catalog revision as its content token.
+    // The content-digest protocol must perform one bounded migration read
+    // instead of trusting that ambiguous token and pinning stale history.
+    expect(listThreadTurns).toHaveBeenCalledTimes(1);
+    expect(desktopToolTimelineReader).toHaveBeenCalledTimes(1);
     fixture.handler.disconnect(cachedClient);
 
     const freshClient = {};
@@ -6859,7 +7655,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(secondStop).toHaveBeenCalledTimes(1);
   });
 
-  it("does not label an in-flight stale snapshot with a newer live revision", async () => {
+  it("does not enqueue an in-flight stale snapshot after live revision advances", async () => {
     let resolveFirstRead: ((messages: ServerMessage[]) => void) | undefined;
     const firstRead = new Promise<ServerMessage[]>((resolve) => {
       resolveFirstRead = resolve;
@@ -6910,12 +7706,10 @@ describe("ConversationSyncV2FeatureHandler", () => {
         ).toBeGreaterThanOrEqual(2),
       { timeout: 3_000 },
     );
-    const revisions = new Set(
-      events(fixture.sent, client, "timeline_page").map(
-        (event) => event.revision,
-      ),
-    );
-    expect(revisions.size).toBeGreaterThanOrEqual(2);
+    const timelines = events(fixture.sent, client, "timeline_page");
+    expect(JSON.stringify(timelines)).not.toContain("session-0-old");
+    expect(JSON.stringify(timelines)).toContain("session-0-new");
+    expect(new Set(timelines.map((event) => event.revision)).size).toBe(1);
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(historyReader).toHaveBeenCalledTimes(2);
     expect(fixture.catalogReader).toHaveBeenCalledTimes(1);

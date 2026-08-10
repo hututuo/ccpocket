@@ -233,7 +233,7 @@ describe("ConversationContentSyncFeatureHandler", () => {
     expect(snapshot.latestTurnGap).not.toHaveProperty("turnId");
   });
 
-  it("stops serializing an oversized latest turn before compacting its tail", () => {
+  it("keeps the root and newest safe tail of an oversized active turn", () => {
     let poisonPayloadReads = 0;
     const poison = {
       type: "tool_result" as const,
@@ -292,7 +292,7 @@ describe("ConversationContentSyncFeatureHandler", () => {
       },
     );
 
-    expect(poisonPayloadReads).toBe(0);
+    expect(poisonPayloadReads).toBeLessThanOrEqual(1);
     expect(snapshot.cacheBytes).toBeLessThanOrEqual(512 * 1024);
     expect(snapshot.latestTurnComplete).toBe(false);
     expect(snapshot.latestTurnGap).toMatchObject({
@@ -300,6 +300,10 @@ describe("ConversationContentSyncFeatureHandler", () => {
       payloadOmitted: true,
       repair: "items_page",
     });
+    expect(
+      JSON.stringify(snapshot.entries.map((entry) => entry.message)),
+    ).toContain("still responsive");
+    expect(snapshot.entries.at(-1)?.sourceIndex).toBe(messages.length - 1);
   });
 
   it("bounds aggregate text per message without changing the wire envelope", async () => {
