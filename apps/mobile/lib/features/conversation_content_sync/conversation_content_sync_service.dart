@@ -2557,19 +2557,19 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           timelineIndex == null ||
           timelineCount == null ||
           timelineCount <= 0) {
-        return 90;
+        return 88;
       }
       final pageIndex = event.pageIndex ?? 0;
       final pageCount = event.pageCount ?? 1;
       final withinTimeline = ((pageIndex + 1) / pageCount).clamp(0, 1);
       final completed = (timelineIndex + withinTimeline) / timelineCount;
-      return 90 + 6 * completed.clamp(0, 1);
+      return 88 + 8 * completed.clamp(0, 1);
     }
 
     return switch (event.event) {
-      ConversationSyncV2EventKind.syncBegin => 82,
-      ConversationSyncV2EventKind.catalogChanges => pageProgress(82, 4).round(),
-      ConversationSyncV2EventKind.statusChanges => pageProgress(86, 4).round(),
+      ConversationSyncV2EventKind.syncBegin => 80,
+      ConversationSyncV2EventKind.catalogChanges => pageProgress(80, 4).round(),
+      ConversationSyncV2EventKind.statusChanges => pageProgress(84, 4).round(),
       ConversationSyncV2EventKind.timelinePage => timelineProgress().round(),
       ConversationSyncV2EventKind.syncCheckpoint
           when event.phase == 'priority' =>

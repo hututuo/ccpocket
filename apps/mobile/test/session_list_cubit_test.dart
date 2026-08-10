@@ -579,6 +579,82 @@ void main() {
       },
     );
 
+    test('v2 startup without a sync service falls back to legacy', () async {
+      var projectHistoryRequested = false;
+      mockBridge
+        ..testSupportsConversationSyncV2 = true
+        ..onRequestProjectHistory = () => projectHistoryRequested = true;
+
+      expect(await cubit.refreshCatalog(startupBootstrap: true), isTrue);
+
+      expect(projectHistoryRequested, isTrue);
+      expect(mockBridge.sentMessages, hasLength(1));
+    });
+
+    test('v2 startup without a catalog cache falls back to legacy', () async {
+      await cubit.close();
+      var projectHistoryRequested = false;
+      mockBridge
+        ..testSupportsConversationSyncV2 = true
+        ..onRequestProjectHistory = () => projectHistoryRequested = true;
+      final sync = FakeConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(mockBridge),
+        cache: FakeSessionCatalogCacheRepository(),
+      );
+      addTearDown(sync.dispose);
+      cubit = SessionListCubit(bridge: mockBridge, conversationSync: sync);
+
+      expect(await cubit.refreshCatalog(startupBootstrap: true), isTrue);
+
+      expect(projectHistoryRequested, isTrue);
+      expect(mockBridge.sentMessages, hasLength(1));
+    });
+
+    test(
+      'v2 startup with a sync service does not duplicate legacy reads',
+      () async {
+        await cubit.close();
+        var projectHistoryRequested = false;
+        mockBridge
+          ..testSupportsConversationSyncV2 = true
+          ..onRequestProjectHistory = () => projectHistoryRequested = true;
+        final cache = FakeSessionCatalogCacheRepository();
+        final sync = FakeConversationContentSyncService(
+          bridge: BridgeServiceConversationContentSyncGateway(mockBridge),
+          cache: cache,
+        );
+        addTearDown(sync.dispose);
+        cubit = SessionListCubit(
+          bridge: mockBridge,
+          catalogCache: cache,
+          conversationSync: sync,
+        );
+
+        expect(await cubit.refreshCatalog(startupBootstrap: true), isTrue);
+
+        expect(projectHistoryRequested, isTrue);
+        expect(mockBridge.sentMessages, isEmpty);
+
+        // An explicit/manual refresh still asks the Bridge for current filters.
+        projectHistoryRequested = false;
+        expect(await cubit.refreshCatalog(), isTrue);
+        expect(projectHistoryRequested, isTrue);
+        expect(mockBridge.sentMessages, hasLength(1));
+      },
+    );
+
+    test('legacy startup bootstrap keeps the catalog request', () async {
+      var projectHistoryRequested = false;
+      mockBridge
+        ..testSupportsConversationSyncV2 = false
+        ..onRequestProjectHistory = () => projectHistoryRequested = true;
+
+      expect(await cubit.refreshCatalog(startupBootstrap: true), isTrue);
+
+      expect(projectHistoryRequested, isTrue);
+      expect(mockBridge.sentMessages, hasLength(1));
+    });
+
     test('catalog bootstrap reports a dispatch failure', () async {
       mockBridge.throwOnSwitchFilter = true;
 

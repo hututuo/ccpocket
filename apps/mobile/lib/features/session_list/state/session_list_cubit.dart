@@ -1018,13 +1018,31 @@ class SessionListCubit extends Cubit<SessionListState> {
   /// authoritative session-list snapshot.
   Future<bool> refreshCatalog({
     bool Function()? isCurrentConnection,
+    bool startupBootstrap = false,
     bool waitForResponse = false,
     Duration responseTimeout = const Duration(seconds: 12),
   }) async {
     try {
       await _preferencesLoaded;
       if (isClosed || isCurrentConnection?.call() == false) return false;
+      // This is a tiny Bridge-owned list (at most 20 saved project paths), not
+      // a provider catalog scan. Keep it on both paths so a Bridge switch can
+      // authoritatively clear stale project shortcuts.
       _bridge.requestProjectHistory();
+      if (startupBootstrap &&
+          _bridge.supportsConversationSyncV2 &&
+          _conversationSync != null &&
+          _catalogCache != null) {
+        // ConversationContentSyncService already owns the authoritative v2
+        // startup subscription. Sending list_recent_sessions here duplicates
+        // the same bounded catalog work and competes with priority timeline
+        // reads. Manual refreshes and filtered queries still use the legacy
+        // catalog request path below.
+        logger.info(
+          '[SessionListCubit] Startup catalog is owned by conversation_sync_v2',
+        );
+        return true;
+      }
       final requestRevision = ++_queryRequestRevision;
       final previousNetworkSerial = _networkCatalogSerial;
       final dispatched = await _requestWithCurrentFiltersAfterPreferences(

@@ -32,6 +32,7 @@ import '../session_list/workspace_shell_screen.dart';
 import '../conversation_content_sync/conversation_content_sync_service.dart';
 import '../conversation_content_sync/conversation_route_focus_restorer.dart';
 import '../session_list/cache/session_catalog_cache_repository.dart';
+import '../session_list/state/session_list_cubit.dart';
 import '../session_link/widgets/session_unavailable_view.dart';
 import '../settings/state/settings_cubit.dart';
 import '../../widgets/approval_bar.dart';
@@ -72,6 +73,12 @@ const _fileListRefreshToolNames = {
   'NotebookEdit',
   'Bash',
 };
+
+@visibleForTesting
+bool isCurrentCatalogIdentityProof({
+  required bool hasUsableCatalogForCurrentTarget,
+  required RecentSession? session,
+}) => hasUsableCatalogForCurrentTarget && session != null;
 
 class _NoopListenable implements Listenable {
   const _NoopListenable();
@@ -186,6 +193,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   StreamSubscription<ConversationContentCacheUpdate>? _cachedPreviewSub;
   StreamSubscription<List<SessionInfo>>? _identitySessionListSub;
   StreamSubscription<List<RecentSession>>? _identityRecentSessionsSub;
+  StreamSubscription<void>? _identityCatalogSub;
   ConversationHotWindowSnapshot? _cachedPreview;
   Object? _cachedPreviewLoadError;
   bool _cachedPreviewErrorSnackbarVisible = false;
@@ -234,6 +242,14 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     _identityRecentSessionsSub = bridge.recentSessionsStream.listen((_) {
       _reconcileAuthoritativeDataSourceIdentity(bridge);
     });
+    try {
+      _identityCatalogSub = context
+          .read<SessionListCubit>()
+          .catalogSnapshotChanges
+          .listen((_) => _reconcileAuthoritativeDataSourceIdentity(bridge));
+    } catch (_) {
+      // Isolated widget hosts may not provide the durable catalog projection.
+    }
     _reconcileAuthoritativeDataSourceIdentity(bridge);
   }
 
@@ -251,6 +267,20 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
           (session.id == _sessionId ||
               session.claudeSessionId == providerSessionId),
     );
+    var durableCatalogConfirmsThread = false;
+    try {
+      final catalog = context.read<SessionListCubit>();
+      durableCatalogConfirmsThread = isCurrentCatalogIdentityProof(
+        hasUsableCatalogForCurrentTarget:
+            catalog.hasUsableCatalogForCurrentTarget,
+        session: catalog.catalogSessionFor(
+          providerSessionId,
+          provider: Provider.claude.value,
+        ),
+      );
+    } catch (_) {
+      // Legacy and isolated hosts can still confirm through BridgeService.
+    }
     final catalogConfirmsThread =
         bridge.hasAuthoritativeRecentSessionsForCurrentConnection &&
         bridge.recentSessions.any(
@@ -258,7 +288,11 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
               session.provider == Provider.claude.value &&
               session.sessionId == providerSessionId,
         );
-    if (!runtimeConfirmsThread && !catalogConfirmsThread) return;
+    if (!runtimeConfirmsThread &&
+        !catalogConfirmsThread &&
+        !durableCatalogConfirmsThread) {
+      return;
+    }
 
     final authenticatedIdentity = bridge.dataSourceIdentity;
     final next = _dataSourceIdentity.reconciledWithAuthenticated(
@@ -930,6 +964,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     _cachedPreviewSub?.cancel();
     _identitySessionListSub?.cancel();
     _identityRecentSessionsSub?.cancel();
+    _identityCatalogSub?.cancel();
     final durableId = widget.durableProviderSessionId;
     if (durableId != null) {
       try {

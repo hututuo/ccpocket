@@ -1230,6 +1230,120 @@ abstract class AppLocalizations {
   /// **'Bridge はオンラインです。共有 Codex ランタイムを準備しています...'**
   String get preparingCodexRuntime;
 
+  /// No description provided for @connectionPreparingTarget.
+  ///
+  /// In ja, this message translates to:
+  /// **'接続先を準備しています…'**
+  String get connectionPreparingTarget;
+
+  /// No description provided for @connectionOpeningTransport.
+  ///
+  /// In ja, this message translates to:
+  /// **'ネットワーク接続を開始しています…'**
+  String get connectionOpeningTransport;
+
+  /// No description provided for @connectionNegotiatingTransport.
+  ///
+  /// In ja, this message translates to:
+  /// **'ネットワークに接続しました。Bridge の機能を確認しています…'**
+  String get connectionNegotiatingTransport;
+
+  /// No description provided for @connectionSendingCapabilities.
+  ///
+  /// In ja, this message translates to:
+  /// **'モバイル側の機能情報を送信しています…'**
+  String get connectionSendingCapabilities;
+
+  /// No description provided for @connectionRequestingSessionList.
+  ///
+  /// In ja, this message translates to:
+  /// **'正規のセッション一覧を要求しています…'**
+  String get connectionRequestingSessionList;
+
+  /// No description provided for @connectionReceivingSessionList.
+  ///
+  /// In ja, this message translates to:
+  /// **'一覧データを受信しました。読み込んでいます…'**
+  String get connectionReceivingSessionList;
+
+  /// No description provided for @connectionDecodingSessionList.
+  ///
+  /// In ja, this message translates to:
+  /// **'セッション一覧をデコードしています…'**
+  String get connectionDecodingSessionList;
+
+  /// No description provided for @connectionValidatingSessionList.
+  ///
+  /// In ja, this message translates to:
+  /// **'セッション一覧を検証しています…'**
+  String get connectionValidatingSessionList;
+
+  /// No description provided for @connectionAcceptingSessionAuthority.
+  ///
+  /// In ja, this message translates to:
+  /// **'現在の Bridge とデータソースを確認しています…'**
+  String get connectionAcceptingSessionAuthority;
+
+  /// No description provided for @connectionResolvingBridgeIdentity.
+  ///
+  /// In ja, this message translates to:
+  /// **'コンピュータと Codex ソースを識別しています…'**
+  String get connectionResolvingBridgeIdentity;
+
+  /// No description provided for @connectionPublishingSessionList.
+  ///
+  /// In ja, this message translates to:
+  /// **'正規のセッション一覧を公開しています…'**
+  String get connectionPublishingSessionList;
+
+  /// No description provided for @connectionPreparingConversationSync.
+  ///
+  /// In ja, this message translates to:
+  /// **'差分会話同期を準備しています…'**
+  String get connectionPreparingConversationSync;
+
+  /// No description provided for @connectionStartingConversationSync.
+  ///
+  /// In ja, this message translates to:
+  /// **'差分会話同期を開始しています…'**
+  String get connectionStartingConversationSync;
+
+  /// No description provided for @connectionSavingConversationCatalog.
+  ///
+  /// In ja, this message translates to:
+  /// **'会話一覧を保存しています…'**
+  String get connectionSavingConversationCatalog;
+
+  /// No description provided for @connectionSavingSessionStatus.
+  ///
+  /// In ja, this message translates to:
+  /// **'セッションの実行状態を保存しています…'**
+  String get connectionSavingSessionStatus;
+
+  /// No description provided for @connectionSavingPriorityTimelines.
+  ///
+  /// In ja, this message translates to:
+  /// **'最近の会話内容を保存しています…'**
+  String get connectionSavingPriorityTimelines;
+
+  /// No description provided for @connectionReloadingLocalProjection.
+  ///
+  /// In ja, this message translates to:
+  /// **'ローカルの会話表示を再読み込みしています…'**
+  String get connectionReloadingLocalProjection;
+
+  /// No description provided for @connectionProgressWithCount.
+  ///
+  /// In ja, this message translates to:
+  /// **'{label}（{completed}/{total}）'**
+  String connectionProgressWithCount(String label, int completed, int total);
+
+  /// No description provided for @connectionProgressWhilePreparingRuntime.
+  ///
+  /// In ja, this message translates to:
+  /// **'{label}（共有 Codex ランタイムも準備中）'**
+  String connectionProgressWhilePreparingRuntime(String label);
+
   /// No description provided for @codexRuntimeTakingLonger.
   ///
   /// In ja, this message translates to:

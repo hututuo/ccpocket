@@ -1361,7 +1361,10 @@
   (`78%`). Conversation Sync v2 then records subscription/SQLite-committed
   catalog, status, timeline and priority-checkpoint pages through `98%`;
   projection reload and the complete application gate are `99%` and `100%`.
-  A legacy catalog keeps its correlated request/response milestones.
+  Before the v2 `sync_begin` event, the UI remains at the truthful `78%`
+  “preparing sync” step. A legacy catalog keeps its correlated
+  request/response milestones and legacy catalog wording; it must never claim
+  that Conversation Sync v2 started.
 - The activity ring is intentionally indeterminate and keeps rotating while
   work is active. The separate percentage and linear bar remain determinate;
   a stationary ring must never be used to represent a numeric checkpoint.
@@ -1374,6 +1377,41 @@
   checkpoint until the priority checkpoint. Once the application gate is
   ready, ongoing timeline patches no longer rebuild the entire connection
   screen merely to update startup progress.
+- Shared runtime readiness and conversation-sync commits are independent
+  startup lanes. The visible progress keeps showing committed catalog, status
+  and priority-timeline advancement while `/readyz` is still preparing, and
+  the localized label explicitly says that both are in progress. Runtime
+  readiness remains a mandatory final gate; displaying the parallel work must
+  never turn a 503/unknown runtime into application-ready.
+- The connection screen resolves its text from the same fine-grained progress
+  object used by the watchdog and diagnostics: transport open, capability
+  negotiation, authoritative list request/receive/decode/validate/accept,
+  Bridge/source identity, catalog/status/timeline SQLite commit and local
+  projection reload. Each changed checkpoint logs its stable step name, total
+  elapsed time and step elapsed time without endpoint, key, path, title or
+  thread identity.
+- On a `conversation_sync_v2` startup, `ConversationContentSyncService` is the
+  sole owner of the authoritative catalog/status/priority-timeline bootstrap.
+  `SessionListCubit` must not simultaneously send legacy
+  `list_recent_sessions`, because that duplicate provider scan competes with
+  the priority path. This optimization applies only when the v2 sync service
+  and its SQLite catalog cache are actually installed; isolated hosts fall
+  back to the legacy catalog request instead of waiting for a producer or
+  projection that does not exist. The cheap
+  Bridge-owned `list_project_history` remains so
+  a source switch can clear stale shortcuts. Manual refresh, filters/search and
+  old Bridges retain the existing legacy catalog request. UI and identity
+  consumers must read the committed `SessionListCubit` projection as well as
+  the legacy `BridgeService.recentSessions` cache, so skipping the duplicate
+  v2 provider scan cannot make an existing durable conversation look absent.
+  A same-socket Bridge/source authority change clears the previous source's
+  visible sync progress before the replacement subscription starts. Because
+  that replacement `session_list` frame is already decoded and validated when
+  its new identity is known, Bridge resets the old published milestone and
+  resumes at the truthful model-validated stage before accepting/publishing
+  the new authority.
+  Its progress watchdog and elapsed diagnostics also restart at that authority
+  boundary; elapsed values never combine work from two Codex sources.
 - Prompt History is excluded from the startup critical path. It starts once
   per authenticated socket only after application readiness, prefers stable
   Bridge identity across IP routes, skips unchanged revisions, serializes

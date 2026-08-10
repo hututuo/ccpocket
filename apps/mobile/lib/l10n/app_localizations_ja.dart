@@ -623,6 +623,69 @@ class AppLocalizationsJa extends AppLocalizations {
       'Bridge はオンラインです。共有 Codex ランタイムを準備しています...';
 
   @override
+  String get connectionPreparingTarget => '接続先を準備しています…';
+
+  @override
+  String get connectionOpeningTransport => 'ネットワーク接続を開始しています…';
+
+  @override
+  String get connectionNegotiatingTransport =>
+      'ネットワークに接続しました。Bridge の機能を確認しています…';
+
+  @override
+  String get connectionSendingCapabilities => 'モバイル側の機能情報を送信しています…';
+
+  @override
+  String get connectionRequestingSessionList => '正規のセッション一覧を要求しています…';
+
+  @override
+  String get connectionReceivingSessionList => '一覧データを受信しました。読み込んでいます…';
+
+  @override
+  String get connectionDecodingSessionList => 'セッション一覧をデコードしています…';
+
+  @override
+  String get connectionValidatingSessionList => 'セッション一覧を検証しています…';
+
+  @override
+  String get connectionAcceptingSessionAuthority =>
+      '現在の Bridge とデータソースを確認しています…';
+
+  @override
+  String get connectionResolvingBridgeIdentity => 'コンピュータと Codex ソースを識別しています…';
+
+  @override
+  String get connectionPublishingSessionList => '正規のセッション一覧を公開しています…';
+
+  @override
+  String get connectionPreparingConversationSync => '差分会話同期を準備しています…';
+
+  @override
+  String get connectionStartingConversationSync => '差分会話同期を開始しています…';
+
+  @override
+  String get connectionSavingConversationCatalog => '会話一覧を保存しています…';
+
+  @override
+  String get connectionSavingSessionStatus => 'セッションの実行状態を保存しています…';
+
+  @override
+  String get connectionSavingPriorityTimelines => '最近の会話内容を保存しています…';
+
+  @override
+  String get connectionReloadingLocalProjection => 'ローカルの会話表示を再読み込みしています…';
+
+  @override
+  String connectionProgressWithCount(String label, int completed, int total) {
+    return '$label（$completed/$total）';
+  }
+
+  @override
+  String connectionProgressWhilePreparingRuntime(String label) {
+    return '$label（共有 Codex ランタイムも準備中）';
+  }
+
+  @override
   String get codexRuntimeTakingLonger =>
       'Bridge プロセスはオンラインですが、共有 Codex ランタイムはまだ準備中です。待機、再試行、またはキャンセルできます。';
 

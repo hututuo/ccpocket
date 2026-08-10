@@ -255,6 +255,35 @@
   "bridgeConnectionTakingLonger": "Bridge には接続しましたが、会話一覧の準備に時間がかかっています。このまま待つか、再試行またはキャンセルできます。",
   "authenticatingWithBridge": "Bridge で認証しています...",
   "preparingCodexRuntime": "Bridge はオンラインです。共有 Codex ランタイムを準備しています...",
+  "connectionPreparingTarget": "接続先を準備しています…",
+  "connectionOpeningTransport": "ネットワーク接続を開始しています…",
+  "connectionNegotiatingTransport": "ネットワークに接続しました。Bridge の機能を確認しています…",
+  "connectionSendingCapabilities": "モバイル側の機能情報を送信しています…",
+  "connectionRequestingSessionList": "正規のセッション一覧を要求しています…",
+  "connectionReceivingSessionList": "一覧データを受信しました。読み込んでいます…",
+  "connectionDecodingSessionList": "セッション一覧をデコードしています…",
+  "connectionValidatingSessionList": "セッション一覧を検証しています…",
+  "connectionAcceptingSessionAuthority": "現在の Bridge とデータソースを確認しています…",
+  "connectionResolvingBridgeIdentity": "コンピュータと Codex ソースを識別しています…",
+  "connectionPublishingSessionList": "正規のセッション一覧を公開しています…",
+  "connectionPreparingConversationSync": "差分会話同期を準備しています…",
+  "connectionStartingConversationSync": "差分会話同期を開始しています…",
+  "connectionSavingConversationCatalog": "会話一覧を保存しています…",
+  "connectionSavingSessionStatus": "セッションの実行状態を保存しています…",
+  "connectionSavingPriorityTimelines": "最近の会話内容を保存しています…",
+  "connectionReloadingLocalProjection": "ローカルの会話表示を再読み込みしています…",
+  "connectionProgressWithCount": "{label}（{completed}/{total}）",
+  "@connectionProgressWithCount": {
+    "placeholders": {
+      "label": {"type": "String"},
+      "completed": {"type": "int"},
+      "total": {"type": "int"}
+    }
+  },
+  "connectionProgressWhilePreparingRuntime": "{label}（共有 Codex ランタイムも準備中）",
+  "@connectionProgressWhilePreparingRuntime": {
+    "placeholders": {"label": {"type": "String"}}
+  },
   "codexRuntimeTakingLonger": "Bridge プロセスはオンラインですが、共有 Codex ランタイムはまだ準備中です。待機、再試行、またはキャンセルできます。",
   "useCachedConversations": "キャッシュを使用して開く",
   "bridgeConnectionAttemptFailed": "Bridge 接続を利用可能な状態にできませんでした。アドレスと認証情報を確認して再試行してください。",

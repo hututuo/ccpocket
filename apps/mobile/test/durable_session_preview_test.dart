@@ -29,6 +29,34 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'chat_screen/helpers/chat_test_helpers.dart';
 
 void main() {
+  test('Claude identity ignores a retained catalog from another source', () {
+    final retained = RecentSession(
+      sessionId: 'shared-thread',
+      provider: Provider.claude.value,
+      firstPrompt: 'retained old source',
+      created: '2026-08-10T00:00:00Z',
+      modified: '2026-08-10T00:00:00Z',
+      gitBranch: 'main',
+      projectPath: '/tmp/project',
+      isSidechain: false,
+    );
+
+    expect(
+      isCurrentCatalogIdentityProof(
+        hasUsableCatalogForCurrentTarget: false,
+        session: retained,
+      ),
+      isFalse,
+    );
+    expect(
+      isCurrentCatalogIdentityProof(
+        hasUsableCatalogForCurrentTarget: true,
+        session: retained,
+      ),
+      isTrue,
+    );
+  });
+
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() => SharedPreferences.setMockInitialValues({}));

@@ -622,6 +622,69 @@ class AppLocalizationsKo extends AppLocalizations {
   String get preparingCodexRuntime => 'Bridge가 온라인입니다. 공유 Codex 런타임을 준비하는 중...';
 
   @override
+  String get connectionPreparingTarget => '연결 대상을 준비하는 중…';
+
+  @override
+  String get connectionOpeningTransport => '네트워크 연결을 여는 중…';
+
+  @override
+  String get connectionNegotiatingTransport =>
+      '네트워크가 연결되었습니다. Bridge 기능을 협상하는 중…';
+
+  @override
+  String get connectionSendingCapabilities => '모바일 기능 정보를 전송하는 중…';
+
+  @override
+  String get connectionRequestingSessionList => '권한 있는 세션 목록을 요청하는 중…';
+
+  @override
+  String get connectionReceivingSessionList => '목록 데이터를 받았습니다. 읽는 중…';
+
+  @override
+  String get connectionDecodingSessionList => '세션 목록을 디코딩하는 중…';
+
+  @override
+  String get connectionValidatingSessionList => '세션 목록을 검증하는 중…';
+
+  @override
+  String get connectionAcceptingSessionAuthority =>
+      '현재 Bridge와 데이터 소스를 확인하는 중…';
+
+  @override
+  String get connectionResolvingBridgeIdentity => '컴퓨터와 Codex 소스를 식별하는 중…';
+
+  @override
+  String get connectionPublishingSessionList => '권한 있는 세션 목록을 게시하는 중…';
+
+  @override
+  String get connectionPreparingConversationSync => '증분 대화 동기화를 준비하는 중…';
+
+  @override
+  String get connectionStartingConversationSync => '증분 대화 동기화를 시작하는 중…';
+
+  @override
+  String get connectionSavingConversationCatalog => '대화 목록을 저장하는 중…';
+
+  @override
+  String get connectionSavingSessionStatus => '실시간 세션 상태를 저장하는 중…';
+
+  @override
+  String get connectionSavingPriorityTimelines => '최근 대화 내용을 저장하는 중…';
+
+  @override
+  String get connectionReloadingLocalProjection => '로컬 대화 화면을 다시 불러오는 중…';
+
+  @override
+  String connectionProgressWithCount(String label, int completed, int total) {
+    return '$label ($completed/$total)';
+  }
+
+  @override
+  String connectionProgressWhilePreparingRuntime(String label) {
+    return '$label (공유 Codex 런타임도 준비 중)';
+  }
+
+  @override
   String get codexRuntimeTakingLonger =>
       'Bridge 프로세스는 온라인이지만 공유 Codex 런타임은 아직 준비 중입니다. 계속 기다리거나 다시 시도하거나 취소할 수 있습니다.';
 

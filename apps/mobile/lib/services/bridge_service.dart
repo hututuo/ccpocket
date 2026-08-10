@@ -44,22 +44,21 @@ const bridgeApplicationReadinessCapability = 'bridge_application_readiness_v1';
 /// corresponding protocol or local publication step has actually completed.
 enum BridgeConnectionBootstrapPhase {
   idle(0),
-  // Bootstrap milestones are deliberately spaced across the full range. The
-  // values are protocol facts, not a timer or an estimate of remaining work.
-  // Keeping the spacing regular prevents the UI from appearing idle until the
-  // final session/catalog phases, which can legitimately take the longest.
-  openingTransport(8),
-  transportReady(16),
-  capabilitiesSent(24),
-  sessionListRequested(32),
+  // Bootstrap milestones are weighted by their observed role in the startup
+  // critical path. They remain protocol facts rather than timer interpolation;
+  // conversation-sync commits own the final 20 percent below.
+  openingTransport(5),
+  transportReady(15),
+  capabilitiesSent(22),
+  sessionListRequested(30),
   sessionListFrameReceived(40),
   sessionListEnvelopeDecoded(48),
-  sessionListModelValidated(56),
-  sessionListAuthorityAccepted(64),
-  identityResolved(72),
-  sessionListPublished(80),
-  conversationCatalogRequested(88),
-  conversationCatalogReceived(96),
+  sessionListModelValidated(58),
+  sessionListAuthorityAccepted(68),
+  identityResolved(74),
+  sessionListPublished(78),
+  conversationCatalogRequested(80),
+  conversationCatalogReceived(98),
   reconnectScheduled(3);
 
   const BridgeConnectionBootstrapPhase(this.percent);
@@ -2334,12 +2333,31 @@ class BridgeService implements BridgeServiceBase {
                     previousBridgeId != authoritativeBridgeId ||
                     (authoritativeBridgeId != null &&
                         previousSourceId != authoritativeSourceId);
+                final replacingAuthoritativeSource =
+                    dataSourceChanged &&
+                    _hasAuthoritativeSessionListForCurrentConnection;
                 final advertisedPromptHistoryStatus = _lastPromptHistoryStatus;
                 if (dataSourceChanged) {
                   _hasAuthoritativeSessionListForCurrentConnection = false;
                   _requeueInFlightInputMessages();
                   _requeueInFlightPendingMessages();
                   _clearBridgeScopedState(clearOfflineQueue: false);
+                  if (replacingAuthoritativeSource) {
+                    // The replacement frame has already been decoded and
+                    // validated on this same socket. Reset the previous
+                    // source's published milestone, then restore the latest
+                    // truthful stage so the remaining authority/identity
+                    // commits can advance normally.
+                    _setConnectionBootstrapPhase(
+                      BridgeConnectionBootstrapPhase.idle,
+                      epoch: epoch,
+                      reason: 'data_source_changed',
+                    );
+                    _setConnectionBootstrapPhase(
+                      BridgeConnectionBootstrapPhase.sessionListModelValidated,
+                      epoch: epoch,
+                    );
+                  }
                 }
                 _bridgeInstanceId = authoritativeBridgeId;
                 _codexSourceId = authoritativeSourceId;
@@ -4017,6 +4035,7 @@ class BridgeService implements BridgeServiceBase {
       state: phase.name,
       reason: reason,
       errorKind: errorKind,
+      elapsedMs: _connectionDiagnosticStopwatch?.elapsedMilliseconds,
       progress: phase.percent,
       warning: warning,
     );

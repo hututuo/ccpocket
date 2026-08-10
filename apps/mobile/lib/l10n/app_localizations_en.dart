@@ -635,6 +635,79 @@ class AppLocalizationsEn extends AppLocalizations {
       'Bridge is online. Preparing the shared Codex runtime...';
 
   @override
+  String get connectionPreparingTarget => 'Preparing the connection target…';
+
+  @override
+  String get connectionOpeningTransport => 'Opening the network connection…';
+
+  @override
+  String get connectionNegotiatingTransport =>
+      'Network connected. Negotiating Bridge capabilities…';
+
+  @override
+  String get connectionSendingCapabilities => 'Sending Mobile capabilities…';
+
+  @override
+  String get connectionRequestingSessionList =>
+      'Requesting the authoritative session catalog…';
+
+  @override
+  String get connectionReceivingSessionList =>
+      'Catalog data received. Reading it…';
+
+  @override
+  String get connectionDecodingSessionList => 'Decoding the session catalog…';
+
+  @override
+  String get connectionValidatingSessionList =>
+      'Validating the session catalog…';
+
+  @override
+  String get connectionAcceptingSessionAuthority =>
+      'Confirming the current Bridge and data source…';
+
+  @override
+  String get connectionResolvingBridgeIdentity =>
+      'Identifying the computer and Codex source…';
+
+  @override
+  String get connectionPublishingSessionList =>
+      'Publishing the authoritative session catalog…';
+
+  @override
+  String get connectionPreparingConversationSync =>
+      'Preparing incremental conversation sync…';
+
+  @override
+  String get connectionStartingConversationSync =>
+      'Starting incremental conversation sync…';
+
+  @override
+  String get connectionSavingConversationCatalog =>
+      'Saving the conversation catalog…';
+
+  @override
+  String get connectionSavingSessionStatus => 'Saving live session status…';
+
+  @override
+  String get connectionSavingPriorityTimelines =>
+      'Saving recent conversation content…';
+
+  @override
+  String get connectionReloadingLocalProjection =>
+      'Reloading the local conversation view…';
+
+  @override
+  String connectionProgressWithCount(String label, int completed, int total) {
+    return '$label ($completed/$total)';
+  }
+
+  @override
+  String connectionProgressWhilePreparingRuntime(String label) {
+    return '$label (also preparing the shared Codex runtime)';
+  }
+
+  @override
   String get codexRuntimeTakingLonger =>
       'The Bridge process is online, but the shared Codex runtime is still preparing. You can keep waiting, retry, or cancel.';
 
