@@ -39,6 +39,7 @@ import '../session_list/services/session_resume_coordinator.dart';
 import '../session_list/state/session_list_cubit.dart';
 import '../session_list/workspace_shell_screen.dart';
 import '../conversation_content_sync/conversation_content_sync_service.dart';
+import '../conversation_content_sync/conversation_sync_trace.dart';
 import '../conversation_content_sync/conversation_route_focus_restorer.dart';
 import '../codex_action_broker/codex_action_broker_interaction_frame.dart';
 import '../codex_action_broker/codex_action_broker_service.dart';
@@ -554,10 +555,16 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     } catch (_) {
       return;
     }
+    final trace = conversationSyncTargetTrace(Provider.codex.value, durableId);
     if (sync.hasAuthoritativeDataSourceConflict(
       _dataSourceIdentity,
       provider: Provider.codex.value,
     )) {
+      conversationSyncTrace(
+        '[conversation_sync_v2] event=preview_read_skipped '
+        'target=$trace reason=source_conflict',
+        warning: true,
+      );
       return;
     }
     final targetFingerprint = sync.cacheTargetFingerprintForDataSource(
@@ -604,10 +611,16 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     } catch (_) {
       return;
     }
+    final trace = conversationSyncTargetTrace(Provider.codex.value, durableId);
     if (sync.hasAuthoritativeDataSourceConflict(
       _dataSourceIdentity,
       provider: Provider.codex.value,
     )) {
+      conversationSyncTrace(
+        '[conversation_sync_v2] event=preview_read_skipped '
+        'target=$trace reason=source_conflict',
+        warning: true,
+      );
       return;
     }
     final targetFingerprint = sync.cacheTargetFingerprintForDataSource(
@@ -615,6 +628,11 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     );
     if (_expectedCacheTargetFingerprint != null &&
         _expectedCacheTargetFingerprint != targetFingerprint) {
+      conversationSyncTrace(
+        '[conversation_sync_v2] event=preview_read_skipped '
+        'target=$trace reason=cache_target',
+        warning: true,
+      );
       return;
     }
     _expectedCacheTargetFingerprint ??= targetFingerprint;
@@ -629,6 +647,11 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     _loadingCachedPreviewTargetFingerprint = targetFingerprint;
     _cachedPreviewDirty = false;
     final cacheCommitEpoch = sync.cacheCommitEpoch;
+    conversationSyncTrace(
+      '[conversation_sync_v2] event=preview_read_start '
+      'target=$trace epoch=$cacheCommitEpoch '
+      'visible=${shortConversationSyncToken(_cachedPreview?.revision)}',
+    );
     unawaited(
       sync
           .loadCachedWindow(
@@ -643,27 +666,55 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
                   _dataSourceIdentity,
                   provider: Provider.codex.value,
                 )) {
+              conversationSyncTrace(
+                '[conversation_sync_v2] event=preview_read_superseded '
+                'target=$trace reason=route_or_source',
+              );
               if (mounted && widget.durableProviderSessionId == durableId) {
                 _cachedPreviewDirty = true;
               }
               return;
             }
             if (sync.cacheCommitEpoch != cacheCommitEpoch) {
+              conversationSyncTrace(
+                '[conversation_sync_v2] event=preview_read_superseded '
+                'target=$trace reason=commit_epoch '
+                'start=$cacheCommitEpoch current=${sync.cacheCommitEpoch}',
+              );
               _cachedPreviewDirty = true;
               return;
             }
             // A cache commit can arrive while this SQLite read is in flight.
             // Never flash the now-stale result before the coalesced follow-up
             // read; doing so can visibly rewind an active conversation.
-            if (_cachedPreviewDirty) return;
+            if (_cachedPreviewDirty) {
+              conversationSyncTrace(
+                '[conversation_sync_v2] event=preview_read_superseded '
+                'target=$trace reason=dirty_commit',
+              );
+              return;
+            }
             final currentPreview = _cachedPreview;
             if (snapshot == null && currentPreview != null) return;
             if (snapshot != null &&
                 currentPreview != null &&
                 _cachedPreviewTargetFingerprint == targetFingerprint &&
                 snapshot.cachedAt.isBefore(currentPreview.cachedAt)) {
+              conversationSyncTrace(
+                '[conversation_sync_v2] event=preview_read_superseded '
+                'target=$trace reason=older_cache '
+                'candidate=${shortConversationSyncToken(snapshot.revision)} '
+                'visible=${shortConversationSyncToken(currentPreview.revision)}',
+              );
               return;
             }
+            conversationSyncTrace(
+              '[conversation_sync_v2] event=preview_applied '
+              'target=$trace '
+              'content=${shortConversationSyncToken(snapshot?.revision)} '
+              'entries=${snapshot?.entries.length ?? 0} '
+              'cachedAt=${snapshot?.cachedAt.toIso8601String() ?? 'none'}',
+            );
             setState(() {
               _cachedPreview = snapshot;
               _cachedPreviewTargetFingerprint = targetFingerprint;

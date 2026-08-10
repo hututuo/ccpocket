@@ -8,6 +8,7 @@ import '../../models/bridge_data_source_identity.dart';
 import '../../models/messages.dart';
 import '../../services/bridge_service.dart';
 import '../session_list/cache/session_catalog_cache_repository.dart';
+import 'conversation_sync_trace.dart';
 
 abstract interface class ConversationContentSyncGateway {
   Stream<BridgeConnectionState> get connectionStatus;
@@ -214,6 +215,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   _latestTurnRepairFlights = {};
   String? _focusedRefreshFlightKey;
   Future<void>? _focusedRefreshFlight;
+  Completer<void>? _focusedRefreshCancellation;
+  int? _focusedRefreshGeneration;
   final Map<String, Future<void>> _historyOperationTails = {};
   final Map<String, Future<void>> _userIndexFlights = {};
   final Map<String, Future<List<ServerMessage>?>> _userTurnDetailFlights = {};
@@ -235,6 +238,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   bool _started = false;
   bool _disposed = false;
   int _generation = 0;
+  int _focusIntentGeneration = 0;
   int _requestSequence = 0;
   int _retryAttempt = 0;
   int _highestV2CommittedSequence = 0;
@@ -367,6 +371,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             providerSessionId: providerSessionId,
           );
     if (_sameTarget(_focused, next)) return;
+    _focusIntentGeneration += 1;
+    _interruptFocusedRefresh();
     final previous = _focused;
     if (previous != null) {
       _markConversationReadBestEffort(previous);
@@ -423,13 +429,42 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     required BridgeDataSourceIdentity expectedDataSourceIdentity,
     Duration timeout = const Duration(seconds: 12),
   }) {
+    if (_disposed ||
+        !_canProcessContent ||
+        !matchesCurrentDataSource(
+          expectedDataSourceIdentity,
+          provider: provider,
+        )) {
+      return Future<void>.error(const _ConversationPagingInterrupted());
+    }
+    final next = ConversationContentTarget(
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
+    if (!_sameTarget(_focused, next)) {
+      _focusIntentGeneration += 1;
+      _interruptFocusedRefresh();
+      final previous = _focused;
+      if (previous != null) _markConversationReadBestEffort(previous);
+      _focused = next;
+      _markConversationReadBestEffort(next);
+    }
+    final focusGeneration = _focusIntentGeneration;
     final flightKey =
         '${_cacheTarget.fingerprint}\u0000$provider\u0000$providerSessionId';
     final existing = _focusedRefreshFlight;
-    if (existing != null) {
-      if (_focusedRefreshFlightKey == flightKey) return existing;
-      return Future<void>.error(const _ConversationPagingInterrupted());
+    final existingCancellation = _focusedRefreshCancellation;
+    if (existing != null &&
+        _focusedRefreshFlightKey == flightKey &&
+        _focusedRefreshGeneration == focusGeneration &&
+        existingCancellation != null &&
+        !existingCancellation.isCompleted) {
+      return existing;
     }
+    if (existing != null) {
+      _interruptFocusedRefresh();
+    }
+    final cancellation = Completer<void>();
     late final Future<void> flight;
     flight =
         _refreshFocusedConversation(
@@ -437,14 +472,20 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           providerSessionId: providerSessionId,
           expectedDataSourceIdentity: expectedDataSourceIdentity,
           timeout: timeout,
+          cancellation: cancellation,
+          focusGeneration: focusGeneration,
         ).whenComplete(() {
           if (identical(_focusedRefreshFlight, flight)) {
             _focusedRefreshFlight = null;
             _focusedRefreshFlightKey = null;
+            _focusedRefreshCancellation = null;
+            _focusedRefreshGeneration = null;
           }
         });
     _focusedRefreshFlightKey = flightKey;
     _focusedRefreshFlight = flight;
+    _focusedRefreshCancellation = cancellation;
+    _focusedRefreshGeneration = focusGeneration;
     return flight;
   }
 
@@ -453,43 +494,43 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     required String providerSessionId,
     required BridgeDataSourceIdentity expectedDataSourceIdentity,
     required Duration timeout,
+    required Completer<void> cancellation,
+    required int focusGeneration,
   }) async {
-    if (_disposed || !_canProcessContent) {
-      throw const _ConversationPagingInterrupted();
-    }
-    if (!matchesCurrentDataSource(
-      expectedDataSourceIdentity,
-      provider: provider,
-    )) {
-      throw const _ConversationPagingInterrupted();
-    }
     final next = ConversationContentTarget(
       provider: provider,
       providerSessionId: providerSessionId,
     );
-    final targetFingerprint = _cacheTarget.fingerprint;
-    if (!_sameTarget(_focused, next)) {
-      final previous = _focused;
-      if (previous != null) _markConversationReadBestEffort(previous);
-      _focused = next;
-      _markConversationReadBestEffort(next);
+    if (!_isFocusedRefreshCurrent(focusGeneration, next, cancellation) ||
+        !matchesCurrentDataSource(
+          expectedDataSourceIdentity,
+          provider: provider,
+        )) {
+      throw const _ConversationPagingInterrupted();
     }
+    final targetFingerprint = _cacheTarget.fingerprint;
     if (_activeSubscriptionId == null) {
       _retryTimer?.cancel();
       _retryTimer = null;
       _ensureSubscribed();
-      await _waitForActiveSubscription(timeout);
+      await _awaitFocusedRefresh(
+        _waitForActiveSubscription(timeout),
+        cancellation,
+      );
     }
     if (!matchesCurrentDataSource(
           expectedDataSourceIdentity,
           provider: provider,
         ) ||
         targetFingerprint != _cacheTarget.fingerprint ||
-        !_sameTarget(_focused, next)) {
+        !_isFocusedRefreshCurrent(focusGeneration, next, cancellation)) {
       throw const _ConversationPagingInterrupted();
     }
     final subscriptionId = _activeSubscriptionId;
     if (subscriptionId == null) throw const _ConversationPagingInterrupted();
+    if (!_isFocusedRefreshCurrent(focusGeneration, next, cancellation)) {
+      throw const _ConversationPagingInterrupted();
+    }
 
     final requestId = _nextRequestId('manual-focus');
     final supportsV2 = bridge.supportsConversationSyncV2;
@@ -567,13 +608,15 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 focused: next,
               ),
       );
-      if (completion != null) await completion;
+      if (completion != null) {
+        await _awaitFocusedRefresh(completion, cancellation);
+      }
       if (!matchesCurrentDataSource(
             expectedDataSourceIdentity,
             provider: provider,
           ) ||
           targetFingerprint != _cacheTarget.fingerprint ||
-          !_sameTarget(_focused, next)) {
+          !_isFocusedRefreshCurrent(focusGeneration, next, cancellation)) {
         throw const _ConversationPagingInterrupted();
       }
     } finally {
@@ -582,6 +625,40 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         completionSubscriptions.map((subscription) => subscription.cancel()),
       );
     }
+  }
+
+  Future<T> _awaitFocusedRefresh<T>(
+    Future<T> operation,
+    Completer<void> cancellation,
+  ) {
+    if (cancellation.isCompleted) {
+      return Future<T>.error(const _ConversationPagingInterrupted());
+    }
+    return Future.any<T>([
+      operation,
+      cancellation.future.then<T>(
+        (_) => throw const _ConversationPagingInterrupted(),
+      ),
+    ]);
+  }
+
+  void _interruptFocusedRefresh() {
+    final cancellation = _focusedRefreshCancellation;
+    if (cancellation != null && !cancellation.isCompleted) {
+      cancellation.complete();
+    }
+  }
+
+  bool _isFocusedRefreshCurrent(
+    int focusGeneration,
+    ConversationContentTarget target,
+    Completer<void> cancellation,
+  ) {
+    return !_disposed &&
+        _canProcessContent &&
+        !cancellation.isCompleted &&
+        focusGeneration == _focusIntentGeneration &&
+        _sameTarget(_focused, target);
   }
 
   void clearFocusedConversation({
@@ -1207,7 +1284,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           provider,
           providerSessionId,
         ).toUnsigned(32).toRadixString(16).padLeft(8, '0');
-        logger.info(
+        conversationSyncTrace(
           '[conversation_sync_v2] event=latest_turn_repair_retry '
           'reason=subscription_replaced scope=$scope',
         );
@@ -1237,7 +1314,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           provider,
           providerSessionId,
         ).toUnsigned(32).toRadixString(16).padLeft(8, '0');
-        logger.info(
+        conversationSyncTrace(
           '[conversation_sync_v2] event=turns_page_retry '
           'reason=subscription_replaced scope=$scope',
         );
@@ -1769,7 +1846,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 ),
         ),
       );
-      logger.info(
+      conversationSyncTrace(
         '[conversation_sync_v2] event=subscribe_sent '
         'generation=$generation progress=80 '
         'knownRevisions=${resumableRevisions.length} '
@@ -1820,13 +1897,26 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   }
 
   void _handleV2Event(ConversationSyncV2EventMessage event) {
-    if (!bridge.supportsConversationSyncV2 ||
-        !_canProcessContent ||
-        event.bridgeInstanceId != bridge.bridgeInstanceId ||
-        event.codexSourceId != (bridge.codexSourceId ?? 'legacy') ||
-        _subscriptionTargetFingerprint != _cacheTarget.fingerprint ||
-        (event.subscriptionId != _activeSubscriptionId &&
-            event.subscriptionId != _pendingSubscriptionId)) {
+    if (!bridge.supportsConversationSyncV2) return;
+    final rejection = !_canProcessContent
+        ? 'processing_disabled'
+        : event.bridgeInstanceId != bridge.bridgeInstanceId
+        ? 'bridge_identity'
+        : event.codexSourceId != (bridge.codexSourceId ?? 'legacy')
+        ? 'source_identity'
+        : _subscriptionTargetFingerprint != _cacheTarget.fingerprint
+        ? 'cache_target'
+        : event.subscriptionId != _activeSubscriptionId &&
+              event.subscriptionId != _pendingSubscriptionId
+        ? 'subscription'
+        : null;
+    if (rejection != null) {
+      conversationSyncTrace(
+        '[conversation_sync_v2] event=event_ignored '
+        'kind=${event.event.name} sequence=${event.sequence} '
+        'generation=$_generation reason=$rejection',
+        warning: true,
+      );
       return;
     }
     final generation = _generation;
@@ -2099,6 +2189,28 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       case ConversationSyncV2EventKind.statusChanges:
         publish = await _stageConversationStatusPage(event, generation, target);
       case ConversationSyncV2EventKind.timelinePage:
+        final timelineTrace = conversationSyncTargetTrace(
+          event.provider!,
+          event.providerSessionId!,
+        );
+        final focused = _focused;
+        final isFocused =
+            focused?.provider == event.provider &&
+            focused?.providerSessionId == event.providerSessionId;
+        final isBoundaryPage =
+            event.pageIndex == 0 || event.pageIndex == event.pageCount! - 1;
+        if (isFocused || isBoundaryPage) {
+          conversationSyncTrace(
+            '[conversation_sync_v2] event=timeline_received '
+            'target=$timelineTrace sequence=${event.sequence} '
+            'batch=${conversationSyncBatchTrace(event.batchId)} mode=${event.mode} '
+            'page=${event.pageIndex! + 1}/${event.pageCount} '
+            'entries=${event.entries.length} deletes=${event.deletes.length} '
+            'base=${shortConversationSyncToken(event.baseRevision)} '
+            'content=${shortConversationSyncToken(event.revision)} '
+            'latestComplete=${event.latestTurnComplete ?? true}',
+          );
+        }
         final committed = await cache.stageConversationTimelinePage(
           target: target,
           subscriptionId: event.subscriptionId,
@@ -2124,6 +2236,12 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           throw const _ConversationTimelineBaseRevisionMismatch();
         }
         if (committed.windowCommitted) {
+          conversationSyncTrace(
+            '[conversation_sync_v2] event=timeline_window_committed '
+            'target=$timelineTrace sequence=${event.sequence} '
+            'content=${shortConversationSyncToken(event.revision)} '
+            'lastAssistant=${committed.lastAssistantOutputAt ?? 'none'}',
+          );
           if (event.mode == 'snapshot') {
             _clearForcedSnapshotThread(
               target,
@@ -2566,12 +2684,14 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               ? ' pageScope=thread progressScope=unavailable'
               : ' pageScope=thread progressScope=${event.phase ?? 'timeline'}_batch'
         : '';
-    logger.info(
-      '[conversation_sync_v2] event=commit '
-      'kind=${event.event.name} sequence=${event.sequence} '
-      'generation=$generation${progress == null ? '' : ' progress=$progress'}'
-      '$timeline$page$phase$scope$progressScope',
-    );
+    if (event.event != ConversationSyncV2EventKind.timelinePage) {
+      conversationSyncTrace(
+        '[conversation_sync_v2] event=commit '
+        'kind=${event.event.name} sequence=${event.sequence} '
+        'generation=$generation${progress == null ? '' : ' progress=$progress'}'
+        '$timeline$page$phase$scope$progressScope',
+      );
+    }
     final progressUpdate =
         publish ??
         (event.event == ConversationSyncV2EventKind.timelinePage
@@ -2965,8 +3085,10 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     required bool sendUnsubscribe,
     String reason = 'unspecified',
   }) {
+    _focusIntentGeneration += 1;
+    _interruptFocusedRefresh();
     final subscriptionId = _activeSubscriptionId ?? _pendingSubscriptionId;
-    logger.info(
+    conversationSyncTrace(
       '[conversation_sync_v2] event=subscription_stop '
       'generation=$_generation reason=$reason '
       'hadSubscription=${subscriptionId != null} '
