@@ -49,27 +49,44 @@ class MachineGroupCard extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: ExpansionTile(
         key: PageStorageKey<String>('machine_group_routes_${group.id}'),
-        tilePadding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
-        childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        tilePadding: const EdgeInsetsDirectional.fromSTEB(12, 0, 4, 0),
+        childrenPadding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+        visualDensity: VisualDensity.compact,
+        minTileHeight: 58,
         leading: _MachineStatusDot(status: group.status),
         title: _MachineGroupHeader(
           group: group,
           preferred: preferred,
           onConnect: () => onConnect(preferred),
           onDelete: () => onDelete(preferred),
-          onRename: onRename,
         ),
         children: [
-          Align(
-            alignment: AlignmentDirectional.centerStart,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(4, 2, 4, 8),
-              child: Text(
-                l.machineRoutes,
-                style: theme.textTheme.labelLarge?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
+          Padding(
+            padding: const EdgeInsetsDirectional.fromSTEB(8, 0, 2, 4),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    l.machineRoutes,
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
                 ),
-              ),
+                if (onRename != null)
+                  IconButton(
+                    key: ValueKey('machine_group_rename_${group.id}'),
+                    onPressed: onRename,
+                    icon: const Icon(Icons.drive_file_rename_outline, size: 17),
+                    tooltip: l.renameMachineGroup,
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(
+                      width: 44,
+                      height: 44,
+                    ),
+                  ),
+              ],
             ),
           ),
           ...group.routes.map(
@@ -100,14 +117,12 @@ class _MachineGroupHeader extends StatelessWidget {
     required this.preferred,
     required this.onConnect,
     required this.onDelete,
-    this.onRename,
   });
 
   final BridgeMachineGroup group;
   final MachineWithStatus preferred;
   final VoidCallback onConnect;
   final VoidCallback onDelete;
-  final VoidCallback? onRename;
 
   @override
   Widget build(BuildContext context) {
@@ -120,112 +135,68 @@ class _MachineGroupHeader extends StatelessWidget {
       MachineStatus.identityChanged => l.machineIdentityChanged,
       MachineStatus.unknown => l.machineChecking,
     };
-    final metadataStyle = theme.textTheme.bodySmall?.copyWith(
+    final metadataStyle = theme.textTheme.labelSmall?.copyWith(
       color: theme.colorScheme.onSurfaceVariant,
-      height: 1.3,
+      height: 1.15,
     );
-    final routeAddress = formatHostPort(
-      preferred.machine.host,
-      preferred.machine.port,
-    );
-    final routeSummary = group.routes.length > 1
-        ? '${l.machinePreferredRoute}: $routeAddress'
-        : routeAddress;
-    final facts = Wrap(
-      spacing: 12,
-      runSpacing: 4,
-      children: [
-        Text(status, style: metadataStyle),
-        Text(l.machineRoutesCount(group.routes.length), style: metadataStyle),
-        if (preferred.latencyMs case final latency?)
-          Text(l.machineLatency(latency), style: metadataStyle),
-      ],
-    );
-    final details = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        facts,
-        const SizedBox(height: 4),
-        Text(
-          routeSummary,
-          key: ValueKey('machine_group_route_summary_${group.id}'),
-          softWrap: true,
-          style: metadataStyle,
-        ),
-      ],
-    );
-    final connectButton = FilledButton.tonalIcon(
+    final summaryParts = <String>[status];
+    if (preferred.latencyMs case final latency?) {
+      summaryParts.add(l.machineLatency(latency));
+    }
+    final connectButton = IconButton.filledTonal(
       key: ValueKey('machine_group_connect_${group.id}'),
       onPressed: group.hasOnlineRoute ? onConnect : null,
       icon: const Icon(Icons.login, size: 16),
-      label: Text(l.connect),
-      style: FilledButton.styleFrom(
-        visualDensity: VisualDensity.compact,
-        padding: const EdgeInsets.symmetric(horizontal: 12),
+      tooltip: l.connect,
+      visualDensity: VisualDensity.compact,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+      style: IconButton.styleFrom(
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       ),
     );
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: GestureDetector(
-                  key: ValueKey('machine_group_delete_gesture_${group.id}'),
-                  behavior: HitTestBehavior.opaque,
-                  onLongPress: group.routes.length == 1 ? onDelete : null,
-                  child: Text(
-                    group.displayName,
-                    softWrap: true,
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      height: 1.2,
-                    ),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: GestureDetector(
+                key: ValueKey('machine_group_delete_gesture_${group.id}'),
+                behavior: HitTestBehavior.opaque,
+                onLongPress: group.routes.length == 1 ? onDelete : null,
+                child: Text(
+                  group.displayName,
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.fade,
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    height: 1.1,
                   ),
                 ),
               ),
-              if (onRename != null)
-                IconButton(
-                  key: ValueKey('machine_group_rename_${group.id}'),
-                  onPressed: onRename,
-                  icon: const Icon(Icons.drive_file_rename_outline, size: 18),
-                  tooltip: l.renameMachineGroup,
-                  visualDensity: VisualDensity.compact,
-                ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              if (constraints.maxWidth < 280) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    details,
-                    const SizedBox(height: 8),
-                    Align(
-                      alignment: AlignmentDirectional.centerEnd,
-                      child: connectButton,
-                    ),
-                  ],
-                );
-              }
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Expanded(child: details),
-                  const SizedBox(width: 12),
-                  connectButton,
-                ],
-              );
-            },
-          ),
-        ],
-      ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              l.machineRoutesCount(group.routes.length),
+              style: metadataStyle,
+            ),
+            const SizedBox(width: 4),
+            connectButton,
+          ],
+        ),
+        Text(
+          summaryParts.join(' · '),
+          key: ValueKey('machine_group_route_summary_${group.id}'),
+          maxLines: 1,
+          softWrap: false,
+          overflow: TextOverflow.fade,
+          style: metadataStyle,
+        ),
+      ],
     );
   }
 }
@@ -261,6 +232,7 @@ class _MachineRouteTile extends StatelessWidget {
     final theme = Theme.of(context);
     final machine = route.machine;
     final isOnline = route.status == MachineStatus.online;
+    final compatibilityWarning = _compatibilityWarning(l);
     final routeActions = Row(
       key: ValueKey('machine_route_actions_${machine.id}'),
       mainAxisSize: MainAxisSize.min,
@@ -276,6 +248,9 @@ class _MachineRouteTile extends StatelessWidget {
             onPressed: onConnect,
             icon: const Icon(Icons.login, size: 19),
             tooltip: l.connect,
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints.tightFor(width: 44, height: 44),
           )
         else if (machine.canStartRemotely)
           IconButton(
@@ -283,6 +258,9 @@ class _MachineRouteTile extends StatelessWidget {
             onPressed: onStart,
             icon: const Icon(Icons.power_settings_new, size: 19),
             tooltip: l.start,
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints.tightFor(width: 44, height: 44),
           ),
         PopupMenuButton<_RouteAction>(
           key: ValueKey('machine_route_menu_${machine.id}'),
@@ -316,47 +294,81 @@ class _MachineRouteTile extends StatelessWidget {
               ),
             PopupMenuItem(value: _RouteAction.delete, child: Text(l.delete)),
           ],
+          iconSize: 19,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints.tightFor(width: 44, height: 44),
         ),
       ],
     );
     final routeDetails = Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Padding(
-          padding: const EdgeInsets.only(top: 5),
-          child: _MachineStatusDot(status: route.status, size: 9),
-        ),
-        const SizedBox(width: 10),
+        _MachineStatusDot(status: route.status, size: 8),
+        const SizedBox(width: 8),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              GestureDetector(
-                key: ValueKey('machine_route_delete_gesture_${machine.id}'),
-                behavior: HitTestBehavior.opaque,
-                onLongPress: onDelete,
-                child: Text(
-                  formatHostPort(machine.host, machine.port),
-                  key: ValueKey('machine_route_address_${machine.id}'),
-                  softWrap: true,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w500,
-                    height: 1.25,
+              Row(
+                children: [
+                  Expanded(
+                    child: GestureDetector(
+                      key: ValueKey(
+                        'machine_route_delete_gesture_${machine.id}',
+                      ),
+                      behavior: HitTestBehavior.opaque,
+                      onLongPress: onDelete,
+                      child: Text(
+                        formatHostPort(machine.host, machine.port),
+                        key: ValueKey('machine_route_address_${machine.id}'),
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.fade,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          height: 1.15,
+                        ),
+                      ),
+                    ),
                   ),
-                ),
+                  if (isPreferred) ...[
+                    const SizedBox(width: 6),
+                    Tooltip(
+                      message: l.machinePreferredRoute,
+                      child: Icon(
+                        Icons.route_outlined,
+                        key: ValueKey('machine_route_preferred_${machine.id}'),
+                        size: 16,
+                        color: theme.colorScheme.primary,
+                      ),
+                    ),
+                  ],
+                  if (compatibilityWarning != null) ...[
+                    const SizedBox(width: 6),
+                    Tooltip(
+                      message: compatibilityWarning,
+                      child: Icon(
+                        Icons.warning_amber_rounded,
+                        key: ValueKey(
+                          'machine_route_compatibility_warning_${machine.id}',
+                        ),
+                        size: 17,
+                        color: theme.colorScheme.error,
+                      ),
+                    ),
+                  ],
+                ],
               ),
-              if (isPreferred) ...[
-                const SizedBox(height: 4),
-                _RouteBadge(label: l.machinePreferredRoute),
-              ],
-              const SizedBox(height: 4),
+              const SizedBox(height: 1),
               Text(
                 _routeSubtitle(l),
                 key: ValueKey('machine_route_metadata_${machine.id}'),
-                softWrap: true,
-                style: theme.textTheme.bodySmall?.copyWith(
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.fade,
+                style: theme.textTheme.labelSmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
-                  height: 1.3,
+                  height: 1.1,
                 ),
               ),
             ],
@@ -377,35 +389,15 @@ class _MachineRouteTile extends StatelessWidget {
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: isOnline ? onConnect : null,
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final usesLargeText =
-                  MediaQuery.textScalerOf(context).scale(14) > 17;
-              final stackActions = constraints.maxWidth < 360 || usesLargeText;
-              return Padding(
-                padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-                child: stackActions
-                    ? Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          routeDetails,
-                          const SizedBox(height: 4),
-                          Align(
-                            alignment: AlignmentDirectional.centerEnd,
-                            child: routeActions,
-                          ),
-                        ],
-                      )
-                    : Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          Expanded(child: routeDetails),
-                          const SizedBox(width: 8),
-                          routeActions,
-                        ],
-                      ),
-              );
-            },
+          child: Padding(
+            padding: const EdgeInsetsDirectional.fromSTEB(10, 5, 2, 5),
+            child: Row(
+              children: [
+                Expanded(child: routeDetails),
+                const SizedBox(width: 4),
+                routeActions,
+              ],
+            ),
           ),
         ),
       ),
@@ -425,19 +417,22 @@ class _MachineRouteTile extends StatelessWidget {
     if (route.latencyMs case final latency?) {
       parts.add(l.machineLatency(latency));
     }
-    if (route.versionInfo case final version?) {
-      parts.add('v${version.version}');
-      final compatibility = compareClientBridgeCompatibility(
-        bridgeRevision: version.clientBridgeCompatibilityRevision,
-        mobileRevision: AppConstants.clientBridgeCompatibilityRevision,
-      );
-      if (compatibility == ClientBridgeCompatibility.bridgeOlder) {
-        parts.add(l.clientBridgeBridgeOlder);
-      } else if (compatibility == ClientBridgeCompatibility.mobileOlder) {
-        parts.add(l.clientBridgeMobileOlder);
-      }
-    }
     return parts.join(' · ');
+  }
+
+  String? _compatibilityWarning(AppLocalizations l) {
+    final version = route.versionInfo;
+    if (version == null) return null;
+    final compatibility = compareClientBridgeCompatibility(
+      bridgeRevision: version.clientBridgeCompatibilityRevision,
+      mobileRevision: AppConstants.clientBridgeCompatibilityRevision,
+    );
+    final warning = switch (compatibility) {
+      ClientBridgeCompatibility.bridgeOlder => l.clientBridgeBridgeOlder,
+      ClientBridgeCompatibility.mobileOlder => l.clientBridgeMobileOlder,
+      ClientBridgeCompatibility.matched => null,
+    };
+    return warning == null ? null : 'v${version.version} · $warning';
   }
 }
 
@@ -463,32 +458,6 @@ class _MachineStatusDot extends StatelessWidget {
       width: size,
       height: size,
       decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-    );
-  }
-}
-
-class _RouteBadge extends StatelessWidget {
-  const _RouteBadge({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: scheme.secondaryContainer,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-        child: Text(
-          label,
-          style: Theme.of(
-            context,
-          ).textTheme.labelSmall?.copyWith(color: scheme.onSecondaryContainer),
-        ),
-      ),
     );
   }
 }
