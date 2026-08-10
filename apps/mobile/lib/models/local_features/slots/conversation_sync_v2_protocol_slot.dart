@@ -7,6 +7,7 @@ const conversationItemsByIdCapability = 'conversation_items_by_id_v1';
 const conversationUserIndexCapability = 'conversation_user_index_v1';
 const appServerStatusV1Capability = 'app_server_status_v1';
 const bridgeIdentityV2Capability = 'bridge_identity_v2';
+const conversationRuntimeOverlayCapability = 'conversation_runtime_overlay_v1';
 
 const _conversationSyncMaxCatalogChanges = 512;
 const _conversationSyncMaxStatuses = 512;
@@ -28,6 +29,7 @@ class _ConversationSyncV2ProtocolSlot implements LocalFeatureProtocolSlot {
   @override
   List<String> get supportedServerMessageTypes => const [
     conversationSyncV2Capability,
+    conversationRuntimeOverlayCapability,
     conversationUserIndexCapability,
     appServerStatusV1Capability,
   ];
@@ -44,6 +46,7 @@ enum ConversationSyncV2EventKind {
   catalogChanges('catalog_changes'),
   statusChanges('status_changes'),
   timelinePage('timeline_page'),
+  runtimeOverlay('runtime_overlay'),
   syncCheckpoint('sync_checkpoint'),
   syncComplete('sync_complete'),
   syncReset('sync_reset'),
@@ -560,6 +563,12 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
     this.latestTurnComplete,
     this.latestTurnGap,
     this.sourceEntryCount,
+    this.overlayId,
+    this.observedAt,
+    this.originGeneration,
+    this.runtimeSessionId,
+    this.authorityGeneration,
+    this.overlayMessage,
     this.phase,
     this.hasMore,
     this.nextState,
@@ -606,6 +615,12 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
   final bool? latestTurnComplete;
   final ConversationSyncV2LatestTurnGap? latestTurnGap;
   final int? sourceEntryCount;
+  final String? overlayId;
+  final String? observedAt;
+  final String? originGeneration;
+  final String? runtimeSessionId;
+  final String? authorityGeneration;
+  final ServerMessage? overlayMessage;
   final String? phase;
   final bool? hasMore;
   final ConversationSyncV2NextState? nextState;
@@ -811,6 +826,28 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
         'sourceEntryCount',
         minimum: 0,
       ),
+      overlayId: _conversationSyncOptionalString(
+        json,
+        'overlayId',
+        maximumLength: 128,
+      ),
+      observedAt: _conversationSyncOptionalIsoDate(json['observedAt']),
+      originGeneration: _conversationSyncOptionalString(
+        json,
+        'originGeneration',
+        maximumLength: 256,
+      ),
+      runtimeSessionId: _conversationSyncOptionalString(
+        json,
+        'runtimeSessionId',
+        maximumLength: 256,
+      ),
+      authorityGeneration: _conversationSyncOptionalString(
+        json,
+        'authorityGeneration',
+        maximumLength: 256,
+      ),
+      overlayMessage: _conversationSyncRuntimeOverlayMessage(json['message']),
       phase: _conversationSyncOptionalString(json, 'phase', maximumLength: 16),
       hasMore: json['hasMore'] as bool?,
       nextState: _conversationSyncNextState(json['nextState']),
@@ -1075,6 +1112,15 @@ void _validateConversationSyncEvent(ConversationSyncV2EventMessage message) {
           !timelinePositionValid) {
         throw const FormatException('Timeline page is incomplete.');
       }
+    case ConversationSyncV2EventKind.runtimeOverlay:
+      if (message.provider != 'codex' ||
+          message.providerSessionId == null ||
+          message.overlayId == null ||
+          message.observedAt == null ||
+          message.originGeneration == null ||
+          message.overlayMessage == null) {
+        throw const FormatException('Runtime overlay is incomplete.');
+      }
     case ConversationSyncV2EventKind.syncCheckpoint:
       if (!const {'priority', 'recent', 'cold'}.contains(message.phase) ||
           message.hasMore == null) {
@@ -1298,4 +1344,31 @@ String _conversationSyncIsoDate(Map<String, dynamic> json, String key) {
     throw FormatException('Conversation sync $key is not an ISO date.');
   }
   return value;
+}
+
+String? _conversationSyncOptionalIsoDate(Object? raw) {
+  if (raw == null) return null;
+  if (raw is! String || raw.length > 64 || DateTime.tryParse(raw) == null) {
+    throw const FormatException(
+      'Conversation sync optional ISO date is invalid.',
+    );
+  }
+  return raw;
+}
+
+ServerMessage? _conversationSyncRuntimeOverlayMessage(Object? raw) {
+  if (raw == null) return null;
+  if (raw is! Map) {
+    throw const FormatException('Conversation runtime overlay is malformed.');
+  }
+  final message = ServerMessage.fromJson(Map<String, dynamic>.from(raw));
+  if (message is ResultMessage ||
+      message is ErrorMessage ||
+      message is GuardianApprovalMessage ||
+      message is ToolUseSummaryMessage) {
+    return message;
+  }
+  throw const FormatException(
+    'Conversation runtime overlay type is unsupported.',
+  );
 }

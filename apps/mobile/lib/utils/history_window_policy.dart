@@ -557,6 +557,10 @@ String? _historyTurnIdForMessage(ServerMessage message) => switch (message) {
   UserInputMessage(:final historyTurnId) => historyTurnId,
   AssistantServerMessage(:final historyTurnId) => historyTurnId,
   ToolResultMessage(:final historyTurnId) => historyTurnId,
+  ResultMessage(:final historyTurnId) => historyTurnId,
+  ErrorMessage(:final historyTurnId) => historyTurnId,
+  GuardianApprovalMessage(:final historyTurnId) => historyTurnId,
+  ToolUseSummaryMessage(:final historyTurnId) => historyTurnId,
   _ => null,
 };
 

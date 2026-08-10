@@ -1790,6 +1790,11 @@ class _CodexProviders extends StatelessWidget {
               detachedHistoryToolDetailLoader: toolDetailLoader,
               detachedUserMessageIndexLoader: userMessageIndexLoader,
               detachedUserTurnLoader: userTurnLoader,
+              detachedRuntimeOverlayStream: detachedPreview
+                  ? context
+                        .read<ConversationContentSyncService?>()
+                        ?.runtimeOverlays
+                  : null,
               initialHistoryHasEarlier: initialHistoryHasEarlier,
             );
             final submission = initialSubmission;
@@ -2280,6 +2285,7 @@ class _CodexChatBody extends HookWidget {
         final queuedLocally = !context.read<BridgeService>().isConnected;
         chatSessionCubit.showDeferredSubmission(
           submission.text,
+          clientMessageId: submission.clientMessageId,
           images: submission.images,
           queuedLocally: queuedLocally,
         );

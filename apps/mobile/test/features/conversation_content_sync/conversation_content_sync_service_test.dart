@@ -258,6 +258,170 @@ void main() {
   });
 
   test(
+    'rejects a runtime overlay before sync_begin establishes authority',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      final overlays = <ConversationSyncV2EventMessage>[];
+      final overlaySubscription = service.runtimeOverlays.listen(overlays.add);
+      addTearDown(overlaySubscription.cancel);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final pendingSubscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.runtimeOverlay,
+          subscriptionId: pendingSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-overlay-before-begin',
+          sequence: 1,
+          provider: 'codex',
+          providerSessionId: 'thread-overlay',
+          overlayId: 'overlay-before-begin',
+          observedAt: '2026-08-10T00:59:59.000Z',
+          originGeneration: 'observer:1:1',
+          authorityGeneration: 'daemon:1',
+          turnId: 'turn-a',
+          overlayMessage: const ErrorMessage(message: 'out of order warning'),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_unsubscribe');
+      await pumpEventQueue();
+      expect(overlays, isEmpty);
+    },
+  );
+
+  test('forwards only current ordered runtime overlays', () async {
+    await service.dispose();
+    gateway.supportsConversationSyncV2 = true;
+    service = ConversationContentSyncService(bridge: gateway, cache: repository)
+      ..start(initialLifecycleState: AppLifecycleState.resumed);
+    final overlays = <ConversationSyncV2EventMessage>[];
+    final overlaySubscription = service.runtimeOverlays.listen(overlays.add);
+    addTearDown(overlaySubscription.cancel);
+
+    final firstSubscribe = await gateway.nextOutgoing(
+      'conversation_sync_subscribe',
+    );
+    final firstSubscriptionId = firstSubscribe['requestId']! as String;
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.syncBegin,
+        subscriptionId: firstSubscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-overlay-1',
+        sequence: 1,
+        requestId: firstSubscriptionId,
+        catalogState: 'catalog-overlay',
+        statusState: 'status-overlay',
+      ),
+    );
+    await gateway.nextOutgoing('conversation_sync_ack');
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.runtimeOverlay,
+        subscriptionId: firstSubscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-overlay-1',
+        sequence: 2,
+        provider: 'codex',
+        providerSessionId: 'thread-overlay',
+        overlayId: 'overlay-current-1',
+        observedAt: '2026-08-10T01:00:00.000Z',
+        originGeneration: 'observer:1:1',
+        authorityGeneration: 'daemon:1',
+        turnId: 'turn-a',
+        overlayMessage: ErrorMessage(message: 'first warning'),
+      ),
+    );
+    expect(
+      (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+      2,
+    );
+    await pumpEventQueue();
+    expect(overlays.map((event) => event.overlayId), ['overlay-current-1']);
+
+    expect(service.retryBootstrap(reason: 'overlay_test'), isTrue);
+    await gateway.nextOutgoing('conversation_sync_unsubscribe');
+    final secondSubscribe = await gateway.nextOutgoing(
+      'conversation_sync_subscribe',
+    );
+    final secondSubscriptionId = secondSubscribe['requestId']! as String;
+
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.runtimeOverlay,
+        subscriptionId: firstSubscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-overlay-1',
+        sequence: 3,
+        provider: 'codex',
+        providerSessionId: 'thread-overlay',
+        overlayId: 'overlay-stale',
+        observedAt: '2026-08-10T01:00:01.000Z',
+        originGeneration: 'observer:1:1',
+        authorityGeneration: 'daemon:1',
+        turnId: 'turn-a',
+        overlayMessage: ErrorMessage(message: 'stale warning'),
+      ),
+    );
+    await pumpEventQueue();
+    expect(overlays.map((event) => event.overlayId), ['overlay-current-1']);
+
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.syncBegin,
+        subscriptionId: secondSubscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-overlay-2',
+        sequence: 1,
+        requestId: secondSubscriptionId,
+        catalogState: 'catalog-overlay',
+        statusState: 'status-overlay',
+      ),
+    );
+    await gateway.nextOutgoing('conversation_sync_ack');
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.runtimeOverlay,
+        subscriptionId: secondSubscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-overlay-2',
+        sequence: 2,
+        provider: 'codex',
+        providerSessionId: 'thread-overlay',
+        overlayId: 'overlay-current-2',
+        observedAt: '2026-08-10T01:00:02.000Z',
+        originGeneration: 'observer:1:2',
+        authorityGeneration: 'daemon:1',
+        turnId: 'turn-a',
+        overlayMessage: ErrorMessage(message: 'second warning'),
+      ),
+    );
+    expect(
+      (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+      2,
+    );
+    await pumpEventQueue();
+    expect(overlays.map((event) => event.overlayId), [
+      'overlay-current-1',
+      'overlay-current-2',
+    ]);
+  });
+
+  test(
     'retry revokes live readiness before the replacement subscribe can fail',
     () async {
       await service.dispose();

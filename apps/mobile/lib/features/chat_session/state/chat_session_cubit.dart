@@ -253,6 +253,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   final ChatMessageHandler _handler = ChatMessageHandler();
   final bool detachedPreview;
   final List<ServerMessage> initialHistoryMessages;
+  final Stream<ConversationSyncV2EventMessage>? _detachedRuntimeOverlayStream;
 
   String? _detachedLiveRuntimeSessionId;
   int _detachedLiveRuntimeGeneration = 0;
@@ -561,6 +562,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   StreamSubscription<ServerMessage>? _subscription;
   StreamSubscription<ServerMessage>? _detachedSettingsSubscription;
+  StreamSubscription<ConversationSyncV2EventMessage>?
+  _detachedRuntimeOverlaySubscription;
   StreamSubscription<BridgeConnectionState>? _goalConnectionSubscription;
   StreamSubscription<List<SessionInfo>>? _goalSessionListSubscription;
   StreamSubscription<List<SessionInfo>>? _runtimeSnapshotSubscription;
@@ -616,6 +619,21 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool _goalUserRefreshPending = false;
   bool _codexGoalThreadReady = false;
   final Map<String, QueuedInputItem> _deliveryPendingInputs = {};
+  // A provider ACK may arrive before conversation_sync_v2 commits the user
+  // item. Keep that one local envelope across unrelated cache replacements;
+  // canonical history removes the correlation once it contains the client id.
+  static const _maxDetachedLocalOverlayClientIds = 512;
+  final Set<String> _detachedLocalOverlayClientIds = {};
+  static const _maxSubmittedClientMessageIds = 512;
+  final Set<String> _submittedClientMessageIds = {};
+  static const _maxDetachedRuntimeOverlayEventIds = 128;
+  static const _maxDetachedRuntimeOverlayEntries = 32;
+  static const _maxDetachedRuntimeOverlayBytes = 64 * 1024;
+  final Set<String> _detachedRuntimeOverlayEventIds = {};
+  int? _detachedRuntimeOverlayGeneration;
+  String? _detachedRuntimeOverlayTurnId;
+  String? _detachedRuntimeOverlayAuthorityGeneration;
+  String? _detachedRuntimeOverlayRuntimeSessionId;
   Future<void> _inputDispatchTail = Future<void>.value();
   int _pendingInputDispatchCount = 0;
   final Set<String> _pendingInputDispatchIds = {};
@@ -918,6 +936,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     DetachedHistoryToolDetailLoader? detachedHistoryToolDetailLoader,
     DetachedUserMessageIndexLoader? detachedUserMessageIndexLoader,
     DetachedUserTurnLoader? detachedUserTurnLoader,
+    Stream<ConversationSyncV2EventMessage>? detachedRuntimeOverlayStream,
     bool initialHistoryHasEarlier = false,
   }) : _bridge = bridge,
        _streamingCubit = streamingCubit,
@@ -925,6 +944,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
        _detachedHistoryToolDetailLoader = detachedHistoryToolDetailLoader,
        _detachedUserMessageIndexLoader = detachedUserMessageIndexLoader,
        _detachedUserTurnLoader = detachedUserTurnLoader,
+       // Keep the public constructor label free of a private implementation
+       // name; this stream is injected by the composition root.
+       // ignore: prefer_initializing_formals
+       _detachedRuntimeOverlayStream = detachedRuntimeOverlayStream,
        _imagePayloadEncoder =
            imagePayloadEncoder ?? _defaultChatImagePayloadEncoder,
        super(
@@ -999,6 +1022,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             .messagesForSession(sessionId)
             .where(_isDetachedControlResponse)
             .listen(_onMessage);
+        _detachedRuntimeOverlaySubscription = _detachedRuntimeOverlayStream
+            ?.where(
+              (message) =>
+                  message.event == ConversationSyncV2EventKind.runtimeOverlay,
+            )
+            .listen(_onDetachedRuntimeOverlay);
         _goalConnectionSubscription = _bridge.connectionStatus.listen(
           _onGoalConnectionState,
         );
@@ -1127,6 +1156,81 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         code == 'codex_shared_runtime_settings_busy';
   }
 
+  void _onDetachedRuntimeOverlay(ConversationSyncV2EventMessage event) {
+    if (!detachedPreview || isClosed) return;
+    if (event.provider != Provider.codex.value ||
+        event.providerSessionId != sessionId) {
+      return;
+    }
+    final bridgeInstanceId = _bridge.bridgeInstanceId?.trim();
+    final codexSourceId = _bridge.codexSourceId?.trim();
+    if ((bridgeInstanceId?.isNotEmpty == true &&
+            event.bridgeInstanceId != bridgeInstanceId) ||
+        (codexSourceId?.isNotEmpty == true &&
+            event.codexSourceId != codexSourceId)) {
+      return;
+    }
+    final overlayId = event.overlayId;
+    final message = event.overlayMessage;
+    final originGeneration = event.originGeneration?.trim();
+    final eventRuntimeSessionId = event.runtimeSessionId?.trim();
+    final eventAuthorityGeneration = event.authorityGeneration?.trim();
+    if (overlayId == null ||
+        message == null ||
+        originGeneration?.isNotEmpty != true) {
+      return;
+    }
+    final liveRuntimeSessionId = _detachedLiveRuntimeSessionId?.trim();
+    if (eventRuntimeSessionId?.isNotEmpty == true &&
+        liveRuntimeSessionId?.isNotEmpty == true &&
+        eventRuntimeSessionId != liveRuntimeSessionId) {
+      return;
+    }
+    final currentAuthorityGeneration = _detachedAuthorityGeneration?.trim();
+    if (eventAuthorityGeneration?.isNotEmpty == true &&
+        currentAuthorityGeneration?.isNotEmpty == true &&
+        eventAuthorityGeneration != currentAuthorityGeneration) {
+      return;
+    }
+    if (eventAuthorityGeneration?.isNotEmpty == true &&
+        eventAuthorityGeneration == _detachedRejectedAuthorityGeneration) {
+      return;
+    }
+    final activeTurnId = _detachedActiveTurnId?.trim();
+    final eventTurnId =
+        (event.turnId ?? _detachedRuntimeOverlayMessageTurnId(message))?.trim();
+    if (activeTurnId?.isNotEmpty == true &&
+        eventTurnId?.isNotEmpty == true &&
+        activeTurnId != eventTurnId) {
+      return;
+    }
+    if (!_detachedRuntimeOverlayEventIds.add(overlayId)) return;
+    while (_detachedRuntimeOverlayEventIds.length >
+        _maxDetachedRuntimeOverlayEventIds) {
+      _detachedRuntimeOverlayEventIds.remove(
+        _detachedRuntimeOverlayEventIds.first,
+      );
+    }
+    _onMessage(message);
+    // The observer event can legitimately beat the authoritative status
+    // projection. Preserve its explicit turn identity so the later status can
+    // validate it instead of treating the temporarily unknown activity as
+    // evidence that this overlay is stale.
+    if (eventTurnId?.isNotEmpty == true &&
+        _detachedRuntimeOverlayGeneration == _detachedLiveRuntimeGeneration) {
+      _detachedRuntimeOverlayTurnId = eventTurnId;
+    }
+    _detachedRuntimeOverlayAuthorityGeneration =
+        eventAuthorityGeneration?.isNotEmpty == true
+        ? eventAuthorityGeneration
+        : null;
+    _detachedRuntimeOverlayRuntimeSessionId =
+        eventRuntimeSessionId?.isNotEmpty == true
+        ? eventRuntimeSessionId
+        : null;
+    _trimDetachedRuntimeOverlayEntries();
+  }
+
   void _restoreInitialHistoryMessages() {
     updateDetachedPreviewHistory(initialHistoryMessages);
   }
@@ -1166,6 +1270,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     unawaited(_subscription?.cancel());
     _subscription = null;
     _detachedLiveRuntimeSessionId = next;
+    final adoptsMatchingRuntimeOverlay =
+        previousRuntimeSessionId == null &&
+        next != null &&
+        _detachedRuntimeOverlayRuntimeSessionId == next &&
+        _detachedRuntimeOverlayGeneration == generation - 1;
     if (previousRuntimeSessionId != null &&
         previousRuntimeSessionId != next &&
         _detachedAuthorityGeneration != null) {
@@ -1175,7 +1284,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       previousRuntimeSessionId,
       preserveProviderProjection: true,
       preserveVisualTimeline: true,
+      preserveRuntimeOverlay: adoptsMatchingRuntimeOverlay,
     );
+    if (adoptsMatchingRuntimeOverlay) {
+      _detachedRuntimeOverlayGeneration = generation;
+    }
     _detachedAuthorityObserved = false;
     _detachedExecutionHost = null;
     _detachedControlState = null;
@@ -1204,7 +1317,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           message is HistorySnapshotMessage ||
           message is HistoryDeltaMessage ||
           message is HistoryPageMessage ||
-          message is HistoryToolDetailsMessage) {
+          message is HistoryToolDetailsMessage ||
+          _isDetachedDurableTimelineFrame(message)) {
+        return;
+      }
+      if (_isDetachedRuntimeOverlayMessage(message)) {
+        _onDetachedDirectRuntimeOverlay(message);
         return;
       }
       if (_bufferDetachedVisualMessageUntilTurnValidation(message)) return;
@@ -1213,10 +1331,30 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _synchronizeDetachedCodexRuntimeSnapshot(_bridge.sessions);
   }
 
+  /// Stable transcript content for a detached durable thread has exactly one
+  /// writer: conversation_sync_v2 -> SQLite -> this Cubit. The attached
+  /// runtime stream remains responsible for control, approvals, receipts and
+  /// streaming deltas. Result/error/guardian/summary frames are also retained
+  /// here because they are runtime UI/control facts rather than canonical
+  /// provider transcript rows. Replaying only durable user/assistant/tool
+  /// content would create a second timeline beside the cache-owned projection.
+  bool _isDetachedDurableTimelineFrame(ServerMessage message) =>
+      _bridge.supportsConversationSyncV2 &&
+      (message is UserInputMessage ||
+          message is AssistantServerMessage ||
+          message is ToolResultMessage ||
+          (_usesValidatedRuntimeOverlayChannel &&
+              _isDetachedRuntimeOverlayMessage(message)));
+
+  bool get _usesValidatedRuntimeOverlayChannel =>
+      _detachedRuntimeOverlayStream != null &&
+      _bridge.bridgeCapabilities.contains(conversationRuntimeOverlayCapability);
+
   void _clearDetachedRuntimeTransients(
     String? previousRuntimeSessionId, {
     bool preserveProviderProjection = false,
     bool preserveVisualTimeline = false,
+    bool preserveRuntimeOverlay = false,
   }) {
     if (previousRuntimeSessionId != null) {
       for (final item in _deliveryPendingInputs.values) {
@@ -1235,11 +1373,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (!preserveVisualTimeline) {
       _resetDetachedVisualTimelineInternals();
     }
-    final durableEntries = preserveVisualTimeline
+    final filteredEntries = state.entries
+        .where(
+          (entry) =>
+              (preserveVisualTimeline || entry is! StreamingChatEntry) &&
+              (preserveRuntimeOverlay ||
+                  !_isDetachedRuntimeOverlayEntry(entry)),
+        )
+        .toList(growable: false);
+    final durableEntries = filteredEntries.length == state.entries.length
         ? state.entries
-        : state.entries
-              .where((entry) => entry is! StreamingChatEntry)
-              .toList(growable: false);
+        : filteredEntries;
+    if (!preserveRuntimeOverlay) {
+      _resetDetachedRuntimeOverlayTracking();
+    }
     emit(
       state.copyWith(
         entries: durableEntries,
@@ -1349,10 +1496,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         clearError: true,
       );
     }
-    // An empty cache row does not currently carry enough provenance to
-    // distinguish stale durable entries from accepted live/optimistic entries.
-    // Keep the visible projection until the cache protocol supplies that fence.
-    if (messages.isEmpty) return;
+    // Legacy Bridges do not carry an authoritative-empty/completeness fence.
+    // Their empty refresh can mean "history unavailable", so it must not
+    // erase the last readable durable window. V2 empty snapshots are staged
+    // atomically by SQLite and may authoritatively clear stale rows.
+    if (messages.isEmpty && !_bridge.supportsConversationSyncV2) return;
     try {
       final history = HistoryMessage(messages: messages);
       final update = _handler.handle(
@@ -1496,6 +1644,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         active: active,
         result: status.result,
         activeTurnId: activeTurnId,
+      );
+      _reconcileDetachedRuntimeOverlayForStatus(
+        active: active,
+        activeTurnId: hasActiveTurnId ? activeTurnId : null,
+        authorityGeneration: authorityGeneration,
       );
     }
     _detachedActiveTurnId = replaysRejectedAuthority || !hasActiveTurnId
@@ -1771,7 +1924,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       // different source. Two known, unequal fingerprints are a real source
       // replacement and still clear the old runtime projection.
       preserveVisualTimeline: firstAuthoritativeSource,
+      preserveRuntimeOverlay: firstAuthoritativeSource,
     );
+    if (!firstAuthoritativeSource) {
+      _detachedLocalOverlayClientIds.clear();
+    }
     _detachedProviderSourceFingerprint = normalized;
     _detachedProviderStatusObservedAt = null;
     _detachedProviderStatusSignature = null;
@@ -1816,6 +1973,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     bool? catalogUsable,
   }) {
     if (!detachedPreview || isClosed) return;
+    final entriesWithoutRuntimeOverlay = _withoutDetachedRuntimeOverlayEntries(
+      state.entries,
+    );
+    final runtimeOverlayChanged =
+        entriesWithoutRuntimeOverlay.length != state.entries.length;
+    _resetDetachedRuntimeOverlayTracking();
     final authorityChanged =
         _detachedProviderProjectionCurrent ||
         _detachedAuthorityObserved ||
@@ -1836,8 +1999,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     externalDesktopTurnSteerable.value = false;
     if (authorityChanged) {
       detachedLiveRuntimeRevision.value += 1;
+    }
+    if (authorityChanged || runtimeOverlayChanged) {
       emit(
         state.copyWith(
+          entries: entriesWithoutRuntimeOverlay,
           externalDesktopTurnActive: false,
           externalDesktopTurnId: null,
         ),
@@ -1880,15 +2046,244 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     codexSpeed: CodexSpeed.unknown,
   );
 
+  void _rememberDetachedLocalOverlayClientId(String clientMessageId) {
+    if (!detachedPreview || clientMessageId.isEmpty) return;
+    _detachedLocalOverlayClientIds.add(clientMessageId);
+    while (_detachedLocalOverlayClientIds.length >
+        _maxDetachedLocalOverlayClientIds) {
+      _detachedLocalOverlayClientIds.remove(
+        _detachedLocalOverlayClientIds.first,
+      );
+    }
+  }
+
+  bool _rememberSubmittedClientMessageId(String clientMessageId) {
+    if (_submittedClientMessageIds.contains(clientMessageId)) return false;
+    _submittedClientMessageIds.add(clientMessageId);
+    while (_submittedClientMessageIds.length > _maxSubmittedClientMessageIds) {
+      _submittedClientMessageIds.remove(_submittedClientMessageIds.first);
+    }
+    return true;
+  }
+
+  bool _isDetachedRuntimeOverlayMessage(ServerMessage message) =>
+      message is ResultMessage ||
+      message is ErrorMessage ||
+      message is GuardianApprovalMessage ||
+      message is ToolUseSummaryMessage;
+
+  String? _detachedRuntimeOverlayMessageTurnId(ServerMessage message) =>
+      switch (message) {
+        ResultMessage(:final historyTurnId) => historyTurnId,
+        ErrorMessage(:final historyTurnId) => historyTurnId,
+        GuardianApprovalMessage(:final historyTurnId) => historyTurnId,
+        ToolUseSummaryMessage(:final historyTurnId) => historyTurnId,
+        _ => null,
+      };
+
+  void _onDetachedDirectRuntimeOverlay(ServerMessage message) {
+    final messageTurnId = _detachedRuntimeOverlayMessageTurnId(message)?.trim();
+    final activeTurnId = _detachedActiveTurnId?.trim();
+    if (messageTurnId?.isNotEmpty == true &&
+        activeTurnId?.isNotEmpty == true &&
+        messageTurnId != activeTurnId) {
+      return;
+    }
+    _onMessage(message);
+    if (messageTurnId?.isNotEmpty == true) {
+      _detachedRuntimeOverlayTurnId = messageTurnId;
+    }
+    _detachedRuntimeOverlayRuntimeSessionId = _detachedLiveRuntimeSessionId;
+    _detachedRuntimeOverlayAuthorityGeneration = _detachedAuthorityGeneration;
+    _trimDetachedRuntimeOverlayEntries();
+  }
+
+  bool _isDetachedRuntimeOverlayEntry(ChatEntry entry) =>
+      entry is ServerChatEntry &&
+      _isDetachedRuntimeOverlayMessage(entry.message);
+
+  List<ChatEntry> _withoutDetachedRuntimeOverlayEntries(
+    Iterable<ChatEntry> entries,
+  ) => entries
+      .where((entry) => !_isDetachedRuntimeOverlayEntry(entry))
+      .toList(growable: false);
+
+  void _resetDetachedRuntimeOverlayTracking() {
+    _detachedRuntimeOverlayGeneration = null;
+    _detachedRuntimeOverlayTurnId = null;
+    _detachedRuntimeOverlayAuthorityGeneration = null;
+    _detachedRuntimeOverlayRuntimeSessionId = null;
+    _detachedRuntimeOverlayEventIds.clear();
+  }
+
+  void _clearDetachedRuntimeOverlay() {
+    final filtered = _withoutDetachedRuntimeOverlayEntries(state.entries);
+    _resetDetachedRuntimeOverlayTracking();
+    if (filtered.length != state.entries.length) {
+      emit(state.copyWith(entries: filtered));
+    }
+  }
+
+  void _reconcileDetachedRuntimeOverlayForStatus({
+    required bool active,
+    required String? activeTurnId,
+    required String? authorityGeneration,
+  }) {
+    if (_detachedRuntimeOverlayGeneration == null) return;
+    if (_detachedRuntimeOverlayGeneration != _detachedLiveRuntimeGeneration) {
+      _clearDetachedRuntimeOverlay();
+      return;
+    }
+    final overlayRuntimeSessionId = _detachedRuntimeOverlayRuntimeSessionId;
+    if (overlayRuntimeSessionId?.isNotEmpty == true &&
+        overlayRuntimeSessionId != _detachedLiveRuntimeSessionId) {
+      _clearDetachedRuntimeOverlay();
+      return;
+    }
+    final overlayAuthorityGeneration =
+        _detachedRuntimeOverlayAuthorityGeneration;
+    if (overlayAuthorityGeneration?.isNotEmpty == true &&
+        authorityGeneration?.isNotEmpty == true &&
+        overlayAuthorityGeneration != authorityGeneration) {
+      _clearDetachedRuntimeOverlay();
+      return;
+    }
+    if (!active || activeTurnId?.isNotEmpty != true) return;
+    final overlayTurnId = _detachedRuntimeOverlayTurnId;
+    if (overlayTurnId == null) {
+      // A validated overlay can beat the status page on the same ordered v2
+      // subscription. Unknown activity is not proof that the event is stale;
+      // bind a turnless overlay to the first authoritative active turn, then
+      // enforce exact equality on every subsequent status update.
+      _detachedRuntimeOverlayTurnId = activeTurnId;
+      return;
+    }
+    if (overlayTurnId != activeTurnId) {
+      _clearDetachedRuntimeOverlay();
+    }
+  }
+
+  int _detachedRuntimeOverlayEntryBytes(ChatEntry entry) {
+    if (entry is! ServerChatEntry ||
+        !_isDetachedRuntimeOverlayMessage(entry.message)) {
+      return 0;
+    }
+    try {
+      final wireShape = switch (entry.message) {
+        ResultMessage message => <String, dynamic>{
+          'type': 'result',
+          'subtype': message.subtype,
+          if (message.result != null) 'result': message.result,
+          if (message.error != null) 'error': message.error,
+          if (message.cost != null) 'cost': message.cost,
+          if (message.duration != null) 'duration': message.duration,
+          if (message.sessionId != null) 'sessionId': message.sessionId,
+          if (message.stopReason != null) 'stopReason': message.stopReason,
+          if (message.inputTokens != null) 'inputTokens': message.inputTokens,
+          if (message.cachedInputTokens != null)
+            'cachedInputTokens': message.cachedInputTokens,
+          if (message.outputTokens != null)
+            'outputTokens': message.outputTokens,
+          if (message.toolCalls != null) 'toolCalls': message.toolCalls,
+          if (message.fileEdits != null) 'fileEdits': message.fileEdits,
+          if (message.historyTurnId != null)
+            'historyTurnId': message.historyTurnId,
+        },
+        ErrorMessage message => <String, dynamic>{
+          'type': 'error',
+          'message': message.message,
+          if (message.errorCode != null) 'errorCode': message.errorCode,
+          if (message.sessionId != null) 'sessionId': message.sessionId,
+          if (message.permissionChangeId != null)
+            'permissionChangeId': message.permissionChangeId,
+          if (message.goalChangeId != null)
+            'goalChangeId': message.goalChangeId,
+          if (message.historyTurnId != null)
+            'historyTurnId': message.historyTurnId,
+        },
+        GuardianApprovalMessage message => <String, dynamic>{
+          'type': 'guardian_approval',
+          'risk': message.risk.name,
+          'status': message.status.name,
+          'reason': message.reason,
+          if (message.authorization != null)
+            'authorization': message.authorization,
+          if (message.reviewId != null) 'reviewId': message.reviewId,
+          if (message.targetItemId != null)
+            'targetItemId': message.targetItemId,
+          if (message.action != null) 'action': message.action,
+          if (message.historyTurnId != null)
+            'historyTurnId': message.historyTurnId,
+        },
+        ToolUseSummaryMessage message => <String, dynamic>{
+          'type': 'tool_use_summary',
+          'summary': message.summary,
+          'precedingToolUseIds': message.precedingToolUseIds,
+          if (message.historyTurnId != null)
+            'historyTurnId': message.historyTurnId,
+        },
+        _ => const <String, dynamic>{},
+      };
+      return utf8.encode(jsonEncode(wireShape)).length;
+    } catch (_) {
+      return _maxDetachedRuntimeOverlayBytes;
+    }
+  }
+
+  void _trimDetachedRuntimeOverlayEntries() {
+    final overlayIndexes = <int>[];
+    var totalBytes = 0;
+    for (var index = 0; index < state.entries.length; index++) {
+      final entry = state.entries[index];
+      if (!_isDetachedRuntimeOverlayEntry(entry)) continue;
+      overlayIndexes.add(index);
+      totalBytes += _detachedRuntimeOverlayEntryBytes(entry);
+    }
+    if (overlayIndexes.length <= _maxDetachedRuntimeOverlayEntries &&
+        totalBytes <= _maxDetachedRuntimeOverlayBytes) {
+      return;
+    }
+    final remove = <int>{};
+    for (final index in overlayIndexes) {
+      if (overlayIndexes.length - remove.length <=
+              _maxDetachedRuntimeOverlayEntries &&
+          totalBytes <= _maxDetachedRuntimeOverlayBytes) {
+        break;
+      }
+      remove.add(index);
+      totalBytes -= _detachedRuntimeOverlayEntryBytes(state.entries[index]);
+    }
+    if (remove.isEmpty) return;
+    emit(
+      state.copyWith(
+        entries: [
+          for (var index = 0; index < state.entries.length; index++)
+            if (!remove.contains(index)) state.entries[index],
+        ],
+      ),
+    );
+  }
+
   /// Adds the user's first message to a detached durable view while the live
   /// runtime attaches. An online attachment remains an ordinary send; only a
   /// genuinely disconnected outbox item is presented as locally queued.
   bool showDeferredSubmission(
     String text, {
+    String? clientMessageId,
     List<({Uint8List bytes, String mimeType})>? images,
     bool queuedLocally = false,
   }) {
     if (!detachedPreview || isClosed || text.trim().isEmpty) return false;
+    final normalizedClientMessageId = clientMessageId?.trim();
+    if (normalizedClientMessageId?.isNotEmpty == true) {
+      _rememberDetachedLocalOverlayClientId(normalizedClientMessageId!);
+      final alreadyVisible = state.entries.any(
+        (entry) =>
+            entry is UserChatEntry &&
+            entry.clientMessageId == normalizedClientMessageId,
+      );
+      if (alreadyVisible) return true;
+    }
     emit(
       state.copyWith(
         entries: [
@@ -1896,6 +2291,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           UserChatEntry(
             text,
             sessionId: sessionId,
+            clientMessageId: normalizedClientMessageId,
             imageBytesList: images?.map((image) => image.bytes).toList(),
             imageCount: images?.length ?? 0,
             status: queuedLocally
@@ -3530,6 +3926,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       final clientMessageId = deliveryPendingClientMessageId(pending);
       if (clientMessageId == null) continue;
       _deliveryPendingInputs[clientMessageId] = pending;
+      if (detachedPreview) {
+        _rememberDetachedLocalOverlayClientId(clientMessageId);
+      }
       final alreadyVisible = state.entries.any(
         (entry) =>
             entry is UserChatEntry && entry.clientMessageId == clientMessageId,
@@ -4310,6 +4709,29 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final nonStreamingEntries = update.entriesToAdd
         .where((e) => e is! StreamingChatEntry)
         .toList();
+    final hasDetachedRuntimeOverlay =
+        detachedPreview &&
+        nonStreamingEntries.any(_isDetachedRuntimeOverlayEntry);
+    if (hasDetachedRuntimeOverlay) {
+      final activeTurnId = _detachedActiveTurnId?.trim();
+      final overlayTurnId = _detachedRuntimeOverlayTurnId;
+      final startsNewOverlay =
+          _detachedRuntimeOverlayGeneration != _detachedLiveRuntimeGeneration ||
+          (overlayTurnId?.isNotEmpty == true &&
+              activeTurnId?.isNotEmpty == true &&
+              overlayTurnId != activeTurnId);
+      if (startsNewOverlay) {
+        final filtered = _withoutDetachedRuntimeOverlayEntries(entries);
+        if (filtered.length != entries.length) {
+          entries = filtered;
+          didModifyEntries = true;
+        }
+      }
+      _detachedRuntimeOverlayGeneration = _detachedLiveRuntimeGeneration;
+      _detachedRuntimeOverlayTurnId = activeTurnId?.isNotEmpty == true
+          ? activeTurnId
+          : null;
+    }
     if (update.replaceEntries) {
       // History is a full snapshot — replace all non-past-history entries
       // to prevent duplicates when get_history is received multiple times.
@@ -4983,9 +5405,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final lastUserIndex = existingNonPast.lastIndexWhere(
       (entry) => entry is UserChatEntry,
     );
-    final candidates = existingNonPast
-        .skip(lastUserIndex == -1 ? 0 : lastUserIndex)
-        .toList(growable: false);
+    final candidates = detachedPreview
+        ? existingNonPast
+              .where(_shouldPreserveDetachedOverlayAcrossHistoryReplace)
+              .toList(growable: false)
+        : existingNonPast
+              .skip(lastUserIndex == -1 ? 0 : lastUserIndex)
+              .toList(growable: false);
     final historyCurrentUserIndex = lastUserIndex == -1
         ? -1
         : historyEntries.lastIndexWhere(
@@ -5007,13 +5433,22 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         : historyCurrentUserIndex == -1
         ? historyEntries.length
         : historyCurrentUserIndex;
-    return _weavePreservedEntriesIntoCanonicalHistory(
+    final merged = _weavePreservedEntriesIntoCanonicalHistory(
       canonicalEntries: historyEntries,
       existingEntries: candidates,
       minimumCanonicalIndex: minimumCanonicalIndex,
       unanchoredExistingBeforeCanonical: false,
       allowBroadLegacyAliases: true,
     );
+    if (detachedPreview && _detachedLocalOverlayClientIds.isNotEmpty) {
+      for (final entry in historyEntries.whereType<UserChatEntry>()) {
+        final clientMessageId = entry.clientMessageId?.trim();
+        if (clientMessageId?.isNotEmpty == true) {
+          _detachedLocalOverlayClientIds.remove(clientMessageId);
+        }
+      }
+    }
+    return merged;
   }
 
   /// Keeps the downloaded mirror as a progressively pageable prefix while a
@@ -5981,6 +6416,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       switch (message) {
         AssistantServerMessage(:final historyTurnId) => historyTurnId,
         ToolResultMessage(:final historyTurnId) => historyTurnId,
+        ResultMessage(:final historyTurnId) => historyTurnId,
+        ErrorMessage(:final historyTurnId) => historyTurnId,
+        GuardianApprovalMessage(:final historyTurnId) => historyTurnId,
+        ToolUseSummaryMessage(:final historyTurnId) => historyTurnId,
         _ => null,
       };
 
@@ -6032,10 +6471,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         :final stopReason,
         :final result,
         :final error,
+        :final historyTurnId,
       ):
-        return ['result', subtype, stopReason, result, error].join('\u0001');
-      case ErrorMessage(:final message, :final errorCode):
-        return ['error', errorCode, message].join('\u0001');
+        return [
+          'result',
+          historyTurnId,
+          subtype,
+          stopReason,
+          result,
+          error,
+        ].join('\u0001');
+      case ErrorMessage(:final message, :final errorCode, :final historyTurnId):
+        return ['error', historyTurnId, errorCode, message].join('\u0001');
       case GuardianApprovalMessage(
         :final risk,
         :final status,
@@ -6044,9 +6491,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         :final reviewId,
         :final targetItemId,
         :final action,
+        :final historyTurnId,
       ):
         return [
           'guardian_approval',
+          historyTurnId,
           risk.name,
           status.name,
           authorization,
@@ -6055,9 +6504,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           if (action != null) jsonEncode(action),
           reason,
         ].join('\u0001');
-      case ToolUseSummaryMessage(:final summary, :final precedingToolUseIds):
+      case ToolUseSummaryMessage(
+        :final summary,
+        :final precedingToolUseIds,
+        :final historyTurnId,
+      ):
         return [
           'tool_use_summary',
+          historyTurnId,
           summary,
           ...precedingToolUseIds,
         ].join('\u0001');
@@ -6088,6 +6542,26 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           entry.message is! ConversationQueueMessage;
     }
     return false;
+  }
+
+  bool _shouldPreserveDetachedOverlayAcrossHistoryReplace(ChatEntry entry) {
+    if (entry is ServerChatEntry) {
+      final message = entry.message;
+      // These are bounded to the current runtime attachment and are not part
+      // of Codex turns/list. Keep them visible while SQLite replaces the
+      // durable transcript; reconnect/reopen may reconstruct terminal status
+      // from v2 status, but never fabricates missing historical UI events.
+      return _isDetachedRuntimeOverlayMessage(message) &&
+          _detachedRuntimeOverlayGeneration == _detachedLiveRuntimeGeneration;
+    }
+    if (entry is! UserChatEntry) return false;
+    if (entry.status != MessageStatus.sent) return true;
+    final clientMessageId = entry.clientMessageId?.trim();
+    // A sent local envelope can still be awaiting its first canonical cache
+    // row. Preserve only ids originated/restored by this Cubit; old runtime or
+    // polluted-cache rows with the same shape are not treated as overlays.
+    return clientMessageId?.isNotEmpty == true &&
+        _detachedLocalOverlayClientIds.contains(clientMessageId);
   }
 
   ChatEntry _mergeEquivalentEntry(ChatEntry existing, ChatEntry incoming) {
@@ -6316,6 +6790,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return entry.text == item.text && entry.status == MessageStatus.sent;
     });
     if (alreadyVisible) return entries;
+    if (detachedPreview && clientMessageId?.isNotEmpty == true) {
+      _rememberDetachedLocalOverlayClientId(clientMessageId!);
+    }
     final entry = UserChatEntry(
       item.text,
       sessionId: sessionId,
@@ -6415,6 +6892,24 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (runtimeLease == null) return false;
     final bridgeSessionId = runtimeLease.sessionId;
     final isOffline = !_bridge.isConnected;
+    final effectiveClientMessageId = clientMessageId?.trim().isNotEmpty == true
+        ? clientMessageId!.trim()
+        : _uuid.v4();
+    final existingSubmission = state.entries
+        .whereType<UserChatEntry>()
+        .where((entry) => entry.clientMessageId == effectiveClientMessageId)
+        .firstOrNull;
+    final alreadyDispatched =
+        _submittedClientMessageIds.contains(effectiveClientMessageId) ||
+        _pendingInputDispatchIds.contains(effectiveClientMessageId) ||
+        _deliveryPendingInputs.containsKey(effectiveClientMessageId) ||
+        (existingSubmission != null &&
+            (existingSubmission.providerItemId?.isNotEmpty == true ||
+                existingSubmission.historyTurnId?.isNotEmpty == true ||
+                existingSubmission.messageUuid?.isNotEmpty == true ||
+                existingSubmission.status != MessageStatus.sending &&
+                    existingSubmission.status != MessageStatus.queued));
+    if (alreadyDispatched) return true;
     if (isCodex) {
       if (isOffline && state.queuedInput != null) return false;
       final supportsMultiple = _bridge.bridgeCapabilities.contains(
@@ -6430,10 +6925,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         return false;
       }
     }
-
-    final effectiveClientMessageId = clientMessageId?.trim().isNotEmpty == true
-        ? clientMessageId!.trim()
-        : _uuid.v4();
+    if (!_rememberSubmittedClientMessageId(effectiveClientMessageId)) {
+      return true;
+    }
     final baseSeq = isOffline
         ? _bridge.cachedSessionHistorySeq(bridgeSessionId)
         : null;
@@ -6453,18 +6947,54 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     // Bridge-owned fact. Keep one optimistic bubble until the authoritative
     // input_ack/conversation_queue response decides the final presentation.
     final shouldAddLocalEntry = !shouldUseOfflineQueuePanel;
-    if (shouldAddLocalEntry) {
-      final entry = UserChatEntry(
-        text,
-        sessionId: sessionId,
-        clientMessageId: effectiveClientMessageId,
-        imageBytesList: images?.map((i) => i.bytes).toList(),
-        status: isOffline ? MessageStatus.queued : MessageStatus.sending,
+    var submissionEntries = state.entries;
+    if (detachedPreview && _detachedRuntimeOverlayGeneration != null) {
+      submissionEntries = _withoutDetachedRuntimeOverlayEntries(
+        submissionEntries,
       );
-      emit(state.copyWith(entries: [...state.entries, entry]));
+      _resetDetachedRuntimeOverlayTracking();
+    }
+    if (shouldAddLocalEntry) {
+      if (detachedPreview) {
+        _rememberDetachedLocalOverlayClientId(effectiveClientMessageId);
+      }
+      final existingIndex = submissionEntries.indexWhere(
+        (entry) =>
+            entry is UserChatEntry &&
+            entry.clientMessageId == effectiveClientMessageId,
+      );
+      if (existingIndex >= 0) {
+        final existing = submissionEntries[existingIndex] as UserChatEntry;
+        final nextEntries = List<ChatEntry>.of(submissionEntries);
+        nextEntries[existingIndex] = UserChatEntry(
+          existing.text,
+          sessionId: existing.sessionId ?? sessionId,
+          clientMessageId: effectiveClientMessageId,
+          providerItemId: existing.providerItemId,
+          historyTurnId: existing.historyTurnId,
+          imageBytesList: existing.imageBytesList,
+          imageUrls: existing.imageUrls,
+          imageCount: existing.imageCount,
+          status: isOffline ? MessageStatus.queued : MessageStatus.sending,
+          messageUuid: existing.messageUuid,
+          timestamp: existing.timestamp,
+          timestampIsAuthoritative: existing.timestampIsAuthoritative,
+        );
+        emit(state.copyWith(entries: nextEntries));
+      } else {
+        final entry = UserChatEntry(
+          text,
+          sessionId: sessionId,
+          clientMessageId: effectiveClientMessageId,
+          imageBytesList: images?.map((i) => i.bytes).toList(),
+          status: isOffline ? MessageStatus.queued : MessageStatus.sending,
+        );
+        emit(state.copyWith(entries: [...submissionEntries, entry]));
+      }
     } else if (shouldUseOfflineQueuePanel) {
       emit(
         state.copyWith(
+          entries: submissionEntries,
           queuedInput: QueuedInputItem(
             itemId: '$offlineQueuedInputPrefix$effectiveClientMessageId',
             text: text,
@@ -9034,6 +9564,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final runtimeLease = _captureRuntimeMutationLease();
     if (runtimeLease == null) return false;
     final clientMessageId = _uuid.v4();
+    if (detachedPreview) {
+      _rememberDetachedLocalOverlayClientId(clientMessageId);
+    }
     final retrySessionId = runtimeLease.sessionId;
     final isOffline = !_bridge.isConnected;
     final baseSeq = isOffline
@@ -9225,7 +9758,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _desktopContinuitySubscription?.cancel();
     _desktopContinuityConnectionSubscription?.cancel();
     _deliveryPendingInputs.clear();
+    _detachedLocalOverlayClientIds.clear();
+    _submittedClientMessageIds.clear();
+    _detachedRuntimeOverlayEventIds.clear();
+    _resetDetachedRuntimeOverlayTracking();
     _detachedSettingsSubscription?.cancel();
+    _detachedRuntimeOverlaySubscription?.cancel();
     _subscription?.cancel();
     _sideEffectsController.close();
     _bridge.invalidateLocalSessionHistoryPaging(sessionId);

@@ -52,6 +52,7 @@ class CodexSessionCubit extends ChatSessionCubit {
     super.detachedHistoryToolDetailLoader,
     super.detachedUserMessageIndexLoader,
     super.detachedUserTurnLoader,
+    super.detachedRuntimeOverlayStream,
     super.initialHistoryHasEarlier,
     super.initialLiveRuntimeSessionId,
   }) : super(provider: Provider.codex);

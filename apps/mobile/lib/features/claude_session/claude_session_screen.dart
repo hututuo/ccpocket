@@ -1473,6 +1473,7 @@ class _ChatScreenBody extends HookWidget {
       final queuedLocally = !context.read<BridgeService>().isConnected;
       chatSessionCubit.showDeferredSubmission(
         submission.text,
+        clientMessageId: submission.clientMessageId,
         images: submission.images,
         queuedLocally: queuedLocally,
       );

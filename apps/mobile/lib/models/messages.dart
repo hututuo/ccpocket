@@ -1409,6 +1409,7 @@ sealed class ServerMessage {
         outputTokens: json['outputTokens'] as int?,
         toolCalls: json['toolCalls'] as int?,
         fileEdits: json['fileEdits'] as int?,
+        historyTurnId: json['historyTurnId'] as String?,
       ),
       'guardian_approval' => GuardianApprovalMessage.fromJson(json),
       'error' =>
@@ -1419,6 +1420,7 @@ sealed class ServerMessage {
               sessionId: json['sessionId'] as String?,
               permissionChangeId: json['permissionChangeId'] as String?,
               goalChangeId: json['goalChangeId'] as String?,
+              historyTurnId: json['historyTurnId'] as String?,
             ),
       sessionLinkProgressCapability => SessionLinkProgressMessage.fromJson(
         json,
@@ -1655,6 +1657,7 @@ sealed class ServerMessage {
                 ?.whereType<String>()
                 .toList() ??
             const [],
+        historyTurnId: json['historyTurnId'] as String?,
       ),
       'user_input' => UserInputMessage(
         text: json['text'] as String? ?? '',
@@ -2413,6 +2416,7 @@ class ResultMessage implements ServerMessage {
   final int? outputTokens;
   final int? toolCalls;
   final int? fileEdits;
+  final String? historyTurnId;
   const ResultMessage({
     required this.subtype,
     this.result,
@@ -2426,6 +2430,7 @@ class ResultMessage implements ServerMessage {
     this.outputTokens,
     this.toolCalls,
     this.fileEdits,
+    this.historyTurnId,
   });
 }
 
@@ -2435,6 +2440,7 @@ class ErrorMessage implements ServerMessage {
   final String? sessionId;
   final String? permissionChangeId;
   final String? goalChangeId;
+  final String? historyTurnId;
 
   const ErrorMessage({
     required this.message,
@@ -2442,6 +2448,7 @@ class ErrorMessage implements ServerMessage {
     this.sessionId,
     this.permissionChangeId,
     this.goalChangeId,
+    this.historyTurnId,
   });
 }
 
@@ -2651,6 +2658,7 @@ class GuardianApprovalMessage implements ServerMessage {
   final String? reviewId;
   final String? targetItemId;
   final Map<String, dynamic>? action;
+  final String? historyTurnId;
   const GuardianApprovalMessage({
     required this.risk,
     this.status = GuardianApprovalStatus.approved,
@@ -2659,6 +2667,7 @@ class GuardianApprovalMessage implements ServerMessage {
     this.reviewId,
     this.targetItemId,
     this.action,
+    this.historyTurnId,
   });
 
   factory GuardianApprovalMessage.fromJson(Map<String, dynamic> json) {
@@ -2671,6 +2680,7 @@ class GuardianApprovalMessage implements ServerMessage {
       reviewId: json['reviewId'] as String?,
       targetItemId: json['targetItemId'] as String?,
       action: rawAction is Map ? Map<String, dynamic>.from(rawAction) : null,
+      historyTurnId: json['historyTurnId'] as String?,
     );
   }
 }
@@ -2680,14 +2690,26 @@ GuardianApprovalMessage? _guardianReviewFromErrorJson(
 ) {
   final rawReview = json['guardianReview'];
   if (rawReview is Map) {
-    return GuardianApprovalMessage.fromJson(
-      Map<String, dynamic>.from(rawReview),
-    );
+    final normalized = Map<String, dynamic>.from(rawReview);
+    normalized['historyTurnId'] ??= json['historyTurnId'];
+    return GuardianApprovalMessage.fromJson(normalized);
   }
   if (json['errorCode'] != 'codex_warning') return null;
   final rawMessage = json['message'];
   if (rawMessage is! String) return null;
-  return _guardianReviewFromLegacyWarning(rawMessage);
+  final parsed = _guardianReviewFromLegacyWarning(rawMessage);
+  final historyTurnId = json['historyTurnId'] as String?;
+  if (parsed == null || historyTurnId == null) return parsed;
+  return GuardianApprovalMessage(
+    risk: parsed.risk,
+    status: parsed.status,
+    reason: parsed.reason,
+    authorization: parsed.authorization,
+    reviewId: parsed.reviewId,
+    targetItemId: parsed.targetItemId,
+    action: parsed.action,
+    historyTurnId: historyTurnId,
+  );
 }
 
 GuardianApprovalMessage? _guardianReviewFromLegacyWarning(String message) {
@@ -3991,9 +4013,13 @@ class ToolUseSummaryMessage implements ServerMessage {
   /// IDs of the tool_use calls that this summary replaces
   final List<String> precedingToolUseIds;
 
+  /// Provider turn fence used by the legacy direct-runtime fallback.
+  final String? historyTurnId;
+
   const ToolUseSummaryMessage({
     required this.summary,
     this.precedingToolUseIds = const [],
+    this.historyTurnId,
   });
 }
 

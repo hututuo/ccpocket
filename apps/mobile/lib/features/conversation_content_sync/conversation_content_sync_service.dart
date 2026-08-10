@@ -200,6 +200,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       StreamController<ConversationContentCacheUpdate>.broadcast();
   final StreamController<ConversationSyncCacheUpdate> _syncUpdatesController =
       StreamController<ConversationSyncCacheUpdate>.broadcast();
+  final StreamController<ConversationSyncV2EventMessage>
+  _runtimeOverlaysController =
+      StreamController<ConversationSyncV2EventMessage>.broadcast();
   final Map<String, _SnapshotStage> _stages = {};
   final Map<String, _ConversationCatalogBatchStage> _v2CatalogStages = {};
   final Map<String, _ConversationStatusBatchStage> _v2StatusStages = {};
@@ -269,6 +272,11 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       _cacheCommitEpochFloor;
   Stream<ConversationSyncCacheUpdate> get syncUpdates =>
       _syncUpdatesController.stream;
+
+  /// Runtime-only UI events after the active v2 subscription, identity and
+  /// sequence fences have all been committed. These never enter SQLite.
+  Stream<ConversationSyncV2EventMessage> get runtimeOverlays =>
+      _runtimeOverlaysController.stream;
 
   /// Identifies the cache partition used by a read started right now.
   ///
@@ -2181,6 +2189,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       );
     }
     ConversationSyncCacheUpdate? publish;
+    ConversationSyncV2EventMessage? runtimeOverlay;
     switch (event.event) {
       case ConversationSyncV2EventKind.syncBegin:
         _ensureNoIncompleteV2PageBatch();
@@ -2290,6 +2299,14 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             lastAssistantOutputAt: committed.lastAssistantOutputAt,
           );
         }
+      case ConversationSyncV2EventKind.runtimeOverlay:
+        if (_activeSubscriptionId != event.subscriptionId) {
+          throw const _ConversationSyncBeginMismatch();
+        }
+        // Deliberately not written to the canonical SQLite timeline. The
+        // focused detached Cubit consumes only this service-forwarded event,
+        // after the active subscription and ordered sequence are validated.
+        runtimeOverlay = event;
       case ConversationSyncV2EventKind.syncCheckpoint:
         _ensureNoIncompleteV2PageBatch();
         if (event.phase == 'priority') {
@@ -2697,6 +2714,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     if (!_isV2Current(event, generation, target)) return;
     _highestV2CommittedSequence = event.sequence;
     _sendV2Ack(event.subscriptionId, event.sequence);
+    if (runtimeOverlay != null && !_runtimeOverlaysController.isClosed) {
+      _runtimeOverlaysController.add(runtimeOverlay);
+    }
     final pageIndex = event.pageIndex;
     final pageCount = event.pageCount;
     final page = pageIndex == null || pageCount == null
@@ -2802,6 +2822,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       ConversationSyncV2EventKind.catalogChanges => pageProgress(80, 4).round(),
       ConversationSyncV2EventKind.statusChanges => pageProgress(84, 4).round(),
       ConversationSyncV2EventKind.timelinePage => timelineProgress().round(),
+      ConversationSyncV2EventKind.runtimeOverlay => null,
       ConversationSyncV2EventKind.syncCheckpoint
           when event.phase == 'priority' =>
         97,
@@ -3414,6 +3435,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     ]);
     await _updatesController.close();
     await _syncUpdatesController.close();
+    await _runtimeOverlaysController.close();
   }
 }
 
