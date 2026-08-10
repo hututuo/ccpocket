@@ -1633,6 +1633,55 @@ describe("CodexRolloutMonitor", () => {
     monitor.close();
   });
 
+  it("does not suppress a reused client id across anonymous legacy turns", async () => {
+    const path = await rollout();
+    const events: CodexDesktopContinuityMonitorEvent[] = [];
+    const monitor = new CodexRolloutMonitor({
+      threadId: "thread-repeated-anonymous-client-id",
+      path,
+      getLocalActiveTurnId: () => undefined,
+      consumeLocalClientMessageId: () => false,
+      onEvent: (entry) => events.push(entry),
+    });
+    await monitor.start();
+
+    for (const [index, text] of ["first request", "second request"].entries()) {
+      const timestamp = `2026-07-19T12:0${index}:00Z`;
+      await appendEntries(path, [
+        event("event_msg", { type: "task_started" }, timestamp),
+        event(
+          "event_msg",
+          {
+            type: "user_message",
+            client_id: "reused-anonymous-client-message",
+            message: text,
+          },
+          timestamp,
+        ),
+        event("event_msg", { type: "task_complete" }, timestamp),
+      ]);
+      await monitor.refreshNow();
+    }
+
+    const users = events.filter(
+      (
+        entry,
+      ): entry is Extract<
+        CodexDesktopContinuityMonitorEvent,
+        { kind: "message" }
+      > => entry.kind === "message" && entry.message.type === "user_input",
+    );
+    expect(users.map((entry) => entry.message)).toMatchObject([
+      { type: "user_input", text: "first request" },
+      { type: "user_input", text: "second request" },
+    ]);
+    expect(users.every((entry) => entry.turnId === undefined)).toBe(true);
+    expect(new Set(users.map((entry) => entry.anonymousTurnScope)).size).toBe(
+      2,
+    );
+    monitor.close();
+  });
+
   it("pairs event assistant messages with canonical response ids and suppresses late duplicates", async () => {
     vi.useFakeTimers();
     const path = await rollout();
@@ -1818,6 +1867,70 @@ describe("CodexRolloutMonitor", () => {
       turnId: "turn-second",
     });
     expect((monitor as any).pendingAssistantMessages.size).toBe(0);
+    monitor.close();
+  });
+
+  it("does not pair an older anonymous assistant with a newer explicit turn", async () => {
+    vi.useFakeTimers();
+    const path = await rollout();
+    const events: CodexDesktopContinuityMonitorEvent[] = [];
+    const monitor = new CodexRolloutMonitor({
+      threadId: "thread-anonymous-explicit-assistant",
+      path,
+      getLocalActiveTurnId: () => undefined,
+      consumeLocalClientMessageId: () => false,
+      onEvent: (entry) => events.push(entry),
+      assistantMessagePairMs: 40,
+    });
+    await monitor.start();
+    await appendEntries(path, [
+      event("event_msg", { type: "task_started" }),
+      event("event_msg", {
+        type: "user_message",
+        client_id: "anonymous-user",
+        message: "anonymous request",
+      }),
+      event("event_msg", {
+        type: "agent_message",
+        message: "Repeated assistant text",
+        phase: "commentary",
+      }),
+      event("event_msg", { type: "task_complete" }),
+      event("event_msg", { type: "task_started", turn_id: "turn-explicit" }),
+      event("event_msg", {
+        type: "user_message",
+        client_id: "explicit-user",
+        message: "explicit request",
+      }),
+      event("response_item", {
+        type: "message",
+        id: "explicit-assistant",
+        role: "assistant",
+        phase: "commentary",
+        content: [{ type: "output_text", text: "Repeated assistant text" }],
+      }),
+    ]);
+
+    await monitor.refreshNow();
+    expect(
+      events.find(
+        (entry) =>
+          entry.kind === "message" &&
+          entry.itemKey === "assistant:explicit-assistant",
+      ),
+    ).toMatchObject({ turnId: "turn-explicit" });
+
+    await vi.advanceTimersByTimeAsync(40);
+    const assistants = events.filter(
+      (entry) => entry.kind === "message" && entry.message.type === "assistant",
+    );
+    expect(assistants).toHaveLength(2);
+    expect(
+      assistants.some(
+        (entry) =>
+          entry.turnId === undefined && entry.anonymousTurnScope != null,
+      ),
+    ).toBe(true);
     monitor.close();
   });
 

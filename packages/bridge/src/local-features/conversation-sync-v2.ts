@@ -159,6 +159,8 @@ const LIVE_CONTENT_SETTLE_MS = 100;
 const LIVE_CONTENT_MAX_WAIT_MS = 1_000;
 const MAX_SHARED_OBSERVER_LIVE_MESSAGES = 256;
 const MAX_SHARED_OBSERVER_LIVE_BYTES_PER_THREAD = 512 * 1024;
+const MAX_SHARED_OBSERVER_LIVE_THREADS = 64;
+const MAX_SHARED_OBSERVER_LIVE_BYTES_TOTAL = 8 * 1024 * 1024;
 const MAX_SHARED_OBSERVER_INLINE_IMAGES = 4;
 const MAX_SHARED_OBSERVER_INLINE_IMAGE_BASE64_BYTES = 8 * 1024 * 1024;
 const CATALOG_CONNECTION_REUSE_MS = 5_000;
@@ -475,6 +477,8 @@ interface ExternalCodexLiveMessage {
   message: ServerMessage;
   observedAt: string;
   bytes: number;
+  /** Internal per-turn identity when the provider omits a durable turn id. */
+  identityScope?: string;
 }
 
 /**
@@ -601,6 +605,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     Map<string, ExternalCodexLiveMessage>
   >();
   private readonly sharedObserverLiveBytes = new Map<ConversationKey, number>();
+  private sharedObserverLiveTotalBytes = 0;
   private readonly externalCodexDiscoveredRunning = new Map<
     string,
     ExternalCodexSnapshot
@@ -1430,9 +1435,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
     const remembered = this.rememberSharedObserverMessage(
       target,
-      `${event.turnId ?? "turn-unknown"}:${identity}`,
+      `${event.turnId ?? event.anonymousTurnScope ?? `observer:${event.observerGeneration}:turn-unknown`}:${identity}`,
       message,
       event.observedAt,
+      event.turnId ? undefined : event.anonymousTurnScope,
     );
     if (!remembered) {
       this.queueLiveContent(target, event.observedAt, "latestTurn");
@@ -1557,6 +1563,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     itemKey: string,
     message: ServerMessage,
     observedAt: string,
+    identityScope?: string,
   ): boolean {
     const key = targetKey(target);
     const bytes = Buffer.byteLength(stableJson(message), "utf8");
@@ -1564,10 +1571,16 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const messages =
       this.sharedObserverLiveMessages.get(key) ??
       new Map<string, ExternalCodexLiveMessage>();
-    let totalBytes = this.sharedObserverLiveBytes.get(key) ?? 0;
+    const previousThreadBytes = this.sharedObserverLiveBytes.get(key) ?? 0;
+    let totalBytes = previousThreadBytes;
     const previous = messages.get(itemKey);
     if (previous) totalBytes = Math.max(0, totalBytes - previous.bytes);
-    messages.set(itemKey, { message, observedAt, bytes });
+    messages.set(itemKey, {
+      message,
+      observedAt,
+      bytes,
+      ...(identityScope ? { identityScope } : {}),
+    });
     totalBytes += bytes;
     while (
       messages.size > MAX_SHARED_OBSERVER_LIVE_MESSAGES ||
@@ -1586,10 +1599,29 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const retained = messages.has(itemKey);
     this.sharedObserverLiveMessages.set(key, messages);
     this.sharedObserverLiveBytes.set(key, totalBytes);
-    return retained;
+    this.sharedObserverLiveTotalBytes = Math.max(
+      0,
+      this.sharedObserverLiveTotalBytes - previousThreadBytes + totalBytes,
+    );
+    while (
+      this.sharedObserverLiveMessages.size > MAX_SHARED_OBSERVER_LIVE_THREADS ||
+      this.sharedObserverLiveTotalBytes > MAX_SHARED_OBSERVER_LIVE_BYTES_TOTAL
+    ) {
+      const oldestKey = this.sharedObserverLiveMessages.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.deleteSharedObserverLiveMessages(oldestKey);
+    }
+    return (
+      retained && this.sharedObserverLiveMessages.get(key)?.has(itemKey) === true
+    );
   }
 
   private deleteSharedObserverLiveMessages(key: ConversationKey): void {
+    this.sharedObserverLiveTotalBytes = Math.max(
+      0,
+      this.sharedObserverLiveTotalBytes -
+        (this.sharedObserverLiveBytes.get(key) ?? 0),
+    );
     this.sharedObserverLiveMessages.delete(key);
     this.sharedObserverLiveBytes.delete(key);
   }
@@ -1861,6 +1893,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.sharedRuntimeStatuses.clear();
     this.sharedObserverLiveMessages.clear();
     this.sharedObserverLiveBytes.clear();
+    this.sharedObserverLiveTotalBytes = 0;
     this.sharedControlRecoveryTargets.clear();
     this.focusedCodexSettingsFlights.clear();
     this.focusedCodexSettingsAttempts.clear();
@@ -2826,17 +2859,30 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       .then(({ window, canonicalMessages }) => {
         const externalMessages = this.externalCodexLiveMessages.get(key);
         const sharedMessages = this.sharedObserverLiveMessages.get(key);
-        const externalMergedMessages = mergeExternalCodexMessages(
-          window.messages,
-          externalMessages?.values() ?? [],
-        );
-        const mergedMessages = mergeObservedMessagesReplacingStable(
-          externalMergedMessages,
-          sharedMessages?.values() ?? [],
+        const providerWindowIncomplete =
+          canonicalMessages !== undefined && window.latestTurnComplete === false;
+        const effectiveWindow =
+          providerWindowIncomplete && previousSnapshot
+            ? mergeSnapshotWithLatestTurn(previousSnapshot, window)
+            : window;
+        const mergedMessages = mergeObservedMessageSources(
+          effectiveWindow.messages,
+          [
+            {
+              source: "external",
+              observed: externalMessages?.values() ?? [],
+            },
+            {
+              source: "shared",
+              observed: sharedMessages?.values() ?? [],
+            },
+          ],
+          preferNonRegressiveLatestTurnMessage,
         );
         const canonicalHistoryCoversExternalMessages =
           externalMessages === undefined ||
           (canonicalMessages !== undefined &&
+            !providerWindowIncomplete &&
             !this.liveContentRevisions.has(key) &&
             canonicalHistoryCoversDurableExternalMessages(
               canonicalMessages,
@@ -2845,6 +2891,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         const canonicalHistoryCoversSharedMessages =
           sharedMessages === undefined ||
           (canonicalMessages !== undefined &&
+            !providerWindowIncomplete &&
             canonicalHistoryCoversDurableExternalMessages(
               canonicalMessages,
               sharedMessages.values(),
@@ -2852,7 +2899,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         const messages =
           canonicalHistoryCoversExternalMessages &&
           canonicalHistoryCoversSharedMessages
-            ? window.messages
+            ? effectiveWindow.messages
             : mergedMessages;
         const hasFreshObservedContent =
           (externalMessages?.size ?? 0) > 0 || (sharedMessages?.size ?? 0) > 0;
@@ -2871,8 +2918,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           record.entry.firstPrompt?.trim() || record.entry.summary?.trim(),
         );
         const providerHistoryIndicatesContent =
-          window.nextTurnCursor != null ||
-          (window.turnDetails?.length ?? 0) > 0 ||
+          effectiveWindow.nextTurnCursor != null ||
+          (effectiveWindow.turnDetails?.length ?? 0) > 0 ||
           (externalMessages?.size ?? 0) > 0 ||
           (sharedMessages?.size ?? 0) > 0;
         const catalogIndicatesPriorActivity =
@@ -2886,7 +2933,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           (catalogHasVisibleContent ||
             providerHistoryIndicatesContent ||
             catalogIndicatesPriorActivity);
-        if (catalogContentMissing && !providerHistoryUnavailable) {
+        if (
+          (catalogContentMissing || providerWindowIncomplete) &&
+          !providerHistoryUnavailable
+        ) {
           // An empty canonical response for a thread that the catalog says has
           // content is a transient consistency gap, not a stable empty
           // timeline. Keep the explicit gap and arm the same bounded retry
@@ -2899,8 +2949,13 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           this.clearProviderHistoryFailure(key);
         }
         const latestTurnGap = mergeLatestTurnGaps(
-          mergeLatestTurnGaps(window.latestTurnGap, built.latestTurnGap),
-          providerHistoryUnavailable || catalogContentMissing
+          mergeLatestTurnGaps(
+            effectiveWindow.latestTurnGap,
+            built.latestTurnGap,
+          ),
+          providerHistoryUnavailable ||
+            catalogContentMissing ||
+            providerWindowIncomplete
             ? {
                 missingEntryCount: 1,
                 payloadOmitted: false,
@@ -2914,9 +2969,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           target.provider,
           target.providerSessionId,
           built.revision,
-          built.hasEarlier || window.nextTurnCursor != null || catalogContentMissing,
-          window.nextTurnCursor ?? null,
-          window.latestTurnComplete !== false &&
+          built.hasEarlier ||
+            effectiveWindow.nextTurnCursor != null ||
+            catalogContentMissing,
+          effectiveWindow.nextTurnCursor ?? null,
+          effectiveWindow.latestTurnComplete !== false &&
             built.latestTurnComplete &&
             latestTurnGap === undefined,
           latestTurnGap ?? null,
@@ -2931,11 +2988,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             : {}),
           hasEarlier:
             built.hasEarlier ||
-            window.nextTurnCursor != null ||
+            effectiveWindow.nextTurnCursor != null ||
             catalogContentMissing,
-          turnsNextCursor: window.nextTurnCursor,
+          turnsNextCursor: effectiveWindow.nextTurnCursor,
           latestTurnComplete:
-            window.latestTurnComplete !== false &&
+            effectiveWindow.latestTurnComplete !== false &&
             built.latestTurnComplete &&
             latestTurnGap === undefined,
           ...(latestTurnGap ? { latestTurnGap } : {}),
@@ -2958,6 +3015,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         if (
           !providerHistoryUnavailable &&
           !catalogContentMissing &&
+          !providerWindowIncomplete &&
           canonicalHistoryCoversExternalMessages &&
           (canonicalHistoryCoversSharedMessages || sharedMessages !== undefined)
         ) {
@@ -4945,7 +5003,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     let totalBytes = this.externalCodexLiveBytes.get(key) ?? 0;
     const storageItemKey = event.turnId
       ? `turn:${event.turnId}:${event.itemKey}`
-      : event.itemKey;
+      : event.anonymousTurnScope
+        ? `anonymous:${event.anonymousTurnScope}:${event.itemKey}`
+        : event.itemKey;
     const previous = messages.get(storageItemKey);
     if (previous) totalBytes = Math.max(0, totalBytes - previous.bytes);
     // Map#set replaces an existing value without changing insertion order.
@@ -4956,6 +5016,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       message,
       observedAt,
       bytes,
+      ...(!event.turnId && event.anonymousTurnScope
+        ? { identityScope: event.anonymousTurnScope }
+        : {}),
     });
     totalBytes += bytes;
     while (
@@ -6005,38 +6068,6 @@ async function inspectDurableCodexThread(
   });
 }
 
-function mergeExternalCodexMessages(
-  history: readonly ServerMessage[],
-  observed: Iterable<ExternalCodexLiveMessage>,
-): ServerMessage[] {
-  const merged = [...history];
-  const canonicalUsers = history
-    .map((message, index) => ({ message, index }))
-    .filter((entry) => entry.message.type === "user_input");
-  const matchedCanonicalUsers = new Set<number>();
-  const identities = new Set(
-    history.map(observedMessageIdentity).filter((value) => value !== null),
-  );
-  for (const entry of observed) {
-    if (entry.message.type === "user_input") {
-      const matchingCanonical = canonicalUsers.find(
-        (candidate) =>
-          !matchedCanonicalUsers.has(candidate.index) &&
-          equivalentObservedUserMessage(candidate.message, entry.message),
-      );
-      if (matchingCanonical) {
-        matchedCanonicalUsers.add(matchingCanonical.index);
-        continue;
-      }
-    }
-    const identity = observedMessageIdentity(entry.message);
-    if (identity && identities.has(identity)) continue;
-    merged.push(entry.message);
-    if (identity) identities.add(identity);
-  }
-  return merged;
-}
-
 function mergeObservedMessagesReplacingStable(
   history: readonly ServerMessage[],
   observed: Iterable<ExternalCodexLiveMessage>,
@@ -6045,48 +6076,432 @@ function mergeObservedMessagesReplacingStable(
     incoming: ServerMessage,
   ) => ServerMessage = (_previous, incoming) => incoming,
 ): ServerMessage[] {
-  const merged = [...history];
-  const canonicalUsers = merged
-    .map((message, index) => ({ message, index }))
-    .filter((entry) => entry.message.type === "user_input");
-  const matchedCanonicalUsers = new Set<number>();
-  const identities = new Map<string, number>();
-  merged.forEach((message, index) => {
-    const identity = observedMessageIdentity(message);
-    if (identity) identities.set(identity, index);
+  return mergeObservedMessageSources(
+    history,
+    [{ source: "observed", observed }],
+    selectReplacement,
+  );
+}
+
+interface ObservedMessageSource {
+  source: string;
+  observed: Iterable<ExternalCodexLiveMessage>;
+}
+
+interface ObservedMessageAliasGroup {
+  output: ServerMessage;
+  outputIdentityScope?: string;
+  aliases: Array<{
+    source: string;
+    message: ServerMessage;
+    identityScope?: string;
+  }>;
+  sources: Set<string>;
+}
+
+/**
+ * Reconciles aliases only across independent provider projections. The first
+ * (canonical) representation owns the stable wire position and id. Later
+ * sources may prove that their differently named item is the same logical
+ * message, but ambiguous matches fail open and remain separate.
+ */
+function mergeObservedMessageSources(
+  history: readonly ServerMessage[],
+  sources: readonly ObservedMessageSource[],
+  selectReplacement: (
+    previous: ServerMessage,
+    incoming: ServerMessage,
+  ) => ServerMessage = (_previous, incoming) => incoming,
+): ServerMessage[] {
+  const groups: ObservedMessageAliasGroup[] = history.map((message) => ({
+    output: message,
+    aliases: [{ source: "canonical", message }],
+    sources: new Set(["canonical"]),
+  }));
+  const identities = new Map<string, Set<number>>();
+  const baseIdentities = new Map<string, Set<number>>();
+  const turnlessIdentities = new Map<string, Set<number>>();
+  const assistantAliases = new Map<string, Set<number>>();
+  const assistantAliasCountsBySource = new Map<
+    string,
+    ReadonlyMap<string, number>
+  >();
+  const countAssistantAliases = (
+    messages: Iterable<ServerMessage>,
+  ): Map<string, number> => {
+    const counts = new Map<string, number>();
+    for (const message of messages) {
+      const alias = observedAssistantAliasKey(message);
+      if (!alias) continue;
+      counts.set(alias, (counts.get(alias) ?? 0) + 1);
+    }
+    return counts;
+  };
+  assistantAliasCountsBySource.set("canonical", countAssistantAliases(history));
+  const registerIdentity = (identity: string | null, index: number): void => {
+    if (!identity) return;
+    const matches = identities.get(identity) ?? new Set<number>();
+    matches.add(index);
+    identities.set(identity, matches);
+  };
+  const registerBaseIdentity = (
+    identity: string | null,
+    index: number,
+  ): void => {
+    if (!identity) return;
+    const matches = baseIdentities.get(identity) ?? new Set<number>();
+    matches.add(index);
+    baseIdentities.set(identity, matches);
+  };
+  const registerTurnlessIdentity = (
+    identity: string | null,
+    index: number,
+  ): void => {
+    if (!identity) return;
+    const matches = turnlessIdentities.get(identity) ?? new Set<number>();
+    matches.add(index);
+    turnlessIdentities.set(identity, matches);
+  };
+  const registerAssistantAlias = (
+    message: ServerMessage,
+    index: number,
+  ): void => {
+    const alias = observedAssistantAliasKey(message);
+    if (!alias) return;
+    const matches = assistantAliases.get(alias) ?? new Set<number>();
+    matches.add(index);
+    assistantAliases.set(alias, matches);
+  };
+  groups.forEach((group, index) => {
+    const baseIdentity = observedMessageIdentity(group.output);
+    registerIdentity(baseIdentity, index);
+    registerBaseIdentity(baseIdentity, index);
+    registerTurnlessIdentity(
+      turnlessObservedMessageIdentity(group.output),
+      index,
+    );
+    registerAssistantAlias(group.output, index);
   });
-  for (const entry of observed) {
-    if (entry.message.type === "user_input") {
-      const matchingCanonical = canonicalUsers.find(
-        (candidate) =>
-          !matchedCanonicalUsers.has(candidate.index) &&
-          equivalentObservedUserMessage(candidate.message, entry.message),
-      );
-      if (matchingCanonical) {
-        matchedCanonicalUsers.add(matchingCanonical.index);
+
+  for (const source of sources) {
+    const observedEntries = [...source.observed];
+    const sourceAssistantAliasCounts = countAssistantAliases(
+      observedEntries.map((entry) => entry.message),
+    );
+    assistantAliasCountsBySource.set(
+      source.source,
+      sourceAssistantAliasCounts,
+    );
+    for (const entry of observedEntries) {
+      const message = entry.message;
+      const baseIdentity = observedMessageIdentity(message);
+      const turnlessIdentity = turnlessObservedMessageIdentity(message);
+      const identity = entry.identityScope
+        ? scopedObservedMessageIdentity(baseIdentity, entry.identityScope)
+        : baseIdentity;
+      const exactCandidates = identity
+        ? [...(identities.get(identity) ?? [])]
+        : [];
+      if (exactCandidates.length === 1) {
+        const index = exactCandidates[0]!;
+        const group = groups[index]!;
+        const groupIdentity = group.outputIdentityScope
+          ? scopedObservedMessageIdentity(
+              observedMessageIdentity(group.output),
+              group.outputIdentityScope,
+            )
+          : observedMessageIdentity(group.output);
+        if (groupIdentity === identity) {
+          group.output = selectReplacement(group.output, message);
+        }
+        group.aliases.push({
+          source: source.source,
+          message,
+          ...(entry.identityScope
+            ? { identityScope: entry.identityScope }
+            : {}),
+        });
+        group.sources.add(source.source);
+        registerIdentity(identity, index);
+        registerBaseIdentity(baseIdentity, index);
+        registerTurnlessIdentity(turnlessIdentity, index);
+        registerAssistantAlias(message, index);
         continue;
       }
-    }
-    const identity = observedMessageIdentity(entry.message);
-    if (!identity) {
-      merged.push(entry.message);
-      continue;
-    }
-    const existing = identities.get(identity);
-    if (existing === undefined) {
-      identities.set(identity, merged.length);
-      merged.push(entry.message);
-    } else {
-      // Stable app-server item ids are update identities. Preserve their
-      // timeline position while replacing a tool-start shell or partial final
-      // message with its newer observer projection.
-      merged[existing] = selectReplacement(
-        merged[existing]!,
-        entry.message,
-      );
+
+      // A scoped anonymous item may still be the same provider item as one
+      // canonical projection. Match that stable base identity only across
+      // independent sources; once this source already contributed to the
+      // group, a second anonymous scope must remain a distinct turn.
+      const crossSourceStableCandidates = baseIdentity
+        ? [...(baseIdentities.get(baseIdentity) ?? [])].filter(
+            (index) => {
+              const group = groups[index]!;
+              return (
+                !group.sources.has(source.source) &&
+                anonymousScopesMayAlias(
+                  group.aliases,
+                  message,
+                  entry.identityScope,
+                )
+              );
+            },
+          )
+        : [];
+      if (crossSourceStableCandidates.length === 1) {
+        const index = crossSourceStableCandidates[0]!;
+        const group = groups[index]!;
+        if (observedMessageIdentity(group.output) === baseIdentity) {
+          group.output = selectReplacement(group.output, message);
+        }
+        group.aliases.push({
+          source: source.source,
+          message,
+          ...(entry.identityScope
+            ? { identityScope: entry.identityScope }
+            : {}),
+        });
+        group.sources.add(source.source);
+        registerIdentity(identity, index);
+        registerBaseIdentity(baseIdentity, index);
+        registerTurnlessIdentity(turnlessIdentity, index);
+        registerAssistantAlias(message, index);
+        continue;
+      }
+
+      // Canonical app-server items usually carry historyTurnId while a legacy
+      // observer may not. Reconcile that one missing-field difference only
+      // when stable id, content and source timestamp independently agree.
+      const crossTurnStableCandidates = turnlessIdentity
+        ? [...(turnlessIdentities.get(turnlessIdentity) ?? [])].filter(
+            (index) => {
+              const group = groups[index]!;
+              return (
+                !group.sources.has(source.source) &&
+                group.aliases.some((candidate) =>
+                  equivalentTurnlessStableMessage(candidate.message, message),
+                )
+              );
+            },
+          )
+        : [];
+      if (crossTurnStableCandidates.length === 1) {
+        const index = crossTurnStableCandidates[0]!;
+        const group = groups[index]!;
+        // Keep the canonical turn identity and wire position. The observer's
+        // missing turn id is not evidence that the canonical field is stale.
+        group.aliases.push({
+          source: source.source,
+          message,
+          ...(entry.identityScope
+            ? { identityScope: entry.identityScope }
+            : {}),
+        });
+        group.sources.add(source.source);
+        registerIdentity(identity, index);
+        registerBaseIdentity(baseIdentity, index);
+        registerTurnlessIdentity(turnlessIdentity, index);
+        registerAssistantAlias(message, index);
+        continue;
+      }
+
+      const assistantAlias = observedAssistantAliasKey(message);
+      const possibleAliasIndices = assistantAlias
+        ? [...(assistantAliases.get(assistantAlias) ?? [])]
+        : message.type === "user_input"
+          ? groups.map((_group, index) => index)
+          : [];
+      const aliasCandidates = possibleAliasIndices.filter((index) => {
+        const group = groups[index]!;
+        const assistantCardinalityMatches =
+          assistantAlias === null ||
+          group.aliases.some((candidate) => {
+            const candidateCount = assistantAliasCountsBySource
+              .get(candidate.source)
+              ?.get(assistantAlias);
+            return (
+              candidateCount !== undefined &&
+              candidateCount === sourceAssistantAliasCounts.get(assistantAlias)
+            );
+          });
+        return (
+          !group.sources.has(source.source) &&
+          assistantCardinalityMatches &&
+          group.aliases.some((candidate) =>
+            equivalentObservedMessageAlias(candidate.message, message),
+          )
+        );
+      });
+      if (aliasCandidates.length === 1) {
+        const index = aliasCandidates[0]!;
+        const group = groups[index]!;
+        // Keep the canonical output identity. Recording every representation
+        // enables a third source to match transitively without mutating the
+        // message that Mobile already cached.
+        group.aliases.push({
+          source: source.source,
+          message,
+          ...(entry.identityScope
+            ? { identityScope: entry.identityScope }
+            : {}),
+        });
+        group.sources.add(source.source);
+        registerIdentity(identity, index);
+        registerBaseIdentity(baseIdentity, index);
+        registerTurnlessIdentity(turnlessIdentity, index);
+        registerAssistantAlias(message, index);
+        continue;
+      }
+
+      const index = groups.length;
+      groups.push({
+        output: message,
+        ...(entry.identityScope
+          ? { outputIdentityScope: entry.identityScope }
+          : {}),
+        aliases: [
+          {
+            source: source.source,
+            message,
+            ...(entry.identityScope
+              ? { identityScope: entry.identityScope }
+              : {}),
+          },
+        ],
+        sources: new Set([source.source]),
+      });
+      registerIdentity(identity, index);
+      registerBaseIdentity(baseIdentity, index);
+      registerTurnlessIdentity(turnlessIdentity, index);
+      registerAssistantAlias(message, index);
     }
   }
-  return merged;
+  return groups.map((group) => group.output);
+}
+
+function scopedObservedMessageIdentity(
+  identity: string | null,
+  scope: string,
+): string | null {
+  if (!identity) return null;
+  return `scope:${scope}:${identity}`;
+}
+
+function anonymousScopesMayAlias(
+  aliases: ReadonlyArray<{
+    message: ServerMessage;
+    identityScope?: string;
+  }>,
+  incoming: ServerMessage,
+  incomingScope: string | undefined,
+): boolean {
+  if (!incomingScope) return true;
+  const scoped = aliases.filter((alias) => alias.identityScope);
+  if (scoped.length === 0) return true;
+  return scoped.some((alias) => {
+    if (alias.identityScope === incomingScope) return true;
+    if (alias.message.type === "user_input" && incoming.type === "user_input") {
+      return equivalentObservedUserMessage(alias.message, incoming);
+    }
+    if (alias.message.type !== incoming.type) return false;
+    if (
+      stableObservedMessagePayload(alias.message) !==
+      stableObservedMessagePayload(incoming)
+    ) {
+      return false;
+    }
+    const firstTimestamp = observedMessageTimestamp(alias.message);
+    const secondTimestamp = observedMessageTimestamp(incoming);
+    if (!firstTimestamp || !secondTimestamp) return false;
+    const firstMs = Date.parse(firstTimestamp);
+    const secondMs = Date.parse(secondTimestamp);
+    return (
+      Number.isFinite(firstMs) &&
+      Number.isFinite(secondMs) &&
+      Math.abs(firstMs - secondMs) <= 1_000
+    );
+  });
+}
+
+function observedMessageTimestamp(message: ServerMessage): string | undefined {
+  if (message.sourceTimestamp) return message.sourceTimestamp;
+  const record = message as unknown as Record<string, unknown>;
+  if (typeof record.timestamp === "string") return record.timestamp;
+  return typeof record.receivedAt === "string" ? record.receivedAt : undefined;
+}
+
+function turnlessObservedMessageIdentity(
+  message: ServerMessage,
+): string | null {
+  if (message.type === "user_input") {
+    const providerItemId = message.providerItemId?.trim();
+    if (providerItemId) return `user:provider:${providerItemId}`;
+    const userMessageUuid = message.userMessageUuid?.trim();
+    if (userMessageUuid) return `user:uuid:${userMessageUuid}`;
+    const clientMessageId = message.clientMessageId?.trim();
+    if (clientMessageId) return `user:client:${clientMessageId}`;
+    return null;
+  }
+  if (message.type === "assistant") {
+    return `assistant:${message.messageUuid ?? message.message.id}`;
+  }
+  if (message.type === "tool_result") {
+    return `tool-result:${message.toolUseId}`;
+  }
+  return null;
+}
+
+function equivalentTurnlessStableMessage(
+  first: ServerMessage,
+  second: ServerMessage,
+): boolean {
+  if (first.type === "user_input" && second.type === "user_input") {
+    return equivalentObservedUserMessage(first, second);
+  }
+  if (first.type !== second.type) return false;
+  const firstPayload = { ...first } as Record<string, unknown>;
+  const secondPayload = { ...second } as Record<string, unknown>;
+  delete firstPayload.historyTurnId;
+  delete secondPayload.historyTurnId;
+  if (
+    stableObservedMessagePayload(firstPayload as unknown as ServerMessage) !==
+    stableObservedMessagePayload(secondPayload as unknown as ServerMessage)
+  ) {
+    return false;
+  }
+  const firstTimestamp = observedMessageTimestamp(first);
+  const secondTimestamp = observedMessageTimestamp(second);
+  if (!firstTimestamp || !secondTimestamp) return false;
+  const firstMs = Date.parse(firstTimestamp);
+  const secondMs = Date.parse(secondTimestamp);
+  return (
+    Number.isFinite(firstMs) &&
+    Number.isFinite(secondMs) &&
+    Math.abs(firstMs - secondMs) <= 1_000
+  );
+}
+
+function equivalentObservedMessageAlias(
+  first: ServerMessage,
+  second: ServerMessage,
+): boolean {
+  if (first.type === "user_input" && second.type === "user_input") {
+    return equivalentObservedUserMessage(first, second);
+  }
+  if (first.type !== "assistant" || second.type !== "assistant") return false;
+  const firstId = (first.messageUuid ?? first.message.id)?.trim();
+  const secondId = (second.messageUuid ?? second.message.id)?.trim();
+  if (!firstId || !secondId || firstId === secondId) return false;
+  return observedAssistantAliasKey(first) === observedAssistantAliasKey(second);
+}
+
+function observedAssistantAliasKey(message: ServerMessage): string | null {
+  if (message.type !== "assistant") return null;
+  const turnId = message.historyTurnId?.trim();
+  if (!turnId) return null;
+  return `assistant:${turnId}:content:${createHash("sha256")
+    .update(stableJson(message.message.content))
+    .digest("hex")}`;
 }
 
 function historyWindowFromSnapshot(
@@ -6159,9 +6574,12 @@ function preferNonRegressiveLatestTurnMessage(
     return timestampPreserved;
   }
   try {
-    const previousBytes = Buffer.byteLength(stableJson(previous), "utf8");
+    const previousBytes = Buffer.byteLength(
+      stableObservedMessagePayload(previous),
+      "utf8",
+    );
     const incomingBytes = Buffer.byteLength(
-      stableJson(timestampPreserved),
+      stableObservedMessagePayload(timestampPreserved),
       "utf8",
     );
     // Same-source active-turn reads are eventually consistent. A shorter
@@ -6172,6 +6590,16 @@ function preferNonRegressiveLatestTurnMessage(
   } catch {
     return previous;
   }
+}
+
+function stableObservedMessagePayload(message: ServerMessage): string {
+  const payload = { ...message } as Record<string, unknown>;
+  delete payload.receivedAt;
+  delete payload.timestamp;
+  delete payload.sourceTimestamp;
+  delete payload.sourceTimestampIsAuthoritative;
+  delete payload.historySeq;
+  return stableJson(payload);
 }
 
 function annotateObservedTurn(
@@ -6261,27 +6689,34 @@ function canonicalHistoryCoversDurableExternalMessages(
   // provider items. Keep them while canonical history is wholly empty, then
   // require only stable user/assistant/tool identities to be represented.
   if (hasTransient && history.length === 0) return false;
-  return mergeExternalCodexMessages(history, durable).length === history.length;
+  const merged = mergeObservedMessageSources(
+    history,
+    [{ source: "external", observed: durable }],
+    preferNonRegressiveLatestTurnMessage,
+  );
+  return (
+    merged.length === history.length &&
+    merged.every(
+      (message, index) =>
+        stableObservedMessagePayload(message) ===
+        stableObservedMessagePayload(history[index]!),
+    )
+  );
 }
 
 function observedMessageIdentity(message: ServerMessage): string | null {
   if (message.type === "user_input") {
-    const providerItemId = message.providerItemId?.trim();
-    if (providerItemId) return `user:provider:${providerItemId}`;
     const turnId = message.historyTurnId?.trim();
     const turnScope = turnId ? `turn:${turnId}:` : "";
-    const clientMessageId =
-      "clientMessageId" in message &&
-      typeof message.clientMessageId === "string"
-        ? message.clientMessageId
-        : undefined;
+    const providerItemId = message.providerItemId?.trim();
+    if (providerItemId) return `user:${turnScope}provider:${providerItemId}`;
     const userMessageUuid = message.userMessageUuid?.trim();
     if (userMessageUuid) {
       return `user:${turnScope}uuid:${userMessageUuid}`;
     }
-    const normalizedClientMessageId = clientMessageId?.trim();
-    if (normalizedClientMessageId) {
-      return `user:${turnScope}client:${normalizedClientMessageId}`;
+    const clientMessageId = message.clientMessageId?.trim();
+    if (clientMessageId) {
+      return `user:${turnScope}client:${clientMessageId}`;
     }
     return `user:${turnScope}hash:${createHash("sha256")
       .update(stableJson(message))
@@ -6312,27 +6747,9 @@ function equivalentObservedUserMessage(
   if (canonical.type !== "user_input" || live.type !== "user_input") {
     return false;
   }
-  const canonicalProviderItemId = canonical.providerItemId?.trim();
-  const liveProviderItemId = live.providerItemId?.trim();
-  if (
-    canonicalProviderItemId &&
-    liveProviderItemId &&
-    canonicalProviderItemId !== liveProviderItemId
-  ) {
-    return false;
-  }
   const canonicalTurnId = canonical.historyTurnId?.trim();
   const liveTurnId = live.historyTurnId?.trim();
   if (canonicalTurnId && liveTurnId && canonicalTurnId !== liveTurnId) {
-    return false;
-  }
-  const canonicalClientMessageId = canonical.clientMessageId?.trim();
-  const liveClientMessageId = live.clientMessageId?.trim();
-  if (
-    canonicalClientMessageId &&
-    liveClientMessageId &&
-    canonicalClientMessageId !== liveClientMessageId
-  ) {
     return false;
   }
   if (
@@ -6343,14 +6760,42 @@ function equivalentObservedUserMessage(
   }
   const canonicalTimestamp = canonical.sourceTimestamp ?? canonical.timestamp;
   const liveTimestamp = live.sourceTimestamp ?? live.timestamp;
-  if (!canonicalTimestamp || !liveTimestamp) return false;
-  const canonicalTime = Date.parse(canonicalTimestamp);
-  const liveTime = Date.parse(liveTimestamp);
-  return (
-    Number.isFinite(canonicalTime) &&
-    Number.isFinite(liveTime) &&
-    Math.abs(canonicalTime - liveTime) <= 1_000
-  );
+  const timestampsMatch = (): boolean => {
+    if (!canonicalTimestamp || !liveTimestamp) return false;
+    const canonicalTime = Date.parse(canonicalTimestamp);
+    const liveTime = Date.parse(liveTimestamp);
+    return (
+      Number.isFinite(canonicalTime) &&
+      Number.isFinite(liveTime) &&
+      Math.abs(canonicalTime - liveTime) <= 1_000
+    );
+  };
+  const canonicalClientMessageId = canonical.clientMessageId?.trim();
+  const liveClientMessageId = live.clientMessageId?.trim();
+  if (canonicalClientMessageId && liveClientMessageId) {
+    if (canonicalClientMessageId !== liveClientMessageId) return false;
+    // Explicit equal turn identities make the client admission id decisive.
+    // If either source lacks a turn id, require the provider UUID and a near
+    // timestamp as independent evidence so a reused client id fails open.
+    if (canonicalTurnId && liveTurnId) return true;
+    const canonicalUuid = canonical.userMessageUuid?.trim();
+    const liveUuid = live.userMessageUuid?.trim();
+    return (
+      canonicalUuid !== undefined &&
+      liveUuid !== undefined &&
+      canonicalUuid === liveUuid &&
+      timestampsMatch()
+    );
+  }
+  const canonicalProviderItemId = canonical.providerItemId?.trim();
+  const liveProviderItemId = live.providerItemId?.trim();
+  if (canonicalProviderItemId && liveProviderItemId) {
+    return canonicalProviderItemId === liveProviderItemId;
+  }
+  const canonicalUuid = canonical.userMessageUuid?.trim();
+  const liveUuid = live.userMessageUuid?.trim();
+  if (canonicalUuid && liveUuid && canonicalUuid === liveUuid) return true;
+  return timestampsMatch();
 }
 
 async function readUnifiedCatalog(

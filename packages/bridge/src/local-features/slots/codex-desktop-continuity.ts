@@ -67,6 +67,8 @@ interface MonitorMessageEvent {
   kind: "message";
   itemKey: string;
   turnId?: string;
+  /** Bridge-internal identity for legacy rollout turns without a turn id. */
+  anonymousTurnScope?: string;
   timestamp?: string;
   message: ServerMessage;
   /** Bridge-internal only; converted to opaque ImageRefs before sending. */
@@ -114,6 +116,7 @@ interface PendingCompletedTool {
   payload: Record<string, unknown>;
   timestamp?: string;
   turnId?: string;
+  anonymousTurnScope?: string;
 }
 
 interface PendingAssistantMessage {
@@ -131,6 +134,7 @@ interface PendingAssistantMessage {
 
 interface RecentResponseAssistant {
   key: string;
+  turnKey?: string;
   turnId?: string;
   phase: AssistantMessagePhase;
   text: string;
@@ -1726,6 +1730,8 @@ export class CodexRolloutMonitor {
         { type: "thinking_delta", text: `${text}\n` },
         timestamp,
         turn.turnId,
+        undefined,
+        turn.key,
       );
       return;
     }
@@ -1737,7 +1743,7 @@ export class CodexRolloutMonitor {
     ) {
       const turn = this.scopedTurnForPayload(payload, timestamp);
       if (turn?.origin === "desktop") {
-        this.queueCompletedEventTool(type, payload, timestamp, turn.turnId);
+        this.queueCompletedEventTool(type, payload, timestamp, turn);
       }
     }
   }
@@ -1826,6 +1832,8 @@ export class CodexRolloutMonitor {
       },
       timestamp,
       turn.turnId,
+      undefined,
+      turn.key,
     );
   }
 
@@ -1925,10 +1933,12 @@ export class CodexRolloutMonitor {
     if (turn?.origin !== "desktop") return;
     const phase = normalizeAssistantPhase(payload.phase);
     const timestampMs = parseTimestampMs(timestamp);
+    const payloadTurnId = rolloutTurnId(payload);
     const recent = this.findRecentResponseAssistant(
       text,
       phase,
-      rolloutTurnId(payload),
+      payloadTurnId,
+      !payloadTurnId ? turn.key : undefined,
       timestampMs,
     );
     if (recent) {
@@ -1986,6 +1996,7 @@ export class CodexRolloutMonitor {
     if (!text) return;
     const phase = normalizeAssistantPhase(payload.phase);
     const timestampMs = parseTimestampMs(timestamp);
+    const payloadTurnId = rolloutTurnId(payload);
     const currentTurn = this.scopedTurnForPayload(payload, timestamp);
     // Pairing by text is only a dedupe aid, not turn ownership evidence. If
     // multiple active turns make this payload ambiguous, suppress it and let
@@ -1994,7 +2005,8 @@ export class CodexRolloutMonitor {
     const pending = this.findPendingAssistantMessage(
       text,
       phase,
-      rolloutTurnId(payload),
+      payloadTurnId,
+      !payloadTurnId ? currentTurn.key : undefined,
       timestampMs,
     );
     if (pending) {
@@ -2007,6 +2019,7 @@ export class CodexRolloutMonitor {
         text,
         timestamp ?? pending.timestamp,
         pending.turnId,
+        pending.turnKey,
       );
       return;
     }
@@ -2015,13 +2028,20 @@ export class CodexRolloutMonitor {
     const id =
       optionalString(payload.id) ??
       `desktop-${hashText(`${timestamp ?? ""}:${text}`)}`;
-    this.emitAssistantMessage(id, text, timestamp, currentTurn.turnId);
+    this.emitAssistantMessage(
+      id,
+      text,
+      timestamp,
+      currentTurn.turnId,
+      currentTurn.key,
+    );
     const key = `response-assistant:${++this.assistantMessageSequence}`;
     setBoundedMap(
       this.recentResponseAssistants,
       key,
       {
         key,
+        turnKey: currentTurn.key,
         ...(currentTurn.turnId ? { turnId: currentTurn.turnId } : {}),
         phase,
         text,
@@ -2042,6 +2062,7 @@ export class CodexRolloutMonitor {
       pending.text,
       pending.timestamp,
       pending.turnId,
+      pending.turnKey,
     );
   }
 
@@ -2050,6 +2071,7 @@ export class CodexRolloutMonitor {
     text: string,
     timestamp?: string,
     turnId?: string,
+    anonymousTurnScope?: string,
   ): void {
     this.emitMessage(
       `assistant:${id}`,
@@ -2064,6 +2086,8 @@ export class CodexRolloutMonitor {
       },
       timestamp,
       turnId,
+      undefined,
+      anonymousTurnScope,
     );
   }
 
@@ -2071,8 +2095,10 @@ export class CodexRolloutMonitor {
     text: string,
     phase: AssistantMessagePhase,
     turnId?: string,
+    turnKey?: string,
     timestampMs?: number,
   ): PendingAssistantMessage | undefined {
+    const candidates: PendingAssistantMessage[] = [];
     for (const pending of this.pendingAssistantMessages.values()) {
       if (
         pending.text === text &&
@@ -2080,18 +2106,27 @@ export class CodexRolloutMonitor {
         turnIdsMatch(pending.turnId, turnId) &&
         assistantTimestampsMatch(pending.timestampMs, timestampMs)
       ) {
-        return pending;
+        candidates.push(pending);
       }
     }
-    return undefined;
+    if (!turnKey) return candidates[0];
+    // Prefer the active scope. A late canonical response without turn_id may
+    // still pair to an older explicit provider turn, but it must never consume
+    // an unrelated anonymous pending item from a previous turn.
+    return (
+      candidates.find((pending) => pending.turnKey === turnKey) ??
+      candidates.find((pending) => pending.turnId != null)
+    );
   }
 
   private findRecentResponseAssistant(
     text: string,
     phase: AssistantMessagePhase,
     turnId?: string,
+    turnKey?: string,
     timestampMs?: number,
   ): RecentResponseAssistant | undefined {
+    const candidates: RecentResponseAssistant[] = [];
     for (const recent of this.recentResponseAssistants.values()) {
       if (
         recent.text === text &&
@@ -2099,10 +2134,14 @@ export class CodexRolloutMonitor {
         turnIdsMatch(recent.turnId, turnId) &&
         assistantTimestampsMatch(recent.timestampMs, timestampMs)
       ) {
-        return recent;
+        candidates.push(recent);
       }
     }
-    return undefined;
+    if (!turnKey) return candidates[0];
+    return (
+      candidates.find((recent) => recent.turnKey === turnKey) ??
+      candidates.find((recent) => recent.turnId != null)
+    );
   }
 
   private consumeResponseItem(
@@ -2128,7 +2167,10 @@ export class CodexRolloutMonitor {
         rawInput,
       );
       const name = descriptor.name;
-      this.toolNames.set(this.turnScopedIdentity(turn.turnId, callId), name);
+      this.toolNames.set(
+        this.turnScopedIdentity(turn.turnId, callId, turn.key),
+        name,
+      );
       while (this.toolNames.size > 512) {
         this.toolNames.delete(this.toolNames.keys().next().value!);
       }
@@ -2147,6 +2189,8 @@ export class CodexRolloutMonitor {
         },
         timestamp,
         turn.turnId,
+        undefined,
+        turn.key,
       );
       return;
     }
@@ -2157,7 +2201,7 @@ export class CodexRolloutMonitor {
       const callId = optionalString(payload.call_id);
       if (!callId) return;
       const toolName = this.toolNames.get(
-        this.turnScopedIdentity(turn.turnId, callId),
+        this.turnScopedIdentity(turn.turnId, callId, turn.key),
       );
       const normalized = normalizeCodexDesktopToolOutput(payload.output);
       this.emitMessage(
@@ -2179,6 +2223,7 @@ export class CodexRolloutMonitor {
         timestamp,
         turn.turnId,
         normalized.imageBase64,
+        turn.key,
       );
     }
   }
@@ -2260,10 +2305,15 @@ export class CodexRolloutMonitor {
     const itemId = optionalString(payload.id);
     const transportCallId = optionalString(payload.call_id);
     const turnId = turn.turnId;
+    const anonymousTurnScope = turn.key;
     const previouslyEmittedTransportId =
       transportCallId &&
       this.emittedKeys.has(
-        this.turnScopedIdentity(turnId, `tool-start:${transportCallId}`),
+        this.turnScopedIdentity(
+          turnId,
+          `tool-start:${transportCallId}`,
+          anonymousTurnScope,
+        ),
       )
         ? transportCallId
         : undefined;
@@ -2279,7 +2329,7 @@ export class CodexRolloutMonitor {
       if (alias) {
         setBoundedMap(
           this.toolIdAliases,
-          this.turnScopedIdentity(turnId, alias),
+          this.turnScopedIdentity(turnId, alias, anonymousTurnScope),
           callId,
           512,
         );
@@ -2287,12 +2337,16 @@ export class CodexRolloutMonitor {
     }
     if (transportCallId) {
       this.flushPendingCompletedTool(
-        this.turnScopedIdentity(turnId, `call:${transportCallId}`),
+        this.turnScopedIdentity(
+          turnId,
+          `call:${transportCallId}`,
+          anonymousTurnScope,
+        ),
       );
     }
     setBoundedMap(
       this.toolNames,
-      this.turnScopedIdentity(turnId, callId),
+      this.turnScopedIdentity(turnId, callId, anonymousTurnScope),
       name,
       512,
     );
@@ -2310,6 +2364,8 @@ export class CodexRolloutMonitor {
       },
       timestamp,
       turn.turnId,
+      undefined,
+      anonymousTurnScope,
     );
     if (immediateResult) {
       this.emitMessage(
@@ -2322,6 +2378,8 @@ export class CodexRolloutMonitor {
         },
         timestamp,
         turn.turnId,
+        undefined,
+        anonymousTurnScope,
       );
     }
     return true;
@@ -2331,14 +2389,22 @@ export class CodexRolloutMonitor {
     type: CompletedEventToolType,
     payload: Record<string, unknown>,
     timestamp?: string,
-    turnId?: string,
+    turn?: ActiveTurn,
   ): void {
+    const turnId = turn?.turnId;
+    const anonymousTurnScope = turn?.key;
     const rawCallId = optionalString(payload.call_id);
     const scopedRawCallId = rawCallId
-      ? this.turnScopedIdentity(turnId, rawCallId)
+      ? this.turnScopedIdentity(turnId, rawCallId, anonymousTurnScope)
       : undefined;
     if (scopedRawCallId && this.toolIdAliases.has(scopedRawCallId)) {
-      this.consumeCompletedEventTool(type, payload, timestamp, turnId);
+      this.consumeCompletedEventTool(
+        type,
+        payload,
+        timestamp,
+        turnId,
+        anonymousTurnScope,
+      );
       return;
     }
     const key = this.turnScopedIdentity(
@@ -2348,6 +2414,7 @@ export class CodexRolloutMonitor {
         : `anonymous:${type}:${hashText(
             `${timestamp ?? ""}:${JSON.stringify(payload).slice(0, 4096)}`,
           )}`,
+      anonymousTurnScope,
     );
     const previous = this.pendingCompletedTools.get(key);
     if (previous) {
@@ -2357,6 +2424,7 @@ export class CodexRolloutMonitor {
         previous.payload,
         previous.timestamp,
         previous.turnId,
+        previous.anonymousTurnScope,
       );
     }
     this.pendingCompletedTools.set(key, {
@@ -2364,6 +2432,7 @@ export class CodexRolloutMonitor {
       payload,
       ...(timestamp ? { timestamp } : {}),
       ...(turnId ? { turnId } : {}),
+      ...(!turnId && anonymousTurnScope ? { anonymousTurnScope } : {}),
     });
     queueMicrotask(() => this.flushPendingCompletedTool(key));
   }
@@ -2377,6 +2446,7 @@ export class CodexRolloutMonitor {
       pending.payload,
       pending.timestamp,
       pending.turnId,
+      pending.anonymousTurnScope,
     );
   }
 
@@ -2391,6 +2461,7 @@ export class CodexRolloutMonitor {
     payload: Record<string, unknown>,
     timestamp?: string,
     turnId?: string,
+    anonymousTurnScope?: string,
   ): void {
     const imagePrompt = boundedText(
       optionalString(payload.revised_prompt) ??
@@ -2409,7 +2480,13 @@ export class CodexRolloutMonitor {
     const rawCallId = optionalString(payload.call_id);
     const callId =
       (rawCallId
-        ? (this.toolIdAliases.get(this.turnScopedIdentity(turnId, rawCallId)) ??
+        ? (this.toolIdAliases.get(
+            this.turnScopedIdentity(
+              turnId,
+              rawCallId,
+              anonymousTurnScope,
+            ),
+          ) ??
           rawCallId)
         : undefined) ??
       (type === "image_generation_end"
@@ -2455,7 +2532,7 @@ export class CodexRolloutMonitor {
     }
     setBoundedMap(
       this.toolNames,
-      this.turnScopedIdentity(turnId, callId),
+      this.turnScopedIdentity(turnId, callId, anonymousTurnScope),
       name,
       512,
     );
@@ -2473,6 +2550,8 @@ export class CodexRolloutMonitor {
       },
       timestamp,
       turnId,
+      undefined,
+      anonymousTurnScope,
     );
     this.emitMessage(
       `tool-result:${callId}`,
@@ -2484,6 +2563,8 @@ export class CodexRolloutMonitor {
       },
       timestamp,
       turnId,
+      undefined,
+      anonymousTurnScope,
     );
   }
 
@@ -2716,8 +2797,13 @@ export class CodexRolloutMonitor {
     timestamp?: string,
     turnId?: string,
     imageBase64?: CodexDesktopInlineImage[],
+    anonymousTurnScope?: string,
   ): void {
-    const dedupeKey = this.turnScopedIdentity(turnId, itemKey);
+    const dedupeKey = turnId
+      ? this.turnScopedIdentity(turnId, itemKey)
+      : anonymousTurnScope
+        ? `anonymous:${anonymousTurnScope}:${itemKey}`
+        : this.turnScopedIdentity(undefined, itemKey);
     if (!remember(this.emittedKeys, dedupeKey, MAX_DEDUPE_KEYS)) return;
     this.options.onEvent({
       kind: "message",
@@ -2725,6 +2811,7 @@ export class CodexRolloutMonitor {
       message,
       ...(imageBase64 && imageBase64.length > 0 ? { imageBase64 } : {}),
       ...(turnId ? { turnId } : {}),
+      ...(!turnId && anonymousTurnScope ? { anonymousTurnScope } : {}),
       ...(timestamp ? { timestamp } : {}),
     });
   }
@@ -2732,10 +2819,13 @@ export class CodexRolloutMonitor {
   private turnScopedIdentity(
     turnId: string | undefined,
     identity: string,
+    anonymousTurnScope?: string,
   ): string {
     const normalizedTurnId = turnId?.trim();
-    return normalizedTurnId
-      ? `turn:${normalizedTurnId}:${identity}`
+    if (normalizedTurnId) return `turn:${normalizedTurnId}:${identity}`;
+    const normalizedAnonymousScope = anonymousTurnScope?.trim();
+    return normalizedAnonymousScope
+      ? `anonymous:${normalizedAnonymousScope}:${identity}`
       : `legacy:${identity}`;
   }
 

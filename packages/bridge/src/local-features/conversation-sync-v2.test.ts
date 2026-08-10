@@ -156,6 +156,244 @@ describe("conversation_sync_v2 protocol", () => {
     });
   });
 
+  it("collapses cross-source user and assistant aliases without merging distinct stable replies", async () => {
+    type HandlerOptions = NonNullable<
+      ConstructorParameters<typeof ConversationSyncV2FeatureHandler>[1]
+    >;
+    type ObserverCallback = Parameters<
+      NonNullable<HandlerOptions["observeCodexThread"]>
+    >[1];
+    const threadId = "thread-cross-source-aliases";
+    const turnId = "turn-cross-source-aliases";
+    const clientMessageId = "09a584c0-6591-4837-916a-f853b0bbdf90";
+    const duplicateUserText =
+      "你看最下面又给我显示了3000多条中间过程的更新非常的混乱";
+    const duplicateAssistantText = "Bridge has the latest durable answer";
+    const ambiguousStableText = "A valid repeated answer";
+    const partialStableText = "Partial stable answer";
+    const completeStableText = "Partial stable answer, now complete";
+    let callback: ObserverCallback | undefined;
+    const canonicalHistory: ServerMessage[] = [
+      {
+        type: "user_input",
+        text: duplicateUserText,
+        userMessageUuid: "codex:user-turn:11",
+        clientMessageId,
+        timestamp: "2026-08-10T10:33:04.069Z",
+        receivedAt: "2026-08-10T10:33:04.069Z",
+        historySeq: 1114,
+      },
+      {
+        type: "assistant",
+        historyTurnId: turnId,
+        messageUuid:
+          "msg_07d067f29e687b3c016a79a8f4a3e88191aaab1fdfd563210e",
+        receivedAt: "2026-08-10T10:33:27.529Z",
+        historySeq: 1118,
+        message: {
+          id: "msg_07d067f29e687b3c016a79a8f4a3e88191aaab1fdfd563210e",
+          role: "assistant",
+          model: "gpt-5.6-sol",
+          content: [{ type: "text", text: duplicateAssistantText }],
+        },
+      },
+      {
+        type: "assistant",
+        historyTurnId: turnId,
+        messageUuid: "msg_partial_stable",
+        message: {
+          id: "msg_partial_stable",
+          role: "assistant",
+          model: "gpt-5.6-sol",
+          content: [{ type: "text", text: partialStableText }],
+        },
+      },
+      {
+        type: "assistant",
+        historyTurnId: turnId,
+        messageUuid: "msg_ambiguous_repeat",
+        message: {
+          id: "msg_ambiguous_repeat",
+          role: "assistant",
+          model: "gpt-5.6-sol",
+          content: [{ type: "text", text: ambiguousStableText }],
+        },
+      },
+    ];
+    const fixture = createFixture(
+      [codexSeed(0, threadId)],
+      vi.fn(async () => canonicalHistory),
+      {
+        initialExternalCodexMonitors: 1,
+        observeCodexThread: async (_threadId, onEvent) => {
+          callback = onEvent;
+          return {
+            snapshot: { state: "running" as const, turnId },
+            refreshNow: async () => {},
+            close: () => {},
+          };
+        },
+      },
+      { getProviderSessionId: () => threadId },
+    );
+    const liveClient = {};
+
+    try {
+      await fixture.handler.handle(
+        subscribeMessage(),
+        context(liveClient, fixture.runtime),
+      );
+      await vi.waitFor(() => expect(callback).toBeDefined());
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, liveClient, "sync_complete")).toHaveLength(
+          1,
+        ),
+      );
+
+      callback!({
+        kind: "message",
+        itemKey: "user:rollout-global",
+        timestamp: "2026-08-10T10:33:04.069Z",
+        message: {
+          type: "user_input",
+          text: duplicateUserText,
+          providerItemId: "019feb3b-b4be-7612-b0c2-3df24c5ff9bb",
+          userMessageUuid: "codex:user-turn:11",
+          clientMessageId,
+          historyTurnId: turnId,
+          timestamp: "2026-08-10T10:33:04.069Z",
+        },
+      });
+      const runtimeSession: LocalFeatureSession = {
+        id: "runtime-cross-source-aliases",
+        provider: "codex",
+        process: {},
+        projectPath: "/project/0",
+      };
+      fixture.handler.sessionMessage(runtimeSession, {
+        type: "user_input",
+        text: duplicateUserText,
+        providerItemId: "item-16",
+        userMessageUuid: "codex:user-turn:2",
+        clientMessageId,
+        historyTurnId: turnId,
+        sourceTimestamp: "2026-08-10T10:29:11.000Z",
+      });
+      fixture.handler.sessionMessage(runtimeSession, {
+        type: "assistant",
+        historyTurnId: turnId,
+        messageUuid: "item-18",
+        sourceTimestamp: "2026-08-10T10:29:11.000Z",
+        message: {
+          id: "item-18",
+          role: "assistant",
+          model: "",
+          content: [{ type: "text", text: duplicateAssistantText }],
+        },
+      });
+      fixture.handler.sessionMessage(runtimeSession, {
+        type: "assistant",
+        historyTurnId: turnId,
+        messageUuid: "msg_partial_stable",
+        message: {
+          id: "msg_partial_stable",
+          role: "assistant",
+          model: "gpt-5.6-sol",
+          content: [{ type: "text", text: completeStableText }],
+        },
+      });
+      for (const id of ["item-ambiguous-a", "item-ambiguous-b"]) {
+        fixture.handler.sessionMessage(runtimeSession, {
+          type: "assistant",
+          historyTurnId: turnId,
+          messageUuid: id,
+          message: {
+            id,
+            role: "assistant",
+            model: "",
+            content: [{ type: "text", text: ambiguousStableText }],
+          },
+        });
+      }
+      await vi.waitFor(
+        () =>
+          expect(
+            events(fixture.sent, liveClient, "sync_complete").length,
+          ).toBeGreaterThan(1),
+        { timeout: 3_000 },
+      );
+
+      // A new client sees the authoritative current window rather than a sum
+      // of every patch emitted to the live client.
+      const snapshotClient = {};
+      await fixture.handler.handle(
+        subscribeMessage(),
+        context(snapshotClient, fixture.runtime),
+      );
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, snapshotClient, "sync_complete")).toHaveLength(
+          1,
+        ),
+      );
+
+      const entries = events(
+        fixture.sent,
+        snapshotClient,
+        "timeline_page",
+      ).flatMap((event) => event.entries);
+      const users = entries.filter(
+        (entry) => entry.message.type === "user_input",
+      );
+      const assistantTexts = entries
+        .filter((entry) => entry.message.type === "assistant")
+        .map((entry) =>
+          entry.message.type === "assistant"
+            ? entry.message.message.content
+                .filter((content) => content.type === "text")
+                .map((content) => content.text)
+                .join("\n")
+            : "",
+        );
+
+      expect(users).toHaveLength(1);
+      expect(users[0]).toMatchObject({
+        entryId: "user:codex:user-turn:11",
+        message: {
+          clientMessageId,
+          timestamp: "2026-08-10T10:33:04.069Z",
+        },
+      });
+      expect(
+        assistantTexts.filter((text) => text === duplicateAssistantText),
+      ).toHaveLength(1);
+      expect(
+        entries.find(
+          (entry) =>
+            entry.message.type === "assistant" &&
+            entry.message.message.content.some(
+              (content) =>
+                content.type === "text" &&
+                content.text === duplicateAssistantText,
+            ),
+        ),
+      ).toMatchObject({
+        message: {
+          message: {
+            id: "msg_07d067f29e687b3c016a79a8f4a3e88191aaab1fdfd563210e",
+            model: "gpt-5.6-sol",
+          },
+        },
+      });
+      expect(assistantTexts).not.toContain(partialStableText);
+      expect(assistantTexts).toContain(completeStableText);
+      expect(
+        assistantTexts.filter((text) => text === ambiguousStableText),
+      ).toHaveLength(3);
+    } finally {
+      await fixture.handler.close();
+    }
+  });
+
   it("projects durable Codex model settings into the catalog producer", () => {
     const seed = buildConversationSyncCodexCatalogSeed(
       {
@@ -4419,6 +4657,104 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("keeps a complete base when a non-empty provider refresh is incomplete", async () => {
+    const threadId = "thread-refresh-partial-history";
+    const codex = codexSeed(0, threadId);
+    codex.entry.firstPrompt = "complete cached prompt";
+    let returnPartialHistory = false;
+    const historyReader = vi.fn(async () =>
+      returnPartialHistory
+        ? {
+            messages: [
+              {
+                type: "user_input" as const,
+                text: "new partial turn",
+                userMessageUuid: "partial-user",
+                historyTurnId: "partial-turn",
+              },
+            ],
+            nextTurnCursor: "older-partial-cursor",
+            latestTurnComplete: false,
+            latestTurnGap: {
+              turnId: "partial-turn",
+              missingEntryCount: 2,
+              payloadOmitted: false,
+              repair: "turns_page" as const,
+            },
+          }
+        : history(threadId),
+    );
+    const fixture = createFixture([codex], historyReader);
+    const client = {};
+    const subscription = subscribeMessage();
+
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const initialPage = events(fixture.sent, client, "timeline_page")[0]!;
+    const initialComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    )[0]!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: initialComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+
+    returnPartialHistory = true;
+    codex.entry.revision = "revision-refresh-partial";
+    codex.entry.modifiedAt = "2026-08-10T01:04:03.000Z";
+    codex.entry.recencyAt = codex.entry.modifiedAt;
+    fixture.handler.sessionCatalogChanged();
+
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(2),
+    );
+    const partialPages = events(fixture.sent, client, "timeline_page").filter(
+      (event) => event.revision !== initialPage.revision,
+    );
+    expect(partialPages).not.toHaveLength(0);
+    expect(partialPages.every((event) => event.deletes.length === 0)).toBe(
+      true,
+    );
+    expect(
+      partialPages.flatMap((event) => event.entries).some(
+        (entry) =>
+          entry.message.type === "user_input" &&
+          entry.message.text === "new partial turn",
+      ),
+    ).toBe(true);
+    expect(partialPages.at(-1)).toMatchObject({
+      mode: "patch",
+      baseRevision: initialPage.revision,
+      latestTurnComplete: false,
+      latestTurnGap: expect.objectContaining({
+        turnId: "partial-turn",
+        repair: "turns_page",
+      }),
+    });
+
+    const retainedSnapshots = [
+      ...(fixture.handler as unknown as {
+        snapshots: Map<string, Array<{ latestTurnComplete: boolean }>>;
+      }).snapshots.values(),
+    ].flat();
+    expect(retainedSnapshots).toHaveLength(1);
+    expect(retainedSnapshots[0]?.latestTurnComplete).toBe(true);
+    expect(historyReader).toHaveBeenCalledTimes(2);
+    fixture.handler.close();
+  });
+
   it("keeps a genuinely new empty Codex thread complete", async () => {
     const codex = codexSeed(0, "thread-new-empty");
     delete codex.entry.firstPrompt;
@@ -5708,6 +6044,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
           text: "继续",
           historyTurnId: "provider-turn-one",
           userMessageUuid: "reused-user",
+          clientMessageId: "reused-client-message",
           timestamp,
           sourceTimestamp: timestamp,
           sourceTimestampIsAuthoritative: true,
@@ -5744,6 +6081,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
         type: "user_input",
         text: "继续",
         userMessageUuid: "reused-user",
+        clientMessageId: "reused-client-message",
         timestamp,
       },
     });
@@ -5757,6 +6095,222 @@ describe("ConversationSyncV2FeatureHandler", () => {
       expect(users.map((message) => message.historyTurnId)).toEqual(
         expect.arrayContaining(["provider-turn-one", "provider-turn-two"]),
       );
+    });
+    fixture.handler.close();
+  });
+
+  it("retains reused user assistant and tool ids across anonymous legacy turns", async () => {
+    type HandlerOptions = NonNullable<
+      ConstructorParameters<typeof ConversationSyncV2FeatureHandler>[1]
+    >;
+    type ObserverCallback = Parameters<
+      NonNullable<HandlerOptions["observeCodexThread"]>
+    >[1];
+    let callback: ObserverCallback | undefined;
+    const fixture = createFixture(
+      [codexSeed(0, "thread-anonymous-scopes")],
+      async () => [],
+      {
+        initialExternalCodexMonitors: 1,
+        observeCodexThread: async (_threadId, onEvent) => {
+          callback = onEvent;
+          return {
+            snapshot: { state: "running" as const },
+            refreshNow: async () => {},
+            close: () => {},
+          };
+        },
+      },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() => expect(callback).toBeDefined());
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    for (const [index, scope] of ["legacy-turn-one", "legacy-turn-two"].entries()) {
+      const timestamp = `2026-07-30T02:0${index}:00.000Z`;
+      callback!({
+        kind: "message",
+        itemKey: "user:reused-client",
+        anonymousTurnScope: scope,
+        timestamp,
+        message: {
+          type: "user_input",
+          text: `request ${index + 1}`,
+          clientMessageId: "reused-client",
+          timestamp,
+        },
+      });
+      callback!({
+        kind: "message",
+        itemKey: "assistant:reused-assistant",
+        anonymousTurnScope: scope,
+        timestamp,
+        message: {
+          type: "assistant",
+          message: {
+            id: "reused-assistant",
+            role: "assistant",
+            content: [{ type: "text", text: `answer ${index + 1}` }],
+            model: "codex",
+          },
+        },
+      });
+      callback!({
+        kind: "message",
+        itemKey: "tool-result:reused-tool",
+        anonymousTurnScope: scope,
+        timestamp,
+        message: {
+          type: "tool_result",
+          toolUseId: "reused-tool",
+          content: `result ${index + 1}`,
+        },
+      });
+    }
+
+    await vi.waitFor(() => {
+      const messages = events(fixture.sent, client, "timeline_page")
+        .flatMap((page) => page.entries)
+        .map((entry) => entry.message);
+      expect(messages.filter((message) => message.type === "user_input"))
+        .toHaveLength(2);
+      expect(messages.filter((message) => message.type === "assistant"))
+        .toHaveLength(2);
+      expect(messages.filter((message) => message.type === "tool_result"))
+        .toHaveLength(2);
+    });
+    fixture.handler.close();
+  });
+
+  it("reconciles a canonical turn with its no-id observer projection", async () => {
+    type HandlerOptions = NonNullable<
+      ConstructorParameters<typeof ConversationSyncV2FeatureHandler>[1]
+    >;
+    type ObserverCallback = Parameters<
+      NonNullable<HandlerOptions["observeCodexThread"]>
+    >[1];
+    let callback: ObserverCallback | undefined;
+    const timestamp = "2026-07-30T02:10:00.000Z";
+    const fixture = createFixture(
+      [codexSeed(0, "thread-canonical-anonymous")],
+      async () => [
+        {
+          type: "user_input",
+          text: "canonical request",
+          historyTurnId: "canonical-turn",
+          userMessageUuid: "canonical-user-uuid",
+          clientMessageId: "canonical-client-id",
+          timestamp,
+          sourceTimestamp: timestamp,
+          sourceTimestampIsAuthoritative: true,
+        },
+        {
+          type: "assistant",
+          historyTurnId: "canonical-turn",
+          receivedAt: timestamp,
+          message: {
+            id: "canonical-assistant-id",
+            role: "assistant",
+            content: [{ type: "text", text: "canonical answer" }],
+            model: "codex",
+          },
+        },
+        {
+          type: "tool_result",
+          historyTurnId: "canonical-turn",
+          receivedAt: timestamp,
+          toolUseId: "canonical-tool-id",
+          content: "canonical tool result",
+        },
+      ],
+      {
+        initialExternalCodexMonitors: 1,
+        observeCodexThread: async (_threadId, onEvent) => {
+          callback = onEvent;
+          return {
+            snapshot: { state: "running" as const },
+            refreshNow: async () => {},
+            close: () => {},
+          };
+        },
+      },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() => expect(callback).toBeDefined());
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    callback!({
+      kind: "message",
+      itemKey: "user:canonical-client-id",
+      anonymousTurnScope: "legacy-canonical-turn",
+      timestamp,
+      message: {
+        type: "user_input",
+        text: "canonical request",
+        userMessageUuid: "canonical-user-uuid",
+        clientMessageId: "canonical-client-id",
+        timestamp,
+      },
+    });
+    callback!({
+      kind: "message",
+      itemKey: "assistant:canonical-assistant-id",
+      anonymousTurnScope: "legacy-canonical-turn",
+      timestamp,
+      message: {
+        type: "assistant",
+        message: {
+          id: "canonical-assistant-id",
+          role: "assistant",
+          content: [{ type: "text", text: "canonical answer" }],
+          model: "codex",
+        },
+      },
+    });
+    callback!({
+      kind: "message",
+      itemKey: "tool-result:canonical-tool-id",
+      anonymousTurnScope: "legacy-canonical-turn",
+      timestamp,
+      message: {
+        type: "tool_result",
+        toolUseId: "canonical-tool-id",
+        content: "canonical tool result",
+      },
+    });
+
+    await vi.waitFor(() => {
+      const messages = events(fixture.sent, client, "timeline_page")
+        .flatMap((page) => page.entries)
+        .map((entry) => entry.message);
+      expect(messages.filter((message) => message.type === "user_input"))
+        .toHaveLength(1);
+      expect(messages.filter((message) => message.type === "assistant"))
+        .toHaveLength(1);
+      expect(messages.filter((message) => message.type === "tool_result"))
+        .toHaveLength(1);
+      expect(
+        messages
+          .filter(
+            (message) =>
+              message.type === "user_input" ||
+              message.type === "assistant" ||
+              message.type === "tool_result",
+          )
+          .every((message) => message.historyTurnId === "canonical-turn"),
+      ).toBe(true);
     });
     fixture.handler.close();
   });
