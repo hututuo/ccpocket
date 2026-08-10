@@ -2014,3 +2014,20 @@
   unsubscribe 与 socket disconnect；不逐条记录累计 ACK，也不记录 thread ID、标题、路径
   或正文。LAN proxy 的暂时网卡空观测不得关闭健康 listener；只有连续确认的新地址才允许
   rebind。
+
+## 2026-08-10 Desktop 内容必须有且只有一个实时入口
+
+- 已就绪的 formal shared attachment 会把同线程 app-server notification 送入既有 session
+  message stream；`executionHost=desktopAppServer` 只表示当前 turn 的发起方，不表示该 stream
+  缺失。因此 formal attachment 存在时不得再建第二个 observer。相反，只有目录/旧 runtime
+  记录、没有 `controlState` 的 detached 会话不具备直接消息流，必须保留有界、只读、
+  settings-neutral observer。`undefined controlState` 不能再被 `!== unavailable/reconciling`
+  误判成可用 attachment。正式 adoption 继续原子抢占 observer，重复消息由稳定 item identity
+  去重。
+- Codex daemon 的首次连接仍必须核验 CODEX_HOME、父目录权限、CLI 所有权与执行权限、
+  精确 CLI/app-server 版本、生命周期 backend、managed CLI 和 Unix socket identity。
+  核验成功后，只要 CLI file identity 和 socket inode/identity 均未变化，就复用该结果；
+  每次 attachment 仍重新执行路径、权限、所有权和 identity 检查。CLI 原地变化或 socket
+  被替换会立即失效并重新做完整版本核验。禁止用短 TTL 在 timeline 热路径反复同步
+  `spawnSync daemon version`，否则会阻塞 Node 事件循环，并让权威历史暂时不可用后退回旧
+  snapshot。
