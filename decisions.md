@@ -2031,3 +2031,18 @@
   被替换会立即失效并重新做完整版本核验。禁止用短 TTL 在 timeline 热路径反复同步
   `spawnSync daemon version`，否则会阻塞 Node 事件循环，并让权威历史暂时不可用后退回旧
   snapshot。
+
+## 2026-08-11 首页项目目录采用单一展示权威
+
+- 同一 provider 的首页项目目录只能由 provider catalog（包括其 SQLite 持久缓存）投影；
+  Conversation Mirror 不再与 catalog 并列成为第二个项目目录写入者。Mirror 只在该
+  provider 完全没有 catalog 行时作为临时回退，并且必须同时匹配当前认证的
+  `bridgeInstanceId`；Codex 还必须精确匹配当前 `codexSourceId`。
+- 项目不能按显示名称、路径 basename 或 IP 合并。项目身份继续使用 Bridge 投影的稳定
+  `projectGroupId`/`projectGroupingKey`，连接路线只负责连接，同一台电脑的缓存仍按
+  `bridgeInstanceId + codexSourceId` 隔离和复用。
+- 支持 `conversation_sync_v2` 时，catalog change 已由 v2 增量写入持久目录，Mobile 不得
+  再并行启动 legacy `list_recent_sessions` 全目录刷新。旧 Bridge 不声明 v2 时保留原有
+  有界 compatibility refresh。v2 consumer 接管前已经排队或发出的自动 `catalog`
+  请求必须按 request ID 隔离并丢弃迟到响应；用户手动搜索、筛选、分页和 `list`
+  请求不受影响。本决定不删除手机缓存、不改变 schema，也不授权发布或重启生产 Bridge。

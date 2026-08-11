@@ -4307,6 +4307,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   }) {
     if (showConnectedUI) {
       final bridge = context.read<BridgeService>();
+      final sessionListCubit = context.read<SessionListCubit>();
       final settingsState = context.watch<SettingsCubit>().state;
       final allowedProviderFilters = providerFiltersForEnabledTabs(
         settingsState.newSessionTabs,
@@ -4340,6 +4341,17 @@ class _SessionListScreenState extends State<SessionListScreen>
               sessions: sessions,
               offlinePendingActions: offlinePendingActions,
               recentSessions: recentSessionsList,
+              catalogProviderPresenceComplete:
+                  widget.debugRecentSessions != null ||
+                  sessionListCubit.hasCompleteCatalogProviderPresence,
+              catalogProviders: widget.debugRecentSessions != null
+                  ? {
+                      for (final session in recentSessionsList)
+                        session.provider ?? Provider.claude.value,
+                    }
+                  : sessionListCubit.completeCatalogProviders,
+              currentBridgeInstanceId: bridge.bridgeInstanceId,
+              currentCodexSourceId: bridge.codexSourceId,
               accumulatedProjectPaths: slState.accumulatedProjectPaths,
               collapsedProjectPaths: slState.collapsedProjectPaths,
               loadingProjectPaths: slState.loadingProjectPaths,

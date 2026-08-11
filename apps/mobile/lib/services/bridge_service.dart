@@ -721,12 +721,14 @@ class BridgeService implements BridgeServiceBase {
   Timer? _sessionCatalogRefreshTimeout;
   bool _sessionCatalogRefreshInFlight = false;
   bool _sessionCatalogRefreshDirty = false;
+  int _conversationSyncV2CatalogConsumerCount = 0;
   int _lastSessionCatalogRevision = 0;
   int _recentSessionsQueryGeneration = 0;
   int _recentSessionsRequestSequence = 0;
   final Map<String, String> _latestRecentSessionRequestByScope = {};
   _RecentSessionsRequest? _legacyRecentSessionsRequestInFlight;
   final List<_RecentSessionsRequest> _legacyRecentSessionsRequestQueue = [];
+  final Set<String> _ignoredAutomaticCatalogRequestIds = {};
   static const _maxLegacyRecentSessionsRequestQueue = 32;
   static const _sessionCatalogRefreshDebounce = Duration(milliseconds: 250);
   static const _sessionCatalogRefreshRequestTimeout = Duration(seconds: 15);
@@ -2487,6 +2489,9 @@ class BridgeService implements BridgeServiceBase {
               case RecentSessionsMessage():
                 final recentResponse = _correlateRecentSessionsResponse(msg);
                 if (recentResponse == null ||
+                    _discardSupersededAutomaticCatalogResponse(
+                      recentResponse,
+                    ) ||
                     !_isCurrentRecentSessionsResponse(recentResponse)) {
                   break;
                 }
@@ -5998,6 +6003,11 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void _sendNextLegacyRecentSessionsRequest() {
+    if (_conversationSyncV2OwnsCatalog) {
+      _legacyRecentSessionsRequestQueue.removeWhere(
+        (request) => request.requestScope == 'catalog',
+      );
+    }
     if (_legacyRecentSessionsRequestInFlight != null ||
         _legacyRecentSessionsRequestQueue.isEmpty ||
         !isConnected) {
@@ -6032,6 +6042,18 @@ class BridgeService implements BridgeServiceBase {
   void _resetLegacyRecentSessionsTransport() {
     _legacyRecentSessionsRequestInFlight = null;
     _legacyRecentSessionsRequestQueue.clear();
+    _ignoredAutomaticCatalogRequestIds.clear();
+  }
+
+  bool _discardSupersededAutomaticCatalogResponse(
+    RecentSessionsMessage response,
+  ) {
+    final requestId = response.requestId;
+    final wasExplicitlyFenced =
+        requestId != null &&
+        _ignoredAutomaticCatalogRequestIds.remove(requestId);
+    return response.requestScope == 'catalog' &&
+        (wasExplicitlyFenced || _conversationSyncV2OwnsCatalog);
   }
 
   bool _isCurrentRecentSessionsResponse(RecentSessionsMessage message) {
@@ -6059,11 +6081,49 @@ class BridgeService implements BridgeServiceBase {
   void _handleSessionCatalogChanged(int revision) {
     if (revision <= 0 || revision <= _lastSessionCatalogRevision) return;
     _lastSessionCatalogRevision = revision;
+    // conversation_sync_v2 already carries source-scoped catalog changes into
+    // the durable SQLite projection. Starting the legacy broad directory
+    // refresh as a second writer causes project counts and grouping to churn.
+    // Older peers keep the bounded compatibility refresh below.
+    if (_conversationSyncV2OwnsCatalog) return;
     _scheduleSessionCatalogRefresh();
   }
 
+  bool get _conversationSyncV2OwnsCatalog =>
+      supportsConversationSyncV2 && _conversationSyncV2CatalogConsumerCount > 0;
+
+  /// Registers a live Mobile projection that commits conversation_sync_v2
+  /// catalog pages to the durable SQLite cache.
+  ///
+  /// A Bridge capability alone is not sufficient: isolated hosts and tests
+  /// may intentionally construct [BridgeService] without the v2 consumer. In
+  /// that case the bounded legacy catalog refresh remains the only producer.
+  void registerConversationSyncV2CatalogConsumer() {
+    _conversationSyncV2CatalogConsumerCount += 1;
+    if (_conversationSyncV2OwnsCatalog) {
+      _fenceAutomaticCatalogRefreshTransport();
+    }
+  }
+
+  void unregisterConversationSyncV2CatalogConsumer() {
+    if (_conversationSyncV2CatalogConsumerCount <= 0) return;
+    _conversationSyncV2CatalogConsumerCount -= 1;
+  }
+
+  void _fenceAutomaticCatalogRefreshTransport() {
+    _resetSessionCatalogRefresh();
+    _legacyRecentSessionsRequestQueue.removeWhere(
+      (request) => request.requestScope == 'catalog',
+    );
+    final inFlight = _legacyRecentSessionsRequestInFlight;
+    if (inFlight?.requestScope == 'catalog') {
+      _ignoredAutomaticCatalogRequestIds.add(inFlight!.requestId);
+    }
+  }
+
   void _scheduleSessionCatalogRefresh() {
-    if (!supportsSessionCatalogWatch ||
+    if (_conversationSyncV2OwnsCatalog ||
+        !supportsSessionCatalogWatch ||
         !isConnected ||
         _desiredClientDeliveryMode != BridgeClientDeliveryMode.interactive) {
       return;
@@ -6081,6 +6141,10 @@ class BridgeService implements BridgeServiceBase {
   void _requestSessionCatalogRefresh() {
     _sessionCatalogRefreshTimer?.cancel();
     _sessionCatalogRefreshTimer = null;
+    if (_conversationSyncV2OwnsCatalog) {
+      _sessionCatalogRefreshDirty = false;
+      return;
+    }
     if (!isConnected ||
         !supportsSessionCatalogWatch ||
         _desiredClientDeliveryMode != BridgeClientDeliveryMode.interactive) {

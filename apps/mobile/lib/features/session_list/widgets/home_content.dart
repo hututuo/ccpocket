@@ -26,6 +26,7 @@ import '../../../widgets/pin_toggle_button.dart';
 import '../../../widgets/session_card.dart';
 import '../../../widgets/workspace_pane_chrome.dart';
 import '../../conversation_mirror/conversation_mirror_service.dart';
+import '../../conversation_mirror/storage/conversation_mirror_models.dart';
 import '../../conversation_mirror/conversation_mirror_target.dart';
 import '../../file_transfer/file_transfer_service.dart';
 import '../../file_transfer/received_file_inbox_banner.dart';
@@ -63,6 +64,63 @@ class _ProjectSessionGroup {
 
 ValueKey<String> _conversationRowKey(String identityKey) =>
     ValueKey('conversation_$identityKey');
+
+/// Composes the Home catalog without letting the phone-resident Mirror become
+/// a second project-directory writer.
+///
+/// A complete provider catalog, even when restored from the durable SQLite
+/// cache, owns project identity and grouping for that provider. Mirror
+/// metadata is only a fallback when that complete projection proves no catalog
+/// row exists for the provider. The fallback is also fenced to the
+/// authenticated Bridge and Codex source so source-less or old-source copies
+/// cannot surface as another same-named project.
+List<RecentSession> composeHomeCatalogSessions({
+  required Iterable<RecentSession> providerSessions,
+  required bool catalogProviderPresenceComplete,
+  required Set<String> catalogProviders,
+  required Iterable<ConversationMirrorMetadata> mirrorMetadata,
+  required String? currentBridgeInstanceId,
+  required String? currentCodexSourceId,
+}) {
+  final catalog = providerSessions.toList(growable: false);
+  final bridgeId = currentBridgeInstanceId?.trim();
+  final codexSourceId = currentCodexSourceId?.trim();
+  final byIdentity = <String, RecentSession>{};
+  if (catalogProviderPresenceComplete &&
+      bridgeId != null &&
+      bridgeId.isNotEmpty) {
+    for (final metadata in mirrorMetadata) {
+      final key = metadata.key;
+      if (key.bridgeInstanceId != bridgeId ||
+          catalogProviders.contains(key.provider)) {
+        continue;
+      }
+      if (key.provider == Provider.codex.value) {
+        if (codexSourceId == null ||
+            codexSourceId.isEmpty ||
+            key.codexSourceId != codexSourceId) {
+          continue;
+        }
+      }
+      final fallback = ConversationMirrorTarget.fromMetadata(
+        metadata,
+      ).toRecentSession();
+      final identity = providerSessionIdentityKey(
+        fallback.provider ?? Provider.claude.value,
+        fallback.sessionId,
+      );
+      byIdentity[identity] = fallback;
+    }
+  }
+  for (final session in catalog) {
+    final identity = providerSessionIdentityKey(
+      session.provider ?? Provider.claude.value,
+      session.sessionId,
+    );
+    byIdentity[identity] = session;
+  }
+  return List.unmodifiable(byIdentity.values);
+}
 
 List<_ProjectSessionGroup> _groupSessionsByProject({
   required Iterable<String> projectKeys,
@@ -318,6 +376,10 @@ class HomeContent extends StatefulWidget {
   final List<SessionInfo> sessions;
   final List<OfflinePendingAction> offlinePendingActions;
   final List<RecentSession> recentSessions;
+  final bool catalogProviderPresenceComplete;
+  final Set<String> catalogProviders;
+  final String? currentBridgeInstanceId;
+  final String? currentCodexSourceId;
   final Set<String> accumulatedProjectPaths;
   final Set<String> collapsedProjectPaths;
   final Set<String> loadingProjectPaths;
@@ -393,6 +455,10 @@ class HomeContent extends StatefulWidget {
     required this.sessions,
     this.offlinePendingActions = const [],
     required this.recentSessions,
+    this.catalogProviderPresenceComplete = false,
+    this.catalogProviders = const {},
+    this.currentBridgeInstanceId,
+    this.currentCodexSourceId,
     required this.accumulatedProjectPaths,
     this.collapsedProjectPaths = const {},
     this.loadingProjectPaths = const {},
@@ -1000,7 +1066,6 @@ class HomeContentState extends State<HomeContent> {
     }
     final hasPendingActions = pendingStartActions.isNotEmpty;
     final mirrorService = context.watch<ConversationMirrorService?>();
-    final mirrorBridgeId = mirrorService?.currentBridgeInstanceId;
     final hasKnownProjects = widget.accumulatedProjectPaths.isNotEmpty;
     final isReconnecting =
         widget.connectionState == BridgeConnectionState.reconnecting;
@@ -1026,20 +1091,21 @@ class HomeContentState extends State<HomeContent> {
         ? ReceivedFileInboxBanner(service: fileTransferService)
         : null;
 
-    // Keep a single conversation identity across live runtimes, the provider
-    // catalog, and phone-resident mirror fallbacks. The richer provider entry
-    // is appended last so it wins when a local fallback has the same identity.
+    // Keep one presentation writer per provider. The durable provider catalog
+    // owns project identity; Mirror participates only as a source-scoped
+    // fallback when that provider has no catalog rows yet.
     final catalogSessions =
-        <RecentSession>[
-          if (mirrorService != null)
-            for (final metadata in mirrorService.residentMetadata)
-              if (mirrorBridgeId == null ||
-                  metadata.key.bridgeInstanceId == mirrorBridgeId)
-                ConversationMirrorTarget.fromMetadata(
-                  metadata,
-                ).toRecentSession(),
-          ...widget.recentSessions,
-        ].where(
+        composeHomeCatalogSessions(
+          providerSessions: widget.recentSessions,
+          catalogProviderPresenceComplete:
+              widget.catalogProviderPresenceComplete,
+          catalogProviders: widget.catalogProviders,
+          mirrorMetadata:
+              mirrorService?.residentMetadata ??
+              const <ConversationMirrorMetadata>[],
+          currentBridgeInstanceId: widget.currentBridgeInstanceId,
+          currentCodexSourceId: widget.currentCodexSourceId,
+        ).where(
           (session) => recentSessionMatchesListFilters(
             session,
             providerFilter: widget.providerFilter,

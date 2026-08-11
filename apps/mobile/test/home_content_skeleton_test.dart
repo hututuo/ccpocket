@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:ccpocket/features/conversation_mirror/storage/conversation_mirror_models.dart';
 import 'package:ccpocket/features/session_list/state/session_list_cubit.dart';
 import 'package:ccpocket/features/session_list/state/session_list_state.dart';
 import 'package:ccpocket/features/session_list/widgets/home_content.dart';
@@ -254,6 +255,140 @@ Widget _buildHomeContent({
 }
 
 void main() {
+  group('composeHomeCatalogSessions', () {
+    ConversationMirrorMetadata mirror({
+      required String id,
+      required String bridgeId,
+      required String? sourceId,
+    }) => ConversationMirrorMetadata(
+      key: ConversationMirrorKey(
+        bridgeInstanceId: bridgeId,
+        provider: 'codex',
+        providerSessionId: id,
+        codexSourceId: sourceId,
+      ),
+      activeGeneration: 'generation-$id',
+      revision: 'revision-$id',
+      entryCount: 1,
+      bytes: 10,
+      autoSync: true,
+      projectPath: '/Users/test/AI agent/Codex',
+      lastSyncedAt: DateTime.utc(2026, 8, 11),
+      error: null,
+    );
+
+    test('provider catalog is the only project writer for its provider', () {
+      final result = composeHomeCatalogSessions(
+        providerSessions: [
+          _session(
+            id: 'catalog-thread',
+            provider: 'codex',
+            projectPath: '/Users/test/AI agent/Codex',
+            projectGroupId: 'desktop-codex',
+            projectGroupName: 'Codex',
+          ),
+        ],
+        catalogProviderPresenceComplete: true,
+        catalogProviders: const {'codex'},
+        mirrorMetadata: [
+          mirror(
+            id: 'mirror-only-thread',
+            bridgeId: 'bridge-current',
+            sourceId: 'source-current',
+          ),
+        ],
+        currentBridgeInstanceId: 'bridge-current',
+        currentCodexSourceId: 'source-current',
+      );
+
+      expect(result, hasLength(1));
+      expect(result.single.sessionId, 'catalog-thread');
+      expect(result.single.projectGroupingKey, 'desktop-project:desktop-codex');
+    });
+
+    test('Mirror fallback rejects another Bridge and Codex source', () {
+      final result = composeHomeCatalogSessions(
+        providerSessions: const [],
+        catalogProviderPresenceComplete: true,
+        catalogProviders: const {},
+        mirrorMetadata: [
+          mirror(
+            id: 'current',
+            bridgeId: 'bridge-current',
+            sourceId: 'source-current',
+          ),
+          mirror(
+            id: 'old-source',
+            bridgeId: 'bridge-current',
+            sourceId: 'source-old',
+          ),
+          mirror(
+            id: 'other-bridge',
+            bridgeId: 'bridge-other',
+            sourceId: 'source-current',
+          ),
+        ],
+        currentBridgeInstanceId: 'bridge-current',
+        currentCodexSourceId: 'source-current',
+      );
+
+      expect(result.map((session) => session.sessionId), ['current']);
+    });
+
+    test('filtered catalog rows cannot re-enable a Mirror writer', () {
+      final result = composeHomeCatalogSessions(
+        providerSessions: const [],
+        catalogProviderPresenceComplete: true,
+        catalogProviders: const {'codex'},
+        mirrorMetadata: [
+          mirror(
+            id: 'mirror-only-thread',
+            bridgeId: 'bridge-current',
+            sourceId: 'source-current',
+          ),
+        ],
+        currentBridgeInstanceId: 'bridge-current',
+        currentCodexSourceId: 'source-current',
+      );
+
+      expect(result, isEmpty);
+    });
+
+    test('incomplete provider presence keeps Mirror fail closed', () {
+      final result = composeHomeCatalogSessions(
+        providerSessions: const [],
+        catalogProviderPresenceComplete: false,
+        catalogProviders: const {},
+        mirrorMetadata: [
+          mirror(
+            id: 'mirror-only-thread',
+            bridgeId: 'bridge-current',
+            sourceId: 'source-current',
+          ),
+        ],
+        currentBridgeInstanceId: 'bridge-current',
+        currentCodexSourceId: 'source-current',
+      );
+
+      expect(result, isEmpty);
+    });
+
+    test('source-less Codex Mirror is rejected until identity is proven', () {
+      final result = composeHomeCatalogSessions(
+        providerSessions: const [],
+        catalogProviderPresenceComplete: true,
+        catalogProviders: const {},
+        mirrorMetadata: [
+          mirror(id: 'source-less', bridgeId: 'bridge-current', sourceId: null),
+        ],
+        currentBridgeInstanceId: 'bridge-current',
+        currentCodexSourceId: null,
+      );
+
+      expect(result, isEmpty);
+    });
+  });
+
   group('conversationDestructiveActionBlocked', () {
     ConversationSyncV2Status status({
       required String activity,

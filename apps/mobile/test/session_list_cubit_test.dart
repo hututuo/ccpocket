@@ -889,6 +889,8 @@ void main() {
       await pumpEventQueue();
       expect(cubit.state.sessions.single.sessionId, 'cached-v2');
       expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
+      expect(cubit.hasCompleteCatalogProviderPresence, isFalse);
+      expect(cubit.completeCatalogProviders, isEmpty);
 
       await cubit.close();
       cache.syncStates[target.fingerprint] = ConversationSyncCacheState(
@@ -901,6 +903,11 @@ void main() {
       await pumpEventQueue();
       expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
       expect(cubit.hasCachedCatalogForCurrentTarget, isTrue);
+      expect(cubit.hasCompleteCatalogProviderPresence, isTrue);
+      expect(cubit.completeCatalogProviders, {'claude'});
+
+      cubit.setSearchQuery('not in the visible projection');
+      expect(cubit.completeCatalogProviders, {'claude'});
     });
 
     test(

@@ -704,6 +704,309 @@ void main() {
       },
     );
 
+    test('v2 catalog ownership suppresses the legacy broad refresh', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final socketReady = Completer<WebSocket>();
+      server.transform(WebSocketTransformer()).listen((socket) {
+        socketReady.complete(socket);
+      });
+
+      final outgoing = <ClientMessage>[];
+      final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+      bridge.registerConversationSyncV2CatalogConsumer();
+      bridge.connect('ws://127.0.0.1:${server.port}');
+      final socket = await socketReady.future;
+      socket.add(
+        jsonEncode({
+          'type': 'session_list',
+          'sessions': [],
+          'bridgeCapabilities': [
+            sessionCatalogWatchCapability,
+            conversationSyncV2Capability,
+          ],
+        }),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      outgoing.clear();
+
+      socket.add(
+        jsonEncode({'type': sessionCatalogChangedMessageType, 'revision': 1}),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+
+      expect(
+        outgoing.where((message) => message.type == 'list_recent_sessions'),
+        isEmpty,
+      );
+
+      bridge.disconnect();
+      await socket.close();
+      await server.close(force: true);
+      bridge.unregisterConversationSyncV2CatalogConsumer();
+      bridge.dispose();
+    });
+
+    test(
+      'v2 capability without a local catalog consumer keeps legacy refresh',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+        });
+
+        final outgoing = <ClientMessage>[];
+        final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [],
+            'bridgeCapabilities': [
+              sessionCatalogWatchCapability,
+              conversationSyncV2Capability,
+            ],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        outgoing.clear();
+
+        socket.add(
+          jsonEncode({'type': sessionCatalogChangedMessageType, 'revision': 1}),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+
+        expect(
+          outgoing.where((message) => message.type == 'list_recent_sessions'),
+          hasLength(1),
+        );
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test('a queued legacy refresh is fenced after v2 adoption', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final socketReady = Completer<WebSocket>();
+      server.transform(WebSocketTransformer()).listen((socket) {
+        socketReady.complete(socket);
+      });
+
+      final outgoing = <ClientMessage>[];
+      final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+      bridge.connect('ws://127.0.0.1:${server.port}');
+      final socket = await socketReady.future;
+      socket.add(
+        jsonEncode({
+          'type': 'session_list',
+          'sessions': [],
+          'bridgeCapabilities': [sessionCatalogWatchCapability],
+        }),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      outgoing.clear();
+      socket.add(
+        jsonEncode({'type': sessionCatalogChangedMessageType, 'revision': 1}),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      bridge.registerConversationSyncV2CatalogConsumer();
+      socket.add(
+        jsonEncode({
+          'type': 'session_list',
+          'sessions': [],
+          'bridgeCapabilities': [
+            sessionCatalogWatchCapability,
+            conversationSyncV2Capability,
+          ],
+        }),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+
+      expect(
+        outgoing.where((message) => message.type == 'list_recent_sessions'),
+        isEmpty,
+      );
+
+      bridge.disconnect();
+      await socket.close();
+      await server.close(force: true);
+      bridge.unregisterConversationSyncV2CatalogConsumer();
+      bridge.dispose();
+    });
+
+    test(
+      'an in-flight automatic catalog response is ignored after v2 adoption',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+        });
+
+        final outgoing = <ClientMessage>[];
+        final published = <RecentSessionsMessage>[];
+        final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+        final publishedSub = bridge.recentSessionResponses.listen(
+          published.add,
+        );
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [],
+            'bridgeCapabilities': [sessionCatalogWatchCapability],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        outgoing.clear();
+
+        socket.add(
+          jsonEncode({'type': sessionCatalogChangedMessageType, 'revision': 1}),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        expect(
+          outgoing.where((message) => message.type == 'list_recent_sessions'),
+          hasLength(1),
+        );
+
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [],
+            'bridgeCapabilities': [
+              sessionCatalogWatchCapability,
+              conversationSyncV2Capability,
+            ],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        bridge.registerConversationSyncV2CatalogConsumer();
+        socket.add(
+          jsonEncode({
+            'type': 'recent_sessions',
+            'sessions': [
+              {
+                'sessionId': 'stale-catalog-thread',
+                'provider': 'codex',
+                'firstPrompt': 'stale catalog',
+                'created': '2026-08-11T00:00:00Z',
+                'modified': '2026-08-11T00:00:01Z',
+                'gitBranch': '',
+                'projectPath': '/stale',
+                'isSidechain': false,
+              },
+            ],
+            'hasMore': false,
+            'limit': 20,
+            'offset': 0,
+            'requestScope': 'catalog',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+
+        expect(bridge.recentSessions, isEmpty);
+        expect(published, isEmpty);
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        await publishedSub.cancel();
+        bridge.unregisterConversationSyncV2CatalogConsumer();
+        bridge.dispose();
+      },
+    );
+
+    test(
+      'queued automatic catalog work is removed after v2 adoption',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+        });
+
+        final outgoing = <ClientMessage>[];
+        final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [],
+            'bridgeCapabilities': [sessionCatalogWatchCapability],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        outgoing.clear();
+
+        bridge.requestRecentSessions(limit: 20);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        expect(
+          outgoing.where((message) => message.type == 'list_recent_sessions'),
+          hasLength(1),
+        );
+        outgoing.clear();
+        socket.add(
+          jsonEncode({'type': sessionCatalogChangedMessageType, 'revision': 1}),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        expect(outgoing, isEmpty);
+
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [],
+            'bridgeCapabilities': [
+              sessionCatalogWatchCapability,
+              conversationSyncV2Capability,
+            ],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        bridge.registerConversationSyncV2CatalogConsumer();
+        socket.add(
+          jsonEncode({
+            'type': 'recent_sessions',
+            'sessions': [
+              {
+                'sessionId': 'manual-thread',
+                'provider': 'codex',
+                'firstPrompt': 'manual query',
+                'created': '2026-08-11T00:00:00Z',
+                'modified': '2026-08-11T00:00:01Z',
+                'gitBranch': '',
+                'projectPath': '/manual',
+                'isSidechain': false,
+              },
+            ],
+            'hasMore': false,
+            'limit': 20,
+            'offset': 0,
+            'requestScope': 'list',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+
+        expect(bridge.recentSessions.single.sessionId, 'manual-thread');
+        expect(
+          outgoing.where((message) => message.type == 'list_recent_sessions'),
+          isEmpty,
+        );
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.unregisterConversationSyncV2CatalogConsumer();
+        bridge.dispose();
+      },
+    );
+
     test(
       'a complete catalog refresh removes stale entries beyond the old prefix',
       () async {

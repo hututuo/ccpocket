@@ -134,6 +134,7 @@ class SessionListCubit extends Cubit<SessionListState> {
   bool _syncCacheReloadPending = false;
   Map<String, ConversationSyncV2Status> _conversationStatuses = const {};
   Map<String, String> _conversationReadWatermarks = const {};
+  bool _registeredConversationSyncV2CatalogConsumer = false;
 
   SessionListCubit({
     required BridgeService bridge,
@@ -143,6 +144,10 @@ class SessionListCubit extends Cubit<SessionListState> {
        _catalogCache = catalogCache,
        _conversationSync = conversationSync,
        super(const SessionListState()) {
+    if (_catalogCache != null && _conversationSync != null) {
+      _bridge.registerConversationSyncV2CatalogConsumer();
+      _registeredConversationSyncV2CatalogConsumer = true;
+    }
     _recentSub = _bridge.recentSessionResponses.listen(_onSessionsUpdate);
     _projectHistorySub = _bridge.projectHistoryStream.listen(
       _onProjectHistoryUpdate,
@@ -235,6 +240,27 @@ class SessionListCubit extends Cubit<SessionListState> {
   /// fingerprint, while a different Codex Home cannot reuse stale facts.
   String? get conversationSourceFingerprint =>
       _currentCacheTarget()?.fingerprint;
+
+  /// Whether provider presence is known from one complete, source-scoped
+  /// catalog projection rather than inferred from the currently filtered UI.
+  bool get hasCompleteCatalogProviderPresence {
+    final target = _currentCacheTarget();
+    return target != null &&
+        _loadedCacheComplete &&
+        _loadedCacheFingerprint == target.fingerprint;
+  }
+
+  /// Providers present in the complete catalog for the current Bridge/source.
+  /// An empty set is authoritative only when
+  /// [hasCompleteCatalogProviderPresence] is true.
+  Set<String> get completeCatalogProviders {
+    if (!hasCompleteCatalogProviderPresence) return const {};
+    return Set.unmodifiable(
+      _cachedSessions.map(
+        (session) => session.provider ?? Provider.claude.value,
+      ),
+    );
+  }
 
   bool get hasUsableCatalogForCurrentTarget {
     final currentTarget = _currentCacheTarget();
@@ -1554,6 +1580,10 @@ class SessionListCubit extends Cubit<SessionListState> {
     await _sessionIdentitySub?.cancel();
     await _conversationSyncSub?.cancel();
     await _catalogSnapshotChanges.close();
+    if (_registeredConversationSyncV2CatalogConsumer) {
+      _registeredConversationSyncV2CatalogConsumer = false;
+      _bridge.unregisterConversationSyncV2CatalogConsumer();
+    }
     await super.close();
   }
 }
