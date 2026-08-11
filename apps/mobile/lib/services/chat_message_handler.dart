@@ -60,6 +60,7 @@ class ChatStateUpdate {
   final bool markUserMessagesFailed;
   final MessageStatus? userMessageStatus;
   final String? userStatusClientMessageId;
+  final String? userStatusProviderTurnId;
   final String? projectPath;
 
   /// When true, messages transition to [MessageStatus.queued] instead of
@@ -127,6 +128,7 @@ class ChatStateUpdate {
     this.markUserMessagesFailed = false,
     this.userMessageStatus,
     this.userStatusClientMessageId,
+    this.userStatusProviderTurnId,
     this.projectPath,
     this.markUserMessagesQueued = false,
     this.sideEffects = const {},
@@ -376,6 +378,7 @@ class ChatMessageHandler {
       case InputDeliveryStatusMessage(
         :final stage,
         :final clientMessageId,
+        :final providerTurnId,
         :final queued,
       ):
         return ChatStateUpdate(
@@ -385,6 +388,7 @@ class ChatMessageHandler {
                     : MessageStatus.bridgeAccepted
               : MessageStatus.providerRejected,
           userStatusClientMessageId: clientMessageId,
+          userStatusProviderTurnId: providerTurnId,
         );
       case InputRejectedMessage(:final clientMessageId):
         logger.warning('[handler] input_rejected');

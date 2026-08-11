@@ -241,10 +241,24 @@ ChatProcessLayout buildChatProcessLayout(
         ? entries[turnStart] as UserChatEntry
         : null;
     final turnContentStart = userEntry == null ? turnStart : turnStart + 1;
+    var providerTurnId = chatEntryHistoryTurnId(entries[turnStart]);
     var turnEnd = turnContentStart;
-    while (turnEnd < entries.length &&
-        entries[turnEnd] is! UserChatEntry &&
-        !_isManualContextCompactionEntry(entries[turnEnd])) {
+    while (turnEnd < entries.length) {
+      final candidate = entries[turnEnd];
+      if (_isManualContextCompactionEntry(candidate)) break;
+      final candidateTurnId = chatEntryHistoryTurnId(candidate);
+      if (candidate is UserChatEntry &&
+          (providerTurnId == null ||
+              candidateTurnId == null ||
+              candidateTurnId != providerTurnId)) {
+        break;
+      }
+      if (providerTurnId != null &&
+          candidateTurnId != null &&
+          candidateTurnId != providerTurnId) {
+        break;
+      }
+      providerTurnId ??= candidateTurnId;
       turnEnd++;
     }
 
@@ -252,12 +266,20 @@ ChatProcessLayout buildChatProcessLayout(
     // after its UserChatEntry has already been paged out. Treat that leading
     // range as one partial turn so its thought/tool hierarchy keeps the same
     // two-level disclosure instead of falling back to independent bubbles.
-    final partialTurnKey = _partialTurnKey(entries, turnContentStart, turnEnd);
-    final turnKey = userEntry == null ? partialTurnKey : _turnKey(userEntry);
-    if (userEntry != null &&
-        partialTurnKey != 'partial:empty' &&
-        partialTurnKey != turnKey) {
-      turnKeyAliases[partialTurnKey] = turnKey;
+    final legacyPartialTurnKey = _partialTurnKey(
+      entries,
+      turnContentStart,
+      turnEnd,
+    );
+    final providerTurnKey = providerTurnId == null
+        ? null
+        : 'turn:$providerTurnId';
+    final userTurnKey = userEntry == null ? null : _turnKey(userEntry);
+    final turnKey = providerTurnKey ?? userTurnKey ?? legacyPartialTurnKey;
+    for (final alias in [legacyPartialTurnKey, userTurnKey]) {
+      if (alias != null && alias != 'partial:empty' && alias != turnKey) {
+        turnKeyAliases[alias] = turnKey;
+      }
     }
     final isLatestTurn = turnEnd == entries.length;
     final isActive = isLatestTurn && latestTurnIsActive;
@@ -709,7 +731,13 @@ bool _looksGloballyUniqueProviderId(String value) =>
     !value.startsWith('codex:user-turn:') &&
     !value.startsWith('legacy-turn:');
 
-String _partialTurnKey(List<ChatEntry> entries, int start, int end) {
+String _partialTurnKey(
+  List<ChatEntry> entries,
+  int start,
+  int end, {
+  String? providerTurnId,
+}) {
+  if (providerTurnId != null) return 'turn:$providerTurnId';
   for (var index = start; index < end; index++) {
     final entry = entries[index];
     if (entry is! ServerChatEntry) continue;
@@ -725,10 +753,29 @@ String _partialTurnKey(List<ChatEntry> entries, int start, int end) {
       return 'partial:tool:${message.precedingToolUseIds.first}';
     }
   }
-  final timestamp = start < entries.length
+  final timestamp = start < end && start < entries.length
       ? _processEntryIdentity(entries[start])
       : 'empty';
   return 'partial:$timestamp';
+}
+
+String? chatEntryHistoryTurnId(ChatEntry entry) {
+  final value = switch (entry) {
+    UserChatEntry(:final historyTurnId) => historyTurnId,
+    ServerChatEntry(:final message) => switch (message) {
+      AssistantServerMessage(:final historyTurnId) => historyTurnId,
+      ToolResultMessage(:final historyTurnId) => historyTurnId,
+      ToolUseSummaryMessage(:final historyTurnId) => historyTurnId,
+      GuardianApprovalMessage(:final historyTurnId) => historyTurnId,
+      ResultMessage(:final historyTurnId) => historyTurnId,
+      ErrorMessage(:final historyTurnId) => historyTurnId,
+      SystemMessage(:final historyTurnId) => historyTurnId,
+      _ => null,
+    },
+    StreamingChatEntry() => null,
+  };
+  final normalized = value?.trim();
+  return normalized == null || normalized.isEmpty ? null : normalized;
 }
 
 String _processEntryIdentity(ChatEntry entry) {

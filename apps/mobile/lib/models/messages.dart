@@ -4142,6 +4142,7 @@ class InputDeliveryStatusMessage implements ServerMessage {
   final InputDeliveryStage stage;
   final String provider;
   final String method;
+  final String? providerTurnId;
   final String occurredAt;
   final int? acceptedSeq;
   final bool queued;
@@ -4154,6 +4155,7 @@ class InputDeliveryStatusMessage implements ServerMessage {
     required this.stage,
     required this.provider,
     required this.method,
+    this.providerTurnId,
     required this.occurredAt,
     this.acceptedSeq,
     this.queued = false,
@@ -4167,6 +4169,7 @@ class InputDeliveryStatusMessage implements ServerMessage {
     final stage = InputDeliveryStage.fromWireValue(json['stage']);
     final provider = json['provider'];
     final method = json['method'];
+    final providerTurnId = json['providerTurnId'];
     final occurredAt = json['occurredAt'];
     final acceptedSeq = json['acceptedSeq'];
     final queued = json['queued'];
@@ -4179,6 +4182,10 @@ class InputDeliveryStatusMessage implements ServerMessage {
         stage == null ||
         provider != Provider.codex.value ||
         (method != 'turn/start' && method != 'turn/steer') ||
+        (providerTurnId != null &&
+            (providerTurnId is! String ||
+                providerTurnId.trim().isEmpty ||
+                providerTurnId.length > 256)) ||
         occurredAt is! String ||
         DateTime.tryParse(occurredAt) == null ||
         (acceptedSeq != null && acceptedSeq is! int) ||
@@ -4194,6 +4201,7 @@ class InputDeliveryStatusMessage implements ServerMessage {
       stage: stage,
       provider: provider as String,
       method: method as String,
+      providerTurnId: providerTurnId as String?,
       occurredAt: occurredAt,
       acceptedSeq: acceptedSeq as int?,
       queued: queued as bool? ?? false,

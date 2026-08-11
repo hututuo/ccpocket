@@ -224,6 +224,19 @@ class MockBridgeService extends BridgeService {
   }
 }
 
+class _MutableEntriesChatSessionCubit extends ChatSessionCubit {
+  _MutableEntriesChatSessionCubit({
+    required super.sessionId,
+    required super.bridge,
+    required super.streamingCubit,
+    required super.provider,
+  });
+
+  void replaceEntriesForTest(List<ChatEntry> entries) {
+    emit(state.copyWith(entries: entries));
+  }
+}
+
 void main() {
   late MockBridgeService mockBridge;
   late StreamingStateCubit streamingCubit;
@@ -2315,7 +2328,7 @@ void main() {
     });
 
     test(
-      'durable cache replacement collapses stale runtime and optimistic copies',
+      'durable cache replacement keeps an identity-distinct deferred submission',
       () {
         const turnId = 'turn-one';
         const clientMessageId = '8cc81087-39db-4fe5-ac86-6ff87594cc8f';
@@ -2387,10 +2400,17 @@ void main() {
             .map((entry) => entry.message)
             .whereType<AssistantServerMessage>()
             .toList();
-        expect(users, hasLength(1));
-        expect(users.single.providerItemId, 'canonical-user-item');
-        expect(users.single.historyTurnId, turnId);
-        expect(users.single.status, MessageStatus.sent);
+        expect(users, hasLength(2));
+        final canonical = users.singleWhere(
+          (entry) => entry.providerItemId == 'canonical-user-item',
+        );
+        expect(canonical.historyTurnId, turnId);
+        expect(canonical.status, MessageStatus.sent);
+        final deferred = users.singleWhere(
+          (entry) => entry.providerItemId == null,
+        );
+        expect(deferred.text, '1');
+        expect(deferred.clientMessageId, isNot(clientMessageId));
         expect(assistants, hasLength(1));
         expect(assistants.single.messageUuid, 'canonical-assistant-item');
       },
@@ -3469,7 +3489,12 @@ void main() {
     test(
       'Codex native Plan capability follows session_list and resets on disconnect',
       () async {
-        final cubit = createCubit('s1', provider: Provider.codex);
+        final cubit = _MutableEntriesChatSessionCubit(
+          sessionId: 's1',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+        );
         addTearDown(cubit.close);
 
         expect(
@@ -6729,7 +6754,7 @@ void main() {
     });
 
     test(
-      'provider user item upgrades one optimistic bubble without client echo',
+      'provider user item without client echo remains a separate legacy fact',
       () async {
         final cubit = createCubit('s1', provider: Provider.codex);
         addTearDown(cubit.close);
@@ -6760,20 +6785,88 @@ void main() {
         await pumpEventQueue();
 
         users = cubit.state.entries.whereType<UserChatEntry>().toList();
-        expect(users, hasLength(1));
-        expect(users.single.clientMessageId, isNotNull);
-        expect(users.single.providerItemId, 'provider-user-item-1');
-        expect(users.single.historyTurnId, 'provider-turn-1');
-        expect(users.single.messageUuid, 'codex:user-turn:1');
+        expect(users, hasLength(2));
+        expect(
+          users
+              .singleWhere((entry) => entry.clientMessageId != null)
+              .providerItemId,
+          isNull,
+        );
+        expect(
+          users
+              .singleWhere(
+                (entry) => entry.providerItemId == 'provider-user-item-1',
+              )
+              .clientMessageId,
+          isNull,
+        );
+      },
+    );
 
+    test(
+      'same-turn Desktop steer cannot claim a Mobile root before its exact echo',
+      () async {
+        const clientId = 'mobile-root-client';
+        const turnId = 'provider-turn-with-desktop-steer';
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        cubit.sendMessage('same prompt', clientMessageId: clientId);
+        mockBridge.emitMessage(
+          const InputDeliveryStatusMessage(
+            sessionId: 's1',
+            clientMessageId: clientId,
+            stage: InputDeliveryStage.providerAccepted,
+            provider: 'codex',
+            method: 'turn/start',
+            providerTurnId: turnId,
+            occurredAt: '2026-08-11T00:00:00.000Z',
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        mockBridge.emitMessage(
+          const UserInputMessage(
+            text: 'same prompt',
+            providerItemId: 'desktop-steer-item',
+            historyTurnId: turnId,
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        var users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(2));
+        expect(
+          users
+              .singleWhere((entry) => entry.clientMessageId == clientId)
+              .providerItemId,
+          isNull,
+        );
+        expect(
+          users
+              .singleWhere(
+                (entry) => entry.providerItemId == 'desktop-steer-item',
+              )
+              .clientMessageId,
+          isNull,
+        );
+
+        // A partial canonical replacement containing only the foreign steer
+        // must preserve the pending Mobile root without transferring its id.
         mockBridge.emitMessage(
           const HistoryMessage(
             messages: [
               UserInputMessage(
-                text: 'Provider accepted this prompt',
-                providerItemId: 'provider-user-item-1',
-                historyTurnId: 'provider-turn-1',
-                userMessageUuid: 'codex:user-turn:1',
+                text: 'same prompt',
+                providerItemId: 'desktop-steer-item',
+                historyTurnId: turnId,
               ),
             ],
           ),
@@ -6781,14 +6874,55 @@ void main() {
         );
         await pumpEventQueue();
         users = cubit.state.entries.whereType<UserChatEntry>().toList();
-        expect(users, hasLength(1));
-        expect(users.single.clientMessageId, isNotNull);
-        expect(users.single.providerItemId, 'provider-user-item-1');
+        expect(users, hasLength(2));
+        expect(
+          users
+              .singleWhere((entry) => entry.clientMessageId == clientId)
+              .providerItemId,
+          isNull,
+        );
+
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              UserInputMessage(
+                text: 'same prompt',
+                clientMessageId: clientId,
+                providerItemId: 'mobile-root-item',
+                historyTurnId: turnId,
+              ),
+              UserInputMessage(
+                text: 'same prompt',
+                providerItemId: 'desktop-steer-item',
+                historyTurnId: turnId,
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(2));
+        expect(
+          users
+              .singleWhere((entry) => entry.clientMessageId == clientId)
+              .providerItemId,
+          'mobile-root-item',
+        );
+        expect(
+          users
+              .singleWhere(
+                (entry) => entry.providerItemId == 'desktop-steer-item',
+              )
+              .clientMessageId,
+          isNull,
+        );
       },
     );
 
     test(
-      'provider echo upgrades an already sent optimistic bubble in place',
+      'provider echo without item correlation keeps the optimistic fact separate',
       () async {
         final cubit = createCubit('s1', provider: Provider.codex);
         addTearDown(cubit.close);
@@ -6828,10 +6962,18 @@ void main() {
         await pumpEventQueue();
 
         final users = cubit.state.entries.whereType<UserChatEntry>().toList();
-        expect(users, hasLength(1));
-        expect(users.single.providerItemId, 'provider-user-after-ack');
-        expect(users.single.historyTurnId, 'provider-turn-after-ack');
-        expect(users.single.messageUuid, 'codex:user-turn:1');
+        expect(users, hasLength(2));
+        final optimistic = users.singleWhere(
+          (entry) => entry.clientMessageId != null,
+        );
+        expect(optimistic.providerItemId, isNull);
+        expect(optimistic.status, MessageStatus.sent);
+        final providerFact = users.singleWhere(
+          (entry) => entry.providerItemId == 'provider-user-after-ack',
+        );
+        expect(providerFact.clientMessageId, isNull);
+        expect(providerFact.historyTurnId, 'provider-turn-after-ack');
+        expect(providerFact.messageUuid, 'codex:user-turn:1');
       },
     );
 
@@ -6894,7 +7036,7 @@ void main() {
     );
 
     test(
-      'canonical cache keeps the whole turn presentation identity',
+      'canonical provider turn aliases the optimistic presentation identity',
       () async {
         const clientId = '111848d7-cd43-4f6e-ba7b-3fcd8af165dc';
         const assistantId = 'msg_019fe754-99d6-78d0-9a89-a43a24cd64de';
@@ -6960,10 +7102,13 @@ void main() {
         final after = buildChatProcessLayout(cubit.state.entries);
         expect(cubit.state.entries.whereType<UserChatEntry>(), hasLength(1));
         expect(cubit.state.entries.whereType<ServerChatEntry>(), hasLength(1));
-        expect(after.latestTurnKey, beforeTurnKey);
+        expect(after.latestTurnKey, 'turn:turn-layout');
+        expect(after.turnKeyAliases[beforeTurnKey], after.latestTurnKey);
         expect(
-          after.latestTurn!.segments.map((segment) => segment.key),
-          beforeSegmentKeys,
+          after.latestTurn!.segments.map(
+            (segment) => segment.key.split(':segment:').last,
+          ),
+          beforeSegmentKeys.map((key) => key.split(':segment:').last),
         );
       },
     );
@@ -7003,6 +7148,425 @@ void main() {
         expect(identityFree.clientMessageId, isNull);
         expect(identityFree.historyTurnId, isNull);
         expect(identityFree.messageUuid, isNull);
+      },
+    );
+
+    test(
+      'provider turn admission keeps a no-echo same-text provider fact separate',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        cubit.sendMessage('same prompt', clientMessageId: 'client-a');
+        cubit.sendMessage('same prompt', clientMessageId: 'client-b');
+        expect(cubit.state.entries.whereType<UserChatEntry>(), hasLength(2));
+
+        mockBridge.emitMessage(
+          const InputDeliveryStatusMessage(
+            sessionId: 's1',
+            clientMessageId: 'client-a',
+            stage: InputDeliveryStage.providerAccepted,
+            provider: 'codex',
+            method: 'turn/start',
+            providerTurnId: 'turn-provider',
+            occurredAt: '2026-08-11T00:00:00.000Z',
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        mockBridge.emitMessage(
+          const UserInputMessage(
+            text: 'same prompt',
+            providerItemId: 'provider-ambiguous',
+            historyTurnId: 'turn-provider',
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(3));
+        expect(
+          users
+              .where((entry) => entry.providerItemId == null)
+              .map((entry) => entry.clientMessageId),
+          ['client-a', 'client-b'],
+        );
+        expect(
+          users
+              .singleWhere(
+                (entry) => entry.providerItemId == 'provider-ambiguous',
+              )
+              .clientMessageId,
+          isNull,
+        );
+        expect(
+          users
+              .singleWhere((entry) => entry.clientMessageId == 'client-a')
+              .historyTurnId,
+          'turn-provider',
+        );
+      },
+    );
+
+    test(
+      'late start admission cannot claim a same-text Desktop steer that arrived first',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        cubit.sendMessage('same prompt', clientMessageId: 'client-a');
+        cubit.sendMessage('same prompt', clientMessageId: 'client-b');
+        mockBridge.emitMessage(
+          const UserInputMessage(
+            text: 'same prompt',
+            providerItemId: 'provider-canonical-first',
+            historyTurnId: 'turn-canonical-first',
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+        expect(cubit.state.entries.whereType<UserChatEntry>(), hasLength(3));
+
+        mockBridge.emitMessage(
+          const InputDeliveryStatusMessage(
+            sessionId: 's1',
+            clientMessageId: 'client-a',
+            stage: InputDeliveryStage.providerAccepted,
+            provider: 'codex',
+            method: 'turn/start',
+            providerTurnId: 'turn-canonical-first',
+            occurredAt: '2026-08-11T00:00:00.000Z',
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(3));
+        expect(
+          users
+              .singleWhere(
+                (entry) => entry.providerItemId == 'provider-canonical-first',
+              )
+              .clientMessageId,
+          isNull,
+        );
+        expect(
+          users
+              .singleWhere((entry) => entry.clientMessageId == 'client-a')
+              .historyTurnId,
+          'turn-canonical-first',
+        );
+        expect(
+          users.singleWhere((entry) => entry.clientMessageId == 'client-b'),
+          isNotNull,
+        );
+      },
+    );
+
+    test(
+      'late steer admission collapses only its canonical user when the turn already has a root user',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              UserInputMessage(
+                text: 'same prompt',
+                providerItemId: 'provider-root-user',
+                historyTurnId: 'turn-with-steer',
+              ),
+              UserInputMessage(
+                text: 'same prompt',
+                clientMessageId: 'client-steer',
+                providerItemId: 'provider-steer-user',
+                historyTurnId: 'turn-with-steer',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        cubit.sendMessage('same prompt', clientMessageId: 'client-steer');
+        // The canonical row already carries the exact idempotency key, so
+        // sendMessage must not create a second optimistic bubble.
+        expect(cubit.state.entries.whereType<UserChatEntry>(), hasLength(2));
+
+        mockBridge.emitMessage(
+          const InputDeliveryStatusMessage(
+            sessionId: 's1',
+            clientMessageId: 'client-steer',
+            stage: InputDeliveryStage.providerAccepted,
+            provider: 'codex',
+            method: 'turn/steer',
+            providerTurnId: 'turn-with-steer',
+            occurredAt: '2026-08-11T00:00:00.000Z',
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(2));
+        expect(
+          users
+              .singleWhere(
+                (entry) => entry.providerItemId == 'provider-root-user',
+              )
+              .clientMessageId,
+          isNull,
+        );
+        expect(
+          users
+              .singleWhere(
+                (entry) => entry.providerItemId == 'provider-steer-user',
+              )
+              .clientMessageId,
+          'client-steer',
+        );
+      },
+    );
+
+    test(
+      'same-text steer receipts bind the newest pending canonical users even when receipts arrive out of order',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              UserInputMessage(
+                text: 'same prompt',
+                providerItemId: 'provider-root',
+                historyTurnId: 'turn-multi-steer',
+              ),
+              UserInputMessage(
+                text: 'same prompt',
+                clientMessageId: 'client-steer-2',
+                providerItemId: 'provider-mobile-steer-2',
+                historyTurnId: 'turn-multi-steer',
+              ),
+              UserInputMessage(
+                text: 'same prompt',
+                clientMessageId: 'client-steer-3',
+                providerItemId: 'provider-mobile-steer-3',
+                historyTurnId: 'turn-multi-steer',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+        cubit.sendMessage('same prompt', clientMessageId: 'client-steer-2');
+        cubit.sendMessage('same prompt', clientMessageId: 'client-steer-3');
+
+        for (final receipt in [
+          ('client-steer-3', '2026-08-11T00:00:02.000Z'),
+          ('client-steer-2', '2026-08-11T00:00:01.000Z'),
+        ]) {
+          mockBridge.emitMessage(
+            InputDeliveryStatusMessage(
+              sessionId: 's1',
+              clientMessageId: receipt.$1,
+              stage: InputDeliveryStage.providerAccepted,
+              provider: 'codex',
+              method: 'turn/steer',
+              providerTurnId: 'turn-multi-steer',
+              occurredAt: receipt.$2,
+            ),
+            sessionId: 's1',
+          );
+          await pumpEventQueue();
+        }
+
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(3));
+        expect(
+          users
+              .singleWhere(
+                (entry) => entry.providerItemId == 'provider-mobile-steer-2',
+              )
+              .clientMessageId,
+          'client-steer-2',
+        );
+        expect(
+          users
+              .singleWhere(
+                (entry) => entry.providerItemId == 'provider-mobile-steer-3',
+              )
+              .clientMessageId,
+          'client-steer-3',
+        );
+        expect(
+          users.where(
+            (entry) =>
+                entry.providerItemId == null &&
+                entry.clientMessageId?.startsWith('client-steer-') == true,
+          ),
+          isEmpty,
+        );
+      },
+    );
+
+    test(
+      'steer admission keeps facts separate when an extra same-text Desktop steer makes ownership ambiguous',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              UserInputMessage(
+                text: 'same prompt',
+                providerItemId: 'provider-root-ambiguous',
+                historyTurnId: 'turn-ambiguous-steer',
+              ),
+              UserInputMessage(
+                text: 'same prompt',
+                providerItemId: 'provider-desktop-steer-ambiguous',
+                historyTurnId: 'turn-ambiguous-steer',
+              ),
+              UserInputMessage(
+                text: 'same prompt',
+                providerItemId: 'provider-mobile-steer-ambiguous',
+                historyTurnId: 'turn-ambiguous-steer',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+        cubit.sendMessage(
+          'same prompt',
+          clientMessageId: 'client-steer-ambiguous',
+        );
+        mockBridge.emitMessage(
+          const InputDeliveryStatusMessage(
+            sessionId: 's1',
+            clientMessageId: 'client-steer-ambiguous',
+            stage: InputDeliveryStage.providerAccepted,
+            provider: 'codex',
+            method: 'turn/steer',
+            providerTurnId: 'turn-ambiguous-steer',
+            occurredAt: '2026-08-11T00:00:03.000Z',
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(4));
+        expect(
+          users
+              .where((entry) => entry.providerItemId?.isNotEmpty == true)
+              .every((entry) => entry.clientMessageId == null),
+          isTrue,
+        );
+        expect(
+          users
+              .singleWhere(
+                (entry) => entry.clientMessageId == 'client-steer-ambiguous',
+              )
+              .historyTurnId,
+          'turn-ambiguous-steer',
+        );
+      },
+    );
+
+    test(
+      'an out-of-order steer receipt does not claim the only canonical row while two local envelopes are pending',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.idle),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              UserInputMessage(
+                text: 'same prompt',
+                providerItemId: 'provider-root-progressive',
+                historyTurnId: 'turn-progressive-steer',
+              ),
+              UserInputMessage(
+                text: 'same prompt',
+                providerItemId: 'provider-first-progressive-steer',
+                historyTurnId: 'turn-progressive-steer',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+        cubit.sendMessage(
+          'same prompt',
+          clientMessageId: 'client-progressive-2',
+        );
+        cubit.sendMessage(
+          'same prompt',
+          clientMessageId: 'client-progressive-3',
+        );
+        mockBridge.emitMessage(
+          const InputDeliveryStatusMessage(
+            sessionId: 's1',
+            clientMessageId: 'client-progressive-3',
+            stage: InputDeliveryStage.providerAccepted,
+            provider: 'codex',
+            method: 'turn/steer',
+            providerTurnId: 'turn-progressive-steer',
+            occurredAt: '2026-08-11T00:00:03.000Z',
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(4));
+        expect(
+          users
+              .singleWhere(
+                (entry) =>
+                    entry.providerItemId == 'provider-first-progressive-steer',
+              )
+              .clientMessageId,
+          isNull,
+        );
+        expect(
+          users
+              .singleWhere(
+                (entry) => entry.clientMessageId == 'client-progressive-3',
+              )
+              .historyTurnId,
+          'turn-progressive-steer',
+        );
       },
     );
 
@@ -10663,6 +11227,69 @@ void main() {
           MessageStatus.failed,
           MessageStatus.sending,
         ]);
+      },
+    );
+
+    test(
+      'delivered repeated prompt is restored by client id beside old history',
+      () async {
+        final cubit = _MutableEntriesChatSessionCubit(
+          sessionId: 's1',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+        );
+        addTearDown(cubit.close);
+        mockBridge.emitMessage(
+          const HistoryMessage(
+            messages: [
+              UserInputMessage(
+                text: 'repeat me',
+                providerItemId: 'old-provider-user',
+                historyTurnId: 'old-turn',
+              ),
+            ],
+          ),
+          sessionId: 's1',
+        );
+        mockBridge.emitMessage(
+          const StatusMessage(status: ProcessStatus.running),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        cubit.sendMessage('repeat me', clientMessageId: 'new-client-user');
+        cubit.replaceEntriesForTest(
+          cubit.state.entries
+              .whereType<UserChatEntry>()
+              .where((entry) => entry.providerItemId == 'old-provider-user')
+              .toList(),
+        );
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().map(
+            (entry) => entry.providerItemId,
+          ),
+          ['old-provider-user'],
+        );
+
+        mockBridge.emitMessage(
+          AssistantServerMessage(
+            message: const AssistantMessage(
+              id: 'assistant-after-repeat',
+              role: 'assistant',
+              content: [TextContent(text: 'accepted repeat')],
+              model: 'codex',
+            ),
+          ),
+          sessionId: 's1',
+        );
+        await pumpEventQueue();
+
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(2));
+        expect(users.first.providerItemId, 'old-provider-user');
+        expect(users.last.clientMessageId, 'new-client-user');
+        expect(users.last.status, MessageStatus.sent);
       },
     );
 

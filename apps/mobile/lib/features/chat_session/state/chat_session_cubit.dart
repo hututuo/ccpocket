@@ -4374,6 +4374,114 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     };
   }
 
+  int _findClientEnvelopeIndex(
+    List<ChatEntry> entries,
+    String clientMessageId,
+  ) {
+    var canonicalFallback = -1;
+    var localEnvelope = -1;
+    for (var index = 0; index < entries.length; index++) {
+      final entry = entries[index];
+      if (entry is! UserChatEntry || entry.clientMessageId != clientMessageId) {
+        continue;
+      }
+      canonicalFallback = index;
+      if (entry.providerItemId?.isNotEmpty != true &&
+          entry.messageUuid?.isNotEmpty != true) {
+        // A provider row can arrive before its admission receipt. Prefer the
+        // optimistic envelope even when that provider row appears earlier in
+        // the list with the same exact client id.
+        localEnvelope = index;
+      }
+    }
+    return localEnvelope != -1 ? localEnvelope : canonicalFallback;
+  }
+
+  /// Binds Bridge admission identity to the exact optimistic envelope.
+  ///
+  /// The app-server can publish the canonical user item before or after the
+  /// admission response. Collapse rows only when the provider echoed the same
+  /// exact client id; turn id and text are not item identity.
+  List<ChatEntry>? _bindProviderTurnToClientEnvelope(
+    List<ChatEntry> entries, {
+    required String clientMessageId,
+    required String providerTurnId,
+  }) {
+    final localIndex = _findClientEnvelopeIndex(entries, clientMessageId);
+    if (localIndex == -1) return null;
+    final local = entries[localIndex] as UserChatEntry;
+    final canonicalIndexes = <int>[];
+    for (var index = 0; index < entries.length; index++) {
+      if (index == localIndex) continue;
+      final entry = entries[index];
+      if (entry is UserChatEntry &&
+          entry.historyTurnId == providerTurnId &&
+          (entry.providerItemId?.isNotEmpty == true ||
+              entry.messageUuid?.isNotEmpty == true)) {
+        if (entry.clientMessageId == null ||
+            entry.clientMessageId == clientMessageId) {
+          canonicalIndexes.add(index);
+        }
+      }
+    }
+
+    final exactClientIndexes = canonicalIndexes
+        .where((index) {
+          final canonical = entries[index] as UserChatEntry;
+          return canonical.clientMessageId == clientMessageId;
+        })
+        .toList(growable: false);
+    int? canonicalIndex;
+    if (exactClientIndexes.length == 1) {
+      canonicalIndex = exactClientIndexes.single;
+    }
+
+    if (canonicalIndex != null) {
+      final canonical = entries[canonicalIndex] as UserChatEntry;
+      final next = [...entries];
+      next[canonicalIndex] = UserChatEntry(
+        canonical.text,
+        sessionId: canonical.sessionId ?? local.sessionId,
+        clientMessageId: local.clientMessageId,
+        providerItemId: canonical.providerItemId ?? local.providerItemId,
+        historyTurnId: providerTurnId,
+        imageBytesList: canonical.imageBytesList.isNotEmpty
+            ? canonical.imageBytesList
+            : local.imageBytesList,
+        imageUrls: canonical.imageUrls.isNotEmpty
+            ? canonical.imageUrls
+            : local.imageUrls,
+        imageCount: canonical.imageCount > 0
+            ? canonical.imageCount
+            : local.imageCount,
+        status: local.status,
+        messageUuid: canonical.messageUuid ?? local.messageUuid,
+        timestamp: canonical.timestamp,
+        timestampIsAuthoritative: canonical.timestampIsAuthoritative,
+      );
+      next.removeAt(localIndex);
+      return next;
+    }
+
+    if (local.historyTurnId == providerTurnId) return null;
+    final next = [...entries];
+    next[localIndex] = UserChatEntry(
+      local.text,
+      sessionId: local.sessionId,
+      clientMessageId: local.clientMessageId,
+      providerItemId: local.providerItemId,
+      historyTurnId: providerTurnId,
+      imageBytesList: local.imageBytesList,
+      imageUrls: local.imageUrls,
+      imageCount: local.imageCount,
+      status: local.status,
+      messageUuid: local.messageUuid,
+      timestamp: local.timestamp,
+      timestampIsAuthoritative: local.timestampIsAuthoritative,
+    );
+    return next;
+  }
+
   bool _canCarryUserIdentityAcrossCanonicalMerge(
     UserChatEntry existing,
     UserChatEntry incoming,
@@ -4383,26 +4491,33 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
     if (sameKnown(existing.providerItemId, incoming.providerItemId) ||
         sameKnown(existing.messageUuid, incoming.messageUuid) ||
-        sameKnown(existing.clientMessageId, incoming.clientMessageId) ||
-        sameKnown(existing.historyTurnId, incoming.historyTurnId)) {
+        sameKnown(existing.clientMessageId, incoming.clientMessageId)) {
       return true;
     }
-
-    // The only safe one-way enrichment is a Mobile-created envelope that has
-    // not acquired any provider identity yet, paired with a canonical row that
-    // does have provider/turn evidence. A text-only historical row must never
-    // inherit durable identity from an arbitrary repeated prompt.
-    final existingIsLocalEnvelope =
-        existing.clientMessageId?.isNotEmpty == true &&
-        existing.providerItemId?.isNotEmpty != true &&
-        existing.messageUuid?.isNotEmpty != true &&
-        existing.historyTurnId?.isNotEmpty != true;
-    final incomingHasProviderEvidence =
-        incoming.providerItemId?.isNotEmpty == true ||
-        incoming.messageUuid?.isNotEmpty == true ||
-        incoming.historyTurnId?.isNotEmpty == true;
-    return existingIsLocalEnvelope && incomingHasProviderEvidence;
+    if (!isCodex) {
+      final existingIsLocalEnvelope =
+          existing.clientMessageId?.isNotEmpty == true &&
+          existing.providerItemId?.isNotEmpty != true &&
+          existing.messageUuid?.isNotEmpty != true &&
+          existing.historyTurnId?.isNotEmpty != true;
+      final incomingHasProviderEvidence =
+          incoming.providerItemId?.isNotEmpty == true ||
+          incoming.messageUuid?.isNotEmpty == true ||
+          incoming.historyTurnId?.isNotEmpty == true;
+      return existingIsLocalEnvelope && incomingHasProviderEvidence;
+    }
+    // A Codex turn may contain the root user input plus multiple steers.
+    // historyTurnId and equal text therefore define a container, not an item.
+    // Legacy providers that omit every item-level correlation must fail open
+    // instead of transferring a Mobile client id to an arbitrary Desktop
+    // steer in the same turn.
+    return false;
   }
+
+  bool _hasUserItemIdentity(UserChatEntry entry) =>
+      entry.providerItemId?.isNotEmpty == true ||
+      entry.clientMessageId?.isNotEmpty == true ||
+      entry.messageUuid?.isNotEmpty == true;
 
   void _applyUpdate(
     ChatStateUpdate update,
@@ -4499,9 +4614,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       int targetIndex = -1;
       final clientMessageId = update.userStatusClientMessageId;
       if (clientMessageId != null) {
-        targetIndex = entries.indexWhere(
-          (e) => e is UserChatEntry && e.clientMessageId == clientMessageId,
-        );
+        targetIndex = _findClientEnvelopeIndex(entries, clientMessageId);
       } else if (update.markUserMessagesQueued) {
         targetIndex = entries.indexWhere(
           (e) => e is UserChatEntry && e.status == MessageStatus.sending,
@@ -4538,6 +4651,21 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           entries[targetIndex] = updatedEntry;
           didModifyEntries = true;
         }
+      }
+    }
+
+    final admittedProviderTurnId = update.userStatusProviderTurnId?.trim();
+    final admittedClientMessageId = update.userStatusClientMessageId;
+    if (admittedProviderTurnId?.isNotEmpty == true &&
+        admittedClientMessageId?.isNotEmpty == true) {
+      final rebound = _bindProviderTurnToClientEnvelope(
+        entries,
+        clientMessageId: admittedClientMessageId!,
+        providerTurnId: admittedProviderTurnId!,
+      );
+      if (rebound != null) {
+        entries = rebound;
+        didModifyEntries = true;
       }
     }
 
@@ -4615,13 +4743,36 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           break;
         }
       }
-      // The app-server user item event does not always echo clientUserMessageId.
-      // Correlate it only with the oldest unresolved local envelope of the
-      // same shape. Never match two entries that already have provider ids.
-      if (matchedIndex == -1 && providerItemId?.isNotEmpty == true) {
-        matchedIndex = entries.indexWhere(
+      int uniqueUnresolvedUserIndex(bool Function(UserChatEntry) matches) {
+        var found = -1;
+        for (var index = 0; index < entries.length; index++) {
+          final entry = entries[index];
+          if (entry is! UserChatEntry || !matches(entry)) continue;
+          if (found != -1) return -1;
+          found = index;
+        }
+        return found;
+      }
+
+      // A provider item without an exact client/provider/UUID echo cannot be
+      // assigned to a local envelope. The turn can contain multiple same-text
+      // steers, so turn id and text are deliberately not admission evidence.
+      if (!isCodex &&
+          matchedIndex == -1 &&
+          providerItemId?.isNotEmpty == true) {
+        if (historyTurnId?.isNotEmpty == true) {
+          matchedIndex = uniqueUnresolvedUserIndex(
+            (entry) =>
+                entry.providerItemId?.isNotEmpty != true &&
+                entry.historyTurnId == historyTurnId,
+          );
+        }
+      }
+      if (!isCodex &&
+          matchedIndex == -1 &&
+          providerItemId?.isNotEmpty == true) {
+        matchedIndex = uniqueUnresolvedUserIndex(
           (entry) =>
-              entry is UserChatEntry &&
               entry.providerItemId?.isNotEmpty != true &&
               entry.clientMessageId?.isNotEmpty == true &&
               entry.messageUuid?.isNotEmpty != true &&
@@ -4637,9 +4788,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (matchedIndex == -1 &&
           providerItemId == null &&
           clientMessageId == null) {
-        matchedIndex = entries.indexWhere(
+        matchedIndex = uniqueUnresolvedUserIndex(
           (entry) =>
-              entry is UserChatEntry &&
               entry.providerItemId?.isNotEmpty != true &&
               entry.messageUuid == null &&
               entry.status != MessageStatus.sent &&
@@ -4851,6 +5001,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           if (matchIndex == -1) {
             matchIndex = find((candidate) {
               if (candidate.text != incoming.text) return false;
+              if (isCodex &&
+                  (_hasUserItemIdentity(candidate) ||
+                      _hasUserItemIdentity(incoming))) {
+                return false;
+              }
               final candidateProviderItemId = candidate.providerItemId;
               if (incomingProviderItemId?.isNotEmpty == true &&
                   candidateProviderItemId?.isNotEmpty == true) {
@@ -4889,10 +5044,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             if (match == null) continue;
             final existing = match.entry;
             final carryIdentity = match.carryIdentity;
+            final carryPresentationData = carryIdentity || !isCodex;
             final needsImages =
-                e.imageBytesList.isEmpty && existing.imageBytesList.isNotEmpty;
+                carryPresentationData &&
+                e.imageBytesList.isEmpty &&
+                existing.imageBytesList.isNotEmpty;
             final needsImageUrls =
-                e.imageUrls.isEmpty && existing.imageUrls.isNotEmpty;
+                carryPresentationData &&
+                e.imageUrls.isEmpty &&
+                existing.imageUrls.isNotEmpty;
             final needsClientMessageId =
                 carryIdentity &&
                 e.clientMessageId?.isNotEmpty != true &&
@@ -4913,12 +5073,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                 ? _mergeUserDeliveryStatus(existing.status, e.status)
                 : e.status;
             final existingTimestampIsPreferred =
+                carryPresentationData &&
                 existing.timestampIsAuthoritative &&
                 !e.timestampIsAuthoritative;
             final needsTimestamp =
-                existingTimestampIsPreferred ||
-                (!e.timestampIsAuthoritative &&
-                    existing.timestamp != e.timestamp);
+                carryPresentationData &&
+                (existingTimestampIsPreferred ||
+                    (!e.timestampIsAuthoritative &&
+                        existing.timestamp != e.timestamp));
             if (needsImages ||
                 needsImageUrls ||
                 needsClientMessageId ||
@@ -5405,12 +5567,24 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final lastUserIndex = existingNonPast.lastIndexWhere(
       (entry) => entry is UserChatEntry,
     );
+    final lastUserTurnId = lastUserIndex == -1
+        ? null
+        : _explicitHistoryTurnId(existingNonPast[lastUserIndex]);
+    final currentTurnStartIndex = lastUserTurnId == null
+        ? lastUserIndex
+        : existingNonPast.indexWhere(
+            (entry) => _explicitHistoryTurnId(entry) == lastUserTurnId,
+          );
     final candidates = detachedPreview
         ? existingNonPast
               .where(_shouldPreserveDetachedOverlayAcrossHistoryReplace)
               .toList(growable: false)
         : existingNonPast
-              .skip(lastUserIndex == -1 ? 0 : lastUserIndex)
+              .skip(
+                currentTurnStartIndex == -1
+                    ? (lastUserIndex == -1 ? 0 : lastUserIndex)
+                    : currentTurnStartIndex,
+              )
               .toList(growable: false);
     final historyCurrentUserIndex = lastUserIndex == -1
         ? -1
@@ -5419,6 +5593,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               entry,
               existingNonPast[lastUserIndex],
             ),
+          );
+    final historyCurrentTurnIndex = lastUserTurnId == null
+        ? historyCurrentUserIndex
+        : historyEntries.indexWhere(
+            (entry) => _explicitHistoryTurnId(entry) == lastUserTurnId,
           );
     // A durable page can receive a live assistant item before SQLite has
     // committed the optimistic user envelope that preceded it. In that case
@@ -5430,9 +5609,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         ? 0
         : lastUserIndex == -1
         ? 0
-        : historyCurrentUserIndex == -1
+        : historyCurrentTurnIndex == -1
         ? historyEntries.length
-        : historyCurrentUserIndex;
+        : historyCurrentTurnIndex;
     final merged = _weavePreservedEntriesIntoCanonicalHistory(
       canonicalEntries: historyEntries,
       existingEntries: candidates,
@@ -5932,28 +6111,48 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     ChatEntry canonical,
   ) {
     if (existing is UserChatEntry && canonical is UserChatEntry) {
-      final preferredTimestamp = _preferredTimestamp(existing, canonical);
+      final carryIdentity = _canCarryUserIdentityAcrossCanonicalMerge(
+        existing,
+        canonical,
+      );
+      final carryPresentationData = carryIdentity || !isCodex;
+      final preferredTimestamp = carryPresentationData
+          ? _preferredTimestamp(existing, canonical)
+          : null;
       return UserChatEntry(
         canonical.text.isNotEmpty ? canonical.text : existing.text,
         sessionId: canonical.sessionId ?? existing.sessionId,
-        clientMessageId: existing.clientMessageId ?? canonical.clientMessageId,
-        providerItemId: canonical.providerItemId ?? existing.providerItemId,
-        historyTurnId: canonical.historyTurnId ?? existing.historyTurnId,
-        imageBytesList: existing.imageBytesList.isNotEmpty
+        clientMessageId: carryIdentity
+            ? (existing.clientMessageId ?? canonical.clientMessageId)
+            : canonical.clientMessageId,
+        providerItemId:
+            canonical.providerItemId ??
+            (carryIdentity ? existing.providerItemId : null),
+        historyTurnId:
+            canonical.historyTurnId ??
+            (carryIdentity ? existing.historyTurnId : null),
+        imageBytesList:
+            carryPresentationData && existing.imageBytesList.isNotEmpty
             ? existing.imageBytesList
             : canonical.imageBytesList,
-        imageUrls: canonical.imageUrls.isNotEmpty
-            ? canonical.imageUrls
-            : existing.imageUrls,
-        imageCount: canonical.imageCount > 0
-            ? canonical.imageCount
-            : existing.imageCount,
-        status: canonical.status == MessageStatus.sent
-            ? _preserveStagedUserStatus(existing.status)
-            : existing.status,
-        messageUuid: canonical.messageUuid ?? existing.messageUuid,
-        timestamp: preferredTimestamp?.value,
-        timestampIsAuthoritative: preferredTimestamp?.isAuthoritative ?? false,
+        imageUrls: carryPresentationData && canonical.imageUrls.isEmpty
+            ? existing.imageUrls
+            : canonical.imageUrls,
+        imageCount: carryPresentationData && canonical.imageCount == 0
+            ? existing.imageCount
+            : canonical.imageCount,
+        status: carryIdentity
+            ? (canonical.status == MessageStatus.sent
+                  ? _preserveStagedUserStatus(existing.status)
+                  : existing.status)
+            : canonical.status,
+        messageUuid:
+            canonical.messageUuid ??
+            (carryIdentity ? existing.messageUuid : null),
+        timestamp: preferredTimestamp?.value ?? canonical.timestamp,
+        timestampIsAuthoritative:
+            preferredTimestamp?.isAuthoritative ??
+            canonical.timestampIsAuthoritative,
       );
     }
     return _mergeEquivalentEntry(existing, canonical);
@@ -6253,19 +6452,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
       final aClientId = a.clientMessageId;
       final bClientId = b.clientMessageId;
-      if (aClientId != null &&
-          aClientId.isNotEmpty &&
-          bClientId != null &&
-          aClientId == bClientId) {
-        return true;
+      if (aClientId?.isNotEmpty == true && bClientId?.isNotEmpty == true) {
+        return aClientId == bClientId;
       }
       final aUuid = a.messageUuid;
       final bUuid = b.messageUuid;
-      if (aUuid != null &&
-          aUuid.isNotEmpty &&
-          bUuid != null &&
-          aUuid == bUuid) {
-        return true;
+      if (aUuid?.isNotEmpty == true && bUuid?.isNotEmpty == true) {
+        return aUuid == bUuid;
+      }
+      if (isCodex && (_hasUserItemIdentity(a) || _hasUserItemIdentity(b))) {
+        // Do not use turn id or equal text as item identity. Both are shared
+        // by a root message and any number of steer inputs.
+        return false;
       }
     }
     if (a is ServerChatEntry && b is ServerChatEntry) {
@@ -6782,21 +6980,23 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     bool beforeTrailingAssistant = false,
   }) {
     if (item == null) return entries;
-    final alreadyVisible = entries.any((entry) {
-      if (entry is! UserChatEntry) return false;
-      if (clientMessageId != null && entry.clientMessageId == clientMessageId) {
-        return true;
-      }
-      return entry.text == item.text && entry.status == MessageStatus.sent;
-    });
+    final effectiveClientMessageId =
+        clientMessageId ?? item.clientMessageId?.trim();
+    final alreadyVisible =
+        effectiveClientMessageId?.isNotEmpty == true &&
+        entries.any(
+          (entry) =>
+              entry is UserChatEntry &&
+              entry.clientMessageId == effectiveClientMessageId,
+        );
     if (alreadyVisible) return entries;
-    if (detachedPreview && clientMessageId?.isNotEmpty == true) {
-      _rememberDetachedLocalOverlayClientId(clientMessageId!);
+    if (detachedPreview && effectiveClientMessageId?.isNotEmpty == true) {
+      _rememberDetachedLocalOverlayClientId(effectiveClientMessageId!);
     }
     final entry = UserChatEntry(
       item.text,
       sessionId: sessionId,
-      clientMessageId: clientMessageId,
+      clientMessageId: effectiveClientMessageId,
       imageCount: item.imageCount,
       status: MessageStatus.sent,
     );

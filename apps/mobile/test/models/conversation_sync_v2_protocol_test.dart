@@ -11,6 +11,10 @@ void main() {
         LocalFeatureProtocolHost.supportedServerMessageTypes,
         contains(appServerStatusV1Capability),
       );
+      expect(
+        LocalFeatureProtocolHost.supportedServerMessageTypes,
+        contains(conversationWindowCoverageCapability),
+      );
     },
   );
 
@@ -478,6 +482,53 @@ void main() {
     expect(message.latestTurnGap?.turnId, 'turn-current');
     expect(message.latestTurnGap?.repair, 'items_page');
     expect(message.latestTurnGap?.firstMissingSourceIndex, 41);
+    expect(message.windowComplete, isNull);
+    expect(message.effectiveWindowComplete, isFalse);
+
+    final complete =
+        ServerMessage.fromJson({
+              ..._baseFrame,
+              'event': 'timeline_page',
+              'provider': 'codex',
+              'providerSessionId': 'thread-1',
+              'revision': 'revision-complete',
+              'mode': 'snapshot',
+              'pageIndex': 0,
+              'pageCount': 1,
+              'entries': const [],
+              'deletes': const [],
+              'hasEarlier': false,
+              'windowComplete': true,
+              'latestTurnComplete': true,
+              'sourceEntryCount': 0,
+            })
+            as ConversationSyncV2EventMessage;
+    expect(complete.effectiveWindowComplete, isTrue);
+
+    expect(
+      () => ServerMessage.fromJson({
+        ..._baseFrame,
+        'event': 'timeline_page',
+        'provider': 'codex',
+        'providerSessionId': 'thread-1',
+        'revision': 'revision-contradictory',
+        'mode': 'snapshot',
+        'pageIndex': 0,
+        'pageCount': 1,
+        'entries': const [],
+        'deletes': const [],
+        'hasEarlier': true,
+        'windowComplete': true,
+        'latestTurnComplete': false,
+        'latestTurnGap': const {
+          'missingEntryCount': 1,
+          'payloadOmitted': false,
+          'repair': 'turns_page',
+        },
+        'sourceEntryCount': 1,
+      }),
+      throwsFormatException,
+    );
     expect(
       () => ServerMessage.fromJson({
         ..._baseFrame,
@@ -501,6 +552,32 @@ void main() {
       }),
       throwsFormatException,
     );
+  });
+
+  test('decodes bounded item projection completeness metadata', () {
+    final message =
+        ServerMessage.fromJson({
+              ..._baseFrame,
+              'event': 'items_page_response',
+              'requestId': 'items-bounded',
+              'provider': 'codex',
+              'providerSessionId': 'thread-1',
+              'turnId': 'turn-1',
+              'data': const [
+                {'type': 'user_input', 'text': 'bounded'},
+              ],
+              'nextCursor': 'after-bounded',
+              'pageComplete': false,
+              'latestTurnGap': const {
+                'turnId': 'turn-1',
+                'missingEntryCount': 0,
+                'payloadOmitted': true,
+                'repair': 'items_page',
+              },
+            })
+            as ConversationSyncV2EventMessage;
+    expect(message.pageComplete, isFalse);
+    expect(message.latestTurnGap?.payloadOmitted, isTrue);
   });
 
   test('validates normalized messages inside turn page responses', () {

@@ -1016,6 +1016,7 @@ void main() {
     () async {
       await service.dispose();
       gateway.supportsConversationSyncV2 = true;
+      gateway.supportsConversationWindowCoverage = true;
       final target = SessionCatalogCacheTarget.fromBridge(
         bridgeInstanceId: 'bridge-1',
         codexSourceId: 'codex-home-a',
@@ -1105,8 +1106,12 @@ void main() {
         'conversation_sync_subscribe',
       );
       expect(
-        secondSubscribe['threadContentStates'],
-        isNot(contains(containsPair('providerSessionId', 'thread-mismatch'))),
+        (secondSubscribe['threadContentStates'] as List)
+            .cast<Map<String, dynamic>>()
+            .singleWhere(
+              (state) => state['providerSessionId'] == 'thread-mismatch',
+            ),
+        containsPair('forceReplacement', true),
       );
       expect(
         secondSubscribe['threadContentStates'],
@@ -1152,6 +1157,7 @@ void main() {
           pageCount: 1,
           entries: [_wireEntry('entry-next', 0)],
           hasEarlier: true,
+          windowComplete: true,
           sourceEntryCount: 1,
         ),
       );
@@ -1188,6 +1194,120 @@ void main() {
             .length,
         1,
       );
+    },
+  );
+
+  test(
+    'old v2 Bridge never receives the additive forceReplacement field',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      gateway.supportsConversationWindowCoverage = false;
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        logicalConnectionIdentity: 'machine:1',
+        websocketUrl: 'wss://bridge.example/socket?token=secret',
+      );
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-old-v2',
+        revision: 'revision-old-v2',
+        entries: [_wireEntry('entry-old-v2', 0)],
+        hasEarlier: true,
+        windowComplete: false,
+        latestTurnComplete: false,
+        latestTurnGap: const ConversationSyncV2LatestTurnGap(
+          missingEntryCount: 1,
+          payloadOmitted: false,
+          repair: 'turns_page',
+        ),
+        sourceEntryCount: 2,
+      );
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final state = (subscribe['threadContentStates'] as List)
+          .cast<Map<String, dynamic>>()
+          .singleWhere(
+            (candidate) => candidate['providerSessionId'] == 'thread-old-v2',
+          );
+      expect(state['revision'], 'revision-old-v2');
+      expect(state.containsKey('forceReplacement'), isFalse);
+
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-old-v2',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-old-v2',
+          statusState: 'status-old-v2',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-old-v2',
+          sequence: 2,
+          provider: 'codex',
+          providerSessionId: 'thread-old-v2',
+          revision: 'revision-old-v2-next',
+          baseRevision: 'revision-old-v2',
+          mode: 'patch',
+          phase: 'priority',
+          timelineIndex: 0,
+          timelineCount: 1,
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('entry-old-v2-next', 1)],
+          deletes: const ['entry-old-v2'],
+          hasEarlier: true,
+          latestTurnComplete: false,
+          latestTurnGap: const ConversationSyncV2LatestTurnGap(
+            missingEntryCount: 1,
+            payloadOmitted: false,
+            repair: 'turns_page',
+          ),
+          sourceEntryCount: 2,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      final retained = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-old-v2',
+      );
+      expect(retained?.revision, 'revision-old-v2-next');
+      expect(retained?.windowComplete, isFalse);
+      expect(retained?.entries.map((entry) => entry.entryId), [
+        'entry-old-v2',
+        'entry-old-v2-next',
+      ]);
+
+      expect(service.retryBootstrap(reason: 'old_v2_lineage_test'), isTrue);
+      await gateway.nextOutgoing('conversation_sync_unsubscribe');
+      final retry = await gateway.nextOutgoing('conversation_sync_subscribe');
+      final retriedState = (retry['threadContentStates'] as List)
+          .cast<Map<String, dynamic>>()
+          .singleWhere(
+            (candidate) => candidate['providerSessionId'] == 'thread-old-v2',
+          );
+      expect(retriedState['revision'], 'revision-old-v2-next');
+      expect(retriedState.containsKey('forceReplacement'), isFalse);
     },
   );
 
@@ -2236,11 +2356,13 @@ void main() {
         provider: 'codex',
         providerSessionId: 'thread-incomplete-with-older',
       );
-      expect(cached?.latestTurnComplete, isTrue);
+      expect(cached?.latestTurnComplete, isFalse);
+      expect(cached?.windowComplete, isFalse);
       expect(cached?.hasEarlier, isFalse);
       expect(cached?.turnsNextCursor, isNull);
       expect(cached?.entries.map((entry) => entry.entryId), [
         'user:older-cached-user',
+        'incomplete-latest-shell',
         'user:latest-repaired-user',
       ]);
     },
@@ -2386,6 +2508,128 @@ void main() {
         (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
         4,
       );
+    },
+  );
+
+  test(
+    'rejects a terminal projected item without retrying the null cursor',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-terminal-item',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-terminal-item',
+          statusState: 'status-terminal-item',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-terminal-item',
+          sequence: 2,
+          provider: 'codex',
+          providerSessionId: 'thread-terminal-item',
+          revision: 'revision-terminal-item',
+          mode: 'snapshot',
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('terminal-item-shell', 0)],
+          hasEarlier: true,
+          windowComplete: false,
+          latestTurnComplete: false,
+          latestTurnGap: const ConversationSyncV2LatestTurnGap(
+            turnId: 'turn-terminal-item',
+            missingEntryCount: 1,
+            payloadOmitted: true,
+            repair: 'items_page',
+          ),
+          sourceEntryCount: 2,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final load = service.repairLatestTurn(
+        provider: 'codex',
+        providerSessionId: 'thread-terminal-item',
+      );
+      final request = await gateway.nextOutgoing('conversation_items_page');
+      final failure = expectLater(
+        load,
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('frame budget'),
+          ),
+        ),
+      );
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.itemsPageResponse,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-terminal-item',
+          sequence: 3,
+          requestId: request['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-terminal-item',
+          turnId: 'turn-terminal-item',
+          data: const [
+            {
+              'type': 'assistant',
+              'message': {
+                'id': 'projected-terminal-item',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'projected shell'},
+                ],
+              },
+            },
+          ],
+          nextCursor: null,
+          pageComplete: false,
+          latestTurnGap: const ConversationSyncV2LatestTurnGap(
+            turnId: 'turn-terminal-item',
+            missingEntryCount: 1,
+            payloadOmitted: true,
+            repair: 'items_page',
+          ),
+        ),
+      );
+      await failure;
+      expect(
+        gateway.sentTypes.where((type) => type == 'conversation_items_page'),
+        hasLength(1),
+      );
+      final cached = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-terminal-item',
+      );
+      expect(cached?.entries.map((entry) => entry.entryId), [
+        'terminal-item-shell',
+      ]);
+      expect(cached?.latestTurnComplete, isFalse);
     },
   );
 
@@ -4779,6 +5023,8 @@ class _FailingLatestTurnRepairRepository extends SessionCatalogCacheRepository {
     required String expectedTurnId,
     required List<Map<String, dynamic>> rawMessages,
     required String? nextCursor,
+    bool pageComplete = true,
+    ConversationSyncV2LatestTurnGap? latestTurnGap,
   }) {
     return Future<ConversationHotWindowSnapshot?>.error(
       StateError('injected latest-turn merge failure'),
@@ -4859,6 +5105,9 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
 
   @override
   bool supportsConversationSyncV2 = false;
+
+  @override
+  bool supportsConversationWindowCoverage = true;
 
   @override
   bool supportsConversationSyncFocusRefresh = false;

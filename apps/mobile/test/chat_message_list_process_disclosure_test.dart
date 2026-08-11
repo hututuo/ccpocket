@@ -262,7 +262,7 @@ void main() {
       await _expandToolResult(tester, 2);
       expect(find.text('third result'), findsOneWidget);
       scrollController.jumpTo(0);
-      await tester.pump();
+      await tester.pumpAndSettle();
       expect(find.text('Final answer'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await cubit.close();
@@ -401,6 +401,71 @@ void main() {
       expect(tester.getTopLeft(disclosure).dy, closeTo(expandedY, 1));
       expect(tester.takeException(), isNull);
       await cubit.close();
+    },
+  );
+
+  testWidgets(
+    'non-streaming canonical replacement keeps the visible row anchored while the tail shrinks and grows',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 500));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final bridge = _Bridge();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
+      final cubit = ChatSessionCubit(
+        sessionId: 'session-canonical-anchor',
+        bridge: bridge,
+        streamingCubit: streaming,
+        provider: Provider.codex,
+        detachedPreview: true,
+        initialHistoryMessages: _anchoringCanonicalWindow(tailParagraphs: 28),
+      );
+      final scrollController = ReadingPositionAutoScrollController();
+      addTearDown(bridge.dispose);
+      addTearDown(streaming.close);
+      addTearDown(scrollController.dispose);
+      addTearDown(() async {
+        if (!cubit.isClosed) await cubit.close();
+      });
+
+      await tester.pumpWidget(
+        _chatHarness(
+          bridge: bridge,
+          cubit: cubit,
+          streaming: streaming,
+          scrollController: scrollController,
+          sessionId: 'session-canonical-anchor',
+        ),
+      );
+      await tester.pump();
+
+      final disclosure = find.byKey(
+        const ValueKey('chat_intermediate_disclosure_client:turn-anchor'),
+      );
+      for (var step = 0; step <= 30; step++) {
+        scrollController.jumpTo(
+          scrollController.position.maxScrollExtent * step / 30,
+        );
+        await tester.pump();
+        if (disclosure.evaluate().isNotEmpty) break;
+      }
+      expect(disclosure, findsOneWidget);
+      final initialY = tester.getTopLeft(disclosure).dy;
+
+      cubit.updateDetachedPreviewHistory(
+        _anchoringCanonicalWindow(tailParagraphs: 3),
+      );
+      await tester.pump();
+      expect(tester.getTopLeft(disclosure).dy, closeTo(initialY, 1));
+      final shrunkenY = tester.getTopLeft(disclosure).dy;
+
+      cubit.updateDetachedPreviewHistory(
+        _anchoringCanonicalWindow(tailParagraphs: 36),
+      );
+      await tester.pump();
+      expect(tester.getTopLeft(disclosure).dy, closeTo(shrunkenY, 1));
+      expect(streaming.state.isStreaming, isFalse);
+      expect(tester.takeException(), isNull);
     },
   );
 
@@ -1949,6 +2014,34 @@ List<ServerMessage> _anchoringHistory({
       ),
   ];
 }
+
+List<ServerMessage> _anchoringCanonicalWindow({required int tailParagraphs}) =>
+    [
+      ..._anchoringHistory(toolCount: 4),
+      const UserInputMessage(
+        text: 'canonical tail request',
+        clientMessageId: 'canonical-tail-client',
+        providerItemId: 'canonical-tail-user',
+        historyTurnId: 'canonical-tail-turn',
+      ),
+      AssistantServerMessage(
+        historyTurnId: 'canonical-tail-turn',
+        messageUuid: 'canonical-tail-assistant',
+        message: AssistantMessage(
+          id: 'canonical-tail-assistant',
+          role: 'assistant',
+          content: [
+            TextContent(
+              text: List<String>.filled(
+                tailParagraphs,
+                'Canonical cache content changes height without streaming.',
+              ).join('\n\n'),
+            ),
+          ],
+          model: 'codex',
+        ),
+      ),
+    ];
 
 List<ServerMessage> _partialTurnWindowHistory(int updateCount) {
   final messages = <ServerMessage>[];

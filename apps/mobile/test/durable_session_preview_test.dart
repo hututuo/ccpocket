@@ -1304,6 +1304,7 @@ void main() {
             ],
             hasEarlier: false,
             turnsNextCursor: null,
+            windowComplete: true,
             latestTurnComplete: true,
             latestTurnGap: null,
             latestTurnGapCursor: null,
@@ -2550,6 +2551,7 @@ ConversationHotWindowSnapshot _previewSnapshot({
     ],
     hasEarlier: false,
     turnsNextCursor: null,
+    windowComplete: true,
     latestTurnComplete: true,
     latestTurnGap: null,
     latestTurnGapCursor: null,
@@ -2589,6 +2591,7 @@ class _LatestTurnRecoveryHarness {
           entries: entries,
           hasEarlier: false,
           turnsNextCursor: null,
+          windowComplete: true,
           latestTurnComplete: latestTurnComplete,
           latestTurnGap: latestTurnComplete
               ? null

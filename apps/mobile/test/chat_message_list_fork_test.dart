@@ -48,6 +48,43 @@ void main() {
       expect(forkableAssistantEntryIndices(entries), {2});
     });
 
+    test('splits rootless provider turns at explicit turn ids', () {
+      final entries = <ChatEntry>[
+        ServerChatEntry(_assistant('a-progress', turnId: 'turn-a')),
+        ServerChatEntry(_assistant('a-final', turnId: 'turn-a')),
+        ServerChatEntry(_result(turnId: 'turn-a')),
+        ServerChatEntry(_assistant('b-final', turnId: 'turn-b')),
+        ServerChatEntry(_result(turnId: 'turn-b')),
+      ];
+
+      expect(shouldShowForkForAssistant(entries, 0), isFalse);
+      expect(shouldShowForkForAssistant(entries, 1), isTrue);
+      expect(shouldShowForkForAssistant(entries, 3), isTrue);
+      expect(forkableAssistantEntryIndices(entries), {1, 3});
+    });
+
+    test('does not turn same-provider-turn steer progress into a fork', () {
+      final entries = <ChatEntry>[
+        UserChatEntry(
+          'initial',
+          clientMessageId: 'initial',
+          historyTurnId: 'turn-steer',
+        ),
+        ServerChatEntry(_assistant('progress', turnId: 'turn-steer')),
+        UserChatEntry(
+          'steer',
+          clientMessageId: 'steer',
+          historyTurnId: 'turn-steer',
+        ),
+        ServerChatEntry(_assistant('final', turnId: 'turn-steer')),
+        ServerChatEntry(_result(turnId: 'turn-steer')),
+      ];
+
+      expect(shouldShowForkForAssistant(entries, 1), isFalse);
+      expect(shouldShowForkForAssistant(entries, 3), isTrue);
+      expect(forkableAssistantEntryIndices(entries), {3});
+    });
+
     test(
       'only exposes a result-less transcript tail when the turn is idle',
       () {
@@ -114,14 +151,16 @@ void main() {
   });
 }
 
-AssistantServerMessage _assistant(String id) => AssistantServerMessage(
-  message: AssistantMessage(
-    id: id,
-    role: 'assistant',
-    content: [TextContent(text: id)],
-    model: 'codex',
-  ),
-);
+AssistantServerMessage _assistant(String id, {String? turnId}) =>
+    AssistantServerMessage(
+      historyTurnId: turnId,
+      message: AssistantMessage(
+        id: id,
+        role: 'assistant',
+        content: [TextContent(text: id)],
+        model: 'codex',
+      ),
+    );
 
 AssistantServerMessage _toolOnlyAssistant(String id) => AssistantServerMessage(
   message: AssistantMessage(
@@ -137,4 +176,5 @@ AssistantServerMessage _toolOnlyAssistant(String id) => AssistantServerMessage(
 ToolResultMessage _toolResult(String id) =>
     ToolResultMessage(toolUseId: id, content: 'ok');
 
-ResultMessage _result() => const ResultMessage(subtype: 'success');
+ResultMessage _result({String? turnId}) =>
+    ResultMessage(subtype: 'success', historyTurnId: turnId);

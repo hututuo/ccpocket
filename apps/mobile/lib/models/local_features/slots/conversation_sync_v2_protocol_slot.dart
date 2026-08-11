@@ -1,6 +1,8 @@
 part of '../../messages.dart';
 
 const conversationSyncV2Capability = 'conversation_sync_v2';
+const conversationWindowCoverageCapability =
+    'conversation_sync_window_coverage_v1';
 const conversationSyncFocusRefreshCapability =
     'conversation_sync_focus_refresh_v1';
 const conversationItemsByIdCapability = 'conversation_items_by_id_v1';
@@ -29,6 +31,7 @@ class _ConversationSyncV2ProtocolSlot implements LocalFeatureProtocolSlot {
   @override
   List<String> get supportedServerMessageTypes => const [
     conversationSyncV2Capability,
+    conversationWindowCoverageCapability,
     conversationRuntimeOverlayCapability,
     conversationUserIndexCapability,
     appServerStatusV1Capability,
@@ -99,14 +102,17 @@ class ConversationSyncV2ThreadState extends ConversationSyncV2Target {
     required super.provider,
     required super.providerSessionId,
     required this.revision,
+    this.forceReplacement = false,
   });
 
   final String revision;
+  final bool forceReplacement;
 
   @override
   Map<String, dynamic> toJson() => <String, dynamic>{
     ...super.toJson(),
     'revision': revision,
+    if (forceReplacement) 'forceReplacement': true,
   };
 }
 
@@ -560,6 +566,7 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
     this.deletes = const [],
     this.hasEarlier,
     this.turnsNextCursor,
+    this.windowComplete,
     this.latestTurnComplete,
     this.latestTurnGap,
     this.sourceEntryCount,
@@ -578,6 +585,7 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
     this.turnId,
     this.data = const [],
     this.nextCursor,
+    this.pageComplete,
     this.focused,
     this.errorCode,
     this.error,
@@ -612,6 +620,7 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
   final List<String> deletes;
   final bool? hasEarlier;
   final String? turnsNextCursor;
+  final bool? windowComplete;
   final bool? latestTurnComplete;
   final ConversationSyncV2LatestTurnGap? latestTurnGap;
   final int? sourceEntryCount;
@@ -630,9 +639,14 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
   final String? turnId;
   final List<Object?> data;
   final String? nextCursor;
+  final bool? pageComplete;
   final ConversationSyncV2Target? focused;
   final String? errorCode;
   final String? error;
+
+  /// Whole-window replacement authority. Older Bridges did not send the
+  /// explicit field, so a latest-turn repair is conservatively additive.
+  bool get effectiveWindowComplete => windowComplete ?? false;
 
   @override
   String? get sessionId => providerSessionId ?? target?.providerSessionId;
@@ -814,6 +828,7 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
         'turnsNextCursor',
         maximumLength: 512,
       ),
+      windowComplete: _conversationSyncOptionalBool(json, 'windowComplete'),
       latestTurnComplete: _conversationSyncOptionalBool(
         json,
         'latestTurnComplete',
@@ -869,6 +884,7 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
         'nextCursor',
         maximumLength: 512,
       ),
+      pageComplete: _conversationSyncOptionalBool(json, 'pageComplete'),
       focused: _conversationSyncOptionalTarget(json['focused']),
       errorCode: _conversationSyncOptionalString(
         json,
@@ -1097,6 +1113,9 @@ void _validateConversationSyncEvent(ConversationSyncV2EventMessage message) {
               message.latestTurnGap == null) ||
           (message.latestTurnComplete == false &&
               message.latestTurnGap != null);
+      final windowMetadataValid =
+          !(message.windowComplete == true &&
+              message.latestTurnComplete == false);
       if (!validPage ||
           message.provider == null ||
           message.providerSessionId == null ||
@@ -1108,6 +1127,7 @@ void _validateConversationSyncEvent(ConversationSyncV2EventMessage message) {
           message.hasEarlier == null ||
           message.sourceEntryCount == null ||
           !latestTurnMetadataValid ||
+          !windowMetadataValid ||
           !timelinePositionComplete ||
           !timelinePositionValid) {
         throw const FormatException('Timeline page is incomplete.');
@@ -1140,7 +1160,8 @@ void _validateConversationSyncEvent(ConversationSyncV2EventMessage message) {
     case ConversationSyncV2EventKind.itemsPageResponse:
       if (message.requestId == null ||
           message.provider == null ||
-          message.providerSessionId == null) {
+          message.providerSessionId == null ||
+          (message.pageComplete == false && message.latestTurnGap == null)) {
         throw const FormatException(
           'Conversation page response is incomplete.',
         );

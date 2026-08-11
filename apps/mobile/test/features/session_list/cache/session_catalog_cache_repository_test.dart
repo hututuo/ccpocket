@@ -90,6 +90,7 @@ void main() {
       ],
       hasEarlier: false,
       turnsNextCursor: null,
+      windowComplete: true,
       latestTurnComplete: true,
       latestTurnGap: null,
       latestTurnGapCursor: null,
@@ -1729,7 +1730,8 @@ void main() {
         provider: 'codex',
         providerSessionId: 'thread-stage',
       );
-      expect(preservedWindow?.revision, 'revision-3');
+      expect(preservedWindow?.revision, 'revision-2');
+      expect(preservedWindow?.windowComplete, isFalse);
       expect(preservedWindow?.latestTurnComplete, isFalse);
       expect(preservedWindow?.entries.map((entry) => entry.entryId), [
         'entry-2',
@@ -1748,6 +1750,398 @@ void main() {
       );
     },
   );
+
+  test(
+    'nonempty partial windows never shrink or advance a complete cache',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-partial-monotonic',
+        codexSourceId: 'source-partial-monotonic',
+      );
+      const threadId = 'thread-partial-monotonic';
+      final baseline = List.generate(
+        72,
+        (index) => _entry('baseline-$index', index, 'idle'),
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-complete',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'complete-1',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: baseline,
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: true,
+        sourceEntryCount: 72,
+      );
+
+      for (final partialSize in const [1, 2, 9, 47]) {
+        final observed = [
+          ...baseline.sublist(72 - partialSize),
+          _entry('live-$partialSize', 72, 'working'),
+        ];
+        final commit = await repository.stageConversationTimelinePage(
+          target: target,
+          subscriptionId: 'subscription-partial-$partialSize',
+          provider: 'codex',
+          providerSessionId: threadId,
+          revision: 'partial-$partialSize',
+          baseRevision: null,
+          mode: 'snapshot',
+          pageIndex: 0,
+          pageCount: 1,
+          entries: observed,
+          deletes: baseline
+              .take(partialSize)
+              .map((entry) => entry.entryId)
+              .toList(),
+          hasEarlier: true,
+          windowComplete: false,
+          sourceEntryCount: 72 + partialSize,
+        );
+        expect(commit.windowCommitted, isTrue);
+        expect(commit.committedRevision, 'complete-1');
+
+        final cached = await repository.loadConversationWindow(
+          target: target,
+          provider: 'codex',
+          providerSessionId: threadId,
+        );
+        expect(cached?.revision, 'complete-1');
+        expect(cached?.windowComplete, isFalse);
+        expect(
+          cached?.entries.map((entry) => entry.entryId),
+          containsAll(baseline.map((entry) => entry.entryId)),
+        );
+        expect(
+          cached?.entries.map((entry) => entry.index).toSet().length,
+          cached?.entries.length,
+        );
+        expect(
+          (await repository.knownConversationRevisions(
+            target,
+          )).where((cursor) => cursor.providerSessionId == threadId),
+          isEmpty,
+        );
+      }
+
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-complete-2',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'complete-2',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: baseline.take(3).toList(),
+        deletes: const [],
+        hasEarlier: false,
+        windowComplete: true,
+        sourceEntryCount: 3,
+      );
+      final repaired = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      expect(repaired?.revision, 'complete-2');
+      expect(repaired?.windowComplete, isTrue);
+      expect(repaired?.entries.map((entry) => entry.entryId), [
+        'baseline-0',
+        'baseline-1',
+        'baseline-2',
+      ]);
+    },
+  );
+
+  test(
+    'wider incomplete windows insert older rows before stable tail anchors',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-partial-order',
+        codexSourceId: 'source-partial-order',
+      );
+      const threadId = 'thread-partial-order';
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-partial-tail',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'partial-order-base',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [
+          _entry('tail-b1', 0, 'working'),
+          _entry('tail-b2', 1, 'working'),
+        ],
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: false,
+        sourceEntryCount: 2,
+      );
+
+      final widened = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-partial-wider',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'partial-order-base',
+        baseRevision: 'partial-order-base',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [
+          _entry('older-a1', 0, 'idle'),
+          _entry('older-a2', 1, 'idle'),
+          _entry('tail-b1', 2, 'working'),
+          _entry('tail-b2', 3, 'working'),
+        ],
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: false,
+        sourceEntryCount: 4,
+      );
+      expect(widened.windowCommitted, isTrue);
+      var cached = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      expect(cached?.entries.map((entry) => entry.entryId), [
+        'older-a1',
+        'older-a2',
+        'tail-b1',
+        'tail-b2',
+      ]);
+
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-partial-new-tail',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'partial-order-base',
+        baseRevision: 'partial-order-base',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [
+          _entry('tail-b1', 0, 'working'),
+          _entry('tail-b2', 1, 'working'),
+          _entry('latest-c1', 2, 'working'),
+        ],
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: false,
+        sourceEntryCount: 5,
+      );
+      cached = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      expect(cached?.entries.map((entry) => entry.entryId), [
+        'older-a1',
+        'older-a2',
+        'tail-b1',
+        'tail-b2',
+        'latest-c1',
+      ]);
+    },
+  );
+
+  test(
+    'incomplete windows validate and preserve anchors across a paged negative prefix',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-negative-prefix-order',
+        codexSourceId: 'source-negative-prefix-order',
+      );
+      const threadId = 'thread-negative-prefix-order';
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-negative-prefix-base',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'negative-prefix-base',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [
+          _entry('tail-b1', 0, 'working'),
+          _entry('tail-b2', 1, 'working'),
+        ],
+        deletes: const [],
+        hasEarlier: true,
+        turnsNextCursor: 'older-prefix-cursor',
+        windowComplete: false,
+        sourceEntryCount: 2,
+      );
+      await repository.prependConversationTurnsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: threadId,
+        expectedRevision: 'negative-prefix-base',
+        expectedCursor: 'older-prefix-cursor',
+        rawMessages: const [
+          {
+            'type': 'user_input',
+            'text': 'paged prefix',
+            'userMessageUuid': 'prefix-user',
+          },
+        ],
+        nextCursor: 'older-prefix-cursor-2',
+      );
+
+      final widened = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-negative-prefix-wider',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'negative-prefix-base',
+        baseRevision: 'negative-prefix-base',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [
+          _entry('older-before-prefix', 0, 'idle'),
+          const ConversationContentWireEntry(
+            entryId: 'user:prefix-user',
+            index: 1,
+            contentHash: 'hash-prefix-user',
+            rawMessage: {
+              'type': 'user_input',
+              'text': 'paged prefix',
+              'userMessageUuid': 'prefix-user',
+            },
+          ),
+          _entry('tail-b1', 2, 'working'),
+          _entry('tail-b2', 3, 'working'),
+        ],
+        deletes: const [],
+        hasEarlier: true,
+        turnsNextCursor: 'older-prefix-cursor-2',
+        windowComplete: false,
+        sourceEntryCount: 4,
+      );
+      expect(widened.windowCommitted, isTrue);
+      var cached = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      expect(cached?.entries.map((entry) => entry.entryId), [
+        'older-before-prefix',
+        'user:prefix-user',
+        'tail-b1',
+        'tail-b2',
+      ]);
+      expect(cached?.entries.map((entry) => entry.index), [-2, -1, 0, 1]);
+
+      final reversed = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-negative-prefix-reversed',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'negative-prefix-base',
+        baseRevision: 'negative-prefix-base',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [
+          _entry('tail-b1', 0, 'working'),
+          const ConversationContentWireEntry(
+            entryId: 'user:prefix-user',
+            index: 1,
+            contentHash: 'hash-prefix-user',
+            rawMessage: {
+              'type': 'user_input',
+              'text': 'paged prefix',
+              'userMessageUuid': 'prefix-user',
+            },
+          ),
+        ],
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: false,
+        sourceEntryCount: 4,
+      );
+      expect(reversed.stageRejected, isTrue);
+      cached = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      expect(cached?.entries.map((entry) => entry.entryId), [
+        'older-before-prefix',
+        'user:prefix-user',
+        'tail-b1',
+        'tail-b2',
+      ]);
+    },
+  );
+
+  test('rejects cumulative timeline staging before all pages arrive', () async {
+    final target = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-stage-bound',
+      codexSourceId: 'source-stage-bound',
+    );
+    const threadId = 'thread-stage-bound';
+    ConversationTimelinePageCommit? rejected;
+    for (var page = 0; page < 63; page++) {
+      final commit = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-stage-bound',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'revision-stage-bound',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: page,
+        pageCount: 64,
+        entries: List.generate(64, (offset) {
+          final index = page * 64 + offset;
+          return _entry('stage-$index', index, 'payload-$index');
+        }),
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: true,
+        sourceEntryCount: 4096,
+      );
+      if (commit.stageRejected) {
+        rejected = commit;
+        break;
+      }
+      expect(commit.windowCommitted, isFalse);
+    }
+    expect(rejected?.stageRejected, isTrue);
+
+    final db = await database.database;
+    for (final table in [
+      SessionCatalogCacheDatabase.timelineStagesTable,
+      SessionCatalogCacheDatabase.timelineStagePagesTable,
+      SessionCatalogCacheDatabase.timelineStageEntriesTable,
+      SessionCatalogCacheDatabase.timelineStageDeletesTable,
+    ]) {
+      expect(
+        await db.query(
+          table,
+          where: 'provider_session_id = ?',
+          whereArgs: [threadId],
+        ),
+        isEmpty,
+      );
+    }
+  });
 
   test(
     'persists assistant text ordering checkpoints across tool patches and catalog refreshes',
@@ -2072,7 +2466,10 @@ void main() {
       );
       repository = SessionCatalogCacheRepository(database);
       final upgraded = await database.database;
-      expect(await upgraded.getVersion(), 7);
+      expect(
+        await upgraded.getVersion(),
+        SessionCatalogCacheDatabase.schemaVersion,
+      );
       expect(
         await upgraded.query(
           SessionCatalogCacheDatabase.partitionsTable,
@@ -2173,6 +2570,113 @@ void main() {
       expect(reopenedDetail?.complete, isTrue);
       expect(
         await (await database.database).rawQuery('PRAGMA foreign_key_check'),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
+    'migrates v7 windows conservatively when latest turns were incomplete',
+    () async {
+      await repository.close();
+      if (await File(databasePath).exists()) {
+        await File(databasePath).delete();
+      }
+      final legacy = await databaseFactoryFfi.openDatabase(
+        databasePath,
+        options: OpenDatabaseOptions(
+          version: 7,
+          onCreate: (db, _) async {
+            await db.execute('''
+              CREATE TABLE ${SessionCatalogCacheDatabase.hotWindowsTable} (
+                partition_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                provider_session_id TEXT NOT NULL,
+                revision TEXT NOT NULL,
+                entry_count INTEGER NOT NULL,
+                has_earlier INTEGER NOT NULL,
+                turns_next_cursor TEXT,
+                latest_turn_complete INTEGER NOT NULL DEFAULT 1,
+                latest_turn_gap_json TEXT,
+                latest_turn_gap_cursor TEXT,
+                source_entry_count INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+              )
+            ''');
+            await db.execute('''
+              CREATE TABLE ${SessionCatalogCacheDatabase.timelineStagesTable} (
+                partition_id TEXT NOT NULL,
+                subscription_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                provider_session_id TEXT NOT NULL,
+                revision TEXT NOT NULL,
+                base_revision TEXT,
+                mode TEXT NOT NULL,
+                page_count INTEGER NOT NULL,
+                has_earlier INTEGER NOT NULL,
+                turns_next_cursor TEXT,
+                latest_turn_complete INTEGER NOT NULL DEFAULT 1,
+                latest_turn_gap_json TEXT,
+                latest_turn_gap_cursor TEXT,
+                source_entry_count INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+              )
+            ''');
+            for (final complete in [0, 1]) {
+              await db.insert(SessionCatalogCacheDatabase.hotWindowsTable, {
+                'partition_id': 'legacy-v7-$complete',
+                'provider': 'codex',
+                'provider_session_id': 'thread-$complete',
+                'revision': 'revision-$complete',
+                'entry_count': 0,
+                'has_earlier': complete == 0 ? 1 : 0,
+                'turns_next_cursor': null,
+                'latest_turn_complete': complete,
+                'latest_turn_gap_json': null,
+                'latest_turn_gap_cursor': null,
+                'source_entry_count': 0,
+                'updated_at': complete,
+              });
+              await db.insert(SessionCatalogCacheDatabase.timelineStagesTable, {
+                'partition_id': 'legacy-v7-$complete',
+                'subscription_id': 'subscription-$complete',
+                'provider': 'codex',
+                'provider_session_id': 'thread-$complete',
+                'revision': 'revision-$complete',
+                'base_revision': null,
+                'mode': 'snapshot',
+                'page_count': 1,
+                'has_earlier': complete == 0 ? 1 : 0,
+                'turns_next_cursor': null,
+                'latest_turn_complete': complete,
+                'latest_turn_gap_json': null,
+                'latest_turn_gap_cursor': null,
+                'source_entry_count': 0,
+                'created_at': complete,
+              });
+            }
+          },
+        ),
+      );
+      await legacy.close();
+
+      database = SessionCatalogCacheDatabase(
+        databasePath: databasePath,
+        openDatabase: openFfi,
+      );
+      repository = SessionCatalogCacheRepository(database);
+      final upgraded = await database.database;
+      final windows = await upgraded.query(
+        SessionCatalogCacheDatabase.hotWindowsTable,
+        columns: ['latest_turn_complete', 'window_complete'],
+        orderBy: 'latest_turn_complete ASC',
+      );
+      expect(windows, [
+        {'latest_turn_complete': 0, 'window_complete': 0},
+        {'latest_turn_complete': 1, 'window_complete': 0},
+      ]);
+      expect(
+        await upgraded.query(SessionCatalogCacheDatabase.timelineStagesTable),
         isEmpty,
       );
     },
@@ -2323,7 +2827,10 @@ void main() {
     );
     repository = SessionCatalogCacheRepository(database);
     final repaired = await database.database;
-    expect(await repaired.getVersion(), 7);
+    expect(
+      await repaired.getVersion(),
+      SessionCatalogCacheDatabase.schemaVersion,
+    );
     final detailColumns = await repaired.rawQuery(
       'PRAGMA table_info(${SessionCatalogCacheDatabase.userTurnDetailsTable})',
     );
@@ -2432,6 +2939,48 @@ void main() {
       expect(rebuilt?.latestTurnGap?.turnId, 'turn-current');
       expect(rebuilt?.latestTurnGapCursor, 'current-turn-page-2');
       expect(rebuilt?.turnsNextCursor, 'older-turns-cursor');
+
+      const terminalGap = ConversationSyncV2LatestTurnGap(
+        turnId: 'turn-current',
+        missingEntryCount: 1,
+        payloadOmitted: true,
+        repair: 'items_page',
+      );
+      final oversizedTerminal = await repository
+          .mergeConversationLatestTurnItemsPage(
+            target: target,
+            provider: 'codex',
+            providerSessionId: 'thread-latest-turn',
+            expectedRevision: 'revision-latest-turn',
+            expectedTurnId: 'turn-current',
+            rawMessages: const [
+              {
+                'type': 'assistant',
+                'message': {
+                  'id': 'assistant-current',
+                  'role': 'assistant',
+                  'content': [
+                    {'type': 'text', 'text': 'Current answer'},
+                  ],
+                },
+              },
+            ],
+            nextCursor: null,
+            pageComplete: false,
+            latestTurnGap: terminalGap,
+          );
+      expect(oversizedTerminal?.latestTurnComplete, isFalse);
+      expect(oversizedTerminal?.latestTurnGap?.turnId, terminalGap.turnId);
+      expect(
+        oversizedTerminal?.latestTurnGap?.missingEntryCount,
+        terminalGap.missingEntryCount,
+      );
+      expect(
+        oversizedTerminal?.latestTurnGap?.payloadOmitted,
+        terminalGap.payloadOmitted,
+      );
+      expect(oversizedTerminal?.latestTurnGap?.repair, terminalGap.repair);
+      expect(oversizedTerminal?.latestTurnGapCursor, isNull);
 
       final complete = await repository.mergeConversationLatestTurnItemsPage(
         target: target,

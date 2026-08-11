@@ -70,13 +70,28 @@ bool shouldShowForkForAssistant(
   );
   if (!hasVisibleReply) return false;
 
+  var assistantTurnId = chatEntryHistoryTurnId(entry);
   var hasTerminalResult = false;
   for (var i = entryIndex + 1; i < entries.length; i++) {
     final next = entries[i];
+    final nextTurnId = chatEntryHistoryTurnId(next);
     // Desktop/app-server history may omit the synthetic ResultMessage that the
     // live Bridge stream emits. A following user turn still proves that this
-    // was the final assistant reply for the preceding completed turn.
-    if (next is UserChatEntry) return true;
+    // was the final assistant reply only when it is a different provider turn.
+    // A steer/user item with the same explicit turn id belongs to the active
+    // turn and must not turn progress into a fork point.
+    if (next is UserChatEntry &&
+        (assistantTurnId == null ||
+            nextTurnId == null ||
+            nextTurnId != assistantTurnId)) {
+      return true;
+    }
+    if (assistantTurnId != null &&
+        nextTurnId != null &&
+        nextTurnId != assistantTurnId) {
+      return true;
+    }
+    assistantTurnId ??= nextTurnId;
     if (next is ServerChatEntry) {
       final message = next.message;
       // Fork is turn-granular: a later visible assistant update means this
@@ -135,6 +150,7 @@ Set<int> forkableAssistantEntryIndices(
 }) {
   final result = <int>{};
   int? candidate;
+  String? candidateTurnId;
   var candidateHasTerminalResult = false;
 
   void finishCandidate({required bool followedByUser}) {
@@ -145,15 +161,30 @@ Set<int> forkableAssistantEntryIndices(
       result.add(candidate!);
     }
     candidate = null;
+    candidateTurnId = null;
     candidateHasTerminalResult = false;
   }
 
   for (var index = 0; index < entries.length; index++) {
     final entry = entries[index];
     if (entry is UserChatEntry) {
-      finishCandidate(followedByUser: true);
+      final userTurnId = chatEntryHistoryTurnId(entry);
+      if (candidate != null &&
+          (candidateTurnId == null ||
+              userTurnId == null ||
+              userTurnId != candidateTurnId)) {
+        finishCandidate(followedByUser: true);
+      }
       continue;
     }
+    final entryTurnId = chatEntryHistoryTurnId(entry);
+    if (candidate != null &&
+        candidateTurnId != null &&
+        entryTurnId != null &&
+        entryTurnId != candidateTurnId) {
+      finishCandidate(followedByUser: true);
+    }
+    if (candidate != null) candidateTurnId ??= entryTurnId;
     if (entry is! ServerChatEntry) continue;
     switch (entry.message) {
       case AssistantServerMessage(:final message):
@@ -162,6 +193,7 @@ Set<int> forkableAssistantEntryIndices(
         );
         if (hasVisibleReply) {
           candidate = index;
+          candidateTurnId = entryTurnId;
           candidateHasTerminalResult = false;
         }
         break;
@@ -1003,7 +1035,6 @@ class _ChatMessageListState extends State<ChatMessageList> {
       hasTransientCurrentOutput: hasStreaming,
     );
     final messageCount = allEntries.length + (hasStreaming ? 1 : 0);
-    final streamingCubit = context.read<StreamingStateCubit>();
     final transcriptTailComplete =
         chatState.status == ProcessStatus.idle &&
         chatState.queuedInput == null &&
@@ -1051,9 +1082,8 @@ class _ChatMessageListState extends State<ChatMessageList> {
         physics: MaintainReadingPositionPhysics(
           shouldMaintain: () {
             final controller = widget.scrollController;
-            return streamingCubit.state.isStreaming &&
-                (controller is! ReadingPositionAutoScrollController ||
-                    !controller.hasAnchorMutation);
+            return controller is! ReadingPositionAutoScrollController ||
+                !controller.suppressPassiveExtentCorrection;
           },
         ),
         padding: EdgeInsets.only(top: 36, bottom: widget.bottomPadding),

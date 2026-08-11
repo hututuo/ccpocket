@@ -1784,6 +1784,7 @@ void main() {
         'stage': 'provider_accepted',
         'provider': 'codex',
         'method': 'turn/start',
+        'providerTurnId': 'turn-provider-1',
         'occurredAt': '2026-07-31T00:00:00.000Z',
         'acceptedSeq': 12,
         'queued': true,
@@ -1794,6 +1795,7 @@ void main() {
       final status = msg as InputDeliveryStatusMessage;
       expect(status.stage, InputDeliveryStage.providerAccepted);
       expect(status.clientMessageId, 'cm-1');
+      expect(status.providerTurnId, 'turn-provider-1');
       expect(status.clientUserMessageIdAccepted, isFalse);
     });
   });

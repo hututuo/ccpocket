@@ -610,12 +610,31 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     return (loaded: result.loaded, hasMore: result.hasMore);
   }
 
-  Future<bool> _repairLatestTurn() async =>
-      (await context.read<ConversationContentSyncService>().repairLatestTurn(
+  Future<bool> _repairLatestTurn() async {
+    final sync = context.read<ConversationContentSyncService>();
+    final preview = _cachedPreview;
+    if (preview != null &&
+        !preview.windowComplete &&
+        (preview.latestTurnComplete ||
+            preview.latestTurnGap?.repair == 'turns_page')) {
+      await sync.refreshFocusedConversation(
         provider: Provider.claude.value,
         providerSessionId: widget.durableProviderSessionId!,
         expectedDataSourceIdentity: _dataSourceIdentity,
-      )).loaded;
+      );
+      final repaired = await sync.loadCachedWindow(
+        provider: Provider.claude.value,
+        providerSessionId: widget.durableProviderSessionId!,
+        expectedDataSourceIdentity: _dataSourceIdentity,
+      );
+      return repaired?.windowComplete == true;
+    }
+    return (await sync.repairLatestTurn(
+      provider: Provider.claude.value,
+      providerSessionId: widget.durableProviderSessionId!,
+      expectedDataSourceIdentity: _dataSourceIdentity,
+    )).loaded;
+  }
 
   bool _isCurrentDurablePreviewTargetConfirmed() {
     try {
@@ -1038,8 +1057,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     final cachedPreview = _cachedPreview;
     final latestTurnRecoveryVisible =
         cachedPreview != null &&
-        cachedPreview.entries.isEmpty &&
-        !cachedPreview.latestTurnComplete &&
+        (!cachedPreview.windowComplete || !cachedPreview.latestTurnComplete) &&
         _isCurrentDurablePreviewTargetConfirmed();
     if (_isPending && durableId != null) {
       return ConversationRouteFocusRestorer(

@@ -16,7 +16,7 @@ class SessionCatalogCacheDatabase {
   SessionCatalogCacheDatabase({this.databasePath, this.openDatabase});
 
   static const fileName = 'session_catalog_cache_v1.db';
-  static const schemaVersion = 7;
+  static const schemaVersion = 8;
 
   static const partitionsTable = 'session_catalog_partitions';
   static const aliasesTable = 'session_catalog_aliases';
@@ -175,6 +175,36 @@ class SessionCatalogCacheDatabase {
         'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
       });
     }
+    if (oldVersion < 8) {
+      await _addWindowCompleteColumnIfNeeded(database, hotWindowsTable);
+      await _addWindowCompleteColumnIfNeeded(database, timelineStagesTable);
+      if ((await database.rawQuery(
+        'PRAGMA table_info($timelineStagesTable)',
+      )).isNotEmpty) {
+        // A staging generation is never readable state. Its old schema cannot
+        // prove whole-window coverage, so rebuilding it is safer and cheaper
+        // than carrying an ambiguous partial batch across the migration.
+        await database.delete(timelineStagesTable);
+      }
+    }
+  }
+
+  static Future<void> _addWindowCompleteColumnIfNeeded(
+    Database database,
+    String table,
+  ) async {
+    final columns = await database.rawQuery('PRAGMA table_info($table)');
+    if (columns.isEmpty) return;
+    if (!columns.any((column) => column['name'] == 'window_complete')) {
+      await database.execute(
+        'ALTER TABLE $table '
+        'ADD COLUMN window_complete INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    // v7 only knew whether the latest turn was complete. That is not evidence
+    // that the bounded hot window covered all older rows, so every migrated
+    // window starts as coverage-unknown and must be replayed once.
+    await database.execute('UPDATE $table SET window_complete = 0');
   }
 
   static Future<void> _createSchema(Database database, int version) async {
@@ -562,6 +592,7 @@ class SessionCatalogCacheDatabase {
         entry_count INTEGER NOT NULL,
         has_earlier INTEGER NOT NULL,
         turns_next_cursor TEXT,
+        window_complete INTEGER NOT NULL DEFAULT 1,
         latest_turn_complete INTEGER NOT NULL DEFAULT 1,
         latest_turn_gap_json TEXT,
         latest_turn_gap_cursor TEXT,
@@ -671,6 +702,7 @@ class SessionCatalogCacheDatabase {
         page_count INTEGER NOT NULL,
         has_earlier INTEGER NOT NULL,
         turns_next_cursor TEXT,
+        window_complete INTEGER NOT NULL DEFAULT 1,
         latest_turn_complete INTEGER NOT NULL DEFAULT 1,
         latest_turn_gap_json TEXT,
         latest_turn_gap_cursor TEXT,

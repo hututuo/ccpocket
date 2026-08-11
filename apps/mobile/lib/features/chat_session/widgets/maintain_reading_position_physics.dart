@@ -44,7 +44,7 @@ class MaintainReadingPositionPhysics extends ScrollPhysics {
     if (oldPosition.pixels <= scrolledUpThreshold) return adjusted;
 
     final delta = newPosition.maxScrollExtent - oldPosition.maxScrollExtent;
-    if (delta <= extentChangeTolerance) return adjusted;
+    if (delta.abs() <= extentChangeTolerance) return adjusted;
 
     return clampDouble(
       adjusted + delta,

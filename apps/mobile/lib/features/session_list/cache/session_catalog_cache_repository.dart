@@ -99,6 +99,7 @@ class ConversationHotWindowSnapshot {
     required this.entries,
     required this.hasEarlier,
     required this.turnsNextCursor,
+    required this.windowComplete,
     required this.latestTurnComplete,
     required this.latestTurnGap,
     required this.latestTurnGapCursor,
@@ -115,6 +116,7 @@ class ConversationHotWindowSnapshot {
 
   /// Opaque cursor for the next older turn page.
   final String? turnsNextCursor;
+  final bool windowComplete;
   final bool latestTurnComplete;
   final ConversationSyncV2LatestTurnGap? latestTurnGap;
 
@@ -269,12 +271,16 @@ class ConversationTimelinePageCommit {
     required this.pageStored,
     required this.windowCommitted,
     required this.baseRevisionMatched,
+    this.stageRejected = false,
+    this.committedRevision,
     this.lastAssistantOutputAt,
   });
 
   final bool pageStored;
   final bool windowCommitted;
   final bool baseRevisionMatched;
+  final bool stageRejected;
+  final String? committedRevision;
 
   /// Newest discrete assistant text timestamp introduced by this committed
   /// snapshot/patch, or null when the commit only changed tools/status.
@@ -364,6 +370,9 @@ class SessionCatalogCacheRepository {
 
   static const maxEntriesPerPartition = 10_000;
   static const maxHotWindowEntries = 2_000;
+  static const _maxTimelineStageRows = maxHotWindowEntries * 2;
+  static const _maxTimelineStagePages = 128;
+  static const _maxTimelineStageBytes = 8 * 1024 * 1024;
   static const _maxIdentityLookupsPerQuery = 300;
   // Revision advertisement is only a reconnect optimization. Keep the initial
   // subscribe path deliberately small; omitted windows are safely replayed by
@@ -824,6 +833,7 @@ class SessionCatalogCacheRepository {
   Future<List<ConversationContentCursor>> knownConversationRevisions(
     SessionCatalogCacheTarget target, {
     int limit = 512,
+    bool includeIncomplete = false,
   }) async {
     if (!target.isValid || limit <= 0) return const [];
     await _mutationTail;
@@ -836,6 +846,7 @@ class SessionCatalogCacheRepository {
       FROM ${SessionCatalogCacheDatabase.hotWindowsTable} AS windows
       WHERE windows.partition_id = ?
         AND windows.entry_count BETWEEN 0 AND ?
+        ${includeIncomplete ? '' : 'AND windows.window_complete = 1'}
         AND NOT (
           windows.entry_count = 0
           AND windows.latest_turn_complete = 0
@@ -895,6 +906,7 @@ class SessionCatalogCacheRepository {
           provider: provider,
           providerSessionId: providerSessionId,
           revision: snapshot.revision,
+          windowComplete: snapshot.windowComplete,
         ),
       );
     }
@@ -1499,6 +1511,8 @@ class SessionCatalogCacheRepository {
     required List<String> deletes,
     required bool hasEarlier,
     String? turnsNextCursor,
+    bool? windowComplete,
+    bool advanceIncompleteWireRevision = false,
     bool latestTurnComplete = true,
     ConversationSyncV2LatestTurnGap? latestTurnGap,
     required int sourceEntryCount,
@@ -1512,9 +1526,15 @@ class SessionCatalogCacheRepository {
         ),
       );
     }
+    if (pageCount > _maxTimelineStagePages) {
+      return Future.error(
+        StateError('Conversation timeline page count exceeds the local bound.'),
+      );
+    }
     return _enqueueMutationResult(() async {
       final db = await database.database;
       return db.transaction((transaction) async {
+        final commitsCompleteWindow = windowComplete ?? latestTurnComplete;
         final latestTurnGapJson = _encodeLatestTurnGap(
           latestTurnComplete: latestTurnComplete,
           gap: latestTurnGap,
@@ -1544,6 +1564,7 @@ class SessionCatalogCacheRepository {
             'page_count': pageCount,
             'has_earlier': hasEarlier ? 1 : 0,
             'turns_next_cursor': turnsNextCursor,
+            'window_complete': commitsCompleteWindow ? 1 : 0,
             'latest_turn_complete': latestTurnComplete ? 1 : 0,
             'latest_turn_gap_json': latestTurnGapJson,
             'latest_turn_gap_cursor': null,
@@ -1567,6 +1588,7 @@ class SessionCatalogCacheRepository {
             stage['page_count'] != pageCount ||
             stage['has_earlier'] != (hasEarlier ? 1 : 0) ||
             stage['turns_next_cursor'] != turnsNextCursor ||
+            stage['window_complete'] != (commitsCompleteWindow ? 1 : 0) ||
             stage['latest_turn_complete'] != (latestTurnComplete ? 1 : 0) ||
             stage['latest_turn_gap_json'] != latestTurnGapJson ||
             stage['latest_turn_gap_cursor'] != null ||
@@ -1581,6 +1603,51 @@ class SessionCatalogCacheRepository {
           limit: 1,
         );
         if (duplicate.isEmpty) {
+          final stagedEntryStats = await transaction.rawQuery('''
+            SELECT
+              COUNT(*) AS row_count,
+              COALESCE(SUM(LENGTH(CAST(message_json AS BLOB))), 0) AS byte_count
+            FROM ${SessionCatalogCacheDatabase.timelineStageEntriesTable}
+            WHERE $keyWhere
+            ''', keyArgs);
+          final stagedDeleteStats = await transaction.rawQuery('''
+            SELECT
+              COUNT(*) AS row_count,
+              COALESCE(SUM(LENGTH(CAST(entry_id AS BLOB))), 0) AS byte_count
+            FROM ${SessionCatalogCacheDatabase.timelineStageDeletesTable}
+            WHERE $keyWhere
+            ''', keyArgs);
+          final stagedRows =
+              (stagedEntryStats.single['row_count']! as int) +
+              (stagedDeleteStats.single['row_count']! as int);
+          final stagedBytes =
+              (stagedEntryStats.single['byte_count']! as int) +
+              (stagedDeleteStats.single['byte_count']! as int);
+          final incomingBytes =
+              entries.fold<int>(
+                0,
+                (total, entry) =>
+                    total + utf8.encode(jsonEncode(entry.rawMessage)).length,
+              ) +
+              deletes.fold<int>(
+                0,
+                (total, entryId) => total + utf8.encode(entryId).length,
+              );
+          if (stagedRows + entries.length + deletes.length >
+                  _maxTimelineStageRows ||
+              stagedBytes + incomingBytes > _maxTimelineStageBytes) {
+            await transaction.delete(
+              SessionCatalogCacheDatabase.timelineStagesTable,
+              where: keyWhere,
+              whereArgs: keyArgs,
+            );
+            return const ConversationTimelinePageCommit(
+              pageStored: false,
+              windowCommitted: false,
+              baseRevisionMatched: true,
+              stageRejected: true,
+            );
+          }
           await transaction
               .insert(SessionCatalogCacheDatabase.timelineStagePagesTable, {
                 'partition_id': partitionId,
@@ -1643,32 +1710,33 @@ class SessionCatalogCacheRepository {
         if (entryCount > maxHotWindowEntries) {
           throw StateError('Conversation timeline exceeds the local bound.');
         }
-        var preserveExistingIncompleteSnapshot = false;
-        if (mode == 'snapshot' && entryCount == 0 && !latestTurnComplete) {
-          final existingWindows = await transaction.query(
-            SessionCatalogCacheDatabase.hotWindowsTable,
-            columns: ['entry_count'],
-            where:
-                'partition_id = ? AND provider = ? '
-                'AND provider_session_id = ?',
-            whereArgs: [partitionId, provider, providerSessionId],
-            limit: 1,
-          );
-          preserveExistingIncompleteSnapshot =
-              existingWindows.isNotEmpty &&
-              (existingWindows.single['entry_count'] as int? ?? 0) > 0;
-        }
+        final existingWindows = await transaction.query(
+          SessionCatalogCacheDatabase.hotWindowsTable,
+          columns: [
+            'revision',
+            'entry_count',
+            'has_earlier',
+            'turns_next_cursor',
+            'window_complete',
+            'source_entry_count',
+          ],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+          limit: 1,
+        );
+        final existingWindow = existingWindows.isEmpty
+            ? null
+            : existingWindows.single;
+        final additiveCommit = !commitsCompleteWindow && existingWindow != null;
+        // An incomplete window is an additive observation, never replacement
+        // authority. Old Bridges can still attach deletes or a newer wire
+        // revision to latestTurnComplete=false frames; both are intentionally
+        // ignored here. New Bridges are validated more strictly by the service.
         if (mode == 'patch') {
-          final windows = await transaction.query(
-            SessionCatalogCacheDatabase.hotWindowsTable,
-            columns: ['revision'],
-            where:
-                'partition_id = ? AND provider = ? '
-                'AND provider_session_id = ?',
-            whereArgs: [partitionId, provider, providerSessionId],
-            limit: 1,
-          );
-          if (windows.isEmpty || windows.single['revision'] != baseRevision) {
+          if (existingWindow == null ||
+              existingWindow['revision'] != baseRevision) {
             await transaction.delete(
               SessionCatalogCacheDatabase.timelineStagesTable,
               where: keyWhere,
@@ -1680,22 +1748,24 @@ class SessionCatalogCacheRepository {
               baseRevisionMatched: false,
             );
           }
-          await transaction.rawDelete(
-            '''
-            DELETE FROM ${SessionCatalogCacheDatabase.hotEntriesTable}
-            WHERE partition_id = ?
-              AND provider = ?
-              AND provider_session_id = ?
-              AND entry_id IN (
-                SELECT entry_id
-                FROM ${SessionCatalogCacheDatabase.timelineStageDeletesTable}
-                WHERE $keyWhere
-              )
-            ''',
-            [partitionId, provider, providerSessionId, ...keyArgs],
-          );
+          if (commitsCompleteWindow) {
+            await transaction.rawDelete(
+              '''
+              DELETE FROM ${SessionCatalogCacheDatabase.hotEntriesTable}
+              WHERE partition_id = ?
+                AND provider = ?
+                AND provider_session_id = ?
+                AND entry_id IN (
+                  SELECT entry_id
+                  FROM ${SessionCatalogCacheDatabase.timelineStageDeletesTable}
+                  WHERE $keyWhere
+                )
+              ''',
+              [partitionId, provider, providerSessionId, ...keyArgs],
+            );
+          }
         } else if (mode == 'snapshot') {
-          if (!preserveExistingIncompleteSnapshot) {
+          if (!additiveCommit) {
             await transaction.delete(
               SessionCatalogCacheDatabase.hotEntriesTable,
               where:
@@ -1713,6 +1783,7 @@ class SessionCatalogCacheRepository {
                 'entry_count': 0,
                 'has_earlier': hasEarlier ? 1 : 0,
                 'turns_next_cursor': turnsNextCursor,
+                'window_complete': commitsCompleteWindow ? 1 : 0,
                 'latest_turn_complete': latestTurnComplete ? 1 : 0,
                 'latest_turn_gap_json': latestTurnGapJson,
                 'latest_turn_gap_cursor': null,
@@ -1725,24 +1796,123 @@ class SessionCatalogCacheRepository {
         } else {
           throw StateError('Unsupported conversation timeline mode: $mode');
         }
-        await transaction.rawInsert(
-          '''
-          INSERT OR REPLACE INTO
-            ${SessionCatalogCacheDatabase.hotEntriesTable} (
-              partition_id,
-              provider,
-              provider_session_id,
-              entry_id,
-              entry_index,
-              content_hash,
-              message_json
-            )
-          SELECT ?, ?, ?, entry_id, entry_index, content_hash, message_json
-          FROM ${SessionCatalogCacheDatabase.timelineStageEntriesTable}
-          WHERE $keyWhere
-          ''',
-          [partitionId, provider, providerSessionId, ...keyArgs],
-        );
+        if (additiveCommit) {
+          final existingEntries = await transaction.query(
+            SessionCatalogCacheDatabase.hotEntriesTable,
+            columns: ['entry_id', 'entry_index'],
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, provider, providerSessionId],
+            orderBy: 'entry_index ASC',
+          );
+          final stagedEntries = await transaction.query(
+            SessionCatalogCacheDatabase.timelineStageEntriesTable,
+            columns: [
+              'entry_id',
+              'entry_index',
+              'content_hash',
+              'message_json',
+            ],
+            where: keyWhere,
+            whereArgs: keyArgs,
+            orderBy: 'entry_index ASC',
+          );
+          final existingIds = <String>[];
+          final existingPrefixIds = <String>{};
+          for (final row in existingEntries) {
+            final entryId = row['entry_id']! as String;
+            final entryIndex = row['entry_index']! as int;
+            existingIds.add(entryId);
+            if (entryIndex < 0) existingPrefixIds.add(entryId);
+          }
+          final stagedIds = stagedEntries
+              .map((row) => row['entry_id']! as String)
+              .toList(growable: false);
+          final mergedIds = _mergeAdditiveTimelineOrder(existingIds, stagedIds);
+          if (mergedIds == null) {
+            await transaction.delete(
+              SessionCatalogCacheDatabase.timelineStagesTable,
+              where: keyWhere,
+              whereArgs: keyArgs,
+            );
+            return const ConversationTimelinePageCommit(
+              pageStored: false,
+              windowCommitted: false,
+              baseRevisionMatched: true,
+              stageRejected: true,
+            );
+          }
+          var lastExistingPrefixPosition = -1;
+          for (var index = 0; index < mergedIds.length; index++) {
+            if (existingPrefixIds.contains(mergedIds[index])) {
+              lastExistingPrefixPosition = index;
+            }
+          }
+          final prefixExtent = lastExistingPrefixPosition + 1;
+          final indexById = <String, int>{
+            for (var index = 0; index < mergedIds.length; index++)
+              mergedIds[index]: index - prefixExtent,
+          };
+          final reorder = transaction.batch();
+          for (var index = 0; index < mergedIds.length; index++) {
+            reorder.update(
+              SessionCatalogCacheDatabase.hotEntriesTable,
+              {'entry_index': indexById[mergedIds[index]]},
+              where:
+                  'partition_id = ? AND provider = ? '
+                  'AND provider_session_id = ? AND entry_id = ?',
+              whereArgs: [
+                partitionId,
+                provider,
+                providerSessionId,
+                mergedIds[index],
+              ],
+            );
+          }
+          await reorder.commit(noResult: true);
+          final upserts = transaction.batch();
+          for (final row in stagedEntries) {
+            final entryId = row['entry_id']! as String;
+            final stableIndex = indexById[entryId];
+            if (stableIndex == null) {
+              throw StateError('Partial timeline entry has no stable order.');
+            }
+            upserts.insert(
+              SessionCatalogCacheDatabase.hotEntriesTable,
+              {
+                'partition_id': partitionId,
+                'provider': provider,
+                'provider_session_id': providerSessionId,
+                'entry_id': entryId,
+                'entry_index': stableIndex,
+                'content_hash': row['content_hash'],
+                'message_json': row['message_json'],
+              },
+              conflictAlgorithm: ConflictAlgorithm.replace,
+            );
+          }
+          await upserts.commit(noResult: true);
+        } else {
+          await transaction.rawInsert(
+            '''
+            INSERT OR REPLACE INTO
+              ${SessionCatalogCacheDatabase.hotEntriesTable} (
+                partition_id,
+                provider,
+                provider_session_id,
+                entry_id,
+                entry_index,
+                content_hash,
+                message_json
+              )
+            SELECT ?, ?, ?, entry_id, entry_index, content_hash, message_json
+            FROM ${SessionCatalogCacheDatabase.timelineStageEntriesTable}
+            WHERE $keyWhere
+            ''',
+            [partitionId, provider, providerSessionId, ...keyArgs],
+          );
+        }
         final committedRows = await transaction.rawQuery(
           '''
           SELECT
@@ -1761,17 +1931,38 @@ class SessionCatalogCacheRepository {
             committedCount != committedIndexCount) {
           throw StateError('Committed conversation timeline is invalid.');
         }
+        final committedRevision = additiveCommit
+            ? advanceIncompleteWireRevision
+                  ? revision
+                  : existingWindow['revision']! as String
+            : revision;
+        final committedHasEarlier = additiveCommit
+            ? (existingWindow['has_earlier']! as int) != 0 || hasEarlier
+            : hasEarlier;
+        final committedTurnsNextCursor = additiveCommit
+            ? (existingWindow['turns_next_cursor'] as String?) ??
+                  turnsNextCursor
+            : turnsNextCursor;
+        final existingSourceEntryCount = additiveCommit
+            ? existingWindow['source_entry_count']! as int
+            : 0;
+        final committedSourceEntryCount = [
+          existingSourceEntryCount,
+          sourceEntryCount,
+          committedCount,
+        ].reduce((left, right) => left > right ? left : right);
         await transaction.update(
           SessionCatalogCacheDatabase.hotWindowsTable,
           {
             'entry_count': committedCount,
-            'revision': revision,
-            'has_earlier': hasEarlier ? 1 : 0,
-            'turns_next_cursor': turnsNextCursor,
+            'revision': committedRevision,
+            'has_earlier': committedHasEarlier ? 1 : 0,
+            'turns_next_cursor': committedTurnsNextCursor,
+            'window_complete': commitsCompleteWindow ? 1 : 0,
             'latest_turn_complete': latestTurnComplete ? 1 : 0,
             'latest_turn_gap_json': latestTurnGapJson,
             'latest_turn_gap_cursor': null,
-            'source_entry_count': sourceEntryCount,
+            'source_entry_count': committedSourceEntryCount,
             'updated_at': now,
           },
           where:
@@ -1802,6 +1993,7 @@ class SessionCatalogCacheRepository {
           pageStored: true,
           windowCommitted: true,
           baseRevisionMatched: true,
+          committedRevision: committedRevision,
           lastAssistantOutputAt: advancedAssistantOutputAt,
         );
       });
@@ -1926,6 +2118,7 @@ class SessionCatalogCacheRepository {
     try {
       final revision = window['revision'];
       final hasEarlier = window['has_earlier'];
+      final windowCompleteValue = window['window_complete'];
       final latestTurnCompleteValue = window['latest_turn_complete'];
       final sourceEntryCount = window['source_entry_count'];
       final updatedAt = window['updated_at'];
@@ -1933,6 +2126,7 @@ class SessionCatalogCacheRepository {
           revision.trim().isEmpty ||
           revision.length > 128 ||
           hasEarlier is! int ||
+          (windowCompleteValue != null && windowCompleteValue is! int) ||
           (latestTurnCompleteValue != null &&
               latestTurnCompleteValue is! int) ||
           sourceEntryCount is! int ||
@@ -1941,6 +2135,7 @@ class SessionCatalogCacheRepository {
         return null;
       }
       final latestTurnComplete = (latestTurnCompleteValue as int? ?? 1) != 0;
+      final windowComplete = (windowCompleteValue as int? ?? 1) != 0;
       final latestTurnGap = _decodeLatestTurnGap(
         latestTurnComplete: latestTurnComplete,
         encoded: window['latest_turn_gap_json'] as String?,
@@ -1953,6 +2148,7 @@ class SessionCatalogCacheRepository {
         entries: List<ConversationContentWireEntry>.unmodifiable(entries),
         hasEarlier: hasEarlier != 0,
         turnsNextCursor: window['turns_next_cursor'] as String?,
+        windowComplete: windowComplete,
         latestTurnComplete: latestTurnComplete,
         latestTurnGap: latestTurnGap,
         latestTurnGapCursor: latestTurnComplete
@@ -1974,6 +2170,7 @@ class SessionCatalogCacheRepository {
     required List<ConversationContentWireEntry> entries,
     required bool hasEarlier,
     String? turnsNextCursor,
+    bool windowComplete = true,
     bool latestTurnComplete = true,
     ConversationSyncV2LatestTurnGap? latestTurnGap,
     String? latestTurnGapCursor,
@@ -2004,6 +2201,7 @@ class SessionCatalogCacheRepository {
             'entry_count': entries.length,
             'has_earlier': hasEarlier ? 1 : 0,
             'turns_next_cursor': turnsNextCursor,
+            'window_complete': windowComplete ? 1 : 0,
             'latest_turn_complete': latestTurnComplete ? 1 : 0,
             'latest_turn_gap_json': latestTurnGapJson,
             'latest_turn_gap_cursor': latestTurnComplete
@@ -2111,6 +2309,20 @@ class SessionCatalogCacheRepository {
         final additions = candidates
             .where((entry) => !existingIds.contains(entry.entryId))
             .toList(growable: false);
+        final existingCountRows = await transaction.rawQuery(
+          '''
+          SELECT COUNT(*) AS entry_count
+          FROM ${SessionCatalogCacheDatabase.hotEntriesTable}
+          WHERE partition_id = ?
+            AND provider = ?
+            AND provider_session_id = ?
+          ''',
+          [partitionId, provider, providerSessionId],
+        );
+        final existingCount = Sqflite.firstIntValue(existingCountRows) ?? 0;
+        if (existingCount + additions.length > maxHotWindowEntries) {
+          return false;
+        }
         final minimumRows = await transaction.rawQuery(
           '''
           SELECT MIN(entry_index) AS minimum_index
@@ -2123,6 +2335,7 @@ class SessionCatalogCacheRepository {
         );
         final minimum = minimumRows.single['minimum_index'] as int? ?? 0;
         final firstIndex = minimum - additions.length;
+        if (firstIndex < -maxHotWindowEntries) return false;
         for (var index = 0; index < additions.length; index++) {
           final entry = additions[index];
           await _insertHotEntry(
@@ -2189,6 +2402,8 @@ class SessionCatalogCacheRepository {
     required String expectedTurnId,
     required List<Map<String, dynamic>> rawMessages,
     required String? nextCursor,
+    bool pageComplete = true,
+    ConversationSyncV2LatestTurnGap? latestTurnGap,
   }) async {
     if (!target.isValid) return null;
     final candidates = _historyPageEntries(rawMessages);
@@ -2270,7 +2485,8 @@ class SessionCatalogCacheRepository {
             ),
           );
         }
-        final completed = nextCursor == null;
+        final completed = nextCursor == null && pageComplete;
+        final remainingGap = pageComplete ? gap : (latestTurnGap ?? gap);
         await transaction.update(
           SessionCatalogCacheDatabase.hotWindowsTable,
           {
@@ -2278,7 +2494,7 @@ class SessionCatalogCacheRepository {
             'latest_turn_complete': completed ? 1 : 0,
             'latest_turn_gap_json': completed
                 ? null
-                : window['latest_turn_gap_json'],
+                : jsonEncode(remainingGap!.toJson()),
             'latest_turn_gap_cursor': completed ? null : nextCursor,
             'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
           },
@@ -2298,8 +2514,11 @@ class SessionCatalogCacheRepository {
     );
   }
 
-  /// Atomically replaces the bounded recent window with a fresh latest-turn
-  /// page when the provider cannot expose an authoritative turn id.
+  /// Merges a bounded latest-turn summary without destroying richer rows.
+  ///
+  /// A turns-page summary does not prove coverage of the hot window or of the
+  /// latest turn's item list. It may enrich an incomplete cache, but only a
+  /// later complete canonical timeline may replace or mark that cache complete.
   Future<ConversationHotWindowSnapshot?>
   replaceConversationLatestTurnsRepairPage({
     required SessionCatalogCacheTarget target,
@@ -2353,28 +2572,38 @@ class SessionCatalogCacheRepository {
             gap?.repair != 'turns_page') {
           return false;
         }
-        final preservedRows = await transaction.query(
+        final existingRows = await transaction.query(
           SessionCatalogCacheDatabase.hotEntriesTable,
-          columns: ['entry_id'],
+          columns: ['entry_id', 'entry_index'],
           where:
               'partition_id = ? AND provider = ? '
-              'AND provider_session_id = ? AND entry_index < 0',
+              'AND provider_session_id = ?',
           whereArgs: [partitionId, provider, providerSessionId],
         );
-        if (preservedRows.length + entries.length > maxHotWindowEntries) {
+        final indexById = <String, int>{
+          for (final row in existingRows)
+            row['entry_id']! as String: row['entry_index']! as int,
+        };
+        final hasPagedPrefix = existingRows.any(
+          (row) => (row['entry_index']! as int) < 0,
+        );
+        final newEntryCount = entries
+            .where((entry) => !indexById.containsKey(entry.entryId))
+            .length;
+        if (existingRows.length + newEntryCount > maxHotWindowEntries) {
           throw StateError(
             'Conversation latest turns repair exceeds the local safety bound.',
           );
         }
-        await transaction.delete(
-          SessionCatalogCacheDatabase.hotEntriesTable,
-          where:
-              'partition_id = ? AND provider = ? '
-              'AND provider_session_id = ? AND entry_index >= 0',
-          whereArgs: [partitionId, provider, providerSessionId],
+        var appendIndex = existingRows.fold<int>(
+          -1,
+          (maximum, row) => (row['entry_index']! as int) > maximum
+              ? row['entry_index']! as int
+              : maximum,
         );
-        for (var index = 0; index < entries.length; index++) {
-          final entry = entries[index];
+        for (final entry in entries) {
+          if (indexById.containsKey(entry.entryId)) continue;
+          final stableIndex = ++appendIndex;
           await _insertHotEntry(
             transaction,
             partitionId: partitionId,
@@ -2382,7 +2611,7 @@ class SessionCatalogCacheRepository {
             providerSessionId: providerSessionId,
             entry: ConversationContentWireEntry(
               entryId: entry.entryId,
-              index: index,
+              index: stableIndex,
               contentHash: entry.contentHash,
               rawMessage: entry.rawMessage,
             ),
@@ -2399,7 +2628,6 @@ class SessionCatalogCacheRepository {
           [partitionId, provider, providerSessionId],
         );
         final committedCount = Sqflite.firstIntValue(countRows) ?? 0;
-        final hasPagedPrefix = preservedRows.isNotEmpty;
         final sourceEntryCount = window['source_entry_count']! as int;
         await transaction.update(
           SessionCatalogCacheDatabase.hotWindowsTable,
@@ -2413,8 +2641,9 @@ class SessionCatalogCacheRepository {
             'turns_next_cursor': hasPagedPrefix
                 ? window['turns_next_cursor']
                 : turnsNextCursor,
-            'latest_turn_complete': 1,
-            'latest_turn_gap_json': null,
+            'window_complete': 0,
+            'latest_turn_complete': 0,
+            'latest_turn_gap_json': window['latest_turn_gap_json'],
             'latest_turn_gap_cursor': null,
             'source_entry_count': sourceEntryCount > committedCount
                 ? sourceEntryCount
@@ -2522,6 +2751,7 @@ class SessionCatalogCacheRepository {
             'entry_count': count,
             'has_earlier': hasEarlier ? 1 : 0,
             'turns_next_cursor': turnsNextCursor,
+            'window_complete': 1,
             'latest_turn_complete': latestTurnComplete ? 1 : 0,
             'latest_turn_gap_json': latestTurnGapJson,
             'latest_turn_gap_cursor': null,
@@ -4235,4 +4465,52 @@ class SessionCatalogCacheRepository {
 
 class _ConversationCacheBatchSuperseded implements Exception {
   const _ConversationCacheBatchSuperseded();
+}
+
+/// Merges an incomplete ordered observation into an existing hot window.
+///
+/// Existing rows keep their relative order. New rows are inserted immediately
+/// before the next overlapping stable-ID anchor; a trailing run is appended.
+/// Reversed anchors prove the partial projection is inconsistent with the
+/// committed cache, so the caller must reject it and wait for a complete
+/// replacement instead of guessing from timestamps.
+List<String>? _mergeAdditiveTimelineOrder(
+  List<String> existingIds,
+  List<String> incomingIds,
+) {
+  final existingPositions = <String, int>{
+    for (var index = 0; index < existingIds.length; index++)
+      existingIds[index]: index,
+  };
+  final incomingUnique = <String>[];
+  final seenIncoming = <String>{};
+  for (final entryId in incomingIds) {
+    if (seenIncoming.add(entryId)) incomingUnique.add(entryId);
+  }
+
+  var lastAnchorPosition = -1;
+  for (final entryId in incomingUnique) {
+    final position = existingPositions[entryId];
+    if (position == null) continue;
+    if (position <= lastAnchorPosition) return null;
+    lastAnchorPosition = position;
+  }
+
+  final beforeAnchor = <String, List<String>>{};
+  final pending = <String>[];
+  for (final entryId in incomingUnique) {
+    if (existingPositions.containsKey(entryId)) {
+      if (pending.isNotEmpty) {
+        beforeAnchor[entryId] = List<String>.of(pending);
+        pending.clear();
+      }
+    } else {
+      pending.add(entryId);
+    }
+  }
+
+  return [
+    for (final entryId in existingIds) ...[...?beforeAnchor[entryId], entryId],
+    ...pending,
+  ];
 }

@@ -23,6 +23,7 @@ abstract interface class ConversationContentSyncGateway {
   String? get lastUrl;
   bool get supportsConversationContentEvents;
   bool get supportsConversationSyncV2;
+  bool get supportsConversationWindowCoverage;
   bool get supportsConversationSyncFocusRefresh;
   bool get supportsConversationItemsById;
   bool get supportsConversationUserIndex;
@@ -73,6 +74,10 @@ class BridgeServiceConversationContentSyncGateway
 
   @override
   bool get supportsConversationSyncV2 => bridge.supportsConversationSyncV2;
+
+  @override
+  bool get supportsConversationWindowCoverage =>
+      bridge.supportsConversationWindowCoverage;
 
   @override
   bool get supportsConversationSyncFocusRefresh =>
@@ -1819,7 +1824,11 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     try {
       final values = await Future.wait<Object>([
         cache.loadConversationSyncState(target),
-        cache.knownConversationRevisions(target, limit: 512),
+        cache.knownConversationRevisions(
+          target,
+          limit: 512,
+          includeIncomplete: true,
+        ),
         cache.loadReadWatermarks(target, limit: 512),
       ]);
       if (_disposed ||
@@ -1838,24 +1847,27 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           _forcedSnapshotTargetFingerprint == target.fingerprint
           ? Set<String>.of(_forcedSnapshotThreadKeys)
           : const <String>{};
-      final resumableRevisions = revisions
-          .where(
-            (cursor) => !forcedSnapshotKeys.contains(
-              _conversationThreadKey(cursor.provider, cursor.providerSessionId),
-            ),
-          )
-          .toList(growable: false);
+      final supportsWindowCoverage = bridge.supportsConversationWindowCoverage;
       bridge.send(
         conversationSyncV2Subscribe(
           requestId: requestId,
           catalogState: state.catalogState,
           statusState: state.statusState,
-          threadContentStates: resumableRevisions
+          threadContentStates: revisions
               .map(
                 (cursor) => ConversationSyncV2ThreadState(
                   provider: cursor.provider,
                   providerSessionId: cursor.providerSessionId,
                   revision: cursor.revision,
+                  forceReplacement:
+                      supportsWindowCoverage &&
+                      (!cursor.windowComplete ||
+                          forcedSnapshotKeys.contains(
+                            _conversationThreadKey(
+                              cursor.provider,
+                              cursor.providerSessionId,
+                            ),
+                          )),
                 ),
               )
               .toList(growable: false),
@@ -1871,7 +1883,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       conversationSyncTrace(
         '[conversation_sync_v2] event=subscribe_sent '
         'generation=$generation progress=80 '
-        'knownRevisions=${resumableRevisions.length} '
+        'knownRevisions=${revisions.length} '
         'forcedSnapshots=${forcedSnapshotKeys.length} '
         'readWatermarks=${watermarks.length}',
       );
@@ -2241,8 +2253,21 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             'entries=${event.entries.length} deletes=${event.deletes.length} '
             'base=${shortConversationSyncToken(event.baseRevision)} '
             'content=${shortConversationSyncToken(event.revision)} '
+            'windowComplete=${event.effectiveWindowComplete} '
             'latestComplete=${event.latestTurnComplete ?? true}',
           );
+        }
+        final effectiveWindowComplete = event.effectiveWindowComplete;
+        // New Bridges explicitly promise additive semantics. Reject a broken
+        // explicit frame with thread-scoped recovery. Older Bridges expressed
+        // the same repair only through latestTurnComplete=false and may still
+        // carry replacement-style revision/deletes; the repository ignores
+        // those destructive fields while preserving its canonical revision.
+        if (event.windowComplete == false &&
+            (event.deletes.isNotEmpty ||
+                (event.mode == 'patch' &&
+                    event.revision != event.baseRevision))) {
+          throw const _ConversationTimelineBaseRevisionMismatch();
         }
         final committed = await cache.stageConversationTimelinePage(
           target: target,
@@ -2258,6 +2283,12 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           deletes: event.deletes,
           hasEarlier: event.hasEarlier!,
           turnsNextCursor: event.turnsNextCursor,
+          windowComplete: effectiveWindowComplete,
+          // Pre-coverage v2 Bridges advanced their own patch lineage even
+          // though they could not prove whole-window replacement authority.
+          // Track that wire revision while keeping the local body additive;
+          // otherwise the next legacy patch is guaranteed to base-mismatch.
+          advanceIncompleteWireRevision: event.windowComplete == null,
           latestTurnComplete: event.latestTurnComplete ?? true,
           latestTurnGap: event.latestTurnGap,
           sourceEntryCount: event.sourceEntryCount!,
@@ -2268,14 +2299,19 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           // replacement instead of blanking the conversation.
           throw const _ConversationTimelineBaseRevisionMismatch();
         }
+        if (committed.stageRejected) {
+          throw StateError('Conversation timeline staging safety bound hit.');
+        }
         if (committed.windowCommitted) {
+          final committedRevision =
+              committed.committedRevision ?? event.revision!;
           conversationSyncTrace(
             '[conversation_sync_v2] event=timeline_window_committed '
             'target=$timelineTrace sequence=${event.sequence} '
-            'content=${shortConversationSyncToken(event.revision)} '
+            'content=${shortConversationSyncToken(committedRevision)} '
             'lastAssistant=${committed.lastAssistantOutputAt ?? 'none'}',
           );
-          if (event.mode == 'snapshot') {
+          if (event.mode == 'snapshot' && effectiveWindowComplete) {
             _clearForcedSnapshotThread(
               target,
               event.provider!,
@@ -2287,7 +2323,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               targetFingerprint: target.fingerprint,
               provider: event.provider!,
               providerSessionId: event.providerSessionId!,
-              revision: event.revision!,
+              revision: committedRevision,
             ),
           );
           publish = ConversationSyncCacheUpdate(
@@ -2295,7 +2331,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             targetFingerprint: target.fingerprint,
             provider: event.provider,
             providerSessionId: event.providerSessionId,
-            revision: event.revision,
+            revision: committedRevision,
             lastAssistantOutputAt: committed.lastAssistantOutputAt,
           );
         }
@@ -2445,7 +2481,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 latestTurnRequest.completer.completeError(error, stackTrace);
               }
             }
-            if (snapshot == null || !snapshot.latestTurnComplete) {
+            if (snapshot == null) {
               if (!latestTurnRequest.completer.isCompleted) {
                 latestTurnRequest.completer.completeError(
                   const _ConversationPagingInterrupted(),
@@ -2578,6 +2614,19 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 ),
               );
             }
+          } else if (event.pageComplete == false && event.nextCursor == null) {
+            // A source item that cannot fit must be reported by the Bridge as
+            // an explicit request failure without cursor advancement. Do not
+            // merge a projected terminal payload and then request the same
+            // null cursor until the 32-page bound is exhausted.
+            if (!latestTurnRequest.completer.isCompleted) {
+              latestTurnRequest.completer.completeError(
+                StateError(
+                  'Conversation item exceeds the Bridge frame budget; '
+                  'retry with the same cursor after updating the Bridge.',
+                ),
+              );
+            }
           } else {
             ConversationHotWindowSnapshot? snapshot;
             try {
@@ -2589,6 +2638,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 expectedTurnId: latestTurnRequest.turnId!,
                 rawMessages: rawMessages,
                 nextCursor: event.nextCursor,
+                pageComplete: event.pageComplete ?? true,
+                latestTurnGap: event.latestTurnGap,
               );
             } catch (error, stackTrace) {
               // Keep the previous gap/cursor committed. This is an explicit
