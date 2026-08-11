@@ -56,6 +56,45 @@ runtime 的源码 HEAD 没有差异，禁止为了让 runtime 名称包含最新
 阻断或用户补充修复时，只从第一个失效阶段续跑。禁止无条件回到第 1 阶段重新阅读全部
 项目资料、重跑无关全量测试或重启未变化的服务。
 
+### 3.1 可执行快速通道
+
+仓库提供 `scripts/local-release-fast.sh`，把最容易重复且确定性的步骤固化为四个命令：
+
+```bash
+# 只分类，不构建、不发布
+npm run local-release:plan -- --base <已部署基线>
+
+# 运行一次最小真实链路门禁；相同 fingerprint 自动复用
+npm run local-release:gate -- --base <已部署基线>
+
+# 仅在 Bridge tree 变化且 lock 未变化时，APFS clone 依赖并覆盖新 dist
+npm run local-release:bridge-runtime -- --base <已部署基线>
+
+# 复用 Flutter/Pods/DerivedData，一次构建并审计无签名 AltStore IPA
+npm run local-release:ipa -- --base <已部署基线> --build-number <新 build>
+```
+
+fingerprint 绑定完整 HEAD、Bridge/Mobile tree、两个 lock、Node 和 Flutter 工具链。
+相同输入的成功门禁不会重复执行；任一真实输入变化时只让相应阶段失效。缓存路径默认为
+`~/Library/Caches/CCPocketLocalRelease`，可用 `CCPOCKET_FAST_RELEASE_CACHE` 覆盖。
+
+该脚本故意不执行 LaunchAgent 切换、owner/stable 发布或设备安装。Bridge 候选完成真实
+wire smoke 后，仍由固定发布任务按生产 SOP 做唯一一次可回滚切换；IPA 审计后再使用既有
+手机发送工具 offer。这样把确定性构建压缩为一条命令，同时不把生产授权藏进脚本。
+
+### 3.2 快速试用不再重复的步骤
+
+- 开发任务已经给出精确 HEAD、产品 tree 和全量证据时，发布任务不再重跑同一套全量；
+- 不执行 `flutter clean`、不删除 Pods/DerivedData、依赖缓存或 Bridge `node_modules`；
+- Dart-only AltStore 试用包不先跑一遍 Shorebird dry-run；只有实际 owner OTA 才进入
+  Shorebird lineage/signing 门禁；
+- 不为 IPA 再做一个内容相同的 simulator build；定向 Widget/链路测试与 iPhoneOS archive
+  是两个必要层；
+- package/pub lock 未变化时不重新安装依赖；Bridge runtime 复用当前 runtime 的 APFS
+  clone，随后只覆盖本次 `dist`；
+- 文档、测试 helper 或另一产品层变化，不使已经绑定 fingerprint 的构建证据失效；
+- 生产 Bridge tree 未变时不重建 runtime，Mobile delivery tree 未变时不生成 IPA/OTA。
+
 ## 4. 可安全并行与必须串行的工作
 
 可并行的只读工作：
@@ -108,4 +147,3 @@ runtime 的源码 HEAD 没有差异，禁止为了让 runtime 名称包含最新
 - 需要协调任务修复或决定的唯一下一步。
 
 协调任务给出新 HEAD 或决定后，发布任务从第一个失效阶段继续，不重新执行仍有效阶段。
-
