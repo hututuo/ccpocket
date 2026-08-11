@@ -339,6 +339,77 @@ describe("codexThreadToSessionHistory", () => {
     ).toBeUndefined();
   });
 
+  it("keeps reasoning identities stable across full and focused projections", () => {
+    const reasoning = {
+      type: "reasoning",
+      id: "reasoning-stable",
+      summary: ["checking the same turn"],
+    };
+    const full = codexThreadToSessionHistory({
+      turns: [
+        {
+          id: "turn-stable-reasoning",
+          items: [
+            {
+              type: "userMessage",
+              id: "user-stable-reasoning",
+              content: [{ type: "text", text: "inspect" }],
+            },
+            reasoning,
+          ],
+        },
+      ],
+    });
+    const focused = codexThreadToSessionHistory({
+      turns: [
+        {
+          id: "turn-stable-reasoning",
+          items: [reasoning],
+        },
+      ],
+    });
+    const fullReasoning = full.find(
+      (message) => message.rawItemId === "reasoning-stable",
+    );
+    const focusedReasoning = focused.find(
+      (message) => message.rawItemId === "reasoning-stable",
+    );
+    expect(fullReasoning).toMatchObject({
+      uuid: "reasoning-stable",
+      rawItemId: "reasoning-stable",
+      historyTurnId: "turn-stable-reasoning",
+    });
+    expect(focusedReasoning?.uuid).toBe(fullReasoning?.uuid);
+  });
+
+  it("keeps an anonymous item identity stable when its payload grows", () => {
+    const project = (summary: string[]) =>
+      codexThreadToSessionHistory({
+        turns: [
+          {
+            id: "turn-anonymous-growth",
+            items: [
+              {
+                type: "userMessage",
+                id: "user-anonymous-growth",
+                content: [{ type: "text", text: "inspect" }],
+              },
+              { type: "reasoning", summary },
+            ],
+          },
+        ],
+      }).find(
+        (message) =>
+          Array.isArray(message.content) &&
+          message.content[0]?.type === "thinking",
+      );
+
+    const partial = project(["checking"]);
+    const complete = project(["checking", "finished"]);
+    expect(partial?.uuid).toBe("codex-item-turn-anonymous-growth-1");
+    expect(complete?.uuid).toBe(partial?.uuid);
+  });
+
   it("keeps exact event time when a mirror consumes a supplemented thread", () => {
     const timeline = {
       callIds: new Set<string>(),

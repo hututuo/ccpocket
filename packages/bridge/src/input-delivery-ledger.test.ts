@@ -248,6 +248,7 @@ describe("InputDeliveryLedger", () => {
       identity,
       stage: "provider_accepted",
       method: "turn/start",
+      providerTurnId: "turn-accepted-before-phone",
       occurredAt: "2026-08-01T01:01:00.000Z",
       clientUserMessageIdAccepted: true,
     });
@@ -262,6 +263,7 @@ describe("InputDeliveryLedger", () => {
     expect(plan.records).toMatchObject([
       {
         state: "provider_accepted",
+        providerTurnId: "turn-accepted-before-phone",
         clientUserMessageIdAccepted: true,
       },
     ]);

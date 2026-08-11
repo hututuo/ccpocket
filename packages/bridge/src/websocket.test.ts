@@ -3734,6 +3734,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(sessionList.bridgeCapabilities).toContain(
       "conversation_sync_focus_refresh_v1",
     );
+    expect(sessionList.bridgeCapabilities).toContain(
+      "conversation_sync_window_coverage_v1",
+    );
     (bridge as any).wss.clients.add(ws);
     (bridge as any).connectionAuth.set(ws, { kind: "open" });
     (bridge as any).broadcastSessionList();
@@ -3743,6 +3746,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       .at(-1);
     expect(broadcastSessionList.bridgeCapabilities).toContain(
       "conversation_sync_focus_refresh_v1",
+    );
+    expect(broadcastSessionList.bridgeCapabilities).toContain(
+      "conversation_sync_window_coverage_v1",
     );
     expect(broadcastSessionList.clientBridgeCompatibilityRevision).toBe(1);
     expect(sessionList.codexModels).toEqual([
@@ -3903,6 +3909,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       stage: "provider_accepted",
       provider: "codex",
       method: "turn/start",
+      providerTurnId: "turn-mobile-1",
       occurredAt: "2026-07-31T00:00:00.000Z",
       acceptedSeq: 1,
       queued: true,

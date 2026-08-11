@@ -306,6 +306,50 @@ describe("ConversationContentSyncFeatureHandler", () => {
     expect(snapshot.entries.at(-1)?.sourceIndex).toBe(messages.length - 1);
   });
 
+  it("marks a latest-only budget fallback as an incomplete whole window", () => {
+    const messages: ServerMessage[] = [];
+    for (let turn = 0; turn < 5; turn += 1) {
+      messages.push(
+        {
+          type: "user_input",
+          text: `prompt-${turn}-${"u".repeat(700)}`,
+          userMessageUuid: `user-${turn}`,
+          historyTurnId: `turn-${turn}`,
+        },
+        {
+          type: "assistant",
+          messageUuid: `assistant-${turn}`,
+          historyTurnId: `turn-${turn}`,
+          message: {
+            id: `assistant-${turn}`,
+            role: "assistant",
+            model: "test",
+            content: [{ type: "text", text: `answer-${turn}` }],
+          },
+        },
+      );
+    }
+
+    const snapshot = buildConversationContentSnapshot(
+      { provider: "codex", providerSessionId: "thread-latest-only" },
+      messages,
+      {
+        maxMessageTextBytes: 2 * 1024,
+        maxSnapshotBytes: 2 * 1024,
+      },
+    );
+
+    expect(snapshot.latestTurnComplete).toBe(true);
+    expect(snapshot.latestTurnGap).toBeUndefined();
+    expect(snapshot.windowComplete).toBe(false);
+    expect(snapshot.entries.map((entry) => entry.message)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ historyTurnId: "turn-4" }),
+      ]),
+    );
+    expect(snapshot.entries.length).toBeLessThan(messages.length);
+  });
+
   it("bounds aggregate text per message without changing the wire envelope", async () => {
     const fixture = createFixture(1, {
       maxMessageTextBytes: 64,

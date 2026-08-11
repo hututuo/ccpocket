@@ -23,6 +23,7 @@ import {
   APP_SERVER_STATUS_CAPABILITY,
   CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
   CONVERSATION_SYNC_V2_CAPABILITY,
+  CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
   CONVERSATION_USER_INDEX_CAPABILITY,
   conversationSyncV2ProtocolContribution,
   type ConversationSyncCatalogEntry,
@@ -732,6 +733,7 @@ describe("conversation_sync_v2 protocol", () => {
         getProviderSessionId: () => threadId,
         supports: (client, capability) =>
           capability === CONVERSATION_SYNC_V2_CAPABILITY ||
+          capability === CONVERSATION_WINDOW_COVERAGE_CAPABILITY ||
           capability === CONVERSATION_USER_INDEX_CAPABILITY ||
           (client === capableClient &&
             capability === CONVERSATION_RUNTIME_OVERLAY_CAPABILITY),
@@ -824,6 +826,7 @@ describe("conversation_sync_v2 protocol", () => {
         ],
         supports: (_target, capability) =>
           capability === CONVERSATION_SYNC_V2_CAPABILITY ||
+          capability === CONVERSATION_WINDOW_COVERAGE_CAPABILITY ||
           capability === CONVERSATION_USER_INDEX_CAPABILITY ||
           capability === CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
       },
@@ -880,6 +883,7 @@ describe("conversation_sync_v2 protocol", () => {
         getProviderSessionId: () => "session-0",
         supports: (_target, capability) =>
           capability === CONVERSATION_SYNC_V2_CAPABILITY ||
+          capability === CONVERSATION_WINDOW_COVERAGE_CAPABILITY ||
           capability === CONVERSATION_USER_INDEX_CAPABILITY ||
           capability === CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
       },
@@ -1838,13 +1842,16 @@ describe("conversation_sync_v2 protocol", () => {
             provider: "codex",
             providerSessionId: "thread-1",
             revision: "revision-1",
+            forceReplacement: true,
           },
         ]),
       ),
     ).toMatchObject({
       type: "conversation_sync_subscribe",
       protocolVersion: 2,
-      threadContentStates: [{ providerSessionId: "thread-1" }],
+      threadContentStates: [
+        { providerSessionId: "thread-1", forceReplacement: true },
+      ],
     });
 
     expect(
@@ -1862,6 +1869,20 @@ describe("conversation_sync_v2 protocol", () => {
           },
         ]),
       ),
+    ).toBeNull();
+
+    expect(
+      conversationSyncV2ProtocolContribution.parseClient({
+        ...subscribeMessage(),
+        threadContentStates: [
+          {
+            provider: "codex",
+            providerSessionId: "thread-1",
+            revision: "revision-1",
+            forceReplacement: "yes",
+          },
+        ],
+      }),
     ).toBeNull();
   });
 
@@ -2178,11 +2199,19 @@ describe("ConversationSyncV2FeatureHandler", () => {
       client,
       "sync_complete",
     ).at(-1)!;
-    expect(
-      events(fixture.sent, client, "timeline_page").filter(
-        (event) => event.batchId === ordinaryComplete.batchId,
-      ),
-    ).toHaveLength(0);
+    const ordinaryTimeline = events(
+      fixture.sent,
+      client,
+      "timeline_page",
+    ).filter((event) => event.batchId === ordinaryComplete.batchId);
+    expect(ordinaryTimeline).not.toHaveLength(0);
+    expect(ordinaryTimeline.at(-1)?.revision).not.toBe(
+      refreshTimeline.at(-1)?.revision,
+    );
+    expect(JSON.stringify(ordinaryTimeline)).toContain('"text":"new"');
+    expect(JSON.stringify(ordinaryTimeline)).not.toContain(
+      "new Desktop progress",
+    );
     expect(latestTurnHistoryReader).toHaveBeenCalledTimes(2);
     fixture.handler.close();
   });
@@ -2194,13 +2223,19 @@ describe("ConversationSyncV2FeatureHandler", () => {
       latestAttempts += 1;
       return {
         messages:
-          latestAttempts === 1 ? [] : history("empty-latest-recovered"),
+          latestAttempts === 1
+            ? []
+            : historyForTurn(
+                "empty-latest-recovered",
+                "turn-empty-latest-retry",
+              ),
         nextTurnCursor: null,
       };
     });
     const fixture = createFixture(
       [codex],
-      async () => history("empty-latest-existing"),
+      async () =>
+        historyForTurn("empty-latest-existing", "turn-empty-latest-retry"),
       {
         latestTurnHistoryReader,
         providerHistoryRetryDelaysMs: [25],
@@ -2275,11 +2310,14 @@ describe("ConversationSyncV2FeatureHandler", () => {
     const historyReader = vi.fn(async () => {
       historyReadCount += 1;
       return historyReadCount === 1
-        ? history("initial-before-background-flight")
+        ? historyForTurn(
+            "initial-before-background-flight",
+            "turn-background-flight",
+          )
         : backgroundRead;
     });
     const latestTurnHistoryReader = vi.fn(async () => ({
-      messages: history("forced-focus-new"),
+      messages: historyForTurn("forced-focus-new", "turn-background-flight"),
       nextTurnCursor: null,
     }));
     const fixture = createFixture([codex], historyReader, {
@@ -2329,7 +2367,9 @@ describe("ConversationSyncV2FeatureHandler", () => {
     await Promise.resolve();
     expect(latestTurnHistoryReader).not.toHaveBeenCalled();
 
-    resolveBackgroundRead!(history("background-flight-old"));
+    resolveBackgroundRead!(
+      historyForTurn("background-flight-old", "turn-background-flight"),
+    );
     await vi.waitFor(() =>
       expect(latestTurnHistoryReader).toHaveBeenCalledTimes(1),
     );
@@ -2601,13 +2641,17 @@ describe("ConversationSyncV2FeatureHandler", () => {
     const latestTurnHistoryReader = vi.fn(async () => {
       latestRead += 1;
       return {
-        messages: history(`pending-chain-${latestRead}`),
+        messages: historyForTurn(
+          `pending-chain-${latestRead}`,
+          "turn-pending-base-chain",
+        ),
         nextTurnCursor: null,
       };
     });
     const fixture = createFixture(
       [codex],
-      async () => history("pending-chain-initial"),
+      async () =>
+        historyForTurn("pending-chain-initial", "turn-pending-base-chain"),
       { latestTurnHistoryReader },
     );
     const client = {};
@@ -2820,7 +2864,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
-  it("adds live fallback content without deleting a phone-only cached window", async () => {
+  it("does not guess an additive lineage for a phone-only cached window", async () => {
     const fixture = createFixture([seed(0)], async () => {
       throw new Error("canonical history unavailable");
     });
@@ -2862,14 +2906,11 @@ describe("ConversationSyncV2FeatureHandler", () => {
     await vi.waitFor(() =>
       expect(events(fixture.sent, client, "sync_complete")).toHaveLength(2),
     );
-    const livePage = events(fixture.sent, client, "timeline_page").at(-1);
-    expect(livePage).toMatchObject({
-      mode: "patch",
-      baseRevision: "phone-cache-only-revision",
-      deletes: [],
-      latestTurnComplete: false,
-    });
-    expect(JSON.stringify(livePage)).toContain("additive live output");
+    // The Bridge cannot know how many entries or which stable IDs the phone's
+    // retained body contains after a Bridge restart. It must keep that body
+    // readable and wait for a complete provider replacement; live runtime
+    // content uses the separately capability-gated overlay path.
+    expect(events(fixture.sent, client, "timeline_page")).toEqual([]);
     await fixture.handler.close();
   });
 
@@ -3903,6 +3944,530 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("keeps identical anonymous app-server turns distinct within a page", async () => {
+    const anonymousTurn = () => ({
+      items: [{ type: "agentMessage", text: "same anonymous answer" }],
+    });
+    const fixture = createCodexPageFixture(
+      {
+        listThreadTurns: vi.fn(async () => ({
+          data: [anonymousTurn(), anonymousTurn()],
+          nextCursor: null,
+        })),
+      },
+      async () => [],
+    );
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_turns_page",
+        protocolVersion: 2,
+        requestId: "anonymous-turns-page",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-anonymous-page",
+        limit: 2,
+        sortDirection: "asc",
+        itemsView: "full",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+    const response = events(
+      fixture.sent,
+      fixture.client,
+      "turns_page_response",
+    ).find((event) => event.requestId === "anonymous-turns-page")!;
+    const ids = response.data.map((turn) => turn.turnId);
+    expect(new Set(ids).size).toBe(2);
+    expect(ids.every((id) => id.startsWith("turn:"))).toBe(true);
+    await fixture.handler.close();
+  });
+
+  it("keeps old anonymous turn ids stable when a newer turn is appended", async () => {
+    const oldTurns = [
+      { items: [{ type: "userMessage", text: "anonymous first" }] },
+      { items: [{ type: "agentMessage", text: "anonymous second" }] },
+    ];
+    let page = [...oldTurns];
+    const fixture = createCodexPageFixture(
+      {
+        listThreadTurns: vi.fn(async () => ({
+          data: page,
+          nextCursor: null,
+        })),
+      },
+      async () => [],
+    );
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    const request = async (requestId: string) => {
+      await fixture.handler.handle(
+        {
+          type: "conversation_turns_page",
+          protocolVersion: 2,
+          requestId,
+          subscriptionId: subscription.requestId,
+          provider: "codex",
+          providerSessionId: "thread-anonymous-stability",
+          limit: 5,
+          sortDirection: "asc",
+          itemsView: "full",
+        },
+        context(fixture.client, fixture.runtime),
+      );
+      return events(
+        fixture.sent,
+        fixture.client,
+        "turns_page_response",
+      ).find((event) => event.requestId === requestId)!.data;
+    };
+
+    const before = await request("anonymous-before-append");
+    page = [
+      ...oldTurns,
+      { items: [{ type: "agentMessage", text: "anonymous newest" }] },
+    ];
+    const after = await request("anonymous-after-append");
+
+    expect(after.slice(0, 2).map((turn) => turn.turnId)).toEqual(
+      before.map((turn) => turn.turnId),
+    );
+    expect(new Set(after.map((turn) => turn.turnId))).toHaveLength(3);
+    await fixture.handler.close();
+  });
+
+  it("keeps overlapping same-root anonymous turn ids stable when a bounded hot window slides", async () => {
+    const anonymousTurn = (answer: number) => ({
+      items: [
+        { type: "userMessage", text: "repeated anonymous prompt" },
+        { type: "agentMessage", text: `anonymous answer ${answer}` },
+      ],
+    });
+    let page = [1, 2, 3, 4, 5].map(anonymousTurn);
+    const fixture = createCodexPageFixture(
+      {
+        listThreadTurns: vi.fn(async () => ({
+          data: page,
+          nextCursor: null,
+        })),
+      },
+      async () => [],
+    );
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    const request = async (requestId: string) => {
+      await fixture.handler.handle(
+        {
+          type: "conversation_turns_page",
+          protocolVersion: 2,
+          requestId,
+          subscriptionId: subscription.requestId,
+          provider: "codex",
+          providerSessionId: "thread-anonymous-sliding-window",
+          limit: 5,
+          sortDirection: "asc",
+          itemsView: "full",
+        },
+        context(fixture.client, fixture.runtime),
+      );
+      return events(
+        fixture.sent,
+        fixture.client,
+        "turns_page_response",
+      ).find((event) => event.requestId === requestId)!.data;
+    };
+    const before = await request("anonymous-sliding-before");
+    page = [2, 3, 4, 5, 6].map(anonymousTurn);
+    const after = await request("anonymous-sliding-after");
+    const turnIdFor = (turns: typeof before, answer: number) =>
+      turns.find((turn) =>
+        JSON.stringify(turn).includes(`anonymous answer ${answer}`),
+      )!.turnId;
+    for (const answer of [2, 3, 4, 5]) {
+      expect(turnIdFor(after, answer)).toBe(turnIdFor(before, answer));
+    }
+    await fixture.handler.close();
+  });
+
+  it("scopes repeated anonymous turn anchors across opaque pagination cursors", async () => {
+    const listThreadTurns = vi.fn(
+      async (request: { cursor?: string | null }) => ({
+        data: [
+          {
+            items: [
+              { type: "userMessage", text: "same anonymous prompt" },
+              {
+                type: "agentMessage",
+                text:
+                  request.cursor == null
+                    ? "newer anonymous answer"
+                    : "older anonymous answer",
+              },
+            ],
+          },
+        ],
+        nextCursor: request.cursor == null ? "older-cursor" : null,
+      }),
+    );
+    const fixture = createCodexPageFixture({ listThreadTurns }, async () => []);
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    const readPage = async (requestId: string, cursor: string | null) => {
+      await fixture.handler.handle(
+        {
+          type: "conversation_turns_page",
+          protocolVersion: 2,
+          requestId,
+          subscriptionId: subscription.requestId,
+          provider: "codex",
+          providerSessionId: "thread-anonymous-pages",
+          cursor,
+          limit: 1,
+          sortDirection: "desc",
+          itemsView: "full",
+        },
+        context(fixture.client, fixture.runtime),
+      );
+      return events(
+        fixture.sent,
+        fixture.client,
+        "turns_page_response",
+      ).find((event) => event.requestId === requestId)!;
+    };
+
+    const newest = await readPage("anonymous-page-head", null);
+    const older = await readPage("anonymous-page-older", "older-cursor");
+    expect(newest.data).toHaveLength(1);
+    expect(older.data).toHaveLength(1);
+    expect(newest.data[0]!.turnId).not.toBe(older.data[0]!.turnId);
+    await fixture.handler.close();
+  });
+
+  it("falls back to a bounded full read for an id-less latest turn with a repeated root", async () => {
+    const threadId = "thread-anonymous-latest-refresh";
+    const sameRoot = {
+      type: "userMessage",
+      text: "same anonymous prompt",
+    };
+    const oldestTurn = {
+      items: [
+        sameRoot,
+        { type: "agentMessage", text: "old anonymous answer" },
+      ],
+    };
+    let newestTurn = {
+      items: [
+        sameRoot,
+        { type: "agentMessage", text: "latest anonymous stale" },
+      ],
+    };
+    let chronologicalTurns = [oldestTurn, newestTurn];
+    const listThreadTurns = vi.fn(
+      async (request: { limit?: number; sortDirection?: "asc" | "desc" }) => ({
+        data:
+          request.limit === 1
+            ? [chronologicalTurns.at(-1)!]
+            : request.sortDirection === "desc"
+              ? [...chronologicalTurns].reverse()
+              : chronologicalTurns,
+        nextCursor: null,
+      }),
+    );
+    const process = {
+      isRunning: true,
+      listThreadTurns,
+      listThreadItems: vi.fn(async () => ({ data: [], nextCursor: null })),
+      stop: vi.fn(),
+    } as unknown as CodexProcess;
+    const codex = codexSeed(0, threadId);
+    const fixture = createFixture([codex], undefined, {}, {
+      getActiveCodexProcess: () => process,
+    });
+    const client = {};
+    const subscription = {
+      ...subscribeMessage(),
+      focused: {
+        provider: "codex" as const,
+        providerSessionId: threadId,
+      },
+    };
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const initialComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    ).at(-1)!;
+    const initialPages = events(fixture.sent, client, "timeline_page").filter(
+      (event) => event.batchId === initialComplete.batchId,
+    );
+    const initialEntries = initialPages.flatMap((page) => page.entries);
+    const initialLatest = initialEntries.find(
+      (entry) =>
+        entry.message.type === "assistant" &&
+        JSON.stringify(entry.message).includes("latest anonymous stale"),
+    )!;
+    const oldTurnId = initialEntries.find(
+      (entry) =>
+        entry.message.type === "assistant" &&
+        JSON.stringify(entry.message).includes("old anonymous answer"),
+    )!.message.historyTurnId;
+    expect(initialLatest.message.historyTurnId).not.toBe(oldTurnId);
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: initialComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+
+    newestTurn = {
+      items: [
+        sameRoot,
+        { type: "agentMessage", text: "latest anonymous updated" },
+      ],
+    };
+    chronologicalTurns = [oldestTurn, newestTurn];
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "anonymous-latest-refresh",
+        subscriptionId: subscription.requestId,
+        refresh: true,
+        focused: subscription.focused,
+      },
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(2),
+    );
+    const refreshComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    ).at(-1)!;
+    const refreshPages = events(fixture.sent, client, "timeline_page").filter(
+      (event) => event.batchId === refreshComplete.batchId,
+    );
+    const committed = new Map(
+      initialEntries.map((entry) => [entry.entryId, entry] as const),
+    );
+    for (const page of refreshPages) {
+      if (page.mode === "snapshot") committed.clear();
+      for (const entryId of page.deletes) committed.delete(entryId);
+      for (const entry of page.entries) committed.set(entry.entryId, entry);
+    }
+    const committedJson = JSON.stringify([...committed.values()]);
+    expect(committedJson).toContain("old anonymous answer");
+    expect(committedJson).toContain("latest anonymous updated");
+    expect(committedJson).not.toContain("latest anonymous stale");
+    expect(
+      listThreadTurns.mock.calls.filter(([request]) => request.limit === 1),
+    ).toHaveLength(0);
+    const committedOld = [...committed.values()].find(
+      (entry) =>
+        entry.message.type === "assistant" &&
+        JSON.stringify(entry.message).includes("old anonymous answer"),
+    )!;
+    expect(committedOld.message.historyTurnId).toBe(oldTurnId);
+    const updatedLatest = [...committed.values()].find(
+      (entry) =>
+        entry.message.type === "assistant" &&
+        JSON.stringify(entry.message).includes("latest anonymous updated"),
+    )!;
+    expect(updatedLatest.message.historyTurnId).not.toBe(oldTurnId);
+    expect(updatedLatest.message.historyTurnId).toBe(
+      initialLatest.message.historyTurnId,
+    );
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: refreshComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+    chronologicalTurns = [
+      oldestTurn,
+      newestTurn,
+      {
+        items: [
+          sameRoot,
+          { type: "agentMessage", text: "new legal same-root answer" },
+        ],
+      },
+    ];
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "anonymous-new-same-root-turn",
+        subscriptionId: subscription.requestId,
+        refresh: true,
+        focused: subscription.focused,
+      },
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(3),
+    );
+    const newTurnComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    ).at(-1)!;
+    const newTurnPages = events(
+      fixture.sent,
+      client,
+      "timeline_page",
+    ).filter((event) => event.batchId === newTurnComplete.batchId);
+    for (const page of newTurnPages) {
+      if (page.mode === "snapshot") committed.clear();
+      for (const entryId of page.deletes) committed.delete(entryId);
+      for (const entry of page.entries) committed.set(entry.entryId, entry);
+    }
+    const afterNewTurn = JSON.stringify([...committed.values()]);
+    expect(afterNewTurn).toContain("latest anonymous updated");
+    expect(afterNewTurn).toContain("new legal same-root answer");
+    const legalNewTurn = [...committed.values()].find(
+      (entry) =>
+        entry.message.type === "assistant" &&
+        JSON.stringify(entry.message).includes("new legal same-root answer"),
+    )!;
+    expect(legalNewTurn.message.historyTurnId).not.toBe(
+      updatedLatest.message.historyTurnId,
+    );
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: newTurnComplete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+
+    // One provider refresh can both extend the active anonymous turn and
+    // append another turn with the same root prompt. The old active identity
+    // must follow the earlier evolved turn; assigning it to the new tail would
+    // make the visible conversation jump backwards and duplicate a round.
+    chronologicalTurns = [
+      oldestTurn,
+      newestTurn,
+      {
+        items: [
+          sameRoot,
+          {
+            type: "agentMessage",
+            text: "new legal same-root answer evolved",
+          },
+        ],
+      },
+      {
+        items: [
+          sameRoot,
+          { type: "agentMessage", text: "combined appended same-root answer" },
+        ],
+      },
+    ];
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "anonymous-evolve-and-append-same-refresh",
+        subscriptionId: subscription.requestId,
+        refresh: true,
+        focused: subscription.focused,
+      },
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(4),
+    );
+    const combinedComplete = events(
+      fixture.sent,
+      client,
+      "sync_complete",
+    ).at(-1)!;
+    const combinedPages = events(
+      fixture.sent,
+      client,
+      "timeline_page",
+    ).filter((event) => event.batchId === combinedComplete.batchId);
+    for (const page of combinedPages) {
+      if (page.mode === "snapshot") committed.clear();
+      for (const entryId of page.deletes) committed.delete(entryId);
+      for (const entry of page.entries) committed.set(entry.entryId, entry);
+    }
+    const evolvedPriorLatest = [...committed.values()].find(
+      (entry) =>
+        entry.message.type === "assistant" &&
+        JSON.stringify(entry.message).includes(
+          "new legal same-root answer evolved",
+        ),
+    )!;
+    const combinedAppended = [...committed.values()].find(
+      (entry) =>
+        entry.message.type === "assistant" &&
+        JSON.stringify(entry.message).includes(
+          "combined appended same-root answer",
+        ),
+    )!;
+    expect(evolvedPriorLatest.message.historyTurnId).toBe(
+      legalNewTurn.message.historyTurnId,
+    );
+    expect(combinedAppended.message.historyTurnId).not.toBe(
+      legalNewTurn.message.historyTurnId,
+    );
+    fixture.handler.close();
+  });
+
   it("preserves explicit legacy turn ids and disambiguates repeated fallback user ids", async () => {
     const listThreadTurns = vi.fn(async () => {
       throw new Error("Method not found");
@@ -4688,9 +5253,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
         (event) => event.scope,
       ),
     ).toEqual(expect.arrayContaining(["catalog", "status"]));
-    expect(
-      events(fixture.sent, staleClient, "timeline_page").length,
-    ).toBeGreaterThan(0);
+    expect(events(fixture.sent, staleClient, "timeline_page")).toHaveLength(0);
     // The full hot-window bootstrap reuses the Bridge snapshot cache rather
     // than rereading provider history for every reconnecting phone.
     expect(historyReader).toHaveBeenCalledTimes(readsAfterFirstSync);
@@ -5067,7 +5630,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
-  it("preserves a known phone window when a refresh is empty and incomplete", async () => {
+  it("preserves a phone-only window without emitting an unprovable empty patch", async () => {
     const codex = codexSeed(0, "thread-refresh-empty-history");
     codex.entry.firstPrompt = "already cached user prompt";
     const fixture = createFixture(
@@ -5090,22 +5653,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
       expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
     );
 
-    expect(events(fixture.sent, client, "timeline_page")).toEqual([
-      expect.objectContaining({
-        providerSessionId: "thread-refresh-empty-history",
-        mode: "patch",
-        baseRevision: "phone-complete-window",
-        entries: [],
-        deletes: [],
-        hasEarlier: true,
-        latestTurnComplete: false,
-        latestTurnGap: {
-          missingEntryCount: 1,
-          payloadOmitted: false,
-          repair: "turns_page",
-        },
-      }),
-    ]);
+    expect(events(fixture.sent, client, "timeline_page")).toEqual([]);
     fixture.handler.close();
   });
 
@@ -5198,7 +5746,9 @@ describe("ConversationSyncV2FeatureHandler", () => {
           }
         : history(threadId),
     );
-    const fixture = createFixture([codex], historyReader);
+    const fixture = createFixture([codex], historyReader, {
+      latestTurnHistoryReader: historyReader,
+    });
     const client = {};
     const subscription = subscribeMessage();
 
@@ -5235,7 +5785,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
       expect(events(fixture.sent, client, "sync_complete")).toHaveLength(2),
     );
     const partialPages = events(fixture.sent, client, "timeline_page").filter(
-      (event) => event.revision !== initialPage.revision,
+      (event) => event.windowComplete === false,
     );
     expect(partialPages).not.toHaveLength(0);
     expect(partialPages.every((event) => event.deletes.length === 0)).toBe(
@@ -5251,6 +5801,8 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(partialPages.at(-1)).toMatchObject({
       mode: "patch",
       baseRevision: initialPage.revision,
+      revision: initialPage.revision,
+      windowComplete: false,
       latestTurnComplete: false,
       latestTurnGap: expect.objectContaining({
         turnId: "partial-turn",
@@ -5266,7 +5818,402 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(retainedSnapshots).toHaveLength(1);
     expect(retainedSnapshots[0]?.latestTurnComplete).toBe(true);
     expect(historyReader).toHaveBeenCalledTimes(2);
+
+    returnPartialHistory = false;
+    codex.entry.revision = "revision-refresh-complete";
+    codex.entry.modifiedAt = "2026-08-10T01:05:03.000Z";
+    codex.entry.recencyAt = codex.entry.modifiedAt;
+    fixture.handler.sessionCatalogChanged();
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(3),
+    );
+    const replacement = events(fixture.sent, client, "timeline_page").at(-1)!;
+    expect(replacement).toMatchObject({
+      mode: "snapshot",
+      windowComplete: true,
+      latestTurnComplete: true,
+    });
+    expect(replacement).not.toHaveProperty("baseRevision");
+    const complete = events(fixture.sent, client, "sync_complete").at(-1)!;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: complete.sequence,
+      },
+      context(client, fixture.runtime),
+    );
+    const timelineCount = events(
+      fixture.sent,
+      client,
+      "timeline_page",
+    ).length;
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_focus",
+        protocolVersion: 2,
+        requestId: "complete-repair-no-repeat",
+        subscriptionId: subscription.requestId,
+        refresh: true,
+        focused: {
+          provider: "codex",
+          providerSessionId: threadId,
+        },
+      },
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, client, "sync_complete").some(
+          (event) => event.requestId === "complete-repair-no-repeat",
+        ),
+      ).toBe(true),
+    );
+    expect(events(fixture.sent, client, "timeline_page")).toHaveLength(
+      timelineCount,
+    );
     fixture.handler.close();
+  });
+
+  it("suppresses incomplete windows for legacy v2 clients", async () => {
+    const threadId = "thread-legacy-coverage";
+    const codex = codexSeed(0, threadId);
+    let partial = false;
+    const fixture = createFixture(
+      [codex],
+      vi.fn(async () =>
+        partial
+          ? {
+              messages: [
+                {
+                  type: "user_input" as const,
+                  text: "partial live tail",
+                  userMessageUuid: "partial-live-tail",
+                },
+              ],
+              nextTurnCursor: "older",
+              latestTurnComplete: false,
+              latestTurnGap: {
+                missingEntryCount: 1,
+                payloadOmitted: false,
+                repair: "turns_page" as const,
+              },
+            }
+          : history(threadId),
+      ),
+      {},
+      {
+        supports: (_client, capability) =>
+          capability === CONVERSATION_SYNC_V2_CAPABILITY,
+      },
+    );
+    const client = {};
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    const initialTimelineCount = events(
+      fixture.sent,
+      client,
+      "timeline_page",
+    ).length;
+    partial = true;
+    codex.entry.revision = "legacy-partial-source";
+    fixture.handler.sessionCatalogChanged();
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(2),
+    );
+    expect(events(fixture.sent, client, "timeline_page")).toHaveLength(
+      initialTimelineCount,
+    );
+    fixture.handler.close();
+  });
+
+  it("suppresses incomplete bootstrap for a cold legacy v2 client", async () => {
+    const threadId = "thread-legacy-cold-partial";
+    const fixture = createFixture(
+      [codexSeed(0, threadId)],
+      vi.fn(async () => ({
+        messages: [
+          {
+            type: "user_input" as const,
+            text: "cold partial tail",
+            userMessageUuid: "cold-partial-tail",
+          },
+        ],
+        nextTurnCursor: "older-cold-partial",
+        latestTurnComplete: false,
+        latestTurnGap: {
+          missingEntryCount: 1,
+          payloadOmitted: false,
+          repair: "turns_page" as const,
+        },
+      })),
+      {},
+      {
+        supports: (_client, capability) =>
+          capability === CONVERSATION_SYNC_V2_CAPABILITY,
+      },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    expect(events(fixture.sent, client, "timeline_page")).toEqual([]);
+    await fixture.handler.close();
+  });
+
+  it("bounds cumulative additive IDs for one retained base", async () => {
+    const threadId = "thread-partial-union-bound";
+    const codex = codexSeed(0, threadId);
+    let partialBatch = 0;
+    const historyReader = vi.fn(async () => {
+      if (partialBatch === 0) {
+        return historyForTurn("partial-bound-base", "turn-partial-bound");
+      }
+      return {
+        messages: [
+          {
+            type: "user_input" as const,
+            text: "partial bound root",
+            userMessageUuid: "partial-bound-root",
+            historyTurnId: "turn-partial-bound",
+          },
+          ...Array.from({ length: 400 }, (_, index) => ({
+            type: "assistant" as const,
+            messageUuid: `partial-${partialBatch}-${index}`,
+            historyTurnId: "turn-partial-bound",
+            message: {
+              id: `partial-${partialBatch}-${index}`,
+              role: "assistant" as const,
+              model: "test",
+              content: [
+                {
+                  type: "text" as const,
+                  text: `partial-${partialBatch}-${index}`,
+                },
+              ],
+            },
+          })),
+        ],
+        nextTurnCursor: "older-partial-bound",
+        latestTurnComplete: false,
+        latestTurnGap: {
+          turnId: "turn-partial-bound",
+          missingEntryCount: 1,
+          payloadOmitted: false,
+          repair: "turns_page" as const,
+        },
+      };
+    });
+    const fixture = createFixture([codex], historyReader);
+    const client = {};
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: events(fixture.sent, client, "sync_complete").at(-1)!
+          .sequence,
+      },
+      context(client, fixture.runtime),
+    );
+
+    var previousTimelineCount = events(
+      fixture.sent,
+      client,
+      "timeline_page",
+    ).length;
+    var suppressed = false;
+    for (partialBatch = 1; partialBatch <= 8; partialBatch += 1) {
+      codex.entry.revision = `partial-bound-source-${partialBatch}`;
+      fixture.handler.sessionCatalogChanged();
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, client, "sync_complete")).toHaveLength(
+          partialBatch + 1,
+        ),
+      );
+      const currentTimelineCount = events(
+        fixture.sent,
+        client,
+        "timeline_page",
+      ).length;
+      if (currentTimelineCount == previousTimelineCount) suppressed = true;
+      if (!suppressed) {
+        expect(currentTimelineCount).toBeGreaterThan(previousTimelineCount);
+      }
+      previousTimelineCount = currentTimelineCount;
+      await fixture.handler.handle(
+        {
+          type: "conversation_sync_ack",
+          protocolVersion: 2,
+          subscriptionId: subscription.requestId,
+          sequence: events(fixture.sent, client, "sync_complete").at(-1)!
+            .sequence,
+        },
+        context(client, fixture.runtime),
+      );
+      if (suppressed) break;
+    }
+    expect(suppressed).toBe(true);
+    await fixture.handler.close();
+  });
+
+  it("bounds per-subscription partial unions and fails closed after LRU eviction", async () => {
+    const fixture = createFixture([], async () => []);
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    type PartialState = {
+      partialThreadKeys: Set<string>;
+      partialUnionEntries: Map<
+        string,
+        { baseRevision: string; entryIds: Set<string> }
+      >;
+    };
+    const internal = fixture.handler as unknown as {
+      subscriptions: Map<object, PartialState>;
+      admitPartialUnion(
+        subscription: PartialState,
+        key: string,
+        baseRevision: string,
+        snapshot: ReturnType<typeof buildConversationContentSnapshot>,
+        base: ReturnType<typeof buildConversationContentSnapshot>,
+      ): boolean;
+    };
+    const state = internal.subscriptions.get(client)!;
+    const snapshots = Array.from({ length: 33 }, (_, index) => {
+      const providerSessionId = `thread-partial-lru-${index}`;
+      const snapshot = buildConversationContentSnapshot(
+        { provider: "codex", providerSessionId },
+        historyForTurn(`partial-lru-${index}`, `turn-partial-lru-${index}`),
+        { maxMessageTextBytes: 64 * 1024, maxSnapshotBytes: 512 * 1024 },
+      );
+      return { key: `codex\0${providerSessionId}`, snapshot };
+    });
+
+    for (const { key, snapshot } of snapshots) {
+      expect(
+        internal.admitPartialUnion(
+          state,
+          key,
+          snapshot.revision,
+          snapshot,
+          snapshot,
+        ),
+      ).toBe(true);
+      state.partialThreadKeys.add(key);
+    }
+
+    expect(state.partialUnionEntries).toHaveLength(32);
+    expect(state.partialUnionEntries.has(snapshots[0]!.key)).toBe(false);
+    expect(
+      internal.admitPartialUnion(
+        state,
+        snapshots[0]!.key,
+        snapshots[0]!.snapshot.revision,
+        snapshots[0]!.snapshot,
+        snapshots[0]!.snapshot,
+      ),
+    ).toBe(false);
+    await fixture.handler.close();
+  });
+
+  it("drops incomplete delivery state when a catalog thread is destroyed", async () => {
+    const threadId = "thread-partial-destroyed";
+    const codex = codexSeed(0, threadId);
+    const seeds = [codex];
+    let partial = false;
+    const fixture = createFixture(seeds, async () =>
+      partial
+        ? {
+            messages: [
+              {
+                type: "user_input" as const,
+                text: "partial before destroy",
+                userMessageUuid: "partial-before-destroy",
+                historyTurnId: "turn-before-destroy",
+              },
+            ],
+            nextTurnCursor: "older-before-destroy",
+            latestTurnComplete: false,
+          }
+        : historyForTurn("complete-before-destroy", "turn-before-destroy"),
+    );
+    const client = {};
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: events(fixture.sent, client, "sync_complete").at(-1)!
+          .sequence,
+      },
+      context(client, fixture.runtime),
+    );
+
+    partial = true;
+    codex.entry.revision = "partial-before-destroy-revision";
+    fixture.handler.sessionCatalogChanged();
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(2),
+    );
+
+    type PartialState = {
+      partialThreadKeys: Set<string>;
+      partialThreadProjections: Map<string, string>;
+      partialUnionEntries: Map<string, unknown>;
+      threadStates: Map<string, string>;
+    };
+    const internal = fixture.handler as unknown as {
+      subscriptions: Map<object, PartialState>;
+    };
+    const state = internal.subscriptions.get(client)!;
+    const key = `codex\0${threadId}`;
+    expect(state.partialThreadKeys.has(key)).toBe(true);
+    expect(state.partialUnionEntries.has(key)).toBe(true);
+
+    seeds.splice(0);
+    fixture.handler.sessionCatalogChanged();
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(3),
+    );
+    expect(state.partialThreadKeys.has(key)).toBe(false);
+    expect(state.partialThreadProjections.has(key)).toBe(false);
+    expect(state.partialUnionEntries.has(key)).toBe(false);
+    expect(state.threadStates.has(key)).toBe(false);
+    await fixture.handler.close();
   });
 
   it("keeps a genuinely new empty Codex thread complete", async () => {
@@ -6007,9 +6954,18 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(catalogUpdates).toHaveLength(1);
     expect(catalogUpdates[0]?.modifiedAt).toBe(textActivityAt);
     expect(catalogUpdates[0]?.recencyAt).toBe(textActivityAt);
-    expect(
-      events(fixture.sent, client, "timeline_page").at(-1)?.revision,
-    ).not.toBe(textRevision);
+    const latestProjection = events(
+      fixture.sent,
+      client,
+      "timeline_page",
+    ).at(-1)!;
+    expect(latestProjection).toMatchObject({
+      revision: textRevision,
+      baseRevision: textRevision,
+      windowComplete: false,
+      deletes: [],
+    });
+    expect(JSON.stringify(latestProjection.entries)).toContain("tool-3");
 
     fixture.handler.sessionCatalogChanged();
     await vi.waitFor(() =>
@@ -6523,8 +7479,13 @@ describe("ConversationSyncV2FeatureHandler", () => {
         ).toBeGreaterThanOrEqual(3),
       { timeout: 3_000 },
     );
-    const timelineEntries = events(fixture.sent, client, "timeline_page")
-      .flatMap((event) => event.entries);
+    const timelineEntries = [
+      ...new Map(
+        events(fixture.sent, client, "timeline_page")
+          .flatMap((event) => event.entries)
+          .map((entry) => [entry.entryId, entry] as const),
+      ).values(),
+    ];
     const serialized = JSON.stringify(timelineEntries);
     expect(serialized.match(/继续/g)).toHaveLength(1);
     expect(serialized.match(/same delta chunk/g)).toHaveLength(2);
@@ -6601,8 +7562,13 @@ describe("ConversationSyncV2FeatureHandler", () => {
     });
 
     await vi.waitFor(() => {
-      const users = events(fixture.sent, client, "timeline_page")
-        .flatMap((page) => page.entries)
+      const users = [
+        ...new Map(
+          events(fixture.sent, client, "timeline_page")
+            .flatMap((page) => page.entries)
+            .map((entry) => [entry.entryId, entry] as const),
+        ).values(),
+      ]
         .map((entry) => entry.message)
         .filter((message) => message.type === "user_input");
       expect(users).toHaveLength(2);
@@ -6824,6 +7790,126 @@ describe("ConversationSyncV2FeatureHandler", () => {
               message.type === "tool_result",
           )
           .every((message) => message.historyTurnId === "canonical-turn"),
+      ).toBe(true);
+    });
+    fixture.handler.close();
+  });
+
+  it("binds an anonymous Desktop scope to the canonical turn before aliasing different provider ids", async () => {
+    type HandlerOptions = NonNullable<
+      ConstructorParameters<typeof ConversationSyncV2FeatureHandler>[1]
+    >;
+    type ObserverCallback = Parameters<
+      NonNullable<HandlerOptions["observeCodexThread"]>
+    >[1];
+    let callback: ObserverCallback | undefined;
+    const canonicalTimestamp = "2026-07-30T02:00:00.000Z";
+    const observerTimestamp = "2026-07-30T04:00:00.000Z";
+    const fixture = createFixture(
+      [codexSeed(0, "thread-desktop-provider-alias")],
+      async () => [
+        {
+          type: "user_input",
+          text: "same physical prompt",
+          historyTurnId: "provider-turn",
+          providerItemId: "provider-user-item",
+          clientMessageId: "client-admission-id",
+          userMessageUuid: "provider-user-uuid",
+          timestamp: canonicalTimestamp,
+          sourceTimestamp: canonicalTimestamp,
+          sourceTimestampIsAuthoritative: false,
+        },
+        {
+          type: "assistant",
+          historyTurnId: "provider-turn",
+          messageUuid: "provider-assistant-item",
+          message: {
+            id: "provider-assistant-item",
+            role: "assistant",
+            content: [{ type: "text", text: "same physical answer" }],
+            model: "codex",
+          },
+          sourceTimestamp: canonicalTimestamp,
+        },
+      ],
+      {
+        initialExternalCodexMonitors: 1,
+        observeCodexThread: async (_threadId, onEvent) => {
+          callback = onEvent;
+          return {
+            snapshot: { state: "running" as const },
+            refreshNow: async () => {},
+            close: () => {},
+          };
+        },
+      },
+    );
+    const client = {};
+    await fixture.handler.handle(
+      subscribeMessage(),
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() => expect(callback).toBeDefined());
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+
+    callback!({
+      kind: "message",
+      itemKey: "user:desktop-user-item",
+      anonymousTurnScope: "desktop-task-scope",
+      timestamp: observerTimestamp,
+      message: {
+        type: "user_input",
+        text: "same physical prompt",
+        clientMessageId: "client-admission-id",
+        timestamp: observerTimestamp,
+      },
+    });
+    callback!({
+      kind: "message",
+      itemKey: "assistant:desktop-event-id",
+      anonymousTurnScope: "desktop-task-scope",
+      timestamp: observerTimestamp,
+      message: {
+        type: "assistant",
+        messageUuid: "desktop-event-id",
+        message: {
+          id: "desktop-event-id",
+          role: "assistant",
+          content: [{ type: "text", text: "same physical answer" }],
+          model: "codex",
+        },
+      },
+    });
+
+    await vi.waitFor(() => {
+      const latest = events(fixture.sent, client, "timeline_page")
+        .flatMap((page) => page.entries)
+        .map((entry) => entry.message);
+      expect(
+        latest.filter(
+          (message) =>
+            message.type === "user_input" &&
+            message.text === "same physical prompt",
+        ),
+      ).toHaveLength(1);
+      expect(
+        latest.filter(
+          (message) =>
+            message.type === "assistant" &&
+            JSON.stringify(message.message.content).includes(
+              "same physical answer",
+            ),
+        ),
+      ).toHaveLength(1);
+      expect(
+        latest
+          .filter(
+            (message) =>
+              message.type === "user_input" || message.type === "assistant",
+          )
+          .every((message) => message.historyTurnId === "provider-turn"),
       ).toBe(true);
     });
     fixture.handler.close();
@@ -8410,7 +9496,8 @@ describe("ConversationSyncV2FeatureHandler", () => {
       },
       isClientOpen: () => true,
       supports: (_client, capability) =>
-        capability === CONVERSATION_SYNC_V2_CAPABILITY,
+        capability === CONVERSATION_SYNC_V2_CAPABILITY ||
+        capability === CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
     };
     const handler = new ConversationSyncV2FeatureHandler(runtime, {
       catalogReader: async () => [
@@ -8510,6 +9597,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
       isClientOpen: () => true,
       supports: (_client, capability) =>
         capability === CONVERSATION_SYNC_V2_CAPABILITY ||
+        capability === CONVERSATION_WINDOW_COVERAGE_CAPABILITY ||
         capability === APP_SERVER_STATUS_CAPABILITY,
     };
     let withSharedRead!: <T>(
@@ -8603,7 +9691,8 @@ describe("ConversationSyncV2FeatureHandler", () => {
       },
       isClientOpen: () => true,
       supports: (_client, capability) =>
-        capability === CONVERSATION_SYNC_V2_CAPABILITY,
+        capability === CONVERSATION_SYNC_V2_CAPABILITY ||
+        capability === CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
     };
     const handler = new ConversationSyncV2FeatureHandler(runtime, {
       catalogReader: async () => [],
@@ -8689,7 +9778,8 @@ describe("ConversationSyncV2FeatureHandler", () => {
       send: () => {},
       isClientOpen: () => true,
       supports: (_client, capability) =>
-        capability === CONVERSATION_SYNC_V2_CAPABILITY,
+        capability === CONVERSATION_SYNC_V2_CAPABILITY ||
+        capability === CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
     };
     const handler = new ConversationSyncV2FeatureHandler(runtime, {
       catalogReader: async () => [],
@@ -9669,7 +10759,9 @@ describe("ConversationSyncV2FeatureHandler", () => {
         subscribeSharedRuntimeControl: control.subscribe,
         registerInlineImages,
         supports: (_client: object, type: string) =>
-          type === CONVERSATION_SYNC_V2_CAPABILITY || type === "context_usage",
+          type === CONVERSATION_SYNC_V2_CAPABILITY ||
+          type === CONVERSATION_WINDOW_COVERAGE_CAPABILITY ||
+          type === "context_usage",
       },
     );
     const firstClient = {};
@@ -11363,6 +12455,7 @@ function createFixture(
     isClientOpen: () => true,
     supports: (_client: object, type: string) =>
       type === CONVERSATION_SYNC_V2_CAPABILITY ||
+      type === CONVERSATION_WINDOW_COVERAGE_CAPABILITY ||
       type === CONVERSATION_USER_INDEX_CAPABILITY,
     ...runtimeOverrides,
   };
@@ -11427,6 +12520,7 @@ function createCodexPageFixture(
     isClientOpen: () => true,
     supports: (_client: object, type: string) =>
       type === CONVERSATION_SYNC_V2_CAPABILITY ||
+      type === CONVERSATION_WINDOW_COVERAGE_CAPABILITY ||
       type === CONVERSATION_USER_INDEX_CAPABILITY,
   };
   return {
@@ -11473,6 +12567,7 @@ function subscribeMessage(
     provider: "claude" | "codex";
     providerSessionId: string;
     revision: string;
+    forceReplacement?: boolean;
   }> = [],
   state: { catalogState?: string; statusState?: string } = {},
 ): Extract<
@@ -11600,6 +12695,10 @@ function history(id: string): ServerMessage[] {
       },
     },
   ];
+}
+
+function historyForTurn(id: string, turnId: string): ServerMessage[] {
+  return history(id).map((message) => ({ ...message, historyTurnId: turnId }));
 }
 
 function events<Event extends ConversationSyncServerMessage["event"]>(

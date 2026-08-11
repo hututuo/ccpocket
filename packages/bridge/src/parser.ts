@@ -1002,6 +1002,7 @@ export type ServerMessage = (
       stage: "provider_accepted" | "provider_rejected";
       provider: "codex";
       method: "turn/start" | "turn/steer";
+      providerTurnId?: string;
       occurredAt: string;
       acceptedSeq?: number;
       queued?: boolean;

@@ -190,6 +190,7 @@ import { ArtifactManager, ArtifactResolveError } from "./artifact-manager.js";
 import { validateFileTransferPeerBaseUrl } from "./file-transfer-utils.js";
 import { createPathArtifactCandidate } from "./artifact-candidates.js";
 import { createLocalFeaturesController } from "./local-features/registry.js";
+import type { ConversationSyncV2Options } from "./local-features/conversation-sync-v2.js";
 import { CodexBoundedHistoryReader } from "./local-features/codex-bounded-history.js";
 import type { LocalFeaturesController } from "./local-features/controller.js";
 import type {
@@ -212,6 +213,7 @@ import {
   CONVERSATION_ITEMS_BY_ID_CAPABILITY,
   CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
   CONVERSATION_SYNC_FOCUS_REFRESH_CAPABILITY,
+  CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
   CONVERSATION_USER_INDEX_CAPABILITY,
   CONVERSATION_MIRROR_SOURCE_IDENTITY_CAPABILITY,
   CONVERSATION_SYNC_V2_CAPABILITY,
@@ -1707,6 +1709,17 @@ export interface BridgeServerOptions {
   sessionCatalogMonitorFactory?: (
     onChanged: (revision: number, change?: SessionCatalogChange) => void,
   ) => SessionCatalogMonitorControl;
+  /**
+   * Raw Codex app-server boundary used by the black-box chain harness.
+   *
+   * The harness may substitute the Provider/app-server process, but the
+   * Bridge catalog, normalization, synchronization, framing, and WebSocket
+   * code remain the production implementation. Ordinary hosts omit this and
+   * receive a real CodexProcess.
+   */
+  codexProcessFactory?: () => CodexProcess;
+  /** Provider/app-server seam used by the real-WebSocket chain harness. */
+  conversationSyncV2Options?: ConversationSyncV2Options;
 }
 
 export interface SessionCatalogMonitorControl {
@@ -1863,6 +1876,7 @@ export class BridgeWebSocketServer {
    * lease can move while a standalone process is initializing.
    */
   private readonly codexSharedRuntimeMutationAllowed?: () => boolean;
+  private readonly codexProcessFactory: () => CodexProcess;
   private codexActionBrokerNotificationUnsubscribe?: () => void;
   private readonly codexActionPushProjectionStates = new Map<
     PushLocale,
@@ -1940,6 +1954,8 @@ export class BridgeWebSocketServer {
       terminalResultLedger,
       inputDeliveryLedger,
       sessionCatalogMonitorFactory,
+      codexProcessFactory,
+      conversationSyncV2Options,
     } = options;
     this.apiKeyAuthenticator =
       apiKeyAuthenticator ?? new BridgeApiKeyAuthenticator(apiKey);
@@ -1983,6 +1999,13 @@ export class BridgeWebSocketServer {
           daemonActionBrokerRuntime.health.ready === true &&
           daemonActionBrokerRuntime.health.writerLeaseHeld === true
       : undefined;
+    this.codexProcessFactory =
+      codexProcessFactory ??
+      (() =>
+        new CodexProcess(
+          this.platform,
+          this.codexSharedRuntimeMutationAllowed,
+        ));
     this.inputDeliveryLedger =
       inputDeliveryLedger && this.bridgeInstanceId ? inputDeliveryLedger : null;
     this.sessionCatalogMonitor = sessionCatalogMonitorFactory
@@ -2282,7 +2305,7 @@ export class BridgeWebSocketServer {
           requestTimeoutMs,
         ),
       createDedicatedCodexProcess: () =>
-        new CodexProcess(this.platform, this.codexSharedRuntimeMutationAllowed),
+        this.codexProcessFactory(),
       createPersistedCodexChildSession: (parentSessionId, childOptions) =>
         this.createPersistedCodexChildSession(parentSessionId, childOptions),
       createEphemeralCodexChildSession: (parentSessionId, childOptions) =>
@@ -2404,7 +2427,7 @@ export class BridgeWebSocketServer {
         this.clientSupportedServerMessages
           .get(client as WebSocket)
           ?.has(messageType) ?? false,
-    });
+    }, process.env, { conversationSyncV2: conversationSyncV2Options });
     this.codexActionBrokerNotificationUnsubscribe =
       this.codexActionBrokerRuntime?.subscribe((update) => {
         try {
@@ -14449,6 +14472,7 @@ export class BridgeWebSocketServer {
         ...(this.bridgeIdentity ? [BRIDGE_IDENTITY_V3_CAPABILITY] : []),
         CONVERSATION_SYNC_V2_CAPABILITY,
         CONVERSATION_SYNC_FOCUS_REFRESH_CAPABILITY,
+        CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
         CONVERSATION_ITEMS_BY_ID_CAPABILITY,
         CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
         CONVERSATION_USER_INDEX_CAPABILITY,
@@ -14561,6 +14585,7 @@ export class BridgeWebSocketServer {
         ...(this.bridgeIdentity ? [BRIDGE_IDENTITY_V3_CAPABILITY] : []),
         CONVERSATION_SYNC_V2_CAPABILITY,
         CONVERSATION_SYNC_FOCUS_REFRESH_CAPABILITY,
+        CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
         CONVERSATION_ITEMS_BY_ID_CAPABILITY,
         CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
         CONVERSATION_USER_INDEX_CAPABILITY,
@@ -16088,10 +16113,7 @@ export class BridgeWebSocketServer {
     projectPath?: string,
     requestTimeoutMs?: number,
   ): Promise<CodexProcess> {
-    const proc = new CodexProcess(
-      this.platform,
-      this.codexSharedRuntimeMutationAllowed,
-    );
+    const proc = this.codexProcessFactory();
     try {
       // launchd starts the Bridge with `/` as its process cwd. A read-only
       // app-server bootstrapped there cannot resolve project-local metadata
@@ -17193,6 +17215,9 @@ export class BridgeWebSocketServer {
       occurredAt: receipt.occurredAt,
       acceptedSeq: receipt.acceptedSeq,
       queued: receipt.queued,
+      ...(receipt.providerTurnId
+        ? { providerTurnId: receipt.providerTurnId }
+        : {}),
       ...(receipt.clientUserMessageIdAccepted === undefined
         ? {}
         : {

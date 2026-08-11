@@ -52,6 +52,7 @@ import {
   APP_SERVER_STATUS_CAPABILITY,
   CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
   CONVERSATION_SYNC_V2_CAPABILITY,
+  CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
   CONVERSATION_USER_INDEX_CAPABILITY,
   type ConversationSyncCatalogEntry,
   type ConversationSyncClientMessage,
@@ -122,6 +123,8 @@ const MAX_TIMELINE_BYTES = 512 * 1024;
 const MAX_MESSAGE_TEXT_BYTES = 40 * 1024;
 const MAX_TIMELINE_PAGE_ENTRIES = 24;
 const MAX_SNAPSHOT_TARGETS = 32;
+const MAX_PARTIAL_UNION_ENTRIES = 2_000;
+const MAX_PARTIAL_UNION_TARGETS = 32;
 const MAX_STATE_HISTORY = 4;
 const MAX_THREAD_STATES = 512;
 const PROVIDER_HISTORY_CONCURRENCY = 2;
@@ -233,6 +236,10 @@ interface SyncTimelineSnapshot extends ConversationContentSnapshot {
   sourceRevision: string;
   /** Internal-only marker; never serialized onto the wire. */
   providerHistoryUnavailable?: boolean;
+  /** Internal-only identity needed to reconcile an id-less latest-turn read. */
+  latestTurnAnonymousIdentity?: AnonymousConversationTurnIdentity;
+  /** Internal-only chronological identities for the bounded anonymous turns. */
+  anonymousTurnIdentities?: AnonymousConversationTurnIdentity[];
 }
 
 interface SyncTimelineSnapshotFlight {
@@ -272,6 +279,20 @@ interface SyncSubscription {
   threadStates: Map<ConversationKey, string>;
   pendingThreadStates: Map<ConversationKey, string>;
   pendingThreadSequences: Map<ConversationKey, number>;
+  forceReplacementThreadKeys: Set<ConversationKey>;
+  /** Threads enriched by a non-replacing projection in this subscription. */
+  partialThreadKeys: Set<ConversationKey>;
+  /** Last partial content digest sent, used only for in-subscription dedupe. */
+  partialThreadProjections: Map<ConversationKey, string>;
+  /**
+   * Proven ID unions for incomplete additive delivery. Bodies intentionally
+   * remain in the canonical snapshot cache / Mobile cache instead of being
+   * duplicated per subscription.
+   */
+  partialUnionEntries: Map<
+    ConversationKey,
+    { baseRevision: string; entryIds: Set<string> }
+  >;
   readWatermarks: Map<ConversationKey, string>;
   runtimeOverlayIds: Set<string>;
   nextSequence: number;
@@ -293,7 +314,7 @@ interface SyncSubscription {
   bootstrapEnqueued: boolean;
 }
 
-interface ConversationSyncV2Options {
+export interface ConversationSyncV2Options {
   catalogReader?: () => Promise<ConversationSyncCatalogSeed[]>;
   /** Test seam for authoritative Codex thread settings scans. */
   focusedCodexMetadataReader?: (
@@ -379,9 +400,15 @@ interface ConversationHistoryReadRequest {
 interface ConversationHistoryWindow {
   messages: ServerMessage[];
   nextTurnCursor: string | null;
+  /** Whether this reader result covers the complete bounded hot window. */
+  windowComplete?: boolean;
   turnDetails?: ConversationTurnDetails[];
   latestTurnComplete?: boolean;
   latestTurnGap?: ConversationContentLatestTurnGap;
+  /** Internal-only fallback identity for an app-server turn without an id. */
+  latestTurnAnonymousIdentity?: AnonymousConversationTurnIdentity;
+  /** Internal-only chronological identities for the bounded anonymous turns. */
+  anonymousTurnIdentities?: AnonymousConversationTurnIdentity[];
   /**
    * Cursor this bounded window actually consumed. A reader must echo an
    * opaque non-null request cursor here; otherwise the fallback cannot prove
@@ -402,6 +429,15 @@ interface NormalizedConversationTurn {
   itemsView: "summary" | "full";
   latestTurnComplete?: boolean;
   latestTurnGap?: ConversationContentLatestTurnGap;
+  anonymousIdentity?: AnonymousConversationTurnIdentity;
+}
+
+interface AnonymousConversationTurnIdentity {
+  anchor: string;
+  rootAnchor: string;
+  contentAnchor: string;
+  turnId: string;
+  occurrence: number;
 }
 
 interface ConversationTurnDetails {
@@ -419,6 +455,8 @@ interface ConversationItemsPage {
   data: unknown[];
   nextCursor: string | null;
   turnDetails?: ConversationTurnDetails;
+  pageComplete?: boolean;
+  latestTurnGap?: ConversationContentLatestTurnGap;
 }
 
 interface TimelinePatchPage {
@@ -2057,8 +2095,13 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       return;
     }
     const threadStates = new Map<ConversationKey, string>();
+    const forceReplacementThreadKeys = new Set<ConversationKey>();
     for (const state of message.threadContentStates) {
-      threadStates.set(targetKey(state), state.revision);
+      const key = targetKey(state);
+      threadStates.set(key, state.revision);
+      if (state.forceReplacement === true) {
+        forceReplacementThreadKeys.add(key);
+      }
     }
     const readWatermarks = new Map<ConversationKey, string>();
     for (const watermark of message.readWatermarks) {
@@ -2083,6 +2126,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       threadStates,
       pendingThreadStates: new Map(),
       pendingThreadSequences: new Map(),
+      forceReplacementThreadKeys,
+      partialThreadKeys: new Set(),
+      partialThreadProjections: new Map(),
+      partialUnionEntries: new Map(),
       readWatermarks,
       runtimeOverlayIds: new Set(),
       nextSequence: 0,
@@ -2597,15 +2644,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         scope: "catalog",
         reason: "state_unavailable",
       });
-      // A client whose global catalog cursor can no longer be continued may
-      // also hold per-thread revisions from a cache generation the Bridge can
-      // no longer relate to the current catalog. Preserve user read
-      // watermarks, but force one bounded hot-window bootstrap.
-      subscription.threadStates.clear();
-      subscription.pendingThreadStates.clear();
-      subscription.pendingThreadSequences.clear();
+      // Catalog lineage and per-thread content lineage are independent. A
+      // catalog reset must not discard the only base revision the client still
+      // has for a durable hot window; destroyed thread keys are handled by the
+      // catalog diff below. Keeping these states also lets an incomplete
+      // provider projection use additive delivery after a Bridge restart.
     }
     const current = this.catalogProjection;
+    this.prunePartialUnionState(subscription, current);
     const changes: Array<
       | { kind: "created"; value: ConversationSyncCatalogEntry }
       | { kind: "updated"; value: ConversationSyncCatalogEntry }
@@ -2789,7 +2835,18 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
               (snapshot) => snapshot.sourceRevision === sourceRevision,
             )
             .at(-1);
-          if (!revalidate && cached && known === cached.revision) return null;
+          const knownBaseNeedsReplacement =
+            known !== undefined &&
+            (subscription.forceReplacementThreadKeys.has(key) ||
+              subscription.partialThreadKeys.has(key));
+          if (
+            !revalidate &&
+            cached &&
+            known === cached.revision &&
+            !knownBaseNeedsReplacement
+          ) {
+            return null;
+          }
           try {
             const snapshot = await this.snapshotFor(record, {
               forceProviderRead: revalidate,
@@ -2812,7 +2869,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             }
             const revalidationIncomplete =
               snapshot.providerHistoryUnavailable === true ||
-              (!snapshot.latestTurnComplete && snapshot.entries.length === 0);
+              !snapshot.windowComplete;
             if (revalidate && revalidationIncomplete) {
               incompleteRevalidationKeys.add(key);
             } else if (revalidate) {
@@ -2820,7 +2877,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             }
             // An explicit refresh must perform the provider read, but it does
             // not need to resend or rewrite an identical committed window.
-            return known === snapshot.revision ? null : snapshot;
+            return known === snapshot.revision && !knownBaseNeedsReplacement
+              ? null
+              : snapshot;
           } catch (error) {
             if (revalidate) incompleteRevalidationKeys.add(key);
             const shouldReport =
@@ -2924,6 +2983,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       options.forceProviderRead === true &&
       target.provider === "codex" &&
       previousSnapshot !== undefined &&
+      previousSnapshot.windowComplete &&
       previousSnapshot.sourceRevision === requestedSourceRevision;
     if (options.forceProviderRead === true) {
       traceConversationSync(
@@ -2933,18 +2993,40 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           `previous=${shortRevision(previousSnapshot?.revision)}`,
       );
     }
+    const readLatestTurnOrFull = async (): Promise<{
+      window: ConversationHistoryWindow;
+      canonicalMessages: ServerMessage[];
+    }> => {
+      const readFull = async () => {
+        const full = normalizeHistoryWindow(
+          await this.historyReader(target),
+          true,
+        );
+        return { window: full, canonicalMessages: full.messages };
+      };
+      // An id-less latest turn cannot prove whether a same-root response is
+      // growth of the old turn or a new legal turn. Re-read the bounded full
+      // window instead of guessing from one anonymous item sequence.
+      if (previousSnapshot!.latestTurnAnonymousIdentity) {
+        return readFull();
+      }
+      const latest = normalizeLatestHistoryForMerge(
+        previousSnapshot!,
+        await this.latestTurnHistoryReader(target),
+      );
+      const merged = mergeSnapshotWithLatestTurn(previousSnapshot!, latest);
+      if (merged) {
+        return { window: merged, canonicalMessages: latest.messages };
+      }
+      // A complete latest-turn response without one exact provider turn id
+      // cannot safely delete stale items from the previous projection. Fall
+      // back to the authoritative bounded window instead of calling a union
+      // complete and making removed thinking/tool output permanent.
+      return readFull();
+    };
     const historySource = (
       forceLatestTurnRead
-        ? this.latestTurnHistoryReader(target).then((history) => {
-            const latest = normalizeLatestHistoryForMerge(
-              previousSnapshot,
-              history,
-            );
-            return {
-              window: mergeSnapshotWithLatestTurn(previousSnapshot, latest),
-              canonicalMessages: latest.messages,
-            };
-          })
+        ? readLatestTurnOrFull()
         : target.provider === "codex" &&
       options.forceProviderRead !== true &&
       sharedMessagesAtReadStart &&
@@ -2957,18 +3039,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         : target.provider === "codex" &&
             previousSnapshot &&
             liveAtReadStart?.readScope === "latestTurn"
-          ? this.latestTurnHistoryReader(target).then((history) => {
-              const latest = normalizeLatestHistoryForMerge(
-                previousSnapshot,
-                history,
-              );
-              return {
-                window: mergeSnapshotWithLatestTurn(previousSnapshot, latest),
-                canonicalMessages: latest.messages,
-              };
-            })
+          ? readLatestTurnOrFull()
           : this.historyReader(target).then((history) => {
-              const window = normalizeHistoryWindow(history);
+              const window = normalizeHistoryWindow(history, true);
               return { window, canonicalMessages: window.messages };
             })
     ).catch((error) => {
@@ -2984,6 +3057,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           : {
               messages: [],
               nextTurnCursor: null,
+              windowComplete: false,
               latestTurnComplete: false,
             },
         canonicalMessages: undefined,
@@ -2991,6 +3065,15 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     });
     const flight = historySource
       .then(({ window, canonicalMessages }) => {
+        const reconciledWindow = previousSnapshot
+          ? reconcileAnonymousFullWindow(previousSnapshot, window)
+          : window;
+        const reconciledCanonicalMessages =
+          canonicalMessages === undefined
+            ? undefined
+            : canonicalMessages === window.messages
+              ? reconciledWindow.messages
+              : canonicalMessages;
         const externalMessages = this.externalCodexLiveMessages.get(key);
         const sharedMessages = this.sharedObserverLiveMessages.get(key);
         const externalSources = observedMessageSources(
@@ -3002,11 +3085,15 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           sharedMessages?.values() ?? [],
         );
         const providerWindowIncomplete =
-          canonicalMessages !== undefined && window.latestTurnComplete === false;
+          reconciledCanonicalMessages !== undefined &&
+          reconciledWindow.latestTurnComplete === false;
         const effectiveWindow =
           providerWindowIncomplete && previousSnapshot
-            ? mergeSnapshotWithLatestTurn(previousSnapshot, window)
-            : window;
+            ? (mergeSnapshotWithLatestTurn(
+                previousSnapshot,
+                reconciledWindow,
+              ) ?? reconciledWindow)
+            : reconciledWindow;
         const mergedMessages = mergeObservedMessageSources(
           effectiveWindow.messages,
           [...externalSources, ...sharedSources],
@@ -3014,19 +3101,19 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         );
         const canonicalHistoryCoversExternalMessages =
           externalMessages === undefined ||
-          (canonicalMessages !== undefined &&
+          (reconciledCanonicalMessages !== undefined &&
             !providerWindowIncomplete &&
             !this.liveContentRevisions.has(key) &&
             canonicalHistoryCoversObservedSources(
-              canonicalMessages,
+              reconciledCanonicalMessages,
               externalSources,
             ));
         const canonicalHistoryCoversSharedMessages =
           sharedMessages === undefined ||
-          (canonicalMessages !== undefined &&
+          (reconciledCanonicalMessages !== undefined &&
             !providerWindowIncomplete &&
             canonicalHistoryCoversObservedSources(
-              canonicalMessages,
+              reconciledCanonicalMessages,
               sharedSources,
             ));
         if (
@@ -3056,7 +3143,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         if (providerHistoryUnavailable && !hasFreshObservedContent) {
           throw new ProviderHistoryBackoffError(true);
         }
-        for (const turn of window.turnDetails ?? []) {
+        for (const turn of reconciledWindow.turnDetails ?? []) {
           this.rememberTurnDetails(target, turn);
         }
         const built = buildConversationContentSnapshot(target, messages, {
@@ -3113,6 +3200,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
               }
             : undefined,
         );
+        const windowComplete =
+          effectiveWindow.windowComplete !== false &&
+          built.windowComplete &&
+          !providerHistoryUnavailable &&
+          !catalogContentMissing &&
+          !providerWindowIncomplete &&
+          canonicalHistoryCoversExternalMessages &&
+          canonicalHistoryCoversSharedMessages;
         const contentRevision = hashState([
           CONTENT_STATE_SCHEMA_VERSION,
           "conversation-timeline-content-v2",
@@ -3128,11 +3223,25 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             latestTurnGap === undefined,
           latestTurnGap ?? null,
           providerHistoryUnavailable,
+          windowComplete,
         ]);
         const snapshot: SyncTimelineSnapshot = {
           ...built,
           revision: contentRevision,
           sourceRevision: requestedSourceRevision,
+          windowComplete,
+          ...(effectiveWindow.latestTurnAnonymousIdentity
+            ? {
+                latestTurnAnonymousIdentity:
+                  effectiveWindow.latestTurnAnonymousIdentity,
+              }
+            : {}),
+          ...(effectiveWindow.anonymousTurnIdentities
+            ? {
+                anonymousTurnIdentities:
+                  effectiveWindow.anonymousTurnIdentities,
+              }
+            : {}),
           ...(providerHistoryUnavailable
             ? { providerHistoryUnavailable: true }
             : {}),
@@ -3166,6 +3275,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           !providerHistoryUnavailable &&
           !catalogContentMissing &&
           !providerWindowIncomplete &&
+          snapshot.windowComplete &&
           canonicalHistoryCoversExternalMessages &&
           canonicalHistoryCoversSharedMessages
         ) {
@@ -3237,15 +3347,53 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const known =
       subscription.pendingThreadStates.get(key) ??
       subscription.threadStates.get(key);
+    if (
+      !snapshot.windowComplete &&
+      !this.runtime.supports(
+        client,
+        CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
+      )
+    ) {
+      // Old v2 clients treat every timeline page as replacement-authoritative.
+      // Suppress a partial window rather than make an existing readable cache
+      // shrink or oscillate. Live runtime overlays remain independently usable.
+      traceConversationSync(
+        `[conversation-sync-v2] partial timeline suppressed ` +
+          `target=${traceTarget(key)} reason=client_without_coverage_capability`,
+      );
+      return;
+    }
     const base = known
       ? this.snapshots
           .get(key)
           ?.find((candidate) => candidate.revision === known)
       : undefined;
     const preserveKnownWindow =
-      known !== undefined &&
-      (snapshot.providerHistoryUnavailable ||
-        (!snapshot.latestTurnComplete && snapshot.entries.length === 0));
+      known !== undefined && !snapshot.windowComplete;
+    if (
+      preserveKnownWindow &&
+      !this.admitPartialUnion(subscription, key, known, snapshot, base)
+    ) {
+      traceConversationSync(
+        `[conversation-sync-v2] partial timeline suppressed ` +
+          `target=${traceTarget(key)} reason=unprovable_or_unbounded_union`,
+      );
+      return;
+    }
+    if (
+      preserveKnownWindow &&
+      subscription.partialThreadProjections.get(key) === snapshot.revision
+    ) {
+      traceConversationSync(
+        `[conversation-sync-v2] partial timeline unchanged ` +
+          `target=${traceTarget(key)} content=${shortRevision(snapshot.revision)}`,
+      );
+      return;
+    }
+    const requiresCompleteReplacement =
+      snapshot.windowComplete &&
+      (subscription.partialThreadKeys.has(key) ||
+        subscription.forceReplacementThreadKeys.has(key));
     const sent = preserveKnownWindow
       ? this.sendTimelineAdditivePatch(
           client,
@@ -3256,7 +3404,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           timelineIndex,
           timelineCount,
         )
-      : base
+      : base && !requiresCompleteReplacement
         ? this.sendTimelinePatch(
             client,
             subscription,
@@ -3285,14 +3433,96 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         `source=${shortRevision(snapshot.sourceRevision)} ` +
         `base=${shortRevision(known)} content=${shortRevision(snapshot.revision)} ` +
         `entries=${snapshot.entries.length} ` +
+        `windowComplete=${snapshot.windowComplete} ` +
         `latestComplete=${snapshot.latestTurnComplete} ` +
         `gapTurn=${traceTurn(snapshot.latestTurnGap?.turnId)}`,
     );
-    subscription.pendingThreadStates.set(key, snapshot.revision);
+    const committedRevision = preserveKnownWindow ? known : snapshot.revision;
+    if (!snapshot.windowComplete) {
+      if (!preserveKnownWindow) {
+        this.rememberPartialUnion(
+          subscription,
+          key,
+          committedRevision,
+          new Set(snapshot.entries.map((entry) => entry.entryId)),
+        );
+      }
+      subscription.partialThreadKeys.add(key);
+      subscription.partialThreadProjections.set(key, snapshot.revision);
+    } else {
+      subscription.partialThreadKeys.delete(key);
+      subscription.partialThreadProjections.delete(key);
+      subscription.partialUnionEntries.delete(key);
+      subscription.forceReplacementThreadKeys.delete(key);
+    }
+    subscription.pendingThreadStates.set(key, committedRevision);
     subscription.pendingThreadSequences.set(
       key,
       subscription.nextSequence - 1,
     );
+  }
+
+  private admitPartialUnion(
+    subscription: SyncSubscription,
+    key: ConversationKey,
+    baseRevision: string,
+    snapshot: SyncTimelineSnapshot,
+    base: ConversationContentSnapshot | undefined,
+  ): boolean {
+    const previous = subscription.partialUnionEntries.get(key);
+    let entryIds: Set<string>;
+    if (previous?.baseRevision === baseRevision) {
+      entryIds = new Set(previous.entryIds);
+    } else {
+      // Once an incomplete body has been delivered, losing its compact union
+      // proof must fail closed. Reconstructing from only the old canonical
+      // base could let disjoint partial windows grow the phone cache without
+      // a bound. A later complete snapshot is forced to replace it.
+      if (subscription.partialThreadKeys.has(key)) return false;
+      if (!base || base.revision !== baseRevision) return false;
+      entryIds = new Set(base.entries.map((entry) => entry.entryId));
+    }
+    for (const entry of snapshot.entries) entryIds.add(entry.entryId);
+    if (entryIds.size > MAX_PARTIAL_UNION_ENTRIES) return false;
+    this.rememberPartialUnion(subscription, key, baseRevision, entryIds);
+    return true;
+  }
+
+  private rememberPartialUnion(
+    subscription: SyncSubscription,
+    key: ConversationKey,
+    baseRevision: string,
+    entryIds: Set<string>,
+  ): void {
+    if (entryIds.size > MAX_PARTIAL_UNION_ENTRIES) return;
+    // Refresh insertion order so the map also acts as a small LRU. Evicted
+    // keys remain in partialThreadKeys, which suppresses further incomplete
+    // delivery until a complete replacement arrives.
+    subscription.partialUnionEntries.delete(key);
+    subscription.partialUnionEntries.set(key, { baseRevision, entryIds });
+    while (
+      subscription.partialUnionEntries.size > MAX_PARTIAL_UNION_TARGETS
+    ) {
+      const oldest = subscription.partialUnionEntries.keys().next().value;
+      if (oldest === undefined) break;
+      subscription.partialUnionEntries.delete(oldest);
+    }
+  }
+
+  private prunePartialUnionState(
+    subscription: SyncSubscription,
+    catalog: ReadonlyMap<ConversationKey, ConversationSyncCatalogEntry>,
+  ): void {
+    for (const key of subscription.partialThreadKeys) {
+      if (catalog.has(key)) continue;
+      subscription.partialThreadKeys.delete(key);
+      subscription.partialThreadProjections.delete(key);
+      subscription.partialUnionEntries.delete(key);
+      subscription.forceReplacementThreadKeys.delete(key);
+      subscription.pendingThreadStates.delete(key);
+      subscription.pendingThreadSequences.delete(key);
+      subscription.threadStates.delete(key);
+    }
   }
 
   private sendTimelineAdditivePatch(
@@ -3304,11 +3534,16 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     timelineIndex: number,
     timelineCount: number,
   ): boolean {
+    // Incomplete windows cannot delete, but their overlapping stable IDs are
+    // still required as order anchors by Mobile. Sending only changed rows
+    // makes a widened [older, existing-tail] projection indistinguishable from
+    // a new live tail and would append older messages after newer ones.
+    const upserts = snapshot.entries;
     const pages = this.timelinePatchPages(
       subscription,
       baseRevision,
       snapshot,
-      snapshot.entries,
+      upserts,
       [],
       phase,
       timelineIndex,
@@ -3321,7 +3556,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         event: "timeline_page",
         provider: snapshot.provider,
         providerSessionId: snapshot.providerSessionId,
-        revision: snapshot.revision,
+        // A partial projection may enrich the local readable union, but it
+        // cannot advance the canonical replacement lineage. Keeping the
+        // committed revision at the acknowledged base makes reconnects safe
+        // even when the Bridge has restarted and forgotten that base body.
+        revision: baseRevision,
         baseRevision,
         mode: "patch",
         phase,
@@ -3331,16 +3570,17 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         pageCount: pages.length,
         entries: page.entries.map(toWireConversationContentEntry),
         deletes: [],
-        hasEarlier: true,
+        hasEarlier: snapshot.hasEarlier,
         turnsNextCursor: snapshot.turnsNextCursor,
-        latestTurnComplete: false,
+        windowComplete: false,
+        latestTurnComplete: snapshot.latestTurnComplete,
         latestTurnGap: snapshot.latestTurnGap,
         sourceEntryCount: snapshot.sourceEntryCount,
       });
     }
     if (finalSequence < 0) return false;
     this.mergeCommit(subscription, finalSequence, {
-      thread: { key: targetKey(snapshot), revision: snapshot.revision },
+      thread: { key: targetKey(snapshot), revision: baseRevision },
     });
     return true;
   }
@@ -3399,6 +3639,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         deletes: page.deletes,
         hasEarlier: snapshot.hasEarlier,
         turnsNextCursor: snapshot.turnsNextCursor,
+        windowComplete: snapshot.windowComplete,
         latestTurnComplete: snapshot.latestTurnComplete,
         latestTurnGap: snapshot.latestTurnGap,
         sourceEntryCount: snapshot.sourceEntryCount,
@@ -3440,6 +3681,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       deletes: [],
       hasEarlier: snapshot.hasEarlier,
       turnsNextCursor: snapshot.turnsNextCursor,
+      windowComplete: snapshot.windowComplete,
       latestTurnComplete: snapshot.latestTurnComplete,
       latestTurnGap: snapshot.latestTurnGap,
       sourceEntryCount: snapshot.sourceEntryCount,
@@ -3515,6 +3757,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         deletes: [],
         hasEarlier: snapshot.hasEarlier,
         turnsNextCursor: snapshot.turnsNextCursor,
+        windowComplete: snapshot.windowComplete,
         latestTurnComplete: snapshot.latestTurnComplete,
         latestTurnGap: snapshot.latestTurnGap,
         sourceEntryCount: snapshot.sourceEntryCount,
@@ -3554,6 +3797,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         deletes: [],
         hasEarlier: snapshot.hasEarlier,
         turnsNextCursor: snapshot.turnsNextCursor,
+        windowComplete: snapshot.windowComplete,
         latestTurnComplete: snapshot.latestTurnComplete,
         latestTurnGap: snapshot.latestTurnGap,
         sourceEntryCount: snapshot.sourceEntryCount,
@@ -5922,6 +6166,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       ...(message.turnId ? { turnId: message.turnId } : {}),
       data: page.data,
       nextCursor: page.nextCursor,
+      ...(page.pageComplete === false ? { pageComplete: false } : {}),
+      ...(page.latestTurnGap ? { latestTurnGap: page.latestTurnGap } : {}),
     });
     let page: ConversationItemsPage;
     try {
@@ -6299,6 +6545,9 @@ function mergeObservedMessageSources(
     incoming: ServerMessage,
   ) => ServerMessage = (_previous, incoming) => incoming,
 ): ServerMessage[] {
+  const resolvedSources = sources.map((source) =>
+    resolveObservedTurnScopes(history, source),
+  );
   const groups: ObservedMessageAliasGroup[] = history.map((message) => ({
     output: message,
     aliases: [{ source: "canonical", message }],
@@ -6396,7 +6645,7 @@ function mergeObservedMessageSources(
     registerAssistantAlias(group.output, index);
   });
 
-  for (const source of sources) {
+  for (const source of resolvedSources) {
     const observedEntries = [...source.observed];
     const sourceAssistantAliasCounts = countAssistantAliases(
       observedEntries.map((entry) => entry.message),
@@ -6614,6 +6863,80 @@ function mergeObservedMessageSources(
   return groups.map((group) => group.output);
 }
 
+/**
+ * Desktop's rollout observer sees task/turn fences that older app-server event
+ * projections expose only as an anonymous scope. A later thread/turns read,
+ * however, carries the official provider turn id. Bind the two representations
+ * through an exact, unique client admission id before attempting message
+ * aliases. This prevents one physical user/assistant exchange from being
+ * appended twice merely because the app-server assigned a provider item id
+ * while the live observer retained its desktop-event id.
+ *
+ * Ambiguous/reused client ids fail open: no scope is assigned and both facts
+ * remain visible. Content equality is required so a corrupt producer cannot
+ * use a reused admission id to overwrite a different prompt.
+ */
+function resolveObservedTurnScopes(
+  history: readonly ServerMessage[],
+  source: ObservedMessageSource,
+): ObservedMessageSource {
+  const canonicalByClientId = new Map<string, ServerMessage[]>();
+  for (const message of history) {
+    if (message.type !== "user_input") continue;
+    const clientMessageId = message.clientMessageId?.trim();
+    const turnId = message.historyTurnId?.trim();
+    if (!clientMessageId || !turnId) continue;
+    const values = canonicalByClientId.get(clientMessageId) ?? [];
+    values.push(message);
+    canonicalByClientId.set(clientMessageId, values);
+  }
+  if (canonicalByClientId.size === 0) return source;
+
+  const scopeTurns = new Map<string, string>();
+  const ambiguousScopes = new Set<string>();
+  for (const entry of source.observed) {
+    const scope = entry.identityScope?.trim();
+    const message = entry.message;
+    if (!scope || message.type !== "user_input") continue;
+    const clientMessageId = message.clientMessageId?.trim();
+    if (!clientMessageId) continue;
+    const candidates = (canonicalByClientId.get(clientMessageId) ?? []).filter(
+      (candidate) =>
+        candidate.type === "user_input" &&
+        candidate.text === message.text &&
+        (candidate.imageCount ?? 0) === (message.imageCount ?? 0),
+    );
+    if (candidates.length !== 1) {
+      ambiguousScopes.add(scope);
+      scopeTurns.delete(scope);
+      continue;
+    }
+    const turnId =
+      candidates[0]!.type === "user_input"
+        ? candidates[0]!.historyTurnId?.trim()
+        : undefined;
+    if (!turnId) continue;
+    const previous = scopeTurns.get(scope);
+    if (previous && previous !== turnId) {
+      ambiguousScopes.add(scope);
+      scopeTurns.delete(scope);
+      continue;
+    }
+    if (!ambiguousScopes.has(scope)) scopeTurns.set(scope, turnId);
+  }
+  if (scopeTurns.size === 0) return source;
+  return {
+    ...source,
+    observed: source.observed.map((entry) => {
+      const scope = entry.identityScope?.trim();
+      const turnId = scope ? scopeTurns.get(scope) : undefined;
+      return turnId
+        ? { ...entry, message: annotateObservedTurn(entry.message, turnId) }
+        : entry;
+    }),
+  };
+}
+
 function scopedObservedMessageIdentity(
   identity: string | null,
   scope: string,
@@ -6808,23 +7131,242 @@ function observedAssistantAliasKey(message: ServerMessage): string | null {
 }
 
 function historyWindowFromSnapshot(
-  snapshot: ConversationContentSnapshot,
+  snapshot: SyncTimelineSnapshot,
 ): ConversationHistoryWindow {
   return {
     messages: snapshot.entries.map((entry) => entry.message),
     nextTurnCursor: snapshot.turnsNextCursor ?? null,
+    windowComplete: snapshot.windowComplete,
     latestTurnComplete: snapshot.latestTurnComplete,
+    ...(snapshot.latestTurnAnonymousIdentity
+      ? { latestTurnAnonymousIdentity: snapshot.latestTurnAnonymousIdentity }
+      : {}),
+    ...(snapshot.anonymousTurnIdentities
+      ? { anonymousTurnIdentities: snapshot.anonymousTurnIdentities }
+      : {}),
     ...(snapshot.latestTurnGap
       ? { latestTurnGap: snapshot.latestTurnGap }
       : {}),
   };
 }
 
-function mergeSnapshotWithLatestTurn(
-  snapshot: ConversationContentSnapshot,
-  latest: ConversationHistoryWindow,
+function reconcileAnonymousFullWindow(
+  previous: SyncTimelineSnapshot,
+  incoming: ConversationHistoryWindow,
 ): ConversationHistoryWindow {
+  const previousIdentities = previous.anonymousTurnIdentities ?? [];
+  const incomingIdentities = incoming.anonymousTurnIdentities ?? [];
+  if (previousIdentities.length === 0 || incomingIdentities.length === 0) {
+    return incoming;
+  }
+  const aligned = alignAnonymousTurnIdentities(
+    previousIdentities,
+    incomingIdentities,
+  );
+  const replacements = new Map<
+    string,
+    AnonymousConversationTurnIdentity
+  >();
+  const matchedPreviousTurnIds = new Set<string>();
+  const matchedIncomingTurnIds = new Set<string>();
+  for (const [previousIndex, incomingIndex] of aligned) {
+    const prior = previousIdentities[previousIndex]!;
+    const next = incomingIdentities[incomingIndex]!;
+    matchedPreviousTurnIds.add(prior.turnId);
+    matchedIncomingTurnIds.add(next.turnId);
+    replacements.set(next.turnId, {
+      ...next,
+      turnId: prior.turnId,
+      occurrence: prior.occurrence,
+    });
+  }
+
+  const previousLatest = previous.latestTurnAnonymousIdentity;
+  const incomingLatest = incoming.latestTurnAnonymousIdentity;
+  if (
+    previousLatest &&
+    incomingLatest &&
+    !matchedPreviousTurnIds.has(previousLatest.turnId) &&
+    !matchedIncomingTurnIds.has(incomingLatest.turnId) &&
+    previousLatest.rootAnchor === incomingLatest.rootAnchor
+  ) {
+    // If the previous latest content still exists earlier in the new bounded
+    // window, LCS already matched it and this is a new same-root turn. Only an
+    // unmatched latest-to-latest pair is an evolving physical turn.
+    replacements.set(incomingLatest.turnId, {
+      ...incomingLatest,
+      turnId: previousLatest.turnId,
+      occurrence: previousLatest.occurrence,
+    });
+  }
+  if (replacements.size === 0) return incoming;
+
+  const replacementTurnId = (turnId: string | undefined) =>
+    turnId ? (replacements.get(turnId)?.turnId ?? turnId) : turnId;
+  const identities = incomingIdentities.map(
+    (identity) => replacements.get(identity.turnId) ?? identity,
+  );
+  return {
+    ...incoming,
+    messages: incoming.messages.map((message) => {
+      const turnId = conversationMessageTurnId(message);
+      const replacement = replacementTurnId(turnId);
+      return replacement && replacement !== turnId
+        ? ({ ...message, historyTurnId: replacement } as ServerMessage)
+        : message;
+    }),
+    turnDetails: incoming.turnDetails?.map((turn) => ({
+      ...turn,
+      turnId: replacementTurnId(turn.turnId) ?? turn.turnId,
+    })),
+    latestTurnGap: incoming.latestTurnGap
+      ? {
+          ...incoming.latestTurnGap,
+          ...(replacementTurnId(incoming.latestTurnGap.turnId)
+            ? {
+                turnId: replacementTurnId(incoming.latestTurnGap.turnId),
+              }
+            : {}),
+        }
+      : undefined,
+    anonymousTurnIdentities: identities,
+    latestTurnAnonymousIdentity: incomingLatest
+      ? (replacements.get(incomingLatest.turnId) ?? incomingLatest)
+      : undefined,
+  };
+}
+
+function alignAnonymousTurnIdentities(
+  previous: readonly AnonymousConversationTurnIdentity[],
+  incoming: readonly AnonymousConversationTurnIdentity[],
+): Array<readonly [number, number]> {
+  const stablePairs = alignAnonymousIdentityRange(
+    previous,
+    incoming,
+    0,
+    previous.length,
+    0,
+    incoming.length,
+    (
+      left: AnonymousConversationTurnIdentity,
+      right: AnonymousConversationTurnIdentity,
+    ) =>
+      left.anchor === right.anchor ||
+      left.contentAnchor === right.contentAnchor,
+  );
+  const pairs: Array<readonly [number, number]> = [];
+  let previousStart = 0;
+  let incomingStart = 0;
+  for (const [previousIndex, incomingIndex] of stablePairs) {
+    pairs.push(
+      ...alignAnonymousIdentityRange(
+        previous,
+        incoming,
+        previousStart,
+        previousIndex,
+        incomingStart,
+        incomingIndex,
+        (left, right) => left.rootAnchor === right.rootAnchor,
+      ),
+      [previousIndex, incomingIndex],
+    );
+    previousStart = previousIndex + 1;
+    incomingStart = incomingIndex + 1;
+  }
+  pairs.push(
+    ...alignAnonymousIdentityRange(
+      previous,
+      incoming,
+      previousStart,
+      previous.length,
+      incomingStart,
+      incoming.length,
+      (left, right) => left.rootAnchor === right.rootAnchor,
+    ),
+  );
+  return pairs;
+}
+
+function alignAnonymousIdentityRange(
+  previous: readonly AnonymousConversationTurnIdentity[],
+  incoming: readonly AnonymousConversationTurnIdentity[],
+  previousStart: number,
+  previousEnd: number,
+  incomingStart: number,
+  incomingEnd: number,
+  equivalent: (
+    left: AnonymousConversationTurnIdentity,
+    right: AnonymousConversationTurnIdentity,
+  ) => boolean,
+): Array<readonly [number, number]> {
+  const previousLength = previousEnd - previousStart;
+  const incomingLength = incomingEnd - incomingStart;
+  const lengths = Array.from({ length: previousLength + 1 }, () =>
+    Array<number>(incomingLength + 1).fill(0),
+  );
+  for (let left = previousLength - 1; left >= 0; left -= 1) {
+    for (let right = incomingLength - 1; right >= 0; right -= 1) {
+      lengths[left]![right] = equivalent(
+        previous[previousStart + left]!,
+        incoming[incomingStart + right]!,
+      )
+        ? 1 + lengths[left + 1]![right + 1]!
+        : Math.max(lengths[left + 1]![right]!, lengths[left]![right + 1]!);
+    }
+  }
+  const pairs: Array<readonly [number, number]> = [];
+  let left = 0;
+  let right = 0;
+  while (left < previousLength && right < incomingLength) {
+    if (
+      equivalent(
+        previous[previousStart + left]!,
+        incoming[incomingStart + right]!,
+      ) &&
+      lengths[left]![right] === 1 + lengths[left + 1]![right + 1]!
+    ) {
+      pairs.push([previousStart + left, incomingStart + right]);
+      left += 1;
+      right += 1;
+    } else if (lengths[left + 1]![right]! >= lengths[left]![right + 1]!) {
+      left += 1;
+    } else {
+      right += 1;
+    }
+  }
+  return pairs;
+}
+
+function mergeSnapshotWithLatestTurn(
+  snapshot: SyncTimelineSnapshot,
+  latest: ConversationHistoryWindow,
+): ConversationHistoryWindow | null {
+  if (
+    snapshot.latestTurnAnonymousIdentity ||
+    latest.latestTurnAnonymousIdentity
+  ) {
+    return null;
+  }
   const base = snapshot.entries.map((entry) => entry.message);
+  if (latest.latestTurnComplete !== false) {
+    const turnIds = new Set(
+      latest.messages
+        .map(conversationMessageTurnId)
+        .filter((turnId): turnId is string => turnId !== undefined),
+    );
+    if (turnIds.size !== 1) return null;
+    const turnId = turnIds.values().next().value!;
+    return {
+      messages: [
+        ...base.filter((message) => conversationMessageTurnId(message) !== turnId),
+        ...latest.messages,
+      ],
+      nextTurnCursor: snapshot.turnsNextCursor ?? latest.nextTurnCursor,
+      turnDetails: latest.turnDetails,
+      windowComplete: snapshot.windowComplete,
+      latestTurnComplete: true,
+    };
+  }
   const messages = mergeObservedMessagesReplacingStable(
     base,
     latest.messages.map((message) => ({
@@ -6839,16 +7381,25 @@ function mergeSnapshotWithLatestTurn(
     messages,
     nextTurnCursor: snapshot.turnsNextCursor ?? latest.nextTurnCursor,
     turnDetails: latest.turnDetails,
+    windowComplete:
+      snapshot.windowComplete && latest.latestTurnComplete !== false,
     latestTurnComplete: latest.latestTurnComplete,
     ...(latest.latestTurnGap ? { latestTurnGap: latest.latestTurnGap } : {}),
   };
 }
 
+function conversationMessageTurnId(message: ServerMessage): string | undefined {
+  const value = (message as { historyTurnId?: unknown }).historyTurnId;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized || undefined;
+}
+
 function normalizeLatestHistoryForMerge(
-  previous: ConversationContentSnapshot,
+  previous: SyncTimelineSnapshot,
   history: Awaited<ReturnType<ConversationHistoryReader>>,
 ): ConversationHistoryWindow {
-  const latest = normalizeHistoryWindow(history);
+  const latest = normalizeHistoryWindow(history, false);
   if (previous.entries.length > 0 && latest.messages.length === 0) {
     throw new Error("Latest conversation turn is temporarily unavailable.");
   }
@@ -7006,14 +7557,27 @@ function canonicalHistoryCoversObservedSources(
       .filter((source) => source.observed.length > 0),
     preferNonRegressiveLatestTurnMessage,
   );
-  return (
-    merged.length === history.length &&
-    merged.every(
-      (message, index) =>
-        stableObservedMessagePayload(message) ===
-        stableObservedMessagePayload(history[index]!),
-    )
+  if (merged.length !== history.length) return false;
+  const mismatchIndex = merged.findIndex(
+    (message, index) =>
+      stableObservedMessagePayload(message) !==
+      stableObservedMessagePayload(history[index]!),
   );
+  if (mismatchIndex >= 0) {
+    const canonical = history[mismatchIndex]!;
+    const projected = merged[mismatchIndex]!;
+    traceConversationSync(
+      `[conversation-sync-v2] observed coverage mismatch ` +
+        `index=${mismatchIndex} canonicalType=${canonical.type} ` +
+        `projectedType=${projected.type} ` +
+        `canonicalId=${hashState(observedMessageIdentity(canonical)).slice(0, 12)} ` +
+        `projectedId=${hashState(observedMessageIdentity(projected)).slice(0, 12)} ` +
+        `canonicalPayload=${hashState(stableObservedMessagePayload(canonical)).slice(0, 12)} ` +
+        `projectedPayload=${hashState(stableObservedMessagePayload(projected)).slice(0, 12)}`,
+    );
+    return false;
+  }
+  return true;
 }
 
 function observedMessageIdentity(message: ServerMessage): string | null {
@@ -7297,6 +7861,7 @@ async function readRecentCodexConversationHistory(
     "full",
     target.providerSessionId,
     desktopToolTimeline,
+    "hot-window",
   );
   const fullStart = Math.max(0, normalized.turns.length - FULL_RECENT_TURNS);
   const latestTurn = normalized.turns.at(-1);
@@ -7309,6 +7874,15 @@ async function readRecentCodexConversationHistory(
     nextTurnCursor: page.nextCursor,
     turnDetails: normalized.turnDetails,
     latestTurnComplete: latestTurn?.latestTurnComplete ?? true,
+    anonymousTurnIdentities: normalized.turns
+      .map((turn) => turn.anonymousIdentity)
+      .filter(
+        (identity): identity is AnonymousConversationTurnIdentity =>
+          identity !== undefined,
+      ),
+    ...(latestTurn?.anonymousIdentity
+      ? { latestTurnAnonymousIdentity: latestTurn.anonymousIdentity }
+      : {}),
     ...(latestTurn?.latestTurnGap
       ? { latestTurnGap: latestTurn.latestTurnGap }
       : {}),
@@ -7348,6 +7922,8 @@ async function readLatestCodexTurnHistory(
     [...page.data].reverse(),
     "full",
     target.providerSessionId,
+    undefined,
+    "hot-window",
   );
   const latestTurn = normalized.turns.at(-1);
   return {
@@ -7355,6 +7931,15 @@ async function readLatestCodexTurnHistory(
     nextTurnCursor: page.nextCursor,
     turnDetails: normalized.turnDetails,
     latestTurnComplete: latestTurn?.latestTurnComplete ?? true,
+    anonymousTurnIdentities: normalized.turns
+      .map((turn) => turn.anonymousIdentity)
+      .filter(
+        (identity): identity is AnonymousConversationTurnIdentity =>
+          identity !== undefined,
+      ),
+    ...(latestTurn?.anonymousIdentity
+      ? { latestTurnAnonymousIdentity: latestTurn.anonymousIdentity }
+      : {}),
     ...(latestTurn?.latestTurnGap
       ? { latestTurnGap: latestTurn.latestTurnGap }
       : {}),
@@ -7448,6 +8033,7 @@ async function readTurnsPage(
             message.itemsView ?? "summary",
             message.providerSessionId,
             await timeline,
+            message.cursor == null ? "hot-window" : `page:${message.cursor}`,
           );
           const candidate = projectTurnsPage(message, {
             data: normalized.turns,
@@ -7739,12 +8325,13 @@ async function readLegacyItemsPage(
   }
   let lastPage: ConversationItemsPage | undefined;
   for (const limit of decreasingPageLimits(message.limit ?? 50)) {
-    const candidate = paginateArray(
+    const page = paginateArray(
       annotated,
       localCursor,
       limit,
       message.sortDirection ?? "asc",
     );
+    const candidate: ConversationItemsPage = page;
     if (pageFits(candidate)) return candidate;
     lastPage = candidate;
   }
@@ -7949,10 +8536,16 @@ function projectedSnapshotBudget(textBudget: number): number {
 
 function normalizeHistoryWindow(
   history: ServerMessage[] | ConversationHistoryWindow,
+  windowComplete = true,
 ): ConversationHistoryWindow {
   return Array.isArray(history)
-    ? { messages: history, nextTurnCursor: null }
-    : history;
+    ? { messages: history, nextTurnCursor: null, windowComplete }
+    : {
+        ...history,
+        windowComplete:
+          history.windowComplete ??
+          (history.latestTurnComplete !== false && windowComplete),
+      };
 }
 
 function normalizeCodexTurns(
@@ -7960,29 +8553,71 @@ function normalizeCodexTurns(
   itemsView: "summary" | "full",
   threadId: string,
   desktopToolTimeline?: CodexDesktopToolTimeline,
+  fallbackNamespace = "hot-window",
 ): {
   turns: NormalizedConversationTurn[];
   turnDetails: ConversationTurnDetails[];
 } {
   const turns: NormalizedConversationTurn[] = [];
   const turnDetails: ConversationTurnDetails[] = [];
-  rawTurns.forEach((rawTurn, index) => {
+  const anonymousOccurrences = new Map<string, number>();
+  rawTurns.forEach((rawTurn) => {
     if (!rawTurn || typeof rawTurn !== "object") return;
     const turn = rawTurn as Record<string, unknown>;
     const rawId = turn.id;
     const rawItems = Array.isArray(turn.items) ? turn.items : [];
-    const firstItem =
-      rawItems[0] && typeof rawItems[0] === "object"
-        ? (rawItems[0] as Record<string, unknown>)
-        : undefined;
-    const firstItemId =
-      typeof firstItem?.id === "string" ? firstItem.id : "anonymous";
+    const explicitTurnId =
+      typeof rawId === "string" && rawId.trim() ? rawId.trim() : undefined;
+    const bounded = boundCodexRawTurnForConversion(
+      turn,
+      explicitTurnId ?? "anonymous-codex-turn",
+    );
+    const boundedItems = Array.isArray(bounded.turn.items)
+      ? bounded.turn.items
+      : [];
+    const contentAnchor = hashState([
+      "anonymous-turn-content-v1",
+      stableAnonymousCodexValue(boundedItems),
+    ]);
+    const rootAnchor = hashState([
+      "anonymous-turn-root-v1",
+      boundedItems[0] === undefined
+        ? null
+        : stableAnonymousCodexValue(boundedItems[0]),
+    ]);
+    const anonymousAnchor = anonymousCodexTurnAnchor(
+      turn,
+      boundedItems,
+      fallbackNamespace,
+      contentAnchor,
+    );
+    const anonymousOccurrence =
+      anonymousOccurrences.get(anonymousAnchor) ?? 0;
+    anonymousOccurrences.set(anonymousAnchor, anonymousOccurrence + 1);
+    const anonymousIdentityParts: unknown[] = [
+      threadId,
+      "anonymous-codex-turn-v2",
+      anonymousAnchor,
+      anonymousOccurrence,
+    ];
+    if (fallbackNamespace.startsWith("page:")) {
+      anonymousIdentityParts.splice(2, 0, fallbackNamespace);
+    }
     const turnId =
-      typeof rawId === "string" && rawId.trim()
-        ? rawId.trim()
-        : `turn:${hashState([threadId, index, firstItemId]).slice(0, 24)}`;
+      explicitTurnId ??
+      `turn:${hashState(anonymousIdentityParts).slice(0, 24)}`;
+    const anonymousIdentity: AnonymousConversationTurnIdentity | undefined =
+      explicitTurnId
+        ? undefined
+        : {
+            anchor: anonymousAnchor,
+            rootAnchor,
+            contentAnchor,
+            turnId,
+            occurrence: anonymousOccurrence,
+          };
     const items = rawItems;
-    const bounded = boundCodexRawTurnForConversion(turn, turnId);
+    bounded.turn.id = turnId;
     const fullMessages = annotateTurnMessages(
       codexTurnMessages(bounded.turn, threadId, desktopToolTimeline),
       turnId,
@@ -8010,9 +8645,81 @@ function normalizeCodexTurns(
             },
           }
         : {}),
+      ...(anonymousIdentity ? { anonymousIdentity } : {}),
     });
   });
   return { turns, turnDetails };
+}
+
+/**
+ * Intrinsic fallback identity for old app-servers that omit a turn id.
+ *
+ * The previous fallback used distance-from-newest, which renamed every old
+ * turn whenever a newer turn was appended.  Prefer immutable provider time or
+ * the first item (normally the root user item); an occurrence ordinal in
+ * chronological order keeps genuinely identical anonymous turns distinct.
+ * The namespace is used only for an entirely empty, timestamp-free turn where
+ * no cross-page identity can be proved.
+ */
+function anonymousCodexTurnAnchor(
+  turn: Record<string, unknown>,
+  rawItems: readonly unknown[],
+  fallbackNamespace: string,
+  contentAnchor: string,
+): string {
+  const startedAt = stableCodexTurnTime(turn.startedAt);
+  const completedAt = stableCodexTurnTime(turn.completedAt);
+  // startedAt is immutable once observed; completedAt may appear later and
+  // must not rename an already-running turn.
+  if (startedAt !== undefined) {
+    return hashState(["anonymous-turn-started-at", startedAt]);
+  }
+  if (completedAt !== undefined) {
+    return hashState(["anonymous-turn-completed-at", completedAt]);
+  }
+  if (rawItems.length > 0) {
+    // With neither provider id nor time, the first item alone is not a unique
+    // turn identity: repeated prompts are legal. The complete bounded turn
+    // payload distinguishes completed same-root turns and remains stable when
+    // the surrounding hot window slides. Active anonymous turns deliberately
+    // use a full bounded re-read instead of the latest-only shortcut above.
+    return contentAnchor;
+  }
+  return hashState(["empty-anonymous-turn", fallbackNamespace]);
+}
+
+function stableCodexTurnTime(value: unknown): string | number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) return value.trim();
+  return undefined;
+}
+
+function stableAnonymousCodexValue(value: unknown, depth = 0): unknown {
+  if (
+    value == null ||
+    typeof value === "boolean" ||
+    typeof value === "number"
+  ) {
+    return value;
+  }
+  if (typeof value === "string") return value;
+  if (depth >= 4) return null;
+  if (Array.isArray(value)) {
+    return value.slice(0, 32).map((item) =>
+      stableAnonymousCodexValue(item, depth + 1),
+    );
+  }
+  if (typeof value !== "object") return String(value);
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.keys(record)
+      .sort()
+      .slice(0, 64)
+      .map((key) => [
+        key,
+        stableAnonymousCodexValue(record[key], depth + 1),
+      ]),
+  );
 }
 
 interface BoundedCodexRawTurn {

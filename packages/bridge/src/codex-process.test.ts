@@ -276,6 +276,7 @@ describe("CodexProcess (app-server)", () => {
         clientMessageId: "mobile-accepted",
         stage: "provider_accepted",
         method: "turn/steer",
+        providerTurnId: "turn-1",
         clientUserMessageIdAccepted: true,
       }),
       expect.objectContaining({
@@ -5604,7 +5605,9 @@ describe("CodexProcess (app-server)", () => {
   it("ignores placeholder codex model names from resume state", async () => {
     const proc = new CodexProcess("linux");
     const messages: unknown[] = [];
+    const deliveries: unknown[] = [];
     proc.on("message", (msg) => messages.push(msg));
+    proc.on("input_delivery", (event) => deliveries.push(event));
 
     proc.start("/tmp/project-placeholder", {
       sandboxMode: "workspace-write",
@@ -5666,6 +5669,22 @@ describe("CodexProcess (app-server)", () => {
       "mobile-message-loop",
     );
     expect(turnReq.params).not.toHaveProperty("collaborationMode");
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: turnReq.id,
+        result: { turn: { id: "turn-admitted-loop" } },
+      })}\n`,
+    );
+    await tick();
+    expect(deliveries).toContainEqual(
+      expect.objectContaining({
+        clientMessageId: "mobile-message-loop",
+        stage: "provider_accepted",
+        method: "turn/start",
+        providerTurnId: "turn-admitted-loop",
+      }),
+    );
 
     proc.stop();
   });

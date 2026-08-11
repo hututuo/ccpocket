@@ -7,6 +7,8 @@ import {
 } from "../protocol-slot.js";
 
 export const CONVERSATION_SYNC_V2_CAPABILITY = "conversation_sync_v2" as const;
+export const CONVERSATION_WINDOW_COVERAGE_CAPABILITY =
+  "conversation_sync_window_coverage_v1" as const;
 export const CONVERSATION_SYNC_FOCUS_REFRESH_CAPABILITY =
   "conversation_sync_focus_refresh_v1" as const;
 export const CONVERSATION_ITEMS_BY_ID_CAPABILITY =
@@ -34,6 +36,8 @@ export interface ConversationSyncTarget {
 
 export interface ConversationSyncThreadState extends ConversationSyncTarget {
   revision: string;
+  /** Client retained this base, but its additive window needs a full replace. */
+  forceReplacement?: boolean;
 }
 
 export interface ConversationSyncReadWatermark extends ConversationSyncTarget {
@@ -189,6 +193,11 @@ interface ConversationSyncEventBase {
 }
 
 export type ConversationSyncServerMessage =
+  | {
+      /** Capability-advertisement marker; never emitted as a runtime event. */
+      type: typeof CONVERSATION_WINDOW_COVERAGE_CAPABILITY;
+      supported: true;
+    }
   | (ConversationSyncEventBase & {
       event: "sync_begin";
       requestId: string;
@@ -226,6 +235,12 @@ export type ConversationSyncServerMessage =
         deletes: string[];
         hasEarlier: boolean;
         turnsNextCursor?: string | null;
+        /**
+         * True only when this page transaction covers the complete bounded hot
+         * window and may replace a previously committed window. Older clients
+         * safely ignore this additive field.
+         */
+        windowComplete?: boolean;
         latestTurnComplete?: boolean;
         latestTurnGap?: ConversationSyncLatestTurnGap;
         sourceEntryCount: number;
@@ -268,11 +283,18 @@ export type ConversationSyncServerMessage =
       })
   | (ConversationSyncEventBase &
       ConversationSyncTarget & {
-        event: "items_page_response";
-        requestId: string;
-        turnId?: string;
-        data: unknown[];
-        nextCursor: string | null;
+      event: "items_page_response";
+      requestId: string;
+      turnId?: string;
+      data: unknown[];
+      nextCursor: string | null;
+      /**
+       * Compatibility marker for a non-terminal projected page. Current
+       * Bridges fail an oversized source item and keep its cursor unchanged
+       * instead of presenting a projection as complete.
+       */
+      pageComplete?: boolean;
+      latestTurnGap?: ConversationSyncLatestTurnGap;
       })
   | (ConversationSyncEventBase & {
       event: "focus_applied";
@@ -352,15 +374,22 @@ function parseThreadStates(
         "provider",
         "providerSessionId",
         "revision",
+        "forceReplacement",
       ]) ||
-      !validLocalFeatureId(record.revision, 128)
+      !validLocalFeatureId(record.revision, 128) ||
+      (record.forceReplacement !== undefined &&
+        typeof record.forceReplacement !== "boolean")
     ) {
       return null;
     }
     const key = targetKey(target);
     if (seen.has(key)) return null;
     seen.add(key);
-    states.push({ ...target, revision: record.revision });
+    states.push({
+      ...target,
+      revision: record.revision,
+      ...(record.forceReplacement === true ? { forceReplacement: true } : {}),
+    });
   }
   return states;
 }
@@ -431,7 +460,10 @@ export const conversationSyncV2ProtocolContribution: LocalFeatureProtocolContrib
   ConversationSyncServerMessage
 > = {
   clientTypes: CLIENT_TYPES,
-  serverTypes: [CONVERSATION_SYNC_V2_CAPABILITY],
+  serverTypes: [
+    CONVERSATION_SYNC_V2_CAPABILITY,
+    CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
+  ],
   parseClient(message) {
     if (
       typeof message.type !== "string" ||

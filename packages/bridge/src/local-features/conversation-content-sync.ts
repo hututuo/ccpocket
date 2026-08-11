@@ -103,6 +103,12 @@ export interface ConversationContentLatestTurnGap {
 export interface ConversationContentSnapshot extends ConversationContentTarget {
   revision: string;
   entries: ConversationContentSnapshotEntry[];
+  /**
+   * True only when this projection covers the complete bounded hot window and
+   * may replace a previously committed window. A complete latest turn can
+   * still have an incomplete hot window after byte-budget fallback.
+   */
+  windowComplete: boolean;
   hasEarlier: boolean;
   /// Opaque app-server/provider cursor for the next older turn page.
   turnsNextCursor?: string | null;
@@ -724,7 +730,9 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
             maxSnapshotBytes: this.maxSnapshotBytes,
           });
           this.publishSnapshot(task.key, snapshot);
-          this.rememberSnapshot(task.key, snapshot);
+          if (snapshot.windowComplete) {
+            this.rememberSnapshot(task.key, snapshot);
+          }
         } catch (error) {
           this.sendTargetErrors(
             task,
@@ -790,7 +798,21 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
     allowDeferral = true,
   ): void {
     if (!subscription.interactive || !this.clientReady(client)) return;
+    // v1 has no coverage field or provisional overlay lineage. Publishing a
+    // partial projection would make older Mobile replace its readable cache as
+    // if the subset were authoritative. Keep the last complete v1 window; the
+    // live session stream still carries current focused progress.
     const pendingRevision = subscription.pendingRevisions.get(key);
+    if (!snapshot.windowComplete) {
+      // v1 has no coverage bit. An incomplete snapshot is safe only as the
+      // first bootstrap for a client that has no readable window at all. Once
+      // a local or pending revision exists, preserve it until a complete
+      // replacement is available.
+      if (pendingRevision || subscription.cursors.has(key)) return;
+      this.sendSnapshot(client, subscription, snapshot);
+      subscription.pendingRevisions.set(key, snapshot.revision);
+      return;
+    }
     if (pendingRevision === snapshot.revision) return;
     const canReplayAfterAck =
       snapshot.cacheBytes <= this.maxCachedTargetBytes &&
@@ -1162,6 +1184,7 @@ export function buildConversationContentSnapshot(
     limits.maxMessageTextBytes,
     limits.maxSnapshotBytes,
   );
+  let windowComplete = true;
 
   // The ordinary fast path retains the existing exact window. Only if the
   // serialized 512 KiB budget is exceeded do we project heavy tool payloads
@@ -1178,6 +1201,7 @@ export function buildConversationContentSnapshot(
       latestTurnId,
     ).cacheBytes > limits.maxSnapshotBytes;
   if (initialSnapshotTooLarge) {
+    windowComplete = false;
     const latestSelected = selected.filter(
       (entry) => entry.sourceIndex >= latestTurnStart,
     );
@@ -1342,6 +1366,7 @@ export function buildConversationContentSnapshot(
     rawMessages,
     latestTurnStart,
     latestTurnId,
+    windowComplete && entries.length === candidates.length,
   );
   while (
     snapshot.cacheBytes > limits.maxSnapshotBytes &&
@@ -1354,6 +1379,7 @@ export function buildConversationContentSnapshot(
       rawMessages,
       latestTurnStart,
       latestTurnId,
+      windowComplete && entries.length === candidates.length,
     );
   }
   if (snapshot.cacheBytes > limits.maxSnapshotBytes) {
@@ -1434,6 +1460,7 @@ function materializeCandidateSnapshot(
   rawMessages: readonly ServerMessage[],
   latestTurnStart: number,
   latestTurnId?: string,
+  windowComplete = true,
 ): ConversationContentSnapshot {
   const entries = preparedEntries.map(
     ({ payloadOmitted: _, serializedEntryBytes: __, ...entry }) => entry,
@@ -1483,6 +1510,7 @@ function materializeCandidateSnapshot(
     rawMessages.length,
     latestTurnComplete,
     latestTurnGap,
+    windowComplete && latestTurnComplete,
   );
 }
 
@@ -1533,11 +1561,13 @@ function materializeSnapshot(
   sourceEntryCount: number,
   latestTurnComplete = true,
   latestTurnGap?: ConversationContentLatestTurnGap,
+  windowComplete = true,
 ): ConversationContentSnapshot {
   const revision = sha256(
     JSON.stringify({
       sourceEntryCount,
       hasEarlier,
+      windowComplete,
       latestTurnComplete,
       latestTurnGap,
       entries: entries.map((entry) => [
@@ -1551,6 +1581,7 @@ function materializeSnapshot(
     ...target,
     revision,
     entries,
+    windowComplete,
     hasEarlier,
     latestTurnComplete,
     ...(latestTurnGap ? { latestTurnGap } : {}),

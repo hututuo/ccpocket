@@ -2747,11 +2747,15 @@ function appendCodexThinkingMessage(
   text: string,
   timestamp?: string,
   historyTurnId?: string,
+  uuid?: string,
+  rawItemId?: string,
 ): void {
   const normalized = text.trim();
   if (!normalized) return;
   messages.push({
     role: "assistant",
+    ...(uuid ? { uuid } : {}),
+    ...(rawItemId ? { rawItemId } : {}),
     content: [{ type: "thinking", thinking: normalized }],
     ...(historyTurnId ? { historyTurnId } : {}),
     ...(timestamp ? { timestamp } : {}),
@@ -2802,18 +2806,22 @@ export function codexThreadToSessionHistory(
   const turns = arrayValue(asObject(sourceThread)?.turns);
   let userTurnOrdinal = 0;
 
-  for (const rawTurn of turns) {
+  for (let turnOrdinal = 0; turnOrdinal < turns.length; turnOrdinal += 1) {
+    const rawTurn = turns[turnOrdinal];
     const turn = asObject(rawTurn);
     if (!turn) continue;
     const historyTurnId = stringValue(turn.id);
     const turnStartedAt = numberToIsoTimestamp(turn.startedAt);
     const turnCompletedAt = numberToIsoTimestamp(turn.completedAt);
 
-    for (const rawItem of arrayValue(turn.items)) {
+    const rawItems = arrayValue(turn.items);
+    for (let itemOrdinal = 0; itemOrdinal < rawItems.length; itemOrdinal += 1) {
+      const rawItem = rawItems[itemOrdinal];
       const item = asObject(rawItem);
       if (!item || typeof item.type !== "string") continue;
       const rawItemId = stringValue(item.id);
-      const itemId = rawItemId ?? `codex-item-${messages.length}`;
+      const itemId = rawItemId ??
+          `codex-item-${historyTurnId ?? `legacy-turn-${turnOrdinal}`}-${itemOrdinal}`;
       const itemTimestamp = turnCompletedAt ?? turnStartedAt;
       const embeddedItemTiming: CodexDesktopItemTimestamp = {
         startedAt: stringValue(item.__ccPocketEventStartedAt),
@@ -2893,6 +2901,8 @@ export function codexThreadToSessionHistory(
             [...summary, ...content].join("\n"),
             itemTimestamp,
             historyTurnId,
+            itemId,
+            rawItemId,
           );
           break;
         }

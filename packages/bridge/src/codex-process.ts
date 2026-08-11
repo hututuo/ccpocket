@@ -232,6 +232,8 @@ export interface CodexInputDeliveryEvent {
   stage: CodexInputDeliveryStage;
   method: "turn/start" | "turn/steer";
   occurredAt: string;
+  /** Exact provider turn admitted by the app-server RPC boundary. */
+  providerTurnId?: string;
   clientUserMessageIdAccepted?: boolean;
   error?: string;
 }
@@ -3332,6 +3334,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         "provider_accepted",
         "turn/steer",
         receipt.clientUserMessageIdAccepted,
+        undefined,
+        expectedTurnId,
       );
     } catch (err) {
       this.emitInputDelivery(
@@ -4887,17 +4891,24 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           pendingInput.requireClientUserMessageId === true,
         )
           .then((receipt) => {
+            const turn = (receipt.result as Record<string, unknown>).turn as
+              | Record<string, unknown>
+              | undefined;
+            const providerTurnId =
+              typeof turn?.id === "string" && turn.id.trim()
+                ? turn.id.trim()
+                : undefined;
             this.emitInputDelivery(
               pendingInput.clientMessageId,
               "provider_accepted",
               "turn/start",
               receipt.clientUserMessageIdAccepted,
+              undefined,
+              providerTurnId,
             );
             if (!this.isRuntimeActive(runtimeGeneration)) return;
-            const turn = (receipt.result as Record<string, unknown>).turn as
-              Record<string, unknown> | undefined;
-            if (typeof turn?.id === "string") {
-              this.bindPendingTurnCompletion(turnCompletion, turn.id);
+            if (providerTurnId) {
+              this.bindPendingTurnCompletion(turnCompletion, providerTurnId);
             }
           })
           .catch((err) => {
@@ -6906,13 +6917,18 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     method: "turn/start" | "turn/steer",
     clientUserMessageIdAccepted?: boolean,
     error?: unknown,
+    providerTurnId?: string,
   ): void {
     if (!clientMessageId) return;
+    const normalizedProviderTurnId = providerTurnId?.trim();
     this.emit("input_delivery", {
       clientMessageId,
       stage,
       method,
       occurredAt: new Date().toISOString(),
+      ...(normalizedProviderTurnId && normalizedProviderTurnId.length <= 256
+        ? { providerTurnId: normalizedProviderTurnId }
+        : {}),
       ...(clientUserMessageIdAccepted === undefined
         ? {}
         : { clientUserMessageIdAccepted }),
