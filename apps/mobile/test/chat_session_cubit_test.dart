@@ -479,6 +479,195 @@ void main() {
     );
 
     test(
+      'v2 detached assistant completion closes one stream segment before the next',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+          ChatSessionCubit.codexDesktopContinuityCapability,
+        };
+        const user = UserInputMessage(
+          text: 'Investigate the receiver',
+          clientMessageId: 'client-segment-turn',
+          providerItemId: 'provider-user-segment-turn',
+          historyTurnId: 'turn-segments',
+          userMessageUuid: 'user-segment-turn',
+        );
+        const first = AssistantServerMessage(
+          message: AssistantMessage(
+            id: 'assistant-segment-a',
+            role: 'assistant',
+            content: [TextContent(text: 'First intermediate update')],
+            model: 'gpt-test',
+          ),
+          messageUuid: 'assistant-segment-a',
+          historyTurnId: 'turn-segments',
+        );
+        const second = AssistantServerMessage(
+          message: AssistantMessage(
+            id: 'assistant-segment-b',
+            role: 'assistant',
+            content: [TextContent(text: 'Second intermediate update')],
+            model: 'gpt-test',
+          ),
+          messageUuid: 'assistant-segment-b',
+          historyTurnId: 'turn-segments',
+        );
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-segment-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-segment-thread',
+          initialHistoryMessages: const [user],
+        );
+        addTearDown(cubit.close);
+
+        mockBridge.emitMessage(
+          const StreamDeltaMessage(text: 'First intermediate update'),
+          sessionId: 'runtime-segment-thread',
+        );
+        await pumpEventQueue();
+        expect(streamingCubit.state.text, 'First intermediate update');
+        expect(streamingCubit.state.isStreaming, isTrue);
+
+        mockBridge.emitMessage(first, sessionId: 'runtime-segment-thread');
+        await pumpEventQueue();
+        expect(
+          streamingCubit.state.isStreaming,
+          isFalse,
+          reason: 'An item/completed assistant frame is a stream boundary.',
+        );
+        expect(
+          cubit.visibleEntries.whereType<ServerChatEntry>().where(
+            (entry) =>
+                entry.message is AssistantServerMessage &&
+                (entry.message as AssistantServerMessage).message.id ==
+                    'assistant-segment-a',
+          ),
+          hasLength(1),
+        );
+
+        mockBridge.emitMessage(first, sessionId: 'runtime-segment-thread');
+        await pumpEventQueue();
+        expect(
+          cubit.visibleEntries.whereType<ServerChatEntry>().where(
+            (entry) =>
+                entry.message is AssistantServerMessage &&
+                (entry.message as AssistantServerMessage).message.id ==
+                    'assistant-segment-a',
+          ),
+          hasLength(1),
+          reason: 'A replayed completion keeps one provider item.',
+        );
+
+        cubit.updateDetachedPreviewHistory(const [user, first]);
+        mockBridge.emitMessage(
+          const StreamDeltaMessage(text: 'Second intermediate update'),
+          sessionId: 'runtime-segment-thread',
+        );
+        await pumpEventQueue();
+        expect(
+          streamingCubit.state.text,
+          'Second intermediate update',
+          reason: 'The next provider item must not append to the prior item.',
+        );
+
+        mockBridge.emitMessage(second, sessionId: 'runtime-segment-thread');
+        await pumpEventQueue();
+        expect(streamingCubit.state.isStreaming, isFalse);
+        cubit.updateDetachedPreviewHistory(const [user, first, second]);
+
+        final assistants = cubit.visibleEntries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .whereType<AssistantServerMessage>()
+            .toList(growable: false);
+        expect(assistants.map((message) => message.message.id), [
+          'assistant-segment-a',
+          'assistant-segment-b',
+        ]);
+        final layout = buildChatProcessLayout(
+          cubit.visibleEntries,
+          latestTurnIsActive: true,
+        );
+        expect(layout.latestTurn?.intermediateOutputCount, 1);
+        expect(
+          layout.latestTurn?.currentAssistantEntryIndex,
+          cubit.visibleEntries.indexWhere(
+            (entry) =>
+                entry is ServerChatEntry &&
+                entry.message is AssistantServerMessage &&
+                (entry.message as AssistantServerMessage).message.id ==
+                    'assistant-segment-b',
+          ),
+        );
+      },
+    );
+
+    test(
+      'v2 detached reopen restores an accepted user envelope before SQLite catches up',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+          ChatSessionCubit.codexDesktopContinuityCapability,
+        };
+        mockBridge.cachedMessagesBySession['runtime-reopen-thread'] = const [
+          UserInputMessage(
+            text: 'Newest accepted request',
+            clientMessageId: 'client-reopen-latest',
+          ),
+        ];
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-reopen-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-reopen-thread',
+          initialHistoryMessages: const [
+            UserInputMessage(
+              text: 'Older canonical request',
+              providerItemId: 'provider-older-user',
+              historyTurnId: 'turn-older',
+              userMessageUuid: 'user-older',
+            ),
+          ],
+        );
+        addTearDown(cubit.close);
+
+        expect(
+          cubit.visibleEntries.whereType<UserChatEntry>().map(
+            (entry) => entry.text,
+          ),
+          ['Older canonical request', 'Newest accepted request'],
+        );
+
+        cubit.updateDetachedPreviewHistory(const [
+          UserInputMessage(
+            text: 'Older canonical request',
+            providerItemId: 'provider-older-user',
+            historyTurnId: 'turn-older',
+            userMessageUuid: 'user-older',
+          ),
+          UserInputMessage(
+            text: 'Newest accepted request',
+            clientMessageId: 'client-reopen-latest',
+            providerItemId: 'provider-reopen-latest',
+            historyTurnId: 'turn-reopen-latest',
+            userMessageUuid: 'user-reopen-latest',
+          ),
+        ]);
+        final users = cubit.visibleEntries.whereType<UserChatEntry>().toList(
+          growable: false,
+        );
+        expect(users, hasLength(2));
+        expect(users.last.text, 'Newest accepted request');
+        expect(users.last.providerItemId, 'provider-reopen-latest');
+      },
+    );
+
+    test(
       'detached provider status stays source-scoped and rejects late history',
       () async {
         final cubit = ChatSessionCubit(

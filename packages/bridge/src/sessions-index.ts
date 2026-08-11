@@ -3616,10 +3616,18 @@ function appendTextMessage(
     last.content[0].type === "text" &&
     typeof last.content[0].text === "string" &&
     last.content[0].text.trim() === normalized &&
-    (!uuid || last.uuid === uuid) &&
     last.historyTurnId === historyTurnId
   ) {
-    return false;
+    // Codex persists one visible assistant update twice: first as the
+    // user-facing event_msg, then as the canonical response_item carrying the
+    // stable provider item id. Promote that id onto the provisional row. Two
+    // response items with different ids remain distinct even when their text
+    // happens to be identical.
+    if (!uuid || !last.uuid || last.uuid === uuid) {
+      if (uuid && !last.uuid) last.uuid = uuid;
+      if (timestamp && !last.timestamp) last.timestamp = timestamp;
+      return false;
+    }
   }
 
   messages.push({
@@ -5756,7 +5764,7 @@ export async function getCodexSessionHistory(
               "assistant",
               text,
               entryTimestamp,
-              undefined,
+              stringValue(payload.id),
               responseTurnId,
             );
             continue;

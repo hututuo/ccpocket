@@ -2626,6 +2626,73 @@ describe("codex sessions integration", () => {
     expect(history[1].content[0].text).toBe("Here is the diff summary.");
   });
 
+  it("keeps response item ids as boundaries between identical commentary updates", async () => {
+    const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68020";
+    const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
+    mkdirSync(codexDir, { recursive: true });
+    const commentary = "Still investigating the same subsystem.";
+    const lines = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: threadId, cwd: "/tmp/project-a" },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "turn-commentary" },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "agent_message", phase: "commentary", message: commentary },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          id: "msg-commentary-a",
+          role: "assistant",
+          phase: "commentary",
+          internal_chat_message_metadata_passthrough: {
+            turn_id: "turn-commentary",
+          },
+          content: [{ type: "output_text", text: commentary }],
+        },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "agent_message", phase: "commentary", message: commentary },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          id: "msg-commentary-b",
+          role: "assistant",
+          phase: "commentary",
+          internal_chat_message_metadata_passthrough: {
+            turn_id: "turn-commentary",
+          },
+          content: [{ type: "output_text", text: commentary }],
+        },
+      }),
+    ];
+    writeFileSync(
+      join(codexDir, `rollout-2026-02-13T11-26-43-${threadId}.jsonl`),
+      lines.join("\n"),
+    );
+
+    const history = await getCodexSessionHistory(threadId);
+    const assistants = history.filter((message) => message.role === "assistant");
+    expect(assistants).toHaveLength(2);
+    expect(assistants.map((message) => message.uuid)).toEqual([
+      "msg-commentary-a",
+      "msg-commentary-b",
+    ]);
+    expect(assistants.map((message) => message.historyTurnId)).toEqual([
+      "turn-commentary",
+      "turn-commentary",
+    ]);
+  });
+
   it("keeps repeated JSONL tool ids isolated by active provider turn", async () => {
     const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68019";
     const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");

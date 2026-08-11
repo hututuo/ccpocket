@@ -624,6 +624,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   // canonical history removes the correlation once it contains the client id.
   static const _maxDetachedLocalOverlayClientIds = 512;
   final Set<String> _detachedLocalOverlayClientIds = {};
+  // A live assistant completion is a presentation overlay until
+  // conversation_sync_v2 commits that stable item to SQLite. The cache stays
+  // the durable writer; these aliases only bridge the short commit gap.
+  static const _maxDetachedProvisionalAssistantAliases = 512;
+  final Set<String> _detachedProvisionalAssistantAliases = {};
   static const _maxSubmittedClientMessageIds = 512;
   final Set<String> _submittedClientMessageIds = {};
   static const _maxDetachedRuntimeOverlayEventIds = 128;
@@ -1312,6 +1317,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           _detachedLiveRuntimeSessionId != next) {
         return;
       }
+      if (message is AssistantServerMessage &&
+          _isDetachedLiveAssistantCompletion(message)) {
+        if (_bufferDetachedVisualMessageUntilTurnValidation(message)) return;
+        _applyDetachedVisualMessage(message);
+        return;
+      }
       if (message is HistoryMessage ||
           message is PastHistoryMessage ||
           message is HistorySnapshotMessage ||
@@ -1328,16 +1339,154 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (_bufferDetachedVisualMessageUntilTurnValidation(message)) return;
       _onMessage(message);
     });
+    _restoreDetachedAcceptedUserOverlays(next);
     _synchronizeDetachedCodexRuntimeSnapshot(_bridge.sessions);
+  }
+
+  void _applyDetachedVisualMessage(ServerMessage message) {
+    if (message is! AssistantServerMessage ||
+        !_isDetachedLiveAssistantCompletion(message)) {
+      _onMessage(message);
+      return;
+    }
+
+    final timestamp = serverMessageTimestamp(message);
+    final entry = ServerChatEntry(
+      message,
+      timestamp: timestamp?.value.toLocal(),
+      timestampIsAuthoritative: timestamp?.isAuthoritative ?? false,
+    );
+    _rememberDetachedProvisionalAssistant(entry);
+    // The direct completion is not a second durable transcript writer. It
+    // closes the exact live item and remains only until the matching SQLite
+    // row is committed and reconciled by stable provider identity.
+    _handler.resetTransientStreaming();
+    _applyUpdate(
+      ChatStateUpdate(
+        entriesToAdd: [entry],
+        resetStreaming: true,
+        markUserMessagesSent: true,
+      ),
+      message,
+    );
+    logger.info(
+      '[timeline_projection] event=assistant_item_completed '
+      'thread=$_projectionThreadToken '
+      'item=${_projectionItemToken(message.message.id)} '
+      'turn=${_projectionItemToken(message.historyTurnId)}',
+    );
+  }
+
+  void _restoreDetachedAcceptedUserOverlays(String runtimeSessionId) {
+    if (!detachedPreview || !isCodex || isClosed) return;
+    final additions = <ChatEntry>[];
+    for (final message
+        in _bridge
+            .cachedSessionMessages(runtimeSessionId)
+            .whereType<UserInputMessage>()) {
+      final clientMessageId = message.clientMessageId?.trim();
+      // ACK projections have only the client id. Provider/turn/UUID-bearing
+      // rows are canonical transcript data and continue to come from SQLite.
+      if (clientMessageId?.isNotEmpty != true ||
+          message.providerItemId?.trim().isNotEmpty == true ||
+          message.historyTurnId?.trim().isNotEmpty == true ||
+          message.userMessageUuid?.trim().isNotEmpty == true) {
+        continue;
+      }
+      final alreadyVisible = state.entries.whereType<UserChatEntry>().any(
+        (entry) => entry.clientMessageId == clientMessageId,
+      );
+      if (alreadyVisible) continue;
+      final timestamp = serverMessageTimestamp(message);
+      _rememberDetachedLocalOverlayClientId(clientMessageId!);
+      additions.add(
+        UserChatEntry(
+          message.text,
+          sessionId: sessionId,
+          clientMessageId: clientMessageId,
+          imageCount: message.imageCount,
+          imageUrls: message.imageUrls,
+          status: MessageStatus.bridgeAccepted,
+          timestamp:
+              timestamp?.value.toLocal() ??
+              DateTime.tryParse(message.timestamp ?? '')?.toLocal(),
+          timestampIsAuthoritative:
+              timestamp?.isAuthoritative ?? message.timestamp != null,
+        ),
+      );
+    }
+    if (additions.isEmpty) return;
+    final appended = _appendEntriesDeduped(state.entries, additions);
+    if (!appended.didChange) return;
+    emit(state.copyWith(entries: appended.entries));
+    logger.info(
+      '[timeline_projection] event=accepted_user_overlay_restored '
+      'thread=$_projectionThreadToken count=${additions.length}',
+    );
+  }
+
+  void _rememberDetachedProvisionalAssistant(ServerChatEntry entry) {
+    for (final alias in _entryExactAliasKeys(entry)) {
+      if (alias.startsWith('assistant:')) {
+        _detachedProvisionalAssistantAliases.add(alias);
+      }
+    }
+    while (_detachedProvisionalAssistantAliases.length >
+        _maxDetachedProvisionalAssistantAliases) {
+      _detachedProvisionalAssistantAliases.remove(
+        _detachedProvisionalAssistantAliases.first,
+      );
+    }
+  }
+
+  bool _isDetachedProvisionalAssistant(ChatEntry entry) {
+    if (entry is! ServerChatEntry || entry.message is! AssistantServerMessage) {
+      return false;
+    }
+    return _entryExactAliasKeys(
+      entry,
+    ).any(_detachedProvisionalAssistantAliases.contains);
+  }
+
+  void _consumeDetachedCanonicalAssistantAliases(
+    Iterable<ChatEntry> historyEntries,
+  ) {
+    if (_detachedProvisionalAssistantAliases.isEmpty) return;
+    for (final entry in historyEntries) {
+      if (entry is! ServerChatEntry ||
+          entry.message is! AssistantServerMessage) {
+        continue;
+      }
+      final aliases = _entryExactAliasKeys(entry).toList(growable: false);
+      if (aliases.any(_detachedProvisionalAssistantAliases.contains)) {
+        _detachedProvisionalAssistantAliases.removeAll(aliases);
+      }
+    }
+  }
+
+  String _projectionItemToken(String? value) {
+    final normalized = value?.trim();
+    if (normalized == null || normalized.isEmpty) return 'unknown';
+    return normalized.length <= 12
+        ? normalized
+        : '${normalized.substring(0, 6)}…${normalized.substring(normalized.length - 4)}';
+  }
+
+  bool _isDetachedLiveAssistantCompletion(AssistantServerMessage message) {
+    if (!_bridge.supportsConversationSyncV2) return false;
+    return message.message.id.trim().isNotEmpty &&
+        message.historyTurnId?.trim().isNotEmpty == true;
   }
 
   /// Stable transcript content for a detached durable thread has exactly one
   /// writer: conversation_sync_v2 -> SQLite -> this Cubit. The attached
   /// runtime stream remains responsible for control, approvals, receipts and
-  /// streaming deltas. Result/error/guardian/summary frames are also retained
-  /// here because they are runtime UI/control facts rather than canonical
-  /// provider transcript rows. Replaying only durable user/assistant/tool
-  /// content would create a second timeline beside the cache-owned projection.
+  /// streaming deltas. A completed assistant item is handled immediately
+  /// before this predicate as a bounded presentation overlay: it closes the
+  /// cursor and preserves the item boundary until SQLite commits the same
+  /// stable provider ID. Result/error/guardian/summary frames are retained as
+  /// runtime UI/control facts. Replaying durable user/assistant/tool content
+  /// through this generic path would create a second timeline writer.
   bool _isDetachedDurableTimelineFrame(ServerMessage message) =>
       _bridge.supportsConversationSyncV2 &&
       (message is UserInputMessage ||
@@ -1405,8 +1554,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   bool _bufferDetachedVisualMessageUntilTurnValidation(ServerMessage message) {
+    final isLiveAssistantCompletion =
+        message is AssistantServerMessage &&
+        _isDetachedLiveAssistantCompletion(message);
     if (!_detachedVisualTurnValidationPending ||
-        (message is! StreamDeltaMessage && message is! ThinkingDeltaMessage)) {
+        (message is! StreamDeltaMessage &&
+            message is! ThinkingDeltaMessage &&
+            !isLiveAssistantCompletion)) {
       return false;
     }
     if (_detachedPendingVisualMessages.length >=
@@ -1416,7 +1570,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       _clearDetachedVisualTimeline();
       for (final pending in buffered) {
         if (isClosed) return true;
-        _onMessage(pending);
+        _applyDetachedVisualMessage(pending);
       }
       return true;
     }
@@ -1455,7 +1609,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (!active || result != 'none') return;
     for (final pending in buffered) {
       if (isClosed) return;
-      _onMessage(pending);
+      _applyDetachedVisualMessage(pending);
     }
   }
 
@@ -1469,6 +1623,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _detachedPreservedVisualTurnId = null;
     _detachedVisualTurnValidationPending = false;
     _detachedPendingVisualMessages.clear();
+    _detachedProvisionalAssistantAliases.clear();
   }
 
   void _clearDetachedVisualTimeline() {
@@ -5627,6 +5782,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         }
       }
     }
+    if (detachedPreview) {
+      _consumeDetachedCanonicalAssistantAliases(historyEntries);
+    }
     return merged;
   }
 
@@ -6743,6 +6901,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   bool _shouldPreserveDetachedOverlayAcrossHistoryReplace(ChatEntry entry) {
+    if (_isDetachedProvisionalAssistant(entry)) return true;
     if (entry is ServerChatEntry) {
       final message = entry.message;
       // These are bounded to the current runtime attachment and are not part
@@ -9959,6 +10118,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _desktopContinuityConnectionSubscription?.cancel();
     _deliveryPendingInputs.clear();
     _detachedLocalOverlayClientIds.clear();
+    _detachedProvisionalAssistantAliases.clear();
     _submittedClientMessageIds.clear();
     _detachedRuntimeOverlayEventIds.clear();
     _resetDetachedRuntimeOverlayTracking();
