@@ -78,6 +78,8 @@ npm run local-release:ipa -- --base <已部署基线> --build-number <新 build>
 fingerprint，分别绑定自己的产品 tree、lock 和工具链。相同层输入的成功门禁不会重复执行；
 任一真实输入变化时只让相应阶段失效。缓存路径默认为
 `~/Library/Caches/CCPocketLocalRelease`，可用 `CCPOCKET_FAST_RELEASE_CACHE` 覆盖。
+Bridge build 证据同时保存按 Bridge fingerprint 校验的 `dist` 压缩包；新 worktree
+复用证据时直接还原该产物，不会把另一棵工作树里的旧 `dist` 当成当前构建。
 
 该脚本故意不执行 LaunchAgent 切换、owner/stable 发布或设备安装。Bridge 候选完成真实
 wire smoke 后，仍由固定发布任务按生产 SOP 做唯一一次可回滚切换；IPA 审计后再使用既有

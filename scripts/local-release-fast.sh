@@ -180,6 +180,7 @@ chain_stage_dir="$cache_root/conversation-chain/$chain_fingerprint"
 plan_json="$stage_dir/plan.json"
 gate_json="$stage_dir/source-gates.json"
 bridge_gate_json="$bridge_stage_dir/build.json"
+bridge_dist_zip="$bridge_stage_dir/bridge-dist.zip"
 mobile_gate_json="$mobile_stage_dir/analyze.json"
 chain_gate_json="$chain_stage_dir/chain.json"
 
@@ -274,6 +275,39 @@ run_logged() {
   "$@" 2>&1 | tee -a "$log_file"
 }
 
+bridge_dist_evidence_valid() {
+  [[ -s "$bridge_gate_json" && -s "$bridge_dist_zip" ]] || return 1
+  jq -e --arg fp "$bridge_fingerprint" '.status == "passed" and .fingerprint == $fp' "$bridge_gate_json" >/dev/null \
+    || return 1
+  expected_sha="$(jq -r '.distSha256 // empty' "$bridge_gate_json")"
+  [[ -n "$expected_sha" ]] || return 1
+  actual_sha="$(shasum -a 256 "$bridge_dist_zip" | awk '{print $1}')"
+  [[ "$actual_sha" == "$expected_sha" ]]
+}
+
+cache_bridge_dist() {
+  local evidence_source="$1"
+  local evidence_log="$2"
+  need ditto
+  [[ -s packages/bridge/dist/cli.js ]] || die "Bridge dist/cli.js is missing after a successful build"
+  mkdir -p "$bridge_stage_dir"
+  rm -f "$bridge_dist_zip"
+  ditto -c -k --sequesterRsrc --keepParent packages/bridge/dist "$bridge_dist_zip"
+  local dist_sha
+  dist_sha="$(shasum -a 256 "$bridge_dist_zip" | awk '{print $1}')"
+  jq -n \
+    --arg fingerprint "$bridge_fingerprint" \
+    --arg head "$head_sha" \
+    --arg source "$evidence_source" \
+    --arg evidenceLog "$evidence_log" \
+    --arg distArchive "$bridge_dist_zip" \
+    --arg distSha256 "$dist_sha" \
+    '{schemaVersion: 1, status: "passed", fingerprint: $fingerprint,
+      head: $head, source: $source, log: $evidenceLog,
+      distArchive: $distArchive, distSha256: $distSha256}' \
+    > "$bridge_gate_json"
+}
+
 if [[ "$command_name" == "gate" ]]; then
   if [[ "$force" == "0" && -s "$gate_json" ]] && \
       jq -e --arg fp "$fingerprint" '.status == "passed" and .fingerprint == $fp' "$gate_json" >/dev/null; then
@@ -310,6 +344,12 @@ if [[ "$command_name" == "gate" ]]; then
     if [[ "$force" == "0" && -s "$chain_gate_json" ]] && \
         jq -e --arg fp "$chain_fingerprint" '.status == "passed" and .fingerprint == $fp' "$chain_gate_json" >/dev/null; then
       echo "Reusing real conversation-chain gate: $chain_fingerprint" | tee -a "$log_file"
+      if ! bridge_dist_evidence_valid; then
+        bridge_log="$bridge_stage_dir/build.log"
+        : > "$bridge_log"
+        run_logged "$bridge_log" npm run bridge:build
+        cache_bridge_dist "bridge-build-after-chain-reuse" "$bridge_log"
+      fi
     else
       chain_log="$chain_stage_dir/chain.log"
       : > "$chain_log"
@@ -324,32 +364,19 @@ if [[ "$command_name" == "gate" ]]; then
         '{schemaVersion: 1, status: "passed", fingerprint: $fingerprint,
           head: $head, startedAt: $startedAt, finishedAt: $finishedAt, log: $log}' \
         > "$chain_gate_json"
+      cache_bridge_dist "conversation-chain" "$chain_log"
     fi
-    jq -n \
-      --arg fingerprint "$bridge_fingerprint" \
-      --arg head "$head_sha" \
-      --arg source "$chain_gate_json" \
-      '{schemaVersion: 1, status: "passed", fingerprint: $fingerprint,
-        head: $head, source: "conversation-chain", evidence: $source}' \
-      > "$bridge_gate_json"
     bridge_already_built=1
   fi
   if [[ "$bridge_changed" == "1" && "$bridge_already_built" == "0" ]]; then
     mkdir -p "$bridge_stage_dir"
-    if [[ "$force" == "0" && -s "$bridge_gate_json" ]] && \
-        jq -e --arg fp "$bridge_fingerprint" '.status == "passed" and .fingerprint == $fp' "$bridge_gate_json" >/dev/null; then
+    if [[ "$force" == "0" ]] && bridge_dist_evidence_valid; then
       echo "Reusing Bridge build gate: $bridge_fingerprint" | tee -a "$log_file"
     else
       bridge_log="$bridge_stage_dir/build.log"
       : > "$bridge_log"
       run_logged "$bridge_log" npm run bridge:build
-      jq -n \
-        --arg fingerprint "$bridge_fingerprint" \
-        --arg head "$head_sha" \
-        --arg log "$bridge_log" \
-        '{schemaVersion: 1, status: "passed", fingerprint: $fingerprint,
-          head: $head, source: "bridge-build", log: $log}' \
-        > "$bridge_gate_json"
+      cache_bridge_dist "bridge-build" "$bridge_log"
     fi
   fi
   if [[ "$mobile_changed" == "1" ]]; then
@@ -401,9 +428,7 @@ fi
 if [[ "$command_name" == "bridge-runtime" ]]; then
   [[ "$bridge_changed" == "1" ]] || die "Bridge tree is unchanged; refusing needless runtime rebuild"
   if [[ "$dry_run" == "0" ]]; then
-    [[ -s "$bridge_gate_json" ]] || die "Bridge build evidence is missing; run gate first"
-    jq -e --arg fp "$bridge_fingerprint" '.status == "passed" and .fingerprint == $fp' "$bridge_gate_json" >/dev/null \
-      || die "source-gate evidence does not match this fingerprint"
+    bridge_dist_evidence_valid || die "Bridge build archive is missing or stale; run gate first"
   fi
   [[ -s "$bridge_plist" ]] || die "Bridge plist is missing: $bridge_plist"
   current_cli="$(plutil -extract EnvironmentVariables.BRIDGE_CLI_ENTRY raw "$bridge_plist")"
@@ -447,7 +472,11 @@ if [[ "$command_name" == "bridge-runtime" ]]; then
     *) die "unsafe runtime staging path" ;;
   esac
   [[ ! -e "$stage_runtime" ]] || die "staging runtime already exists: $stage_runtime"
+  dist_extract=""
   cleanup_stage() {
+    if [[ -n "$dist_extract" && -d "$dist_extract" ]]; then
+      rm -rf "$dist_extract"
+    fi
     if [[ -d "$stage_runtime" ]]; then
       rm -rf "$stage_runtime"
     fi
@@ -455,8 +484,13 @@ if [[ "$command_name" == "bridge-runtime" ]]; then
   trap 'cleanup_stage; rm -f "$changed_file"' EXIT
 
   cp -cR "$current_runtime" "$stage_runtime"
+  dist_extract="$(mktemp -d /private/tmp/ccpocket-fast-bridge-dist.XXXXXX)"
   rm -rf "$stage_runtime/packages/bridge/dist"
-  ditto packages/bridge/dist "$stage_runtime/packages/bridge/dist"
+  ditto -x -k "$bridge_dist_zip" "$dist_extract"
+  [[ -s "$dist_extract/dist/cli.js" ]] || die "cached Bridge dist archive is invalid"
+  ditto "$dist_extract/dist" "$stage_runtime/packages/bridge/dist"
+  rm -rf "$dist_extract"
+  dist_extract=""
   ditto packages/bridge/scripts "$stage_runtime/packages/bridge/scripts"
   cp packages/bridge/package.json "$stage_runtime/packages/bridge/package.json"
   cp packages/bridge/file-browser-posix-helper.c "$stage_runtime/packages/bridge/file-browser-posix-helper.c"
