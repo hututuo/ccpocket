@@ -153,14 +153,43 @@ void main() {
   );
 
   test(
-    'foreground rebuilds an unresponsive route before trusting sessions',
+    'foreground preserves a healthy authoritative route on refresh timeout',
+    () async {
+      final host = _FakeHost();
+      final bridge = _FakeBridge(
+        autoRespondToSessionList: false,
+        sessionIds: const ['already-authoritative'],
+      );
+      final mirror = _FakeMirror();
+      final coordinator = MobileBackgroundSyncCoordinator(
+        host: host,
+        bridge: bridge,
+        mirror: mirror,
+        sessionListTimeout: const Duration(milliseconds: 20),
+        historyResponseTimeout: const Duration(milliseconds: 50),
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      await coordinator.handleLifecycleState(AppLifecycleState.hidden);
+      await coordinator.handleLifecycleState(AppLifecycleState.resumed);
+
+      expect(bridge.rebuildCount, 0);
+      expect(bridge.sessionListRequestCount, 1);
+      expect(bridge.historyRequests, ['already-authoritative']);
+
+      await coordinator.dispose();
+      await bridge.dispose();
+    },
+  );
+
+  test(
+    'foreground rebuilds only when the route lacks catalog authority',
     () async {
       final host = _FakeHost();
       final bridge = _FakeBridge(
         autoRespondToSessionList: false,
         respondAfterRebuild: true,
         sessionIds: const ['after-rebuild'],
-      );
+      )..hasAuthoritativeSessionList = false;
       final mirror = _FakeMirror();
       final coordinator = MobileBackgroundSyncCoordinator(
         host: host,

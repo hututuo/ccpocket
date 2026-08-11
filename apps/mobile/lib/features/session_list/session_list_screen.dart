@@ -186,6 +186,7 @@ Duration bridgeApplicationReadinessRetryDelay(int retryAttempt) {
 class SessionHomeConnectionGate {
   bool _hasReadyTarget = false;
   String? _readyTargetKey;
+  bool _awaitingPostReconnectAuthority = false;
 
   bool get hasReadyTarget => _hasReadyTarget;
 
@@ -199,11 +200,20 @@ class SessionHomeConnectionGate {
   }) {
     final previousReady = _hasReadyTarget;
     final previousKey = _readyTargetKey;
+    final previousAwaitingPostReconnectAuthority =
+        _awaitingPostReconnectAuthority;
     if (_readyTargetKey != null &&
         targetKey != _readyTargetKey &&
         state != BridgeConnectionState.disconnected) {
       _hasReadyTarget = false;
       _readyTargetKey = null;
+      _awaitingPostReconnectAuthority = false;
+    }
+    if (_hasReadyTarget &&
+        _readyTargetKey == targetKey &&
+        (state == BridgeConnectionState.disconnected ||
+            state == BridgeConnectionState.reconnecting)) {
+      _awaitingPostReconnectAuthority = true;
     }
     if (state == BridgeConnectionState.connected &&
         applicationReadiness.permitsApplicationEntry &&
@@ -211,8 +221,12 @@ class SessionHomeConnectionGate {
         hasAuthoritativeRecentSessions) {
       _hasReadyTarget = true;
       _readyTargetKey = targetKey;
+      _awaitingPostReconnectAuthority = false;
     }
-    return previousReady != _hasReadyTarget || previousKey != _readyTargetKey;
+    return previousReady != _hasReadyTarget ||
+        previousKey != _readyTargetKey ||
+        previousAwaitingPostReconnectAuthority !=
+            _awaitingPostReconnectAuthority;
   }
 
   BridgeConnectionState presentationState({
@@ -226,9 +240,10 @@ class SessionHomeConnectionGate {
         (!applicationReadiness.permitsApplicationEntry ||
             !hasAuthoritativeSessionList ||
             !hasAuthoritativeRecentSessions)) {
-      return _hasReadyTarget
+      if (!_hasReadyTarget) return BridgeConnectionState.connecting;
+      return _awaitingPostReconnectAuthority
           ? BridgeConnectionState.reconnecting
-          : BridgeConnectionState.connecting;
+          : BridgeConnectionState.connected;
     }
     return transportState;
   }
@@ -240,11 +255,13 @@ class SessionHomeConnectionGate {
   void acceptCachedTarget(String targetKey) {
     _hasReadyTarget = true;
     _readyTargetKey = targetKey;
+    _awaitingPostReconnectAuthority = false;
   }
 
   void reset() {
     _hasReadyTarget = false;
     _readyTargetKey = null;
+    _awaitingPostReconnectAuthority = false;
   }
 }
 
@@ -848,9 +865,7 @@ bool shouldAdvanceConversationCatalogBootstrapUpdate(
   ConversationSyncCacheUpdate? current,
   ConversationSyncCacheUpdate next,
 ) {
-  if (next.kind == ConversationSyncCacheUpdateKind.reset ||
-      next.kind == ConversationSyncCacheUpdateKind.started ||
-      current == null) {
+  if (next.kind == ConversationSyncCacheUpdateKind.reset || current == null) {
     return true;
   }
   final nextFraction = _conversationCatalogBootstrapFraction(0, next);
@@ -862,6 +877,25 @@ bool shouldAdvanceConversationCatalogBootstrapUpdate(
   // watchdog while duplicate heartbeats do not.
   return bridgeConnectionProgressAuthorityKey(next) !=
       bridgeConnectionProgressAuthorityKey(current);
+}
+
+@visibleForTesting
+bool shouldWaitForInFlightConversationSyncOnStall({
+  required bool supportsConversationSyncV2,
+  required ConversationSyncCacheUpdate? update,
+}) {
+  if (!supportsConversationSyncV2 || update == null) return false;
+  return switch (update.kind) {
+    ConversationSyncCacheUpdateKind.catalog ||
+    ConversationSyncCacheUpdateKind.status ||
+    ConversationSyncCacheUpdateKind.timeline ||
+    ConversationSyncCacheUpdateKind.priorityReady => true,
+    ConversationSyncCacheUpdateKind.started ||
+    ConversationSyncCacheUpdateKind.focusApplied ||
+    ConversationSyncCacheUpdateKind.readWatermark ||
+    ConversationSyncCacheUpdateKind.completed ||
+    ConversationSyncCacheUpdateKind.reset => false,
+  };
 }
 
 @visibleForTesting
@@ -1273,12 +1307,10 @@ class _SessionListScreenState extends State<SessionListScreen>
             return;
           }
           final current = _contentSyncProgressUpdate;
-          // The sync service emits `started` once before each replacement
-          // subscription and suppresses later sync_begin markers from that
-          // same subscription. It may therefore rewind a completed/stalled
-          // attempt to the truthful 80% start, while all events inside one
-          // subscription remain monotonic. Transport and authority changes
-          // still clear the current update through their dedicated fences.
+          // A replacement subscription on the same transport must not rewind
+          // visible progress. Real transport/source changes clear the current
+          // update through their dedicated authority fences; within one
+          // authority, committed progress remains monotonic.
           if (shouldAdvanceConversationCatalogBootstrapUpdate(
             current,
             update,
@@ -1620,7 +1652,12 @@ class _SessionListScreenState extends State<SessionListScreen>
       });
     }
     if (_connectionAwaitingReadiness) {
-      unawaited(_handleConnectionReadinessTimeout(snapshot.generation));
+      unawaited(
+        _handleConnectionReadinessTimeout(
+          snapshot.generation,
+          stalledSnapshot: snapshot,
+        ),
+      );
     }
   }
 
@@ -1742,7 +1779,10 @@ class _SessionListScreenState extends State<SessionListScreen>
     _lastConnectionProgressEpoch = null;
   }
 
-  Future<void> _handleConnectionReadinessTimeout(int token) async {
+  Future<void> _handleConnectionReadinessTimeout(
+    int token, {
+    required BridgeConnectionProgressWatchdogSnapshot stalledSnapshot,
+  }) async {
     if (!_isCurrentConnectionAttempt(token) || !_connectionAwaitingReadiness) {
       return;
     }
@@ -1765,6 +1805,19 @@ class _SessionListScreenState extends State<SessionListScreen>
         _connectionTakingLonger = true;
         _connectionAttemptFailed = false;
       });
+      return;
+    }
+    if (shouldWaitForInFlightConversationSyncOnStall(
+      supportsConversationSyncV2: bridge.supportsConversationSyncV2,
+      update: _contentSyncProgressUpdate,
+    )) {
+      logger.info(
+        '[session_catalog] event=progress_stalled '
+        'action=wait_for_inflight_conversation_sync '
+        'step=${stalledSnapshot.stage.name} '
+        'progress=${stalledSnapshot.percent} '
+        'authority=${bridge.hasAuthoritativeSessionListForCurrentConnection}',
+      );
       return;
     }
     final action = _catalogRecoveryPolicy.nextAction(
@@ -3598,12 +3651,16 @@ class _SessionListScreenState extends State<SessionListScreen>
     });
     navigation.then((_) {
       if (!mounted) return;
-      final isConnected =
-          context.read<ConnectionCubit>().state ==
-          BridgeConnectionState.connected;
-      if (isConnected) {
-        _refresh();
-      }
+      final currentBridge = context.read<BridgeService>();
+      // Leaving a conversation changes only the focused thread on the shared
+      // conversation_sync_v2 subscription. The route's dispose path already
+      // clears that focus and records the read watermark. Re-running the
+      // manual home refresh here used to unsubscribe/resubscribe the global
+      // feed, revoke priority readiness and falsely present a Bridge reconnect.
+      _syncConnectionUiGate(
+        currentBridge,
+        currentBridge.currentBridgeConnectionState,
+      );
     });
   }
 

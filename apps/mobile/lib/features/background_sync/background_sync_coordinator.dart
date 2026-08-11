@@ -742,6 +742,15 @@ class MobileBackgroundSyncCoordinator {
     if (!allowConnectionRebuild || _isCancelled(refreshRequest, cancellation)) {
       return false;
     }
+    // A missed foreground metadata refresh is not proof that the transport is
+    // dead. If the same socket is still healthy and already owns an
+    // authoritative session list, keep it alive and let the normal realtime
+    // sync continue. Rebuilding here used to close a healthy WebSocket after a
+    // five-second response timeout, producing reconnect loops while the user
+    // was entering the app.
+    if (_bridge.isConnected && _bridge.hasAuthoritativeSessionList) {
+      return true;
+    }
     final rebuilt = await _bridge.rebuildConnection();
     if (!rebuilt || !await _ensureConnected(refreshRequest, cancellation)) {
       return false;

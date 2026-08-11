@@ -322,11 +322,14 @@ void main() {
           hasAuthoritativeRecentSessions: true,
         );
 
-      gate.update(
-        state: BridgeConnectionState.reconnecting,
-        targetKey: 'machine:a',
-        hasAuthoritativeSessionList: false,
-        hasAuthoritativeRecentSessions: false,
+      expect(
+        gate.update(
+          state: BridgeConnectionState.reconnecting,
+          targetKey: 'machine:a',
+          hasAuthoritativeSessionList: false,
+          hasAuthoritativeRecentSessions: false,
+        ),
+        isTrue,
       );
       expect(
         gate.shouldShowConnectedUi(BridgeConnectionState.reconnecting),
@@ -394,7 +397,32 @@ void main() {
         hasAuthoritativeSessionList: false,
         hasAuthoritativeRecentSessions: false,
       );
-      expect(presentation, BridgeConnectionState.reconnecting);
+      expect(presentation, BridgeConnectionState.connected);
+      expect(gate.shouldShowConnectedUi(presentation), isTrue);
+    });
+
+    test('temporary catalog replacement does not impersonate a reconnect', () {
+      final gate = SessionHomeConnectionGate()
+        ..update(
+          state: BridgeConnectionState.connected,
+          targetKey: 'machine:a',
+          hasAuthoritativeSessionList: true,
+          hasAuthoritativeRecentSessions: true,
+        );
+
+      gate.update(
+        state: BridgeConnectionState.connected,
+        targetKey: 'machine:a',
+        hasAuthoritativeSessionList: true,
+        hasAuthoritativeRecentSessions: false,
+      );
+
+      final presentation = gate.presentationState(
+        transportState: BridgeConnectionState.connected,
+        hasAuthoritativeSessionList: true,
+        hasAuthoritativeRecentSessions: false,
+      );
+      expect(presentation, BridgeConnectionState.connected);
       expect(gate.shouldShowConnectedUi(presentation), isTrue);
     });
   });
@@ -688,7 +716,7 @@ void main() {
       );
     });
 
-    test('a replacement subscription truthfully restarts content progress', () {
+    test('a replacement subscription cannot rewind committed progress', () {
       const current = ConversationSyncCacheUpdate(
         kind: ConversationSyncCacheUpdateKind.timeline,
         pageIndex: 0,
@@ -706,11 +734,55 @@ void main() {
 
       expect(
         shouldAdvanceConversationCatalogBootstrapUpdate(current, continued),
-        isTrue,
+        isFalse,
       );
       expect(
         shouldAdvanceConversationCatalogBootstrapUpdate(current, reset),
         isTrue,
+      );
+    });
+
+    test('in-flight v2 pages wait instead of restarting the subscription', () {
+      for (final kind in [
+        ConversationSyncCacheUpdateKind.catalog,
+        ConversationSyncCacheUpdateKind.status,
+        ConversationSyncCacheUpdateKind.timeline,
+        ConversationSyncCacheUpdateKind.priorityReady,
+      ]) {
+        expect(
+          shouldWaitForInFlightConversationSyncOnStall(
+            supportsConversationSyncV2: true,
+            update: ConversationSyncCacheUpdate(kind: kind),
+          ),
+          isTrue,
+          reason: '$kind is committed in-flight v2 progress',
+        );
+      }
+
+      for (final kind in [
+        ConversationSyncCacheUpdateKind.started,
+        ConversationSyncCacheUpdateKind.focusApplied,
+        ConversationSyncCacheUpdateKind.readWatermark,
+        ConversationSyncCacheUpdateKind.completed,
+        ConversationSyncCacheUpdateKind.reset,
+      ]) {
+        expect(
+          shouldWaitForInFlightConversationSyncOnStall(
+            supportsConversationSyncV2: true,
+            update: ConversationSyncCacheUpdate(kind: kind),
+          ),
+          isFalse,
+          reason: '$kind is not an in-flight bootstrap page',
+        );
+      }
+      expect(
+        shouldWaitForInFlightConversationSyncOnStall(
+          supportsConversationSyncV2: false,
+          update: const ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.timeline,
+          ),
+        ),
+        isFalse,
       );
     });
 

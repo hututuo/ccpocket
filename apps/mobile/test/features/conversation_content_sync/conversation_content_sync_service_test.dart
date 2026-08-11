@@ -4386,6 +4386,18 @@ void main() {
         ),
       );
       expect(stored.single.readAt, '2099-07-30T01:02:03.000Z');
+      expect(
+        gateway.sentTypes.where(
+          (type) => type == 'conversation_sync_subscribe',
+        ),
+        hasLength(1),
+      );
+      expect(
+        gateway.sentTypes.where(
+          (type) => type == 'conversation_sync_unsubscribe',
+        ),
+        isEmpty,
+      );
     },
   );
 
