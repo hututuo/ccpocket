@@ -463,6 +463,7 @@ export class SessionManager {
   private artifactManager: ArtifactManager | null;
   private codexQueueDrainHooks: CodexQueueDrainHooks;
   private codexSharedRuntimeMutationAllowed?: CodexSharedRuntimeMutationGuard;
+  private readonly codexProcessFactory: () => CodexProcess;
   private readonly inputDeliveryLedger?: InputDeliveryLedger;
   private readonly inputDeliveryScope?: InputDeliveryScope;
   private readonly inputDeliveryRestoredThreads = new WeakMap<
@@ -512,6 +513,7 @@ export class SessionManager {
       ledger: InputDeliveryLedger;
       scope: InputDeliveryScope;
     },
+    codexProcessFactory?: () => CodexProcess,
   ) {
     this.onMessage = onMessage;
     this.imageStore = imageStore ?? null;
@@ -522,6 +524,13 @@ export class SessionManager {
     this.artifactManager = artifactManager ?? null;
     this.codexQueueDrainHooks = codexQueueDrainHooks;
     this.codexSharedRuntimeMutationAllowed = codexSharedRuntimeMutationAllowed;
+    this.codexProcessFactory =
+      codexProcessFactory ??
+      (() =>
+        new CodexProcess(
+          process.platform,
+          this.codexSharedRuntimeMutationAllowed,
+        ));
     this.inputDeliveryLedger = inputDelivery?.ledger;
     this.inputDeliveryScope = inputDelivery?.scope;
   }
@@ -672,10 +681,7 @@ export class SessionManager {
     const effectiveProvider = provider ?? "claude";
     const proc =
       effectiveProvider === "codex"
-        ? new CodexProcess(
-            process.platform,
-            this.codexSharedRuntimeMutationAllowed,
-          )
+        ? this.codexProcessFactory()
         : new SdkProcess();
 
     // Handle worktree: reuse existing or create new

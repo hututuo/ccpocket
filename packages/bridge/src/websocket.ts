@@ -2169,6 +2169,7 @@ export class BridgeWebSocketServer {
             },
           }
         : undefined,
+      this.codexProcessFactory,
     );
     this.codexGoals = new CodexGoalController({
       getSession: (sessionId) => this.sessionManager.get(sessionId),

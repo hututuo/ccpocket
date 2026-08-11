@@ -26,7 +26,8 @@ fi
   cd apps/mobile
   "$flutter_bin" test --no-pub \
     test/blackbox/conversation_protocol_chain_test.dart \
-    test/blackbox/conversation_real_bridge_chain_test.dart
+    test/blackbox/conversation_real_bridge_chain_test.dart \
+    test/blackbox/conversation_live_segment_receiver_test.dart
 )
 
 echo "Receiver traces:"
