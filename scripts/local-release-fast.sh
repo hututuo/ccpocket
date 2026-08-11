@@ -162,9 +162,26 @@ fingerprint="$({
   printf '%s\n' "$head_sha" "$bridge_tree" "$mobile_tree" "$root_lock" "$mobile_lock"
   printf '%s\n' "$node_version" "$flutter_version"
 } | shasum -a 256 | awk '{print $1}')"
-stage_dir="$cache_root/$fingerprint"
+bridge_fingerprint="$({
+  printf '%s\n' "$bridge_tree" "$root_lock" "$node_version"
+} | shasum -a 256 | awk '{print $1}')"
+mobile_fingerprint="$({
+  printf '%s\n' "$mobile_tree" "$mobile_lock" "$flutter_version"
+} | shasum -a 256 | awk '{print $1}')"
+chain_script_blob="$(git rev-parse "$head_sha:scripts/test-conversation-chain.sh" 2>/dev/null || echo missing)"
+chain_fingerprint="$({
+  printf '%s\n' "$bridge_tree" "$mobile_tree" "$root_lock" "$mobile_lock"
+  printf '%s\n' "$node_version" "$flutter_version" "$chain_script_blob"
+} | shasum -a 256 | awk '{print $1}')"
+stage_dir="$cache_root/release/$fingerprint"
+bridge_stage_dir="$cache_root/bridge/$bridge_fingerprint"
+mobile_stage_dir="$cache_root/mobile/$mobile_fingerprint"
+chain_stage_dir="$cache_root/conversation-chain/$chain_fingerprint"
 plan_json="$stage_dir/plan.json"
 gate_json="$stage_dir/source-gates.json"
+bridge_gate_json="$bridge_stage_dir/build.json"
+mobile_gate_json="$mobile_stage_dir/analyze.json"
+chain_gate_json="$chain_stage_dir/chain.json"
 
 make_plan_json() {
   mkdir -p "$stage_dir"
@@ -173,6 +190,9 @@ make_plan_json() {
     --arg base "$base_sha" \
     --arg branch "$branch" \
     --arg fingerprint "$fingerprint" \
+    --arg bridgeFingerprint "$bridge_fingerprint" \
+    --arg mobileFingerprint "$mobile_fingerprint" \
+    --arg chainFingerprint "$chain_fingerprint" \
     --arg bridgeTree "$bridge_tree" \
     --arg mobileTree "$mobile_tree" \
     --arg rootLock "$root_lock" \
@@ -189,6 +209,11 @@ make_plan_json() {
       schemaVersion: 1,
       source: {head: $head, base: $base, branch: $branch, clean: true},
       fingerprint: $fingerprint,
+      stageFingerprints: {
+        bridge: $bridgeFingerprint,
+        mobile: $mobileFingerprint,
+        conversationChain: $chainFingerprint
+      },
       inputs: {
         bridgeTree: $bridgeTree,
         mobileTree: $mobileTree,
@@ -225,6 +250,9 @@ print_plan() {
   echo "  source: $branch@$head_sha"
   echo "  base:   $base_sha"
   echo "  fingerprint: $fingerprint"
+  echo "  Bridge fingerprint: $bridge_fingerprint"
+  echo "  Mobile fingerprint: $mobile_fingerprint"
+  echo "  Chain fingerprint:  $chain_fingerprint"
   echo "  Bridge changed: $bridge_changed"
   echo "  Mobile changed: $mobile_changed (native/dependency: $mobile_native_changed)"
   echo "  Cloud changed:  $cloud_changed"
@@ -278,17 +306,72 @@ if [[ "$command_name" == "gate" ]]; then
 
   bridge_already_built=0
   if [[ "$bridge_changed" == "1" && "$mobile_changed" == "1" ]]; then
-    run_logged "$log_file" bash scripts/test-conversation-chain.sh
+    mkdir -p "$chain_stage_dir" "$bridge_stage_dir"
+    if [[ "$force" == "0" && -s "$chain_gate_json" ]] && \
+        jq -e --arg fp "$chain_fingerprint" '.status == "passed" and .fingerprint == $fp' "$chain_gate_json" >/dev/null; then
+      echo "Reusing real conversation-chain gate: $chain_fingerprint" | tee -a "$log_file"
+    else
+      chain_log="$chain_stage_dir/chain.log"
+      : > "$chain_log"
+      chain_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      run_logged "$chain_log" bash scripts/test-conversation-chain.sh
+      jq -n \
+        --arg fingerprint "$chain_fingerprint" \
+        --arg head "$head_sha" \
+        --arg startedAt "$chain_started" \
+        --arg finishedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg log "$chain_log" \
+        '{schemaVersion: 1, status: "passed", fingerprint: $fingerprint,
+          head: $head, startedAt: $startedAt, finishedAt: $finishedAt, log: $log}' \
+        > "$chain_gate_json"
+    fi
+    jq -n \
+      --arg fingerprint "$bridge_fingerprint" \
+      --arg head "$head_sha" \
+      --arg source "$chain_gate_json" \
+      '{schemaVersion: 1, status: "passed", fingerprint: $fingerprint,
+        head: $head, source: "conversation-chain", evidence: $source}' \
+      > "$bridge_gate_json"
     bridge_already_built=1
   fi
   if [[ "$bridge_changed" == "1" && "$bridge_already_built" == "0" ]]; then
-    run_logged "$log_file" npm run bridge:build
+    mkdir -p "$bridge_stage_dir"
+    if [[ "$force" == "0" && -s "$bridge_gate_json" ]] && \
+        jq -e --arg fp "$bridge_fingerprint" '.status == "passed" and .fingerprint == $fp' "$bridge_gate_json" >/dev/null; then
+      echo "Reusing Bridge build gate: $bridge_fingerprint" | tee -a "$log_file"
+    else
+      bridge_log="$bridge_stage_dir/build.log"
+      : > "$bridge_log"
+      run_logged "$bridge_log" npm run bridge:build
+      jq -n \
+        --arg fingerprint "$bridge_fingerprint" \
+        --arg head "$head_sha" \
+        --arg log "$bridge_log" \
+        '{schemaVersion: 1, status: "passed", fingerprint: $fingerprint,
+          head: $head, source: "bridge-build", log: $log}' \
+        > "$bridge_gate_json"
+    fi
   fi
   if [[ "$mobile_changed" == "1" ]]; then
-    (
-      cd apps/mobile
-      run_logged "$log_file" "$flutter_bin" analyze --no-pub --no-fatal-infos
-    )
+    mkdir -p "$mobile_stage_dir"
+    if [[ "$force" == "0" && -s "$mobile_gate_json" ]] && \
+        jq -e --arg fp "$mobile_fingerprint" '.status == "passed" and .fingerprint == $fp' "$mobile_gate_json" >/dev/null; then
+      echo "Reusing Mobile analyze gate: $mobile_fingerprint" | tee -a "$log_file"
+    else
+      mobile_log="$mobile_stage_dir/analyze.log"
+      : > "$mobile_log"
+      (
+        cd apps/mobile
+        run_logged "$mobile_log" "$flutter_bin" analyze --no-pub --no-fatal-infos
+      )
+      jq -n \
+        --arg fingerprint "$mobile_fingerprint" \
+        --arg head "$head_sha" \
+        --arg log "$mobile_log" \
+        '{schemaVersion: 1, status: "passed", fingerprint: $fingerprint,
+          head: $head, source: "mobile-analyze", log: $log}' \
+        > "$mobile_gate_json"
+    fi
   fi
 
   finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -300,9 +383,17 @@ if [[ "$command_name" == "gate" ]]; then
     --arg finishedAt "$finished_at" \
     --argjson elapsedSeconds "$elapsed" \
     --arg log "$log_file" \
+    --arg bridgeEvidence "$bridge_gate_json" \
+    --arg mobileEvidence "$mobile_gate_json" \
+    --arg chainEvidence "$chain_gate_json" \
     '{schemaVersion: 1, status: "passed", fingerprint: $fingerprint, head: $head,
       startedAt: $startedAt, finishedAt: $finishedAt, elapsedSeconds: $elapsedSeconds,
-      log: $log}' > "$gate_json"
+      log: $log,
+      evidence: {
+        bridge: $bridgeEvidence,
+        mobile: $mobileEvidence,
+        conversationChain: $chainEvidence
+      }}' > "$gate_json"
   echo "Source gates passed in ${elapsed}s: $gate_json"
   exit 0
 fi
@@ -310,8 +401,8 @@ fi
 if [[ "$command_name" == "bridge-runtime" ]]; then
   [[ "$bridge_changed" == "1" ]] || die "Bridge tree is unchanged; refusing needless runtime rebuild"
   if [[ "$dry_run" == "0" ]]; then
-    [[ -s "$gate_json" ]] || die "source gates are missing; run gate first"
-    jq -e --arg fp "$fingerprint" '.status == "passed" and .fingerprint == $fp' "$gate_json" >/dev/null \
+    [[ -s "$bridge_gate_json" ]] || die "Bridge build evidence is missing; run gate first"
+    jq -e --arg fp "$bridge_fingerprint" '.status == "passed" and .fingerprint == $fp' "$bridge_gate_json" >/dev/null \
       || die "source-gate evidence does not match this fingerprint"
   fi
   [[ -s "$bridge_plist" ]] || die "Bridge plist is missing: $bridge_plist"
@@ -391,8 +482,8 @@ if [[ "$command_name" == "ipa" ]]; then
   [[ "$mobile_changed" == "1" ]] || die "Mobile tree is unchanged; refusing needless IPA rebuild"
   [[ "$build_number" =~ ^[0-9]+$ ]] || die "--build-number must be a positive integer"
   if [[ "$dry_run" == "0" ]]; then
-    [[ -s "$gate_json" ]] || die "source gates are missing; run gate first"
-    jq -e --arg fp "$fingerprint" '.status == "passed" and .fingerprint == $fp' "$gate_json" >/dev/null \
+    [[ -s "$mobile_gate_json" ]] || die "Mobile analyze evidence is missing; run gate first"
+    jq -e --arg fp "$mobile_fingerprint" '.status == "passed" and .fingerprint == $fp' "$mobile_gate_json" >/dev/null \
       || die "source-gate evidence does not match this fingerprint"
   fi
   build_name="$(awk '/^version:/ {print $2; exit}' apps/mobile/pubspec.yaml | cut -d+ -f1)"

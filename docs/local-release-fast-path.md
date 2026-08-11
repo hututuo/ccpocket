@@ -74,8 +74,9 @@ npm run local-release:bridge-runtime -- --base <已部署基线>
 npm run local-release:ipa -- --base <已部署基线> --build-number <新 build>
 ```
 
-fingerprint 绑定完整 HEAD、Bridge/Mobile tree、两个 lock、Node 和 Flutter 工具链。
-相同输入的成功门禁不会重复执行；任一真实输入变化时只让相应阶段失效。缓存路径默认为
+总 release fingerprint 绑定完整 HEAD；Bridge、Mobile 与真实闭环另有彼此独立的
+fingerprint，分别绑定自己的产品 tree、lock 和工具链。相同层输入的成功门禁不会重复执行；
+任一真实输入变化时只让相应阶段失效。缓存路径默认为
 `~/Library/Caches/CCPocketLocalRelease`，可用 `CCPOCKET_FAST_RELEASE_CACHE` 覆盖。
 
 该脚本故意不执行 LaunchAgent 切换、owner/stable 发布或设备安装。Bridge 候选完成真实
