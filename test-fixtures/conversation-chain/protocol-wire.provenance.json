@@ -1,0 +1,187 @@
+{
+  "schemaVersion": 1,
+  "source": "fake Provider boundary -> production BridgeWebSocketServer capture",
+  "proves": [
+    "formal conversation_sync_v2 framing",
+    "window coverage capability",
+    "W0 snapshot/patch payload sequence",
+    "partial patches carry baseRevision and no deletes",
+    "Mobile transport replay input"
+  ],
+  "doesNotProve": [
+    "Codex app-server raw turn normalization",
+    "physical iPhone rendering"
+  ],
+  "bridgeHead": "7ec83bd96702eb6470cf7045889315af8d75031c",
+  "bridgeTrackedDiffSha256": "fccbc3f9f112c01545b52f27421812a6e3c5f8ef772ec3d9e430ba0fb3cd09e9",
+  "sourceFileSha256": {
+    "packages/bridge/dist/websocket.js": "e46857ada69f8a9f3f28f98c071d554169d10938d59c1582ff25aaa98664abbd",
+    "packages/bridge/dist/local-features/conversation-sync-v2.js": "1bf50ec6e958d46a676c445edfd7716cc84bbb7a3fb3b2ad85b40eccf062a2ad",
+    "packages/bridge/dist/local-features/conversation-content-sync.js": "96fcf99c81692af7434f6e28e3a7a30a130c28111142b3e90277f5a9628fc5b3",
+    "packages/bridge/scripts/conversation-chain-bridge-harness.mjs": "ad36c547389f28714ab68ff2008712dbc77ead3b2d575c68e62565359d0745c8",
+    "packages/bridge/scripts/freeze-conversation-protocol-trace.mjs": "e744fb10cbb60c6b1259b9910104ddb53fed4a2aa1935af7cc46a172d236c970",
+    "test-fixtures/conversation-chain/scenarios.json": "bf2a58db6d151a24ed2820a6f97f0f34897c66312f92a54468f384cebf4cd097"
+  },
+  "captureSummary": {
+    "runId": "2026-08-11T12-50-48.293Z-4d6a3c20",
+    "threadId": "chain-thread-00000000-0000-4000-8000-000000000001",
+    "finalStep": 15,
+    "providerGeneration": 1,
+    "bridgeFrameCount": 141,
+    "ackCount": 134,
+    "clientFrameCount": 145,
+    "providerReadCount": 16
+  },
+  "captureInputSha256": "14236784dac34033d20c18351ffe101d27a69ab72e283b7e2d8bc4f609b7b6f0",
+  "providerReadSha256": "dc55c357fa978ce43f3b272a885bf17d6057e4f1cdc0eec2e5b66f63e86c1349",
+  "clientFrameSha256": "141ef2383e34aa580582431a9b45aaa1d61d5278e3d2c8e0ec79ffea66c1c91b",
+  "normalizedFrameCount": 127,
+  "normalizedV2FrameCount": 126,
+  "normalizedSha256": "28a24db71400e29346d55aa4d727fede3492203dce05f699bbbcf4082ad11bd3",
+  "formalBatches": [
+    {
+      "mode": "snapshot",
+      "baseRevision": null,
+      "revision": "2133ebe1061c6d6b969df6f1235c7eba6143d14ca5a55a5039f977e013b9fde1",
+      "windowComplete": true,
+      "sourceEntryCount": 71,
+      "payloadEntryCount": 71,
+      "deleteCount": 0
+    },
+    {
+      "mode": "patch",
+      "baseRevision": "2133ebe1061c6d6b969df6f1235c7eba6143d14ca5a55a5039f977e013b9fde1",
+      "revision": "2133ebe1061c6d6b969df6f1235c7eba6143d14ca5a55a5039f977e013b9fde1",
+      "windowComplete": false,
+      "sourceEntryCount": 1,
+      "payloadEntryCount": 1,
+      "deleteCount": 0
+    },
+    {
+      "mode": "snapshot",
+      "baseRevision": null,
+      "revision": "4614278b73c80fb56852c9a5ca10a7e1a8be34da47cbe15d5482e3c91b387a16",
+      "windowComplete": true,
+      "sourceEntryCount": 72,
+      "payloadEntryCount": 72,
+      "deleteCount": 0
+    },
+    {
+      "mode": "patch",
+      "baseRevision": "4614278b73c80fb56852c9a5ca10a7e1a8be34da47cbe15d5482e3c91b387a16",
+      "revision": "4614278b73c80fb56852c9a5ca10a7e1a8be34da47cbe15d5482e3c91b387a16",
+      "windowComplete": false,
+      "sourceEntryCount": 1,
+      "payloadEntryCount": 1,
+      "deleteCount": 0
+    },
+    {
+      "mode": "snapshot",
+      "baseRevision": null,
+      "revision": "4614278b73c80fb56852c9a5ca10a7e1a8be34da47cbe15d5482e3c91b387a16",
+      "windowComplete": true,
+      "sourceEntryCount": 72,
+      "payloadEntryCount": 72,
+      "deleteCount": 0
+    },
+    {
+      "mode": "patch",
+      "baseRevision": "4614278b73c80fb56852c9a5ca10a7e1a8be34da47cbe15d5482e3c91b387a16",
+      "revision": "4614278b73c80fb56852c9a5ca10a7e1a8be34da47cbe15d5482e3c91b387a16",
+      "windowComplete": false,
+      "sourceEntryCount": 2,
+      "payloadEntryCount": 2,
+      "deleteCount": 0
+    },
+    {
+      "mode": "snapshot",
+      "baseRevision": null,
+      "revision": "f414194bd53d476a0f9a68e9f1ea13a7144834626f11792d438f6ad202a5ba7a",
+      "windowComplete": true,
+      "sourceEntryCount": 73,
+      "payloadEntryCount": 73,
+      "deleteCount": 0
+    },
+    {
+      "mode": "patch",
+      "baseRevision": "f414194bd53d476a0f9a68e9f1ea13a7144834626f11792d438f6ad202a5ba7a",
+      "revision": "f414194bd53d476a0f9a68e9f1ea13a7144834626f11792d438f6ad202a5ba7a",
+      "windowComplete": false,
+      "sourceEntryCount": 3,
+      "payloadEntryCount": 3,
+      "deleteCount": 0
+    },
+    {
+      "mode": "snapshot",
+      "baseRevision": null,
+      "revision": "9d4d32935be624ad6b73a8429871ac019353cf93955f6f1056fac3f42a9d3374",
+      "windowComplete": true,
+      "sourceEntryCount": 91,
+      "payloadEntryCount": 91,
+      "deleteCount": 0
+    },
+    {
+      "mode": "patch",
+      "baseRevision": "9d4d32935be624ad6b73a8429871ac019353cf93955f6f1056fac3f42a9d3374",
+      "revision": "9d4d32935be624ad6b73a8429871ac019353cf93955f6f1056fac3f42a9d3374",
+      "windowComplete": false,
+      "sourceEntryCount": 47,
+      "payloadEntryCount": 47,
+      "deleteCount": 0
+    },
+    {
+      "mode": "snapshot",
+      "baseRevision": null,
+      "revision": "4003f5abcea7bfacbee3bafcf1be95fc81ee33cd9f63ea4466b696e7a63f2e85",
+      "windowComplete": true,
+      "sourceEntryCount": 126,
+      "payloadEntryCount": 126,
+      "deleteCount": 0
+    },
+    {
+      "mode": "patch",
+      "baseRevision": "4003f5abcea7bfacbee3bafcf1be95fc81ee33cd9f63ea4466b696e7a63f2e85",
+      "revision": "4003f5abcea7bfacbee3bafcf1be95fc81ee33cd9f63ea4466b696e7a63f2e85",
+      "windowComplete": false,
+      "sourceEntryCount": 47,
+      "payloadEntryCount": 47,
+      "deleteCount": 0
+    },
+    {
+      "mode": "snapshot",
+      "baseRevision": null,
+      "revision": "4003f5abcea7bfacbee3bafcf1be95fc81ee33cd9f63ea4466b696e7a63f2e85",
+      "windowComplete": true,
+      "sourceEntryCount": 126,
+      "payloadEntryCount": 126,
+      "deleteCount": 0
+    },
+    {
+      "mode": "patch",
+      "baseRevision": "4003f5abcea7bfacbee3bafcf1be95fc81ee33cd9f63ea4466b696e7a63f2e85",
+      "revision": "4003f5abcea7bfacbee3bafcf1be95fc81ee33cd9f63ea4466b696e7a63f2e85",
+      "windowComplete": false,
+      "sourceEntryCount": 9,
+      "payloadEntryCount": 9,
+      "deleteCount": 0
+    },
+    {
+      "mode": "snapshot",
+      "baseRevision": null,
+      "revision": "346407f15258c3b2b76e96590718d86f390d6608fd2494148986fe2f5de202c0",
+      "windowComplete": true,
+      "sourceEntryCount": 120,
+      "payloadEntryCount": 120,
+      "deleteCount": 0
+    },
+    {
+      "mode": "patch",
+      "baseRevision": "346407f15258c3b2b76e96590718d86f390d6608fd2494148986fe2f5de202c0",
+      "revision": "346407f15258c3b2b76e96590718d86f390d6608fd2494148986fe2f5de202c0",
+      "windowComplete": false,
+      "sourceEntryCount": 9,
+      "payloadEntryCount": 9,
+      "deleteCount": 0
+    }
+  ]
+}
