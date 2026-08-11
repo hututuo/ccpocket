@@ -542,10 +542,28 @@ if [[ "$command_name" == "ipa" ]]; then
   runner_app="$repo_root/apps/mobile/build/ios/iphoneos/Runner.app"
   [[ -d "$runner_app" ]] || die "Runner.app was not produced"
   stage_ipa="$(mktemp -d /private/tmp/ccpocket-fast-ipa.XXXXXX)"
-  cleanup_ipa() { rm -rf "$stage_ipa"; }
+  ipa_complete=0
+  cleanup_ipa() {
+    rm -rf "$stage_ipa"
+    if [[ "$ipa_complete" == "0" ]]; then
+      rm -f "$output_path"
+    fi
+  }
   trap 'cleanup_ipa; rm -f "$changed_file"' EXIT
   mkdir -p "$stage_ipa/Payload"
   ditto "$runner_app" "$stage_ipa/Payload/Runner.app"
+  staged_app="$stage_ipa/Payload/Runner.app"
+
+  # Flutter/Xcode may copy prebuilt frameworks that still carry their vendor
+  # signature. The AltStore input must be uniformly unsigned, so strip only the
+  # disposable staging copy and leave the Xcode archive untouched.
+  while IFS= read -r -d '' candidate; do
+    if file "$candidate" | grep -q 'Mach-O'; then
+      codesign --remove-signature "$candidate" >/dev/null 2>&1 || true
+    fi
+  done < <(find "$staged_app" -type f -print0)
+  find "$staged_app" -type d -name _CodeSignature -prune -exec rm -rf {} +
+
   rm -f "$output_path"
   ditto -c -k --sequesterRsrc --keepParent "$stage_ipa/Payload" "$output_path"
 
@@ -553,16 +571,25 @@ if [[ "$command_name" == "ipa" ]]; then
     /^\// || /(^|\/)\.\.($|\/)/ {bad=1}
     END {exit bad ? 1 : 0}
   ' || die "unsafe ZIP path found"
-  [[ ! -e "$stage_ipa/Payload/Runner.app/embedded.mobileprovision" ]] || die "IPA unexpectedly contains provisioning"
-  [[ ! -d "$stage_ipa/Payload/Runner.app/_CodeSignature" ]] || die "IPA unexpectedly contains a code signature"
-  bundle_id="$(plutil -extract CFBundleIdentifier raw "$stage_ipa/Payload/Runner.app/Info.plist")"
-  actual_build="$(plutil -extract CFBundleVersion raw "$stage_ipa/Payload/Runner.app/Info.plist")"
+  if find "$staged_app" -name embedded.mobileprovision -print -quit | grep -q .; then
+    die "IPA unexpectedly contains provisioning"
+  fi
+  if find "$staged_app" -type d -name _CodeSignature -print -quit | grep -q .; then
+    die "IPA unexpectedly contains a code-signature directory"
+  fi
+  bundle_id="$(plutil -extract CFBundleIdentifier raw "$staged_app/Info.plist")"
+  actual_build="$(plutil -extract CFBundleVersion raw "$staged_app/Info.plist")"
   [[ "$bundle_id" == "com.k9i.ccpocket" ]] || die "unexpected bundle id: $bundle_id"
   [[ "$actual_build" == "$build_number" ]] || die "unexpected build number: $actual_build"
   macho_report="$stage_dir/ipa-macho.txt"
-  find "$stage_ipa/Payload/Runner.app" -type f -print0 | xargs -0 file | grep 'Mach-O' > "$macho_report" || true
+  find "$staged_app" -type f -print0 | xargs -0 file | grep 'Mach-O' > "$macho_report" || true
   [[ -s "$macho_report" ]] || die "no Mach-O files found"
   ! grep -Eq 'x86_64|i386' "$macho_report" || die "simulator architecture found in IPA"
+  while IFS= read -r -d '' candidate; do
+    if file "$candidate" | grep -q 'Mach-O' && codesign -dv "$candidate" >/dev/null 2>&1; then
+      die "signed Mach-O remains in IPA staging: $candidate"
+    fi
+  done < <(find "$staged_app" -type f -print0)
   ipa_sha="$(shasum -a 256 "$output_path" | awk '{print $1}')"
   ipa_size="$(stat -f %z "$output_path")"
   jq -n \
@@ -577,6 +604,7 @@ if [[ "$command_name" == "ipa" ]]; then
       path: $path, version: $version, build: $build, bytes: $bytes,
       sha256: $sha256, unsigned: true, provisioningProfile: false}' \
     > "$stage_dir/ipa.json"
+  ipa_complete=1
   echo "IPA prepared and audited (not installed): $output_path"
   echo "SHA-256: $ipa_sha"
   echo "Bytes: $ipa_size"
