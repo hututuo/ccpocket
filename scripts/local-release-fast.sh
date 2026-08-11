@@ -152,7 +152,10 @@ if [[ "$bridge_changed" == "1" ]]; then
 fi
 if [[ "$mobile_changed" == "1" ]]; then
   [[ -x "$flutter_bin" ]] || die "Flutter is not executable: $flutter_bin"
-  flutter_version="$($flutter_bin --version --machine | jq -r '.frameworkVersion + ":" + .frameworkRevision')"
+  flutter_root="$(cd "$(dirname "$flutter_bin")/.." && pwd)"
+  flutter_version_file="$flutter_root/bin/cache/flutter.version.json"
+  [[ -r "$flutter_version_file" ]] || die "Flutter version metadata is unavailable: $flutter_version_file"
+  flutter_version="$(jq -r '.frameworkVersion + ":" + .frameworkRevision' "$flutter_version_file")"
 fi
 
 fingerprint="$({
