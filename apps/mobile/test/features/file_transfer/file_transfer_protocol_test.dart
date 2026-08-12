@@ -175,57 +175,55 @@ void main() {
     });
   });
 
-  test(
-    'prepare carries bounded diagnostic metadata without changing '
-    'ordinary wire',
-    () {
-      final metadata = <String, Object?>{
-        'schemaVersion': 1,
-        'reportId': 'report_20260812',
-        'provider': 'codex',
-        'providerSessionId': 'thread-123',
-        'codexSourceId': 'source-123',
-        'capturedAtStart': '2026-08-12T00:00:00.000Z',
-        'capturedAtEnd': '2026-08-12T00:01:00.000Z',
-        'sha256': 'a' * 64,
-      };
-      final json = _json(
-        prepareFileTransferUpload(
-          requestId: 'request-1',
-          transferId: transferId,
-          resumeToken: token,
-          filename: 'report.json',
-          sizeBytes: 32,
-          purpose: 'diagnostic_report',
-          diagnosticReport: metadata,
-        ),
-      );
-      expect(json['purpose'], 'diagnostic_report');
-      expect(json['diagnosticReport'], metadata);
-      expect(
-        () => prepareFileTransferUpload(
-          requestId: 'request-1',
-          transferId: transferId,
-          resumeToken: token,
-          filename: 'report.json',
-          sizeBytes: 32,
-          purpose: 'diagnostic_report',
-        ),
-        throwsArgumentError,
-      );
-      expect(
-        () => prepareFileTransferUpload(
-          requestId: 'request-1',
-          transferId: transferId,
-          resumeToken: token,
-          filename: 'report.json',
-          sizeBytes: 32,
-          diagnosticReport: metadata,
-        ),
-        throwsArgumentError,
-      );
-    },
-  );
+  test('prepare carries bounded diagnostic metadata without changing '
+      'ordinary wire', () {
+    final metadata = <String, Object?>{
+      'schemaVersion': 1,
+      'reportId': 'report_20260812',
+      'provider': 'codex',
+      'providerSessionId': 'thread-123',
+      'bridgeInstanceId': 'bridge-123',
+      'codexSourceId': 'source-123',
+      'capturedAtStart': '2026-08-12T00:00:00.000Z',
+      'capturedAtEnd': '2026-08-12T00:01:00.000Z',
+      'sha256': 'a' * 64,
+    };
+    final json = _json(
+      prepareFileTransferUpload(
+        requestId: 'request-1',
+        transferId: transferId,
+        resumeToken: token,
+        filename: 'report.json',
+        sizeBytes: 32,
+        purpose: 'diagnostic_report',
+        diagnosticReport: metadata,
+      ),
+    );
+    expect(json['purpose'], 'diagnostic_report');
+    expect(json['diagnosticReport'], metadata);
+    expect(
+      () => prepareFileTransferUpload(
+        requestId: 'request-1',
+        transferId: transferId,
+        resumeToken: token,
+        filename: 'report.json',
+        sizeBytes: 32,
+        purpose: 'diagnostic_report',
+      ),
+      throwsArgumentError,
+    );
+    expect(
+      () => prepareFileTransferUpload(
+        requestId: 'request-1',
+        transferId: transferId,
+        resumeToken: token,
+        filename: 'report.json',
+        sizeBytes: 32,
+        diagnosticReport: metadata,
+      ),
+      throwsArgumentError,
+    );
+  });
 
   test('prepare carries only the exact short-lived mutation proof', () {
     final password = _json(

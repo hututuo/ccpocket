@@ -190,6 +190,7 @@ class ConversationTurnsPageLoadResult {
 class ConversationContentSyncService with WidgetsBindingObserver {
   static const int _maxCacheCommitEpochKeys = 4096;
   static const int _maximumAutomaticLatestTurnRepairFailures = 4;
+  static const int _maximumDiagnosticEvents = 96;
   ConversationContentSyncService({
     required this.bridge,
     required this.cache,
@@ -260,6 +261,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   int _cacheCommitEpoch = 0;
   int _cacheCommitEpochFloor = 0;
   final Map<String, int> _cacheCommitEpochsByConversation = {};
+  final List<Map<String, Object?>> _diagnosticEvents = [];
   bool _v2PriorityBootstrapComplete = false;
   String? _v2RecoveryTargetFingerprint;
   String? _forcedSnapshotTargetFingerprint;
@@ -303,6 +305,96 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         logicalConnectionIdentity: bridge.logicalConnectionIdentity,
         websocketUrl: bridge.lastUrl,
       );
+
+  /// Captures bounded structural state for a user-triggered diagnostic report.
+  /// No transcript bodies are duplicated here; the screen/SQLite snapshots
+  /// carry those at capture time.
+  Map<String, Object?> diagnosticSnapshot({
+    required String provider,
+    required String providerSessionId,
+  }) {
+    final target = conversationSyncTargetTrace(provider, providerSessionId);
+    return <String, Object?>{
+      'started': _started,
+      'disposed': _disposed,
+      'foreground': _foreground,
+      'canProcessContent': _canProcessContent,
+      'generation': _generation,
+      'focusIntentGeneration': _focusIntentGeneration,
+      'requestSequence': _requestSequence,
+      'highestV2CommittedSequence': _highestV2CommittedSequence,
+      'cacheCommitEpoch': _cacheCommitEpoch,
+      'cacheCommitEpochFloor': _cacheCommitEpochFloor,
+      'targetCacheCommitEpoch': cacheCommitEpochFor(
+        targetFingerprint: _cacheTarget.fingerprint,
+        provider: provider,
+        providerSessionId: providerSessionId,
+      ),
+      'cacheTargetFingerprint': _cacheTarget.fingerprint,
+      'focused': _focused?.toJson(),
+      'pendingSubscriptionId': _pendingSubscriptionId,
+      'activeSubscriptionId': _activeSubscriptionId,
+      'activeSubscriptionRequestId': _activeSubscriptionRequestId,
+      'subscriptionTargetFingerprint': _subscriptionTargetFingerprint,
+      'subscriptionBridgeInstanceId': _subscriptionBridgeInstanceId,
+      'v2PriorityBootstrapComplete': _v2PriorityBootstrapComplete,
+      'v2RecoveryTargetFingerprint': _v2RecoveryTargetFingerprint,
+      'forcedSnapshotTargetFingerprint': _forcedSnapshotTargetFingerprint,
+      'forcedSnapshotThreadCount': _forcedSnapshotThreadKeys.length,
+      'currentGenerationTimelineKeys': _currentGenerationTimelineKeys.toList()
+        ..sort(),
+      'stageCounts': <String, Object?>{
+        'legacySnapshot': _stages.length,
+        'catalog': _v2CatalogStages.length,
+        'status': _v2StatusStages.length,
+      },
+      'pendingRequestCounts': <String, Object?>{
+        'turns': _pendingTurnsPages.length,
+        'items': _pendingItemsPages.length,
+        'userIndex': _pendingUserIndexPages.length,
+        'userTurn': _pendingUserTurnDetailPages.length,
+        'latestTurnRepair': _pendingLatestTurnRepairPages.length,
+        'historyPageFlights': _historyPageFlights.length,
+        'latestTurnRepairFlights': _latestTurnRepairFlights.length,
+        'automaticLatestTurnRepairs': _automaticLatestTurnRepairs.length,
+      },
+      'targetTrace': target,
+      'recentEvents': List<Map<String, Object?>>.unmodifiable(
+        _diagnosticEvents,
+      ),
+    };
+  }
+
+  void _recordDiagnosticEvent(
+    String kind, {
+    int? generation,
+    int? sequence,
+    String? provider,
+    String? providerSessionId,
+    String? revision,
+    String? phase,
+    String? result,
+  }) {
+    _diagnosticEvents.add(<String, Object?>{
+      'at': DateTime.now().toUtc().toIso8601String(),
+      'kind': kind,
+      'generation': generation ?? _generation,
+      'sequence': sequence,
+      if (provider != null && providerSessionId != null)
+        'target': conversationSyncTargetTrace(provider, providerSessionId),
+      'revision': revision == null
+          ? null
+          : shortConversationSyncToken(revision),
+      'phase': phase,
+      'result': result,
+    });
+    if (_diagnosticEvents.length > _maximumDiagnosticEvents) {
+      _diagnosticEvents.removeRange(
+        0,
+        _diagnosticEvents.length - _maximumDiagnosticEvents,
+      );
+    }
+  }
 
   bool matchesCurrentDataSource(
     BridgeDataSourceIdentity expected, {
@@ -2081,6 +2173,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   }
 
   void _handleTransportLoss() {
+    _recordDiagnosticEvent('transportLoss', result: 'subscription_cleared');
     _failTimelineReadyWaiters(const _ConversationPagingInterrupted());
     _generation += 1;
     _pendingSubscriptionId = null;
@@ -2137,6 +2230,11 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _currentGenerationTimelineKeys.clear();
     final requestId = _nextRequestId('subscribe');
     _pendingSubscriptionId = requestId;
+    _recordDiagnosticEvent(
+      'subscribeRequested',
+      generation: generation,
+      result: bridge.supportsConversationSyncV2 ? 'v2' : 'v1',
+    );
     _subscriptionTargetFingerprint = targetFingerprint;
     _subscriptionBridgeInstanceId = bridgeInstanceId;
     if (bridge.supportsConversationSyncV2) {
@@ -2321,6 +2419,15 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         ? 'subscription'
         : null;
     if (rejection != null) {
+      _recordDiagnosticEvent(
+        'eventIgnored',
+        sequence: event.sequence,
+        provider: event.provider,
+        providerSessionId: event.providerSessionId,
+        revision: event.revision,
+        phase: event.phase,
+        result: rejection,
+      );
       conversationSyncTrace(
         '[conversation_sync_v2] event=event_ignored '
         'kind=${event.event.name} sequence=${event.sequence} '
@@ -2362,6 +2469,16 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         : streamContinuityFailure
         ? 'stream_retry'
         : 'retry';
+    _recordDiagnosticEvent(
+      'commitFailure',
+      generation: generation,
+      sequence: event.sequence,
+      provider: event.provider,
+      providerSessionId: event.providerSessionId,
+      revision: event.revision,
+      phase: event.phase,
+      result: '${error.runtimeType}:$recovery',
+    );
 
     if (threadRevisionMismatch &&
         event.provider != null &&
@@ -2566,6 +2683,16 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     SessionCatalogCacheTarget target,
   ) async {
     if (!_isV2Current(event, generation, target)) return;
+    _recordDiagnosticEvent(
+      'eventReceived',
+      generation: generation,
+      sequence: event.sequence,
+      provider: event.provider,
+      providerSessionId: event.providerSessionId,
+      revision: event.revision,
+      phase: event.phase,
+      result: event.event.name,
+    );
     if (event.sequence <= _highestV2CommittedSequence) {
       _sendV2Ack(event.subscriptionId, _highestV2CommittedSequence);
       return;
@@ -3186,6 +3313,16 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
     if (!_isV2Current(event, generation, target)) return;
     _highestV2CommittedSequence = event.sequence;
+    _recordDiagnosticEvent(
+      'eventCommitted',
+      generation: generation,
+      sequence: event.sequence,
+      provider: event.provider,
+      providerSessionId: event.providerSessionId,
+      revision: publish?.revision ?? event.revision,
+      phase: event.phase,
+      result: event.event.name,
+    );
     _sendV2Ack(event.subscriptionId, event.sequence);
     if (runtimeOverlay != null && !_runtimeOverlaysController.isClosed) {
       _runtimeOverlaysController.add(runtimeOverlay);

@@ -312,6 +312,54 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       _detachedAuthorityGeneration;
   String? get detachedActionBrokerExecutionHost => _detachedExecutionHost;
 
+  Map<String, Object?> get diagnosticRuntimeProjection => <String, Object?>{
+    'detachedPreview': detachedPreview,
+    'liveRuntimeSessionId': _detachedLiveRuntimeSessionId,
+    'liveRuntimeGeneration': _detachedLiveRuntimeGeneration,
+    'authorityObserved': _detachedAuthorityObserved,
+    'executionHost': _detachedExecutionHost,
+    'controlState': _detachedControlState,
+    'authorityGeneration': _detachedAuthorityGeneration,
+    'authorityLiveRuntimeGeneration': _detachedAuthorityLiveRuntimeGeneration,
+    'authoritySourceFingerprint': _detachedAuthoritySourceFingerprint,
+    'activeTurnId': _detachedActiveTurnId,
+    'preservedVisualTurnId': _detachedPreservedVisualTurnId,
+    'visualTurnValidationPending': _detachedVisualTurnValidationPending,
+    'pendingVisualMessageCount': _detachedPendingVisualMessages.length,
+    'rejectedAuthorityGeneration': _detachedRejectedAuthorityGeneration,
+    'providerProjectionCurrent': _detachedProviderProjectionCurrent,
+    'runtimeSessionIdForRead': runtimeSessionIdForRead,
+    'runtimeSessionIdForMutation': runtimeSessionIdForMutation(),
+    'canMutateAttachedRuntime': canMutateAttachedRuntime,
+    'settingsActionability': codexSettingsActionability.name,
+    'modelSettingsKnown': codexModelSettingsKnown,
+    'planModeKnown': codexPlanModeKnown,
+    'queuedInputLimit': _queuedInputLimit,
+    'queuedInputs': [
+      for (final item in queuedInputs.value)
+        <String, Object?>{
+          'itemId': item.itemId,
+          'text': item.text,
+          'createdAt': item.createdAt,
+          'updatedAt': item.updatedAt,
+          'clientMessageId': item.clientMessageId,
+          'deliveryStage': item.deliveryStage?.wireValue,
+          'deliveryError': item.deliveryError,
+        },
+    ],
+    'historyNavigationActive': historyNavigationActive,
+    'historyNavigationEntryCount': historyNavigation.value?.entries.length,
+    'localHistoryPaging': <String, Object?>{
+      'enabled': localHistoryPaging.value.enabled,
+      'hasMore': localHistoryPaging.value.hasMore,
+      'hasLater': localHistoryPaging.value.hasLater,
+      'loading': localHistoryPaging.value.loading,
+      'loadingLater': localHistoryPaging.value.loadingLater,
+      'error': localHistoryPaging.value.error?.toString(),
+      'laterError': localHistoryPaging.value.laterError?.toString(),
+    },
+  };
+
   bool get canMutateAttachedRuntime => _runtimeSessionIdForMutation() != null;
 
   /// A Desktop-owned shared turn can be detached from this phone, but it must

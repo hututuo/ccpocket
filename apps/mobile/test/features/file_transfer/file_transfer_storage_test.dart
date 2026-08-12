@@ -263,6 +263,8 @@ void main() {
         'reportId': 'report_20260812',
         'provider': 'codex',
         'providerSessionId': 'thread-123',
+        'bridgeInstanceId': 'bridge-123',
+        'codexSourceId': 'source-123',
         'capturedAtStart': '2026-08-12T00:00:00.000Z',
         'capturedAtEnd': '2026-08-12T00:01:00.000Z',
         'sha256': 'a' * 64,
@@ -444,22 +446,25 @@ void main() {
     );
   });
 
-  test('received inbox lists newest regular files without following links', () async {
-    final older = File('${downloads.path}/older.txt');
-    final newer = File('${downloads.path}/newer.pdf');
-    await older.writeAsBytes(const [1]);
-    await newer.writeAsBytes(const [2, 3]);
-    await older.setLastModified(DateTime.utc(2026, 7, 18, 10));
-    await newer.setLastModified(DateTime.utc(2026, 7, 18, 11));
-    await Directory('${downloads.path}/folder').create();
-    await Link('${downloads.path}/linked.txt').create(older.path);
+  test(
+    'received inbox lists newest regular files without following links',
+    () async {
+      final older = File('${downloads.path}/older.txt');
+      final newer = File('${downloads.path}/newer.pdf');
+      await older.writeAsBytes(const [1]);
+      await newer.writeAsBytes(const [2, 3]);
+      await older.setLastModified(DateTime.utc(2026, 7, 18, 10));
+      await newer.setLastModified(DateTime.utc(2026, 7, 18, 11));
+      await Directory('${downloads.path}/folder').create();
+      await Link('${downloads.path}/linked.txt').create(older.path);
 
-    final received = await storage.listReceivedFiles();
+      final received = await storage.listReceivedFiles();
 
-    expect(received.map((file) => file.filename), ['newer.pdf', 'older.txt']);
-    expect(received.first.sizeBytes, 2);
-    expect(received.first.path, newer.path);
-  });
+      expect(received.map((file) => file.filename), ['newer.pdf', 'older.txt']);
+      expect(received.first.sizeBytes, 2);
+      expect(received.first.path, newer.path);
+    },
+  );
 
   test('failed external drop removes its private staging directory', () async {
     final picker = await storage.pickerStagingDirectory();
@@ -484,9 +489,8 @@ void main() {
       await picker
           .list(followLinks: false)
           .where(
-            (entity) => entity.path.split('/').last.startsWith(
-              'ccpocket-picker-',
-            ),
+            (entity) =>
+                entity.path.split('/').last.startsWith('ccpocket-picker-'),
           )
           .toList(),
       isEmpty,

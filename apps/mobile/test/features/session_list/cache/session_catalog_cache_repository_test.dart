@@ -812,6 +812,105 @@ void main() {
     expect(patched?.entries.single.entryId, 'entry-2');
   });
 
+  test(
+    'diagnostic reads stay target-scoped and bounded at the newest tail',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-diagnostic',
+        codexSourceId: 'source-diagnostic',
+      );
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-diagnostic',
+        revision: 'revision-diagnostic',
+        entries: [
+          for (var index = 0; index < 20; index += 1)
+            _assistantEntry(
+              'entry-$index',
+              index,
+              text: 'tail-$index ${'x' * 600}',
+            ),
+        ],
+        hasEarlier: true,
+        sourceEntryCount: 2000,
+      );
+      await repository.applyConversationStatusBatch(
+        target: target,
+        statusState: 'status-diagnostic',
+        changes: const [
+          ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'thread-diagnostic',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-12T00:03:00.000Z',
+          ),
+          ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'other-thread',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'notLoaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-12T00:02:00.000Z',
+          ),
+        ],
+      );
+      await repository.storeReadWatermark(
+        target: target,
+        watermark: const ConversationSyncV2ReadWatermark(
+          provider: 'codex',
+          providerSessionId: 'thread-diagnostic',
+          readAt: '2026-08-12T00:04:00.000Z',
+        ),
+      );
+
+      final snapshot = await repository.loadConversationDiagnosticWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-diagnostic',
+        maximumEntries: 5,
+        maximumEncodedBytes: 2000,
+      );
+      final entries = (snapshot!['entries']! as List).cast<Map>();
+      expect(snapshot['entryCount'], 20);
+      expect(snapshot['inspectedEntryCount'], lessThanOrEqualTo(5));
+      expect(snapshot['rawMessageBytes'], lessThanOrEqualTo(2000));
+      expect(entries, isNotEmpty);
+      expect(entries.last['index'], 19);
+      expect(snapshot['omittedEntryCount'], 20 - entries.length);
+      expect(
+        await repository.loadConversationStatus(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-diagnostic',
+        ),
+        isA<ConversationSyncV2Status>().having(
+          (status) => status.activity,
+          'activity',
+          'working',
+        ),
+      );
+      expect(
+        (await repository.loadReadWatermark(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-diagnostic',
+        ))?.readAt,
+        // The production store clamps a phone-ahead read watermark to the
+        // authoritative status observation time before persisting it.
+        '2026-08-12T00:03:00.000Z',
+      );
+    },
+  );
+
   test('thread reset preserves the last committed hot window', () async {
     final target = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-thread-reset',

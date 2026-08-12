@@ -255,6 +255,29 @@ void main() {
       )).priorityReady,
       isTrue,
     );
+    final diagnostic = service.diagnosticSnapshot(
+      provider: 'codex',
+      providerSessionId: 'thread-v2',
+    );
+    final recentEvents = (diagnostic['recentEvents']! as List)
+        .cast<Map<String, Object?>>();
+    expect(
+      recentEvents.map((event) => event['kind']),
+      containsAllInOrder(const [
+        'subscribeRequested',
+        'eventReceived',
+        'eventCommitted',
+      ]),
+    );
+    expect(
+      recentEvents.where(
+        (event) => event['kind'] == 'eventCommitted' && event['sequence'] == 4,
+      ),
+      hasLength(1),
+    );
+    expect(diagnostic['highestV2CommittedSequence'], 5);
+    expect(diagnostic['targetCacheCommitEpoch'], 1);
+    expect(jsonEncode(diagnostic), isNot(contains('Visible update')));
   });
 
   test(

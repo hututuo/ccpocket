@@ -41,6 +41,7 @@ import '../session_list/workspace_shell_screen.dart';
 import '../conversation_content_sync/conversation_content_sync_service.dart';
 import '../conversation_content_sync/conversation_sync_trace.dart';
 import '../conversation_content_sync/conversation_route_focus_restorer.dart';
+import '../diagnostics/session_diagnostic_report.dart';
 import '../codex_action_broker/codex_action_broker_interaction_frame.dart';
 import '../codex_action_broker/codex_action_broker_service.dart';
 import '../codex_core_actions/codex_core_actions_controller.dart';
@@ -242,11 +243,15 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   Object? _sessionRouteIdentity;
   late BridgeDataSourceIdentity _dataSourceIdentity;
   late final DraftService _draftService;
+  bool _diagnosticReportsSupported = false;
 
   @override
   void initState() {
     super.initState();
     final bridge = context.read<BridgeService>();
+    _diagnosticReportsSupported = bridge.bridgeCapabilities.contains(
+      fileTransferDiagnosticReportCapability,
+    );
     _draftService = context.read<DraftService>();
     _dataSourceIdentity =
         widget.dataSourceIdentity ?? bridge.dataSourceIdentity;
@@ -277,6 +282,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
 
   void _listenForAuthoritativeDataSourceIdentity(BridgeService bridge) {
     _identitySessionListSub = bridge.sessionList.listen((sessions) {
+      _reconcileDiagnosticReportCapability(bridge);
       _reconcileAuthoritativeDataSourceIdentity(bridge);
       _reconcileDurableLiveRuntime(bridge, sessions);
       _requestRestoredDeferredAttachmentIfReady();
@@ -302,6 +308,15 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     _reconcileAuthoritativeDataSourceIdentity(bridge);
     _reconcileDurableLiveRuntime(bridge, bridge.sessions);
     _requestRestoredDeferredAttachmentIfReady();
+  }
+
+  void _reconcileDiagnosticReportCapability(BridgeService bridge) {
+    if (!mounted) return;
+    final supported = bridge.bridgeCapabilities.contains(
+      fileTransferDiagnosticReportCapability,
+    );
+    if (supported == _diagnosticReportsSupported) return;
+    setState(() => _diagnosticReportsSupported = supported);
   }
 
   /// Keeps the transient runtime handle of a durable Codex page aligned with
@@ -1597,6 +1612,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
           hideSessionBackButton: widget.hideSessionBackButton,
           allowMessageFork: false,
           dataSourceIdentity: _dataSourceIdentity,
+          diagnosticReportsSupported: _diagnosticReportsSupported,
         ),
       );
     }
@@ -1663,6 +1679,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       hideSessionBackButton: widget.hideSessionBackButton,
       allowMessageFork: widget.allowMessageFork,
       dataSourceIdentity: _dataSourceIdentity,
+      diagnosticReportsSupported: _diagnosticReportsSupported,
     );
   }
 }
@@ -1704,6 +1721,7 @@ class _CodexProviders extends StatelessWidget {
   final ChatComposerSubmission? initialSubmission;
   final ValueChanged<ChatComposerSubmission>? onInitialSubmissionConsumed;
   final BridgeDataSourceIdentity dataSourceIdentity;
+  final bool diagnosticReportsSupported;
 
   const _CodexProviders({
     super.key,
@@ -1739,6 +1757,7 @@ class _CodexProviders extends StatelessWidget {
     this.initialSubmission,
     this.onInitialSubmissionConsumed,
     required this.dataSourceIdentity,
+    required this.diagnosticReportsSupported,
   });
 
   @override
@@ -1887,6 +1906,7 @@ class _CodexProviders extends StatelessWidget {
           onDeferredSubmit: onDeferredSubmit,
           onDeferredCompact: onDeferredCompact,
           dataSourceIdentity: dataSourceIdentity,
+          diagnosticReportsSupported: diagnosticReportsSupported,
           latestTurnRecoveryVisible: latestTurnRecoveryVisible,
           onLatestTurnRecoveryRetry: onLatestTurnRecoveryRetry,
         ),
@@ -1917,6 +1937,7 @@ class _CodexChatBody extends HookWidget {
   final ChatComposerSubmitCallback? onDeferredSubmit;
   final bool Function()? onDeferredCompact;
   final BridgeDataSourceIdentity dataSourceIdentity;
+  final bool diagnosticReportsSupported;
 
   const _CodexChatBody({
     required this.sessionId,
@@ -1936,6 +1957,7 @@ class _CodexChatBody extends HookWidget {
     this.onDeferredSubmit,
     this.onDeferredCompact,
     required this.dataSourceIdentity,
+    required this.diagnosticReportsSupported,
   });
 
   @override
@@ -2043,6 +2065,9 @@ class _CodexChatBody extends HookWidget {
     // Collapse tool results notifier (shared widget needs it)
     final collapseToolResults = useMemoized(() => ValueNotifier<int>(0));
     useEffect(() => collapseToolResults.dispose, const []);
+    final diagnosticController = useMemoized(
+      ChatMessageListDiagnosticController.new,
+    );
 
     // Scroll-to-user-entry notifier (for message history jump)
     final scrollToUserEntry = useMemoized(
@@ -3218,6 +3243,32 @@ class _CodexChatBody extends HookWidget {
                               _openInTerminal(context, effectiveProjectPath);
                             case 'collapse_all':
                               collapseToolResults.value++;
+                            case 'diagnostic_report':
+                              final diagnosticSessionId =
+                                  sessionInsightsSessionId?.trim().isNotEmpty ==
+                                      true
+                                  ? sessionInsightsSessionId!.trim()
+                                  : sessionState.claudeSessionId?.trim();
+                              if (diagnosticSessionId == null ||
+                                  diagnosticSessionId.isEmpty) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('持久会话身份尚未同步，暂不能上报诊断。'),
+                                  ),
+                                );
+                                return;
+                              }
+                              unawaited(
+                                uploadCurrentSessionDiagnosticReport(
+                                  context: context,
+                                  provider: Provider.codex.value,
+                                  providerSessionId: diagnosticSessionId,
+                                  detachedPreview: detachedPreview,
+                                  expectedDataSourceIdentity:
+                                      dataSourceIdentity,
+                                  presentation: diagnosticController,
+                                ),
+                              );
                           }
                         },
                         itemBuilder: (context) {
@@ -3308,6 +3359,29 @@ class _CodexChatBody extends HookWidget {
                                 contentPadding: EdgeInsets.zero,
                               ),
                             ),
+                            if (diagnosticReportsSupported)
+                              PopupMenuItem(
+                                key: const ValueKey(
+                                  'menu_session_diagnostic_report',
+                                ),
+                                value: 'diagnostic_report',
+                                child: ListTile(
+                                  leading: const Icon(
+                                    Icons.bug_report_outlined,
+                                    size: 20,
+                                  ),
+                                  title: Text(
+                                    Localizations.localeOf(
+                                              context,
+                                            ).languageCode ==
+                                            'zh'
+                                        ? '上报会话诊断'
+                                        : 'Upload session diagnostics',
+                                  ),
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                ),
+                              ),
                             PopupMenuItem(
                               key: const ValueKey('menu_collapse_all'),
                               value: 'collapse_all',
@@ -3488,6 +3562,7 @@ class _CodexChatBody extends HookWidget {
                                 LocalSessionFeatureHost.selectionActions(
                                   localFeatureContext,
                                 ),
+                            diagnosticController: diagnosticController,
                             scrollToUserEntry: scrollToUserEntry,
                             collapseToolResults: collapseToolResults,
                             bottomPadding: 8,

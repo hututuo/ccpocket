@@ -31,6 +31,7 @@ import '../session_list/pending_session_binding.dart';
 import '../session_list/workspace_shell_screen.dart';
 import '../conversation_content_sync/conversation_content_sync_service.dart';
 import '../conversation_content_sync/conversation_route_focus_restorer.dart';
+import '../diagnostics/session_diagnostic_report.dart';
 import '../session_list/cache/session_catalog_cache_repository.dart';
 import '../session_list/state/session_list_cubit.dart';
 import '../session_link/widgets/session_unavailable_view.dart';
@@ -208,11 +209,15 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   final Object _sessionRouteOwner = Object();
   Object? _sessionRouteIdentity;
   late BridgeDataSourceIdentity _dataSourceIdentity;
+  bool _diagnosticReportsSupported = false;
 
   @override
   void initState() {
     super.initState();
     final bridge = context.read<BridgeService>();
+    _diagnosticReportsSupported = bridge.bridgeCapabilities.contains(
+      fileTransferDiagnosticReportCapability,
+    );
     _dataSourceIdentity =
         widget.dataSourceIdentity ?? bridge.dataSourceIdentity;
     _sessionId = widget.sessionId;
@@ -238,6 +243,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
 
   void _listenForAuthoritativeDataSourceIdentity(BridgeService bridge) {
     _identitySessionListSub = bridge.sessionList.listen((_) {
+      _reconcileDiagnosticReportCapability(bridge);
       _reconcileAuthoritativeDataSourceIdentity(bridge);
     });
     _identityRecentSessionsSub = bridge.recentSessionsStream.listen((_) {
@@ -252,6 +258,15 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       // Isolated widget hosts may not provide the durable catalog projection.
     }
     _reconcileAuthoritativeDataSourceIdentity(bridge);
+  }
+
+  void _reconcileDiagnosticReportCapability(BridgeService bridge) {
+    if (!mounted) return;
+    final supported = bridge.bridgeCapabilities.contains(
+      fileTransferDiagnosticReportCapability,
+    );
+    if (supported == _diagnosticReportsSupported) return;
+    setState(() => _diagnosticReportsSupported = supported);
   }
 
   void _reconcileAuthoritativeDataSourceIdentity(BridgeService bridge) {
@@ -1068,6 +1083,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
         child: _ChatScreenProviders(
           key: ValueKey('durable-claude-$durableId'),
           sessionId: durableId,
+          durableProviderSessionId: durableId,
           projectPath: _projectPath,
           gitBranch: _gitBranch,
           worktreePath: _worktreePath,
@@ -1093,6 +1109,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
           onBackToSessions: widget.onBackToSessions,
           hideSessionBackButton: widget.hideSessionBackButton,
           dataSourceIdentity: _dataSourceIdentity,
+          diagnosticReportsSupported: _diagnosticReportsSupported,
         ),
       );
     }
@@ -1140,6 +1157,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     final providers = _ChatScreenProviders(
       key: ValueKey(_sessionId),
       sessionId: _sessionId,
+      durableProviderSessionId: durableId,
       projectPath: _projectPath,
       gitBranch: _gitBranch,
       worktreePath: _worktreePath,
@@ -1152,6 +1170,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       onBackToSessions: widget.onBackToSessions,
       hideSessionBackButton: widget.hideSessionBackButton,
       dataSourceIdentity: _dataSourceIdentity,
+      diagnosticReportsSupported: _diagnosticReportsSupported,
     );
     return durableId == null
         ? providers
@@ -1165,6 +1184,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
 /// Wrapper that creates screen-scoped cubits once per session.
 class _ChatScreenProviders extends StatelessWidget {
   final String sessionId;
+  final String? durableProviderSessionId;
   final String? projectPath;
   final String? gitBranch;
   final String? worktreePath;
@@ -1188,10 +1208,12 @@ class _ChatScreenProviders extends StatelessWidget {
   final ChatComposerSubmission? initialSubmission;
   final ValueChanged<ChatComposerSubmission>? onInitialSubmissionConsumed;
   final BridgeDataSourceIdentity dataSourceIdentity;
+  final bool diagnosticReportsSupported;
 
   const _ChatScreenProviders({
     super.key,
     required this.sessionId,
+    this.durableProviderSessionId,
     this.projectPath,
     this.gitBranch,
     this.worktreePath,
@@ -1215,6 +1237,7 @@ class _ChatScreenProviders extends StatelessWidget {
     this.initialSubmission,
     this.onInitialSubmissionConsumed,
     required this.dataSourceIdentity,
+    required this.diagnosticReportsSupported,
   });
 
   @override
@@ -1321,6 +1344,7 @@ class _ChatScreenProviders extends StatelessWidget {
         detachedUserTurnLoader: userTurnLoader,
         child: _ChatScreenBody(
           sessionId: sessionId,
+          durableProviderSessionId: durableProviderSessionId,
           projectPath: projectPath,
           gitBranch: gitBranch,
           worktreePath: worktreePath,
@@ -1330,6 +1354,7 @@ class _ChatScreenProviders extends StatelessWidget {
           deferredSubmissionPending: deferredSubmissionPending,
           onDeferredSubmit: onDeferredSubmit,
           dataSourceIdentity: dataSourceIdentity,
+          diagnosticReportsSupported: diagnosticReportsSupported,
           latestTurnRecoveryVisible: latestTurnRecoveryVisible,
           onLatestTurnRecoveryRetry: onLatestTurnRecoveryRetry,
         ),
@@ -1340,6 +1365,7 @@ class _ChatScreenProviders extends StatelessWidget {
 
 class _ChatScreenBody extends HookWidget {
   final String sessionId;
+  final String? durableProviderSessionId;
   final String? projectPath;
   final String? gitBranch;
   final String? worktreePath;
@@ -1351,9 +1377,11 @@ class _ChatScreenBody extends HookWidget {
   final LatestTurnRepairCallback? onLatestTurnRecoveryRetry;
   final ChatComposerSubmitCallback? onDeferredSubmit;
   final BridgeDataSourceIdentity dataSourceIdentity;
+  final bool diagnosticReportsSupported;
 
   const _ChatScreenBody({
     required this.sessionId,
+    this.durableProviderSessionId,
     this.projectPath,
     this.gitBranch,
     this.worktreePath,
@@ -1365,6 +1393,7 @@ class _ChatScreenBody extends HookWidget {
     this.onLatestTurnRecoveryRetry,
     this.onDeferredSubmit,
     required this.dataSourceIdentity,
+    required this.diagnosticReportsSupported,
   });
 
   @override
@@ -1457,6 +1486,9 @@ class _ChatScreenBody extends HookWidget {
     // Collapse tool results notifier
     final collapseToolResults = useMemoized(() => ValueNotifier<int>(0));
     useEffect(() => collapseToolResults.dispose, const []);
+    final diagnosticController = useMemoized(
+      ChatMessageListDiagnosticController.new,
+    );
 
     // Scroll-to-user-entry notifier (set by message history sheet)
     final scrollToUserEntry = useMemoized(
@@ -1991,6 +2023,32 @@ class _ChatScreenBody extends HookWidget {
                               _openInTerminal(context, effectiveProjectPath);
                             case 'collapse_all':
                               collapseToolResults.value++;
+                            case 'diagnostic_report':
+                              final diagnosticSessionId =
+                                  durableProviderSessionId?.trim().isNotEmpty ==
+                                      true
+                                  ? durableProviderSessionId!.trim()
+                                  : sessionState.claudeSessionId?.trim();
+                              if (diagnosticSessionId == null ||
+                                  diagnosticSessionId.isEmpty) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('持久会话身份尚未同步，暂不能上报诊断。'),
+                                  ),
+                                );
+                                return;
+                              }
+                              unawaited(
+                                uploadCurrentSessionDiagnosticReport(
+                                  context: context,
+                                  provider: Provider.claude.value,
+                                  providerSessionId: diagnosticSessionId,
+                                  detachedPreview: detachedPreview,
+                                  expectedDataSourceIdentity:
+                                      dataSourceIdentity,
+                                  presentation: diagnosticController,
+                                ),
+                              );
                           }
                         },
                         itemBuilder: (context) {
@@ -2053,6 +2111,29 @@ class _ChatScreenBody extends HookWidget {
                                 contentPadding: EdgeInsets.zero,
                               ),
                             ),
+                            if (diagnosticReportsSupported)
+                              PopupMenuItem(
+                                key: const ValueKey(
+                                  'menu_session_diagnostic_report',
+                                ),
+                                value: 'diagnostic_report',
+                                child: ListTile(
+                                  leading: const Icon(
+                                    Icons.bug_report_outlined,
+                                    size: 20,
+                                  ),
+                                  title: Text(
+                                    Localizations.localeOf(
+                                              context,
+                                            ).languageCode ==
+                                            'zh'
+                                        ? '上报会话诊断'
+                                        : 'Upload session diagnostics',
+                                  ),
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                ),
+                              ),
                             PopupMenuItem(
                               key: const ValueKey('menu_collapse_all'),
                               value: 'collapse_all',
@@ -2248,6 +2329,7 @@ class _ChatScreenBody extends HookWidget {
                       onFilePeekOpened: context
                           .read<ChatSessionCubit>()
                           .recordPeekedFile,
+                      diagnosticController: diagnosticController,
                     ),
                   ),
                 ),

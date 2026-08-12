@@ -269,6 +269,102 @@ void main() {
     },
   );
 
+  testWidgets(
+    'diagnostic controller captures raw order and the folded UI projection',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final bridge = _Bridge();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
+      final cubit = ChatSessionCubit(
+        sessionId: 'session-diagnostic',
+        bridge: bridge,
+        streamingCubit: streaming,
+        provider: Provider.codex,
+      );
+      final scrollController = ReadingPositionAutoScrollController();
+      final diagnostic = ChatMessageListDiagnosticController();
+      addTearDown(bridge.dispose);
+      addTearDown(streaming.close);
+      addTearDown(scrollController.dispose);
+      addTearDown(() async {
+        if (!cubit.isClosed) await cubit.close();
+      });
+
+      await tester.pumpWidget(
+        RepositoryProvider<BridgeService>.value(
+          value: bridge,
+          child: MultiBlocProvider(
+            providers: [
+              BlocProvider<ChatSessionCubit>.value(value: cubit),
+              BlocProvider<StreamingStateCubit>.value(value: streaming),
+            ],
+            child: MaterialApp(
+              localizationsDelegates: AppLocalizations.localizationsDelegates,
+              supportedLocales: AppLocalizations.supportedLocales,
+              theme: AppTheme.darkTheme,
+              home: Scaffold(
+                body: ChatMessageList(
+                  sessionId: 'session-diagnostic',
+                  scrollController: scrollController,
+                  httpBaseUrl: null,
+                  onRetryMessage: null,
+                  collapseToolResults: null,
+                  isCodex: true,
+                  diagnosticController: diagnostic,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      bridge.emit(HistoryMessage(messages: _history()), 'session-diagnostic');
+      await tester.pump();
+
+      final snapshot = diagnostic.capture();
+      expect(snapshot['available'], isTrue);
+      final entries = (snapshot['entries']! as List).cast<Map>();
+      expect(entries, isNotEmpty);
+      expect(
+        entries.map((entry) => entry['index']),
+        orderedEquals(List<int>.generate(entries.length, (index) => index)),
+      );
+      final intermediate = entries.where(
+        (entry) => entry['renderRole'] == 'intermediateSummary',
+      );
+      final members = entries.where(
+        (entry) => entry['renderRole'] == 'foldedIntermediateMember',
+      );
+      expect(intermediate, isNotEmpty);
+      expect(members, isNotEmpty);
+      expect(
+        members.every((entry) => entry['visibleTopLevel'] == false),
+        isTrue,
+      );
+      final visible = (snapshot['visibleTopLevelStableKeys']! as List)
+          .cast<String>();
+      expect(visible.length, lessThan(entries.length));
+      expect(snapshot['presentationRevision'], hasLength(64));
+      final revisionBeforeStreaming = snapshot['presentationRevision'];
+      streaming.appendThinking('new live reasoning delta');
+      await tester.pump();
+      final streamingSnapshot = diagnostic.capture();
+      expect(
+        streamingSnapshot['presentationRevision'],
+        isNot(revisionBeforeStreaming),
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+      await cubit.close();
+    },
+  );
+
+  test('diagnostic controller reports when the real list is not attached', () {
+    expect(ChatMessageListDiagnosticController().capture(), {
+      'available': false,
+      'reason': 'chatMessageListNotAttached',
+    });
+  });
+
   testWidgets('expanding an intermediate fold keeps its visible row anchored', (
     tester,
   ) async {

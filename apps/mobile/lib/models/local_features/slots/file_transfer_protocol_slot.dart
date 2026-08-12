@@ -4,7 +4,10 @@ const LocalFeatureProtocolSlot fileTransferProtocolSlot =
     _FileTransferProtocolSlot();
 
 const fileTransferCapability = 'file_transfer_v2';
+const fileTransferDiagnosticReportCapability =
+    'file_transfer_diagnostic_report_v1';
 const maxFileTransferBytes = 15 * 1024 * 1024 * 1024;
+const maxDiagnosticReportBytes = 16 * 1024 * 1024;
 const fileTransferChunkBytes = 16 * 1024 * 1024;
 const _fileTransferMaxIdLength = 128;
 const _fileTransferMaxFilenameLength = 1024;
@@ -13,6 +16,7 @@ const _fileTransferMaxErrorLength = 2048;
 const _fileTransferMaxProviderLength = 64;
 const _fileTransferMaxProviderSessionIdLength = 256;
 const _fileTransferMaxCodexSourceIdLength = 256;
+const _fileTransferMaxBridgeInstanceIdLength = 256;
 const _fileTransferMaxTimestampLength = 128;
 
 /// The bounded metadata carried alongside a diagnostic report upload.
@@ -28,6 +32,7 @@ const _diagnosticReportMetadataKeys = {
   'reportId',
   'provider',
   'providerSessionId',
+  'bridgeInstanceId',
   'codexSourceId',
   'capturedAtStart',
   'capturedAtEnd',
@@ -76,14 +81,16 @@ DiagnosticReportMetadata normalizeDiagnosticReportMetadata(Object? value) {
     'providerSessionId',
     _fileTransferMaxProviderSessionIdLength,
   );
-  final codexSourceId = source['codexSourceId'];
-  if (codexSourceId != null &&
-      !_diagnosticIsBoundedText(
-        codexSourceId,
-        _fileTransferMaxCodexSourceIdLength,
-      )) {
-    throw const FormatException('diagnostic report codexSourceId is invalid');
-  }
+  final bridgeInstanceId = _diagnosticRequiredText(
+    source['bridgeInstanceId'],
+    'bridgeInstanceId',
+    _fileTransferMaxBridgeInstanceIdLength,
+  );
+  final codexSourceId = _diagnosticRequiredText(
+    source['codexSourceId'],
+    'codexSourceId',
+    _fileTransferMaxCodexSourceIdLength,
+  );
   final capturedAtStart = _diagnosticRequiredText(
     source['capturedAtStart'],
     'capturedAtStart',
@@ -108,14 +115,16 @@ DiagnosticReportMetadata normalizeDiagnosticReportMetadata(Object? value) {
     'reportId': reportId,
     'provider': provider,
     'providerSessionId': providerSessionId,
-    if (codexSourceId != null) 'codexSourceId': codexSourceId,
+    'bridgeInstanceId': bridgeInstanceId,
+    'codexSourceId': codexSourceId,
     'capturedAtStart': capturedAtStart,
     'capturedAtEnd': capturedAtEnd,
     'sha256': sha256,
   };
 }
 
-class _FileTransferProtocolSlot implements LocalFeatureProtocolSlot {
+class _FileTransferProtocolSlot
+    implements LocalFeatureProtocolSlot, LocalFeatureRequestProtocolSlot {
   const _FileTransferProtocolSlot();
 
   @override
@@ -130,6 +139,42 @@ class _FileTransferProtocolSlot implements LocalFeatureProtocolSlot {
     'file_transfer_download_resumed_v2',
     'file_transfer_cancel_result_v2',
   ];
+
+  @override
+  LocalFeatureRequestDescriptor? describeRequest(Map<String, dynamic> request) {
+    if (request['type'] != 'file_transfer_upload_prepare_v2') return null;
+    final requestId = request['requestId'];
+    if (requestId is! String ||
+        requestId.isEmpty ||
+        requestId.length > _fileTransferMaxIdLength) {
+      return null;
+    }
+    return LocalFeatureRequestDescriptor(
+      featureId: featureId,
+      requestType: 'file_transfer_upload_prepare_v2',
+      ownerSessionId: '__file_transfer__',
+      requestId: requestId,
+    );
+  }
+
+  @override
+  bool matchesTerminalResponse(
+    LocalFeatureRequestDescriptor request,
+    ServerMessage response,
+  ) =>
+      response is FileTransferUploadReadyMessage &&
+      response.requestId == request.requestId;
+
+  @override
+  bool matchesRequestError(
+    LocalFeatureRequestDescriptor request,
+    ErrorMessage error,
+  ) {
+    final text = error.message.toLowerCase();
+    return text.contains(request.requestType) ||
+        (error.errorCode?.startsWith('diagnostic_') ?? false) ||
+        error.errorCode == 'owner_authentication_required';
+  }
 
   @override
   ServerMessage? tryDecode(Map<String, dynamic> json) => switch (json['type']) {
@@ -589,10 +634,9 @@ ClientMessage prepareFileTransferUpload({
     'resumeToken': resumeToken,
     'filename': filename,
     'sizeBytes': sizeBytes,
-    if (mutationAuthorization != null)
-      'mutationAuthorization': mutationAuthorization.toJson(),
-    if (purpose != null) 'purpose': purpose,
-    if (normalizedReport != null) 'diagnosticReport': normalizedReport,
+    'mutationAuthorization': ?mutationAuthorization?.toJson(),
+    'purpose': ?purpose,
+    'diagnosticReport': ?normalizedReport,
   }, delivery: ClientMessageDelivery.ephemeral);
 }
 
@@ -802,8 +846,7 @@ String _fileTransferRequiredTimestamp(Object? value) {
 
 String? _fileTransferOptionalPurpose(Object? value) {
   if (value == null) return null;
-  if (value is! String ||
-      (value != 'file' && value != 'diagnostic_report')) {
+  if (value is! String || (value != 'file' && value != 'diagnostic_report')) {
     throw const FormatException('file transfer purpose is invalid');
   }
   return value;
@@ -831,7 +874,7 @@ DiagnosticReportMetadata? _normalizeUploadPurposeMetadata({
   }
   if (purpose == 'diagnostic_report') {
     if (diagnosticReport == null) {
-      throw const ArgumentError('diagnostic_report purpose requires metadata');
+      throw ArgumentError('diagnostic_report purpose requires metadata');
     }
     try {
       return normalizeDiagnosticReportMetadata(diagnosticReport);
@@ -844,9 +887,7 @@ DiagnosticReportMetadata? _normalizeUploadPurposeMetadata({
     }
   }
   if (diagnosticReport != null) {
-    throw const ArgumentError(
-      'diagnosticReport requires diagnostic_report purpose',
-    );
+    throw ArgumentError('diagnosticReport requires diagnostic_report purpose');
   }
   return null;
 }

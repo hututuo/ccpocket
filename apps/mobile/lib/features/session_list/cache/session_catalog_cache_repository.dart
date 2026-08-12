@@ -362,6 +362,25 @@ String? _bridgePartitionIdentity({
   return source == null || source.isEmpty ? bridge : '$bridge\u0000$source';
 }
 
+Object? _decodeBoundedDiagnosticJson(
+  Object? value, {
+  required int maximumBytes,
+}) {
+  if (value is! String || value.isEmpty) return null;
+  if (value.length > maximumBytes || utf8.encode(value).length > maximumBytes) {
+    return <String, Object?>{
+      'omitted': true,
+      'reason': 'diagnostic_json_budget',
+      'characterCount': value.length,
+    };
+  }
+  try {
+    return jsonDecode(value);
+  } catch (_) {
+    return const <String, Object?>{'omitted': true, 'reason': 'malformed_json'};
+  }
+}
+
 class SessionCatalogCacheRepository {
   SessionCatalogCacheRepository(
     this.database, {
@@ -383,6 +402,8 @@ class SessionCatalogCacheRepository {
   final SessionCatalogCacheDatabase database;
   final Future<void> Function()? userCacheReadBarrierForTesting;
   Future<void> _mutationTail = Future<void>.value();
+  final Map<String, Future<Map<String, Object?>?>> _diagnosticWindowFlights =
+      {};
   bool _closed = false;
 
   Future<SessionCatalogCacheSnapshot?> load(
@@ -977,6 +998,42 @@ class SessionCatalogCacheRepository {
     return List.unmodifiable(statuses);
   }
 
+  Future<ConversationSyncV2Status?> loadConversationStatus({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) async {
+    if (!target.isValid ||
+        (provider != 'claude' && provider != 'codex') ||
+        providerSessionId.trim().isEmpty ||
+        providerSessionId.length > 256) {
+      return null;
+    }
+    await _mutationTail;
+    final db = await database.database;
+    final partitionId = await _resolveReadablePartition(db, target);
+    if (partitionId == null) return null;
+    final rows = await db.query(
+      SessionCatalogCacheDatabase.statusesTable,
+      columns: ['status_json'],
+      where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+      whereArgs: [partitionId, provider, providerSessionId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(rows.single['status_json']! as String);
+      if (decoded is Map) {
+        return ConversationSyncV2Status.fromJson(
+          Map<String, dynamic>.from(decoded),
+        );
+      }
+    } catch (_) {
+      // Diagnostic reads are optional and must isolate a damaged cache row.
+    }
+    return null;
+  }
+
   Future<List<ConversationSyncV2ReadWatermark>> loadReadWatermarks(
     SessionCatalogCacheTarget target, {
     int limit = 512,
@@ -1001,6 +1058,36 @@ class SessionCatalogCacheRepository {
           readAt: row['read_at']! as String,
         ),
       ),
+    );
+  }
+
+  Future<ConversationSyncV2ReadWatermark?> loadReadWatermark({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) async {
+    if (!target.isValid ||
+        (provider != 'claude' && provider != 'codex') ||
+        providerSessionId.trim().isEmpty ||
+        providerSessionId.length > 256) {
+      return null;
+    }
+    await _mutationTail;
+    final db = await database.database;
+    final partitionId = await _resolveReadablePartition(db, target);
+    if (partitionId == null) return null;
+    final rows = await db.query(
+      SessionCatalogCacheDatabase.readWatermarksTable,
+      where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+      whereArgs: [partitionId, provider, providerSessionId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    final row = rows.single;
+    return ConversationSyncV2ReadWatermark(
+      provider: row['provider']! as String,
+      providerSessionId: row['provider_session_id']! as String,
+      readAt: row['read_at']! as String,
     );
   }
 
@@ -2166,6 +2253,184 @@ class SessionCatalogCacheRepository {
       providerSessionId: providerSessionId,
       window: windows.single,
     );
+  }
+
+  /// Reads a bounded, newest-first diagnostic view without materializing the
+  /// complete hot window. The ordinary renderer keeps using
+  /// [loadConversationWindow]; this path exists only for explicit user reports
+  /// so a very large cached history cannot multiply memory usage during JSON
+  /// capture.
+  Future<Map<String, Object?>?> loadConversationDiagnosticWindow({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    int maximumEntries = 256,
+    int maximumEncodedBytes = 4 * 1024 * 1024,
+  }) {
+    if (_closed) {
+      return Future<Map<String, Object?>?>.error(
+        StateError('Session catalog cache repository is already closed.'),
+      );
+    }
+    if (!target.isValid ||
+        (provider != 'claude' && provider != 'codex') ||
+        providerSessionId.trim().isEmpty ||
+        providerSessionId.length > 256 ||
+        maximumEntries < 1 ||
+        maximumEntries > maxHotWindowEntries ||
+        maximumEncodedBytes < 1 ||
+        maximumEncodedBytes > 8 * 1024 * 1024) {
+      return Future.value(null);
+    }
+    final key =
+        '${target.fingerprint}\u0000$provider\u0000$providerSessionId'
+        '\u0000$maximumEntries\u0000$maximumEncodedBytes';
+    final existing = _diagnosticWindowFlights[key];
+    if (existing != null) return existing;
+    late final Future<Map<String, Object?>?> flight;
+    flight =
+        _loadConversationDiagnosticWindow(
+          target: target,
+          provider: provider,
+          providerSessionId: providerSessionId,
+          maximumEntries: maximumEntries,
+          maximumEncodedBytes: maximumEncodedBytes,
+        ).whenComplete(() {
+          if (identical(_diagnosticWindowFlights[key], flight)) {
+            _diagnosticWindowFlights.remove(key);
+          }
+        });
+    _diagnosticWindowFlights[key] = flight;
+    return flight;
+  }
+
+  Future<Map<String, Object?>?> _loadConversationDiagnosticWindow({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required int maximumEntries,
+    required int maximumEncodedBytes,
+  }) async {
+    await _mutationTail;
+    final db = await database.database;
+    final partitionId = await _resolveReadablePartition(db, target);
+    if (partitionId == null) return null;
+    final windows = await db.query(
+      SessionCatalogCacheDatabase.hotWindowsTable,
+      where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+      whereArgs: [partitionId, provider, providerSessionId],
+      limit: 1,
+    );
+    if (windows.isEmpty) return null;
+    final window = windows.single;
+    final totalEntryCount = window['entry_count'];
+    if (totalEntryCount is! int ||
+        totalEntryCount < 0 ||
+        totalEntryCount > maxHotWindowEntries) {
+      return null;
+    }
+    var encodedBytes = 0;
+    var inspectedEntries = 0;
+    var skippedOversizedEntries = 0;
+    var skippedMalformedEntries = 0;
+    final entries = <Map<String, Object?>>[];
+    int? beforeIndex;
+    while (inspectedEntries < maximumEntries &&
+        encodedBytes < maximumEncodedBytes) {
+      final rows = await db.rawQuery(
+        '''
+        SELECT entry_id, entry_index, content_hash,
+               LENGTH(CAST(message_json AS BLOB)) AS message_bytes,
+               CASE
+                 WHEN LENGTH(CAST(message_json AS BLOB)) <= ?
+                 THEN message_json
+                 ELSE NULL
+               END AS bounded_message_json
+        FROM ${SessionCatalogCacheDatabase.hotEntriesTable}
+        WHERE partition_id = ? AND provider = ? AND provider_session_id = ?
+          ${beforeIndex == null ? '' : 'AND entry_index < ?'}
+        ORDER BY entry_index DESC
+        LIMIT 1
+        ''',
+        <Object?>[
+          maximumEncodedBytes - encodedBytes,
+          partitionId,
+          provider,
+          providerSessionId,
+          ?beforeIndex,
+        ],
+      );
+      if (rows.isEmpty) break;
+      final row = rows.single;
+      final entryId = row['entry_id'];
+      final entryIndex = row['entry_index'];
+      final contentHash = row['content_hash'];
+      final messageBytes = row['message_bytes'];
+      final encodedMessage = row['bounded_message_json'];
+      inspectedEntries += 1;
+      if (entryIndex is int) beforeIndex = entryIndex;
+      if (entryId is! String ||
+          entryIndex is! int ||
+          contentHash is! String ||
+          messageBytes is! int) {
+        skippedMalformedEntries += 1;
+        continue;
+      }
+      if (encodedMessage is! String) {
+        skippedOversizedEntries += 1;
+        continue;
+      }
+      Object? decoded;
+      try {
+        decoded = jsonDecode(encodedMessage);
+      } catch (_) {
+        skippedMalformedEntries += 1;
+        continue;
+      }
+      if (decoded is! Map) {
+        skippedMalformedEntries += 1;
+        continue;
+      }
+      encodedBytes += messageBytes;
+      entries.add(<String, Object?>{
+        'entryId': entryId,
+        'index': entryIndex,
+        'contentHash': contentHash,
+        'rawMessage': Map<String, Object?>.from(decoded),
+      });
+    }
+    entries.sort(
+      (left, right) =>
+          (left['index']! as int).compareTo(right['index']! as int),
+    );
+    return <String, Object?>{
+      'partitionId': partitionId,
+      'provider': provider,
+      'providerSessionId': providerSessionId,
+      'revision': window['revision'],
+      'entryCount': totalEntryCount,
+      'capturedEntryCount': entries.length,
+      'omittedEntryCount': totalEntryCount - entries.length,
+      'inspectedEntryCount': inspectedEntries,
+      'skippedOversizedEntryCount': skippedOversizedEntries,
+      'skippedMalformedEntryCount': skippedMalformedEntries,
+      'rawMessageBytes': encodedBytes,
+      'hasEarlier': (window['has_earlier'] as int? ?? 0) != 0,
+      'turnsNextCursor': window['turns_next_cursor'],
+      'windowComplete': (window['window_complete'] as int? ?? 1) != 0,
+      'latestTurnComplete': (window['latest_turn_complete'] as int? ?? 1) != 0,
+      'latestTurnGap': _decodeBoundedDiagnosticJson(
+        window['latest_turn_gap_json'],
+        maximumBytes: 256 * 1024,
+      ),
+      'latestTurnGapCursor': window['latest_turn_gap_cursor'],
+      'sourceEntryCount': window['source_entry_count'],
+      'cachedAt': DateTime.fromMillisecondsSinceEpoch(
+        window['updated_at']! as int,
+        isUtc: true,
+      ).toIso8601String(),
+      'entries': entries,
+    };
   }
 
   Future<ConversationHotWindowSnapshot?> _decodeConversationWindow({
@@ -3839,6 +4104,8 @@ class SessionCatalogCacheRepository {
     if (_closed) return;
     _closed = true;
     await _mutationTail;
+    await Future.wait(_diagnosticWindowFlights.values);
+    _diagnosticWindowFlights.clear();
     await database.close();
   }
 

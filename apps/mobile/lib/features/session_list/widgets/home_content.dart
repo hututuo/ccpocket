@@ -30,6 +30,7 @@ import '../../conversation_mirror/storage/conversation_mirror_models.dart';
 import '../../conversation_mirror/conversation_mirror_target.dart';
 import '../../file_transfer/file_transfer_service.dart';
 import '../../file_transfer/received_file_inbox_banner.dart';
+import '../../diagnostics/home_diagnostic_projection.dart';
 import '../../mobile_update/mobile_update_screen.dart';
 import '../session_list_projection.dart';
 import '../state/session_list_cubit.dart';
@@ -851,6 +852,7 @@ class HomeContentState extends State<HomeContent> {
 
   @override
   void dispose() {
+    HomeDiagnosticProjectionRegistry.instance.detach(this);
     if (_revenueCatService != null && _catalogStateListener != null) {
       _revenueCatService!.catalogState.removeListener(_catalogStateListener!);
     }
@@ -1200,6 +1202,182 @@ class HomeContentState extends State<HomeContent> {
         : allGroupedSessions
               .where((group) => group.key == widget.currentProjectFilter)
               .toList(growable: false);
+
+    final bridgeInstanceId = widget.currentBridgeInstanceId?.trim();
+    if (bridgeInstanceId != null && bridgeInstanceId.isNotEmpty) {
+      HomeDiagnosticProjectionRegistry.instance.attach(
+        owner: this,
+        bridgeInstanceId: bridgeInstanceId,
+        codexSourceId: widget.currentCodexSourceId,
+        capture: (targetKey) {
+          const maximumDiagnosticRows = 1024;
+          const maximumDiagnosticGroups = 256;
+          const maximumDiagnosticGroupRows = 256;
+          final visibleRowKeys = <String>[];
+          var visibleRowCount = 0;
+          int? targetVisibleIndex;
+
+          void registerVisibleRow(UnifiedSessionListItem session) {
+            if (session.identityKey == targetKey) {
+              targetVisibleIndex = visibleRowCount;
+            }
+            if (visibleRowKeys.length < maximumDiagnosticRows) {
+              visibleRowKeys.add(session.identityKey);
+            }
+            visibleRowCount += 1;
+          }
+
+          if (!_groupByProject) {
+            for (final session in unifiedSessions) {
+              registerVisibleRow(session);
+            }
+          } else {
+            for (final group in groupedSessions) {
+              final collapsed = _groupContainsProjectKey(
+                widget.collapsedProjectPaths,
+                group,
+                legacyAliasOwners,
+              );
+              if (collapsed) continue;
+              final displayLimit = _groupDisplayLimit(
+                widget.projectSessionDisplayLimits,
+                group,
+                legacyAliasOwners,
+              );
+              final lastAlwaysVisibleIndex = group.sessions.lastIndexWhere(
+                (session) =>
+                    alwaysVisibleSessionKeys.contains(session.identityKey),
+              );
+              final effectiveDisplayLimit =
+                  lastAlwaysVisibleIndex + 1 > displayLimit
+                  ? lastAlwaysVisibleIndex + 1
+                  : displayLimit;
+              for (final session in group.sessions.take(
+                effectiveDisplayLimit,
+              )) {
+                registerVisibleRow(session);
+              }
+            }
+          }
+          final targetOrderedIndex = unifiedSessions.indexWhere(
+            (session) => session.identityKey == targetKey,
+          );
+          final capturedOrderedRows =
+              <({int index, UnifiedSessionListItem item})>[
+                for (
+                  var index = 0;
+                  index < unifiedSessions.length &&
+                      index < maximumDiagnosticRows;
+                  index += 1
+                )
+                  (index: index, item: unifiedSessions[index]),
+              ];
+          if (targetOrderedIndex >= maximumDiagnosticRows) {
+            capturedOrderedRows.add((
+              index: targetOrderedIndex,
+              item: unifiedSessions[targetOrderedIndex],
+            ));
+          }
+          if (targetVisibleIndex != null &&
+              !visibleRowKeys.contains(targetKey)) {
+            visibleRowKeys.add(targetKey);
+          }
+          return <String, Object?>{
+            'capturedAt': DateTime.now().toUtc().toIso8601String(),
+            'bridgeInstanceId': bridgeInstanceId,
+            'codexSourceId': widget.currentCodexSourceId,
+            'connectionState': widget.connectionState.name,
+            'displayMode': _displayMode.name,
+            'groupByProject': _groupByProject,
+            'isSearching': _isSearching,
+            'searchQuery': widget.searchQuery,
+            'providerFilter': widget.providerFilter.name,
+            'namedOnly': widget.namedOnly,
+            'currentProjectFilter': widget.currentProjectFilter,
+            'isInitialLoading': widget.isInitialLoading,
+            'isLoadingMore': widget.isLoadingMore,
+            'hasMoreSessions': widget.hasMoreSessions,
+            'orderedRowCount': unifiedSessions.length,
+            'visibleRowCount': visibleRowCount,
+            'targetOrderedIndex': targetOrderedIndex < 0
+                ? null
+                : targetOrderedIndex,
+            'targetVisibleIndex': targetVisibleIndex,
+            'omittedOrderedRowCount':
+                unifiedSessions.length - capturedOrderedRows.length,
+            'orderedRows': [
+              for (final captured in capturedOrderedRows)
+                <String, Object?>{
+                  'originalIndex': captured.index,
+                  'identityKey': captured.item.identityKey,
+                  'provider': captured.item.provider,
+                  'providerSessionId': captured.item.providerSessionId,
+                  'runtimeSessionId': captured.item.running?.id,
+                  'projectGroupingKey': captured.item.projectGroupingKey,
+                  'urgency': sessionListUrgencyFor(
+                    captured.item,
+                    unseenSessionIds: widget.unseenSessionIds,
+                  ).name,
+                  'hasRuntime': captured.item.running != null,
+                  'hasCatalog': captured.item.recent != null,
+                  'syncUnread': captured.item.syncUnread,
+                  'syncActivity': captured.item.syncStatus?.activity,
+                  'syncAttention': captured.item.syncStatus?.attention,
+                },
+            ],
+            'visibleRowKeys': visibleRowKeys,
+            'projectOrder': allProjectKeys.take(512).toList(growable: false),
+            'omittedProjectOrderCount': allProjectKeys.length > 512
+                ? allProjectKeys.length - 512
+                : 0,
+            'groups': [
+              for (final group in groupedSessions.take(maximumDiagnosticGroups))
+                <String, Object?>{
+                  'key': group.key,
+                  'projectPath': group.projectPath,
+                  'projectName': group.projectName,
+                  'collapsed': _groupContainsProjectKey(
+                    widget.collapsedProjectPaths,
+                    group,
+                    legacyAliasOwners,
+                  ),
+                  'pinned': _groupContainsProjectKey(
+                    widget.pinnedProjectPaths,
+                    group,
+                    legacyAliasOwners,
+                  ),
+                  'loadingMore': _groupContainsProjectKey(
+                    widget.loadingProjectPaths,
+                    group,
+                    legacyAliasOwners,
+                  ),
+                  'displayLimit': _groupDisplayLimit(
+                    widget.projectSessionDisplayLimits,
+                    group,
+                    legacyAliasOwners,
+                  ),
+                  'rowKeys': [
+                    for (final item in group.sessions.take(
+                      maximumDiagnosticGroupRows,
+                    ))
+                      item.identityKey,
+                  ],
+                  'omittedRowCount':
+                      group.sessions.length > maximumDiagnosticGroupRows
+                      ? group.sessions.length - maximumDiagnosticGroupRows
+                      : 0,
+                },
+            ],
+            'omittedGroupCount':
+                groupedSessions.length > maximumDiagnosticGroups
+                ? groupedSessions.length - maximumDiagnosticGroups
+                : 0,
+          };
+        },
+      );
+    } else {
+      HomeDiagnosticProjectionRegistry.instance.detach(this);
+    }
 
     Widget buildUnifiedSessionRow(UnifiedSessionListItem item) {
       final running = item.running;

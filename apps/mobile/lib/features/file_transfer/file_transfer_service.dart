@@ -15,6 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../models/messages.dart';
 import '../../services/bridge_service.dart';
 import '../../services/notification_service.dart';
+import '../diagnostics/diagnostic_sanitizer.dart';
 import 'adaptive_transfer_chunk_sizer.dart';
 import 'file_transfer_cancellation.dart';
 import 'file_transfer_http.dart';
@@ -88,10 +89,7 @@ class FileTransferSelection {
 }
 
 class FileTransferUploadTicket {
-  const FileTransferUploadTicket({
-    required this.id,
-    required this.completion,
-  });
+  const FileTransferUploadTicket({required this.id, required this.completion});
 
   final String id;
   final Future<FileTransferRecord> completion;
@@ -355,8 +353,8 @@ class FileTransferService extends ChangeNotifier {
   final Map<String, AdaptiveTransferChunkSizer> _chunkSizers = {};
   final Map<String, int> _completionRecoveryAttempts = {};
   final Map<String, Completer<FileTransferRecord>> _uploadCompletions = {};
-  final Map<String, FileMutationAuthorization>
-  _uploadMutationAuthorizations = {};
+  final Map<String, FileMutationAuthorization> _uploadMutationAuthorizations =
+      {};
   final Set<Future<void>> _backgroundOperations = {};
   List<ReceivedFileTransfer> _receivedFiles = const [];
   Set<String> _unreadReceivedPaths = const {};
@@ -396,6 +394,8 @@ class FileTransferService extends ChangeNotifier {
   bool get isConnected => _bridge.isConnected;
   bool get supportedByBridge =>
       _bridge.capabilities.contains(fileTransferCapability);
+  bool get diagnosticReportsSupportedByBridge =>
+      _bridge.capabilities.contains(fileTransferDiagnosticReportCapability);
   bool get uploadMutationAuthRequired =>
       _bridge.capabilities.contains(fileTransferUploadAuthCapability);
   bool get uploadAvailable =>
@@ -461,8 +461,7 @@ class FileTransferService extends ChangeNotifier {
     _receivedFiles = files;
     _unreadReceivedPaths = {
       for (final file in files)
-        if (file.modifiedAt.microsecondsSinceEpoch >
-            _receivedSeenBeforeMicros)
+        if (file.modifiedAt.microsecondsSinceEpoch > _receivedSeenBeforeMicros)
           file.path,
     };
     _notify(force: true);
@@ -554,20 +553,30 @@ class FileTransferService extends ChangeNotifier {
     required DiagnosticReportMetadata metadata,
     FileMutationAuthorizationCallback? authorizeMutation,
   }) async {
+    if (!diagnosticReportsSupportedByBridge) {
+      throw const FileTransferException('diagnostic_report_unsupported');
+    }
     final identity = _requireUploadIngressReady(
       rejectIfBusy: uploadMutationAuthRequired,
     );
+    if (expectedSizeBytes == null ||
+        expectedSizeBytes < 0 ||
+        expectedSizeBytes > maxDiagnosticReportBytes) {
+      throw const FileTransferException('diagnostic_report_too_large');
+    }
     _validateIngressMetadata(filename, expectedSizeBytes);
     final normalizedMetadata = normalizeDiagnosticReportMetadata(metadata);
+    if (sanitizeDiagnosticValue(normalizedMetadata).redactedCredentialCount >
+        0) {
+      throw const FileTransferException('diagnostic_sensitive_field');
+    }
     await _markTransientStorage(identity);
     final pickerRoot = await _storage.pickerStagingDirectory();
-    await _requireCapacity(pickerRoot.path, expectedSizeBytes ?? 0);
+    await _requireCapacity(pickerRoot.path, expectedSizeBytes);
     final staged = await _storage.stageExternalFile(
       filename: filename,
-      bytes: expectedSizeBytes == null
-          ? _capacityCheckedDropStream(bytes, pickerRoot.path)
-          : bytes,
-      maxSizeBytes: maxFileTransferBytes,
+      bytes: bytes,
+      maxSizeBytes: maxDiagnosticReportBytes,
       expectedSizeBytes: expectedSizeBytes,
     );
     return _enqueueUploadSelection(
@@ -664,10 +673,7 @@ class FileTransferService extends ChangeNotifier {
     _uploadRecoveryQueue.add(checkpoint);
     _notify(force: true);
     _launch(_drainAndScheduleRecovery());
-    return FileTransferUploadTicket(
-      id: localId,
-      completion: completion.future,
-    );
+    return FileTransferUploadTicket(id: localId, completion: completion.future);
   }
 
   void pauseActive() {
@@ -756,6 +762,22 @@ class FileTransferService extends ChangeNotifier {
   void _handleMessage(LocalFeatureServerMessage message) {
     if (message is FileTransferOfferMessage) {
       _launch(_handleOffer(message));
+      return;
+    }
+    if (message is LocalFeatureRequestErrorMessage &&
+        message.featureId == 'file_transfer' &&
+        message.requestType == 'file_transfer_upload_prepare_v2') {
+      final pending = _pendingUploadResponse;
+      if (pending != null &&
+          (message.requestId == null ||
+              message.requestId == pending.requestId)) {
+        final error = FileTransferException(
+          message.errorCode ?? 'upload_prepare_failed',
+          message.message,
+        );
+        if (!pending.ready.isCompleted) pending.ready.completeError(error);
+        if (!pending.result.isCompleted) pending.result.completeError(error);
+      }
       return;
     }
     final cancelPending = _pendingCancel;
@@ -1109,6 +1131,15 @@ class FileTransferService extends ChangeNotifier {
               );
             }
           } else {
+            if (work is _UploadWork &&
+                work.checkpoint.purpose == 'diagnostic_report') {
+              try {
+                await _cleanupWork(work);
+              } catch (_) {
+                // Keep the terminal error authoritative. The storage startup
+                // sweep will retry cleanup of any durable sidecar left behind.
+              }
+            }
             _remember(
               _recordForWork(
                 work,
@@ -2132,8 +2163,8 @@ class FileTransferService extends ChangeNotifier {
     final expectedReportId = checkpoint.metadata?['reportId'];
     final metadataMatches = expectedPurpose == 'diagnostic_report'
         ? expectedReportId is String &&
-            resultPurpose == 'diagnostic_report' &&
-            result.reportId == expectedReportId
+              resultPurpose == 'diagnostic_report' &&
+              result.reportId == expectedReportId
         : result.reportId == null;
     if (!result.success ||
         result.transferId != checkpoint.transferId ||
