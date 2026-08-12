@@ -189,6 +189,7 @@ class ConversationTurnsPageLoadResult {
 /// reject body events and unsubscribe, preserving notification-only behavior.
 class ConversationContentSyncService with WidgetsBindingObserver {
   static const int _maxCacheCommitEpochKeys = 4096;
+  static const int _maximumAutomaticLatestTurnRepairFailures = 4;
   ConversationContentSyncService({
     required this.bridge,
     required this.cache,
@@ -222,6 +223,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   _historyPageFlights = {};
   final Map<String, Future<ConversationTurnsPageLoadResult>>
   _latestTurnRepairFlights = {};
+  final Map<String, _AutomaticLatestTurnRepairState>
+  _automaticLatestTurnRepairs = {};
+  final Map<String, Timer> _automaticLatestTurnRepairRetryTimers = {};
   String? _focusedRefreshFlightKey;
   Future<void>? _focusedRefreshFlight;
   Completer<void>? _focusedRefreshCancellation;
@@ -403,10 +407,16 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     final previous = _focused;
     if (previous != null) {
       _markConversationReadBestEffort(previous);
+      _clearAutomaticLatestTurnRepair(
+        target: _cacheTarget,
+        provider: previous.provider,
+        providerSessionId: previous.providerSessionId,
+      );
     }
     _focused = next;
     if (next != null) {
       _markConversationReadBestEffort(next);
+      _scheduleAutomaticLatestTurnRepairFromCache(next);
     }
     final subscriptionId = _activeSubscriptionId;
     if (subscriptionId == null) {
@@ -1239,6 +1249,225 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     return flight;
   }
 
+  void _scheduleAutomaticLatestTurnRepair({
+    required int generation,
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String revision,
+    required ConversationSyncV2LatestTurnGap gap,
+  }) {
+    final focused = _focused;
+    if (focused?.provider != provider ||
+        focused?.providerSessionId != providerSessionId ||
+        !_isAutoRepairableLatestTurnGap(gap)) {
+      return;
+    }
+    final key = _automaticLatestTurnRepairKey(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      revision: revision,
+      gap: gap,
+    );
+    final previous = _automaticLatestTurnRepairs[key];
+    if (previous?.running == true) {
+      _automaticLatestTurnRepairs[key] = previous!.copyWith(dirty: true);
+      return;
+    }
+    if ((previous?.failureCount ?? 0) >=
+        _maximumAutomaticLatestTurnRepairFailures) {
+      return;
+    }
+    final now = DateTime.now();
+    if (previous?.nextRetryAt case final nextRetryAt?
+        when now.isBefore(nextRetryAt)) {
+      return;
+    }
+    _automaticLatestTurnRepairs[key] = _AutomaticLatestTurnRepairState(
+      running: true,
+      dirty: false,
+      failureCount: previous?.failureCount ?? 0,
+    );
+
+    conversationSyncTrace(
+      '[conversation_sync_v2] event=latest_turn_auto_repair_scheduled '
+      'target=${conversationSyncTargetTrace(provider, providerSessionId)} '
+      'content=${shortConversationSyncToken(revision)} repair=${gap.repair}',
+    );
+    scheduleMicrotask(() {
+      if (_disposed ||
+          generation != _generation ||
+          target.fingerprint != _cacheTarget.fingerprint ||
+          _focused?.provider != provider ||
+          _focused?.providerSessionId != providerSessionId) {
+        _automaticLatestTurnRepairs.remove(key);
+        return;
+      }
+      unawaited(
+        repairLatestTurn(
+              provider: provider,
+              providerSessionId: providerSessionId,
+            )
+            .then((result) {
+              conversationSyncTrace(
+                '[conversation_sync_v2] event=latest_turn_auto_repair_complete '
+                'target=${conversationSyncTargetTrace(provider, providerSessionId)} '
+                'loaded=${result.loaded} hasMore=${result.hasMore}',
+              );
+              final state = _automaticLatestTurnRepairs.remove(key);
+              _automaticLatestTurnRepairRetryTimers.remove(key)?.cancel();
+              if (state?.dirty == true && !result.loaded) {
+                _scheduleAutomaticLatestTurnRepairFromCache(
+                  ConversationContentTarget(
+                    provider: provider,
+                    providerSessionId: providerSessionId,
+                  ),
+                );
+              }
+            })
+            .catchError((Object error) {
+              conversationSyncTrace(
+                '[conversation_sync_v2] event=latest_turn_auto_repair_failed '
+                'target=${conversationSyncTargetTrace(provider, providerSessionId)} '
+                'error=${error.runtimeType}',
+                warning: true,
+              );
+              final state = _automaticLatestTurnRepairs[key];
+              if (state == null) return;
+              final failureCount = (state.failureCount + 1).clamp(
+                1,
+                _maximumAutomaticLatestTurnRepairFailures,
+              );
+              final retryDelay = Duration(seconds: 1 << (failureCount - 1));
+              _automaticLatestTurnRepairs[key] =
+                  _AutomaticLatestTurnRepairState(
+                    running: false,
+                    dirty: state.dirty,
+                    failureCount: failureCount,
+                    nextRetryAt: DateTime.now().add(retryDelay),
+                  );
+              _automaticLatestTurnRepairRetryTimers.remove(key)?.cancel();
+              if (failureCount < _maximumAutomaticLatestTurnRepairFailures) {
+                _automaticLatestTurnRepairRetryTimers[key] = Timer(
+                  retryDelay,
+                  () {
+                    _automaticLatestTurnRepairRetryTimers.remove(key);
+                    final retryState = _automaticLatestTurnRepairs[key];
+                    if (retryState == null || retryState.running) return;
+                    _automaticLatestTurnRepairs[key] =
+                        _AutomaticLatestTurnRepairState(
+                          running: false,
+                          dirty: retryState.dirty,
+                          failureCount: retryState.failureCount,
+                        );
+                    _scheduleAutomaticLatestTurnRepairFromCache(
+                      ConversationContentTarget(
+                        provider: provider,
+                        providerSessionId: providerSessionId,
+                      ),
+                    );
+                  },
+                );
+              }
+            }),
+      );
+    });
+  }
+
+  static bool _isAutoRepairableLatestTurnGap(
+    ConversationSyncV2LatestTurnGap gap,
+  ) =>
+      gap.repair == 'items_page' &&
+      gap.turnId?.isNotEmpty == true &&
+      (gap.payloadOmitted || gap.missingEntryCount > 0);
+
+  static String _automaticLatestTurnRepairKey({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String revision,
+    required ConversationSyncV2LatestTurnGap gap,
+  }) =>
+      '${target.fingerprint}\u0000$provider\u0000$providerSessionId\u0000'
+      '$revision\u0000${gap.turnId ?? ''}\u0000${gap.repair}';
+
+  void _clearAutomaticLatestTurnRepair({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) {
+    final prefix =
+        '${target.fingerprint}\u0000$provider\u0000$providerSessionId\u0000';
+    final keys = _automaticLatestTurnRepairs.keys
+        .where((key) => key.startsWith(prefix))
+        .toList(growable: false);
+    for (final key in keys) {
+      _automaticLatestTurnRepairRetryTimers.remove(key)?.cancel();
+      _automaticLatestTurnRepairs.remove(key);
+    }
+  }
+
+  void _clearAllAutomaticLatestTurnRepairs() {
+    for (final timer in _automaticLatestTurnRepairRetryTimers.values) {
+      timer.cancel();
+    }
+    _automaticLatestTurnRepairRetryTimers.clear();
+    _automaticLatestTurnRepairs.clear();
+  }
+
+  void _scheduleAutomaticLatestTurnRepairFromCache(
+    ConversationContentTarget focused,
+  ) {
+    if (_disposed ||
+        !_canProcessContent ||
+        !bridge.supportsConversationSyncV2 ||
+        _activeSubscriptionId == null) {
+      return;
+    }
+    final generation = _generation;
+    final target = _cacheTarget;
+    scheduleMicrotask(() async {
+      if (_disposed ||
+          generation != _generation ||
+          target.fingerprint != _cacheTarget.fingerprint ||
+          !_sameTarget(_focused, focused)) {
+        return;
+      }
+      try {
+        final snapshot = await cache.loadConversationWindow(
+          target: target,
+          provider: focused.provider,
+          providerSessionId: focused.providerSessionId,
+        );
+        final gap = snapshot?.latestTurnGap;
+        if (snapshot == null ||
+            snapshot.latestTurnComplete ||
+            gap == null ||
+            !_isAutoRepairableLatestTurnGap(gap) ||
+            generation != _generation ||
+            !_sameTarget(_focused, focused)) {
+          return;
+        }
+        _scheduleAutomaticLatestTurnRepair(
+          generation: generation,
+          target: target,
+          provider: focused.provider,
+          providerSessionId: focused.providerSessionId,
+          revision: snapshot.revision,
+          gap: gap,
+        );
+      } catch (error) {
+        conversationSyncTrace(
+          '[conversation_sync_v2] event=latest_turn_auto_repair_cache_read_failed '
+          'target=${conversationSyncTargetTrace(focused.provider, focused.providerSessionId)} '
+          'error=${error.runtimeType}',
+          warning: true,
+        );
+      }
+    });
+  }
+
   Future<T> _enqueueHistoryOperation<T>(
     String key,
     Future<T> Function() operation,
@@ -1446,6 +1675,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     final deadline = DateTime.now().add(const Duration(seconds: 30));
     var current = snapshot;
     var transferredBytes = 0;
+    final seenCursors = <String?>{current.latestTurnGapCursor};
     for (var page = 0; page < maximumPages; page++) {
       if (current.latestTurnComplete) {
         return ConversationTurnsPageLoadResult(
@@ -1479,7 +1709,16 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         maximumBytes: maximumBytes - transferredBytes,
       );
       transferredBytes += repaired.pageBytes;
+      final previousCursor = current.latestTurnGapCursor;
       current = repaired.snapshot;
+      final nextCursor = current.latestTurnGapCursor;
+      if (useItemsPage &&
+          !current.latestTurnComplete &&
+          (nextCursor == previousCursor || !seenCursors.add(nextCursor))) {
+        throw StateError(
+          'Conversation latest turn repair returned a repeated cursor.',
+        );
+      }
       if (!useItemsPage || current.latestTurnComplete) {
         return ConversationTurnsPageLoadResult(
           loaded: true,
@@ -1524,6 +1763,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       repair: repair,
       turnId: repair == 'items_page' ? gap.turnId : null,
       maximumBytes: maximumBytes,
+      expectedCursor: repair == 'items_page'
+          ? snapshot.latestTurnGapCursor
+          : null,
       completer: completer,
     );
     _pendingLatestTurnRepairPages[requestId] = pending;
@@ -1716,6 +1958,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _subscriptionBridgeInstanceId = null;
     _highestV2CommittedSequence = 0;
     _v2PriorityBootstrapComplete = false;
+    _clearAllAutomaticLatestTurnRepairs();
     _failPendingTurnsPages(const _ConversationPagingInterrupted());
     _failPendingUserIndexPages(const _ConversationPagingInterrupted());
     _failPendingUserTurnDetailPages(const _ConversationPagingInterrupted());
@@ -2218,6 +2461,10 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             subscriptionId: event.subscriptionId,
           );
           _notifySubscriptionReady();
+          final focused = _focused;
+          if (focused != null) {
+            _scheduleAutomaticLatestTurnRepairFromCache(focused);
+          }
           publish = ConversationSyncCacheUpdate(
             kind: ConversationSyncCacheUpdateKind.started,
             targetFingerprint: target.fingerprint,
@@ -2334,6 +2581,19 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             revision: committedRevision,
             lastAssistantOutputAt: committed.lastAssistantOutputAt,
           );
+          if (isFocused &&
+              event.latestTurnComplete == false &&
+              event.latestTurnGap != null &&
+              _isAutoRepairableLatestTurnGap(event.latestTurnGap!)) {
+            _scheduleAutomaticLatestTurnRepair(
+              generation: generation,
+              target: target,
+              provider: event.provider!,
+              providerSessionId: event.providerSessionId!,
+              revision: committedRevision,
+              gap: event.latestTurnGap!,
+            );
+          }
         }
       case ConversationSyncV2EventKind.runtimeOverlay:
         if (_activeSubscriptionId != event.subscriptionId) {
@@ -2372,6 +2632,11 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           thread: event.target,
         );
         if (event.scope == 'thread' && event.target != null) {
+          _clearAutomaticLatestTurnRepair(
+            target: target,
+            provider: event.target!.provider,
+            providerSessionId: event.target!.providerSessionId,
+          );
           _publishCacheInvalidation(
             targetFingerprint: target.fingerprint,
             provider: event.target!.provider,
@@ -2496,24 +2761,26 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                   ),
                 );
               }
-              _publishCacheUpdate(
-                ConversationContentCacheUpdate(
+              if (snapshot.latestTurnComplete) {
+                _publishCacheUpdate(
+                  ConversationContentCacheUpdate(
+                    targetFingerprint: target.fingerprint,
+                    provider: event.provider!,
+                    providerSessionId: event.providerSessionId!,
+                    revision:
+                        '${snapshot.revision}:'
+                        '${snapshot.entries.length}:'
+                        '${snapshot.cachedAt.microsecondsSinceEpoch}',
+                  ),
+                );
+                publish = ConversationSyncCacheUpdate(
+                  kind: ConversationSyncCacheUpdateKind.timeline,
                   targetFingerprint: target.fingerprint,
-                  provider: event.provider!,
-                  providerSessionId: event.providerSessionId!,
-                  revision:
-                      '${snapshot.revision}:'
-                      '${snapshot.entries.length}:'
-                      '${snapshot.cachedAt.microsecondsSinceEpoch}',
-                ),
-              );
-              publish = ConversationSyncCacheUpdate(
-                kind: ConversationSyncCacheUpdateKind.timeline,
-                targetFingerprint: target.fingerprint,
-                provider: event.provider,
-                providerSessionId: event.providerSessionId,
-                revision: snapshot.revision,
-              );
+                  provider: event.provider,
+                  providerSessionId: event.providerSessionId,
+                  revision: snapshot.revision,
+                );
+              }
             }
           }
         } else {
@@ -2637,6 +2904,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 expectedRevision: latestTurnRequest.revision,
                 expectedTurnId: latestTurnRequest.turnId!,
                 rawMessages: rawMessages,
+                expectedCursor: latestTurnRequest.expectedCursor,
                 nextCursor: event.nextCursor,
                 pageComplete: event.pageComplete ?? true,
                 latestTurnGap: event.latestTurnGap,
@@ -3272,6 +3540,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _subscriptionBridgeInstanceId = null;
     _highestV2CommittedSequence = 0;
     _v2PriorityBootstrapComplete = false;
+    _clearAllAutomaticLatestTurnRepairs();
     _failPendingTurnsPages(const _ConversationPagingInterrupted());
     _failPendingUserIndexPages(const _ConversationPagingInterrupted());
     _failPendingUserTurnDetailPages(const _ConversationPagingInterrupted());
@@ -3713,6 +3982,7 @@ class _PendingLatestTurnRepairPage {
     required this.repair,
     required this.turnId,
     required this.maximumBytes,
+    required this.expectedCursor,
     required this.completer,
   });
 
@@ -3724,6 +3994,7 @@ class _PendingLatestTurnRepairPage {
   final String repair;
   final String? turnId;
   final int maximumBytes;
+  final String? expectedCursor;
   final Completer<_LatestTurnRepairPageResult> completer;
 }
 
@@ -3735,4 +4006,26 @@ class _LatestTurnRepairPageResult {
 
   final ConversationHotWindowSnapshot snapshot;
   final int pageBytes;
+}
+
+class _AutomaticLatestTurnRepairState {
+  const _AutomaticLatestTurnRepairState({
+    required this.running,
+    required this.dirty,
+    required this.failureCount,
+    this.nextRetryAt,
+  });
+
+  final bool running;
+  final bool dirty;
+  final int failureCount;
+  final DateTime? nextRetryAt;
+
+  _AutomaticLatestTurnRepairState copyWith({bool? dirty}) =>
+      _AutomaticLatestTurnRepairState(
+        running: running,
+        dirty: dirty ?? this.dirty,
+        failureCount: failureCount,
+        nextRetryAt: nextRetryAt,
+      );
 }

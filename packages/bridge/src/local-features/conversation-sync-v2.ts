@@ -46,6 +46,7 @@ import {
   type ConversationContentSnapshot,
   type ConversationContentSnapshotEntry,
 } from "./conversation-content-sync.js";
+import { CodexBoundedHistoryReader } from "./codex-bounded-history.js";
 import type { CodexDesktopToolTimeline } from "./codex-tool-history.js";
 import { sessionHistoryToServerMessages } from "./codex-thread-history.js";
 import {
@@ -136,11 +137,15 @@ const PROVIDER_HISTORY_RETRY_DELAYS_MS = [
 const FULL_RECENT_TURNS = 3;
 const MAX_TURN_DETAIL_CACHE_BYTES = 16 * 1024 * 1024;
 const MAX_TURN_DETAIL_CACHE_ENTRIES = 128;
+const MAX_TURN_ITEM_FALLBACK_CACHE_BYTES = 16 * 1024 * 1024;
+const MAX_TURN_ITEM_FALLBACK_CACHE_ENTRIES = 8;
+const TURN_ITEM_FALLBACK_CACHE_TTL_MS = 60_000;
 const MAX_TOOL_DETAIL_COMPONENT_BYTES = 3 * 1024;
 const MAX_TOOL_DETAIL_ATTACHMENTS = 4;
 const MAX_CODEX_TURN_SCAN_PAGES = 50;
 const CODEX_TURN_SCAN_PAGE_SIZE = 20;
 const LEGACY_WINDOW_CURSOR_PREFIX = "ccp-legacy-window-v1:";
+const CODEX_TURN_ITEM_CURSOR_PREFIX = "ccp-codex-turn-items-v1:";
 const MAX_CODEX_RAW_TURN_ITEMS = 256;
 const MAX_CODEX_RAW_TURN_BYTES = 192 * 1024;
 const MAX_CODEX_RAW_ITEM_BYTES = 32 * 1024;
@@ -473,6 +478,13 @@ interface CachedTurnDetails {
   bytes: number;
 }
 
+interface CachedCodexTurnItems {
+  turn: Record<string, unknown>;
+  snapshotId: string;
+  bytes: number;
+  cachedAt: number;
+}
+
 interface LiveContentRevision {
   target: ConversationSyncTarget;
   /** Latest timeline event, including streaming, thinking, and tool traffic. */
@@ -620,6 +632,17 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private readonly terminalResultScope?: TerminalResultScope;
   private terminalResultWrites: Promise<void> = Promise.resolve();
   private readonly turnDetailCache = new Map<string, CachedTurnDetails>();
+  private readonly codexTurnItemFallbackCache = new Map<
+    string,
+    CachedCodexTurnItems
+  >();
+  private readonly codexTurnFallbackReader = new CodexBoundedHistoryReader({
+    pageSize: CODEX_TURN_SCAN_PAGE_SIZE,
+    maxPages: MAX_CODEX_TURN_SCAN_PAGES,
+    maxEntries: MAX_CODEX_TURN_SCAN_PAGES * CODEX_TURN_SCAN_PAGE_SIZE,
+    rpcTimeoutMs: CODEX_HISTORY_RPC_TIMEOUT_MS,
+  });
+  private codexTurnItemFallbackCacheBytes = 0;
   private readonly liveContentRevisions = new Map<
     ConversationKey,
     LiveContentRevision
@@ -2053,6 +2076,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
     this.providerHistoryFailures.clear();
     this.turnDetailCache.clear();
+    this.codexTurnItemFallbackCache.clear();
+    this.codexTurnItemFallbackCacheBytes = 0;
     this.liveContentRevisions.clear();
     this.pendingLiveContent.clear();
     this.catalogProjection.clear();
@@ -5878,6 +5903,70 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     return details;
   }
 
+  private async withCachedCodexTurnItems(
+    threadId: string,
+    turnId: string,
+    requestedSnapshotId: string | null,
+    operation: () => Promise<Record<string, unknown>>,
+  ): Promise<CachedCodexTurnItems> {
+    const now = Date.now();
+    const requestedKey = requestedSnapshotId
+      ? `${threadId}\0${turnId}\0${requestedSnapshotId}`
+      : null;
+    const cached = requestedKey
+      ? this.codexTurnItemFallbackCache.get(requestedKey)
+      : undefined;
+    if (cached && now - cached.cachedAt <= TURN_ITEM_FALLBACK_CACHE_TTL_MS) {
+      this.codexTurnItemFallbackCache.delete(requestedKey!);
+      this.codexTurnItemFallbackCache.set(requestedKey!, cached);
+      return cached;
+    }
+    if (cached && requestedKey) {
+      this.codexTurnItemFallbackCache.delete(requestedKey);
+      this.codexTurnItemFallbackCacheBytes -= cached.bytes;
+    }
+
+    const turn = await operation();
+    const serialized = JSON.stringify(turn);
+    const bytes = Buffer.byteLength(serialized, "utf8");
+    const snapshotId = createHash("sha256")
+      .update(serialized)
+      .digest("base64url")
+      .slice(0, 24);
+    if (requestedSnapshotId && requestedSnapshotId !== snapshotId) {
+      throw new Error(
+        "Codex turn changed while its item cursor was active; refresh the focused conversation",
+      );
+    }
+    const result = { turn, snapshotId, bytes, cachedAt: now };
+    if (bytes > MAX_TURN_ITEM_FALLBACK_CACHE_BYTES) return result;
+    const key = `${threadId}\0${turnId}\0${snapshotId}`;
+    const previous = this.codexTurnItemFallbackCache.get(key);
+    if (previous) {
+      this.codexTurnItemFallbackCache.delete(key);
+      this.codexTurnItemFallbackCacheBytes -= previous.bytes;
+    }
+    this.codexTurnItemFallbackCache.set(key, {
+      turn,
+      snapshotId,
+      bytes,
+      cachedAt: now,
+    });
+    this.codexTurnItemFallbackCacheBytes += bytes;
+    while (
+      this.codexTurnItemFallbackCache.size >
+        MAX_TURN_ITEM_FALLBACK_CACHE_ENTRIES ||
+      this.codexTurnItemFallbackCacheBytes > MAX_TURN_ITEM_FALLBACK_CACHE_BYTES
+    ) {
+      const oldestKey = this.codexTurnItemFallbackCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      const oldest = this.codexTurnItemFallbackCache.get(oldestKey);
+      this.codexTurnItemFallbackCache.delete(oldestKey);
+      if (oldest) this.codexTurnItemFallbackCacheBytes -= oldest.bytes;
+    }
+    return result;
+  }
+
   private ensureTimers(): void {
     if (this.closed || !this.hasInteractiveClients()) return;
     if (!this.usesSharedControlStatusStream() && !this.watchdogTimer) {
@@ -6185,6 +6274,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             signal,
             (operation) => this.withSharedCodexReadProcess(operation),
             this.desktopToolTimelineReader,
+            (threadId, turnId, snapshotId, operation) =>
+              this.withCachedCodexTurnItems(
+                threadId,
+                turnId,
+                snapshotId,
+                operation,
+              ),
+            this.codexTurnFallbackReader,
             pageFits,
           );
       if (!pageFits(page)) {
@@ -8175,23 +8272,49 @@ async function readItemsPage(
   signal: AbortSignal,
   runCodexRead: CodexReadRunner,
   desktopToolTimelineReader: DesktopToolTimelineReader,
+  withCachedCodexTurnItems: (
+    threadId: string,
+    turnId: string,
+    snapshotId: string | null,
+    operation: () => Promise<Record<string, unknown>>,
+  ) => Promise<CachedCodexTurnItems>,
+  codexTurnFallbackReader: CodexBoundedHistoryReader,
   pageFits: (page: ConversationItemsPage) => boolean,
 ): Promise<ConversationItemsPage> {
   if (message.provider === "codex") {
     try {
       return await runCodexRead(async (process) => {
-        const timeline = readOptionalDesktopToolTimeline(
-          desktopToolTimelineReader,
-          message.providerSessionId,
-        );
+        // The Desktop timeline is only needed when the client explicitly asks
+        // for tool details. Starting that rollout read for an ordinary item
+        // repair would turn every missing-page recovery into a second history
+        // scan, including for very large threads.
+        const timeline = message.toolUseIds
+          ? readOptionalDesktopToolTimeline(
+              desktopToolTimelineReader,
+              message.providerSessionId,
+            )
+          : Promise.resolve(undefined);
         const turnId = message.turnId ?? "paged-items";
         let lastPage: ConversationItemsPage | undefined;
         for (const limit of decreasingPageLimits(message.limit ?? 200)) {
           signal.throwIfAborted();
           let messages: ServerMessage[];
           let nextCursor: string | null = null;
-          let usedTurnsFallback = false;
           try {
+            if (
+              message.cursor?.startsWith(CODEX_TURN_ITEM_CURSOR_PREFIX) &&
+              message.turnId
+            ) {
+              return await readCodexTurnItemsFallbackPage(
+                process,
+                message,
+                signal,
+                await timeline,
+                withCachedCodexTurnItems,
+                codexTurnFallbackReader,
+                pageFits,
+              );
+            }
             const page = await process.listThreadItems(
               {
                 threadId: message.providerSessionId,
@@ -8209,21 +8332,22 @@ async function readItemsPage(
             messages = codexTurnMessages(
               { id: turnId, items },
               message.providerSessionId,
-              await timeline,
+              message.toolUseIds ? await timeline : undefined,
             );
             nextCursor = page.nextCursor;
           } catch (error) {
             if (!message.turnId || !isUnsupportedAppServerRead(error)) {
               throw error;
             }
-            messages = await findCodexTurnMessages(
+            return await readCodexTurnItemsFallbackPage(
               process,
-              message.providerSessionId,
-              message.turnId,
+              message,
               signal,
               await timeline,
+              withCachedCodexTurnItems,
+              codexTurnFallbackReader,
+              pageFits,
             );
-            usedTurnsFallback = true;
           }
           const details = historyToolDetailPayloads(
             messages,
@@ -8244,9 +8368,15 @@ async function readItemsPage(
                 turnDetails,
               };
           if (pageFits(candidate)) return candidate;
-          if (usedTurnsFallback || message.toolUseIds) {
+          if (message.toolUseIds) {
             throw oversizedItemsPageError();
           }
+          const projected = projectConversationItemsPage(
+            messages,
+            nextCursor,
+            pageFits,
+          );
+          if (projected) return projected;
           lastPage = candidate;
         }
         if (!lastPage) {
@@ -8259,6 +8389,120 @@ async function readItemsPage(
     }
   }
   return readLegacyItemsPage(message, historyReader, pageFits);
+}
+
+async function readCodexTurnItemsFallbackPage(
+  process: CodexProcess,
+  message: Extract<
+    ConversationSyncClientMessage,
+    { type: "conversation_items_page" }
+  >,
+  signal: AbortSignal,
+  desktopToolTimeline: CodexDesktopToolTimeline | undefined,
+  withCachedCodexTurnItems: (
+    threadId: string,
+    turnId: string,
+    snapshotId: string | null,
+    operation: () => Promise<Record<string, unknown>>,
+  ) => Promise<CachedCodexTurnItems>,
+  codexTurnFallbackReader: CodexBoundedHistoryReader,
+  pageFits: (page: ConversationItemsPage) => boolean,
+): Promise<ConversationItemsPage> {
+  const turnId = message.turnId;
+  if (!turnId) throw new Error("Codex item paging requires a turn id");
+  const requestedIds = message.toolUseIds;
+  const cursor = decodeCodexTurnItemCursor(message.cursor, turnId);
+  const cachedTurn = await withCachedCodexTurnItems(
+    message.providerSessionId,
+    turnId,
+    cursor.snapshotId,
+    () =>
+      findCodexTurn(
+        process,
+        message.providerSessionId,
+        turnId,
+        signal,
+        codexTurnFallbackReader,
+      ),
+  );
+  const turn = cachedTurn.turn;
+  const items = Array.isArray(turn.items) ? turn.items : [];
+  if (message.cursor && cursor.offset >= items.length) {
+    throw new Error("Codex turn item cursor is outside the current turn");
+  }
+  if (requestedIds) {
+    const messages = codexTurnMessages(
+      turn,
+      message.providerSessionId,
+      desktopToolTimeline,
+    );
+    const candidate = historyToolDetailsPage(
+      message,
+      historyToolDetailPayloads(messages, requestedIds),
+    );
+    if (!pageFits(candidate)) throw oversizedItemsPageError();
+    return candidate;
+  }
+
+  let lastPage: ConversationItemsPage | undefined;
+  for (const limit of decreasingPageLimits(message.limit ?? 200)) {
+    signal.throwIfAborted();
+    const rawPage = paginateArray(
+      items,
+      String(cursor.offset),
+      limit,
+      message.sortDirection ?? "asc",
+    );
+    const identifiedItems = rawPage.data.map((rawItem, pageIndex) => {
+      if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) {
+        return rawItem;
+      }
+      const item = rawItem as Record<string, unknown>;
+      if (typeof item.id === "string" && item.id.length > 0) return item;
+      const sourceOffset =
+        message.sortDirection === "desc"
+          ? items.length - 1 - (cursor.offset + pageIndex)
+          : cursor.offset + pageIndex;
+      return {
+        ...item,
+        id: `ccp-fallback-${turnId}-${sourceOffset}-${createHash("sha256")
+          .update(stableJson(item))
+          .digest("hex")
+          .slice(0, 16)}`,
+      };
+    });
+    const messages = annotateTurnMessages(
+      codexTurnMessages(
+        { ...turn, items: identifiedItems },
+        message.providerSessionId,
+      ),
+      turnId,
+    );
+    const nextCursor =
+      rawPage.nextCursor == null
+        ? null
+        : encodeCodexTurnItemCursor(
+            turnId,
+            Number.parseInt(rawPage.nextCursor, 10),
+            cachedTurn.snapshotId,
+          );
+    const candidate: ConversationItemsPage = {
+      data: messages,
+      nextCursor,
+    };
+    if (pageFits(candidate)) return candidate;
+    const projected = projectConversationItemsPage(
+      messages,
+      nextCursor,
+      pageFits,
+    );
+    if (projected) return projected;
+    lastPage = candidate;
+  }
+  if (!lastPage) {
+    throw new Error("Codex fallback item page did not return a bounded result");
+  }
+  throw oversizedItemsPageError();
 }
 
 async function readLegacyItemsPage(
@@ -8341,6 +8585,63 @@ async function readLegacyItemsPage(
   throw oversizedItemsPageError();
 }
 
+/**
+ * Keeps a latest-turn repair advancing when one provider item expands into a
+ * wire message that cannot fit the 64 KiB envelope.
+ *
+ * Tool bodies are already available through historyToolDetailGaps and the
+ * explicit by-id detail request.  The repair lane therefore projects only the
+ * conversational/process spine and records tool gaps instead of allowing one
+ * multi-megabyte command/compaction payload to block every later commentary
+ * and the final answer behind the same opaque provider cursor.
+ */
+function projectConversationItemsPage(
+  messages: readonly ServerMessage[],
+  nextCursor: string | null,
+  pageFits: (page: ConversationItemsPage) => boolean,
+): ConversationItemsPage | undefined {
+  const projected = selectTurnAwareHistoryWindow(
+    messages.map((message, sourceIndex) => ({ message, sourceIndex })),
+    {
+      rootTurns: 1,
+      toolCalls: 0,
+      envelopeEntries: messages.length,
+      maxRetainedEntries: Math.max(messages.length, 1),
+      preserveLatestRootTurnTools: false,
+    },
+  ).map((entry) => entry.message);
+  if (projected.length === 0) return undefined;
+
+  const candidate: ConversationItemsPage = {
+    data: projected.map(stabilizeProjectedToolGapEnvelope),
+    nextCursor,
+  };
+  return pageFits(candidate) ? candidate : undefined;
+}
+
+function stabilizeProjectedToolGapEnvelope(message: ServerMessage): ServerMessage {
+  if (
+    message.type !== "assistant" ||
+    message.message.content.length > 0 ||
+    !message.historyToolDetailGaps?.length
+  ) {
+    return message;
+  }
+  const stableId = `history-tool-gap-envelope:${createHash("sha256")
+    .update(
+      JSON.stringify(
+        message.historyToolDetailGaps.map((gap) => gap.gapId).sort(),
+      ),
+    )
+    .digest("hex")
+    .slice(0, 24)}`;
+  return {
+    ...message,
+    messageUuid: stableId,
+    message: { ...message.message, id: stableId },
+  };
+}
+
 function decreasingPageLimits(requestedLimit: number): number[] {
   const limits: number[] = [];
   let current = Math.min(200, Math.max(1, Math.floor(requestedLimit)));
@@ -8354,6 +8655,48 @@ function decreasingPageLimits(requestedLimit: number): number[] {
 interface LegacyWindowCursor {
   sourceCursor: string | null;
   offset: number;
+}
+
+function decodeCodexTurnItemCursor(
+  cursor: string | undefined,
+  expectedTurnId: string,
+): { offset: number; snapshotId: string | null } {
+  if (!cursor) return { offset: 0, snapshotId: null };
+  if (!cursor.startsWith(CODEX_TURN_ITEM_CURSOR_PREFIX)) {
+    throw new Error("Invalid Codex turn item cursor");
+  }
+  try {
+    const decoded = JSON.parse(
+      Buffer.from(
+        cursor.slice(CODEX_TURN_ITEM_CURSOR_PREFIX.length),
+        "base64url",
+      ).toString("utf8"),
+    ) as { turnId?: unknown; offset?: unknown; snapshotId?: unknown };
+    if (
+      decoded.turnId === expectedTurnId &&
+      typeof decoded.offset === "number" &&
+      Number.isSafeInteger(decoded.offset) &&
+      decoded.offset >= 0 &&
+      typeof decoded.snapshotId === "string" &&
+      decoded.snapshotId.length > 0
+    ) {
+      return { offset: decoded.offset, snapshotId: decoded.snapshotId };
+    }
+  } catch {
+    // Invalid cursor is rejected below rather than replayed from offset zero.
+  }
+  throw new Error("Invalid Codex turn item cursor");
+}
+
+function encodeCodexTurnItemCursor(
+  turnId: string,
+  offset: number,
+  snapshotId: string,
+): string {
+  return `${CODEX_TURN_ITEM_CURSOR_PREFIX}${Buffer.from(
+    JSON.stringify({ turnId, offset, snapshotId }),
+    "utf8",
+  ).toString("base64url")}`;
 }
 
 function decodeLegacyWindowCursor(
@@ -9193,13 +9536,14 @@ function unwrapCodexThreadItem(value: unknown): unknown {
     : value;
 }
 
-async function findCodexTurnMessages(
+async function findCodexTurn(
   process: CodexProcess,
   threadId: string,
   turnId: string,
   signal: AbortSignal,
-  desktopToolTimeline?: CodexDesktopToolTimeline,
-): Promise<ServerMessage[]> {
+  boundedReader: CodexBoundedHistoryReader,
+): Promise<Record<string, unknown>> {
+  const seenCursors = new Set<string>();
   let cursor: string | null = null;
   for (
     let pageIndex = 0;
@@ -9207,33 +9551,33 @@ async function findCodexTurnMessages(
     pageIndex += 1
   ) {
     signal.throwIfAborted();
-    const page = await process.listThreadTurns(
-      {
-        threadId,
-        cursor,
-        limit: CODEX_TURN_SCAN_PAGE_SIZE,
-        sortDirection: "desc",
-        itemsView: "full",
-      },
-      { signal, timeoutMs: CODEX_HISTORY_RPC_TIMEOUT_MS },
-    );
-    const found = page.data.find((rawTurn) => {
+    const page = await boundedReader.readPage(process, threadId, {
+      cursor,
+      limit: CODEX_TURN_SCAN_PAGE_SIZE,
+      sortDirection: "desc",
+      preference: "turns",
+      signal,
+    });
+    const turns = Array.isArray(page.thread.turns)
+      ? page.thread.turns
+      : [];
+    const found = turns.find((rawTurn) => {
       if (!rawTurn || typeof rawTurn !== "object" || Array.isArray(rawTurn)) {
         return false;
       }
       return (rawTurn as Record<string, unknown>).id === turnId;
     });
     if (found && typeof found === "object" && !Array.isArray(found)) {
-      return annotateTurnMessages(
-        codexTurnMessages(
-          found as Record<string, unknown>,
-          threadId,
-          desktopToolTimeline,
-        ),
-        turnId,
-      );
+      return found as Record<string, unknown>;
     }
     if (!page.nextCursor) break;
+    if (
+      page.nextCursor === cursor ||
+      seenCursors.has(page.nextCursor)
+    ) {
+      throw new Error("Codex turn pagination returned a repeated cursor");
+    }
+    seenCursors.add(page.nextCursor);
     cursor = page.nextCursor;
   }
   throw new Error("Requested Codex turn is outside the bounded read window");

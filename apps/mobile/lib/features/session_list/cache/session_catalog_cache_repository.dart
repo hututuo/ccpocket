@@ -1490,6 +1490,29 @@ class SessionCatalogCacheRepository {
                 thread.providerSessionId,
               ],
             );
+            await transaction.delete(
+              SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+              where:
+                  'partition_id = ? AND provider = ? '
+                  'AND provider_session_id = ?',
+              whereArgs: [
+                partitionId,
+                thread.provider,
+                thread.providerSessionId,
+              ],
+            );
+            await transaction.update(
+              SessionCatalogCacheDatabase.hotWindowsTable,
+              {'latest_turn_gap_cursor': null},
+              where:
+                  'partition_id = ? AND provider = ? '
+                  'AND provider_session_id = ?',
+              whereArgs: [
+                partitionId,
+                thread.provider,
+                thread.providerSessionId,
+              ],
+            );
           default:
             throw ArgumentError.value(scope, 'scope');
         }
@@ -1951,6 +1974,89 @@ class SessionCatalogCacheRepository {
           sourceEntryCount,
           committedCount,
         ].reduce((left, right) => left > right ? left : right);
+        final repairStages = await transaction.query(
+          SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+          limit: 1,
+        );
+        final repairStage = repairStages.isEmpty ? null : repairStages.single;
+        var repairStageRowsStillCurrent = repairStage != null;
+        if (repairStage != null) {
+          final repairBaseRows = await transaction.query(
+            SessionCatalogCacheDatabase.latestTurnRepairBaseEntriesTable,
+            columns: ['entry_id', 'content_hash'],
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ? AND revision = ? AND turn_id = ?',
+            whereArgs: [
+              partitionId,
+              provider,
+              providerSessionId,
+              repairStage['revision'],
+              repairStage['turn_id'],
+            ],
+          );
+          final repairBaseHashes = <String, String>{
+            for (final row in repairBaseRows)
+              row['entry_id']! as String: row['content_hash']! as String,
+          };
+          final stagedRows = await transaction.query(
+            SessionCatalogCacheDatabase.latestTurnRepairEntriesTable,
+            columns: ['entry_id', 'content_hash'],
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ? AND revision = ? AND turn_id = ?',
+            whereArgs: [
+              partitionId,
+              provider,
+              providerSessionId,
+              repairStage['revision'],
+              repairStage['turn_id'],
+            ],
+          );
+          final stagedHashes = <String, String>{
+            for (final row in stagedRows)
+              row['entry_id']! as String: row['content_hash']! as String,
+          };
+          final currentRepairTurnRows = await transaction.query(
+            SessionCatalogCacheDatabase.hotEntriesTable,
+            columns: ['entry_id', 'content_hash', 'message_json'],
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, provider, providerSessionId],
+          );
+          for (final row in currentRepairTurnRows) {
+            try {
+              final raw = jsonDecode(row['message_json']! as String);
+              if (raw is! Map ||
+                  raw['historyTurnId'] != repairStage['turn_id']) {
+                continue;
+              }
+              final entryId = row['entry_id']! as String;
+              final contentHash = row['content_hash']! as String;
+              if (repairBaseHashes[entryId] != contentHash &&
+                  stagedHashes[entryId] != contentHash) {
+                repairStageRowsStillCurrent = false;
+                break;
+              }
+            } catch (_) {
+              repairStageRowsStillCurrent = false;
+              break;
+            }
+          }
+        }
+        final preserveRepairStage =
+            repairStage != null &&
+            repairStageRowsStillCurrent &&
+            repairStage['revision'] == revision &&
+            repairStage['revision'] == committedRevision &&
+            !latestTurnComplete &&
+            latestTurnGap?.repair == 'items_page' &&
+            latestTurnGap?.turnId == repairStage['turn_id'];
         await transaction.update(
           SessionCatalogCacheDatabase.hotWindowsTable,
           {
@@ -1961,7 +2067,9 @@ class SessionCatalogCacheRepository {
             'window_complete': commitsCompleteWindow ? 1 : 0,
             'latest_turn_complete': latestTurnComplete ? 1 : 0,
             'latest_turn_gap_json': latestTurnGapJson,
-            'latest_turn_gap_cursor': null,
+            'latest_turn_gap_cursor': preserveRepairStage
+                ? repairStage['expected_cursor']
+                : null,
             'source_entry_count': committedSourceEntryCount,
             'updated_at': now,
           },
@@ -1970,6 +2078,19 @@ class SessionCatalogCacheRepository {
               'AND provider_session_id = ?',
           whereArgs: [partitionId, provider, providerSessionId],
         );
+        // A partial v2 live patch intentionally retains the acknowledged base
+        // revision. Keep a resumable item-page repair only while its exact
+        // revision, turn and repair family remain current. The terminal merge
+        // below reconciles live rows observed after this stage was created.
+        if (!preserveRepairStage) {
+          await transaction.delete(
+            SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, provider, providerSessionId],
+          );
+        }
         final lastAssistantOutputAt = await _latestStagedAssistantOutputAt(
           transaction,
           keyWhere: keyWhere,
@@ -2389,11 +2510,13 @@ class SessionCatalogCacheRepository {
     );
   }
 
-  /// Atomically merges one ascending item page into an incomplete newest turn.
+  /// Stages one ascending item page for an incomplete newest turn.
   ///
-  /// [nextCursor] is deliberately stored separately from [turnsNextCursor]:
-  /// the former continues repair of the current turn while the latter points
-  /// to an older turn page.
+  /// The readable hot window is deliberately left untouched until the final
+  /// page arrives. Publishing each page immediately used to append recovered
+  /// early items after already-visible later items, so the same turn jumped
+  /// around while repair progressed. The terminal page replaces only this
+  /// turn in one SQLite transaction, preserving older cached turns.
   Future<ConversationHotWindowSnapshot?> mergeConversationLatestTurnItemsPage({
     required SessionCatalogCacheTarget target,
     required String provider,
@@ -2401,6 +2524,7 @@ class SessionCatalogCacheRepository {
     required String expectedRevision,
     required String expectedTurnId,
     required List<Map<String, dynamic>> rawMessages,
+    required String? expectedCursor,
     required String? nextCursor,
     bool pageComplete = true,
     ConversationSyncV2LatestTurnGap? latestTurnGap,
@@ -2422,6 +2546,7 @@ class SessionCatalogCacheRepository {
             'entry_count',
             'latest_turn_complete',
             'latest_turn_gap_json',
+            'source_entry_count',
           ],
           where:
               'partition_id = ? AND provider = ? '
@@ -2443,61 +2568,291 @@ class SessionCatalogCacheRepository {
           return false;
         }
 
+        final stages = await transaction.query(
+          SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+          limit: 1,
+        );
+        var stage = stages.isEmpty ? null : stages.single;
+        if (stage != null &&
+            (stage['revision'] != expectedRevision ||
+                stage['turn_id'] != expectedTurnId)) {
+          if (expectedCursor != null) return false;
+          await transaction.delete(
+            SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, provider, providerSessionId],
+          );
+          stage = null;
+        }
+        if (stage == null) {
+          if (expectedCursor != null) return false;
+          await transaction
+              .insert(SessionCatalogCacheDatabase.latestTurnRepairStagesTable, {
+                'partition_id': partitionId,
+                'provider': provider,
+                'provider_session_id': providerSessionId,
+                'revision': expectedRevision,
+                'turn_id': expectedTurnId,
+                'expected_cursor': null,
+                'page_depth': 0,
+                'entry_count': 0,
+                'byte_count': 0,
+                'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
+              });
+          final baseRows = await transaction.query(
+            SessionCatalogCacheDatabase.hotEntriesTable,
+            columns: ['entry_id', 'content_hash', 'message_json'],
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, provider, providerSessionId],
+          );
+          for (final row in baseRows) {
+            try {
+              final decoded = jsonDecode(row['message_json']! as String);
+              if (decoded is! Map ||
+                  decoded['historyTurnId'] != expectedTurnId) {
+                continue;
+              }
+              await transaction.insert(
+                SessionCatalogCacheDatabase.latestTurnRepairBaseEntriesTable,
+                {
+                  'partition_id': partitionId,
+                  'provider': provider,
+                  'provider_session_id': providerSessionId,
+                  'revision': expectedRevision,
+                  'turn_id': expectedTurnId,
+                  'entry_id': row['entry_id'],
+                  'content_hash': row['content_hash'],
+                },
+              );
+            } catch (_) {
+              // The readable cache may retain a malformed legacy row, but it
+              // cannot participate in a resumable latest-turn identity fence.
+            }
+          }
+        } else if (stage['expected_cursor'] != expectedCursor) {
+          return false;
+        }
+
+        if (nextCursor != null && nextCursor == expectedCursor) {
+          throw StateError(
+            'Conversation latest turn repair returned a repeated cursor.',
+          );
+        }
+
+        final activeStage = stage ?? const <String, Object?>{};
+        final pageDepth = activeStage['page_depth'] as int? ?? 0;
+        for (var itemOrder = 0; itemOrder < candidates.length; itemOrder++) {
+          final candidate = candidates[itemOrder];
+          final encoded = jsonEncode(candidate.rawMessage);
+          await transaction.insert(
+            SessionCatalogCacheDatabase.latestTurnRepairEntriesTable,
+            {
+              'partition_id': partitionId,
+              'provider': provider,
+              'provider_session_id': providerSessionId,
+              'revision': expectedRevision,
+              'turn_id': expectedTurnId,
+              'page_depth': pageDepth,
+              'item_order': itemOrder,
+              'entry_id': candidate.entryId,
+              'content_hash': candidate.contentHash,
+              'message_json': encoded,
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
+        final stagedStats = await transaction.rawQuery(
+          '''
+          SELECT
+            COUNT(*) AS entry_count,
+            COALESCE(SUM(LENGTH(CAST(message_json AS BLOB))), 0) AS byte_count
+          FROM ${SessionCatalogCacheDatabase.latestTurnRepairEntriesTable}
+          WHERE partition_id = ? AND provider = ?
+            AND provider_session_id = ? AND revision = ? AND turn_id = ?
+          ''',
+          [
+            partitionId,
+            provider,
+            providerSessionId,
+            expectedRevision,
+            expectedTurnId,
+          ],
+        );
+        final stagedEntryCount = stagedStats.single['entry_count']! as int;
+        final stagedByteCount = stagedStats.single['byte_count']! as int;
+        if (stagedEntryCount > maxHotWindowEntries ||
+            stagedByteCount > _maxTimelineStageBytes) {
+          throw StateError(
+            'Conversation latest turn repair exceeds the local safety bound.',
+          );
+        }
+        final completed = nextCursor == null && pageComplete;
+        if (!completed) {
+          await transaction.update(
+            SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+            {
+              'expected_cursor': nextCursor,
+              'page_depth': pageDepth + 1,
+              'entry_count': stagedEntryCount,
+              'byte_count': stagedByteCount,
+              'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
+            },
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, provider, providerSessionId],
+          );
+          await transaction.update(
+            SessionCatalogCacheDatabase.hotWindowsTable,
+            {
+              'latest_turn_gap_json': jsonEncode(
+                (pageComplete ? gap : (latestTurnGap ?? gap))!.toJson(),
+              ),
+              'latest_turn_gap_cursor': nextCursor,
+            },
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, provider, providerSessionId],
+          );
+          return true;
+        }
+
         final existingRows = await transaction.query(
           SessionCatalogCacheDatabase.hotEntriesTable,
-          columns: ['entry_id', 'entry_index'],
+          columns: ['entry_id', 'entry_index', 'content_hash', 'message_json'],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+          orderBy: 'entry_index ASC',
+        );
+        final retainedRows = existingRows
+            .where((row) {
+              try {
+                final raw = jsonDecode(row['message_json']! as String);
+                return raw is! Map || raw['historyTurnId'] != expectedTurnId;
+              } catch (_) {
+                return true;
+              }
+            })
+            .toList(growable: false);
+        final existingCurrentTurnRows = existingRows
+            .where((row) {
+              try {
+                final raw = jsonDecode(row['message_json']! as String);
+                return raw is Map && raw['historyTurnId'] == expectedTurnId;
+              } catch (_) {
+                return false;
+              }
+            })
+            .toList(growable: false);
+        final baseRows = await transaction.query(
+          SessionCatalogCacheDatabase.latestTurnRepairBaseEntriesTable,
+          columns: ['entry_id', 'content_hash'],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ? AND revision = ? AND turn_id = ?',
+          whereArgs: [
+            partitionId,
+            provider,
+            providerSessionId,
+            expectedRevision,
+            expectedTurnId,
+          ],
+        );
+        final baseHashes = <String, String>{
+          for (final row in baseRows)
+            row['entry_id']! as String: row['content_hash']! as String,
+        };
+        final stagedRows = await transaction.query(
+          SessionCatalogCacheDatabase.latestTurnRepairEntriesTable,
+          columns: ['entry_id', 'content_hash', 'message_json'],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ? AND revision = ? AND turn_id = ?',
+          whereArgs: [
+            partitionId,
+            provider,
+            providerSessionId,
+            expectedRevision,
+            expectedTurnId,
+          ],
+          orderBy: 'page_depth ASC, item_order ASC',
+        );
+        final stagedById = <String, Map<String, Object?>>{
+          for (final row in stagedRows) row['entry_id']! as String: row,
+        };
+        final newLiveRows = <Map<String, Object?>>[];
+        for (final row in existingCurrentTurnRows) {
+          final entryId = row['entry_id']! as String;
+          final contentHash = row['content_hash']! as String;
+          final baseHash = baseHashes[entryId];
+          final stagedRow = stagedById[entryId];
+          if (baseHash == null || baseHash != contentHash) {
+            if (stagedRow != null && stagedRow['content_hash'] != contentHash) {
+              throw StateError(
+                'Conversation latest turn changed while its repair was active.',
+              );
+            }
+            if (stagedRow == null) newLiveRows.add(row);
+          }
+        }
+        final combinedCount =
+            retainedRows.length + stagedRows.length + newLiveRows.length;
+        if (combinedCount > maxHotWindowEntries) {
+          throw StateError(
+            'Conversation latest turn repair exceeds the local safety bound.',
+          );
+        }
+        await transaction.delete(
+          SessionCatalogCacheDatabase.hotEntriesTable,
           where:
               'partition_id = ? AND provider = ? '
               'AND provider_session_id = ?',
           whereArgs: [partitionId, provider, providerSessionId],
         );
-        final existingIndexes = <String, int>{
-          for (final row in existingRows)
-            row['entry_id']! as String: row['entry_index']! as int,
-        };
-        var nextIndex = existingRows.fold<int>(
-          -1,
-          (maximum, row) => (row['entry_index']! as int) > maximum
-              ? row['entry_index']! as int
-              : maximum,
-        );
-        final newEntryCount = candidates
-            .where((entry) => !existingIndexes.containsKey(entry.entryId))
-            .length;
-        if (existingRows.length + newEntryCount > maxHotWindowEntries) {
-          throw StateError(
-            'Conversation latest turn repair exceeds the local safety bound.',
-          );
+        var entryIndex = 0;
+        for (final row in [...retainedRows, ...stagedRows, ...newLiveRows]) {
+          await transaction
+              .insert(SessionCatalogCacheDatabase.hotEntriesTable, {
+                'partition_id': partitionId,
+                'provider': provider,
+                'provider_session_id': providerSessionId,
+                'entry_id': row['entry_id'],
+                'entry_index': entryIndex++,
+                'content_hash': row['content_hash'],
+                'message_json': row['message_json'],
+              });
         }
-        for (final candidate in candidates) {
-          final existingIndex = existingIndexes[candidate.entryId];
-          final entryIndex = existingIndex ?? ++nextIndex;
-          await _insertHotEntry(
-            transaction,
-            partitionId: partitionId,
-            provider: provider,
-            providerSessionId: providerSessionId,
-            entry: ConversationContentWireEntry(
-              entryId: candidate.entryId,
-              index: entryIndex,
-              contentHash: candidate.contentHash,
-              rawMessage: candidate.rawMessage,
-            ),
-          );
-        }
-        final completed = nextCursor == null && pageComplete;
-        final remainingGap = pageComplete ? gap : (latestTurnGap ?? gap);
         await transaction.update(
           SessionCatalogCacheDatabase.hotWindowsTable,
           {
-            'entry_count': existingRows.length + newEntryCount,
-            'latest_turn_complete': completed ? 1 : 0,
-            'latest_turn_gap_json': completed
-                ? null
-                : jsonEncode(remainingGap!.toJson()),
-            'latest_turn_gap_cursor': completed ? null : nextCursor,
+            'entry_count': combinedCount,
+            'latest_turn_complete': 1,
+            'latest_turn_gap_json': null,
+            'latest_turn_gap_cursor': null,
+            'source_entry_count':
+                (window['source_entry_count']! as int) > combinedCount
+                ? window['source_entry_count']
+                : combinedCount,
             'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
           },
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+        );
+        await transaction.delete(
+          SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
           where:
               'partition_id = ? AND provider = ? '
               'AND provider_session_id = ?',
@@ -2725,6 +3080,17 @@ class SessionCatalogCacheRepository {
             entry: entry,
           );
         }
+        // Legacy/v1 patches are authoritative mutations of the readable hot
+        // window but do not carry the v2 item-page staging generation. Any
+        // resumable repair created for the old window must therefore be
+        // invalidated before its next page can rewrite this newer patch.
+        await transaction.delete(
+          SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+        );
         final countRows = await transaction.rawQuery(
           '''
           SELECT
@@ -2781,6 +3147,7 @@ class SessionCatalogCacheRepository {
       await db.transaction((transaction) async {
         for (final table in [
           SessionCatalogCacheDatabase.timelineStagesTable,
+          SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
           SessionCatalogCacheDatabase.hotWindowsTable,
           SessionCatalogCacheDatabase.userIndexStatesTable,
         ]) {
@@ -2803,6 +3170,7 @@ class SessionCatalogCacheRepository {
   }) async {
     for (final table in [
       SessionCatalogCacheDatabase.timelineStagesTable,
+      SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
       SessionCatalogCacheDatabase.hotWindowsTable,
       SessionCatalogCacheDatabase.statusesTable,
       SessionCatalogCacheDatabase.syncStatesTable,

@@ -2459,6 +2459,15 @@ void main() {
         ),
       );
       await gateway.nextOutgoing('conversation_sync_ack');
+      final visibleWhileRepairing = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-current-gap',
+      );
+      expect(
+        visibleWhileRepairing?.entries.map((entry) => entry.entryId),
+        ['current-shell'],
+        reason: 'partial repair pages must not rewrite the visible cache',
+      );
       final secondRequest = await gateway.nextOutgoing(
         'conversation_items_page',
       );
@@ -2500,6 +2509,13 @@ void main() {
       expect(
         cached?.entries
             .map((entry) => entry.rawMessage['text'])
+            .whereType<String>(),
+        [firstPayload, secondPayload],
+        reason: 'the completed turn must publish in provider page order',
+      );
+      expect(
+        cached?.entries
+            .map((entry) => entry.rawMessage['text'])
             .whereType<String>()
             .fold<int>(0, (sum, text) => sum + text.length),
         greaterThan(512 * 1024),
@@ -2508,6 +2524,266 @@ void main() {
         (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
         4,
       );
+    },
+  );
+
+  test(
+    'focused omitted latest turn repairs automatically without blanking cache',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-auto-current-gap',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-auto-current-gap',
+          statusState: 'status-auto-current-gap',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-auto-current-gap',
+          sequence: 2,
+          provider: 'codex',
+          providerSessionId: 'thread-auto-current-gap',
+          revision: 'revision-auto-current-gap',
+          mode: 'snapshot',
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('auto-current-visible-shell', 0)],
+          hasEarlier: true,
+          turnsNextCursor: 'older-auto-current-gap',
+          windowComplete: false,
+          latestTurnComplete: false,
+          latestTurnGap: const ConversationSyncV2LatestTurnGap(
+            turnId: 'turn-auto-current-gap',
+            missingEntryCount: 2,
+            payloadOmitted: true,
+            repair: 'items_page',
+          ),
+          sourceEntryCount: 3,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      expect(
+        gateway.sentTypes.where((type) => type == 'conversation_items_page'),
+        isEmpty,
+      );
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'thread-auto-current-gap',
+      );
+
+      final repairRequest = await gateway.nextOutgoing(
+        'conversation_items_page',
+      );
+      expect(repairRequest['turnId'], 'turn-auto-current-gap');
+      expect(repairRequest, isNot(contains('cursor')));
+      final beforeRepair = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-auto-current-gap',
+      );
+      expect(beforeRepair?.entries.map((entry) => entry.entryId), [
+        'auto-current-visible-shell',
+      ]);
+
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.itemsPageResponse,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-auto-current-gap',
+          sequence: 3,
+          requestId: repairRequest['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-auto-current-gap',
+          turnId: 'turn-auto-current-gap',
+          data: const [
+            {
+              'type': 'assistant',
+              'messageUuid': 'auto-current-commentary',
+              'historyTurnId': 'turn-auto-current-gap',
+              'message': {
+                'id': 'auto-current-commentary',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'Recovered commentary'},
+                ],
+              },
+            },
+            {
+              'type': 'assistant',
+              'messageUuid': 'auto-current-final',
+              'historyTurnId': 'turn-auto-current-gap',
+              'message': {
+                'id': 'auto-current-final',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'Recovered final answer'},
+                ],
+              },
+            },
+          ],
+          nextCursor: null,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await pumpEventQueue();
+
+      final repaired = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-auto-current-gap',
+      );
+      expect(repaired?.latestTurnComplete, isTrue);
+      expect(repaired?.latestTurnGap, isNull);
+      expect(repaired?.entries.map((entry) => entry.entryId), [
+        'auto-current-visible-shell',
+        'turn:turn-auto-current-gap:assistant:auto-current-commentary',
+        'turn:turn-auto-current-gap:assistant:auto-current-final',
+      ]);
+      expect(
+        gateway.sentTypes.where((type) => type == 'conversation_items_page'),
+        hasLength(1),
+      );
+    },
+  );
+
+  test(
+    'focused counted latest-turn gap repairs and rejects a repeated item cursor',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-counted-gap-loop',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-counted-gap-loop',
+          statusState: 'status-counted-gap-loop',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'thread-counted-gap-loop',
+      );
+      await gateway.nextOutgoing('conversation_sync_focus');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-counted-gap-loop',
+          sequence: 2,
+          provider: 'codex',
+          providerSessionId: 'thread-counted-gap-loop',
+          revision: 'revision-counted-gap-loop',
+          mode: 'snapshot',
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('counted-gap-shell', 0)],
+          hasEarlier: true,
+          latestTurnComplete: false,
+          latestTurnGap: const ConversationSyncV2LatestTurnGap(
+            turnId: 'turn-counted-gap-loop',
+            missingEntryCount: 2,
+            payloadOmitted: false,
+            repair: 'items_page',
+          ),
+          sourceEntryCount: 3,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final first = await gateway.nextOutgoing('conversation_items_page');
+      expect(first, isNot(contains('cursor')));
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.itemsPageResponse,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-counted-gap-loop',
+          sequence: 3,
+          requestId: first['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-counted-gap-loop',
+          turnId: 'turn-counted-gap-loop',
+          data: const [],
+          nextCursor: 'cursor-counted-gap-loop',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final second = await gateway.nextOutgoing('conversation_items_page');
+      expect(second['cursor'], 'cursor-counted-gap-loop');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.itemsPageResponse,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-counted-gap-loop',
+          sequence: 4,
+          requestId: second['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-counted-gap-loop',
+          turnId: 'turn-counted-gap-loop',
+          data: const [],
+          nextCursor: 'cursor-counted-gap-loop',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await pumpEventQueue();
+
+      expect(
+        gateway.sentTypes.where((type) => type == 'conversation_items_page'),
+        hasLength(2),
+      );
+      final cached = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-counted-gap-loop',
+      );
+      expect(cached?.latestTurnComplete, isFalse);
+      expect(cached?.latestTurnGapCursor, 'cursor-counted-gap-loop');
+      expect(cached?.entries.map((entry) => entry.entryId), [
+        'counted-gap-shell',
+      ]);
     },
   );
 
@@ -5034,6 +5310,7 @@ class _FailingLatestTurnRepairRepository extends SessionCatalogCacheRepository {
     required String expectedRevision,
     required String expectedTurnId,
     required List<Map<String, dynamic>> rawMessages,
+    required String? expectedCursor,
     required String? nextCursor,
     bool pageComplete = true,
     ConversationSyncV2LatestTurnGap? latestTurnGap,

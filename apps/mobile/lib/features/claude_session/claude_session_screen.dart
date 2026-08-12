@@ -1058,6 +1058,9 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     final latestTurnRecoveryVisible =
         cachedPreview != null &&
         (!cachedPreview.windowComplete || !cachedPreview.latestTurnComplete) &&
+        (cachedPreview.entries.isEmpty ||
+            cachedPreview.latestTurnGap?.payloadOmitted == true ||
+            (cachedPreview.latestTurnGap?.missingEntryCount ?? 0) > 0) &&
         _isCurrentDurablePreviewTargetConfirmed();
     if (_isPending && durableId != null) {
       return ConversationRouteFocusRestorer(
@@ -2123,7 +2126,6 @@ class _ChatScreenBody extends HookWidget {
                   ),
                 if (detachedPreview &&
                     latestTurnRecoveryVisible &&
-                    sessionState.entries.isEmpty &&
                     onLatestTurnRecoveryRetry != null)
                   DurableLatestTurnRecoveryBanner(
                     onRetry: onLatestTurnRecoveryRetry!,

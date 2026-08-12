@@ -140,7 +140,7 @@ void main() {
   );
 
   testWidgets(
-    'authoritative empty and visible durable entries do not show recovery',
+    'complete snapshots hide recovery while visible incomplete snapshots keep it available',
     (tester) async {
       for (final provider in [Provider.codex.value, Provider.claude.value]) {
         for (final scenario in [
@@ -176,7 +176,7 @@ void main() {
             await tester.pump();
             expect(
               find.byKey(const ValueKey('durable_latest_turn_recovery_banner')),
-              findsNothing,
+              scenario.latestTurnComplete ? findsNothing : findsOneWidget,
               reason: '$provider ${scenario.latestTurnComplete}',
             );
           } finally {

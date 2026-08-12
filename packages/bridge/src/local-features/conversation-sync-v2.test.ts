@@ -5,7 +5,11 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { CodexProcess, CodexThreadSummary } from "../codex-process.js";
+import {
+  CodexRpcError,
+  type CodexProcess,
+  type CodexThreadSummary,
+} from "../codex-process.js";
 import type { SharedCodexContentObserverProcess } from "../codex-shared-runtime-content-observer.js";
 import type {
   CodexActionBrokerRuntime,
@@ -3555,6 +3559,279 @@ describe("ConversationSyncV2FeatureHandler", () => {
       cursor: "before-one-large-item",
       limit: 1,
     });
+    fixture.handler.close();
+  });
+
+  it("pages a large Codex turn locally when thread/items/list is unsupported", async () => {
+    const turnId = "turn-local-items-fallback";
+    const items = [
+      {
+        type: "userMessage",
+        id: "fallback-user",
+        content: [{ type: "text", text: "repair the complete turn" }],
+      },
+      {
+        type: "commandExecution",
+        id: "fallback-heavy-tool",
+        command: "generate-large-output",
+        status: "completed",
+        aggregatedOutput: "x".repeat(100 * 1024),
+      },
+      {
+        type: "agentMessage",
+        id: "fallback-commentary",
+        text: "commentary after the large tool",
+      },
+      {
+        type: "agentMessage",
+        id: "fallback-final",
+        text: "final answer after the large tool",
+      },
+    ];
+    const listThreadItems = vi.fn(async () => {
+      throw new CodexRpcError(
+        "thread/items/list",
+        "thread/items/list is not supported yet",
+        -32601,
+      );
+    });
+    const listThreadTurns = vi.fn(async () => ({
+      data: [{ id: turnId, items }],
+      nextCursor: null,
+    }));
+    const fixture = createCodexPageFixture({
+      listThreadItems,
+      listThreadTurns,
+    });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    const received: ConversationSyncServerMessage[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 8; page += 1) {
+      const requestId = `fallback-items-${page}`;
+      await fixture.handler.handle(
+        {
+          type: "conversation_items_page",
+          protocolVersion: 2,
+          requestId,
+          subscriptionId: subscription.requestId,
+          provider: "codex",
+          providerSessionId: "thread-local-items-fallback",
+          turnId,
+          ...(cursor ? { cursor } : {}),
+          limit: 2,
+          sortDirection: "asc",
+        },
+        context(fixture.client, fixture.runtime),
+      );
+      const response = events(
+        fixture.sent,
+        fixture.client,
+        "items_page_response",
+      ).find((event) => event.requestId === requestId)!;
+      expect(
+        response,
+        JSON.stringify(
+          events(fixture.sent, fixture.client, "error").filter(
+            (event) => event.requestId === requestId,
+          ),
+        ),
+      ).toBeDefined();
+      expect(
+        Buffer.byteLength(JSON.stringify(response), "utf8"),
+      ).toBeLessThanOrEqual(64 * 1024);
+      received.push(response);
+      if (!response.nextCursor) break;
+      expect(response.nextCursor).not.toBe(cursor);
+      cursor = response.nextCursor;
+    }
+
+    expect(listThreadItems).toHaveBeenCalledTimes(1);
+    expect(listThreadTurns).toHaveBeenCalledTimes(1);
+    const wire = JSON.stringify(received);
+    expect(wire).toContain("fallback-user");
+    expect(wire).toContain("fallback-heavy-tool");
+    expect(wire).toContain("fallback-commentary");
+    expect(wire).toContain("fallback-final");
+    expect(wire).toContain("historyToolDetailGaps");
+    expect(wire).not.toContain("x".repeat(64 * 1024));
+    fixture.handler.close();
+  });
+
+  it("rejects an out-of-range local Codex turn cursor", async () => {
+    const cursorPrefix = "ccp-codex-turn-items-v1:";
+    const turnId = "turn-local-items-stale-cursor";
+    const listThreadItems = vi.fn(async () => {
+      throw new CodexRpcError(
+        "thread/items/list",
+        "thread/items/list is not supported yet",
+        -32601,
+      );
+    });
+    const listThreadTurns = vi.fn(async () => ({
+      data: [
+        {
+          id: turnId,
+          items: [
+            { type: "agentMessage", id: "stale-item", text: "only item" },
+            { type: "agentMessage", id: "later-item", text: "later item" },
+          ],
+        },
+      ],
+      nextCursor: null,
+    }));
+    const fixture = createCodexPageFixture({
+      listThreadItems,
+      listThreadTurns,
+    });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_items_page",
+        protocolVersion: 2,
+        requestId: "stale-cursor-first",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-local-items-stale-cursor",
+        turnId,
+        limit: 1,
+        sortDirection: "asc",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+    const first = events(
+      fixture.sent,
+      fixture.client,
+      "items_page_response",
+    ).find((event) => event.requestId === "stale-cursor-first")!;
+    const decoded = JSON.parse(
+      Buffer.from(
+        first.nextCursor!.slice(cursorPrefix.length),
+        "base64url",
+      ).toString("utf8"),
+    ) as { snapshotId: string };
+    const staleCursor = `${cursorPrefix}${Buffer.from(
+      JSON.stringify({ turnId, offset: 99, snapshotId: decoded.snapshotId }),
+      "utf8",
+    ).toString("base64url")}`;
+
+    await fixture.handler.handle(
+      {
+        type: "conversation_items_page",
+        protocolVersion: 2,
+        requestId: "stale-cursor-second",
+        subscriptionId: subscription.requestId,
+        provider: "codex",
+        providerSessionId: "thread-local-items-stale-cursor",
+        turnId,
+        cursor: staleCursor,
+        limit: 1,
+        sortDirection: "asc",
+      },
+      context(fixture.client, fixture.runtime),
+    );
+    expect(
+      events(fixture.sent, fixture.client, "error").find(
+        (event) => event.requestId === "stale-cursor-second",
+      ),
+    ).toMatchObject({ errorCode: "items_page_failed" });
+    expect(
+      events(fixture.sent, fixture.client, "items_page_response").find(
+        (event) => event.requestId === "stale-cursor-second",
+      ),
+    ).toBeUndefined();
+    fixture.handler.close();
+  });
+
+  it("keeps missing provider item ids distinct across local fallback pages", async () => {
+    const turnId = "turn-local-items-missing-ids";
+    const listThreadItems = vi.fn(async () => {
+      throw new CodexRpcError(
+        "thread/items/list",
+        "thread/items/list is not supported yet",
+        -32601,
+      );
+    });
+    const listThreadTurns = vi.fn(async () => ({
+      data: [
+        {
+          id: turnId,
+          items: [
+            { type: "agentMessage", text: "missing id page one" },
+            { type: "agentMessage", text: "missing id page two" },
+          ],
+        },
+      ],
+      nextCursor: null,
+    }));
+    const fixture = createCodexPageFixture({
+      listThreadItems,
+      listThreadTurns,
+    });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(fixture.client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(fixture.sent, fixture.client, "sync_complete"),
+      ).toHaveLength(1),
+    );
+    const ids = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 2; page += 1) {
+      const requestId = `missing-id-page-${page}`;
+      await fixture.handler.handle(
+        {
+          type: "conversation_items_page",
+          protocolVersion: 2,
+          requestId,
+          subscriptionId: subscription.requestId,
+          provider: "codex",
+          providerSessionId: "thread-local-items-missing-ids",
+          turnId,
+          ...(cursor ? { cursor } : {}),
+          limit: 1,
+          sortDirection: "asc",
+        },
+        context(fixture.client, fixture.runtime),
+      );
+      const response = events(
+        fixture.sent,
+        fixture.client,
+        "items_page_response",
+      ).find((event) => event.requestId === requestId)!;
+      const assistant = response.data.find(
+        (value) =>
+          value &&
+          typeof value === "object" &&
+          !Array.isArray(value) &&
+          (value as { type?: unknown }).type === "assistant",
+      ) as { message: { id: string } };
+      ids.add(assistant.message.id);
+      cursor = response.nextCursor ?? undefined;
+    }
+    expect(ids).toHaveLength(2);
     fixture.handler.close();
   });
 

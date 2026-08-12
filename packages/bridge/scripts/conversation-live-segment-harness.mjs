@@ -35,6 +35,8 @@ const [
 
 const threadId = "019f-live-segment-authority-thread";
 const turnId = "turn-live-segments";
+const latestTurnGapScenario =
+  process.env.CCPOCKET_CHAIN_SCENARIO === "latest-turn-gap";
 const userItem = {
   type: "userMessage",
   id: "provider-user-live-segments",
@@ -42,10 +44,40 @@ const userItem = {
   content: [{ type: "text", text: "Exercise live segment boundaries" }],
 };
 const providerState = {
-  revision: 1,
+  revision: latestTurnGapScenario ? 4 : 1,
   active: false,
-  completed: false,
-  assistantItems: [],
+  completed: latestTurnGapScenario,
+  assistantItems: latestTurnGapScenario
+    ? [
+        {
+          type: "agentMessage",
+          id: "provider-commentary-before-oversized-tool",
+          text: "Commentary before oversized tool",
+        },
+        {
+          type: "commandExecution",
+          id: "provider-oversized-tool",
+          command: "generate-large-output",
+          status: "completed",
+          aggregatedOutput: "x".repeat(100 * 1024),
+        },
+        {
+          type: "reasoning",
+          id: "provider-reasoning-after-oversized-tool",
+          summary: ["Reasoning after oversized tool"],
+        },
+        {
+          type: "agentMessage",
+          id: "provider-commentary-after-oversized-tool",
+          text: "Commentary after oversized tool",
+        },
+        {
+          type: "agentMessage",
+          id: "provider-final-after-oversized-tool",
+          text: "Final answer after oversized tool",
+        },
+      ]
+    : [],
 };
 const providerReads = [];
 const bridgeFrames = [];
@@ -178,16 +210,7 @@ class FakeCodexAppServer extends CodexProcess {
   }
 
   async listThreadItems(options) {
-    if (options.threadId !== threadId || options.turnId !== turnId) {
-      return { data: [], nextCursor: null };
-    }
-    return {
-      data: providerTurn().items.map((item) => ({
-        turnId,
-        item: structuredClone(item),
-      })),
-      nextCursor: null,
-    };
+    throw new Error("thread/items/list is not supported yet");
   }
 
   injectAssistantItem(id, text, { completeTurn = false } = {}) {
@@ -335,6 +358,7 @@ process.stdout.write(
     turnId,
     projectPath,
     traceRoot,
+    scenario: latestTurnGapScenario ? "latest-turn-gap" : "live-segments",
   })}\n`,
 );
 

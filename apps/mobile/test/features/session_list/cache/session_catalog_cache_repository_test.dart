@@ -2488,6 +2488,9 @@ void main() {
           SessionCatalogCacheDatabase.userIndexEntriesTable,
           SessionCatalogCacheDatabase.userTurnDetailsTable,
           SessionCatalogCacheDatabase.userTurnDetailItemsTable,
+          SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+          SessionCatalogCacheDatabase.latestTurnRepairEntriesTable,
+          SessionCatalogCacheDatabase.latestTurnRepairBaseEntriesTable,
         ]),
       );
       final itemForeignKeys = await upgraded.rawQuery(
@@ -2897,7 +2900,40 @@ void main() {
         mode: 'snapshot',
         pageIndex: 0,
         pageCount: 1,
-        entries: [_entry('current-entry', 0, 'running')],
+        entries: const [
+          ConversationContentWireEntry(
+            entryId: 'older-entry',
+            index: 0,
+            contentHash: 'hash-older-entry',
+            rawMessage: {
+              'type': 'assistant',
+              'historyTurnId': 'turn-older',
+              'message': {
+                'id': 'older-entry',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'Older answer'},
+                ],
+              },
+            },
+          ),
+          ConversationContentWireEntry(
+            entryId: 'turn:turn-current:assistant:stale-late',
+            index: 1,
+            contentHash: 'hash-stale-late',
+            rawMessage: {
+              'type': 'assistant',
+              'historyTurnId': 'turn-current',
+              'message': {
+                'id': 'stale-late',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'Stale later fragment'},
+                ],
+              },
+            },
+          ),
+        ],
         deletes: const [],
         hasEarlier: true,
         turnsNextCursor: 'older-turns-cursor',
@@ -2919,11 +2955,16 @@ void main() {
             'userMessageUuid': 'user-current',
           },
         ],
+        expectedCursor: null,
         nextCursor: 'current-turn-page-2',
       );
       expect(first?.latestTurnComplete, isFalse);
       expect(first?.latestTurnGapCursor, 'current-turn-page-2');
       expect(first?.turnsNextCursor, 'older-turns-cursor');
+      expect(first?.entries.map((entry) => entry.entryId), [
+        'older-entry',
+        'turn:turn-current:assistant:stale-late',
+      ]);
 
       await repository.close();
       database = SessionCatalogCacheDatabase(
@@ -2965,7 +3006,8 @@ void main() {
                 },
               },
             ],
-            nextCursor: null,
+            expectedCursor: 'current-turn-page-2',
+            nextCursor: 'current-turn-page-3',
             pageComplete: false,
             latestTurnGap: terminalGap,
           );
@@ -2980,7 +3022,11 @@ void main() {
         terminalGap.payloadOmitted,
       );
       expect(oversizedTerminal?.latestTurnGap?.repair, terminalGap.repair);
-      expect(oversizedTerminal?.latestTurnGapCursor, isNull);
+      expect(oversizedTerminal?.latestTurnGapCursor, 'current-turn-page-3');
+      expect(oversizedTerminal?.entries.map((entry) => entry.entryId), [
+        'older-entry',
+        'turn:turn-current:assistant:stale-late',
+      ]);
 
       final complete = await repository.mergeConversationLatestTurnItemsPage(
         target: target,
@@ -3000,22 +3046,422 @@ void main() {
             },
           },
         ],
+        expectedCursor: 'current-turn-page-3',
         nextCursor: null,
       );
       expect(complete?.latestTurnComplete, isTrue);
+      expect(complete?.windowComplete, isFalse);
       expect(complete?.latestTurnGap, isNull);
       expect(complete?.latestTurnGapCursor, isNull);
       expect(complete?.turnsNextCursor, 'older-turns-cursor');
       expect(
         complete?.entries.map((entry) => entry.entryId),
         containsAll([
-          'current-entry',
+          'older-entry',
           'user:user-current',
           'assistant:assistant-current',
         ]),
       );
+      expect(
+        complete?.entries.map((entry) => entry.entryId),
+        isNot(contains('turn:turn-current:assistant:stale-late')),
+      );
     },
   );
+
+  test(
+    'an advancing provider window invalidates an in-flight latest-turn repair',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-latest-turn-generation',
+        codexSourceId: 'source-latest-turn-generation',
+      );
+      const originalGap = ConversationSyncV2LatestTurnGap(
+        turnId: 'turn-original',
+        missingEntryCount: 2,
+        payloadOmitted: true,
+        repair: 'items_page',
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-latest-turn-generation-original',
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-generation',
+        revision: 'revision-original',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: const [
+          ConversationContentWireEntry(
+            entryId: 'turn:turn-original:assistant:stale',
+            index: 0,
+            contentHash: 'hash-original-stale',
+            rawMessage: {
+              'type': 'assistant',
+              'historyTurnId': 'turn-original',
+              'message': {
+                'id': 'original-stale',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'Original stale fragment'},
+                ],
+              },
+            },
+          ),
+        ],
+        deletes: const [],
+        hasEarlier: true,
+        latestTurnComplete: false,
+        latestTurnGap: originalGap,
+        sourceEntryCount: 3,
+      );
+
+      final firstRepairPage = await repository
+          .mergeConversationLatestTurnItemsPage(
+            target: target,
+            provider: 'codex',
+            providerSessionId: 'thread-latest-turn-generation',
+            expectedRevision: 'revision-original',
+            expectedTurnId: 'turn-original',
+            rawMessages: const [
+              {
+                'type': 'user_input',
+                'text': 'Original prompt',
+                'userMessageUuid': 'original-user',
+              },
+            ],
+            expectedCursor: null,
+            nextCursor: 'original-page-2',
+          );
+      expect(firstRepairPage?.latestTurnGapCursor, 'original-page-2');
+
+      const replacementGap = ConversationSyncV2LatestTurnGap(
+        turnId: 'turn-replacement',
+        missingEntryCount: 1,
+        payloadOmitted: true,
+        repair: 'items_page',
+      );
+      final replacement = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-latest-turn-generation-replacement',
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-generation',
+        revision: 'revision-replacement',
+        baseRevision: 'revision-original',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: const [
+          ConversationContentWireEntry(
+            entryId: 'turn:turn-original:assistant:stale',
+            index: 0,
+            contentHash: 'hash-original-stale',
+            rawMessage: {
+              'type': 'assistant',
+              'historyTurnId': 'turn-original',
+              'message': {
+                'id': 'original-stale',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'Original stale fragment'},
+                ],
+              },
+            },
+          ),
+          ConversationContentWireEntry(
+            entryId: 'turn:turn-replacement:assistant:stale',
+            index: 1,
+            contentHash: 'hash-replacement-stale',
+            rawMessage: {
+              'type': 'assistant',
+              'historyTurnId': 'turn-replacement',
+              'message': {
+                'id': 'replacement-stale',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'Replacement stale fragment'},
+                ],
+              },
+            },
+          ),
+        ],
+        deletes: const [],
+        hasEarlier: true,
+        advanceIncompleteWireRevision: true,
+        latestTurnComplete: false,
+        latestTurnGap: replacementGap,
+        sourceEntryCount: 4,
+      );
+      expect(replacement.windowCommitted, isTrue);
+      expect(replacement.committedRevision, 'revision-replacement');
+
+      final db = await database.database;
+      expect(
+        await db.query(
+          SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+          where: 'provider_session_id = ?',
+          whereArgs: ['thread-latest-turn-generation'],
+        ),
+        isEmpty,
+      );
+
+      final staleContinuation = await repository
+          .mergeConversationLatestTurnItemsPage(
+            target: target,
+            provider: 'codex',
+            providerSessionId: 'thread-latest-turn-generation',
+            expectedRevision: 'revision-original',
+            expectedTurnId: 'turn-original',
+            rawMessages: const [],
+            expectedCursor: 'original-page-2',
+            nextCursor: null,
+          );
+      expect(staleContinuation, isNull);
+
+      final replacementRepair = await repository
+          .mergeConversationLatestTurnItemsPage(
+            target: target,
+            provider: 'codex',
+            providerSessionId: 'thread-latest-turn-generation',
+            expectedRevision: 'revision-replacement',
+            expectedTurnId: 'turn-replacement',
+            rawMessages: const [
+              {
+                'type': 'assistant',
+                'message': {
+                  'id': 'replacement-complete',
+                  'role': 'assistant',
+                  'content': [
+                    {'type': 'text', 'text': 'Replacement complete answer'},
+                  ],
+                },
+              },
+            ],
+            expectedCursor: null,
+            nextCursor: null,
+          );
+      expect(replacementRepair?.latestTurnComplete, isTrue);
+      expect(
+        replacementRepair?.entries.map((entry) => entry.entryId),
+        contains('assistant:replacement-complete'),
+      );
+      expect(
+        replacementRepair?.entries.map((entry) => entry.entryId),
+        isNot(contains('turn:turn-replacement:assistant:stale')),
+      );
+    },
+  );
+
+  test(
+    'a duplicate incomplete provider window preserves a resumable repair',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-latest-turn-resume',
+        codexSourceId: 'source-latest-turn-resume',
+      );
+      const gap = ConversationSyncV2LatestTurnGap(
+        turnId: 'turn-resume',
+        missingEntryCount: 2,
+        payloadOmitted: false,
+        repair: 'items_page',
+      );
+      const shell = ConversationContentWireEntry(
+        entryId: 'turn:turn-resume:assistant:shell',
+        index: 0,
+        contentHash: 'hash-resume-shell',
+        rawMessage: {
+          'type': 'assistant',
+          'historyTurnId': 'turn-resume',
+          'message': {
+            'id': 'resume-shell',
+            'role': 'assistant',
+            'content': [
+              {'type': 'text', 'text': 'Visible tail shell'},
+            ],
+          },
+        },
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-latest-turn-resume-initial',
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-resume',
+        revision: 'revision-resume',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: const [shell],
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: false,
+        latestTurnComplete: false,
+        latestTurnGap: gap,
+        sourceEntryCount: 3,
+      );
+      await repository.mergeConversationLatestTurnItemsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-resume',
+        expectedRevision: 'revision-resume',
+        expectedTurnId: 'turn-resume',
+        rawMessages: const [
+          {
+            'type': 'user_input',
+            'text': 'Resume prompt',
+            'userMessageUuid': 'resume-user',
+          },
+        ],
+        expectedCursor: null,
+        nextCursor: 'resume-page-2',
+      );
+
+      final duplicate = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-latest-turn-resume-duplicate',
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-resume',
+        revision: 'revision-resume',
+        baseRevision: 'revision-resume',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: const [shell],
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: false,
+        latestTurnComplete: false,
+        latestTurnGap: gap,
+        sourceEntryCount: 3,
+      );
+      expect(duplicate.windowCommitted, isTrue);
+      final afterDuplicate = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-resume',
+      );
+      expect(afterDuplicate?.latestTurnGapCursor, 'resume-page-2');
+
+      final completed = await repository.mergeConversationLatestTurnItemsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-resume',
+        expectedRevision: 'revision-resume',
+        expectedTurnId: 'turn-resume',
+        rawMessages: const [
+          {
+            'type': 'assistant',
+            'historyTurnId': 'turn-resume',
+            'message': {
+              'id': 'resume-complete',
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'Resume complete answer'},
+              ],
+            },
+          },
+        ],
+        expectedCursor: 'resume-page-2',
+        nextCursor: null,
+      );
+      expect(completed?.latestTurnComplete, isTrue);
+      expect(
+        completed?.entries.map((entry) => entry.entryId),
+        containsAll([
+          'user:resume-user',
+          'turn:turn-resume:assistant:resume-complete',
+        ]),
+      );
+    },
+  );
+
+  test('thread reset clears the orphaned latest-turn repair cursor', () async {
+    final target = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-latest-turn-reset',
+      codexSourceId: 'source-latest-turn-reset',
+    );
+    const gap = ConversationSyncV2LatestTurnGap(
+      turnId: 'turn-reset',
+      missingEntryCount: 1,
+      payloadOmitted: false,
+      repair: 'items_page',
+    );
+    await repository.stageConversationTimelinePage(
+      target: target,
+      subscriptionId: 'subscription-latest-turn-reset',
+      provider: 'codex',
+      providerSessionId: 'thread-latest-turn-reset',
+      revision: 'revision-reset',
+      baseRevision: null,
+      mode: 'snapshot',
+      pageIndex: 0,
+      pageCount: 1,
+      entries: [_entry('reset-shell', 0, 'shell')],
+      deletes: const [],
+      hasEarlier: true,
+      windowComplete: false,
+      latestTurnComplete: false,
+      latestTurnGap: gap,
+      sourceEntryCount: 2,
+    );
+    await repository.mergeConversationLatestTurnItemsPage(
+      target: target,
+      provider: 'codex',
+      providerSessionId: 'thread-latest-turn-reset',
+      expectedRevision: 'revision-reset',
+      expectedTurnId: 'turn-reset',
+      rawMessages: const [
+        {
+          'type': 'user_input',
+          'text': 'Reset prompt',
+          'userMessageUuid': 'reset-user',
+        },
+      ],
+      expectedCursor: null,
+      nextCursor: 'reset-page-2',
+    );
+
+    await repository.resetConversationSyncScope(
+      target: target,
+      scope: 'thread',
+      thread: const ConversationSyncV2Target(
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-reset',
+      ),
+    );
+    final reset = await repository.loadConversationWindow(
+      target: target,
+      provider: 'codex',
+      providerSessionId: 'thread-latest-turn-reset',
+    );
+    expect(reset?.latestTurnGapCursor, isNull);
+    expect(reset?.entries, isNotEmpty);
+
+    final restarted = await repository.mergeConversationLatestTurnItemsPage(
+      target: target,
+      provider: 'codex',
+      providerSessionId: 'thread-latest-turn-reset',
+      expectedRevision: 'revision-reset',
+      expectedTurnId: 'turn-reset',
+      rawMessages: const [
+        {
+          'type': 'assistant',
+          'historyTurnId': 'turn-reset',
+          'message': {
+            'id': 'reset-complete',
+            'role': 'assistant',
+            'content': [
+              {'type': 'text', 'text': 'Reset complete answer'},
+            ],
+          },
+        },
+      ],
+      expectedCursor: null,
+      nextCursor: null,
+    );
+    expect(restarted?.latestTurnComplete, isTrue);
+  });
 
   test(
     'falls back to safe latest-turn repair for damaged cache metadata',
