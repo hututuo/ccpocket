@@ -493,7 +493,9 @@ if [[ "$command_name" == "bridge-runtime" ]]; then
   dist_extract=""
   ditto packages/bridge/scripts "$stage_runtime/packages/bridge/scripts"
   cp packages/bridge/package.json "$stage_runtime/packages/bridge/package.json"
-  cp packages/bridge/file-browser-posix-helper.c "$stage_runtime/packages/bridge/file-browser-posix-helper.c"
+  mkdir -p "$stage_runtime/packages/bridge/src"
+  cp packages/bridge/src/file-browser-posix-helper.c \
+    "$stage_runtime/packages/bridge/src/file-browser-posix-helper.c"
   cp LICENSE "$stage_runtime/packages/bridge/LICENSE"
   cli_sha="$(shasum -a 256 "$stage_runtime/packages/bridge/dist/cli.js" | awk '{print $1}')"
   source_cli_sha="$(shasum -a 256 packages/bridge/dist/cli.js | awk '{print $1}')"
