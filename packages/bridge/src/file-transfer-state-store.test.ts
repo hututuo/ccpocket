@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { hashTransferSecret } from "./file-transfer-download-store.js";
 import { FILE_TRANSFER_MAX_FILE_SIZE_BYTES } from "./file-transfer-constants.js";
+import { DIAGNOSTIC_REPORT_PAYLOAD_MAX_BYTES } from "./file-transfer-diagnostic.js";
 import {
   FILE_TRANSFER_STATE_MAX_BYTES,
   FileTransferStateStore,
@@ -209,6 +210,51 @@ describe("FileTransferStateStore", () => {
       version: 2,
       downloads: [entry],
       uploads: [],
+    }));
+    const store = new FileTransferStateStore({ filePath: f.filePath });
+    await expect(store.init()).rejects.toThrow("invalid transfer metadata");
+    await store.close();
+  });
+
+  it("rejects a persisted diagnostic upload above its 16 MiB purpose limit", async () => {
+    const f = await fixture();
+    const sizeBytes = DIAGNOSTIC_REPORT_PAYLOAD_MAX_BYTES + 1;
+    await writeFile(f.filePath, JSON.stringify({
+      version: 2,
+      downloads: [],
+      uploads: [{
+        transferId: "upload_oversizeddiag",
+        uploadTokenHash: hashTransferSecret(token),
+        resumeTokenHash: hashTransferSecret("r".repeat(43)),
+        filename: "oversized-diagnostic.json",
+        sizeBytes,
+        offset: 0,
+        status: "pending",
+        partialPath: "/private/tmp/oversized-diagnostic.part",
+        partialIdentity: {
+          dev: 1,
+          ino: 2,
+          size: 0,
+          mtimeMs: 3,
+          ctimeMs: 4,
+        },
+        createdAt: 1_000,
+        updatedAt: 1_000,
+        expiresAt: 2_000,
+        retainUntil: 3_000,
+        purpose: "diagnostic_report",
+        diagnosticReport: {
+          schemaVersion: 1,
+          reportId: "oversized-diagnostic",
+          provider: "codex",
+          providerSessionId: "thread-123",
+          bridgeInstanceId: "bridge-test",
+          codexSourceId: "source-bridge",
+          capturedAtStart: "2026-08-12T00:00:00.000Z",
+          capturedAtEnd: "2026-08-12T00:01:00.000Z",
+          sha256: "a".repeat(64),
+        },
+      }],
     }));
     const store = new FileTransferStateStore({ filePath: f.filePath });
     await expect(store.init()).rejects.toThrow("invalid transfer metadata");

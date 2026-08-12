@@ -11,6 +11,7 @@ const diagnosticReport = {
   reportId: "report_20260812",
   provider: "codex",
   providerSessionId: "thread-123",
+  bridgeInstanceId: "bridge-test",
   codexSourceId: "source-123",
   capturedAtStart: "2026-08-12T00:00:00.000Z",
   capturedAtEnd: "2026-08-12T00:01:00.000Z",
@@ -110,6 +111,16 @@ describe("file transfer v2 protocol", () => {
       filename: "phone-report.json",
       sizeBytes: 42,
       purpose: "diagnostic_report",
+    })).toBeNull();
+    expect(parseFileTransferClientMessage({
+      type: "file_transfer_upload_prepare_v2",
+      requestId: "diagnostic-too-large",
+      transferId,
+      resumeToken: token,
+      filename: "phone-report.json",
+      sizeBytes: 32 * 1024 * 1024 + 1,
+      purpose: "diagnostic_report",
+      diagnosticReport,
     })).toBeNull();
   });
 

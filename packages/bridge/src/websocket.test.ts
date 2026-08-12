@@ -1005,11 +1005,14 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(initialSessionList.bridgeCapabilities).not.toContain(
       "file_mutation_auth_v1",
     );
-    expect(initialSessionList.bridgeCapabilities).not.toContain(
+    expect(initialSessionList.bridgeCapabilities).toContain(
       "file_transfer_upload_auth_v1",
     );
     expect(initialSessionList.bridgeCapabilities).not.toContain(
       "scoped_context_usage_v1",
+    );
+    expect(initialSessionList.bridgeCapabilities).not.toContain(
+      "file_transfer_diagnostic_report_v1",
     );
 
     const binding = fileTransfer.connect.mock.calls[0][1];
@@ -1092,6 +1095,8 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         reportId: "report_open_auth",
         provider: "codex",
         providerSessionId: "thread-open-auth",
+        bridgeInstanceId: "bridge-open-auth",
+        codexSourceId: "source-open-auth",
         capturedAtStart: "2026-08-12T00:00:00.000Z",
         capturedAtEnd: "2026-08-12T00:01:00.000Z",
         sha256: "a".repeat(64),
@@ -1158,6 +1163,58 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ]),
     );
 
+    await bridge.close();
+  });
+
+  it("advertises diagnostic reports only to authenticated peers when the archiver is ready", async () => {
+    let diagnosticReady = true;
+    const fileTransfer = {
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      handleClientMessage: vi.fn(),
+      close: vi.fn(async () => {}),
+      get diagnosticReportsAvailable() {
+        return diagnosticReady;
+      },
+    };
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      fileTransfer: fileTransfer as any,
+      fileMutationAuthorizer: {} as any,
+    });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const latestSessionList = () => ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .filter((message: any) => message.type === "session_list")
+      .at(-1);
+
+    (bridge as any).connectionAuth.set(ws, { kind: "api_key" });
+    (bridge as any).sendSessionList(ws);
+    let sessionList = latestSessionList();
+    expect(sessionList.bridgeCapabilities).toContain(
+      "file_transfer_diagnostic_report_v1",
+    );
+    expect(sessionList.bridgeCapabilities).toContain(
+      "file_transfer_upload_auth_v1",
+    );
+
+    (bridge as any).connectionAuth.set(ws, { kind: "open" });
+    (bridge as any).sendSessionList(ws);
+    sessionList = latestSessionList();
+    expect(sessionList.bridgeCapabilities).not.toContain(
+      "file_transfer_diagnostic_report_v1",
+    );
+
+    diagnosticReady = false;
+    (bridge as any).connectionAuth.set(ws, { kind: "api_key" });
+    (bridge as any).sendSessionList(ws);
+    sessionList = latestSessionList();
+    expect(sessionList.bridgeCapabilities).not.toContain(
+      "file_transfer_diagnostic_report_v1",
+    );
     await bridge.close();
   });
 

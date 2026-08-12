@@ -46,11 +46,18 @@ export function resolveBridgeConnectionAuthentication(input: {
   const explicitMode = parseBridgeAuthMode(input.authMode);
   const mode = explicitMode ??
     (explicitRequired === true || configuredApiKey !== undefined ? "key" : "open");
+  if (explicitMode === "key" && explicitRequired === false) {
+    throw new Error(
+      "BRIDGE_AUTH_MODE=key conflicts with BRIDGE_REQUIRE_API_KEY=false; use BRIDGE_AUTH_MODE=open to disable authentication",
+    );
+  }
   const required = mode === "paired_or_key"
     ? true
     : mode === "open"
       ? false
-      : explicitRequired ?? (configuredApiKey !== undefined);
+      : explicitMode === "key"
+        ? true
+        : explicitRequired ?? (configuredApiKey !== undefined);
   if (required && configuredApiKey === undefined) {
     if (mode === "key") {
       throw new Error(

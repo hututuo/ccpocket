@@ -13,11 +13,15 @@ import {
   type FileMutationAuthorization,
 } from "./file-mutation-auth.js";
 import {
+  DIAGNOSTIC_REPORT_PAYLOAD_MAX_BYTES,
   validateDiagnosticReportMetadata,
   type DiagnosticReportMetadata,
   type FileTransferPurpose,
 } from "./file-transfer-diagnostic.js";
-export { FILE_TRANSFER_CAPABILITY } from "./file-transfer-constants.js";
+export {
+  FILE_TRANSFER_CAPABILITY,
+  FILE_TRANSFER_DIAGNOSTIC_REPORT_CAPABILITY,
+} from "./file-transfer-constants.js";
 export type { DiagnosticReportMetadata, FileTransferPurpose } from "./file-transfer-diagnostic.js";
 
 export type FileTransferClientMessage =
@@ -240,6 +244,8 @@ export function parseFileTransferClientMessage(
       !Number.isSafeInteger(message.sizeBytes) ||
       Number(message.sizeBytes) < 0 ||
       Number(message.sizeBytes) > FILE_TRANSFER_MAX_FILE_SIZE_BYTES ||
+      (message.purpose === "diagnostic_report" &&
+        Number(message.sizeBytes) > DIAGNOSTIC_REPORT_PAYLOAD_MAX_BYTES) ||
       (message.mutationAuthorization !== undefined &&
         !validateFileMutationAuthorization(message.mutationAuthorization)) ||
       (message.purpose !== undefined &&

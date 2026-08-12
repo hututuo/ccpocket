@@ -245,6 +245,7 @@ import {
 } from "./bridge-identity.js";
 import {
   FILE_TRANSFER_CAPABILITY,
+  FILE_TRANSFER_DIAGNOSTIC_REPORT_CAPABILITY,
   isFileTransferClientMessage,
   isFileTransferServerMessageType,
 } from "./file-transfer-protocol.js";
@@ -14515,10 +14516,13 @@ export class BridgeWebSocketServer {
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileBrowser ? [FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
+        ...(this.fileTransfer?.diagnosticReportsAvailable
+          ? [FILE_TRANSFER_DIAGNOSTIC_REPORT_CAPABILITY]
+          : []),
         ...(this.fileBrowser && this.fileMutationAuthorizer
           ? [FILE_MUTATION_AUTH_CAPABILITY]
           : []),
-        ...(this.fileTransfer && this.fileBrowser && this.fileMutationAuthorizer
+        ...(this.fileTransfer && this.fileMutationAuthorizer
           ? [FILE_TRANSFER_UPLOAD_AUTH_CAPABILITY]
           : []),
       ],
@@ -14628,10 +14632,13 @@ export class BridgeWebSocketServer {
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileBrowser ? [FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
+        ...(this.fileTransfer?.diagnosticReportsAvailable
+          ? [FILE_TRANSFER_DIAGNOSTIC_REPORT_CAPABILITY]
+          : []),
         ...(this.fileBrowser && this.fileMutationAuthorizer
           ? [FILE_MUTATION_AUTH_CAPABILITY]
           : []),
-        ...(this.fileTransfer && this.fileBrowser && this.fileMutationAuthorizer
+        ...(this.fileTransfer && this.fileMutationAuthorizer
           ? [FILE_TRANSFER_UPLOAD_AUTH_CAPABILITY]
           : []),
       ],
@@ -16883,6 +16890,18 @@ export class BridgeWebSocketServer {
       }
     }
     if (!this.shouldSendToClient(ws, msg)) return null;
+    if (
+      msg.type === "session_list" &&
+      this.connectionAuth.get(ws)?.kind === "open" &&
+      Array.isArray(msg.bridgeCapabilities)
+    ) {
+      return {
+        ...msg,
+        bridgeCapabilities: msg.bridgeCapabilities.filter(
+          (capability) => capability !== FILE_TRANSFER_DIAGNOSTIC_REPORT_CAPABILITY,
+        ),
+      };
+    }
     if (!("messages" in msg) || !Array.isArray(msg.messages)) return msg;
     const messages = msg.messages as unknown[];
 

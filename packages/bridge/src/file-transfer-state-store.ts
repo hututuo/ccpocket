@@ -11,6 +11,8 @@ import {
 } from "./file-transfer-constants.js";
 import { readBoundedNoFollowMetadata } from "./file-transfer-safe-metadata.js";
 import {
+  DIAGNOSTIC_REPORT_PAYLOAD_MAX_BYTES,
+  validateDiagnosticReportIdentity,
   validateDiagnosticReportMetadata,
   type DiagnosticReportMetadata,
   type FileTransferPurpose,
@@ -50,6 +52,17 @@ export interface PersistedUploadDirectoryIdentity {
   targetIno: number;
 }
 
+export interface PersistedDiagnosticReceipt {
+  filename: string;
+  savedPath: string;
+  sizeBytes: number;
+  purpose: "diagnostic_report";
+  reportId: string;
+  archiveSha256: string;
+  mobileReportCanonicalSha256: string;
+  committedAt: number;
+}
+
 export interface PersistedUploadTransfer {
   transferId: string;
   uploadTokenHash: string;
@@ -72,6 +85,7 @@ export interface PersistedUploadTransfer {
   retainUntil: number;
   purpose?: FileTransferPurpose;
   diagnosticReport?: DiagnosticReportMetadata;
+  diagnosticReceipt?: PersistedDiagnosticReceipt;
 }
 
 interface FileTransferState {
@@ -116,6 +130,7 @@ export interface FileTransferLockInspection {
 const DEFAULT_MAX_DOWNLOADS = 256;
 const DEFAULT_MAX_UPLOADS = 256;
 const HASH_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 export const FILE_TRANSFER_STATE_MAX_BYTES = 8 * 1024 * 1024;
 const FILE_TRANSFER_MAX_PATH_LENGTH = 4_096;
 const FILE_TRANSFER_MAX_FILENAME_LENGTH = 1_024;
@@ -833,6 +848,9 @@ function cloneUpload(entry: PersistedUploadTransfer): PersistedUploadTransfer {
     ...(entry.diagnosticReport
       ? { diagnosticReport: { ...entry.diagnosticReport } }
       : {}),
+    ...(entry.diagnosticReceipt
+      ? { diagnosticReceipt: { ...entry.diagnosticReceipt } }
+      : {}),
   };
 }
 
@@ -858,6 +876,24 @@ function isIdentity(value: unknown): value is TransferFileIdentity {
     isSafeByteCount(identity.size) &&
     isFiniteNumber(identity.mtimeMs) &&
     isFiniteNumber(identity.ctimeMs)
+  );
+}
+
+function isDiagnosticReceipt(value: unknown): value is PersistedDiagnosticReceipt {
+  if (!value || typeof value !== "object") return false;
+  const receipt = value as Partial<PersistedDiagnosticReceipt>;
+  return (
+    validLeafName(receipt.filename) &&
+    validText(receipt.savedPath, FILE_TRANSFER_MAX_PATH_LENGTH) &&
+    isSafeByteCount(receipt.sizeBytes) &&
+    receipt.purpose === "diagnostic_report" &&
+    typeof receipt.reportId === "string" &&
+    validateDiagnosticReportIdentity(receipt.reportId) &&
+    typeof receipt.archiveSha256 === "string" &&
+    SHA256_PATTERN.test(receipt.archiveSha256) &&
+    typeof receipt.mobileReportCanonicalSha256 === "string" &&
+    SHA256_PATTERN.test(receipt.mobileReportCanonicalSha256) &&
+    isFiniteNumber(receipt.committedAt)
   );
 }
 
@@ -931,6 +967,11 @@ function isUpload(value: unknown): value is PersistedUploadTransfer {
     entry.partialIdentity === undefined &&
     (entry.finalIdentity === undefined ||
       (isIdentity(entry.finalIdentity) && entry.finalIdentity.size === entry.sizeBytes));
+  const diagnosticReceiptValid = entry.diagnosticReceipt === undefined ||
+    (entry.purpose === "diagnostic_report" &&
+      isDiagnosticReceipt(entry.diagnosticReceipt) &&
+      entry.diagnosticReceipt.sizeBytes === entry.sizeBytes &&
+      entry.diagnosticReceipt.reportId === entry.diagnosticReport?.reportId);
   return (
     validId(entry.transferId) &&
     typeof entry.uploadTokenHash === "string" && HASH_PATTERN.test(entry.uploadTokenHash) &&
@@ -941,7 +982,10 @@ function isUpload(value: unknown): value is PersistedUploadTransfer {
       ? entry.diagnosticReport === undefined
       : validateDiagnosticReportMetadata(entry.diagnosticReport)) &&
     (entry.purpose === "diagnostic_report" || entry.finalIdentity === undefined) &&
+    diagnosticReceiptValid &&
     isSafeByteCount(entry.sizeBytes) &&
+    (entry.purpose !== "diagnostic_report" ||
+      entry.sizeBytes <= DIAGNOSTIC_REPORT_PAYLOAD_MAX_BYTES) &&
     isSafeByteCount(entry.offset) && entry.offset <= entry.sizeBytes &&
     (pendingValid || committingValid || completeValid) &&
     isFiniteNumber(entry.createdAt) &&
