@@ -2046,3 +2046,24 @@
   有界 compatibility refresh。v2 consumer 接管前已经排队或发出的自动 `catalog`
   请求必须按 request ID 隔离并丢弃迟到响应；用户手动搜索、筛选、分页和 `list`
   请求不受影响。本决定不删除手机缓存、不改变 schema，也不授权发布或重启生产 Bridge。
+
+## 2026-08-13 手机错误现场使用真实会话诊断快照
+
+- 会话同步、排序、折叠或缓存异常必须能够从手机错误现场取证。诊断入口直接捕获现有
+  SQLite/Cubit、真实 ChatMessageList 展示投影、首页排序分组和有界 sync trace；禁止在
+  诊断层重写一套理想排序/折叠算法冒充手机实际状态。
+- 上报只由用户显式点击触发，并复用 `file_transfer_v2` 的暂存、续传、ACK、重连和
+  step-up 授权。不得新增平行上传通道或后台遥测。
+- 手机写盘前递归去凭据，Bridge 归档前再次 fail-closed 校验；报告精确绑定
+  `bridgeInstanceId + codexSourceId + provider + providerSessionId`。open-auth 不得广告或
+  使用诊断能力。
+- fail-closed 不得只拒绝响应后留下原始上传：确定性安全/身份/校验失败必须按完成文件
+  的原 inode 同时删除 Downloads payload 和持久状态；receipt 重放前重新核验不可变归档，
+  缺失归档不得报告成功。不同报告的解析归档全局串行，避免并发 16 MiB JSON 放大 RSS。
+- 手机 payload、Bridge envelope、结构条目、正文和事件环全部有界；Mac 归档目录采用
+  `0700/0600`、不跟随符号链接、不覆盖同名报告，并按时间、数量和总大小清理。
+- Bridge 同时只允许最多 4 份、合计 64 MiB 的诊断原始暂存；完成态不能绕过该预算，
+  归档与 receipt 复核采用有界串行/同回执合并，避免堆积数 GiB 原文或放大内存。
+- 断线或丢失结果后的相同上传依靠持久 receipt 幂等重放；源码和自动测试不代表真机
+  菜单、Face ID/密码、文件传输或错误现场已验收。详细流程见
+  `docs/mobile-session-diagnostic-report.md`。
