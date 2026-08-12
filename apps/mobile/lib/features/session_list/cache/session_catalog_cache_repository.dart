@@ -2510,6 +2510,124 @@ class SessionCatalogCacheRepository {
     );
   }
 
+  /// Atomically captures the readable latest-turn baseline before a provider
+  /// page request is sent.
+  ///
+  /// Creating this stage after the response arrives is unsafe: live timeline
+  /// commits during the network flight would be mistaken for the original
+  /// baseline and a terminal repair could delete or overwrite those newer
+  /// rows. A missing or superseded stage therefore fails closed.
+  Future<bool> prepareConversationLatestTurnItemsRepair({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String expectedRevision,
+    required String expectedTurnId,
+    required String? expectedCursor,
+  }) {
+    if (!target.isValid) return Future.value(false);
+    return _enqueueMutationResult(() async {
+      final db = await database.database;
+      return db.transaction((transaction) async {
+        final partitionId = await _resolveReadablePartition(
+          transaction,
+          target,
+        );
+        if (partitionId == null) return false;
+        final windows = await transaction.query(
+          SessionCatalogCacheDatabase.hotWindowsTable,
+          columns: [
+            'revision',
+            'latest_turn_complete',
+            'latest_turn_gap_json',
+            'latest_turn_gap_cursor',
+          ],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+          limit: 1,
+        );
+        if (windows.isEmpty) return false;
+        final window = windows.single;
+        final complete = (window['latest_turn_complete'] as int? ?? 1) != 0;
+        final gap = _decodeLatestTurnGap(
+          latestTurnComplete: complete,
+          encoded: window['latest_turn_gap_json'] as String?,
+        );
+        if (complete ||
+            window['revision'] != expectedRevision ||
+            gap?.repair != 'items_page' ||
+            gap?.turnId != expectedTurnId ||
+            window['latest_turn_gap_cursor'] != expectedCursor) {
+          return false;
+        }
+
+        final stages = await transaction.query(
+          SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+          limit: 1,
+        );
+        final stage = stages.isEmpty ? null : stages.single;
+        if (stage != null) {
+          return stage['revision'] == expectedRevision &&
+              stage['turn_id'] == expectedTurnId &&
+              stage['expected_cursor'] == expectedCursor;
+        }
+        if (expectedCursor != null) return false;
+
+        await transaction
+            .insert(SessionCatalogCacheDatabase.latestTurnRepairStagesTable, {
+              'partition_id': partitionId,
+              'provider': provider,
+              'provider_session_id': providerSessionId,
+              'revision': expectedRevision,
+              'turn_id': expectedTurnId,
+              'expected_cursor': null,
+              'page_depth': 0,
+              'entry_count': 0,
+              'byte_count': 0,
+              'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
+            });
+        final baseRows = await transaction.query(
+          SessionCatalogCacheDatabase.hotEntriesTable,
+          columns: ['entry_id', 'content_hash', 'message_json'],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+        );
+        for (final row in baseRows) {
+          try {
+            final decoded = jsonDecode(row['message_json']! as String);
+            if (decoded is! Map || decoded['historyTurnId'] != expectedTurnId) {
+              continue;
+            }
+            await transaction.insert(
+              SessionCatalogCacheDatabase.latestTurnRepairBaseEntriesTable,
+              {
+                'partition_id': partitionId,
+                'provider': provider,
+                'provider_session_id': providerSessionId,
+                'revision': expectedRevision,
+                'turn_id': expectedTurnId,
+                'entry_id': row['entry_id'],
+                'content_hash': row['content_hash'],
+              },
+            );
+          } catch (_) {
+            // A malformed legacy row remains readable but cannot establish a
+            // safe request-time identity fence for latest-turn replacement.
+          }
+        }
+        return true;
+      });
+    });
+  }
+
   /// Stages one ascending item page for an incomplete newest turn.
   ///
   /// The readable hot window is deliberately left untouched until the final
@@ -2576,68 +2694,11 @@ class SessionCatalogCacheRepository {
           whereArgs: [partitionId, provider, providerSessionId],
           limit: 1,
         );
-        var stage = stages.isEmpty ? null : stages.single;
-        if (stage != null &&
-            (stage['revision'] != expectedRevision ||
-                stage['turn_id'] != expectedTurnId)) {
-          if (expectedCursor != null) return false;
-          await transaction.delete(
-            SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
-            where:
-                'partition_id = ? AND provider = ? '
-                'AND provider_session_id = ?',
-            whereArgs: [partitionId, provider, providerSessionId],
-          );
-          stage = null;
-        }
-        if (stage == null) {
-          if (expectedCursor != null) return false;
-          await transaction
-              .insert(SessionCatalogCacheDatabase.latestTurnRepairStagesTable, {
-                'partition_id': partitionId,
-                'provider': provider,
-                'provider_session_id': providerSessionId,
-                'revision': expectedRevision,
-                'turn_id': expectedTurnId,
-                'expected_cursor': null,
-                'page_depth': 0,
-                'entry_count': 0,
-                'byte_count': 0,
-                'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
-              });
-          final baseRows = await transaction.query(
-            SessionCatalogCacheDatabase.hotEntriesTable,
-            columns: ['entry_id', 'content_hash', 'message_json'],
-            where:
-                'partition_id = ? AND provider = ? '
-                'AND provider_session_id = ?',
-            whereArgs: [partitionId, provider, providerSessionId],
-          );
-          for (final row in baseRows) {
-            try {
-              final decoded = jsonDecode(row['message_json']! as String);
-              if (decoded is! Map ||
-                  decoded['historyTurnId'] != expectedTurnId) {
-                continue;
-              }
-              await transaction.insert(
-                SessionCatalogCacheDatabase.latestTurnRepairBaseEntriesTable,
-                {
-                  'partition_id': partitionId,
-                  'provider': provider,
-                  'provider_session_id': providerSessionId,
-                  'revision': expectedRevision,
-                  'turn_id': expectedTurnId,
-                  'entry_id': row['entry_id'],
-                  'content_hash': row['content_hash'],
-                },
-              );
-            } catch (_) {
-              // The readable cache may retain a malformed legacy row, but it
-              // cannot participate in a resumable latest-turn identity fence.
-            }
-          }
-        } else if (stage['expected_cursor'] != expectedCursor) {
+        final stage = stages.isEmpty ? null : stages.single;
+        if (stage == null ||
+            stage['revision'] != expectedRevision ||
+            stage['turn_id'] != expectedTurnId ||
+            stage['expected_cursor'] != expectedCursor) {
           return false;
         }
 
@@ -2647,8 +2708,7 @@ class SessionCatalogCacheRepository {
           );
         }
 
-        final activeStage = stage ?? const <String, Object?>{};
-        final pageDepth = activeStage['page_depth'] as int? ?? 0;
+        final pageDepth = stage['page_depth'] as int? ?? 0;
         for (var itemOrder = 0; itemOrder < candidates.length; itemOrder++) {
           final candidate = candidates[itemOrder];
           final encoded = jsonEncode(candidate.rawMessage);

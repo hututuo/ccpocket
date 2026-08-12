@@ -234,6 +234,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   final Map<String, Future<void>> _userIndexFlights = {};
   final Map<String, Future<List<ServerMessage>?>> _userTurnDetailFlights = {};
   final Set<Completer<void>> _subscriptionReadyWaiters = {};
+  final Map<String, Set<Completer<void>>> _timelineReadyWaiters = {};
+  final Set<String> _currentGenerationTimelineKeys = {};
 
   StreamSubscription<BridgeConnectionState>? _connectionSubscription;
   StreamSubscription<List<SessionInfo>>? _sessionListSubscription;
@@ -416,7 +418,6 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _focused = next;
     if (next != null) {
       _markConversationReadBestEffort(next);
-      _scheduleAutomaticLatestTurnRepairFromCache(next);
     }
     final subscriptionId = _activeSubscriptionId;
     if (subscriptionId == null) {
@@ -429,10 +430,11 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
     if (!_canProcessContent) return;
     try {
+      final requestId = _nextRequestId('focus');
       bridge.send(
         bridge.supportsConversationSyncV2
             ? conversationSyncV2Focus(
-                requestId: _nextRequestId('focus'),
+                requestId: requestId,
                 subscriptionId: subscriptionId,
                 focused: next == null
                     ? null
@@ -442,11 +444,17 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                       ),
               )
             : conversationContentFocus(
-                requestId: _nextRequestId('focus'),
+                requestId: requestId,
                 subscriptionId: subscriptionId,
                 focused: next,
               ),
       );
+      if (next != null &&
+          _currentGenerationTimelineKeys.contains(
+            _conversationThreadKey(next.provider, next.providerSessionId),
+          )) {
+        _scheduleAutomaticLatestTurnRepairFromCache(next);
+      }
     } catch (_) {
       _handleTransportLoss();
     }
@@ -1499,6 +1507,12 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               expectedDataSourceIdentity,
               provider: provider,
             )) {
+          conversationSyncTrace(
+            '[conversation_sync_v2] event=latest_turn_repair_blocked '
+            'target=${conversationSyncTargetTrace(provider, providerSessionId)} '
+            'reason=source_identity',
+            warning: true,
+          );
           return const ConversationTurnsPageLoadResult(
             loaded: false,
             hasMore: false,
@@ -1509,6 +1523,24 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             loaded: false,
             hasMore: false,
           );
+        }
+        // A newly established subscription may still be replaying the cached
+        // revision while Bridge is preparing the current focused timeline.
+        // Paging that stale gap before the priority checkpoint races the first
+        // authoritative timeline commit and makes a valid response fail the
+        // SQLite revision fence. Keep the readable cache on screen, but wait
+        // for this connection generation's priority snapshot before repairing.
+        await _waitForLatestTurnRepairReadiness(
+          provider: provider,
+          providerSessionId: providerSessionId,
+          timeout: const Duration(seconds: 12),
+        );
+        if (expectedDataSourceIdentity != null &&
+            !matchesCurrentDataSource(
+              expectedDataSourceIdentity,
+              provider: provider,
+            )) {
+          throw const _ConversationPagingInterrupted();
         }
         final target = _cacheTarget;
         final snapshot = await cache.loadConversationWindow(
@@ -1770,6 +1802,33 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     );
     _pendingLatestTurnRepairPages[requestId] = pending;
     try {
+      if (repair == 'items_page') {
+        final prepared = await cache.prepareConversationLatestTurnItemsRepair(
+          target: target,
+          provider: provider,
+          providerSessionId: providerSessionId,
+          expectedRevision: snapshot.revision,
+          expectedTurnId: gap.turnId!,
+          expectedCursor: snapshot.latestTurnGapCursor,
+        );
+        if (!prepared) {
+          conversationSyncTrace(
+            '[conversation_sync_v2] event=latest_turn_repair_superseded '
+            'target=${conversationSyncTargetTrace(provider, providerSessionId)} '
+            'content=${shortConversationSyncToken(snapshot.revision)} '
+            'reason=preflight_fence',
+            warning: true,
+          );
+          throw const _ConversationPagingInterrupted();
+        }
+      }
+      conversationSyncTrace(
+        '[conversation_sync_v2] event=latest_turn_repair_request '
+        'target=${conversationSyncTargetTrace(provider, providerSessionId)} '
+        'generation=$_generation repair=$repair '
+        'content=${shortConversationSyncToken(snapshot.revision)} '
+        'cursor=${snapshot.latestTurnGapCursor == null ? 'start' : 'resume'}',
+      );
       final targetMessage = ConversationSyncV2Target(
         provider: provider,
         providerSessionId: providerSessionId,
@@ -1830,6 +1889,78 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           ),
         )
         .whenComplete(() => _subscriptionReadyWaiters.remove(completer));
+  }
+
+  Future<void> _waitForLatestTurnRepairReadiness({
+    required String provider,
+    required String providerSessionId,
+    required Duration timeout,
+  }) {
+    final key = _conversationThreadKey(provider, providerSessionId);
+    if (!bridge.supportsConversationSyncV2 ||
+        _v2PriorityBootstrapComplete ||
+        _currentGenerationTimelineKeys.contains(key)) {
+      return Future<void>.value();
+    }
+    if (_disposed || !_canProcessContent) {
+      return Future<void>.error(const _ConversationPagingInterrupted());
+    }
+    final completer = Completer<void>();
+    (_timelineReadyWaiters[key] ??= <Completer<void>>{}).add(completer);
+    return completer.future
+        .timeout(
+          timeout,
+          onTimeout: () => throw TimeoutException(
+            'Conversation priority sync did not finish in time.',
+            timeout,
+          ),
+        )
+        .whenComplete(() {
+          final waiters = _timelineReadyWaiters[key];
+          waiters?.remove(completer);
+          if (waiters?.isEmpty == true) _timelineReadyWaiters.remove(key);
+        });
+  }
+
+  void _markCurrentGenerationTimelineReady(
+    String provider,
+    String providerSessionId,
+  ) {
+    final key = _conversationThreadKey(provider, providerSessionId);
+    _currentGenerationTimelineKeys.add(key);
+    final focused = _focused;
+    if (focused != null &&
+        focused.provider == provider &&
+        focused.providerSessionId == providerSessionId) {
+      _scheduleAutomaticLatestTurnRepairFromCache(focused);
+    }
+    final waiters = _timelineReadyWaiters.remove(key)?.toList(growable: false);
+    if (waiters == null) return;
+    for (final waiter in waiters) {
+      if (!waiter.isCompleted) waiter.complete();
+    }
+  }
+
+  void _notifyPriorityReady() {
+    if (!_v2PriorityBootstrapComplete || !_canProcessContent) return;
+    final waiters = _timelineReadyWaiters.values
+        .expand((entries) => entries)
+        .toList(growable: false);
+    _timelineReadyWaiters.clear();
+    for (final waiter in waiters) {
+      if (!waiter.isCompleted) waiter.complete();
+    }
+  }
+
+  void _failTimelineReadyWaiters(Object error) {
+    final waiters = _timelineReadyWaiters.values
+        .expand((entries) => entries)
+        .toList(growable: false);
+    _timelineReadyWaiters.clear();
+    _currentGenerationTimelineKeys.clear();
+    for (final waiter in waiters) {
+      if (!waiter.isCompleted) waiter.completeError(error);
+    }
   }
 
   void _notifySubscriptionReady() {
@@ -1950,6 +2081,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   }
 
   void _handleTransportLoss() {
+    _failTimelineReadyWaiters(const _ConversationPagingInterrupted());
     _generation += 1;
     _pendingSubscriptionId = null;
     _activeSubscriptionId = null;
@@ -2002,6 +2134,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _retryTimer = null;
     final generation = ++_generation;
     _v2PriorityBootstrapComplete = false;
+    _currentGenerationTimelineKeys.clear();
     final requestId = _nextRequestId('subscribe');
     _pendingSubscriptionId = requestId;
     _subscriptionTargetFingerprint = targetFingerprint;
@@ -2461,10 +2594,6 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             subscriptionId: event.subscriptionId,
           );
           _notifySubscriptionReady();
-          final focused = _focused;
-          if (focused != null) {
-            _scheduleAutomaticLatestTurnRepairFromCache(focused);
-          }
           publish = ConversationSyncCacheUpdate(
             kind: ConversationSyncCacheUpdateKind.started,
             targetFingerprint: target.fingerprint,
@@ -2557,6 +2686,10 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             'target=$timelineTrace sequence=${event.sequence} '
             'content=${shortConversationSyncToken(committedRevision)} '
             'lastAssistant=${committed.lastAssistantOutputAt ?? 'none'}',
+          );
+          _markCurrentGenerationTimelineReady(
+            event.provider!,
+            event.providerSessionId!,
           );
           if (event.mode == 'snapshot' && effectiveWindowComplete) {
             _clearForcedSnapshotThread(
@@ -2747,6 +2880,13 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               }
             }
             if (snapshot == null) {
+              conversationSyncTrace(
+                '[conversation_sync_v2] event=latest_turn_repair_commit_rejected '
+                'target=${conversationSyncTargetTrace(event.provider!, event.providerSessionId!)} '
+                'content=${shortConversationSyncToken(latestTurnRequest.revision)} '
+                'reason=sqlite_fence',
+                warning: true,
+              );
               if (!latestTurnRequest.completer.isCompleted) {
                 latestTurnRequest.completer.completeError(
                   const _ConversationPagingInterrupted(),
@@ -2917,6 +3057,13 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               }
             }
             if (snapshot == null) {
+              conversationSyncTrace(
+                '[conversation_sync_v2] event=latest_turn_repair_commit_rejected '
+                'target=${conversationSyncTargetTrace(event.provider!, event.providerSessionId!)} '
+                'content=${shortConversationSyncToken(latestTurnRequest.revision)} '
+                'reason=sqlite_fence',
+                warning: true,
+              );
               if (!latestTurnRequest.completer.isCompleted) {
                 latestTurnRequest.completer.completeError(
                   const _ConversationPagingInterrupted(),
@@ -3020,6 +3167,13 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             : _pendingLatestTurnRepairPages[event.requestId!];
         if (latestTurnRequest != null &&
             !latestTurnRequest.completer.isCompleted) {
+          conversationSyncTrace(
+            '[conversation_sync_v2] event=latest_turn_repair_response_error '
+            'target=${conversationSyncTargetTrace(latestTurnRequest.provider, latestTurnRequest.providerSessionId)} '
+            'content=${shortConversationSyncToken(latestTurnRequest.revision)} '
+            'code=${event.errorCode ?? 'unknown'}',
+            warning: true,
+          );
           latestTurnRequest.completer.completeError(
             StateError(
               event.error ?? 'Conversation latest turn repair failed.',
@@ -3104,6 +3258,11 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         event.event == ConversationSyncV2EventKind.syncComplete;
     if (reachedStableCheckpoint) {
       _v2PriorityBootstrapComplete = true;
+      _notifyPriorityReady();
+      final focused = _focused;
+      if (focused != null) {
+        _scheduleAutomaticLatestTurnRepairFromCache(focused);
+      }
       _retryAttempt = 0;
       _v2RecoveryTargetFingerprint = null;
     }
@@ -3523,6 +3682,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     required bool sendUnsubscribe,
     String reason = 'unspecified',
   }) {
+    _failTimelineReadyWaiters(const _ConversationPagingInterrupted());
     _focusIntentGeneration += 1;
     _interruptFocusedRefresh();
     final subscriptionId = _activeSubscriptionId ?? _pendingSubscriptionId;
@@ -3742,6 +3902,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     if (_disposed) return;
     _disposed = true;
     _failSubscriptionReadyWaiters(
+      StateError('Conversation content sync was disposed.'),
+    );
+    _failTimelineReadyWaiters(
       StateError('Conversation content sync was disposed.'),
     );
     WidgetsBinding.instance.removeObserver(this);

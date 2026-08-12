@@ -3008,6 +3008,35 @@ void main() {
       );
       await gateway.nextOutgoing('conversation_sync_ack');
 
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: secondSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-current-gap-retry-2',
+          sequence: 2,
+          provider: 'codex',
+          providerSessionId: 'thread-current-gap-retry',
+          revision: 'revision-current-gap-retry',
+          mode: 'snapshot',
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('current-gap-retry-shell', 0)],
+          hasEarlier: true,
+          turnsNextCursor: 'older-current-gap-retry',
+          latestTurnComplete: false,
+          latestTurnGap: const ConversationSyncV2LatestTurnGap(
+            turnId: 'turn-current-gap-retry',
+            missingEntryCount: 1,
+            payloadOmitted: true,
+            repair: 'items_page',
+          ),
+          sourceEntryCount: 2,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
       final retriedRepairRequest = await gateway.nextOutgoing(
         'conversation_items_page',
       );
@@ -3025,7 +3054,7 @@ void main() {
           bridgeInstanceId: 'bridge-1',
           codexSourceId: 'codex-home-a',
           batchId: 'batch-current-gap-retry-2',
-          sequence: 2,
+          sequence: 3,
           requestId: retriedRepairRequest['requestId']! as String,
           provider: 'codex',
           providerSessionId: 'thread-current-gap-retry',
@@ -3053,7 +3082,7 @@ void main() {
       expect(cached?.turnsNextCursor, 'older-current-gap-retry');
       expect(
         (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
-        2,
+        3,
       );
     },
   );
@@ -5301,6 +5330,18 @@ class _FailingLatestTurnRepairRepository extends SessionCatalogCacheRepository {
   _FailingLatestTurnRepairRepository(super.database);
 
   int clearTargetCalls = 0;
+
+  @override
+  Future<bool> prepareConversationLatestTurnItemsRepair({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String expectedRevision,
+    required String expectedTurnId,
+    required String? expectedCursor,
+  }) {
+    return Future<bool>.value(true);
+  }
 
   @override
   Future<ConversationHotWindowSnapshot?> mergeConversationLatestTurnItemsPage({

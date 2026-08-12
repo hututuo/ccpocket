@@ -2941,6 +2941,17 @@ void main() {
         latestTurnGap: gap,
         sourceEntryCount: 3,
       );
+      expect(
+        await repository.prepareConversationLatestTurnItemsRepair(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-latest-turn',
+          expectedRevision: 'revision-latest-turn',
+          expectedTurnId: 'turn-current',
+          expectedCursor: null,
+        ),
+        isTrue,
+      );
 
       final first = await repository.mergeConversationLatestTurnItemsPage(
         target: target,
@@ -3116,6 +3127,17 @@ void main() {
         latestTurnGap: originalGap,
         sourceEntryCount: 3,
       );
+      expect(
+        await repository.prepareConversationLatestTurnItemsRepair(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-latest-turn-generation',
+          expectedRevision: 'revision-original',
+          expectedTurnId: 'turn-original',
+          expectedCursor: null,
+        ),
+        isTrue,
+      );
 
       final firstRepairPage = await repository
           .mergeConversationLatestTurnItemsPage(
@@ -3219,6 +3241,18 @@ void main() {
           );
       expect(staleContinuation, isNull);
 
+      expect(
+        await repository.prepareConversationLatestTurnItemsRepair(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-latest-turn-generation',
+          expectedRevision: 'revision-replacement',
+          expectedTurnId: 'turn-replacement',
+          expectedCursor: null,
+        ),
+        isTrue,
+      );
+
       final replacementRepair = await repository
           .mergeConversationLatestTurnItemsPage(
             target: target,
@@ -3300,6 +3334,17 @@ void main() {
         latestTurnGap: gap,
         sourceEntryCount: 3,
       );
+      expect(
+        await repository.prepareConversationLatestTurnItemsRepair(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-latest-turn-resume',
+          expectedRevision: 'revision-resume',
+          expectedTurnId: 'turn-resume',
+          expectedCursor: null,
+        ),
+        isTrue,
+      );
       await repository.mergeConversationLatestTurnItemsPage(
         target: target,
         provider: 'codex',
@@ -3376,6 +3421,135 @@ void main() {
     },
   );
 
+  test(
+    'a live row written during request flight invalidates the late repair',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-latest-turn-flight',
+        codexSourceId: 'source-latest-turn-flight',
+      );
+      const gap = ConversationSyncV2LatestTurnGap(
+        turnId: 'turn-flight',
+        missingEntryCount: 1,
+        payloadOmitted: true,
+        repair: 'items_page',
+      );
+      const shell = ConversationContentWireEntry(
+        entryId: 'turn:turn-flight:assistant:shell',
+        index: 0,
+        contentHash: 'hash-flight-shell',
+        rawMessage: {
+          'type': 'assistant',
+          'historyTurnId': 'turn-flight',
+          'message': {
+            'id': 'flight-shell',
+            'role': 'assistant',
+            'content': [
+              {'type': 'text', 'text': 'Visible shell'},
+            ],
+          },
+        },
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-flight-initial',
+        provider: 'codex',
+        providerSessionId: 'thread-flight',
+        revision: 'revision-flight',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: const [shell],
+        deletes: const [],
+        hasEarlier: true,
+        latestTurnComplete: false,
+        latestTurnGap: gap,
+        sourceEntryCount: 2,
+      );
+      expect(
+        await repository.prepareConversationLatestTurnItemsRepair(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-flight',
+          expectedRevision: 'revision-flight',
+          expectedTurnId: 'turn-flight',
+          expectedCursor: null,
+        ),
+        isTrue,
+      );
+
+      const live = ConversationContentWireEntry(
+        entryId: 'turn:turn-flight:assistant:live',
+        index: 1,
+        contentHash: 'hash-flight-live',
+        rawMessage: {
+          'type': 'assistant',
+          'historyTurnId': 'turn-flight',
+          'message': {
+            'id': 'flight-live',
+            'role': 'assistant',
+            'content': [
+              {'type': 'text', 'text': 'Arrived while request was in flight'},
+            ],
+          },
+        },
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-flight-live',
+        provider: 'codex',
+        providerSessionId: 'thread-flight',
+        revision: 'revision-flight',
+        baseRevision: 'revision-flight',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: const [live],
+        deletes: const [],
+        hasEarlier: true,
+        latestTurnComplete: false,
+        latestTurnGap: gap,
+        sourceEntryCount: 3,
+      );
+
+      final late = await repository.mergeConversationLatestTurnItemsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-flight',
+        expectedRevision: 'revision-flight',
+        expectedTurnId: 'turn-flight',
+        rawMessages: const [
+          {
+            'type': 'assistant',
+            'historyTurnId': 'turn-flight',
+            'message': {
+              'id': 'provider-old-terminal',
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'Older provider page'},
+              ],
+            },
+          },
+        ],
+        expectedCursor: null,
+        nextCursor: null,
+      );
+      expect(late, isNull);
+      final cached = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-flight',
+      );
+      expect(
+        cached?.entries.map((entry) => entry.entryId),
+        contains('turn:turn-flight:assistant:live'),
+      );
+      expect(cached?.latestTurnComplete, isFalse);
+      expect(cached?.latestTurnGap?.turnId, 'turn-flight');
+    },
+  );
+
   test('thread reset clears the orphaned latest-turn repair cursor', () async {
     final target = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-latest-turn-reset',
@@ -3404,6 +3578,17 @@ void main() {
       latestTurnComplete: false,
       latestTurnGap: gap,
       sourceEntryCount: 2,
+    );
+    expect(
+      await repository.prepareConversationLatestTurnItemsRepair(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-reset',
+        expectedRevision: 'revision-reset',
+        expectedTurnId: 'turn-reset',
+        expectedCursor: null,
+      ),
+      isTrue,
     );
     await repository.mergeConversationLatestTurnItemsPage(
       target: target,
@@ -3437,6 +3622,18 @@ void main() {
     );
     expect(reset?.latestTurnGapCursor, isNull);
     expect(reset?.entries, isNotEmpty);
+
+    expect(
+      await repository.prepareConversationLatestTurnItemsRepair(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-reset',
+        expectedRevision: 'revision-reset',
+        expectedTurnId: 'turn-reset',
+        expectedCursor: null,
+      ),
+      isTrue,
+    );
 
     final restarted = await repository.mergeConversationLatestTurnItemsPage(
       target: target,
