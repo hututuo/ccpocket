@@ -496,6 +496,13 @@ if [[ "$command_name" == "bridge-runtime" ]]; then
   cp packages/bridge/file-browser-posix-helper.c "$stage_runtime/packages/bridge/file-browser-posix-helper.c"
   cp LICENSE "$stage_runtime/packages/bridge/LICENSE"
   cli_sha="$(shasum -a 256 "$stage_runtime/packages/bridge/dist/cli.js" | awk '{print $1}')"
+  source_cli_sha="$(shasum -a 256 packages/bridge/dist/cli.js | awk '{print $1}')"
+  source_sync_sha="$(shasum -a 256 packages/bridge/dist/local-features/conversation-sync-v2.js | awk '{print $1}')"
+  runtime_sync_sha="$(shasum -a 256 "$stage_runtime/packages/bridge/dist/local-features/conversation-sync-v2.js" | awk '{print $1}')"
+  [[ "$cli_sha" == "$source_cli_sha" ]] || die "runtime CLI does not match the exact HEAD build"
+  [[ "$runtime_sync_sha" == "$source_sync_sha" ]] || die "runtime conversation sync bundle does not match the exact HEAD build"
+  diff -qr packages/bridge/dist "$stage_runtime/packages/bridge/dist" >/dev/null \
+    || die "runtime Bridge dist differs from the exact HEAD build"
   cat > "$stage_runtime/RELEASE_MANIFEST.txt" <<EOF
 version=$runtime_name
 source_head=$head_sha
@@ -504,7 +511,16 @@ bridge_tree=$bridge_tree
 package_lock=$root_lock
 seed_runtime=$(basename "$current_runtime")
 cli_sha256=$cli_sha
+conversation_sync_sha256=$runtime_sync_sha
 EOF
+  grep -Fqx "source_head=$head_sha" "$stage_runtime/RELEASE_MANIFEST.txt" \
+    || die "runtime manifest source_head mismatch"
+  grep -Fq 'CODEX_TURN_ITEM_CURSOR_PREFIX' \
+    "$stage_runtime/packages/bridge/dist/local-features/conversation-sync-v2.js" \
+    || die "runtime is missing the bounded Codex turn-item cursor"
+  grep -Fq 'withCachedCodexTurnItems' \
+    "$stage_runtime/packages/bridge/dist/local-features/conversation-sync-v2.js" \
+    || die "runtime is missing the bounded Codex turn-item fallback"
   mv "$stage_runtime" "$final_runtime"
   trap 'rm -f "$changed_file"' EXIT
   echo "Bridge runtime prepared (not activated): $final_runtime"
