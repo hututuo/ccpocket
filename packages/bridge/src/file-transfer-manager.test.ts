@@ -14,6 +14,8 @@ import {
 import type { FileTransferServerMessage } from "./file-transfer-protocol.js";
 import { FileTransferStateStore } from "./file-transfer-state-store.js";
 import { FileTransferUploadStore } from "./file-transfer-upload-store.js";
+import { DiagnosticReportArchiver } from "./file-transfer-diagnostic.js";
+import { createHash } from "node:crypto";
 
 const roots: string[] = [];
 const managers: FileTransferManager[] = [];
@@ -26,6 +28,7 @@ interface Fixture {
   downloadStore: FileTransferDownloadStore;
   uploadStore: FileTransferUploadStore;
   manager: FileTransferManager;
+  reports: string;
 }
 
 async function fixture(options: {
@@ -39,6 +42,7 @@ async function fixture(options: {
   const source = join(root, "report.pdf");
   const downloads = join(root, "downloads");
   const parts = join(root, "parts");
+  const reports = join(root, "reports");
   await writeFile(source, "source");
   await mkdir(downloads);
   let idSequence = 0;
@@ -86,10 +90,28 @@ async function fixture(options: {
     uploadStore,
     baseUrl: "http://100.64.0.1:8765",
     fileMutationAuthorizer,
+    diagnosticReportArchiver: new DiagnosticReportArchiver({
+      reportsDirectory: reports,
+      bridgeInstanceId: "bridge-test",
+      codexSourceId: "source-bridge",
+      bridgeVersion: "1.69.6-test",
+      getRuntimeStates: () => [{
+        bridgeSessionId: "bridge-session",
+        provider: "codex",
+        providerSessionId: "thread-diagnostic",
+        projectPath: root,
+        processStatus: "running",
+        executionHost: "bridge",
+        controlState: "writable",
+        authorityGeneration: "generation-1",
+        activeTurnId: "turn-1",
+        observedAt: "2026-08-12T00:02:00.000Z",
+      }],
+    }),
   });
   await manager.init();
   managers.push(manager);
-  return { root, source, state, downloadStore, uploadStore, manager };
+  return { root, source, state, downloadStore, uploadStore, manager, reports };
 }
 
 function binding(
@@ -529,6 +551,135 @@ describe("FileTransferManager v2", () => {
       sizeBytes: 5,
       savedPath: join(f.root, "downloads", "from phone.txt"),
     });
+  });
+
+  it("archives a diagnostic upload with Bridge runtime authority and removes the Downloads artifact", async () => {
+    const f = await fixture();
+    const client = {};
+    const phone = binding([
+      "file_transfer_upload_ready_v2",
+      "file_transfer_upload_result_v2",
+      "file_transfer_upload_result_v3",
+    ]);
+    f.manager.connect(client, phone.binding);
+    const body = Buffer.from(JSON.stringify({ event: "diagnostic", details: { ok: true } }));
+    const diagnosticReport = {
+      schemaVersion: 1 as const,
+      reportId: "report_manager_1",
+      provider: "codex",
+      providerSessionId: "thread-diagnostic",
+      codexSourceId: "source-phone",
+      capturedAtStart: "2026-08-12T00:00:00.000Z",
+      capturedAtEnd: "2026-08-12T00:01:00.000Z",
+      sha256: createHash("sha256").update(body).digest("hex"),
+    };
+    await f.manager.handleClientMessage(client, {
+      type: "file_transfer_upload_prepare_v2",
+      requestId: "diagnostic-prepare",
+      transferId: "upload_diagnostic1",
+      resumeToken,
+      filename: "phone-diagnostic.json",
+      sizeBytes: body.length,
+      purpose: "diagnostic_report",
+      diagnosticReport,
+    });
+    const ready = phone.messages[0];
+    if (ready.type !== "file_transfer_upload_ready_v2") throw new Error("expected ready");
+    await f.manager.appendUpload(
+      ready.transferId,
+      ready.uploadToken,
+      0,
+      body.length,
+      chunks(body.toString()),
+      new AbortController().signal,
+    );
+    const result = phone.messages.at(-1);
+    expect(result).toMatchObject({
+      type: "file_transfer_upload_result_v3",
+      success: true,
+      purpose: "diagnostic_report",
+      reportId: "report_manager_1",
+    });
+    if (result?.type !== "file_transfer_upload_result_v3" || !result.savedPath) {
+      throw new Error("expected diagnostic result path");
+    }
+    expect(result.filename).toMatch(/^report_manager_1-/);
+    expect(await readFile(result.savedPath, "utf8")).toContain("\"executionHost\": \"bridge\"");
+    expect(await f.state.getUpload("upload_diagnostic1")).toBeUndefined();
+    await expect(readFile(join(f.root, "downloads", "phone-diagnostic.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("fails a diagnostic prepare closed when the phone lacks the v3 result path", async () => {
+    const f = await fixture();
+    const client = {};
+    const phone = binding(["file_transfer_upload_ready_v2", "file_transfer_upload_result_v2"]);
+    f.manager.connect(client, phone.binding);
+    const body = Buffer.from("{}");
+    await f.manager.handleClientMessage(client, {
+      type: "file_transfer_upload_prepare_v2",
+      requestId: "diagnostic-no-v3",
+      transferId: "upload_diagnostic3",
+      resumeToken: "t".repeat(43),
+      filename: "diagnostic.json",
+      sizeBytes: body.length,
+      purpose: "diagnostic_report",
+      diagnosticReport: {
+        schemaVersion: 1,
+        reportId: "report_no_v3",
+        provider: "codex",
+        providerSessionId: "thread-diagnostic",
+        capturedAtStart: "2026-08-12T00:00:00.000Z",
+        capturedAtEnd: "2026-08-12T00:01:00.000Z",
+        sha256: createHash("sha256").update(body).digest("hex"),
+      },
+    });
+    expect(phone.messages).toMatchObject([
+      expect.objectContaining({
+        type: "file_transfer_upload_result_v2",
+        success: false,
+        errorCode: "diagnostic_result_unsupported",
+      }),
+    ]);
+    expect(await f.state.getUpload("upload_diagnostic3")).toBeUndefined();
+  });
+
+  it("keeps a completed diagnostic upload for safe retry when its checksum is invalid", async () => {
+    const f = await fixture();
+    const client = {};
+    const phone = binding([
+      "file_transfer_upload_ready_v2",
+      "file_transfer_upload_result_v2",
+      "file_transfer_upload_result_v3",
+    ]);
+    f.manager.connect(client, phone.binding);
+    const body = Buffer.from(JSON.stringify({ event: "diagnostic" }));
+    const prepare = {
+      type: "file_transfer_upload_prepare_v2" as const,
+      requestId: "diagnostic-invalid",
+      transferId: "upload_diagnostic2",
+      resumeToken: "s".repeat(43),
+      filename: "invalid-diagnostic.json",
+      sizeBytes: body.length,
+      purpose: "diagnostic_report" as const,
+      diagnosticReport: {
+        schemaVersion: 1 as const,
+        reportId: "report_manager_2",
+        provider: "codex",
+        providerSessionId: "thread-diagnostic",
+        capturedAtStart: "2026-08-12T00:00:00.000Z",
+        capturedAtEnd: "2026-08-12T00:01:00.000Z",
+        sha256: "0".repeat(64),
+      },
+    };
+    await f.manager.handleClientMessage(client, prepare);
+    const ready = phone.messages[0];
+    if (ready.type !== "file_transfer_upload_ready_v2") throw new Error("expected ready");
+    await f.manager.appendUpload(ready.transferId, ready.uploadToken, 0, body.length, chunks(body.toString()), new AbortController().signal);
+    expect(phone.messages.at(-1)).toMatchObject({ success: false, errorCode: "diagnostic_sha256_mismatch" });
+    expect(await f.state.getUpload(prepare.transferId)).toMatchObject({ status: "complete" });
+    await expect(readFile(join(f.root, "downloads", "invalid-diagnostic.json"))).resolves.toEqual(body);
+    await f.manager.handleClientMessage(client, { ...prepare, requestId: "diagnostic-invalid-retry" });
+    expect(phone.messages.at(-1)).toMatchObject({ success: false, errorCode: "diagnostic_sha256_mismatch" });
   });
 
   it("replays a completed upload result after ready or result response loss", async () => {

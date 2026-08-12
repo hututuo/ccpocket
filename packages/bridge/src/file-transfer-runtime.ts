@@ -8,6 +8,7 @@ import {
 } from "./file-transfer-state-store.js";
 import { FileTransferUploadStore } from "./file-transfer-upload-store.js";
 import type { FileMutationAuthorizer } from "./file-mutation-auth.js";
+import type { DiagnosticReportArchiver } from "./file-transfer-diagnostic.js";
 
 export interface FileTransferRuntime {
   manager: FileTransferManager;
@@ -25,6 +26,7 @@ export interface FileTransferRuntimeOptions {
   partialDirectory?: string;
   fileMutationAuthorizer?: FileMutationAuthorizer;
   warn?: (message: string) => void;
+  diagnosticReportArchiver?: DiagnosticReportArchiver;
 }
 
 /**
@@ -66,6 +68,7 @@ export async function initializeFileTransferRuntime(
       uploadStore,
       baseUrl: options.baseUrl,
       fileMutationAuthorizer: options.fileMutationAuthorizer,
+      diagnosticReportArchiver: options.diagnosticReportArchiver,
     });
     await manager.init();
     return {

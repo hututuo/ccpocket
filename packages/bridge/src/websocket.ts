@@ -2429,6 +2429,15 @@ export class BridgeWebSocketServer {
           .get(client as WebSocket)
           ?.has(messageType) ?? false,
     }, process.env, { conversationSyncV2: conversationSyncV2Options });
+    if (
+      this.fileTransfer &&
+      typeof (this.fileTransfer as FileTransferManager).setDiagnosticRuntimeStateProvider ===
+        "function"
+    ) {
+      this.fileTransfer.setDiagnosticRuntimeStateProvider(() =>
+        this.localFeatures.listRuntimeConversationStates(),
+      );
+    }
     this.codexActionBrokerNotificationUnsubscribe =
       this.codexActionBrokerRuntime?.subscribe((update) => {
         try {
@@ -6000,6 +6009,18 @@ export class BridgeWebSocketServer {
         type: "error",
         errorCode: "owner_authentication_required",
         message: "This Bridge surface requires an API key or paired device.",
+      });
+      return;
+    }
+    if (
+      authState?.kind === "open" &&
+      msg.type === "file_transfer_upload_prepare_v2" &&
+      msg.purpose === "diagnostic_report"
+    ) {
+      this.send(ws, {
+        type: "error",
+        errorCode: "owner_authentication_required",
+        message: "Diagnostic reports require an authenticated Bridge connection.",
       });
       return;
     }

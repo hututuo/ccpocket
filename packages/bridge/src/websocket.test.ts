@@ -1082,6 +1082,33 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         uploadPrepare,
       );
     });
+    const diagnosticPrepare = {
+      ...uploadPrepare,
+      requestId: "diagnostic-open-request",
+      transferId: "upload_diagnostic_open",
+      purpose: "diagnostic_report",
+      diagnosticReport: {
+        schemaVersion: 1,
+        reportId: "report_open_auth",
+        provider: "codex",
+        providerSessionId: "thread-open-auth",
+        capturedAtStart: "2026-08-12T00:00:00.000Z",
+        capturedAtEnd: "2026-08-12T00:01:00.000Z",
+        sha256: "a".repeat(64),
+      },
+    };
+    listeners.get("message")?.(Buffer.from(JSON.stringify(diagnosticPrepare)));
+    await vi.waitFor(() => {
+      expect(fileTransfer.handleClientMessage).not.toHaveBeenCalledWith(
+        ws,
+        diagnosticPrepare,
+      );
+      expect(ws.send.mock.calls.map((call: unknown[]) => JSON.parse(call[0] as string)))
+        .toContainEqual(expect.objectContaining({
+          type: "error",
+          errorCode: "owner_authentication_required",
+        }));
+    });
     await vi.waitFor(() => {
       expect(consoleError).toHaveBeenCalledWith(
         "[ws] Failed to handle file_transfer_upload_prepare_v2:",

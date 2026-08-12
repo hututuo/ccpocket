@@ -9,7 +9,7 @@ import { GalleryStore } from "./gallery-store.js";
 import { printStartupInfo } from "./startup-info.js";
 import { MdnsAdvertiser, shouldAdvertiseMdns } from "./mdns.js";
 import { ProjectHistory } from "./project-history.js";
-import { getVersionInfo } from "./version.js";
+import { getPackageVersion, getVersionInfo } from "./version.js";
 import { fetchAllUsage } from "./usage.js";
 import { runDoctor } from "./doctor.js";
 import { DebugTraceStore } from "./debug-trace-store.js";
@@ -31,6 +31,7 @@ import { ArtifactRegistry } from "./artifact-registry.js";
 import { ArtifactManager } from "./artifact-manager.js";
 import { GeneratedArtifactStore } from "./generated-artifact-store.js";
 import { initializeFileTransferRuntime } from "./file-transfer-runtime.js";
+import { DiagnosticReportArchiver } from "./file-transfer-diagnostic.js";
 import { FileBrowserManager } from "./file-browser-manager.js";
 import {
   FileMutationAuthorizer,
@@ -444,6 +445,11 @@ export async function startServer() {
     downloadDirectory: process.env.BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR?.trim(),
     partialDirectory: process.env.BRIDGE_FILE_TRANSFER_PARTIAL_DIR?.trim(),
     fileMutationAuthorizer,
+    diagnosticReportArchiver: new DiagnosticReportArchiver({
+      bridgeInstanceId: promptHistoryStore.bridgeInstanceId,
+      codexSourceId: codexSourceIdentity(),
+      bridgeVersion: getPackageVersion(),
+    }),
     warn: (message) => console.warn(`[bridge] ${message}`),
   });
   let fileTransfer = fileTransferRuntime?.manager;

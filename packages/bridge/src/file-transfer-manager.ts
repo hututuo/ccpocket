@@ -6,6 +6,10 @@ import type { PersistedUploadTransfer } from "./file-transfer-state-store.js";
 import type { TransferFileIdentity } from "./file-transfer-state-store.js";
 import type { FileTransferUploadStore, UploadAppendResult } from "./file-transfer-upload-store.js";
 import {
+  DiagnosticReportArchiver,
+} from "./file-transfer-diagnostic.js";
+import type { LocalFeatureRuntimeConversationState } from "./local-features/runtime.js";
+import {
   FileMutationAuthError,
   type FileMutationAuthorizer,
 } from "./file-mutation-auth.js";
@@ -71,6 +75,7 @@ export interface FileTransferManagerOptions {
   uploadStore: FileTransferUploadStore;
   baseUrl?: string;
   fileMutationAuthorizer?: FileMutationAuthorizer;
+  diagnosticReportArchiver?: DiagnosticReportArchiver;
 }
 
 /** Coordinates live peers while byte/session authority stays in persistent stores. */
@@ -79,6 +84,7 @@ export class FileTransferManager {
   readonly uploadStore: FileTransferUploadStore;
   private readonly baseUrl?: string;
   private readonly fileMutationAuthorizer?: FileMutationAuthorizer;
+  private readonly diagnosticReportArchiver?: DiagnosticReportArchiver;
   private readonly clients = new Map<object, FileTransferClientBinding>();
   private readonly uploadClients = new Map<string, BoundUploadClient>();
   private readonly downloadClients = new Map<string, BoundDownloadClient>();
@@ -87,12 +93,14 @@ export class FileTransferManager {
   private readonly activeControlOperations = new Set<Promise<void>>();
   private readonly activeOfferOperations = new Set<Promise<unknown>>();
   private closeBarrier?: Promise<void>;
+  private readonly diagnosticArchiveLocks = new Map<string, Promise<void>>();
 
   constructor(options: FileTransferManagerOptions) {
     this.downloadStore = options.downloadStore;
     this.uploadStore = options.uploadStore;
     this.baseUrl = options.baseUrl;
     this.fileMutationAuthorizer = options.fileMutationAuthorizer;
+    this.diagnosticReportArchiver = options.diagnosticReportArchiver;
   }
 
   async init(): Promise<void> {
@@ -144,6 +152,7 @@ export class FileTransferManager {
     this.uploadClients.clear();
     this.downloadClients.clear();
     this.authorizedUploads.clear();
+    this.diagnosticArchiveLocks.clear();
     await this.uploadStore.close();
   }
 
@@ -336,8 +345,14 @@ export class FileTransferManager {
       body,
       signal,
     );
-    if (result.completed) this.sendCompletedUpload(result.entry);
+    if (result.completed) await this.handleCompletedUpload(result.entry);
     return result;
+  }
+
+  setDiagnosticRuntimeStateProvider(
+    provider: () => LocalFeatureRuntimeConversationState[],
+  ): void {
+    this.diagnosticReportArchiver?.setRuntimeStateProvider(provider);
   }
 
   private async prepareUpload(
@@ -354,6 +369,16 @@ export class FileTransferManager {
       return;
     }
     try {
+      if (
+        message.purpose === "diagnostic_report" &&
+        !binding.supports(UPLOAD_RESULT_WITH_PATH_MESSAGE)
+      ) {
+        throw new FileTransferError(
+          409,
+          "diagnostic_result_unsupported",
+          "Diagnostic reports require file_transfer_upload_result_v3",
+        );
+      }
       if (!this.fileMutationAuthorizer) {
         throw new FileMutationAuthError(
           "unsupported_capability",
@@ -384,6 +409,12 @@ export class FileTransferManager {
         message.resumeToken,
         message.filename,
         message.sizeBytes,
+        {
+          ...(message.purpose ? { purpose: message.purpose } : {}),
+          ...(message.diagnosticReport
+            ? { diagnosticReport: message.diagnosticReport }
+            : {}),
+        },
       );
       if (requiresAuthorization) {
         this.authorizedUploads.set(message.transferId, {
@@ -397,7 +428,7 @@ export class FileTransferManager {
         requestId: message.requestId,
       });
       if (prepared.status === "complete") {
-        this.sendCompletedUpload(prepared.entry, message.requestId);
+        await this.handleCompletedUpload(prepared.entry, message.requestId);
         return;
       }
       const baseUrl = this.resolveBaseUrl(undefined, binding.httpBaseUrl);
@@ -565,6 +596,107 @@ export class FileTransferManager {
         error: transferError.message,
       });
     }
+  }
+
+  private async handleCompletedUpload(
+    entry: PersistedUploadTransfer,
+    requestId?: string,
+  ): Promise<void> {
+    if (entry.purpose !== "diagnostic_report") {
+      this.sendCompletedUpload(entry, requestId);
+      return;
+    }
+    const owner = this.uploadClients.get(entry.transferId);
+    const binding = owner ? this.clients.get(owner.client) : undefined;
+    if (!owner || !binding?.isOpen()) return;
+    if (!binding.supports(UPLOAD_RESULT_WITH_PATH_MESSAGE)) {
+      this.sendCompletedUploadFailure(
+        entry,
+        requestId,
+        new FileTransferError(
+          409,
+          "diagnostic_result_unsupported",
+          "Diagnostic reports require file_transfer_upload_result_v3",
+        ),
+      );
+      return;
+    }
+    const run = async (): Promise<void> => {
+      try {
+        if (!this.diagnosticReportArchiver || !entry.diagnosticReport) {
+          throw new FileTransferError(
+            503,
+            "diagnostic_archiver_unavailable",
+            "Diagnostic report archiving is unavailable",
+          );
+        }
+        const bytes = await this.uploadStore.readCompletedUpload(entry);
+        const archive = await this.diagnosticReportArchiver.archive(
+          entry.diagnosticReport,
+          bytes,
+          entry.sizeBytes,
+        );
+        await this.uploadStore.removeCompletedUpload(entry);
+        const currentOwner = this.uploadClients.get(entry.transferId);
+        const currentBinding = currentOwner
+          ? this.clients.get(currentOwner.client)
+          : undefined;
+        if (!currentOwner || !currentBinding?.isOpen()) return;
+        const sent = currentBinding.send({
+          type: UPLOAD_RESULT_WITH_PATH_MESSAGE,
+          requestId: requestId ?? currentOwner.requestId,
+          transferId: entry.transferId,
+          success: true,
+          filename: archive.filename,
+          sizeBytes: archive.sizeBytes,
+          savedPath: archive.savedPath,
+          purpose: "diagnostic_report",
+          reportId: entry.diagnosticReport.reportId,
+        });
+        if (sent) {
+          this.uploadClients.delete(entry.transferId);
+          this.authorizedUploads.delete(entry.transferId);
+        }
+      } catch (error) {
+        this.sendCompletedUploadFailure(entry, requestId, error);
+      }
+    };
+    const previous = this.diagnosticArchiveLocks.get(entry.transferId);
+    const operation = (previous ?? Promise.resolve()).then(run, run);
+    this.diagnosticArchiveLocks.set(
+      entry.transferId,
+      operation,
+    );
+    try {
+      await operation;
+    } finally {
+      if (this.diagnosticArchiveLocks.get(entry.transferId) === operation) {
+        this.diagnosticArchiveLocks.delete(entry.transferId);
+      }
+    }
+  }
+
+  private sendCompletedUploadFailure(
+    entry: PersistedUploadTransfer,
+    requestId: string | undefined,
+    error: unknown,
+  ): void {
+    const owner = this.uploadClients.get(entry.transferId);
+    const binding = owner ? this.clients.get(owner.client) : undefined;
+    if (!owner || !binding?.isOpen() || !binding.supports(UPLOAD_RESULT_WITH_PATH_MESSAGE)) return;
+    const transferError = error instanceof FileTransferError
+      ? error
+      : new FileTransferError(500, "diagnostic_archive_failed", "Unable to archive diagnostic report");
+    binding.send({
+      type: UPLOAD_RESULT_WITH_PATH_MESSAGE,
+      requestId: requestId ?? owner.requestId,
+      transferId: entry.transferId,
+      success: false,
+      errorCode: transferError.code,
+      error: transferError.message,
+      purpose: "diagnostic_report",
+      ...(entry.diagnosticReport ? { reportId: entry.diagnosticReport.reportId } : {}),
+    });
   }
 
   private sendCompletedUpload(entry: PersistedUploadTransfer, requestId?: string): void {

@@ -10,6 +10,11 @@ import {
   FILE_TRANSFER_MAX_FILE_SIZE_BYTES,
 } from "./file-transfer-constants.js";
 import { readBoundedNoFollowMetadata } from "./file-transfer-safe-metadata.js";
+import {
+  validateDiagnosticReportMetadata,
+  type DiagnosticReportMetadata,
+  type FileTransferPurpose,
+} from "./file-transfer-diagnostic.js";
 
 export interface TransferFileIdentity {
   dev: number;
@@ -60,10 +65,13 @@ export interface PersistedUploadTransfer {
   partialPath?: string;
   partialIdentity?: TransferFileIdentity;
   finalFilename?: string;
+  finalIdentity?: TransferFileIdentity;
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
   retainUntil: number;
+  purpose?: FileTransferPurpose;
+  diagnosticReport?: DiagnosticReportMetadata;
 }
 
 interface FileTransferState {
@@ -819,6 +827,12 @@ function cloneUpload(entry: PersistedUploadTransfer): PersistedUploadTransfer {
     ...(entry.partialIdentity
       ? { partialIdentity: cloneIdentity(entry.partialIdentity) }
       : {}),
+    ...(entry.finalIdentity
+      ? { finalIdentity: cloneIdentity(entry.finalIdentity) }
+      : {}),
+    ...(entry.diagnosticReport
+      ? { diagnosticReport: { ...entry.diagnosticReport } }
+      : {}),
   };
 }
 
@@ -895,7 +909,8 @@ function isUpload(value: unknown): value is PersistedUploadTransfer {
     validText(entry.partialPath, FILE_TRANSFER_MAX_PATH_LENGTH) &&
     isIdentity(entry.partialIdentity) &&
     entry.partialIdentity.size === entry.offset &&
-    entry.finalFilename === undefined;
+    entry.finalFilename === undefined &&
+    entry.finalIdentity === undefined;
   const committingValid =
     entry.status === "committing" &&
     entry.rollbackPending === undefined &&
@@ -904,7 +919,8 @@ function isUpload(value: unknown): value is PersistedUploadTransfer {
     isIdentity(entry.partialIdentity) &&
     entry.partialIdentity.size === entry.offset &&
     entry.offset === entry.sizeBytes &&
-    validLeafName(entry.finalFilename);
+    validLeafName(entry.finalFilename) &&
+    entry.finalIdentity === undefined;
   const completeValid =
     entry.status === "complete" &&
     entry.rollbackPending === undefined &&
@@ -912,12 +928,19 @@ function isUpload(value: unknown): value is PersistedUploadTransfer {
     validLeafName(entry.finalFilename) &&
     entry.offset === entry.sizeBytes &&
     entry.partialPath === undefined &&
-    entry.partialIdentity === undefined;
+    entry.partialIdentity === undefined &&
+    (entry.finalIdentity === undefined ||
+      (isIdentity(entry.finalIdentity) && entry.finalIdentity.size === entry.sizeBytes));
   return (
     validId(entry.transferId) &&
     typeof entry.uploadTokenHash === "string" && HASH_PATTERN.test(entry.uploadTokenHash) &&
     typeof entry.resumeTokenHash === "string" && HASH_PATTERN.test(entry.resumeTokenHash) &&
     validLeafName(entry.filename) &&
+    (entry.purpose === undefined || entry.purpose === "file" || entry.purpose === "diagnostic_report") &&
+    (entry.purpose !== "diagnostic_report"
+      ? entry.diagnosticReport === undefined
+      : validateDiagnosticReportMetadata(entry.diagnosticReport)) &&
+    (entry.purpose === "diagnostic_report" || entry.finalIdentity === undefined) &&
     isSafeByteCount(entry.sizeBytes) &&
     isSafeByteCount(entry.offset) && entry.offset <= entry.sizeBytes &&
     (pendingValid || committingValid || completeValid) &&
