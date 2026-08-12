@@ -493,6 +493,12 @@ if [[ "$command_name" == "bridge-runtime" ]]; then
   dist_extract=""
   ditto packages/bridge/scripts "$stage_runtime/packages/bridge/scripts"
   cp packages/bridge/package.json "$stage_runtime/packages/bridge/package.json"
+  runtime_package_tmp="$(mktemp /private/tmp/ccpocket-runtime-package.XXXXXX)"
+  jq --arg version "$runtime_name" '.version = $version' \
+    "$stage_runtime/packages/bridge/package.json" > "$runtime_package_tmp"
+  mv "$runtime_package_tmp" "$stage_runtime/packages/bridge/package.json"
+  [[ "$(jq -r '.version' "$stage_runtime/packages/bridge/package.json")" == "$runtime_name" ]] \
+    || die "runtime package version does not match the immutable runtime name"
   mkdir -p "$stage_runtime/packages/bridge/src"
   cp packages/bridge/src/file-browser-posix-helper.c \
     "$stage_runtime/packages/bridge/src/file-browser-posix-helper.c"
