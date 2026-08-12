@@ -10,6 +10,110 @@ const _fileTransferMaxIdLength = 128;
 const _fileTransferMaxFilenameLength = 1024;
 const _fileTransferMaxUrlLength = 4096;
 const _fileTransferMaxErrorLength = 2048;
+const _fileTransferMaxProviderLength = 64;
+const _fileTransferMaxProviderSessionIdLength = 256;
+const _fileTransferMaxCodexSourceIdLength = 256;
+const _fileTransferMaxTimestampLength = 128;
+
+/// The bounded metadata carried alongside a diagnostic report upload.
+///
+/// A typedef keeps the wire-facing API map-shaped (and therefore compatible
+/// with the Bridge protocol) while giving storage and service code one shared
+/// public type. Callers must still use [normalizeDiagnosticReportMetadata] to
+/// obtain a validated/canonical map before persisting it.
+typedef DiagnosticReportMetadata = Map<String, Object?>;
+
+const _diagnosticReportMetadataKeys = {
+  'schemaVersion',
+  'reportId',
+  'provider',
+  'providerSessionId',
+  'codexSourceId',
+  'capturedAtStart',
+  'capturedAtEnd',
+  'sha256',
+};
+
+/// Validates and copies the bounded diagnostic metadata contract.
+///
+/// The returned map contains only JSON-safe scalar values and is detached
+/// from the caller's mutable map, so a queued/resumable upload cannot silently
+/// change identity after its checkpoint is written.
+DiagnosticReportMetadata normalizeDiagnosticReportMetadata(Object? value) {
+  if (value is! Map) {
+    throw const FormatException('diagnostic report metadata must be an object');
+  }
+  final source = <Object?, Object?>{};
+  for (final entry in value.entries) {
+    source[entry.key] = entry.value;
+  }
+  if (source.keys.any(
+    (key) => key is! String || !_diagnosticReportMetadataKeys.contains(key),
+  )) {
+    throw const FormatException(
+      'diagnostic report metadata has unknown fields',
+    );
+  }
+  final schemaVersion = source['schemaVersion'];
+  if (schemaVersion is! int || schemaVersion != 1) {
+    throw const FormatException('diagnostic report schemaVersion is invalid');
+  }
+  final reportId = _diagnosticRequiredText(
+    source['reportId'],
+    'reportId',
+    _fileTransferMaxIdLength,
+  );
+  if (!RegExp(r'^[A-Za-z0-9._:-]{1,128}$').hasMatch(reportId)) {
+    throw const FormatException('diagnostic report reportId is invalid');
+  }
+  final provider = _diagnosticRequiredText(
+    source['provider'],
+    'provider',
+    _fileTransferMaxProviderLength,
+  );
+  final providerSessionId = _diagnosticRequiredText(
+    source['providerSessionId'],
+    'providerSessionId',
+    _fileTransferMaxProviderSessionIdLength,
+  );
+  final codexSourceId = source['codexSourceId'];
+  if (codexSourceId != null &&
+      !_diagnosticIsBoundedText(
+        codexSourceId,
+        _fileTransferMaxCodexSourceIdLength,
+      )) {
+    throw const FormatException('diagnostic report codexSourceId is invalid');
+  }
+  final capturedAtStart = _diagnosticRequiredText(
+    source['capturedAtStart'],
+    'capturedAtStart',
+    _fileTransferMaxTimestampLength,
+  );
+  final capturedAtEnd = _diagnosticRequiredText(
+    source['capturedAtEnd'],
+    'capturedAtEnd',
+    _fileTransferMaxTimestampLength,
+  );
+  final start = DateTime.tryParse(capturedAtStart);
+  final end = DateTime.tryParse(capturedAtEnd);
+  if (start == null || end == null || start.isAfter(end)) {
+    throw const FormatException('diagnostic report timestamps are invalid');
+  }
+  final sha256 = _diagnosticRequiredText(source['sha256'], 'sha256', 64);
+  if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(sha256)) {
+    throw const FormatException('diagnostic report sha256 is invalid');
+  }
+  return <String, Object?>{
+    'schemaVersion': 1,
+    'reportId': reportId,
+    'provider': provider,
+    'providerSessionId': providerSessionId,
+    if (codexSourceId != null) 'codexSourceId': codexSourceId,
+    'capturedAtStart': capturedAtStart,
+    'capturedAtEnd': capturedAtEnd,
+    'sha256': sha256,
+  };
+}
 
 class _FileTransferProtocolSlot implements LocalFeatureProtocolSlot {
   const _FileTransferProtocolSlot();
@@ -345,6 +449,8 @@ class FileTransferUploadResultMessage implements LocalFeatureTransientMessage {
   final String? filename;
   final int? sizeBytes;
   final String? savedPath;
+  final String? purpose;
+  final String? reportId;
   final String? error;
   final String? errorCode;
 
@@ -355,6 +461,8 @@ class FileTransferUploadResultMessage implements LocalFeatureTransientMessage {
     this.filename,
     this.sizeBytes,
     this.savedPath,
+    this.purpose,
+    this.reportId,
     this.error,
     this.errorCode,
   });
@@ -375,6 +483,8 @@ class FileTransferUploadResultMessage implements LocalFeatureTransientMessage {
       'filename',
       'sizeBytes',
       if (includesSavedPath) 'savedPath',
+      if (includesSavedPath) 'purpose',
+      if (includesSavedPath) 'reportId',
       'error',
       'errorCode',
     });
@@ -410,6 +520,12 @@ class FileTransferUploadResultMessage implements LocalFeatureTransientMessage {
         'successful v3 file transfer result requires savedPath',
       );
     }
+    final purpose = includesSavedPath
+        ? _fileTransferOptionalPurpose(json['purpose'])
+        : null;
+    final reportId = includesSavedPath
+        ? _fileTransferOptionalReportId(json['reportId'])
+        : null;
     return FileTransferUploadResultMessage(
       requestId: _fileTransferRequiredText(
         json['requestId'],
@@ -421,6 +537,8 @@ class FileTransferUploadResultMessage implements LocalFeatureTransientMessage {
       filename: filename,
       sizeBytes: sizeBytes,
       savedPath: savedPath,
+      purpose: purpose,
+      reportId: reportId,
       error: _fileTransferOptionalText(
         json['error'],
         'error',
@@ -442,6 +560,8 @@ ClientMessage prepareFileTransferUpload({
   required String filename,
   required int sizeBytes,
   FileMutationAuthorization? mutationAuthorization,
+  String? purpose,
+  DiagnosticReportMetadata? diagnosticReport,
 }) {
   _fileTransferRequireOutboundText(
     requestId,
@@ -458,6 +578,10 @@ ClientMessage prepareFileTransferUpload({
   }
   _fileTransferRequireOutboundTransferId(transferId);
   _fileTransferRequireOutboundToken(resumeToken, 'resumeToken');
+  final normalizedReport = _normalizeUploadPurposeMetadata(
+    purpose: purpose,
+    diagnosticReport: diagnosticReport,
+  );
   return ClientMessage._(<String, dynamic>{
     'type': 'file_transfer_upload_prepare_v2',
     'requestId': requestId,
@@ -467,6 +591,8 @@ ClientMessage prepareFileTransferUpload({
     'sizeBytes': sizeBytes,
     if (mutationAuthorization != null)
       'mutationAuthorization': mutationAuthorization.toJson(),
+    if (purpose != null) 'purpose': purpose,
+    if (normalizedReport != null) 'diagnosticReport': normalizedReport,
   }, delivery: ClientMessageDelivery.ephemeral);
 }
 
@@ -673,6 +799,70 @@ String _fileTransferRequiredTimestamp(Object? value) {
   }
   return timestamp;
 }
+
+String? _fileTransferOptionalPurpose(Object? value) {
+  if (value == null) return null;
+  if (value is! String ||
+      (value != 'file' && value != 'diagnostic_report')) {
+    throw const FormatException('file transfer purpose is invalid');
+  }
+  return value;
+}
+
+String? _fileTransferOptionalReportId(Object? value) {
+  if (value == null) return null;
+  final reportId = _fileTransferRequiredText(
+    value,
+    'reportId',
+    _fileTransferMaxIdLength,
+  );
+  if (!RegExp(r'^[A-Za-z0-9._:-]{1,128}$').hasMatch(reportId)) {
+    throw const FormatException('file transfer reportId is invalid');
+  }
+  return reportId;
+}
+
+DiagnosticReportMetadata? _normalizeUploadPurposeMetadata({
+  required String? purpose,
+  required DiagnosticReportMetadata? diagnosticReport,
+}) {
+  if (purpose != null && purpose != 'file' && purpose != 'diagnostic_report') {
+    throw ArgumentError.value(purpose, 'purpose', 'has invalid value');
+  }
+  if (purpose == 'diagnostic_report') {
+    if (diagnosticReport == null) {
+      throw const ArgumentError('diagnostic_report purpose requires metadata');
+    }
+    try {
+      return normalizeDiagnosticReportMetadata(diagnosticReport);
+    } on FormatException catch (error) {
+      throw ArgumentError.value(
+        diagnosticReport,
+        'diagnosticReport',
+        error.message,
+      );
+    }
+  }
+  if (diagnosticReport != null) {
+    throw const ArgumentError(
+      'diagnosticReport requires diagnostic_report purpose',
+    );
+  }
+  return null;
+}
+
+String _diagnosticRequiredText(Object? value, String field, int maxLength) {
+  if (!_diagnosticIsBoundedText(value, maxLength)) {
+    throw FormatException('diagnostic report $field is invalid');
+  }
+  return value as String;
+}
+
+bool _diagnosticIsBoundedText(Object? value, int maxLength) =>
+    value is String &&
+    value.isNotEmpty &&
+    value.length <= maxLength &&
+    !value.contains('\u0000');
 
 void _fileTransferRequireOutboundText(
   String value,

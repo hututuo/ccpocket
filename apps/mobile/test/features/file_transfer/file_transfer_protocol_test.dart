@@ -110,6 +110,50 @@ void main() {
     );
   });
 
+  test('decodes v3 diagnostic result identity and rejects it on v2', () {
+    final result =
+        ServerMessage.fromJson({
+              'type': 'file_transfer_upload_result_v3',
+              'requestId': 'request-1',
+              'transferId': transferId,
+              'success': true,
+              'filename': 'report.json',
+              'sizeBytes': 32,
+              'savedPath':
+                  '/Users/test/.ccpocket/diagnostics/reports/report.json',
+              'purpose': 'diagnostic_report',
+              'reportId': 'report_20260812',
+            })
+            as FileTransferUploadResultMessage;
+    expect(result.purpose, 'diagnostic_report');
+    expect(result.reportId, 'report_20260812');
+    expect(
+      () => ServerMessage.fromJson({
+        'type': 'file_transfer_upload_result_v2',
+        'requestId': 'request-1',
+        'transferId': transferId,
+        'success': true,
+        'filename': 'report.json',
+        'sizeBytes': 32,
+        'purpose': 'diagnostic_report',
+      }),
+      throwsFormatException,
+    );
+    expect(
+      () => ServerMessage.fromJson({
+        'type': 'file_transfer_upload_result_v3',
+        'requestId': 'request-1',
+        'transferId': transferId,
+        'success': true,
+        'filename': 'report.json',
+        'sizeBytes': 32,
+        'savedPath': '/Users/test/report.json',
+        'purpose': 'other',
+      }),
+      throwsFormatException,
+    );
+  });
+
   test('prepare always carries stable mobile-owned identity and secret', () {
     final json = _json(
       prepareFileTransferUpload(
@@ -130,6 +174,58 @@ void main() {
       'sizeBytes': maxFileTransferBytes,
     });
   });
+
+  test(
+    'prepare carries bounded diagnostic metadata without changing '
+    'ordinary wire',
+    () {
+      final metadata = <String, Object?>{
+        'schemaVersion': 1,
+        'reportId': 'report_20260812',
+        'provider': 'codex',
+        'providerSessionId': 'thread-123',
+        'codexSourceId': 'source-123',
+        'capturedAtStart': '2026-08-12T00:00:00.000Z',
+        'capturedAtEnd': '2026-08-12T00:01:00.000Z',
+        'sha256': 'a' * 64,
+      };
+      final json = _json(
+        prepareFileTransferUpload(
+          requestId: 'request-1',
+          transferId: transferId,
+          resumeToken: token,
+          filename: 'report.json',
+          sizeBytes: 32,
+          purpose: 'diagnostic_report',
+          diagnosticReport: metadata,
+        ),
+      );
+      expect(json['purpose'], 'diagnostic_report');
+      expect(json['diagnosticReport'], metadata);
+      expect(
+        () => prepareFileTransferUpload(
+          requestId: 'request-1',
+          transferId: transferId,
+          resumeToken: token,
+          filename: 'report.json',
+          sizeBytes: 32,
+          purpose: 'diagnostic_report',
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => prepareFileTransferUpload(
+          requestId: 'request-1',
+          transferId: transferId,
+          resumeToken: token,
+          filename: 'report.json',
+          sizeBytes: 32,
+          diagnosticReport: metadata,
+        ),
+        throwsArgumentError,
+      );
+    },
+  );
 
   test('prepare carries only the exact short-lived mutation proof', () {
     final password = _json(

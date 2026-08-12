@@ -254,6 +254,63 @@ void main() {
     );
   });
 
+  test(
+    'upload checkpoint round-trips diagnostic metadata and old v2 defaults',
+    () {
+      final now = DateTime.utc(2026, 8, 12, 12).toIso8601String();
+      final metadata = <String, Object?>{
+        'schemaVersion': 1,
+        'reportId': 'report_20260812',
+        'provider': 'codex',
+        'providerSessionId': 'thread-123',
+        'capturedAtStart': '2026-08-12T00:00:00.000Z',
+        'capturedAtEnd': '2026-08-12T00:01:00.000Z',
+        'sha256': 'a' * 64,
+      };
+      final checkpoint = UploadTransferCheckpoint.fromJson({
+        'schemaVersion': 2,
+        'bridgeKey': 'a' * 64,
+        'localId': 'local-1',
+        'requestId': 'request-1',
+        'transferId': transferId,
+        'filename': 'report.json',
+        'sizeBytes': 3,
+        'uploadedBytes': 1,
+        'stagedFilename': 'local.stage',
+        'purpose': 'diagnostic_report',
+        'metadata': metadata,
+        'createdAt': now,
+        'expiresAt': now,
+        'updatedAt': now,
+      });
+      expect(checkpoint.purpose, 'diagnostic_report');
+      expect(checkpoint.metadata, metadata);
+      expect(
+        UploadTransferCheckpoint.fromJson(checkpoint.toJson()).metadata,
+        metadata,
+      );
+
+      final old = UploadTransferCheckpoint.fromJson({
+        'schemaVersion': 2,
+        'bridgeKey': 'a' * 64,
+        'localId': 'local-2',
+        'requestId': 'request-2',
+        'transferId': transferId,
+        'filename': 'ordinary.bin',
+        'sizeBytes': 3,
+        'uploadedBytes': 0,
+        'stagedFilename': 'ordinary.stage',
+        'createdAt': now,
+        'expiresAt': now,
+        'updatedAt': now,
+      });
+      expect(old.purpose, isNull);
+      expect(old.metadata, isNull);
+      expect(old.toJson(), isNot(contains('purpose')));
+      expect(old.toJson(), isNot(contains('metadata')));
+    },
+  );
+
   test('old v2 completions default to no pending notification', () {
     final now = DateTime.utc(2026, 7, 18).toIso8601String();
     final checkpoint = ReceiveTransferCheckpoint.fromJson({

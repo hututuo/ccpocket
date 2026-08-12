@@ -544,6 +544,45 @@ class FileTransferService extends ChangeNotifier {
     );
   }
 
+  /// Queues a diagnostic report through the same staged, resumable upload
+  /// pipeline as ordinary files. No alternate transport or queue is created;
+  /// only the optional purpose/metadata travels with the existing checkpoint.
+  Future<FileTransferUploadTicket> enqueueDiagnosticReport({
+    required String filename,
+    required Stream<List<int>> bytes,
+    int? expectedSizeBytes,
+    required DiagnosticReportMetadata metadata,
+    FileMutationAuthorizationCallback? authorizeMutation,
+  }) async {
+    final identity = _requireUploadIngressReady(
+      rejectIfBusy: uploadMutationAuthRequired,
+    );
+    _validateIngressMetadata(filename, expectedSizeBytes);
+    final normalizedMetadata = normalizeDiagnosticReportMetadata(metadata);
+    await _markTransientStorage(identity);
+    final pickerRoot = await _storage.pickerStagingDirectory();
+    await _requireCapacity(pickerRoot.path, expectedSizeBytes ?? 0);
+    final staged = await _storage.stageExternalFile(
+      filename: filename,
+      bytes: expectedSizeBytes == null
+          ? _capacityCheckedDropStream(bytes, pickerRoot.path)
+          : bytes,
+      maxSizeBytes: maxFileTransferBytes,
+      expectedSizeBytes: expectedSizeBytes,
+    );
+    return _enqueueUploadSelection(
+      FileTransferSelection(
+        path: staged.file.path,
+        filename: staged.filename,
+        sizeBytes: staged.sizeBytes,
+      ),
+      identity: identity,
+      purpose: 'diagnostic_report',
+      metadata: normalizedMetadata,
+      authorizeMutation: authorizeMutation,
+    );
+  }
+
   Stream<List<int>> _capacityCheckedDropStream(
     Stream<List<int>> source,
     String targetPath,
@@ -585,6 +624,8 @@ class FileTransferService extends ChangeNotifier {
   Future<FileTransferUploadTicket> _enqueueUploadSelection(
     FileTransferSelection selection, {
     required String identity,
+    String? purpose,
+    DiagnosticReportMetadata? metadata,
     FileMutationAuthorizationCallback? authorizeMutation,
   }) async {
     _validateSelection(selection);
@@ -601,6 +642,8 @@ class FileTransferService extends ChangeNotifier {
       filename: selection.filename,
       sizeBytes: selection.sizeBytes,
       pickerCopy: File(selection.path),
+      purpose: purpose,
+      metadata: metadata,
     );
     try {
       final authorization = await _authorizeUploadMutation(
@@ -1921,6 +1964,8 @@ class FileTransferService extends ChangeNotifier {
         filename: checkpoint.filename,
         sizeBytes: checkpoint.sizeBytes,
         mutationAuthorization: mutationAuthorization,
+        purpose: checkpoint.purpose,
+        diagnosticReport: checkpoint.metadata,
       ),
     );
     final first = await _waitWithCancellation<Object>(
@@ -2082,9 +2127,19 @@ class FileTransferService extends ChangeNotifier {
     FileTransferUploadResultMessage result,
   ) async {
     final savedFilename = result.filename;
+    final expectedPurpose = checkpoint.purpose ?? 'file';
+    final resultPurpose = result.purpose ?? 'file';
+    final expectedReportId = checkpoint.metadata?['reportId'];
+    final metadataMatches = expectedPurpose == 'diagnostic_report'
+        ? expectedReportId is String &&
+            resultPurpose == 'diagnostic_report' &&
+            result.reportId == expectedReportId
+        : result.reportId == null;
     if (!result.success ||
         result.transferId != checkpoint.transferId ||
         result.sizeBytes != checkpoint.sizeBytes ||
+        resultPurpose != expectedPurpose ||
+        !metadataMatches ||
         !_isSafeTransferLeaf(savedFilename)) {
       throw FileTransferException(
         result.errorCode ?? 'upload_failed',

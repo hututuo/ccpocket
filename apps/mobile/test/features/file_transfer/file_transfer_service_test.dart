@@ -2186,6 +2186,98 @@ void main() {
     service.dispose();
   });
 
+  test(
+    'diagnostic report upload reuses the resumable queue and carries metadata',
+    () async {
+      const reportId = 'report_20260812';
+      final metadata = <String, Object?>{
+        'schemaVersion': 1,
+        'reportId': reportId,
+        'provider': 'codex',
+        'providerSessionId': 'thread-123',
+        'capturedAtStart': '2026-08-12T00:00:00.000Z',
+        'capturedAtEnd': '2026-08-12T00:01:00.000Z',
+        'sha256': 'a' * 64,
+      };
+      String? requestId;
+      String? stableTransferId;
+      String? resumeToken;
+      final client = MockClient.streaming((request, body) async {
+        if (request.method == 'HEAD') {
+          return http.StreamedResponse(
+            const Stream.empty(),
+            HttpStatus.ok,
+            headers: {
+              'upload-offset': '0',
+              'upload-length': '3',
+              'upload-expires': '2026-08-13T12:00:00.000Z',
+              'upload-complete': '0',
+              'x-ccpocket-max-chunk-bytes': '16777216',
+            },
+          );
+        }
+        expect(await body.toBytes(), [1, 2, 3]);
+        scheduleMicrotask(() {
+          bridge.emit(
+            FileTransferUploadResultMessage(
+              requestId: requestId!,
+              transferId: stableTransferId!,
+              success: true,
+              filename: 'report.json',
+              sizeBytes: 3,
+              purpose: 'diagnostic_report',
+              reportId: reportId,
+            ),
+          );
+        });
+        return http.StreamedResponse(
+          const Stream.empty(),
+          HttpStatus.noContent,
+          headers: {'upload-offset': '3', 'upload-complete': '1'},
+        );
+      });
+      final service = createService(client: client);
+      bridge.onSend = (json) {
+        if (json['type'] != 'file_transfer_upload_prepare_v2') return;
+        requestId = json['requestId'] as String;
+        stableTransferId = json['transferId'] as String;
+        resumeToken = json['resumeToken'] as String;
+        expect(json['purpose'], 'diagnostic_report');
+        expect(json['diagnosticReport'], metadata);
+        scheduleMicrotask(() {
+          bridge.emit(
+            FileTransferUploadReadyMessage(
+              requestId: requestId!,
+              transferId: stableTransferId!,
+              uploadUrl:
+                  'https://mac.example/api/file-transfers/uploads/'
+                  '$stableTransferId',
+              uploadToken: token,
+              resumeToken: resumeToken!,
+              uploadOffset: 0,
+              sizeBytes: 3,
+              maxChunkSizeBytes: fileTransferChunkBytes,
+              expiresAt: '2026-08-13T12:00:00.000Z',
+            ),
+          );
+        });
+      };
+
+      final ticket = await service.enqueueDiagnosticReport(
+        filename: 'report.json',
+        bytes: Stream<List<int>>.fromIterable(const [
+          [1, 2, 3],
+        ]),
+        expectedSizeBytes: 3,
+        metadata: metadata,
+      );
+      final result = await ticket.completion;
+
+      expect(result.status, FileTransferStatus.succeeded);
+      expect(await storage.loadUploads('machine-1'), isEmpty);
+    },
+  );
+
   test('unsupported Bridge rejects a drop before reading its bytes', () async {
     bridge.setCapabilities(const {});
     var listened = false;
