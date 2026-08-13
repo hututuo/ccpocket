@@ -2067,3 +2067,16 @@
 - 断线或丢失结果后的相同上传依靠持久 receipt 幂等重放；源码和自动测试不代表真机
   菜单、Face ID/密码、文件传输或错误现场已验收。详细流程见
   `docs/mobile-session-diagnostic-report.md`。
+
+### 2026-08-13：open 开发模式允许显式启用会话诊断
+
+- 上述 open-auth 禁止规则继续作为正式默认值；不得因安装新版 Bridge 自动放宽。
+- 开发排障可由 owner 显式设置
+  `BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS=1`。该例外只允许用户显式触发的会话诊断
+  上传，并免除该诊断上传的密码/Face ID step-up；普通文件传输、文件浏览和修改继续
+  沿用它们既有的认证与授权策略，不因本开关扩大。
+- Mobile 不增加第二套入口。收到 Bridge 的 `file_transfer_diagnostic_report_v1` 能力后，
+  在会话右上角菜单显示“上报会话诊断”；只有同时收到窄化的
+  `file_transfer_diagnostic_report_no_step_up_v1`，才免除本次诊断的 step-up。旧 Mobile
+  仍按原授权失败关闭，不从普通文件上传能力推断开发例外。
+- 该开关属于开发配置，正式发布、外网暴露或不受信任局域网必须关闭。

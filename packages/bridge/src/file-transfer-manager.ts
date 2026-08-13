@@ -76,6 +76,7 @@ export interface FileTransferManagerOptions {
   baseUrl?: string;
   fileMutationAuthorizer?: FileMutationAuthorizer;
   diagnosticReportArchiver?: DiagnosticReportArchiver;
+  allowDiagnosticWithoutMutationAuthorization?: boolean;
 }
 
 /** Coordinates live peers while byte/session authority stays in persistent stores. */
@@ -85,6 +86,7 @@ export class FileTransferManager {
   private readonly baseUrl?: string;
   private readonly fileMutationAuthorizer?: FileMutationAuthorizer;
   private readonly diagnosticReportArchiver?: DiagnosticReportArchiver;
+  private readonly allowDiagnosticWithoutMutationAuthorization: boolean;
   private readonly clients = new Map<object, FileTransferClientBinding>();
   private readonly uploadClients = new Map<string, BoundUploadClient>();
   private readonly downloadClients = new Map<string, BoundDownloadClient>();
@@ -105,11 +107,17 @@ export class FileTransferManager {
     this.baseUrl = options.baseUrl;
     this.fileMutationAuthorizer = options.fileMutationAuthorizer;
     this.diagnosticReportArchiver = options.diagnosticReportArchiver;
+    this.allowDiagnosticWithoutMutationAuthorization =
+      options.allowDiagnosticWithoutMutationAuthorization === true;
   }
 
   async init(): Promise<void> {
     await this.uploadStore.init();
-    if (this.diagnosticReportArchiver && this.fileMutationAuthorizer) {
+    if (
+      this.diagnosticReportArchiver &&
+      (this.fileMutationAuthorizer ||
+        this.allowDiagnosticWithoutMutationAuthorization)
+    ) {
       try {
         await this.diagnosticReportArchiver.init();
         this.diagnosticArchiverReady = true;
@@ -126,7 +134,8 @@ export class FileTransferManager {
       this.accepting &&
         this.diagnosticArchiverReady &&
         this.diagnosticReportArchiver &&
-        this.fileMutationAuthorizer,
+        (this.fileMutationAuthorizer ||
+          this.allowDiagnosticWithoutMutationAuthorization),
     );
   }
 
@@ -498,7 +507,10 @@ export class FileTransferManager {
           return;
         }
       }
-      if (!this.fileMutationAuthorizer) {
+      const diagnosticAuthorizationBypassed =
+        message.purpose === "diagnostic_report" &&
+        this.allowDiagnosticWithoutMutationAuthorization;
+      if (!this.fileMutationAuthorizer && !diagnosticAuthorizationBypassed) {
         throw new FileMutationAuthError(
           "unsupported_capability",
           "Phone uploads are locked until Bridge file mutation authorization is available",
@@ -508,11 +520,12 @@ export class FileTransferManager {
         message.transferId,
       );
       const requiresAuthorization =
+        !diagnosticAuthorizationBypassed &&
         (existingAuthorization?.client !== client ||
           existingAuthorization.filename !== message.filename ||
           existingAuthorization.sizeBytes !== message.sizeBytes);
       if (requiresAuthorization) {
-        await this.fileMutationAuthorizer.authorize(
+        await this.fileMutationAuthorizer!.authorize(
           client,
           {
             kind: "upload",

@@ -246,6 +246,7 @@ import {
 import {
   FILE_TRANSFER_CAPABILITY,
   FILE_TRANSFER_DIAGNOSTIC_REPORT_CAPABILITY,
+  FILE_TRANSFER_DIAGNOSTIC_REPORT_NO_STEP_UP_CAPABILITY,
   isFileTransferClientMessage,
   isFileTransferServerMessageType,
 } from "./file-transfer-protocol.js";
@@ -1676,11 +1677,28 @@ function mergeRecentSessionPages(sessions: unknown[]): unknown[] {
   );
 }
 
+/**
+ * The unauthenticated development exception is deliberately narrower than the
+ * file-transfer and file-browser surfaces. It admits only a diagnostic upload
+ * without changing any other file-transfer or file-browser route.
+ */
+function isOpenDiagnosticDevelopmentMessage(msg: ClientMessage): boolean {
+  if (
+    msg.type === "file_transfer_upload_prepare_v2" &&
+    msg.purpose === "diagnostic_report"
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export interface BridgeServerOptions {
   server: HttpServer;
   apiKey?: string;
   apiKeyAuthenticator?: BridgeApiKeyAuthenticator;
   authMode?: BridgeAuthMode;
+  /** Explicit development-only escape hatch for session diagnostics on open connections. */
+  allowUnauthenticatedDiagnosticReports?: boolean;
   bridgeIdentity?: BridgeIdentityStore;
   devicePairing?: BridgeDevicePairing;
   ownerFullDiskRead?: boolean;
@@ -1762,6 +1780,7 @@ export class BridgeWebSocketServer {
   private sessionManager: SessionManager;
   private readonly apiKeyAuthenticator: BridgeApiKeyAuthenticator;
   private readonly authMode: BridgeAuthMode;
+  private readonly allowUnauthenticatedDiagnosticReports: boolean;
   private readonly bridgeIdentity: BridgeIdentityStore | null;
   private readonly devicePairing: BridgeDevicePairing | null;
   private readonly ownerFullDiskRead: boolean;
@@ -1928,6 +1947,7 @@ export class BridgeWebSocketServer {
       apiKey,
       apiKeyAuthenticator,
       authMode,
+      allowUnauthenticatedDiagnosticReports,
       bridgeIdentity,
       devicePairing,
       ownerFullDiskRead,
@@ -1962,6 +1982,8 @@ export class BridgeWebSocketServer {
       apiKeyAuthenticator ?? new BridgeApiKeyAuthenticator(apiKey);
     this.authMode =
       authMode ?? (this.apiKeyAuthenticator.isConfigured ? "key" : "open");
+    this.allowUnauthenticatedDiagnosticReports =
+      this.authMode === "open" && allowUnauthenticatedDiagnosticReports === true;
     this.bridgeIdentity = bridgeIdentity ?? null;
     this.devicePairing = devicePairing ?? null;
     this.ownerFullDiskRead = ownerFullDiskRead === true;
@@ -5997,9 +6019,13 @@ export class BridgeWebSocketServer {
       });
       return;
     }
+    const openDiagnosticDevelopmentMessage =
+      this.allowUnauthenticatedDiagnosticReports &&
+      isOpenDiagnosticDevelopmentMessage(msg);
     if (
       this.ownerFullDiskRead &&
       authState?.kind === "open" &&
+      !openDiagnosticDevelopmentMessage &&
       (msg.type.startsWith("file_browser") ||
         msg.type.startsWith("file_mutation") ||
         msg.type.startsWith("file_transfer") ||
@@ -6016,7 +6042,8 @@ export class BridgeWebSocketServer {
     if (
       authState?.kind === "open" &&
       msg.type === "file_transfer_upload_prepare_v2" &&
-      msg.purpose === "diagnostic_report"
+      msg.purpose === "diagnostic_report" &&
+      !this.allowUnauthenticatedDiagnosticReports
     ) {
       this.send(ws, {
         type: "error",
@@ -14519,6 +14546,10 @@ export class BridgeWebSocketServer {
         ...(this.fileTransfer?.diagnosticReportsAvailable
           ? [FILE_TRANSFER_DIAGNOSTIC_REPORT_CAPABILITY]
           : []),
+        ...(this.fileTransfer?.diagnosticReportsAvailable &&
+        this.allowUnauthenticatedDiagnosticReports
+          ? [FILE_TRANSFER_DIAGNOSTIC_REPORT_NO_STEP_UP_CAPABILITY]
+          : []),
         ...(this.fileBrowser && this.fileMutationAuthorizer
           ? [FILE_MUTATION_AUTH_CAPABILITY]
           : []),
@@ -14634,6 +14665,10 @@ export class BridgeWebSocketServer {
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
         ...(this.fileTransfer?.diagnosticReportsAvailable
           ? [FILE_TRANSFER_DIAGNOSTIC_REPORT_CAPABILITY]
+          : []),
+        ...(this.fileTransfer?.diagnosticReportsAvailable &&
+        this.allowUnauthenticatedDiagnosticReports
+          ? [FILE_TRANSFER_DIAGNOSTIC_REPORT_NO_STEP_UP_CAPABILITY]
           : []),
         ...(this.fileBrowser && this.fileMutationAuthorizer
           ? [FILE_MUTATION_AUTH_CAPABILITY]
@@ -16893,12 +16928,16 @@ export class BridgeWebSocketServer {
     if (
       msg.type === "session_list" &&
       this.connectionAuth.get(ws)?.kind === "open" &&
+      !this.allowUnauthenticatedDiagnosticReports &&
       Array.isArray(msg.bridgeCapabilities)
     ) {
       return {
         ...msg,
         bridgeCapabilities: msg.bridgeCapabilities.filter(
-          (capability) => capability !== FILE_TRANSFER_DIAGNOSTIC_REPORT_CAPABILITY,
+          (capability) =>
+            capability !== FILE_TRANSFER_DIAGNOSTIC_REPORT_CAPABILITY &&
+            capability !==
+              FILE_TRANSFER_DIAGNOSTIC_REPORT_NO_STEP_UP_CAPABILITY,
         ),
       };
     }

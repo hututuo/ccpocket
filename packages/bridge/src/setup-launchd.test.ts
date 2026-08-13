@@ -28,8 +28,11 @@ const originalBridgeEnv = {
   port: process.env.BRIDGE_PORT,
   host: process.env.BRIDGE_HOST,
   apiKey: process.env.BRIDGE_API_KEY,
+  authMode: process.env.BRIDGE_AUTH_MODE,
   requireApiKey: process.env.BRIDGE_REQUIRE_API_KEY,
   allowUnauthenticatedRemote: process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE,
+  allowUnauthenticatedDiagnostics:
+    process.env.BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS,
   allowedDirs: process.env.BRIDGE_ALLOWED_DIRS,
   publicWsUrl: process.env.BRIDGE_PUBLIC_WS_URL,
   artifactBaseUrl: process.env.BRIDGE_ARTIFACT_BASE_URL,
@@ -77,6 +80,8 @@ describe("setup-launchd", () => {
       expect(content).toContain("<string>127.0.0.1</string>");
       expect(content).toContain("<key>BRIDGE_REQUIRE_API_KEY</key>");
       expect(content).toContain("<string>0</string>");
+      expect(content).toContain("<key>BRIDGE_AUTH_MODE</key>");
+      expect(content).toContain("<string>open</string>");
       expect(content).toContain(
         '<string>exec node "$BRIDGE_CLI_ENTRY"</string>',
       );
@@ -84,6 +89,9 @@ describe("setup-launchd", () => {
       expect(content).toContain("/src/cli.js</string>");
       expect(content).not.toContain("BRIDGE_API_KEY");
       expect(content).not.toContain("BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE");
+      expect(content).not.toContain(
+        "BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS",
+      );
       expect(content).not.toContain("BRIDGE_ALLOWED_DIRS");
       expect(content).not.toContain("BRIDGE_PUBLIC_WS_URL");
       expect(content).not.toContain("BRIDGE_ARTIFACT_BASE_URL");
@@ -115,6 +123,20 @@ describe("setup-launchd", () => {
       const content = mockWriteFileSync.mock.calls[0]![1] as string;
       expect(content).toContain("<key>BRIDGE_REQUIRE_API_KEY</key>");
       expect(content).toContain("<string>0</string>");
+      expect(content).toContain("<string>owner-key</string>");
+    });
+
+    it("preserves an explicit open mode even when a saved key remains", () => {
+      setupLaunchd({
+        apiKey: "owner-key",
+        requireApiKey: true,
+        authMode: "open",
+      });
+
+      const content = mockWriteFileSync.mock.calls[0]![1] as string;
+      expect(content).toContain("<key>BRIDGE_AUTH_MODE</key>");
+      expect(content).toContain("<string>open</string>");
+      expect(content).toContain("<key>BRIDGE_API_KEY</key>");
       expect(content).toContain("<string>owner-key</string>");
     });
 
@@ -151,6 +173,28 @@ describe("setup-launchd", () => {
         "<key>BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE</key>",
       );
       expect(content).toContain("<string>1</string>");
+    });
+
+    it("persists the explicit unauthenticated development diagnostics switch", () => {
+      process.env.BRIDGE_AUTH_MODE = "open";
+      process.env.BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS = "1";
+
+      setupLaunchd({});
+
+      const content = mockWriteFileSync.mock.calls[0]![1] as string;
+      expect(content).toContain(
+        "<key>BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS</key>",
+      );
+      expect(content).toContain("<string>1</string>");
+    });
+
+    it("rejects the diagnostics switch without an explicit open mode", () => {
+      process.env.BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS = "1";
+
+      expect(() => setupLaunchd({})).toThrow(
+        "requires an explicit BRIDGE_AUTH_MODE=open",
+      );
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
     });
 
     it.each(["", "123abc"])(
@@ -371,8 +415,10 @@ function clearBridgeEnv(): void {
   delete process.env.BRIDGE_PORT;
   delete process.env.BRIDGE_HOST;
   delete process.env.BRIDGE_API_KEY;
+  delete process.env.BRIDGE_AUTH_MODE;
   delete process.env.BRIDGE_REQUIRE_API_KEY;
   delete process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE;
+  delete process.env.BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS;
   delete process.env.BRIDGE_ALLOWED_DIRS;
   delete process.env.BRIDGE_PUBLIC_WS_URL;
   delete process.env.BRIDGE_ARTIFACT_BASE_URL;
@@ -396,10 +442,15 @@ function restoreBridgeEnv(): void {
   restoreEnvVar("BRIDGE_PORT", originalBridgeEnv.port);
   restoreEnvVar("BRIDGE_HOST", originalBridgeEnv.host);
   restoreEnvVar("BRIDGE_API_KEY", originalBridgeEnv.apiKey);
+  restoreEnvVar("BRIDGE_AUTH_MODE", originalBridgeEnv.authMode);
   restoreEnvVar("BRIDGE_REQUIRE_API_KEY", originalBridgeEnv.requireApiKey);
   restoreEnvVar(
     "BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE",
     originalBridgeEnv.allowUnauthenticatedRemote,
+  );
+  restoreEnvVar(
+    "BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS",
+    originalBridgeEnv.allowUnauthenticatedDiagnostics,
   );
   restoreEnvVar("BRIDGE_ALLOWED_DIRS", originalBridgeEnv.allowedDirs);
   restoreEnvVar("BRIDGE_PUBLIC_WS_URL", originalBridgeEnv.publicWsUrl);

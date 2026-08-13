@@ -1173,6 +1173,36 @@ void main() {
     service.dispose();
   });
 
+  test(
+    'diagnostic no-step-up capability changes only diagnostic authorization',
+    () async {
+      bridge.capabilityValues = {
+        fileTransferCapability,
+        fileTransferDiagnosticReportCapability,
+        fileTransferUploadAuthCapability,
+        fileTransferDiagnosticReportNoStepUpCapability,
+      };
+      final service = createService(
+        client: MockClient((_) async => http.Response('', 500)),
+      );
+      await service.initialize();
+      expect(service.uploadMutationAuthRequired, isTrue);
+      expect(service.diagnosticReportMutationAuthRequired, isFalse);
+
+      var notificationCount = 0;
+      service.addListener(() => notificationCount += 1);
+      bridge.setCapabilities({
+        fileTransferCapability,
+        fileTransferDiagnosticReportCapability,
+        fileTransferUploadAuthCapability,
+      });
+      await _waitUntil(() => notificationCount > 0);
+      expect(service.uploadMutationAuthRequired, isTrue);
+      expect(service.diagnosticReportMutationAuthRequired, isTrue);
+      service.dispose();
+    },
+  );
+
   for (final changeOrigin in [false, true]) {
     test('machine switch clears manual queues without touching machine A '
         '${changeOrigin ? 'across origins' : 'on the same origin'}', () async {
@@ -2195,6 +2225,8 @@ void main() {
       bridge.capabilityValues = {
         fileTransferCapability,
         fileTransferDiagnosticReportCapability,
+        fileTransferUploadAuthCapability,
+        fileTransferDiagnosticReportNoStepUpCapability,
       };
       const reportId = 'report_20260812';
       final metadata = <String, Object?>{
@@ -2279,6 +2311,9 @@ void main() {
         ]),
         expectedSizeBytes: 3,
         metadata: metadata,
+        authorizeMutation: (_) async => throw StateError(
+          'development diagnostic must not request mutation authorization',
+        ),
       );
       final result = await ticket.completion;
 

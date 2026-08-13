@@ -30,15 +30,21 @@ Bridge 再次校验凭据、身份、大小和 SHA-256
 
 报告记录的是 UI 已经计算并持有的投影，不在诊断层重新实现一次排序、分组或折叠算法。
 首页和会话页只登记惰性只读捕获闭包；正常渲染不会序列化报告。
+手机同时保留最近 10 秒、仅内存且不含正文的 post-frame 变化环；用户点击后继续观察至少
+3 秒。报告保存完整起点/终点、内容感知 revision 和最多 96 条轻量变化样本，因此
+`4→0→4`、消息消失后恢复、历史/最新切换及流式状态变化不会再仅因两端相同而被误报为
+稳定。比 200 ms 更短且从未绘制成 frame 的变化仍可能不被采样，报告会明确列出观察时长、
+采样间隔和覆盖范围，不把它描述成屏幕录像。
 
 ## 身份与一致性
 
 - 报告固定绑定 `bridgeInstanceId + codexSourceId + provider + providerSessionId`；Claude
   和 Codex 报告都必须有精确 `codexSourceId`，采集前后不允许跨源。
 - SQLite 异步读取前后重新核验数据源身份。期间切换 Bridge/source 会中止上报。
-- 同时记录缓存 commit epoch 和 presentation revision 的前后值。只有两次真实展示捕获
-  都可用且 revision 与 cache epoch 均未变化时才写 `capture.stable=true`；loading、未挂载
-  或采集期间发生 streaming/status/paging 变化都会保守标记为不稳定，但仍保留现场。
+- 同时记录缓存 commit epoch、完整 presentation 起点/终点和点击前后 temporal trace。
+  只有两次真实展示捕获都可用、内容感知 revision 与 cache epoch 均未变化，并且变化环
+  未观察到中间态时才写 `capture.stable=true`；loading、未挂载或采集期间发生
+  streaming/status/paging 变化都会保守标记为不稳定，但仍保留现场。
 - 报告使用独立 `reportId`。同一个传输因断线或丢失回执重试时复用原有
   `transferId/resumeToken`，Bridge 通过持久 receipt 幂等返回同一归档，不重复覆盖。
 
@@ -49,9 +55,16 @@ Bridge 再次校验凭据、身份、大小和 SHA-256
   或 fragment 的 HTTP/WebSocket URL。
 - Bridge 在归档前再次递归拒绝凭据字段和高置信秘密字符串；任何一层不确定都
   fail closed。PEM/OPENSSH/PGP 私钥块也按高置信凭据处理。
-- 报告上传必须来自 API key 或已配对设备连接；open-auth 客户端既看不到能力，也不能
-  发起诊断上传。
-- 仍沿用文件修改的 Face ID/Bridge 密码 step-up，不在报告或 checkpoint 中保存口令。
+- 默认情况下，报告上传必须来自 API key 或已配对设备连接；open-auth 客户端既看不到
+  能力，也不能发起诊断上传。
+- 本地开发排障可显式设置 `BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS=1`。该开关只在
+  `BRIDGE_AUTH_MODE=open` 时放行用户显式触发的会话诊断上传，并免除该诊断上传的
+  密码/Face ID step-up；它不改变普通文件上传、文件浏览或修改接口原有的认证和授权
+  策略。正式部署不得设置该开关。
+- API key/已配对连接仍沿用文件修改的 Face ID/Bridge 密码 step-up，不在报告或
+  checkpoint 中保存口令；显式 open 开发诊断开关是唯一例外。
+- 新 Mobile 通过 `file_transfer_diagnostic_report_no_step_up_v1` 识别这一窄例外；只认识
+  旧诊断能力的 Mobile 仍会要求密码/Face ID，不会因为 Bridge 开关而静默降低授权。
 - 手机 JSON 最大 16 MiB；Bridge 加入运行态后的归档 envelope 最大 32 MiB。结构、正文、
   SQLite 和事件环还分别有更小的条数/字符预算。
 - Bridge 同时最多保留 4 份、合计 64 MiB 的诊断暂存；归档与 receipt 复核采用有界串行，
@@ -74,8 +87,9 @@ Bridge 再次校验凭据、身份、大小和 SHA-256
 1. 在错误仍显示于手机时，打开该会话右上角菜单并点“上报会话诊断”。
 2. 如要求 Face ID/Bridge 密码，完成一次操作级授权。
 3. 记录手机返回的 reportId 和 Mac 路径。
-4. 排查者先比较 `actualHomeProjection`、`sessionProjection.presentation`、SQLite window、
-   sync event ring 和 capture revision，再对照 Bridge envelope 中同一会话的运行态。
+4. 排查者先比较 `actualHomeProjection`、`sessionProjection.presentationAtStart/AtEnd`、
+   `capture.temporalPresentation`、SQLite window、sync event ring 和 capture revision，再
+   对照 Bridge envelope 中同一会话的运行态。
 5. 若报告标记 `capture.stable=false`，先判断是否正好捕获到竞态；必要时保持错误页面不动
    再上报一次，而不是先刷新或退出会话。
 

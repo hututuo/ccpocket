@@ -41,6 +41,7 @@ ccpocket-bridge --version
 | `BRIDGE_REQUIRE_API_KEY` | inferred | `1` requires `BRIDGE_API_KEY`; `0` disables connection-key authentication; when unset, existing installs keep the legacy “key present = enabled” behavior |
 | `BRIDGE_AUTH_MODE` | inferred | `key` keeps legacy key behavior, `paired_or_key` permits API-key fallback or Ed25519 device pairing, and `open` explicitly retains unauthenticated legacy access |
 | `BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE` | `0` | Legacy compatibility escape hatch for installs that leave `BRIDGE_REQUIRE_API_KEY` unset; an explicit `BRIDGE_REQUIRE_API_KEY=0` is the modern opt-out and also acknowledges unauthenticated LAN exposure |
+| `BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS` | `0` | Development-only: with an explicitly configured `BRIDGE_AUTH_MODE=open`, allows a user-triggered session diagnostic report without file-mutation step-up. It does not bypass ordinary file-upload authorization and must remain off for formal/external deployments |
 | `BRIDGE_PERSIST_DEBUG_TRACES` | `0` | Persist bounded diagnostic trace summaries to disk; disabled by default because traces can contain conversation-adjacent metadata |
 | `BRIDGE_ALLOWED_DIRS` | `$HOME` | Comma-separated list of project directories the Bridge may access; set exactly to `*` to allow any directory |
 | `BRIDGE_PUBLIC_WS_URL` | (none) | Public `ws://` / `wss://` URL used for startup deep link and QR code |

@@ -27,6 +27,9 @@ export interface FileTransferRuntimeOptions {
   fileMutationAuthorizer?: FileMutationAuthorizer;
   warn?: (message: string) => void;
   diagnosticReportArchiver?: DiagnosticReportArchiver;
+  allowDiagnosticWithoutMutationAuthorization?: boolean;
+  /** Rechecked by the HTTP bearer continuation after every Bridge restart. */
+  allowDiagnosticUploadContinuation?: boolean;
 }
 
 /**
@@ -69,11 +72,16 @@ export async function initializeFileTransferRuntime(
       baseUrl: options.baseUrl,
       fileMutationAuthorizer: options.fileMutationAuthorizer,
       diagnosticReportArchiver: options.diagnosticReportArchiver,
+      allowDiagnosticWithoutMutationAuthorization:
+        options.allowDiagnosticWithoutMutationAuthorization,
     });
     await manager.init();
     return {
       manager,
-      http: new FileTransferHttpHandler(manager),
+      http: new FileTransferHttpHandler(manager, {
+        allowDiagnosticUploadContinuation:
+          options.allowDiagnosticUploadContinuation,
+      }),
       stateFilePath,
     };
   } catch (error) {

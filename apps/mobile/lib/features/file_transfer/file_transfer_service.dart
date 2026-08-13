@@ -184,6 +184,15 @@ class BridgeServiceFileTransferGateway implements FileTransferBridgeGateway {
           supported: _bridge.bridgeCapabilities.contains(
             fileTransferCapability,
           ),
+          diagnostic: _bridge.bridgeCapabilities.contains(
+            fileTransferDiagnosticReportCapability,
+          ),
+          uploadAuth: _bridge.bridgeCapabilities.contains(
+            fileTransferUploadAuthCapability,
+          ),
+          diagnosticNoStepUp: _bridge.bridgeCapabilities.contains(
+            fileTransferDiagnosticReportNoStepUpCapability,
+          ),
         ),
       )
       .distinct()
@@ -385,7 +394,15 @@ class FileTransferService extends ChangeNotifier {
   int _queuedReceiveBytes = 0;
   int _reservedReceiveBytes = 0;
   DateTime? _lastProgressNotify;
-  ({bool connected, String? identity, bool supported})? _lastCapabilitySnapshot;
+  ({
+    bool connected,
+    String? identity,
+    bool supported,
+    bool diagnostic,
+    bool uploadAuth,
+    bool diagnosticNoStepUp,
+  })?
+  _lastCapabilitySnapshot;
   List<Future<void>>? _subscriptionCancellations;
   Future<void>? _closeFuture;
 
@@ -396,6 +413,11 @@ class FileTransferService extends ChangeNotifier {
       _bridge.capabilities.contains(fileTransferCapability);
   bool get diagnosticReportsSupportedByBridge =>
       _bridge.capabilities.contains(fileTransferDiagnosticReportCapability);
+  bool get diagnosticReportMutationAuthRequired =>
+      uploadMutationAuthRequired &&
+      !_bridge.capabilities.contains(
+        fileTransferDiagnosticReportNoStepUpCapability,
+      );
   bool get uploadMutationAuthRequired =>
       _bridge.capabilities.contains(fileTransferUploadAuthCapability);
   bool get uploadAvailable =>
@@ -557,7 +579,7 @@ class FileTransferService extends ChangeNotifier {
       throw const FileTransferException('diagnostic_report_unsupported');
     }
     final identity = _requireUploadIngressReady(
-      rejectIfBusy: uploadMutationAuthRequired,
+      rejectIfBusy: diagnosticReportMutationAuthRequired,
     );
     if (expectedSizeBytes == null ||
         expectedSizeBytes < 0 ||
@@ -1956,7 +1978,8 @@ class FileTransferService extends ChangeNotifier {
     final mutationAuthorization = _uploadMutationAuthorizations.remove(
       checkpoint.transferId,
     );
-    if (uploadMutationAuthRequired && mutationAuthorization == null) {
+    if (_uploadMutationAuthorizationRequired(checkpoint) &&
+        mutationAuthorization == null) {
       throw const FileTransferException(
         'step_up_required',
         'Password or Face ID approval is required',
@@ -2253,12 +2276,26 @@ class FileTransferService extends ChangeNotifier {
     };
   }
 
-  ({bool connected, String? identity, bool supported}) _capabilitySnapshot() =>
-      (
-        connected: _bridge.isConnected,
-        identity: _stableIdentity,
-        supported: _bridge.capabilities.contains(fileTransferCapability),
-      );
+  ({
+    bool connected,
+    String? identity,
+    bool supported,
+    bool diagnostic,
+    bool uploadAuth,
+    bool diagnosticNoStepUp,
+  })
+  _capabilitySnapshot() => (
+    connected: _bridge.isConnected,
+    identity: _stableIdentity,
+    supported: _bridge.capabilities.contains(fileTransferCapability),
+    diagnostic: _bridge.capabilities.contains(
+      fileTransferDiagnosticReportCapability,
+    ),
+    uploadAuth: _bridge.capabilities.contains(fileTransferUploadAuthCapability),
+    diagnosticNoStepUp: _bridge.capabilities.contains(
+      fileTransferDiagnosticReportNoStepUpCapability,
+    ),
+  );
 
   void _handleCapabilityChange() {
     final snapshot = _capabilitySnapshot();
@@ -2754,7 +2791,7 @@ class FileTransferService extends ChangeNotifier {
     UploadTransferCheckpoint checkpoint,
     FileMutationAuthorizationCallback? authorizeMutation,
   ) async {
-    if (!uploadMutationAuthRequired) return null;
+    if (!_uploadMutationAuthorizationRequired(checkpoint)) return null;
     if (authorizeMutation == null) {
       throw const FileTransferException('mutation_auth_required');
     }
@@ -2769,6 +2806,16 @@ class FileTransferService extends ChangeNotifier {
       throw const FileTransferException('mutation_auth_cancelled');
     }
     return authorization;
+  }
+
+  bool _uploadMutationAuthorizationRequired(
+    UploadTransferCheckpoint checkpoint,
+  ) {
+    if (!uploadMutationAuthRequired) return false;
+    if (checkpoint.purpose == 'diagnostic_report') {
+      return diagnosticReportMutationAuthRequired;
+    }
+    return true;
   }
 
   void _validateIngressMetadata(String filename, int? sizeBytes) {

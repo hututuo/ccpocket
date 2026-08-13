@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { FILE_TRANSFER_MAX_UPLOAD_CHUNK_BYTES } from "./file-transfer-constants.js";
 import { FileTransferError } from "./file-transfer-errors.js";
 import type { FileTransferManager } from "./file-transfer-manager.js";
+import type { PersistedUploadTransfer } from "./file-transfer-state-store.js";
 import { UploadOffsetConflictError } from "./file-transfer-upload-store.js";
 import { isDirectLoopbackRequest } from "./bridge-http-auth.js";
 import {
@@ -23,6 +24,8 @@ export interface FileTransferHttpHandlerOptions {
   maxActiveDownloads?: number;
   idleTimeoutMs?: number;
   totalTimeoutMs?: number;
+  /** Defaults to true for authenticated/legacy runtimes. */
+  allowDiagnosticUploadContinuation?: boolean;
 }
 
 export class FileTransferHttpHandler {
@@ -33,6 +36,7 @@ export class FileTransferHttpHandler {
   private readonly maxActiveDownloads: number;
   private readonly idleTimeoutMs: number;
   private readonly totalTimeoutMs: number;
+  private readonly allowDiagnosticUploadContinuation: boolean;
 
   constructor(
     private readonly manager: FileTransferManager,
@@ -41,6 +45,8 @@ export class FileTransferHttpHandler {
     this.maxActiveDownloads = options.maxActiveDownloads ?? MAX_ACTIVE_DOWNLOADS;
     this.idleTimeoutMs = options.idleTimeoutMs ?? TRANSFER_IDLE_TIMEOUT_MS;
     this.totalTimeoutMs = options.totalTimeoutMs ?? TRANSFER_TOTAL_TIMEOUT_MS;
+    this.allowDiagnosticUploadContinuation =
+      options.allowDiagnosticUploadContinuation !== false;
   }
 
   handleRequest(req: IncomingMessage, res: ServerResponse): boolean {
@@ -272,9 +278,27 @@ export class FileTransferHttpHandler {
       req.resume();
       return sendTransferJson(res, 403, "transfer_token_required", "Transfer token is required");
     }
+    let authorizedEntry: PersistedUploadTransfer;
+    try {
+      authorizedEntry = await this.manager.statusUpload(transferId, token);
+      if (
+        authorizedEntry.purpose === "diagnostic_report" &&
+        !this.allowDiagnosticUploadContinuation
+      ) {
+        throw new FileTransferError(
+          403,
+          "diagnostic_upload_disabled",
+          "Development diagnostic uploads are disabled for this Bridge runtime",
+        );
+      }
+    } catch (error) {
+      req.resume();
+      sendTransferError(res, error);
+      return;
+    }
     if (req.method === "HEAD") {
       try {
-        const entry = await this.manager.statusUpload(transferId, token);
+        const entry = authorizedEntry;
         res.writeHead(200, uploadStatusHeaders(entry, this.manager.uploadStore.maxChunkSizeBytes));
         res.end();
       } catch (error) {

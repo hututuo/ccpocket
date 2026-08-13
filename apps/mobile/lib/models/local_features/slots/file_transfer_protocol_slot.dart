@@ -6,6 +6,8 @@ const LocalFeatureProtocolSlot fileTransferProtocolSlot =
 const fileTransferCapability = 'file_transfer_v2';
 const fileTransferDiagnosticReportCapability =
     'file_transfer_diagnostic_report_v1';
+const fileTransferDiagnosticReportNoStepUpCapability =
+    'file_transfer_diagnostic_report_no_step_up_v1';
 const maxFileTransferBytes = 15 * 1024 * 1024 * 1024;
 const maxDiagnosticReportBytes = 16 * 1024 * 1024;
 const fileTransferChunkBytes = 16 * 1024 * 1024;

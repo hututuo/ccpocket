@@ -76,6 +76,12 @@ class _MutableChatSessionCubit extends ChatSessionCubit {
   void prependEntryForTest(ChatEntry entry) {
     emit(state.copyWith(entries: [entry, ...state.entries]));
   }
+
+  void replaceEntryForTest(int index, ChatEntry entry) {
+    final entries = List<ChatEntry>.from(state.entries);
+    entries[index] = entry;
+    emit(state.copyWith(entries: entries));
+  }
 }
 
 IconData? _iconForKey(WidgetTester tester, String key) =>
@@ -276,7 +282,7 @@ void main() {
       addTearDown(() => tester.binding.setSurfaceSize(null));
       final bridge = _Bridge();
       final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
-      final cubit = ChatSessionCubit(
+      final cubit = _MutableChatSessionCubit(
         sessionId: 'session-diagnostic',
         bridge: bridge,
         streamingCubit: streaming,
@@ -345,14 +351,104 @@ void main() {
           .cast<String>();
       expect(visible.length, lessThan(entries.length));
       expect(snapshot['presentationRevision'], hasLength(64));
-      final revisionBeforeStreaming = snapshot['presentationRevision'];
+      expect(snapshot['tailContentRevision'], hasLength(64));
+      final stableObservation = diagnostic.observeTemporalChanges(
+        duration: const Duration(milliseconds: 300),
+        interval: const Duration(milliseconds: 100),
+      );
+      await tester.pump(const Duration(milliseconds: 400));
+      final stableTemporal = await stableObservation;
+      expect(stableTemporal['postTriggerObservedChangeCount'], 0);
+      final contentObservation = diagnostic.observeTemporalChanges(
+        duration: const Duration(milliseconds: 400),
+        interval: const Duration(milliseconds: 100),
+      );
+      final finalAssistantIndex = cubit.state.entries.indexWhere(
+        (entry) =>
+            entry is ServerChatEntry &&
+            entry.message is AssistantServerMessage &&
+            (entry.message as AssistantServerMessage).message.id == 'final',
+      );
+      expect(finalAssistantIndex, isNonNegative);
+      final originalFinal = cubit.state.entries[finalAssistantIndex];
+      cubit.replaceEntryForTest(
+        finalAssistantIndex,
+        ServerChatEntry(
+          AssistantServerMessage(
+            message: const AssistantMessage(
+              id: 'final',
+              role: 'assistant',
+              content: [
+                TextContent(
+                  text: 'Final answer changed under the same identity',
+                ),
+              ],
+              model: 'codex',
+            ),
+          ),
+          timestamp: originalFinal.timestamp,
+          timestampIsAuthoritative: originalFinal.timestampIsAuthoritative,
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      final contentTemporal = await contentObservation;
+      final changedContentSnapshot = diagnostic.capture();
+      expect(
+        changedContentSnapshot['tailContentRevision'],
+        isNot(snapshot['tailContentRevision']),
+      );
+      expect(
+        changedContentSnapshot['presentationRevision'],
+        isNot(snapshot['presentationRevision']),
+      );
+      expect(contentTemporal['postTriggerObservedChangeCount'], greaterThan(0));
+      final revisionBeforeStreaming =
+          changedContentSnapshot['presentationRevision'];
+      final temporalObservation = diagnostic.observeTemporalChanges(
+        duration: const Duration(milliseconds: 400),
+        interval: const Duration(milliseconds: 100),
+      );
       streaming.appendThinking('new live reasoning delta');
       await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
       final streamingSnapshot = diagnostic.capture();
       expect(
         streamingSnapshot['presentationRevision'],
         isNot(revisionBeforeStreaming),
       );
+      final temporal = await temporalObservation;
+      expect(temporal['observedChangeCount'], greaterThan(0));
+      expect(temporal['noObservedChanges'], isFalse);
+      final temporalSamples = (temporal['samples']! as List).cast<Map>();
+      expect(
+        temporalSamples.any(
+          (sample) => (sample['streaming'] as Map?)?['isStreaming'] == true,
+        ),
+        isTrue,
+      );
+      streaming.reset();
+      await tester.pump();
+      final abaObservation = diagnostic.observeTemporalChanges(
+        duration: const Duration(milliseconds: 400),
+        interval: const Duration(milliseconds: 100),
+      );
+      streaming.appendThinking('transient ABA reasoning');
+      await tester.pump(const Duration(milliseconds: 100));
+      streaming.reset();
+      await tester.pump(const Duration(milliseconds: 400));
+      final abaTemporal = await abaObservation;
+      expect(abaTemporal['observedChangeCount'], greaterThanOrEqualTo(2));
+      expect(abaTemporal['noObservedChanges'], isFalse);
+      final abaSamples = (abaTemporal['samples']! as List).cast<Map>();
+      expect(
+        abaSamples.any(
+          (sample) => (sample['streaming'] as Map?)?['isStreaming'] == true,
+        ),
+        isTrue,
+      );
+      expect((abaSamples.last['streaming'] as Map?)?['isStreaming'], isFalse);
       await tester.pumpWidget(const SizedBox.shrink());
       await cubit.close();
     },

@@ -109,7 +109,7 @@ Future<void> uploadCurrentSessionDiagnosticReport({
         'capturedAtEnd': report.capturedAtEnd,
         'sha256': sha256.convert(bytes).toString(),
       },
-      authorizeMutation: service.uploadMutationAuthRequired
+      authorizeMutation: service.diagnosticReportMutationAuthRequired
           ? (operation) {
               if (!context.mounted) return Future.value(null);
               return requestFileMutationAuthorization(context, operation);
@@ -250,6 +250,7 @@ class SessionDiagnosticReportBuilder {
           ),
           cache.cacheStatsForTarget(target),
           packageInfoLoader(),
+          presentation.observeTemporalChanges(),
         ]).timeout(
           _diagnosticCaptureTimeout,
           onTimeout: () => throw TimeoutException(
@@ -277,6 +278,7 @@ class SessionDiagnosticReportBuilder {
     final watermark = results[3] as ConversationSyncV2ReadWatermark?;
     final stats = results[4] as SessionCatalogCacheStats;
     final packageInfo = results[5] as PackageInfo;
+    final presentationTemporal = results[6] as Map<String, Object?>;
     final presentationAtEnd = presentation.capture();
     final end = DateTime.now().toUtc();
     final afterEpoch = contentSync.cacheCommitEpochFor(
@@ -319,13 +321,20 @@ class SessionDiagnosticReportBuilder {
       presentationAtStart,
       presentationAtEnd,
     );
+    final noObservedPresentationChanges =
+        presentationTemporal['noObservedChanges'] == true;
     final report = <String, Object?>{
       'schemaVersion': 1,
       'reportId': reportId,
       'capture': <String, Object?>{
         'startedAt': start.toIso8601String(),
         'endedAt': end.toIso8601String(),
-        'stable': beforeEpoch == afterEpoch && presentationStable,
+        'stable':
+            beforeEpoch == afterEpoch &&
+            presentationStable &&
+            noObservedPresentationChanges,
+        'endpointEqual': presentationStable,
+        'noObservedPresentationChanges': noObservedPresentationChanges,
         'cacheCommitEpochBefore': beforeEpoch,
         'cacheCommitEpochAfter': afterEpoch,
         'presentationAvailableAtStart': presentationAvailableAtStart,
@@ -334,6 +343,7 @@ class SessionDiagnosticReportBuilder {
         'presentationUnavailableReasonAtEnd': presentationAtEnd['reason'],
         'presentationRevisionBefore': presentationRevisionBefore,
         'presentationRevisionAfter': presentationRevisionAfter,
+        'temporalPresentation': presentationTemporal,
       },
       'target': <String, Object?>{
         'provider': provider,
@@ -396,6 +406,8 @@ class SessionDiagnosticReportBuilder {
           'state': _diagnosticChatState(chatState),
           'runtime': chatSession.diagnosticRuntimeProjection,
           'presentation': presentationAtStart,
+          'presentationAtStart': presentationAtStart,
+          'presentationAtEnd': presentationAtEnd,
         },
         'sync': contentSync.diagnosticSnapshot(
           provider: provider,

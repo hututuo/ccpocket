@@ -37,6 +37,7 @@ async function fixture(options: {
   maxChunkSizeBytes?: number;
   mutationPassword?: string;
   withoutMutationAuthorizer?: boolean;
+  allowDiagnosticWithoutMutationAuthorization?: boolean;
 } = {}): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "ccpocket-transfer-manager-"));
   roots.push(root);
@@ -109,6 +110,8 @@ async function fixture(options: {
         observedAt: "2026-08-12T00:02:00.000Z",
       }],
     }),
+    allowDiagnosticWithoutMutationAuthorization:
+      options.allowDiagnosticWithoutMutationAuthorization,
   });
   await manager.init();
   managers.push(manager);
@@ -723,6 +726,76 @@ describe("FileTransferManager v2", () => {
       }),
     ]);
     expect(authorize).not.toHaveBeenCalled();
+  });
+
+  it("bypasses mutation step-up only for explicit development diagnostics", async () => {
+    const f = await fixture({
+      withoutMutationAuthorizer: true,
+      allowDiagnosticWithoutMutationAuthorization: true,
+    });
+    const client = {};
+    const phone = binding([
+      "file_transfer_upload_ready_v2",
+      "file_transfer_upload_result_v3",
+    ]);
+    f.manager.connect(client, phone.binding);
+    const body = Buffer.from(JSON.stringify({
+      schemaVersion: 1,
+      reportId: "report_development_bypass",
+      target: { provider: "codex", providerSessionId: "thread-diagnostic" },
+      mobile: {
+        infrastructure: {
+          bridgeInstanceId: "bridge-test",
+          codexSourceId: "source-bridge",
+        },
+      },
+    }));
+    await f.manager.handleClientMessage(client, {
+      type: "file_transfer_upload_prepare_v2",
+      requestId: "diagnostic-dev-bypass",
+      transferId: "upload_diag_dev_bypass",
+      resumeToken,
+      filename: "diagnostic.json",
+      sizeBytes: body.length,
+      purpose: "diagnostic_report",
+      diagnosticReport: {
+        schemaVersion: 1,
+        reportId: "report_development_bypass",
+        provider: "codex",
+        providerSessionId: "thread-diagnostic",
+        bridgeInstanceId: "bridge-test",
+        codexSourceId: "source-bridge",
+        capturedAtStart: "2026-08-13T00:00:00.000Z",
+        capturedAtEnd: "2026-08-13T00:00:03.000Z",
+        sha256: createHash("sha256").update(body).digest("hex"),
+      },
+    });
+    expect(phone.messages[0]).toMatchObject({
+      type: "file_transfer_upload_ready_v2",
+      transferId: "upload_diag_dev_bypass",
+    });
+
+    const ordinaryClient = {};
+    const ordinaryPhone = binding([
+      "file_transfer_upload_ready_v2",
+      "file_transfer_upload_result_v3",
+    ]);
+    f.manager.connect(ordinaryClient, ordinaryPhone.binding);
+    await f.manager.handleClientMessage(ordinaryClient, {
+      type: "file_transfer_upload_prepare_v2",
+      requestId: "ordinary-dev-denied",
+      transferId: "upload_ordinary_dev",
+      resumeToken: "s".repeat(43),
+      filename: "ordinary.txt",
+      sizeBytes: 1,
+    });
+    expect(ordinaryPhone.messages).toContainEqual(
+      expect.objectContaining({
+        type: "file_transfer_upload_result_v3",
+        success: false,
+        errorCode: "unsupported_capability",
+      }),
+    );
   });
 
   it("fails a diagnostic prepare closed when the phone lacks the v3 result path", async () => {

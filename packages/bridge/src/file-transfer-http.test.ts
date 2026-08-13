@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
 import { createServer, request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
@@ -476,6 +477,58 @@ describe("FileTransferHttpHandler v2", () => {
       success: true,
       sizeBytes: total,
     });
+  });
+
+  it("rejects a persisted diagnostic bearer after the development switch is disabled", async () => {
+    const f = await fixture({
+      http: { allowDiagnosticUploadContinuation: false },
+    });
+    const body = Buffer.from("{}");
+    const prepared = await f.manager.uploadStore.prepare(
+      "upload_diag_http01",
+      resumeToken,
+      "diagnostic.json",
+      body.length,
+      {
+        purpose: "diagnostic_report",
+        diagnosticReport: {
+          schemaVersion: 1,
+          reportId: "report_diag_http_policy",
+          provider: "codex",
+          providerSessionId: "thread-diag-http",
+          bridgeInstanceId: "bridge-test",
+          codexSourceId: "source-test",
+          capturedAtStart: "2026-08-13T00:00:00.000Z",
+          capturedAtEnd: "2026-08-13T00:00:03.000Z",
+          sha256: createHash("sha256").update(body).digest("hex"),
+        },
+      },
+    );
+    const path = "/api/file-transfers/uploads/upload_diag_http01";
+    const head = await httpRequest(
+      f.port,
+      "HEAD",
+      path,
+      transferHeaders(prepared.uploadToken),
+    );
+    expect(head.status).toBe(403);
+    const patchResult = await httpRequest(
+      f.port,
+      "PATCH",
+      path,
+      {
+        ...transferHeaders(prepared.uploadToken),
+        "Content-Type": "application/offset+octet-stream",
+        "Content-Length": body.length,
+        "Upload-Offset": 0,
+      },
+      body,
+    );
+    expect(patchResult.status).toBe(403);
+    expect(json(patchResult)).toMatchObject({
+      errorCode: "diagnostic_upload_disabled",
+    });
+    expect((await f.state.getUpload("upload_diag_http01"))?.offset).toBe(0);
   });
 
   it("returns the authoritative offset and rejects zero or over-limit upload chunks", async () => {

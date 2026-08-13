@@ -21,6 +21,7 @@ import {
 export {
   FILE_TRANSFER_CAPABILITY,
   FILE_TRANSFER_DIAGNOSTIC_REPORT_CAPABILITY,
+  FILE_TRANSFER_DIAGNOSTIC_REPORT_NO_STEP_UP_CAPABILITY,
 } from "./file-transfer-constants.js";
 export type { DiagnosticReportMetadata, FileTransferPurpose } from "./file-transfer-diagnostic.js";
 

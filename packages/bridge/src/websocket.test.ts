@@ -1200,6 +1200,9 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(sessionList.bridgeCapabilities).toContain(
       "file_transfer_upload_auth_v1",
     );
+    expect(sessionList.bridgeCapabilities).not.toContain(
+      "file_transfer_diagnostic_report_no_step_up_v1",
+    );
 
     (bridge as any).connectionAuth.set(ws, { kind: "open" });
     (bridge as any).sendSessionList(ws);
@@ -1215,6 +1218,111 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(sessionList.bridgeCapabilities).not.toContain(
       "file_transfer_diagnostic_report_v1",
     );
+    await bridge.close();
+  });
+
+  it("admits only diagnostic upload controls when open development diagnostics are explicit", async () => {
+    const fileTransfer = {
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      handleClientMessage: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+      diagnosticReportsAvailable: true,
+    };
+    const fileBrowser = {
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      handleClientMessage: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    };
+    const bridge = new BridgeWebSocketServer({
+      server: httpServer,
+      authMode: "open",
+      ownerFullDiskRead: true,
+      allowUnauthenticatedDiagnosticReports: true,
+      fileTransfer: fileTransfer as any,
+      fileBrowser: fileBrowser as any,
+      fileMutationAuthorizer: {} as any,
+    });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+      on: vi.fn(),
+    } as any;
+    (bridge as any).handleConnection(ws, {
+      headers: { host: "127.0.0.1:8765" },
+      socket: {},
+    });
+    const sessionList = ws.send.mock.calls
+      .map((call: unknown[]) => JSON.parse(call[0] as string))
+      .filter((message: any) => message.type === "session_list")
+      .at(-1);
+    expect(sessionList.bridgeCapabilities).toContain(
+      "file_transfer_diagnostic_report_v1",
+    );
+    expect(sessionList.bridgeCapabilities).toContain(
+      "file_transfer_upload_auth_v1",
+    );
+    expect(sessionList.bridgeCapabilities).toContain(
+      "file_transfer_diagnostic_report_no_step_up_v1",
+    );
+    await (bridge as any).handleClientMessage(
+      {
+        type: "client_capabilities",
+        supportedServerMessages: [
+          "file_transfer_upload_ready_v2",
+          "file_transfer_upload_result_v3",
+        ],
+      },
+      ws,
+    );
+
+    const diagnosticPrepare = {
+      type: "file_transfer_upload_prepare_v2",
+      requestId: "diagnostic-dev-request",
+      transferId: "upload_diagnostic_dev",
+      resumeToken: "r".repeat(43),
+      filename: "diagnostic.json",
+      sizeBytes: 1,
+      purpose: "diagnostic_report",
+      diagnosticReport: {
+        schemaVersion: 1,
+        reportId: "report_open_development",
+        provider: "codex",
+        providerSessionId: "thread-open-development",
+        bridgeInstanceId: "bridge-open-development",
+        codexSourceId: "source-open-development",
+        capturedAtStart: "2026-08-13T00:00:00.000Z",
+        capturedAtEnd: "2026-08-13T00:01:00.000Z",
+        sha256: "a".repeat(64),
+      },
+    } as const;
+    await (bridge as any).handleClientMessage(diagnosticPrepare, ws);
+    expect(fileTransfer.handleClientMessage).toHaveBeenCalledWith(
+      ws,
+      diagnosticPrepare,
+    );
+
+    fileTransfer.handleClientMessage.mockClear();
+    const ordinaryUpload = {
+      type: "file_transfer_upload_prepare_v2",
+      requestId: "ordinary-open-request",
+      transferId: "upload_ordinary_open",
+      resumeToken: "s".repeat(43),
+      filename: "ordinary.txt",
+      sizeBytes: 1,
+    } as const;
+    await (bridge as any).handleClientMessage(ordinaryUpload, ws);
+    expect(fileTransfer.handleClientMessage).not.toHaveBeenCalled();
+    expect(
+      ws.send.mock.calls
+        .map((call: unknown[]) => JSON.parse(call[0] as string))
+        .at(-1),
+    ).toMatchObject({
+      type: "error",
+      errorCode: "owner_authentication_required",
+    });
+
     await bridge.close();
   });
 

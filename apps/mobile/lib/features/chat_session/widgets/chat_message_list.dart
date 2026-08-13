@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
@@ -132,11 +133,23 @@ String chatMessageEntryStableKey(ChatEntry entry) {
 }
 
 /// Read-only handle for capturing the exact transcript projection currently
-/// owned by [ChatMessageList]. It stores references to the already-computed
-/// layout and only serializes them when the user explicitly requests a
-/// diagnostic report, so ordinary rebuilds pay no second layout/hash cost.
+/// owned by [ChatMessageList]. Full payload serialization happens only after
+/// an explicit report request. Ordinary builds contribute only a bounded,
+/// payload-free temporal digest so a recent visible flicker can be recovered.
 class ChatMessageListDiagnosticController {
   _ChatMessageListDiagnosticSource? _source;
+  final Stopwatch _traceClock = Stopwatch()..start();
+  final List<Map<String, Object?>> _temporalTrace = [];
+  StreamSubscription<StreamingState>? _streamingSubscription;
+  Object? _streamingOwner;
+  String? _targetSessionId;
+  String? _lastTemporalRevision;
+  int _temporalSequence = 0;
+  int _buildSerial = 0;
+  int _frameSerial = 0;
+  int _rawTemporalSampleCount = 0;
+  int _droppedTemporalSampleCount = 0;
+  bool _postFrameCaptureScheduled = false;
 
   Map<String, Object?> capture({int maximumPayloadBytes = 4 * 1024 * 1024}) =>
       _source?.capture(maximumPayloadBytes: maximumPayloadBytes) ??
@@ -145,18 +158,185 @@ class ChatMessageListDiagnosticController {
         'reason': 'chatMessageListNotAttached',
       };
 
+  /// Records a short post-click observation while retaining the last ten
+  /// seconds of in-memory, payload-free post-frame changes. Nothing is written
+  /// or uploaded until the user explicitly requests a diagnostic report.
+  Future<Map<String, Object?>> observeTemporalChanges({
+    Duration duration = const Duration(seconds: 3),
+    Duration interval = const Duration(milliseconds: 200),
+  }) async {
+    final observationStartedAt = DateTime.now().toUtc();
+    final observationStartedElapsedUs = _traceClock.elapsedMicroseconds;
+    final rawSamplesBeforeObservation = _rawTemporalSampleCount;
+    final droppedSamplesBeforeObservation = _droppedTemporalSampleCount;
+    _recordTemporal(trigger: 'observationStart', force: true);
+    var heartbeat = 0;
+    final timer = Timer.periodic(interval, (_) {
+      heartbeat += 1;
+      _recordTemporal(trigger: 'timer', force: heartbeat % 5 == 0);
+    });
+    try {
+      await Future<void>.delayed(duration);
+    } finally {
+      timer.cancel();
+    }
+    _recordTemporal(trigger: 'observationEnd', force: true);
+    final lowerBound =
+        observationStartedElapsedUs -
+        const Duration(seconds: 10).inMicroseconds;
+    final samples = <Map<String, Object?>>[
+      for (final sample in _temporalTrace)
+        if ((sample['monotonicElapsedUs'] as int? ?? 0) >= lowerBound)
+          Map<String, Object?>.from(sample),
+    ];
+    final preTriggerSamples = <Map<String, Object?>>[];
+    final observationSamples = <Map<String, Object?>>[];
+    for (final sample in samples) {
+      final elapsed = sample['monotonicElapsedUs'] as int? ?? 0;
+      if (elapsed < observationStartedElapsedUs) {
+        preTriggerSamples.add(sample);
+      } else {
+        observationSamples.add(sample);
+      }
+    }
+    int countRevisionChanges(List<Map<String, Object?>> values) {
+      var changes = 0;
+      String? previousRevision;
+      for (final value in values) {
+        final revision = value['revision'] as String?;
+        if (previousRevision != null && revision != previousRevision) {
+          changes += 1;
+        }
+        previousRevision = revision;
+      }
+      return changes;
+    }
+
+    final observationChangeCount = countRevisionChanges(observationSamples);
+    var preTriggerChangeCount = countRevisionChanges(preTriggerSamples);
+    if (preTriggerSamples.isNotEmpty &&
+        observationSamples.isNotEmpty &&
+        preTriggerSamples.last['revision'] !=
+            observationSamples.first['revision']) {
+      preTriggerChangeCount += 1;
+    }
+    final totalObservedChangeCount =
+        observationChangeCount + preTriggerChangeCount;
+    final firstPreTriggerElapsed = preTriggerSamples.isEmpty
+        ? observationStartedElapsedUs
+        : preTriggerSamples.first['monotonicElapsedUs'] as int? ??
+              observationStartedElapsedUs;
+    final projectionCounts = <int>[
+      for (final sample in samples)
+        if (sample['projectionEntryCount'] case final int count) count,
+    ];
+    return <String, Object?>{
+      'observationStartedAt': observationStartedAt.toIso8601String(),
+      'observationDurationMs': duration.inMilliseconds,
+      'sampleIntervalMs': interval.inMilliseconds,
+      'preTriggerCoverageMs':
+          (observationStartedElapsedUs - firstPreTriggerElapsed) ~/ 1000,
+      'rawSampleCountDuringObservation':
+          _rawTemporalSampleCount - rawSamplesBeforeObservation,
+      'storedSampleCountDuringObservation': observationSamples.length,
+      'droppedSampleCountDuringObservation':
+          _droppedTemporalSampleCount - droppedSamplesBeforeObservation,
+      'storedSampleCount': samples.length,
+      'observedChangeCount': totalObservedChangeCount,
+      'postTriggerObservedChangeCount': observationChangeCount,
+      'preTriggerObservedChangeCount': preTriggerChangeCount,
+      'noObservedChanges': totalObservedChangeCount == 0,
+      'overflowedDuringObservation':
+          _droppedTemporalSampleCount > droppedSamplesBeforeObservation,
+      if (projectionCounts.isNotEmpty) ...<String, Object?>{
+        'minimumProjectionEntryCount': projectionCounts.reduce(math.min),
+        'maximumProjectionEntryCount': projectionCounts.reduce(math.max),
+      },
+      'samples': samples,
+    };
+  }
+
   void _attach(_ChatMessageListDiagnosticSource source) {
+    if (_targetSessionId != null && _targetSessionId != source.sessionId) {
+      _temporalTrace.clear();
+      _lastTemporalRevision = null;
+      _temporalSequence = 0;
+      _buildSerial = 0;
+      _frameSerial = 0;
+      _rawTemporalSampleCount = 0;
+      _droppedTemporalSampleCount = 0;
+    }
+    _targetSessionId = source.sessionId;
     _source = source;
+    _buildSerial += 1;
+    if (!identical(_streamingOwner, source.owner)) {
+      unawaited(_streamingSubscription?.cancel());
+      _streamingOwner = source.owner;
+      _streamingSubscription = source.streamingCubit.stream.listen((_) {
+        _schedulePostFrameTemporalCapture('streaming');
+      });
+    }
+    _schedulePostFrameTemporalCapture('postFrame');
   }
 
   void _detach(Object owner) {
-    if (identical(_source?.owner, owner)) _source = null;
+    if (!identical(_source?.owner, owner)) return;
+    _recordTemporal(trigger: 'detach', force: true);
+    _source = null;
+    _streamingOwner = null;
+    unawaited(_streamingSubscription?.cancel());
+    _streamingSubscription = null;
+  }
+
+  void _schedulePostFrameTemporalCapture(String trigger) {
+    if (_postFrameCaptureScheduled) return;
+    _postFrameCaptureScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _postFrameCaptureScheduled = false;
+      _frameSerial += 1;
+      _recordTemporal(trigger: trigger);
+    });
+  }
+
+  void _recordTemporal({required String trigger, bool force = false}) {
+    _rawTemporalSampleCount += 1;
+    final summary =
+        _source?.temporalSummary(
+          buildSerial: _buildSerial,
+          frameSerial: _frameSerial,
+        ) ??
+        const <String, Object?>{
+          'available': false,
+          'reason': 'chatMessageListNotAttached',
+        };
+    final revisionInput = Map<String, Object?>.from(summary)
+      ..remove('buildSerial')
+      ..remove('frameSerial');
+    final revision = sha256
+        .convert(utf8.encode(jsonEncode(revisionInput)))
+        .toString();
+    if (!force && revision == _lastTemporalRevision) return;
+    _lastTemporalRevision = revision;
+    _temporalTrace.add(<String, Object?>{
+      'seq': ++_temporalSequence,
+      'wallAt': DateTime.now().toUtc().toIso8601String(),
+      'monotonicElapsedUs': _traceClock.elapsedMicroseconds,
+      'trigger': trigger,
+      'revision': revision,
+      ...summary,
+    });
+    if (_temporalTrace.length > 96) {
+      final removed = _temporalTrace.length - 96;
+      _temporalTrace.removeRange(0, removed);
+      _droppedTemporalSampleCount += removed;
+    }
   }
 }
 
 class _ChatMessageListDiagnosticSource {
-  const _ChatMessageListDiagnosticSource({
+  _ChatMessageListDiagnosticSource({
     required this.owner,
+    required this.sessionId,
     required this.entries,
     required this.layout,
     required this.chatState,
@@ -174,6 +354,7 @@ class _ChatMessageListDiagnosticSource {
   });
 
   final Object owner;
+  final String sessionId;
   final List<ChatEntry> entries;
   final ChatProcessLayout layout;
   final ChatSessionState chatState;
@@ -188,10 +369,12 @@ class _ChatMessageListDiagnosticSource {
   final Set<String> expandedCurrentProgress;
   final Map<int, List<GeneratedImagePreviewItem>> imageItemsByAnchor;
   final Set<int> imageGroupMemberIndices;
+  String? _cachedTemporalTailContentDigest;
 
   Map<String, Object?> capture({required int maximumPayloadBytes}) {
     const maximumStructuralEntries = 1024;
     final payloads = <int, Map<String, Object?>>{};
+    final payloadRevisions = <int, String>{};
     var remainingPayloadBytes = maximumPayloadBytes;
     var omittedPayloadCount = 0;
     // Preserve the newest payloads first because the report is intended to
@@ -208,9 +391,11 @@ class _ChatMessageListDiagnosticSource {
       final payload = Map<String, Object?>.from(
         _boundDiagnosticValue(_diagnosticChatEntry(entries[index]))! as Map,
       );
-      final encodedBytes = utf8.encode(jsonEncode(payload)).length;
+      final encoded = utf8.encode(jsonEncode(payload));
+      final encodedBytes = encoded.length;
       if (encodedBytes <= remainingPayloadBytes) {
         payloads[index] = payload;
+        payloadRevisions[index] = sha256.convert(encoded).toString();
         remainingPayloadBytes -= encodedBytes;
       } else {
         // The capture is newest-first. Stop once the next bounded payload no
@@ -248,6 +433,7 @@ class _ChatMessageListDiagnosticSource {
         'visibleTopLevel': role.$2,
         'turnKey': turn?.key,
         'segmentKey': segment?.key,
+        'payloadRevision': payloadRevisions[index],
         'payload':
             payloads[index] ??
             const <String, Object?>{
@@ -257,6 +443,10 @@ class _ChatMessageListDiagnosticSource {
       });
     }
     final streaming = streamingCubit.state;
+    final tailContentRevision = _contentAwareTailDigest(
+      maximumContentEntries: 16,
+      maximumStringCharacters: 2048,
+    );
     final identityBytes = utf8.encode(
       jsonEncode(<String, Object?>{
         'entries': [
@@ -267,8 +457,10 @@ class _ChatMessageListDiagnosticSource {
               'visibleTopLevel': entry['visibleTopLevel'],
               'turnKey': entry['turnKey'],
               'segmentKey': entry['segmentKey'],
+              'payloadRevision': entry['payloadRevision'],
             },
         ],
+        'tailContentRevision': tailContentRevision,
         'expandedProcessSegments': expandedProcessSegments.toList()..sort(),
         'expandedIntermediateTurns': expandedIntermediateTurns.toList()..sort(),
         'expandedCurrentProgress': expandedCurrentProgress.toList()..sort(),
@@ -309,6 +501,7 @@ class _ChatMessageListDiagnosticSource {
       'omittedPayloadCount': omittedPayloadCount,
       'chronologicalStableKeys': chronologicalKeys,
       'visibleTopLevelStableKeys': visibleTopLevelKeys,
+      'tailContentRevision': tailContentRevision,
       'entries': entryDiagnostics,
       'layout': <String, Object?>{
         'latestTurnKey': layout.latestTurnKey,
@@ -349,6 +542,112 @@ class _ChatMessageListDiagnosticSource {
       'chatStatus': chatState.status.name,
     };
   }
+
+  Map<String, Object?> temporalSummary({
+    required int buildSerial,
+    required int frameSerial,
+  }) {
+    const maximumTailEntries = 96;
+    final firstIndex = entries.length > maximumTailEntries
+        ? entries.length - maximumTailEntries
+        : 0;
+    final tailKeys = <String>[];
+    final visibleKeys = <String>[];
+    final renderRoleCounts = <String, int>{};
+    for (var index = firstIndex; index < entries.length; index++) {
+      final stableKey = chatMessageEntryStableKey(entries[index]);
+      tailKeys.add(stableKey);
+      final role = _diagnosticRenderRole(
+        index: index,
+        segment: layout.segmentForEntry(index),
+        turn: layout.turnForEntry(index),
+        hasStreaming: hasStreaming,
+        imageItemsByAnchor: imageItemsByAnchor,
+        imageGroupMemberIndices: imageGroupMemberIndices,
+      );
+      renderRoleCounts.update(role.$1, (value) => value + 1, ifAbsent: () => 1);
+      if (role.$2) visibleKeys.add(stableKey);
+    }
+    final streaming = streamingCubit.state;
+    final position = scrollController.hasClients
+        ? scrollController.position
+        : null;
+    return <String, Object?>{
+      'available': true,
+      'mounted': true,
+      'buildSerial': buildSerial,
+      'frameSerial': frameSerial,
+      'surfaceMode': historyBrowsing ? 'history' : 'latest',
+      'stateEntryCount': chatState.entries.length,
+      'projectionEntryCount': entries.length,
+      'tailStableKeys': tailKeys,
+      'tailStableKeyDigest': sha256
+          .convert(utf8.encode(jsonEncode(tailKeys)))
+          .toString(),
+      'tailContentDigest': _cachedTemporalTailContentDigest ??=
+          _contentAwareTailDigest(
+            maximumContentEntries: 4,
+            maximumStringCharacters: 512,
+          ),
+      'visibleTopLevelCount': visibleKeys.length,
+      'visibleTopLevelDigest': sha256
+          .convert(utf8.encode(jsonEncode(visibleKeys)))
+          .toString(),
+      'renderRoleCounts': renderRoleCounts,
+      'latestTurnKey': layout.latestTurnKey,
+      'historyBrowsing': historyBrowsing,
+      'latestTurnIsActive': latestTurnIsActive,
+      'chatStatus': chatState.status.name,
+      'expandedProcessSegments': expandedProcessSegments.toList()..sort(),
+      'expandedIntermediateTurns': expandedIntermediateTurns.toList()..sort(),
+      'expandedCurrentProgress': expandedCurrentProgress.toList()..sort(),
+      'streaming': <String, Object?>{
+        'isStreaming': streaming.isStreaming,
+        'text': _diagnosticTextRevision(streaming.text),
+        'thinking': _diagnosticTextRevision(streaming.thinking),
+      },
+      'paging': <String, Object?>{
+        'enabled': paging.enabled,
+        'hasMore': paging.hasMore,
+        'hasLater': paging.hasLater,
+        'loading': paging.loading,
+        'loadingLater': paging.loadingLater,
+        'error': paging.error?.toString(),
+        'laterError': paging.laterError?.toString(),
+      },
+      'scroll': <String, Object?>{
+        'attached': position != null,
+        if (position != null) ...<String, Object?>{
+          'pixels': position.pixels,
+          'minScrollExtent': position.minScrollExtent,
+          'maxScrollExtent': position.maxScrollExtent,
+          'viewportDimension': position.viewportDimension,
+        },
+      },
+    };
+  }
+
+  String _contentAwareTailDigest({
+    required int maximumContentEntries,
+    required int maximumStringCharacters,
+  }) {
+    final contentStart = entries.length > maximumContentEntries
+        ? entries.length - maximumContentEntries
+        : 0;
+    final contentDigestInput = <Object?>[
+      for (var index = contentStart; index < entries.length; index++)
+        <String, Object?>{
+          'stableKey': chatMessageEntryStableKey(entries[index]),
+          'payload': _boundDiagnosticValue(
+            _diagnosticChatEntry(entries[index]),
+            maximumStringCharacters: maximumStringCharacters,
+          ),
+        },
+    ];
+    return sha256
+        .convert(utf8.encode(jsonEncode(contentDigestInput)))
+        .toString();
+  }
 }
 
 String _boundedDiagnosticText(String value, {int maximumCharacters = 65536}) {
@@ -370,15 +669,25 @@ Map<String, Object?> _diagnosticTextRevision(String value) {
   };
 }
 
-Object? _boundDiagnosticValue(Object? value, {int depth = 0}) {
+Object? _boundDiagnosticValue(
+  Object? value, {
+  int depth = 0,
+  int maximumStringCharacters = 65536,
+}) {
   if (depth > 32) return '[DIAGNOSTIC_DEPTH_LIMIT]';
-  if (value is String) return _boundedDiagnosticText(value);
+  if (value is String) {
+    return _boundedDiagnosticText(
+      value,
+      maximumCharacters: maximumStringCharacters,
+    );
+  }
   if (value is Map) {
     return <String, Object?>{
       for (final entry in value.entries.take(512))
         entry.key.toString(): _boundDiagnosticValue(
           entry.value,
           depth: depth + 1,
+          maximumStringCharacters: maximumStringCharacters,
         ),
       if (value.length > 512)
         'ccpocketDiagnosticOmittedFields': value.length - 512,
@@ -388,7 +697,11 @@ Object? _boundDiagnosticValue(Object? value, {int depth = 0}) {
     final sourceLength = value.length;
     final bounded = <Object?>[
       for (final item in value.take(512))
-        _boundDiagnosticValue(item, depth: depth + 1),
+        _boundDiagnosticValue(
+          item,
+          depth: depth + 1,
+          maximumStringCharacters: maximumStringCharacters,
+        ),
     ];
     if (sourceLength > 512) {
       bounded.add(<String, Object?>{
@@ -1567,6 +1880,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
     widget.diagnosticController?._attach(
       _ChatMessageListDiagnosticSource(
         owner: this,
+        sessionId: widget.sessionId,
         entries: allEntries,
         layout: processLayout,
         chatState: chatState,
