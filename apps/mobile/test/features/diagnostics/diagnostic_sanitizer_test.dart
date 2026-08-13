@@ -69,6 +69,25 @@ void main() {
     },
   );
 
+  test('redacts URL-shaped fragments that cannot be safely parsed', () {
+    final result = sanitizeDiagnosticValue(<String, Object?>{
+      'transcript': <String>[
+        'Markdown endpoint: ws://localhost:8765`',
+        r'Environment endpoint: https://${HOST}:${PORT}',
+        r'Environment port: ws://100.94.144.77:${BRIDGE_PORT}',
+        'A normal public URL remains: https://example.test/public/path',
+      ],
+    });
+    final encoded = jsonEncode(result.value);
+
+    expect(encoded, isNot(contains('ws://localhost:8765`')));
+    expect(encoded, isNot(contains(r'https://${HOST}:${PORT}')));
+    expect(encoded, isNot(contains(r'ws://100.94.144.77:${BRIDGE_PORT}')));
+    expect(encoded, contains('[REDACTED_URL]'));
+    expect(encoded, contains('https://example.test/public/path'));
+    expect(result.redactedCredentialCount, 3);
+  });
+
   test('bounds collections, strings, depth, and total nodes', () {
     final result = sanitizeDiagnosticValue(
       <String, Object?>{

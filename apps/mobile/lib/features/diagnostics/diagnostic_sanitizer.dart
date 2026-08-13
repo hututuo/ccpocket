@@ -214,19 +214,30 @@ String _sanitizeDiagnosticString(String input, VoidCallback onRedaction) {
   }
   output = output.replaceAllMapped(_networkUrlPattern, (match) {
     final raw = match.group(0)!;
-    final uri = Uri.tryParse(raw);
-    if (uri == null || uri.host.isEmpty) return raw;
-    if (uri.userInfo.isEmpty && !uri.hasQuery && !uri.hasFragment) return raw;
-    onRedaction();
     try {
-      return Uri(
+      final uri = Uri.parse(raw);
+      if (!uri.hasAuthority || uri.host.isEmpty) {
+        onRedaction();
+        return '[REDACTED_URL]';
+      }
+      // Reading `port` performs stricter validation than Uri.parse itself.
+      // It catches transcript fragments such as `ws://host:8765`` where a
+      // Markdown delimiter was consumed by the URL regex. Node's WHATWG URL
+      // parser rejects the same fragment at the Bridge archive gate.
+      final port = uri.hasPort ? uri.port : null;
+      final unsafeComponents =
+          uri.userInfo.isNotEmpty || uri.hasQuery || uri.hasFragment;
+      final normalized = Uri(
         scheme: uri.scheme,
         host: uri.host,
-        port: uri.hasPort ? uri.port : null,
+        port: port,
         path: uri.path,
-        query: uri.hasQuery ? 'ccpocket_redacted=1' : null,
+        query: unsafeComponents && uri.hasQuery ? 'ccpocket_redacted=1' : null,
       ).toString();
+      if (unsafeComponents) onRedaction();
+      return normalized;
     } catch (_) {
+      onRedaction();
       return '[REDACTED_URL]';
     }
   });
