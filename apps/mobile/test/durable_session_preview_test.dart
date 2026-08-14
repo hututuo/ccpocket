@@ -774,6 +774,30 @@ void main() {
           ).where((message) => message['type'] == 'input'),
           isEmpty,
         );
+
+        await tester.tap(find.text('Tap to retry'));
+        await tester.pump();
+        final inputs = _sentWireMessages(
+          bridge,
+        ).where((message) => message['type'] == 'input').toList();
+        expect(inputs, hasLength(1));
+        expect(inputs.single['sessionId'], 'runtime-attached-recovery');
+        expect(inputs.single['clientMessageId'], 'client-attached-recovery');
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().single.status,
+          MessageStatus.sending,
+        );
+
+        bridge.emitMessage(
+          const InputAckMessage(
+            sessionId: 'runtime-attached-recovery',
+            clientMessageId: 'client-attached-recovery',
+            stage: InputAckStage.bridgeAccepted,
+          ),
+          sessionId: 'runtime-attached-recovery',
+        );
+        await tester.pump();
+        expect(drafts.getPendingSubmission(metadata.sessionId), isNull);
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();

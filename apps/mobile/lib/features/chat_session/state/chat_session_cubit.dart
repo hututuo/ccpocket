@@ -10534,7 +10534,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// conversation is still waiting for its runtime authority projection. This
   /// lets the UI explain the real retry gate instead of making a tap appear to
   /// do nothing.
-  bool retryMessage(UserChatEntry entry) {
+  bool retryMessage(
+    UserChatEntry entry, {
+    List<ChatImageAttachment>? images,
+    Iterable<String>? mentionablePaths,
+    Iterable<Map<String, String>>? additionalMentions,
+  }) {
     if (!_bridge.isConnected) return false;
     final runtimeLease = _captureRuntimeMutationLease();
     if (runtimeLease == null) return false;
@@ -10547,6 +10552,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     final retrySessionId = runtimeLease.sessionId;
     final isOffline = !_bridge.isConnected;
+    final retryImages = images?.toList(growable: false) ?? const [];
+    final structuredMentions = isCodex
+        ? _extractCodexStructuredInputs(
+            entry.text,
+            mentionablePaths: mentionablePaths,
+            additionalMentions: additionalMentions,
+          )
+        : (
+            skills: const <Map<String, String>>[],
+            mentions: const <Map<String, String>>[],
+          );
     final baseSeq = isOffline
         ? _bridge.cachedSessionHistorySeq(retrySessionId)
         : null;
@@ -10556,7 +10572,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             text: entry.text,
             createdAt: DateTime.now().toUtc().toIso8601String(),
             clientMessageId: clientMessageId,
-            imageCount: entry.imageCount,
+            imageCount: retryImages.isEmpty
+                ? entry.imageCount
+                : retryImages.length,
+            skills: structuredMentions.skills,
+            mentions: structuredMentions.mentions,
           )
         : null;
     emit(
@@ -10569,7 +10589,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               clientMessageId: clientMessageId,
               providerItemId: entry.providerItemId,
               historyTurnId: entry.historyTurnId,
-              imageBytesList: entry.imageBytesList,
+              imageBytesList: retryImages.isEmpty
+                  ? entry.imageBytesList
+                  : retryImages.map((image) => image.bytes).toList(),
               imageUrls: entry.imageUrls,
               imageCount: entry.imageCount,
               status: isOffline ? MessageStatus.queued : MessageStatus.sending,
@@ -10586,14 +10608,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     // delivery correlation, and failure transition as a normal submission.
     // The old direct send could leave this bubble spinning forever when the
     // socket queued the frame or the runtime changed during dispatch.
+    _recordOutgoingDraftAttempt(clientMessageId);
     _dispatchInputInOrder(
       runtimeLease: runtimeLease,
       text: entry.text,
       clientMessageId: clientMessageId,
       baseSeq: baseSeq,
-      images: const [],
-      skills: const [],
-      mentions: const [],
+      images: retryImages,
+      skills: structuredMentions.skills,
+      mentions: structuredMentions.mentions,
       deliveryPendingItem: deliveryPendingItem,
     );
     return true;
