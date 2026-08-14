@@ -171,6 +171,79 @@ describe("diagnostic report archiver", () => {
       .rejects.toMatchObject({ code: "diagnostic_size_mismatch" });
   });
 
+  it("archives full-fidelity development reports after basic integrity checks", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ccpocket-diagnostic-"));
+    roots.push(root);
+    const body = reportBody("development-full-fidelity", {
+      transcript: {
+        authorizationHeader: "development-fixture-value",
+        endpoint: "wss://bridge.test/socket?development=1",
+      },
+      largeProjection: Array.from({ length: 100_100 }, (_, index) => index),
+    });
+    const archiver = new DiagnosticReportArchiver({
+      reportsDirectory: join(root, "reports"),
+      bridgeInstanceId: "bridge-test",
+      codexSourceId: "source-bridge",
+      contentPolicy: "development_full_fidelity",
+    });
+
+    const result = await archiver.archive(
+      metadata(body, "development-full-fidelity"),
+      body,
+      body.length,
+    );
+    const saved = JSON.parse(
+      await readFile(result.savedPath, "utf8"),
+    ) as Record<string, any>;
+    expect(saved.mobileReport.transcript).toEqual({
+      authorizationHeader: "development-fixture-value",
+      endpoint: "wss://bridge.test/socket?development=1",
+    });
+    expect(saved.mobileReport.largeProjection).toHaveLength(100_100);
+    const reportMetadata = metadata(body, "development-full-fidelity");
+    await expect(
+      archiver.archive(reportMetadata, body, body.length),
+    ).resolves.toEqual(result);
+    await expect(
+      archiver.verifyReceipt(reportMetadata, {
+        filename: result.filename,
+        savedPath: result.savedPath,
+        purpose: "diagnostic_report",
+        reportId: reportMetadata.reportId,
+        archiveSha256: result.archiveSha256,
+        mobileReportCanonicalSha256: result.mobileReportCanonicalSha256,
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it("keeps development integrity failures distinct from content policy", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ccpocket-diagnostic-"));
+    roots.push(root);
+    const archiver = new DiagnosticReportArchiver({
+      reportsDirectory: join(root, "reports"),
+      bridgeInstanceId: "bridge-test",
+      codexSourceId: "source-bridge",
+      contentPolicy: "development_full_fidelity",
+    });
+    const clean = reportBody("development-integrity");
+    await expect(
+      archiver.archive(
+        { ...metadata(clean, "development-integrity"), sha256: "b".repeat(64) },
+        clean,
+        clean.length,
+      ),
+    ).rejects.toMatchObject({ code: "diagnostic_sha256_mismatch" });
+    const invalidJson = Buffer.from("not json");
+    await expect(
+      archiver.archive(
+        metadata(invalidJson, "development-invalid-json"),
+        invalidJson,
+        invalidJson.length,
+      ),
+    ).rejects.toMatchObject({ code: "diagnostic_invalid_json" });
+  });
+
   it("accepts only exact provider and source identities", async () => {
     const root = await mkdtemp(join(tmpdir(), "ccpocket-diagnostic-"));
     roots.push(root);

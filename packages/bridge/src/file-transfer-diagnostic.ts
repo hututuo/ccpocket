@@ -35,6 +35,10 @@ export interface DiagnosticRuntimeIdentity {
   runtimeIdentity?: string;
 }
 
+export type DiagnosticReportContentPolicy =
+  | "strict"
+  | "development_full_fidelity";
+
 export interface DiagnosticReportArchive {
   filename: string;
   savedPath: string;
@@ -55,6 +59,7 @@ export interface DiagnosticReportReceiptReference {
 export interface DiagnosticReportArchiverOptions extends DiagnosticRuntimeIdentity {
   reportsDirectory?: string;
   getRuntimeStates?: () => LocalFeatureRuntimeConversationState[];
+  contentPolicy?: DiagnosticReportContentPolicy;
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -166,6 +171,7 @@ export class DiagnosticReportArchiver {
   private readonly reportsDirectory: string;
   private readonly now: () => number;
   private readonly log: (message: string) => void;
+  private readonly contentPolicy: DiagnosticReportContentPolicy;
   private runtimeStates?: () => LocalFeatureRuntimeConversationState[];
   private readonly identity: DiagnosticRuntimeIdentity;
   private initBarrier?: Promise<void>;
@@ -177,6 +183,7 @@ export class DiagnosticReportArchiver {
     );
     this.now = options.now ?? Date.now;
     this.log = options.log ?? ((message) => console.info(`[diagnostic] ${message}`));
+    this.contentPolicy = options.contentPolicy ?? "strict";
     this.runtimeStates = options.getRuntimeStates;
     this.identity = {
       ...(options.bridgeInstanceId ? { bridgeInstanceId: options.bridgeInstanceId } : {}),
@@ -203,7 +210,10 @@ export class DiagnosticReportArchiver {
     declaredSizeBytes: number,
   ): Promise<DiagnosticReportArchive> {
     const startedAt = this.now();
-    if (containsProhibitedCredential(metadata)) {
+    if (
+      this.contentPolicy === "strict" &&
+      containsProhibitedCredential(metadata)
+    ) {
       throw diagnosticError("diagnostic_sensitive_field", "Diagnostic report contains a prohibited authentication field");
     }
     if (!validateDiagnosticReportMetadata(metadata)) {
@@ -222,7 +232,10 @@ export class DiagnosticReportArchiver {
     } catch {
       throw diagnosticError("diagnostic_invalid_json", "Diagnostic report is not valid JSON");
     }
-    if (containsProhibitedCredential(payload)) {
+    if (
+      this.contentPolicy === "strict" &&
+      containsProhibitedCredential(payload)
+    ) {
       throw diagnosticError("diagnostic_sensitive_field", "Diagnostic report contains a prohibited authentication field");
     }
     if (metadata.bridgeInstanceId !== this.identity.bridgeInstanceId) {
@@ -296,7 +309,10 @@ export class DiagnosticReportArchiver {
       mobileReport: payload,
       bridge,
     };
-    if (containsProhibitedCredential(envelope)) {
+    if (
+      this.contentPolicy === "strict" &&
+      containsProhibitedCredential(envelope)
+    ) {
       throw diagnosticError("diagnostic_sensitive_field", "Diagnostic report contains a prohibited authentication field");
     }
     const serialized = Buffer.from(`${JSON.stringify(envelope, null, 2)}\n`, "utf8");
@@ -364,7 +380,8 @@ export class DiagnosticReportArchiver {
       }
       const value = JSON.parse(archiveBytes.toString("utf8")) as unknown;
       if (
-        containsProhibitedCredential(value) ||
+        (this.contentPolicy === "strict" &&
+          containsProhibitedCredential(value)) ||
         !isMatchingArchive(
           value,
           metadata,
@@ -583,7 +600,8 @@ export class DiagnosticReportArchiver {
         throw diagnosticError("diagnostic_report_collision", "Diagnostic report destination is occupied");
       }
       if (
-        containsProhibitedCredential(value) ||
+        (this.contentPolicy === "strict" &&
+          containsProhibitedCredential(value)) ||
         !isMatchingArchive(value, metadata, canonicalPayloadSha256)
       ) {
         throw diagnosticError("diagnostic_report_collision", "Diagnostic report destination is occupied");

@@ -8,7 +8,10 @@ import {
 } from "./file-transfer-state-store.js";
 import { FileTransferUploadStore } from "./file-transfer-upload-store.js";
 import type { FileMutationAuthorizer } from "./file-mutation-auth.js";
-import type { DiagnosticReportArchiver } from "./file-transfer-diagnostic.js";
+import type {
+  DiagnosticReportArchiver,
+  DiagnosticReportContentPolicy,
+} from "./file-transfer-diagnostic.js";
 
 export interface FileTransferRuntime {
   manager: FileTransferManager;
@@ -30,6 +33,7 @@ export interface FileTransferRuntimeOptions {
   allowDiagnosticWithoutMutationAuthorization?: boolean;
   /** Rechecked by the HTTP bearer continuation after every Bridge restart. */
   allowDiagnosticUploadContinuation?: boolean;
+  diagnosticContentPolicy?: DiagnosticReportContentPolicy;
 }
 
 /**
@@ -59,6 +63,7 @@ export async function initializeFileTransferRuntime(
     });
     const uploadStore = new FileTransferUploadStore({
       stateStore,
+      diagnosticContentPolicy: options.diagnosticContentPolicy,
       ...(options.downloadDirectory
         ? { directory: options.downloadDirectory }
         : {}),

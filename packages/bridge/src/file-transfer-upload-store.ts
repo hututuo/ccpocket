@@ -32,6 +32,7 @@ import {
   DIAGNOSTIC_REPORT_PAYLOAD_MAX_BYTES,
   containsDiagnosticCredential,
   validateDiagnosticReportMetadata,
+  type DiagnosticReportContentPolicy,
   type DiagnosticReportMetadata,
   type FileTransferPurpose,
 } from "./file-transfer-diagnostic.js";
@@ -96,6 +97,7 @@ export interface FileTransferUploadStoreOptions {
   now?: () => number;
   tokenFactory?: () => string;
   availableBytes?: (path: string) => Promise<bigint>;
+  diagnosticContentPolicy?: DiagnosticReportContentPolicy;
 }
 
 export class UploadOffsetConflictError extends FileTransferError {
@@ -144,6 +146,7 @@ export class FileTransferUploadStore {
   private readonly now: () => number;
   private readonly tokenFactory: () => string;
   private readonly availableBytes: (path: string) => Promise<bigint>;
+  private readonly diagnosticContentPolicy: DiagnosticReportContentPolicy;
   private readonly statfsSupported: boolean;
   private readyBarrier?: Promise<void>;
   private directoryBarrier?: Promise<DirectoryIdentity>;
@@ -166,6 +169,8 @@ export class FileTransferUploadStore {
     this.maxActiveUploads = options.maxActiveUploads ?? DEFAULT_MAX_ACTIVE_UPLOADS;
     this.now = options.now ?? Date.now;
     this.tokenFactory = options.tokenFactory ?? (() => randomBytes(32).toString("base64url"));
+    this.diagnosticContentPolicy =
+      options.diagnosticContentPolicy ?? "strict";
     this.statfsSupported = Boolean(
       options.availableBytes || fileTransferStatfsAvailable(fsPromises),
     );
@@ -1075,7 +1080,10 @@ export class FileTransferUploadStore {
       if (!validateDiagnosticReportMetadata(options.diagnosticReport)) {
         throw new FileTransferError(400, "invalid_diagnostic_metadata", "Diagnostic metadata is invalid");
       }
-      if (containsDiagnosticCredential(options.diagnosticReport)) {
+      if (
+        this.diagnosticContentPolicy === "strict" &&
+        containsDiagnosticCredential(options.diagnosticReport)
+      ) {
         throw new FileTransferError(
           400,
           "diagnostic_sensitive_field",

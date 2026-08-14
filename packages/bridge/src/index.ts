@@ -467,10 +467,16 @@ export async function startServer() {
     allowDiagnosticUploadContinuation:
       connectionAuthentication.mode !== "open" ||
       allowUnauthenticatedDiagnosticReports,
+    diagnosticContentPolicy: allowUnauthenticatedDiagnosticReports
+      ? "development_full_fidelity"
+      : "strict",
     diagnosticReportArchiver: new DiagnosticReportArchiver({
       bridgeInstanceId: promptHistoryStore.bridgeInstanceId,
       codexSourceId: codexSourceIdentity(),
       bridgeVersion: getPackageVersion(),
+      contentPolicy: allowUnauthenticatedDiagnosticReports
+        ? "development_full_fidelity"
+        : "strict",
     }),
     warn: (message) => console.warn(`[bridge] ${message}`),
   });

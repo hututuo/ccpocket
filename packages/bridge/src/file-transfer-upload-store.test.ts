@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FileTransferStateStore } from "./file-transfer-state-store.js";
-import { DIAGNOSTIC_REPORT_PAYLOAD_MAX_BYTES } from "./file-transfer-diagnostic.js";
+import {
+  DIAGNOSTIC_REPORT_PAYLOAD_MAX_BYTES,
+  type DiagnosticReportContentPolicy,
+} from "./file-transfer-diagnostic.js";
 import {
   FileTransferUploadStore,
   fileTransferStatfsAvailable,
@@ -18,6 +21,7 @@ async function fixture(options: {
   now?: () => number;
   availableBytes?: () => Promise<bigint>;
   maxUploads?: number;
+  diagnosticContentPolicy?: DiagnosticReportContentPolicy;
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "ccpocket-transfer-upload-"));
   roots.push(root);
@@ -40,6 +44,7 @@ async function fixture(options: {
     diskSafetyMarginBytes: 0,
     now: options.now,
     availableBytes: options.availableBytes,
+    diagnosticContentPolicy: options.diagnosticContentPolicy,
     tokenFactory: () => `${String(++tokenSequence).padStart(43, "a")}`.slice(-43),
   });
   return { root, downloads, realDownloads, parts, statePath, state, store };
@@ -751,6 +756,35 @@ describe("FileTransferUploadStore v2", () => {
       },
     )).rejects.toMatchObject({ code: "diagnostic_sensitive_field" });
     expect(await f.state.getUpload("upload_diagsecret1")).toBeUndefined();
+    await f.state.close();
+  });
+
+  it("accepts full-fidelity diagnostic metadata only in development policy", async () => {
+    const f = await fixture({
+      diagnosticContentPolicy: "development_full_fidelity",
+    });
+    const prepared = await f.store.prepare(
+      "upload_diagdev001",
+      "d".repeat(43),
+      "diagnostic-development.json",
+      1,
+      {
+        purpose: "diagnostic_report",
+        diagnosticReport: {
+          schemaVersion: 1,
+          reportId: "diagnostic-development",
+          provider: "codex",
+          providerSessionId: "AWS_ACCESS_KEY_ID=ASIAABCDEFGHIJKLMNOP",
+          bridgeInstanceId: "bridge-test",
+          codexSourceId: "source-bridge",
+          capturedAtStart: "2026-08-12T00:00:00.000Z",
+          capturedAtEnd: "2026-08-12T00:01:00.000Z",
+          sha256: "a".repeat(64),
+        },
+      },
+    );
+    expect(prepared.status).toBe("ready");
+    expect(await f.state.getUpload("upload_diagdev001")).toBeDefined();
     await f.state.close();
   });
 
