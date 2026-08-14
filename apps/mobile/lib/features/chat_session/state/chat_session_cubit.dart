@@ -6268,6 +6268,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         final clientMessageId = entry.clientMessageId?.trim();
         if (clientMessageId?.isNotEmpty == true) {
           _detachedLocalOverlayClientIds.remove(clientMessageId);
+          _logOutgoingReceipt(
+            'canonical_commit',
+            clientMessageId,
+            cleared: _clearOutgoingDraft(clientMessageId),
+          );
         }
       }
       _consumeDetachedCanonicalAssistantAliases(historyEntries);

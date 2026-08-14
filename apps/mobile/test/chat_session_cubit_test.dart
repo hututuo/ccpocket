@@ -11245,6 +11245,57 @@ void main() {
     );
 
     test(
+      'canonical commit clears the exact pending draft when Bridge ack was lost',
+      () async {
+        SharedPreferences.setMockInitialValues({});
+        final prefs = await SharedPreferences.getInstance();
+        final drafts = DraftService(prefs);
+        const clientMessageId = 'canonical-receipt-client-id';
+        await drafts.savePendingSubmission(
+          'durable-canonical-receipt',
+          PendingChatSubmissionDraft(
+            clientMessageId: clientMessageId,
+            text: 'Committed despite lost ack',
+          ),
+        );
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-canonical-receipt',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          outgoingDrafts: drafts,
+        );
+        addTearDown(cubit.close);
+        cubit.restoreFailedSubmission(
+          'Committed despite lost ack',
+          clientMessageId: clientMessageId,
+        );
+
+        cubit.updateDetachedPreviewHistory(const [
+          UserInputMessage(
+            text: 'Committed despite lost ack',
+            clientMessageId: clientMessageId,
+            providerItemId: 'provider-user-canonical-receipt',
+            historyTurnId: 'turn-canonical-receipt',
+          ),
+        ]);
+
+        expect(
+          drafts.getPendingSubmission('durable-canonical-receipt'),
+          isNull,
+        );
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(1));
+        expect(users.single.clientMessageId, clientMessageId);
+        expect(users.single.providerItemId, 'provider-user-canonical-receipt');
+      },
+    );
+
+    test(
       'retryMessage reuses the client id on the ordered delivery path',
       () async {
         final cubit = createCubit('s1', provider: Provider.codex);
