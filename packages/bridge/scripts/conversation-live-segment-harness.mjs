@@ -80,6 +80,7 @@ const providerState = {
     : [],
 };
 const providerReads = [];
+const providerMessages = [];
 const bridgeFrames = [];
 const clientFrames = [];
 let activeRuntime = null;
@@ -121,6 +122,7 @@ function providerThread() {
 
 class FakeCodexAppServer extends CodexProcess {
   _fixtureRunning = true;
+  _fixtureObserverAttached = false;
 
   get isRunning() {
     return this._fixtureRunning;
@@ -142,6 +144,12 @@ class FakeCodexAppServer extends CodexProcess {
     this._fixtureRunning = true;
     this._threadId = options.threadId ?? threadId;
     activeRuntime = this;
+    if (!this._fixtureObserverAttached) {
+      this._fixtureObserverAttached = true;
+      this.on("message", (message) => {
+        providerMessages.push(structuredClone(message));
+      });
+    }
     queueMicrotask(() => {
       this.emit("message", {
         type: "system",
@@ -414,6 +422,12 @@ await writeFile(
   providerReads.length === 0
     ? ""
     : `${providerReads.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+);
+await writeFile(
+  join(traceRoot, "provider-message.jsonl"),
+  providerMessages.length === 0
+    ? ""
+    : `${providerMessages.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
 );
 await Promise.race([
   bridge.close(),

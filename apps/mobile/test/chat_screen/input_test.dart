@@ -234,6 +234,14 @@ void main() {
           attachedCubit.runtimeSessionIdForMutation(allowSteerable: false),
           'live-codex-runtime',
         );
+        bridge.emitMessage(
+          InputAckMessage(
+            sessionId: 'live-codex-runtime',
+            clientMessageId: input['clientMessageId'] as String?,
+            stage: InputAckStage.bridgeAccepted,
+          ),
+        );
+        await pumpN($.tester);
 
         bridge.sentMessages.clear();
         await $.tester.enterText(
@@ -454,6 +462,14 @@ void main() {
         expect(input['sessionId'], isNot('runtime-before-stop'));
         expect(input['text'], 'Continue after runtime replacement');
         expect(findAllSentMessages(bridge, 'resume_session'), hasLength(1));
+        bridge.emitMessage(
+          InputAckMessage(
+            sessionId: 'runtime-after-stop',
+            clientMessageId: input['clientMessageId'] as String?,
+            stage: InputAckStage.bridgeAccepted,
+          ),
+        );
+        await pumpN($.tester);
 
         stoppedCubit.updateDetachedLiveRuntime('runtime-inline-replacement');
         stoppedCubit.updateDetachedProviderStatus(

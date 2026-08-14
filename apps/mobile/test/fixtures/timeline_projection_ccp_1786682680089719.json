@@ -1,0 +1,21 @@
+{
+  "sourceReport": "ccp-1786682680089719-4b1e80bb.json",
+  "threadId": "019fe552-2d01-7730-aaf6-87ae94a777f7",
+  "capturedAt": "2026-08-14T04:44:40.089719Z",
+  "sqliteCommittedEntryCount": 697,
+  "observedProjectionEntryCounts": [5268, 1077],
+  "observedMinimumProjectionEntryCount": 1069,
+  "providerOrder": ["item-13928", "item-13960"],
+  "pollutedRuntimeOverlayOrder": [
+    "item-13928",
+    "item-13928",
+    "item-13928"
+  ],
+  "expectedProjectedProviderOrder": ["item-13928", "item-13960"],
+  "replayedImageSubmission": {
+    "clientMessageId": "2d941f42-1313-4fb3-95d6-1c86a3e56d56",
+    "providerItemId": "item-27",
+    "imageCount": 1,
+    "providerReceivedAt": "2026-08-14T04:43:19.142Z"
+  }
+}

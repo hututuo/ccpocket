@@ -866,6 +866,35 @@ describe("conversation_sync_v2 protocol", () => {
           message: "formal runtime warning",
         },
       });
+      const assistantOverlay = {
+        type: "assistant" as const,
+        historyTurnId: "turn-formal-live",
+        messageUuid: "assistant-formal-live",
+        message: {
+          id: "assistant-formal-live",
+          role: "assistant",
+          model: "gpt-5.6-sol",
+          content: [{ type: "text" as const, text: "final live answer" }],
+        },
+      };
+      fixture.handler.sessionMessage(runtimeSession, assistantOverlay);
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, client, "runtime_overlay")).toHaveLength(2),
+      );
+      expect(events(fixture.sent, client, "runtime_overlay")[1]).toMatchObject({
+        provider: "codex",
+        providerSessionId: threadId,
+        turnId: "turn-formal-live",
+        runtimeSessionId: "runtime-formal-overlay",
+        authorityGeneration: "runtime-authority-7",
+        message: assistantOverlay,
+      });
+
+      // A second observation of the same provider item must not create a
+      // second overlay frame for this subscription.
+      fixture.handler.sessionMessage(runtimeSession, assistantOverlay);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(events(fixture.sent, client, "runtime_overlay")).toHaveLength(2);
     } finally {
       await fixture.handler.close();
     }

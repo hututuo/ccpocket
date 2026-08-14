@@ -280,6 +280,13 @@ void main() {
       }
 
       try {
+        // Formal runtime overlays are intentionally scoped to the focused
+        // durable conversation. Mirror the production route, which focuses
+        // the thread before attaching its live runtime.
+        sync.setFocusedConversation(
+          provider: Provider.codex.value,
+          providerSessionId: threadId,
+        );
         final initialWindowFuture = waitForWindowCount(1);
         bridge.connect(url, logicalConnectionIdentity: 'live-segment-harness');
         await bridge.connectionStatus

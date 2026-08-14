@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:ccpocket/features/claude_session/claude_session_screen.dart';
+import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
 import 'package:ccpocket/features/chat_session/widgets/chat_process_disclosure.dart';
 import 'package:ccpocket/features/codex_session/codex_session_screen.dart';
 import 'package:ccpocket/features/conversation_content_sync/conversation_content_sync_service.dart';
@@ -51,6 +52,12 @@ class MockBridgeService extends BridgeService {
   String? mockLogicalConnectionIdentity = 'machine:test';
   String? mockLastUrl = 'wss://bridge.test/socket';
   Set<String> advertisedBridgeCapabilities = const {};
+  bool connected = true;
+
+  void emitConnection(BridgeConnectionState state) {
+    connected = state == BridgeConnectionState.connected;
+    _connectionController.add(state);
+  }
 
   void emitMessage(ServerMessage msg, {String? sessionId}) {
     _taggedController.add((msg, sessionId));
@@ -150,7 +157,7 @@ class MockBridgeService extends BridgeService {
   String? get httpBaseUrl => 'http://localhost:8765';
 
   @override
-  bool get isConnected => true;
+  bool get isConnected => connected;
 
   @override
   Set<String> get bridgeCapabilities => advertisedBridgeCapabilities;
@@ -309,6 +316,7 @@ Future<Widget> buildTestCodexSessionScreen({
   ConversationContentSyncService? conversationContentSync,
   SessionListCubit? sessionListCubit,
   DraftService? draftService,
+  ChatImagePayloadEncoder? imagePayloadEncoder,
 }) => _buildTestSessionScreen(
   bridge: bridge,
   conversationContentSync: conversationContentSync,
@@ -321,6 +329,7 @@ Future<Widget> buildTestCodexSessionScreen({
     durableProviderSessionId: durableProviderSessionId,
     pendingSessionCreated: pendingSessionCreated,
     dataSourceIdentity: dataSourceIdentity,
+    imagePayloadEncoder: imagePayloadEncoder,
   ),
 );
 

@@ -3332,12 +3332,12 @@ void main() {
       },
     );
 
-    test('unacked in-flight input is requeued when socket closes', () async {
+    test('unacked in-flight input is quarantined when socket closes', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final socketReady = Completer<WebSocket>();
 
       server.transform(WebSocketTransformer()).listen((socket) {
-        socketReady.complete(socket);
+        if (!socketReady.isCompleted) socketReady.complete(socket);
       });
 
       final bridge = BridgeService();
@@ -3360,13 +3360,8 @@ void main() {
 
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getStringList(_offlinePendingMessagesV2Key);
-      expect(raw, hasLength(1));
-      expect(_offlineEnvelopeMessage(raw!.single), {
-        'type': 'input',
-        'text': 'retry after reconnect',
-        'sessionId': 's1',
-        'clientMessageId': 'cm-retry',
-      });
+      expect(raw, isNull);
+      expect(bridge.queuedMessageCountForTest, 0);
 
       bridge.disconnect();
       await server.close(force: true);
@@ -3374,7 +3369,7 @@ void main() {
     });
 
     test(
-      'unacked input survives app disposal and replays idempotently',
+      'unacked input is quarantined on app disposal and never replays',
       () async {
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
         final firstSocketReady = Completer<WebSocket>();
@@ -3441,23 +3436,20 @@ void main() {
         firstBridge.dispose();
         await Future<void>.delayed(const Duration(milliseconds: 20));
         prefs = await SharedPreferences.getInstance();
-        expect(prefs.getStringList(_offlinePendingMessagesV2Key), hasLength(1));
+        expect(
+          prefs.getStringList(_offlinePendingMessagesV2Key),
+          hasLength(1),
+          reason:
+              'The transport journal is quarantined by the next startup; '
+              'DraftService owns the visible failed bubble.',
+        );
 
         final secondBridge = BridgeService();
         secondBridge.connect('ws://127.0.0.1:${server.port}');
         final secondSocket = await secondSocketReady.future;
         await _waitForBridgeConnection(secondBridge);
         await _authorizeLegacyBridge(secondBridge, secondSocket);
-        for (var attempt = 0; attempt < 100; attempt++) {
-          if (secondReceived.any(
-            (message) =>
-                message['type'] == 'input' &&
-                message['clientMessageId'] == 'cm-app-exit',
-          )) {
-            break;
-          }
-          await Future<void>.delayed(const Duration(milliseconds: 5));
-        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
 
         expect(
           secondReceived.where(
@@ -3465,23 +3457,8 @@ void main() {
                 message['type'] == 'input' &&
                 message['clientMessageId'] == 'cm-app-exit',
           ),
-          hasLength(1),
+          isEmpty,
         );
-        secondSocket.add(
-          jsonEncode({
-            'type': 'input_ack',
-            'sessionId': 's1',
-            'clientMessageId': 'cm-app-exit',
-            'queued': true,
-          }),
-        );
-        for (var attempt = 0; attempt < 100; attempt++) {
-          prefs = await SharedPreferences.getInstance();
-          if (prefs.getStringList(_offlinePendingMessagesV2Key) == null) {
-            break;
-          }
-          await Future<void>.delayed(const Duration(milliseconds: 5));
-        }
         raw = prefs.getStringList(_offlinePendingMessagesV2Key);
         expect(raw, isNull);
 
@@ -3535,37 +3512,26 @@ void main() {
       bridge.dispose();
     });
 
-    test(
-      'persists selected offline messages and excludes transient reads',
-      () async {
-        final bridge = BridgeService();
+    test('never persists offline input or transient reads', () async {
+      final bridge = BridgeService();
 
-        bridge.send(
-          ClientMessage.input(
-            'offline',
-            sessionId: 's1',
-            clientMessageId: 'cm-1',
-            baseSeq: 4,
-          ),
-        );
-        bridge.send(ClientMessage.getHistory('s1'));
-        await Future<void>.delayed(const Duration(milliseconds: 50));
+      bridge.send(
+        ClientMessage.input(
+          'offline',
+          sessionId: 's1',
+          clientMessageId: 'cm-1',
+          baseSeq: 4,
+        ),
+      );
+      bridge.send(ClientMessage.getHistory('s1'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
 
         final prefs = await SharedPreferences.getInstance();
         final raw = prefs.getStringList(_offlinePendingMessagesV2Key);
-        expect(raw, isNotNull);
-        expect(raw, hasLength(1));
-        expect(_offlineEnvelopeMessage(raw!.single), {
-          'type': 'input',
-          'text': 'offline',
-          'sessionId': 's1',
-          'clientMessageId': 'cm-1',
-          'baseSeq': 4,
-        });
+        expect(raw, isNull);
 
         bridge.dispose();
-      },
-    );
+    });
 
     test(
       'publishes offline pending start and resume actions with dedupe',
@@ -4092,61 +4058,48 @@ void main() {
       },
     );
 
-    test(
-      'updates and cancels offline pending input by clientMessageId',
-      () async {
-        final bridge = BridgeService();
-        await pumpEventQueue();
+    test('offline input has no editable transport outbox record', () async {
+      final bridge = BridgeService();
+      await pumpEventQueue();
 
-        bridge.send(
-          ClientMessage.input(
-            'Original',
-            sessionId: 's1',
-            clientMessageId: 'cm-1',
-            baseSeq: 2,
-            skills: const [
-              {'name': 'skill-a', 'path': '/tmp/skill-a/SKILL.md'},
-            ],
-          ),
-        );
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-
-        final updated = await bridge.updateOfflinePendingInput(
+      bridge.send(
+        ClientMessage.input(
+          'Original',
           sessionId: 's1',
           clientMessageId: 'cm-1',
-          text: 'Edited',
-          mentions: const [
-            {'name': 'Demo App', 'path': 'app://demo'},
+          baseSeq: 2,
+          skills: const [
+            {'name': 'skill-a', 'path': '/tmp/skill-a/SKILL.md'},
           ],
-        );
-        expect(updated, isTrue);
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
 
-        var prefs = await SharedPreferences.getInstance();
-        var raw = prefs.getStringList(_offlinePendingMessagesV2Key);
-        expect(raw, hasLength(1));
-        expect(_offlineEnvelopeMessage(raw!.single), {
-          'type': 'input',
-          'text': 'Edited',
-          'sessionId': 's1',
-          'clientMessageId': 'cm-1',
-          'baseSeq': 2,
-          'mentions': [
-            {'name': 'Demo App', 'path': 'app://demo'},
-          ],
-        });
+      final updated = await bridge.updateOfflinePendingInput(
+        sessionId: 's1',
+        clientMessageId: 'cm-1',
+        text: 'Edited',
+        mentions: const [
+          {'name': 'Demo App', 'path': 'app://demo'},
+        ],
+      );
+      expect(updated, isFalse);
 
-        final canceled = await bridge.cancelOfflinePendingInput(
-          sessionId: 's1',
-          clientMessageId: 'cm-1',
-        );
-        expect(canceled, isTrue);
-        prefs = await SharedPreferences.getInstance();
-        raw = prefs.getStringList(_offlinePendingMessagesV2Key);
-        expect(raw, isNull);
+      var prefs = await SharedPreferences.getInstance();
+      var raw = prefs.getStringList(_offlinePendingMessagesV2Key);
+      expect(raw, isNull);
 
-        bridge.dispose();
-      },
-    );
+      final canceled = await bridge.cancelOfflinePendingInput(
+        sessionId: 's1',
+        clientMessageId: 'cm-1',
+      );
+      expect(canceled, isFalse);
+      prefs = await SharedPreferences.getInstance();
+      raw = prefs.getStringList(_offlinePendingMessagesV2Key);
+      expect(raw, isNull);
+
+      bridge.dispose();
+    });
 
     test(
       'waits for authoritative identity then replays on another route to the '
@@ -4228,6 +4181,72 @@ void main() {
         );
         expect(bridge.queuedMessageCountForTest, 0);
 
+        final prefs = await SharedPreferences.getInstance();
+        expect(prefs.getStringList(_offlinePendingMessagesV2Key), isNull);
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
+      'restored unconfirmed input is quarantined instead of replayed',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          _offlinePendingMessagesV2Key: [
+            _offlineEnvelope(
+              message: {
+                'type': 'input',
+                'text': 'Must require explicit retry',
+                'sessionId': 's1',
+                'clientMessageId': 'stale-client-id',
+              },
+              routeIdentity: 'logical:machine:old-route',
+              bridgeInstanceId: 'bridge-1',
+              codexSourceId: 'source-1',
+            ),
+          ],
+        });
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        final received = <Map<String, dynamic>>[];
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+          socket.listen((data) {
+            received.add(jsonDecode(data as String) as Map<String, dynamic>);
+          });
+        });
+
+        final bridge = BridgeService();
+        bridge.connect(
+          'ws://127.0.0.1:${server.port}',
+          logicalConnectionIdentity: 'machine:new-route',
+          expectedBridgeInstanceId: 'bridge-1',
+          expectedCodexSourceId: 'source-1',
+        );
+        final socket = await socketReady.future;
+        await _waitForBridgeConnection(bridge);
+        await _authorizeBridgeIdentity(
+          bridge,
+          socket,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'source-1',
+        );
+        for (var attempt = 0; attempt < 100; attempt++) {
+          final prefs = await SharedPreferences.getInstance();
+          if (prefs.getStringList(_offlinePendingMessagesV2Key) == null) {
+            break;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+        }
+
+        expect(
+          received.where((message) => message['type'] == 'input'),
+          isEmpty,
+        );
+        expect(bridge.queuedMessageCountForTest, 0);
         final prefs = await SharedPreferences.getInstance();
         expect(prefs.getStringList(_offlinePendingMessagesV2Key), isNull);
 

@@ -380,222 +380,298 @@ void main() {
     },
   );
 
-  testWidgets('restored Codex submission stays failed until an explicit retry', (
-    tester,
-  ) async {
-    final bridge = MockBridgeService()
-      ..authenticatedBridgeInstanceId = 'bridge-restored-resume'
-      ..authenticatedCodexSourceId = 'source-restored-resume'
-      ..advertisedBridgeCapabilities = const {
-        conversationSyncV2Capability,
-        sessionRequestCorrelationCapability,
-      }
-      ..emitSessionList(const []);
-    final identity = bridge.dataSourceIdentity;
-    final target = SessionCatalogCacheTarget.fromBridge(
-      bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
-      codexSourceId: bridge.authenticatedCodexSourceId,
-    );
-    const metadata = RecentSession(
-      sessionId: 'thread-restored-resume',
-      provider: 'codex',
-      firstPrompt: 'Restored pending message',
-      created: '2026-08-01T00:00:00.000Z',
-      modified: '2026-08-01T00:01:00.000Z',
-      gitBranch: 'main',
-      projectPath: '/workspace/restored-resume',
-      isSidechain: false,
-      codexSourceId: 'source-restored-resume',
-    );
-    final sessionList = _ProjectionSessionListCubit(
-      bridge: bridge,
-      sourceFingerprint: target.fingerprint,
-      metadataAvailable: false,
-      status: const ConversationSyncV2Status(
+  testWidgets(
+    'restored Codex submission stays failed until an explicit retry',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-restored-resume'
+        ..authenticatedCodexSourceId = 'source-restored-resume'
+        ..advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+          sessionRequestCorrelationCapability,
+        }
+        ..emitSessionList(const []);
+      final identity = bridge.dataSourceIdentity;
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+        codexSourceId: bridge.authenticatedCodexSourceId,
+      );
+      const metadata = RecentSession(
+        sessionId: 'thread-restored-resume',
         provider: 'codex',
-        providerSessionId: 'thread-restored-resume',
-        activity: 'idle',
-        attention: 'none',
-        result: 'none',
-        runtimeAttachment: 'notLoaded',
-        source: 'appServer',
-        confidence: 'authoritative',
-        observedAt: '2026-08-01T00:01:00.000Z',
-        executionHost: 'unknown',
-        controlState: 'writable',
-      ),
-      metadata: metadata,
-    );
-    final prefs = await SharedPreferences.getInstance();
-    final drafts = DraftService(prefs);
-    final image = Uint8List.fromList([0x89, 0x50, 0x4e, 0x47]);
-    const clientMessageId = 'client-restored-resume';
-    await drafts.savePendingSubmission(
-      metadata.sessionId,
-      PendingChatSubmissionDraft(
-        clientMessageId: clientMessageId,
-        text: 'Continue after reconnect',
-        images: [(bytes: image, mimeType: 'image/png')],
-      ),
-    );
-    final repository = _CountingSessionCatalogCacheRepository(
-      SessionCatalogCacheDatabase(
-        databasePath: 'unused-restored-resume-cache.db',
-      ),
-      snapshots: const {},
-    );
-    final sync = ConversationContentSyncService(
-      bridge: BridgeServiceConversationContentSyncGateway(bridge),
-      cache: repository,
-    );
-
-    try {
-      await tester.pumpWidget(
-        await buildTestCodexSessionScreen(
-          bridge: bridge,
-          sessionId: 'pending-restored-runtime',
-          projectPath: metadata.projectPath,
-          isPending: true,
-          durableProviderSessionId: metadata.sessionId,
-          dataSourceIdentity: identity,
-          conversationContentSync: sync,
-          sessionListCubit: sessionList,
-          draftService: drafts,
-        ),
+        firstPrompt: 'Restored pending message',
+        created: '2026-08-01T00:00:00.000Z',
+        modified: '2026-08-01T00:01:00.000Z',
+        gitBranch: 'main',
+        projectPath: '/workspace/restored-resume',
+        isSidechain: false,
+        codexSourceId: 'source-restored-resume',
       );
-      await tester.pump();
-      final cubit = BlocProvider.of<ChatSessionCubit>(
-        tester.element(find.byKey(const ValueKey('message_input'))),
-      );
-      expect(
-        _sentWireMessages(
-          bridge,
-        ).where((message) => message['type'] == 'resume_session'),
-        isEmpty,
-      );
-      expect(
-        _sentWireMessages(
-          bridge,
-        ).where((message) => message['type'] == 'input'),
-        isEmpty,
-      );
-
-      sessionList.replace(
+      final sessionList = _ProjectionSessionListCubit(
+        bridge: bridge,
         sourceFingerprint: target.fingerprint,
-        status: sessionList.status,
+        metadataAvailable: false,
+        status: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'thread-restored-resume',
+          activity: 'idle',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'notLoaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-08-01T00:01:00.000Z',
+          executionHost: 'unknown',
+          controlState: 'writable',
+        ),
         metadata: metadata,
-        metadataAvailable: true,
       );
-      // Runtime/catalog readiness is deliberately not an implicit recovery
-      // trigger. Let all readiness callbacks settle before asserting that the
-      // old v1 draft did not acquire a runtime or emit input.
-      for (var attempt = 0; attempt < 50; attempt++) {
-        await tester.pump(const Duration(milliseconds: 10));
-      }
-
-      expect(
-        _sentWireMessages(
-          bridge,
-        ).where((message) => message['type'] == 'resume_session'),
-        isEmpty,
-      );
-      expect(
-        _sentWireMessages(
-          bridge,
-        ).where((message) => message['type'] == 'input'),
-        isEmpty,
-      );
-      final restoredUsers = cubit.state.entries
-          .whereType<UserChatEntry>()
-          .toList();
-      expect(restoredUsers, hasLength(1));
-      expect(restoredUsers.single.text, 'Continue after reconnect');
-      expect(restoredUsers.single.clientMessageId, clientMessageId);
-      expect(restoredUsers.single.status, MessageStatus.failed);
-      expect(restoredUsers.single.imageCount, 1);
-      expect(restoredUsers.single.imageBytesList, hasLength(1));
-      expect(restoredUsers.single.imageBytesList.single, image);
-      expect(find.text('Tap to retry'), findsOneWidget);
-
-      // Only the user's explicit retry may enter attachment. It must keep the
-      // same optimistic bubble and client id; it must not send input before a
-      // runtime is attached.
-      await tester.tap(find.text('Tap to retry'));
-      await tester.pump();
-      for (var attempt = 0; attempt < 50; attempt++) {
-        if (_sentWireMessages(
-          bridge,
-        ).any((message) => message['type'] == 'resume_session')) {
-          break;
-        }
-        await tester.pump(const Duration(milliseconds: 10));
-      }
-      final explicitResumeMessages = _sentWireMessages(
-        bridge,
-      ).where((message) => message['type'] == 'resume_session').toList();
-      expect(explicitResumeMessages, hasLength(1));
-      expect(explicitResumeMessages.single['sessionId'], metadata.sessionId);
-      expect(
-        _sentWireMessages(
-          bridge,
-        ).where((message) => message['type'] == 'input'),
-        isEmpty,
-      );
-      final usersAfterRetry = cubit.state.entries
-          .whereType<UserChatEntry>()
-          .toList();
-      expect(usersAfterRetry, hasLength(1));
-      expect(usersAfterRetry.single.clientMessageId, clientMessageId);
-      expect(usersAfterRetry.single.imageBytesList.single, image);
-      // Completing the explicitly requested attachment is the only point at
-      // which the preserved submission may be sent. The same id and image
-      // payload must be used, and the failed bubble must be replaced in place.
-      bridge.emitMessage(
-        SystemMessage(
-          subtype: 'session_created',
-          sessionId: 'attached-restored-runtime',
-          claudeSessionId: metadata.sessionId,
-          provider: Provider.codex.value,
-          projectPath: metadata.projectPath,
-          resumeRequestId:
-              explicitResumeMessages.single['resumeRequestId'] as String,
+      final prefs = await SharedPreferences.getInstance();
+      final drafts = DraftService(prefs);
+      final image = Uint8List.fromList([0x89, 0x50, 0x4e, 0x47]);
+      const clientMessageId = 'client-restored-resume';
+      await drafts.savePendingSubmission(
+        metadata.sessionId,
+        PendingChatSubmissionDraft(
+          clientMessageId: clientMessageId,
+          text: 'Continue after reconnect',
+          images: [(bytes: image, mimeType: 'image/png')],
         ),
       );
-      for (var attempt = 0; attempt < 50; attempt++) {
-        if (_sentWireMessages(
-          bridge,
-        ).any((message) => message['type'] == 'input')) {
-          break;
-        }
-        await tester.pump(const Duration(milliseconds: 10));
-      }
-      final inputMessages = _sentWireMessages(
-        bridge,
-      ).where((message) => message['type'] == 'input').toList();
-      expect(inputMessages, hasLength(1));
-      expect(inputMessages.single['clientMessageId'], clientMessageId);
-      expect(inputMessages.single['images'], [
-        {'base64': 'iVBORw==', 'mimeType': 'image/png'},
-      ]);
-      final usersAfterAttach = cubit.state.entries
-          .whereType<UserChatEntry>()
-          .toList();
-      expect(usersAfterAttach, hasLength(1));
-      expect(usersAfterAttach.single.clientMessageId, clientMessageId);
-      expect(usersAfterAttach.single.imageBytesList.single, image);
-      expect(
-        usersAfterAttach.single.status,
-        anyOf(MessageStatus.sending, MessageStatus.bridgeAccepted),
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(
+          databasePath: 'unused-restored-resume-cache.db',
+        ),
+        snapshots: const {},
       );
-    } finally {
-      await tester.pumpWidget(const SizedBox.shrink());
-      await tester.pump();
-      await sync.dispose();
-      await repository.close();
-      bridge.dispose();
-      unawaited(sessionList.close());
-    }
-  });
+      final sync = ConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+
+      try {
+        await tester.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-restored-runtime',
+            projectPath: metadata.projectPath,
+            isPending: true,
+            durableProviderSessionId: metadata.sessionId,
+            dataSourceIdentity: identity,
+            conversationContentSync: sync,
+            sessionListCubit: sessionList,
+            draftService: drafts,
+            imagePayloadEncoder: (images) async => [
+              for (final image in images)
+                {
+                  'base64': base64Encode(image.bytes),
+                  'mimeType': image.mimeType,
+                },
+            ],
+          ),
+        );
+        await tester.pump();
+        final cubit = BlocProvider.of<ChatSessionCubit>(
+          tester.element(find.byKey(const ValueKey('message_input'))),
+        );
+        expect(
+          _sentWireMessages(
+            bridge,
+          ).where((message) => message['type'] == 'resume_session'),
+          isEmpty,
+        );
+        expect(
+          _sentWireMessages(
+            bridge,
+          ).where((message) => message['type'] == 'input'),
+          isEmpty,
+        );
+
+        sessionList.replace(
+          sourceFingerprint: target.fingerprint,
+          status: sessionList.status,
+          metadata: metadata,
+          metadataAvailable: true,
+        );
+        // Runtime/catalog readiness is deliberately not an implicit recovery
+        // trigger. Let all readiness callbacks settle before asserting that the
+        // old v1 draft did not acquire a runtime or emit input.
+        for (var attempt = 0; attempt < 50; attempt++) {
+          await tester.pump(const Duration(milliseconds: 10));
+        }
+
+        expect(
+          _sentWireMessages(
+            bridge,
+          ).where((message) => message['type'] == 'resume_session'),
+          isEmpty,
+        );
+        expect(
+          _sentWireMessages(
+            bridge,
+          ).where((message) => message['type'] == 'input'),
+          isEmpty,
+        );
+        final restoredUsers = cubit.state.entries
+            .whereType<UserChatEntry>()
+            .toList();
+        expect(restoredUsers, hasLength(1));
+        expect(restoredUsers.single.text, 'Continue after reconnect');
+        expect(restoredUsers.single.clientMessageId, clientMessageId);
+        expect(restoredUsers.single.status, MessageStatus.failed);
+        expect(restoredUsers.single.imageCount, 1);
+        expect(restoredUsers.single.imageBytesList, hasLength(1));
+        expect(restoredUsers.single.imageBytesList.single, image);
+        expect(find.text('Tap to retry'), findsOneWidget);
+
+        // Only the user's explicit retry may enter attachment. It must keep the
+        // same optimistic bubble and client id; it must not send input before a
+        // runtime is attached.
+        bridge.connected = false;
+        await tester.tap(find.text('Tap to retry'));
+        await tester.pump();
+        expect(
+          _sentWireMessages(
+            bridge,
+          ).where((message) => message['type'] == 'resume_session'),
+          isEmpty,
+        );
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().single.status,
+          MessageStatus.failed,
+        );
+
+        bridge.connected = true;
+        await tester.tap(find.text('Tap to retry'));
+        await tester.pump();
+        for (var attempt = 0; attempt < 50; attempt++) {
+          if (_sentWireMessages(
+            bridge,
+          ).any((message) => message['type'] == 'resume_session')) {
+            break;
+          }
+          await tester.pump(const Duration(milliseconds: 10));
+        }
+        final explicitResumeMessages = _sentWireMessages(
+          bridge,
+        ).where((message) => message['type'] == 'resume_session').toList();
+        expect(explicitResumeMessages, hasLength(1));
+        expect(explicitResumeMessages.single['sessionId'], metadata.sessionId);
+        expect(
+          _sentWireMessages(
+            bridge,
+          ).where((message) => message['type'] == 'input'),
+          isEmpty,
+        );
+        final usersAfterRetry = cubit.state.entries
+            .whereType<UserChatEntry>()
+            .toList();
+        expect(usersAfterRetry, hasLength(1));
+        expect(usersAfterRetry.single.clientMessageId, clientMessageId);
+        expect(usersAfterRetry.single.imageBytesList.single, image);
+        expect(usersAfterRetry.single.status, MessageStatus.sending);
+
+        // Runtime attachment alone is not writable authority. Once the exact
+        // source-scoped status arrives, the explicit retry continues once
+        // with the original id and image payload.
+        bridge.emitMessage(
+          SystemMessage(
+            subtype: 'session_created',
+            sessionId: 'attached-restored-runtime',
+            claudeSessionId: metadata.sessionId,
+            provider: Provider.codex.value,
+            projectPath: metadata.projectPath,
+            resumeRequestId:
+                explicitResumeMessages.single['resumeRequestId'] as String,
+          ),
+        );
+        await tester.pump();
+        bridge.emitSessionList(const [
+          SessionInfo(
+            id: 'attached-restored-runtime',
+            provider: 'codex',
+            projectPath: '/workspace/restored-resume',
+            claudeSessionId: 'thread-restored-resume',
+            status: 'idle',
+            createdAt: '2026-08-14T05:29:59.000Z',
+            lastActivityAt: '2026-08-14T05:30:00.000Z',
+          ),
+        ]);
+        await tester.pump();
+        expect(cubit.detachedLiveRuntimeSessionId, 'attached-restored-runtime');
+        sessionList.replace(
+          sourceFingerprint: target.fingerprint,
+          status: const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'thread-restored-resume',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'bridgeRuntime',
+            confidence: 'authoritative',
+            observedAt: '2026-08-14T05:30:00.000Z',
+            executionHost: 'bridge',
+            controlState: 'writable',
+            authorityGeneration: 'authority-restored-retry',
+          ),
+          metadata: metadata,
+          metadataAvailable: true,
+        );
+        for (var attempt = 0; attempt < 50; attempt++) {
+          if (_sentWireMessages(
+            bridge,
+          ).any((message) => message['type'] == 'input')) {
+            break;
+          }
+          await tester.pump(const Duration(milliseconds: 10));
+        }
+        final inputMessages = _sentWireMessages(
+          bridge,
+        ).where((message) => message['type'] == 'input').toList();
+        expect(inputMessages, hasLength(1));
+        expect(inputMessages.single['clientMessageId'], clientMessageId);
+        expect(inputMessages.single['images'], [
+          {'base64': 'iVBORw==', 'mimeType': 'image/png'},
+        ]);
+        expect(drafts.getPendingSubmission(metadata.sessionId), isNotNull);
+
+        bridge.emitMessage(
+          const InputAckMessage(
+            sessionId: 'attached-restored-runtime',
+            clientMessageId: clientMessageId,
+            stage: InputAckStage.bridgeAccepted,
+          ),
+          sessionId: 'attached-restored-runtime',
+        );
+        for (var attempt = 0; attempt < 50; attempt++) {
+          if (drafts.getPendingSubmission(metadata.sessionId) == null) break;
+          await tester.pump(const Duration(milliseconds: 10));
+        }
+        expect(cubit.isClosed, isFalse);
+        final mountedCubit = BlocProvider.of<ChatSessionCubit>(
+          tester.element(find.byKey(const ValueKey('message_input'))),
+        );
+        expect(identical(mountedCubit, cubit), isTrue);
+        expect(drafts.getPendingSubmission(metadata.sessionId), isNull);
+        expect(
+          tester
+              .widget<DurableSessionPreviewUpdater>(
+                find.byType(DurableSessionPreviewUpdater),
+              )
+              .onLiveRuntimeReady,
+          isNull,
+        );
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+        unawaited(sessionList.close());
+      }
+    },
+  );
 
   testWidgets(
     'cache revisions update the detached cubit without rebuilding child state',
@@ -753,6 +829,114 @@ void main() {
       );
     },
   );
+
+  testWidgets('live runtime callback retries after exact authority arrives', (
+    tester,
+  ) async {
+    final bridge = MockBridgeService()
+      ..advertisedBridgeCapabilities = const {conversationSyncV2Capability};
+    final streaming = StreamingStateCubit();
+    final cubit = ChatSessionCubit(
+      sessionId: 'authority-retry-thread',
+      provider: Provider.codex,
+      bridge: bridge,
+      streamingCubit: streaming,
+      detachedPreview: true,
+    );
+    final sessionList = _ProjectionSessionListCubit(
+      bridge: bridge,
+      sourceFingerprint: 'authority-retry-source',
+      status: const ConversationSyncV2Status(
+        provider: 'codex',
+        providerSessionId: 'authority-retry-thread',
+        activity: 'idle',
+        attention: 'none',
+        result: 'none',
+        runtimeAttachment: 'loaded',
+        source: 'bridgeRuntime',
+        confidence: 'authoritative',
+        observedAt: '2026-08-14T05:00:00.000Z',
+        executionHost: 'bridge',
+        controlState: 'writable',
+      ),
+      metadata: const RecentSession(
+        sessionId: 'authority-retry-thread',
+        provider: 'codex',
+        firstPrompt: 'Authority retry',
+        created: '2026-08-14T05:00:00.000Z',
+        modified: '2026-08-14T05:00:00.000Z',
+        gitBranch: 'main',
+        projectPath: '/authority-retry',
+        isSidechain: false,
+      ),
+    );
+    var callbackCount = 0;
+    final callbackTargets = <String?>[];
+    addTearDown(cubit.close);
+    addTearDown(streaming.close);
+    addTearDown(sessionList.close);
+    addTearDown(bridge.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MultiBlocProvider(
+          providers: [
+            BlocProvider<ChatSessionCubit>.value(value: cubit),
+            BlocProvider<SessionListCubit>.value(value: sessionList),
+          ],
+          child: Scaffold(
+            body: DurableSessionPreviewUpdater(
+              revision: 'authority-retry-preview',
+              messages: const [],
+              hasEarlier: false,
+              statusProvider: 'codex',
+              statusProviderSessionId: 'authority-retry-thread',
+              expectedSourceFingerprint: 'authority-retry-source',
+              liveRuntimeSessionId: 'authority-retry-runtime',
+              onLiveRuntimeReady: (cubit) {
+                callbackCount += 1;
+                final target = cubit.runtimeSessionIdForMutation();
+                callbackTargets.add(target);
+                return target != null;
+              },
+              child: const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(callbackCount, 1);
+    expect(callbackTargets, [isNull]);
+    expect(cubit.runtimeSessionIdForMutation(), isNull);
+
+    sessionList.replace(
+      sourceFingerprint: 'authority-retry-source',
+      status: const ConversationSyncV2Status(
+        provider: 'codex',
+        providerSessionId: 'authority-retry-thread',
+        activity: 'idle',
+        attention: 'none',
+        result: 'none',
+        runtimeAttachment: 'loaded',
+        source: 'bridgeRuntime',
+        confidence: 'authoritative',
+        observedAt: '2026-08-14T05:00:01.000Z',
+        executionHost: 'bridge',
+        controlState: 'writable',
+        authorityGeneration: 'authority-retry-generation',
+      ),
+      metadata: sessionList.metadata,
+      metadataAvailable: true,
+    );
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+
+    expect(cubit.runtimeSessionIdForMutation(), 'authority-retry-runtime');
+    expect(callbackCount, 2);
+    expect(callbackTargets, [isNull, 'authority-retry-runtime']);
+  });
 
   testWidgets(
     'focused settings hydrate an already mounted cold Codex page in place',

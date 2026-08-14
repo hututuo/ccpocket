@@ -8,7 +8,9 @@ import 'package:ccpocket/features/chat_session/state/streaming_state_cubit.dart'
 import 'package:ccpocket/features/chat_session/widgets/chat_process_layout.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
+import 'package:ccpocket/services/draft_service.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Minimal mock BridgeService for testing the cubit.
 class MockBridgeService extends BridgeService {
@@ -479,12 +481,16 @@ void main() {
     );
 
     test(
-      'v2 detached assistant completion closes one stream segment before the next',
+      'validated v2 assistant overlay closes one stream segment before the next',
       () async {
         mockBridge.advertisedBridgeCapabilities = const {
           conversationSyncV2Capability,
+          conversationRuntimeOverlayCapability,
           ChatSessionCubit.codexDesktopContinuityCapability,
         };
+        final runtimeOverlays =
+            StreamController<ConversationSyncV2EventMessage>.broadcast();
+        addTearDown(runtimeOverlays.close);
         const user = UserInputMessage(
           text: 'Investigate the receiver',
           clientMessageId: 'client-segment-turn',
@@ -520,6 +526,7 @@ void main() {
           detachedPreview: true,
           initialLiveRuntimeSessionId: 'runtime-segment-thread',
           initialHistoryMessages: const [user],
+          detachedRuntimeOverlayStream: runtimeOverlays.stream,
         );
         addTearDown(cubit.close);
 
@@ -531,7 +538,25 @@ void main() {
         expect(streamingCubit.state.text, 'First intermediate update');
         expect(streamingCubit.state.isStreaming, isTrue);
 
-        mockBridge.emitMessage(first, sessionId: 'runtime-segment-thread');
+        runtimeOverlays.add(
+          const ConversationSyncV2EventMessage(
+            event: ConversationSyncV2EventKind.runtimeOverlay,
+            subscriptionId: 'subscription-segments',
+            bridgeInstanceId: 'bridge-a',
+            codexSourceId: 'source-a',
+            batchId: 'batch-segments',
+            sequence: 1,
+            provider: 'codex',
+            providerSessionId: 'durable-segment-thread',
+            overlayId: 'overlay-segment-a',
+            observedAt: '2026-08-14T01:00:00.000Z',
+            originGeneration: 'runtime:runtime-segment-thread:authority-a',
+            runtimeSessionId: 'runtime-segment-thread',
+            authorityGeneration: 'authority-a',
+            turnId: 'turn-segments',
+            overlayMessage: first,
+          ),
+        );
         await pumpEventQueue();
         expect(
           streamingCubit.state.isStreaming,
@@ -548,7 +573,25 @@ void main() {
           hasLength(1),
         );
 
-        mockBridge.emitMessage(first, sessionId: 'runtime-segment-thread');
+        runtimeOverlays.add(
+          const ConversationSyncV2EventMessage(
+            event: ConversationSyncV2EventKind.runtimeOverlay,
+            subscriptionId: 'subscription-segments',
+            bridgeInstanceId: 'bridge-a',
+            codexSourceId: 'source-a',
+            batchId: 'batch-segments',
+            sequence: 2,
+            provider: 'codex',
+            providerSessionId: 'durable-segment-thread',
+            overlayId: 'overlay-segment-a',
+            observedAt: '2026-08-14T01:00:00.000Z',
+            originGeneration: 'runtime:runtime-segment-thread:authority-a',
+            runtimeSessionId: 'runtime-segment-thread',
+            authorityGeneration: 'authority-a',
+            turnId: 'turn-segments',
+            overlayMessage: first,
+          ),
+        );
         await pumpEventQueue();
         expect(
           cubit.visibleEntries.whereType<ServerChatEntry>().where(
@@ -573,7 +616,25 @@ void main() {
           reason: 'The next provider item must not append to the prior item.',
         );
 
-        mockBridge.emitMessage(second, sessionId: 'runtime-segment-thread');
+        runtimeOverlays.add(
+          const ConversationSyncV2EventMessage(
+            event: ConversationSyncV2EventKind.runtimeOverlay,
+            subscriptionId: 'subscription-segments',
+            bridgeInstanceId: 'bridge-a',
+            codexSourceId: 'source-a',
+            batchId: 'batch-segments',
+            sequence: 3,
+            provider: 'codex',
+            providerSessionId: 'durable-segment-thread',
+            overlayId: 'overlay-segment-b',
+            observedAt: '2026-08-14T01:00:01.000Z',
+            originGeneration: 'runtime:runtime-segment-thread:authority-a',
+            runtimeSessionId: 'runtime-segment-thread',
+            authorityGeneration: 'authority-a',
+            turnId: 'turn-segments',
+            overlayMessage: second,
+          ),
+        );
         await pumpEventQueue();
         expect(streamingCubit.state.isStreaming, isFalse);
         cubit.updateDetachedPreviewHistory(const [user, first, second]);
@@ -602,6 +663,122 @@ void main() {
                     'assistant-segment-b',
           ),
         );
+      },
+    );
+
+    test(
+      'detached v2 ignores durable assistant content on the ordinary runtime stream',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+          conversationRuntimeOverlayCapability,
+        };
+        final runtimeOverlays =
+            StreamController<ConversationSyncV2EventMessage>.broadcast();
+        addTearDown(runtimeOverlays.close);
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-single-writer',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-single-writer',
+          detachedRuntimeOverlayStream: runtimeOverlays.stream,
+        );
+        addTearDown(cubit.close);
+
+        mockBridge.emitMessage(
+          const AssistantServerMessage(
+            message: AssistantMessage(
+              id: 'ordinary-stream-assistant',
+              role: 'assistant',
+              content: [TextContent(text: 'must not become durable UI')],
+              model: 'gpt-test',
+            ),
+            messageUuid: 'ordinary-stream-assistant',
+            historyTurnId: 'turn-single-writer',
+          ),
+          sessionId: 'runtime-single-writer',
+        );
+        await pumpEventQueue();
+
+        expect(cubit.state.entries.whereType<ServerChatEntry>(), isEmpty);
+      },
+    );
+
+    test(
+      'detached v2 rejects a duplicate canonical commit and keeps the last valid item order',
+      () {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        const staleIntermediate = AssistantServerMessage(
+          message: AssistantMessage(
+            id: 'item-13928',
+            role: 'assistant',
+            content: [TextContent(text: 'older intermediate output')],
+            model: 'gpt-test',
+          ),
+          messageUuid: 'item-13928',
+          historyTurnId: 'turn-regression',
+        );
+        const finalReply = AssistantServerMessage(
+          message: AssistantMessage(
+            id: 'item-13960',
+            role: 'assistant',
+            content: [TextContent(text: 'authoritative final reply')],
+            model: 'gpt-test',
+          ),
+          messageUuid: 'item-13960',
+          historyTurnId: 'turn-regression',
+        );
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-regression-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialHistoryMessages: const [
+            UserInputMessage(
+              text: 'regression prompt',
+              clientMessageId: 'client-regression',
+              providerItemId: 'user-regression',
+              historyTurnId: 'turn-regression',
+            ),
+            staleIntermediate,
+            finalReply,
+          ],
+        );
+        addTearDown(cubit.close);
+
+        cubit.updateDetachedPreviewHistory(const [
+          UserInputMessage(
+            text: 'regression prompt',
+            clientMessageId: 'client-regression',
+            providerItemId: 'user-regression',
+            historyTurnId: 'turn-regression',
+          ),
+          staleIntermediate,
+          staleIntermediate,
+          finalReply,
+          staleIntermediate,
+        ]);
+
+        final assistants = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .whereType<AssistantServerMessage>()
+            .toList(growable: false);
+        expect(assistants.map((message) => message.message.id), [
+          'item-13928',
+          'item-13960',
+        ]);
+        final projection =
+            cubit.diagnosticRuntimeProjection['timelineProjection']!
+                as Map<String, Object?>;
+        expect(projection['duplicateCanonicalCount'], 2);
+        expect(projection['lastAction'], 'canonical_rejected_duplicate');
+        expect(projection['composedCount'], 3);
       },
     );
 
@@ -6617,14 +6794,17 @@ void main() {
     );
 
     test(
-      'canceling an offline image input prevents its delayed send',
+      'offline image input fails before encoding and never enters transport',
       () async {
         mockBridge.connected = false;
-        final encoded = Completer<List<Map<String, String>>>();
+        var encodeCalls = 0;
         final cubit = createCubit(
           's1',
           provider: Provider.codex,
-          imagePayloadEncoder: (_) => encoded.future,
+          imagePayloadEncoder: (_) async {
+            encodeCalls += 1;
+            return const [];
+          },
         );
         addTearDown(cubit.close);
 
@@ -6634,42 +6814,38 @@ void main() {
             (bytes: Uint8List.fromList([1, 2, 3]), mimeType: 'image/png'),
           ],
         );
-        final queued = cubit.state.queuedInput;
-        expect(ChatSessionCubit.isOfflineQueuedInput(queued), isTrue);
-
-        await cubit.cancelQueuedInput(queued!);
-        encoded.complete(const [
-          {'base64': 'AQID', 'mimeType': 'image/png'},
-        ]);
         await pumpEventQueue();
 
         expect(cubit.state.queuedInput, isNull);
         expect(mockBridge.sentMessages, isEmpty);
+        expect(encodeCalls, 0);
+        final failed = cubit.state.entries.single as UserChatEntry;
+        expect(failed.text, 'Canceled image');
+        expect(failed.imageCount, 1);
+        expect(failed.status, MessageStatus.failed);
       },
     );
 
-    test('sendMessage while disconnected queues entry with baseSeq', () async {
-      mockBridge.connected = false;
-      mockBridge.historySeqBySession['s1'] = 9;
-      final cubit = createCubit('s1');
-      addTearDown(cubit.close);
-      await Future.microtask(() {});
+    test(
+      'sendMessage while disconnected creates a failed bubble only',
+      () async {
+        mockBridge.connected = false;
+        mockBridge.historySeqBySession['s1'] = 9;
+        final cubit = createCubit('s1');
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
 
-      cubit.sendMessage('Offline input');
+        cubit.sendMessage('Offline input');
 
-      final entry = cubit.state.entries.single as UserChatEntry;
-      expect(entry.status, MessageStatus.queued);
-      expect(entry.clientMessageId, isNotNull);
-
-      final payload =
-          jsonDecode(mockBridge.sentMessages.single.toJson())
-              as Map<String, dynamic>;
-      expect(payload['clientMessageId'], entry.clientMessageId);
-      expect(payload['baseSeq'], 9);
-    });
+        final entry = cubit.state.entries.single as UserChatEntry;
+        expect(entry.status, MessageStatus.failed);
+        expect(entry.clientMessageId, isNotNull);
+        expect(mockBridge.sentMessages, isEmpty);
+      },
+    );
 
     test(
-      'codex sendMessage while disconnected uses queued input panel state',
+      'codex sends while disconnected remain failed local bubbles',
       () async {
         mockBridge.connected = false;
         mockBridge.historySeqBySession['s1'] = 7;
@@ -6678,50 +6854,24 @@ void main() {
         await Future.microtask(() {});
 
         cubit.sendMessage('Offline Codex input');
-        cubit.sendMessage('Second input is blocked');
+        cubit.sendMessage('Second offline input');
 
-        expect(cubit.state.entries.whereType<UserChatEntry>(), isEmpty);
-        expect(cubit.state.queuedInput?.text, 'Offline Codex input');
-        expect(
-          ChatSessionCubit.isOfflineQueuedInput(cubit.state.queuedInput),
-          isTrue,
-        );
-        expect(mockBridge.sentMessages, hasLength(1));
-
-        final payload =
-            jsonDecode(mockBridge.sentMessages.single.toJson())
-                as Map<String, dynamic>;
-        expect(payload['type'], 'input');
-        expect(payload['text'], 'Offline Codex input');
-        expect(payload['baseSeq'], 7);
-        expect(
-          ChatSessionCubit.offlineQueuedClientMessageId(
-            cubit.state.queuedInput,
-          ),
-          payload['clientMessageId'],
-        );
-
-        mockBridge.emitMessage(
-          InputAckMessage(
-            sessionId: 's1',
-            clientMessageId: payload['clientMessageId'] as String,
-            acceptedSeq: 8,
-          ),
-          sessionId: 's1',
-        );
-        await Future.microtask(() {});
         expect(cubit.state.queuedInput, isNull);
-        final delivered = cubit.state.entries
-            .whereType<UserChatEntry>()
-            .toList();
-        expect(delivered, hasLength(1));
-        expect(delivered.single.text, 'Offline Codex input');
-        expect(delivered.single.status, MessageStatus.sent);
+        final failed = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(failed.map((entry) => entry.text), [
+          'Offline Codex input',
+          'Second offline input',
+        ]);
+        expect(
+          failed.map((entry) => entry.status),
+          everyElement(MessageStatus.failed),
+        );
+        expect(mockBridge.sentMessages, isEmpty);
       },
     );
 
     test(
-      'legacy offline ack without client id preserves the queued message',
+      'spurious legacy ack cannot settle a failed offline message',
       () async {
         mockBridge.connected = false;
         final cubit = createCubit('s1', provider: Provider.codex);
@@ -6729,8 +6879,11 @@ void main() {
         await Future.microtask(() {});
 
         cubit.sendMessage('Legacy offline Codex input');
-        expect(cubit.state.queuedInput, isNotNull);
-        expect(cubit.state.entries.whereType<UserChatEntry>(), isEmpty);
+        expect(cubit.state.queuedInput, isNull);
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().single.status,
+          MessageStatus.failed,
+        );
 
         mockBridge.emitMessage(
           const InputAckMessage(sessionId: 's1', acceptedSeq: 1),
@@ -6742,7 +6895,8 @@ void main() {
         final users = cubit.state.entries.whereType<UserChatEntry>().toList();
         expect(users, hasLength(1));
         expect(users.single.text, 'Legacy offline Codex input');
-        expect(users.single.status, MessageStatus.sent);
+        expect(users.single.status, MessageStatus.failed);
+        expect(mockBridge.sentMessages, isEmpty);
       },
     );
 
@@ -10931,20 +11085,175 @@ void main() {
     );
 
     test(
-      'retryMessage reuses the client id and image on the ordered delivery path',
+      'explicit detached retry sends the same client id and image exactly once',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final image = Uint8List.fromList([0x89, 0x50, 0x4e, 0x47]);
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-retry-image',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-retry-image',
+          imagePayloadEncoder: (images) async => [
+            for (final image in images)
+              {'base64': base64Encode(image.bytes), 'mimeType': image.mimeType},
+          ],
+        );
+        addTearDown(cubit.close);
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-retry-image',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'bridgeRuntime',
+            confidence: 'authoritative',
+            observedAt: '2026-08-14T04:43:19.000Z',
+            executionHost: 'bridge',
+            controlState: 'writable',
+            authorityGeneration: 'authority-retry-image',
+          ),
+          sourceFingerprint: 'bridge/source',
+        );
+        const clientMessageId = 'stale-image-client-id';
+        final images = [(bytes: image, mimeType: 'image/png')];
+        expect(
+          cubit.restoreFailedSubmission(
+            'Retry stale image',
+            clientMessageId: clientMessageId,
+            images: images,
+          ),
+          isTrue,
+        );
+        expect(
+          cubit.showDeferredSubmission(
+            'Retry stale image',
+            clientMessageId: clientMessageId,
+            images: images,
+          ),
+          isTrue,
+        );
+        expect(
+          cubit.sendMessage(
+            'Retry stale image',
+            clientMessageId: clientMessageId,
+            images: images,
+          ),
+          isTrue,
+        );
+        await pumpEventQueue();
+
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(1));
+        expect(users.single.clientMessageId, clientMessageId);
+        expect(users.single.imageBytesList.single, image);
+        expect(mockBridge.sentMessages, hasLength(1));
+        final resent = jsonDecode(mockBridge.sentMessages.single.toJson());
+        expect(resent['type'], 'input');
+        expect(resent['sessionId'], 'runtime-retry-image');
+        expect(resent['clientMessageId'], clientMessageId);
+        expect(resent['images'], [
+          {'base64': 'iVBORw==', 'mimeType': 'image/png'},
+        ]);
+      },
+    );
+
+    test(
+      'unconfirmed draft survives local send, fails on disconnect, and clears only after Bridge ack',
+      () async {
+        SharedPreferences.setMockInitialValues({});
+        final prefs = await SharedPreferences.getInstance();
+        final drafts = DraftService(prefs);
+        const clientMessageId = 'receipt-gated-client-id';
+        await drafts.savePendingSubmission(
+          'durable-receipt-gated',
+          PendingChatSubmissionDraft(
+            clientMessageId: clientMessageId,
+            text: 'Receipt gated message',
+            lastAttemptAt: DateTime.utc(2026, 8, 14, 5),
+            attemptCount: 1,
+          ),
+        );
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-receipt-gated',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-receipt-gated',
+          outgoingDrafts: drafts,
+        );
+        addTearDown(cubit.close);
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-receipt-gated',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'bridgeRuntime',
+            confidence: 'authoritative',
+            observedAt: '2026-08-14T05:00:00.000Z',
+            executionHost: 'bridge',
+            controlState: 'writable',
+            authorityGeneration: 'authority-receipt-gated',
+          ),
+          sourceFingerprint: 'bridge/source',
+        );
+
+        expect(
+          cubit.sendMessage(
+            'Receipt gated message',
+            clientMessageId: clientMessageId,
+          ),
+          isTrue,
+        );
+        expect(drafts.getPendingSubmission('durable-receipt-gated'), isNotNull);
+
+        mockBridge.emitConnection(BridgeConnectionState.disconnected);
+        await pumpEventQueue();
+        final failed = cubit.state.entries.single as UserChatEntry;
+        expect(failed.clientMessageId, clientMessageId);
+        expect(failed.status, MessageStatus.failed);
+        expect(
+          drafts.getPendingSubmission('durable-receipt-gated')?.lastError,
+          'bridge_disconnected_before_receipt',
+        );
+
+        mockBridge.emitConnection(BridgeConnectionState.connected);
+        mockBridge.emitMessage(
+          const InputAckMessage(
+            sessionId: 'runtime-receipt-gated',
+            clientMessageId: clientMessageId,
+            stage: InputAckStage.bridgeAccepted,
+          ),
+          sessionId: 'runtime-receipt-gated',
+        );
+        await pumpEventQueue();
+        expect(drafts.getPendingSubmission('durable-receipt-gated'), isNull);
+      },
+    );
+
+    test(
+      'retryMessage reuses the client id on the ordered delivery path',
       () async {
         final cubit = createCubit('s1', provider: Provider.codex);
         addTearDown(cubit.close);
         await Future.microtask(() {});
 
-        const clientMessageId = 'retry-client-id';
-        final image = Uint8List.fromList([1, 2, 3]);
-        cubit.restoreFailedSubmission(
-          'Retry me',
-          clientMessageId: clientMessageId,
-          images: [(bytes: image, mimeType: 'image/png')],
-        );
+        cubit.sendMessage('Retry me');
         final entryToRetry = cubit.state.entries.last as UserChatEntry;
+        entryToRetry.status = MessageStatus.failed;
         final previousClientMessageId = entryToRetry.clientMessageId;
 
         mockBridge.sentMessages.clear();
@@ -10955,16 +11264,10 @@ void main() {
         expect(retriedEntry.status, MessageStatus.sending);
         expect(retriedEntry.text, 'Retry me');
         expect(retriedEntry.clientMessageId, previousClientMessageId);
-        expect(retriedEntry.clientMessageId, clientMessageId);
-        expect(retriedEntry.imageBytesList, hasLength(1));
-        expect(retriedEntry.imageBytesList.single, image);
         expect(mockBridge.sentMessages, hasLength(1));
         final resent = jsonDecode(mockBridge.sentMessages.single.toJson());
         expect(resent['type'], 'input');
-        expect(resent['clientMessageId'], clientMessageId);
-        expect(resent['images'], [
-          {'base64': 'AQID', 'mimeType': 'image/png'},
-        ]);
+        expect(resent['clientMessageId'], previousClientMessageId);
         expect(
           mockBridge
               .deliveryPendingInputsForSession('s1')
@@ -11824,70 +12127,6 @@ void main() {
                 as Map<String, dynamic>;
         expect(payload['type'], 'cancel_queued_input');
         expect(payload['itemId'], 'q1');
-      },
-    );
-
-    test(
-      'offline codex queued input update and cancel mutate local pending input',
-      () async {
-        mockBridge.connected = false;
-        final cubit = createCubit('s1', provider: Provider.codex);
-        addTearDown(cubit.close);
-        await Future.microtask(() {});
-
-        cubit.sendMessage('Original offline');
-        final item = cubit.state.queuedInput!;
-        final clientMessageId = ChatSessionCubit.offlineQueuedClientMessageId(
-          item,
-        );
-
-        await cubit.updateQueuedInput(item, 'Edited offline');
-        expect(cubit.state.queuedInput?.text, 'Edited offline');
-        expect(mockBridge.updatedOfflineInputs.single, {
-          'sessionId': 's1',
-          'clientMessageId': clientMessageId,
-          'text': 'Edited offline',
-          'skills': <Map<String, String>>[],
-          'mentions': <Map<String, String>>[],
-        });
-        expect(
-          mockBridge.sentMessages.map((message) => message.type),
-          isNot(contains('update_queued_input')),
-        );
-
-        cubit.steerQueuedInput(cubit.state.queuedInput!);
-        expect(
-          mockBridge.sentMessages.map((message) => message.type),
-          isNot(contains('steer_queued_input')),
-        );
-
-        await cubit.cancelQueuedInput(cubit.state.queuedInput!);
-        expect(cubit.state.queuedInput, isNull);
-        expect(mockBridge.canceledOfflineInputs.single, {
-          'sessionId': 's1',
-          'clientMessageId': clientMessageId,
-        });
-      },
-    );
-
-    test(
-      'offline queue edit and cancel stay visible when reconnect won the race',
-      () async {
-        mockBridge.connected = false;
-        final cubit = createCubit('s1', provider: Provider.codex);
-        addTearDown(cubit.close);
-        await Future.microtask(() {});
-
-        cubit.sendMessage('Original offline');
-        final item = cubit.state.queuedInput!;
-
-        mockBridge.offlineUpdateSucceeds = false;
-        expect(await cubit.updateQueuedInput(item, 'Too late edit'), isFalse);
-        expect(cubit.state.queuedInput?.text, 'Original offline');
-
-        mockBridge.offlineCancelSucceeds = false;
-        expect(await cubit.cancelQueuedInput(item), isFalse);
-        expect(cubit.state.queuedInput?.itemId, item.itemId);
       },
     );
   });
