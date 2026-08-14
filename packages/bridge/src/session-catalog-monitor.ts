@@ -33,6 +33,8 @@ export interface SessionCatalogMonitorOptions {
    * in-memory counter happened to reach the same value in an earlier process.
    */
   initialRevision?: number;
+  /** Deterministic watcher seam for lifecycle/debounce contract tests. */
+  watchFactory?: typeof watch;
 }
 
 interface WatchedDirectory {
@@ -103,6 +105,7 @@ export class SessionCatalogMonitor {
   private readonly retryMs: number;
   private readonly maxWatchedDirectories: number;
   private readonly roots: CatalogRoot[];
+  private readonly watchFactory: typeof watch;
   private readonly watchedDirectories = new Map<string, WatchedDirectory>();
 
   private active = false;
@@ -128,6 +131,7 @@ export class SessionCatalogMonitor {
     );
     this.retryMs = boundedPositiveInteger(options.retryMs, DEFAULT_RETRY_MS);
     this.roots = options.roots ?? defaultRoots();
+    this.watchFactory = options.watchFactory ?? watch;
     this.maxWatchedDirectories = Math.max(
       1,
       this.roots.length,
@@ -334,7 +338,7 @@ export class SessionCatalogMonitor {
     if (this.watchedDirectories.has(directory)) return true;
     try {
       let entry: WatchedDirectory | null = null;
-      const watcher = watch(
+      const watcher = this.watchFactory(
         directory,
         { persistent: false },
         (eventType, filename) => {
