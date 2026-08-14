@@ -6909,11 +6909,26 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return;
     }
     if (entry case ServerChatEntry(
-      message: AssistantServerMessage(:final messageUuid, :final message),
+      message: AssistantServerMessage(
+        :final messageUuid,
+        :final historyTurnId,
+        :final message,
+      ),
     )) {
       final keys = <String>{};
-      final stableKey = _serverMessageStableKey(entry.message);
-      if (stableKey != null) keys.add(stableKey);
+      final turnId = historyTurnId?.trim();
+      if (turnId?.isNotEmpty == true) {
+        if (message.id.isNotEmpty) {
+          keys.add(
+            _scopeServerMessageIdentity('assistant:id:${message.id}', turnId),
+          );
+        }
+        if (messageUuid?.isNotEmpty == true) {
+          keys.add(
+            _scopeServerMessageIdentity('assistant:uuid:$messageUuid', turnId),
+          );
+        }
+      }
       if (!detachedPreview) {
         if (message.id.isNotEmpty) keys.add('assistant:id:${message.id}');
         if (messageUuid?.isNotEmpty == true) {
