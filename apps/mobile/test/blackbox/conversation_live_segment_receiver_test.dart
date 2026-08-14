@@ -3,12 +3,14 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
+import 'package:ccpocket/features/chat_session/state/streaming_state.dart';
 import 'package:ccpocket/features/chat_session/state/streaming_state_cubit.dart';
 import 'package:ccpocket/features/chat_session/widgets/chat_process_layout.dart';
 import 'package:ccpocket/features/conversation_content_sync/conversation_content_sync_service.dart';
 import 'package:ccpocket/features/session_list/cache/session_catalog_cache_database.dart';
 import 'package:ccpocket/features/session_list/cache/session_catalog_cache_repository.dart';
 import 'package:ccpocket/features/session_list/state/session_list_cubit.dart';
+import 'package:ccpocket/features/session_list/state/session_list_state.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:flutter/widgets.dart';
@@ -97,7 +99,12 @@ void main() {
       );
       StreamingStateCubit? streaming;
       ChatSessionCubit? chat;
+      StreamSubscription<SessionListState>? providerProjectionSub;
+      StreamSubscription<ServerMessage>? runtimeWireSub;
+      StreamSubscription<StreamingState>? streamingTraceSub;
       final receiverTrace = <Map<String, Object?>>[];
+      final runtimeWireTypes = <String>[];
+      final streamingTransitions = <Map<String, Object?>>[];
 
       SessionCatalogCacheTarget cacheTarget() =>
           SessionCatalogCacheTarget.fromBridge(
@@ -310,6 +317,18 @@ void main() {
         );
         final runtime = await runtimeFuture;
         streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
+        runtimeWireSub = bridge.messagesForSession(runtime.id).listen((
+          message,
+        ) {
+          runtimeWireTypes.add(message.runtimeType.toString());
+        });
+        streamingTraceSub = streaming.stream.listen((state) {
+          streamingTransitions.add({
+            'isStreaming': state.isStreaming,
+            'text': state.text,
+            'thinking': state.thinking,
+          });
+        });
         chat = ChatSessionCubit(
           sessionId: threadId,
           provider: Provider.codex,
@@ -322,6 +341,14 @@ void main() {
               .map((entry) => entry.decodeMessage())
               .toList(growable: false),
         );
+        // Production DurableSessionPreviewUpdater applies the current
+        // source-scoped status on mount and on every SessionListCubit update.
+        // Keep the headless receiver on the same boundary so turn/started can
+        // establish authority before its formal runtime overlay is displayed.
+        applyCurrentProviderProjection();
+        providerProjectionSub = sessionList.stream.listen((_) {
+          applyCurrentProviderProjection();
+        });
         recordReceiver('initial', latestTurnIsActive: false);
 
         var committed = waitForWindowCount(2);
@@ -465,6 +492,15 @@ void main() {
               'Reopening must preserve every user/assistant message and segment.',
         );
       } finally {
+        receiverTrace.add({
+          'stage': 'wire-observation',
+          'runtimeWireTypes': runtimeWireTypes,
+          'streamingTransitions': streamingTransitions,
+          'runtimeProjection': chat?.diagnosticRuntimeProjection,
+        });
+        await providerProjectionSub?.cancel();
+        await runtimeWireSub?.cancel();
+        await streamingTraceSub?.cancel();
         await chat?.close();
         await streaming?.close();
         await sessionList.close();

@@ -769,10 +769,40 @@ describe("conversation_sync_v2 protocol", () => {
         errorCode: "runtime_warning",
       };
       observers[0]!.message(overlay);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(
+        events(fixture.sent, capableClient, "runtime_overlay"),
+      ).toEqual([]);
+      control.emit({
+        kind: "event",
+        event: {
+          sequence: 1,
+          observedAt: "2026-08-10T00:00:01.000Z",
+          connectionGeneration: 21,
+          method: "turn/started",
+          threadId,
+          turnId: "turn-shared-live",
+        },
+      });
       await vi.waitFor(() =>
         expect(events(fixture.sent, capableClient, "runtime_overlay")).toHaveLength(
           1,
         ),
+      );
+      const matchingStatusFrame = events(
+        fixture.sent,
+        capableClient,
+        "status_changes",
+      ).find((event) =>
+        event.changes.some(
+          (status) =>
+            status.providerSessionId === threadId &&
+            status.activeTurnId === "turn-shared-live" &&
+            status.authorityGeneration === "daemon:21",
+        ),
+      );
+      expect(matchingStatusFrame?.sequence).toBeLessThan(
+        events(fixture.sent, capableClient, "runtime_overlay")[0]!.sequence,
       );
       expect(events(fixture.sent, capableClient, "runtime_overlay")[0]).toMatchObject({
         provider: "codex",
@@ -801,6 +831,38 @@ describe("conversation_sync_v2 protocol", () => {
       expect(events(fixture.sent, capableClient, "runtime_overlay")).toHaveLength(
         1,
       );
+
+      // Leaving the conversation ends the overlay projection generation.
+      // Re-entering may legitimately replay the same provider item, so the
+      // old focus' sent-ID fence must not suppress the new projection.
+      await fixture.handler.handle(
+        {
+          type: "conversation_sync_focus",
+          protocolVersion: 2,
+          requestId: "focus-away-runtime-overlay",
+          subscriptionId: focused.requestId,
+        },
+        context(capableClient, fixture.runtime),
+      );
+      await fixture.handler.handle(
+        {
+          type: "conversation_sync_focus",
+          protocolVersion: 2,
+          requestId: "focus-back-runtime-overlay",
+          subscriptionId: focused.requestId,
+          focused: {
+            provider: "codex",
+            providerSessionId: threadId,
+          },
+        },
+        context(capableClient, fixture.runtime),
+      );
+      observers.at(-1)!.message(overlay);
+      await vi.waitFor(() =>
+        expect(
+          events(fixture.sent, capableClient, "runtime_overlay"),
+        ).toHaveLength(2),
+      );
     } finally {
       await fixture.handler.close();
     }
@@ -815,26 +877,30 @@ describe("conversation_sync_v2 protocol", () => {
       projectPath: "/project/formal-overlay",
     };
     const client = {};
+    let runtimeStateVisible = false;
     const fixture = createFixture(
       [codexSeed(0, threadId)],
       async () => [],
       {},
       {
         getProviderSessionId: () => threadId,
-        listRuntimeConversationStates: () => [
-          {
-            bridgeSessionId: runtimeSession.id,
-            provider: "codex",
-            providerSessionId: threadId,
-            projectPath: "/project/formal-overlay",
-            processStatus: "running",
-            executionHost: "bridge",
-            activeTurnId: "turn-formal-live",
-            controlState: "steerable",
-            authorityGeneration: "runtime-authority-7",
-            observedAt: "2026-08-10T01:00:00.000Z",
-          },
-        ],
+        listRuntimeConversationStates: () =>
+          runtimeStateVisible
+            ? [
+                {
+                  bridgeSessionId: runtimeSession.id,
+                  provider: "codex",
+                  providerSessionId: threadId,
+                  projectPath: "/project/formal-overlay",
+                  processStatus: "running",
+                  executionHost: "bridge",
+                  activeTurnId: "turn-formal-live",
+                  controlState: "steerable",
+                  authorityGeneration: "runtime-authority-7",
+                  observedAt: "2026-08-10T01:00:00.000Z",
+                },
+              ]
+            : [],
         supports: (_target, capability) =>
           capability === CONVERSATION_SYNC_V2_CAPABILITY ||
           capability === CONVERSATION_WINDOW_COVERAGE_CAPABILITY ||
@@ -851,14 +917,53 @@ describe("conversation_sync_v2 protocol", () => {
       await vi.waitFor(() =>
         expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
       );
+      // SessionManager can expose the new runtime snapshot to the message
+      // callback before its separate lifecycle invalidation reaches v2.
+      runtimeStateVisible = true;
       fixture.handler.sessionMessage(runtimeSession, {
         type: "error",
         message: "formal runtime warning",
         errorCode: "runtime_warning",
         historyTurnId: "turn-formal-live",
       });
+      // The message callback can observe the new runtime snapshot before v2
+      // has projected it. Its ordinary live reconciliation must sequence the
+      // exact turn/authority status before releasing the overlay.
+      await vi.waitFor(() =>
+        expect(
+          events(fixture.sent, client, "status_changes").some((event) =>
+            event.changes.some(
+              (status) =>
+                status.providerSessionId === threadId &&
+                status.activeTurnId === "turn-formal-live" &&
+                status.authorityGeneration === "runtime-authority-7",
+            ),
+          ),
+        ).toBe(true),
+      );
       await vi.waitFor(() =>
         expect(events(fixture.sent, client, "runtime_overlay")).toHaveLength(1),
+      );
+      const authoritativeStatus = events(
+        fixture.sent,
+        client,
+        "status_changes",
+      )
+        .flatMap((event) => event.changes)
+        .find(
+          (status) =>
+            status.providerSessionId === threadId &&
+            status.activeTurnId === "turn-formal-live" &&
+            status.authorityGeneration === "runtime-authority-7",
+        );
+      expect(authoritativeStatus).toBeDefined();
+      const authoritativeStatusFrame = events(
+        fixture.sent,
+        client,
+        "status_changes",
+      ).find((event) => event.changes.includes(authoritativeStatus!));
+      expect(authoritativeStatusFrame?.sequence).toBeLessThan(
+        events(fixture.sent, client, "runtime_overlay")[0]!.sequence,
       );
       expect(events(fixture.sent, client, "runtime_overlay")[0]).toMatchObject({
         provider: "codex",
@@ -902,6 +1007,123 @@ describe("conversation_sync_v2 protocol", () => {
       fixture.handler.sessionMessage(runtimeSession, assistantOverlay);
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(events(fixture.sent, client, "runtime_overlay")).toHaveLength(2);
+    } finally {
+      await fixture.handler.close();
+    }
+  });
+
+  it("retries one queued runtime overlay after a socket write throws", async () => {
+    const threadId = "thread-runtime-overlay-write-retry";
+    const runtimeSession: LocalFeatureSession = {
+      id: "runtime-overlay-write-retry",
+      provider: "codex",
+      process: {},
+      projectPath: "/project/runtime-overlay-write-retry",
+    };
+    const client = {};
+    const wire: ConversationSyncServerMessage[] = [];
+    let rejectOverlayWrite = true;
+    const fixture = createFixture(
+      [codexSeed(0, threadId)],
+      async () => [],
+      {},
+      {
+        getProviderSessionId: () => threadId,
+        listRuntimeConversationStates: () => [
+          {
+            bridgeSessionId: runtimeSession.id,
+            provider: "codex",
+            providerSessionId: threadId,
+            projectPath: runtimeSession.projectPath,
+            processStatus: "running",
+            executionHost: "bridge",
+            activeTurnId: "turn-overlay-write-retry",
+            controlState: "steerable",
+            authorityGeneration: "runtime-authority-write-retry",
+            observedAt: "2026-08-10T01:30:00.000Z",
+          },
+        ],
+        supports: (_target, capability) =>
+          capability === CONVERSATION_SYNC_V2_CAPABILITY ||
+          capability === CONVERSATION_WINDOW_COVERAGE_CAPABILITY ||
+          capability === CONVERSATION_USER_INDEX_CAPABILITY ||
+          capability === CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
+        send: (_target, message) => {
+          if (
+            message.type === CONVERSATION_SYNC_V2_CAPABILITY &&
+            message.event === "runtime_overlay" &&
+            rejectOverlayWrite
+          ) {
+            throw new Error("synthetic socket write failure");
+          }
+          wire.push(message);
+        },
+      },
+    );
+    const subscription = {
+      ...subscribeMessage(),
+      focused: { provider: "codex" as const, providerSessionId: threadId },
+    };
+    const overlay = {
+      type: "error" as const,
+      message: "retry this runtime overlay once",
+      errorCode: "runtime_warning",
+      historyTurnId: "turn-overlay-write-retry",
+    };
+    try {
+      await fixture.handler.handle(
+        subscription,
+        context(client, fixture.runtime),
+      );
+      await vi.waitFor(() =>
+        expect(
+          wire.some(
+            (message) =>
+              message.type === CONVERSATION_SYNC_V2_CAPABILITY &&
+              message.event === "sync_complete",
+          ),
+        ).toBe(true),
+      );
+
+      expect(() =>
+        fixture.handler.sessionMessage(runtimeSession, overlay),
+      ).toThrow("synthetic socket write failure");
+      rejectOverlayWrite = false;
+      const deliveredSequence = Math.max(
+        ...wire
+          .filter(
+            (message) => message.type === CONVERSATION_SYNC_V2_CAPABILITY,
+          )
+          .map((message) => message.sequence),
+      );
+      await fixture.handler.handle(
+        {
+          type: "conversation_sync_ack",
+          protocolVersion: 2,
+          subscriptionId: subscription.requestId,
+          sequence: deliveredSequence,
+        },
+        context(client, fixture.runtime),
+      );
+      await vi.waitFor(() =>
+        expect(
+          wire.filter(
+            (message) =>
+              message.type === CONVERSATION_SYNC_V2_CAPABILITY &&
+              message.event === "runtime_overlay",
+          ),
+        ).toHaveLength(1),
+      );
+
+      fixture.handler.sessionMessage(runtimeSession, overlay);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(
+        wire.filter(
+          (message) =>
+            message.type === CONVERSATION_SYNC_V2_CAPABILITY &&
+            message.event === "runtime_overlay",
+        ),
+      ).toHaveLength(1);
     } finally {
       await fixture.handler.close();
     }

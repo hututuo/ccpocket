@@ -2211,7 +2211,7 @@ void main() {
     );
 
     test(
-      'runtime overlay is rejected until attachment and authority are current',
+      'runtime overlay is quarantined after attachment until authority is current',
       () async {
         mockBridge.advertisedBridgeCapabilities = const {
           conversationSyncV2Capability,
@@ -2255,6 +2255,33 @@ void main() {
         cubit.updateDetachedLiveRuntime('runtime-a');
         expect(cubit.state.entries.whereType<ServerChatEntry>(), isEmpty);
 
+        runtimeOverlays.add(
+          const ConversationSyncV2EventMessage(
+            event: ConversationSyncV2EventKind.runtimeOverlay,
+            subscriptionId: 'subscription-a',
+            bridgeInstanceId: 'bridge-a',
+            codexSourceId: 'source-a',
+            batchId: 'batch-a',
+            sequence: 2,
+            provider: 'codex',
+            providerSessionId: 'durable-thread',
+            overlayId: 'overlay-awaiting-authority',
+            observedAt: '2026-08-10T01:03:01.000Z',
+            originGeneration: 'runtime:runtime-a:authority-a',
+            runtimeSessionId: 'runtime-a',
+            authorityGeneration: 'authority-a',
+            turnId: 'turn-a',
+            overlayMessage: ErrorMessage(message: 'runtime warning'),
+          ),
+        );
+        await pumpEventQueue();
+        expect(cubit.state.entries.whereType<ServerChatEntry>(), isEmpty);
+        expect(
+          (cubit.diagnosticRuntimeProjection['timelineProjection']!
+              as Map<String, Object?>)['pendingRuntimeOverlayCount'],
+          1,
+        );
+
         cubit.updateDetachedProviderStatus(
           const ConversationSyncV2Status(
             provider: 'codex',
@@ -2273,27 +2300,13 @@ void main() {
           ),
           sourceFingerprint: 'bridge/source',
         );
-        runtimeOverlays.add(
-          const ConversationSyncV2EventMessage(
-            event: ConversationSyncV2EventKind.runtimeOverlay,
-            subscriptionId: 'subscription-a',
-            bridgeInstanceId: 'bridge-a',
-            codexSourceId: 'source-a',
-            batchId: 'batch-a',
-            sequence: 2,
-            provider: 'codex',
-            providerSessionId: 'durable-thread',
-            overlayId: 'overlay-after-attachment',
-            observedAt: '2026-08-10T01:03:02.000Z',
-            originGeneration: 'runtime:runtime-a:authority-a',
-            runtimeSessionId: 'runtime-a',
-            authorityGeneration: 'authority-a',
-            turnId: 'turn-a',
-            overlayMessage: ErrorMessage(message: 'runtime warning'),
-          ),
-        );
         await pumpEventQueue();
         expect(cubit.state.entries.whereType<ServerChatEntry>(), hasLength(1));
+        expect(
+          (cubit.diagnosticRuntimeProjection['timelineProjection']!
+              as Map<String, Object?>)['pendingRuntimeOverlayCount'],
+          0,
+        );
 
         cubit.updateDetachedLiveRuntime('runtime-b');
         expect(cubit.state.entries.whereType<ServerChatEntry>(), isEmpty);

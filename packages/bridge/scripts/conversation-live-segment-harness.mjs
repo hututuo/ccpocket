@@ -342,12 +342,12 @@ const bridge = new BridgeWebSocketServer({
   },
 });
 
-const originalSend = bridge.send.bind(bridge);
-bridge.send = (client, message) => {
-  bridgeFrames.push(JSON.stringify(message));
-  originalSend(client, message);
-};
 bridge.wss.on("connection", (socket) => {
+  const originalSocketSend = socket.send.bind(socket);
+  socket.send = (data, ...args) => {
+    bridgeFrames.push(data.toString());
+    return originalSocketSend(data, ...args);
+  };
   socket.on("message", (data) => clientFrames.push(data.toString()));
 });
 

@@ -20,6 +20,10 @@ import 'chat_session_state.dart';
 import 'streaming_state_cubit.dart';
 
 typedef ChatImageAttachment = ({Uint8List bytes, String mimeType});
+typedef _PendingDetachedRuntimeOverlay = ({
+  ConversationSyncV2EventMessage event,
+  int bytes,
+});
 typedef ChatImagePayloadEncoder =
     Future<List<Map<String, String>>> Function(
       List<ChatImageAttachment> images,
@@ -340,6 +344,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       'rejectedRuntimeOverlayCount': _detachedRejectedRuntimeOverlayCount,
       'runtimeOverlayOriginGeneration': _detachedRuntimeOverlayOriginGeneration,
       'runtimeOverlayEventCount': _detachedRuntimeOverlayEventIds.length,
+      'pendingRuntimeOverlayCount': _pendingDetachedRuntimeOverlays.length,
+      'pendingRuntimeOverlayBytes': _pendingDetachedRuntimeOverlayBytes,
       'runtimeAssistantAliasCount': _detachedRuntimeAssistantAliases.length,
       'localOutgoingClientIdCount': _detachedLocalOverlayClientIds.length,
     },
@@ -702,6 +708,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   static const _maxDetachedRuntimeOverlayEntries = 32;
   static const _maxDetachedRuntimeOverlayBytes = 64 * 1024;
   final Set<String> _detachedRuntimeOverlayEventIds = {};
+  final Map<String, _PendingDetachedRuntimeOverlay>
+  _pendingDetachedRuntimeOverlays = {};
+  int _pendingDetachedRuntimeOverlayBytes = 0;
   int? _detachedRuntimeOverlayGeneration;
   String? _detachedRuntimeOverlayOriginGeneration;
   String? _detachedRuntimeOverlayTurnId;
@@ -1289,27 +1298,54 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return;
     }
     final currentAuthorityGeneration = _detachedAuthorityGeneration?.trim();
-    if (currentAuthorityGeneration?.isNotEmpty != true ||
-        eventAuthorityGeneration != currentAuthorityGeneration) {
-      _detachedRejectedRuntimeOverlayCount += 1;
-      return;
-    }
     if (eventAuthorityGeneration == _detachedRejectedAuthorityGeneration) {
       _detachedRejectedRuntimeOverlayCount += 1;
       return;
     }
     final activeTurnId = _detachedActiveTurnId?.trim();
-    if (activeTurnId?.isNotEmpty != true || activeTurnId != eventTurnId) {
-      _detachedRejectedRuntimeOverlayCount += 1;
-      return;
-    }
     final messageTurnId = _detachedRuntimeOverlayMessageTurnId(message)?.trim();
     if (messageTurnId?.isNotEmpty == true && messageTurnId != eventTurnId) {
       _detachedRejectedRuntimeOverlayCount += 1;
       return;
     }
-    if (!_detachedRuntimeOverlayEventIds.add(overlayId)) {
+    if (_detachedRuntimeOverlayEventIds.contains(overlayId) ||
+        _pendingDetachedRuntimeOverlays.containsKey(overlayId)) {
+      return;
+    }
+    if (currentAuthorityGeneration?.isNotEmpty == true &&
+        activeTurnId?.isNotEmpty == true &&
+        eventAuthorityGeneration == currentAuthorityGeneration &&
+        eventTurnId == activeTurnId) {
+      _applyValidatedDetachedRuntimeOverlay(
+        overlayId: overlayId,
+        message: message,
+        originGeneration: originGeneration,
+        runtimeSessionId: eventRuntimeSessionId!,
+        authorityGeneration: eventAuthorityGeneration!,
+        turnId: eventTurnId!,
+      );
+      return;
+    }
+    if (_detachedRuntimeOverlayIsProvenStale(event)) {
       _detachedRejectedRuntimeOverlayCount += 1;
+      return;
+    }
+    _quarantineDetachedRuntimeOverlay(event, message);
+  }
+
+  void _applyValidatedDetachedRuntimeOverlay({
+    required String overlayId,
+    required ServerMessage message,
+    required String originGeneration,
+    required String runtimeSessionId,
+    required String authorityGeneration,
+    required String turnId,
+  }) {
+    if (_isOlderDetachedObserverGeneration(originGeneration)) {
+      _detachedRejectedRuntimeOverlayCount += 1;
+      return;
+    }
+    if (!_detachedRuntimeOverlayEventIds.add(overlayId)) {
       return;
     }
     while (_detachedRuntimeOverlayEventIds.length >
@@ -1329,11 +1365,107 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       _onMessage(message);
     }
     if (_detachedRuntimeOverlayGeneration == _detachedLiveRuntimeGeneration) {
-      _detachedRuntimeOverlayTurnId = eventTurnId;
+      _detachedRuntimeOverlayTurnId = turnId;
     }
-    _detachedRuntimeOverlayAuthorityGeneration = eventAuthorityGeneration;
-    _detachedRuntimeOverlayRuntimeSessionId = eventRuntimeSessionId;
+    _detachedRuntimeOverlayAuthorityGeneration = authorityGeneration;
+    _detachedRuntimeOverlayRuntimeSessionId = runtimeSessionId;
     _trimDetachedRuntimeOverlayEntries();
+  }
+
+  void _quarantineDetachedRuntimeOverlay(
+    ConversationSyncV2EventMessage event,
+    ServerMessage message,
+  ) {
+    final overlayId = event.overlayId!;
+    final bytes = _detachedRuntimeOverlayMessageBytes(message);
+    if (bytes > _maxDetachedRuntimeOverlayBytes ||
+        _pendingDetachedRuntimeOverlays.length >=
+            _maxDetachedRuntimeOverlayEntries ||
+        _pendingDetachedRuntimeOverlayBytes + bytes >
+            _maxDetachedRuntimeOverlayBytes) {
+      _detachedRejectedRuntimeOverlayCount += 1;
+      logger.warning(
+        '[timeline_projection] event=runtime_overlay_quarantine_rejected '
+        'thread=$_projectionThreadToken reason=bounded_capacity',
+      );
+      return;
+    }
+    _pendingDetachedRuntimeOverlays[overlayId] = (event: event, bytes: bytes);
+    _pendingDetachedRuntimeOverlayBytes += bytes;
+    logger.info(
+      '[timeline_projection] event=runtime_overlay_quarantined '
+      'thread=$_projectionThreadToken pending='
+      '${_pendingDetachedRuntimeOverlays.length}',
+    );
+  }
+
+  bool _detachedRuntimeOverlayIsProvenStale(
+    ConversationSyncV2EventMessage event,
+  ) {
+    final projectedAt = _detachedProviderStatusObservedAt;
+    final eventAt = DateTime.tryParse(event.observedAt ?? '')?.toUtc();
+    return projectedAt != null &&
+        eventAt != null &&
+        projectedAt.isAfter(eventAt);
+  }
+
+  void _removePendingDetachedRuntimeOverlay(String overlayId) {
+    final removed = _pendingDetachedRuntimeOverlays.remove(overlayId);
+    if (removed == null) return;
+    final nextBytes = _pendingDetachedRuntimeOverlayBytes - removed.bytes;
+    _pendingDetachedRuntimeOverlayBytes = nextBytes < 0 ? 0 : nextBytes;
+  }
+
+  void _clearPendingDetachedRuntimeOverlays() {
+    _pendingDetachedRuntimeOverlays.clear();
+    _pendingDetachedRuntimeOverlayBytes = 0;
+  }
+
+  void _flushPendingDetachedRuntimeOverlays() {
+    if (_pendingDetachedRuntimeOverlays.isEmpty) return;
+    for (final pending in _pendingDetachedRuntimeOverlays.entries.toList()) {
+      final event = pending.value.event;
+      final overlayId = pending.key;
+      final message = event.overlayMessage;
+      final originGeneration = event.originGeneration?.trim();
+      final runtimeSessionId = event.runtimeSessionId?.trim();
+      final authorityGeneration = event.authorityGeneration?.trim();
+      final turnId = event.turnId?.trim();
+      final sharedObserver = originGeneration?.startsWith('observer:') == true;
+      final runtimeMatches = sharedObserver
+          ? runtimeSessionId == originGeneration
+          : runtimeSessionId?.isNotEmpty == true &&
+                runtimeSessionId == _detachedLiveRuntimeSessionId;
+      if (message == null ||
+          originGeneration?.isNotEmpty != true ||
+          runtimeSessionId?.isNotEmpty != true ||
+          authorityGeneration?.isNotEmpty != true ||
+          turnId?.isNotEmpty != true ||
+          !runtimeMatches ||
+          _isOlderDetachedObserverGeneration(originGeneration!)) {
+        _removePendingDetachedRuntimeOverlay(overlayId);
+        _detachedRejectedRuntimeOverlayCount += 1;
+        continue;
+      }
+      final currentAuthority = _detachedAuthorityGeneration?.trim();
+      final currentTurn = _detachedActiveTurnId?.trim();
+      if (currentAuthority == authorityGeneration && currentTurn == turnId) {
+        _removePendingDetachedRuntimeOverlay(overlayId);
+        _applyValidatedDetachedRuntimeOverlay(
+          overlayId: overlayId,
+          message: message,
+          originGeneration: originGeneration,
+          runtimeSessionId: runtimeSessionId!,
+          authorityGeneration: authorityGeneration!,
+          turnId: turnId!,
+        );
+        continue;
+      }
+      if (_detachedRuntimeOverlayIsProvenStale(event)) {
+        _removePendingDetachedRuntimeOverlay(overlayId);
+        _detachedRejectedRuntimeOverlayCount += 1;
+      }
+    }
   }
 
   bool _isOlderDetachedObserverGeneration(String candidate) {
@@ -2191,6 +2323,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         status.controlState == 'steerable';
     _detachedProviderStatusObservedAt = observedAt;
     _detachedProviderStatusSignature = signature;
+    _flushPendingDetachedRuntimeOverlays();
     externalDesktopTurnSteerable.value =
         externallyOwnedCodexTurn && controllable;
     detachedLiveRuntimeRevision.value += 1;
@@ -2638,6 +2771,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       .toList(growable: false);
 
   void _resetDetachedRuntimeOverlayTracking() {
+    _clearPendingDetachedRuntimeOverlays();
     _detachedRuntimeOverlayGeneration = null;
     _detachedRuntimeOverlayOriginGeneration = null;
     _detachedRuntimeOverlayTurnId = null;
@@ -2698,8 +2832,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (entry is! ServerChatEntry || !_isDetachedRuntimeOverlayEntry(entry)) {
       return 0;
     }
+    return _detachedRuntimeOverlayMessageBytes(entry.message);
+  }
+
+  int _detachedRuntimeOverlayMessageBytes(ServerMessage message) {
     try {
-      final wireShape = switch (entry.message) {
+      final wireShape = switch (message) {
         AssistantServerMessage message => <String, dynamic>{
           'type': 'assistant',
           'message': <String, dynamic>{

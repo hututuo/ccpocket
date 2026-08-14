@@ -4035,6 +4035,30 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _pendingLatestTurnRepairPages.clear();
   }
 
+  Future<void> _settleDisposedBackgroundWork() async {
+    final flights = <Future<dynamic>>[
+      _v2MutationTail,
+      ..._historyPageFlights.values,
+      ..._latestTurnRepairFlights.values,
+      ..._historyOperationTails.values,
+      ..._userIndexFlights.values,
+      ..._userTurnDetailFlights.values,
+      ?_focusedRefreshFlight,
+      ?_userIndexWarmup,
+    ];
+    await Future.wait(
+      flights.map((flight) async {
+        try {
+          await flight;
+        } catch (_) {
+          // _stopSubscription has already failed every public waiter. These
+          // background futures are joined only to guarantee that no cache
+          // access outlives the service and races repository disposal.
+        }
+      }),
+    );
+  }
+
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
@@ -4053,6 +4077,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       if (_deliveryModeSubscription != null)
         _deliveryModeSubscription!.cancel(),
     ]);
+    await _settleDisposedBackgroundWork();
     await _updatesController.close();
     await _syncUpdatesController.close();
     await _runtimeOverlaysController.close();

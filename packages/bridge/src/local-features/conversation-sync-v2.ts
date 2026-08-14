@@ -172,6 +172,7 @@ const MAX_SHARED_OBSERVER_LIVE_BYTES_PER_THREAD = 512 * 1024;
 const MAX_SHARED_OBSERVER_LIVE_THREADS = 64;
 const MAX_SHARED_OBSERVER_LIVE_BYTES_TOTAL = 8 * 1024 * 1024;
 const MAX_RUNTIME_OVERLAY_IDS_PER_SUBSCRIPTION = 128;
+const MAX_PENDING_RUNTIME_OVERLAY_BYTES = 1024 * 1024;
 const MAX_SHARED_OBSERVER_INLINE_IMAGES = 4;
 const MAX_SHARED_OBSERVER_INLINE_IMAGE_BASE64_BYTES = 8 * 1024 * 1024;
 const CATALOG_CONNECTION_REUSE_MS = 5_000;
@@ -264,6 +265,15 @@ interface OutboundFrame {
   message: ConversationSyncServerMessage;
 }
 
+interface PendingRuntimeOverlay {
+  key: ConversationKey;
+  payload: Extract<
+    ConversationSyncEventPayload,
+    { event: "runtime_overlay" }
+  >;
+  bytes: number;
+}
+
 interface FrameCommit {
   catalogState?: string;
   statusState?: string;
@@ -300,6 +310,8 @@ interface SyncSubscription {
   >;
   readWatermarks: Map<ConversationKey, string>;
   runtimeOverlayIds: Set<string>;
+  pendingRuntimeOverlays: Map<string, PendingRuntimeOverlay>;
+  pendingRuntimeOverlayBytes: number;
   nextSequence: number;
   outstandingBytes: number;
   outstanding: Map<number, number>;
@@ -988,6 +1000,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     } else {
       subscription.outbound.length = 0;
       subscription.queuedBytes = 0;
+      this.clearRuntimeOverlayTracking(subscription);
       this.wakeCapacityWaiters(subscription);
       if (!this.hasInteractiveClients()) {
         this.priorityCodexSettingsQueue.clear();
@@ -1615,7 +1628,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           client,
           CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
         ) ||
-        subscription.runtimeOverlayIds.has(overlayId)
+        subscription.runtimeOverlayIds.has(overlayId) ||
+        subscription.pendingRuntimeOverlays.has(overlayId)
       ) {
         continue;
       }
@@ -1631,27 +1645,257 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         message: input.message,
       };
       const bytes = this.eventPayloadBytes(subscription, payload);
-      if (
-        bytes > MAX_FRAME_BYTES ||
-        subscription.queuedBytes + bytes > MAX_QUEUED_BYTES
-      ) {
+      if (bytes > MAX_FRAME_BYTES) {
         console.warn(
           `[conversation-sync-v2] runtime overlay dropped ` +
-            `target=${traceTarget(key)} reason=backpressure_or_size`,
+            `target=${traceTarget(key)} reason=frame_size`,
         );
         continue;
       }
-      this.sendEvent(client, subscription, payload);
-      subscription.runtimeOverlayIds.add(overlayId);
-      while (
-        subscription.runtimeOverlayIds.size >
-        MAX_RUNTIME_OVERLAY_IDS_PER_SUBSCRIPTION
+      if (
+        this.runtimeOverlayAuthorityIsSequenced(
+          client,
+          subscription,
+          key,
+          payload,
+        ) &&
+        subscription.queuedBytes + bytes <= MAX_QUEUED_BYTES
       ) {
-        subscription.runtimeOverlayIds.delete(
-          subscription.runtimeOverlayIds.values().next().value!,
+        this.sendRuntimeOverlayEvent(
+          client,
+          subscription,
+          overlayId,
+          payload,
         );
+        continue;
+      }
+      if (
+        this.enqueuePendingRuntimeOverlay(subscription, overlayId, {
+          key,
+          payload,
+          bytes,
+        })
+      ) {
+        this.scheduleSync(client, subscription);
       }
     }
+  }
+
+  private sendRuntimeOverlayEvent(
+    client: object,
+    subscription: SyncSubscription,
+    overlayId: string,
+    payload: Extract<
+      ConversationSyncEventPayload,
+      { event: "runtime_overlay" }
+    >,
+  ): number {
+    const previousSequence = subscription.nextSequence;
+    this.rememberRuntimeOverlayId(subscription, overlayId);
+    try {
+      return this.sendEvent(client, subscription, payload);
+    } catch (error) {
+      // sendEvent records the frame in the outbound queue before asking the
+      // socket runtime to write it. When that write throws, outbound remains
+      // the sole retry source and the ID must stay remembered. Only undo the
+      // ID when the frame was rejected before it entered the queue.
+      if (subscription.nextSequence === previousSequence) {
+        subscription.runtimeOverlayIds.delete(overlayId);
+      }
+      throw error;
+    }
+  }
+
+  private rememberRuntimeOverlayId(
+    subscription: SyncSubscription,
+    overlayId: string,
+  ): void {
+    subscription.runtimeOverlayIds.add(overlayId);
+    while (
+      subscription.runtimeOverlayIds.size >
+      MAX_RUNTIME_OVERLAY_IDS_PER_SUBSCRIPTION
+    ) {
+      subscription.runtimeOverlayIds.delete(
+        subscription.runtimeOverlayIds.values().next().value!,
+      );
+    }
+  }
+
+  private enqueuePendingRuntimeOverlay(
+    subscription: SyncSubscription,
+    overlayId: string,
+    overlay: PendingRuntimeOverlay,
+  ): boolean {
+    if (subscription.pendingRuntimeOverlays.has(overlayId)) return true;
+    if (
+      subscription.pendingRuntimeOverlays.size >=
+        MAX_RUNTIME_OVERLAY_IDS_PER_SUBSCRIPTION ||
+      subscription.pendingRuntimeOverlayBytes + overlay.bytes >
+        MAX_PENDING_RUNTIME_OVERLAY_BYTES
+    ) {
+      console.warn(
+        `[conversation-sync-v2] runtime overlay rejected ` +
+          `target=${traceTarget(overlay.key)} reason=pending_capacity ` +
+          `pending=${subscription.pendingRuntimeOverlays.size} ` +
+          `bytes=${subscription.pendingRuntimeOverlayBytes}`,
+      );
+      return false;
+    }
+    subscription.pendingRuntimeOverlays.set(overlayId, overlay);
+    subscription.pendingRuntimeOverlayBytes += overlay.bytes;
+    return true;
+  }
+
+  private runtimeOverlayAuthorityMatches(
+    key: ConversationKey,
+    payload: Extract<
+      ConversationSyncEventPayload,
+      { event: "runtime_overlay" }
+    >,
+  ): boolean {
+    const status = this.statusProjection.get(key);
+    return (
+      status?.authorityGeneration === payload.authorityGeneration &&
+      status.activeTurnId === payload.turnId
+    );
+  }
+
+  private runtimeOverlayAuthorityIsSequenced(
+    client: object,
+    subscription: SyncSubscription,
+    key: ConversationKey,
+    payload: Extract<
+      ConversationSyncEventPayload,
+      { event: "runtime_overlay" }
+    >,
+  ): boolean {
+    if (!this.runtimeOverlayAuthorityMatches(key, payload)) return false;
+    const statusState = this.statusStateForClient(client);
+    return (
+      subscription.statusState === statusState ||
+      subscription.pendingStatusState === statusState
+    );
+  }
+
+  private clearPendingRuntimeOverlays(subscription: SyncSubscription): void {
+    subscription.pendingRuntimeOverlays.clear();
+    subscription.pendingRuntimeOverlayBytes = 0;
+  }
+
+  private clearRuntimeOverlayTracking(subscription: SyncSubscription): void {
+    this.clearPendingRuntimeOverlays(subscription);
+    subscription.runtimeOverlayIds.clear();
+  }
+
+  private dropPendingRuntimeOverlay(
+    subscription: SyncSubscription,
+    overlayId: string,
+    overlay: PendingRuntimeOverlay,
+  ): void {
+    subscription.pendingRuntimeOverlays.delete(overlayId);
+    subscription.pendingRuntimeOverlayBytes = Math.max(
+      0,
+      subscription.pendingRuntimeOverlayBytes - overlay.bytes,
+    );
+  }
+
+  private runtimeOverlayAuthorityIsSuperseded(
+    key: ConversationKey,
+    payload: Extract<
+      ConversationSyncEventPayload,
+      { event: "runtime_overlay" }
+    >,
+  ): boolean {
+    const status = this.statusProjection.get(key);
+    return (
+      status?.authorityGeneration !== undefined &&
+      status.activeTurnId !== undefined &&
+      (status.authorityGeneration !== payload.authorityGeneration ||
+        status.activeTurnId !== payload.turnId)
+    );
+  }
+
+  private async sendPendingRuntimeOverlays(
+    client: object,
+    subscription: SyncSubscription,
+  ): Promise<boolean> {
+    for (const [overlayId, overlay] of [
+      ...subscription.pendingRuntimeOverlays,
+    ]) {
+      if (subscription.focusedKey !== overlay.key) {
+        this.dropPendingRuntimeOverlay(subscription, overlayId, overlay);
+        continue;
+      }
+      if (
+        this.runtimeOverlayAuthorityIsSuperseded(
+          overlay.key,
+          overlay.payload,
+        )
+      ) {
+        this.dropPendingRuntimeOverlay(subscription, overlayId, overlay);
+        console.warn(
+          `[conversation-sync-v2] pending runtime overlay dropped ` +
+            `target=${traceTarget(overlay.key)} reason=authority_superseded`,
+        );
+        continue;
+      }
+      if (
+        !this.runtimeOverlayAuthorityIsSequenced(
+          client,
+          subscription,
+          overlay.key,
+          overlay.payload,
+        )
+      ) {
+        continue;
+      }
+      if (
+        !(await this.waitForOutboundCapacity(
+          client,
+          subscription,
+          overlay.payload,
+        ))
+      ) {
+        return false;
+      }
+      if (
+        !this.runtimeOverlayAuthorityIsSequenced(
+          client,
+          subscription,
+          overlay.key,
+          overlay.payload,
+        )
+      ) {
+        if (
+          this.runtimeOverlayAuthorityIsSuperseded(
+            overlay.key,
+            overlay.payload,
+          )
+        ) {
+          this.dropPendingRuntimeOverlay(subscription, overlayId, overlay);
+        }
+        continue;
+      }
+      this.dropPendingRuntimeOverlay(subscription, overlayId, overlay);
+      try {
+        this.sendRuntimeOverlayEvent(
+          client,
+          subscription,
+          overlayId,
+          overlay.payload,
+        );
+      } catch (error) {
+        if (!subscription.runtimeOverlayIds.has(overlayId)) {
+          this.enqueuePendingRuntimeOverlay(
+            subscription,
+            overlayId,
+            overlay,
+          );
+        }
+        throw error;
+      }
+    }
+    return true;
   }
 
   private forwardSharedObserverContextUsage(
@@ -2046,6 +2290,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const subscription = this.subscriptions.get(client);
     if (subscription) {
       this.logSubscriptionEnd(subscription, "socket_disconnect");
+      this.clearRuntimeOverlayTracking(subscription);
       this.wakeCapacityWaiters(subscription);
     }
     this.subscriptions.delete(client);
@@ -2068,6 +2313,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.sharedContentObservers?.close();
     this.cancelSharedControlRecovery();
     for (const subscription of this.subscriptions.values()) {
+      this.clearRuntimeOverlayTracking(subscription);
       this.wakeCapacityWaiters(subscription);
     }
     this.subscriptions.clear();
@@ -2159,6 +2405,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       partialUnionEntries: new Map(),
       readWatermarks,
       runtimeOverlayIds: new Set(),
+      pendingRuntimeOverlays: new Map(),
+      pendingRuntimeOverlayBytes: 0,
       nextSequence: 0,
       outstandingBytes: 0,
       outstanding: new Map(),
@@ -2278,9 +2526,13 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (!subscription || subscription.id !== message.subscriptionId) {
       return;
     }
-    subscription.focusedKey = message.focused
+    const nextFocusedKey = message.focused
       ? targetKey(message.focused)
       : undefined;
+    if (subscription.focusedKey !== nextFocusedKey) {
+      this.clearRuntimeOverlayTracking(subscription);
+    }
+    subscription.focusedKey = nextFocusedKey;
     subscription.pendingFocusRevalidation = subscription.focusedKey
       ? {
           key: subscription.focusedKey,
@@ -2344,6 +2596,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const subscription = this.subscriptions.get(client);
     if (!subscription || subscription.id !== message.subscriptionId) return;
     this.logSubscriptionEnd(subscription, "client_unsubscribe");
+    this.clearRuntimeOverlayTracking(subscription);
     this.sendEvent(client, subscription, {
       event: "unsubscribed",
       requestId: message.requestId,
@@ -2372,6 +2625,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       `outstandingFrames=${subscription.outstanding.size} ` +
       `outstandingBytes=${subscription.outstandingBytes} ` +
       `queuedFrames=${subscription.outbound.length} ` +
+      `pendingRuntimeOverlays=${subscription.pendingRuntimeOverlays.size} ` +
       `bootstrapEnqueued=${subscription.bootstrapEnqueued}`;
     if (subscription.bootstrapEnqueued) {
       console.log(message);
@@ -2490,6 +2744,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       return;
     }
     if (!(await this.sendStatusChanges(client, subscription))) {
+      for (const key of dirtyThreadKeys) {
+        subscription.dirtyThreadKeys.add(key);
+      }
+      subscription.fullSyncRequested ||= fullSyncRequested;
+      subscription.dirty = true;
+      return;
+    }
+    if (!(await this.sendPendingRuntimeOverlays(client, subscription))) {
       for (const key of dirtyThreadKeys) {
         subscription.dirtyThreadKeys.add(key);
       }
