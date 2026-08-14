@@ -10894,38 +10894,85 @@ void main() {
       expect(cubit.state.totalCost, 0.05);
     });
 
-    test('retryMessage uses the ordered Codex delivery path', () async {
-      final cubit = createCubit('s1', provider: Provider.codex);
-      addTearDown(cubit.close);
-      await Future.microtask(() {});
+    test(
+      'restoring a pending submission creates one failed image bubble without network activity',
+      () {
+        final cubit = createCubit(
+          'durable-stale-submission',
+          provider: Provider.codex,
+          detachedPreview: true,
+        );
+        addTearDown(cubit.close);
+        final image = Uint8List.fromList([0x89, 0x50, 0x4e, 0x47]);
 
-      cubit.sendMessage('Test message');
-      expect(cubit.state.entries, hasLength(1));
+        cubit.restoreFailedSubmission(
+          'Stale image submission',
+          clientMessageId: 'stale-client-id',
+          images: [(bytes: image, mimeType: 'image/png')],
+        );
+        // Replaying the restore callback must update the same optimistic
+        // bubble instead of appending a second copy.
+        cubit.restoreFailedSubmission(
+          'Stale image submission',
+          clientMessageId: 'stale-client-id',
+          images: [(bytes: image, mimeType: 'image/png')],
+        );
 
-      cubit.sendMessage('Retry me');
-      final entryToRetry = cubit.state.entries.last as UserChatEntry;
-      entryToRetry.status = MessageStatus.failed;
-      final previousClientMessageId = entryToRetry.clientMessageId;
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(1));
+        expect(users.single.text, 'Stale image submission');
+        expect(users.single.clientMessageId, 'stale-client-id');
+        expect(users.single.status, MessageStatus.failed);
+        expect(users.single.imageCount, 1);
+        expect(users.single.imageBytesList, hasLength(1));
+        expect(users.single.imageBytesList.single, image);
+        expect(mockBridge.sentMessages, isEmpty);
+      },
+    );
 
-      mockBridge.sentMessages.clear();
-      expect(cubit.retryMessage(entryToRetry), isTrue);
+    test(
+      'retryMessage reuses the client id and image on the ordered delivery path',
+      () async {
+        final cubit = createCubit('s1', provider: Provider.codex);
+        addTearDown(cubit.close);
+        await Future.microtask(() {});
 
-      final retriedEntry = cubit.state.entries.last as UserChatEntry;
-      expect(retriedEntry.status, MessageStatus.sending);
-      expect(retriedEntry.text, 'Retry me');
-      expect(retriedEntry.clientMessageId, isNot(previousClientMessageId));
-      expect(retriedEntry.clientMessageId, isNotNull);
-      expect(mockBridge.sentMessages, hasLength(1));
-      final resent = jsonDecode(mockBridge.sentMessages.single.toJson());
-      expect(resent['type'], 'input');
-      expect(resent['clientMessageId'], isNotNull);
-      expect(
-        mockBridge
-            .deliveryPendingInputsForSession('s1')
-            .map((item) => item.clientMessageId),
-        contains(resent['clientMessageId']),
-      );
-    });
+        const clientMessageId = 'retry-client-id';
+        final image = Uint8List.fromList([1, 2, 3]);
+        cubit.restoreFailedSubmission(
+          'Retry me',
+          clientMessageId: clientMessageId,
+          images: [(bytes: image, mimeType: 'image/png')],
+        );
+        final entryToRetry = cubit.state.entries.last as UserChatEntry;
+        final previousClientMessageId = entryToRetry.clientMessageId;
+
+        mockBridge.sentMessages.clear();
+        expect(cubit.retryMessage(entryToRetry), isTrue);
+        await pumpEventQueue();
+
+        final retriedEntry = cubit.state.entries.last as UserChatEntry;
+        expect(retriedEntry.status, MessageStatus.sending);
+        expect(retriedEntry.text, 'Retry me');
+        expect(retriedEntry.clientMessageId, previousClientMessageId);
+        expect(retriedEntry.clientMessageId, clientMessageId);
+        expect(retriedEntry.imageBytesList, hasLength(1));
+        expect(retriedEntry.imageBytesList.single, image);
+        expect(mockBridge.sentMessages, hasLength(1));
+        final resent = jsonDecode(mockBridge.sentMessages.single.toJson());
+        expect(resent['type'], 'input');
+        expect(resent['clientMessageId'], clientMessageId);
+        expect(resent['images'], [
+          {'base64': 'AQID', 'mimeType': 'image/png'},
+        ]);
+        expect(
+          mockBridge
+              .deliveryPendingInputsForSession('s1')
+              .map((item) => item.clientMessageId),
+          contains(resent['clientMessageId']),
+        );
+      },
+    );
 
     test(
       'retryMessage fails closed without a runtime lease and preserves the failed message',

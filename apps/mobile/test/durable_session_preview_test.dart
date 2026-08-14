@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:ccpocket/features/claude_session/claude_session_screen.dart';
 import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
@@ -379,7 +380,7 @@ void main() {
     },
   );
 
-  testWidgets('restored Codex submission resumes attachment after reconnect', (
+  testWidgets('restored Codex submission stays failed until an explicit retry', (
     tester,
   ) async {
     final bridge = MockBridgeService()
@@ -427,11 +428,14 @@ void main() {
     );
     final prefs = await SharedPreferences.getInstance();
     final drafts = DraftService(prefs);
+    final image = Uint8List.fromList([0x89, 0x50, 0x4e, 0x47]);
+    const clientMessageId = 'client-restored-resume';
     await drafts.savePendingSubmission(
       metadata.sessionId,
       PendingChatSubmissionDraft(
-        clientMessageId: 'client-restored-resume',
+        clientMessageId: clientMessageId,
         text: 'Continue after reconnect',
+        images: [(bytes: image, mimeType: 'image/png')],
       ),
     );
     final repository = _CountingSessionCatalogCacheRepository(
@@ -460,10 +464,19 @@ void main() {
         ),
       );
       await tester.pump();
+      final cubit = BlocProvider.of<ChatSessionCubit>(
+        tester.element(find.byKey(const ValueKey('message_input'))),
+      );
       expect(
         _sentWireMessages(
           bridge,
         ).where((message) => message['type'] == 'resume_session'),
+        isEmpty,
+      );
+      expect(
+        _sentWireMessages(
+          bridge,
+        ).where((message) => message['type'] == 'input'),
         isEmpty,
       );
 
@@ -473,6 +486,42 @@ void main() {
         metadata: metadata,
         metadataAvailable: true,
       );
+      // Runtime/catalog readiness is deliberately not an implicit recovery
+      // trigger. Let all readiness callbacks settle before asserting that the
+      // old v1 draft did not acquire a runtime or emit input.
+      for (var attempt = 0; attempt < 50; attempt++) {
+        await tester.pump(const Duration(milliseconds: 10));
+      }
+
+      expect(
+        _sentWireMessages(
+          bridge,
+        ).where((message) => message['type'] == 'resume_session'),
+        isEmpty,
+      );
+      expect(
+        _sentWireMessages(
+          bridge,
+        ).where((message) => message['type'] == 'input'),
+        isEmpty,
+      );
+      final restoredUsers = cubit.state.entries
+          .whereType<UserChatEntry>()
+          .toList();
+      expect(restoredUsers, hasLength(1));
+      expect(restoredUsers.single.text, 'Continue after reconnect');
+      expect(restoredUsers.single.clientMessageId, clientMessageId);
+      expect(restoredUsers.single.status, MessageStatus.failed);
+      expect(restoredUsers.single.imageCount, 1);
+      expect(restoredUsers.single.imageBytesList, hasLength(1));
+      expect(restoredUsers.single.imageBytesList.single, image);
+      expect(find.text('Tap to retry'), findsOneWidget);
+
+      // Only the user's explicit retry may enter attachment. It must keep the
+      // same optimistic bubble and client id; it must not send input before a
+      // runtime is attached.
+      await tester.tap(find.text('Tap to retry'));
+      await tester.pump();
       for (var attempt = 0; attempt < 50; attempt++) {
         if (_sentWireMessages(
           bridge,
@@ -481,15 +530,62 @@ void main() {
         }
         await tester.pump(const Duration(milliseconds: 10));
       }
-
-      final resumeMessages = _sentWireMessages(
+      final explicitResumeMessages = _sentWireMessages(
         bridge,
       ).where((message) => message['type'] == 'resume_session').toList();
-      expect(resumeMessages, hasLength(1));
-      expect(resumeMessages.single['sessionId'], metadata.sessionId);
+      expect(explicitResumeMessages, hasLength(1));
+      expect(explicitResumeMessages.single['sessionId'], metadata.sessionId);
       expect(
-        find.text('Connected. Loading live session status…'),
-        findsOneWidget,
+        _sentWireMessages(
+          bridge,
+        ).where((message) => message['type'] == 'input'),
+        isEmpty,
+      );
+      final usersAfterRetry = cubit.state.entries
+          .whereType<UserChatEntry>()
+          .toList();
+      expect(usersAfterRetry, hasLength(1));
+      expect(usersAfterRetry.single.clientMessageId, clientMessageId);
+      expect(usersAfterRetry.single.imageBytesList.single, image);
+      // Completing the explicitly requested attachment is the only point at
+      // which the preserved submission may be sent. The same id and image
+      // payload must be used, and the failed bubble must be replaced in place.
+      bridge.emitMessage(
+        SystemMessage(
+          subtype: 'session_created',
+          sessionId: 'attached-restored-runtime',
+          claudeSessionId: metadata.sessionId,
+          provider: Provider.codex.value,
+          projectPath: metadata.projectPath,
+          resumeRequestId:
+              explicitResumeMessages.single['resumeRequestId'] as String,
+        ),
+      );
+      for (var attempt = 0; attempt < 50; attempt++) {
+        if (_sentWireMessages(
+          bridge,
+        ).any((message) => message['type'] == 'input')) {
+          break;
+        }
+        await tester.pump(const Duration(milliseconds: 10));
+      }
+      final inputMessages = _sentWireMessages(
+        bridge,
+      ).where((message) => message['type'] == 'input').toList();
+      expect(inputMessages, hasLength(1));
+      expect(inputMessages.single['clientMessageId'], clientMessageId);
+      expect(inputMessages.single['images'], [
+        {'base64': 'iVBORw==', 'mimeType': 'image/png'},
+      ]);
+      final usersAfterAttach = cubit.state.entries
+          .whereType<UserChatEntry>()
+          .toList();
+      expect(usersAfterAttach, hasLength(1));
+      expect(usersAfterAttach.single.clientMessageId, clientMessageId);
+      expect(usersAfterAttach.single.imageBytesList.single, image);
+      expect(
+        usersAfterAttach.single.status,
+        anyOf(MessageStatus.sending, MessageStatus.bridgeAccepted),
       );
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());
