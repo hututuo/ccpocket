@@ -1120,7 +1120,13 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       );
       const turnId = message.historyTurnId ?? runtimeState?.activeTurnId;
       const authorityGeneration = runtimeState?.authorityGeneration;
-      if (turnId && authorityGeneration) {
+      const runtimeStateCanEmitOverlay =
+        runtimeState !== undefined &&
+        runtimeState.activeTurnId === turnId &&
+        (runtimeState.processStatus === "running" ||
+          runtimeState.processStatus === "waiting_approval" ||
+          runtimeState.processStatus === "compacting");
+      if (turnId && authorityGeneration && runtimeStateCanEmitOverlay) {
         this.publishRuntimeOverlay(target, {
           message,
           observedAt,
@@ -1528,7 +1534,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       const key = targetKey(target);
       const projectedTurnId =
         event.turnId ?? this.sharedRuntimeStatuses.get(key)?.activeTurnId;
-      if (projectedTurnId) {
+      const terminal = this.resultLedger.get(key);
+      const turnAlreadyTerminal =
+        projectedTurnId !== undefined && terminal?.turnId === projectedTurnId;
+      if (projectedTurnId && !turnAlreadyTerminal) {
         const observerGeneration =
           `observer:${event.connectionGeneration}:${event.observerGeneration}`;
         this.publishRuntimeOverlay(target, {
@@ -1807,11 +1816,22 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     >,
   ): boolean {
     const status = this.statusProjection.get(key);
+    if (!status?.authorityGeneration) return false;
+    if (status.authorityGeneration !== payload.authorityGeneration) {
+      return true;
+    }
+    if (status.activeTurnId !== undefined) {
+      return status.activeTurnId !== payload.turnId;
+    }
+    if (status.activity === "working" || status.activity === "compacting") {
+      return false;
+    }
+    const statusObservedAt = Date.parse(status.observedAt);
+    const overlayObservedAt = Date.parse(payload.observedAt);
     return (
-      status?.authorityGeneration !== undefined &&
-      status.activeTurnId !== undefined &&
-      (status.authorityGeneration !== payload.authorityGeneration ||
-        status.activeTurnId !== payload.turnId)
+      Number.isFinite(statusObservedAt) &&
+      Number.isFinite(overlayObservedAt) &&
+      statusObservedAt >= overlayObservedAt
     );
   }
 

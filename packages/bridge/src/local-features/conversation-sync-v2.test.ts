@@ -863,6 +863,40 @@ describe("conversation_sync_v2 protocol", () => {
           events(fixture.sent, capableClient, "runtime_overlay"),
         ).toHaveLength(2),
       );
+
+      control.emit({
+        kind: "event",
+        event: {
+          sequence: 2,
+          observedAt: "2026-08-10T00:00:02.000Z",
+          connectionGeneration: 21,
+          method: "turn/completed",
+          threadId,
+          turnId: "turn-shared-live",
+          turnStatus: "completed",
+        },
+      });
+      await vi.waitFor(() =>
+        expect(
+          events(fixture.sent, capableClient, "status_changes").some((event) =>
+            event.changes.some(
+              (status) =>
+                status.providerSessionId === threadId &&
+                status.result === "completed" &&
+                status.activeTurnId === undefined,
+            ),
+          ),
+        ).toBe(true),
+      );
+      observers.at(-1)!.message({
+        type: "error",
+        message: "late observer frame after terminal",
+        errorCode: "runtime_warning",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(events(fixture.sent, capableClient, "runtime_overlay")).toHaveLength(
+        2,
+      );
     } finally {
       await fixture.handler.close();
     }
@@ -1007,6 +1041,151 @@ describe("conversation_sync_v2 protocol", () => {
       fixture.handler.sessionMessage(runtimeSession, assistantOverlay);
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(events(fixture.sent, client, "runtime_overlay")).toHaveLength(2);
+    } finally {
+      await fixture.handler.close();
+    }
+  });
+
+  it("drops a pending overlay after its turn becomes terminal", async () => {
+    const threadId = "thread-terminal-pending-overlay";
+    const runtimeSession: LocalFeatureSession = {
+      id: "runtime-terminal-pending-overlay",
+      provider: "codex",
+      process: {},
+      projectPath: "/project/terminal-pending-overlay",
+    };
+    const client = {};
+    const terminalObservedAt = new Date(Date.now() + 10_000).toISOString();
+    let runtimeStates: LocalFeatureRuntimeConversationState[] = [];
+    const fixture = createFixture(
+      [codexSeed(0, threadId)],
+      async () => [],
+      {},
+      {
+        getProviderSessionId: () => threadId,
+        listRuntimeConversationStates: () => runtimeStates,
+        supports: (_target, capability) =>
+          capability === CONVERSATION_SYNC_V2_CAPABILITY ||
+          capability === CONVERSATION_WINDOW_COVERAGE_CAPABILITY ||
+          capability === CONVERSATION_USER_INDEX_CAPABILITY ||
+          capability === CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
+      },
+    );
+    const focused = {
+      ...subscribeMessage(),
+      focused: { provider: "codex" as const, providerSessionId: threadId },
+    };
+    try {
+      await fixture.handler.handle(focused, context(client, fixture.runtime));
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+      );
+
+      // SessionManager exposes the new runtime to the message callback before
+      // v2 receives the lifecycle invalidation. The overlay must remain
+      // pending because the subscription has not sequenced this authority.
+      runtimeStates = [
+        {
+          bridgeSessionId: runtimeSession.id,
+          provider: "codex",
+          providerSessionId: threadId,
+          projectPath: runtimeSession.projectPath,
+          processStatus: "running",
+          executionHost: "bridge",
+          activeTurnId: "turn-pending-a",
+          controlState: "steerable",
+          authorityGeneration: "runtime-authority-pending-a",
+          observedAt: new Date(Date.now() - 10_000).toISOString(),
+        },
+      ];
+      fixture.handler.sessionMessage(runtimeSession, {
+        type: "error",
+        message: "obsolete pending overlay",
+        errorCode: "runtime_warning",
+        historyTurnId: "turn-pending-a",
+      });
+      runtimeStates = [
+        {
+          bridgeSessionId: runtimeSession.id,
+          provider: "codex",
+          providerSessionId: threadId,
+          projectPath: runtimeSession.projectPath,
+          processStatus: "idle",
+          executionHost: "bridge",
+          controlState: "writable",
+          authorityGeneration: "runtime-authority-pending-a",
+          observedAt: terminalObservedAt,
+        },
+      ];
+      fixture.handler.runtimeSessionChanged(runtimeSession);
+      await vi.waitFor(() =>
+        expect(
+          events(fixture.sent, client, "status_changes").some((event) =>
+            event.changes.some(
+              (status) =>
+                status.providerSessionId === threadId &&
+                status.activity === "idle" &&
+                status.authorityGeneration === "runtime-authority-pending-a" &&
+                status.activeTurnId === undefined,
+            ),
+          ),
+        ).toBe(true),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(events(fixture.sent, client, "runtime_overlay")).toEqual([]);
+
+      // A provider message that arrives after the runtime already reports the
+      // turn terminal must not create a permanently pending overlay.
+      fixture.handler.sessionMessage(runtimeSession, {
+        type: "error",
+        message: "late terminal overlay",
+        errorCode: "runtime_warning",
+        historyTurnId: "turn-pending-a",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(events(fixture.sent, client, "runtime_overlay")).toEqual([]);
+
+      runtimeStates = [
+        {
+          bridgeSessionId: runtimeSession.id,
+          provider: "codex",
+          providerSessionId: threadId,
+          projectPath: runtimeSession.projectPath,
+          processStatus: "running",
+          executionHost: "bridge",
+          activeTurnId: "turn-pending-b",
+          controlState: "steerable",
+          authorityGeneration: "runtime-authority-pending-b",
+          observedAt: new Date(Date.now() + 20_000).toISOString(),
+        },
+      ];
+      fixture.handler.runtimeSessionChanged(runtimeSession);
+      await vi.waitFor(() =>
+        expect(
+          events(fixture.sent, client, "status_changes").some((event) =>
+            event.changes.some(
+              (status) =>
+                status.providerSessionId === threadId &&
+                status.activeTurnId === "turn-pending-b" &&
+                status.authorityGeneration === "runtime-authority-pending-b",
+            ),
+          ),
+        ).toBe(true),
+      );
+      fixture.handler.sessionMessage(runtimeSession, {
+        type: "error",
+        message: "current overlay",
+        errorCode: "runtime_warning",
+        historyTurnId: "turn-pending-b",
+      });
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, client, "runtime_overlay")).toHaveLength(1),
+      );
+      expect(events(fixture.sent, client, "runtime_overlay")[0]).toMatchObject({
+        turnId: "turn-pending-b",
+        authorityGeneration: "runtime-authority-pending-b",
+        message: { message: "current overlay" },
+      });
     } finally {
       await fixture.handler.close();
     }
