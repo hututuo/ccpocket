@@ -402,11 +402,15 @@ class SessionCatalogCacheRepository {
   final SessionCatalogCacheDatabase database;
   final Future<void> Function()? userCacheReadBarrierForTesting;
   Future<void> _mutationTail = Future<void>.value();
+  final Set<Future<void>> _readFlights = {};
   final Map<String, Future<Map<String, Object?>?>> _diagnosticWindowFlights =
       {};
   bool _closed = false;
 
-  Future<SessionCatalogCacheSnapshot?> load(
+  Future<SessionCatalogCacheSnapshot?> load(SessionCatalogCacheTarget target) =>
+      _trackRead(() => _load(target));
+
+  Future<SessionCatalogCacheSnapshot?> _load(
     SessionCatalogCacheTarget target,
   ) async {
     if (!target.isValid) return null;
@@ -616,7 +620,10 @@ class SessionCatalogCacheRepository {
     });
   }
 
-  Future<int> countSessions(SessionCatalogCacheTarget target) async {
+  Future<int> countSessions(SessionCatalogCacheTarget target) =>
+      _trackRead(() => _countSessions(target));
+
+  Future<int> _countSessions(SessionCatalogCacheTarget target) async {
     if (!target.isValid) return 0;
     await _mutationTail;
     final db = await database.database;
@@ -633,7 +640,9 @@ class SessionCatalogCacheRepository {
     return Sqflite.firstIntValue(rows) ?? 0;
   }
 
-  Future<int> countAllSessions() async {
+  Future<int> countAllSessions() => _trackRead(_countAllSessions);
+
+  Future<int> _countAllSessions() async {
     await _mutationTail;
     final db = await database.database;
     final rows = await db.rawQuery('''
@@ -643,7 +652,9 @@ class SessionCatalogCacheRepository {
     return Sqflite.firstIntValue(rows) ?? 0;
   }
 
-  Future<SessionCatalogCacheStats> cacheStats() async {
+  Future<SessionCatalogCacheStats> cacheStats() => _trackRead(_cacheStats);
+
+  Future<SessionCatalogCacheStats> _cacheStats() async {
     await _mutationTail;
     final db = await database.database;
     final rows = await db.rawQuery('''
@@ -661,6 +672,10 @@ class SessionCatalogCacheRepository {
   }
 
   Future<SessionCatalogCacheStats> cacheStatsForTarget(
+    SessionCatalogCacheTarget target,
+  ) => _trackRead(() => _cacheStatsForTarget(target));
+
+  Future<SessionCatalogCacheStats> _cacheStatsForTarget(
     SessionCatalogCacheTarget target,
   ) async {
     if (!target.isValid) return const SessionCatalogCacheStats.empty();
@@ -688,6 +703,10 @@ class SessionCatalogCacheRepository {
   }
 
   Future<List<SessionCatalogCachedConversation>> cachedConversations(
+    SessionCatalogCacheTarget target,
+  ) => _trackRead(() => _cachedConversations(target));
+
+  Future<List<SessionCatalogCachedConversation>> _cachedConversations(
     SessionCatalogCacheTarget target,
   ) async {
     if (!target.isValid) return const [];
@@ -762,7 +781,11 @@ class SessionCatalogCacheRepository {
   }
 
   Future<Map<SessionCatalogCacheIdentity, RecentSession>>
-  findSessionsByIdentities(
+  findSessionsByIdentities(Iterable<SessionCatalogCacheIdentity> identities) =>
+      _trackRead(() => _findSessionsByIdentities(identities));
+
+  Future<Map<SessionCatalogCacheIdentity, RecentSession>>
+  _findSessionsByIdentities(
     Iterable<SessionCatalogCacheIdentity> identities,
   ) async {
     final requested = identities.where((identity) => identity.isValid).toSet();
@@ -855,6 +878,18 @@ class SessionCatalogCacheRepository {
     SessionCatalogCacheTarget target, {
     int limit = 512,
     bool includeIncomplete = false,
+  }) => _trackRead(
+    () => _knownConversationRevisions(
+      target,
+      limit: limit,
+      includeIncomplete: includeIncomplete,
+    ),
+  );
+
+  Future<List<ConversationContentCursor>> _knownConversationRevisions(
+    SessionCatalogCacheTarget target, {
+    int limit = 512,
+    bool includeIncomplete = false,
   }) async {
     if (!target.isValid || limit <= 0) return const [];
     await _mutationTail;
@@ -936,6 +971,10 @@ class SessionCatalogCacheRepository {
 
   Future<ConversationSyncCacheState> loadConversationSyncState(
     SessionCatalogCacheTarget target,
+  ) => _trackRead(() => _loadConversationSyncState(target));
+
+  Future<ConversationSyncCacheState> _loadConversationSyncState(
+    SessionCatalogCacheTarget target,
   ) async {
     if (!target.isValid) return const ConversationSyncCacheState.empty();
     await _mutationTail;
@@ -964,6 +1003,11 @@ class SessionCatalogCacheRepository {
   }
 
   Future<List<ConversationSyncV2Status>> loadConversationStatuses(
+    SessionCatalogCacheTarget target, {
+    int limit = 10_000,
+  }) => _trackRead(() => _loadConversationStatuses(target, limit: limit));
+
+  Future<List<ConversationSyncV2Status>> _loadConversationStatuses(
     SessionCatalogCacheTarget target, {
     int limit = 10_000,
   }) async {
@@ -1002,6 +1046,18 @@ class SessionCatalogCacheRepository {
     required SessionCatalogCacheTarget target,
     required String provider,
     required String providerSessionId,
+  }) => _trackRead(
+    () => _loadConversationStatus(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    ),
+  );
+
+  Future<ConversationSyncV2Status?> _loadConversationStatus({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
   }) async {
     if (!target.isValid ||
         (provider != 'claude' && provider != 'codex') ||
@@ -1037,6 +1093,11 @@ class SessionCatalogCacheRepository {
   Future<List<ConversationSyncV2ReadWatermark>> loadReadWatermarks(
     SessionCatalogCacheTarget target, {
     int limit = 512,
+  }) => _trackRead(() => _loadReadWatermarks(target, limit: limit));
+
+  Future<List<ConversationSyncV2ReadWatermark>> _loadReadWatermarks(
+    SessionCatalogCacheTarget target, {
+    int limit = 512,
   }) async {
     if (!target.isValid || limit <= 0) return const [];
     await _mutationTail;
@@ -1062,6 +1123,18 @@ class SessionCatalogCacheRepository {
   }
 
   Future<ConversationSyncV2ReadWatermark?> loadReadWatermark({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) => _trackRead(
+    () => _loadReadWatermark(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    ),
+  );
+
+  Future<ConversationSyncV2ReadWatermark?> _loadReadWatermark({
     required SessionCatalogCacheTarget target,
     required String provider,
     required String providerSessionId,
@@ -2233,6 +2306,18 @@ class SessionCatalogCacheRepository {
     required SessionCatalogCacheTarget target,
     required String provider,
     required String providerSessionId,
+  }) => _trackRead(
+    () => _loadConversationWindow(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    ),
+  );
+
+  Future<ConversationHotWindowSnapshot?> _loadConversationWindow({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
   }) async {
     if (!target.isValid) return null;
     await _mutationTail;
@@ -2633,7 +2718,11 @@ class SessionCatalogCacheRepository {
     final candidates = <ConversationContentWireEntry>[];
     final seen = <String>{};
     for (var index = 0; index < rawMessages.length; index++) {
-      final candidate = _historyPageEntry(rawMessages[index], index);
+      final candidate = _historyPageEntry(
+        rawMessages[index],
+        index,
+        pageScope: 'turns:${expectedCursor ?? 'start'}',
+      );
       if (candidate == null) continue;
       var entryId = candidate.entryId;
       if (!seen.add(entryId)) {
@@ -2913,7 +3002,11 @@ class SessionCatalogCacheRepository {
     ConversationSyncV2LatestTurnGap? latestTurnGap,
   }) async {
     if (!target.isValid) return null;
-    final candidates = _historyPageEntries(rawMessages);
+    final candidates = _historyPageEntries(
+      rawMessages,
+      fallbackTurnId: expectedTurnId,
+      pageScope: 'items:${expectedCursor ?? 'start'}',
+    );
     final applied = await _enqueueMutationResult(() async {
       final db = await database.database;
       return db.transaction((transaction) async {
@@ -3209,7 +3302,10 @@ class SessionCatalogCacheRepository {
     required String? turnsNextCursor,
   }) async {
     if (!target.isValid) return null;
-    final entries = _historyPageEntries(rawMessages);
+    final entries = _historyPageEntries(
+      rawMessages,
+      pageScope: 'turns:${turnsNextCursor ?? 'end'}',
+    );
     if (entries.isEmpty) return null;
     if (entries.length > maxHotWindowEntries) {
       throw StateError(
@@ -3527,6 +3623,18 @@ class SessionCatalogCacheRepository {
     required SessionCatalogCacheTarget target,
     required String provider,
     required String providerSessionId,
+  }) => _trackRead(
+    () => _loadConversationUserIndex(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    ),
+  );
+
+  Future<ConversationUserIndexSnapshot?> _loadConversationUserIndex({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
   }) async {
     if (!target.isValid) return null;
     await _mutationTail;
@@ -3597,6 +3705,18 @@ class SessionCatalogCacheRepository {
   /// Background warmup uses this probe so an unchanged large index does not
   /// materialize every user prompt in memory just to discover it is current.
   Future<ConversationUserIndexState?> loadConversationUserIndexState({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) => _trackRead(
+    () => _loadConversationUserIndexState(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    ),
+  );
+
+  Future<ConversationUserIndexState?> _loadConversationUserIndexState({
     required SessionCatalogCacheTarget target,
     required String provider,
     required String providerSessionId,
@@ -3840,6 +3960,20 @@ class SessionCatalogCacheRepository {
   }
 
   Future<ConversationUserTurnDetailSnapshot?> loadConversationUserTurnDetail({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String providerTurnId,
+  }) => _trackRead(
+    () => _loadConversationUserTurnDetail(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      providerTurnId: providerTurnId,
+    ),
+  );
+
+  Future<ConversationUserTurnDetailSnapshot?> _loadConversationUserTurnDetail({
     required SessionCatalogCacheTarget target,
     required String provider,
     required String providerSessionId,
@@ -4104,9 +4238,27 @@ class SessionCatalogCacheRepository {
     if (_closed) return;
     _closed = true;
     await _mutationTail;
+    while (_readFlights.isNotEmpty) {
+      await Future.wait(_readFlights.toList(growable: false));
+    }
     await Future.wait(_diagnosticWindowFlights.values);
     _diagnosticWindowFlights.clear();
     await database.close();
+  }
+
+  Future<T> _trackRead<T>(Future<T> Function() operation) {
+    if (_closed) {
+      return Future<T>.error(
+        StateError('Session catalog cache repository is already closed.'),
+      );
+    }
+    late final Future<void> settled;
+    final result = Future<T>.sync(operation);
+    settled = result
+        .then<void>((_) {}, onError: (Object _, StackTrace _) {})
+        .whenComplete(() => _readFlights.remove(settled));
+    _readFlights.add(settled);
+    return result;
   }
 
   Future<void> _enqueueMutation(Future<void> Function() operation) {
@@ -4173,39 +4325,57 @@ class SessionCatalogCacheRepository {
 
   static ConversationContentWireEntry? _historyPageEntry(
     Map<String, dynamic> rawMessage,
-    int index,
-  ) {
+    int index, {
+    String? fallbackTurnId,
+    String? pageScope,
+  }) {
     try {
-      ServerMessage.fromJson(rawMessage);
-      final encoded = jsonEncode(rawMessage);
+      final normalizedRawMessage = Map<String, dynamic>.from(rawMessage);
+      final explicitTurnId = (normalizedRawMessage['historyTurnId'] as String?)
+          ?.trim();
+      if (explicitTurnId?.isNotEmpty != true &&
+          fallbackTurnId?.trim().isNotEmpty == true) {
+        normalizedRawMessage['historyTurnId'] = fallbackTurnId!.trim();
+      }
+      ServerMessage.fromJson(normalizedRawMessage);
+      final encoded = jsonEncode(normalizedRawMessage);
       final contentHash = sha256.convert(utf8.encode(encoded)).toString();
-      final type = rawMessage['type'] as String? ?? 'unknown';
-      final historyTurnId = (rawMessage['historyTurnId'] as String?)?.trim();
+      final type = normalizedRawMessage['type'] as String? ?? 'unknown';
+      final historyTurnId = (normalizedRawMessage['historyTurnId'] as String?)
+          ?.trim();
       String scoped(String identity) => historyTurnId?.isNotEmpty == true
           ? 'turn:$historyTurnId:$identity'
-          : identity;
+          : 'occurrence:${pageScope ?? 'page'}:$index:$identity';
       String? identity;
       if (type == 'user_input') {
-        final providerItemId = (rawMessage['providerItemId'] as String?)
+        final clientMessageId =
+            (normalizedRawMessage['clientMessageId'] as String?)?.trim();
+        final providerItemId =
+            (normalizedRawMessage['providerItemId'] as String?)?.trim();
+        final legacyUuid = (normalizedRawMessage['userMessageUuid'] as String?)
             ?.trim();
-        final legacyUuid = (rawMessage['userMessageUuid'] as String?)?.trim();
-        identity = providerItemId?.isNotEmpty == true
-            ? 'user-provider:$providerItemId'
+        identity = clientMessageId?.isNotEmpty == true
+            ? scoped('user-client:$clientMessageId')
+            : providerItemId?.isNotEmpty == true
+            ? scoped('user-provider:$providerItemId')
             : legacyUuid?.isNotEmpty == true
             ? scoped('user:$legacyUuid')
-            : 'user:$contentHash';
+            : scoped('user:$contentHash');
       } else if (type == 'assistant') {
-        final nested = rawMessage['message'];
+        final nested = normalizedRawMessage['message'];
         final messageId = nested is Map ? nested['id'] as String? : null;
         final stableId =
-            (rawMessage['messageUuid'] as String?)?.trim().isNotEmpty == true
-            ? rawMessage['messageUuid'] as String
+            (normalizedRawMessage['messageUuid'] as String?)
+                    ?.trim()
+                    .isNotEmpty ==
+                true
+            ? normalizedRawMessage['messageUuid'] as String
             : messageId;
         identity = stableId?.trim().isNotEmpty == true
             ? scoped('assistant:$stableId')
             : 'assistant:$contentHash';
       } else if (type == 'tool_result') {
-        final toolUseId = rawMessage['toolUseId'] as String?;
+        final toolUseId = normalizedRawMessage['toolUseId'] as String?;
         identity = toolUseId?.trim().isNotEmpty == true
             ? scoped('tool-result:$toolUseId')
             : 'tool-result:$contentHash';
@@ -4214,7 +4384,7 @@ class SessionCatalogCacheRepository {
         entryId: identity ?? 'message:$type:$contentHash',
         index: index,
         contentHash: contentHash,
-        rawMessage: Map.unmodifiable(rawMessage),
+        rawMessage: Map.unmodifiable(normalizedRawMessage),
       );
     } catch (_) {
       return null;
@@ -4222,12 +4392,19 @@ class SessionCatalogCacheRepository {
   }
 
   static List<ConversationContentWireEntry> _historyPageEntries(
-    List<Map<String, dynamic>> rawMessages,
-  ) {
+    List<Map<String, dynamic>> rawMessages, {
+    String? fallbackTurnId,
+    String? pageScope,
+  }) {
     final entries = <ConversationContentWireEntry>[];
     final seen = <String>{};
     for (var index = 0; index < rawMessages.length; index++) {
-      final candidate = _historyPageEntry(rawMessages[index], index);
+      final candidate = _historyPageEntry(
+        rawMessages[index],
+        index,
+        fallbackTurnId: fallbackTurnId,
+        pageScope: pageScope,
+      );
       if (candidate == null) continue;
       var entryId = candidate.entryId;
       if (!seen.add(entryId)) {

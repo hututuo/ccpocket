@@ -805,6 +805,146 @@ void main() {
     );
 
     test(
+      'detached v2 scopes reused assistant and tool ids to their provider turns',
+      () {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-reused-provider-ids',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialHistoryMessages: const [
+            UserInputMessage(
+              text: 'first prompt',
+              providerItemId: 'reused-provider-user-id',
+              historyTurnId: 'provider-turn-first',
+            ),
+            AssistantServerMessage(
+              messageUuid: 'reused-assistant-id',
+              historyTurnId: 'provider-turn-first',
+              message: AssistantMessage(
+                id: 'reused-assistant-id',
+                role: 'assistant',
+                content: [TextContent(text: 'first answer')],
+                model: 'gpt-test',
+              ),
+            ),
+            ToolResultMessage(
+              toolUseId: 'reused-tool-id',
+              content: 'first result',
+              historyTurnId: 'provider-turn-first',
+            ),
+            UserInputMessage(
+              text: 'second prompt',
+              providerItemId: 'reused-provider-user-id',
+              historyTurnId: 'provider-turn-second',
+            ),
+            AssistantServerMessage(
+              messageUuid: 'reused-assistant-id',
+              historyTurnId: 'provider-turn-second',
+              message: AssistantMessage(
+                id: 'reused-assistant-id',
+                role: 'assistant',
+                content: [TextContent(text: 'second answer')],
+                model: 'gpt-test',
+              ),
+            ),
+            ToolResultMessage(
+              toolUseId: 'reused-tool-id',
+              content: 'second result',
+              historyTurnId: 'provider-turn-second',
+            ),
+          ],
+        );
+        addTearDown(cubit.close);
+
+        final messages = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .toList(growable: false);
+        expect(
+          messages.whereType<AssistantServerMessage>().map(
+            (message) => message.historyTurnId,
+          ),
+          ['provider-turn-first', 'provider-turn-second'],
+        );
+        expect(
+          messages.whereType<ToolResultMessage>().map(
+            (message) => message.historyTurnId,
+          ),
+          ['provider-turn-first', 'provider-turn-second'],
+        );
+        final projection =
+            cubit.diagnosticRuntimeProjection['timelineProjection']!
+                as Map<String, Object?>;
+        expect(projection['duplicateCanonicalCount'], 0);
+        expect(cubit.state.entries, hasLength(6));
+      },
+    );
+
+    test(
+      'detached v2 retains no-turn and mixed-turn provider id occurrences',
+      () {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-no-turn-provider-ids',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialHistoryMessages: const [
+            AssistantServerMessage(
+              messageUuid: 'reused-no-turn-assistant',
+              message: AssistantMessage(
+                id: 'reused-no-turn-assistant',
+                role: 'assistant',
+                content: [TextContent(text: 'legacy no-turn answer')],
+                model: 'gpt-test',
+              ),
+            ),
+            AssistantServerMessage(
+              messageUuid: 'reused-no-turn-assistant',
+              historyTurnId: 'provider-turn-mixed',
+              message: AssistantMessage(
+                id: 'reused-no-turn-assistant',
+                role: 'assistant',
+                content: [TextContent(text: 'turn-scoped answer')],
+                model: 'gpt-test',
+              ),
+            ),
+            ToolResultMessage(
+              toolUseId: 'reused-no-turn-tool',
+              content: 'legacy no-turn result',
+            ),
+            ToolResultMessage(
+              toolUseId: 'reused-no-turn-tool',
+              content: 'turn-scoped result',
+              historyTurnId: 'provider-turn-mixed',
+            ),
+          ],
+        );
+        addTearDown(cubit.close);
+
+        final messages = cubit.state.entries
+            .whereType<ServerChatEntry>()
+            .map((entry) => entry.message)
+            .toList(growable: false);
+        expect(messages.whereType<AssistantServerMessage>(), hasLength(2));
+        expect(messages.whereType<ToolResultMessage>(), hasLength(2));
+        final projection =
+            cubit.diagnosticRuntimeProjection['timelineProjection']!
+                as Map<String, Object?>;
+        expect(projection['duplicateCanonicalCount'], 0);
+        expect(cubit.state.entries, hasLength(4));
+      },
+    );
+
+    test(
       'v2 detached reopen restores an accepted user envelope before SQLite catches up',
       () async {
         mockBridge.advertisedBridgeCapabilities = const {
@@ -11496,6 +11636,74 @@ void main() {
         );
         await pumpEventQueue();
         expect(drafts.getPendingSubmission('durable-receipt-gated'), isNull);
+      },
+    );
+
+    test(
+      'attached unconfirmed input fails on disconnect and retries the same client id once',
+      () async {
+        SharedPreferences.setMockInitialValues({});
+        final prefs = await SharedPreferences.getInstance();
+        final drafts = DraftService(prefs);
+        const sessionId = 'attached-receipt-gated';
+        const clientMessageId = 'attached-receipt-gated-client';
+        await drafts.savePendingSubmission(
+          sessionId,
+          PendingChatSubmissionDraft(
+            clientMessageId: clientMessageId,
+            text: 'Attached receipt gated message',
+            lastAttemptAt: DateTime.utc(2026, 8, 14, 5, 30),
+            attemptCount: 1,
+          ),
+        );
+        final cubit = ChatSessionCubit(
+          sessionId: sessionId,
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          outgoingDrafts: drafts,
+        );
+        addTearDown(cubit.close);
+
+        expect(
+          cubit.sendMessage(
+            'Attached receipt gated message',
+            clientMessageId: clientMessageId,
+          ),
+          isTrue,
+        );
+        List<Map<String, dynamic>> inputs() => mockBridge.sentMessages
+            .map((message) => jsonDecode(message.toJson()))
+            .whereType<Map<String, dynamic>>()
+            .where((message) => message['type'] == 'input')
+            .toList(growable: false);
+        expect(inputs(), hasLength(1));
+
+        mockBridge.emitConnection(BridgeConnectionState.disconnected);
+        await pumpEventQueue();
+        final failed = cubit.state.entries.whereType<UserChatEntry>().single;
+        expect(failed.clientMessageId, clientMessageId);
+        expect(failed.status, MessageStatus.failed);
+        expect(
+          drafts.getPendingSubmission(sessionId)?.lastError,
+          'bridge_disconnected_before_receipt',
+        );
+
+        mockBridge.emitConnection(BridgeConnectionState.connected);
+        await pumpEventQueue();
+        expect(
+          inputs(),
+          hasLength(1),
+          reason: 'Reconnect must not replay an unacknowledged input.',
+        );
+        expect(cubit.retryMessage(failed), isTrue);
+        await pumpEventQueue();
+        final sentInputs = inputs();
+        expect(sentInputs, hasLength(2));
+        expect(sentInputs.map((message) => message['clientMessageId']), [
+          clientMessageId,
+          clientMessageId,
+        ]);
       },
     );
 

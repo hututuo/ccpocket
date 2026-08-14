@@ -325,8 +325,15 @@ void main() {
   test('forwards only current ordered runtime overlays', () async {
     await service.dispose();
     gateway.supportsConversationSyncV2 = true;
-    service = ConversationContentSyncService(bridge: gateway, cache: repository)
-      ..start(initialLifecycleState: AppLifecycleState.resumed);
+    service = ConversationContentSyncService(
+      bridge: gateway,
+      cache: repository,
+    );
+    service.setFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-overlay',
+    );
+    service.start(initialLifecycleState: AppLifecycleState.resumed);
     final overlays = <ConversationSyncV2EventMessage>[];
     final overlaySubscription = service.runtimeOverlays.listen(overlays.add);
     addTearDown(overlaySubscription.cancel);
@@ -447,6 +454,132 @@ void main() {
       'overlay-current-2',
     ]);
   });
+
+  test('acks but does not forward an overlay for an obsolete focus', () async {
+    await service.dispose();
+    gateway.supportsConversationSyncV2 = true;
+    service = ConversationContentSyncService(
+      bridge: gateway,
+      cache: repository,
+    );
+    service.setFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-focus-a',
+    );
+    service.start(initialLifecycleState: AppLifecycleState.resumed);
+    final overlays = <ConversationSyncV2EventMessage>[];
+    final overlaySubscription = service.runtimeOverlays.listen(overlays.add);
+    addTearDown(overlaySubscription.cancel);
+
+    final subscribe = await gateway.nextOutgoing('conversation_sync_subscribe');
+    final subscriptionId = subscribe['requestId']! as String;
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.syncBegin,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-focus-overlay',
+        sequence: 1,
+        requestId: subscriptionId,
+        catalogState: 'catalog-focus-overlay',
+        statusState: 'status-focus-overlay',
+      ),
+    );
+    await gateway.nextOutgoing('conversation_sync_ack');
+
+    service.setFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-focus-b',
+    );
+    await gateway.nextOutgoing('conversation_sync_focus');
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.runtimeOverlay,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-focus-overlay',
+        sequence: 2,
+        provider: 'codex',
+        providerSessionId: 'thread-focus-a',
+        overlayId: 'overlay-obsolete-focus',
+        observedAt: '2026-08-10T02:00:00.000Z',
+        originGeneration: 'observer:1:1',
+        runtimeSessionId: 'observer:1:1',
+        authorityGeneration: 'daemon:1',
+        turnId: 'turn-focus-a',
+        overlayMessage: const ErrorMessage(message: 'obsolete focus'),
+      ),
+    );
+    expect(
+      (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+      2,
+    );
+    await pumpEventQueue();
+    expect(overlays, isEmpty);
+
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.runtimeOverlay,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-focus-overlay',
+        sequence: 3,
+        provider: 'codex',
+        providerSessionId: 'thread-focus-b',
+        overlayId: 'overlay-current-focus',
+        observedAt: '2026-08-10T02:00:01.000Z',
+        originGeneration: 'observer:1:2',
+        runtimeSessionId: 'observer:1:2',
+        authorityGeneration: 'daemon:1',
+        turnId: 'turn-focus-b',
+        overlayMessage: const ErrorMessage(message: 'current focus'),
+      ),
+    );
+    expect(
+      (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+      3,
+    );
+    await pumpEventQueue();
+    expect(overlays.map((event) => event.overlayId), ['overlay-current-focus']);
+  });
+
+  test(
+    'dispose joins an in-flight cache read before repository close',
+    () async {
+      await service.dispose();
+      await repository.close();
+      final blocking = _BlockingWindowRepository(
+        SessionCatalogCacheDatabase(
+          databasePath: path.join(temporaryDirectory.path, 'blocking-cache.db'),
+          openDatabase: openFfi,
+        ),
+      );
+      repository = blocking;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      );
+
+      final read = service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-dispose-read',
+      );
+      await blocking.started.future;
+      var disposed = false;
+      final firstDispose = service.dispose().then((_) => disposed = true);
+      final secondDispose = service.dispose();
+      await pumpEventQueue();
+      expect(disposed, isFalse);
+
+      blocking.release.complete();
+      expect(await read, isNull);
+      await Future.wait([firstDispose, secondDispose]);
+      expect(disposed, isTrue);
+    },
+  );
 
   test(
     'retry revokes live readiness before the replacement subscribe can fail',
@@ -1783,7 +1916,7 @@ void main() {
       providerSessionId: 'thread-turn-page',
     );
     expect(cached?.entries.map((entry) => entry.entryId), [
-      'user:user-earlier',
+      'turn:turn-earlier:user:user-earlier',
       'current-entry',
     ]);
     expect(cached?.turnsNextCursor, isNull);
@@ -2388,9 +2521,9 @@ void main() {
       expect(cached?.hasEarlier, isFalse);
       expect(cached?.turnsNextCursor, isNull);
       expect(cached?.entries.map((entry) => entry.entryId), [
-        'user:older-cached-user',
+        'turn:older-turn:user:older-cached-user',
         'incomplete-latest-shell',
-        'user:latest-repaired-user',
+        'turn:latest-turn:user:latest-repaired-user',
       ]);
     },
   );
@@ -3743,7 +3876,7 @@ void main() {
         providerSessionId: 'thread-turn-retry',
       );
       expect(cached?.entries.map((entry) => entry.entryId), [
-        'user:user-before-retry',
+        'turn:turn-before-retry:user:user-before-retry',
         'current-retry-entry',
       ]);
       expect(
@@ -5350,6 +5483,24 @@ class _FailingCatalogRepository extends SessionCatalogCacheRepository {
   Future<void> clearTarget(SessionCatalogCacheTarget target) {
     clearTargetCalls += 1;
     return super.clearTarget(target);
+  }
+}
+
+class _BlockingWindowRepository extends SessionCatalogCacheRepository {
+  _BlockingWindowRepository(super.database);
+
+  final Completer<void> started = Completer<void>();
+  final Completer<void> release = Completer<void>();
+
+  @override
+  Future<ConversationHotWindowSnapshot?> loadConversationWindow({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) async {
+    if (!started.isCompleted) started.complete();
+    await release.future;
+    return null;
   }
 }
 

@@ -607,6 +607,7 @@ void main() {
             as ConversationSyncV2EventMessage;
 
     expect(message.pageRawMessages().single['text'], 'Earlier prompt');
+    expect(message.pageRawMessages().single['historyTurnId'], 'turn-1');
     expect(
       () => ServerMessage.fromJson({
         ..._baseFrame,

@@ -729,7 +729,7 @@ void main() {
       final prefs = await SharedPreferences.getInstance();
       final drafts = DraftService(prefs);
       await drafts.savePendingSubmission(
-        metadata.sessionId,
+        'runtime-attached-recovery',
         PendingChatSubmissionDraft(
           clientMessageId: 'client-attached-recovery',
           text: 'Recover me without replay',
@@ -767,6 +767,11 @@ void main() {
         final user = cubit.state.entries.whereType<UserChatEntry>().single;
         expect(user.clientMessageId, 'client-attached-recovery');
         expect(user.status, MessageStatus.failed);
+        expect(
+          drafts.getPendingSubmission('runtime-attached-recovery'),
+          isNull,
+        );
+        expect(drafts.getPendingSubmission(metadata.sessionId), isNotNull);
         expect(find.text('Tap to retry'), findsOneWidget);
         expect(
           _sentWireMessages(
@@ -805,6 +810,62 @@ void main() {
         await repository.close();
         bridge.dispose();
         unawaited(sessionList.close());
+      }
+    },
+  );
+
+  testWidgets(
+    'ordinary attached Codex route restores a runtime-key draft without replay',
+    (tester) async {
+      final bridge = MockBridgeService();
+      const sessionId = 'runtime-ordinary-attached-recovery';
+      const clientMessageId = 'client-ordinary-attached-recovery';
+      final prefs = await SharedPreferences.getInstance();
+      final drafts = DraftService(prefs);
+      await drafts.savePendingSubmission(
+        sessionId,
+        PendingChatSubmissionDraft(
+          clientMessageId: clientMessageId,
+          text: 'Recover ordinary attached input',
+        ),
+      );
+
+      try {
+        await tester.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: sessionId,
+            projectPath: '/workspace/ordinary-attached-recovery',
+            draftService: drafts,
+          ),
+        );
+        await tester.pump();
+        final cubit = BlocProvider.of<ChatSessionCubit>(
+          tester.element(find.byKey(const ValueKey('message_input'))),
+        );
+        final user = cubit.state.entries.whereType<UserChatEntry>().single;
+        expect(user.clientMessageId, clientMessageId);
+        expect(user.status, MessageStatus.failed);
+        expect(find.text('Tap to retry'), findsOneWidget);
+        expect(
+          _sentWireMessages(
+            bridge,
+          ).where((message) => message['type'] == 'input'),
+          isEmpty,
+        );
+
+        await tester.tap(find.text('Tap to retry'));
+        await tester.pump();
+        final inputs = _sentWireMessages(
+          bridge,
+        ).where((message) => message['type'] == 'input').toList();
+        expect(inputs, hasLength(1));
+        expect(inputs.single['sessionId'], sessionId);
+        expect(inputs.single['clientMessageId'], clientMessageId);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        bridge.dispose();
       }
     },
   );

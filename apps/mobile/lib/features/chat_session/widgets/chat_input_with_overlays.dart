@@ -63,6 +63,7 @@ typedef ChatComposerSubmitCallback =
 /// Overlay controllers and voice input are managed via hooks.
 class ChatInputWithOverlays extends HookWidget {
   final String sessionId;
+  final String? pendingSubmissionStorageKey;
   final ProcessStatus status;
   final VoidCallback onScrollToBottom;
   final TextEditingController inputController;
@@ -93,6 +94,7 @@ class ChatInputWithOverlays extends HookWidget {
   const ChatInputWithOverlays({
     super.key,
     required this.sessionId,
+    this.pendingSubmissionStorageKey,
     required this.status,
     required this.onScrollToBottom,
     required this.inputController,
@@ -768,11 +770,20 @@ class ChatInputWithOverlays extends HookWidget {
         ),
       );
       final draftService = context.read<DraftService>();
-      if (onSubmit != null) {
-        submitInFlight.value = true;
-        try {
+      final localOnlySubmission = cubit.isLocalOnlySubmission(
+        submission.text,
+        images: submission.images,
+        additionalMentions: submission.additionalMentions,
+      );
+      final pendingStorageKey = localOnlySubmission
+          ? null
+          : pendingSubmissionStorageKey ??
+                (onSubmit != null ? sessionId : null);
+      submitInFlight.value = true;
+      try {
+        if (pendingStorageKey != null) {
           await draftService.savePendingSubmission(
-            sessionId,
+            pendingStorageKey,
             PendingChatSubmissionDraft(
               clientMessageId: submission.clientMessageId,
               text: submission.text,
@@ -781,38 +792,42 @@ class ChatInputWithOverlays extends HookWidget {
               additionalMentions: submission.additionalMentions,
             ),
           );
-          if (!context.mounted || !onSubmit!(submission)) {
+        }
+        if (!context.mounted) return;
+        final accepted = onSubmit != null
+            ? onSubmit!(submission)
+            : cubit.sendMessage(
+                submission.text,
+                clientMessageId: submission.clientMessageId,
+                images: submission.images,
+                mentionablePaths: submission.mentionablePaths,
+                additionalMentions: submission.additionalMentions,
+              );
+        if (!accepted) {
+          if (pendingStorageKey != null) {
             draftService.deletePendingSubmission(
-              sessionId,
+              pendingStorageKey,
               clientMessageId: submission.clientMessageId,
-            );
-            return;
-          }
-        } catch (error) {
-          draftService.deletePendingSubmission(
-            sessionId,
-            clientMessageId: submission.clientMessageId,
-          );
-          debugPrint('Failed to persist deferred submission: $error');
-          if (context.mounted) {
-            showDropMessage(
-              AppLocalizations.of(context).queuedSubmissionSaveFailed,
             );
           }
           return;
-        } finally {
-          submitInFlight.value = false;
         }
-      }
-
-      if (onSubmit == null) {
-        cubit.sendMessage(
-          submission.text,
-          clientMessageId: submission.clientMessageId,
-          images: submission.images,
-          mentionablePaths: submission.mentionablePaths,
-          additionalMentions: submission.additionalMentions,
-        );
+      } catch (error) {
+        if (pendingStorageKey != null) {
+          draftService.deletePendingSubmission(
+            pendingStorageKey,
+            clientMessageId: submission.clientMessageId,
+          );
+        }
+        debugPrint('Failed to persist outgoing submission: $error');
+        if (context.mounted) {
+          showDropMessage(
+            AppLocalizations.of(context).queuedSubmissionSaveFailed,
+          );
+        }
+        return;
+      } finally {
+        submitInFlight.value = false;
       }
       attachedImages.value = [];
       attachedFiles.value = attachedFiles.value

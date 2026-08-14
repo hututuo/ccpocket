@@ -257,6 +257,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   final StreamingStateCubit _streamingCubit;
   final ChatImagePayloadEncoder _imagePayloadEncoder;
   final DraftService? _outgoingDrafts;
+  final String _outgoingDraftStorageKey;
   final ChatMessageHandler _handler = ChatMessageHandler();
   final bool detachedPreview;
   final List<ServerMessage> initialHistoryMessages;
@@ -1019,6 +1020,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     String? initialProjectPath,
     ChatImagePayloadEncoder? imagePayloadEncoder,
     DraftService? outgoingDrafts,
+    String? outgoingDraftStorageKey,
     this.detachedPreview = false,
     this.initialHistoryMessages = const [],
     String? initialLiveRuntimeSessionId,
@@ -1038,6 +1040,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
        // name; the composition root injects durable outgoing recovery.
        // ignore: prefer_initializing_formals
        _outgoingDrafts = outgoingDrafts,
+       _outgoingDraftStorageKey =
+           outgoingDraftStorageKey?.trim().isNotEmpty == true
+           ? outgoingDraftStorageKey!.trim()
+           : sessionId,
        // Keep the public constructor label free of a private implementation
        // name; this stream is injected by the composition root.
        // ignore: prefer_initializing_formals
@@ -1123,7 +1129,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             )
             .listen(_onDetachedRuntimeOverlay);
         _detachedOutgoingConnectionSubscription = _bridge.connectionStatus
-            .listen(_onDetachedOutgoingConnectionState);
+            .listen(_onOutgoingConnectionState);
         _goalConnectionSubscription = _bridge.connectionStatus.listen(
           _onGoalConnectionState,
         );
@@ -1157,6 +1163,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     });
     _statusRefreshConnectionSubscription = _bridge.connectionStatus.listen(
       _onStatusRefreshConnectionState,
+    );
+    _detachedOutgoingConnectionSubscription = _bridge.connectionStatus.listen(
+      _onOutgoingConnectionState,
     );
     _runtimeSnapshotSubscription = _bridge.sessionList.listen(
       _synchronizeRuntimeSnapshot,
@@ -1823,7 +1832,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return false;
     }
     return drafts.deletePendingSubmission(
-      sessionId,
+      _outgoingDraftStorageKey,
       clientMessageId: normalized,
     );
   }
@@ -1846,11 +1855,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final normalized = clientMessageId?.trim();
     final drafts = _outgoingDrafts;
     if (drafts == null || normalized == null || normalized.isEmpty) return;
-    final pending = drafts.getPendingSubmission(sessionId);
+    final pending = drafts.getPendingSubmission(_outgoingDraftStorageKey);
     if (pending == null || pending.clientMessageId != normalized) return;
     unawaited(
       drafts.savePendingSubmission(
-        sessionId,
+        _outgoingDraftStorageKey,
         PendingChatSubmissionDraft(
           clientMessageId: pending.clientMessageId,
           text: pending.text,
@@ -1869,7 +1878,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   void _recordOutgoingDraftAttempt(String clientMessageId) {
     final drafts = _outgoingDrafts;
     if (drafts == null) return;
-    final pending = drafts.getPendingSubmission(sessionId);
+    final pending = drafts.getPendingSubmission(_outgoingDraftStorageKey);
     if (pending == null || pending.clientMessageId != clientMessageId) return;
     final now = DateTime.now().toUtc();
     final lastAttemptAt = pending.lastAttemptAt;
@@ -1879,7 +1888,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             const Duration(seconds: 5);
     unawaited(
       drafts.savePendingSubmission(
-        sessionId,
+        _outgoingDraftStorageKey,
         PendingChatSubmissionDraft(
           clientMessageId: pending.clientMessageId,
           text: pending.text,
@@ -1948,19 +1957,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
   }
 
-  void _onDetachedOutgoingConnectionState(
-    BridgeConnectionState connectionState,
-  ) {
+  void _onOutgoingConnectionState(BridgeConnectionState connectionState) {
     if (isClosed || connectionState != BridgeConnectionState.disconnected) {
       return;
     }
-    _failDetachedUnconfirmedInputs(
+    _failUnconfirmedInputs(
       'bridge_disconnected_before_receipt',
       bridgeSessionId: _detachedLiveRuntimeSessionId ?? sessionId,
     );
   }
 
-  void _failDetachedUnconfirmedInputs(
+  void _failUnconfirmedInputs(
     String reason, {
     required String bridgeSessionId,
   }) {
@@ -2012,7 +2019,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     bool preserveVisualTimeline = false,
     bool preserveRuntimeOverlay = false,
   }) {
-    _failDetachedUnconfirmedInputs(
+    _failUnconfirmedInputs(
       unconfirmedInputFailureReason,
       bridgeSessionId: previousRuntimeSessionId ?? sessionId,
     );
@@ -3049,10 +3056,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     List<({Uint8List bytes, String mimeType})>? images,
     String? failureReason,
   }) {
-    if (!detachedPreview || isClosed || text.trim().isEmpty) return false;
+    if (isClosed || text.trim().isEmpty) return false;
     final normalizedClientMessageId = clientMessageId.trim();
     if (normalizedClientMessageId.isEmpty) return false;
-    _rememberDetachedLocalOverlayClientId(normalizedClientMessageId);
+    if (detachedPreview) {
+      _rememberDetachedLocalOverlayClientId(normalizedClientMessageId);
+    }
     final existingIndex = state.entries.indexWhere(
       (entry) =>
           entry is UserChatEntry &&
@@ -6875,21 +6884,25 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   Iterable<String> _entryExactAliasKeys(ChatEntry entry) sync* {
     if (entry is UserChatEntry) {
+      final historyTurnId = entry.historyTurnId?.trim();
       final providerItemId = entry.providerItemId?.trim();
       if (providerItemId?.isNotEmpty == true) {
-        yield 'user:provider:$providerItemId';
+        if (historyTurnId?.isNotEmpty == true) {
+          yield 'user:turn:$historyTurnId:provider:$providerItemId';
+        } else if (!detachedPreview) {
+          yield 'user:provider:$providerItemId';
+        }
       }
       final clientMessageId = entry.clientMessageId?.trim();
       if (clientMessageId?.isNotEmpty == true) {
         yield 'user:client:$clientMessageId';
       }
       final messageUuid = entry.messageUuid?.trim();
-      final historyTurnId = entry.historyTurnId?.trim();
       if (messageUuid?.isNotEmpty == true) {
         if (historyTurnId?.isNotEmpty == true) {
           yield 'user:turn:$historyTurnId:uuid:$messageUuid';
         }
-        if (!_isPageLocalUserMessageUuid(messageUuid!)) {
+        if (!detachedPreview && !_isPageLocalUserMessageUuid(messageUuid!)) {
           yield 'user:uuid:$messageUuid';
         }
       }
@@ -6899,21 +6912,26 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       message: AssistantServerMessage(:final messageUuid, :final message),
     )) {
       final keys = <String>{};
-      if (message.id.isNotEmpty) keys.add('assistant:id:${message.id}');
-      if (messageUuid?.isNotEmpty == true) {
-        keys.add('assistant:uuid:$messageUuid');
-      }
       final stableKey = _serverMessageStableKey(entry.message);
       if (stableKey != null) keys.add(stableKey);
+      if (!detachedPreview) {
+        if (message.id.isNotEmpty) keys.add('assistant:id:${message.id}');
+        if (messageUuid?.isNotEmpty == true) {
+          keys.add('assistant:uuid:$messageUuid');
+        }
+      }
       yield* keys;
       return;
     }
     if (entry case ServerChatEntry(
       message: ToolResultMessage(:final toolUseId),
     )) {
-      final keys = <String>{'tool_result:$toolUseId'};
+      final keys = <String>{};
       final stableKey = _serverMessageStableKey(entry.message);
       if (stableKey != null) keys.add(stableKey);
+      if (!detachedPreview) {
+        keys.add('tool_result:$toolUseId');
+      }
       yield* keys;
       return;
     }
@@ -7037,11 +7055,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   bool _entriesEquivalentForTurnBoundary(ChatEntry a, ChatEntry b) {
     if (a is UserChatEntry && b is UserChatEntry) {
-      final aProviderItemId = a.providerItemId;
-      final bProviderItemId = b.providerItemId;
-      if (aProviderItemId?.isNotEmpty == true &&
-          bProviderItemId?.isNotEmpty == true) {
-        return aProviderItemId == bProviderItemId;
+      final aClientId = a.clientMessageId;
+      final bClientId = b.clientMessageId;
+      if (aClientId?.isNotEmpty == true && bClientId?.isNotEmpty == true) {
+        return aClientId == bClientId;
       }
       final aHistoryTurnId = a.historyTurnId;
       final bHistoryTurnId = b.historyTurnId;
@@ -7050,15 +7067,26 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           aHistoryTurnId != bHistoryTurnId) {
         return false;
       }
+      final aProviderItemId = a.providerItemId;
+      final bProviderItemId = b.providerItemId;
+      if (aProviderItemId?.isNotEmpty == true &&
+          bProviderItemId?.isNotEmpty == true) {
+        if (detachedPreview &&
+            (aHistoryTurnId?.isNotEmpty != true ||
+                bHistoryTurnId?.isNotEmpty != true)) {
+          return false;
+        }
+        return aProviderItemId == bProviderItemId;
+      }
       final aUuid = a.messageUuid;
       final bUuid = b.messageUuid;
       if (aUuid?.isNotEmpty == true && bUuid?.isNotEmpty == true) {
+        if (detachedPreview &&
+            (aHistoryTurnId?.isNotEmpty != true ||
+                bHistoryTurnId?.isNotEmpty != true)) {
+          return false;
+        }
         return aUuid == bUuid;
-      }
-      final aClientId = a.clientMessageId;
-      final bClientId = b.clientMessageId;
-      if (aClientId?.isNotEmpty == true && bClientId?.isNotEmpty == true) {
-        return aClientId == bClientId;
       }
       return _entriesEquivalent(a, b, allowWeakMatch: true);
     }
@@ -7314,11 +7342,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     bool allowWeakMatch = false,
   }) {
     if (a is UserChatEntry && b is UserChatEntry) {
-      final aProviderItemId = a.providerItemId;
-      final bProviderItemId = b.providerItemId;
-      if (aProviderItemId?.isNotEmpty == true &&
-          bProviderItemId?.isNotEmpty == true) {
-        return aProviderItemId == bProviderItemId;
+      final aClientId = a.clientMessageId;
+      final bClientId = b.clientMessageId;
+      if (aClientId?.isNotEmpty == true && bClientId?.isNotEmpty == true) {
+        return aClientId == bClientId;
       }
       final aHistoryTurnId = a.historyTurnId;
       final bHistoryTurnId = b.historyTurnId;
@@ -7327,14 +7354,25 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           aHistoryTurnId != bHistoryTurnId) {
         return false;
       }
-      final aClientId = a.clientMessageId;
-      final bClientId = b.clientMessageId;
-      if (aClientId?.isNotEmpty == true && bClientId?.isNotEmpty == true) {
-        return aClientId == bClientId;
+      final aProviderItemId = a.providerItemId;
+      final bProviderItemId = b.providerItemId;
+      if (aProviderItemId?.isNotEmpty == true &&
+          bProviderItemId?.isNotEmpty == true) {
+        if (detachedPreview &&
+            (aHistoryTurnId?.isNotEmpty != true ||
+                bHistoryTurnId?.isNotEmpty != true)) {
+          return false;
+        }
+        return aProviderItemId == bProviderItemId;
       }
       final aUuid = a.messageUuid;
       final bUuid = b.messageUuid;
       if (aUuid?.isNotEmpty == true && bUuid?.isNotEmpty == true) {
+        if (detachedPreview &&
+            (aHistoryTurnId?.isNotEmpty != true ||
+                bHistoryTurnId?.isNotEmpty != true)) {
+          return false;
+        }
         return aUuid == bUuid;
       }
       if (isCodex && (_hasUserItemIdentity(a) || _hasUserItemIdentity(b))) {
@@ -7351,6 +7389,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (aHistoryTurnId?.isNotEmpty == true &&
           bHistoryTurnId?.isNotEmpty == true &&
           aHistoryTurnId != bHistoryTurnId) {
+        return false;
+      }
+      if (detachedPreview &&
+          ((aMessage is AssistantServerMessage &&
+                  bMessage is AssistantServerMessage) ||
+              (aMessage is ToolResultMessage &&
+                  bMessage is ToolResultMessage)) &&
+          (aHistoryTurnId?.isNotEmpty != true ||
+              bHistoryTurnId?.isNotEmpty != true)) {
+        // Current v2 canonical items are turn-scoped. If that structural
+        // identity is absent, retain both facts instead of collapsing turns
+        // by a provider ID that may be reused across pages or generations.
         return false;
       }
       if (aMessage is AssistantServerMessage &&
@@ -7399,10 +7449,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   String? _entryStableKey(ChatEntry entry) {
     if (entry is UserChatEntry) {
       final providerItemId = entry.providerItemId;
-      if (providerItemId != null && providerItemId.isNotEmpty) {
-        return 'user:provider:$providerItemId';
-      }
       final historyTurnId = entry.historyTurnId;
+      if (providerItemId != null && providerItemId.isNotEmpty) {
+        if (historyTurnId != null && historyTurnId.isNotEmpty) {
+          return 'user:turn:$historyTurnId:provider:$providerItemId';
+        }
+        if (!detachedPreview) return 'user:provider:$providerItemId';
+      }
       final clientMessageId = entry.clientMessageId;
       if (clientMessageId != null && clientMessageId.isNotEmpty) {
         if (historyTurnId != null && historyTurnId.isNotEmpty) {
@@ -7415,7 +7468,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         if (historyTurnId != null && historyTurnId.isNotEmpty) {
           return 'user:turn:$historyTurnId:uuid:$uuid';
         }
-        return 'user:uuid:$uuid';
+        if (!detachedPreview) return 'user:uuid:$uuid';
       }
       return null;
     }
@@ -7453,6 +7506,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         :final historyTurnId,
         :final message,
       ):
+        if (detachedPreview && historyTurnId?.trim().isNotEmpty != true) {
+          return null;
+        }
         if (messageUuid != null && messageUuid.isNotEmpty) {
           return _scopeServerMessageIdentity(
             'assistant:uuid:$messageUuid',
@@ -7467,6 +7523,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         }
         return null;
       case ToolResultMessage(:final toolUseId, :final historyTurnId):
+        if (detachedPreview && historyTurnId?.trim().isNotEmpty != true) {
+          return null;
+        }
         return _scopeServerMessageIdentity(
           'tool_result:$toolUseId',
           historyTurnId,
@@ -7924,6 +7983,25 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   // ---------------------------------------------------------------------------
 
   /// Send a user message, optionally with image attachments.
+  bool isLocalOnlySubmission(
+    String text, {
+    List<({Uint8List bytes, String mimeType})>? images,
+    Iterable<Map<String, String>>? additionalMentions,
+  }) {
+    if (!isCodex ||
+        (images != null && images.isNotEmpty) ||
+        (additionalMentions != null && additionalMentions.isNotEmpty)) {
+      return false;
+    }
+    final command = text.trim();
+    return command == '/goal' ||
+        command == '/goal edit' ||
+        command == '/goal pause' ||
+        command == '/goal resume' ||
+        command == '/goal clear' ||
+        command.startsWith('/goal ');
+  }
+
   bool sendMessage(
     String text, {
     String? clientMessageId,

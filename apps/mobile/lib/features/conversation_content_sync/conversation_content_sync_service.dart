@@ -268,6 +268,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   final Set<String> _forcedSnapshotThreadKeys = {};
   Future<void> _v2MutationTail = Future<void>.value();
   Future<void>? _userIndexWarmup;
+  final Set<Future<void>> _backgroundFlights = {};
+  Future<void>? _disposeFlight;
 
   Stream<ConversationContentCacheUpdate> get updates =>
       _updatesController.stream;
@@ -828,7 +830,20 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     required String provider,
     required String providerSessionId,
     BridgeDataSourceIdentity? expectedDataSourceIdentity,
+  }) => _trackBackgroundFlight(
+    _loadCachedWindow(
+      provider: provider,
+      providerSessionId: providerSessionId,
+      expectedDataSourceIdentity: expectedDataSourceIdentity,
+    ),
+  );
+
+  Future<ConversationHotWindowSnapshot?> _loadCachedWindow({
+    required String provider,
+    required String providerSessionId,
+    BridgeDataSourceIdentity? expectedDataSourceIdentity,
   }) async {
+    if (_disposed) return null;
     if (expectedDataSourceIdentity != null &&
         hasAuthoritativeDataSourceConflict(
           expectedDataSourceIdentity,
@@ -881,6 +896,18 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   }
 
   Future<void> markConversationRead({
+    required String provider,
+    required String providerSessionId,
+    DateTime? readAt,
+  }) => _trackBackgroundFlight(
+    _markConversationRead(
+      provider: provider,
+      providerSessionId: providerSessionId,
+      readAt: readAt,
+    ),
+  );
+
+  Future<void> _markConversationRead({
     required String provider,
     required String providerSessionId,
     DateTime? readAt,
@@ -964,6 +991,22 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   /// Loads the lightweight user-turn spine without downloading tools or full
   /// assistant history. Completed revisions are served entirely from SQLite.
   Future<ConversationUserIndexSnapshot?> loadUserMessageIndex({
+    required String provider,
+    required String providerSessionId,
+    required String revision,
+    BridgeDataSourceIdentity? expectedDataSourceIdentity,
+    int maximumPages = 250,
+  }) => _trackBackgroundFlight(
+    _loadUserMessageIndex(
+      provider: provider,
+      providerSessionId: providerSessionId,
+      revision: revision,
+      expectedDataSourceIdentity: expectedDataSourceIdentity,
+      maximumPages: maximumPages,
+    ),
+  );
+
+  Future<ConversationUserIndexSnapshot?> _loadUserMessageIndex({
     required String provider,
     required String providerSessionId,
     required String revision,
@@ -1527,45 +1570,47 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
     final generation = _generation;
     final target = _cacheTarget;
-    scheduleMicrotask(() async {
-      if (_disposed ||
-          generation != _generation ||
-          target.fingerprint != _cacheTarget.fingerprint ||
-          !_sameTarget(_focused, focused)) {
-        return;
-      }
-      try {
-        final snapshot = await cache.loadConversationWindow(
-          target: target,
-          provider: focused.provider,
-          providerSessionId: focused.providerSessionId,
-        );
-        final gap = snapshot?.latestTurnGap;
-        if (snapshot == null ||
-            snapshot.latestTurnComplete ||
-            gap == null ||
-            !_isAutoRepairableLatestTurnGap(gap) ||
+    _trackBackgroundFlight(
+      Future<void>.microtask(() async {
+        if (_disposed ||
             generation != _generation ||
+            target.fingerprint != _cacheTarget.fingerprint ||
             !_sameTarget(_focused, focused)) {
           return;
         }
-        _scheduleAutomaticLatestTurnRepair(
-          generation: generation,
-          target: target,
-          provider: focused.provider,
-          providerSessionId: focused.providerSessionId,
-          revision: snapshot.revision,
-          gap: gap,
-        );
-      } catch (error) {
-        conversationSyncTrace(
-          '[conversation_sync_v2] event=latest_turn_auto_repair_cache_read_failed '
-          'target=${conversationSyncTargetTrace(focused.provider, focused.providerSessionId)} '
-          'error=${error.runtimeType}',
-          warning: true,
-        );
-      }
-    });
+        try {
+          final snapshot = await cache.loadConversationWindow(
+            target: target,
+            provider: focused.provider,
+            providerSessionId: focused.providerSessionId,
+          );
+          final gap = snapshot?.latestTurnGap;
+          if (snapshot == null ||
+              snapshot.latestTurnComplete ||
+              gap == null ||
+              !_isAutoRepairableLatestTurnGap(gap) ||
+              generation != _generation ||
+              !_sameTarget(_focused, focused)) {
+            return;
+          }
+          _scheduleAutomaticLatestTurnRepair(
+            generation: generation,
+            target: target,
+            provider: focused.provider,
+            providerSessionId: focused.providerSessionId,
+            revision: snapshot.revision,
+            gap: gap,
+          );
+        } catch (error) {
+          conversationSyncTrace(
+            '[conversation_sync_v2] event=latest_turn_auto_repair_cache_read_failed '
+            'target=${conversationSyncTargetTrace(focused.provider, focused.providerSessionId)} '
+            'error=${error.runtimeType}',
+            warning: true,
+          );
+        }
+      }),
+    );
   }
 
   Future<T> _enqueueHistoryOperation<T>(
@@ -2250,43 +2295,47 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           requestId: requestId,
         ),
       );
-      unawaited(_subscribeV2(generation, requestId, target));
+      unawaited(
+        _trackBackgroundFlight(_subscribeV2(generation, requestId, target)),
+      );
       return;
     }
     unawaited(
-      cache
-          .knownConversationRevisions(target)
-          .then((knownRevisions) {
-            if (_disposed ||
-                generation != _generation ||
-                _pendingSubscriptionId != requestId ||
-                !_canProcessContent ||
-                _subscriptionTargetFingerprint != _cacheTarget.fingerprint ||
-                _subscriptionBridgeInstanceId != bridge.bridgeInstanceId ||
-                target.fingerprint != _cacheTarget.fingerprint) {
-              return;
-            }
-            try {
-              bridge.send(
-                conversationContentSubscribe(
-                  requestId: requestId,
-                  knownRevisions: knownRevisions,
-                  focused: _focused,
-                ),
-              );
-            } catch (_) {
+      _trackBackgroundFlight(
+        cache
+            .knownConversationRevisions(target)
+            .then((knownRevisions) {
+              if (_disposed ||
+                  generation != _generation ||
+                  _pendingSubscriptionId != requestId ||
+                  !_canProcessContent ||
+                  _subscriptionTargetFingerprint != _cacheTarget.fingerprint ||
+                  _subscriptionBridgeInstanceId != bridge.bridgeInstanceId ||
+                  target.fingerprint != _cacheTarget.fingerprint) {
+                return;
+              }
+              try {
+                bridge.send(
+                  conversationContentSubscribe(
+                    requestId: requestId,
+                    knownRevisions: knownRevisions,
+                    focused: _focused,
+                  ),
+                );
+              } catch (_) {
+                if (generation == _generation) {
+                  _pendingSubscriptionId = null;
+                  _scheduleRetry();
+                }
+              }
+            })
+            .catchError((Object _) {
               if (generation == _generation) {
                 _pendingSubscriptionId = null;
                 _scheduleRetry();
               }
-            }
-          })
-          .catchError((Object _) {
-            if (generation == _generation) {
-              _pendingSubscriptionId = null;
-              _scheduleRetry();
-            }
-          }),
+            }),
+      ),
     );
   }
 
@@ -2396,9 +2445,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       case ConversationContentEventKind.snapshotPage:
         _stageSnapshotPage(event);
       case ConversationContentEventKind.snapshotComplete:
-        unawaited(_completeSnapshot(event));
+        unawaited(_trackBackgroundFlight(_completeSnapshot(event)));
       case ConversationContentEventKind.patch:
-        unawaited(_applyPatch(event));
+        unawaited(_trackBackgroundFlight(_applyPatch(event)));
       case ConversationContentEventKind.error:
         _handleError(event);
     }
@@ -2862,7 +2911,20 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         // Deliberately not written to the canonical SQLite timeline. The
         // focused detached Cubit consumes only this service-forwarded event,
         // after the active subscription and ordered sequence are validated.
-        runtimeOverlay = event;
+        final focused = _focused;
+        if (focused?.provider == event.provider &&
+            focused?.providerSessionId == event.providerSessionId) {
+          runtimeOverlay = event;
+        } else {
+          _recordDiagnosticEvent(
+            'runtimeOverlayRejectedFocusMismatch',
+            generation: generation,
+            sequence: event.sequence,
+            provider: event.provider,
+            providerSessionId: event.providerSessionId,
+            result: 'focus_mismatch',
+          );
+        }
       case ConversationSyncV2EventKind.syncCheckpoint:
         _ensureNoIncompleteV2PageBatch();
         if (event.phase == 'priority') {
@@ -4035,31 +4097,45 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _pendingLatestTurnRepairPages.clear();
   }
 
-  Future<void> _settleDisposedBackgroundWork() async {
-    final flights = <Future<dynamic>>[
-      _v2MutationTail,
-      ..._historyPageFlights.values,
-      ..._latestTurnRepairFlights.values,
-      ..._historyOperationTails.values,
-      ..._userIndexFlights.values,
-      ..._userTurnDetailFlights.values,
-      ?_focusedRefreshFlight,
-      ?_userIndexWarmup,
-    ];
-    await Future.wait(
-      flights.map((flight) async {
-        try {
-          await flight;
-        } catch (_) {
-          // _stopSubscription has already failed every public waiter. These
-          // background futures are joined only to guarantee that no cache
-          // access outlives the service and races repository disposal.
-        }
-      }),
-    );
+  Future<T> _trackBackgroundFlight<T>(Future<T> flight) {
+    late final Future<void> settled;
+    settled = flight
+        .then<void>((_) {}, onError: (Object _, StackTrace _) {})
+        .whenComplete(() => _backgroundFlights.remove(settled));
+    _backgroundFlights.add(settled);
+    return flight;
   }
 
-  Future<void> dispose() async {
+  Future<void> _settleDisposedBackgroundWork() async {
+    do {
+      final flights = <Future<dynamic>>[
+        _v2MutationTail,
+        ..._historyPageFlights.values,
+        ..._latestTurnRepairFlights.values,
+        ..._historyOperationTails.values,
+        ..._userIndexFlights.values,
+        ..._userTurnDetailFlights.values,
+        ..._backgroundFlights,
+        ?_focusedRefreshFlight,
+        ?_userIndexWarmup,
+      ];
+      await Future.wait(
+        flights.map((flight) async {
+          try {
+            await flight;
+          } catch (_) {
+            // _stopSubscription has already failed every public waiter. These
+            // background futures are joined only to guarantee that no cache
+            // access outlives the service and races repository disposal.
+          }
+        }),
+      );
+    } while (_backgroundFlights.isNotEmpty);
+  }
+
+  Future<void> dispose() => _disposeFlight ??= _dispose();
+
+  Future<void> _dispose() async {
     if (_disposed) return;
     _disposed = true;
     _failSubscriptionReadyWaiters(

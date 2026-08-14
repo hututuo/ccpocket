@@ -242,6 +242,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   String? _loadingCachedPreviewTargetFingerprint;
   ChatComposerSubmission? _deferredSubmission;
   ChatComposerSubmission? _restoredFailedSubmission;
+  String? _restoredPendingSubmissionStorageKey;
   PendingSessionBinding? _retainedPendingBinding;
   PendingSessionBinding? _localAttachmentBinding;
   bool _durableRuntimeBindingAmbiguous = false;
@@ -1032,11 +1033,31 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     setState(() => _deferredSubmission = null);
   }
 
+  String? get _pendingSubmissionStorageKey {
+    final durableId = widget.durableProviderSessionId?.trim();
+    if (durableId?.isNotEmpty == true) return durableId;
+    final runtimeId = _sessionId.trim();
+    return runtimeId.isEmpty ? null : runtimeId;
+  }
+
   void _restoreDeferredSubmission() {
-    final durableId = widget.durableProviderSessionId;
-    if (durableId == null || durableId.isEmpty) return;
-    final submission = _draftService.getPendingSubmission(durableId);
+    final storageKey = _pendingSubmissionStorageKey;
+    if (storageKey == null) return;
+    var sourceKey = storageKey;
+    var submission = _draftService.getPendingSubmission(storageKey);
+    final runtimeKey = _sessionId.trim();
+    if (submission == null &&
+        runtimeKey.isNotEmpty &&
+        runtimeKey != storageKey) {
+      sourceKey = runtimeKey;
+      submission = _draftService.getPendingSubmission(runtimeKey);
+    }
     if (submission == null) return;
+    if (sourceKey != storageKey) {
+      _draftService.migratePendingSubmission(sourceKey, storageKey);
+      sourceKey = storageKey;
+    }
+    _restoredPendingSubmissionStorageKey = sourceKey;
     // A persisted record without a Bridge receipt is an interrupted local
     // attempt, not permission to send again. Restore it as a failed outgoing
     // bubble; only an explicit retry may request attachment and dispatch it.
@@ -1051,12 +1072,17 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
 
   bool _retryPersistedSubmission(UserChatEntry entry, ChatSessionCubit cubit) {
     if (_deferredSubmission != null) return false;
-    final durableId = widget.durableProviderSessionId?.trim();
+    final storageKey = _pendingSubmissionStorageKey;
     final clientMessageId = entry.clientMessageId?.trim();
-    if (durableId?.isNotEmpty != true || clientMessageId?.isNotEmpty != true) {
+    if (storageKey == null || clientMessageId?.isNotEmpty != true) {
       return false;
     }
-    final pending = _draftService.getPendingSubmission(durableId!);
+    final sourceKey = _restoredPendingSubmissionStorageKey;
+    final pending =
+        _draftService.getPendingSubmission(storageKey) ??
+        (sourceKey == null
+            ? null
+            : _draftService.getPendingSubmission(sourceKey));
     if (pending == null || pending.clientMessageId != clientMessageId) {
       return false;
     }
@@ -1095,7 +1121,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     if (!_queueDeferredSubmission(submission)) return false;
     unawaited(
       _draftService.savePendingSubmission(
-        durableId,
+        storageKey,
         PendingChatSubmissionDraft(
           clientMessageId: pending.clientMessageId,
           text: pending.text,
@@ -1126,13 +1152,13 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     final submission = _deferredSubmission;
     if (submission == null) return;
     _deferredSubmission = null;
-    final durableId = widget.durableProviderSessionId;
-    if (durableId == null || durableId.isEmpty) return;
-    final pending = _draftService.getPendingSubmission(durableId);
+    final storageKey = _pendingSubmissionStorageKey;
+    if (storageKey == null) return;
+    final pending = _draftService.getPendingSubmission(storageKey);
     unawaited(
       _draftService
           .savePendingSubmission(
-            durableId,
+            storageKey,
             PendingChatSubmissionDraft(
               clientMessageId: submission.clientMessageId,
               text: submission.text,
@@ -1682,6 +1708,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
         child: _CodexProviders(
           key: ValueKey('durable-codex-$durableId'),
           sessionId: durableId,
+          outgoingDraftStorageKey: _pendingSubmissionStorageKey ?? durableId,
           sessionInsightsSessionId: durableId,
           projectPath: _projectPath,
           gitBranch: _gitBranch,
@@ -1768,6 +1795,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     return _CodexProviders(
       key: ValueKey('codex-$_sessionId'),
       sessionId: _sessionId,
+      outgoingDraftStorageKey: _pendingSubmissionStorageKey ?? _sessionId,
       sessionInsightsSessionId: widget.durableProviderSessionId,
       projectPath: _projectPath,
       gitBranch: _gitBranch,
@@ -1788,6 +1816,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       dataSourceIdentity: _dataSourceIdentity,
       diagnosticReportsSupported: _diagnosticReportsSupported,
       imagePayloadEncoder: widget.imagePayloadEncoder,
+      initialFailedSubmission: _restoredFailedSubmission,
     );
   }
 }
@@ -1798,6 +1827,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
 
 class _CodexProviders extends StatelessWidget {
   final String sessionId;
+  final String outgoingDraftStorageKey;
   final String? sessionInsightsSessionId;
   final String? projectPath;
   final String? gitBranch;
@@ -1836,6 +1866,7 @@ class _CodexProviders extends StatelessWidget {
   const _CodexProviders({
     super.key,
     required this.sessionId,
+    required this.outgoingDraftStorageKey,
     this.sessionInsightsSessionId,
     this.projectPath,
     this.gitBranch,
@@ -1937,6 +1968,7 @@ class _CodexProviders extends StatelessWidget {
               initialCodexPermissionsMode: codexPermissionsMode,
               initialProjectPath: projectPath,
               outgoingDrafts: draftService,
+              outgoingDraftStorageKey: outgoingDraftStorageKey,
               detachedPreview: detachedPreview,
               initialHistoryMessages: initialHistoryMessages,
               initialLiveRuntimeSessionId: liveRuntimeSessionId,
@@ -1953,7 +1985,7 @@ class _CodexProviders extends StatelessWidget {
               imagePayloadEncoder: imagePayloadEncoder,
             );
             final failedSubmission = initialFailedSubmission;
-            if (detachedPreview && failedSubmission != null) {
+            if (failedSubmission != null) {
               cubit.restoreFailedSubmission(
                 failedSubmission.text,
                 clientMessageId: failedSubmission.clientMessageId,
@@ -2013,6 +2045,7 @@ class _CodexProviders extends StatelessWidget {
         detachedUserTurnLoader: userTurnLoader,
         child: _CodexChatBody(
           sessionId: sessionId,
+          outgoingDraftStorageKey: outgoingDraftStorageKey,
           liveRuntimeSessionId: detachedPreview
               ? liveRuntimeSessionId
               : sessionId,
@@ -2044,6 +2077,7 @@ class _CodexProviders extends StatelessWidget {
 
 class _CodexChatBody extends HookWidget {
   final String sessionId;
+  final String outgoingDraftStorageKey;
   final String? liveRuntimeSessionId;
   final String? sessionInsightsSessionId;
   final String? projectPath;
@@ -2064,6 +2098,7 @@ class _CodexChatBody extends HookWidget {
 
   const _CodexChatBody({
     required this.sessionId,
+    required this.outgoingDraftStorageKey,
     this.liveRuntimeSessionId,
     this.sessionInsightsSessionId,
     this.projectPath,
@@ -2443,7 +2478,7 @@ class _CodexChatBody extends HookWidget {
           // `/compact` is a core action, not a chat message; retaining that
           // draft could replay it as ordinary input or compact twice later.
           draftService.deletePendingSubmission(
-            sessionId,
+            outgoingDraftStorageKey,
             clientMessageId: submission.clientMessageId,
           );
         }
@@ -2499,7 +2534,7 @@ class _CodexChatBody extends HookWidget {
       if (detachedPreview && !chatSessionCubit.canMutateAttachedRuntime) {
         try {
           await draftService.savePendingSubmission(
-            sessionId,
+            outgoingDraftStorageKey,
             PendingChatSubmissionDraft(
               clientMessageId: submission.clientMessageId,
               text: submission.text,
@@ -2522,7 +2557,7 @@ class _CodexChatBody extends HookWidget {
         final accepted = submitWhileAttaching(submission);
         if (!accepted) {
           draftService.deletePendingSubmission(
-            sessionId,
+            outgoingDraftStorageKey,
             clientMessageId: submission.clientMessageId,
           );
         }
@@ -2530,7 +2565,7 @@ class _CodexChatBody extends HookWidget {
       }
       try {
         await draftService.savePendingSubmission(
-          sessionId,
+          outgoingDraftStorageKey,
           PendingChatSubmissionDraft(
             clientMessageId: submission.clientMessageId,
             text: submission.text,
@@ -3841,6 +3876,7 @@ class _CodexChatBody extends HookWidget {
                       if (approval is ApprovalNone)
                         ChatInputWithOverlays(
                           sessionId: sessionId,
+                          pendingSubmissionStorageKey: outgoingDraftStorageKey,
                           status: status,
                           onScrollToBottom: scroll.scrollToBottom,
                           inputController: chatInputController,

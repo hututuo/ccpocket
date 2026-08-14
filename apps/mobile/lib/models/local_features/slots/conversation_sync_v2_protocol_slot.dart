@@ -658,6 +658,12 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
         if (rawTurn is! Map) {
           throw const FormatException('Conversation turn page is malformed.');
         }
+        final turnId = (rawTurn['turnId'] as String?)?.trim();
+        if (turnId == null || turnId.isEmpty) {
+          throw const FormatException(
+            'Conversation turn page is missing its turn identity.',
+          );
+        }
         final rawMessages = rawTurn['messages'];
         if (rawMessages is! List) {
           throw const FormatException(
@@ -671,6 +677,15 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
             );
           }
           final message = Map<String, dynamic>.from(rawMessage);
+          final messageTurnId = (message['historyTurnId'] as String?)?.trim();
+          if (messageTurnId != null &&
+              messageTurnId.isNotEmpty &&
+              messageTurnId != turnId) {
+            throw const FormatException(
+              'Conversation page message belongs to a different turn.',
+            );
+          }
+          message['historyTurnId'] = turnId;
           ServerMessage.fromJson(message);
           messages.add(Map.unmodifiable(message));
         }

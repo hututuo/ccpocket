@@ -2096,6 +2096,7 @@ void main() {
             'type': 'user_input',
             'text': 'paged prefix',
             'userMessageUuid': 'prefix-user',
+            'historyTurnId': 'turn-prefix',
           },
         ],
         nextCursor: 'older-prefix-cursor-2',
@@ -2114,13 +2115,14 @@ void main() {
         entries: [
           _entry('older-before-prefix', 0, 'idle'),
           const ConversationContentWireEntry(
-            entryId: 'user:prefix-user',
+            entryId: 'turn:turn-prefix:user:prefix-user',
             index: 1,
             contentHash: 'hash-prefix-user',
             rawMessage: {
               'type': 'user_input',
               'text': 'paged prefix',
               'userMessageUuid': 'prefix-user',
+              'historyTurnId': 'turn-prefix',
             },
           ),
           _entry('tail-b1', 2, 'working'),
@@ -2140,7 +2142,7 @@ void main() {
       );
       expect(cached?.entries.map((entry) => entry.entryId), [
         'older-before-prefix',
-        'user:prefix-user',
+        'turn:turn-prefix:user:prefix-user',
         'tail-b1',
         'tail-b2',
       ]);
@@ -2159,13 +2161,14 @@ void main() {
         entries: [
           _entry('tail-b1', 0, 'working'),
           const ConversationContentWireEntry(
-            entryId: 'user:prefix-user',
+            entryId: 'turn:turn-prefix:user:prefix-user',
             index: 1,
             contentHash: 'hash-prefix-user',
             rawMessage: {
               'type': 'user_input',
               'text': 'paged prefix',
               'userMessageUuid': 'prefix-user',
+              'historyTurnId': 'turn-prefix',
             },
           ),
         ],
@@ -2182,7 +2185,7 @@ void main() {
       );
       expect(cached?.entries.map((entry) => entry.entryId), [
         'older-before-prefix',
-        'user:prefix-user',
+        'turn:turn-prefix:user:prefix-user',
         'tail-b1',
         'tail-b2',
       ]);
@@ -3168,8 +3171,8 @@ void main() {
         complete?.entries.map((entry) => entry.entryId),
         containsAll([
           'older-entry',
-          'user:user-current',
-          'assistant:assistant-current',
+          'turn:turn-current:user:user-current',
+          'turn:turn-current:assistant:assistant-current',
         ]),
       );
       expect(
@@ -3377,7 +3380,7 @@ void main() {
       expect(replacementRepair?.latestTurnComplete, isTrue);
       expect(
         replacementRepair?.entries.map((entry) => entry.entryId),
-        contains('assistant:replacement-complete'),
+        contains('turn:turn-replacement:assistant:replacement-complete'),
       );
       expect(
         replacementRepair?.entries.map((entry) => entry.entryId),
@@ -3513,7 +3516,7 @@ void main() {
       expect(
         completed?.entries.map((entry) => entry.entryId),
         containsAll([
-          'user:resume-user',
+          'turn:turn-resume:user:resume-user',
           'turn:turn-resume:assistant:resume-complete',
         ]),
       );
@@ -3838,12 +3841,13 @@ void main() {
             'type': 'user_input',
             'text': 'Earlier prompt',
             'userMessageUuid': 'user-earlier',
+            'historyTurnId': 'turn-earlier',
           },
         ],
         nextCursor: 'cursor-2',
       );
       expect(first?.entries.map((entry) => entry.entryId), [
-        'user:user-earlier',
+        'turn:turn-earlier:user:user-earlier',
         'current-entry',
       ]);
       expect(first?.turnsNextCursor, 'cursor-2');
@@ -3860,12 +3864,13 @@ void main() {
             'type': 'user_input',
             'text': 'Earlier prompt',
             'userMessageUuid': 'user-earlier',
+            'historyTurnId': 'turn-earlier',
           },
         ],
         nextCursor: null,
       );
       expect(repeated?.entries.map((entry) => entry.entryId), [
-        'user:user-earlier',
+        'turn:turn-earlier:user:user-earlier',
         'current-entry',
       ]);
       expect(repeated?.turnsNextCursor, isNull);
@@ -3909,22 +3914,107 @@ void main() {
             'text': 'first prompt',
             'providerItemId': 'provider-user-first',
             'userMessageUuid': 'codex:user-turn:1',
+            'historyTurnId': 'provider-turn-first',
           },
           {
             'type': 'user_input',
             'text': 'second prompt',
             'providerItemId': 'provider-user-second',
             'userMessageUuid': 'codex:user-turn:1',
+            'historyTurnId': 'provider-turn-second',
           },
         ],
         nextCursor: null,
       );
 
       expect(snapshot?.entries.map((entry) => entry.entryId), [
-        'user-provider:provider-user-first',
-        'user-provider:provider-user-second',
+        'turn:provider-turn-first:user-provider:provider-user-first',
+        'turn:provider-turn-second:user-provider:provider-user-second',
         'current-entry',
       ]);
+    },
+  );
+
+  test(
+    'prepends no-turn assistant id occurrences without cross-page collapse',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-no-turn-assistant-pages',
+        codexSourceId: 'source-no-turn-assistant-pages',
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-no-turn-assistant-pages',
+        provider: 'codex',
+        providerSessionId: 'thread-no-turn-assistant-pages',
+        revision: 'revision-no-turn-assistant-pages',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [_entry('current-entry', 0, 'idle')],
+        deletes: const [],
+        hasEarlier: true,
+        turnsNextCursor: 'cursor-no-turn-1',
+        sourceEntryCount: 3,
+      );
+
+      await repository.prependConversationTurnsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-no-turn-assistant-pages',
+        expectedRevision: 'revision-no-turn-assistant-pages',
+        expectedCursor: 'cursor-no-turn-1',
+        rawMessages: const [
+          {
+            'type': 'assistant',
+            'messageUuid': 'reused-assistant',
+            'message': {
+              'id': 'reused-assistant',
+              'role': 'assistant',
+              'model': 'gpt-test',
+              'content': [
+                {'type': 'text', 'text': 'later occurrence'},
+              ],
+            },
+          },
+        ],
+        nextCursor: 'cursor-no-turn-2',
+      );
+      final snapshot = await repository.prependConversationTurnsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-no-turn-assistant-pages',
+        expectedRevision: 'revision-no-turn-assistant-pages',
+        expectedCursor: 'cursor-no-turn-2',
+        rawMessages: const [
+          {
+            'type': 'assistant',
+            'messageUuid': 'reused-assistant',
+            'message': {
+              'id': 'reused-assistant',
+              'role': 'assistant',
+              'model': 'gpt-test',
+              'content': [
+                {'type': 'text', 'text': 'earlier occurrence'},
+              ],
+            },
+          },
+        ],
+        nextCursor: null,
+      );
+
+      expect(snapshot?.entries, hasLength(3));
+      expect(
+        snapshot?.entries
+            .where((entry) => entry.entryId.contains('assistant:reused'))
+            .map((entry) => entry.entryId)
+            .toSet(),
+        {
+          'occurrence:turns:cursor-no-turn-1:0:assistant:reused-assistant',
+          'occurrence:turns:cursor-no-turn-2:0:assistant:reused-assistant',
+        },
+      );
     },
   );
 

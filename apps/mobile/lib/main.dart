@@ -444,7 +444,11 @@ void main() async {
         RepositoryProvider<SessionCatalogCacheRepository>(
           create: (_) => sessionCatalogCache,
           lazy: false,
-          dispose: (repository) => unawaited(repository.close()),
+          dispose: (repository) => unawaited(
+            conversationContentSyncService.dispose().whenComplete(
+              repository.close,
+            ),
+          ),
         ),
         RepositoryProvider<ConversationContentSyncService>(
           create: (_) => conversationContentSyncService,
