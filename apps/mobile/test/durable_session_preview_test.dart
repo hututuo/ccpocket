@@ -674,6 +674,118 @@ void main() {
   );
 
   testWidgets(
+    'attached durable Codex route still restores an unconfirmed draft as failed',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-attached-recovery'
+        ..authenticatedCodexSourceId = 'source-attached-recovery'
+        ..advertisedBridgeCapabilities = const {conversationSyncV2Capability};
+      const metadata = RecentSession(
+        sessionId: 'thread-attached-recovery',
+        provider: 'codex',
+        firstPrompt: 'Attached recovery',
+        created: '2026-08-14T05:59:00.000Z',
+        modified: '2026-08-14T06:00:00.000Z',
+        gitBranch: 'main',
+        projectPath: '/workspace/attached-recovery',
+        isSidechain: false,
+        codexSourceId: 'source-attached-recovery',
+      );
+      bridge.emitSessionList(const [
+        SessionInfo(
+          id: 'runtime-attached-recovery',
+          provider: 'codex',
+          projectPath: '/workspace/attached-recovery',
+          claudeSessionId: 'thread-attached-recovery',
+          status: 'idle',
+          createdAt: '2026-08-14T05:59:00.000Z',
+          lastActivityAt: '2026-08-14T06:00:00.000Z',
+        ),
+      ]);
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+        codexSourceId: bridge.authenticatedCodexSourceId,
+      );
+      final sessionList = _ProjectionSessionListCubit(
+        bridge: bridge,
+        sourceFingerprint: target.fingerprint,
+        metadataAvailable: true,
+        status: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'thread-attached-recovery',
+          activity: 'idle',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'bridgeRuntime',
+          confidence: 'authoritative',
+          observedAt: '2026-08-14T06:00:00.000Z',
+          executionHost: 'bridge',
+          controlState: 'writable',
+          authorityGeneration: 'authority-attached-recovery',
+        ),
+        metadata: metadata,
+      );
+      final prefs = await SharedPreferences.getInstance();
+      final drafts = DraftService(prefs);
+      await drafts.savePendingSubmission(
+        metadata.sessionId,
+        PendingChatSubmissionDraft(
+          clientMessageId: 'client-attached-recovery',
+          text: 'Recover me without replay',
+        ),
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(
+          databasePath: 'unused-attached-recovery-cache.db',
+        ),
+        snapshots: const {},
+      );
+      final sync = ConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+
+      try {
+        await tester.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'runtime-attached-recovery',
+            projectPath: metadata.projectPath,
+            isPending: false,
+            durableProviderSessionId: metadata.sessionId,
+            dataSourceIdentity: bridge.dataSourceIdentity,
+            conversationContentSync: sync,
+            sessionListCubit: sessionList,
+            draftService: drafts,
+          ),
+        );
+        await tester.pump();
+        final cubit = BlocProvider.of<ChatSessionCubit>(
+          tester.element(find.byKey(const ValueKey('message_input'))),
+        );
+        final user = cubit.state.entries.whereType<UserChatEntry>().single;
+        expect(user.clientMessageId, 'client-attached-recovery');
+        expect(user.status, MessageStatus.failed);
+        expect(find.text('Tap to retry'), findsOneWidget);
+        expect(
+          _sentWireMessages(
+            bridge,
+          ).where((message) => message['type'] == 'input'),
+          isEmpty,
+        );
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+        unawaited(sessionList.close());
+      }
+    },
+  );
+
+  testWidgets(
     'cache revisions update the detached cubit without rebuilding child state',
     (tester) async {
       final bridge = MockBridgeService();

@@ -785,6 +785,13 @@ describe("conversation_sync_v2 protocol", () => {
         events(fixture.sent, capableClient, "runtime_overlay")[0]
           ?.originGeneration,
       ).toMatch(/^observer:21:\d+$/);
+      expect(
+        events(fixture.sent, capableClient, "runtime_overlay")[0]
+          ?.runtimeSessionId,
+      ).toBe(
+        events(fixture.sent, capableClient, "runtime_overlay")[0]
+          ?.originGeneration,
+      );
       expect(events(fixture.sent, legacyClient, "runtime_overlay")).toEqual([]);
 
       // Observer reconnects may replay an identical terminal/control frame.

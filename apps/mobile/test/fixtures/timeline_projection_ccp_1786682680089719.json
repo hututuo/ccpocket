@@ -1,5 +1,6 @@
 {
   "sourceReport": "ccp-1786682680089719-4b1e80bb.json",
+  "fixtureScope": "alias_sentinel_without_raw_rows",
   "threadId": "019fe552-2d01-7730-aaf6-87ae94a777f7",
   "capturedAt": "2026-08-14T04:44:40.089719Z",
   "sqliteCommittedEntryCount": 697,

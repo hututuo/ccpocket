@@ -37,6 +37,7 @@ class MockBridgeService extends BridgeService {
   bool offlineCancelSucceeds = true;
   int authoritativeGeneration = 0;
   bool authoritativeForCurrentConnection = true;
+  String? bridgeId = 'bridge-a';
   String? sourceId = 'source-a';
   List<SessionInfo> sessionSnapshot = const [];
   Set<String> advertisedBridgeCapabilities = const {
@@ -97,6 +98,9 @@ class MockBridgeService extends BridgeService {
   @override
   bool get supportsConversationSyncV2 =>
       advertisedBridgeCapabilities.contains(conversationSyncV2Capability);
+
+  @override
+  String? get bridgeInstanceId => bridgeId;
 
   @override
   String? get codexSourceId => sourceId;
@@ -529,6 +533,24 @@ void main() {
           detachedRuntimeOverlayStream: runtimeOverlays.stream,
         );
         addTearDown(cubit.close);
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-segment-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'bridgeRuntime',
+            confidence: 'authoritative',
+            observedAt: '2026-08-14T00:59:59.000Z',
+            executionHost: 'bridge',
+            activeTurnId: 'turn-segments',
+            controlState: 'steerable',
+            authorityGeneration: 'authority-a',
+          ),
+          sourceFingerprint: 'bridge/source',
+        );
 
         mockBridge.emitMessage(
           const StreamDeltaMessage(text: 'First intermediate update'),
@@ -1947,6 +1969,24 @@ void main() {
           detachedRuntimeOverlayStream: runtimeOverlays.stream,
         );
         addTearDown(cubit.close);
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-10T01:02:02.000Z',
+            executionHost: 'desktopAppServer',
+            activeTurnId: 'turn-a',
+            controlState: 'steerable',
+            authorityGeneration: 'daemon:1',
+          ),
+          sourceFingerprint: 'bridge/source',
+        );
         const overlay = ConversationSyncV2EventMessage(
           event: ConversationSyncV2EventKind.runtimeOverlay,
           subscriptionId: 'subscription-a',
@@ -1959,7 +1999,8 @@ void main() {
           overlayId: 'overlay-a',
           observedAt: '2026-08-10T01:02:03.000Z',
           originGeneration: 'observer:1:1',
-          authorityGeneration: 'authority-a',
+          runtimeSessionId: 'observer:1:1',
+          authorityGeneration: 'daemon:1',
           turnId: 'turn-a',
           overlayMessage: ErrorMessage(
             message: 'shared observer warning',
@@ -1993,7 +2034,7 @@ void main() {
             executionHost: 'desktopAppServer',
             activeTurnId: 'turn-a',
             controlState: 'steerable',
-            authorityGeneration: 'authority-a',
+            authorityGeneration: 'daemon:1',
           ),
           sourceFingerprint: 'bridge/source',
         );
@@ -2021,87 +2062,156 @@ void main() {
       },
     );
 
-    test('turnless validated overlay binds to the first active turn', () async {
-      mockBridge.advertisedBridgeCapabilities = const {
-        conversationSyncV2Capability,
-        conversationRuntimeOverlayCapability,
-      };
-      final runtimeOverlays =
-          StreamController<ConversationSyncV2EventMessage>.broadcast();
-      addTearDown(runtimeOverlays.close);
-      final cubit = ChatSessionCubit(
-        sessionId: 'durable-thread',
-        provider: Provider.codex,
-        bridge: mockBridge,
-        streamingCubit: streamingCubit,
-        detachedPreview: true,
-        detachedRuntimeOverlayStream: runtimeOverlays.stream,
-      );
-      addTearDown(cubit.close);
+    test(
+      'runtime overlay waits for exact authenticated source identity',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+          conversationRuntimeOverlayCapability,
+        };
+        mockBridge.bridgeId = null;
+        mockBridge.sourceId = null;
+        final runtimeOverlays =
+            StreamController<ConversationSyncV2EventMessage>.broadcast();
+        addTearDown(runtimeOverlays.close);
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-source-fence',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          detachedRuntimeOverlayStream: runtimeOverlays.stream,
+        );
+        addTearDown(cubit.close);
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-source-fence',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-10T01:02:10.000Z',
+            executionHost: 'desktopAppServer',
+            activeTurnId: 'turn-source-fence',
+            controlState: 'steerable',
+            authorityGeneration: 'daemon:1',
+          ),
+          sourceFingerprint: 'bridge/source',
+        );
 
-      runtimeOverlays.add(
-        const ConversationSyncV2EventMessage(
+        const beforeIdentity = ConversationSyncV2EventMessage(
           event: ConversationSyncV2EventKind.runtimeOverlay,
-          subscriptionId: 'subscription-a',
+          subscriptionId: 'subscription-source-fence',
           bridgeInstanceId: 'bridge-a',
           codexSourceId: 'source-a',
-          batchId: 'batch-a',
+          batchId: 'batch-source-fence',
           sequence: 1,
           provider: 'codex',
-          providerSessionId: 'durable-thread',
-          overlayId: 'overlay-turnless',
-          observedAt: '2026-08-10T01:03:00.000Z',
+          providerSessionId: 'durable-source-fence',
+          overlayId: 'overlay-before-source-identity',
+          observedAt: '2026-08-10T01:02:11.000Z',
           originGeneration: 'observer:1:1',
+          runtimeSessionId: 'observer:1:1',
           authorityGeneration: 'daemon:1',
-          overlayMessage: ErrorMessage(message: 'turnless warning'),
-        ),
-      );
-      await pumpEventQueue();
-      expect(cubit.state.entries.whereType<ServerChatEntry>(), hasLength(1));
+          turnId: 'turn-source-fence',
+          overlayMessage: ErrorMessage(message: 'must wait for identity'),
+        );
+        runtimeOverlays.add(beforeIdentity);
+        await pumpEventQueue();
+        expect(cubit.state.entries.whereType<ServerChatEntry>(), isEmpty);
 
-      cubit.updateDetachedProviderStatus(
-        const ConversationSyncV2Status(
-          provider: 'codex',
-          providerSessionId: 'durable-thread',
-          activity: 'working',
-          attention: 'none',
-          result: 'none',
-          runtimeAttachment: 'loaded',
-          source: 'appServer',
-          confidence: 'authoritative',
-          observedAt: '2026-08-10T01:03:01.000Z',
-          executionHost: 'desktopAppServer',
-          activeTurnId: 'turn-a',
-          controlState: 'steerable',
-          authorityGeneration: 'daemon:1',
-        ),
-        sourceFingerprint: 'bridge/source',
-      );
-      expect(cubit.state.entries.whereType<ServerChatEntry>(), hasLength(1));
-
-      cubit.updateDetachedProviderStatus(
-        const ConversationSyncV2Status(
-          provider: 'codex',
-          providerSessionId: 'durable-thread',
-          activity: 'working',
-          attention: 'none',
-          result: 'none',
-          runtimeAttachment: 'loaded',
-          source: 'appServer',
-          confidence: 'authoritative',
-          observedAt: '2026-08-10T01:03:02.000Z',
-          executionHost: 'desktopAppServer',
-          activeTurnId: 'turn-b',
-          controlState: 'steerable',
-          authorityGeneration: 'daemon:1',
-        ),
-        sourceFingerprint: 'bridge/source',
-      );
-      expect(cubit.state.entries.whereType<ServerChatEntry>(), isEmpty);
-    });
+        mockBridge.bridgeId = 'bridge-a';
+        mockBridge.sourceId = 'source-a';
+        runtimeOverlays.add(
+          const ConversationSyncV2EventMessage(
+            event: ConversationSyncV2EventKind.runtimeOverlay,
+            subscriptionId: 'subscription-source-fence',
+            bridgeInstanceId: 'bridge-a',
+            codexSourceId: 'source-a',
+            batchId: 'batch-source-fence',
+            sequence: 2,
+            provider: 'codex',
+            providerSessionId: 'durable-source-fence',
+            overlayId: 'overlay-after-source-identity',
+            observedAt: '2026-08-10T01:02:12.000Z',
+            originGeneration: 'observer:1:1',
+            runtimeSessionId: 'observer:1:1',
+            authorityGeneration: 'daemon:1',
+            turnId: 'turn-source-fence',
+            overlayMessage: ErrorMessage(message: 'identity confirmed'),
+          ),
+        );
+        await pumpEventQueue();
+        expect(cubit.state.entries.whereType<ServerChatEntry>(), hasLength(1));
+      },
+    );
 
     test(
-      'runtime overlay may arrive before its matching attachment snapshot',
+      'turnless runtime overlay is rejected even with current authority',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+          conversationRuntimeOverlayCapability,
+        };
+        final runtimeOverlays =
+            StreamController<ConversationSyncV2EventMessage>.broadcast();
+        addTearDown(runtimeOverlays.close);
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-thread',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          detachedRuntimeOverlayStream: runtimeOverlays.stream,
+        );
+        addTearDown(cubit.close);
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-thread',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-10T01:02:59.000Z',
+            executionHost: 'desktopAppServer',
+            activeTurnId: 'turn-a',
+            controlState: 'steerable',
+            authorityGeneration: 'daemon:1',
+          ),
+          sourceFingerprint: 'bridge/source',
+        );
+
+        runtimeOverlays.add(
+          const ConversationSyncV2EventMessage(
+            event: ConversationSyncV2EventKind.runtimeOverlay,
+            subscriptionId: 'subscription-a',
+            bridgeInstanceId: 'bridge-a',
+            codexSourceId: 'source-a',
+            batchId: 'batch-a',
+            sequence: 1,
+            provider: 'codex',
+            providerSessionId: 'durable-thread',
+            overlayId: 'overlay-turnless',
+            observedAt: '2026-08-10T01:03:00.000Z',
+            originGeneration: 'observer:1:1',
+            runtimeSessionId: 'observer:1:1',
+            authorityGeneration: 'daemon:1',
+            overlayMessage: ErrorMessage(message: 'turnless warning'),
+          ),
+        );
+        await pumpEventQueue();
+        expect(cubit.state.entries.whereType<ServerChatEntry>(), isEmpty);
+      },
+    );
+
+    test(
+      'runtime overlay is rejected until attachment and authority are current',
       () async {
         mockBridge.advertisedBridgeCapabilities = const {
           conversationSyncV2Capability,
@@ -2140,10 +2250,10 @@ void main() {
           ),
         );
         await pumpEventQueue();
-        expect(cubit.state.entries.whereType<ServerChatEntry>(), hasLength(1));
+        expect(cubit.state.entries.whereType<ServerChatEntry>(), isEmpty);
 
         cubit.updateDetachedLiveRuntime('runtime-a');
-        expect(cubit.state.entries.whereType<ServerChatEntry>(), hasLength(1));
+        expect(cubit.state.entries.whereType<ServerChatEntry>(), isEmpty);
 
         cubit.updateDetachedProviderStatus(
           const ConversationSyncV2Status(
@@ -2163,6 +2273,26 @@ void main() {
           ),
           sourceFingerprint: 'bridge/source',
         );
+        runtimeOverlays.add(
+          const ConversationSyncV2EventMessage(
+            event: ConversationSyncV2EventKind.runtimeOverlay,
+            subscriptionId: 'subscription-a',
+            bridgeInstanceId: 'bridge-a',
+            codexSourceId: 'source-a',
+            batchId: 'batch-a',
+            sequence: 2,
+            provider: 'codex',
+            providerSessionId: 'durable-thread',
+            overlayId: 'overlay-after-attachment',
+            observedAt: '2026-08-10T01:03:02.000Z',
+            originGeneration: 'runtime:runtime-a:authority-a',
+            runtimeSessionId: 'runtime-a',
+            authorityGeneration: 'authority-a',
+            turnId: 'turn-a',
+            overlayMessage: ErrorMessage(message: 'runtime warning'),
+          ),
+        );
+        await pumpEventQueue();
         expect(cubit.state.entries.whereType<ServerChatEntry>(), hasLength(1));
 
         cubit.updateDetachedLiveRuntime('runtime-b');
@@ -2247,6 +2377,24 @@ void main() {
         detachedRuntimeOverlayStream: runtimeOverlays.stream,
       );
       addTearDown(cubit.close);
+      cubit.updateDetachedProviderStatus(
+        const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'durable-thread',
+          activity: 'working',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-08-10T01:03:19.000Z',
+          executionHost: 'desktopAppServer',
+          activeTurnId: 'turn-a',
+          controlState: 'steerable',
+          authorityGeneration: 'authority-a',
+        ),
+        sourceFingerprint: 'bridge/source',
+      );
 
       runtimeOverlays.add(
         const ConversationSyncV2EventMessage(
@@ -2261,6 +2409,7 @@ void main() {
           overlayId: 'overlay-before-suspend',
           observedAt: '2026-08-10T01:03:20.000Z',
           originGeneration: 'observer:1:1',
+          runtimeSessionId: 'observer:1:1',
           authorityGeneration: 'authority-a',
           turnId: 'turn-a',
           overlayMessage: ErrorMessage(message: 'transient warning'),
@@ -2348,7 +2497,9 @@ void main() {
             overlayId: 'overlay-stale-nested-turn',
             observedAt: '2026-08-10T01:04:01.500Z',
             originGeneration: 'observer:1:1',
+            runtimeSessionId: 'observer:1:1',
             authorityGeneration: 'authority-a',
+            turnId: 'turn-a',
             overlayMessage: ErrorMessage(
               message: 'stale nested turn warning',
               historyTurnId: 'turn-old',
@@ -2451,6 +2602,24 @@ void main() {
         detachedRuntimeOverlayStream: runtimeOverlays.stream,
       );
       addTearDown(cubit.close);
+      cubit.updateDetachedProviderStatus(
+        const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'durable-thread',
+          activity: 'working',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-08-10T01:04:59.000Z',
+          executionHost: 'desktopAppServer',
+          activeTurnId: 'turn-a',
+          controlState: 'steerable',
+          authorityGeneration: 'daemon:1',
+        ),
+        sourceFingerprint: 'bridge/source',
+      );
       for (var index = 0; index < 40; index++) {
         runtimeOverlays.add(
           ConversationSyncV2EventMessage(
@@ -2465,6 +2634,7 @@ void main() {
             overlayId: 'overlay-$index',
             observedAt: '2026-08-10T01:05:00.000Z',
             originGeneration: 'observer:1:1',
+            runtimeSessionId: 'observer:1:1',
             authorityGeneration: 'daemon:1',
             turnId: 'turn-a',
             overlayMessage: ErrorMessage(message: 'warning-$index'),
@@ -2484,6 +2654,7 @@ void main() {
           overlayId: 'overlay-large-a',
           observedAt: '2026-08-10T01:05:01.000Z',
           originGeneration: 'observer:1:1',
+          runtimeSessionId: 'observer:1:1',
           authorityGeneration: 'daemon:1',
           turnId: 'turn-a',
           overlayMessage: ErrorMessage(message: 'a' * 40000),
@@ -2502,6 +2673,7 @@ void main() {
           overlayId: 'overlay-large-b',
           observedAt: '2026-08-10T01:05:02.000Z',
           originGeneration: 'observer:1:1',
+          runtimeSessionId: 'observer:1:1',
           authorityGeneration: 'daemon:1',
           turnId: 'turn-a',
           overlayMessage: ErrorMessage(message: 'b' * 40000),
@@ -11292,6 +11464,142 @@ void main() {
         expect(users, hasLength(1));
         expect(users.single.clientMessageId, clientMessageId);
         expect(users.single.providerItemId, 'provider-user-canonical-receipt');
+      },
+    );
+
+    test(
+      'restored failure cannot downgrade an already canonical exact user row',
+      () async {
+        SharedPreferences.setMockInitialValues({});
+        final prefs = await SharedPreferences.getInstance();
+        final drafts = DraftService(prefs);
+        const clientMessageId = 'canonical-before-restore-client-id';
+        await drafts.savePendingSubmission(
+          'durable-canonical-before-restore',
+          PendingChatSubmissionDraft(
+            clientMessageId: clientMessageId,
+            text: 'Canonical before restore',
+          ),
+        );
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-canonical-before-restore',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          outgoingDrafts: drafts,
+          initialHistoryMessages: const [
+            UserInputMessage(
+              text: 'Canonical before restore',
+              clientMessageId: clientMessageId,
+              providerItemId: 'provider-canonical-before-restore',
+              historyTurnId: 'turn-canonical-before-restore',
+            ),
+          ],
+        );
+        addTearDown(cubit.close);
+
+        expect(
+          cubit.restoreFailedSubmission(
+            'Canonical before restore',
+            clientMessageId: clientMessageId,
+          ),
+          isFalse,
+        );
+
+        final users = cubit.state.entries.whereType<UserChatEntry>().toList();
+        expect(users, hasLength(1));
+        expect(users.single.clientMessageId, clientMessageId);
+        expect(
+          users.single.providerItemId,
+          'provider-canonical-before-restore',
+        );
+        expect(users.single.status, MessageStatus.sent);
+        expect(
+          drafts.getPendingSubmission('durable-canonical-before-restore'),
+          isNull,
+        );
+      },
+    );
+
+    test(
+      'runtime rebinding fails an unconfirmed input instead of leaving it spinning',
+      () async {
+        SharedPreferences.setMockInitialValues({});
+        final prefs = await SharedPreferences.getInstance();
+        final drafts = DraftService(prefs);
+        const clientMessageId = 'runtime-rebind-unconfirmed-client-id';
+        await drafts.savePendingSubmission(
+          'durable-runtime-rebind',
+          PendingChatSubmissionDraft(
+            clientMessageId: clientMessageId,
+            text: 'Do not strand this input',
+          ),
+        );
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-runtime-rebind',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-before-rebind',
+          outgoingDrafts: drafts,
+        );
+        addTearDown(cubit.close);
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-runtime-rebind',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'bridgeRuntime',
+            confidence: 'authoritative',
+            observedAt: '2026-08-14T06:00:00.000Z',
+            executionHost: 'bridge',
+            controlState: 'writable',
+            authorityGeneration: 'authority-before-rebind',
+          ),
+          sourceFingerprint: 'bridge/source',
+        );
+
+        expect(
+          cubit.sendMessage(
+            'Do not strand this input',
+            clientMessageId: clientMessageId,
+          ),
+          isTrue,
+        );
+        expect(
+          cubit.state.entries.singleOrNull,
+          isA<UserChatEntry>().having(
+            (entry) => entry.status,
+            'status',
+            MessageStatus.sending,
+          ),
+        );
+
+        cubit.updateDetachedLiveRuntime('runtime-after-rebind');
+        await pumpEventQueue();
+
+        final user = cubit.state.entries.whereType<UserChatEntry>().single;
+        expect(user.clientMessageId, clientMessageId);
+        expect(user.status, MessageStatus.failed);
+        expect(
+          drafts.getPendingSubmission('durable-runtime-rebind')?.lastError,
+          'runtime_binding_changed_before_receipt',
+        );
+        expect(
+          mockBridge.deliveryPendingInputsForSession('runtime-before-rebind'),
+          isEmpty,
+        );
       },
     );
 

@@ -1138,6 +1138,9 @@ void _validateConversationSyncEvent(ConversationSyncV2EventMessage message) {
           message.overlayId == null ||
           message.observedAt == null ||
           message.originGeneration == null ||
+          message.runtimeSessionId == null ||
+          message.authorityGeneration == null ||
+          message.turnId == null ||
           message.overlayMessage == null) {
         throw const FormatException('Runtime overlay is incomplete.');
       }

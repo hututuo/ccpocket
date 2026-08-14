@@ -625,6 +625,45 @@ void main() {
       throwsFormatException,
     );
   });
+
+  test(
+    'runtime overlay requires every source runtime authority and turn fence',
+    () {
+      final complete = <String, dynamic>{
+        ..._baseFrame,
+        'event': 'runtime_overlay',
+        'provider': 'codex',
+        'providerSessionId': 'thread-overlay',
+        'overlayId': 'overlay-1',
+        'observedAt': '2026-08-14T00:00:00.000Z',
+        'originGeneration': 'observer:1:2',
+        'runtimeSessionId': 'observer:1:2',
+        'authorityGeneration': 'daemon:1',
+        'turnId': 'turn-overlay',
+        'message': const {'type': 'error', 'message': 'runtime warning'},
+      };
+      final decoded =
+          ServerMessage.fromJson(complete) as ConversationSyncV2EventMessage;
+      expect(decoded.runtimeSessionId, 'observer:1:2');
+      expect(decoded.authorityGeneration, 'daemon:1');
+      expect(decoded.turnId, 'turn-overlay');
+
+      for (final requiredFence in [
+        'originGeneration',
+        'runtimeSessionId',
+        'authorityGeneration',
+        'turnId',
+      ]) {
+        final incomplete = Map<String, dynamic>.of(complete)
+          ..remove(requiredFence);
+        expect(
+          () => ServerMessage.fromJson(incomplete),
+          throwsFormatException,
+          reason: requiredFence,
+        );
+      }
+    },
+  );
 }
 
 const _baseFrame = <String, dynamic>{

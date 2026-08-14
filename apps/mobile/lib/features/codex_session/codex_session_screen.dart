@@ -1033,7 +1033,6 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   }
 
   void _restoreDeferredSubmission() {
-    if (!_isPending) return;
     final durableId = widget.durableProviderSessionId;
     if (durableId == null || durableId.isEmpty) return;
     final submission = _draftService.getPendingSubmission(durableId);
@@ -1051,7 +1050,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   }
 
   bool _retryPersistedSubmission(UserChatEntry entry, ChatSessionCubit cubit) {
-    if (!_isPending || _deferredSubmission != null) return false;
+    if (_deferredSubmission != null) return false;
     final durableId = widget.durableProviderSessionId?.trim();
     final clientMessageId = entry.clientMessageId?.trim();
     if (durableId?.isNotEmpty != true || clientMessageId?.isNotEmpty != true) {
@@ -1077,6 +1076,22 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       mentionablePaths: pending.mentionablePaths,
       additionalMentions: pending.additionalMentions,
     );
+    if (!_isPending) {
+      final accepted = cubit.sendMessage(
+        submission.text,
+        clientMessageId: submission.clientMessageId,
+        images: submission.images,
+        mentionablePaths: submission.mentionablePaths,
+        additionalMentions: submission.additionalMentions,
+      );
+      if (!accepted) return false;
+      if (mounted) {
+        setState(() => _restoredFailedSubmission = null);
+      } else {
+        _restoredFailedSubmission = null;
+      }
+      return true;
+    }
     if (!_queueDeferredSubmission(submission)) return false;
     unawaited(
       _draftService.savePendingSubmission(

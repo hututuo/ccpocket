@@ -1107,14 +1107,16 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       );
       const turnId = message.historyTurnId ?? runtimeState?.activeTurnId;
       const authorityGeneration = runtimeState?.authorityGeneration;
-      this.publishRuntimeOverlay(target, {
-        message,
-        observedAt,
-        ...(turnId ? { turnId } : {}),
-        originGeneration: `runtime:${session.id}:${authorityGeneration ?? "unknown"}`,
-        runtimeSessionId: session.id,
-        ...(authorityGeneration ? { authorityGeneration } : {}),
-      });
+      if (turnId && authorityGeneration) {
+        this.publishRuntimeOverlay(target, {
+          message,
+          observedAt,
+          turnId,
+          originGeneration: `runtime:${session.id}:${authorityGeneration}`,
+          runtimeSessionId: session.id,
+          authorityGeneration,
+        });
+      }
     }
     if (!this.hasInteractiveClients()) return;
 
@@ -1513,16 +1515,20 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       const key = targetKey(target);
       const projectedTurnId =
         event.turnId ?? this.sharedRuntimeStatuses.get(key)?.activeTurnId;
-      this.publishRuntimeOverlay(target, {
-        message,
-        observedAt: event.observedAt,
-        ...(projectedTurnId ? { turnId: projectedTurnId } : {}),
-        originGeneration:
-          `observer:${event.connectionGeneration}:${event.observerGeneration}`,
-        authorityGeneration: sharedControlAuthorityGeneration(
-          event.connectionGeneration,
-        ),
-      });
+      if (projectedTurnId) {
+        const observerGeneration =
+          `observer:${event.connectionGeneration}:${event.observerGeneration}`;
+        this.publishRuntimeOverlay(target, {
+          message,
+          observedAt: event.observedAt,
+          turnId: projectedTurnId,
+          originGeneration: observerGeneration,
+          runtimeSessionId: observerGeneration,
+          authorityGeneration: sharedControlAuthorityGeneration(
+            event.connectionGeneration,
+          ),
+        });
+      }
     }
     if (message.type === "result") {
       const terminal = terminalResultFromServerMessage(message);
@@ -1583,10 +1589,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     input: {
       message: ConversationRuntimeOverlayMessage;
       observedAt: string;
-      turnId?: string;
+      turnId: string;
       originGeneration: string;
-      runtimeSessionId?: string;
-      authorityGeneration?: string;
+      runtimeSessionId: string;
+      authorityGeneration: string;
     },
   ): void {
     const key = targetKey(target);
@@ -1619,13 +1625,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         overlayId,
         observedAt: input.observedAt,
         originGeneration: input.originGeneration,
-        ...(input.runtimeSessionId
-          ? { runtimeSessionId: input.runtimeSessionId }
-          : {}),
-        ...(input.authorityGeneration
-          ? { authorityGeneration: input.authorityGeneration }
-          : {}),
-        ...(input.turnId ? { turnId: input.turnId } : {}),
+        runtimeSessionId: input.runtimeSessionId,
+        authorityGeneration: input.authorityGeneration,
+        turnId: input.turnId,
         message: input.message,
       };
       const bytes = this.eventPayloadBytes(subscription, payload);

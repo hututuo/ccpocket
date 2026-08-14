@@ -257,11 +257,15 @@ export type ConversationSyncServerMessage =
         observedAt: string;
         /** Producer lifecycle fence; changes when observer/runtime is replaced. */
         originGeneration: string;
-        /** Exact runtime attachment when the overlay came from SessionManager. */
-        runtimeSessionId?: string;
-        /** Authority fence shared with the status projection when available. */
-        authorityGeneration?: string;
-        turnId?: string;
+        /**
+         * Exact producer attachment. SessionManager uses its runtime session
+         * ID; the shared observer uses its opaque observer generation.
+         */
+        runtimeSessionId: string;
+        /** Authority fence shared with the current status projection. */
+        authorityGeneration: string;
+        /** Exact provider turn that owns this transient overlay. */
+        turnId: string;
         message: ConversationRuntimeOverlayMessage;
       })
   | (ConversationSyncEventBase & {

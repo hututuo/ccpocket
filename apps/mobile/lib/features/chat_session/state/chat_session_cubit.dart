@@ -1252,10 +1252,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     final bridgeInstanceId = _bridge.bridgeInstanceId?.trim();
     final codexSourceId = _bridge.codexSourceId?.trim();
-    if ((bridgeInstanceId?.isNotEmpty == true &&
-            event.bridgeInstanceId != bridgeInstanceId) ||
-        (codexSourceId?.isNotEmpty == true &&
-            event.codexSourceId != codexSourceId)) {
+    if (bridgeInstanceId?.isNotEmpty != true ||
+        codexSourceId?.isNotEmpty != true ||
+        event.bridgeInstanceId != bridgeInstanceId ||
+        event.codexSourceId != codexSourceId) {
       _detachedRejectedRuntimeOverlayCount += 1;
       return;
     }
@@ -1264,9 +1264,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final originGeneration = event.originGeneration?.trim();
     final eventRuntimeSessionId = event.runtimeSessionId?.trim();
     final eventAuthorityGeneration = event.authorityGeneration?.trim();
+    final eventTurnId = event.turnId?.trim();
     if (overlayId == null ||
         message == null ||
-        originGeneration?.isNotEmpty != true) {
+        originGeneration?.isNotEmpty != true ||
+        eventRuntimeSessionId?.isNotEmpty != true ||
+        eventAuthorityGeneration?.isNotEmpty != true ||
+        eventTurnId?.isNotEmpty != true) {
       _detachedRejectedRuntimeOverlayCount += 1;
       return;
     }
@@ -1275,30 +1279,32 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return;
     }
     final liveRuntimeSessionId = _detachedLiveRuntimeSessionId?.trim();
-    if (eventRuntimeSessionId?.isNotEmpty == true &&
-        liveRuntimeSessionId?.isNotEmpty == true &&
-        eventRuntimeSessionId != liveRuntimeSessionId) {
+    final sharedObserver = originGeneration.startsWith('observer:');
+    final runtimeFenceMatches = sharedObserver
+        ? eventRuntimeSessionId == originGeneration
+        : liveRuntimeSessionId?.isNotEmpty == true &&
+              eventRuntimeSessionId == liveRuntimeSessionId;
+    if (!runtimeFenceMatches) {
       _detachedRejectedRuntimeOverlayCount += 1;
       return;
     }
     final currentAuthorityGeneration = _detachedAuthorityGeneration?.trim();
-    if (eventAuthorityGeneration?.isNotEmpty == true &&
-        currentAuthorityGeneration?.isNotEmpty == true &&
+    if (currentAuthorityGeneration?.isNotEmpty != true ||
         eventAuthorityGeneration != currentAuthorityGeneration) {
       _detachedRejectedRuntimeOverlayCount += 1;
       return;
     }
-    if (eventAuthorityGeneration?.isNotEmpty == true &&
-        eventAuthorityGeneration == _detachedRejectedAuthorityGeneration) {
+    if (eventAuthorityGeneration == _detachedRejectedAuthorityGeneration) {
       _detachedRejectedRuntimeOverlayCount += 1;
       return;
     }
     final activeTurnId = _detachedActiveTurnId?.trim();
-    final eventTurnId =
-        (event.turnId ?? _detachedRuntimeOverlayMessageTurnId(message))?.trim();
-    if (activeTurnId?.isNotEmpty == true &&
-        eventTurnId?.isNotEmpty == true &&
-        activeTurnId != eventTurnId) {
+    if (activeTurnId?.isNotEmpty != true || activeTurnId != eventTurnId) {
+      _detachedRejectedRuntimeOverlayCount += 1;
+      return;
+    }
+    final messageTurnId = _detachedRuntimeOverlayMessageTurnId(message)?.trim();
+    if (messageTurnId?.isNotEmpty == true && messageTurnId != eventTurnId) {
       _detachedRejectedRuntimeOverlayCount += 1;
       return;
     }
@@ -1322,22 +1328,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     } else {
       _onMessage(message);
     }
-    // The observer event can legitimately beat the authoritative status
-    // projection. Preserve its explicit turn identity so the later status can
-    // validate it instead of treating the temporarily unknown activity as
-    // evidence that this overlay is stale.
-    if (eventTurnId?.isNotEmpty == true &&
-        _detachedRuntimeOverlayGeneration == _detachedLiveRuntimeGeneration) {
+    if (_detachedRuntimeOverlayGeneration == _detachedLiveRuntimeGeneration) {
       _detachedRuntimeOverlayTurnId = eventTurnId;
     }
-    _detachedRuntimeOverlayAuthorityGeneration =
-        eventAuthorityGeneration?.isNotEmpty == true
-        ? eventAuthorityGeneration
-        : null;
-    _detachedRuntimeOverlayRuntimeSessionId =
-        eventRuntimeSessionId?.isNotEmpty == true
-        ? eventRuntimeSessionId
-        : null;
+    _detachedRuntimeOverlayAuthorityGeneration = eventAuthorityGeneration;
+    _detachedRuntimeOverlayRuntimeSessionId = eventRuntimeSessionId;
     _trimDetachedRuntimeOverlayEntries();
   }
 
@@ -1416,6 +1411,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     _clearDetachedRuntimeTransients(
       previousRuntimeSessionId,
+      unconfirmedInputFailureReason: 'runtime_binding_changed_before_receipt',
       preserveProviderProjection: true,
       preserveVisualTimeline: true,
       preserveRuntimeOverlay: adoptsMatchingRuntimeOverlay,
@@ -1826,15 +1822,22 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (isClosed || connectionState != BridgeConnectionState.disconnected) {
       return;
     }
+    _failDetachedUnconfirmedInputs(
+      'bridge_disconnected_before_receipt',
+      bridgeSessionId: _detachedLiveRuntimeSessionId ?? sessionId,
+    );
+  }
+
+  void _failDetachedUnconfirmedInputs(
+    String reason, {
+    required String bridgeSessionId,
+  }) {
     final unconfirmedClientIds = _deliveryPendingInputs.keys.toSet();
     if (unconfirmedClientIds.isEmpty) return;
     for (final clientMessageId in unconfirmedClientIds) {
-      _markOutgoingDraftFailed(
-        clientMessageId,
-        'bridge_disconnected_before_receipt',
-      );
+      _markOutgoingDraftFailed(clientMessageId, reason);
       _bridge.clearDeliveryPendingInput(
-        _detachedLiveRuntimeSessionId ?? sessionId,
+        bridgeSessionId,
         itemId: '$deliveryPendingQueuedInputPrefix$clientMessageId',
       );
     }
@@ -1872,19 +1875,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   void _clearDetachedRuntimeTransients(
     String? previousRuntimeSessionId, {
+    required String unconfirmedInputFailureReason,
     bool preserveProviderProjection = false,
     bool preserveVisualTimeline = false,
     bool preserveRuntimeOverlay = false,
   }) {
-    if (previousRuntimeSessionId != null) {
-      for (final item in _deliveryPendingInputs.values) {
-        _bridge.clearDeliveryPendingInput(
-          previousRuntimeSessionId,
-          itemId: item.itemId,
-        );
-      }
-    }
-    _deliveryPendingInputs.clear();
+    _failDetachedUnconfirmedInputs(
+      unconfirmedInputFailureReason,
+      bridgeSessionId: previousRuntimeSessionId ?? sessionId,
+    );
     _setAuthoritativeQueuedInputs(const [], 1);
     _pendingPermissionRequests.clear();
     _clearPendingPermissionModeRollback(_pendingPermissionChangeId);
@@ -2446,6 +2445,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     _clearDetachedRuntimeTransients(
       _detachedLiveRuntimeSessionId,
+      unconfirmedInputFailureReason: 'source_identity_changed_before_receipt',
       // The first authoritative fingerprint confirms the provisional route;
       // it is not evidence that the already visible live stream came from a
       // different source. Two known, unequal fingerprints are a real source
@@ -2666,30 +2666,30 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return;
     }
     final overlayRuntimeSessionId = _detachedRuntimeOverlayRuntimeSessionId;
-    if (overlayRuntimeSessionId?.isNotEmpty == true &&
-        overlayRuntimeSessionId != _detachedLiveRuntimeSessionId) {
+    final originGeneration = _detachedRuntimeOverlayOriginGeneration;
+    final sharedObserver = originGeneration?.startsWith('observer:') == true;
+    final runtimeFenceMatches = sharedObserver
+        ? overlayRuntimeSessionId == originGeneration
+        : overlayRuntimeSessionId?.isNotEmpty == true &&
+              overlayRuntimeSessionId == _detachedLiveRuntimeSessionId;
+    if (!runtimeFenceMatches) {
       _clearDetachedRuntimeOverlay();
       return;
     }
     final overlayAuthorityGeneration =
         _detachedRuntimeOverlayAuthorityGeneration;
-    if (overlayAuthorityGeneration?.isNotEmpty == true &&
-        authorityGeneration?.isNotEmpty == true &&
+    if (overlayAuthorityGeneration?.isNotEmpty != true ||
+        authorityGeneration?.isNotEmpty != true ||
         overlayAuthorityGeneration != authorityGeneration) {
       _clearDetachedRuntimeOverlay();
       return;
     }
-    if (!active || activeTurnId?.isNotEmpty != true) return;
-    final overlayTurnId = _detachedRuntimeOverlayTurnId;
-    if (overlayTurnId == null) {
-      // A validated overlay can beat the status page on the same ordered v2
-      // subscription. Unknown activity is not proof that the event is stale;
-      // bind a turnless overlay to the first authoritative active turn, then
-      // enforce exact equality on every subsequent status update.
-      _detachedRuntimeOverlayTurnId = activeTurnId;
+    if (!active || activeTurnId?.isNotEmpty != true) {
+      _clearDetachedRuntimeOverlay();
       return;
     }
-    if (overlayTurnId != activeTurnId) {
+    final overlayTurnId = _detachedRuntimeOverlayTurnId;
+    if (overlayTurnId?.isNotEmpty != true || overlayTurnId != activeTurnId) {
       _clearDetachedRuntimeOverlay();
     }
   }
@@ -2940,6 +2940,21 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final entries = List<ChatEntry>.of(state.entries);
     final existing = entries[existingIndex];
     if (existing is UserChatEntry) {
+      final canonicalAlreadyCommitted =
+          existing.status == MessageStatus.sent ||
+          existing.providerItemId?.trim().isNotEmpty == true ||
+          existing.historyTurnId?.trim().isNotEmpty == true ||
+          existing.messageUuid?.trim().isNotEmpty == true;
+      if (canonicalAlreadyCommitted) {
+        _detachedLocalOverlayClientIds.remove(normalizedClientMessageId);
+        _logOutgoingReceipt(
+          'restore_skipped_canonical',
+          normalizedClientMessageId,
+          cleared: _clearOutgoingDraft(normalizedClientMessageId),
+        );
+        _detachedProjectionLastAction = 'outgoing_restore_skipped_canonical';
+        return false;
+      }
       entries[existingIndex] = UserChatEntry(
         existing.text.isEmpty ? text : existing.text,
         sessionId: existing.sessionId ?? sessionId,
@@ -8111,7 +8126,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }) {
     logger.warning(
       '[session:$sessionId] Failed to prepare or send input '
-      'clientMessageId=$clientMessageId',
+      'client=${diagnosticToken('client', clientMessageId)}',
       error,
       stackTrace,
     );

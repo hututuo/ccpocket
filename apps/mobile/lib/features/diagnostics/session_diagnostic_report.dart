@@ -21,6 +21,7 @@ import '../file_browser/file_mutation_authorization.dart';
 import '../file_transfer/file_transfer_service.dart';
 import '../session_list/cache/session_catalog_cache_repository.dart';
 import '../session_list/state/session_list_cubit.dart';
+import '../../utils/diagnostic_token.dart';
 import 'diagnostic_sanitizer.dart';
 import 'home_diagnostic_projection.dart';
 
@@ -435,7 +436,10 @@ class SessionDiagnosticReportBuilder {
               : <String, Object?>{
                   'exists': true,
                   'state': pendingEntry?.status.name ?? 'failed_unconfirmed',
-                  'clientMessageId': pendingSubmission.clientMessageId,
+                  'clientMessageToken': diagnosticToken(
+                    'client',
+                    pendingSubmission.clientMessageId,
+                  ),
                   'createdAt': pendingSubmission.createdAt.toIso8601String(),
                   'lastAttemptAt': pendingSubmission.lastAttemptAt
                       ?.toIso8601String(),
