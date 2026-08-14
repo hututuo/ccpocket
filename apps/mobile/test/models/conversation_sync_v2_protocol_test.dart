@@ -448,6 +448,29 @@ void main() {
       }),
       throwsFormatException,
     );
+    expect(
+      () => ServerMessage.fromJson({
+        ..._baseFrame,
+        'event': 'turns_page_response',
+        'requestId': 'request-3',
+        'provider': 'codex',
+        'providerSessionId': 'thread-1',
+        'data': [
+          {
+            'turnId': 'turn-envelope',
+            'messages': [
+              {
+                'type': 'user_input',
+                'text': 'Wrong turn',
+                'historyTurnId': 'turn-message',
+              },
+            ],
+          },
+        ],
+        'nextCursor': null,
+      }),
+      throwsFormatException,
+    );
   });
 
   test('decodes latest-turn repair metadata without reusing older cursor', () {
