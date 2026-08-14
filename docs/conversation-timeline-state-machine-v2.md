@@ -759,3 +759,67 @@ stable ID 或待释放 runtime overlay。
 
 源码行为提交为 `1fcb7995`；最终文档提交不改变运行代码。以上均是源码/桌面自动验证，不代表
 Bridge 已部署、IPA 已构建或真机已经验收。
+
+### 10.7 最终生命周期与身份加固
+
+在上述主重构之后，最终源码又闭合了六个会在页面切换、重连和分页时破坏单写入语义的边界：
+
+1. **同一 durable outbox key**：Codex durable 会话统一使用 provider thread ID 保存发送恢复
+   记录；runtime session key 会在挂接后原子迁移到 durable key。attached/private 会话仍使用
+   runtime session key，两条产品路径互不覆盖。`/compact`、`/plan`、`/goal` 等只在本机执行的
+   命令不写入 pending submission，重启后不会伪装成一条失败的普通用户消息。
+2. **attached 也不自动重放**：普通 attached input 在收到 Bridge receipt 前断线，会把同一个
+   气泡转为 failed；再次连接不会自动发送。用户显式重试继续复用原 `clientMessageId`。
+3. **分页保留 provider turn**：`turns_page_response` 现在要求每个 turn envelope 有非空
+   `turnId`，并给内部每条消息注入同一 `historyTurnId`；若消息自带不同 turn ID，协议层直接
+   拒绝该页。SQLite identity 因而按 `turn:<turnId>:<item identity>` 稳定作用域化，不再把不同
+   turn 中复用的 user/assistant/tool ID 合并。
+4. **退出页面的异步屏障**：同步服务登记所有已启动 SQLite read/mutation/user-index/repair
+   flight；dispose 等待这些工作收束，repository close 再等待 mutation tail、所有 read flight
+   和诊断写入，然后才关闭数据库。页面退出不再让后台 Future 访问已关闭 SQLite。
+5. **终止轮次 overlay fence**：Bridge 只为当前 active turn 且运行状态为 running、
+   waiting-approval 或 compacting 的正式 runtime frame 建立 overlay；terminal result 已写入
+   ledger 后，同 turn 的迟到 shared-observer frame 被丢弃。下一 turn 由 `turn/started` 清除旧
+   terminal fence，不会被误伤。
+6. **assistant 双身份收敛**：真实全量黑盒发现 runtime overlay 只有 `message.id`，SQLite
+   canonical 同一条目同时携带 `messageUuid` 时，旧 reducer 分别选择两个 alias，导致 canonical
+   commit 后仍保留 overlay 副本。detached/shared 现在在同一 turn 内同时登记精确 id/uuid alias；
+   attached/private 继续保留 unscoped identity upgrade。修复后的真实 Bridge→SQLite→Cubit→
+   layout 轨迹在 live、canonical commit、第二段和 final 各阶段均只有一个条目。
+
+当前 v2 wire 不再为缺失 turn identity 的旧分页输入提供“猜测性兼容”。repository 仍对直接
+进入的无 turn 测试数据使用 page/occurrence fail-open，以保存每一条事实而不是跨页误合并；
+该 fallback 不具有跨页稳定身份保证，也不会从正式 `turns_page_response` 进入。attached/private
+时间线仍保留其独立 legacy alias 逻辑，本轮 SSOT reducer 只替换 detached/shared durable 路径，
+避免把两套运行语义再次混成一个 writer。
+
+对应源码提交：
+
+```text
+7032bf7d fix(mobile): enforce timeline and outbox lifecycle fences
+ea687f6e fix(bridge): reject stale runtime overlay frames
+5e7bcefe test(mobile): reject cross-turn page identities
+65c821bb fix(mobile): reconcile runtime and canonical assistant aliases
+ce4f9cde test(bridge): isolate catalog watcher lifecycle
+```
+
+最终门禁：
+
+- Mobile 协议、SQLite、同步服务、Cubit、输入组件与真实 headless 链：412/412 通过；
+- turn identity 协议单测：15/15 通过，包含 envelope/message 交叉 turn 拒绝；
+- assistant identity 定向 Cubit + reducer + 真实 Bridge live-segment 黑盒：249/249 通过；
+- Bridge conversation sync 定向：177/177 通过，TypeScript/native helper build 通过；
+- Mobile fresh 全量：3,198 passed、4 skipped、0 failed，耗时 317.07 秒；4 个 skip 均为
+  未配置 SSH smoke 环境变量；
+- Bridge fresh unsandboxed 单 worker：119 files passed、1 skipped；2,496 tests passed、
+  1 skipped，Vitest 73.97 秒、外层 80.07 秒；
+- Flutter analyze：0 error、0 warning，55 个仓库既有 info；
+- Bridge build、native helper、显式 `tsc --noEmit` 和 `git diff --check` 通过；
+- 独立 Luna Max 复核没有发现新的 P0/P1；no-turn direct repository 输入仅登记为非生产兼容边界。
+
+第一次 Mobile 全量确实拦截到 assistant id/uuid alias 分裂，而不是沿用定向测试的假绿结论；
+第一次 Bridge 全量的唯一 `session-catalog-monitor` 超时也在无 Mobile 并发时复现。该测试历史上
+把 macOS `fs.watch` 是否投递与 debounce/close 生命周期混为一个断言，曾两次靠延长时间修补。
+现在只有 lifecycle 用注入 watcher 确定性验证，其余 8 项仍使用真实 `fs.watch`；定向测试连续
+8 轮均 9/9 通过，随后 fresh Bridge 全量通过。以上最终数字对应行为 HEAD `ce4f9cde`；Mobile
+产品源码自 `65c821bb` 后未再变化。
