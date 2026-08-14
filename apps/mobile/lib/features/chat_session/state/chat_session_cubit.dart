@@ -10536,6 +10536,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// do nothing.
   bool retryMessage(
     UserChatEntry entry, {
+    String? text,
     List<ChatImageAttachment>? images,
     Iterable<String>? mentionablePaths,
     Iterable<Map<String, String>>? additionalMentions,
@@ -10550,12 +10551,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (detachedPreview) {
       _rememberDetachedLocalOverlayClientId(clientMessageId);
     }
+    final retryText = text ?? entry.text;
     final retrySessionId = runtimeLease.sessionId;
     final isOffline = !_bridge.isConnected;
     final retryImages = images?.toList(growable: false) ?? const [];
     final structuredMentions = isCodex
         ? _extractCodexStructuredInputs(
-            entry.text,
+            retryText,
             mentionablePaths: mentionablePaths,
             additionalMentions: additionalMentions,
           )
@@ -10569,7 +10571,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final deliveryPendingItem = isCodex && !isOffline
         ? QueuedInputItem(
             itemId: '$deliveryPendingQueuedInputPrefix$clientMessageId',
-            text: entry.text,
+            text: retryText,
             createdAt: DateTime.now().toUtc().toIso8601String(),
             clientMessageId: clientMessageId,
             imageCount: retryImages.isEmpty
@@ -10584,7 +10586,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         entries: state.entries.map((e) {
           if (identical(e, entry)) {
             return UserChatEntry(
-              entry.text,
+              retryText,
               sessionId: retrySessionId,
               clientMessageId: clientMessageId,
               providerItemId: entry.providerItemId,
@@ -10593,7 +10595,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                   ? entry.imageBytesList
                   : retryImages.map((image) => image.bytes).toList(),
               imageUrls: entry.imageUrls,
-              imageCount: entry.imageCount,
+              imageCount: retryImages.isEmpty
+                  ? entry.imageCount
+                  : retryImages.length,
               status: isOffline ? MessageStatus.queued : MessageStatus.sending,
               messageUuid: entry.messageUuid,
               timestamp: entry.timestamp,
@@ -10611,7 +10615,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _recordOutgoingDraftAttempt(clientMessageId);
     _dispatchInputInOrder(
       runtimeLease: runtimeLease,
-      text: entry.text,
+      text: retryText,
       clientMessageId: clientMessageId,
       baseSeq: baseSeq,
       images: retryImages,

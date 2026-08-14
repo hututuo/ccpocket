@@ -1079,6 +1079,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     if (!_isPending) {
       final accepted = cubit.retryMessage(
         entry,
+        text: submission.text,
         images: submission.images,
         mentionablePaths: submission.mentionablePaths,
         additionalMentions: submission.additionalMentions,

@@ -11337,6 +11337,76 @@ void main() {
     );
 
     test(
+      'persisted retry uses the durable draft payload over a stale presentation row',
+      () async {
+        mockBridge.advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+        };
+        final image = Uint8List.fromList([0x89, 0x50, 0x4e, 0x47]);
+        final cubit = ChatSessionCubit(
+          sessionId: 'durable-retry-authoritative-payload',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+          initialLiveRuntimeSessionId: 'runtime-retry-authoritative-payload',
+          imagePayloadEncoder: (images) async => [
+            for (final image in images)
+              {'base64': base64Encode(image.bytes), 'mimeType': image.mimeType},
+          ],
+        );
+        addTearDown(cubit.close);
+        cubit.updateDetachedProviderStatus(
+          const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'durable-retry-authoritative-payload',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'bridgeRuntime',
+            confidence: 'authoritative',
+            observedAt: '2026-08-14T04:44:00.000Z',
+            executionHost: 'bridge',
+            controlState: 'writable',
+            authorityGeneration: 'authority-retry-authoritative-payload',
+          ),
+          sourceFingerprint: 'bridge/source',
+        );
+        const clientMessageId = 'retry-authoritative-payload-client';
+        expect(
+          cubit.restoreFailedSubmission(
+            'stale presentation text',
+            clientMessageId: clientMessageId,
+          ),
+          isTrue,
+        );
+        final failed = cubit.state.entries.whereType<UserChatEntry>().single;
+
+        expect(
+          cubit.retryMessage(
+            failed,
+            text: 'durable draft text',
+            images: [(bytes: image, mimeType: 'image/png')],
+          ),
+          isTrue,
+        );
+        await pumpEventQueue();
+
+        final resent = jsonDecode(mockBridge.sentMessages.single.toJson());
+        expect(resent['text'], 'durable draft text');
+        expect(resent['clientMessageId'], clientMessageId);
+        expect(resent['images'], [
+          {'base64': 'iVBORw==', 'mimeType': 'image/png'},
+        ]);
+        final displayed = cubit.state.entries.whereType<UserChatEntry>().single;
+        expect(displayed.text, 'durable draft text');
+        expect(displayed.imageCount, 1);
+        expect(displayed.imageBytesList.single, image);
+      },
+    );
+
+    test(
       'unconfirmed draft survives local send, fails on disconnect, and clears only after Bridge ack',
       () async {
         SharedPreferences.setMockInitialValues({});
