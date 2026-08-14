@@ -1,7 +1,8 @@
 # CC Pocket 会话时间线状态机重建
 
-> 状态：源码实现、三链门禁、全量验证、性能扫描和独立终审均已完成（2026-08-11）；
-> 尚未部署 Bridge、构建/发布 IPA 或执行物理设备验收。
+> 状态：2026-08-14 已收束旧输入恢复、单写入时间线、Bridge authority 顺序屏障和
+> Mobile 最终投影；源码与桌面自动验证完成，尚未部署 Bridge、构建/发布 IPA 或执行
+> 物理设备验收。
 > 第 4 节记录修复前基线根因，第 9 节记录当前实现和实测证据。
 > 它不替代 `docs/PROJECT_HANDOFF.md`、`decisions.md`，也不把尚未验证的假设写成已完成结论。
 
@@ -72,7 +73,7 @@ connectionGeneration
 |---|---|---|---|
 | Provider | app-server turns/items、共享运行时事件 | 持久 turn/item、运行时增量 | 以标题合并线程 |
 | Bridge canonical | `conversation-sync-v2.ts` 的 provider reader | 有覆盖范围的 canonical window | 把 latest-turn-only 当完整 recent window |
-| Bridge overlay | Desktop/shared runtime observer | 尚未进入 provider history 的有界条目 | 永久并入 canonical base；重复累积同一 provider item |
+| Bridge overlay | Desktop/shared runtime observer | 尚未进入 provider history 的有界完成项与控制状态 | 永久并入 canonical base；重复累积同一 provider item |
 | Wire | `conversation_sync_v2` snapshot/patch | 带 revision、base、complete/gap 的事务 | 不完整批次发送 deletes 或无条件 replace |
 | SQLite | `SessionCatalogCacheRepository` | staging 完整后原子提交 | 非完整 snapshot 清空已提交窗口 |
 | Cubit | durable cache + bounded runtime/local overlays | 将 SQLite 窗口投影为稳定列表 | 让 runtime history 成为第二持久 writer |
@@ -357,18 +358,21 @@ Cubit 可见结果为：
 ```text
 SQLite canonical entries
   + local optimistic user envelopes
-  + bounded current-generation runtime-only status/guardian/result overlay
+  + bounded current-generation assistant-completion/control overlay
 ```
 
 本地消息生命周期：
 
 ```text
 local(clientMessageId, sending)
-  -> Bridge ACK: same row, queued/sent
+  -> Bridge ACK: same row, queued/sent; durable local recovery record removed
   -> provider admission: same row gains providerTurnId container identity
   -> canonical exact client echo: same row gains providerItemId
   -> canonical cache row: exact row becomes canonical
 ```
+
+没有 Bridge ACK 的本地 input 在 socket 断开、换路或 APP 重启后恢复为 failed，不自动
+重放；显式重试复用同一个 `clientMessageId`，由 Bridge input-delivery ledger 幂等裁决。
 
 现代 app-server 回显 exact `clientMessageId` 时，任何阶段都不创建第二个用户气泡。Codex 一个
 turn 可以同时包含 root user 和多次 steer，因此 `historyTurnId` 只是容器身份，不能把某个
@@ -646,3 +650,112 @@ Bridge 或第二套 stable-ID 生成器。这比让 fake app-server 用手写 no
 
 本任务没有修改 Swift、Info.plist、entitlement、Podfile 或原生插件，因此没有为了本轮纯
 TypeScript/Dart 正确性改动重做 IPA/真机门禁。部署、IPA、OTA 与物理设备验收仍是独立授权。
+
+## 10. 2026-08-14 旧消息误发与投影膨胀收束
+
+### 10.1 真实故障基准
+
+开发时引用的原始诊断文件 `ccp-1786682680089719-4b1e80bb.json` 当前不在仓库或已知本地
+路径中，因此没有伪造 697/1,024 行“原始回放”。仓库只保存
+`timeline_projection_ccp_1786682680089719.json` 的 provenance/sentinel 和人工冻结 oracle；
+它登记以下历史故障证据，但不冒充原始诊断正文：
+
+- SQLite 已提交窗口为 697 条；Mobile 投影曾瞬时膨胀到 5,268 条，最终仍有 1,077 条；
+- 捕获的 1,024 个展示条目中有 138 个重复稳定 ID；
+- `item-13928` 的旧中间输出被保留三次并落到最终回复 `item-13960` 后面；
+- 图片输入 `clientMessageId=2d941f42-1313-4fb3-95d6-1c86a3e56d56` 在数日后由旧恢复记录重新发出。
+
+expected 顺序由 Codex provider 的 turn/item 顺序人工冻结，测试不调用生产合并代码生成
+expected，避免自证循环。原始报告重新取得前，697→5,268→1,077 只作为历史 provenance，
+不能声称已逐行重放；真实端到端门禁改用下面记录的 fake Provider→生产链闭环。
+
+### 10.2 单一投影模型
+
+detached/shared Codex 的最终展示固定为：
+
+```text
+committed SQLite canonical
+  + outgoing overlay keyed by clientMessageId
+  + focused current-turn runtime overlay
+  -> pure TimelineProjectionReducer
+```
+
+reducer 不读取时间戳、正文相似度或上一次 UI 顺序来决定 canonical 排列；canonical 顺序不可
+被 overlay 改写。相同 provider item 或 `clientMessageId` 只产生一个条目，输出数量不得超过
+canonical、outgoing 和当前 runtime overlay 三者之和。
+
+普通 runtime session stream 不再为 detached v2 写入 durable user/assistant/tool 内容。assistant
+完成项只能经 `conversation_runtime_overlay_v1` 进入，并必须通过 provider/thread、runtime、
+authority generation、origin generation、active turn 和 overlay ID 的完整校验；canonical 出现
+相同 provider item 后 overlay 被移除。
+
+### 10.3 未确认输入恢复语义
+
+Mobile 在用户点击发送时先保存带 `clientMessageId`、创建/尝试时间、次数、图片和最后错误的
+恢复记录。记录只有在收到精确 Bridge `input_ack`、delivery receipt 或 canonical user echo 后
+才删除。
+
+- socket 断开、换路或 APP 销毁时，已发出但没有 Bridge receipt 的 transport input 被隔离；
+- 明知 Bridge 离线时不创建 transport queue，也不请求 detached runtime attachment，直接保留
+  同一 failed 气泡；
+- 下次启动不会回放该 transport journal；DraftService 恢复同一条 failed 气泡；
+- 只有用户点击重试才再次发送，并复用原 `clientMessageId`；
+- Bridge 已接收的输入由 input-delivery ledger 裁决，Mobile 不二次提交；
+- 旧 v1 pending 迁移为 failed，不触发网络输入。
+
+当前 DraftService 仍是每个会话一条恢复记录；Bridge 队列是独立的多项权威队列，两者不得互相
+覆盖或用“本地排队”冒充 Bridge 已接收。
+
+### 10.4 真实链路验证边界
+
+黑盒链使用固定 fake app-server、真实 Bridge、真实 `conversation_sync_v2`、真实 SQLite、真实
+Cubit 和真实 timeline layout。正式 runtime overlay 只发给 focused conversation，因此测试必须
+先执行与生产会话页相同的 focus 订阅；不允许改回普通 session stream 来让测试表面通过。
+
+Provider→Bridge 边界另写入 `provider-message.jsonl`，与 `bridge-frame.jsonl`、
+`client-frame.jsonl` 和 `receiver-timeline.jsonl` 一起保留，便于确定丢失发生在哪一层。
+
+本轮真实闭环进一步确认了两段不同的顺序竞态：
+
+1. Bridge 曾先发布 `runtime_overlay`，后发布携带相同 active turn/authority 的
+   `status_changes`。现在 overlay 先进入每订阅有界 pending 区，只有匹配的完整 status state
+   已 ACK 或最后一页已进入同一 outbound FIFO 后才追加；socket write 抛错时 outbound 是唯一
+   重试源，pending 不静默驱逐，focus/authority/disconnect 生命周期会清理旧 generation。
+2. 即使 wire 已按 `status_changes → runtime_overlay` 排序，Mobile 的 status SQLite commit 与
+   `SessionListCubit → ChatSessionCubit` 投影之间仍有异步窗口。Mobile 现在只把字段完整、目标
+   精确且尚未证明过期的 overlay 放进 32 项/64 KiB 隔离区；对应 authority/turn 投影到达后
+   原子释放，旧 generation/turn、容量超限或身份不匹配一律 fail closed。
+
+同步服务 dispose 还会等待已经启动的 SQLite mutation、user-index 和 latest-turn repair 收束，
+防止页面退出或测试 teardown 后后台任务继续访问已关闭数据库。
+
+最新真实闭环证据目录为：
+
+```text
+/private/tmp/ccpocket-chain/2026-08-14T09-08-26.540Z-95f6e8cc-live-segments
+```
+
+该轨迹中 segment A、segment B、final 的 streaming 均按 `true → false` 收束；A/B 依次进入
+intermediate，最终回复保持 final；接受的用户消息关闭并重开后仍只有一条，最终投影没有重复
+stable ID 或待释放 runtime overlay。
+
+### 10.5 本轮边界
+
+本轮不自动删除已经误发并写入 Codex 权威历史的旧消息；那属于单独的历史修改操作。本轮也
+没有部署 Bridge、构建或发送 IPA、发布 OTA、改动 Desktop/网络或修改真实会话数据。
+
+### 10.6 本轮自动验证
+
+- ChatSessionCubit（发送恢复、严格 overlay 隔离、单一气泡和 fail-closed 投影）：244/244 通过；
+- ConversationContentSyncService + fake Provider→真实 Bridge→真实 Mobile 黑盒：46/46 通过；
+- Bridge `conversation_sync_v2` 定向测试：176/176 通过；包含 shared observer/formal runtime
+  顺序、重复投递、focus generation 和 socket write 重试；
+- Bridge 全量单 worker：119 files passed、1 skipped；2,495 tests passed、1 skipped，耗时
+  76.18 秒；受限沙箱先出现的 `listen EPERM` 已在允许本地测试监听的隔离环境复跑排除；
+- Bridge TypeScript 与 native file-browser helper 构建通过；
+- Mobile 全量：3,190 passed、4 skipped，末行 `All tests passed!`，耗时 252.69 秒；
+- Flutter analyze：0 error、0 warning；55 个仓库既有 info；
+- `git diff --check` 通过。
+
+源码行为提交为 `1fcb7995`；最终文档提交不改变运行代码。以上均是源码/桌面自动验证，不代表
+Bridge 已部署、IPA 已构建或真机已经验收。
