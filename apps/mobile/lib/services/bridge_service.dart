@@ -4552,6 +4552,13 @@ class BridgeService implements BridgeServiceBase {
       _clearInFlightPendingMessage(dedupeKey);
       _clearInFlightInputMessage(dedupeKey, persist: false);
     }
+    if (message.type == 'input') {
+      // No input_ack means there is no Bridge receipt. The visible recovery
+      // copy lives in DraftService as a failed bubble; never place user input
+      // in the reconnecting transport outbox.
+      unawaited(_persistOfflinePendingMessages());
+      return;
+    }
     final didAdd = _addQueuedMessageIfAbsent(message);
     if (didAdd || _isPersistableOfflineMessage(message)) {
       _publishOfflinePendingActions();
@@ -4625,10 +4632,9 @@ class BridgeService implements BridgeServiceBase {
     _inFlightInputMessages[dedupeKey] = message;
     _inFlightInputTargets[dedupeKey] =
         _offlineMessageTargets[message] ?? _currentOfflineMessageTarget();
-    // Keep every input in the identity-scoped outbox until a legacy Bridge
-    // replies with input_ack/input_rejected, or a staged Bridge reports the
-    // provider terminal receipt. The first staged ack is only an in-memory
-    // Bridge admission and does not claim Bridge-restart durability.
+    // Retain a volatile, identity-scoped copy only until Bridge replies. It is
+    // persisted for crash diagnostics and cleanup, never for replay: a
+    // process restart restores the DraftService failure bubble instead.
     unawaited(_persistOfflinePendingMessages());
   }
 
@@ -4775,25 +4781,17 @@ class BridgeService implements BridgeServiceBase {
 
   void _requeueInFlightInputMessages() {
     if (_inFlightInputMessages.isEmpty) return;
-    final messages = Map<String, ClientMessage>.from(_inFlightInputMessages);
-    final targets = Map<String, _OfflineMessageTarget?>.from(
-      _inFlightInputTargets,
-    );
+    final removedCount = _inFlightInputMessages.length;
     _inFlightInputMessages.clear();
     _inFlightInputTargets.clear();
-    var didAdd = false;
-    for (final entry in messages.entries) {
-      didAdd =
-          _addQueuedMessageIfAbsent(
-            entry.value,
-            restoredTarget: targets[entry.key],
-            isRestored: true,
-          ) ||
-          didAdd;
-    }
-    if (didAdd || messages.isNotEmpty) {
-      unawaited(_persistOfflinePendingMessages());
-    }
+    // A socket write without input_ack is not a Bridge receipt. Replaying it
+    // automatically can create a new provider turn days later. The composer
+    // draft remains the recovery copy and explicit retry reuses the same
+    // clientMessageId so Bridge's delivery ledger can answer idempotently.
+    logger.info(
+      'Quarantined $removedCount unconfirmed input(s) after disconnect',
+    );
+    unawaited(_persistOfflinePendingMessages());
   }
 
   void _requeueInFlightPendingMessages() {
@@ -5457,6 +5455,7 @@ class BridgeService implements BridgeServiceBase {
 
   Future<void> _restoreOfflinePendingMessages() async {
     final generation = _offlineQueueGeneration;
+    var skippedUnconfirmedInputs = false;
     try {
       final prefs = await SharedPreferences.getInstance();
       final encodedV2 =
@@ -5476,6 +5475,13 @@ class BridgeService implements BridgeServiceBase {
             Map<String, dynamic>.from(messageJson),
           );
           if (!_isPersistableOfflineMessage(message)) return;
+          if (message.type == 'input') {
+            // Persisted inputs have no server receipt. Their DraftService row
+            // is restored as a failed bubble; never turn an app restart into
+            // permission to submit them again.
+            skippedUnconfirmedInputs = true;
+            return;
+          }
           final target = isV2
               ? _OfflineMessageTarget.fromJson(decoded['target'])
               : null;
@@ -5505,6 +5511,12 @@ class BridgeService implements BridgeServiceBase {
         if (generation != _offlineQueueGeneration) return;
       }
       _publishOfflinePendingActions();
+      if (skippedUnconfirmedInputs) {
+        // Rewrite the outbox after restoration so quarantined inputs cannot
+        // be reconsidered by a future process. DraftService remains the sole
+        // manual-recovery copy.
+        unawaited(_persistOfflinePendingMessages());
+      }
     } catch (error, stackTrace) {
       if (_isSharedPreferencesUnavailable(error)) {
         return;

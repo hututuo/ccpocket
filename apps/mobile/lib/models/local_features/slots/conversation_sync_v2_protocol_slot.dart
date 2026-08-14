@@ -1383,7 +1383,8 @@ ServerMessage? _conversationSyncRuntimeOverlayMessage(Object? raw) {
     throw const FormatException('Conversation runtime overlay is malformed.');
   }
   final message = ServerMessage.fromJson(Map<String, dynamic>.from(raw));
-  if (message is ResultMessage ||
+  if (message is AssistantServerMessage ||
+      message is ResultMessage ||
       message is ErrorMessage ||
       message is GuardianApprovalMessage ||
       message is ToolUseSummaryMessage) {

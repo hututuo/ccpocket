@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../core/logger.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../../models/messages.dart';
 import '../../session_list/state/session_list_cubit.dart';
@@ -64,6 +65,7 @@ class _DurableSessionPreviewUpdaterState
   ChatSessionCubit? _boundRuntimeCubit;
   String? _consumedLiveRuntimeSessionId;
   bool _liveRuntimeCallbackScheduled = false;
+  bool _liveRuntimeCallbackRetryPending = false;
 
   @override
   void didChangeDependencies() {
@@ -89,6 +91,7 @@ class _DurableSessionPreviewUpdaterState
     cubit.updateDetachedLiveRuntime(normalized);
     if (normalized == null) {
       _consumedLiveRuntimeSessionId = null;
+      _liveRuntimeCallbackRetryPending = false;
       return;
     }
     _scheduleLiveRuntimeCallback();
@@ -107,12 +110,20 @@ class _DurableSessionPreviewUpdaterState
         cubit == null ||
         normalized == null ||
         normalized.isEmpty ||
-        _consumedLiveRuntimeSessionId == normalized ||
-        _liveRuntimeCallbackScheduled) {
+        _consumedLiveRuntimeSessionId == normalized) {
+      return;
+    }
+    if (_liveRuntimeCallbackScheduled) {
+      _liveRuntimeCallbackRetryPending = true;
       return;
     }
     _liveRuntimeCallbackScheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    // Catalog/runtime authority events can arrive while no Flutter frame is
+    // scheduled. A post-frame callback would then remain stranded until the
+    // user caused another rebuild (for example by leaving and re-entering the
+    // conversation). A microtask runs after the current projection/build stack
+    // and therefore retries the explicit send as soon as authority is usable.
+    scheduleMicrotask(() {
       _liveRuntimeCallbackScheduled = false;
       if (!mounted ||
           !identical(_boundRuntimeCubit, cubit) ||
@@ -120,8 +131,26 @@ class _DurableSessionPreviewUpdaterState
           _consumedLiveRuntimeSessionId == normalized) {
         return;
       }
-      if (widget.onLiveRuntimeReady?.call(cubit) == true) {
+      final consumed = widget.onLiveRuntimeReady?.call(cubit) == true;
+      logger.info(
+        '[outgoing_recovery] event=live_runtime_callback '
+        'thread=${widget.statusProviderSessionId ?? 'unknown'} '
+        'runtime=$normalized consumed=$consumed '
+        'writable=${cubit.runtimeSessionIdForMutation() != null}',
+      );
+      if (consumed) {
         _consumedLiveRuntimeSessionId = normalized;
+      }
+      final retryPending = _liveRuntimeCallbackRetryPending;
+      _liveRuntimeCallbackRetryPending = false;
+      // Multiple projection signals in one frame are coalesced. Only retry a
+      // failed callback when the authority envelope is now actually usable;
+      // this avoids a busy post-frame loop while preserving an explicit send
+      // that attached before its source-scoped authority arrived.
+      if (!consumed &&
+          retryPending &&
+          cubit.runtimeSessionIdForMutation() != null) {
+        _scheduleLiveRuntimeCallback();
       }
     });
   }
@@ -210,6 +239,11 @@ class _DurableSessionPreviewUpdaterState
       sessionList.conversationMetadataFor(provider, providerSessionId),
       sourceFingerprint: sourceFingerprint,
     );
+    // A runtime can attach before the source-scoped authority projection is
+    // committed. The first callback then correctly fails closed; retry it
+    // after each authoritative status/settings projection so an explicitly
+    // requested send is not stranded waiting for another runtime change.
+    _scheduleLiveRuntimeCallback();
   }
 
   @override
@@ -217,12 +251,14 @@ class _DurableSessionPreviewUpdaterState
     super.didUpdateWidget(oldWidget);
     final liveRuntimeChanged =
         oldWidget.liveRuntimeSessionId != widget.liveRuntimeSessionId;
+    final liveRuntimeCallbackChanged =
+        oldWidget.onLiveRuntimeReady != widget.onLiveRuntimeReady;
     final durableHistoryLoaderChanged =
         oldWidget.durableHistoryLoaderRevision !=
             widget.durableHistoryLoaderRevision ||
         oldWidget.durableHistoryLoaderSourceFingerprint !=
             widget.durableHistoryLoaderSourceFingerprint;
-    if (liveRuntimeChanged) {
+    if (liveRuntimeChanged || liveRuntimeCallbackChanged) {
       _bindLiveRuntime();
     }
     if (durableHistoryLoaderChanged) {

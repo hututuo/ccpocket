@@ -23,7 +23,12 @@ export const CONVERSATION_RUNTIME_OVERLAY_CAPABILITY =
 export type ConversationRuntimeOverlayMessage = Extract<
   ServerMessage,
   {
-    type: "result" | "error" | "guardian_approval" | "tool_use_summary";
+    type:
+      | "assistant"
+      | "result"
+      | "error"
+      | "guardian_approval"
+      | "tool_use_summary";
   }
 >;
 

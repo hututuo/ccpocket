@@ -12,8 +12,10 @@ import '../../../models/messages.dart';
 import '../../../services/bridge_service.dart';
 import '../../../services/chat_message_handler.dart';
 import '../../../services/desktop_continuity_backlog.dart';
+import '../../../services/draft_service.dart';
 import '../../../utils/diagnostic_token.dart';
 import '../../../utils/history_window_policy.dart';
+import 'detached_timeline_projection.dart';
 import 'chat_session_state.dart';
 import 'streaming_state_cubit.dart';
 
@@ -250,6 +252,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   final BridgeService _bridge;
   final StreamingStateCubit _streamingCubit;
   final ChatImagePayloadEncoder _imagePayloadEncoder;
+  final DraftService? _outgoingDrafts;
   final ChatMessageHandler _handler = ChatMessageHandler();
   final bool detachedPreview;
   final List<ServerMessage> initialHistoryMessages;
@@ -326,6 +329,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     'preservedVisualTurnId': _detachedPreservedVisualTurnId,
     'visualTurnValidationPending': _detachedVisualTurnValidationPending,
     'pendingVisualMessageCount': _detachedPendingVisualMessages.length,
+    'timelineProjection': <String, Object?>{
+      'lastAction': _detachedProjectionLastAction,
+      'canonicalCount': _detachedProjectionCanonicalCount,
+      'outgoingOverlayCount': _detachedProjectionOutgoingOverlayCount,
+      'runtimeOverlayCount': _detachedProjectionRuntimeOverlayCount,
+      'composedCount': state.entries.length,
+      'duplicateCanonicalCount': _detachedProjectionDuplicateCanonicalCount,
+      'duplicateOverlayCount': _detachedProjectionDuplicateOverlayCount,
+      'rejectedRuntimeOverlayCount': _detachedRejectedRuntimeOverlayCount,
+      'runtimeOverlayOriginGeneration': _detachedRuntimeOverlayOriginGeneration,
+      'runtimeOverlayEventCount': _detachedRuntimeOverlayEventIds.length,
+      'runtimeAssistantAliasCount': _detachedRuntimeAssistantAliases.length,
+      'localOutgoingClientIdCount': _detachedLocalOverlayClientIds.length,
+    },
     'rejectedAuthorityGeneration': _detachedRejectedAuthorityGeneration,
     'providerProjectionCurrent': _detachedProviderProjectionCurrent,
     'runtimeSessionIdForRead': runtimeSessionIdForRead,
@@ -621,6 +638,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   StreamSubscription<String>? _historySyncSubscription;
   StreamSubscription<BridgeConnectionState>?
   _statusRefreshConnectionSubscription;
+  StreamSubscription<BridgeConnectionState>?
+  _detachedOutgoingConnectionSubscription;
   StreamSubscription<LocalFeatureServerMessage>? _desktopContinuitySubscription;
   StreamSubscription<BridgeConnectionState>?
   _desktopContinuityConnectionSubscription;
@@ -675,8 +694,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   // A live assistant completion is a presentation overlay until
   // conversation_sync_v2 commits that stable item to SQLite. The cache stays
   // the durable writer; these aliases only bridge the short commit gap.
-  static const _maxDetachedProvisionalAssistantAliases = 512;
-  final Set<String> _detachedProvisionalAssistantAliases = {};
+  static const _maxDetachedRuntimeAssistantAliases = 512;
+  final Set<String> _detachedRuntimeAssistantAliases = {};
   static const _maxSubmittedClientMessageIds = 512;
   final Set<String> _submittedClientMessageIds = {};
   static const _maxDetachedRuntimeOverlayEventIds = 128;
@@ -684,9 +703,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   static const _maxDetachedRuntimeOverlayBytes = 64 * 1024;
   final Set<String> _detachedRuntimeOverlayEventIds = {};
   int? _detachedRuntimeOverlayGeneration;
+  String? _detachedRuntimeOverlayOriginGeneration;
   String? _detachedRuntimeOverlayTurnId;
   String? _detachedRuntimeOverlayAuthorityGeneration;
   String? _detachedRuntimeOverlayRuntimeSessionId;
+  int _detachedProjectionCanonicalCount = 0;
+  int _detachedProjectionOutgoingOverlayCount = 0;
+  int _detachedProjectionRuntimeOverlayCount = 0;
+  int _detachedProjectionDuplicateCanonicalCount = 0;
+  int _detachedProjectionDuplicateOverlayCount = 0;
+  String _detachedProjectionLastAction = 'initial';
+  int _detachedRejectedRuntimeOverlayCount = 0;
   Future<void> _inputDispatchTail = Future<void>.value();
   int _pendingInputDispatchCount = 0;
   final Set<String> _pendingInputDispatchIds = {};
@@ -982,6 +1009,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     CodexPermissionsMode? initialCodexPermissionsMode,
     String? initialProjectPath,
     ChatImagePayloadEncoder? imagePayloadEncoder,
+    DraftService? outgoingDrafts,
     this.detachedPreview = false,
     this.initialHistoryMessages = const [],
     String? initialLiveRuntimeSessionId,
@@ -997,6 +1025,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
        _detachedHistoryToolDetailLoader = detachedHistoryToolDetailLoader,
        _detachedUserMessageIndexLoader = detachedUserMessageIndexLoader,
        _detachedUserTurnLoader = detachedUserTurnLoader,
+       // Keep the public constructor label free of a private implementation
+       // name; the composition root injects durable outgoing recovery.
+       // ignore: prefer_initializing_formals
+       _outgoingDrafts = outgoingDrafts,
        // Keep the public constructor label free of a private implementation
        // name; this stream is injected by the composition root.
        // ignore: prefer_initializing_formals
@@ -1081,6 +1113,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                   message.event == ConversationSyncV2EventKind.runtimeOverlay,
             )
             .listen(_onDetachedRuntimeOverlay);
+        _detachedOutgoingConnectionSubscription = _bridge.connectionStatus
+            .listen(_onDetachedOutgoingConnectionState);
         _goalConnectionSubscription = _bridge.connectionStatus.listen(
           _onGoalConnectionState,
         );
@@ -1213,6 +1247,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (!detachedPreview || isClosed) return;
     if (event.provider != Provider.codex.value ||
         event.providerSessionId != sessionId) {
+      _detachedRejectedRuntimeOverlayCount += 1;
       return;
     }
     final bridgeInstanceId = _bridge.bridgeInstanceId?.trim();
@@ -1221,6 +1256,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             event.bridgeInstanceId != bridgeInstanceId) ||
         (codexSourceId?.isNotEmpty == true &&
             event.codexSourceId != codexSourceId)) {
+      _detachedRejectedRuntimeOverlayCount += 1;
       return;
     }
     final overlayId = event.overlayId;
@@ -1231,22 +1267,30 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (overlayId == null ||
         message == null ||
         originGeneration?.isNotEmpty != true) {
+      _detachedRejectedRuntimeOverlayCount += 1;
+      return;
+    }
+    if (_isOlderDetachedObserverGeneration(originGeneration!)) {
+      _detachedRejectedRuntimeOverlayCount += 1;
       return;
     }
     final liveRuntimeSessionId = _detachedLiveRuntimeSessionId?.trim();
     if (eventRuntimeSessionId?.isNotEmpty == true &&
         liveRuntimeSessionId?.isNotEmpty == true &&
         eventRuntimeSessionId != liveRuntimeSessionId) {
+      _detachedRejectedRuntimeOverlayCount += 1;
       return;
     }
     final currentAuthorityGeneration = _detachedAuthorityGeneration?.trim();
     if (eventAuthorityGeneration?.isNotEmpty == true &&
         currentAuthorityGeneration?.isNotEmpty == true &&
         eventAuthorityGeneration != currentAuthorityGeneration) {
+      _detachedRejectedRuntimeOverlayCount += 1;
       return;
     }
     if (eventAuthorityGeneration?.isNotEmpty == true &&
         eventAuthorityGeneration == _detachedRejectedAuthorityGeneration) {
+      _detachedRejectedRuntimeOverlayCount += 1;
       return;
     }
     final activeTurnId = _detachedActiveTurnId?.trim();
@@ -1255,16 +1299,29 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (activeTurnId?.isNotEmpty == true &&
         eventTurnId?.isNotEmpty == true &&
         activeTurnId != eventTurnId) {
+      _detachedRejectedRuntimeOverlayCount += 1;
       return;
     }
-    if (!_detachedRuntimeOverlayEventIds.add(overlayId)) return;
+    if (!_detachedRuntimeOverlayEventIds.add(overlayId)) {
+      _detachedRejectedRuntimeOverlayCount += 1;
+      return;
+    }
     while (_detachedRuntimeOverlayEventIds.length >
         _maxDetachedRuntimeOverlayEventIds) {
       _detachedRuntimeOverlayEventIds.remove(
         _detachedRuntimeOverlayEventIds.first,
       );
     }
-    _onMessage(message);
+    _detachedRuntimeOverlayOriginGeneration = originGeneration;
+    if (message is AssistantServerMessage) {
+      if (!_isDetachedLiveAssistantCompletion(message)) {
+        _detachedRejectedRuntimeOverlayCount += 1;
+        return;
+      }
+      _applyDetachedVisualMessage(message);
+    } else {
+      _onMessage(message);
+    }
     // The observer event can legitimately beat the authoritative status
     // projection. Preserve its explicit turn identity so the later status can
     // validate it instead of treating the temporarily unknown activity as
@@ -1282,6 +1339,24 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         ? eventRuntimeSessionId
         : null;
     _trimDetachedRuntimeOverlayEntries();
+  }
+
+  bool _isOlderDetachedObserverGeneration(String candidate) {
+    final match = RegExp(r'^observer:(\d+):(\d+)$').firstMatch(candidate);
+    if (match == null) return false;
+    final connection = int.tryParse(match.group(1)!);
+    final observer = int.tryParse(match.group(2)!);
+    if (connection == null || observer == null) return false;
+    final current = _detachedRuntimeOverlayOriginGeneration;
+    final currentMatch = current == null
+        ? null
+        : RegExp(r'^observer:(\d+):(\d+)$').firstMatch(current);
+    if (currentMatch == null) return false;
+    final currentConnection = int.tryParse(currentMatch.group(1)!);
+    final currentObserver = int.tryParse(currentMatch.group(2)!);
+    if (currentConnection == null || currentObserver == null) return false;
+    return connection < currentConnection ||
+        (connection == currentConnection && observer < currentObserver);
   }
 
   void _restoreInitialHistoryMessages() {
@@ -1320,6 +1395,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       _detachedPendingVisualMessages.clear();
     }
     final generation = ++_detachedLiveRuntimeGeneration;
+    logger.info(
+      '[outgoing_recovery] event=runtime_binding_changed '
+      'thread=$_projectionThreadToken '
+      'from=${_projectionItemToken(previousRuntimeSessionId)} '
+      'to=${_projectionItemToken(next)} generation=$generation',
+    );
     unawaited(_subscription?.cancel());
     _subscription = null;
     _detachedLiveRuntimeSessionId = next;
@@ -1360,15 +1441,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
     _respondedToolUseIds.addAll(_bridge.respondedToolUseIds(next));
     _subscription = _bridge.messagesForSession(next).listen((message) {
+      if (message is InputAckMessage ||
+          message is InputDeliveryStatusMessage ||
+          message is InputRejectedMessage) {
+        logger.info(
+          '[outgoing_recovery] event=runtime_receipt_frame '
+          'thread=$_projectionThreadToken runtime=${_projectionItemToken(next)} '
+          'kind=${message.runtimeType}',
+        );
+      }
       if (isClosed ||
           generation != _detachedLiveRuntimeGeneration ||
           _detachedLiveRuntimeSessionId != next) {
-        return;
-      }
-      if (message is AssistantServerMessage &&
-          _isDetachedLiveAssistantCompletion(message)) {
-        if (_bufferDetachedVisualMessageUntilTurnValidation(message)) return;
-        _applyDetachedVisualMessage(message);
         return;
       }
       if (message is HistoryMessage ||
@@ -1404,7 +1488,30 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       timestamp: timestamp?.value.toLocal(),
       timestampIsAuthoritative: timestamp?.isAuthoritative ?? false,
     );
-    _rememberDetachedProvisionalAssistant(entry);
+    final incomingAliases = _entryExactAliasKeys(entry).toSet();
+    final existingIndex = state.entries.indexWhere(
+      (candidate) =>
+          incomingAliases.isNotEmpty &&
+          _entryExactAliasKeys(candidate).any(incomingAliases.contains),
+    );
+    if (existingIndex != -1) {
+      final existing = state.entries[existingIndex];
+      // A canonical SQLite item already owns this identity, or the same
+      // validated overlay arrived through another observer path. In both
+      // cases only close streaming and advance delivery state; never append.
+      _handler.resetTransientStreaming();
+      _applyUpdate(
+        const ChatStateUpdate(resetStreaming: true, markUserMessagesSent: true),
+        message,
+      );
+      if (_isDetachedRuntimeAssistantOverlay(existing)) {
+        final entries = List<ChatEntry>.of(state.entries);
+        entries[existingIndex] = _mergeEquivalentEntry(existing, entry);
+        emit(state.copyWith(entries: entries));
+      }
+      return;
+    }
+    _rememberDetachedRuntimeAssistantOverlay(entry);
     // The direct completion is not a second durable transcript writer. It
     // closes the exact live item and remains only until the matching SQLite
     // row is committed and reconciled by stable provider identity.
@@ -1417,6 +1524,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       ),
       message,
     );
+    _detachedProjectionLastAction = 'runtime_overlay';
+    _detachedProjectionRuntimeOverlayCount = state.entries
+        .where(_isDetachedRuntimeOverlayEntry)
+        .length;
     logger.info(
       '[timeline_projection] event=assistant_item_completed '
       'thread=$_projectionThreadToken '
@@ -1441,12 +1552,46 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           message.userMessageUuid?.trim().isNotEmpty == true) {
         continue;
       }
-      final alreadyVisible = state.entries.whereType<UserChatEntry>().any(
-        (entry) => entry.clientMessageId == clientMessageId,
+      final existingIndex = state.entries.indexWhere(
+        (entry) =>
+            entry is UserChatEntry && entry.clientMessageId == clientMessageId,
       );
-      if (alreadyVisible) continue;
       final timestamp = serverMessageTimestamp(message);
       _rememberDetachedLocalOverlayClientId(clientMessageId!);
+      if (existingIndex != -1) {
+        final existing = state.entries[existingIndex] as UserChatEntry;
+        final accepted = UserChatEntry(
+          existing.text.isNotEmpty ? existing.text : message.text,
+          sessionId: existing.sessionId ?? sessionId,
+          clientMessageId: clientMessageId,
+          providerItemId: existing.providerItemId,
+          historyTurnId: existing.historyTurnId,
+          imageBytesList: existing.imageBytesList,
+          imageUrls: existing.imageUrls.isNotEmpty
+              ? existing.imageUrls
+              : message.imageUrls,
+          imageCount: existing.imageCount > 0
+              ? existing.imageCount
+              : message.imageCount,
+          status: _mergeUserDeliveryStatus(
+            existing.status,
+            MessageStatus.bridgeAccepted,
+          ),
+          messageUuid: existing.messageUuid,
+          timestamp:
+              timestamp?.value.toLocal() ??
+              DateTime.tryParse(message.timestamp ?? '')?.toLocal() ??
+              existing.timestamp,
+          timestampIsAuthoritative:
+              timestamp?.isAuthoritative ??
+              (message.timestamp != null || existing.timestampIsAuthoritative),
+        );
+        final entries = List<ChatEntry>.of(state.entries);
+        entries[existingIndex] = accepted;
+        emit(state.copyWith(entries: entries));
+        _detachedProjectionLastAction = 'bridge_receipt_restored';
+        continue;
+      }
       additions.add(
         UserChatEntry(
           message.text,
@@ -1467,47 +1612,48 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final appended = _appendEntriesDeduped(state.entries, additions);
     if (!appended.didChange) return;
     emit(state.copyWith(entries: appended.entries));
+    _detachedProjectionLastAction = 'bridge_receipt_restored';
     logger.info(
       '[timeline_projection] event=accepted_user_overlay_restored '
       'thread=$_projectionThreadToken count=${additions.length}',
     );
   }
 
-  void _rememberDetachedProvisionalAssistant(ServerChatEntry entry) {
+  void _rememberDetachedRuntimeAssistantOverlay(ServerChatEntry entry) {
     for (final alias in _entryExactAliasKeys(entry)) {
       if (alias.startsWith('assistant:')) {
-        _detachedProvisionalAssistantAliases.add(alias);
+        _detachedRuntimeAssistantAliases.add(alias);
       }
     }
-    while (_detachedProvisionalAssistantAliases.length >
-        _maxDetachedProvisionalAssistantAliases) {
-      _detachedProvisionalAssistantAliases.remove(
-        _detachedProvisionalAssistantAliases.first,
+    while (_detachedRuntimeAssistantAliases.length >
+        _maxDetachedRuntimeAssistantAliases) {
+      _detachedRuntimeAssistantAliases.remove(
+        _detachedRuntimeAssistantAliases.first,
       );
     }
   }
 
-  bool _isDetachedProvisionalAssistant(ChatEntry entry) {
+  bool _isDetachedRuntimeAssistantOverlay(ChatEntry entry) {
     if (entry is! ServerChatEntry || entry.message is! AssistantServerMessage) {
       return false;
     }
     return _entryExactAliasKeys(
       entry,
-    ).any(_detachedProvisionalAssistantAliases.contains);
+    ).any(_detachedRuntimeAssistantAliases.contains);
   }
 
   void _consumeDetachedCanonicalAssistantAliases(
     Iterable<ChatEntry> historyEntries,
   ) {
-    if (_detachedProvisionalAssistantAliases.isEmpty) return;
+    if (_detachedRuntimeAssistantAliases.isEmpty) return;
     for (final entry in historyEntries) {
       if (entry is! ServerChatEntry ||
           entry.message is! AssistantServerMessage) {
         continue;
       }
       final aliases = _entryExactAliasKeys(entry).toList(growable: false);
-      if (aliases.any(_detachedProvisionalAssistantAliases.contains)) {
-        _detachedProvisionalAssistantAliases.removeAll(aliases);
+      if (aliases.any(_detachedRuntimeAssistantAliases.contains)) {
+        _detachedRuntimeAssistantAliases.removeAll(aliases);
       }
     }
   }
@@ -1529,12 +1675,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// Stable transcript content for a detached durable thread has exactly one
   /// writer: conversation_sync_v2 -> SQLite -> this Cubit. The attached
   /// runtime stream remains responsible for control, approvals, receipts and
-  /// streaming deltas. A completed assistant item is handled immediately
-  /// before this predicate as a bounded presentation overlay: it closes the
-  /// cursor and preserves the item boundary until SQLite commits the same
-  /// stable provider ID. Result/error/guardian/summary frames are retained as
-  /// runtime UI/control facts. Replaying durable user/assistant/tool content
-  /// through this generic path would create a second timeline writer.
+  /// streaming deltas. A completed assistant item is accepted only through
+  /// the focused, generation-fenced conversation_runtime_overlay_v1 channel;
+  /// the ordinary session stream is rejected here with all other durable
+  /// user/assistant/tool content. Result/error/guardian/summary frames remain
+  /// bounded runtime UI/control facts. Replaying transcript content through
+  /// this generic path would create a second timeline writer.
   bool _isDetachedDurableTimelineFrame(ServerMessage message) =>
       _bridge.supportsConversationSyncV2 &&
       (message is UserInputMessage ||
@@ -1542,6 +1688,183 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           message is ToolResultMessage ||
           (_usesValidatedRuntimeOverlayChannel &&
               _isDetachedRuntimeOverlayMessage(message)));
+
+  bool _clearOutgoingDraft(String? clientMessageId) {
+    final normalized = clientMessageId?.trim();
+    final drafts = _outgoingDrafts;
+    if (drafts == null || normalized == null || normalized.isEmpty) {
+      return false;
+    }
+    return drafts.deletePendingSubmission(
+      sessionId,
+      clientMessageId: normalized,
+    );
+  }
+
+  void _logOutgoingReceipt(
+    String evidence,
+    String? clientMessageId, {
+    required bool cleared,
+  }) {
+    logger.info(
+      '[outgoing_recovery] event=receipt_observed '
+      'thread=$_projectionThreadToken evidence=$evidence '
+      'client=${diagnosticToken('client', clientMessageId ?? 'none')} '
+      'cleared=$cleared runtime=${_projectionItemToken(runtimeSessionIdForRead)}',
+    );
+  }
+
+  void _markOutgoingDraftFailed(String? clientMessageId, String error) {
+    final normalized = clientMessageId?.trim();
+    final drafts = _outgoingDrafts;
+    if (drafts == null || normalized == null || normalized.isEmpty) return;
+    final pending = drafts.getPendingSubmission(sessionId);
+    if (pending == null || pending.clientMessageId != normalized) return;
+    unawaited(
+      drafts.savePendingSubmission(
+        sessionId,
+        PendingChatSubmissionDraft(
+          clientMessageId: pending.clientMessageId,
+          text: pending.text,
+          createdAt: pending.createdAt,
+          lastAttemptAt: pending.lastAttemptAt,
+          attemptCount: pending.attemptCount,
+          lastError: error,
+          images: pending.images,
+          mentionablePaths: pending.mentionablePaths,
+          additionalMentions: pending.additionalMentions,
+        ),
+      ),
+    );
+  }
+
+  void _recordOutgoingDraftAttempt(String clientMessageId) {
+    final drafts = _outgoingDrafts;
+    if (drafts == null) return;
+    final pending = drafts.getPendingSubmission(sessionId);
+    if (pending == null || pending.clientMessageId != clientMessageId) return;
+    final now = DateTime.now().toUtc();
+    final lastAttemptAt = pending.lastAttemptAt;
+    final alreadyMarkedByAttachment =
+        lastAttemptAt != null &&
+        now.difference(lastAttemptAt.toUtc()).abs() <
+            const Duration(seconds: 5);
+    unawaited(
+      drafts.savePendingSubmission(
+        sessionId,
+        PendingChatSubmissionDraft(
+          clientMessageId: pending.clientMessageId,
+          text: pending.text,
+          createdAt: pending.createdAt,
+          lastAttemptAt: alreadyMarkedByAttachment ? lastAttemptAt : now,
+          attemptCount: alreadyMarkedByAttachment
+              ? (pending.attemptCount < 1 ? 1 : pending.attemptCount)
+              : pending.attemptCount + 1,
+          lastError: null,
+          images: pending.images,
+          mentionablePaths: pending.mentionablePaths,
+          additionalMentions: pending.additionalMentions,
+        ),
+      ),
+    );
+  }
+
+  void _recordOutgoingDraftEvidence(ServerMessage message) {
+    switch (message) {
+      case InputAckMessage(:final clientMessageId):
+        // Any input_ack is direct proof that Bridge received this exact ID,
+        // whether it started immediately or entered Bridge's queue.
+        _logOutgoingReceipt(
+          'input_ack',
+          clientMessageId,
+          cleared: _clearOutgoingDraft(clientMessageId),
+        );
+      case InputDeliveryStatusMessage(
+        :final clientMessageId,
+        :final stage,
+        :final error,
+      ):
+        if (stage == InputDeliveryStage.providerAccepted) {
+          _logOutgoingReceipt(
+            'provider_accepted',
+            clientMessageId,
+            cleared: _clearOutgoingDraft(clientMessageId),
+          );
+        } else {
+          _markOutgoingDraftFailed(
+            clientMessageId,
+            error ?? 'provider_rejected',
+          );
+        }
+      case InputRejectedMessage(:final clientMessageId, :final reason):
+        _markOutgoingDraftFailed(
+          clientMessageId,
+          reason ?? 'bridge_rejected_input',
+        );
+      case ConversationQueueMessage(:final items):
+        for (final item in items) {
+          _logOutgoingReceipt(
+            'bridge_queue',
+            item.clientMessageId,
+            cleared: _clearOutgoingDraft(item.clientMessageId),
+          );
+        }
+      case UserInputMessage(:final clientMessageId):
+        _logOutgoingReceipt(
+          'canonical_user',
+          clientMessageId,
+          cleared: _clearOutgoingDraft(clientMessageId),
+        );
+      default:
+        return;
+    }
+  }
+
+  void _onDetachedOutgoingConnectionState(
+    BridgeConnectionState connectionState,
+  ) {
+    if (isClosed || connectionState != BridgeConnectionState.disconnected) {
+      return;
+    }
+    final unconfirmedClientIds = _deliveryPendingInputs.keys.toSet();
+    if (unconfirmedClientIds.isEmpty) return;
+    for (final clientMessageId in unconfirmedClientIds) {
+      _markOutgoingDraftFailed(
+        clientMessageId,
+        'bridge_disconnected_before_receipt',
+      );
+      _bridge.clearDeliveryPendingInput(
+        _detachedLiveRuntimeSessionId ?? sessionId,
+        itemId: '$deliveryPendingQueuedInputPrefix$clientMessageId',
+      );
+    }
+    _deliveryPendingInputs.clear();
+    final nextEntries = state.entries
+        .map((entry) {
+          if (entry is! UserChatEntry ||
+              !unconfirmedClientIds.contains(entry.clientMessageId) ||
+              (entry.status != MessageStatus.sending &&
+                  entry.status != MessageStatus.queued)) {
+            return entry;
+          }
+          return UserChatEntry(
+            entry.text,
+            sessionId: entry.sessionId,
+            clientMessageId: entry.clientMessageId,
+            providerItemId: entry.providerItemId,
+            historyTurnId: entry.historyTurnId,
+            imageBytesList: entry.imageBytesList,
+            imageUrls: entry.imageUrls,
+            imageCount: entry.imageCount,
+            status: MessageStatus.failed,
+            messageUuid: entry.messageUuid,
+            timestamp: entry.timestamp,
+            timestampIsAuthoritative: entry.timestampIsAuthoritative,
+          );
+        })
+        .toList(growable: false);
+    emit(state.copyWith(entries: nextEntries));
+  }
 
   bool get _usesValidatedRuntimeOverlayChannel =>
       _detachedRuntimeOverlayStream != null &&
@@ -1582,6 +1905,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         ? state.entries
         : filteredEntries;
     if (!preserveRuntimeOverlay) {
+      _detachedRuntimeAssistantAliases.clear();
       _resetDetachedRuntimeOverlayTracking();
     }
     emit(
@@ -1671,7 +1995,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _detachedPreservedVisualTurnId = null;
     _detachedVisualTurnValidationPending = false;
     _detachedPendingVisualMessages.clear();
-    _detachedProvisionalAssistantAliases.clear();
+    _detachedRuntimeAssistantAliases.clear();
   }
 
   void _clearDetachedVisualTimeline() {
@@ -2277,6 +2601,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   String? _detachedRuntimeOverlayMessageTurnId(ServerMessage message) =>
       switch (message) {
+        AssistantServerMessage(:final historyTurnId) => historyTurnId,
         ResultMessage(:final historyTurnId) => historyTurnId,
         ErrorMessage(:final historyTurnId) => historyTurnId,
         GuardianApprovalMessage(:final historyTurnId) => historyTurnId,
@@ -2302,8 +2627,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   bool _isDetachedRuntimeOverlayEntry(ChatEntry entry) =>
-      entry is ServerChatEntry &&
-      _isDetachedRuntimeOverlayMessage(entry.message);
+      _isDetachedRuntimeAssistantOverlay(entry) ||
+      (entry is ServerChatEntry &&
+          _isDetachedRuntimeOverlayMessage(entry.message));
 
   List<ChatEntry> _withoutDetachedRuntimeOverlayEntries(
     Iterable<ChatEntry> entries,
@@ -2313,6 +2639,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   void _resetDetachedRuntimeOverlayTracking() {
     _detachedRuntimeOverlayGeneration = null;
+    _detachedRuntimeOverlayOriginGeneration = null;
     _detachedRuntimeOverlayTurnId = null;
     _detachedRuntimeOverlayAuthorityGeneration = null;
     _detachedRuntimeOverlayRuntimeSessionId = null;
@@ -2321,6 +2648,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   void _clearDetachedRuntimeOverlay() {
     final filtered = _withoutDetachedRuntimeOverlayEntries(state.entries);
+    _detachedRuntimeAssistantAliases.clear();
     _resetDetachedRuntimeOverlayTracking();
     if (filtered.length != state.entries.length) {
       emit(state.copyWith(entries: filtered));
@@ -2367,12 +2695,42 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   int _detachedRuntimeOverlayEntryBytes(ChatEntry entry) {
-    if (entry is! ServerChatEntry ||
-        !_isDetachedRuntimeOverlayMessage(entry.message)) {
+    if (entry is! ServerChatEntry || !_isDetachedRuntimeOverlayEntry(entry)) {
       return 0;
     }
     try {
       final wireShape = switch (entry.message) {
+        AssistantServerMessage message => <String, dynamic>{
+          'type': 'assistant',
+          'message': <String, dynamic>{
+            'id': message.message.id,
+            'role': message.message.role,
+            'model': message.message.model,
+            'content': [
+              for (final content in message.message.content)
+                switch (content) {
+                  TextContent(:final text) => <String, dynamic>{
+                    'type': 'text',
+                    'text': text,
+                  },
+                  ThinkingContent(:final thinking) => <String, dynamic>{
+                    'type': 'thinking',
+                    'thinking': thinking,
+                  },
+                  ToolUseContent(:final id, :final name, :final input) =>
+                    <String, dynamic>{
+                      'type': 'tool_use',
+                      'id': id,
+                      'name': name,
+                      'input': input,
+                    },
+                },
+            ],
+          },
+          if (message.messageUuid != null) 'messageUuid': message.messageUuid,
+          if (message.historyTurnId != null)
+            'historyTurnId': message.historyTurnId,
+        },
         ResultMessage message => <String, dynamic>{
           'type': 'result',
           'subtype': message.subtype,
@@ -2485,7 +2843,40 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             entry is UserChatEntry &&
             entry.clientMessageId == normalizedClientMessageId,
       );
-      if (alreadyVisible) return true;
+      if (alreadyVisible) {
+        emit(
+          state.copyWith(
+            entries: state.entries
+                .map((entry) {
+                  if (entry is! UserChatEntry ||
+                      entry.clientMessageId != normalizedClientMessageId) {
+                    return entry;
+                  }
+                  return UserChatEntry(
+                    entry.text,
+                    sessionId: entry.sessionId ?? sessionId,
+                    clientMessageId: normalizedClientMessageId,
+                    providerItemId: entry.providerItemId,
+                    historyTurnId: entry.historyTurnId,
+                    imageBytesList:
+                        images?.map((image) => image.bytes).toList() ??
+                        entry.imageBytesList,
+                    imageUrls: entry.imageUrls,
+                    imageCount: images?.length ?? entry.imageCount,
+                    status: queuedLocally
+                        ? MessageStatus.queued
+                        : MessageStatus.sending,
+                    messageUuid: entry.messageUuid,
+                    timestamp: entry.timestamp,
+                    timestampIsAuthoritative: entry.timestampIsAuthoritative,
+                  );
+                })
+                .toList(growable: false),
+          ),
+        );
+        _detachedProjectionLastAction = 'outgoing_retry';
+        return true;
+      }
     }
     emit(
       state.copyWith(
@@ -2505,6 +2896,72 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         ],
       ),
     );
+    _detachedProjectionLastAction = 'outgoing_submit';
+    return true;
+  }
+
+  /// Restores a locally persisted submission as an explicit failure.
+  ///
+  /// Recovery is deliberately presentation-only: it never attaches a runtime
+  /// or writes to the Bridge. A later user tap may retry the same
+  /// [clientMessageId], preserving Bridge idempotency.
+  bool restoreFailedSubmission(
+    String text, {
+    required String clientMessageId,
+    List<({Uint8List bytes, String mimeType})>? images,
+    String? failureReason,
+  }) {
+    if (!detachedPreview || isClosed || text.trim().isEmpty) return false;
+    final normalizedClientMessageId = clientMessageId.trim();
+    if (normalizedClientMessageId.isEmpty) return false;
+    _rememberDetachedLocalOverlayClientId(normalizedClientMessageId);
+    final existingIndex = state.entries.indexWhere(
+      (entry) =>
+          entry is UserChatEntry &&
+          entry.clientMessageId == normalizedClientMessageId,
+    );
+    final restored = UserChatEntry(
+      text,
+      sessionId: sessionId,
+      clientMessageId: normalizedClientMessageId,
+      imageBytesList: images?.map((image) => image.bytes).toList(),
+      imageCount: images?.length ?? 0,
+      status: MessageStatus.failed,
+      timestamp: DateTime.now().toUtc(),
+    );
+    if (existingIndex == -1) {
+      emit(state.copyWith(entries: [...state.entries, restored]));
+      _detachedProjectionLastAction = 'outgoing_restore_failed';
+      if (failureReason != null) {
+        _markOutgoingDraftFailed(normalizedClientMessageId, failureReason);
+      }
+      return true;
+    }
+    final entries = List<ChatEntry>.of(state.entries);
+    final existing = entries[existingIndex];
+    if (existing is UserChatEntry) {
+      entries[existingIndex] = UserChatEntry(
+        existing.text.isEmpty ? text : existing.text,
+        sessionId: existing.sessionId ?? sessionId,
+        clientMessageId: normalizedClientMessageId,
+        providerItemId: existing.providerItemId,
+        historyTurnId: existing.historyTurnId,
+        imageBytesList:
+            images?.map((image) => image.bytes).toList() ??
+            existing.imageBytesList,
+        imageUrls: existing.imageUrls,
+        imageCount: images?.length ?? existing.imageCount,
+        status: MessageStatus.failed,
+        messageUuid: existing.messageUuid,
+        timestamp: existing.timestamp,
+        timestampIsAuthoritative: existing.timestampIsAuthoritative,
+      );
+    }
+    emit(state.copyWith(entries: entries));
+    _detachedProjectionLastAction = 'outgoing_restore_failed';
+    if (failureReason != null) {
+      _markOutgoingDraftFailed(normalizedClientMessageId, failureReason);
+    }
     return true;
   }
 
@@ -4731,6 +5188,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     bool isLocalMirrorSnapshot = false,
     bool discardLocalMirrorEntries = false,
   }) {
+    _recordOutgoingDraftEvidence(originalMsg);
     final messageHandler = sourceHandler ?? _handler;
     final current = state;
     final preservePendingCodexPermissions =
@@ -5125,10 +5583,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                 localMirrorPrefix > 0
             ? allExistingNonPast.skip(localMirrorPrefix).toList()
             : allExistingNonPast;
-        final mergedHistoryEntries = _mergeRicherLiveAssistantEntries(
-          existingEntries: existingNonPast,
-          historyEntries: nonStreamingEntries,
-        );
+        final mergedHistoryEntries =
+            detachedPreview && _bridge.supportsConversationSyncV2
+            ? nonStreamingEntries
+            : _mergeRicherLiveAssistantEntries(
+                existingEntries: existingNonPast,
+                historyEntries: nonStreamingEntries,
+              );
 
         final reconciledHistoryEntries = _mergeHistoryWithPreservedLiveEntries(
           existingNonPast: existingNonPast,
@@ -5767,6 +6228,58 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     required List<ChatEntry> existingNonPast,
     required List<ChatEntry> historyEntries,
   }) {
+    if (detachedPreview && _bridge.supportsConversationSyncV2) {
+      final outgoingOverlays = existingNonPast
+          .whereType<UserChatEntry>()
+          .where(_shouldPreserveDetachedOverlayAcrossHistoryReplace)
+          .cast<ChatEntry>()
+          .toList(growable: false);
+      final runtimeOverlays = existingNonPast
+          .where(_isDetachedRuntimeOverlayEntry)
+          .toList(growable: false);
+      final projection = projectDetachedTimeline(
+        canonicalEntries: historyEntries,
+        outgoingOverlays: outgoingOverlays,
+        runtimeOverlays: runtimeOverlays,
+        exactAliases: _entryExactAliasKeys,
+        mergeEquivalent: _mergeEquivalentEntry,
+      );
+      _detachedProjectionCanonicalCount = projection.canonicalCount;
+      _detachedProjectionOutgoingOverlayCount = projection.outgoingOverlayCount;
+      _detachedProjectionRuntimeOverlayCount = projection.runtimeOverlayCount;
+      _detachedProjectionDuplicateCanonicalCount =
+          projection.duplicateCanonicalCount;
+      _detachedProjectionDuplicateOverlayCount =
+          projection.duplicateOverlayCount;
+      if (projection.duplicateCanonicalCount > 0) {
+        _detachedProjectionLastAction = 'canonical_rejected_duplicate';
+        logger.warning(
+          '[timeline_projection] event=canonical_rejected_duplicate '
+          'thread=$_projectionThreadToken '
+          'count=${projection.duplicateCanonicalCount}',
+        );
+        // A committed SQLite window should already have one row per stable
+        // provider item. Do not replace the last valid projection with a
+        // damaged snapshot merely because the reducer could collapse it.
+        return existingNonPast;
+      }
+      _detachedProjectionLastAction = 'canonical_commit';
+      for (final entry in historyEntries.whereType<UserChatEntry>()) {
+        final clientMessageId = entry.clientMessageId?.trim();
+        if (clientMessageId?.isNotEmpty == true) {
+          _detachedLocalOverlayClientIds.remove(clientMessageId);
+        }
+      }
+      _consumeDetachedCanonicalAssistantAliases(historyEntries);
+      if (projection.duplicateOverlayCount > 0) {
+        logger.warning(
+          '[timeline_projection] event=duplicates_collapsed '
+          'thread=$_projectionThreadToken '
+          'overlay=${projection.duplicateOverlayCount}',
+        );
+      }
+      return projection.entries;
+    }
     final lastUserIndex = existingNonPast.lastIndexWhere(
       (entry) => entry is UserChatEntry,
     );
@@ -6949,7 +7462,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   bool _shouldPreserveDetachedOverlayAcrossHistoryReplace(ChatEntry entry) {
-    if (_isDetachedProvisionalAssistant(entry)) return true;
+    if (_isDetachedRuntimeAssistantOverlay(entry)) return true;
     if (entry is ServerChatEntry) {
       final message = entry.message;
       // These are bounded to the current runtime attachment and are not part
@@ -7297,7 +7810,6 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     final runtimeLease = _captureRuntimeMutationLease();
     if (runtimeLease == null) return false;
-    final bridgeSessionId = runtimeLease.sessionId;
     final isOffline = !_bridge.isConnected;
     final effectiveClientMessageId = clientMessageId?.trim().isNotEmpty == true
         ? clientMessageId!.trim()
@@ -7318,7 +7830,6 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                     existingSubmission.status != MessageStatus.queued));
     if (alreadyDispatched) return true;
     if (isCodex) {
-      if (isOffline && state.queuedInput != null) return false;
       final supportsMultiple = _bridge.bridgeCapabilities.contains(
         codexMultiInputQueueCapability,
       );
@@ -7332,12 +7843,6 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         return false;
       }
     }
-    if (!_rememberSubmittedClientMessageId(effectiveClientMessageId)) {
-      return true;
-    }
-    final baseSeq = isOffline
-        ? _bridge.cachedSessionHistorySeq(bridgeSessionId)
-        : null;
     final structuredMentions = isCodex
         ? _extractCodexStructuredInputs(
             text,
@@ -7349,73 +7854,108 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             mentions: const <Map<String, String>>[],
           );
 
-    final shouldUseOfflineQueuePanel = isCodex && isOffline;
+    if (isOffline) {
+      if (detachedPreview) {
+        _rememberDetachedLocalOverlayClientId(effectiveClientMessageId);
+      }
+      final existingIndex = state.entries.indexWhere(
+        (entry) =>
+            entry is UserChatEntry &&
+            entry.clientMessageId == effectiveClientMessageId,
+      );
+      final failed = UserChatEntry(
+        text,
+        sessionId: sessionId,
+        clientMessageId: effectiveClientMessageId,
+        imageBytesList: images?.map((image) => image.bytes).toList(),
+        imageCount: images?.length ?? 0,
+        status: MessageStatus.failed,
+      );
+      if (existingIndex == -1) {
+        emit(state.copyWith(entries: [...state.entries, failed]));
+      } else {
+        final existing = state.entries[existingIndex] as UserChatEntry;
+        final entries = List<ChatEntry>.of(state.entries);
+        entries[existingIndex] = UserChatEntry(
+          existing.text.isEmpty ? text : existing.text,
+          sessionId: existing.sessionId ?? sessionId,
+          clientMessageId: effectiveClientMessageId,
+          providerItemId: existing.providerItemId,
+          historyTurnId: existing.historyTurnId,
+          imageBytesList:
+              images?.map((image) => image.bytes).toList() ??
+              existing.imageBytesList,
+          imageUrls: existing.imageUrls,
+          imageCount: images?.length ?? existing.imageCount,
+          status: MessageStatus.failed,
+          messageUuid: existing.messageUuid,
+          timestamp: existing.timestamp,
+          timestampIsAuthoritative: existing.timestampIsAuthoritative,
+        );
+        emit(state.copyWith(entries: entries));
+      }
+      _markOutgoingDraftFailed(
+        effectiveClientMessageId,
+        'bridge_not_connected',
+      );
+      _detachedProjectionLastAction = 'outgoing_failed_offline';
+      return true;
+    }
+
+    if (!_rememberSubmittedClientMessageId(effectiveClientMessageId)) {
+      return true;
+    }
+    const int? baseSeq = null;
+
     // Whether the provider will accept this turn immediately or queue it is a
     // Bridge-owned fact. Keep one optimistic bubble until the authoritative
     // input_ack/conversation_queue response decides the final presentation.
-    final shouldAddLocalEntry = !shouldUseOfflineQueuePanel;
     var submissionEntries = state.entries;
     if (detachedPreview && _detachedRuntimeOverlayGeneration != null) {
       submissionEntries = _withoutDetachedRuntimeOverlayEntries(
         submissionEntries,
       );
+      _detachedRuntimeAssistantAliases.clear();
       _resetDetachedRuntimeOverlayTracking();
     }
-    if (shouldAddLocalEntry) {
-      if (detachedPreview) {
-        _rememberDetachedLocalOverlayClientId(effectiveClientMessageId);
-      }
-      final existingIndex = submissionEntries.indexWhere(
-        (entry) =>
-            entry is UserChatEntry &&
-            entry.clientMessageId == effectiveClientMessageId,
+    if (detachedPreview) {
+      _rememberDetachedLocalOverlayClientId(effectiveClientMessageId);
+    }
+    final existingIndex = submissionEntries.indexWhere(
+      (entry) =>
+          entry is UserChatEntry &&
+          entry.clientMessageId == effectiveClientMessageId,
+    );
+    if (existingIndex >= 0) {
+      final existing = submissionEntries[existingIndex] as UserChatEntry;
+      final nextEntries = List<ChatEntry>.of(submissionEntries);
+      nextEntries[existingIndex] = UserChatEntry(
+        existing.text,
+        sessionId: existing.sessionId ?? sessionId,
+        clientMessageId: effectiveClientMessageId,
+        providerItemId: existing.providerItemId,
+        historyTurnId: existing.historyTurnId,
+        imageBytesList: existing.imageBytesList,
+        imageUrls: existing.imageUrls,
+        imageCount: existing.imageCount,
+        status: MessageStatus.sending,
+        messageUuid: existing.messageUuid,
+        timestamp: existing.timestamp,
+        timestampIsAuthoritative: existing.timestampIsAuthoritative,
       );
-      if (existingIndex >= 0) {
-        final existing = submissionEntries[existingIndex] as UserChatEntry;
-        final nextEntries = List<ChatEntry>.of(submissionEntries);
-        nextEntries[existingIndex] = UserChatEntry(
-          existing.text,
-          sessionId: existing.sessionId ?? sessionId,
-          clientMessageId: effectiveClientMessageId,
-          providerItemId: existing.providerItemId,
-          historyTurnId: existing.historyTurnId,
-          imageBytesList: existing.imageBytesList,
-          imageUrls: existing.imageUrls,
-          imageCount: existing.imageCount,
-          status: isOffline ? MessageStatus.queued : MessageStatus.sending,
-          messageUuid: existing.messageUuid,
-          timestamp: existing.timestamp,
-          timestampIsAuthoritative: existing.timestampIsAuthoritative,
-        );
-        emit(state.copyWith(entries: nextEntries));
-      } else {
-        final entry = UserChatEntry(
-          text,
-          sessionId: sessionId,
-          clientMessageId: effectiveClientMessageId,
-          imageBytesList: images?.map((i) => i.bytes).toList(),
-          status: isOffline ? MessageStatus.queued : MessageStatus.sending,
-        );
-        emit(state.copyWith(entries: [...submissionEntries, entry]));
-      }
-    } else if (shouldUseOfflineQueuePanel) {
-      emit(
-        state.copyWith(
-          entries: submissionEntries,
-          queuedInput: QueuedInputItem(
-            itemId: '$offlineQueuedInputPrefix$effectiveClientMessageId',
-            text: text,
-            createdAt: DateTime.now().toUtc().toIso8601String(),
-            clientMessageId: effectiveClientMessageId,
-            imageCount: images?.length ?? 0,
-            skills: structuredMentions.skills,
-            mentions: structuredMentions.mentions,
-          ),
-        ),
+      emit(state.copyWith(entries: nextEntries));
+    } else {
+      final entry = UserChatEntry(
+        text,
+        sessionId: sessionId,
+        clientMessageId: effectiveClientMessageId,
+        imageBytesList: images?.map((i) => i.bytes).toList(),
+        status: MessageStatus.sending,
       );
+      emit(state.copyWith(entries: [...submissionEntries, entry]));
     }
 
-    final deliveryPendingItem = isCodex && !isOffline
+    final deliveryPendingItem = isCodex
         ? QueuedInputItem(
             itemId:
                 '$deliveryPendingQueuedInputPrefix$effectiveClientMessageId',
@@ -7428,6 +7968,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           )
         : null;
 
+    _recordOutgoingDraftAttempt(effectiveClientMessageId);
     _dispatchInputInOrder(
       runtimeLease: runtimeLease,
       text: text,
@@ -7573,6 +8114,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _bridge.clearDeliveryPendingInput(
       bridgeSessionId,
       itemId: '$deliveryPendingQueuedInputPrefix$clientMessageId',
+    );
+    _markOutgoingDraftFailed(
+      clientMessageId,
+      error is _ExpiredRuntimeMutationLease
+          ? 'runtime_authority_changed_before_send'
+          : 'local_input_dispatch_failed',
     );
     if (isClosed) return;
 
@@ -9968,9 +10515,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// lets the UI explain the real retry gate instead of making a tap appear to
   /// do nothing.
   bool retryMessage(UserChatEntry entry) {
+    if (!_bridge.isConnected) return false;
     final runtimeLease = _captureRuntimeMutationLease();
     if (runtimeLease == null) return false;
-    final clientMessageId = _uuid.v4();
+    final existingClientMessageId = entry.clientMessageId?.trim();
+    final clientMessageId = existingClientMessageId?.isNotEmpty == true
+        ? existingClientMessageId!
+        : _uuid.v4();
     if (detachedPreview) {
       _rememberDetachedLocalOverlayClientId(clientMessageId);
     }
@@ -10157,6 +10708,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _localHistoryAvailabilitySubscription?.cancel();
     _historySyncSubscription?.cancel();
     _statusRefreshConnectionSubscription?.cancel();
+    _detachedOutgoingConnectionSubscription?.cancel();
     codexModelCatalogRevision.dispose();
     codexServiceTierRaw.dispose();
     queuedInputs.dispose();
@@ -10166,7 +10718,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _desktopContinuityConnectionSubscription?.cancel();
     _deliveryPendingInputs.clear();
     _detachedLocalOverlayClientIds.clear();
-    _detachedProvisionalAssistantAliases.clear();
+    _detachedRuntimeAssistantAliases.clear();
     _submittedClientMessageIds.clear();
     _detachedRuntimeOverlayEventIds.clear();
     _resetDetachedRuntimeOverlayTracking();

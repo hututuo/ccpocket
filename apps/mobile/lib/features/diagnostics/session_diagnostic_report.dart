@@ -12,6 +12,7 @@ import 'package:uuid/uuid.dart';
 import '../../models/messages.dart';
 import '../../models/bridge_data_source_identity.dart';
 import '../../services/bridge_service.dart';
+import '../../services/draft_service.dart';
 import '../chat_session/state/chat_session_cubit.dart';
 import '../chat_session/state/chat_session_state.dart';
 import '../chat_session/widgets/chat_message_list.dart';
@@ -80,6 +81,7 @@ Future<void> uploadCurrentSessionDiagnosticReport({
       chatSession: context.read<ChatSessionCubit>(),
       contentSync: context.read<ConversationContentSyncService>(),
       cache: context.read<SessionCatalogCacheRepository>(),
+      drafts: context.read<DraftService>(),
       packageInfoLoader: PackageInfo.fromPlatform,
     );
     final report = await builder.build(
@@ -178,6 +180,7 @@ class SessionDiagnosticReportBuilder {
     required this.chatSession,
     required this.contentSync,
     required this.cache,
+    required this.drafts,
     required this.packageInfoLoader,
   });
 
@@ -186,6 +189,7 @@ class SessionDiagnosticReportBuilder {
   final ChatSessionCubit chatSession;
   final ConversationContentSyncService contentSync;
   final SessionCatalogCacheRepository cache;
+  final DraftService drafts;
   final Future<PackageInfo> Function() packageInfoLoader;
 
   Future<SessionDiagnosticReportBuildResult> build({
@@ -305,6 +309,27 @@ class SessionDiagnosticReportBuilder {
           },
     ];
     final chatState = chatSession.state;
+    final pendingSubmission = drafts.getPendingSubmission(providerSessionId);
+    UserChatEntry? pendingEntry;
+    if (pendingSubmission != null) {
+      for (final entry in chatState.entries.whereType<UserChatEntry>()) {
+        if (entry.clientMessageId == pendingSubmission.clientMessageId) {
+          pendingEntry = entry;
+          break;
+        }
+      }
+    }
+    final runtimeSessionId = chatSession.runtimeSessionIdForRead;
+    final bridgeReceiptHeld =
+        pendingSubmission != null &&
+        runtimeSessionId != null &&
+        bridge
+            .cachedSessionMessages(runtimeSessionId)
+            .whereType<UserInputMessage>()
+            .any(
+              (message) =>
+                  message.clientMessageId == pendingSubmission.clientMessageId,
+            );
     final homeProjection = HomeDiagnosticProjectionRegistry.instance.capture(
       bridgeInstanceId: bridgeInstanceId,
       codexSourceId: codexSourceId,
@@ -405,6 +430,29 @@ class SessionDiagnosticReportBuilder {
         'sessionProjection': <String, Object?>{
           'state': _diagnosticChatState(chatState),
           'runtime': chatSession.diagnosticRuntimeProjection,
+          'outgoingRecovery': pendingSubmission == null
+              ? const <String, Object?>{'exists': false}
+              : <String, Object?>{
+                  'exists': true,
+                  'state': pendingEntry?.status.name ?? 'failed_unconfirmed',
+                  'clientMessageId': pendingSubmission.clientMessageId,
+                  'createdAt': pendingSubmission.createdAt.toIso8601String(),
+                  'lastAttemptAt': pendingSubmission.lastAttemptAt
+                      ?.toIso8601String(),
+                  'attemptCount': pendingSubmission.attemptCount,
+                  'lastError': pendingSubmission.lastError,
+                  'text': pendingSubmission.text,
+                  'imageCount': pendingSubmission.images.length,
+                  'imageMimeTypes': [
+                    for (final image in pendingSubmission.images)
+                      image.mimeType,
+                  ],
+                  'mentionablePathCount':
+                      pendingSubmission.mentionablePaths.length,
+                  'additionalMentionCount':
+                      pendingSubmission.additionalMentions.length,
+                  'bridgeReceiptHeld': bridgeReceiptHeld,
+                },
           'presentation': presentationAtStart,
           'presentationAtStart': presentationAtStart,
           'presentationAtEnd': presentationAtEnd,

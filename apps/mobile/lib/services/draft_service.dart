@@ -50,8 +50,13 @@ Future<String> _defaultPendingSubmissionEncoder(
   PendingChatSubmissionDraft submission,
 ) {
   final payload = <String, Object?>{
+    'schemaVersion': 2,
     'clientMessageId': submission.clientMessageId,
     'text': submission.text,
+    'createdAt': submission.createdAt.toUtc().toIso8601String(),
+    'lastAttemptAt': submission.lastAttemptAt?.toUtc().toIso8601String(),
+    'attemptCount': submission.attemptCount,
+    'lastError': submission.lastError,
     'images': [
       for (final image in submission.images)
         <String, Object>{'bytes': image.bytes, 'mime': image.mimeType},
@@ -79,8 +84,13 @@ Future<String> _defaultPendingSubmissionEncoder(
 String _encodePendingSubmissionPayload(Map<String, Object?> payload) {
   final rawImages = payload['images']! as List;
   return jsonEncode({
+    'schemaVersion': payload['schemaVersion'],
     'clientMessageId': payload['clientMessageId'],
     'text': payload['text'],
+    'createdAt': payload['createdAt'],
+    'lastAttemptAt': payload['lastAttemptAt'],
+    'attemptCount': payload['attemptCount'],
+    'lastError': payload['lastError'],
     'images': [
       for (final rawImage in rawImages)
         {
@@ -96,6 +106,10 @@ String _encodePendingSubmissionPayload(Map<String, Object?> payload) {
 class PendingChatSubmissionDraft {
   final String clientMessageId;
   final String text;
+  final DateTime createdAt;
+  final DateTime? lastAttemptAt;
+  final int attemptCount;
+  final String? lastError;
   final List<({Uint8List bytes, String mimeType})> images;
   final List<String> mentionablePaths;
   final List<Map<String, String>> additionalMentions;
@@ -103,10 +117,15 @@ class PendingChatSubmissionDraft {
   PendingChatSubmissionDraft({
     required this.clientMessageId,
     required this.text,
+    DateTime? createdAt,
+    this.lastAttemptAt,
+    this.attemptCount = 0,
+    this.lastError,
     Iterable<({Uint8List bytes, String mimeType})> images = const [],
     Iterable<String> mentionablePaths = const [],
     Iterable<Map<String, String>> additionalMentions = const [],
-  }) : images = List.unmodifiable(images),
+  }) : createdAt = (createdAt ?? DateTime.now()).toUtc(),
+       images = List.unmodifiable(images),
        mentionablePaths = List.unmodifiable(mentionablePaths),
        additionalMentions = List.unmodifiable(
          additionalMentions.map(Map<String, String>.unmodifiable),
@@ -522,9 +541,31 @@ class DraftService {
         }
       }
 
+      final rawCreatedAt = decoded['createdAt'];
+      final createdAt = rawCreatedAt is String
+          ? DateTime.tryParse(rawCreatedAt)
+          : null;
+      final rawLastAttemptAt = decoded['lastAttemptAt'];
+      final lastAttemptAt = rawLastAttemptAt is String
+          ? DateTime.tryParse(rawLastAttemptAt)
+          : null;
+      final attemptCount = decoded['attemptCount'];
+      final lastError = decoded['lastError'];
+
       return PendingChatSubmissionDraft(
         clientMessageId: clientMessageId,
         text: text,
+        // v1 records did not carry lifecycle metadata. Epoch marks them as
+        // recovered legacy input without pretending they were created now.
+        createdAt:
+            createdAt ?? DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+        lastAttemptAt: lastAttemptAt,
+        attemptCount: attemptCount is int && attemptCount >= 0
+            ? attemptCount
+            : 0,
+        lastError: lastError is String && lastError.trim().isNotEmpty
+            ? lastError
+            : null,
         images: images,
         mentionablePaths: mentionablePaths,
         additionalMentions: additionalMentions,

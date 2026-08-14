@@ -10757,6 +10757,7 @@ function isConversationRuntimeOverlayMessage(
   message: ServerMessage,
 ): message is ConversationRuntimeOverlayMessage {
   return (
+    message.type === "assistant" ||
     message.type === "result" ||
     message.type === "error" ||
     message.type === "guardian_approval" ||

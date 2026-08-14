@@ -124,6 +124,10 @@ class CodexSessionScreen extends StatefulWidget {
   final bool hideAuxiliaryDock;
   final BridgeDataSourceIdentity? dataSourceIdentity;
 
+  /// Optional composition seam for deterministic image-send tests.
+  /// Production callers use the isolate-backed default encoder.
+  final ChatImagePayloadEncoder? imagePayloadEncoder;
+
   /// Auxiliary child conversations reuse the full Codex screen, but can
   /// selectively hide operations that the child-session workflow does not
   /// support. All ordinary session screens keep Fork enabled by default.
@@ -151,6 +155,7 @@ class CodexSessionScreen extends StatefulWidget {
     this.hideAuxiliaryDock = false,
     this.dataSourceIdentity,
     this.allowMessageFork = true,
+    this.imagePayloadEncoder,
   });
 
   @override
@@ -236,6 +241,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   String? _cachedPreviewTargetFingerprint;
   String? _loadingCachedPreviewTargetFingerprint;
   ChatComposerSubmission? _deferredSubmission;
+  ChatComposerSubmission? _restoredFailedSubmission;
   PendingSessionBinding? _retainedPendingBinding;
   PendingSessionBinding? _localAttachmentBinding;
   bool _durableRuntimeBindingAmbiguous = false;
@@ -978,12 +984,11 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     return true;
   }
 
-  /// Restarts a persisted first-send after the socket and v2 catalog recover.
+  /// Continues an explicitly requested deferred send once catalog readiness
+  /// proves the durable target exists.
   ///
-  /// The draft itself is intentionally durable, but restoring it without
-  /// re-requesting the live attachment leaves the page forever at
-  /// "Loading live session status". [PendingSessionBinding] and Bridge request
-  /// ids make repeated readiness callbacks idempotent.
+  /// Restored unconfirmed submissions never enter this path until the user
+  /// taps retry and [_queueDeferredSubmission] records that new intent.
   void _requestRestoredDeferredAttachmentIfReady() {
     if (!mounted || !_isPending || _deferredSubmission == null) return;
     final external = widget.pendingSessionCreated;
@@ -1018,13 +1023,8 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
 
   void _consumeDeferredSubmission(ChatComposerSubmission submission) {
     if (_deferredSubmission != submission) return;
-    final durableId = widget.durableProviderSessionId;
-    if (durableId != null && durableId.isNotEmpty) {
-      _draftService.deletePendingSubmission(
-        durableId,
-        clientMessageId: submission.clientMessageId,
-      );
-    }
+    // Keep the durable recovery record until Bridge input_ack proves receipt.
+    // ChatSessionCubit owns that lifecycle transition.
     if (!mounted) {
       _deferredSubmission = null;
       return;
@@ -1038,7 +1038,10 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     if (durableId == null || durableId.isEmpty) return;
     final submission = _draftService.getPendingSubmission(durableId);
     if (submission == null) return;
-    _deferredSubmission = (
+    // A persisted record without a Bridge receipt is an interrupted local
+    // attempt, not permission to send again. Restore it as a failed outgoing
+    // bubble; only an explicit retry may request attachment and dispatch it.
+    _restoredFailedSubmission = (
       clientMessageId: submission.clientMessageId,
       text: submission.text,
       images: submission.images.isEmpty ? null : submission.images,
@@ -1047,12 +1050,70 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     );
   }
 
+  bool _retryPersistedSubmission(UserChatEntry entry, ChatSessionCubit cubit) {
+    if (!_isPending || _deferredSubmission != null) return false;
+    final durableId = widget.durableProviderSessionId?.trim();
+    final clientMessageId = entry.clientMessageId?.trim();
+    if (durableId?.isNotEmpty != true || clientMessageId?.isNotEmpty != true) {
+      return false;
+    }
+    final pending = _draftService.getPendingSubmission(durableId!);
+    if (pending == null || pending.clientMessageId != clientMessageId) {
+      return false;
+    }
+    if (!context.read<BridgeService>().isConnected) {
+      cubit.restoreFailedSubmission(
+        pending.text,
+        clientMessageId: pending.clientMessageId,
+        images: pending.images.isEmpty ? null : pending.images,
+        failureReason: 'bridge_not_connected',
+      );
+      return false;
+    }
+    final submission = (
+      clientMessageId: pending.clientMessageId,
+      text: pending.text,
+      images: pending.images.isEmpty ? null : pending.images,
+      mentionablePaths: pending.mentionablePaths,
+      additionalMentions: pending.additionalMentions,
+    );
+    if (!_queueDeferredSubmission(submission)) return false;
+    unawaited(
+      _draftService.savePendingSubmission(
+        durableId,
+        PendingChatSubmissionDraft(
+          clientMessageId: pending.clientMessageId,
+          text: pending.text,
+          createdAt: pending.createdAt,
+          lastAttemptAt: DateTime.now().toUtc(),
+          attemptCount: pending.attemptCount + 1,
+          images: pending.images,
+          mentionablePaths: pending.mentionablePaths,
+          additionalMentions: pending.additionalMentions,
+        ),
+      ),
+    );
+    if (mounted) {
+      setState(() => _restoredFailedSubmission = null);
+    } else {
+      _restoredFailedSubmission = null;
+    }
+    cubit.showDeferredSubmission(
+      submission.text,
+      clientMessageId: submission.clientMessageId,
+      images: submission.images,
+      queuedLocally: !context.read<BridgeService>().isConnected,
+    );
+    return true;
+  }
+
   void _preserveDeferredSubmissionAsDraft() {
     final submission = _deferredSubmission;
     if (submission == null) return;
     _deferredSubmission = null;
     final durableId = widget.durableProviderSessionId;
     if (durableId == null || durableId.isEmpty) return;
+    final pending = _draftService.getPendingSubmission(durableId);
     unawaited(
       _draftService
           .savePendingSubmission(
@@ -1060,6 +1121,12 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
             PendingChatSubmissionDraft(
               clientMessageId: submission.clientMessageId,
               text: submission.text,
+              createdAt: pending?.createdAt,
+              lastAttemptAt: pending?.lastAttemptAt ?? DateTime.now().toUtc(),
+              attemptCount: pending?.attemptCount ?? 1,
+              lastError:
+                  pending?.lastError ??
+                  'local_submission_interrupted_before_bridge_receipt',
               images: submission.images ?? const [],
               mentionablePaths: submission.mentionablePaths,
               additionalMentions: submission.additionalMentions,
@@ -1179,15 +1246,38 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
           binding.failure.value?.errorMessage ??
           AppLocalizations.of(context).failedToStartServer;
       binding.prepareAttachmentRetry();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(text),
-          action: SnackBarAction(
-            label: AppLocalizations.of(context).retry,
-            onPressed: () => unawaited(binding.requestAttachment()),
+      final deferred = _deferredSubmission;
+      if (deferred != null) {
+        final pending = _draftService.getPendingSubmission(durableId);
+        unawaited(
+          _draftService.savePendingSubmission(
+            durableId,
+            PendingChatSubmissionDraft(
+              clientMessageId: deferred.clientMessageId,
+              text: deferred.text,
+              createdAt: pending?.createdAt,
+              lastAttemptAt: DateTime.now().toUtc(),
+              attemptCount: pending?.attemptCount ?? 1,
+              lastError: text,
+              images: deferred.images ?? const [],
+              mentionablePaths: deferred.mentionablePaths,
+              additionalMentions: deferred.additionalMentions,
+            ),
           ),
-        ),
-      );
+        );
+        setState(() {
+          _deferredSubmission = null;
+          _restoredFailedSubmission = deferred;
+        });
+        try {
+          context.read<ChatSessionCubit>().restoreFailedSubmission(
+            deferred.text,
+            clientMessageId: deferred.clientMessageId,
+            images: deferred.images,
+          );
+        } catch (_) {}
+      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
       return;
     }
     binding.removeListener(_onPendingSessionCreated);
@@ -1607,12 +1697,14 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
           onDeferredSubmit: _queueDeferredSubmission,
           onDeferredCompact: _requestDeferredCompactAttachment,
           initialSubmission: _deferredSubmission,
+          initialFailedSubmission: _restoredFailedSubmission,
           onInitialSubmissionConsumed: _consumeDeferredSubmission,
           onBackToSessions: widget.onBackToSessions,
           hideSessionBackButton: widget.hideSessionBackButton,
           allowMessageFork: false,
           dataSourceIdentity: _dataSourceIdentity,
           diagnosticReportsSupported: _diagnosticReportsSupported,
+          imagePayloadEncoder: widget.imagePayloadEncoder,
         ),
       );
     }
@@ -1680,6 +1772,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       allowMessageFork: widget.allowMessageFork,
       dataSourceIdentity: _dataSourceIdentity,
       diagnosticReportsSupported: _diagnosticReportsSupported,
+      imagePayloadEncoder: widget.imagePayloadEncoder,
     );
   }
 }
@@ -1719,9 +1812,11 @@ class _CodexProviders extends StatelessWidget {
   final ChatComposerSubmitCallback? onDeferredSubmit;
   final bool Function()? onDeferredCompact;
   final ChatComposerSubmission? initialSubmission;
+  final ChatComposerSubmission? initialFailedSubmission;
   final ValueChanged<ChatComposerSubmission>? onInitialSubmissionConsumed;
   final BridgeDataSourceIdentity dataSourceIdentity;
   final bool diagnosticReportsSupported;
+  final ChatImagePayloadEncoder? imagePayloadEncoder;
 
   const _CodexProviders({
     super.key,
@@ -1755,14 +1850,17 @@ class _CodexProviders extends StatelessWidget {
     this.onDeferredSubmit,
     this.onDeferredCompact,
     this.initialSubmission,
+    this.initialFailedSubmission,
     this.onInitialSubmissionConsumed,
     required this.dataSourceIdentity,
     required this.diagnosticReportsSupported,
+    this.imagePayloadEncoder,
   });
 
   @override
   Widget build(BuildContext context) {
     final bridge = context.read<BridgeService>();
+    final draftService = context.read<DraftService>();
     final DetachedHistoryToolDetailLoader? toolDetailLoader = detachedPreview
         ? (gap, toolUseIds) =>
               context.read<ConversationContentSyncService>().loadToolDetails(
@@ -1823,6 +1921,7 @@ class _CodexProviders extends StatelessWidget {
               initialCodexApprovalsReviewer: codexApprovalsReviewer,
               initialCodexPermissionsMode: codexPermissionsMode,
               initialProjectPath: projectPath,
+              outgoingDrafts: draftService,
               detachedPreview: detachedPreview,
               initialHistoryMessages: initialHistoryMessages,
               initialLiveRuntimeSessionId: liveRuntimeSessionId,
@@ -1836,7 +1935,16 @@ class _CodexProviders extends StatelessWidget {
                         ?.runtimeOverlays
                   : null,
               initialHistoryHasEarlier: initialHistoryHasEarlier,
+              imagePayloadEncoder: imagePayloadEncoder,
             );
+            final failedSubmission = initialFailedSubmission;
+            if (detachedPreview && failedSubmission != null) {
+              cubit.restoreFailedSubmission(
+                failedSubmission.text,
+                clientMessageId: failedSubmission.clientMessageId,
+                images: failedSubmission.images,
+              );
+            }
             final submission = initialSubmission;
             if (!detachedPreview && submission != null) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2326,6 +2434,15 @@ class _CodexChatBody extends HookWidget {
         }
         return accepted;
       }
+      if (!bridge.isConnected) {
+        chatSessionCubit.restoreFailedSubmission(
+          submission.text,
+          clientMessageId: submission.clientMessageId,
+          images: submission.images,
+          failureReason: 'bridge_not_connected',
+        );
+        return true;
+      }
       final waitsForAttachment = onDeferredSubmit?.call(submission) ?? false;
       if (waitsForAttachment) {
         final queuedLocally = !context.read<BridgeService>().isConnected;
@@ -2349,12 +2466,6 @@ class _CodexChatBody extends HookWidget {
         mentionablePaths: submission.mentionablePaths,
         additionalMentions: submission.additionalMentions,
       );
-      if (sent) {
-        draftService.deletePendingSubmission(
-          sessionId,
-          clientMessageId: submission.clientMessageId,
-        );
-      }
       return sent;
     }
 
@@ -2385,6 +2496,14 @@ class _CodexChatBody extends HookWidget {
         } catch (_) {
           return false;
         }
+        if (!bridge.isConnected) {
+          chatSessionCubit.restoreFailedSubmission(
+            submission.text,
+            clientMessageId: submission.clientMessageId,
+            failureReason: 'bridge_not_connected',
+          );
+          return true;
+        }
         final accepted = submitWhileAttaching(submission);
         if (!accepted) {
           draftService.deletePendingSubmission(
@@ -2393,6 +2512,19 @@ class _CodexChatBody extends HookWidget {
           );
         }
         return accepted;
+      }
+      try {
+        await draftService.savePendingSubmission(
+          sessionId,
+          PendingChatSubmissionDraft(
+            clientMessageId: submission.clientMessageId,
+            text: submission.text,
+            lastAttemptAt: DateTime.now().toUtc(),
+            attemptCount: 1,
+          ),
+        );
+      } catch (_) {
+        return false;
       }
       return chatSessionCubit.sendMessage(
         submission.text,
@@ -3530,9 +3662,14 @@ class _CodexChatBody extends HookWidget {
                                 .httpBaseUrl,
                             projectPath: chatFileRoot,
                             onRetryMessage: (entry) {
-                              final accepted = context
-                                  .read<ChatSessionCubit>()
-                                  .retryMessage(entry);
+                              final cubit = context.read<ChatSessionCubit>();
+                              final accepted =
+                                  parentState?._retryPersistedSubmission(
+                                        entry,
+                                        cubit,
+                                      ) ==
+                                      true ||
+                                  cubit.retryMessage(entry);
                               if (accepted || !context.mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
