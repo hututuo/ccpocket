@@ -6,6 +6,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../core/logger.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../../models/messages.dart';
+import '../../../utils/diagnostic_token.dart';
 import '../../session_list/state/session_list_cubit.dart';
 import '../state/chat_session_cubit.dart';
 
@@ -134,8 +135,8 @@ class _DurableSessionPreviewUpdaterState
       final consumed = widget.onLiveRuntimeReady?.call(cubit) == true;
       logger.info(
         '[outgoing_recovery] event=live_runtime_callback '
-        'thread=${widget.statusProviderSessionId ?? 'unknown'} '
-        'runtime=$normalized consumed=$consumed '
+        'thread=${diagnosticToken('thread', widget.statusProviderSessionId ?? 'unknown')} '
+        'runtime=${diagnosticToken('runtime', normalized)} consumed=$consumed '
         'writable=${cubit.runtimeSessionIdForMutation() != null}',
       );
       if (consumed) {

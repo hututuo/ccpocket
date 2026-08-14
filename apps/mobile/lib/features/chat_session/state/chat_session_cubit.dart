@@ -1398,8 +1398,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     logger.info(
       '[outgoing_recovery] event=runtime_binding_changed '
       'thread=$_projectionThreadToken '
-      'from=${_projectionItemToken(previousRuntimeSessionId)} '
-      'to=${_projectionItemToken(next)} generation=$generation',
+      'from=${_projectionOpaqueToken('runtime', previousRuntimeSessionId)} '
+      'to=${_projectionOpaqueToken('runtime', next)} generation=$generation',
     );
     unawaited(_subscription?.cancel());
     _subscription = null;
@@ -1446,7 +1446,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           message is InputRejectedMessage) {
         logger.info(
           '[outgoing_recovery] event=runtime_receipt_frame '
-          'thread=$_projectionThreadToken runtime=${_projectionItemToken(next)} '
+          'thread=$_projectionThreadToken '
+          'runtime=${_projectionOpaqueToken('runtime', next)} '
           'kind=${message.runtimeType}',
         );
       }
@@ -1531,8 +1532,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     logger.info(
       '[timeline_projection] event=assistant_item_completed '
       'thread=$_projectionThreadToken '
-      'item=${_projectionItemToken(message.message.id)} '
-      'turn=${_projectionItemToken(message.historyTurnId)}',
+      'item=${_projectionOpaqueToken('item', message.message.id)} '
+      'turn=${_projectionOpaqueToken('turn', message.historyTurnId)}',
     );
   }
 
@@ -1658,12 +1659,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
   }
 
-  String _projectionItemToken(String? value) {
+  String _projectionOpaqueToken(String namespace, String? value) {
     final normalized = value?.trim();
     if (normalized == null || normalized.isEmpty) return 'unknown';
-    return normalized.length <= 12
-        ? normalized
-        : '${normalized.substring(0, 6)}…${normalized.substring(normalized.length - 4)}';
+    return diagnosticToken(namespace, normalized);
   }
 
   bool _isDetachedLiveAssistantCompletion(AssistantServerMessage message) {
@@ -1710,7 +1709,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       '[outgoing_recovery] event=receipt_observed '
       'thread=$_projectionThreadToken evidence=$evidence '
       'client=${diagnosticToken('client', clientMessageId ?? 'none')} '
-      'cleared=$cleared runtime=${_projectionItemToken(runtimeSessionIdForRead)}',
+      'cleared=$cleared '
+      'runtime=${_projectionOpaqueToken('runtime', runtimeSessionIdForRead)}',
     );
   }
 
