@@ -16,7 +16,7 @@ class SessionCatalogCacheDatabase {
   SessionCatalogCacheDatabase({this.databasePath, this.openDatabase});
 
   static const fileName = 'session_catalog_cache_v1.db';
-  static const schemaVersion = 7;
+  static const schemaVersion = 10;
 
   static const partitionsTable = 'session_catalog_partitions';
   static const aliasesTable = 'session_catalog_aliases';
@@ -32,6 +32,12 @@ class SessionCatalogCacheDatabase {
       'conversation_timeline_stage_entries';
   static const timelineStageDeletesTable =
       'conversation_timeline_stage_deletes';
+  static const latestTurnRepairStagesTable =
+      'conversation_latest_turn_repair_stages';
+  static const latestTurnRepairEntriesTable =
+      'conversation_latest_turn_repair_entries';
+  static const latestTurnRepairBaseEntriesTable =
+      'conversation_latest_turn_repair_base_entries';
   static const userIndexStatesTable = 'conversation_user_index_states';
   static const userIndexEntriesTable = 'conversation_user_index_entries';
   static const userTurnDetailsTable = 'conversation_user_turn_details';
@@ -175,6 +181,42 @@ class SessionCatalogCacheDatabase {
         'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
       });
     }
+    if (oldVersion < 8) {
+      await _addWindowCompleteColumnIfNeeded(database, hotWindowsTable);
+      await _addWindowCompleteColumnIfNeeded(database, timelineStagesTable);
+      if ((await database.rawQuery(
+        'PRAGMA table_info($timelineStagesTable)',
+      )).isNotEmpty) {
+        // A staging generation is never readable state. Its old schema cannot
+        // prove whole-window coverage, so rebuilding it is safer and cheaper
+        // than carrying an ambiguous partial batch across the migration.
+        await database.delete(timelineStagesTable);
+      }
+    }
+    if (oldVersion < 9) {
+      await _createLatestTurnRepairSchema(database);
+    }
+    if (oldVersion < 10) {
+      await _createLatestTurnRepairBaseEntrySchema(database);
+    }
+  }
+
+  static Future<void> _addWindowCompleteColumnIfNeeded(
+    Database database,
+    String table,
+  ) async {
+    final columns = await database.rawQuery('PRAGMA table_info($table)');
+    if (columns.isEmpty) return;
+    if (!columns.any((column) => column['name'] == 'window_complete')) {
+      await database.execute(
+        'ALTER TABLE $table '
+        'ADD COLUMN window_complete INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    // v7 only knew whether the latest turn was complete. That is not evidence
+    // that the bounded hot window covered all older rows, so every migrated
+    // window starts as coverage-unknown and must be replayed once.
+    await database.execute('UPDATE $table SET window_complete = 0');
   }
 
   static Future<void> _createSchema(Database database, int version) async {
@@ -562,6 +604,7 @@ class SessionCatalogCacheDatabase {
         entry_count INTEGER NOT NULL,
         has_earlier INTEGER NOT NULL,
         turns_next_cursor TEXT,
+        window_complete INTEGER NOT NULL DEFAULT 1,
         latest_turn_complete INTEGER NOT NULL DEFAULT 1,
         latest_turn_gap_json TEXT,
         latest_turn_gap_cursor TEXT,
@@ -611,6 +654,108 @@ class SessionCatalogCacheDatabase {
         provider,
         provider_session_id,
         entry_index
+      )
+    ''');
+
+    await _createLatestTurnRepairSchema(database);
+  }
+
+  static Future<void> _createLatestTurnRepairSchema(Database database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $latestTurnRepairStagesTable (
+        partition_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        expected_cursor TEXT,
+        page_depth INTEGER NOT NULL,
+        entry_count INTEGER NOT NULL,
+        byte_count INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (partition_id, provider, provider_session_id),
+        FOREIGN KEY (partition_id, provider, provider_session_id)
+          REFERENCES $hotWindowsTable (
+            partition_id,
+            provider,
+            provider_session_id
+          )
+          ON DELETE CASCADE
+      )
+    ''');
+
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $latestTurnRepairEntriesTable (
+        partition_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        page_depth INTEGER NOT NULL,
+        item_order INTEGER NOT NULL,
+        entry_id TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        message_json TEXT NOT NULL,
+        PRIMARY KEY (
+          partition_id,
+          provider,
+          provider_session_id,
+          revision,
+          turn_id,
+          entry_id
+        ),
+        FOREIGN KEY (partition_id, provider, provider_session_id)
+          REFERENCES $latestTurnRepairStagesTable (
+            partition_id,
+            provider,
+            provider_session_id
+          )
+          ON DELETE CASCADE
+      )
+    ''');
+
+    await database.execute('''
+      CREATE UNIQUE INDEX IF NOT EXISTS conversation_latest_turn_repair_order
+      ON $latestTurnRepairEntriesTable (
+        partition_id,
+        provider,
+        provider_session_id,
+        revision,
+        turn_id,
+        page_depth,
+        item_order
+      )
+    ''');
+    await _createLatestTurnRepairBaseEntrySchema(database);
+  }
+
+  static Future<void> _createLatestTurnRepairBaseEntrySchema(
+    Database database,
+  ) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS $latestTurnRepairBaseEntriesTable (
+        partition_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        PRIMARY KEY (
+          partition_id,
+          provider,
+          provider_session_id,
+          revision,
+          turn_id,
+          entry_id
+        ),
+        FOREIGN KEY (partition_id, provider, provider_session_id)
+          REFERENCES $latestTurnRepairStagesTable (
+            partition_id,
+            provider,
+            provider_session_id
+          )
+          ON DELETE CASCADE
       )
     ''');
   }
@@ -671,6 +816,7 @@ class SessionCatalogCacheDatabase {
         page_count INTEGER NOT NULL,
         has_earlier INTEGER NOT NULL,
         turns_next_cursor TEXT,
+        window_complete INTEGER NOT NULL DEFAULT 1,
         latest_turn_complete INTEGER NOT NULL DEFAULT 1,
         latest_turn_gap_json TEXT,
         latest_turn_gap_cursor TEXT,

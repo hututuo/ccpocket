@@ -255,6 +255,35 @@
   "bridgeConnectionTakingLonger": "Bridge には接続しましたが、会話一覧の準備に時間がかかっています。このまま待つか、再試行またはキャンセルできます。",
   "authenticatingWithBridge": "Bridge で認証しています...",
   "preparingCodexRuntime": "Bridge はオンラインです。共有 Codex ランタイムを準備しています...",
+  "connectionPreparingTarget": "接続先を準備しています…",
+  "connectionOpeningTransport": "ネットワーク接続を開始しています…",
+  "connectionNegotiatingTransport": "ネットワークに接続しました。Bridge の機能を確認しています…",
+  "connectionSendingCapabilities": "モバイル側の機能情報を送信しています…",
+  "connectionRequestingSessionList": "正規のセッション一覧を要求しています…",
+  "connectionReceivingSessionList": "一覧データを受信しました。読み込んでいます…",
+  "connectionDecodingSessionList": "セッション一覧をデコードしています…",
+  "connectionValidatingSessionList": "セッション一覧を検証しています…",
+  "connectionAcceptingSessionAuthority": "現在の Bridge とデータソースを確認しています…",
+  "connectionResolvingBridgeIdentity": "コンピュータと Codex ソースを識別しています…",
+  "connectionPublishingSessionList": "正規のセッション一覧を公開しています…",
+  "connectionPreparingConversationSync": "差分会話同期を準備しています…",
+  "connectionStartingConversationSync": "差分会話同期を開始しています…",
+  "connectionSavingConversationCatalog": "会話一覧を保存しています…",
+  "connectionSavingSessionStatus": "セッションの実行状態を保存しています…",
+  "connectionSavingPriorityTimelines": "最近の会話内容を保存しています…",
+  "connectionReloadingLocalProjection": "ローカルの会話表示を再読み込みしています…",
+  "connectionProgressWithCount": "{label}（{completed}/{total}）",
+  "@connectionProgressWithCount": {
+    "placeholders": {
+      "label": {"type": "String"},
+      "completed": {"type": "int"},
+      "total": {"type": "int"}
+    }
+  },
+  "connectionProgressWhilePreparingRuntime": "{label}（共有 Codex ランタイムも準備中）",
+  "@connectionProgressWhilePreparingRuntime": {
+    "placeholders": {"label": {"type": "String"}}
+  },
   "codexRuntimeTakingLonger": "Bridge プロセスはオンラインですが、共有 Codex ランタイムはまだ準備中です。待機、再試行、またはキャンセルできます。",
   "useCachedConversations": "キャッシュを使用して開く",
   "bridgeConnectionAttemptFailed": "Bridge 接続を利用可能な状態にできませんでした。アドレスと認証情報を確認して再試行してください。",
@@ -289,6 +318,7 @@
   "sessionDisplayModeSummary": "要約",
   "allAiTools": "すべての AI ツール",
   "allProjects": "すべてのプロジェクト",
+  "unassignedProject": "プロジェクト未分類",
   "named": "名前付き",
   "machines": "マシン",
   "machineRoutes": "接続ルート",
@@ -337,6 +367,15 @@
   "updateBridge": "Bridge を更新",
   "bridgeIsUpToDate": "Bridge は最新です",
   "bridgeUpdateAvailable": "更新があります",
+  "clientBridgeMatched": "モバイル IPA と Bridge は一致しています",
+  "clientBridgeBridgeOlder": "Bridge が古いため、この IPA に合わせて更新してください",
+  "clientBridgeMobileOlder": "モバイル IPA が古いため、この Bridge に合わせて更新してください",
+  "clientBridgeCompatibilityDetail": "現在の Bridge v{bridgeVersion}",
+  "@clientBridgeCompatibilityDetail": {
+    "placeholders": {
+      "bridgeVersion": { "type": "String" }
+    }
+  },
   "bridgeUpdateRequiresSetup": "SSH と Bridge の自動起動セットアップが必要です",
   "bridgeVersionUnknown": "Bridge のバージョンを確認できません",
   "bridgeVersionCurrentExpected": "現在 v{current}、推奨 v{expected}以上",
@@ -378,8 +417,8 @@
   "supportBannerTitle": "CC Pocketが役に立っていたら",
   "supportBannerSubtitle": "サポートで継続開発を後押しできます",
   "supportBannerAction": "サポートを見る",
-  "offline": "オフライン",
-  "unreachable": "接続不可",
+  "offline": "Mac または Bridge がオフライン",
+  "unreachable": "接続がタイムアウト",
   "checking": "確認中...",
 
   "recentProjects": "最近のプロジェクト",
@@ -650,8 +689,9 @@
   "rewindConfirmTitle": "巻き戻しの確認",
   "rewindConfirmBody": "モード: {mode}\n\nこの操作は元に戻せません。実行しますか？",
   "rewindCannotRewindFiles": "ファイルを巻き戻せません",
-  "codexRewindConfirmTitle": "会話を巻き戻しますか？",
-  "codexRewindConfirmBody": "このメッセージの直前までチャットを戻し、メッセージを入力欄に戻します。ファイル変更はそのまま残ります。",
+  "codexEditMessageConfirmTitle": "このメッセージを編集しますか？",
+  "codexEditMessageConfirmBody": "Codex はこのメッセージの直前から新しいブランチを作成します。元のブランチとファイル変更は保持され、このメッセージは編集して再送できるよう入力欄に戻ります。",
+  "codexEditMessageUnavailable": "会話を同期中のため、まだ編集できません。更新してからもう一度お試しください。",
   "fork": "分岐",
   "forkConversation": "会話を分岐",
   "forkConversationTitle": "会話を分岐しますか？",

@@ -98,7 +98,7 @@ File access options:
 Setup options:
       --uninstall       Remove the registered service
       setup persists --port, --host, --api-key, --require-api-key,
-      --no-require-api-key, --public-ws-url,
+      --no-require-api-key, --auth-mode, --public-ws-url,
       --artifact-base-url, --no-mdns, Codex app-server options,
       --codex-source-id,
       BRIDGE_ALLOWED_DIRS, BRIDGE_AUTO_ARTIFACTS, and
@@ -107,7 +107,7 @@ Setup options:
 
 Configuration can also be provided with BRIDGE_PORT, BRIDGE_HOST,
 BRIDGE_API_KEY, BRIDGE_REQUIRE_API_KEY, BRIDGE_AUTH_MODE, BRIDGE_ALLOWED_DIRS,
-BRIDGE_PUBLIC_WS_URL, and
+BRIDGE_PUBLIC_WS_URL, BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS, and
 BRIDGE_ARTIFACT_BASE_URL, BRIDGE_AUTO_ARTIFACTS,
 BRIDGE_ARTIFACT_REGISTRY_FILE, and BRIDGE_DISABLE_MDNS.
 Phone transfer storage can be configured with
@@ -190,6 +190,7 @@ if (parsed.helpRequested) {
     port: parseFlag(parsed, "port"),
     host: parseFlag(parsed, "host"),
     apiKey: parseFlag(parsed, "api-key"),
+    authMode: parseFlag(parsed, "auth-mode"),
     requireApiKey: requireApiKeyFlag
       ? true
       : noRequireApiKeyFlag

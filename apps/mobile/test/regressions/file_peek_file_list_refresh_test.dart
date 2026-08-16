@@ -148,6 +148,10 @@ void main() {
       await tester.pump();
 
       expect(bridge.requestedFileLists, ['/tmp/worktree']);
+      expect(
+        find.byKey(const ValueKey('appbar_refresh_conversation_button')),
+        findsOneWidget,
+      );
 
       bridge.emitMessage(
         const ToolResultMessage(
@@ -159,10 +163,7 @@ void main() {
       );
       await tester.pump();
 
-      expect(bridge.requestedFileLists, [
-        '/tmp/worktree',
-        '/tmp/worktree',
-      ]);
+      expect(bridge.requestedFileLists, ['/tmp/worktree', '/tmp/worktree']);
     });
 
     testWidgets('Claude requests and refreshes the worktree file list', (
@@ -184,6 +185,10 @@ void main() {
       await tester.pump();
 
       expect(bridge.requestedFileLists, ['/tmp/worktree']);
+      expect(
+        find.byKey(const ValueKey('appbar_refresh_conversation_button')),
+        findsOneWidget,
+      );
 
       bridge.emitMessage(
         const ToolResultMessage(
@@ -195,10 +200,7 @@ void main() {
       );
       await tester.pump();
 
-      expect(bridge.requestedFileLists, [
-        '/tmp/worktree',
-        '/tmp/worktree',
-      ]);
+      expect(bridge.requestedFileLists, ['/tmp/worktree', '/tmp/worktree']);
     });
 
     testWidgets('Codex defers file list refresh while app is backgrounded', (

@@ -297,102 +297,108 @@ void main() {
     }
   });
 
-  test('upload auth capability blocks mutation without a step-up proof', () async {
-    bridge.capabilityValues = {
-      fileTransferCapability,
-      fileTransferUploadAuthCapability,
-    };
-    final pickerRoot = await storage.pickerStagingDirectory();
-    final picked = File('${pickerRoot.path}/locked.bin');
-    await picked.writeAsBytes(const [1]);
-    final service = createService(
-      client: MockClient.streaming((request, body) async {
-        throw StateError('HTTP must not start without authorization');
-      }),
-      picker: _FakePicker(
-        FileTransferSelection(
-          path: picked.path,
-          filename: 'locked.bin',
-          sizeBytes: 1,
+  test(
+    'upload auth capability blocks mutation without a step-up proof',
+    () async {
+      bridge.capabilityValues = {
+        fileTransferCapability,
+        fileTransferUploadAuthCapability,
+      };
+      final pickerRoot = await storage.pickerStagingDirectory();
+      final picked = File('${pickerRoot.path}/locked.bin');
+      await picked.writeAsBytes(const [1]);
+      final service = createService(
+        client: MockClient.streaming((request, body) async {
+          throw StateError('HTTP must not start without authorization');
+        }),
+        picker: _FakePicker(
+          FileTransferSelection(
+            path: picked.path,
+            filename: 'locked.bin',
+            sizeBytes: 1,
+          ),
         ),
-      ),
-    );
+      );
 
-    await expectLater(
-      service.uploadToMac(),
-      throwsA(
-        isA<FileTransferException>().having(
-          (error) => error.code,
-          'code',
-          'mutation_auth_required',
+      await expectLater(
+        service.uploadToMac(),
+        throwsA(
+          isA<FileTransferException>().having(
+            (error) => error.code,
+            'code',
+            'mutation_auth_required',
+          ),
         ),
-      ),
-    );
+      );
 
-    expect(
-      bridge.sentJson.where(
-        (message) => message['type'] == 'file_transfer_upload_prepare_v2',
-      ),
-      isEmpty,
-    );
-    expect(await storage.loadUploads('machine-1'), isEmpty);
-    service.dispose();
-  });
-
-  test('upload sends one operation-bound password proof without persistence', () async {
-    bridge.capabilityValues = {
-      fileTransferCapability,
-      fileTransferUploadAuthCapability,
-    };
-    final pickerRoot = await storage.pickerStagingDirectory();
-    final picked = File('${pickerRoot.path}/authorized.bin');
-    await picked.writeAsBytes(const [7]);
-    FileMutationOperation? approvedOperation;
-    final service = createService(
-      client: MockClient.streaming((request, body) async {
-        throw StateError('completed prepare must not start HTTP');
-      }),
-      picker: _FakePicker(
-        FileTransferSelection(
-          path: picked.path,
-          filename: 'authorized.bin',
-          sizeBytes: 1,
+      expect(
+        bridge.sentJson.where(
+          (message) => message['type'] == 'file_transfer_upload_prepare_v2',
         ),
-      ),
-    );
-    bridge.onSend = (json) {
-      if (json['type'] != 'file_transfer_upload_prepare_v2') return;
-      expect(json['mutationAuthorization'], {
-        'method': 'password',
-        'password': testPassword,
-      });
-      scheduleMicrotask(() {
-        bridge.emit(
-          FileTransferUploadResultMessage(
-            requestId: json['requestId'] as String,
-            transferId: json['transferId'] as String,
-            success: true,
+        isEmpty,
+      );
+      expect(await storage.loadUploads('machine-1'), isEmpty);
+      service.dispose();
+    },
+  );
+
+  test(
+    'upload sends one operation-bound password proof without persistence',
+    () async {
+      bridge.capabilityValues = {
+        fileTransferCapability,
+        fileTransferUploadAuthCapability,
+      };
+      final pickerRoot = await storage.pickerStagingDirectory();
+      final picked = File('${pickerRoot.path}/authorized.bin');
+      await picked.writeAsBytes(const [7]);
+      FileMutationOperation? approvedOperation;
+      final service = createService(
+        client: MockClient.streaming((request, body) async {
+          throw StateError('completed prepare must not start HTTP');
+        }),
+        picker: _FakePicker(
+          FileTransferSelection(
+            path: picked.path,
             filename: 'authorized.bin',
             sizeBytes: 1,
           ),
-        );
-      });
-    };
+        ),
+      );
+      bridge.onSend = (json) {
+        if (json['type'] != 'file_transfer_upload_prepare_v2') return;
+        expect(json['mutationAuthorization'], {
+          'method': 'password',
+          'password': testPassword,
+        });
+        scheduleMicrotask(() {
+          bridge.emit(
+            FileTransferUploadResultMessage(
+              requestId: json['requestId'] as String,
+              transferId: json['transferId'] as String,
+              success: true,
+              filename: 'authorized.bin',
+              sizeBytes: 1,
+            ),
+          );
+        });
+      };
 
-    final result = await service.uploadToMac(
-      authorizeMutation: (operation) async {
-        approvedOperation = operation;
-        return FileMutationPasswordAuthorization(testPassword);
-      },
-    );
+      final result = await service.uploadToMac(
+        authorizeMutation: (operation) async {
+          approvedOperation = operation;
+          return FileMutationPasswordAuthorization(testPassword);
+        },
+      );
 
-    expect(approvedOperation?.filename, 'authorized.bin');
-    expect(approvedOperation?.sizeBytes, 1);
-    expect(result?.status, FileTransferStatus.succeeded);
-    expect(await storage.loadUploads('machine-1'), isEmpty);
-    expect(secrets.values.values, isNot(contains(testPassword)));
-    service.dispose();
-  });
+      expect(approvedOperation?.filename, 'authorized.bin');
+      expect(approvedOperation?.sizeBytes, 1);
+      expect(result?.status, FileTransferStatus.succeeded);
+      expect(await storage.loadUploads('machine-1'), isEmpty);
+      expect(secrets.values.values, isNot(contains(testPassword)));
+      service.dispose();
+    },
+  );
 
   test(
     'auto-receive is idempotent and persists a completion tombstone',
@@ -602,39 +608,36 @@ void main() {
     },
   );
 
-  test(
-    'expired completion recovery deletes its stale tombstone',
-    () async {
-      final checkpoint = await seedCompletedReceive(notificationPending: true);
-      SharedPreferences.setMockInitialValues({
-        'file_transfer_v2_auto_resume': false,
-      });
-      final preferences = await SharedPreferences.getInstance();
-      final failingNotifications = _CountingThrowingNotifications();
-      var now = _fixtureNow();
-      bridge.autoDownloadResumeSize = 3;
-      final service = createService(
-        client: MockClient.streaming((request, body) async {
-          throw StateError('completed receives must not transfer bytes');
-        }),
-        preferences: preferences,
-        notificationsOverride: failingNotifications,
-        clock: () => now,
-        completionRecoveryRetryDelay: const Duration(milliseconds: 20),
-      );
+  test('expired completion recovery deletes its stale tombstone', () async {
+    final checkpoint = await seedCompletedReceive(notificationPending: true);
+    SharedPreferences.setMockInitialValues({
+      'file_transfer_v2_auto_resume': false,
+    });
+    final preferences = await SharedPreferences.getInstance();
+    final failingNotifications = _CountingThrowingNotifications();
+    var now = _fixtureNow();
+    bridge.autoDownloadResumeSize = 3;
+    final service = createService(
+      client: MockClient.streaming((request, body) async {
+        throw StateError('completed receives must not transfer bytes');
+      }),
+      preferences: preferences,
+      notificationsOverride: failingNotifications,
+      clock: () => now,
+      completionRecoveryRetryDelay: const Duration(milliseconds: 20),
+    );
 
-      await service.initialize();
-      await _waitUntil(() => failingNotifications.attempts >= 1);
-      now = checkpoint.expiresAt.add(const Duration(seconds: 1));
-      await _waitUntilAsync(
-        () async => (await storage.loadReceives('machine-1')).isEmpty,
-      );
+    await service.initialize();
+    await _waitUntil(() => failingNotifications.attempts >= 1);
+    now = checkpoint.expiresAt.add(const Duration(seconds: 1));
+    await _waitUntilAsync(
+      () async => (await storage.loadReceives('machine-1')).isEmpty,
+    );
 
-      expect(service.queuedReceiveCount, 0);
-      expect(service.queuedReceiveBytes, 0);
-      service.dispose();
-    },
-  );
+    expect(service.queuedReceiveCount, 0);
+    expect(service.queuedReceiveBytes, 0);
+    service.dispose();
+  });
 
   test(
     'recovery rebuilds the download URL for the current same-machine origin',
@@ -1169,6 +1172,36 @@ void main() {
     expect(countingStorage.loadUploadsCount, 2);
     service.dispose();
   });
+
+  test(
+    'diagnostic no-step-up capability changes only diagnostic authorization',
+    () async {
+      bridge.capabilityValues = {
+        fileTransferCapability,
+        fileTransferDiagnosticReportCapability,
+        fileTransferUploadAuthCapability,
+        fileTransferDiagnosticReportNoStepUpCapability,
+      };
+      final service = createService(
+        client: MockClient((_) async => http.Response('', 500)),
+      );
+      await service.initialize();
+      expect(service.uploadMutationAuthRequired, isTrue);
+      expect(service.diagnosticReportMutationAuthRequired, isFalse);
+
+      var notificationCount = 0;
+      service.addListener(() => notificationCount += 1);
+      bridge.setCapabilities({
+        fileTransferCapability,
+        fileTransferDiagnosticReportCapability,
+        fileTransferUploadAuthCapability,
+      });
+      await _waitUntil(() => notificationCount > 0);
+      expect(service.uploadMutationAuthRequired, isTrue);
+      expect(service.diagnosticReportMutationAuthRequired, isTrue);
+      service.dispose();
+    },
+  );
 
   for (final changeOrigin in [false, true]) {
     test('machine switch clears manual queues without touching machine A '
@@ -2186,6 +2219,306 @@ void main() {
     service.dispose();
   });
 
+  test(
+    'diagnostic report upload reuses the resumable queue and carries metadata',
+    () async {
+      bridge.capabilityValues = {
+        fileTransferCapability,
+        fileTransferDiagnosticReportCapability,
+        fileTransferUploadAuthCapability,
+        fileTransferDiagnosticReportNoStepUpCapability,
+      };
+      const reportId = 'report_20260812';
+      final metadata = <String, Object?>{
+        'schemaVersion': 1,
+        'reportId': reportId,
+        'provider': 'codex',
+        'providerSessionId': 'thread-123',
+        'bridgeInstanceId': 'bridge-test',
+        'codexSourceId': 'source-test',
+        'capturedAtStart': '2026-08-12T00:00:00.000Z',
+        'capturedAtEnd': '2026-08-12T00:01:00.000Z',
+        'sha256': 'a' * 64,
+      };
+      String? requestId;
+      String? stableTransferId;
+      String? resumeToken;
+      final client = MockClient.streaming((request, body) async {
+        if (request.method == 'HEAD') {
+          return http.StreamedResponse(
+            const Stream.empty(),
+            HttpStatus.ok,
+            headers: {
+              'upload-offset': '0',
+              'upload-length': '3',
+              'upload-expires': '2026-08-13T12:00:00.000Z',
+              'upload-complete': '0',
+              'x-ccpocket-max-chunk-bytes': '16777216',
+            },
+          );
+        }
+        expect(await body.toBytes(), [1, 2, 3]);
+        scheduleMicrotask(() {
+          bridge.emit(
+            FileTransferUploadResultMessage(
+              requestId: requestId!,
+              transferId: stableTransferId!,
+              success: true,
+              filename: 'report.json',
+              sizeBytes: 3,
+              purpose: 'diagnostic_report',
+              reportId: reportId,
+            ),
+          );
+        });
+        return http.StreamedResponse(
+          const Stream.empty(),
+          HttpStatus.noContent,
+          headers: {'upload-offset': '3', 'upload-complete': '1'},
+        );
+      });
+      final service = createService(client: client);
+      bridge.onSend = (json) {
+        if (json['type'] != 'file_transfer_upload_prepare_v2') return;
+        requestId = json['requestId'] as String;
+        stableTransferId = json['transferId'] as String;
+        resumeToken = json['resumeToken'] as String;
+        expect(json['purpose'], 'diagnostic_report');
+        expect(json['diagnosticReport'], metadata);
+        scheduleMicrotask(() {
+          bridge.emit(
+            FileTransferUploadReadyMessage(
+              requestId: requestId!,
+              transferId: stableTransferId!,
+              uploadUrl:
+                  'https://mac.example/api/file-transfers/uploads/'
+                  '$stableTransferId',
+              uploadToken: token,
+              resumeToken: resumeToken!,
+              uploadOffset: 0,
+              sizeBytes: 3,
+              maxChunkSizeBytes: fileTransferChunkBytes,
+              expiresAt: '2026-08-13T12:00:00.000Z',
+            ),
+          );
+        });
+      };
+
+      final ticket = await service.enqueueDiagnosticReport(
+        filename: 'report.json',
+        bytes: Stream<List<int>>.fromIterable(const [
+          [1, 2, 3],
+        ]),
+        expectedSizeBytes: 3,
+        metadata: metadata,
+        authorizeMutation: (_) async => throw StateError(
+          'development diagnostic must not request mutation authorization',
+        ),
+      );
+      final result = await ticket.completion;
+
+      expect(result.status, FileTransferStatus.succeeded);
+      expect(await storage.loadUploads('machine-1'), isEmpty);
+    },
+  );
+
+  test(
+    'unsupported diagnostic report is rejected before reading or staging',
+    () async {
+      var listened = false;
+      final bytes = StreamController<List<int>>.broadcast(
+        onListen: () => listened = true,
+      );
+      final service = createService(
+        client: MockClient((_) async => http.Response('', 500)),
+      );
+
+      await expectLater(
+        service.enqueueDiagnosticReport(
+          filename: 'report.json',
+          bytes: bytes.stream,
+          expectedSizeBytes: 1,
+          metadata: const {
+            'schemaVersion': 1,
+            'reportId': 'report_unsupported',
+            'provider': 'codex',
+            'providerSessionId': 'thread-123',
+            'bridgeInstanceId': 'bridge-test',
+            'codexSourceId': 'source-test',
+            'capturedAtStart': '2026-08-12T00:00:00.000Z',
+            'capturedAtEnd': '2026-08-12T00:01:00.000Z',
+            'sha256':
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          },
+        ),
+        throwsA(
+          isA<FileTransferException>().having(
+            (error) => error.code,
+            'code',
+            'diagnostic_report_unsupported',
+          ),
+        ),
+      );
+
+      expect(listened, isFalse);
+      expect(await storage.loadUploads('machine-1'), isEmpty);
+      await bytes.close();
+    },
+  );
+
+  test(
+    'oversize diagnostic report is rejected before reading or staging',
+    () async {
+      bridge.capabilityValues = {
+        fileTransferCapability,
+        fileTransferDiagnosticReportCapability,
+      };
+      var listened = false;
+      final bytes = StreamController<List<int>>.broadcast(
+        onListen: () => listened = true,
+      );
+      final service = createService(
+        client: MockClient((_) async => http.Response('', 500)),
+      );
+
+      await expectLater(
+        service.enqueueDiagnosticReport(
+          filename: 'oversize.json',
+          bytes: bytes.stream,
+          expectedSizeBytes: maxDiagnosticReportBytes + 1,
+          metadata: const {
+            'schemaVersion': 1,
+            'reportId': 'report_oversize',
+            'provider': 'codex',
+            'providerSessionId': 'thread-123',
+            'bridgeInstanceId': 'bridge-test',
+            'codexSourceId': 'source-test',
+            'capturedAtStart': '2026-08-12T00:00:00.000Z',
+            'capturedAtEnd': '2026-08-12T00:01:00.000Z',
+            'sha256':
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          },
+        ),
+        throwsA(
+          isA<FileTransferException>().having(
+            (error) => error.code,
+            'code',
+            'diagnostic_report_too_large',
+          ),
+        ),
+      );
+
+      expect(listened, isFalse);
+      expect(await storage.loadUploads('machine-1'), isEmpty);
+      await bytes.close();
+    },
+  );
+
+  test(
+    'credential-bearing diagnostic metadata is rejected before staging',
+    () async {
+      bridge.capabilityValues = {
+        fileTransferCapability,
+        fileTransferDiagnosticReportCapability,
+      };
+      var listened = false;
+      final bytes = StreamController<List<int>>.broadcast(
+        onListen: () => listened = true,
+      );
+      final service = createService(
+        client: MockClient((_) async => http.Response('', 500)),
+      );
+
+      await expectLater(
+        service.enqueueDiagnosticReport(
+          filename: 'secret-metadata.json',
+          bytes: bytes.stream,
+          expectedSizeBytes: 1,
+          metadata: const {
+            'schemaVersion': 1,
+            'reportId': 'report_secret_metadata',
+            'provider': 'codex',
+            'providerSessionId': 'AWS_ACCESS_KEY_ID=ASIAABCDEFGHIJKLMNOP',
+            'bridgeInstanceId': 'bridge-test',
+            'codexSourceId': 'source-test',
+            'capturedAtStart': '2026-08-12T00:00:00.000Z',
+            'capturedAtEnd': '2026-08-12T00:01:00.000Z',
+            'sha256':
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          },
+        ),
+        throwsA(
+          isA<FileTransferException>().having(
+            (error) => error.code,
+            'code',
+            'diagnostic_sensitive_field',
+          ),
+        ),
+      );
+
+      expect(listened, isFalse);
+      expect(await storage.loadUploads('machine-1'), isEmpty);
+      await bytes.close();
+    },
+  );
+
+  test(
+    'terminal diagnostic rejection deletes its checkpoint and stage',
+    () async {
+      bridge.capabilityValues = {
+        fileTransferCapability,
+        fileTransferDiagnosticReportCapability,
+      };
+      const reportId = 'report_rejected';
+      final service = createService(
+        client: MockClient((_) async => http.Response('', 500)),
+      );
+      bridge.onSend = (json) {
+        if (json['type'] != 'file_transfer_upload_prepare_v2') return;
+        scheduleMicrotask(() {
+          bridge.emit(
+            FileTransferUploadResultMessage(
+              requestId: json['requestId'] as String,
+              transferId: json['transferId'] as String,
+              success: false,
+              purpose: 'diagnostic_report',
+              reportId: reportId,
+              errorCode: 'diagnostic_report_rejected',
+            ),
+          );
+        });
+      };
+
+      final ticket = await service.enqueueDiagnosticReport(
+        filename: 'rejected.json',
+        bytes: Stream<List<int>>.value(const [1, 2, 3]),
+        expectedSizeBytes: 3,
+        metadata: const {
+          'schemaVersion': 1,
+          'reportId': reportId,
+          'provider': 'codex',
+          'providerSessionId': 'thread-123',
+          'bridgeInstanceId': 'bridge-test',
+          'codexSourceId': 'source-test',
+          'capturedAtStart': '2026-08-12T00:00:00.000Z',
+          'capturedAtEnd': '2026-08-12T00:01:00.000Z',
+          'sha256':
+              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        },
+      );
+      final result = await ticket.completion;
+
+      expect(result.status, FileTransferStatus.failed);
+      expect(result.errorCode, 'diagnostic_report_rejected');
+      expect(await storage.loadUploads('machine-1'), isEmpty);
+      final stages = await support
+          .list(recursive: true, followLinks: false)
+          .where((entity) => entity.path.endsWith('.stage'))
+          .toList();
+      expect(stages, isEmpty);
+    },
+  );
+
   test('unsupported Bridge rejects a drop before reading its bytes', () async {
     bridge.setCapabilities(const {});
     var listened = false;
@@ -2660,7 +2993,9 @@ void main() {
     );
 
     await service.initialize();
-    expect(service.receivedFiles.map((file) => file.filename), ['existing.txt']);
+    expect(service.receivedFiles.map((file) => file.filename), [
+      'existing.txt',
+    ]);
     expect(service.unreadReceivedCount, 0);
 
     final incoming = File('${downloads.path}/incoming.pdf');

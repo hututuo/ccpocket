@@ -5,7 +5,6 @@ import 'package:freezed_annotation/freezed_annotation.dart';
 
 import '../constants/app_constants.dart';
 import '../models/machine.dart';
-import '../services/bridge_latest_version_service.dart';
 import '../services/machine_manager_service.dart';
 import '../services/ssh_startup_service.dart';
 
@@ -27,15 +26,6 @@ abstract class MachineManagerState with _$MachineManagerState {
     /// ID of machine currently being updated
     String? updatingMachineId,
 
-    /// Latest Bridge version published to npm.
-    String? latestBridgeVersion,
-
-    /// Whether the latest Bridge version is being checked.
-    @Default(false) bool isCheckingLatestBridgeVersion,
-
-    /// Error message from the latest version check, if any.
-    String? latestBridgeVersionError,
-
     /// Error message if any
     String? error,
 
@@ -48,8 +38,6 @@ abstract class MachineManagerState with _$MachineManagerState {
 class MachineManagerCubit extends Cubit<MachineManagerState> {
   final MachineManagerService _service;
   final SshStartupService? _sshService;
-  final BridgeLatestVersionService _latestVersionService;
-  final bool _ownsLatestVersionService;
   final Duration _startHealthTimeout;
   final Duration _updateHealthTimeout;
   final Duration _healthRetryDelay;
@@ -60,40 +48,24 @@ class MachineManagerCubit extends Cubit<MachineManagerState> {
   static const _defaultUpdateHealthTimeout = Duration(seconds: 30);
   static const _defaultHealthRetryDelay = Duration(seconds: 1);
   static const _defaultPostStartHealthRequestTimeout = Duration(seconds: 2);
-  static const _latestBridgeVersionAutoRefreshMinInterval =
-      BridgeLatestVersionService.cacheDuration;
-
-  DateTime? _lastLatestBridgeVersionRefreshAttemptAt;
-
   MachineManagerCubit(
     this._service,
     this._sshService, {
-    BridgeLatestVersionService? latestVersionService,
-    bool refreshLatestBridgeVersionOnInit = false,
     Duration? healthTimeout,
     Duration? startHealthTimeout,
     Duration? updateHealthTimeout,
-    Duration healthRetryDelay = _defaultHealthRetryDelay,
-    Duration postStartHealthRequestTimeout =
-        _defaultPostStartHealthRequestTimeout,
-  }) : _latestVersionService =
-           latestVersionService ?? BridgeLatestVersionService(),
-       _ownsLatestVersionService = latestVersionService == null,
-       _startHealthTimeout =
+    this._healthRetryDelay = _defaultHealthRetryDelay,
+    this._postStartHealthRequestTimeout = _defaultPostStartHealthRequestTimeout,
+  }) : _startHealthTimeout =
            startHealthTimeout ?? healthTimeout ?? _defaultStartHealthTimeout,
        _updateHealthTimeout =
            updateHealthTimeout ?? healthTimeout ?? _defaultUpdateHealthTimeout,
-       _healthRetryDelay = healthRetryDelay,
-       _postStartHealthRequestTimeout = postStartHealthRequestTimeout,
        super(const MachineManagerState()) {
     _machinesSub = _service.machines.listen((machines) {
       emit(state.copyWith(machines: machines, isLoading: false));
     });
     // Auto-init on creation
     init();
-    if (refreshLatestBridgeVersionOnInit) {
-      unawaited(refreshLatestBridgeVersion());
-    }
   }
 
   /// Whether SSH features are available (not available on web)
@@ -132,73 +104,6 @@ class MachineManagerCubit extends Cubit<MachineManagerState> {
     } catch (e) {
       emit(state.copyWith(isLoading: false, error: e.toString()));
     }
-  }
-
-  /// Refresh the latest Bridge version published on npm.
-  Future<void> refreshLatestBridgeVersion({bool forceRefresh = false}) async {
-    _lastLatestBridgeVersionRefreshAttemptAt = DateTime.now();
-    emit(
-      state.copyWith(
-        isCheckingLatestBridgeVersion: true,
-        latestBridgeVersionError: null,
-      ),
-    );
-    try {
-      final version = await _latestVersionService.fetchLatestVersion(
-        forceRefresh: forceRefresh,
-      );
-      emit(
-        state.copyWith(
-          latestBridgeVersion: version,
-          isCheckingLatestBridgeVersion: false,
-          latestBridgeVersionError: null,
-        ),
-      );
-    } catch (e) {
-      emit(
-        state.copyWith(
-          isCheckingLatestBridgeVersion: false,
-          latestBridgeVersionError: e.toString(),
-        ),
-      );
-    }
-  }
-
-  /// Refresh npm latest version when the cached value is stale.
-  ///
-  /// This is intended for automatic UI-triggered checks, such as opening
-  /// settings or pressing connect. Manual retry should use
-  /// [refreshLatestBridgeVersion] with forceRefresh.
-  Future<void> refreshLatestBridgeVersionIfStale() async {
-    if (state.isCheckingLatestBridgeVersion) return;
-    if (_latestVersionService.hasFreshCache &&
-        state.latestBridgeVersion != null) {
-      return;
-    }
-
-    final lastAttempt = _lastLatestBridgeVersionRefreshAttemptAt;
-    if (lastAttempt != null &&
-        DateTime.now().difference(lastAttempt) <
-            _latestBridgeVersionAutoRefreshMinInterval) {
-      return;
-    }
-
-    await refreshLatestBridgeVersion();
-  }
-
-  /// Version used to decide whether an update should be offered.
-  String get bridgeUpdateTargetVersion {
-    final latest = state.latestBridgeVersion;
-    if (latest == null) return AppConstants.expectedBridgeVersion;
-    return compareSemanticVersions(latest, AppConstants.expectedBridgeVersion) >
-            0
-        ? latest
-        : AppConstants.expectedBridgeVersion;
-  }
-
-  bool bridgeNeedsUpdate(BridgeVersionInfo? versionInfo) {
-    if (versionInfo == null) return false;
-    return versionInfo.needsUpdate(bridgeUpdateTargetVersion);
   }
 
   /// Check health of a specific machine
@@ -496,8 +401,7 @@ class MachineManagerCubit extends Cubit<MachineManagerState> {
           emit(
             state.copyWith(
               updatingMachineId: null,
-              error:
-                  'Bridge Server restarted but version is still older than $bridgeUpdateTargetVersion',
+              error: 'Bridge Server restarted but is still older than this IPA',
             ),
           );
           return false;
@@ -538,7 +442,13 @@ class MachineManagerCubit extends Cubit<MachineManagerState> {
   bool _machineStillNeedsUpdate(String machineId) {
     for (final item in _service.machinesWithStatus) {
       if (item.machine.id == machineId) {
-        return item.needsUpdate(bridgeUpdateTargetVersion);
+        final versionInfo = item.versionInfo;
+        if (versionInfo == null) return false;
+        return compareClientBridgeCompatibility(
+              bridgeRevision: versionInfo.clientBridgeCompatibilityRevision,
+              mobileRevision: AppConstants.clientBridgeCompatibilityRevision,
+            ) ==
+            ClientBridgeCompatibility.bridgeOlder;
       }
     }
     return false;
@@ -649,9 +559,6 @@ class MachineManagerCubit extends Cubit<MachineManagerState> {
   @override
   Future<void> close() {
     _machinesSub?.cancel();
-    if (_ownsLatestVersionService) {
-      _latestVersionService.dispose();
-    }
     return super.close();
   }
 }

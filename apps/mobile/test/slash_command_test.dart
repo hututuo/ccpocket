@@ -88,6 +88,12 @@ void main() {
       expect(cmd.category, SlashCommandCategory.builtin);
     });
 
+    test('goal command leaves the composer ready for an objective', () {
+      final cmd = buildSlashCommand('goal');
+      expect(cmd.command, '/goal');
+      expect(cmd.insertText, '/goal ');
+    });
+
     test('unknown command gets default icon', () {
       final cmd = buildSlashCommand('my-custom-command');
       expect(cmd.command, '/my-custom-command');

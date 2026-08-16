@@ -17,6 +17,11 @@ import { isAutoRenamePromptText } from "./auto-rename.js";
 import { resolveCodexHome, resolveCodexSessionsDir } from "./codex-home.js";
 import { normalizeCodexServiceTierForClient } from "./codex-service-tier.js";
 import {
+  readCodexDesktopProjectCatalog,
+  type CodexDesktopProjectCatalog,
+  type CodexDesktopProjectGroupKind,
+} from "./codex-desktop-project-catalog.js";
+import {
   CodexDesktopToolTimelineBuilder,
   codexDesktopToolImagePaths,
   codexDesktopToolOutputText,
@@ -46,6 +51,12 @@ export interface SessionIndexEntry {
   projectPath: string;
   /** Raw cwd used to resume this session (worktree path for codex, if any). */
   resumeCwd?: string;
+  /** Desktop-owned presentation grouping. Never replaces projectPath/resumeCwd. */
+  projectGroupKind?: CodexDesktopProjectGroupKind;
+  projectGroupId?: string;
+  projectGroupName?: string;
+  projectGroupPath?: string;
+  projectGroupingSnapshotComplete?: boolean;
   /** Permission mode from the first user message (Claude sessions only). */
   permissionMode?: string;
   isSidechain: boolean;
@@ -119,6 +130,22 @@ export interface GetRecentSessionsOptions {
 export interface GetRecentSessionsResult {
   sessions: SessionIndexEntry[];
   hasMore: boolean;
+}
+
+function attachDesktopProjectGrouping(
+  entries: SessionIndexEntry[],
+  desktopProjects: CodexDesktopProjectCatalog,
+): SessionIndexEntry[] {
+  if (!desktopProjects.available) return entries;
+  return entries.map((entry) => ({
+    ...entry,
+    ...(desktopProjects.groupingFor(
+      // Desktop assignments and projectless IDs belong only to Codex
+      // threads. Claude rows participate through their filesystem path.
+      entry.provider === "codex" ? entry.sessionId : "",
+      entry.resumeCwd ?? entry.projectPath,
+    ) ?? {}),
+  }));
 }
 
 interface JsonlScanStats {
@@ -1021,6 +1048,8 @@ export async function getAllRecentSessions(
 
   // --- Load Claude and Codex sessions in parallel ---
 
+  const desktopProjectsPromise = readCodexDesktopProjectCatalog();
+
   const loadClaudeStartedAt = process.hrtime.bigint();
   const claudeEntriesPromise = (async (): Promise<SessionIndexEntry[]> => {
     if (!shouldLoadClaude) return [];
@@ -1167,10 +1196,20 @@ export async function getAllRecentSessions(
   })();
 
   // Wait for both Claude and Codex loading to complete in parallel
-  const [claudeEntries, codexEntries] = await Promise.all([
-    claudeEntriesPromise,
-    codexEntriesPromise,
-  ]);
+  const [rawClaudeEntries, rawCodexEntries, desktopProjects] =
+    await Promise.all([
+      claudeEntriesPromise,
+      codexEntriesPromise,
+      desktopProjectsPromise,
+    ]);
+  const claudeEntries = attachDesktopProjectGrouping(
+    rawClaudeEntries,
+    desktopProjects,
+  );
+  const codexEntries = attachDesktopProjectGrouping(
+    rawCodexEntries,
+    desktopProjects,
+  );
   markDuration(durations, "loadClaudeSessions", loadClaudeStartedAt);
   markDuration(durations, "loadCodexSessions", loadCodexStartedAt);
 
@@ -1244,7 +1283,8 @@ export async function getAllRecentSessions(
         e.name?.toLowerCase().includes(q) ||
         e.firstPrompt?.toLowerCase().includes(q) ||
         e.lastPrompt?.toLowerCase().includes(q) ||
-        e.summary?.toLowerCase().includes(q),
+        e.summary?.toLowerCase().includes(q) ||
+        e.projectGroupName?.toLowerCase().includes(q),
     );
   }
   perfStats.counts.afterSearch = filtered.length;
@@ -2198,9 +2238,16 @@ export async function loadCodexSessionNames(): Promise<Map<string, string>> {
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
     try {
-      const entry = JSON.parse(line) as { id?: string; thread_name?: string };
-      if (entry.id && entry.thread_name) {
-        names.set(entry.id, entry.thread_name);
+      const entry = JSON.parse(line) as { id?: string; thread_name?: unknown };
+      if (entry.id && typeof entry.thread_name === "string") {
+        const normalizedName = entry.thread_name.trim();
+        if (normalizedName) {
+          names.set(entry.id, normalizedName);
+        } else {
+          // An append-only empty marker is an authoritative title clear. It
+          // must remove an earlier value instead of being ignored.
+          names.delete(entry.id);
+        }
       }
     } catch {
       // skip malformed
@@ -2700,11 +2747,15 @@ function appendCodexThinkingMessage(
   text: string,
   timestamp?: string,
   historyTurnId?: string,
+  uuid?: string,
+  rawItemId?: string,
 ): void {
   const normalized = text.trim();
   if (!normalized) return;
   messages.push({
     role: "assistant",
+    ...(uuid ? { uuid } : {}),
+    ...(rawItemId ? { rawItemId } : {}),
     content: [{ type: "thinking", thinking: normalized }],
     ...(historyTurnId ? { historyTurnId } : {}),
     ...(timestamp ? { timestamp } : {}),
@@ -2755,18 +2806,22 @@ export function codexThreadToSessionHistory(
   const turns = arrayValue(asObject(sourceThread)?.turns);
   let userTurnOrdinal = 0;
 
-  for (const rawTurn of turns) {
+  for (let turnOrdinal = 0; turnOrdinal < turns.length; turnOrdinal += 1) {
+    const rawTurn = turns[turnOrdinal];
     const turn = asObject(rawTurn);
     if (!turn) continue;
     const historyTurnId = stringValue(turn.id);
     const turnStartedAt = numberToIsoTimestamp(turn.startedAt);
     const turnCompletedAt = numberToIsoTimestamp(turn.completedAt);
 
-    for (const rawItem of arrayValue(turn.items)) {
+    const rawItems = arrayValue(turn.items);
+    for (let itemOrdinal = 0; itemOrdinal < rawItems.length; itemOrdinal += 1) {
+      const rawItem = rawItems[itemOrdinal];
       const item = asObject(rawItem);
       if (!item || typeof item.type !== "string") continue;
       const rawItemId = stringValue(item.id);
-      const itemId = rawItemId ?? `codex-item-${messages.length}`;
+      const itemId = rawItemId ??
+          `codex-item-${historyTurnId ?? `legacy-turn-${turnOrdinal}`}-${itemOrdinal}`;
       const itemTimestamp = turnCompletedAt ?? turnStartedAt;
       const embeddedItemTiming: CodexDesktopItemTimestamp = {
         startedAt: stringValue(item.__ccPocketEventStartedAt),
@@ -2846,6 +2901,8 @@ export function codexThreadToSessionHistory(
             [...summary, ...content].join("\n"),
             itemTimestamp,
             historyTurnId,
+            itemId,
+            rawItemId,
           );
           break;
         }
@@ -2946,6 +3003,11 @@ export function codexThreadToSessionHistory(
             itemId,
             tool,
             {
+              // App-server dynamic tools carry their semantic arguments in
+              // `arguments`. Promote only a bounded summary allowlist to the
+              // stable ToolUse input level so Mobile can render Desktop-like
+              // Read/Search summaries without duplicating arbitrary payloads.
+              ...dynamicToolSummaryInput(toolInput),
               arguments: item.arguments ?? {},
               ...(typeof item.status === "string"
                 ? { status: item.status }
@@ -3507,6 +3569,33 @@ function parseObjectLike(value: unknown): Record<string, unknown> {
   return asObject(value) ?? {};
 }
 
+const DYNAMIC_TOOL_SUMMARY_LIMITS = Object.freeze({
+  file_path: 4_096,
+  notebook_path: 4_096,
+  path: 4_096,
+  cwd: 4_096,
+  glob: 512,
+  pattern: 512,
+  query: 512,
+  url: 2_048,
+});
+
+function dynamicToolSummaryInput(
+  input: Record<string, unknown>,
+): Record<string, string> {
+  const summary: Record<string, string> = {};
+  for (const [key, maximumLength] of Object.entries(
+    DYNAMIC_TOOL_SUMMARY_LIMITS,
+  )) {
+    const value = input[key];
+    if (typeof value !== "string") continue;
+    const normalized = value.trim();
+    if (!normalized) continue;
+    summary[key] = normalized.slice(0, maximumLength);
+  }
+  return summary;
+}
+
 function appendTextMessage(
   messages: SessionHistoryMessage[],
   role: "user" | "assistant",
@@ -3527,10 +3616,18 @@ function appendTextMessage(
     last.content[0].type === "text" &&
     typeof last.content[0].text === "string" &&
     last.content[0].text.trim() === normalized &&
-    (!uuid || last.uuid === uuid) &&
     last.historyTurnId === historyTurnId
   ) {
-    return false;
+    // Codex persists one visible assistant update twice: first as the
+    // user-facing event_msg, then as the canonical response_item carrying the
+    // stable provider item id. Promote that id onto the provisional row. Two
+    // response items with different ids remain distinct even when their text
+    // happens to be identical.
+    if (!uuid || !last.uuid || last.uuid === uuid) {
+      if (uuid && !last.uuid) last.uuid = uuid;
+      if (timestamp && !last.timestamp) last.timestamp = timestamp;
+      return false;
+    }
   }
 
   messages.push({
@@ -5667,7 +5764,7 @@ export async function getCodexSessionHistory(
               "assistant",
               text,
               entryTimestamp,
-              undefined,
+              stringValue(payload.id),
               responseTurnId,
             );
             continue;

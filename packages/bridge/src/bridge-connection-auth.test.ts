@@ -42,6 +42,16 @@ describe("Bridge connection authentication configuration", () => {
     expect(() =>
       resolveBridgeConnectionAuthentication({ requireApiKey: true }),
     ).toThrow(/BRIDGE_API_KEY is empty/);
+    expect(() =>
+      resolveBridgeConnectionAuthentication({ authMode: "key" }),
+    ).toThrow(/BRIDGE_API_KEY is empty/);
+    expect(() =>
+      resolveBridgeConnectionAuthentication({
+        authMode: "key",
+        apiKey: "owner-key",
+        requireApiKey: false,
+      }),
+    ).toThrow(/conflicts/);
   });
 
   it.each([

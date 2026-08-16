@@ -33,6 +33,25 @@ List<int?> _semanticVersionCore(String version) {
   return officialCore.split('.').map(int.tryParse).toList();
 }
 
+/// Which side of the locally distributed Mobile/Bridge pair is older.
+///
+/// A missing Bridge revision means the Bridge predates this additive
+/// handshake, so a current Mobile can safely classify it as the older side.
+enum ClientBridgeCompatibility { matched, bridgeOlder, mobileOlder }
+
+ClientBridgeCompatibility compareClientBridgeCompatibility({
+  required int? bridgeRevision,
+  required int mobileRevision,
+}) {
+  if (bridgeRevision == null || bridgeRevision < mobileRevision) {
+    return ClientBridgeCompatibility.bridgeOlder;
+  }
+  if (bridgeRevision > mobileRevision) {
+    return ClientBridgeCompatibility.mobileOlder;
+  }
+  return ClientBridgeCompatibility.matched;
+}
+
 /// Status of a machine's Bridge Server
 enum MachineStatus {
   /// Not checked yet
@@ -41,10 +60,11 @@ enum MachineStatus {
   /// Health check passed (Bridge Server running)
   online,
 
-  /// Health check failed (Bridge Server not running)
+  /// The route failed immediately or returned a non-success health response.
+  /// This usually means the Mac or Bridge is not running on that address.
   offline,
 
-  /// Network unreachable or connection refused
+  /// The route did not answer before the health-check deadline.
   unreachable,
 
   /// The endpoint answered, but its signed Bridge identity no longer matches
@@ -71,6 +91,7 @@ abstract class BridgeVersionInfo with _$BridgeVersionInfo {
 
   const factory BridgeVersionInfo({
     required String version,
+    int? clientBridgeCompatibilityRevision,
     String? nodeVersion,
     String? platform,
     String? arch,

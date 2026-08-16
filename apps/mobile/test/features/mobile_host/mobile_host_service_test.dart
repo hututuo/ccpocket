@@ -84,9 +84,7 @@ void main() {
         isTrue,
       );
       expect(
-        snapshot.supports(
-          MobileHostCapability.backgroundRefreshWarmRuntime,
-        ),
+        snapshot.supports(MobileHostCapability.backgroundRefreshWarmRuntime),
         isTrue,
       );
     });
@@ -100,13 +98,20 @@ void main() {
         buildNumber: '198',
       );
 
-      expect(snapshot.toClientCapabilitiesJson(patchNumber: 7), {
-        'baseVersion': '1.107.2',
-        'buildNumber': '198',
-        'patchNumber': 7,
-        'hostSchemaVersion': 1,
-        'nativeCapabilities': {'fileTransfer': 2},
-      });
+      expect(
+        snapshot.toClientCapabilitiesJson(
+          patchNumber: 7,
+          clientBridgeCompatibilityRevision: 1,
+        ),
+        {
+          'baseVersion': '1.107.2',
+          'buildNumber': '198',
+          'patchNumber': 7,
+          'clientBridgeCompatibilityRevision': 1,
+          'hostSchemaVersion': 1,
+          'nativeCapabilities': {'fileTransfer': 2},
+        },
+      );
     });
   });
 

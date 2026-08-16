@@ -12,7 +12,18 @@ import {
   validateFileMutationAuthorization,
   type FileMutationAuthorization,
 } from "./file-mutation-auth.js";
-export { FILE_TRANSFER_CAPABILITY } from "./file-transfer-constants.js";
+import {
+  DIAGNOSTIC_REPORT_PAYLOAD_MAX_BYTES,
+  validateDiagnosticReportMetadata,
+  type DiagnosticReportMetadata,
+  type FileTransferPurpose,
+} from "./file-transfer-diagnostic.js";
+export {
+  FILE_TRANSFER_CAPABILITY,
+  FILE_TRANSFER_DIAGNOSTIC_REPORT_CAPABILITY,
+  FILE_TRANSFER_DIAGNOSTIC_REPORT_NO_STEP_UP_CAPABILITY,
+} from "./file-transfer-constants.js";
+export type { DiagnosticReportMetadata, FileTransferPurpose } from "./file-transfer-diagnostic.js";
 
 export type FileTransferClientMessage =
   | {
@@ -23,6 +34,8 @@ export type FileTransferClientMessage =
       filename: string;
       sizeBytes: number;
       mutationAuthorization?: FileMutationAuthorization;
+      purpose?: FileTransferPurpose;
+      diagnosticReport?: DiagnosticReportMetadata;
     }
   | {
       type: "file_transfer_receive_result_v2";
@@ -90,6 +103,8 @@ export type FileTransferServerMessage =
       filename?: string;
       sizeBytes?: number;
       savedPath?: string;
+      purpose?: FileTransferPurpose;
+      reportId?: string;
       error?: string;
       errorCode?: string;
     }
@@ -218,6 +233,8 @@ export function parseFileTransferClientMessage(
         "filename",
         "sizeBytes",
         "mutationAuthorization",
+        "purpose",
+        "diagnosticReport",
       ]) ||
       !correlatedId(message.requestId, MAX_REQUEST_ID_LENGTH) ||
       typeof message.transferId !== "string" ||
@@ -228,8 +245,17 @@ export function parseFileTransferClientMessage(
       !Number.isSafeInteger(message.sizeBytes) ||
       Number(message.sizeBytes) < 0 ||
       Number(message.sizeBytes) > FILE_TRANSFER_MAX_FILE_SIZE_BYTES ||
+      (message.purpose === "diagnostic_report" &&
+        Number(message.sizeBytes) > DIAGNOSTIC_REPORT_PAYLOAD_MAX_BYTES) ||
       (message.mutationAuthorization !== undefined &&
-        !validateFileMutationAuthorization(message.mutationAuthorization))
+        !validateFileMutationAuthorization(message.mutationAuthorization)) ||
+      (message.purpose !== undefined &&
+        message.purpose !== "file" &&
+        message.purpose !== "diagnostic_report") ||
+      (message.purpose === "diagnostic_report" &&
+        !validateDiagnosticReportMetadata(message.diagnosticReport)) ||
+      ((message.purpose === undefined || message.purpose === "file") &&
+        message.diagnosticReport !== undefined)
     ) {
       return null;
     }
@@ -243,6 +269,12 @@ export function parseFileTransferClientMessage(
       ...(message.mutationAuthorization === undefined
         ? {}
         : { mutationAuthorization: message.mutationAuthorization }),
+      ...(message.purpose === undefined
+        ? {}
+        : { purpose: message.purpose as FileTransferPurpose }),
+      ...(message.diagnosticReport === undefined
+        ? {}
+        : { diagnosticReport: message.diagnosticReport as DiagnosticReportMetadata }),
     };
   }
 

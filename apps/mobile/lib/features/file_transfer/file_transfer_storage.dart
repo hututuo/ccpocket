@@ -194,6 +194,8 @@ class UploadTransferCheckpoint {
   final int sizeBytes;
   final int uploadedBytes;
   final String stagedFilename;
+  final String? purpose;
+  final DiagnosticReportMetadata? metadata;
   final DateTime createdAt;
   final DateTime expiresAt;
   final DateTime updatedAt;
@@ -207,6 +209,8 @@ class UploadTransferCheckpoint {
     required this.sizeBytes,
     required this.uploadedBytes,
     required this.stagedFilename,
+    this.purpose,
+    this.metadata,
     required this.createdAt,
     required this.expiresAt,
     required this.updatedAt,
@@ -217,6 +221,8 @@ class UploadTransferCheckpoint {
     int? uploadedBytes,
     DateTime? expiresAt,
     DateTime? updatedAt,
+    String? purpose,
+    DiagnosticReportMetadata? metadata,
   }) => UploadTransferCheckpoint(
     bridgeKey: bridgeKey,
     localId: localId,
@@ -226,25 +232,35 @@ class UploadTransferCheckpoint {
     sizeBytes: sizeBytes,
     uploadedBytes: uploadedBytes ?? this.uploadedBytes,
     stagedFilename: stagedFilename,
+    purpose: purpose ?? this.purpose,
+    metadata: metadata ?? this.metadata,
     createdAt: createdAt,
     expiresAt: expiresAt ?? this.expiresAt,
     updatedAt: updatedAt ?? this.updatedAt,
   );
 
-  Map<String, Object?> toJson() => {
-    'schemaVersion': fileTransferCheckpointVersion,
-    'bridgeKey': bridgeKey,
-    'localId': localId,
-    'requestId': requestId,
-    'transferId': transferId,
-    'filename': filename,
-    'sizeBytes': sizeBytes,
-    'uploadedBytes': uploadedBytes,
-    'stagedFilename': stagedFilename,
-    'createdAt': createdAt.toUtc().toIso8601String(),
-    'expiresAt': expiresAt.toUtc().toIso8601String(),
-    'updatedAt': updatedAt.toUtc().toIso8601String(),
-  };
+  Map<String, Object?> toJson() {
+    final normalized = _normalizeUploadCheckpointMetadata(
+      purpose: purpose,
+      metadata: metadata,
+    );
+    return {
+      'schemaVersion': fileTransferCheckpointVersion,
+      'bridgeKey': bridgeKey,
+      'localId': localId,
+      'requestId': requestId,
+      'transferId': transferId,
+      'filename': filename,
+      'sizeBytes': sizeBytes,
+      'uploadedBytes': uploadedBytes,
+      'stagedFilename': stagedFilename,
+      if (purpose != null) 'purpose': purpose,
+      if (normalized != null) 'metadata': normalized,
+      'createdAt': createdAt.toUtc().toIso8601String(),
+      'expiresAt': expiresAt.toUtc().toIso8601String(),
+      'updatedAt': updatedAt.toUtc().toIso8601String(),
+    };
+  }
 
   factory UploadTransferCheckpoint.fromJson(Map<String, dynamic> json) {
     _requireCheckpointSchemaVersion(json, 'upload');
@@ -253,6 +269,17 @@ class UploadTransferCheckpoint {
     if (uploadedBytes > sizeBytes) {
       throw const FormatException('Upload checkpoint offset exceeds size');
     }
+    final purpose = _optionalUploadPurpose(json['purpose']);
+    final rawMetadata = json['metadata'];
+    if (rawMetadata != null && rawMetadata is! Map) {
+      throw const FormatException('Invalid upload checkpoint metadata');
+    }
+    final metadata = rawMetadata == null
+        ? null
+        : _normalizeUploadCheckpointMetadata(
+            purpose: purpose,
+            metadata: _uploadCheckpointMetadataMap(rawMetadata),
+          );
     return UploadTransferCheckpoint(
       bridgeKey: _requiredText(json, 'bridgeKey', 64),
       localId: _requiredText(json, 'localId', 128),
@@ -262,6 +289,8 @@ class UploadTransferCheckpoint {
       sizeBytes: sizeBytes,
       uploadedBytes: uploadedBytes,
       stagedFilename: _safeLeaf(json, 'stagedFilename'),
+      purpose: purpose,
+      metadata: metadata,
       createdAt: _requiredDate(json, 'createdAt'),
       expiresAt: _requiredDate(json, 'expiresAt'),
       updatedAt: _requiredDate(json, 'updatedAt'),
@@ -508,7 +537,13 @@ class FileTransferStorage {
     required String filename,
     required int sizeBytes,
     required File pickerCopy,
+    String? purpose,
+    DiagnosticReportMetadata? metadata,
   }) => _withUploadMutation(() async {
+    final normalizedMetadata = _normalizeUploadCheckpointMetadata(
+      purpose: purpose,
+      metadata: metadata,
+    );
     final pickerRoot = await pickerStagingDirectory();
     final pickerResolved = await pickerRoot.resolveSymbolicLinks();
     final sourceResolved = await pickerCopy.resolveSymbolicLinks();
@@ -538,6 +573,8 @@ class FileTransferStorage {
         sizeBytes: sizeBytes,
         uploadedBytes: 0,
         stagedFilename: stagedFilename,
+        purpose: purpose,
+        metadata: normalizedMetadata,
         createdAt: now,
         expiresAt: now.add(fileTransferCheckpointRetention),
         updatedAt: now,
@@ -1225,6 +1262,52 @@ String? _optionalText(Map<String, dynamic> json, String key, int maxLength) {
   final value = json[key];
   if (value == null) return null;
   return _requiredText(json, key, maxLength);
+}
+
+String? _optionalUploadPurpose(Object? value) {
+  if (value == null) return null;
+  if (value is! String ||
+      (value != 'file' && value != 'diagnostic_report')) {
+    throw const FormatException('Invalid upload checkpoint purpose');
+  }
+  return value;
+}
+
+DiagnosticReportMetadata? _normalizeUploadCheckpointMetadata({
+  required String? purpose,
+  required DiagnosticReportMetadata? metadata,
+}) {
+  if (purpose != null && purpose != 'file' && purpose != 'diagnostic_report') {
+    throw const FormatException('Invalid upload checkpoint purpose');
+  }
+  if (metadata == null) {
+    if (purpose == 'diagnostic_report') {
+      throw const FormatException(
+        'Diagnostic upload checkpoint requires metadata',
+      );
+    }
+    return null;
+  }
+  if (purpose != 'diagnostic_report') {
+    throw const FormatException(
+      'Upload checkpoint metadata requires diagnostic_report purpose',
+    );
+  }
+  return normalizeDiagnosticReportMetadata(metadata);
+}
+
+DiagnosticReportMetadata _uploadCheckpointMetadataMap(Object value) {
+  if (value is! Map) {
+    throw const FormatException('Invalid upload checkpoint metadata');
+  }
+  final result = <String, Object?>{};
+  for (final entry in value.entries) {
+    if (entry.key is! String) {
+      throw const FormatException('Invalid upload checkpoint metadata');
+    }
+    result[entry.key as String] = entry.value;
+  }
+  return result;
 }
 
 String _requiredTransferId(Map<String, dynamic> json, String key) {

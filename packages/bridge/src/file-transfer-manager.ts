@@ -6,6 +6,10 @@ import type { PersistedUploadTransfer } from "./file-transfer-state-store.js";
 import type { TransferFileIdentity } from "./file-transfer-state-store.js";
 import type { FileTransferUploadStore, UploadAppendResult } from "./file-transfer-upload-store.js";
 import {
+  DiagnosticReportArchiver,
+} from "./file-transfer-diagnostic.js";
+import type { LocalFeatureRuntimeConversationState } from "./local-features/runtime.js";
+import {
   FileMutationAuthError,
   type FileMutationAuthorizer,
 } from "./file-mutation-auth.js";
@@ -71,6 +75,8 @@ export interface FileTransferManagerOptions {
   uploadStore: FileTransferUploadStore;
   baseUrl?: string;
   fileMutationAuthorizer?: FileMutationAuthorizer;
+  diagnosticReportArchiver?: DiagnosticReportArchiver;
+  allowDiagnosticWithoutMutationAuthorization?: boolean;
 }
 
 /** Coordinates live peers while byte/session authority stays in persistent stores. */
@@ -79,6 +85,8 @@ export class FileTransferManager {
   readonly uploadStore: FileTransferUploadStore;
   private readonly baseUrl?: string;
   private readonly fileMutationAuthorizer?: FileMutationAuthorizer;
+  private readonly diagnosticReportArchiver?: DiagnosticReportArchiver;
+  private readonly allowDiagnosticWithoutMutationAuthorization: boolean;
   private readonly clients = new Map<object, FileTransferClientBinding>();
   private readonly uploadClients = new Map<string, BoundUploadClient>();
   private readonly downloadClients = new Map<string, BoundDownloadClient>();
@@ -86,17 +94,49 @@ export class FileTransferManager {
   private accepting = true;
   private readonly activeControlOperations = new Set<Promise<void>>();
   private readonly activeOfferOperations = new Set<Promise<unknown>>();
+  private readonly activeDiagnosticOperations = new Set<Promise<void>>();
   private closeBarrier?: Promise<void>;
+  private readonly diagnosticArchiveLocks = new Map<string, Promise<void>>();
+  private readonly diagnosticReceiptVerifications = new Map<string, Promise<boolean>>();
+  private diagnosticArchiveTail: Promise<void> = Promise.resolve();
+  private diagnosticArchiverReady = false;
 
   constructor(options: FileTransferManagerOptions) {
     this.downloadStore = options.downloadStore;
     this.uploadStore = options.uploadStore;
     this.baseUrl = options.baseUrl;
     this.fileMutationAuthorizer = options.fileMutationAuthorizer;
+    this.diagnosticReportArchiver = options.diagnosticReportArchiver;
+    this.allowDiagnosticWithoutMutationAuthorization =
+      options.allowDiagnosticWithoutMutationAuthorization === true;
   }
 
   async init(): Promise<void> {
     await this.uploadStore.init();
+    if (
+      this.diagnosticReportArchiver &&
+      (this.fileMutationAuthorizer ||
+        this.allowDiagnosticWithoutMutationAuthorization)
+    ) {
+      try {
+        await this.diagnosticReportArchiver.init();
+        this.diagnosticArchiverReady = true;
+      } catch (error) {
+        this.diagnosticArchiverReady = false;
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(`[file-transfer] Diagnostic reports unavailable: ${detail}`);
+      }
+    }
+  }
+
+  get diagnosticReportsAvailable(): boolean {
+    return Boolean(
+      this.accepting &&
+        this.diagnosticArchiverReady &&
+        this.diagnosticReportArchiver &&
+        (this.fileMutationAuthorizer ||
+          this.allowDiagnosticWithoutMutationAuthorization),
+    );
   }
 
   connect(client: object, binding: FileTransferClientBinding): void {
@@ -133,17 +173,21 @@ export class FileTransferManager {
     this.accepting = false;
     while (
       this.activeControlOperations.size > 0 ||
-      this.activeOfferOperations.size > 0
+      this.activeOfferOperations.size > 0 ||
+      this.activeDiagnosticOperations.size > 0
     ) {
       await Promise.allSettled([
         ...this.activeControlOperations,
         ...this.activeOfferOperations,
+        ...this.activeDiagnosticOperations,
       ]);
     }
     this.clients.clear();
     this.uploadClients.clear();
     this.downloadClients.clear();
     this.authorizedUploads.clear();
+    this.diagnosticArchiveLocks.clear();
+    this.diagnosticReceiptVerifications.clear();
     await this.uploadStore.close();
   }
 
@@ -336,8 +380,14 @@ export class FileTransferManager {
       body,
       signal,
     );
-    if (result.completed) this.sendCompletedUpload(result.entry);
+    if (result.completed) await this.handleCompletedUpload(result.entry);
     return result;
+  }
+
+  setDiagnosticRuntimeStateProvider(
+    provider: () => LocalFeatureRuntimeConversationState[],
+  ): void {
+    this.diagnosticReportArchiver?.setRuntimeStateProvider(provider);
   }
 
   private async prepareUpload(
@@ -354,7 +404,113 @@ export class FileTransferManager {
       return;
     }
     try {
-      if (!this.fileMutationAuthorizer) {
+      if (
+        message.purpose === "diagnostic_report" &&
+        !binding.supports(UPLOAD_RESULT_WITH_PATH_MESSAGE)
+      ) {
+        throw new FileTransferError(
+          409,
+          "diagnostic_result_unsupported",
+          "Diagnostic reports require file_transfer_upload_result_v3",
+        );
+      }
+      if (
+        message.purpose === "diagnostic_report" &&
+        !this.diagnosticReportsAvailable
+      ) {
+        throw new FileTransferError(
+          503,
+          "diagnostic_archiver_unavailable",
+          "Diagnostic report archiving is unavailable",
+        );
+      }
+      const completedReceipt = message.purpose === "diagnostic_report"
+        ? await this.uploadStore.findDiagnosticReceipt(
+            message.transferId,
+            message.resumeToken,
+            message.filename,
+            message.sizeBytes,
+            {
+              purpose: message.purpose,
+              diagnosticReport: message.diagnosticReport,
+            },
+          )
+        : undefined;
+      if (completedReceipt) {
+        let receiptValid = false;
+        try {
+          const verificationKey = [
+            completedReceipt.entry.transferId,
+            completedReceipt.receipt.archiveSha256,
+            completedReceipt.receipt.mobileReportCanonicalSha256,
+          ].join("\u0000");
+          const existingVerification = this.diagnosticReceiptVerifications.get(
+            verificationKey,
+          );
+          if (existingVerification) {
+            receiptValid = await existingVerification;
+          } else {
+            const verification = this.runSerializedDiagnosticOperation(
+              () => this.diagnosticReportArchiver!.verifyReceipt(
+                completedReceipt.entry.diagnosticReport!,
+                completedReceipt.receipt,
+              ),
+            );
+            this.diagnosticReceiptVerifications.set(
+              verificationKey,
+              verification,
+            );
+            try {
+              receiptValid = await verification;
+            } finally {
+              if (
+                this.diagnosticReceiptVerifications.get(verificationKey) ===
+                verification
+              ) {
+                this.diagnosticReceiptVerifications.delete(verificationKey);
+              }
+            }
+          }
+        } catch (error) {
+          if (isTerminalDiagnosticArchiveFailure(error)) {
+            await this.uploadStore.removeCompletedUpload(
+              completedReceipt.entry,
+            );
+          }
+          throw error;
+        }
+        if (!receiptValid) {
+          // The immutable archive disappeared after its receipt was committed.
+          // Remove only the exact now-missing completed upload state, then let
+          // this same prepare create a fresh resumable transfer.
+          await this.uploadStore.removeCompletedUpload(completedReceipt.entry);
+        } else {
+          await this.uploadStore.ensureDiagnosticReceiptPayloadRemoved(
+            completedReceipt.entry,
+          );
+          this.uploadClients.set(message.transferId, {
+            client,
+            requestId: message.requestId,
+          });
+          const sent = binding.send({
+            type: UPLOAD_RESULT_WITH_PATH_MESSAGE,
+            requestId: message.requestId,
+            transferId: message.transferId,
+            success: true,
+            filename: completedReceipt.receipt.filename,
+            sizeBytes: completedReceipt.receipt.sizeBytes,
+            savedPath: completedReceipt.receipt.savedPath,
+            purpose: "diagnostic_report",
+            reportId: completedReceipt.receipt.reportId,
+          });
+          if (sent) this.uploadClients.delete(message.transferId);
+          return;
+        }
+      }
+      const diagnosticAuthorizationBypassed =
+        message.purpose === "diagnostic_report" &&
+        this.allowDiagnosticWithoutMutationAuthorization;
+      if (!this.fileMutationAuthorizer && !diagnosticAuthorizationBypassed) {
         throw new FileMutationAuthError(
           "unsupported_capability",
           "Phone uploads are locked until Bridge file mutation authorization is available",
@@ -364,11 +520,12 @@ export class FileTransferManager {
         message.transferId,
       );
       const requiresAuthorization =
+        !diagnosticAuthorizationBypassed &&
         (existingAuthorization?.client !== client ||
           existingAuthorization.filename !== message.filename ||
           existingAuthorization.sizeBytes !== message.sizeBytes);
       if (requiresAuthorization) {
-        await this.fileMutationAuthorizer.authorize(
+        await this.fileMutationAuthorizer!.authorize(
           client,
           {
             kind: "upload",
@@ -384,6 +541,12 @@ export class FileTransferManager {
         message.resumeToken,
         message.filename,
         message.sizeBytes,
+        {
+          ...(message.purpose ? { purpose: message.purpose } : {}),
+          ...(message.diagnosticReport
+            ? { diagnosticReport: message.diagnosticReport }
+            : {}),
+        },
       );
       if (requiresAuthorization) {
         this.authorizedUploads.set(message.transferId, {
@@ -397,7 +560,7 @@ export class FileTransferManager {
         requestId: message.requestId,
       });
       if (prepared.status === "complete") {
-        this.sendCompletedUpload(prepared.entry, message.requestId);
+        await this.handleCompletedUpload(prepared.entry, message.requestId);
         return;
       }
       const baseUrl = this.resolveBaseUrl(undefined, binding.httpBaseUrl);
@@ -567,6 +730,176 @@ export class FileTransferManager {
     }
   }
 
+  private async handleCompletedUpload(
+    entry: PersistedUploadTransfer,
+    requestId?: string,
+  ): Promise<void> {
+    if (entry.purpose !== "diagnostic_report") {
+      this.sendCompletedUpload(entry, requestId);
+      return;
+    }
+    const owner = this.uploadClients.get(entry.transferId);
+    const binding = owner ? this.clients.get(owner.client) : undefined;
+    if (
+      owner &&
+      binding?.isOpen() &&
+      !binding.supports(UPLOAD_RESULT_WITH_PATH_MESSAGE)
+    ) {
+      let failure: unknown = new FileTransferError(
+        409,
+        "diagnostic_result_unsupported",
+        "Diagnostic reports require file_transfer_upload_result_v3",
+      );
+      try {
+        await this.uploadStore.removeCompletedUpload(entry);
+      } catch {
+        failure = new FileTransferError(
+          500,
+          "diagnostic_rejected_payload_cleanup_failed",
+          "Diagnostic report was rejected but its staged payload could not be safely removed",
+        );
+      }
+      this.sendCompletedUploadFailure(
+        entry,
+        requestId,
+        failure,
+      );
+      this.uploadClients.delete(entry.transferId);
+      this.authorizedUploads.delete(entry.transferId);
+      return;
+    }
+    const run = async (): Promise<void> => {
+      try {
+        if (!this.diagnosticReportArchiver || !entry.diagnosticReport) {
+          throw new FileTransferError(
+            503,
+            "diagnostic_archiver_unavailable",
+            "Diagnostic report archiving is unavailable",
+          );
+        }
+        const bytes = await this.uploadStore.readCompletedUpload(entry);
+        const archive = await this.diagnosticReportArchiver.archive(
+          entry.diagnosticReport,
+          bytes,
+          entry.sizeBytes,
+        );
+        await this.uploadStore.commitDiagnosticReceipt(entry, {
+          filename: archive.filename,
+          savedPath: archive.savedPath,
+          sizeBytes: entry.sizeBytes,
+          purpose: "diagnostic_report",
+          reportId: entry.diagnosticReport.reportId,
+          archiveSha256: archive.archiveSha256,
+          mobileReportCanonicalSha256:
+            archive.mobileReportCanonicalSha256,
+          committedAt: Date.now(),
+        });
+        const currentOwner = this.uploadClients.get(entry.transferId);
+        const currentBinding = currentOwner
+          ? this.clients.get(currentOwner.client)
+          : undefined;
+        if (!currentOwner || !currentBinding?.isOpen()) return;
+        const sent = currentBinding.send({
+          type: UPLOAD_RESULT_WITH_PATH_MESSAGE,
+          requestId: requestId ?? currentOwner.requestId,
+          transferId: entry.transferId,
+          success: true,
+          filename: archive.filename,
+          // Keep the upload-result size in transfer semantics. The archived
+          // envelope adds Bridge authority fields and is therefore normally
+          // larger than the phone payload; Mobile validates this field against
+          // its resumable checkpoint before deleting local staging.
+          sizeBytes: entry.sizeBytes,
+          savedPath: archive.savedPath,
+          purpose: "diagnostic_report",
+          reportId: entry.diagnosticReport.reportId,
+        });
+        if (sent) {
+          this.uploadClients.delete(entry.transferId);
+          this.authorizedUploads.delete(entry.transferId);
+        }
+      } catch (error) {
+        let failure = error;
+        let terminalPayloadRemoved = false;
+        if (isTerminalDiagnosticArchiveFailure(error)) {
+          try {
+            if (isUnreadableDiagnosticPayload(error)) {
+              await this.uploadStore.discardUnreadableDiagnosticUpload(entry);
+            } else {
+              await this.uploadStore.removeCompletedUpload(entry);
+            }
+            terminalPayloadRemoved = true;
+          } catch {
+            failure = new FileTransferError(
+              500,
+              "diagnostic_rejected_payload_cleanup_failed",
+              "Diagnostic report was rejected but its staged payload could not be safely removed",
+            );
+          }
+        }
+        this.sendCompletedUploadFailure(entry, requestId, failure);
+        if (terminalPayloadRemoved) {
+          this.uploadClients.delete(entry.transferId);
+          this.authorizedUploads.delete(entry.transferId);
+        }
+      }
+    };
+    const existing = this.diagnosticArchiveLocks.get(entry.transferId);
+    if (existing) {
+      await existing;
+      return;
+    }
+    // Serialize distinct reports as well as deduplicating the same transfer.
+    // Each report may read and parse up to 16 MiB, so an unbounded fan-out can
+    // otherwise create a large transient RSS spike after simultaneous PATCHes.
+    const operation = this.runSerializedDiagnosticOperation(run);
+    this.diagnosticArchiveLocks.set(entry.transferId, operation);
+    try {
+      await operation;
+    } finally {
+      if (this.diagnosticArchiveLocks.get(entry.transferId) === operation) {
+        this.diagnosticArchiveLocks.delete(entry.transferId);
+      }
+    }
+  }
+
+  private async runSerializedDiagnosticOperation<T>(
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const operation = this.diagnosticArchiveTail.then(run, run);
+    const tracked = operation.then(() => undefined, () => undefined);
+    this.diagnosticArchiveTail = tracked;
+    this.activeDiagnosticOperations.add(tracked);
+    try {
+      return await operation;
+    } finally {
+      this.activeDiagnosticOperations.delete(tracked);
+    }
+  }
+
+  private sendCompletedUploadFailure(
+    entry: PersistedUploadTransfer,
+    requestId: string | undefined,
+    error: unknown,
+  ): void {
+    const owner = this.uploadClients.get(entry.transferId);
+    const binding = owner ? this.clients.get(owner.client) : undefined;
+    if (!owner || !binding?.isOpen() || !binding.supports(UPLOAD_RESULT_WITH_PATH_MESSAGE)) return;
+    const transferError = error instanceof FileTransferError
+      ? error
+      : new FileTransferError(500, "diagnostic_archive_failed", "Unable to archive diagnostic report");
+    binding.send({
+      type: UPLOAD_RESULT_WITH_PATH_MESSAGE,
+      requestId: requestId ?? owner.requestId,
+      transferId: entry.transferId,
+      success: false,
+      errorCode: transferError.code,
+      error: transferError.message,
+      purpose: "diagnostic_report",
+      ...(entry.diagnosticReport ? { reportId: entry.diagnosticReport.reportId } : {}),
+    });
+  }
+
   private sendCompletedUpload(entry: PersistedUploadTransfer, requestId?: string): void {
     const owner = this.uploadClients.get(entry.transferId);
     if (!owner) return;
@@ -685,6 +1018,31 @@ export class FileTransferManager {
     }
     return resolved;
   }
+}
+
+function isTerminalDiagnosticArchiveFailure(error: unknown): boolean {
+  if (!(error instanceof FileTransferError)) return false;
+  return new Set([
+    "diagnostic_metadata_invalid",
+    "diagnostic_size_mismatch",
+    "diagnostic_sha256_mismatch",
+    "diagnostic_invalid_json",
+    "diagnostic_sensitive_field",
+    "diagnostic_source_mismatch",
+    "diagnostic_payload_identity_mismatch",
+    "diagnostic_envelope_too_large",
+    "diagnostic_report_id_invalid",
+    "diagnostic_report_collision",
+    "diagnostic_receipt_identity_mismatch",
+    "upload_final_changed",
+    "upload_final_unavailable",
+  ]).has(error.code);
+}
+
+function isUnreadableDiagnosticPayload(error: unknown): boolean {
+  return error instanceof FileTransferError &&
+    (error.code === "upload_final_changed" ||
+      error.code === "upload_final_unavailable");
 }
 
 function throwIfOfferCancelled(signal?: AbortSignal): void {

@@ -623,6 +623,69 @@ class AppLocalizationsJa extends AppLocalizations {
       'Bridge はオンラインです。共有 Codex ランタイムを準備しています...';
 
   @override
+  String get connectionPreparingTarget => '接続先を準備しています…';
+
+  @override
+  String get connectionOpeningTransport => 'ネットワーク接続を開始しています…';
+
+  @override
+  String get connectionNegotiatingTransport =>
+      'ネットワークに接続しました。Bridge の機能を確認しています…';
+
+  @override
+  String get connectionSendingCapabilities => 'モバイル側の機能情報を送信しています…';
+
+  @override
+  String get connectionRequestingSessionList => '正規のセッション一覧を要求しています…';
+
+  @override
+  String get connectionReceivingSessionList => '一覧データを受信しました。読み込んでいます…';
+
+  @override
+  String get connectionDecodingSessionList => 'セッション一覧をデコードしています…';
+
+  @override
+  String get connectionValidatingSessionList => 'セッション一覧を検証しています…';
+
+  @override
+  String get connectionAcceptingSessionAuthority =>
+      '現在の Bridge とデータソースを確認しています…';
+
+  @override
+  String get connectionResolvingBridgeIdentity => 'コンピュータと Codex ソースを識別しています…';
+
+  @override
+  String get connectionPublishingSessionList => '正規のセッション一覧を公開しています…';
+
+  @override
+  String get connectionPreparingConversationSync => '差分会話同期を準備しています…';
+
+  @override
+  String get connectionStartingConversationSync => '差分会話同期を開始しています…';
+
+  @override
+  String get connectionSavingConversationCatalog => '会話一覧を保存しています…';
+
+  @override
+  String get connectionSavingSessionStatus => 'セッションの実行状態を保存しています…';
+
+  @override
+  String get connectionSavingPriorityTimelines => '最近の会話内容を保存しています…';
+
+  @override
+  String get connectionReloadingLocalProjection => 'ローカルの会話表示を再読み込みしています…';
+
+  @override
+  String connectionProgressWithCount(String label, int completed, int total) {
+    return '$label（$completed/$total）';
+  }
+
+  @override
+  String connectionProgressWhilePreparingRuntime(String label) {
+    return '$label（共有 Codex ランタイムも準備中）';
+  }
+
+  @override
   String get codexRuntimeTakingLonger =>
       'Bridge プロセスはオンラインですが、共有 Codex ランタイムはまだ準備中です。待機、再試行、またはキャンセルできます。';
 
@@ -731,6 +794,9 @@ class AppLocalizationsJa extends AppLocalizations {
   String get allProjects => 'すべてのプロジェクト';
 
   @override
+  String get unassignedProject => 'プロジェクト未分類';
+
+  @override
   String get named => '名前付き';
 
   @override
@@ -830,6 +896,21 @@ class AppLocalizationsJa extends AppLocalizations {
   String get bridgeUpdateAvailable => '更新があります';
 
   @override
+  String get clientBridgeMatched => 'モバイル IPA と Bridge は一致しています';
+
+  @override
+  String get clientBridgeBridgeOlder => 'Bridge が古いため、この IPA に合わせて更新してください';
+
+  @override
+  String get clientBridgeMobileOlder =>
+      'モバイル IPA が古いため、この Bridge に合わせて更新してください';
+
+  @override
+  String clientBridgeCompatibilityDetail(String bridgeVersion) {
+    return '現在の Bridge v$bridgeVersion';
+  }
+
+  @override
   String get bridgeUpdateRequiresSetup => 'SSH と Bridge の自動起動セットアップが必要です';
 
   @override
@@ -911,10 +992,10 @@ class AppLocalizationsJa extends AppLocalizations {
   String get supportBannerAction => 'サポートを見る';
 
   @override
-  String get offline => 'オフライン';
+  String get offline => 'Mac または Bridge がオフライン';
 
   @override
-  String get unreachable => '接続不可';
+  String get unreachable => '接続がタイムアウト';
 
   @override
   String get checking => '確認中...';
@@ -1528,11 +1609,15 @@ class AppLocalizationsJa extends AppLocalizations {
   String get rewindCannotRewindFiles => 'ファイルを巻き戻せません';
 
   @override
-  String get codexRewindConfirmTitle => '会話を巻き戻しますか？';
+  String get codexEditMessageConfirmTitle => 'このメッセージを編集しますか？';
 
   @override
-  String get codexRewindConfirmBody =>
-      'このメッセージの直前までチャットを戻し、メッセージを入力欄に戻します。ファイル変更はそのまま残ります。';
+  String get codexEditMessageConfirmBody =>
+      'Codex はこのメッセージの直前から新しいブランチを作成します。元のブランチとファイル変更は保持され、このメッセージは編集して再送できるよう入力欄に戻ります。';
+
+  @override
+  String get codexEditMessageUnavailable =>
+      '会話を同期中のため、まだ編集できません。更新してからもう一度お試しください。';
 
   @override
   String get fork => '分岐';

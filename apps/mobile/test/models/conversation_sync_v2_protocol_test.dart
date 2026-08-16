@@ -11,6 +11,10 @@ void main() {
         LocalFeatureProtocolHost.supportedServerMessageTypes,
         contains(appServerStatusV1Capability),
       );
+      expect(
+        LocalFeatureProtocolHost.supportedServerMessageTypes,
+        contains(conversationWindowCoverageCapability),
+      );
     },
   );
 
@@ -176,6 +180,11 @@ void main() {
                   'providerSessionId': 'thread-settings',
                   'revision': 'revision-settings',
                   'projectPath': '/workspace',
+                  'projectGroupKind': 'desktopProject',
+                  'projectGroupId': 'project-ccpocket',
+                  'projectGroupName': 'CC Pocket',
+                  'projectGroupPath': '/workspace/ccpocket',
+                  'projectGroupingSnapshotComplete': true,
                   'firstPrompt': 'Prompt',
                   'model': 'gpt-5.6-sol',
                   'modelReasoningEffort': 'ultra',
@@ -202,6 +211,10 @@ void main() {
       codexSourceId: 'source-1',
     );
     expect(session.contentRevision, 'revision-settings');
+    expect(session.projectGroupingKey, 'desktop-project:project-ccpocket');
+    expect(session.projectName, 'CC Pocket');
+    expect(session.effectiveProjectGroupPath, '/workspace/ccpocket');
+    expect(session.projectGroupingSnapshotComplete, isTrue);
     expect(session.codexModel, 'gpt-5.6-sol');
     expect(session.codexModelReasoningEffort, 'ultra');
     expect(session.codexServiceTier, 'fast');
@@ -216,6 +229,8 @@ void main() {
 
     final restored = RecentSession.fromJson(session.toJson());
     expect(restored.contentRevision, 'revision-settings');
+    expect(restored.projectGroupingKey, 'desktop-project:project-ccpocket');
+    expect(restored.projectName, 'CC Pocket');
     expect(restored.codexCollaborationMode, 'plan');
     expect(restored.codexSettingsSnapshotComplete, isTrue);
   });
@@ -236,6 +251,43 @@ void main() {
     final session = entry.toRecentSession(codexSourceId: 'source-1');
     expect(session.codexModel, 'gpt-5.6-sol');
     expect(session.codexSettingsSnapshotComplete, isFalse);
+  });
+
+  test('does not treat malformed Desktop grouping as a complete clear', () {
+    final entry = ConversationSyncV2CatalogEntry.fromJson(<String, dynamic>{
+      'provider': 'codex',
+      'providerSessionId': 'thread-malformed-project',
+      'revision': 'revision-malformed-project',
+      'projectPath': '/workspace',
+      'projectGroupKind': 'desktopProject',
+      'projectGroupingSnapshotComplete': true,
+      'createdAt': '2026-07-30T00:00:00.000Z',
+      'modifiedAt': '2026-07-30T00:01:00.000Z',
+      'recencyAt': '2026-07-30T00:02:00.000Z',
+      'availability': 'durable',
+    });
+
+    expect(entry.projectGroupingSnapshotComplete, isFalse);
+    expect(
+      RecentSession.fromJson({
+        ...entry.toRecentSession(codexSourceId: 'source-1').toJson(),
+        'projectGroupingSnapshotComplete': true,
+      }).projectGroupingSnapshotComplete,
+      isFalse,
+    );
+
+    final legacy = RecentSession.fromJson({
+      ...entry.toRecentSession(codexSourceId: 'source-1').toJson(),
+      'projectGroupKind': 'desktopProject',
+      'projectGroupId': 7,
+      'projectGroupName': ['not', 'a', 'string'],
+      'projectGroupPath': {'path': '/workspace'},
+      'projectGroupingSnapshotComplete': true,
+    });
+    expect(legacy.projectGroupId, isNull);
+    expect(legacy.projectGroupName, isNull);
+    expect(legacy.projectGroupPath, isNull);
+    expect(legacy.projectGroupingSnapshotComplete, isFalse);
   });
 
   test('builds a bounded subscription without endpoint identity', () {
@@ -396,6 +448,29 @@ void main() {
       }),
       throwsFormatException,
     );
+    expect(
+      () => ServerMessage.fromJson({
+        ..._baseFrame,
+        'event': 'turns_page_response',
+        'requestId': 'request-3',
+        'provider': 'codex',
+        'providerSessionId': 'thread-1',
+        'data': [
+          {
+            'turnId': 'turn-envelope',
+            'messages': [
+              {
+                'type': 'user_input',
+                'text': 'Wrong turn',
+                'historyTurnId': 'turn-message',
+              },
+            ],
+          },
+        ],
+        'nextCursor': null,
+      }),
+      throwsFormatException,
+    );
   });
 
   test('decodes latest-turn repair metadata without reusing older cursor', () {
@@ -430,6 +505,53 @@ void main() {
     expect(message.latestTurnGap?.turnId, 'turn-current');
     expect(message.latestTurnGap?.repair, 'items_page');
     expect(message.latestTurnGap?.firstMissingSourceIndex, 41);
+    expect(message.windowComplete, isNull);
+    expect(message.effectiveWindowComplete, isFalse);
+
+    final complete =
+        ServerMessage.fromJson({
+              ..._baseFrame,
+              'event': 'timeline_page',
+              'provider': 'codex',
+              'providerSessionId': 'thread-1',
+              'revision': 'revision-complete',
+              'mode': 'snapshot',
+              'pageIndex': 0,
+              'pageCount': 1,
+              'entries': const [],
+              'deletes': const [],
+              'hasEarlier': false,
+              'windowComplete': true,
+              'latestTurnComplete': true,
+              'sourceEntryCount': 0,
+            })
+            as ConversationSyncV2EventMessage;
+    expect(complete.effectiveWindowComplete, isTrue);
+
+    expect(
+      () => ServerMessage.fromJson({
+        ..._baseFrame,
+        'event': 'timeline_page',
+        'provider': 'codex',
+        'providerSessionId': 'thread-1',
+        'revision': 'revision-contradictory',
+        'mode': 'snapshot',
+        'pageIndex': 0,
+        'pageCount': 1,
+        'entries': const [],
+        'deletes': const [],
+        'hasEarlier': true,
+        'windowComplete': true,
+        'latestTurnComplete': false,
+        'latestTurnGap': const {
+          'missingEntryCount': 1,
+          'payloadOmitted': false,
+          'repair': 'turns_page',
+        },
+        'sourceEntryCount': 1,
+      }),
+      throwsFormatException,
+    );
     expect(
       () => ServerMessage.fromJson({
         ..._baseFrame,
@@ -453,6 +575,32 @@ void main() {
       }),
       throwsFormatException,
     );
+  });
+
+  test('decodes bounded item projection completeness metadata', () {
+    final message =
+        ServerMessage.fromJson({
+              ..._baseFrame,
+              'event': 'items_page_response',
+              'requestId': 'items-bounded',
+              'provider': 'codex',
+              'providerSessionId': 'thread-1',
+              'turnId': 'turn-1',
+              'data': const [
+                {'type': 'user_input', 'text': 'bounded'},
+              ],
+              'nextCursor': 'after-bounded',
+              'pageComplete': false,
+              'latestTurnGap': const {
+                'turnId': 'turn-1',
+                'missingEntryCount': 0,
+                'payloadOmitted': true,
+                'repair': 'items_page',
+              },
+            })
+            as ConversationSyncV2EventMessage;
+    expect(message.pageComplete, isFalse);
+    expect(message.latestTurnGap?.payloadOmitted, isTrue);
   });
 
   test('validates normalized messages inside turn page responses', () {
@@ -482,6 +630,7 @@ void main() {
             as ConversationSyncV2EventMessage;
 
     expect(message.pageRawMessages().single['text'], 'Earlier prompt');
+    expect(message.pageRawMessages().single['historyTurnId'], 'turn-1');
     expect(
       () => ServerMessage.fromJson({
         ..._baseFrame,
@@ -500,6 +649,45 @@ void main() {
       throwsFormatException,
     );
   });
+
+  test(
+    'runtime overlay requires every source runtime authority and turn fence',
+    () {
+      final complete = <String, dynamic>{
+        ..._baseFrame,
+        'event': 'runtime_overlay',
+        'provider': 'codex',
+        'providerSessionId': 'thread-overlay',
+        'overlayId': 'overlay-1',
+        'observedAt': '2026-08-14T00:00:00.000Z',
+        'originGeneration': 'observer:1:2',
+        'runtimeSessionId': 'observer:1:2',
+        'authorityGeneration': 'daemon:1',
+        'turnId': 'turn-overlay',
+        'message': const {'type': 'error', 'message': 'runtime warning'},
+      };
+      final decoded =
+          ServerMessage.fromJson(complete) as ConversationSyncV2EventMessage;
+      expect(decoded.runtimeSessionId, 'observer:1:2');
+      expect(decoded.authorityGeneration, 'daemon:1');
+      expect(decoded.turnId, 'turn-overlay');
+
+      for (final requiredFence in [
+        'originGeneration',
+        'runtimeSessionId',
+        'authorityGeneration',
+        'turnId',
+      ]) {
+        final incomplete = Map<String, dynamic>.of(complete)
+          ..remove(requiredFence);
+        expect(
+          () => ServerMessage.fromJson(incomplete),
+          throwsFormatException,
+          reason: requiredFence,
+        );
+      }
+    },
+  );
 }
 
 const _baseFrame = <String, dynamic>{

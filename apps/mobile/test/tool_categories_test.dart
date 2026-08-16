@@ -161,7 +161,7 @@ void main() {
   });
 
   group('getToolCollapsedSummary', () {
-    test('keeps file and agent identity but hides executable content', () {
+    test('keeps bounded structured file, search, and agent identity', () {
       expect(
         getToolCollapsedSummary(ToolCategory.read, {
           'file_path': '/Users/project/lib/main.dart',
@@ -183,14 +183,49 @@ void main() {
       );
       expect(
         getToolCollapsedSummary(ToolCategory.search, {
-          'query': 'secret implementation detail',
+          'query': 'ToolUseTile',
+          'path': '/Users/project/apps/mobile/lib',
         }),
-        isEmpty,
+        '"ToolUseTile" · /Users/project/apps/mobile/lib',
       );
       expect(
         getToolCollapsedSummary(ToolCategory.compact, {
           'title': 'Update plan',
           'todos': const [],
+        }),
+        isEmpty,
+      );
+    });
+
+    test('lists a structured path without exposing arbitrary payload keys', () {
+      expect(
+        getToolCollapsedSummary(ToolCategory.search, {
+          'path': '/Users/project/apps/mobile',
+          'privatePayload': 'must stay hidden',
+        }),
+        '/Users/project/apps/mobile',
+      );
+      expect(
+        getToolCollapsedSummary(ToolCategory.other, {
+          'privatePayload': 'must stay hidden',
+        }),
+        isEmpty,
+      );
+      expect(
+        getToolCollapsedSummary(ToolCategory.search, {
+          'query': {'nested': 'must stay hidden'},
+        }),
+        isEmpty,
+      );
+      expect(
+        getToolCollapsedSummary(ToolCategory.read, {
+          'privatePayload': 'must stay hidden',
+        }),
+        isEmpty,
+      );
+      expect(
+        getToolCollapsedSummary(ToolCategory.subagent, {
+          'agent_name': {'nested': 'must stay hidden'},
         }),
         isEmpty,
       );

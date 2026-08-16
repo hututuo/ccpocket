@@ -17,7 +17,7 @@ import {
 import type { ServerMessage } from "./parser.js";
 
 class FakeObserverProcess extends EventEmitter {
-  activeTurnId = "turn-live";
+  activeTurnId: string | undefined = "turn-live";
   isRunning = true;
   readonly starts: Array<{ projectPath: string; options: CodexStartOptions }> =
     [];
@@ -226,6 +226,26 @@ describe("SharedCodexContentObserverCoordinator", () => {
     expect(value.completions).toMatchObject([
       { threadId: "thread-request", turnId: "turn-live" },
     ]);
+    value.coordinator.close();
+  });
+
+  it("rotates the fallback identity scope between no-id turns", () => {
+    const value = fixture();
+    value.coordinator.setAuthority(1, true);
+    value.coordinator.setActive(true);
+    value.coordinator.setInterests([interest("thread-anonymous-turns")]);
+    const process = value.processes[0]!;
+    process.activeTurnId = undefined;
+
+    process.message({ type: "user_input", text: "first" });
+    process.message({ type: "result", subtype: "success", result: "done" });
+    process.message({ type: "user_input", text: "second" });
+
+    expect(value.messages).toHaveLength(3);
+    const firstScope = value.messages[0]!.anonymousTurnScope;
+    expect(firstScope).toEqual(value.messages[1]!.anonymousTurnScope);
+    expect(value.messages[2]!.anonymousTurnScope).not.toEqual(firstScope);
+    expect(value.completions[0]!.anonymousTurnScope).toEqual(firstScope);
     value.coordinator.close();
   });
 

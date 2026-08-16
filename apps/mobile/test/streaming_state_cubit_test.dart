@@ -1,6 +1,7 @@
 import 'package:bloc_test/bloc_test.dart';
 import 'package:ccpocket/features/chat_session/state/streaming_state.dart';
 import 'package:ccpocket/features/chat_session/state/streaming_state_cubit.dart';
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -139,30 +140,38 @@ void main() {
     group('delta coalescing', () {
       test(
         'emits the first delta immediately and batches following deltas',
-        () async {
-          final coalesced = StreamingStateCubit(
-            coalesceInterval: const Duration(milliseconds: 10),
-          );
-          addTearDown(coalesced.close);
-          final emitted = <StreamingState>[];
-          final subscription = coalesced.stream.listen(emitted.add);
-          addTearDown(subscription.cancel);
+        () {
+          fakeAsync((async) {
+            final coalesced = StreamingStateCubit(
+              coalesceInterval: const Duration(milliseconds: 10),
+            );
+            addTearDown(coalesced.close);
+            final emitted = <StreamingState>[];
+            final subscription = coalesced.stream.listen(emitted.add);
+            addTearDown(subscription.cancel);
 
-          coalesced.appendText('A');
-          coalesced.appendText('B');
-          coalesced.appendText('C');
+            coalesced.appendText('A');
+            coalesced.appendText('B');
+            coalesced.appendText('C');
 
-          expect(coalesced.state.text, 'A');
-          await Future<void>.delayed(Duration.zero);
-          expect(emitted, [const StreamingState(text: 'A', isStreaming: true)]);
+            expect(coalesced.state.text, 'A');
+            async.flushMicrotasks();
+            expect(emitted, [
+              const StreamingState(text: 'A', isStreaming: true),
+            ]);
 
-          await Future<void>.delayed(const Duration(milliseconds: 15));
+            async.elapse(const Duration(milliseconds: 9));
+            async.flushMicrotasks();
+            expect(coalesced.state.text, 'A');
 
-          expect(coalesced.state.text, 'ABC');
-          expect(emitted, [
-            const StreamingState(text: 'A', isStreaming: true),
-            const StreamingState(text: 'ABC', isStreaming: true),
-          ]);
+            async.elapse(const Duration(milliseconds: 1));
+            async.flushMicrotasks();
+            expect(coalesced.state.text, 'ABC');
+            expect(emitted, [
+              const StreamingState(text: 'A', isStreaming: true),
+              const StreamingState(text: 'ABC', isStreaming: true),
+            ]);
+          });
         },
       );
 

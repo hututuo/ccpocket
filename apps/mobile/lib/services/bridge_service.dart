@@ -44,22 +44,21 @@ const bridgeApplicationReadinessCapability = 'bridge_application_readiness_v1';
 /// corresponding protocol or local publication step has actually completed.
 enum BridgeConnectionBootstrapPhase {
   idle(0),
-  // Bootstrap milestones are deliberately spaced across the full range. The
-  // values are protocol facts, not a timer or an estimate of remaining work.
-  // Keeping the spacing regular prevents the UI from appearing idle until the
-  // final session/catalog phases, which can legitimately take the longest.
-  openingTransport(8),
-  transportReady(16),
-  capabilitiesSent(24),
-  sessionListRequested(32),
+  // Bootstrap milestones are weighted by their observed role in the startup
+  // critical path. They remain protocol facts rather than timer interpolation;
+  // conversation-sync commits own the final 20 percent below.
+  openingTransport(5),
+  transportReady(15),
+  capabilitiesSent(22),
+  sessionListRequested(30),
   sessionListFrameReceived(40),
   sessionListEnvelopeDecoded(48),
-  sessionListModelValidated(56),
-  sessionListAuthorityAccepted(64),
-  identityResolved(72),
-  sessionListPublished(80),
-  conversationCatalogRequested(88),
-  conversationCatalogReceived(96),
+  sessionListModelValidated(58),
+  sessionListAuthorityAccepted(68),
+  identityResolved(74),
+  sessionListPublished(78),
+  conversationCatalogRequested(80),
+  conversationCatalogReceived(98),
   reconnectScheduled(3);
 
   const BridgeConnectionBootstrapPhase(this.percent);
@@ -287,11 +286,23 @@ class LocalSessionHistoryPage {
   const LocalSessionHistoryPage({
     required this.messages,
     required this.hasMore,
+    this.hasLater = false,
+    this.startOrdinal,
+    this.endOrdinalExclusive,
+    this.totalEntries,
     this.timestampAnchor,
   });
 
   final List<ServerMessage> messages;
+
+  /// Whether entries immediately before this page are still available.
   final bool hasMore;
+
+  /// Whether entries immediately after this page are still available.
+  final bool hasLater;
+  final int? startOrdinal;
+  final int? endOrdinalExclusive;
+  final int? totalEntries;
   final DateTime? timestampAnchor;
 }
 
@@ -613,6 +624,7 @@ class BridgeService implements BridgeServiceBase {
   String? _defaultCodexProfile;
   bool _codexAutoReviewDisabled = false;
   String? _bridgeVersion;
+  int? _clientBridgeCompatibilityRevision;
   Set<String> _bridgeCapabilities = const {};
   int _backgroundActiveWorkCount = 0;
   BridgeClientDeliveryMode _desiredClientDeliveryMode =
@@ -709,12 +721,14 @@ class BridgeService implements BridgeServiceBase {
   Timer? _sessionCatalogRefreshTimeout;
   bool _sessionCatalogRefreshInFlight = false;
   bool _sessionCatalogRefreshDirty = false;
+  int _conversationSyncV2CatalogConsumerCount = 0;
   int _lastSessionCatalogRevision = 0;
   int _recentSessionsQueryGeneration = 0;
   int _recentSessionsRequestSequence = 0;
   final Map<String, String> _latestRecentSessionRequestByScope = {};
   _RecentSessionsRequest? _legacyRecentSessionsRequestInFlight;
   final List<_RecentSessionsRequest> _legacyRecentSessionsRequestQueue = [];
+  final Set<String> _ignoredAutomaticCatalogRequestIds = {};
   static const _maxLegacyRecentSessionsRequestQueue = 32;
   static const _sessionCatalogRefreshDebounce = Duration(milliseconds: 250);
   static const _sessionCatalogRefreshRequestTimeout = Duration(seconds: 15);
@@ -1025,6 +1039,8 @@ class BridgeService implements BridgeServiceBase {
   String? get defaultCodexProfile => _defaultCodexProfile;
   bool get codexAutoReviewDisabled => _codexAutoReviewDisabled;
   String? get bridgeVersion => _bridgeVersion;
+  int? get clientBridgeCompatibilityRevision =>
+      _clientBridgeCompatibilityRevision;
   Set<String> get bridgeCapabilities => _bridgeCapabilities;
   bool get supportsBackgroundNotificationDelivery => _bridgeCapabilities
       .contains(backgroundNotificationDeliveryBridgeCapability);
@@ -1044,6 +1060,10 @@ class BridgeService implements BridgeServiceBase {
       _bridgeCapabilities.contains(conversationContentEventCapability);
   bool get supportsConversationSyncV2 =>
       _bridgeCapabilities.contains(conversationSyncV2Capability);
+  bool get supportsConversationWindowCoverage =>
+      _bridgeCapabilities.contains(conversationWindowCoverageCapability);
+  bool get supportsConversationSyncFocusRefresh =>
+      _bridgeCapabilities.contains(conversationSyncFocusRefreshCapability);
   bool get supportsConversationItemsById =>
       _bridgeCapabilities.contains(conversationItemsByIdCapability);
   bool get supportsConversationUserIndex =>
@@ -2287,6 +2307,7 @@ class BridgeService implements BridgeServiceBase {
                 :final defaultCodexProfile,
                 :final codexAutoReviewDisabled,
                 :final bridgeVersion,
+                :final clientBridgeCompatibilityRevision,
                 :final bridgeCapabilities,
               ):
                 final requestStartedAtMs = _sessionListRequestStartedAtMs;
@@ -2316,12 +2337,31 @@ class BridgeService implements BridgeServiceBase {
                     previousBridgeId != authoritativeBridgeId ||
                     (authoritativeBridgeId != null &&
                         previousSourceId != authoritativeSourceId);
+                final replacingAuthoritativeSource =
+                    dataSourceChanged &&
+                    _hasAuthoritativeSessionListForCurrentConnection;
                 final advertisedPromptHistoryStatus = _lastPromptHistoryStatus;
                 if (dataSourceChanged) {
                   _hasAuthoritativeSessionListForCurrentConnection = false;
                   _requeueInFlightInputMessages();
                   _requeueInFlightPendingMessages();
                   _clearBridgeScopedState(clearOfflineQueue: false);
+                  if (replacingAuthoritativeSource) {
+                    // The replacement frame has already been decoded and
+                    // validated on this same socket. Reset the previous
+                    // source's published milestone, then restore the latest
+                    // truthful stage so the remaining authority/identity
+                    // commits can advance normally.
+                    _setConnectionBootstrapPhase(
+                      BridgeConnectionBootstrapPhase.idle,
+                      epoch: epoch,
+                      reason: 'data_source_changed',
+                    );
+                    _setConnectionBootstrapPhase(
+                      BridgeConnectionBootstrapPhase.sessionListModelValidated,
+                      epoch: epoch,
+                    );
+                  }
                 }
                 _bridgeInstanceId = authoritativeBridgeId;
                 _codexSourceId = authoritativeSourceId;
@@ -2403,6 +2443,8 @@ class BridgeService implements BridgeServiceBase {
                 _codexAutoReviewDisabled = codexAutoReviewDisabled;
                 _codexAutoReviewPolicyController.add(codexAutoReviewDisabled);
                 _bridgeVersion = bridgeVersion;
+                _clientBridgeCompatibilityRevision =
+                    clientBridgeCompatibilityRevision;
                 _bridgeCapabilities = bridgeCapabilities.toSet();
                 _sendNextLegacyRecentSessionsRequest();
                 // Catalog metadata belongs to the same authoritative
@@ -2449,6 +2491,9 @@ class BridgeService implements BridgeServiceBase {
               case RecentSessionsMessage():
                 final recentResponse = _correlateRecentSessionsResponse(msg);
                 if (recentResponse == null ||
+                    _discardSupersededAutomaticCatalogResponse(
+                      recentResponse,
+                    ) ||
                     !_isCurrentRecentSessionsResponse(recentResponse)) {
                   break;
                 }
@@ -2849,6 +2894,7 @@ class BridgeService implements BridgeServiceBase {
             'socket_error',
             epoch: epoch,
             errorKind: _diagnosticToken(error.runtimeType.toString()),
+            elapsedMs: _connectionDiagnosticStopwatch?.elapsedMilliseconds,
             warning: true,
           );
           _failPendingHistoryRequests(clearCursors: false);
@@ -2884,7 +2930,12 @@ class BridgeService implements BridgeServiceBase {
             return;
           }
           _cancelAuthoritativeSessionListWatchdog();
-          _logConnectionDiagnostic('socket_done', epoch: epoch);
+          _logConnectionDiagnostic(
+            'socket_done',
+            epoch: epoch,
+            reason: 'close_${channel.closeCode ?? 'none'}',
+            elapsedMs: _connectionDiagnosticStopwatch?.elapsedMilliseconds,
+          );
           _channel = null;
           _failPendingHistoryRequests(clearCursors: false);
           _clearPendingLocalFeatureRequests();
@@ -3595,6 +3646,7 @@ class BridgeService implements BridgeServiceBase {
     _defaultCodexProfile = null;
     _codexAutoReviewDisabled = false;
     _bridgeVersion = null;
+    _clientBridgeCompatibilityRevision = null;
     _bridgeCapabilities = const {};
     _backgroundActiveWorkCount = 0;
     _promptHistoryBridgeId = null;
@@ -3990,6 +4042,7 @@ class BridgeService implements BridgeServiceBase {
       state: phase.name,
       reason: reason,
       errorKind: errorKind,
+      elapsedMs: _connectionDiagnosticStopwatch?.elapsedMilliseconds,
       progress: phase.percent,
       warning: warning,
     );
@@ -4499,6 +4552,13 @@ class BridgeService implements BridgeServiceBase {
       _clearInFlightPendingMessage(dedupeKey);
       _clearInFlightInputMessage(dedupeKey, persist: false);
     }
+    if (message.type == 'input') {
+      // No input_ack means there is no Bridge receipt. The visible recovery
+      // copy lives in DraftService as a failed bubble; never place user input
+      // in the reconnecting transport outbox.
+      unawaited(_persistOfflinePendingMessages());
+      return;
+    }
     final didAdd = _addQueuedMessageIfAbsent(message);
     if (didAdd || _isPersistableOfflineMessage(message)) {
       _publishOfflinePendingActions();
@@ -4572,10 +4632,9 @@ class BridgeService implements BridgeServiceBase {
     _inFlightInputMessages[dedupeKey] = message;
     _inFlightInputTargets[dedupeKey] =
         _offlineMessageTargets[message] ?? _currentOfflineMessageTarget();
-    // Keep every input in the identity-scoped outbox until a legacy Bridge
-    // replies with input_ack/input_rejected, or a staged Bridge reports the
-    // provider terminal receipt. The first staged ack is only an in-memory
-    // Bridge admission and does not claim Bridge-restart durability.
+    // Retain a volatile, identity-scoped copy only until Bridge replies. It is
+    // persisted for crash diagnostics and cleanup, never for replay: a
+    // process restart restores the DraftService failure bubble instead.
     unawaited(_persistOfflinePendingMessages());
   }
 
@@ -4722,25 +4781,17 @@ class BridgeService implements BridgeServiceBase {
 
   void _requeueInFlightInputMessages() {
     if (_inFlightInputMessages.isEmpty) return;
-    final messages = Map<String, ClientMessage>.from(_inFlightInputMessages);
-    final targets = Map<String, _OfflineMessageTarget?>.from(
-      _inFlightInputTargets,
-    );
+    final removedCount = _inFlightInputMessages.length;
     _inFlightInputMessages.clear();
     _inFlightInputTargets.clear();
-    var didAdd = false;
-    for (final entry in messages.entries) {
-      didAdd =
-          _addQueuedMessageIfAbsent(
-            entry.value,
-            restoredTarget: targets[entry.key],
-            isRestored: true,
-          ) ||
-          didAdd;
-    }
-    if (didAdd || messages.isNotEmpty) {
-      unawaited(_persistOfflinePendingMessages());
-    }
+    // A socket write without input_ack is not a Bridge receipt. Replaying it
+    // automatically can create a new provider turn days later. The composer
+    // draft remains the recovery copy and explicit retry reuses the same
+    // clientMessageId so Bridge's delivery ledger can answer idempotently.
+    logger.info(
+      'Quarantined $removedCount unconfirmed input(s) after disconnect',
+    );
+    unawaited(_persistOfflinePendingMessages());
   }
 
   void _requeueInFlightPendingMessages() {
@@ -5404,6 +5455,7 @@ class BridgeService implements BridgeServiceBase {
 
   Future<void> _restoreOfflinePendingMessages() async {
     final generation = _offlineQueueGeneration;
+    var skippedUnconfirmedInputs = false;
     try {
       final prefs = await SharedPreferences.getInstance();
       final encodedV2 =
@@ -5423,6 +5475,13 @@ class BridgeService implements BridgeServiceBase {
             Map<String, dynamic>.from(messageJson),
           );
           if (!_isPersistableOfflineMessage(message)) return;
+          if (message.type == 'input') {
+            // Persisted inputs have no server receipt. Their DraftService row
+            // is restored as a failed bubble; never turn an app restart into
+            // permission to submit them again.
+            skippedUnconfirmedInputs = true;
+            return;
+          }
           final target = isV2
               ? _OfflineMessageTarget.fromJson(decoded['target'])
               : null;
@@ -5452,6 +5511,12 @@ class BridgeService implements BridgeServiceBase {
         if (generation != _offlineQueueGeneration) return;
       }
       _publishOfflinePendingActions();
+      if (skippedUnconfirmedInputs) {
+        // Rewrite the outbox after restoration so quarantined inputs cannot
+        // be reconsidered by a future process. DraftService remains the sole
+        // manual-recovery copy.
+        unawaited(_persistOfflinePendingMessages());
+      }
     } catch (error, stackTrace) {
       if (_isSharedPreferencesUnavailable(error)) {
         return;
@@ -5541,6 +5606,69 @@ class BridgeService implements BridgeServiceBase {
       return;
     }
     send(ClientMessage.listSessions());
+  }
+
+  /// Requests and waits for a fresh authoritative runtime/session snapshot on
+  /// the exact current socket generation.
+  ///
+  /// Public refresh surfaces use this instead of treating message dispatch as
+  /// completion. A stale socket is reconnected first, and a response from a
+  /// replacement generation cannot satisfy the old waiter.
+  Future<bool> refreshAuthoritativeSessionList({
+    Duration timeout = const Duration(seconds: 12),
+  }) async {
+    if (!isTransportHealthy) {
+      ensureConnected();
+      final deadline = DateTime.now().add(timeout);
+      while (!isTransportHealthy && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+      }
+    }
+    if (!isTransportHealthy) return false;
+
+    final epoch = _connectionEpoch;
+    final previousGeneration = _authoritativeSessionListGeneration;
+    final completer = Completer<bool>();
+    late final StreamSubscription<List<SessionInfo>> sessionSubscription;
+    late final StreamSubscription<BridgeConnectionState> connectionSubscription;
+    final timer = Timer(timeout, () {
+      if (!completer.isCompleted) completer.complete(false);
+    });
+    sessionSubscription = sessionList.listen(
+      (_) {
+        if (!completer.isCompleted &&
+            epoch == _connectionEpoch &&
+            isTransportHealthy &&
+            _hasAuthoritativeSessionListForCurrentConnection &&
+            _authoritativeSessionListGeneration > previousGeneration) {
+          completer.complete(true);
+        }
+      },
+      onError: (Object _, StackTrace _) {
+        if (!completer.isCompleted) completer.complete(false);
+      },
+    );
+    connectionSubscription = connectionStatus.listen(
+      (_) {
+        if (!completer.isCompleted &&
+            (epoch != _connectionEpoch || !isTransportHealthy)) {
+          completer.complete(false);
+        }
+      },
+      onError: (Object _, StackTrace _) {
+        if (!completer.isCompleted) completer.complete(false);
+      },
+    );
+    try {
+      requestSessionList();
+      return await completer.future;
+    } finally {
+      timer.cancel();
+      await Future.wait([
+        sessionSubscription.cancel(),
+        connectionSubscription.cancel(),
+      ]);
+    }
   }
 
   Future<SessionLinkResolveResult> resolveSessionLink(
@@ -5889,6 +6017,11 @@ class BridgeService implements BridgeServiceBase {
   }
 
   void _sendNextLegacyRecentSessionsRequest() {
+    if (_conversationSyncV2OwnsCatalog) {
+      _legacyRecentSessionsRequestQueue.removeWhere(
+        (request) => request.requestScope == 'catalog',
+      );
+    }
     if (_legacyRecentSessionsRequestInFlight != null ||
         _legacyRecentSessionsRequestQueue.isEmpty ||
         !isConnected) {
@@ -5923,6 +6056,18 @@ class BridgeService implements BridgeServiceBase {
   void _resetLegacyRecentSessionsTransport() {
     _legacyRecentSessionsRequestInFlight = null;
     _legacyRecentSessionsRequestQueue.clear();
+    _ignoredAutomaticCatalogRequestIds.clear();
+  }
+
+  bool _discardSupersededAutomaticCatalogResponse(
+    RecentSessionsMessage response,
+  ) {
+    final requestId = response.requestId;
+    final wasExplicitlyFenced =
+        requestId != null &&
+        _ignoredAutomaticCatalogRequestIds.remove(requestId);
+    return response.requestScope == 'catalog' &&
+        (wasExplicitlyFenced || _conversationSyncV2OwnsCatalog);
   }
 
   bool _isCurrentRecentSessionsResponse(RecentSessionsMessage message) {
@@ -5950,11 +6095,49 @@ class BridgeService implements BridgeServiceBase {
   void _handleSessionCatalogChanged(int revision) {
     if (revision <= 0 || revision <= _lastSessionCatalogRevision) return;
     _lastSessionCatalogRevision = revision;
+    // conversation_sync_v2 already carries source-scoped catalog changes into
+    // the durable SQLite projection. Starting the legacy broad directory
+    // refresh as a second writer causes project counts and grouping to churn.
+    // Older peers keep the bounded compatibility refresh below.
+    if (_conversationSyncV2OwnsCatalog) return;
     _scheduleSessionCatalogRefresh();
   }
 
+  bool get _conversationSyncV2OwnsCatalog =>
+      supportsConversationSyncV2 && _conversationSyncV2CatalogConsumerCount > 0;
+
+  /// Registers a live Mobile projection that commits conversation_sync_v2
+  /// catalog pages to the durable SQLite cache.
+  ///
+  /// A Bridge capability alone is not sufficient: isolated hosts and tests
+  /// may intentionally construct [BridgeService] without the v2 consumer. In
+  /// that case the bounded legacy catalog refresh remains the only producer.
+  void registerConversationSyncV2CatalogConsumer() {
+    _conversationSyncV2CatalogConsumerCount += 1;
+    if (_conversationSyncV2OwnsCatalog) {
+      _fenceAutomaticCatalogRefreshTransport();
+    }
+  }
+
+  void unregisterConversationSyncV2CatalogConsumer() {
+    if (_conversationSyncV2CatalogConsumerCount <= 0) return;
+    _conversationSyncV2CatalogConsumerCount -= 1;
+  }
+
+  void _fenceAutomaticCatalogRefreshTransport() {
+    _resetSessionCatalogRefresh();
+    _legacyRecentSessionsRequestQueue.removeWhere(
+      (request) => request.requestScope == 'catalog',
+    );
+    final inFlight = _legacyRecentSessionsRequestInFlight;
+    if (inFlight?.requestScope == 'catalog') {
+      _ignoredAutomaticCatalogRequestIds.add(inFlight!.requestId);
+    }
+  }
+
   void _scheduleSessionCatalogRefresh() {
-    if (!supportsSessionCatalogWatch ||
+    if (_conversationSyncV2OwnsCatalog ||
+        !supportsSessionCatalogWatch ||
         !isConnected ||
         _desiredClientDeliveryMode != BridgeClientDeliveryMode.interactive) {
       return;
@@ -5972,6 +6155,10 @@ class BridgeService implements BridgeServiceBase {
   void _requestSessionCatalogRefresh() {
     _sessionCatalogRefreshTimer?.cancel();
     _sessionCatalogRefreshTimer = null;
+    if (_conversationSyncV2OwnsCatalog) {
+      _sessionCatalogRefreshDirty = false;
+      return;
+    }
     if (!isConnected ||
         !supportsSessionCatalogWatch ||
         _desiredClientDeliveryMode != BridgeClientDeliveryMode.interactive) {

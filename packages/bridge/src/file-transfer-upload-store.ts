@@ -21,11 +21,21 @@ import {
 import { hashTransferSecret, identityMatches, identityOf, secretHashMatches } from "./file-transfer-download-store.js";
 import { FileTransferError, fileTransferErrorCode } from "./file-transfer-errors.js";
 import type {
+  PersistedDiagnosticReceipt,
   PersistedUploadDirectoryIdentity,
   PersistedUploadTransfer,
   TransferFileIdentity,
 } from "./file-transfer-state-store.js";
 import { FileTransferStateStore } from "./file-transfer-state-store.js";
+import {
+  DIAGNOSTIC_REPORT_MAX_BYTES,
+  DIAGNOSTIC_REPORT_PAYLOAD_MAX_BYTES,
+  containsDiagnosticCredential,
+  validateDiagnosticReportMetadata,
+  type DiagnosticReportContentPolicy,
+  type DiagnosticReportMetadata,
+  type FileTransferPurpose,
+} from "./file-transfer-diagnostic.js";
 
 export { FILE_TRANSFER_MAX_FILE_SIZE_BYTES } from "./file-transfer-constants.js";
 
@@ -33,6 +43,8 @@ const DEFAULT_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_DISK_SAFETY_MARGIN_BYTES = 512 * 1024 * 1024;
 const DEFAULT_MAX_ACTIVE_UPLOADS = 2;
+const DIAGNOSTIC_STAGING_MAX_UPLOADS = 4;
+const DIAGNOSTIC_STAGING_MAX_BYTES = 64 * 1024 * 1024;
 const MAX_FILENAME_BYTES = 240;
 const MAX_COLLISION_ATTEMPTS = 10_000;
 const MAX_TOKEN_ATTEMPTS = 100;
@@ -67,6 +79,11 @@ export interface UploadAppendResult {
   completed: boolean;
 }
 
+export interface UploadPreparationOptions {
+  purpose?: FileTransferPurpose;
+  diagnosticReport?: DiagnosticReportMetadata;
+}
+
 export interface FileTransferUploadStoreOptions {
   stateStore: FileTransferStateStore;
   directory?: string;
@@ -80,6 +97,7 @@ export interface FileTransferUploadStoreOptions {
   now?: () => number;
   tokenFactory?: () => string;
   availableBytes?: (path: string) => Promise<bigint>;
+  diagnosticContentPolicy?: DiagnosticReportContentPolicy;
 }
 
 export class UploadOffsetConflictError extends FileTransferError {
@@ -128,6 +146,7 @@ export class FileTransferUploadStore {
   private readonly now: () => number;
   private readonly tokenFactory: () => string;
   private readonly availableBytes: (path: string) => Promise<bigint>;
+  private readonly diagnosticContentPolicy: DiagnosticReportContentPolicy;
   private readonly statfsSupported: boolean;
   private readyBarrier?: Promise<void>;
   private directoryBarrier?: Promise<DirectoryIdentity>;
@@ -150,6 +169,8 @@ export class FileTransferUploadStore {
     this.maxActiveUploads = options.maxActiveUploads ?? DEFAULT_MAX_ACTIVE_UPLOADS;
     this.now = options.now ?? Date.now;
     this.tokenFactory = options.tokenFactory ?? (() => randomBytes(32).toString("base64url"));
+    this.diagnosticContentPolicy =
+      options.diagnosticContentPolicy ?? "strict";
     this.statfsSupported = Boolean(
       options.availableBytes || fileTransferStatfsAvailable(fsPromises),
     );
@@ -197,10 +218,12 @@ export class FileTransferUploadStore {
     resumeToken: string,
     filename: string,
     sizeBytes: number,
+    options: UploadPreparationOptions = {},
   ): Promise<PreparedUpload> {
     await this.init();
     const safeFilename = sanitizeFileTransferFilename(filename);
     this.validateDeclaredSize(sizeBytes);
+    this.validatePurpose(options, sizeBytes);
     if (!FILE_TRANSFER_ID_PATTERN.test(transferId) || !FILE_TRANSFER_TOKEN_PATTERN.test(resumeToken)) {
       throw new FileTransferError(400, "invalid_transfer_identity", "Invalid transfer id or resume token");
     }
@@ -212,15 +235,59 @@ export class FileTransferUploadStore {
       return this.withTransferLock(transferId, async () => {
         const existing = await this.stateStore.getUpload(transferId);
         if (existing) {
-          return this.resumeLocked(existing, resumeToken, safeFilename, sizeBytes);
+          return this.resumeLocked(existing, resumeToken, safeFilename, sizeBytes, options);
         }
         const resumeHash = hashTransferSecret(resumeToken);
         const uploads = await this.stateStore.listUploads();
         if (uploads.some((entry) => entry.resumeTokenHash === resumeHash)) {
           throw new FileTransferError(409, "resume_token_collision", "Resume token is already in use");
         }
-        return this.prepareNewLocked(transferId, resumeToken, safeFilename, sizeBytes);
+        return this.prepareNewLocked(transferId, resumeToken, safeFilename, sizeBytes, options);
       });
+    });
+  }
+
+  /**
+   * Looks up a durable diagnostic receipt without creating or mutating an
+   * upload. Identity and resume-token verification happen under the same
+   * per-transfer lock as prepare, so a replay cannot bypass the v2 security
+   * boundary or learn a receipt with the wrong token.
+   */
+  async findDiagnosticReceipt(
+    transferId: string,
+    resumeToken: string,
+    filename: string,
+    sizeBytes: number,
+    options: UploadPreparationOptions,
+  ): Promise<{
+    entry: PersistedUploadTransfer;
+    receipt: PersistedDiagnosticReceipt;
+  } | undefined> {
+    await this.init();
+    const safeFilename = sanitizeFileTransferFilename(filename);
+    this.validateDeclaredSize(sizeBytes);
+    this.validatePurpose(options, sizeBytes);
+    if (
+      options.purpose !== "diagnostic_report" ||
+      !FILE_TRANSFER_ID_PATTERN.test(transferId) ||
+      !FILE_TRANSFER_TOKEN_PATTERN.test(resumeToken)
+    ) {
+      throw new FileTransferError(400, "invalid_transfer_identity", "Invalid diagnostic transfer identity");
+    }
+    return this.withTransferLock(transferId, async () => {
+      const entry = await this.stateStore.getUpload(transferId);
+      if (!entry) return undefined;
+      this.assertResumeIdentity(entry, resumeToken, safeFilename, sizeBytes, options);
+      if (entry.retainUntil <= this.now()) {
+        await this.removeExpiredUploadLocked(entry);
+        return undefined;
+      }
+      return entry.diagnosticReceipt
+        ? {
+            entry,
+            receipt: { ...entry.diagnosticReceipt },
+          }
+        : undefined;
     });
   }
 
@@ -229,7 +296,11 @@ export class FileTransferUploadStore {
     resumeToken: string,
     safeFilename: string,
     sizeBytes: number,
+    options: UploadPreparationOptions,
   ): Promise<PreparedUpload> {
+    if (options.purpose === "diagnostic_report") {
+      await this.ensureDiagnosticStagingCapacity(sizeBytes);
+    }
     await this.ensureDiskReservation(sizeBytes);
     const uploadToken = await this.createToken();
     const directory = await this.assertDirectoryIdentity();
@@ -257,6 +328,9 @@ export class FileTransferUploadStore {
         updatedAt: now,
         expiresAt: now + this.sessionTtlMs,
         retainUntil: now + this.retentionMs,
+        ...(options.purpose === "diagnostic_report"
+          ? { purpose: options.purpose, diagnosticReport: options.diagnosticReport }
+          : {}),
       };
       await this.stateStore.upsertUpload(entry);
     } catch (error) {
@@ -348,24 +422,233 @@ export class FileTransferUploadStore {
     });
   }
 
+  /** Reads one completed upload through the pinned Downloads identity. */
+  async readCompletedUpload(
+    entry: PersistedUploadTransfer,
+    maxBytes = DIAGNOSTIC_REPORT_MAX_BYTES,
+  ): Promise<Buffer> {
+    await this.init();
+    if (entry.status !== "complete" || !entry.finalFilename) {
+      throw new FileTransferError(409, "upload_not_complete", "Upload is not complete");
+    }
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+      throw new FileTransferError(500, "upload_read_limit_invalid", "Upload read limit is invalid");
+    }
+    const directory = await this.assertDirectoryIdentity();
+    const safeFilename = sanitizeFileTransferFilename(entry.finalFilename);
+    if (safeFilename !== entry.finalFilename) {
+      throw new FileTransferError(409, "upload_final_path_invalid", "Upload final path is invalid");
+    }
+    const destination = join(directory.canonicalPath, safeFilename);
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+      handle = await open(destination, fsConstants.O_RDONLY | noFollow);
+      const opened = await handle.stat();
+      const lexical = await lstat(destination);
+      if (
+        !opened.isFile() ||
+        !lexical.isFile() ||
+        lexical.isSymbolicLink() ||
+        opened.dev !== lexical.dev ||
+        opened.ino !== lexical.ino ||
+        (entry.finalIdentity !== undefined &&
+          !sameFileObject(entry.finalIdentity, identityOf(opened))) ||
+        opened.size !== entry.sizeBytes ||
+        opened.size > maxBytes
+      ) {
+        throw new FileTransferError(409, "upload_final_changed", "Upload final file changed");
+      }
+      const bytes = await handle.readFile();
+      if (bytes.length !== entry.sizeBytes) {
+        throw new FileTransferError(409, "upload_final_changed", "Upload final file changed");
+      }
+      return bytes;
+    } catch (error) {
+      if (error instanceof FileTransferError) throw error;
+      throw new FileTransferError(409, "upload_final_unavailable", "Upload final file is unavailable", { cause: error });
+    } finally {
+      await handle?.close().catch(() => undefined);
+    }
+  }
+
+  /** Removes only the exact completed file represented by one upload entry. */
+  async removeCompletedUpload(entry: PersistedUploadTransfer): Promise<void> {
+    await this.init();
+    await this.withTransferLock(entry.transferId, async () => {
+      const current = await this.stateStore.getUpload(entry.transferId);
+      if (!current) return;
+      if (current.status !== "complete" || !current.finalFilename) {
+        throw new FileTransferError(409, "upload_not_complete", "Upload is not complete");
+      }
+      const directory = await this.assertDirectoryIdentity();
+      const safeFilename = sanitizeFileTransferFilename(current.finalFilename);
+      if (safeFilename !== current.finalFilename) {
+        throw new FileTransferError(409, "upload_final_path_invalid", "Upload final path is invalid");
+      }
+      const destination = join(directory.canonicalPath, safeFilename);
+      const lexical = await lstat(destination).catch((error) => {
+        if (fileTransferErrorCode(error) === "ENOENT") return undefined;
+        throw error;
+      });
+      if (!lexical) {
+        await this.stateStore.removeUpload(current.transferId);
+        return;
+      }
+      if (
+        !lexical.isFile() ||
+        lexical.isSymbolicLink() ||
+        lexical.size !== current.sizeBytes ||
+        (current.finalIdentity !== undefined &&
+          !sameFileObject(current.finalIdentity, identityOf(lexical)))
+      ) {
+        throw new FileTransferError(409, "upload_final_changed", "Upload final file changed");
+      }
+      await unlink(destination);
+      await fsyncDirectory(directory.canonicalPath);
+      await this.stateStore.removeUpload(current.transferId);
+    });
+  }
+
+  /**
+   * Drops one unreadable diagnostic completion without deleting a replacement
+   * file owned by another inode. A modified original inode is still the exact
+   * staged object and is scrubbed before its state is removed.
+   */
+  async discardUnreadableDiagnosticUpload(
+    entry: PersistedUploadTransfer,
+  ): Promise<void> {
+    await this.init();
+    await this.withTransferLock(entry.transferId, async () => {
+      const current = await this.stateStore.getUpload(entry.transferId);
+      if (
+        !current ||
+        current.status !== "complete" ||
+        current.purpose !== "diagnostic_report" ||
+        !current.finalFilename
+      ) {
+        return;
+      }
+      const directory = await this.assertDirectoryIdentity();
+      const safeFilename = sanitizeFileTransferFilename(current.finalFilename);
+      if (safeFilename !== current.finalFilename) {
+        throw new FileTransferError(409, "upload_final_path_invalid", "Upload final path is invalid");
+      }
+      const destination = join(directory.canonicalPath, safeFilename);
+      const lexical = await lstat(destination).catch((error) => {
+        if (fileTransferErrorCode(error) === "ENOENT") return undefined;
+        throw error;
+      });
+      if (
+        lexical?.isFile() &&
+        !lexical.isSymbolicLink() &&
+        current.finalIdentity &&
+        sameInode(current.finalIdentity, identityOf(lexical))
+      ) {
+        await unlink(destination);
+        await fsyncDirectory(directory.canonicalPath);
+      }
+      await this.stateStore.removeUpload(current.transferId);
+    });
+  }
+
+  /** Atomically commits a replayable receipt before deleting staged bytes. */
+  async commitDiagnosticReceipt(
+    entry: PersistedUploadTransfer,
+    receipt: PersistedDiagnosticReceipt,
+  ): Promise<PersistedUploadTransfer> {
+    await this.init();
+    return this.withTransferLock(entry.transferId, async () => {
+      const current = await this.stateStore.getUpload(entry.transferId);
+      if (
+        !current ||
+        current.status !== "complete" ||
+        current.purpose !== "diagnostic_report" ||
+        !current.diagnosticReport ||
+        !current.finalFilename ||
+        current.sizeBytes !== receipt.sizeBytes ||
+        current.diagnosticReport.reportId !== receipt.reportId ||
+        receipt.purpose !== "diagnostic_report"
+      ) {
+        throw new FileTransferError(409, "diagnostic_receipt_identity_mismatch", "Diagnostic receipt identity does not match the completed upload");
+      }
+      const existing = current.diagnosticReceipt;
+      if (existing) {
+        if (!sameDiagnosticReceipt(existing, receipt)) {
+          throw new FileTransferError(409, "diagnostic_report_collision", "Diagnostic receipt is already committed with different data");
+        }
+        await this.removeCommittedDiagnosticPayload(current);
+        return current;
+      }
+      const committed: PersistedUploadTransfer = {
+        ...current,
+        diagnosticReceipt: { ...receipt },
+        updatedAt: this.now(),
+      };
+      await this.stateStore.upsertUpload(committed);
+      await this.removeCommittedDiagnosticPayload(committed);
+      return committed;
+    });
+  }
+
+  /** Ensures receipt replay never leaves a second raw payload in Downloads. */
+  async ensureDiagnosticReceiptPayloadRemoved(
+    entry: PersistedUploadTransfer,
+  ): Promise<void> {
+    await this.init();
+    await this.withTransferLock(entry.transferId, async () => {
+      const current = await this.stateStore.getUpload(entry.transferId);
+      if (
+        !current ||
+        current.status !== "complete" ||
+        current.purpose !== "diagnostic_report" ||
+        !current.diagnosticReceipt ||
+        !current.diagnosticReport ||
+        current.diagnosticReport.reportId !== entry.diagnosticReport?.reportId
+      ) {
+        throw new FileTransferError(
+          409,
+          "diagnostic_receipt_identity_mismatch",
+          "Diagnostic receipt identity does not match the completed upload",
+        );
+      }
+      await this.removeCommittedDiagnosticPayload(current);
+    });
+  }
+
   private async cleanupExpiredLocked(): Promise<void> {
     const entries = await this.stateStore.listUploads();
     const now = this.now();
     for (const original of entries) {
       if (original.retainUntil > now) continue;
       await this.withTransferLock(original.transferId, async () => {
-        let entry = await this.stateStore.getUpload(original.transferId);
+        const entry = await this.stateStore.getUpload(original.transferId);
         if (!entry || entry.retainUntil > this.now()) return;
-        if (entry.status === "committing") {
-          try { entry = await this.recoverCommit(entry); } catch { /* partial cleanup below */ }
-        }
-        if (entry.status !== "complete" && entry.partialPath && entry.partialIdentity) {
-          const controlled = await this.controlledPartialPath(entry);
-          await unlinkIfSameInode(controlled, entry.partialIdentity);
-        }
-        await this.stateStore.removeUpload(entry.transferId);
+        await this.removeExpiredUploadLocked(entry);
       });
     }
+  }
+
+  /** Removes one expired entry while its per-transfer lock is already held. */
+  private async removeExpiredUploadLocked(
+    original: PersistedUploadTransfer,
+  ): Promise<void> {
+    let entry = original;
+    if (entry.status === "committing") {
+      try {
+        entry = await this.recoverCommit(entry);
+      } catch {
+        // Continue with the exact partial identity recorded before the crash.
+      }
+    }
+    if (entry.status !== "complete" && entry.partialPath && entry.partialIdentity) {
+      const controlled = await this.controlledPartialPath(entry);
+      await unlinkIfSameInode(controlled, entry.partialIdentity);
+    }
+    if (entry.status === "complete" && entry.purpose === "diagnostic_report") {
+      await this.removeCommittedDiagnosticPayload(entry);
+    }
+    await this.stateStore.removeUpload(entry.transferId);
   }
 
   private async resumeLocked(
@@ -373,14 +656,10 @@ export class FileTransferUploadStore {
     resumeToken: string,
     filename: string,
     sizeBytes: number,
+    options: UploadPreparationOptions,
   ): Promise<PreparedUpload> {
       let entry = original;
-      if (!secretHashMatches(entry.resumeTokenHash, resumeToken)) {
-        throw new FileTransferError(404, "upload_not_found", "Upload is invalid or expired");
-      }
-      if (entry.filename !== filename || entry.sizeBytes !== sizeBytes) {
-        throw new FileTransferError(409, "upload_identity_mismatch", "Resume filename or size does not match");
-      }
+      this.assertResumeIdentity(entry, resumeToken, filename, sizeBytes, options);
       if (entry.retainUntil <= this.now()) {
         throw new FileTransferError(410, "upload_expired", "Upload retention expired");
       }
@@ -399,6 +678,41 @@ export class FileTransferUploadStore {
       };
       await this.stateStore.upsertUpload(updated);
       return { status: "ready", entry: updated, uploadToken, resumeToken };
+  }
+
+  private assertResumeIdentity(
+    entry: PersistedUploadTransfer,
+    resumeToken: string,
+    filename: string,
+    sizeBytes: number,
+    options: UploadPreparationOptions,
+  ): void {
+    if (!secretHashMatches(entry.resumeTokenHash, resumeToken)) {
+      throw new FileTransferError(404, "upload_not_found", "Upload is invalid or expired");
+    }
+    if (entry.filename !== filename || entry.sizeBytes !== sizeBytes) {
+      throw new FileTransferError(409, "upload_identity_mismatch", "Resume filename or size does not match");
+    }
+    if (
+      (options.purpose ?? "file") !== (entry.purpose ?? "file") ||
+      !sameDiagnosticMetadata(options.diagnosticReport, entry.diagnosticReport)
+    ) {
+      throw new FileTransferError(409, "upload_identity_mismatch", "Resume purpose or diagnostic metadata does not match");
+    }
+  }
+
+  private async removeCommittedDiagnosticPayload(
+    entry: PersistedUploadTransfer,
+  ): Promise<void> {
+    if (!entry.finalFilename || !entry.finalIdentity) return;
+    const directory = await this.assertDirectoryIdentity();
+    const safeFilename = sanitizeFileTransferFilename(entry.finalFilename);
+    if (safeFilename !== entry.finalFilename) {
+      throw new FileTransferError(409, "upload_final_path_invalid", "Upload final path is invalid");
+    }
+    const destination = join(directory.canonicalPath, safeFilename);
+    await unlinkIfSameInode(destination, entry.finalIdentity);
+    await fsyncDirectory(directory.canonicalPath);
   }
 
   private async authorizeUpload(transferId: string, uploadToken: string): Promise<PersistedUploadTransfer> {
@@ -612,6 +926,9 @@ export class FileTransferUploadStore {
       offset: entry.sizeBytes,
       partialPath: undefined,
       partialIdentity: undefined,
+      ...(entry.purpose === "diagnostic_report"
+        ? { finalIdentity: destinationIdentity }
+        : {}),
       updatedAt: now,
       retainUntil: now + this.retentionMs,
     };
@@ -723,9 +1040,62 @@ export class FileTransferUploadStore {
     }
   }
 
+  private async ensureDiagnosticStagingCapacity(
+    prospectiveSizeBytes: number,
+  ): Promise<void> {
+    const entries = await this.stateStore.listUploads();
+    const staged = entries.filter(
+      (entry) =>
+        entry.purpose === "diagnostic_report" &&
+        !entry.diagnosticReceipt &&
+        entry.retainUntil > this.now(),
+    );
+    const stagedBytes = staged.reduce(
+      (total, entry) => total + entry.sizeBytes,
+      0,
+    );
+    if (
+      staged.length >= DIAGNOSTIC_STAGING_MAX_UPLOADS ||
+      stagedBytes + prospectiveSizeBytes > DIAGNOSTIC_STAGING_MAX_BYTES
+    ) {
+      throw new FileTransferError(
+        429,
+        "diagnostic_staging_limit",
+        "Too many diagnostic reports are awaiting archive",
+      );
+    }
+  }
+
   private validateDeclaredSize(sizeBytes: number): void {
     if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0 || sizeBytes > this.maxFileSizeBytes) {
       throw new FileTransferError(413, "file_too_large", "File exceeds the 15 GiB transfer limit");
+    }
+  }
+
+  private validatePurpose(options: UploadPreparationOptions, sizeBytes: number): void {
+    if (options.purpose !== undefined && options.purpose !== "file" && options.purpose !== "diagnostic_report") {
+      throw new FileTransferError(400, "invalid_upload_purpose", "Upload purpose is invalid");
+    }
+    if (options.purpose === "diagnostic_report") {
+      if (!validateDiagnosticReportMetadata(options.diagnosticReport)) {
+        throw new FileTransferError(400, "invalid_diagnostic_metadata", "Diagnostic metadata is invalid");
+      }
+      if (
+        this.diagnosticContentPolicy === "strict" &&
+        containsDiagnosticCredential(options.diagnosticReport)
+      ) {
+        throw new FileTransferError(
+          400,
+          "diagnostic_sensitive_field",
+          "Diagnostic metadata contains a prohibited authentication field",
+        );
+      }
+    }
+    if (options.purpose === "diagnostic_report" && sizeBytes > DIAGNOSTIC_REPORT_PAYLOAD_MAX_BYTES) {
+      throw new FileTransferError(413, "diagnostic_report_too_large", "Diagnostic report exceeds the 16 MiB limit");
+    }
+    if ((options.purpose === undefined || options.purpose === "file") && options.diagnosticReport !== undefined) {
+      throw new FileTransferError(400, "invalid_diagnostic_metadata", "Diagnostic metadata requires diagnostic_report purpose");
     }
   }
 
@@ -1098,6 +1468,36 @@ function sameFileObject(
     expected.ino === actual.ino &&
     expected.size === actual.size &&
     expected.mtimeMs === actual.mtimeMs;
+}
+
+function sameDiagnosticMetadata(
+  left: DiagnosticReportMetadata | undefined,
+  right: DiagnosticReportMetadata | undefined,
+): boolean {
+  if (!left || !right) return left === right;
+  return left.schemaVersion === right.schemaVersion &&
+    left.reportId === right.reportId &&
+    left.provider === right.provider &&
+    left.providerSessionId === right.providerSessionId &&
+    left.bridgeInstanceId === right.bridgeInstanceId &&
+    left.codexSourceId === right.codexSourceId &&
+    left.capturedAtStart === right.capturedAtStart &&
+    left.capturedAtEnd === right.capturedAtEnd &&
+    left.sha256 === right.sha256;
+}
+
+function sameDiagnosticReceipt(
+  left: PersistedDiagnosticReceipt,
+  right: PersistedDiagnosticReceipt,
+): boolean {
+  return left.filename === right.filename &&
+    left.savedPath === right.savedPath &&
+    left.sizeBytes === right.sizeBytes &&
+    left.purpose === right.purpose &&
+    left.reportId === right.reportId &&
+    left.archiveSha256 === right.archiveSha256 &&
+    left.mobileReportCanonicalSha256 ===
+      right.mobileReportCanonicalSha256;
 }
 
 async function fsyncDirectory(path: string): Promise<void> {

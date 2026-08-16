@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:math' as math;
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
@@ -70,13 +73,28 @@ bool shouldShowForkForAssistant(
   );
   if (!hasVisibleReply) return false;
 
+  var assistantTurnId = chatEntryHistoryTurnId(entry);
   var hasTerminalResult = false;
   for (var i = entryIndex + 1; i < entries.length; i++) {
     final next = entries[i];
+    final nextTurnId = chatEntryHistoryTurnId(next);
     // Desktop/app-server history may omit the synthetic ResultMessage that the
     // live Bridge stream emits. A following user turn still proves that this
-    // was the final assistant reply for the preceding completed turn.
-    if (next is UserChatEntry) return true;
+    // was the final assistant reply only when it is a different provider turn.
+    // A steer/user item with the same explicit turn id belongs to the active
+    // turn and must not turn progress into a fork point.
+    if (next is UserChatEntry &&
+        (assistantTurnId == null ||
+            nextTurnId == null ||
+            nextTurnId != assistantTurnId)) {
+      return true;
+    }
+    if (assistantTurnId != null &&
+        nextTurnId != null &&
+        nextTurnId != assistantTurnId) {
+      return true;
+    }
+    assistantTurnId ??= nextTurnId;
     if (next is ServerChatEntry) {
       final message = next.message;
       // Fork is turn-granular: a later visible assistant update means this
@@ -114,6 +132,822 @@ String chatMessageEntryStableKey(ChatEntry entry) {
   };
 }
 
+/// Read-only handle for capturing the exact transcript projection currently
+/// owned by [ChatMessageList]. Full payload serialization happens only after
+/// an explicit report request. Ordinary builds contribute only a bounded,
+/// payload-free temporal digest so a recent visible flicker can be recovered.
+class ChatMessageListDiagnosticController {
+  _ChatMessageListDiagnosticSource? _source;
+  final Stopwatch _traceClock = Stopwatch()..start();
+  final List<Map<String, Object?>> _temporalTrace = [];
+  StreamSubscription<StreamingState>? _streamingSubscription;
+  Object? _streamingOwner;
+  String? _targetSessionId;
+  String? _lastTemporalRevision;
+  int _temporalSequence = 0;
+  int _buildSerial = 0;
+  int _frameSerial = 0;
+  int _rawTemporalSampleCount = 0;
+  int _droppedTemporalSampleCount = 0;
+  bool _postFrameCaptureScheduled = false;
+
+  Map<String, Object?> capture({int maximumPayloadBytes = 4 * 1024 * 1024}) =>
+      _source?.capture(maximumPayloadBytes: maximumPayloadBytes) ??
+      const <String, Object?>{
+        'available': false,
+        'reason': 'chatMessageListNotAttached',
+      };
+
+  /// Records a short post-click observation while retaining the last ten
+  /// seconds of in-memory, payload-free post-frame changes. Nothing is written
+  /// or uploaded until the user explicitly requests a diagnostic report.
+  Future<Map<String, Object?>> observeTemporalChanges({
+    Duration duration = const Duration(seconds: 3),
+    Duration interval = const Duration(milliseconds: 200),
+  }) async {
+    final observationStartedAt = DateTime.now().toUtc();
+    final observationStartedElapsedUs = _traceClock.elapsedMicroseconds;
+    final rawSamplesBeforeObservation = _rawTemporalSampleCount;
+    final droppedSamplesBeforeObservation = _droppedTemporalSampleCount;
+    _recordTemporal(trigger: 'observationStart', force: true);
+    var heartbeat = 0;
+    final timer = Timer.periodic(interval, (_) {
+      heartbeat += 1;
+      _recordTemporal(trigger: 'timer', force: heartbeat % 5 == 0);
+    });
+    try {
+      await Future<void>.delayed(duration);
+    } finally {
+      timer.cancel();
+    }
+    _recordTemporal(trigger: 'observationEnd', force: true);
+    final lowerBound =
+        observationStartedElapsedUs -
+        const Duration(seconds: 10).inMicroseconds;
+    final samples = <Map<String, Object?>>[
+      for (final sample in _temporalTrace)
+        if ((sample['monotonicElapsedUs'] as int? ?? 0) >= lowerBound)
+          Map<String, Object?>.from(sample),
+    ];
+    final preTriggerSamples = <Map<String, Object?>>[];
+    final observationSamples = <Map<String, Object?>>[];
+    for (final sample in samples) {
+      final elapsed = sample['monotonicElapsedUs'] as int? ?? 0;
+      if (elapsed < observationStartedElapsedUs) {
+        preTriggerSamples.add(sample);
+      } else {
+        observationSamples.add(sample);
+      }
+    }
+    int countRevisionChanges(List<Map<String, Object?>> values) {
+      var changes = 0;
+      String? previousRevision;
+      for (final value in values) {
+        final revision = value['revision'] as String?;
+        if (previousRevision != null && revision != previousRevision) {
+          changes += 1;
+        }
+        previousRevision = revision;
+      }
+      return changes;
+    }
+
+    final observationChangeCount = countRevisionChanges(observationSamples);
+    var preTriggerChangeCount = countRevisionChanges(preTriggerSamples);
+    if (preTriggerSamples.isNotEmpty &&
+        observationSamples.isNotEmpty &&
+        preTriggerSamples.last['revision'] !=
+            observationSamples.first['revision']) {
+      preTriggerChangeCount += 1;
+    }
+    final totalObservedChangeCount =
+        observationChangeCount + preTriggerChangeCount;
+    final firstPreTriggerElapsed = preTriggerSamples.isEmpty
+        ? observationStartedElapsedUs
+        : preTriggerSamples.first['monotonicElapsedUs'] as int? ??
+              observationStartedElapsedUs;
+    final projectionCounts = <int>[
+      for (final sample in samples)
+        if (sample['projectionEntryCount'] case final int count) count,
+    ];
+    return <String, Object?>{
+      'observationStartedAt': observationStartedAt.toIso8601String(),
+      'observationDurationMs': duration.inMilliseconds,
+      'sampleIntervalMs': interval.inMilliseconds,
+      'preTriggerCoverageMs':
+          (observationStartedElapsedUs - firstPreTriggerElapsed) ~/ 1000,
+      'rawSampleCountDuringObservation':
+          _rawTemporalSampleCount - rawSamplesBeforeObservation,
+      'storedSampleCountDuringObservation': observationSamples.length,
+      'droppedSampleCountDuringObservation':
+          _droppedTemporalSampleCount - droppedSamplesBeforeObservation,
+      'storedSampleCount': samples.length,
+      'observedChangeCount': totalObservedChangeCount,
+      'postTriggerObservedChangeCount': observationChangeCount,
+      'preTriggerObservedChangeCount': preTriggerChangeCount,
+      'noObservedChanges': totalObservedChangeCount == 0,
+      'overflowedDuringObservation':
+          _droppedTemporalSampleCount > droppedSamplesBeforeObservation,
+      if (projectionCounts.isNotEmpty) ...<String, Object?>{
+        'minimumProjectionEntryCount': projectionCounts.reduce(math.min),
+        'maximumProjectionEntryCount': projectionCounts.reduce(math.max),
+      },
+      'samples': samples,
+    };
+  }
+
+  void _attach(_ChatMessageListDiagnosticSource source) {
+    if (_targetSessionId != null && _targetSessionId != source.sessionId) {
+      _temporalTrace.clear();
+      _lastTemporalRevision = null;
+      _temporalSequence = 0;
+      _buildSerial = 0;
+      _frameSerial = 0;
+      _rawTemporalSampleCount = 0;
+      _droppedTemporalSampleCount = 0;
+    }
+    _targetSessionId = source.sessionId;
+    _source = source;
+    _buildSerial += 1;
+    if (!identical(_streamingOwner, source.owner)) {
+      unawaited(_streamingSubscription?.cancel());
+      _streamingOwner = source.owner;
+      _streamingSubscription = source.streamingCubit.stream.listen((_) {
+        _schedulePostFrameTemporalCapture('streaming');
+      });
+    }
+    _schedulePostFrameTemporalCapture('postFrame');
+  }
+
+  void _detach(Object owner) {
+    if (!identical(_source?.owner, owner)) return;
+    _recordTemporal(trigger: 'detach', force: true);
+    _source = null;
+    _streamingOwner = null;
+    unawaited(_streamingSubscription?.cancel());
+    _streamingSubscription = null;
+  }
+
+  void _schedulePostFrameTemporalCapture(String trigger) {
+    if (_postFrameCaptureScheduled) return;
+    _postFrameCaptureScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _postFrameCaptureScheduled = false;
+      _frameSerial += 1;
+      _recordTemporal(trigger: trigger);
+    });
+  }
+
+  void _recordTemporal({required String trigger, bool force = false}) {
+    _rawTemporalSampleCount += 1;
+    final summary =
+        _source?.temporalSummary(
+          buildSerial: _buildSerial,
+          frameSerial: _frameSerial,
+        ) ??
+        const <String, Object?>{
+          'available': false,
+          'reason': 'chatMessageListNotAttached',
+        };
+    final revisionInput = Map<String, Object?>.from(summary)
+      ..remove('buildSerial')
+      ..remove('frameSerial');
+    final revision = sha256
+        .convert(utf8.encode(jsonEncode(revisionInput)))
+        .toString();
+    if (!force && revision == _lastTemporalRevision) return;
+    _lastTemporalRevision = revision;
+    _temporalTrace.add(<String, Object?>{
+      'seq': ++_temporalSequence,
+      'wallAt': DateTime.now().toUtc().toIso8601String(),
+      'monotonicElapsedUs': _traceClock.elapsedMicroseconds,
+      'trigger': trigger,
+      'revision': revision,
+      ...summary,
+    });
+    if (_temporalTrace.length > 96) {
+      final removed = _temporalTrace.length - 96;
+      _temporalTrace.removeRange(0, removed);
+      _droppedTemporalSampleCount += removed;
+    }
+  }
+}
+
+class _ChatMessageListDiagnosticSource {
+  _ChatMessageListDiagnosticSource({
+    required this.owner,
+    required this.sessionId,
+    required this.entries,
+    required this.layout,
+    required this.chatState,
+    required this.paging,
+    required this.historyBrowsing,
+    required this.latestTurnIsActive,
+    required this.hasStreaming,
+    required this.streamingCubit,
+    required this.scrollController,
+    required this.expandedProcessSegments,
+    required this.expandedIntermediateTurns,
+    required this.expandedCurrentProgress,
+    required this.imageItemsByAnchor,
+    required this.imageGroupMemberIndices,
+  });
+
+  final Object owner;
+  final String sessionId;
+  final List<ChatEntry> entries;
+  final ChatProcessLayout layout;
+  final ChatSessionState chatState;
+  final LocalHistoryPagingState paging;
+  final bool historyBrowsing;
+  final bool latestTurnIsActive;
+  final bool hasStreaming;
+  final StreamingStateCubit streamingCubit;
+  final AutoScrollController scrollController;
+  final Set<String> expandedProcessSegments;
+  final Set<String> expandedIntermediateTurns;
+  final Set<String> expandedCurrentProgress;
+  final Map<int, List<GeneratedImagePreviewItem>> imageItemsByAnchor;
+  final Set<int> imageGroupMemberIndices;
+  String? _cachedTemporalTailContentDigest;
+
+  Map<String, Object?> capture({required int maximumPayloadBytes}) {
+    const maximumStructuralEntries = 1024;
+    final payloads = <int, Map<String, Object?>>{};
+    final payloadRevisions = <int, String>{};
+    var remainingPayloadBytes = maximumPayloadBytes;
+    var omittedPayloadCount = 0;
+    // Preserve the newest payloads first because the report is intended to
+    // diagnose a stale or incomplete live tail. Every entry still keeps its
+    // structural identity below even when an old, large body is omitted.
+    final firstCapturedIndex = entries.length > maximumStructuralEntries
+        ? entries.length - maximumStructuralEntries
+        : 0;
+    for (var index = entries.length - 1; index >= firstCapturedIndex; index--) {
+      if (remainingPayloadBytes <= 0) {
+        omittedPayloadCount += index - firstCapturedIndex + 1;
+        break;
+      }
+      final payload = Map<String, Object?>.from(
+        _boundDiagnosticValue(_diagnosticChatEntry(entries[index]))! as Map,
+      );
+      final encoded = utf8.encode(jsonEncode(payload));
+      final encodedBytes = encoded.length;
+      if (encodedBytes <= remainingPayloadBytes) {
+        payloads[index] = payload;
+        payloadRevisions[index] = sha256.convert(encoded).toString();
+        remainingPayloadBytes -= encodedBytes;
+      } else {
+        // The capture is newest-first. Stop once the next bounded payload no
+        // longer fits instead of serializing every older body on the UI
+        // isolate after the report budget is already exhausted.
+        omittedPayloadCount += index - firstCapturedIndex + 1;
+        break;
+      }
+    }
+    final entryDiagnostics = <Map<String, Object?>>[];
+    final chronologicalKeys = <String>[];
+    final visibleTopLevelKeys = <String>[];
+    for (var index = firstCapturedIndex; index < entries.length; index++) {
+      final entry = entries[index];
+      final stableKey = chatMessageEntryStableKey(entry);
+      chronologicalKeys.add(stableKey);
+      final segment = layout.segmentForEntry(index);
+      final turn = layout.turnForEntry(index);
+      final role = _diagnosticRenderRole(
+        index: index,
+        segment: segment,
+        turn: turn,
+        hasStreaming: hasStreaming,
+        imageItemsByAnchor: imageItemsByAnchor,
+        imageGroupMemberIndices: imageGroupMemberIndices,
+      );
+      if (role.$2) visibleTopLevelKeys.add(stableKey);
+      entryDiagnostics.add(<String, Object?>{
+        'index': index,
+        'stableKey': stableKey,
+        'historyTurnId': chatEntryHistoryTurnId(entry),
+        'timestamp': entry.timestamp.toUtc().toIso8601String(),
+        'timestampIsAuthoritative': entry.timestampIsAuthoritative,
+        'renderRole': role.$1,
+        'visibleTopLevel': role.$2,
+        'turnKey': turn?.key,
+        'segmentKey': segment?.key,
+        'payloadRevision': payloadRevisions[index],
+        'payload':
+            payloads[index] ??
+            const <String, Object?>{
+              'kind': 'omitted',
+              'reason': 'diagnostic_payload_budget',
+            },
+      });
+    }
+    final streaming = streamingCubit.state;
+    final tailContentRevision = _contentAwareTailDigest(
+      maximumContentEntries: 16,
+      maximumStringCharacters: 2048,
+    );
+    final identityBytes = utf8.encode(
+      jsonEncode(<String, Object?>{
+        'entries': [
+          for (final entry in entryDiagnostics)
+            <String, Object?>{
+              'stableKey': entry['stableKey'],
+              'renderRole': entry['renderRole'],
+              'visibleTopLevel': entry['visibleTopLevel'],
+              'turnKey': entry['turnKey'],
+              'segmentKey': entry['segmentKey'],
+              'payloadRevision': entry['payloadRevision'],
+            },
+        ],
+        'tailContentRevision': tailContentRevision,
+        'expandedProcessSegments': expandedProcessSegments.toList()..sort(),
+        'expandedIntermediateTurns': expandedIntermediateTurns.toList()..sort(),
+        'expandedCurrentProgress': expandedCurrentProgress.toList()..sort(),
+        'chatStatus': chatState.status.name,
+        'historyBrowsing': historyBrowsing,
+        'latestTurnIsActive': latestTurnIsActive,
+        'hasStreaming': hasStreaming,
+        'streaming': <String, Object?>{
+          'isStreaming': streaming.isStreaming,
+          'text': _diagnosticTextRevision(streaming.text),
+          'thinking': _diagnosticTextRevision(streaming.thinking),
+        },
+        'paging': <String, Object?>{
+          'enabled': paging.enabled,
+          'hasMore': paging.hasMore,
+          'hasLater': paging.hasLater,
+          'loading': paging.loading,
+          'loadingLater': paging.loadingLater,
+          'error': paging.error?.toString(),
+          'laterError': paging.laterError?.toString(),
+        },
+      }),
+    );
+    final position = scrollController.hasClients
+        ? scrollController.position
+        : null;
+    return <String, Object?>{
+      'available': true,
+      'presentationRevision': sha256.convert(identityBytes).toString(),
+      'entryCount': entries.length,
+      'capturedStructuralEntryCount': entryDiagnostics.length,
+      'omittedStructuralEntryCount': firstCapturedIndex,
+      'oldestOmittedStableKey': firstCapturedIndex == 0
+          ? null
+          : chatMessageEntryStableKey(entries.first),
+      'payloadBudgetBytes': maximumPayloadBytes,
+      'payloadBytesUsed': maximumPayloadBytes - remainingPayloadBytes,
+      'omittedPayloadCount': omittedPayloadCount,
+      'chronologicalStableKeys': chronologicalKeys,
+      'visibleTopLevelStableKeys': visibleTopLevelKeys,
+      'tailContentRevision': tailContentRevision,
+      'entries': entryDiagnostics,
+      'layout': <String, Object?>{
+        'latestTurnKey': layout.latestTurnKey,
+        'latestTurn': _diagnosticTurn(layout.latestTurn),
+        'turnKeyAliases': Map<String, String>.from(layout.turnKeyAliases),
+        'expandedProcessSegments': expandedProcessSegments.toList()..sort(),
+        'expandedIntermediateTurns': expandedIntermediateTurns.toList()..sort(),
+        'expandedCurrentProgress': expandedCurrentProgress.toList()..sort(),
+      },
+      'selection': <String, Object?>{
+        'historyBrowsing': historyBrowsing,
+        'latestTurnIsActive': latestTurnIsActive,
+        'hasStreaming': hasStreaming,
+      },
+      'streaming': <String, Object?>{
+        'isStreaming': streaming.isStreaming,
+        'text': _boundedDiagnosticText(streaming.text),
+        'thinking': _boundedDiagnosticText(streaming.thinking),
+      },
+      'paging': <String, Object?>{
+        'enabled': paging.enabled,
+        'hasMore': paging.hasMore,
+        'hasLater': paging.hasLater,
+        'loading': paging.loading,
+        'loadingLater': paging.loadingLater,
+        'error': paging.error?.toString(),
+        'laterError': paging.laterError?.toString(),
+      },
+      'scroll': <String, Object?>{
+        'attached': position != null,
+        if (position != null) ...<String, Object?>{
+          'pixels': position.pixels,
+          'minScrollExtent': position.minScrollExtent,
+          'maxScrollExtent': position.maxScrollExtent,
+          'viewportDimension': position.viewportDimension,
+        },
+      },
+      'chatStatus': chatState.status.name,
+    };
+  }
+
+  Map<String, Object?> temporalSummary({
+    required int buildSerial,
+    required int frameSerial,
+  }) {
+    const maximumTailEntries = 96;
+    final firstIndex = entries.length > maximumTailEntries
+        ? entries.length - maximumTailEntries
+        : 0;
+    final tailKeys = <String>[];
+    final visibleKeys = <String>[];
+    final renderRoleCounts = <String, int>{};
+    for (var index = firstIndex; index < entries.length; index++) {
+      final stableKey = chatMessageEntryStableKey(entries[index]);
+      tailKeys.add(stableKey);
+      final role = _diagnosticRenderRole(
+        index: index,
+        segment: layout.segmentForEntry(index),
+        turn: layout.turnForEntry(index),
+        hasStreaming: hasStreaming,
+        imageItemsByAnchor: imageItemsByAnchor,
+        imageGroupMemberIndices: imageGroupMemberIndices,
+      );
+      renderRoleCounts.update(role.$1, (value) => value + 1, ifAbsent: () => 1);
+      if (role.$2) visibleKeys.add(stableKey);
+    }
+    final streaming = streamingCubit.state;
+    final position = scrollController.hasClients
+        ? scrollController.position
+        : null;
+    return <String, Object?>{
+      'available': true,
+      'mounted': true,
+      'buildSerial': buildSerial,
+      'frameSerial': frameSerial,
+      'surfaceMode': historyBrowsing ? 'history' : 'latest',
+      'stateEntryCount': chatState.entries.length,
+      'projectionEntryCount': entries.length,
+      'tailStableKeys': tailKeys,
+      'tailStableKeyDigest': sha256
+          .convert(utf8.encode(jsonEncode(tailKeys)))
+          .toString(),
+      'tailContentDigest': _cachedTemporalTailContentDigest ??=
+          _contentAwareTailDigest(
+            maximumContentEntries: 4,
+            maximumStringCharacters: 512,
+          ),
+      'visibleTopLevelCount': visibleKeys.length,
+      'visibleTopLevelDigest': sha256
+          .convert(utf8.encode(jsonEncode(visibleKeys)))
+          .toString(),
+      'renderRoleCounts': renderRoleCounts,
+      'latestTurnKey': layout.latestTurnKey,
+      'historyBrowsing': historyBrowsing,
+      'latestTurnIsActive': latestTurnIsActive,
+      'chatStatus': chatState.status.name,
+      'expandedProcessSegments': expandedProcessSegments.toList()..sort(),
+      'expandedIntermediateTurns': expandedIntermediateTurns.toList()..sort(),
+      'expandedCurrentProgress': expandedCurrentProgress.toList()..sort(),
+      'streaming': <String, Object?>{
+        'isStreaming': streaming.isStreaming,
+        'text': _diagnosticTextRevision(streaming.text),
+        'thinking': _diagnosticTextRevision(streaming.thinking),
+      },
+      'paging': <String, Object?>{
+        'enabled': paging.enabled,
+        'hasMore': paging.hasMore,
+        'hasLater': paging.hasLater,
+        'loading': paging.loading,
+        'loadingLater': paging.loadingLater,
+        'error': paging.error?.toString(),
+        'laterError': paging.laterError?.toString(),
+      },
+      'scroll': <String, Object?>{
+        'attached': position != null,
+        if (position != null) ...<String, Object?>{
+          'pixels': position.pixels,
+          'minScrollExtent': position.minScrollExtent,
+          'maxScrollExtent': position.maxScrollExtent,
+          'viewportDimension': position.viewportDimension,
+        },
+      },
+    };
+  }
+
+  String _contentAwareTailDigest({
+    required int maximumContentEntries,
+    required int maximumStringCharacters,
+  }) {
+    final contentStart = entries.length > maximumContentEntries
+        ? entries.length - maximumContentEntries
+        : 0;
+    final contentDigestInput = <Object?>[
+      for (var index = contentStart; index < entries.length; index++)
+        <String, Object?>{
+          'stableKey': chatMessageEntryStableKey(entries[index]),
+          'payload': _boundDiagnosticValue(
+            _diagnosticChatEntry(entries[index]),
+            maximumStringCharacters: maximumStringCharacters,
+          ),
+        },
+    ];
+    return sha256
+        .convert(utf8.encode(jsonEncode(contentDigestInput)))
+        .toString();
+  }
+}
+
+String _boundedDiagnosticText(String value, {int maximumCharacters = 65536}) {
+  if (value.length <= maximumCharacters) return value;
+  return '${value.substring(value.length - maximumCharacters)}'
+      '\n[DIAGNOSTIC KEPT LAST $maximumCharacters OF ${value.length} CHARS]';
+}
+
+Map<String, Object?> _diagnosticTextRevision(String value) {
+  const edgeCharacters = 32768;
+  final sampled = value.length <= edgeCharacters * 2
+      ? value
+      : '${value.substring(0, edgeCharacters)}'
+            '${value.substring(value.length - edgeCharacters)}';
+  return <String, Object?>{
+    'length': value.length,
+    'sampledCharacters': sampled.length,
+    'edgeSha256': sha256.convert(utf8.encode(sampled)).toString(),
+  };
+}
+
+Object? _boundDiagnosticValue(
+  Object? value, {
+  int depth = 0,
+  int maximumStringCharacters = 65536,
+}) {
+  if (depth > 32) return '[DIAGNOSTIC_DEPTH_LIMIT]';
+  if (value is String) {
+    return _boundedDiagnosticText(
+      value,
+      maximumCharacters: maximumStringCharacters,
+    );
+  }
+  if (value is Map) {
+    return <String, Object?>{
+      for (final entry in value.entries.take(512))
+        entry.key.toString(): _boundDiagnosticValue(
+          entry.value,
+          depth: depth + 1,
+          maximumStringCharacters: maximumStringCharacters,
+        ),
+      if (value.length > 512)
+        'ccpocketDiagnosticOmittedFields': value.length - 512,
+    };
+  }
+  if (value is Iterable) {
+    final sourceLength = value.length;
+    final bounded = <Object?>[
+      for (final item in value.take(512))
+        _boundDiagnosticValue(
+          item,
+          depth: depth + 1,
+          maximumStringCharacters: maximumStringCharacters,
+        ),
+    ];
+    if (sourceLength > 512) {
+      bounded.add(<String, Object?>{
+        'ccpocketDiagnosticOmittedItems': sourceLength - 512,
+      });
+    }
+    return bounded;
+  }
+  return value;
+}
+
+(String, bool) _diagnosticRenderRole({
+  required int index,
+  required ChatProcessSegmentLayout? segment,
+  required ChatProcessTurnLayout? turn,
+  required bool hasStreaming,
+  required Map<int, List<GeneratedImagePreviewItem>> imageItemsByAnchor,
+  required Set<int> imageGroupMemberIndices,
+}) {
+  if (turn?.isPlanUpdateEntry(index) == true) {
+    if (turn!.latestPlanUpdateInput == null) {
+      return ('hiddenPlanUpdateWithoutInput', false);
+    }
+    return turn.showsPlanUpdateAt(index)
+        ? ('planUpdate', true)
+        : ('hiddenPlanUpdateMember', false);
+  }
+  if (turn?.isIntermediateEntry(index) == true) {
+    return turn!.showsIntermediateSummaryAt(index)
+        ? ('intermediateSummary', true)
+        : ('foldedIntermediateMember', false);
+  }
+  final current = turn?.currentSegment;
+  if (!hasStreaming && current?.containsEntry(index) == true) {
+    return current!.showsSummaryAt(index)
+        ? ('currentProgressSummary', true)
+        : ('currentProgressMember', false);
+  }
+  if (segment != null) {
+    return segment.showsSummaryAt(index)
+        ? ('processSummary', true)
+        : ('processMember', false);
+  }
+  if (imageItemsByAnchor.containsKey(index)) {
+    return ('generatedImageGroup', true);
+  }
+  if (imageGroupMemberIndices.contains(index)) {
+    return ('hiddenGeneratedImageMember', false);
+  }
+  return ('transcript', true);
+}
+
+Map<String, Object?>? _diagnosticTurn(ChatProcessTurnLayout? turn) {
+  if (turn == null) return null;
+  return <String, Object?>{
+    'key': turn.key,
+    'isActive': turn.isActive,
+    'hasTransientCurrentOutput': turn.hasTransientCurrentOutput,
+    'intermediateDetailCount': turn.intermediateDetailCount,
+    'intermediateOutputCount': turn.intermediateOutputCount,
+    'intermediateEntryIndices': turn.intermediateEntryIndices.toList()..sort(),
+    'finalAssistantEntryIndex': turn.finalAssistantEntryIndex,
+    'currentAssistantEntryIndex': turn.currentAssistantEntryIndex,
+    'currentSegmentKey': turn.currentSegment?.key,
+    'planUpdateEntryIndices': turn.planUpdateEntryIndices.toList()..sort(),
+  };
+}
+
+Map<String, Object?> _diagnosticChatEntry(ChatEntry entry) => switch (entry) {
+  UserChatEntry() => <String, Object?>{
+    'kind': 'user',
+    'text': entry.text,
+    'sessionId': entry.sessionId,
+    'clientMessageId': entry.clientMessageId,
+    'providerItemId': entry.providerItemId,
+    'historyTurnId': entry.historyTurnId,
+    'messageUuid': entry.messageUuid,
+    'status': entry.status.name,
+    'imageCount': entry.imageCount,
+    'memoryImageCount': entry.imageBytesList.length,
+    'imageUrls': entry.imageUrls,
+  },
+  StreamingChatEntry() => <String, Object?>{
+    'kind': 'streaming',
+    'text': entry.text,
+  },
+  ServerChatEntry() => <String, Object?>{
+    'kind': 'server',
+    'message': _diagnosticServerMessage(entry.message),
+  },
+};
+
+Map<String, Object?> _diagnosticServerMessage(ServerMessage message) {
+  return switch (message) {
+    AssistantServerMessage() => <String, Object?>{
+      'type': 'assistant',
+      'id': message.message.id,
+      'messageUuid': message.messageUuid,
+      'historyTurnId': message.historyTurnId,
+      'model': message.message.model,
+      'content': [
+        for (final content in message.message.content)
+          switch (content) {
+            TextContent() => <String, Object?>{
+              'type': 'text',
+              'text': content.text,
+            },
+            ThinkingContent() => <String, Object?>{
+              'type': 'thinking',
+              'thinking': content.thinking,
+            },
+            ToolUseContent() => <String, Object?>{
+              'type': 'tool_use',
+              'id': content.id,
+              'name': content.name,
+              'input': content.input,
+            },
+          },
+      ],
+    },
+    ToolResultMessage() => <String, Object?>{
+      'type': 'tool_result',
+      'toolUseId': message.toolUseId,
+      'toolName': message.toolName,
+      'content': message.content,
+      'historyTurnId': message.historyTurnId,
+      'userMessageUuid': message.userMessageUuid,
+      'imageCount': message.images.length,
+    },
+    ResultMessage() => <String, Object?>{
+      'type': 'result',
+      'subtype': message.subtype,
+      'result': message.result,
+      'error': message.error,
+      'sessionId': message.sessionId,
+      'stopReason': message.stopReason,
+      'historyTurnId': message.historyTurnId,
+      'cost': message.cost,
+      'duration': message.duration,
+    },
+    SystemMessage() => <String, Object?>{
+      'type': 'system',
+      'subtype': message.subtype,
+      'sessionId': message.sessionId,
+      'claudeSessionId': message.claudeSessionId,
+      'provider': message.provider,
+      'projectPath': message.projectPath,
+      'historyTurnId': message.historyTurnId,
+      'model': message.model,
+      'modelReasoningEffort': message.modelReasoningEffort,
+      'serviceTier': message.serviceTier,
+      'approvalPolicy': message.approvalPolicy,
+      'approvalsReviewer': message.approvalsReviewer,
+      'sandboxMode': message.sandboxMode,
+      'planMode': message.planMode,
+      'clearContext': message.clearContext,
+    },
+    StatusMessage() => <String, Object?>{
+      'type': 'status',
+      'status': message.status.name,
+      'rawStatus': message.rawStatus,
+      'activityAt': message.activityAt,
+    },
+    ErrorMessage() => <String, Object?>{
+      'type': 'error',
+      'message': message.message,
+      'errorCode': message.errorCode,
+      'sessionId': message.sessionId,
+      'historyTurnId': message.historyTurnId,
+    },
+    ToolUseSummaryMessage() => <String, Object?>{
+      'type': 'tool_use_summary',
+      'summary': message.summary,
+      'precedingToolUseIds': message.precedingToolUseIds,
+      'historyTurnId': message.historyTurnId,
+    },
+    GuardianApprovalMessage() => <String, Object?>{
+      'type': 'guardian_approval',
+      'risk': message.risk.name,
+      'status': message.status.name,
+      'reason': message.reason,
+      'authorization': message.authorization,
+      'reviewId': message.reviewId,
+      'targetItemId': message.targetItemId,
+      'action': message.action,
+      'historyTurnId': message.historyTurnId,
+    },
+    PermissionRequestMessage() => <String, Object?>{
+      'type': 'permission_request',
+      'toolUseId': message.toolUseId,
+      'toolName': message.toolName,
+      'input': message.input,
+    },
+    UserInputMessage() => <String, Object?>{
+      'type': 'user_input',
+      'text': message.text,
+      'clientMessageId': message.clientMessageId,
+      'providerItemId': message.providerItemId,
+      'historyTurnId': message.historyTurnId,
+      'userMessageUuid': message.userMessageUuid,
+      'timestamp': message.timestamp,
+    },
+    InputAckMessage() => <String, Object?>{
+      'type': 'input_ack',
+      'sessionId': message.sessionId,
+      'clientMessageId': message.clientMessageId,
+      'acceptedSeq': message.acceptedSeq,
+      'queued': message.queued,
+      'stage': message.stage?.wireValue,
+    },
+    InputDeliveryStatusMessage() => <String, Object?>{
+      'type': 'input_delivery_status',
+      'sessionId': message.sessionId,
+      'clientMessageId': message.clientMessageId,
+      'stage': message.stage.wireValue,
+      'provider': message.provider,
+      'method': message.method,
+      'providerTurnId': message.providerTurnId,
+      'occurredAt': message.occurredAt,
+      'acceptedSeq': message.acceptedSeq,
+      'queued': message.queued,
+    },
+    ConversationQueueMessage() => <String, Object?>{
+      'type': 'conversation_queue',
+      'sessionId': message.sessionId,
+      'limit': message.limit,
+      'items': [for (final item in message.items) _diagnosticQueuedInput(item)],
+    },
+    _ => <String, Object?>{'type': message.runtimeType.toString()},
+  };
+}
+
+Map<String, Object?> _diagnosticQueuedInput(QueuedInputItem item) =>
+    <String, Object?>{
+      'itemId': item.itemId,
+      'text': item.text,
+      'createdAt': item.createdAt,
+      'updatedAt': item.updatedAt,
+      'clientMessageId': item.clientMessageId,
+      'deliveryStage': item.deliveryStage?.wireValue,
+      'deliveryError': item.deliveryError,
+      'imageCount': item.imageCount,
+      'skills': item.skills,
+      'mentions': item.mentions,
+    };
+
 @visibleForTesting
 bool shouldLoadOlderLocalHistory(
   ScrollMetrics metrics, {
@@ -123,12 +957,19 @@ bool shouldLoadOlderLocalHistory(
     metrics.pixels >= metrics.maxScrollExtent - threshold;
 
 @visibleForTesting
+bool shouldLoadNewerLocalHistory(
+  ScrollMetrics metrics, {
+  double threshold = 480,
+}) => metrics.maxScrollExtent > 0 && metrics.pixels <= threshold;
+
+@visibleForTesting
 Set<int> forkableAssistantEntryIndices(
   List<ChatEntry> entries, {
   bool transcriptTailComplete = false,
 }) {
   final result = <int>{};
   int? candidate;
+  String? candidateTurnId;
   var candidateHasTerminalResult = false;
 
   void finishCandidate({required bool followedByUser}) {
@@ -139,15 +980,30 @@ Set<int> forkableAssistantEntryIndices(
       result.add(candidate!);
     }
     candidate = null;
+    candidateTurnId = null;
     candidateHasTerminalResult = false;
   }
 
   for (var index = 0; index < entries.length; index++) {
     final entry = entries[index];
     if (entry is UserChatEntry) {
-      finishCandidate(followedByUser: true);
+      final userTurnId = chatEntryHistoryTurnId(entry);
+      if (candidate != null &&
+          (candidateTurnId == null ||
+              userTurnId == null ||
+              userTurnId != candidateTurnId)) {
+        finishCandidate(followedByUser: true);
+      }
       continue;
     }
+    final entryTurnId = chatEntryHistoryTurnId(entry);
+    if (candidate != null &&
+        candidateTurnId != null &&
+        entryTurnId != null &&
+        entryTurnId != candidateTurnId) {
+      finishCandidate(followedByUser: true);
+    }
+    if (candidate != null) candidateTurnId ??= entryTurnId;
     if (entry is! ServerChatEntry) continue;
     switch (entry.message) {
       case AssistantServerMessage(:final message):
@@ -156,6 +1012,7 @@ Set<int> forkableAssistantEntryIndices(
         );
         if (hasVisibleReply) {
           candidate = index;
+          candidateTurnId = entryTurnId;
           candidateHasTerminalResult = false;
         }
         break;
@@ -188,6 +1045,7 @@ class ChatMessageList extends StatefulWidget {
   final bool isCodex;
   final ValueChanged<String>? onFilePeekOpened;
   final List<ChatSelectionAction> selectionActions;
+  final ChatMessageListDiagnosticController? diagnosticController;
 
   /// Project path for file peek (reading files from Bridge).
   final String? projectPath;
@@ -211,6 +1069,7 @@ class ChatMessageList extends StatefulWidget {
     this.isCodex = false,
     this.onFilePeekOpened,
     this.selectionActions = const [],
+    this.diagnosticController,
   });
 
   @override
@@ -248,13 +1107,18 @@ class _ChatMessageListState extends State<ChatMessageList> {
     final nextCubit = context.read<ChatSessionCubit>();
     if (identical(nextCubit, _pagingCubit)) return;
     _pagingCubit?.localHistoryPaging.removeListener(_onPagingChanged);
+    _pagingCubit?.historyNavigation.removeListener(_onHistoryNavigationChanged);
     _pagingCubit = nextCubit;
     nextCubit.localHistoryPaging.addListener(_onPagingChanged);
+    nextCubit.historyNavigation.addListener(_onHistoryNavigationChanged);
   }
 
   @override
   void didUpdateWidget(covariant ChatMessageList oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.diagnosticController != widget.diagnosticController) {
+      oldWidget.diagnosticController?._detach(this);
+    }
     if (oldWidget.scrollToUserEntry != widget.scrollToUserEntry) {
       oldWidget.scrollToUserEntry?.removeListener(_onScrollToUserEntry);
       widget.scrollToUserEntry?.addListener(_onScrollToUserEntry);
@@ -268,9 +1132,11 @@ class _ChatMessageListState extends State<ChatMessageList> {
 
   @override
   void dispose() {
+    widget.diagnosticController?._detach(this);
     widget.scrollToUserEntry?.removeListener(_onScrollToUserEntry);
     widget.collapseToolResults?.removeListener(_onCollapseSignal);
     _pagingCubit?.localHistoryPaging.removeListener(_onPagingChanged);
+    _pagingCubit?.historyNavigation.removeListener(_onHistoryNavigationChanged);
     super.dispose();
   }
 
@@ -294,12 +1160,26 @@ class _ChatMessageListState extends State<ChatMessageList> {
     if (mounted) setState(() {});
   }
 
+  void _onHistoryNavigationChanged() {
+    _processLayoutEntries = null;
+    _cachedProcessLayout = null;
+    _derivedEntries = null;
+    _derivedData = null;
+    if (mounted) setState(() {});
+  }
+
   void _onScrollToUserEntry() {
     final entry = widget.scrollToUserEntry?.value;
     if (entry == null) return;
     // Reset the notifier
     widget.scrollToUserEntry?.value = null;
-    _scrollToUserEntry(entry);
+    // A history reveal may have switched the list to an isolated viewport in
+    // the same microtask. Wait until its AutoScrollTags are mounted before
+    // resolving the target index; otherwise the old live list can win the
+    // race and leave the user at the wrong position.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _scrollToUserEntry(entry);
+    });
   }
 
   GlobalKey _anchorKey(String id) =>
@@ -607,7 +1487,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
   /// Uses [AutoScrollController.scrollToIndex] which handles both on-screen
   /// and off-screen items correctly with variable-height widgets.
   void _scrollToUserEntry(UserChatEntry entry) {
-    final entries = context.read<ChatSessionCubit>().state.entries;
+    final entries = context.read<ChatSessionCubit>().visibleEntries;
     final idx = entries.indexOf(entry);
     if (idx < 0) return;
     widget.scrollController.scrollToIndex(
@@ -636,7 +1516,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
 
   /// Search all entries in reverse for a Write tool targeting `.claude/plans/`.
   String? _findPlanFromWriteTool() {
-    final entries = context.read<ChatSessionCubit>().state.entries;
+    final entries = context.read<ChatSessionCubit>().visibleEntries;
     for (var i = entries.length - 1; i >= 0; i--) {
       final entry = entries[i];
       if (entry is! ServerChatEntry) continue;
@@ -702,6 +1582,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
       resolvedPlanText: _resolvePlanText(entry),
       hiddenToolUseIds: hiddenToolUseIds,
       onArtifactOpen: _openArtifact,
+      isCodex: widget.isCodex,
       onFileTap: fileRoot?.isNotEmpty == true
           ? (filePath) {
               openFilePeek(
@@ -734,7 +1615,6 @@ class _ChatMessageListState extends State<ChatMessageList> {
           ),
         );
       },
-      isCodex: widget.isCodex,
     );
   }
 
@@ -912,17 +1792,18 @@ class _ChatMessageListState extends State<ChatMessageList> {
           key: ValueKey('process_details_viewport_current_$progressKey'),
           expanded: expanded,
           transientGuardianReview: currentTool?.guardianReview,
-          children: [
-            if (currentTool != null)
-              ChatCurrentToolActivityLine(
-                activity: currentTool,
-                expanded: expanded,
-                onTap: () => _toggleCurrentProgress(progressKey),
-                timestamp: _timestampForEntryIndex(
-                  entries,
-                  currentTool.entryIndex,
+          pinnedHeader: currentTool == null
+              ? null
+              : ChatCurrentToolActivityLine(
+                  activity: currentTool,
+                  expanded: expanded,
+                  onTap: () => _toggleCurrentProgress(progressKey),
+                  timestamp: _timestampForEntryIndex(
+                    entries,
+                    currentTool.entryIndex,
+                  ),
                 ),
-              ),
+          children: [
             if (expanded)
               ..._buildProcessSegmentDetails(
                 segment: segment,
@@ -955,28 +1836,30 @@ class _ChatMessageListState extends State<ChatMessageList> {
     final chatCubit = context.watch<ChatSessionCubit>();
     final chatState = chatCubit.state;
     final hiddenToolUseIds = chatState.hiddenToolUseIds;
-    final allEntries = chatState.entries;
+    final historyBrowsing = chatCubit.historyNavigationActive;
+    final allEntries = chatCubit.visibleEntries;
 
     // Watch only the isStreaming flag (not the full streaming text) so the
     // list rebuilds when streaming starts/stops (to adjust itemCount) but NOT
     // on every text delta. The actual streaming text is rendered inside a
     // scoped BlocBuilder on the streaming item only.
-    final hasStreaming = context.select<StreamingStateCubit, bool>(
+    final streamingActive = context.select<StreamingStateCubit, bool>(
       (cubit) => cubit.state.isStreaming,
     );
+    final hasStreaming = !historyBrowsing && streamingActive;
     final latestTurnIsActive =
-        chatState.status == ProcessStatus.running ||
-        chatState.status == ProcessStatus.waitingApproval ||
-        chatState.status == ProcessStatus.compacting ||
-        chatState.externalDesktopTurnActive ||
-        hasStreaming;
+        !historyBrowsing &&
+        (chatState.status == ProcessStatus.running ||
+            chatState.status == ProcessStatus.waitingApproval ||
+            chatState.status == ProcessStatus.compacting ||
+            chatState.externalDesktopTurnActive ||
+            hasStreaming);
     final processLayout = _processLayoutFor(
       allEntries,
       latestTurnIsActive: latestTurnIsActive,
       hasTransientCurrentOutput: hasStreaming,
     );
     final messageCount = allEntries.length + (hasStreaming ? 1 : 0);
-    final streamingCubit = context.read<StreamingStateCubit>();
     final transcriptTailComplete =
         chatState.status == ProcessStatus.idle &&
         chatState.queuedInput == null &&
@@ -994,6 +1877,26 @@ class _ChatMessageListState extends State<ChatMessageList> {
     };
 
     final paging = chatCubit.localHistoryPaging.value;
+    widget.diagnosticController?._attach(
+      _ChatMessageListDiagnosticSource(
+        owner: this,
+        sessionId: widget.sessionId,
+        entries: allEntries,
+        layout: processLayout,
+        chatState: chatState,
+        paging: paging,
+        historyBrowsing: historyBrowsing,
+        latestTurnIsActive: latestTurnIsActive,
+        hasStreaming: hasStreaming,
+        streamingCubit: context.read<StreamingStateCubit>(),
+        scrollController: widget.scrollController,
+        expandedProcessSegments: _expandedProcessSegments,
+        expandedIntermediateTurns: _expandedIntermediateTurns,
+        expandedCurrentProgress: _expandedCurrentProgress,
+        imageItemsByAnchor: imageItemsByAnchor,
+        imageGroupMemberIndices: imageGroupMemberIndices,
+      ),
+    );
     final content = NotificationListener<ScrollNotification>(
       onNotification: (notification) {
         // Only unfocus when user drags the list (not programmatic scroll).
@@ -1009,6 +1912,13 @@ class _ChatMessageListState extends State<ChatMessageList> {
             shouldLoadOlderLocalHistory(notification.metrics)) {
           unawaited(chatCubit.loadOlderLocalHistory());
         }
+        if (paging.enabled &&
+            paging.hasLater &&
+            notification is ScrollUpdateNotification &&
+            notification.dragDetails != null &&
+            shouldLoadNewerLocalHistory(notification.metrics)) {
+          unawaited(chatCubit.loadNewerLocalHistory());
+        }
         return false;
       },
       child: ListView.builder(
@@ -1017,9 +1927,8 @@ class _ChatMessageListState extends State<ChatMessageList> {
         physics: MaintainReadingPositionPhysics(
           shouldMaintain: () {
             final controller = widget.scrollController;
-            return streamingCubit.state.isStreaming &&
-                (controller is! ReadingPositionAutoScrollController ||
-                    !controller.hasAnchorMutation);
+            return controller is! ReadingPositionAutoScrollController ||
+                !controller.suppressPassiveExtentCorrection;
           },
         ),
         padding: EdgeInsets.only(top: 36, bottom: widget.bottomPadding),
@@ -1028,9 +1937,28 @@ class _ChatMessageListState extends State<ChatMessageList> {
             ((paging.enabled &&
                     (paging.hasMore || paging.loading || paging.error != null))
                 ? 1
-                : 0),
+                : 0) +
+            (historyBrowsing ? 1 : 0),
         itemBuilder: (context, index) {
-          if (index == messageCount) {
+          if (historyBrowsing && index == 0) {
+            return _LocalHistoryNewerPageIndicator(
+              paging: paging,
+              onRetry: chatCubit.loadNewerLocalHistory,
+              onReturnToLatest: () {
+                chatCubit.exitHistoryNavigation();
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted || !widget.scrollController.hasClients) return;
+                  widget.scrollController.animateTo(
+                    widget.scrollController.position.minScrollExtent,
+                    duration: const Duration(milliseconds: 250),
+                    curve: Curves.easeOut,
+                  );
+                });
+              },
+            );
+          }
+          final transcriptIndex = index - (historyBrowsing ? 1 : 0);
+          if (transcriptIndex == messageCount) {
             if (paging.hasMore && !paging.loading && paging.error == null) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (mounted) unawaited(chatCubit.loadOlderLocalHistory());
@@ -1045,7 +1973,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
           }
           // index 0 = newest entry (bottom of chat)
           // Map to actual entry index:
-          final entryIndex = messageCount - 1 - index;
+          final entryIndex = messageCount - 1 - transcriptIndex;
 
           // Streaming entry is at messageCount - 1 (index 0 in reverse)
           if (hasStreaming && entryIndex == allEntries.length) {
@@ -1115,18 +2043,19 @@ class _ChatMessageListState extends State<ChatMessageList> {
                             expanded: expanded,
                             transientGuardianReview:
                                 currentTool?.guardianReview,
-                            children: [
-                              if (currentTool != null)
-                                ChatCurrentToolActivityLine(
-                                  activity: currentTool,
-                                  expanded: expanded,
-                                  onTap: () =>
-                                      _toggleCurrentProgress(progressKey),
-                                  timestamp: _timestampForEntryIndex(
-                                    allEntries,
-                                    currentTool.entryIndex,
+                            pinnedHeader: currentTool == null
+                                ? null
+                                : ChatCurrentToolActivityLine(
+                                    activity: currentTool,
+                                    expanded: expanded,
+                                    onTap: () =>
+                                        _toggleCurrentProgress(progressKey),
+                                    timestamp: _timestampForEntryIndex(
+                                      allEntries,
+                                      currentTool.entryIndex,
+                                    ),
                                   ),
-                                ),
+                            children: [
                               if (expanded)
                                 BlocSelector<
                                   StreamingStateCubit,
@@ -1423,11 +2352,13 @@ class _ProcessDetailsViewport extends StatefulWidget {
     super.key,
     required this.expanded,
     required this.children,
+    this.pinnedHeader,
     this.transientGuardianReview,
   });
 
   final bool expanded;
   final List<Widget> children;
+  final Widget? pinnedHeader;
   final GuardianApprovalMessage? transientGuardianReview;
 
   @override
@@ -1477,7 +2408,7 @@ class _ProcessDetailsViewportState extends State<_ProcessDetailsViewport> {
     });
   }
 
-  List<Widget> get _visibleChildren {
+  List<Widget> get _visibleScrollableChildren {
     final review = widget.transientGuardianReview;
     return [
       ...widget.children,
@@ -1496,7 +2427,7 @@ class _ProcessDetailsViewportState extends State<_ProcessDetailsViewport> {
     if (!widget.expanded) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: _visibleChildren,
+        children: [?widget.pinnedHeader, ..._visibleScrollableChildren],
       );
     }
     final media = MediaQuery.of(context);
@@ -1522,23 +2453,34 @@ class _ProcessDetailsViewportState extends State<_ProcessDetailsViewport> {
           borderRadius: BorderRadius.circular(11),
           child: ConstrainedBox(
             constraints: BoxConstraints(maxHeight: maximumHeight),
-            child: NotificationListener<ScrollNotification>(
-              // This nested viewport owns its vertical gesture. Do not let its
-              // metrics trigger the transcript's older-history pagination.
-              onNotification: (_) => true,
-              child: Scrollbar(
-                controller: _controller,
-                child: SingleChildScrollView(
-                  key: const ValueKey('process_details_scroll_view'),
-                  controller: _controller,
-                  primary: false,
-                  padding: const EdgeInsets.symmetric(vertical: 5),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: _visibleChildren,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ?widget.pinnedHeader,
+                if (_visibleScrollableChildren.isNotEmpty)
+                  Flexible(
+                    fit: FlexFit.loose,
+                    child: NotificationListener<ScrollNotification>(
+                      // This nested viewport owns its vertical gesture. Do not
+                      // let its metrics trigger older-history pagination.
+                      onNotification: (_) => true,
+                      child: Scrollbar(
+                        controller: _controller,
+                        child: SingleChildScrollView(
+                          key: const ValueKey('process_details_scroll_view'),
+                          controller: _controller,
+                          primary: false,
+                          padding: const EdgeInsets.symmetric(vertical: 5),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: _visibleScrollableChildren,
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
-                ),
-              ),
+              ],
             ),
           ),
         ),
@@ -1759,6 +2701,69 @@ class _LocalHistoryPageIndicator extends StatelessWidget {
           child: CircularProgressIndicator(strokeWidth: 2),
         ),
       ),
+    );
+  }
+}
+
+class _LocalHistoryNewerPageIndicator extends StatelessWidget {
+  const _LocalHistoryNewerPageIndicator({
+    required this.paging,
+    required this.onRetry,
+    required this.onReturnToLatest,
+  });
+
+  final LocalHistoryPagingState paging;
+  final Future<bool> Function() onRetry;
+  final VoidCallback onReturnToLatest;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    if (paging.loadingLater) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Wrap(
+          alignment: WrapAlignment.center,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 8,
+          children: [
+            const SizedBox.square(
+              key: ValueKey('local_history_newer_loading'),
+              dimension: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            _returnToLatestButton(l),
+          ],
+        ),
+      );
+    }
+    if (paging.laterError != null || paging.hasLater) {
+      return Wrap(
+        alignment: WrapAlignment.center,
+        spacing: 8,
+        children: [
+          TextButton.icon(
+            key: const ValueKey('local_history_newer_retry'),
+            onPressed: () => unawaited(onRetry()),
+            icon: Icon(
+              paging.laterError == null ? Icons.expand_more : Icons.refresh,
+              size: 18,
+            ),
+            label: Text(paging.laterError == null ? l.loadMore : l.retry),
+          ),
+          _returnToLatestButton(l),
+        ],
+      );
+    }
+    return Center(child: _returnToLatestButton(l));
+  }
+
+  Widget _returnToLatestButton(AppLocalizations l) {
+    return TextButton.icon(
+      key: const ValueKey('local_history_return_latest'),
+      onPressed: onReturnToLatest,
+      icon: const Icon(Icons.vertical_align_bottom, size: 18),
+      label: Text(l.scrollToBottom),
     );
   }
 }

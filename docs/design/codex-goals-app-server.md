@@ -1,6 +1,6 @@
 # Codex Goals / App Server Protocol 調査
 
-## Status: Implemented (updated 2026-07-13)
+## Status: Implemented (updated 2026-08-10)
 
 `openai/codex` の app-server protocol に追加された `thread/goal/*` RPC と、公式 docs の
 `/goal` 機能を調査したメモ。
@@ -96,7 +96,7 @@ app-server README では `single persisted goal for a materialized thread` と�
 
 ### Goal の状態
 
-Codex CLI 0.144.1 の生成 schema では状態は 6つ。
+Codex CLI 0.146.0 の生成 schema でも状態は 6つ。
 
 | 状態 | 意味 |
 |---|---|
@@ -159,6 +159,18 @@ goal は sqlite の thread-level state として永続化されるため、保�
 - goal 未設定: 非表示、または小さな追加ボタン
 - goal 設定中: objective 1行、status、token budget 進捗、操作メニュー
 - 詳細編集: bottom sheet
+
+2026-08-10 以降、右上の管理 UI と composer の `/goal <objective>` は同じ
+app-server Goal を操作する。後者は通常 turn を開始せず、チャット履歴にも追加しない。
+bare `/goal` は管理 UI を開く。
+
+durable thread は `codex_durable_thread_goals_v1` を使い、`threadId` と
+`codexSourceId` を Bridge に渡す。Bridge は thread を resume せず、initialize-only
+接続から公式 RPC を直接実行する。書き込みは共有 writer lease、thread 単位直列化、
+operation ID の冪等性、既知の Goal presence と objective / status / budget /
+createdAt の比較を通過した場合だけ行う。tokensUsed / timeUsedSeconds だけの増加は編集競合にしない。
+旧 Bridge は従来の active-runtime Goal 経路を維持し、runtime がない場合は loading を
+続けず明示的に非対応として扱う。
 
 操作は以下を提供する。
 

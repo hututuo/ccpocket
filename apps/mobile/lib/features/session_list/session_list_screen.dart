@@ -186,6 +186,7 @@ Duration bridgeApplicationReadinessRetryDelay(int retryAttempt) {
 class SessionHomeConnectionGate {
   bool _hasReadyTarget = false;
   String? _readyTargetKey;
+  bool _awaitingPostReconnectAuthority = false;
 
   bool get hasReadyTarget => _hasReadyTarget;
 
@@ -199,11 +200,20 @@ class SessionHomeConnectionGate {
   }) {
     final previousReady = _hasReadyTarget;
     final previousKey = _readyTargetKey;
+    final previousAwaitingPostReconnectAuthority =
+        _awaitingPostReconnectAuthority;
     if (_readyTargetKey != null &&
         targetKey != _readyTargetKey &&
         state != BridgeConnectionState.disconnected) {
       _hasReadyTarget = false;
       _readyTargetKey = null;
+      _awaitingPostReconnectAuthority = false;
+    }
+    if (_hasReadyTarget &&
+        _readyTargetKey == targetKey &&
+        (state == BridgeConnectionState.disconnected ||
+            state == BridgeConnectionState.reconnecting)) {
+      _awaitingPostReconnectAuthority = true;
     }
     if (state == BridgeConnectionState.connected &&
         applicationReadiness.permitsApplicationEntry &&
@@ -211,8 +221,12 @@ class SessionHomeConnectionGate {
         hasAuthoritativeRecentSessions) {
       _hasReadyTarget = true;
       _readyTargetKey = targetKey;
+      _awaitingPostReconnectAuthority = false;
     }
-    return previousReady != _hasReadyTarget || previousKey != _readyTargetKey;
+    return previousReady != _hasReadyTarget ||
+        previousKey != _readyTargetKey ||
+        previousAwaitingPostReconnectAuthority !=
+            _awaitingPostReconnectAuthority;
   }
 
   BridgeConnectionState presentationState({
@@ -226,9 +240,10 @@ class SessionHomeConnectionGate {
         (!applicationReadiness.permitsApplicationEntry ||
             !hasAuthoritativeSessionList ||
             !hasAuthoritativeRecentSessions)) {
-      return _hasReadyTarget
+      if (!_hasReadyTarget) return BridgeConnectionState.connecting;
+      return _awaitingPostReconnectAuthority
           ? BridgeConnectionState.reconnecting
-          : BridgeConnectionState.connecting;
+          : BridgeConnectionState.connected;
     }
     return transportState;
   }
@@ -240,11 +255,13 @@ class SessionHomeConnectionGate {
   void acceptCachedTarget(String targetKey) {
     _hasReadyTarget = true;
     _readyTargetKey = targetKey;
+    _awaitingPostReconnectAuthority = false;
   }
 
   void reset() {
     _hasReadyTarget = false;
     _readyTargetKey = null;
+    _awaitingPostReconnectAuthority = false;
   }
 }
 
@@ -367,11 +384,24 @@ class ConnectionAttemptFence {
 
 enum BridgeConnectionEntryStage {
   preparingTarget,
-  connectingTransport,
-  authenticatingBridge,
+  openingTransport,
+  negotiatingTransport,
+  sendingCapabilities,
+  requestingSessionList,
+  receivingSessionList,
+  decodingSessionList,
+  validatingSessionList,
+  acceptingSessionAuthority,
+  resolvingBridgeIdentity,
+  publishingSessionList,
   preparingCodexRuntime,
-  loadingSessionStatus,
-  loadingConversationCatalog,
+  preparingConversationSync,
+  loadingLegacyConversationCatalog,
+  startingConversationSync,
+  savingConversationCatalog,
+  savingSessionStatus,
+  savingPriorityTimelines,
+  reloadingLocalProjection,
 }
 
 typedef BridgeConnectionProgressTimerFactory =
@@ -391,11 +421,23 @@ class BridgeConnectionEntryProgress {
   /// may intentionally map to one visible percentage; that is still progress.
   final String? phaseKey;
 
+  /// Optional committed-unit position for a page- or timeline-backed step.
+  /// This is producer progress, not a byte or elapsed-time estimate.
+  final int? completedUnits;
+  final int? totalUnits;
+
+  /// Whether the content pipeline is advancing while the independent Codex
+  /// runtime readiness gate is still preparing.
+  final bool waitingForCodexRuntime;
+
   const BridgeConnectionEntryProgress({
     required this.stage,
     required this.fraction,
     this.progressKey,
     this.phaseKey,
+    this.completedUnits,
+    this.totalUnits,
+    this.waitingForCodexRuntime = false,
   });
 
   int get percent => (fraction * 100).round();
@@ -410,6 +452,7 @@ class BridgeConnectionEntryProgress {
 class BridgeConnectionProgressWatchdogSnapshot {
   const BridgeConnectionProgressWatchdogSnapshot({
     required this.generation,
+    required this.connectionEpoch,
     required this.stage,
     required this.percent,
     this.progressKey,
@@ -417,6 +460,7 @@ class BridgeConnectionProgressWatchdogSnapshot {
   });
 
   final int generation;
+  final int connectionEpoch;
   final BridgeConnectionEntryStage stage;
   final int percent;
   final String? progressKey;
@@ -426,6 +470,7 @@ class BridgeConnectionProgressWatchdogSnapshot {
   bool operator ==(Object other) {
     return other is BridgeConnectionProgressWatchdogSnapshot &&
         other.generation == generation &&
+        other.connectionEpoch == connectionEpoch &&
         other.stage == stage &&
         other.percent == percent &&
         other.progressKey == progressKey &&
@@ -433,8 +478,14 @@ class BridgeConnectionProgressWatchdogSnapshot {
   }
 
   @override
-  int get hashCode =>
-      Object.hash(generation, stage, percent, progressKey, phaseKey);
+  int get hashCode => Object.hash(
+    generation,
+    connectionEpoch,
+    stage,
+    percent,
+    progressKey,
+    phaseKey,
+  );
 }
 
 /// Arms a warning only while one real connection milestone remains unchanged.
@@ -505,6 +556,12 @@ class BridgeConnectionProgressWatchdog {
       Timer(duration, callback);
 }
 
+@visibleForTesting
+bool shouldResetConnectionProgressDiagnosticsForEpoch(
+  int? previousEpoch,
+  int nextEpoch,
+) => previousEpoch != nextEpoch;
+
 /// Encodes authoritative conversation-sync facts without retaining payloads.
 ///
 /// Page/count/sequence/revision fields are enough to distinguish a newly
@@ -546,6 +603,7 @@ BridgeConnectionEntryProgress? bridgeConnectionEntryProgressFor({
   required bool hasAuthoritativeSessionList,
   required bool hasAuthoritativeRecentSessions,
   required bool autoConnecting,
+  required bool supportsConversationSyncV2,
   BridgeApplicationReadiness applicationReadiness =
       BridgeApplicationReadiness.legacyUnsupported,
   BridgeConnectionBootstrapPhase bootstrapPhase =
@@ -558,13 +616,19 @@ BridgeConnectionEntryProgress? bridgeConnectionEntryProgressFor({
   );
   BridgeConnectionEntryProgress milestone(
     BridgeConnectionEntryStage stage,
-    double fraction,
-  ) {
+    double fraction, {
+    int? completedUnits,
+    int? totalUnits,
+    bool waitingForCodexRuntime = false,
+  }) {
     return BridgeConnectionEntryProgress(
       stage: stage,
       fraction: fraction.clamp(0, 1).toDouble(),
       progressKey: progressKey,
       phaseKey: phaseKey,
+      completedUnits: completedUnits,
+      totalUnits: totalUnits,
+      waitingForCodexRuntime: waitingForCodexRuntime,
     );
   }
 
@@ -572,56 +636,86 @@ BridgeConnectionEntryProgress? bridgeConnectionEntryProgressFor({
     return milestone(BridgeConnectionEntryStage.preparingTarget, 0);
   }
   final bootstrapFraction = bootstrapPhase.percent / 100;
-  return switch (transportState) {
-    BridgeConnectionState.connecting ||
-    BridgeConnectionState.reconnecting => BridgeConnectionEntryProgress(
-      stage: BridgeConnectionEntryStage.connectingTransport,
-      fraction: bootstrapFraction.clamp(0.08, 0.24).toDouble(),
-      progressKey: progressKey,
-      phaseKey: phaseKey,
-    ),
-    BridgeConnectionState.connected
-        when !hasAuthoritativeSessionList &&
-            bootstrapPhase.percent <
-                BridgeConnectionBootstrapPhase
-                    .sessionListAuthorityAccepted
-                    .percent =>
-      BridgeConnectionEntryProgress(
-        stage: BridgeConnectionEntryStage.authenticatingBridge,
-        fraction: bootstrapFraction.clamp(0.16, 0.56).toDouble(),
-        progressKey: progressKey,
-        phaseKey: phaseKey,
-      ),
-    BridgeConnectionState.connected when !hasAuthoritativeSessionList =>
-      BridgeConnectionEntryProgress(
-        stage: BridgeConnectionEntryStage.loadingSessionStatus,
-        fraction: bootstrapFraction.clamp(0.64, 0.72).toDouble(),
-        progressKey: progressKey,
-        phaseKey: phaseKey,
-      ),
-    BridgeConnectionState.connected
-        when !applicationReadiness.permitsApplicationEntry =>
-      milestone(
-        BridgeConnectionEntryStage.preparingCodexRuntime,
-        bootstrapFraction < 0.84 ? 0.84 : bootstrapFraction,
-      ),
-    BridgeConnectionState.connected when !hasAuthoritativeRecentSessions =>
-      milestone(
-        BridgeConnectionEntryStage.loadingConversationCatalog,
-        _conversationCatalogBootstrapFraction(
-          bootstrapFraction,
-          conversationSyncUpdate,
-        ),
-      ),
-    _ when autoConnecting => milestone(
-      BridgeConnectionEntryStage.preparingTarget,
-      0,
-    ),
-    _ => null,
-  };
+  if (transportState == BridgeConnectionState.connecting ||
+      transportState == BridgeConnectionState.reconnecting) {
+    final stage = switch (bootstrapPhase) {
+      BridgeConnectionBootstrapPhase.transportReady =>
+        BridgeConnectionEntryStage.negotiatingTransport,
+      BridgeConnectionBootstrapPhase.capabilitiesSent =>
+        BridgeConnectionEntryStage.sendingCapabilities,
+      _ => BridgeConnectionEntryStage.openingTransport,
+    };
+    return milestone(stage, bootstrapFraction.clamp(0.05, 0.22).toDouble());
+  }
+  if (transportState == BridgeConnectionState.connected &&
+      !hasAuthoritativeSessionList) {
+    final stage = switch (bootstrapPhase) {
+      BridgeConnectionBootstrapPhase.idle ||
+      BridgeConnectionBootstrapPhase.openingTransport =>
+        BridgeConnectionEntryStage.openingTransport,
+      BridgeConnectionBootstrapPhase.transportReady =>
+        BridgeConnectionEntryStage.negotiatingTransport,
+      BridgeConnectionBootstrapPhase.capabilitiesSent =>
+        BridgeConnectionEntryStage.sendingCapabilities,
+      BridgeConnectionBootstrapPhase.sessionListRequested =>
+        BridgeConnectionEntryStage.requestingSessionList,
+      BridgeConnectionBootstrapPhase.sessionListFrameReceived =>
+        BridgeConnectionEntryStage.receivingSessionList,
+      BridgeConnectionBootstrapPhase.sessionListEnvelopeDecoded =>
+        BridgeConnectionEntryStage.decodingSessionList,
+      BridgeConnectionBootstrapPhase.sessionListModelValidated =>
+        BridgeConnectionEntryStage.validatingSessionList,
+      BridgeConnectionBootstrapPhase.sessionListAuthorityAccepted =>
+        BridgeConnectionEntryStage.acceptingSessionAuthority,
+      BridgeConnectionBootstrapPhase.identityResolved =>
+        BridgeConnectionEntryStage.resolvingBridgeIdentity,
+      BridgeConnectionBootstrapPhase.sessionListPublished ||
+      BridgeConnectionBootstrapPhase.conversationCatalogRequested ||
+      BridgeConnectionBootstrapPhase.conversationCatalogReceived =>
+        BridgeConnectionEntryStage.publishingSessionList,
+      BridgeConnectionBootstrapPhase.reconnectScheduled =>
+        BridgeConnectionEntryStage.openingTransport,
+    };
+    return milestone(stage, bootstrapFraction.clamp(0.15, 0.78).toDouble());
+  }
+  if (transportState == BridgeConnectionState.connected) {
+    final runtimeReady = applicationReadiness.permitsApplicationEntry;
+    if (!supportsConversationSyncV2 && !hasAuthoritativeRecentSessions) {
+      return milestone(
+        BridgeConnectionEntryStage.loadingLegacyConversationCatalog,
+        bootstrapFraction.clamp(0.80, 0.98).toDouble(),
+        waitingForCodexRuntime: !runtimeReady,
+      );
+    }
+    final content = _conversationCatalogBootstrapProgress(
+      bootstrapFraction,
+      conversationSyncUpdate,
+    );
+    if (hasAuthoritativeRecentSessions) {
+      if (runtimeReady) return null;
+      return milestone(BridgeConnectionEntryStage.preparingCodexRuntime, 0.99);
+    }
+    return milestone(
+      content.stage,
+      content.fraction,
+      completedUnits: content.completedUnits,
+      totalUnits: content.totalUnits,
+      waitingForCodexRuntime: !runtimeReady,
+    );
+  }
+  if (autoConnecting) {
+    return milestone(BridgeConnectionEntryStage.preparingTarget, 0);
+  }
+  return null;
 }
 
-double _conversationCatalogBootstrapFraction(
+({
+  BridgeConnectionEntryStage stage,
+  double fraction,
+  int? completedUnits,
+  int? totalUnits,
+})
+_conversationCatalogBootstrapProgress(
   double bootstrapFraction,
   ConversationSyncCacheUpdate? update,
 ) {
@@ -632,36 +726,138 @@ double _conversationCatalogBootstrapFraction(
     return start + span * ((pageIndex + 1) / pageCount).clamp(0, 1).toDouble();
   }
 
-  double timelineFraction() {
+  ({double fraction, int? completedUnits, int? totalUnits}) timelineProgress() {
     final timelineIndex = update?.timelineIndex;
     final timelineCount = update?.timelineCount;
     if (update?.phase != 'priority' ||
         timelineIndex == null ||
         timelineCount == null ||
         timelineCount <= 0) {
-      return 0.92;
+      return (fraction: 0.88, completedUnits: null, totalUnits: null);
     }
     final pageIndex = update?.pageIndex ?? 0;
     final pageCount = update?.pageCount ?? 1;
     final withinTimeline = ((pageIndex + 1) / pageCount).clamp(0, 1);
     final completed = (timelineIndex + withinTimeline) / timelineCount;
-    return 0.92 + 0.04 * completed.clamp(0, 1);
+    return (
+      fraction: 0.88 + 0.08 * completed.clamp(0, 1),
+      completedUnits: timelineIndex + 1,
+      totalUnits: timelineCount,
+    );
   }
 
-  final committedFraction = switch (update?.kind) {
-    ConversationSyncCacheUpdateKind.started => 0.84,
-    ConversationSyncCacheUpdateKind.catalog => pageFraction(0.84, 0.04),
-    ConversationSyncCacheUpdateKind.status => pageFraction(0.88, 0.04),
-    ConversationSyncCacheUpdateKind.timeline => timelineFraction(),
-    ConversationSyncCacheUpdateKind.priorityReady => 0.97,
-    ConversationSyncCacheUpdateKind.completed => 0.98,
-    ConversationSyncCacheUpdateKind.reset => 0.84,
-    ConversationSyncCacheUpdateKind.readWatermark || null => 0.84,
+  final timeline = timelineProgress();
+  final result = switch (update?.kind) {
+    ConversationSyncCacheUpdateKind.catalog => (
+      stage: BridgeConnectionEntryStage.savingConversationCatalog,
+      fraction: pageFraction(0.80, 0.04),
+      completedUnits: update?.pageIndex == null ? null : update!.pageIndex! + 1,
+      totalUnits: update?.pageCount,
+    ),
+    ConversationSyncCacheUpdateKind.status => (
+      stage: BridgeConnectionEntryStage.savingSessionStatus,
+      fraction: pageFraction(0.84, 0.04),
+      completedUnits: update?.pageIndex == null ? null : update!.pageIndex! + 1,
+      totalUnits: update?.pageCount,
+    ),
+    ConversationSyncCacheUpdateKind.timeline => (
+      stage: BridgeConnectionEntryStage.savingPriorityTimelines,
+      fraction: timeline.fraction,
+      completedUnits: timeline.completedUnits,
+      totalUnits: timeline.totalUnits,
+    ),
+    ConversationSyncCacheUpdateKind.priorityReady ||
+    ConversationSyncCacheUpdateKind.completed => (
+      stage: BridgeConnectionEntryStage.reloadingLocalProjection,
+      fraction: update?.kind == ConversationSyncCacheUpdateKind.completed
+          ? 0.98
+          : 0.97,
+      completedUnits: null,
+      totalUnits: null,
+    ),
+    ConversationSyncCacheUpdateKind.started ||
+    ConversationSyncCacheUpdateKind.focusApplied ||
+    ConversationSyncCacheUpdateKind.reset ||
+    ConversationSyncCacheUpdateKind.readWatermark => (
+      stage: BridgeConnectionEntryStage.startingConversationSync,
+      fraction: 0.80,
+      completedUnits: null,
+      totalUnits: null,
+    ),
+    null => (
+      stage: BridgeConnectionEntryStage.preparingConversationSync,
+      fraction: 0.78,
+      completedUnits: null,
+      totalUnits: null,
+    ),
   };
-  return [bootstrapFraction, committedFraction, 0.80]
-      .reduce((left, right) => left > right ? left : right)
-      .clamp(0.80, 0.98)
-      .toDouble();
+  return (
+    stage: result.stage,
+    fraction: [bootstrapFraction, result.fraction, 0.78]
+        .reduce((left, right) => left > right ? left : right)
+        .clamp(0.78, 0.98)
+        .toDouble(),
+    completedUnits: result.completedUnits,
+    totalUnits: result.totalUnits,
+  );
+}
+
+double _conversationCatalogBootstrapFraction(
+  double bootstrapFraction,
+  ConversationSyncCacheUpdate? update,
+) => _conversationCatalogBootstrapProgress(bootstrapFraction, update).fraction;
+
+@visibleForTesting
+String bridgeConnectionProgressLabelFor(
+  AppLocalizations l,
+  BridgeConnectionEntryProgress progress,
+) {
+  var label = switch (progress.stage) {
+    BridgeConnectionEntryStage.preparingTarget => l.connectionPreparingTarget,
+    BridgeConnectionEntryStage.openingTransport => l.connectionOpeningTransport,
+    BridgeConnectionEntryStage.negotiatingTransport =>
+      l.connectionNegotiatingTransport,
+    BridgeConnectionEntryStage.sendingCapabilities =>
+      l.connectionSendingCapabilities,
+    BridgeConnectionEntryStage.requestingSessionList =>
+      l.connectionRequestingSessionList,
+    BridgeConnectionEntryStage.receivingSessionList =>
+      l.connectionReceivingSessionList,
+    BridgeConnectionEntryStage.decodingSessionList =>
+      l.connectionDecodingSessionList,
+    BridgeConnectionEntryStage.validatingSessionList =>
+      l.connectionValidatingSessionList,
+    BridgeConnectionEntryStage.acceptingSessionAuthority =>
+      l.connectionAcceptingSessionAuthority,
+    BridgeConnectionEntryStage.resolvingBridgeIdentity =>
+      l.connectionResolvingBridgeIdentity,
+    BridgeConnectionEntryStage.publishingSessionList =>
+      l.connectionPublishingSessionList,
+    BridgeConnectionEntryStage.preparingCodexRuntime => l.preparingCodexRuntime,
+    BridgeConnectionEntryStage.preparingConversationSync =>
+      l.connectionPreparingConversationSync,
+    BridgeConnectionEntryStage.loadingLegacyConversationCatalog =>
+      l.loadingConversationCatalog,
+    BridgeConnectionEntryStage.startingConversationSync =>
+      l.connectionStartingConversationSync,
+    BridgeConnectionEntryStage.savingConversationCatalog =>
+      l.connectionSavingConversationCatalog,
+    BridgeConnectionEntryStage.savingSessionStatus =>
+      l.connectionSavingSessionStatus,
+    BridgeConnectionEntryStage.savingPriorityTimelines =>
+      l.connectionSavingPriorityTimelines,
+    BridgeConnectionEntryStage.reloadingLocalProjection =>
+      l.connectionReloadingLocalProjection,
+  };
+  final completed = progress.completedUnits;
+  final total = progress.totalUnits;
+  if (completed != null && total != null && total > 0) {
+    label = l.connectionProgressWithCount(label, completed, total);
+  }
+  if (progress.waitingForCodexRuntime) {
+    label = l.connectionProgressWhilePreparingRuntime(label);
+  }
+  return label;
 }
 
 @visibleForTesting
@@ -682,6 +878,35 @@ bool shouldAdvanceConversationCatalogBootstrapUpdate(
   return bridgeConnectionProgressAuthorityKey(next) !=
       bridgeConnectionProgressAuthorityKey(current);
 }
+
+@visibleForTesting
+bool shouldWaitForInFlightConversationSyncOnStall({
+  required bool supportsConversationSyncV2,
+  required ConversationSyncCacheUpdate? update,
+}) {
+  if (!supportsConversationSyncV2 || update == null) return false;
+  return switch (update.kind) {
+    ConversationSyncCacheUpdateKind.catalog ||
+    ConversationSyncCacheUpdateKind.status ||
+    ConversationSyncCacheUpdateKind.timeline ||
+    ConversationSyncCacheUpdateKind.priorityReady => true,
+    ConversationSyncCacheUpdateKind.started ||
+    ConversationSyncCacheUpdateKind.focusApplied ||
+    ConversationSyncCacheUpdateKind.readWatermark ||
+    ConversationSyncCacheUpdateKind.completed ||
+    ConversationSyncCacheUpdateKind.reset => false,
+  };
+}
+
+@visibleForTesting
+bool shouldResetConversationSyncProgressForAuthority({
+  required String? previousAuthorityKey,
+  required String nextAuthorityKey,
+  required ConversationSyncCacheUpdate? currentProgress,
+}) =>
+    currentProgress != null &&
+    previousAuthorityKey != null &&
+    previousAuthorityKey != nextAuthorityKey;
 
 Future<bool> showExternalBridgeConnectionConfirmation({
   required BuildContext context,
@@ -902,6 +1127,11 @@ class _SessionListScreenState extends State<SessionListScreen>
   final _connectionAttemptFence = ConnectionAttemptFence();
   late final BridgeConnectionProgressWatchdog _connectionProgressWatchdog;
   int _committedSnapshotSerial = 0;
+  String? _lastConnectionProgressDiagnosticKey;
+  String? _lastConnectionProgressStep;
+  int? _lastConnectionProgressEpoch;
+  DateTime? _connectionProgressStartedAt;
+  DateTime? _connectionProgressStepStartedAt;
   bool _isDisposing = false;
   Timer? _applicationReadinessPollTimer;
   final _applicationReadinessProbeFence =
@@ -916,6 +1146,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   bool _connectionTakingLonger = false;
   bool _connectionAttemptFailed = false;
   bool _connectionSelectionPending = false;
+  bool _manualCatalogRefreshRunning = false;
 
   /// Key to access HomeContent state for programmatic search (Cmd+K).
   final _homeContentKey = GlobalKey<HomeContentState>();
@@ -940,6 +1171,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   StreamSubscription<BridgeDevicePairingSnapshot>? _devicePairingSub;
   StreamSubscription<ConversationSyncCacheUpdate>? _contentSyncProgressSub;
   ConversationSyncCacheUpdate? _contentSyncProgressUpdate;
+  String? _contentSyncProgressAuthorityKey;
   int _lastBoundBridgeIdentityGeneration = 0;
   Future<void> _bridgeIdentityBinding = Future<void>.value();
   String? _lastPromptHistorySyncAuthorityKey;
@@ -1009,6 +1241,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         _archivePendingRequests.connectionLost();
         _promptHistorySyncTimer?.cancel();
         _promptHistorySyncTimer = null;
+        _contentSyncProgressAuthorityKey = null;
         if (mounted && _contentSyncProgressUpdate != null) {
           setState(() => _contentSyncProgressUpdate = null);
         }
@@ -1065,17 +1298,19 @@ class _SessionListScreenState extends State<SessionListScreen>
                   BridgeConnectionState.connected) {
             return;
           }
-          if (bridge.hasAuthoritativeSessionListForCurrentConnection &&
+          final startsReplacementSubscription =
+              update.kind == ConversationSyncCacheUpdateKind.started ||
+              update.kind == ConversationSyncCacheUpdateKind.reset;
+          if (!startsReplacementSubscription &&
+              bridge.hasAuthoritativeSessionListForCurrentConnection &&
               sessionListCubit.hasUsableCatalogForCurrentTarget) {
             return;
           }
           final current = _contentSyncProgressUpdate;
-          // A Bridge may emit another sync_begin while continuing the same
-          // back-pressured subscription. The sync service suppresses that
-          // duplicate `started`, and this monotonic guard also prevents a
-          // delayed/replayed marker from moving the visible progress backward.
-          // A transport change clears the current update above; only an
-          // authoritative reset may rewind within one connected generation.
+          // A replacement subscription on the same transport must not rewind
+          // visible progress. Real transport/source changes clear the current
+          // update through their dedicated authority fences; within one
+          // authority, committed progress remains monotonic.
           if (shouldAdvanceConversationCatalogBootstrapUpdate(
             current,
             update,
@@ -1111,6 +1346,18 @@ class _SessionListScreenState extends State<SessionListScreen>
       _observeConnectionProgress();
     });
     _sessionListReadinessSub = bridge.sessionList.listen((_) {
+      final nextAuthorityKey = _currentConnectionAuthorityKey(bridge);
+      if (shouldResetConversationSyncProgressForAuthority(
+        previousAuthorityKey: _contentSyncProgressAuthorityKey,
+        nextAuthorityKey: nextAuthorityKey,
+        currentProgress: _contentSyncProgressUpdate,
+      )) {
+        _committedSnapshotSerial += 1;
+        _resetConnectionProgressDiagnostics();
+        _connectionProgressWatchdog.reset();
+        if (mounted) setState(() => _contentSyncProgressUpdate = null);
+      }
+      _contentSyncProgressAuthorityKey = nextAuthorityKey;
       _bindCurrentBridgeIdentityIfAuthoritative(bridge);
       unawaited(_refreshApplicationReadiness(bridge));
       _syncConnectionUiGate(bridge, bridge.currentBridgeConnectionState);
@@ -1393,6 +1640,11 @@ class _SessionListScreenState extends State<SessionListScreen>
     // target. Authentication failures and ordinary disconnects cancel the
     // watchdog before they can reach this callback.
     if (!_connectionSelectionPending && !_connectionAwaitingReadiness) return;
+    logger.info(
+      '[session_catalog] event=progress_stalled '
+      'epoch=${snapshot.connectionEpoch} step=${snapshot.stage.name} '
+      'progress=${snapshot.percent} phase=${snapshot.phaseKey ?? 'unknown'}',
+    );
     if (!_connectionTakingLonger) {
       setState(() {
         _connectionTakingLonger = true;
@@ -1400,7 +1652,12 @@ class _SessionListScreenState extends State<SessionListScreen>
       });
     }
     if (_connectionAwaitingReadiness) {
-      unawaited(_handleConnectionReadinessTimeout(snapshot.generation));
+      unawaited(
+        _handleConnectionReadinessTimeout(
+          snapshot.generation,
+          stalledSnapshot: snapshot,
+        ),
+      );
     }
   }
 
@@ -1435,18 +1692,33 @@ class _SessionListScreenState extends State<SessionListScreen>
       hasAuthoritativeSessionList: hasAuthoritativeSessionList,
       hasAuthoritativeRecentSessions: hasAuthoritativeRecentSessions,
       autoConnecting: _isAutoConnecting,
+      supportsConversationSyncV2: bridge.supportsConversationSyncV2,
       applicationReadiness: _applicationReadiness,
       bootstrapPhase: bridge.currentConnectionBootstrap.phase,
       conversationSyncUpdate: _contentSyncProgressUpdate,
     );
     if (progress == null) {
+      _resetConnectionProgressDiagnostics();
       _connectionProgressWatchdog.reset();
       return;
     }
     final epoch = bridge.currentConnectionBootstrap.connectionEpoch;
+    if (shouldResetConnectionProgressDiagnosticsForEpoch(
+      _lastConnectionProgressEpoch,
+      epoch,
+    )) {
+      _resetConnectionProgressDiagnostics();
+      _lastConnectionProgressEpoch = epoch;
+    }
+    _recordConnectionProgressDiagnostic(
+      epoch: epoch,
+      progress: progress,
+      readiness: _applicationReadiness,
+    );
     _connectionProgressWatchdog.observe(
       BridgeConnectionProgressWatchdogSnapshot(
         generation: attemptGeneration ?? _connectionAttemptFence.current,
+        connectionEpoch: epoch,
         stage: progress.stage,
         percent: progress.percent,
         progressKey:
@@ -1457,7 +1729,60 @@ class _SessionListScreenState extends State<SessionListScreen>
     );
   }
 
-  Future<void> _handleConnectionReadinessTimeout(int token) async {
+  void _recordConnectionProgressDiagnostic({
+    required int epoch,
+    required BridgeConnectionEntryProgress progress,
+    required BridgeApplicationReadiness readiness,
+  }) {
+    final diagnosticKey = [
+      epoch,
+      progress.stage.name,
+      progress.percent,
+      progress.progressKey,
+      progress.phaseKey,
+      progress.completedUnits,
+      progress.totalUnits,
+      progress.waitingForCodexRuntime,
+      readiness.name,
+    ].join('|');
+    if (_lastConnectionProgressDiagnosticKey == diagnosticKey) return;
+
+    final now = DateTime.now();
+    final startedAt = _connectionProgressStartedAt ?? now;
+    final previousStep = _lastConnectionProgressStep;
+    final stageChanged = previousStep != progress.stage.name;
+    final previousStepStartedAt = _connectionProgressStepStartedAt ?? now;
+    final currentStepStartedAt = stageChanged ? now : previousStepStartedAt;
+    logger.info(
+      '[session_catalog] event=entry_progress '
+      'epoch=$epoch step=${progress.stage.name} '
+      'progress=${progress.percent} runtime=${readiness.name} '
+      'elapsedMs=${now.difference(startedAt).inMilliseconds} '
+      'stepElapsedMs=${now.difference(currentStepStartedAt).inMilliseconds} '
+      '${previousStep == null || !stageChanged ? '' : 'previousStep=$previousStep '}'
+      '${previousStep == null || !stageChanged ? '' : 'previousStepElapsedMs=${now.difference(previousStepStartedAt).inMilliseconds} '}'
+      '${progress.completedUnits == null ? '' : 'completed=${progress.completedUnits} '}'
+      '${progress.totalUnits == null ? '' : 'total=${progress.totalUnits} '}'
+      'waitingRuntime=${progress.waitingForCodexRuntime}',
+    );
+    _connectionProgressStartedAt = startedAt;
+    _connectionProgressStepStartedAt = currentStepStartedAt;
+    _lastConnectionProgressStep = progress.stage.name;
+    _lastConnectionProgressDiagnosticKey = diagnosticKey;
+  }
+
+  void _resetConnectionProgressDiagnostics() {
+    _lastConnectionProgressDiagnosticKey = null;
+    _lastConnectionProgressStep = null;
+    _connectionProgressStartedAt = null;
+    _connectionProgressStepStartedAt = null;
+    _lastConnectionProgressEpoch = null;
+  }
+
+  Future<void> _handleConnectionReadinessTimeout(
+    int token, {
+    required BridgeConnectionProgressWatchdogSnapshot stalledSnapshot,
+  }) async {
     if (!_isCurrentConnectionAttempt(token) || !_connectionAwaitingReadiness) {
       return;
     }
@@ -1480,6 +1805,19 @@ class _SessionListScreenState extends State<SessionListScreen>
         _connectionTakingLonger = true;
         _connectionAttemptFailed = false;
       });
+      return;
+    }
+    if (shouldWaitForInFlightConversationSyncOnStall(
+      supportsConversationSyncV2: bridge.supportsConversationSyncV2,
+      update: _contentSyncProgressUpdate,
+    )) {
+      logger.info(
+        '[session_catalog] event=progress_stalled '
+        'action=wait_for_inflight_conversation_sync '
+        'step=${stalledSnapshot.stage.name} '
+        'progress=${stalledSnapshot.percent} '
+        'authority=${bridge.hasAuthoritativeSessionListForCurrentConnection}',
+      );
       return;
     }
     final action = _catalogRecoveryPolicy.nextAction(
@@ -1510,6 +1848,16 @@ class _SessionListScreenState extends State<SessionListScreen>
         _catalogRecoveryPolicy.recordSessionListRetry();
         break;
       case SessionCatalogRecoveryAction.retryCatalog:
+        final conversationSync = context
+            .read<ConversationContentSyncService?>();
+        if (bridge.supportsConversationSyncV2 &&
+            conversationSync?.retryBootstrap(
+                  reason: 'startup_progress_stalled',
+                ) ==
+                true) {
+          _catalogRecoveryPolicy.recordCatalogRetry();
+          break;
+        }
         final generation = bridge.authoritativeSessionListGeneration;
         _catalogBootstrapGate.prepareRetry(generation);
         if (_refreshCatalogAfterAuthoritativeSessionList(bridge)) {
@@ -1659,9 +2007,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     final machineManagerCubit = context.read<MachineManagerCubit?>();
     final tunnelService = context.read<SshBridgeTunnelService?>();
     final bridge = context.read<BridgeService>();
-    if (machineManagerCubit != null) {
-      unawaited(machineManagerCubit.refreshLatestBridgeVersionIfStale());
-    }
+    if (machineManagerCubit != null) {}
     final messenger = ScaffoldMessenger.of(context);
 
     // Health check before connecting
@@ -1906,7 +2252,15 @@ class _SessionListScreenState extends State<SessionListScreen>
       unawaited(_refreshApplicationReadiness(bridge));
       _observeConnectionProgress();
       if (bridge.hasAuthoritativeSessionListForCurrentConnection) {
-        unawaited(context.read<SessionListCubit>().refresh());
+        // ConversationContentSyncService already resumes its v2 subscription
+        // from the same lifecycle event. Refresh Bridge-owned metadata here,
+        // but do not immediately tear down that fresh subscription and start a
+        // second one on the same socket.
+        unawaited(
+          context.read<SessionListCubit>().refresh(
+            restartConversationSync: false,
+          ),
+        );
       }
       return;
     }
@@ -2222,6 +2576,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     var dispatched = false;
     try {
       dispatched = await context.read<SessionListCubit>().refreshCatalog(
+        startupBootstrap: true,
         isCurrentConnection: () =>
             mounted &&
             identical(context.read<BridgeService>(), bridge) &&
@@ -2387,10 +2742,28 @@ class _SessionListScreenState extends State<SessionListScreen>
   }
 
   Future<void> _refresh() async {
+    if (_manualCatalogRefreshRunning) return;
+    setState(() => _manualCatalogRefreshRunning = true);
+    final bridge = context.read<BridgeService>();
     final machineManagerCubit = context.read<MachineManagerCubit?>();
-    await context.read<SessionListCubit>().refresh();
-    if (machineManagerCubit != null) {
-      unawaited(machineManagerCubit.refreshLatestBridgeVersionIfStale());
+    try {
+      final authoritative = await bridge.refreshAuthoritativeSessionList();
+      if (authoritative && mounted) {
+        final sessionList = context.read<SessionListCubit>();
+        if (bridge.supportsConversationSyncV2) {
+          await sessionList.refreshCatalog(startupBootstrap: true);
+          if (mounted) {
+            context.read<ConversationContentSyncService?>()?.retryBootstrap(
+              reason: 'manual_home_refresh',
+            );
+          }
+        } else {
+          await sessionList.refreshCatalog(waitForResponse: true);
+        }
+      }
+      if (machineManagerCubit != null) {}
+    } finally {
+      if (mounted) setState(() => _manualCatalogRefreshRunning = false);
     }
   }
 
@@ -3278,12 +3651,16 @@ class _SessionListScreenState extends State<SessionListScreen>
     });
     navigation.then((_) {
       if (!mounted) return;
-      final isConnected =
-          context.read<ConnectionCubit>().state ==
-          BridgeConnectionState.connected;
-      if (isConnected) {
-        _refresh();
-      }
+      final currentBridge = context.read<BridgeService>();
+      // Leaving a conversation changes only the focused thread on the shared
+      // conversation_sync_v2 subscription. The route's dispose path already
+      // clears that focus and records the read watermark. Re-running the
+      // manual home refresh here used to unsubscribe/resubscribe the global
+      // feed, revoke priority readiness and falsely present a Bridge reconnect.
+      _syncConnectionUiGate(
+        currentBridge,
+        currentBridge.currentBridgeConnectionState,
+      );
     });
   }
 
@@ -3637,24 +4014,16 @@ class _SessionListScreenState extends State<SessionListScreen>
       hasAuthoritativeSessionList: hasAuthoritativeSessionList,
       hasAuthoritativeRecentSessions: hasAuthoritativeRecentSessions,
       autoConnecting: _isAutoConnecting,
+      supportsConversationSyncV2: bridge.supportsConversationSyncV2,
       applicationReadiness: widget.debugRecentSessions != null
           ? BridgeApplicationReadiness.ready
           : _applicationReadiness,
       bootstrapPhase: bridge.currentConnectionBootstrap.phase,
       conversationSyncUpdate: _contentSyncProgressUpdate,
     );
-    final connectionProgressLabel = switch (connectionProgress?.stage) {
-      BridgeConnectionEntryStage.authenticatingBridge =>
-        l.authenticatingWithBridge,
-      BridgeConnectionEntryStage.preparingCodexRuntime =>
-        l.preparingCodexRuntime,
-      BridgeConnectionEntryStage.loadingSessionStatus => l.loadingSessionStatus,
-      BridgeConnectionEntryStage.loadingConversationCatalog =>
-        l.loadingConversationCatalog,
-      BridgeConnectionEntryStage.preparingTarget ||
-      BridgeConnectionEntryStage.connectingTransport => l.connectingToBridge,
-      null => null,
-    };
+    final connectionProgressLabel = connectionProgress == null
+        ? null
+        : bridgeConnectionProgressLabelFor(l, connectionProgress);
     final connectionNoticeLabel = _connectionAttemptFailed
         ? l.bridgeConnectionAttemptFailed
         : _connectionTakingLonger
@@ -3908,6 +4277,8 @@ class _SessionListScreenState extends State<SessionListScreen>
                         : null,
                     onDisconnect: showConnectedUI ? _disconnect : null,
                     onTogglePaneVisibility: widget.onTogglePaneVisibility,
+                    onRefresh: showConnectedUI ? _refresh : null,
+                    isRefreshing: _manualCatalogRefreshRunning,
                     bridgeLabel: connectedBridgeLabel,
                   ),
                   Expanded(child: body),
@@ -3993,6 +4364,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   }) {
     if (showConnectedUI) {
       final bridge = context.read<BridgeService>();
+      final sessionListCubit = context.read<SessionListCubit>();
       final settingsState = context.watch<SettingsCubit>().state;
       final allowedProviderFilters = providerFiltersForEnabledTabs(
         settingsState.newSessionTabs,
@@ -4021,10 +4393,22 @@ class _SessionListScreenState extends State<SessionListScreen>
               key: _homeContentKey,
               connectionState: connectionState,
               bridgeVersion: bridge.bridgeVersion,
-              latestBridgeVersion: machineState?.latestBridgeVersion,
+              bridgeCompatibilityRevision:
+                  bridge.clientBridgeCompatibilityRevision,
               sessions: sessions,
               offlinePendingActions: offlinePendingActions,
               recentSessions: recentSessionsList,
+              catalogProviderPresenceComplete:
+                  widget.debugRecentSessions != null ||
+                  sessionListCubit.hasCompleteCatalogProviderPresence,
+              catalogProviders: widget.debugRecentSessions != null
+                  ? {
+                      for (final session in recentSessionsList)
+                        session.provider ?? Provider.claude.value,
+                    }
+                  : sessionListCubit.completeCatalogProviders,
+              currentBridgeInstanceId: bridge.bridgeInstanceId,
+              currentCodexSourceId: bridge.codexSourceId,
               accumulatedProjectPaths: slState.accumulatedProjectPaths,
               collapsedProjectPaths: slState.collapsedProjectPaths,
               loadingProjectPaths: slState.loadingProjectPaths,
@@ -4032,6 +4416,7 @@ class _SessionListScreenState extends State<SessionListScreen>
               projectSessionDisplayLimits: slState.projectSessionDisplayLimits,
               pinnedSessionKeys: slState.pinnedSessionKeys,
               pinnedProjectPaths: slState.pinnedProjectPaths,
+              projectOrderScope: bridge.dataSourceIdentity.connectionScopeKey,
               searchQuery: slState.searchQuery,
               isLoadingMore: slState.isLoadingMore,
               isInitialLoading: slState.isInitialLoading,
@@ -4176,6 +4561,8 @@ class _SessionListScreenState extends State<SessionListScreen>
                 )
                 ? _openArchivedSessions
                 : null,
+            onRefresh: _refresh,
+            isRefreshing: _manualCatalogRefreshRunning,
             forceElevated: innerBoxIsScrolled,
             toolbarHeight: chrome.toolbarHeight,
             bridgeLabel: connectedBridgeLabel,
@@ -4190,7 +4577,6 @@ class _SessionListScreenState extends State<SessionListScreen>
       machines: machineState?.machines ?? [],
       startingMachineId: machineState?.startingMachineId,
       updatingMachineId: machineState?.updatingMachineId,
-      latestBridgeVersion: machineState?.latestBridgeVersion,
       isRefreshingMachines: machineState?.isLoading ?? false,
       onScanQrCode: _scanQrCode,
       onViewSetupGuide: () {
@@ -4207,7 +4593,6 @@ class _SessionListScreenState extends State<SessionListScreen>
       onEditMachine: _editMachine,
       onDeleteMachine: _deleteMachine,
       onToggleFavorite: _toggleFavorite,
-      onUpdateMachine: _updateMachine,
       onStopMachine: _stopMachine,
       onRenameMachineGroup: _renameMachineGroup,
       onAddMachine: _addMachine,
@@ -4336,7 +4721,6 @@ class _SessionListScreenState extends State<SessionListScreen>
     final bridge = context.read<BridgeService>();
     final tunnelService = context.read<SshBridgeTunnelService?>();
     final messenger = ScaffoldMessenger.of(context);
-    unawaited(cubit.refreshLatestBridgeVersionIfStale());
     late final String wsUrl;
     try {
       wsUrl = await cubit.buildWsUrl(
@@ -4413,34 +4797,6 @@ class _SessionListScreenState extends State<SessionListScreen>
 
   void _toggleFavorite(MachineWithStatus m) {
     context.read<MachineManagerCubit>().toggleFavorite(m.machine.id);
-  }
-
-  void _updateMachine(MachineWithStatus m) async {
-    final cubit = context.read<MachineManagerCubit>();
-    final l = AppLocalizations.of(context);
-
-    String? password;
-    if (m.machine.sshAuthType == SshAuthType.password) {
-      final savedPassword = await cubit.getSshPassword(m.machine.id);
-      password = savedPassword;
-      if (password == null || password.isEmpty) {
-        password = await _promptForPassword(m.machine.displayName);
-        if (password == null) return; // User cancelled
-      }
-    }
-
-    final success = await cubit.updateBridge(m.machine.id, password: password);
-
-    if (success && mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(l.bridgeServerUpdated)));
-    } else if (mounted) {
-      final error = cubit.state.error;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(error ?? l.failedToUpdateServer)));
-    }
   }
 
   void _startMachine(MachineWithStatus m) async {
@@ -4794,7 +5150,6 @@ class _ConnectFormWidget extends StatelessWidget {
   final List<MachineWithStatus> machines;
   final String? startingMachineId;
   final String? updatingMachineId;
-  final String? latestBridgeVersion;
   final bool isRefreshingMachines;
   final VoidCallback onScanQrCode;
   final VoidCallback onViewSetupGuide;
@@ -4804,7 +5159,6 @@ class _ConnectFormWidget extends StatelessWidget {
   final ValueChanged<MachineWithStatus> onEditMachine;
   final ValueChanged<MachineWithStatus> onDeleteMachine;
   final ValueChanged<MachineWithStatus> onToggleFavorite;
-  final ValueChanged<MachineWithStatus> onUpdateMachine;
   final ValueChanged<MachineWithStatus> onStopMachine;
   final ValueChanged<BridgeMachineGroup> onRenameMachineGroup;
   final VoidCallback onAddMachine;
@@ -4821,7 +5175,6 @@ class _ConnectFormWidget extends StatelessWidget {
     required this.machines,
     this.startingMachineId,
     this.updatingMachineId,
-    this.latestBridgeVersion,
     this.isRefreshingMachines = false,
     required this.onScanQrCode,
     required this.onViewSetupGuide,
@@ -4831,7 +5184,6 @@ class _ConnectFormWidget extends StatelessWidget {
     required this.onEditMachine,
     required this.onDeleteMachine,
     required this.onToggleFavorite,
-    required this.onUpdateMachine,
     required this.onStopMachine,
     required this.onRenameMachineGroup,
     required this.onAddMachine,
@@ -4855,14 +5207,12 @@ class _ConnectFormWidget extends StatelessWidget {
       machines: machines,
       startingMachineId: startingMachineId,
       updatingMachineId: updatingMachineId,
-      latestBridgeVersion: latestBridgeVersion,
       isRefreshingMachines: isRefreshingMachines,
       onConnectToMachine: onConnectToMachine,
       onStartMachine: onStartMachine,
       onEditMachine: onEditMachine,
       onDeleteMachine: onDeleteMachine,
       onToggleFavorite: onToggleFavorite,
-      onUpdateMachine: onUpdateMachine,
       onStopMachine: onStopMachine,
       onRenameMachineGroup: onRenameMachineGroup,
       onAddMachine: onAddMachine,

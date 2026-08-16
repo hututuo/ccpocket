@@ -60,6 +60,7 @@ interface SetupOptions {
   port?: string;
   host?: string;
   apiKey?: string;
+  authMode?: string;
   requireApiKey?: boolean;
   publicWsUrl?: string;
   artifactBaseUrl?: string;
@@ -111,16 +112,31 @@ function escapeSystemdEnvironment(value: string): string {
 export function setupSystemd(opts: SetupOptions): void {
   const port = parseBridgePort(opts.port ?? process.env.BRIDGE_PORT);
   const host = opts.host ?? process.env.BRIDGE_HOST ?? DEFAULT_BRIDGE_HOST;
+  const rawAuthMode = opts.authMode ?? process.env.BRIDGE_AUTH_MODE;
+  const unauthenticatedDiagnosticsRequested =
+    process.env.BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS === "1";
+  if (
+    unauthenticatedDiagnosticsRequested &&
+    rawAuthMode?.trim().toLowerCase() !== "open"
+  ) {
+    throw new Error(
+      "BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS requires an explicit BRIDGE_AUTH_MODE=open",
+    );
+  }
   const connectionAuthentication = resolveBridgeConnectionAuthentication({
     apiKey: opts.apiKey ?? process.env.BRIDGE_API_KEY,
     requireApiKey:
       opts.requireApiKey ?? process.env.BRIDGE_REQUIRE_API_KEY,
+    authMode: rawAuthMode,
   });
   const apiKey = connectionAuthentication.configuredApiKey ?? "";
   const allowUnauthenticatedRemote =
     process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE === "1" ||
     (connectionAuthentication.explicitlyConfigured &&
       !connectionAuthentication.required);
+  const allowUnauthenticatedDiagnostics =
+    unauthenticatedDiagnosticsRequested &&
+    connectionAuthentication.mode === "open";
   assertSecureBridgeBinding({
     host,
     apiKey: connectionAuthentication.effectiveApiKey,
@@ -190,6 +206,7 @@ export function setupSystemd(opts: SetupOptions): void {
 Environment=BRIDGE_PORT=${port}
 Environment=BRIDGE_HOST=${host}
 Environment=BRIDGE_REQUIRE_API_KEY=${connectionAuthentication.required ? "1" : "0"}
+Environment=BRIDGE_AUTH_MODE=${connectionAuthentication.mode}
 Environment="BRIDGE_CLI_ENTRY=${escapeSystemdEnvironment(bridgeCliEntry)}"`;
 
   if (apiKey) {
@@ -197,6 +214,9 @@ Environment="BRIDGE_CLI_ENTRY=${escapeSystemdEnvironment(bridgeCliEntry)}"`;
   }
   if (allowUnauthenticatedRemote) {
     envLines += "\nEnvironment=BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE=1";
+  }
+  if (allowUnauthenticatedDiagnostics) {
+    envLines += "\nEnvironment=BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS=1";
   }
   if (allowedDirs) {
     envLines += `\nEnvironment=BRIDGE_ALLOWED_DIRS=${allowedDirs}`;

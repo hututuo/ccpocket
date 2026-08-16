@@ -3,6 +3,21 @@ import 'package:ccpocket/models/messages.dart';
 import 'dart:convert';
 
 void main() {
+  test('preserves the source session for a failed Codex message edit', () {
+    final message =
+        ServerMessage.fromJson({
+              'type': 'rewind_result',
+              'success': false,
+              'mode': 'conversation',
+              'sessionId': 'thread-1',
+              'error': 'editing failed',
+            })
+            as RewindResultMessage;
+
+    expect(message.sessionId, 'thread-1');
+    expect(message.error, 'editing failed');
+  });
+
   test('preserves the provider turn for a manual compaction marker', () {
     final message =
         ServerMessage.fromJson({
@@ -1394,6 +1409,7 @@ void main() {
         },
         'codexProfiles': ['ccpocket', 'research'],
         'defaultCodexProfile': 'ccpocket',
+        'clientBridgeCompatibilityRevision': 4,
         'bridgeCapabilities': ['codex_permission_apply_strategy_v1'],
         'codexAutoReviewDisabled': true,
       });
@@ -1431,6 +1447,7 @@ void main() {
       );
       expect(sessionList.sessions.single.codexNativePlanModeSupported, isTrue);
       expect(sessionList.defaultCodexProfile, 'ccpocket');
+      expect(sessionList.clientBridgeCompatibilityRevision, 4);
       expect(sessionList.codexAutoReviewDisabled, isTrue);
     });
 
@@ -1644,6 +1661,53 @@ void main() {
     });
   });
 
+  group('Codex turn-boundary actions', () {
+    test('rewind serializes the exact provider turn', () {
+      final message = ClientMessage.rewind(
+        'runtime-1',
+        'codex:user-turn:3',
+        'conversation',
+        historyTurnId: 'provider-turn-3',
+      );
+      final json = jsonDecode(message.toJson()) as Map<String, dynamic>;
+
+      expect(json, containsPair('historyTurnId', 'provider-turn-3'));
+      expect(message.delivery, ClientMessageDelivery.ephemeral);
+    });
+
+    test('detached Codex edit serializes its durable source', () {
+      final json =
+          jsonDecode(
+                ClientMessage.rewind(
+                  'thread-1',
+                  'codex:user-turn:3',
+                  'conversation',
+                  historyTurnId: 'provider-turn-3',
+                  projectPath: '/tmp/project',
+                  codexSourceId: 'source-1',
+                ).toJson(),
+              )
+              as Map<String, dynamic>;
+
+      expect(json, containsPair('projectPath', '/tmp/project'));
+      expect(json, containsPair('codexSourceId', 'source-1'));
+    });
+
+    test('fork serializes the exact provider turn', () {
+      final json =
+          jsonDecode(
+                ClientMessage.forkSession(
+                  'runtime-1',
+                  'codex:user-turn:3',
+                  historyTurnId: 'provider-turn-3',
+                ).toJson(),
+              )
+              as Map<String, dynamic>;
+
+      expect(json, containsPair('historyTurnId', 'provider-turn-3'));
+    });
+  });
+
   group('Result message parsing', () {
     test('parses token and tool usage fields', () {
       final msg = ServerMessage.fromJson({
@@ -1720,6 +1784,7 @@ void main() {
         'stage': 'provider_accepted',
         'provider': 'codex',
         'method': 'turn/start',
+        'providerTurnId': 'turn-provider-1',
         'occurredAt': '2026-07-31T00:00:00.000Z',
         'acceptedSeq': 12,
         'queued': true,
@@ -1730,6 +1795,7 @@ void main() {
       final status = msg as InputDeliveryStatusMessage;
       expect(status.stage, InputDeliveryStage.providerAccepted);
       expect(status.clientMessageId, 'cm-1');
+      expect(status.providerTurnId, 'turn-provider-1');
       expect(status.clientUserMessageIdAccepted, isFalse);
     });
   });

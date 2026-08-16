@@ -1,4 +1,5 @@
 import type { ConversationContentEntry } from "./conversation-content-protocol.js";
+import type { ServerMessage } from "../../parser.js";
 import {
   hasOnlyLocalFeatureKeys,
   validLocalFeatureId,
@@ -6,12 +7,30 @@ import {
 } from "../protocol-slot.js";
 
 export const CONVERSATION_SYNC_V2_CAPABILITY = "conversation_sync_v2" as const;
+export const CONVERSATION_WINDOW_COVERAGE_CAPABILITY =
+  "conversation_sync_window_coverage_v1" as const;
+export const CONVERSATION_SYNC_FOCUS_REFRESH_CAPABILITY =
+  "conversation_sync_focus_refresh_v1" as const;
 export const CONVERSATION_ITEMS_BY_ID_CAPABILITY =
   "conversation_items_by_id_v1" as const;
 export const CONVERSATION_USER_INDEX_CAPABILITY =
   "conversation_user_index_v1" as const;
 export const APP_SERVER_STATUS_CAPABILITY = "app_server_status_v1" as const;
 export const BRIDGE_IDENTITY_V2_CAPABILITY = "bridge_identity_v2" as const;
+export const CONVERSATION_RUNTIME_OVERLAY_CAPABILITY =
+  "conversation_runtime_overlay_v1" as const;
+
+export type ConversationRuntimeOverlayMessage = Extract<
+  ServerMessage,
+  {
+    type:
+      | "assistant"
+      | "result"
+      | "error"
+      | "guardian_approval"
+      | "tool_use_summary";
+  }
+>;
 
 export type ConversationSyncProvider = "claude" | "codex";
 
@@ -22,6 +41,8 @@ export interface ConversationSyncTarget {
 
 export interface ConversationSyncThreadState extends ConversationSyncTarget {
   revision: string;
+  /** Client retained this base, but its additive window needs a full replace. */
+  forceReplacement?: boolean;
 }
 
 export interface ConversationSyncReadWatermark extends ConversationSyncTarget {
@@ -56,6 +77,7 @@ export type ConversationSyncClientMessage =
       requestId: string;
       subscriptionId: string;
       focused?: ConversationSyncTarget;
+      refresh?: boolean;
     }
   | {
       type: "conversation_sync_unsubscribe";
@@ -89,6 +111,11 @@ export type ConversationSyncClientMessage =
 export interface ConversationSyncCatalogEntry extends ConversationSyncTarget {
   revision: string;
   projectPath: string;
+  projectGroupKind?: "desktopProject" | "projectless";
+  projectGroupId?: string;
+  projectGroupName?: string;
+  projectGroupPath?: string;
+  projectGroupingSnapshotComplete?: boolean;
   name?: string;
   summary?: string;
   firstPrompt?: string;
@@ -167,9 +194,15 @@ interface ConversationSyncEventBase {
   codexSourceId: string;
   batchId: string;
   sequence: number;
+  requestId?: string;
 }
 
 export type ConversationSyncServerMessage =
+  | {
+      /** Capability-advertisement marker; never emitted as a runtime event. */
+      type: typeof CONVERSATION_WINDOW_COVERAGE_CAPABILITY;
+      supported: true;
+    }
   | (ConversationSyncEventBase & {
       event: "sync_begin";
       requestId: string;
@@ -207,9 +240,33 @@ export type ConversationSyncServerMessage =
         deletes: string[];
         hasEarlier: boolean;
         turnsNextCursor?: string | null;
+        /**
+         * True only when this page transaction covers the complete bounded hot
+         * window and may replace a previously committed window. Older clients
+         * safely ignore this additive field.
+         */
+        windowComplete?: boolean;
         latestTurnComplete?: boolean;
         latestTurnGap?: ConversationSyncLatestTurnGap;
         sourceEntryCount: number;
+      })
+  | (ConversationSyncEventBase &
+      ConversationSyncTarget & {
+        event: "runtime_overlay";
+        overlayId: string;
+        observedAt: string;
+        /** Producer lifecycle fence; changes when observer/runtime is replaced. */
+        originGeneration: string;
+        /**
+         * Exact producer attachment. SessionManager uses its runtime session
+         * ID; the shared observer uses its opaque observer generation.
+         */
+        runtimeSessionId: string;
+        /** Authority fence shared with the current status projection. */
+        authorityGeneration: string;
+        /** Exact provider turn that owns this transient overlay. */
+        turnId: string;
+        message: ConversationRuntimeOverlayMessage;
       })
   | (ConversationSyncEventBase & {
       event: "sync_checkpoint";
@@ -235,11 +292,18 @@ export type ConversationSyncServerMessage =
       })
   | (ConversationSyncEventBase &
       ConversationSyncTarget & {
-        event: "items_page_response";
-        requestId: string;
-        turnId?: string;
-        data: unknown[];
-        nextCursor: string | null;
+      event: "items_page_response";
+      requestId: string;
+      turnId?: string;
+      data: unknown[];
+      nextCursor: string | null;
+      /**
+       * Compatibility marker for a non-terminal projected page. Current
+       * Bridges fail an oversized source item and keep its cursor unchanged
+       * instead of presenting a projection as complete.
+       */
+      pageComplete?: boolean;
+      latestTurnGap?: ConversationSyncLatestTurnGap;
       })
   | (ConversationSyncEventBase & {
       event: "focus_applied";
@@ -319,15 +383,22 @@ function parseThreadStates(
         "provider",
         "providerSessionId",
         "revision",
+        "forceReplacement",
       ]) ||
-      !validLocalFeatureId(record.revision, 128)
+      !validLocalFeatureId(record.revision, 128) ||
+      (record.forceReplacement !== undefined &&
+        typeof record.forceReplacement !== "boolean")
     ) {
       return null;
     }
     const key = targetKey(target);
     if (seen.has(key)) return null;
     seen.add(key);
-    states.push({ ...target, revision: record.revision });
+    states.push({
+      ...target,
+      revision: record.revision,
+      ...(record.forceReplacement === true ? { forceReplacement: true } : {}),
+    });
   }
   return states;
 }
@@ -398,7 +469,10 @@ export const conversationSyncV2ProtocolContribution: LocalFeatureProtocolContrib
   ConversationSyncServerMessage
 > = {
   clientTypes: CLIENT_TYPES,
-  serverTypes: [CONVERSATION_SYNC_V2_CAPABILITY],
+  serverTypes: [
+    CONVERSATION_SYNC_V2_CAPABILITY,
+    CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
+  ],
   parseClient(message) {
     if (
       typeof message.type !== "string" ||
@@ -515,11 +589,18 @@ export const conversationSyncV2ProtocolContribution: LocalFeatureProtocolContrib
                 "requestId",
                 "subscriptionId",
                 "focused",
+                "refresh",
               ]
             : ["type", "protocolVersion", "requestId", "subscriptionId"],
         ) ||
         !validLocalFeatureId(message.requestId, 128) ||
         !validLocalFeatureId(message.subscriptionId, 128) ||
+        (message.type === "conversation_sync_focus" &&
+          message.refresh !== undefined &&
+          typeof message.refresh !== "boolean") ||
+        (message.type === "conversation_sync_focus" &&
+          message.refresh === true &&
+          !focused) ||
         focused === null
       ) {
         return null;
@@ -538,6 +619,7 @@ export const conversationSyncV2ProtocolContribution: LocalFeatureProtocolContrib
         requestId: message.requestId,
         subscriptionId: message.subscriptionId,
         ...(focused ? { focused } : {}),
+        ...(message.refresh === true ? { refresh: true } : {}),
       };
     }
 

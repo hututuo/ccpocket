@@ -232,6 +232,8 @@ export interface CodexInputDeliveryEvent {
   stage: CodexInputDeliveryStage;
   method: "turn/start" | "turn/steer";
   occurredAt: string;
+  /** Exact provider turn admitted by the app-server RPC boundary. */
+  providerTurnId?: string;
   clientUserMessageIdAccepted?: boolean;
   error?: string;
 }
@@ -588,6 +590,7 @@ export interface CodexServerActionProjection {
 interface PendingGuardianReviewWarning {
   review: GuardianReviewDetails;
   message: string;
+  historyTurnId?: string;
   timeout: ReturnType<typeof setTimeout>;
 }
 
@@ -788,6 +791,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private emittedGuardianReviewIdOrder: string[] = [];
   private goalOperationSequence = 0;
   private goalOrderingGeneration = 0;
+  /** Thread scope for initialize-only durable Goal RPCs. */
+  private directGoalThreadId: string | null = null;
   private _lastGoalRpcSequence: number | undefined;
   private expectedGoalNotifications: Array<{
     sequence: number;
@@ -1942,10 +1947,16 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!this._threadId) {
       throw new Error("No thread ID available for goal lookup");
     }
+    return this.getGoalSnapshotById(this._threadId);
+  }
+
+  /** Read Goal state for an exact durable thread without resuming it. */
+  async getGoalSnapshotById(threadId: string): Promise<CodexGoalSnapshot> {
+    const targetThreadId = this.bindDirectGoalThread(threadId);
     this.beginGoalRpc();
     const orderingGeneration = this.goalOrderingGeneration;
     const response = (await this.request("thread/goal/get", {
-      threadId: this._threadId,
+      threadId: targetThreadId,
     })) as Record<string, unknown>;
     return {
       goal: response.goal == null ? null : parseCodexGoal(response.goal),
@@ -1965,9 +1976,23 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!this._threadId) {
       throw new Error("No thread ID available for goal update");
     }
+    return this.setGoalById(this._threadId, update, options);
+  }
+
+  /** Create or update Goal state for an exact durable thread. */
+  async setGoalById(
+    threadId: string,
+    update: {
+      objective?: string;
+      status?: CodexGoalWritableStatus;
+      tokenBudget?: number | null;
+    },
+    options: CodexGoalMutationOptions = {},
+  ): Promise<CodexGoal> {
+    const targetThreadId = this.bindDirectGoalThread(threadId);
     await this.waitForPendingThreadSettingsUpdates();
     if (options.validateCurrentGoal) {
-      const snapshot = await this.getGoalSnapshot();
+      const snapshot = await this.getGoalSnapshotById(targetThreadId);
       if (!snapshot.stable) throw new CodexGoalSnapshotConflictError();
       // Intentionally synchronous: no notification can interleave between the
       // validated app-server snapshot and registering the mutation RPC.
@@ -1975,7 +2000,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     }
     this.beginGoalRpc();
     const response = (await this.request("thread/goal/set", {
-      threadId: this._threadId,
+      threadId: targetThreadId,
       ...(update.objective !== undefined
         ? { objective: update.objective.trim() }
         : {}),
@@ -1992,20 +2017,47 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!this._threadId) {
       throw new Error("No thread ID available for goal clear");
     }
+    return this.clearGoalById(this._threadId, options);
+  }
+
+  /** Remove Goal state from an exact durable thread. */
+  async clearGoalById(
+    threadId: string,
+    options: CodexGoalMutationOptions = {},
+  ): Promise<boolean> {
+    const targetThreadId = this.bindDirectGoalThread(threadId);
     await this.waitForPendingThreadSettingsUpdates();
     if (options.validateCurrentGoal) {
-      const snapshot = await this.getGoalSnapshot();
+      const snapshot = await this.getGoalSnapshotById(targetThreadId);
       if (!snapshot.stable) throw new CodexGoalSnapshotConflictError();
       options.validateCurrentGoal(snapshot.goal);
     }
     this.beginGoalRpc();
     const response = (await this.request("thread/goal/clear", {
-      threadId: this._threadId,
+      threadId: targetThreadId,
     })) as Record<string, unknown>;
     if (typeof response.cleared !== "boolean") {
       throw new Error("thread/goal/clear returned an invalid response");
     }
     return response.cleared;
+  }
+
+  private bindDirectGoalThread(threadId: string): string {
+    const normalized = threadId.trim();
+    if (!normalized) throw new Error("Goal RPC requires a thread ID");
+    if (this._threadId !== null && this._threadId !== normalized) {
+      throw new Error("Goal RPC target does not match the attached thread");
+    }
+    if (
+      this.directGoalThreadId !== null &&
+      this.directGoalThreadId !== normalized
+    ) {
+      throw new Error(
+        "This Goal RPC process is already scoped to another thread",
+      );
+    }
+    this.directGoalThreadId = normalized;
+    return normalized;
   }
 
   private nextGoalOperationSequence(): number {
@@ -2420,23 +2472,41 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     if (!this._threadId) {
       throw new Error("No thread ID available for fork");
     }
+    return this.forkThreadById(this._threadId);
+  }
+
+  async forkThreadById(
+    threadId: string,
+    boundary: { beforeTurnId?: string; lastTurnId?: string } = {},
+  ): Promise<{
+    threadId: string;
+    thread: Record<string, unknown>;
+  }> {
+    if (boundary.beforeTurnId && boundary.lastTurnId) {
+      throw new Error("Codex fork accepts only one turn boundary");
+    }
     const response = (await this.request(
       "thread/fork",
       {
-        threadId: this._threadId,
+        threadId,
         persistExtendedHistory: true,
+        ...(boundary.beforeTurnId
+          ? { beforeTurnId: boundary.beforeTurnId }
+          : {}),
+        ...(boundary.lastTurnId ? { lastTurnId: boundary.lastTurnId } : {}),
       },
       { bindThreadResult: false },
     )) as Record<string, unknown>;
     const thread = response.thread as Record<string, unknown> | undefined;
-    const threadId = typeof thread?.id === "string" ? thread.id : undefined;
-    if (!thread || !threadId) {
+    const childThreadId =
+      typeof thread?.id === "string" ? thread.id : undefined;
+    if (!thread || !childThreadId) {
       throw new Error("thread/fork returned no thread id");
     }
     if (this.isSharedRuntimeTopology()) {
-      this.sharedRuntimeOwnedForkThreadIds.add(threadId);
+      this.sharedRuntimeOwnedForkThreadIds.add(childThreadId);
     }
-    return { threadId, thread };
+    return { threadId: childThreadId, thread };
   }
 
   async listThreads(
@@ -2453,10 +2523,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       useStateDbOnly?: boolean;
       parentThreadId?: string;
       ancestorThreadId?: string;
+      /** Fail closed when a compatibility server returns a non-canonical list. */
+      requireCanonicalResultShape?: boolean;
     } = {},
     options: CodexRpcRequestOptions = {},
   ): Promise<{ data: CodexThreadSummary[]; nextCursor: string | null }> {
-    const result = (await this.requestReadOnlyRpc(
+    const rawResult = (await this.requestReadOnlyRpc(
       "thread/list",
       {
         sortKey: params.sortKey ?? "updated_at",
@@ -2483,7 +2555,20 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           : {}),
       },
       options,
-    )) as { data?: unknown[]; nextCursor?: unknown };
+    )) as unknown;
+    const result =
+      rawResult && typeof rawResult === "object"
+        ? (rawResult as { data?: unknown[]; nextCursor?: unknown })
+        : {};
+    if (
+      params.requireCanonicalResultShape &&
+      (!Array.isArray(result.data) ||
+        (result.nextCursor !== undefined &&
+          result.nextCursor !== null &&
+          typeof result.nextCursor !== "string"))
+    ) {
+      throw new Error("thread/list returned a non-canonical result");
+    }
 
     const data = Array.isArray(result.data)
       ? result.data.map((entry) => toCodexThreadSummary(entry))
@@ -2848,6 +2933,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this._sharedRuntimePilotGates = snapshotSharedRuntimePilotGates();
     this.setStatus("starting");
     this._threadId = null;
+    this.directGoalThreadId = null;
     this._sharedRuntimeAttachMode = options?.sharedRuntimeAttach ?? null;
     this._attachmentRuntimeGeneration = null;
     this._authoritativeThreadStatus = { type: "unknown" };
@@ -3248,6 +3334,8 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         "provider_accepted",
         "turn/steer",
         receipt.clientUserMessageIdAccepted,
+        undefined,
+        expectedTurnId,
       );
     } catch (err) {
       this.emitInputDelivery(
@@ -4803,17 +4891,24 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           pendingInput.requireClientUserMessageId === true,
         )
           .then((receipt) => {
+            const turn = (receipt.result as Record<string, unknown>).turn as
+              | Record<string, unknown>
+              | undefined;
+            const providerTurnId =
+              typeof turn?.id === "string" && turn.id.trim()
+                ? turn.id.trim()
+                : undefined;
             this.emitInputDelivery(
               pendingInput.clientMessageId,
               "provider_accepted",
               "turn/start",
               receipt.clientUserMessageIdAccepted,
+              undefined,
+              providerTurnId,
             );
             if (!this.isRuntimeActive(runtimeGeneration)) return;
-            const turn = (receipt.result as Record<string, unknown>).turn as
-              Record<string, unknown> | undefined;
-            if (typeof turn?.id === "string") {
-              this.bindPendingTurnCompletion(turnCompletion, turn.id);
+            if (providerTurnId) {
+              this.bindPendingTurnCompletion(turnCompletion, providerTurnId);
             }
           })
           .catch((err) => {
@@ -5417,6 +5512,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     review: GuardianReviewDetails,
     message: string,
   ): void {
+    const historyTurnId = this.activeTurnId;
     const key = guardianReviewSignature(review);
     let pending!: PendingGuardianReviewWarning;
     const timeout = setTimeout(() => {
@@ -5428,10 +5524,15 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       if (queued.length === 0) {
         this.pendingGuardianReviewWarnings.delete(key);
       }
-      this.emitGuardianReview(review, message);
+      this.emitGuardianReview(review, message, pending.historyTurnId);
     }, GUARDIAN_REVIEW_ENRICHMENT_DELAY_MS);
     timeout.unref?.();
-    pending = { review, message, timeout };
+    pending = {
+      review,
+      message,
+      ...(historyTurnId ? { historyTurnId } : {}),
+      timeout,
+    };
     const queued = this.pendingGuardianReviewWarnings.get(key);
     if (queued) {
       queued.push(pending);
@@ -5484,6 +5585,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private emitGuardianReview(
     review: GuardianReviewDetails,
     legacyMessage?: string,
+    historyTurnId?: string,
   ): void {
     if (review.reviewId && this.emittedGuardianReviewIds.has(review.reviewId)) {
       return;
@@ -5502,27 +5604,39 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       review.status === "approved" &&
       (review.risk === "medium" || review.risk === "high")
     ) {
-      this.emitMessage({
-        type: "guardian_approval",
-        risk: review.risk,
-        reason: review.reason,
-        ...(review.authorization
-          ? { authorization: review.authorization }
-          : {}),
-        status: "approved",
-        ...(review.reviewId ? { reviewId: review.reviewId } : {}),
-        ...(review.targetItemId ? { targetItemId: review.targetItemId } : {}),
-        ...(review.action ? { action: review.action } : {}),
-      });
+      this.emitMessage(
+        withCodexHistoryTurn(
+          {
+            type: "guardian_approval",
+            risk: review.risk,
+            reason: review.reason,
+            ...(review.authorization
+              ? { authorization: review.authorization }
+              : {}),
+            status: "approved",
+            ...(review.reviewId ? { reviewId: review.reviewId } : {}),
+            ...(review.targetItemId
+              ? { targetItemId: review.targetItemId }
+              : {}),
+            ...(review.action ? { action: review.action } : {}),
+          },
+          historyTurnId,
+        ),
+      );
       return;
     }
 
-    this.emitMessage({
-      type: "error",
-      errorCode: "codex_warning",
-      message: legacyMessage ?? formatGuardianReviewWarning(review),
-      guardianReview: review,
-    });
+    this.emitMessage(
+      withCodexHistoryTurn(
+        {
+          type: "error",
+          errorCode: "codex_warning",
+          message: legacyMessage ?? formatGuardianReviewWarning(review),
+          guardianReview: review,
+        },
+        historyTurnId,
+      ),
+    );
   }
 
   private rememberGuardianReviewId(reviewId: string | undefined): void {
@@ -5939,7 +6053,13 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         const review = pending
           ? mergeGuardianReviewDetails(pending.review, completed)
           : completed;
-        this.emitGuardianReview(review, pending?.message);
+        this.emitGuardianReview(
+          review,
+          pending?.message,
+          pending?.historyTurnId ??
+            stringOrNull(params.turnId) ??
+            this.activeTurnId,
+        );
         break;
       }
 
@@ -6018,8 +6138,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     // In shared app-server modes, early notifications can belong to another
     // client, so explicit-thread notifications are ignored until this process
     // has its own authoritative thread id.
-    if (!this._threadId) return true;
-    return threadId !== this._threadId;
+    const boundThreadId =
+      method.startsWith("thread/goal/") && this.directGoalThreadId !== null
+        ? this.directGoalThreadId
+        : this._threadId;
+    if (!boundThreadId) return true;
+    return threadId !== boundThreadId;
   }
 
   private handleTurnCompleted(turn: Record<string, unknown> | undefined): void {
@@ -6101,30 +6225,45 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
         typeof errorObj?.message === "string"
           ? errorObj.message
           : "Turn failed";
-      this.emitMessage({
-        type: "result",
-        subtype: "error",
-        error: message,
-        sessionId: this._threadId ?? undefined,
-      });
+      this.emitMessage(
+        withCodexHistoryTurn(
+          {
+            type: "result",
+            subtype: "error",
+            error: message,
+            sessionId: this._threadId ?? undefined,
+          },
+          turnId,
+        ),
+      );
     } else if (status === "interrupted") {
-      this.emitMessage({
-        type: "result",
-        subtype: "interrupted",
-        sessionId: this._threadId ?? undefined,
-      });
+      this.emitMessage(
+        withCodexHistoryTurn(
+          {
+            type: "result",
+            subtype: "interrupted",
+            sessionId: this._threadId ?? undefined,
+          },
+          turnId,
+        ),
+      );
     } else {
-      this.emitMessage({
-        type: "result",
-        subtype: "success",
-        sessionId: this._threadId ?? undefined,
-        ...(this.lastResultText ? { result: this.lastResultText } : {}),
-        ...(usage?.input != null ? { inputTokens: usage.input } : {}),
-        ...(usage?.cachedInput != null
-          ? { cachedInputTokens: usage.cachedInput }
-          : {}),
-        ...(usage?.output != null ? { outputTokens: usage.output } : {}),
-      });
+      this.emitMessage(
+        withCodexHistoryTurn(
+          {
+            type: "result",
+            subtype: "success",
+            sessionId: this._threadId ?? undefined,
+            ...(this.lastResultText ? { result: this.lastResultText } : {}),
+            ...(usage?.input != null ? { inputTokens: usage.input } : {}),
+            ...(usage?.cachedInput != null
+              ? { cachedInputTokens: usage.cachedInput }
+              : {}),
+            ...(usage?.output != null ? { outputTokens: usage.output } : {}),
+          },
+          turnId,
+        ),
+      );
     }
 
     if (!turnId || this.pendingTurnId === turnId) {
@@ -6778,13 +6917,18 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     method: "turn/start" | "turn/steer",
     clientUserMessageIdAccepted?: boolean,
     error?: unknown,
+    providerTurnId?: string,
   ): void {
     if (!clientMessageId) return;
+    const normalizedProviderTurnId = providerTurnId?.trim();
     this.emit("input_delivery", {
       clientMessageId,
       stage,
       method,
       occurredAt: new Date().toISOString(),
+      ...(normalizedProviderTurnId && normalizedProviderTurnId.length <= 256
+        ? { providerTurnId: normalizedProviderTurnId }
+        : {}),
       ...(clientUserMessageIdAccepted === undefined
         ? {}
         : { clientUserMessageIdAccepted }),
@@ -7772,7 +7916,11 @@ function withCodexHistoryTurn(
     !turnId ||
     (message.type !== "user_input" &&
       message.type !== "assistant" &&
-      message.type !== "tool_result")
+      message.type !== "tool_result" &&
+      message.type !== "result" &&
+      message.type !== "error" &&
+      message.type !== "guardian_approval" &&
+      message.type !== "tool_use_summary")
   ) {
     return message;
   }

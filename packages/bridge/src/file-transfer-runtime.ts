@@ -8,6 +8,10 @@ import {
 } from "./file-transfer-state-store.js";
 import { FileTransferUploadStore } from "./file-transfer-upload-store.js";
 import type { FileMutationAuthorizer } from "./file-mutation-auth.js";
+import type {
+  DiagnosticReportArchiver,
+  DiagnosticReportContentPolicy,
+} from "./file-transfer-diagnostic.js";
 
 export interface FileTransferRuntime {
   manager: FileTransferManager;
@@ -25,6 +29,11 @@ export interface FileTransferRuntimeOptions {
   partialDirectory?: string;
   fileMutationAuthorizer?: FileMutationAuthorizer;
   warn?: (message: string) => void;
+  diagnosticReportArchiver?: DiagnosticReportArchiver;
+  allowDiagnosticWithoutMutationAuthorization?: boolean;
+  /** Rechecked by the HTTP bearer continuation after every Bridge restart. */
+  allowDiagnosticUploadContinuation?: boolean;
+  diagnosticContentPolicy?: DiagnosticReportContentPolicy;
 }
 
 /**
@@ -54,6 +63,7 @@ export async function initializeFileTransferRuntime(
     });
     const uploadStore = new FileTransferUploadStore({
       stateStore,
+      diagnosticContentPolicy: options.diagnosticContentPolicy,
       ...(options.downloadDirectory
         ? { directory: options.downloadDirectory }
         : {}),
@@ -66,11 +76,17 @@ export async function initializeFileTransferRuntime(
       uploadStore,
       baseUrl: options.baseUrl,
       fileMutationAuthorizer: options.fileMutationAuthorizer,
+      diagnosticReportArchiver: options.diagnosticReportArchiver,
+      allowDiagnosticWithoutMutationAuthorization:
+        options.allowDiagnosticWithoutMutationAuthorization,
     });
     await manager.init();
     return {
       manager,
-      http: new FileTransferHttpHandler(manager),
+      http: new FileTransferHttpHandler(manager, {
+        allowDiagnosticUploadContinuation:
+          options.allowDiagnosticUploadContinuation,
+      }),
       stateFilePath,
     };
   } catch (error) {

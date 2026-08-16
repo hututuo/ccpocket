@@ -990,7 +990,7 @@ void main() {
   );
 
   test(
-    'a far turn swaps in one target window without mounting skipped pages',
+    'a far turn opens a two-way window without replacing the live cache',
     () async {
       var sequentialLoads = 0;
       var targetWindowLoads = 0;
@@ -1033,6 +1033,21 @@ void main() {
             }) async {
               targetWindowLoads += 1;
               expect(limit, 200);
+              if (startOrdinal == 2) {
+                return const LocalSessionHistoryPage(
+                  messages: [
+                    UserInputMessage(
+                      text: 'later target context',
+                      userMessageUuid: 'later-target-context',
+                    ),
+                  ],
+                  hasMore: true,
+                  hasLater: false,
+                  startOrdinal: 2,
+                  endOrdinalExclusive: 3,
+                  totalEntries: 3,
+                );
+              }
               if (startOrdinal == 1800) {
                 return const LocalSessionHistoryPage(
                   messages: [
@@ -1057,6 +1072,10 @@ void main() {
                   ),
                 ],
                 hasMore: false,
+                hasLater: true,
+                startOrdinal: 0,
+                endOrdinalExclusive: 2,
+                totalEntries: 3,
               );
             },
       );
@@ -1109,20 +1128,123 @@ void main() {
 
       expect(revealed?.messageUuid, 'far-target');
       expect(
-        cubit.state.entries.whereType<UserChatEntry>().map(
+        cubit.visibleEntries.whereType<UserChatEntry>().map(
           (entry) => entry.text,
         ),
         ['far target', 'next turn in target window'],
       );
+      expect(
+        cubit.state.entries.whereType<UserChatEntry>().map(
+          (entry) => entry.text,
+        ),
+        ['recent visible'],
+      );
       expect(sequentialLoads, 0);
       expect(targetWindowLoads, 1);
-      expect(visibleUserCounts.where((count) => count > 1), [2]);
+      expect(visibleUserCounts.where((count) => count > 1), isEmpty);
       expect(cubit.localHistoryPaging.value.hasMore, isFalse);
+      expect(cubit.localHistoryPaging.value.hasLater, isTrue);
+
+      bridge.notifySessionHistoryAvailabilityChanged('s1', available: true);
+      await Future<void>.microtask(() {});
+      expect(cubit.historyNavigationActive, isTrue);
+      expect(cubit.localHistoryPaging.value.hasMore, isFalse);
+      expect(cubit.localHistoryPaging.value.hasLater, isTrue);
+
+      expect(await cubit.loadNewerLocalHistory(), isTrue);
+      expect(targetWindowLoads, 2);
+      expect(
+        cubit.visibleEntries.whereType<UserChatEntry>().map(
+          (entry) => entry.text,
+        ),
+        ['far target', 'next turn in target window', 'later target context'],
+      );
+      expect(cubit.localHistoryPaging.value.hasMore, isFalse);
+      expect(cubit.localHistoryPaging.value.hasLater, isFalse);
 
       final recent = await cubit.revealUserMessage(index.last);
       expect(recent?.messageUuid, 'recent-visible');
+      expect(cubit.historyNavigationActive, isFalse);
       expect(targetWindowLoads, 2);
       expect(cubit.localHistoryPaging.value.hasMore, isTrue);
+    },
+  );
+
+  test(
+    'prepending a history window preserves the already-complete newer edge',
+    () async {
+      bridge.sessionSnapshot = const [
+        SessionInfo(
+          id: 's1',
+          provider: 'codex',
+          projectPath: '/project',
+          status: 'idle',
+          createdAt: '',
+          lastActivityAt: '',
+        ),
+      ];
+      bridge.configureSessionHistoryBootstrap(({
+        required runtimeSessionId,
+        required provider,
+        required providerSessionId,
+        required projectPath,
+        required force,
+      }) async {
+        bridge.publishExternalSessionHistory(runtimeSessionId, const [
+          UserInputMessage(text: 'live tail', userMessageUuid: 'live-tail'),
+        ]);
+        return true;
+      });
+      bridge.configureSessionHistoryPaging(
+        hasMore: (_) => true,
+        loader: ({required runtimeSessionId, required limit}) async =>
+            const LocalSessionHistoryPage(messages: [], hasMore: false),
+        windowLoader:
+            ({
+              required runtimeSessionId,
+              required startOrdinal,
+              required limit,
+            }) async {
+              expect(startOrdinal, 0);
+              expect(limit, 200);
+              return const LocalSessionHistoryPage(
+                messages: [
+                  UserInputMessage(
+                    text: 'older context',
+                    userMessageUuid: 'older-context',
+                  ),
+                ],
+                hasMore: false,
+                hasLater: true,
+                startOrdinal: 0,
+                endOrdinalExclusive: 200,
+                totalEntries: 400,
+              );
+            },
+      );
+
+      final cubit = createCubit();
+      await settleBootstrap();
+      cubit.historyNavigation.value = HistoryNavigationWindow(
+        entries: List.unmodifiable(cubit.state.entries),
+        startOrdinal: 200,
+        endOrdinalExclusive: 400,
+      );
+      cubit.localHistoryPaging.value = const LocalHistoryPagingState(
+        enabled: true,
+        hasMore: true,
+        hasLater: false,
+      );
+
+      expect(await cubit.loadOlderLocalHistory(), isTrue);
+      expect(cubit.localHistoryPaging.value.hasMore, isFalse);
+      expect(cubit.localHistoryPaging.value.hasLater, isFalse);
+      expect(
+        cubit.visibleEntries.whereType<UserChatEntry>().map(
+          (entry) => entry.text,
+        ),
+        ['older context', 'live tail'],
+      );
     },
   );
 

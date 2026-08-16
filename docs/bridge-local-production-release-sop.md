@@ -53,6 +53,12 @@ URL（除上述 candidate public URL）、allowed dirs、文件传输和会话�
 认证。本机开发阶段当前要求 `BRIDGE_REQUIRE_API_KEY=1`；以后改成 `0` 是单独的配置
 变更和风险确认，不是普通 Bridge 升级的默认动作。
 
+`BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS=1` 是另一项独立的开发配置。正式、外网或
+不受信任网络部署必须断言它不存在或不为 `1`；只有当前任务明确授权“本机开发诊断”时，
+候选和生产切换才可以保留它，并同时证明 `BRIDGE_AUTH_MODE=open` 以及 `/health` 中
+`developmentDiagnostics.unauthenticatedSessionReports=true`。该例外不得被普通 runtime
+升级或后续正式发布静默继承。
+
 所有独立 metadata 与协议探针也必须显式注入从 plist 读取的
 `CODEX_HOME`、`BRIDGE_CODEX_DAEMON_SOCKET` 和 `BRIDGE_CODEX_SOURCE_ID`，并在证据中
 标注环境来源为“当前 LaunchAgent plist”。不依赖 shell 默认值。
@@ -115,6 +121,9 @@ wire smoke。切换后再证明新生产实例持有 writer lease。
 2. 生成 candidate plist，对比并断言唯一改动是 `BRIDGE_CLI_ENTRY`。必须保留
    `CODEX_HOME`、daemon socket/source id、`BRIDGE_REQUIRE_API_KEY`、API key、
    public/artifact URL、allowed dirs、文件传输和会话配置。
+   若本任务不是明确授权的本机开发诊断，另须断言
+   `BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS` 未启用；若已授权，则把它作为显式部署
+   差异记录，而不是隐藏在完整环境继承中。
 3. 使用项目已验证的温和 LaunchAgent registration 流程切换。若这会终止共享
    app-server 或正在运行的 Codex 会话，停止而非强行发布。
 4. 任何切换、监听、health、daemon、Action Broker 或协议验收失败，立即恢复旧

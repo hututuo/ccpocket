@@ -254,6 +254,65 @@ void main() {
     );
   });
 
+  test(
+    'upload checkpoint round-trips diagnostic metadata and old v2 defaults',
+    () {
+      final now = DateTime.utc(2026, 8, 12, 12).toIso8601String();
+      final metadata = <String, Object?>{
+        'schemaVersion': 1,
+        'reportId': 'report_20260812',
+        'provider': 'codex',
+        'providerSessionId': 'thread-123',
+        'bridgeInstanceId': 'bridge-123',
+        'codexSourceId': 'source-123',
+        'capturedAtStart': '2026-08-12T00:00:00.000Z',
+        'capturedAtEnd': '2026-08-12T00:01:00.000Z',
+        'sha256': 'a' * 64,
+      };
+      final checkpoint = UploadTransferCheckpoint.fromJson({
+        'schemaVersion': 2,
+        'bridgeKey': 'a' * 64,
+        'localId': 'local-1',
+        'requestId': 'request-1',
+        'transferId': transferId,
+        'filename': 'report.json',
+        'sizeBytes': 3,
+        'uploadedBytes': 1,
+        'stagedFilename': 'local.stage',
+        'purpose': 'diagnostic_report',
+        'metadata': metadata,
+        'createdAt': now,
+        'expiresAt': now,
+        'updatedAt': now,
+      });
+      expect(checkpoint.purpose, 'diagnostic_report');
+      expect(checkpoint.metadata, metadata);
+      expect(
+        UploadTransferCheckpoint.fromJson(checkpoint.toJson()).metadata,
+        metadata,
+      );
+
+      final old = UploadTransferCheckpoint.fromJson({
+        'schemaVersion': 2,
+        'bridgeKey': 'a' * 64,
+        'localId': 'local-2',
+        'requestId': 'request-2',
+        'transferId': transferId,
+        'filename': 'ordinary.bin',
+        'sizeBytes': 3,
+        'uploadedBytes': 0,
+        'stagedFilename': 'ordinary.stage',
+        'createdAt': now,
+        'expiresAt': now,
+        'updatedAt': now,
+      });
+      expect(old.purpose, isNull);
+      expect(old.metadata, isNull);
+      expect(old.toJson(), isNot(contains('purpose')));
+      expect(old.toJson(), isNot(contains('metadata')));
+    },
+  );
+
   test('old v2 completions default to no pending notification', () {
     final now = DateTime.utc(2026, 7, 18).toIso8601String();
     final checkpoint = ReceiveTransferCheckpoint.fromJson({
@@ -387,22 +446,25 @@ void main() {
     );
   });
 
-  test('received inbox lists newest regular files without following links', () async {
-    final older = File('${downloads.path}/older.txt');
-    final newer = File('${downloads.path}/newer.pdf');
-    await older.writeAsBytes(const [1]);
-    await newer.writeAsBytes(const [2, 3]);
-    await older.setLastModified(DateTime.utc(2026, 7, 18, 10));
-    await newer.setLastModified(DateTime.utc(2026, 7, 18, 11));
-    await Directory('${downloads.path}/folder').create();
-    await Link('${downloads.path}/linked.txt').create(older.path);
+  test(
+    'received inbox lists newest regular files without following links',
+    () async {
+      final older = File('${downloads.path}/older.txt');
+      final newer = File('${downloads.path}/newer.pdf');
+      await older.writeAsBytes(const [1]);
+      await newer.writeAsBytes(const [2, 3]);
+      await older.setLastModified(DateTime.utc(2026, 7, 18, 10));
+      await newer.setLastModified(DateTime.utc(2026, 7, 18, 11));
+      await Directory('${downloads.path}/folder').create();
+      await Link('${downloads.path}/linked.txt').create(older.path);
 
-    final received = await storage.listReceivedFiles();
+      final received = await storage.listReceivedFiles();
 
-    expect(received.map((file) => file.filename), ['newer.pdf', 'older.txt']);
-    expect(received.first.sizeBytes, 2);
-    expect(received.first.path, newer.path);
-  });
+      expect(received.map((file) => file.filename), ['newer.pdf', 'older.txt']);
+      expect(received.first.sizeBytes, 2);
+      expect(received.first.path, newer.path);
+    },
+  );
 
   test('failed external drop removes its private staging directory', () async {
     final picker = await storage.pickerStagingDirectory();
@@ -427,9 +489,8 @@ void main() {
       await picker
           .list(followLinks: false)
           .where(
-            (entity) => entity.path.split('/').last.startsWith(
-              'ccpocket-picker-',
-            ),
+            (entity) =>
+                entity.path.split('/').last.startsWith('ccpocket-picker-'),
           )
           .toList(),
       isEmpty,

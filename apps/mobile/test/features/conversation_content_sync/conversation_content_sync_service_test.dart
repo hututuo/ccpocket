@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:ccpocket/features/conversation_content_sync/conversation_content_sync_service.dart';
 import 'package:ccpocket/features/session_list/cache/session_catalog_cache_database.dart';
 import 'package:ccpocket/features/session_list/cache/session_catalog_cache_repository.dart';
+import 'package:ccpocket/models/bridge_data_source_identity.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -112,6 +113,7 @@ void main() {
       (update) => update.kind == ConversationSyncCacheUpdateKind.catalog,
     );
     expect(catalogUpdate.targetFingerprint, isNotEmpty);
+    final catalogTargetFingerprint = catalogUpdate.targetFingerprint!;
     expect(catalogUpdate.codexSourceId, 'codex-home-a');
     expect(catalogUpdate.catalogUpserts.single.providerSessionId, 'thread-v2');
     expect(catalogUpdate.catalogDestroyed, isEmpty);
@@ -146,6 +148,14 @@ void main() {
         providerSessionId: 'thread-v2',
       ),
       isNull,
+    );
+    expect(
+      service.cacheCommitEpochFor(
+        targetFingerprint: catalogTargetFingerprint,
+        provider: 'codex',
+        providerSessionId: 'thread-v2',
+      ),
+      0,
     );
 
     gateway.addEvent(
@@ -187,6 +197,22 @@ void main() {
       'entry-2',
     ]);
     expect(cached?.turnsNextCursor, 'older-turns-1');
+    expect(
+      service.cacheCommitEpochFor(
+        targetFingerprint: catalogTargetFingerprint,
+        provider: 'codex',
+        providerSessionId: 'thread-v2',
+      ),
+      1,
+    );
+    expect(
+      service.cacheCommitEpochFor(
+        targetFingerprint: catalogTargetFingerprint,
+        provider: 'codex',
+        providerSessionId: 'unrelated-thread',
+      ),
+      0,
+    );
     await pumpEventQueue();
     expect(
       syncUpdates
@@ -229,7 +255,401 @@ void main() {
       )).priorityReady,
       isTrue,
     );
+    final diagnostic = service.diagnosticSnapshot(
+      provider: 'codex',
+      providerSessionId: 'thread-v2',
+    );
+    final recentEvents = (diagnostic['recentEvents']! as List)
+        .cast<Map<String, Object?>>();
+    expect(
+      recentEvents.map((event) => event['kind']),
+      containsAllInOrder(const [
+        'subscribeRequested',
+        'eventReceived',
+        'eventCommitted',
+      ]),
+    );
+    expect(
+      recentEvents.where(
+        (event) => event['kind'] == 'eventCommitted' && event['sequence'] == 4,
+      ),
+      hasLength(1),
+    );
+    expect(diagnostic['highestV2CommittedSequence'], 5);
+    expect(diagnostic['targetCacheCommitEpoch'], 1);
+    expect(jsonEncode(diagnostic), isNot(contains('Visible update')));
   });
+
+  test(
+    'rejects a runtime overlay before sync_begin establishes authority',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      final overlays = <ConversationSyncV2EventMessage>[];
+      final overlaySubscription = service.runtimeOverlays.listen(overlays.add);
+      addTearDown(overlaySubscription.cancel);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final pendingSubscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.runtimeOverlay,
+          subscriptionId: pendingSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-overlay-before-begin',
+          sequence: 1,
+          provider: 'codex',
+          providerSessionId: 'thread-overlay',
+          overlayId: 'overlay-before-begin',
+          observedAt: '2026-08-10T00:59:59.000Z',
+          originGeneration: 'observer:1:1',
+          runtimeSessionId: 'observer:1:1',
+          authorityGeneration: 'daemon:1',
+          turnId: 'turn-a',
+          overlayMessage: const ErrorMessage(message: 'out of order warning'),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_unsubscribe');
+      await pumpEventQueue();
+      expect(overlays, isEmpty);
+    },
+  );
+
+  test('forwards only current ordered runtime overlays', () async {
+    await service.dispose();
+    gateway.supportsConversationSyncV2 = true;
+    service = ConversationContentSyncService(
+      bridge: gateway,
+      cache: repository,
+    );
+    service.setFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-overlay',
+    );
+    service.start(initialLifecycleState: AppLifecycleState.resumed);
+    final overlays = <ConversationSyncV2EventMessage>[];
+    final overlaySubscription = service.runtimeOverlays.listen(overlays.add);
+    addTearDown(overlaySubscription.cancel);
+
+    final firstSubscribe = await gateway.nextOutgoing(
+      'conversation_sync_subscribe',
+    );
+    final firstSubscriptionId = firstSubscribe['requestId']! as String;
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.syncBegin,
+        subscriptionId: firstSubscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-overlay-1',
+        sequence: 1,
+        requestId: firstSubscriptionId,
+        catalogState: 'catalog-overlay',
+        statusState: 'status-overlay',
+      ),
+    );
+    await gateway.nextOutgoing('conversation_sync_ack');
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.runtimeOverlay,
+        subscriptionId: firstSubscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-overlay-1',
+        sequence: 2,
+        provider: 'codex',
+        providerSessionId: 'thread-overlay',
+        overlayId: 'overlay-current-1',
+        observedAt: '2026-08-10T01:00:00.000Z',
+        originGeneration: 'observer:1:1',
+        runtimeSessionId: 'observer:1:1',
+        authorityGeneration: 'daemon:1',
+        turnId: 'turn-a',
+        overlayMessage: ErrorMessage(message: 'first warning'),
+      ),
+    );
+    expect(
+      (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+      2,
+    );
+    await pumpEventQueue();
+    expect(overlays.map((event) => event.overlayId), ['overlay-current-1']);
+
+    expect(service.retryBootstrap(reason: 'overlay_test'), isTrue);
+    await gateway.nextOutgoing('conversation_sync_unsubscribe');
+    final secondSubscribe = await gateway.nextOutgoing(
+      'conversation_sync_subscribe',
+    );
+    final secondSubscriptionId = secondSubscribe['requestId']! as String;
+
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.runtimeOverlay,
+        subscriptionId: firstSubscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-overlay-1',
+        sequence: 3,
+        provider: 'codex',
+        providerSessionId: 'thread-overlay',
+        overlayId: 'overlay-stale',
+        observedAt: '2026-08-10T01:00:01.000Z',
+        originGeneration: 'observer:1:1',
+        runtimeSessionId: 'observer:1:1',
+        authorityGeneration: 'daemon:1',
+        turnId: 'turn-a',
+        overlayMessage: ErrorMessage(message: 'stale warning'),
+      ),
+    );
+    await pumpEventQueue();
+    expect(overlays.map((event) => event.overlayId), ['overlay-current-1']);
+
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.syncBegin,
+        subscriptionId: secondSubscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-overlay-2',
+        sequence: 1,
+        requestId: secondSubscriptionId,
+        catalogState: 'catalog-overlay',
+        statusState: 'status-overlay',
+      ),
+    );
+    await gateway.nextOutgoing('conversation_sync_ack');
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.runtimeOverlay,
+        subscriptionId: secondSubscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-overlay-2',
+        sequence: 2,
+        provider: 'codex',
+        providerSessionId: 'thread-overlay',
+        overlayId: 'overlay-current-2',
+        observedAt: '2026-08-10T01:00:02.000Z',
+        originGeneration: 'observer:1:2',
+        runtimeSessionId: 'observer:1:2',
+        authorityGeneration: 'daemon:1',
+        turnId: 'turn-a',
+        overlayMessage: ErrorMessage(message: 'second warning'),
+      ),
+    );
+    expect(
+      (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+      2,
+    );
+    await pumpEventQueue();
+    expect(overlays.map((event) => event.overlayId), [
+      'overlay-current-1',
+      'overlay-current-2',
+    ]);
+  });
+
+  test('acks but does not forward an overlay for an obsolete focus', () async {
+    await service.dispose();
+    gateway.supportsConversationSyncV2 = true;
+    service = ConversationContentSyncService(
+      bridge: gateway,
+      cache: repository,
+    );
+    service.setFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-focus-a',
+    );
+    service.start(initialLifecycleState: AppLifecycleState.resumed);
+    final overlays = <ConversationSyncV2EventMessage>[];
+    final overlaySubscription = service.runtimeOverlays.listen(overlays.add);
+    addTearDown(overlaySubscription.cancel);
+
+    final subscribe = await gateway.nextOutgoing('conversation_sync_subscribe');
+    final subscriptionId = subscribe['requestId']! as String;
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.syncBegin,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-focus-overlay',
+        sequence: 1,
+        requestId: subscriptionId,
+        catalogState: 'catalog-focus-overlay',
+        statusState: 'status-focus-overlay',
+      ),
+    );
+    await gateway.nextOutgoing('conversation_sync_ack');
+
+    service.setFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-focus-b',
+    );
+    await gateway.nextOutgoing('conversation_sync_focus');
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.runtimeOverlay,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-focus-overlay',
+        sequence: 2,
+        provider: 'codex',
+        providerSessionId: 'thread-focus-a',
+        overlayId: 'overlay-obsolete-focus',
+        observedAt: '2026-08-10T02:00:00.000Z',
+        originGeneration: 'observer:1:1',
+        runtimeSessionId: 'observer:1:1',
+        authorityGeneration: 'daemon:1',
+        turnId: 'turn-focus-a',
+        overlayMessage: const ErrorMessage(message: 'obsolete focus'),
+      ),
+    );
+    expect(
+      (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+      2,
+    );
+    await pumpEventQueue();
+    expect(overlays, isEmpty);
+
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.runtimeOverlay,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'batch-focus-overlay',
+        sequence: 3,
+        provider: 'codex',
+        providerSessionId: 'thread-focus-b',
+        overlayId: 'overlay-current-focus',
+        observedAt: '2026-08-10T02:00:01.000Z',
+        originGeneration: 'observer:1:2',
+        runtimeSessionId: 'observer:1:2',
+        authorityGeneration: 'daemon:1',
+        turnId: 'turn-focus-b',
+        overlayMessage: const ErrorMessage(message: 'current focus'),
+      ),
+    );
+    expect(
+      (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+      3,
+    );
+    await pumpEventQueue();
+    expect(overlays.map((event) => event.overlayId), ['overlay-current-focus']);
+  });
+
+  test(
+    'dispose joins an in-flight cache read before repository close',
+    () async {
+      await service.dispose();
+      await repository.close();
+      final blocking = _BlockingWindowRepository(
+        SessionCatalogCacheDatabase(
+          databasePath: path.join(temporaryDirectory.path, 'blocking-cache.db'),
+          openDatabase: openFfi,
+        ),
+      );
+      repository = blocking;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      );
+
+      final read = service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-dispose-read',
+      );
+      await blocking.started.future;
+      var disposed = false;
+      final firstDispose = service.dispose().then((_) => disposed = true);
+      final secondDispose = service.dispose();
+      await pumpEventQueue();
+      expect(disposed, isFalse);
+
+      blocking.release.complete();
+      expect(await read, isNull);
+      await Future.wait([firstDispose, secondDispose]);
+      expect(disposed, isTrue);
+    },
+  );
+
+  test(
+    'retry revokes live readiness before the replacement subscribe can fail',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      );
+      final updates = <ConversationSyncCacheUpdate>[];
+      final updatesSubscription = service.syncUpdates.listen(updates.add);
+      addTearDown(updatesSubscription.cancel);
+      service.start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final firstSubscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final firstSubscriptionId = firstSubscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: firstSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-retry-ready',
+          sequence: 1,
+          requestId: firstSubscriptionId,
+          catalogState: 'catalog-retry-ready',
+          statusState: 'status-retry-ready',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncCheckpoint,
+          subscriptionId: firstSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-retry-ready',
+          sequence: 2,
+          phase: 'priority',
+          hasMore: true,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await pumpEventQueue();
+      expect(
+        updates.where(
+          (update) =>
+              update.kind == ConversationSyncCacheUpdateKind.priorityReady,
+        ),
+        isNotEmpty,
+      );
+
+      updates.clear();
+      expect(service.retryBootstrap(reason: 'test_retry'), isTrue);
+      await pumpEventQueue();
+      expect(updates.single.kind, ConversationSyncCacheUpdateKind.started);
+      await gateway.nextOutgoing('conversation_sync_unsubscribe');
+      await gateway.nextOutgoing('conversation_sync_subscribe');
+      expect(
+        updates.where(
+          (update) =>
+              update.kind == ConversationSyncCacheUpdateKind.priorityReady,
+        ),
+        isEmpty,
+      );
+    },
+  );
 
   test(
     'publishes catalog and status only after the complete logical batch commits',
@@ -752,6 +1172,306 @@ void main() {
   );
 
   test(
+    'base revision mismatch retries one thread as a snapshot without blanking cache',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      gateway.supportsConversationWindowCoverage = true;
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        logicalConnectionIdentity: 'machine:1',
+        websocketUrl: 'wss://bridge.example/socket?token=secret',
+      );
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-mismatch',
+        revision: 'revision-local',
+        entries: [_wireEntry('entry-local', 0)],
+        hasEarlier: true,
+        sourceEntryCount: 1,
+      );
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-unaffected',
+        revision: 'revision-unaffected',
+        entries: [_wireEntry('entry-unaffected', 0)],
+        hasEarlier: true,
+        sourceEntryCount: 1,
+      );
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+        retryBaseDelay: const Duration(milliseconds: 1),
+        retryMaxDelay: const Duration(milliseconds: 1),
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final firstSubscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      expect(
+        firstSubscribe['threadContentStates'],
+        contains(containsPair('providerSessionId', 'thread-mismatch')),
+      );
+      final firstSubscriptionId = firstSubscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: firstSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-mismatch-1',
+          sequence: 1,
+          requestId: firstSubscriptionId,
+          catalogState: 'catalog-mismatch',
+          statusState: 'status-mismatch',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: firstSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-mismatch-1',
+          sequence: 2,
+          provider: 'codex',
+          providerSessionId: 'thread-mismatch',
+          revision: 'revision-next',
+          baseRevision: 'revision-bridge-base',
+          mode: 'patch',
+          phase: 'priority',
+          timelineIndex: 0,
+          timelineCount: 1,
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('entry-next', 1)],
+          hasEarlier: true,
+          sourceEntryCount: 2,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_unsubscribe');
+
+      final retained = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-mismatch',
+      );
+      expect(retained?.revision, 'revision-local');
+      expect(retained?.entries.single.entryId, 'entry-local');
+
+      final secondSubscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      expect(
+        (secondSubscribe['threadContentStates'] as List)
+            .cast<Map<String, dynamic>>()
+            .singleWhere(
+              (state) => state['providerSessionId'] == 'thread-mismatch',
+            ),
+        containsPair('forceReplacement', true),
+      );
+      expect(
+        secondSubscribe['threadContentStates'],
+        contains(containsPair('providerSessionId', 'thread-unaffected')),
+      );
+      final unaffected = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-unaffected',
+      );
+      expect(unaffected?.revision, 'revision-unaffected');
+      expect(unaffected?.entries.single.entryId, 'entry-unaffected');
+      final secondSubscriptionId = secondSubscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: secondSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-mismatch-2',
+          sequence: 1,
+          requestId: secondSubscriptionId,
+          catalogState: 'catalog-mismatch',
+          statusState: 'status-mismatch',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: secondSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-mismatch-2',
+          sequence: 2,
+          provider: 'codex',
+          providerSessionId: 'thread-mismatch',
+          revision: 'revision-next',
+          mode: 'snapshot',
+          phase: 'priority',
+          timelineIndex: 0,
+          timelineCount: 1,
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('entry-next', 0)],
+          hasEarlier: true,
+          windowComplete: true,
+          sourceEntryCount: 1,
+        ),
+      );
+      expect(
+        (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+        2,
+      );
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncCheckpoint,
+          subscriptionId: secondSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-mismatch-2',
+          sequence: 3,
+          phase: 'priority',
+          hasMore: false,
+        ),
+      );
+      expect(
+        (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+        3,
+      );
+
+      final repaired = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-mismatch',
+      );
+      expect(repaired?.revision, 'revision-next');
+      expect(repaired?.entries.single.entryId, 'entry-next');
+      expect(
+        gateway.sentTypes
+            .where((type) => type == 'conversation_sync_unsubscribe')
+            .length,
+        1,
+      );
+    },
+  );
+
+  test(
+    'old v2 Bridge never receives the additive forceReplacement field',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      gateway.supportsConversationWindowCoverage = false;
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        logicalConnectionIdentity: 'machine:1',
+        websocketUrl: 'wss://bridge.example/socket?token=secret',
+      );
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-old-v2',
+        revision: 'revision-old-v2',
+        entries: [_wireEntry('entry-old-v2', 0)],
+        hasEarlier: true,
+        windowComplete: false,
+        latestTurnComplete: false,
+        latestTurnGap: const ConversationSyncV2LatestTurnGap(
+          missingEntryCount: 1,
+          payloadOmitted: false,
+          repair: 'turns_page',
+        ),
+        sourceEntryCount: 2,
+      );
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final state = (subscribe['threadContentStates'] as List)
+          .cast<Map<String, dynamic>>()
+          .singleWhere(
+            (candidate) => candidate['providerSessionId'] == 'thread-old-v2',
+          );
+      expect(state['revision'], 'revision-old-v2');
+      expect(state.containsKey('forceReplacement'), isFalse);
+
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-old-v2',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-old-v2',
+          statusState: 'status-old-v2',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-old-v2',
+          sequence: 2,
+          provider: 'codex',
+          providerSessionId: 'thread-old-v2',
+          revision: 'revision-old-v2-next',
+          baseRevision: 'revision-old-v2',
+          mode: 'patch',
+          phase: 'priority',
+          timelineIndex: 0,
+          timelineCount: 1,
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('entry-old-v2-next', 1)],
+          deletes: const ['entry-old-v2'],
+          hasEarlier: true,
+          latestTurnComplete: false,
+          latestTurnGap: const ConversationSyncV2LatestTurnGap(
+            missingEntryCount: 1,
+            payloadOmitted: false,
+            repair: 'turns_page',
+          ),
+          sourceEntryCount: 2,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      final retained = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-old-v2',
+      );
+      expect(retained?.revision, 'revision-old-v2-next');
+      expect(retained?.windowComplete, isFalse);
+      expect(retained?.entries.map((entry) => entry.entryId), [
+        'entry-old-v2',
+        'entry-old-v2-next',
+      ]);
+
+      expect(service.retryBootstrap(reason: 'old_v2_lineage_test'), isTrue);
+      await gateway.nextOutgoing('conversation_sync_unsubscribe');
+      final retry = await gateway.nextOutgoing('conversation_sync_subscribe');
+      final retriedState = (retry['threadContentStates'] as List)
+          .cast<Map<String, dynamic>>()
+          .singleWhere(
+            (candidate) => candidate['providerSessionId'] == 'thread-old-v2',
+          );
+      expect(retriedState['revision'], 'revision-old-v2-next');
+      expect(retriedState.containsKey('forceReplacement'), isFalse);
+    },
+  );
+
+  test(
     'commits a status reset and replacement page without resubscribing',
     () async {
       final target = SessionCatalogCacheTarget.fromBridge(
@@ -884,6 +1604,113 @@ void main() {
   );
 
   test(
+    'thread reset advances only its cache fence and publishes a reread',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        logicalConnectionIdentity: 'machine:1',
+        websocketUrl: 'wss://bridge.example/socket',
+      );
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-reset-fence',
+        revision: 'revision-before-reset',
+        entries: [_wireEntry('entry-before-reset', 0)],
+        hasEarlier: true,
+        sourceEntryCount: 12,
+      );
+
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-thread-reset-fence',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-reset-fence',
+          statusState: 'status-reset-fence',
+        ),
+      );
+      expect(
+        (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+        1,
+      );
+
+      final beforeEpoch = service.cacheCommitEpochFor(
+        targetFingerprint: target.fingerprint,
+        provider: 'codex',
+        providerSessionId: 'thread-reset-fence',
+      );
+      final unrelatedBefore = service.cacheCommitEpochFor(
+        targetFingerprint: target.fingerprint,
+        provider: 'codex',
+        providerSessionId: 'thread-unrelated',
+      );
+      final invalidation = service.updates.firstWhere(
+        (update) => update.providerSessionId == 'thread-reset-fence',
+      );
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncReset,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-thread-reset-fence',
+          sequence: 2,
+          scope: 'thread',
+          reason: 'base_revision_mismatch',
+          target: const ConversationSyncV2Target(
+            provider: 'codex',
+            providerSessionId: 'thread-reset-fence',
+          ),
+        ),
+      );
+      expect(
+        (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+        2,
+      );
+      expect((await invalidation).revision, startsWith('invalidated:'));
+      expect(
+        service.cacheCommitEpochFor(
+          targetFingerprint: target.fingerprint,
+          provider: 'codex',
+          providerSessionId: 'thread-reset-fence',
+        ),
+        greaterThan(beforeEpoch),
+      );
+      expect(
+        service.cacheCommitEpochFor(
+          targetFingerprint: target.fingerprint,
+          provider: 'codex',
+          providerSessionId: 'thread-unrelated',
+        ),
+        unrelatedBefore,
+      );
+      final retained = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-reset-fence',
+      );
+      expect(retained?.revision, 'revision-before-reset');
+      expect(retained?.entries.single.entryId, 'entry-before-reset');
+    },
+  );
+
+  test(
     'preserves readable cache and retry backoff after partial progress',
     () async {
       await service.dispose();
@@ -979,25 +1806,24 @@ void main() {
           catalogState: 'catalog-recovery-2',
         ),
       );
+      final secondRetryDelay = Stopwatch()..start();
       await gateway.nextOutgoing('conversation_sync_unsubscribe');
       expect(failingRepository.clearTargetCalls, 0);
 
       final subscribeCount = gateway.sentTypes
           .where((type) => type == 'conversation_sync_subscribe')
           .length;
-      await Future<void>.delayed(const Duration(milliseconds: 45));
-      expect(
-        gateway.sentTypes
-            .where((type) => type == 'conversation_sync_subscribe')
-            .length,
-        subscribeCount,
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await gateway.nextOutgoing('conversation_sync_subscribe');
+      secondRetryDelay.stop();
       expect(
         gateway.sentTypes
             .where((type) => type == 'conversation_sync_subscribe')
             .length,
         subscribeCount + 1,
+      );
+      expect(
+        secondRetryDelay.elapsed,
+        greaterThanOrEqualTo(const Duration(milliseconds: 70)),
       );
     },
   );
@@ -1090,7 +1916,7 @@ void main() {
       providerSessionId: 'thread-turn-page',
     );
     expect(cached?.entries.map((entry) => entry.entryId), [
-      'user:user-earlier',
+      'turn:turn-earlier:user:user-earlier',
       'current-entry',
     ]);
     expect(cached?.turnsNextCursor, isNull);
@@ -1690,12 +2516,14 @@ void main() {
         provider: 'codex',
         providerSessionId: 'thread-incomplete-with-older',
       );
-      expect(cached?.latestTurnComplete, isTrue);
+      expect(cached?.latestTurnComplete, isFalse);
+      expect(cached?.windowComplete, isFalse);
       expect(cached?.hasEarlier, isFalse);
       expect(cached?.turnsNextCursor, isNull);
       expect(cached?.entries.map((entry) => entry.entryId), [
-        'user:older-cached-user',
-        'user:latest-repaired-user',
+        'turn:older-turn:user:older-cached-user',
+        'incomplete-latest-shell',
+        'turn:latest-turn:user:latest-repaired-user',
       ]);
     },
   );
@@ -1791,6 +2619,15 @@ void main() {
         ),
       );
       await gateway.nextOutgoing('conversation_sync_ack');
+      final visibleWhileRepairing = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-current-gap',
+      );
+      expect(
+        visibleWhileRepairing?.entries.map((entry) => entry.entryId),
+        ['current-shell'],
+        reason: 'partial repair pages must not rewrite the visible cache',
+      );
       final secondRequest = await gateway.nextOutgoing(
         'conversation_items_page',
       );
@@ -1832,6 +2669,13 @@ void main() {
       expect(
         cached?.entries
             .map((entry) => entry.rawMessage['text'])
+            .whereType<String>(),
+        [firstPayload, secondPayload],
+        reason: 'the completed turn must publish in provider page order',
+      );
+      expect(
+        cached?.entries
+            .map((entry) => entry.rawMessage['text'])
             .whereType<String>()
             .fold<int>(0, (sum, text) => sum + text.length),
         greaterThan(512 * 1024),
@@ -1840,6 +2684,388 @@ void main() {
         (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
         4,
       );
+    },
+  );
+
+  test(
+    'focused omitted latest turn repairs automatically without blanking cache',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-auto-current-gap',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-auto-current-gap',
+          statusState: 'status-auto-current-gap',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-auto-current-gap',
+          sequence: 2,
+          provider: 'codex',
+          providerSessionId: 'thread-auto-current-gap',
+          revision: 'revision-auto-current-gap',
+          mode: 'snapshot',
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('auto-current-visible-shell', 0)],
+          hasEarlier: true,
+          turnsNextCursor: 'older-auto-current-gap',
+          windowComplete: false,
+          latestTurnComplete: false,
+          latestTurnGap: const ConversationSyncV2LatestTurnGap(
+            turnId: 'turn-auto-current-gap',
+            missingEntryCount: 2,
+            payloadOmitted: true,
+            repair: 'items_page',
+          ),
+          sourceEntryCount: 3,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      expect(
+        gateway.sentTypes.where((type) => type == 'conversation_items_page'),
+        isEmpty,
+      );
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'thread-auto-current-gap',
+      );
+
+      final repairRequest = await gateway.nextOutgoing(
+        'conversation_items_page',
+      );
+      expect(repairRequest['turnId'], 'turn-auto-current-gap');
+      expect(repairRequest, isNot(contains('cursor')));
+      final beforeRepair = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-auto-current-gap',
+      );
+      expect(beforeRepair?.entries.map((entry) => entry.entryId), [
+        'auto-current-visible-shell',
+      ]);
+
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.itemsPageResponse,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-auto-current-gap',
+          sequence: 3,
+          requestId: repairRequest['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-auto-current-gap',
+          turnId: 'turn-auto-current-gap',
+          data: const [
+            {
+              'type': 'assistant',
+              'messageUuid': 'auto-current-commentary',
+              'historyTurnId': 'turn-auto-current-gap',
+              'message': {
+                'id': 'auto-current-commentary',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'Recovered commentary'},
+                ],
+              },
+            },
+            {
+              'type': 'assistant',
+              'messageUuid': 'auto-current-final',
+              'historyTurnId': 'turn-auto-current-gap',
+              'message': {
+                'id': 'auto-current-final',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'Recovered final answer'},
+                ],
+              },
+            },
+          ],
+          nextCursor: null,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await pumpEventQueue();
+
+      final repaired = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-auto-current-gap',
+      );
+      expect(repaired?.latestTurnComplete, isTrue);
+      expect(repaired?.latestTurnGap, isNull);
+      expect(repaired?.entries.map((entry) => entry.entryId), [
+        'auto-current-visible-shell',
+        'turn:turn-auto-current-gap:assistant:auto-current-commentary',
+        'turn:turn-auto-current-gap:assistant:auto-current-final',
+      ]);
+      expect(
+        gateway.sentTypes.where((type) => type == 'conversation_items_page'),
+        hasLength(1),
+      );
+    },
+  );
+
+  test(
+    'focused counted latest-turn gap repairs and rejects a repeated item cursor',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-counted-gap-loop',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-counted-gap-loop',
+          statusState: 'status-counted-gap-loop',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'thread-counted-gap-loop',
+      );
+      await gateway.nextOutgoing('conversation_sync_focus');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-counted-gap-loop',
+          sequence: 2,
+          provider: 'codex',
+          providerSessionId: 'thread-counted-gap-loop',
+          revision: 'revision-counted-gap-loop',
+          mode: 'snapshot',
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('counted-gap-shell', 0)],
+          hasEarlier: true,
+          latestTurnComplete: false,
+          latestTurnGap: const ConversationSyncV2LatestTurnGap(
+            turnId: 'turn-counted-gap-loop',
+            missingEntryCount: 2,
+            payloadOmitted: false,
+            repair: 'items_page',
+          ),
+          sourceEntryCount: 3,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final first = await gateway.nextOutgoing('conversation_items_page');
+      expect(first, isNot(contains('cursor')));
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.itemsPageResponse,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-counted-gap-loop',
+          sequence: 3,
+          requestId: first['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-counted-gap-loop',
+          turnId: 'turn-counted-gap-loop',
+          data: const [],
+          nextCursor: 'cursor-counted-gap-loop',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final second = await gateway.nextOutgoing('conversation_items_page');
+      expect(second['cursor'], 'cursor-counted-gap-loop');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.itemsPageResponse,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-counted-gap-loop',
+          sequence: 4,
+          requestId: second['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-counted-gap-loop',
+          turnId: 'turn-counted-gap-loop',
+          data: const [],
+          nextCursor: 'cursor-counted-gap-loop',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await pumpEventQueue();
+
+      expect(
+        gateway.sentTypes.where((type) => type == 'conversation_items_page'),
+        hasLength(2),
+      );
+      final cached = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-counted-gap-loop',
+      );
+      expect(cached?.latestTurnComplete, isFalse);
+      expect(cached?.latestTurnGapCursor, 'cursor-counted-gap-loop');
+      expect(cached?.entries.map((entry) => entry.entryId), [
+        'counted-gap-shell',
+      ]);
+    },
+  );
+
+  test(
+    'rejects a terminal projected item without retrying the null cursor',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-terminal-item',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-terminal-item',
+          statusState: 'status-terminal-item',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-terminal-item',
+          sequence: 2,
+          provider: 'codex',
+          providerSessionId: 'thread-terminal-item',
+          revision: 'revision-terminal-item',
+          mode: 'snapshot',
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('terminal-item-shell', 0)],
+          hasEarlier: true,
+          windowComplete: false,
+          latestTurnComplete: false,
+          latestTurnGap: const ConversationSyncV2LatestTurnGap(
+            turnId: 'turn-terminal-item',
+            missingEntryCount: 1,
+            payloadOmitted: true,
+            repair: 'items_page',
+          ),
+          sourceEntryCount: 2,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final load = service.repairLatestTurn(
+        provider: 'codex',
+        providerSessionId: 'thread-terminal-item',
+      );
+      final request = await gateway.nextOutgoing('conversation_items_page');
+      final failure = expectLater(
+        load,
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('frame budget'),
+          ),
+        ),
+      );
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.itemsPageResponse,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-terminal-item',
+          sequence: 3,
+          requestId: request['requestId']! as String,
+          provider: 'codex',
+          providerSessionId: 'thread-terminal-item',
+          turnId: 'turn-terminal-item',
+          data: const [
+            {
+              'type': 'assistant',
+              'message': {
+                'id': 'projected-terminal-item',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'projected shell'},
+                ],
+              },
+            },
+          ],
+          nextCursor: null,
+          pageComplete: false,
+          latestTurnGap: const ConversationSyncV2LatestTurnGap(
+            turnId: 'turn-terminal-item',
+            missingEntryCount: 1,
+            payloadOmitted: true,
+            repair: 'items_page',
+          ),
+        ),
+      );
+      await failure;
+      expect(
+        gateway.sentTypes.where((type) => type == 'conversation_items_page'),
+        hasLength(1),
+      );
+      final cached = await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: 'thread-terminal-item',
+      );
+      expect(cached?.entries.map((entry) => entry.entryId), [
+        'terminal-item-shell',
+      ]);
+      expect(cached?.latestTurnComplete, isFalse);
     },
   );
 
@@ -1942,6 +3168,35 @@ void main() {
       );
       await gateway.nextOutgoing('conversation_sync_ack');
 
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: secondSubscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-current-gap-retry-2',
+          sequence: 2,
+          provider: 'codex',
+          providerSessionId: 'thread-current-gap-retry',
+          revision: 'revision-current-gap-retry',
+          mode: 'snapshot',
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('current-gap-retry-shell', 0)],
+          hasEarlier: true,
+          turnsNextCursor: 'older-current-gap-retry',
+          latestTurnComplete: false,
+          latestTurnGap: const ConversationSyncV2LatestTurnGap(
+            turnId: 'turn-current-gap-retry',
+            missingEntryCount: 1,
+            payloadOmitted: true,
+            repair: 'items_page',
+          ),
+          sourceEntryCount: 2,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
       final retriedRepairRequest = await gateway.nextOutgoing(
         'conversation_items_page',
       );
@@ -1959,7 +3214,7 @@ void main() {
           bridgeInstanceId: 'bridge-1',
           codexSourceId: 'codex-home-a',
           batchId: 'batch-current-gap-retry-2',
-          sequence: 2,
+          sequence: 3,
           requestId: retriedRepairRequest['requestId']! as String,
           provider: 'codex',
           providerSessionId: 'thread-current-gap-retry',
@@ -1987,7 +3242,7 @@ void main() {
       expect(cached?.turnsNextCursor, 'older-current-gap-retry');
       expect(
         (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
-        2,
+        3,
       );
     },
   );
@@ -2621,7 +3876,7 @@ void main() {
         providerSessionId: 'thread-turn-retry',
       );
       expect(cached?.entries.map((entry) => entry.entryId), [
-        'user:user-before-retry',
+        'turn:turn-before-retry:user:user-before-retry',
         'current-retry-entry',
       ]);
       expect(
@@ -2883,6 +4138,606 @@ void main() {
   );
 
   test(
+    'manual focused refresh re-sends an unchanged focus and waits for commit',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      gateway.supportsConversationSyncFocusRefresh = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-initial',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-refresh',
+          statusState: 'status-refresh',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncComplete,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-initial',
+          sequence: 2,
+          requestId: subscriptionId,
+          nextState: const ConversationSyncV2NextState(
+            catalogState: 'catalog-refresh',
+            statusState: 'status-refresh',
+            threadContentStates: [],
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      var completed = false;
+      final refresh = service
+          .refreshFocusedConversation(
+            provider: 'codex',
+            providerSessionId: 'thread-manual-refresh',
+            expectedDataSourceIdentity: const BridgeDataSourceIdentity(
+              bridgeInstanceId: 'bridge-1',
+              codexSourceId: 'codex-home-a',
+            ),
+          )
+          .whenComplete(() => completed = true);
+      final duplicateRefresh = service.refreshFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'thread-manual-refresh',
+        expectedDataSourceIdentity: const BridgeDataSourceIdentity(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+        ),
+      );
+      final repeatedFocus = await gateway.nextOutgoing(
+        'conversation_sync_focus',
+      );
+      expect(repeatedFocus['focused'], {
+        'provider': 'codex',
+        'providerSessionId': 'thread-manual-refresh',
+      });
+      expect(repeatedFocus['refresh'], isTrue);
+      expect(
+        gateway.sent.where(
+          (message) => message['type'] == 'conversation_sync_focus',
+        ),
+        hasLength(1),
+      );
+      final requestId = repeatedFocus['requestId']! as String;
+      expect(completed, isFalse);
+
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.focusApplied,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-manual-refresh',
+          sequence: 3,
+          requestId: requestId,
+          focused: const ConversationSyncV2Target(
+            provider: 'codex',
+            providerSessionId: 'thread-manual-refresh',
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      // An older in-flight batch may finish after focus_applied. It must not
+      // complete the user-visible refresh flight.
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-unrelated',
+          sequence: 4,
+          requestId: subscriptionId,
+          catalogState: 'catalog-refresh',
+          statusState: 'status-refresh',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncComplete,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-unrelated',
+          sequence: 5,
+          nextState: const ConversationSyncV2NextState(
+            catalogState: 'catalog-refresh',
+            statusState: 'status-refresh',
+            threadContentStates: [],
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      expect(completed, isFalse);
+
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-manual-refresh',
+          sequence: 6,
+          requestId: subscriptionId,
+          catalogState: 'catalog-refresh',
+          statusState: 'status-refresh',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncComplete,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-manual-refresh',
+          sequence: 7,
+          requestId: requestId,
+          nextState: const ConversationSyncV2NextState(
+            catalogState: 'catalog-refresh',
+            statusState: 'status-refresh',
+            threadContentStates: [],
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await refresh;
+      await duplicateRefresh;
+      expect(completed, isTrue);
+    },
+  );
+
+  test(
+    'focus A to B interrupts the obsolete refresh and starts B immediately',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      gateway.supportsConversationSyncFocusRefresh = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-focus-switch-initial',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-focus-switch',
+          statusState: 'status-focus-switch',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncComplete,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-focus-switch-initial',
+          sequence: 2,
+          requestId: subscriptionId,
+          nextState: const ConversationSyncV2NextState(
+            catalogState: 'catalog-focus-switch',
+            statusState: 'status-focus-switch',
+            threadContentStates: [],
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final refreshA = service.refreshFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'thread-focus-a',
+        expectedDataSourceIdentity: const BridgeDataSourceIdentity(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+        ),
+      );
+      final refreshAResult = expectLater(refreshA, throwsA(isA<Object>()));
+      final focusA = await gateway.nextOutgoing('conversation_sync_focus');
+      expect(focusA['refresh'], isTrue);
+      expect(
+        (focusA['focused']! as Map<String, dynamic>)['providerSessionId'],
+        'thread-focus-a',
+      );
+
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'thread-focus-b',
+      );
+      final ordinaryFocusB = await gateway.nextOutgoing(
+        'conversation_sync_focus',
+      );
+      expect(ordinaryFocusB, isNot(contains('refresh')));
+
+      final refreshB = service.refreshFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'thread-focus-b',
+        expectedDataSourceIdentity: const BridgeDataSourceIdentity(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+        ),
+      );
+      final focusB = await gateway
+          .nextOutgoing('conversation_sync_focus')
+          .timeout(const Duration(seconds: 1));
+      expect(focusB['refresh'], isTrue);
+      expect(
+        (focusB['focused']! as Map<String, dynamic>)['providerSessionId'],
+        'thread-focus-b',
+      );
+      await refreshAResult;
+
+      final requestId = focusB['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.focusApplied,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-focus-switch-b',
+          sequence: 3,
+          requestId: requestId,
+          focused: const ConversationSyncV2Target(
+            provider: 'codex',
+            providerSessionId: 'thread-focus-b',
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-focus-switch-b',
+          sequence: 4,
+          requestId: subscriptionId,
+          catalogState: 'catalog-focus-switch',
+          statusState: 'status-focus-switch',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncComplete,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-focus-switch-b',
+          sequence: 5,
+          requestId: requestId,
+          nextState: const ConversationSyncV2NextState(
+            catalogState: 'catalog-focus-switch',
+            statusState: 'status-focus-switch',
+            threadContentStates: [],
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await refreshB;
+    },
+  );
+
+  test('focus A to B to C never revives the obsolete B refresh', () async {
+    await service.dispose();
+    gateway.supportsConversationSyncV2 = true;
+    gateway.supportsConversationSyncFocusRefresh = true;
+    service = ConversationContentSyncService(bridge: gateway, cache: repository)
+      ..start(initialLifecycleState: AppLifecycleState.resumed);
+    final subscriptionId = await _bootstrapFocusedRefreshTest(
+      gateway,
+      'focus-abc',
+    );
+    const identity = BridgeDataSourceIdentity(
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-home-a',
+    );
+
+    final refreshA = service.refreshFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-focus-a',
+      expectedDataSourceIdentity: identity,
+    );
+    final refreshAResult = expectLater(refreshA, throwsA(isA<Object>()));
+    expect(
+      _focusedThread(await gateway.nextOutgoing('conversation_sync_focus')),
+      'thread-focus-a',
+    );
+
+    service.setFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-focus-b',
+    );
+    expect(
+      _focusedThread(await gateway.nextOutgoing('conversation_sync_focus')),
+      'thread-focus-b',
+    );
+    final refreshB = service.refreshFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-focus-b',
+      expectedDataSourceIdentity: identity,
+    );
+    final refreshBResult = expectLater(refreshB, throwsA(isA<Object>()));
+
+    service.setFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-focus-c',
+    );
+    final refreshC = service.refreshFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-focus-c',
+      expectedDataSourceIdentity: identity,
+    );
+    final queued = <Map<String, dynamic>>[
+      await gateway.nextOutgoing('conversation_sync_focus'),
+      await gateway.nextOutgoing('conversation_sync_focus'),
+      await gateway.nextOutgoing('conversation_sync_focus'),
+    ];
+    final focusC = queued.lastWhere(
+      (message) =>
+          _focusedThread(message) == 'thread-focus-c' &&
+          message['refresh'] == true,
+    );
+
+    await refreshAResult;
+    await refreshBResult;
+    await _completeFocusedRefreshTest(
+      gateway: gateway,
+      subscriptionId: subscriptionId,
+      focus: focusC,
+      suffix: 'focus-abc',
+    );
+    await refreshC;
+    await pumpEventQueue();
+
+    final focusMessages = gateway.sent
+        .where((message) => message['type'] == 'conversation_sync_focus')
+        .toList(growable: false);
+    final firstC = focusMessages.indexWhere(
+      (message) => _focusedThread(message) == 'thread-focus-c',
+    );
+    expect(firstC, isNonNegative);
+    expect(
+      focusMessages
+          .skip(firstC)
+          .map(_focusedThread)
+          .whereType<String>()
+          .toSet(),
+      {'thread-focus-c'},
+    );
+  });
+
+  test('focus A to B to A starts a new A refresh generation', () async {
+    await service.dispose();
+    gateway.supportsConversationSyncV2 = true;
+    gateway.supportsConversationSyncFocusRefresh = true;
+    service = ConversationContentSyncService(bridge: gateway, cache: repository)
+      ..start(initialLifecycleState: AppLifecycleState.resumed);
+    final subscriptionId = await _bootstrapFocusedRefreshTest(
+      gateway,
+      'focus-aba',
+    );
+    const identity = BridgeDataSourceIdentity(
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-home-a',
+    );
+
+    final firstRefreshA = service.refreshFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-focus-a',
+      expectedDataSourceIdentity: identity,
+    );
+    final firstAResult = expectLater(firstRefreshA, throwsA(isA<Object>()));
+    final firstFocusA = await gateway.nextOutgoing('conversation_sync_focus');
+
+    service.setFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-focus-b',
+    );
+    await gateway.nextOutgoing('conversation_sync_focus');
+    final refreshB = service.refreshFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-focus-b',
+      expectedDataSourceIdentity: identity,
+    );
+    final refreshBResult = expectLater(refreshB, throwsA(isA<Object>()));
+
+    service.setFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-focus-a',
+    );
+    final secondRefreshA = service.refreshFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-focus-a',
+      expectedDataSourceIdentity: identity,
+    );
+    final queued = <Map<String, dynamic>>[
+      await gateway.nextOutgoing('conversation_sync_focus'),
+      await gateway.nextOutgoing('conversation_sync_focus'),
+      await gateway.nextOutgoing('conversation_sync_focus'),
+    ];
+    final secondFocusA = queued.lastWhere(
+      (message) =>
+          _focusedThread(message) == 'thread-focus-a' &&
+          message['refresh'] == true,
+    );
+    expect(secondFocusA['requestId'], isNot(firstFocusA['requestId']));
+
+    await firstAResult;
+    await refreshBResult;
+    await _completeFocusedRefreshTest(
+      gateway: gateway,
+      subscriptionId: subscriptionId,
+      focus: secondFocusA,
+      suffix: 'focus-aba',
+    );
+    await secondRefreshA;
+  });
+
+  test('manual focused refresh rejects a different data source', () async {
+    final before = gateway.sent
+        .where((message) => message['type'] == 'conversation_sync_focus')
+        .length;
+    await expectLater(
+      service.refreshFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'thread-wrong-source',
+        expectedDataSourceIdentity: const BridgeDataSourceIdentity(
+          bridgeInstanceId: 'other-bridge',
+          codexSourceId: 'codex-home-a',
+        ),
+      ),
+      throwsA(isA<Object>()),
+    );
+    expect(
+      gateway.sent.where(
+        (message) => message['type'] == 'conversation_sync_focus',
+      ),
+      hasLength(before),
+    );
+  });
+
+  test(
+    'manual focused refresh falls back to exact v2 focus acknowledgement',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      gateway.supportsConversationSyncFocusRefresh = false;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-legacy-focus',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-legacy-focus',
+          statusState: 'status-legacy-focus',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncComplete,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-legacy-focus',
+          sequence: 2,
+          nextState: const ConversationSyncV2NextState(
+            catalogState: 'catalog-legacy-focus',
+            statusState: 'status-legacy-focus',
+            threadContentStates: [],
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      final refresh = service.refreshFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'thread-legacy-focus',
+        expectedDataSourceIdentity: const BridgeDataSourceIdentity(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+        ),
+      );
+      final focus = await gateway.nextOutgoing('conversation_sync_focus');
+      expect(focus, isNot(contains('refresh')));
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.focusApplied,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-legacy-focus',
+          sequence: 3,
+          requestId: focus['requestId']! as String,
+          focused: const ConversationSyncV2Target(
+            provider: 'codex',
+            providerSessionId: 'thread-legacy-focus',
+          ),
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await refresh;
+    },
+  );
+
+  test('manual focused refresh keeps the v1 content-focus fallback', () async {
+    final subscribe = await gateway.nextOutgoing(
+      'conversation_content_subscribe',
+    );
+    final subscriptionId = subscribe['requestId']! as String;
+    gateway.addEvent(
+      ConversationContentEventMessage(
+        event: ConversationContentEventKind.subscribed,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        requestId: subscriptionId,
+        hotConversationLimit: 10,
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    await service.refreshFocusedConversation(
+      provider: 'codex',
+      providerSessionId: 'thread-v1-focus',
+      expectedDataSourceIdentity: const BridgeDataSourceIdentity(
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+      ),
+    );
+    final focus = await gateway.nextOutgoing('conversation_content_focus');
+    expect(focus['subscriptionId'], subscriptionId);
+    expect(focus['focused'], {
+      'provider': 'codex',
+      'providerSessionId': 'thread-v1-focus',
+    });
+  });
+
+  test(
     'durable focus marks read on entry and again on exit after a newer status',
     () async {
       await service.dispose();
@@ -2996,6 +4851,18 @@ void main() {
         ),
       );
       expect(stored.single.readAt, '2099-07-30T01:02:03.000Z');
+      expect(
+        gateway.sentTypes.where(
+          (type) => type == 'conversation_sync_subscribe',
+        ),
+        hasLength(1),
+      );
+      expect(
+        gateway.sentTypes.where(
+          (type) => type == 'conversation_sync_unsubscribe',
+        ),
+        isEmpty,
+      );
     },
   );
 
@@ -3084,6 +4951,84 @@ void main() {
       isNull,
     );
   });
+
+  test(
+    'publishes a committed snapshot even when its ACK write fails',
+    () async {
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_content_subscribe',
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationContentEventMessage(
+          event: ConversationContentEventKind.subscribed,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          requestId: subscriptionId,
+          hotConversationLimit: 10,
+        ),
+      );
+      gateway.addEvent(
+        ConversationContentEventMessage(
+          event: ConversationContentEventKind.snapshotBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          provider: 'codex',
+          providerSessionId: 'thread-ack-failure',
+          revision: 'revision-ack-failure',
+          entryCount: 1,
+          pageCount: 1,
+          hasEarlier: false,
+          sourceEntryCount: 1,
+        ),
+      );
+      gateway.addEvent(
+        ConversationContentEventMessage(
+          event: ConversationContentEventKind.snapshotPage,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          provider: 'codex',
+          providerSessionId: 'thread-ack-failure',
+          revision: 'revision-ack-failure',
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('entry-ack-failure', 0)],
+        ),
+      );
+      final committedUpdate = service.updates.firstWhere(
+        (update) => update.providerSessionId == 'thread-ack-failure',
+      );
+      gateway.throwOnConversationContentAck = true;
+      gateway.addEvent(
+        ConversationContentEventMessage(
+          event: ConversationContentEventKind.snapshotComplete,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          provider: 'codex',
+          providerSessionId: 'thread-ack-failure',
+          revision: 'revision-ack-failure',
+          entryCount: 1,
+          hasEarlier: false,
+          sourceEntryCount: 1,
+        ),
+      );
+
+      expect((await committedUpdate).revision, 'revision-ack-failure');
+      expect(
+        service.cacheCommitEpochFor(
+          targetFingerprint: SessionCatalogCacheTarget.fromBridge(
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'codex-home-a',
+            logicalConnectionIdentity: 'machine:1',
+            websocketUrl: 'wss://bridge.example/socket',
+          ).fingerprint,
+          provider: 'codex',
+          providerSessionId: 'thread-ack-failure',
+        ),
+        greaterThan(0),
+      );
+    },
+  );
 
   test('isolates hot windows by Codex source on the same Bridge', () async {
     gateway.codexSourceId = 'codex-home-a';
@@ -3370,6 +5315,107 @@ ConversationContentWireEntry _assistantWireEntry(
   },
 );
 
+Future<String> _bootstrapFocusedRefreshTest(
+  FakeConversationContentGateway gateway,
+  String suffix,
+) async {
+  final subscribe = await gateway.nextOutgoing('conversation_sync_subscribe');
+  final subscriptionId = subscribe['requestId']! as String;
+  gateway.addEvent(
+    ConversationSyncV2EventMessage(
+      event: ConversationSyncV2EventKind.syncBegin,
+      subscriptionId: subscriptionId,
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-home-a',
+      batchId: 'batch-$suffix-initial',
+      sequence: 1,
+      requestId: subscriptionId,
+      catalogState: 'catalog-$suffix',
+      statusState: 'status-$suffix',
+    ),
+  );
+  await gateway.nextOutgoing('conversation_sync_ack');
+  gateway.addEvent(
+    ConversationSyncV2EventMessage(
+      event: ConversationSyncV2EventKind.syncComplete,
+      subscriptionId: subscriptionId,
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-home-a',
+      batchId: 'batch-$suffix-initial',
+      sequence: 2,
+      requestId: subscriptionId,
+      nextState: ConversationSyncV2NextState(
+        catalogState: 'catalog-$suffix',
+        statusState: 'status-$suffix',
+        threadContentStates: const [],
+      ),
+    ),
+  );
+  await gateway.nextOutgoing('conversation_sync_ack');
+  return subscriptionId;
+}
+
+Future<void> _completeFocusedRefreshTest({
+  required FakeConversationContentGateway gateway,
+  required String subscriptionId,
+  required Map<String, dynamic> focus,
+  required String suffix,
+}) async {
+  final requestId = focus['requestId']! as String;
+  final focused = focus['focused']! as Map<String, dynamic>;
+  gateway.addEvent(
+    ConversationSyncV2EventMessage(
+      event: ConversationSyncV2EventKind.focusApplied,
+      subscriptionId: subscriptionId,
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-home-a',
+      batchId: 'batch-$suffix',
+      sequence: 3,
+      requestId: requestId,
+      focused: ConversationSyncV2Target(
+        provider: focused['provider']! as String,
+        providerSessionId: focused['providerSessionId']! as String,
+      ),
+    ),
+  );
+  await gateway.nextOutgoing('conversation_sync_ack');
+  gateway.addEvent(
+    ConversationSyncV2EventMessage(
+      event: ConversationSyncV2EventKind.syncBegin,
+      subscriptionId: subscriptionId,
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-home-a',
+      batchId: 'batch-$suffix',
+      sequence: 4,
+      requestId: subscriptionId,
+      catalogState: 'catalog-$suffix',
+      statusState: 'status-$suffix',
+    ),
+  );
+  await gateway.nextOutgoing('conversation_sync_ack');
+  gateway.addEvent(
+    ConversationSyncV2EventMessage(
+      event: ConversationSyncV2EventKind.syncComplete,
+      subscriptionId: subscriptionId,
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-home-a',
+      batchId: 'batch-$suffix',
+      sequence: 5,
+      requestId: requestId,
+      nextState: ConversationSyncV2NextState(
+        catalogState: 'catalog-$suffix',
+        statusState: 'status-$suffix',
+        threadContentStates: const [],
+      ),
+    ),
+  );
+  await gateway.nextOutgoing('conversation_sync_ack');
+}
+
+String? _focusedThread(Map<String, dynamic> focus) =>
+    (focus['focused'] as Map<String, dynamic>?)?['providerSessionId']
+        as String?;
+
 ConversationSyncV2EventMessage _catalogRecoveryEvent({
   required String subscriptionId,
   required String batchId,
@@ -3440,10 +5486,40 @@ class _FailingCatalogRepository extends SessionCatalogCacheRepository {
   }
 }
 
+class _BlockingWindowRepository extends SessionCatalogCacheRepository {
+  _BlockingWindowRepository(super.database);
+
+  final Completer<void> started = Completer<void>();
+  final Completer<void> release = Completer<void>();
+
+  @override
+  Future<ConversationHotWindowSnapshot?> loadConversationWindow({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) async {
+    if (!started.isCompleted) started.complete();
+    await release.future;
+    return null;
+  }
+}
+
 class _FailingLatestTurnRepairRepository extends SessionCatalogCacheRepository {
   _FailingLatestTurnRepairRepository(super.database);
 
   int clearTargetCalls = 0;
+
+  @override
+  Future<bool> prepareConversationLatestTurnItemsRepair({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String expectedRevision,
+    required String expectedTurnId,
+    required String? expectedCursor,
+  }) {
+    return Future<bool>.value(true);
+  }
 
   @override
   Future<ConversationHotWindowSnapshot?> mergeConversationLatestTurnItemsPage({
@@ -3453,7 +5529,10 @@ class _FailingLatestTurnRepairRepository extends SessionCatalogCacheRepository {
     required String expectedRevision,
     required String expectedTurnId,
     required List<Map<String, dynamic>> rawMessages,
+    required String? expectedCursor,
     required String? nextCursor,
+    bool pageComplete = true,
+    ConversationSyncV2LatestTurnGap? latestTurnGap,
   }) {
     return Future<ConversationHotWindowSnapshot?>.error(
       StateError('injected latest-turn merge failure'),
@@ -3494,6 +5573,7 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
   final StreamController<Map<String, dynamic>> _outgoing =
       StreamController<Map<String, dynamic>>.broadcast();
   final List<Map<String, dynamic>> sent = [];
+  bool throwOnConversationContentAck = false;
 
   List<String> get sentTypes =>
       sent.map((message) => message['type']! as String).toList();
@@ -3535,6 +5615,12 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
   bool supportsConversationSyncV2 = false;
 
   @override
+  bool supportsConversationWindowCoverage = true;
+
+  @override
+  bool supportsConversationSyncFocusRefresh = false;
+
+  @override
   bool supportsConversationItemsById = true;
 
   @override
@@ -3547,6 +5633,10 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
   @override
   void send(ClientMessage message) {
     final json = jsonDecode(message.toJson()) as Map<String, dynamic>;
+    if (throwOnConversationContentAck &&
+        json['type'] == 'conversation_content_ack') {
+      throw StateError('injected conversation content ACK failure');
+    }
     sent.add(json);
     _outgoing.add(json);
   }

@@ -12,12 +12,18 @@ import '../../../models/messages.dart';
 import '../../../services/bridge_service.dart';
 import '../../../services/chat_message_handler.dart';
 import '../../../services/desktop_continuity_backlog.dart';
+import '../../../services/draft_service.dart';
 import '../../../utils/diagnostic_token.dart';
 import '../../../utils/history_window_policy.dart';
+import 'detached_timeline_projection.dart';
 import 'chat_session_state.dart';
 import 'streaming_state_cubit.dart';
 
 typedef ChatImageAttachment = ({Uint8List bytes, String mimeType});
+typedef _PendingDetachedRuntimeOverlay = ({
+  ConversationSyncV2EventMessage event,
+  int bytes,
+});
 typedef ChatImagePayloadEncoder =
     Future<List<Map<String, String>>> Function(
       List<ChatImageAttachment> images,
@@ -45,27 +51,56 @@ class LocalHistoryPagingState {
   const LocalHistoryPagingState({
     this.enabled = false,
     this.hasMore = false,
+    this.hasLater = false,
     this.loading = false,
+    this.loadingLater = false,
     this.error,
+    this.laterError,
   });
 
   final bool enabled;
   final bool hasMore;
+  final bool hasLater;
   final bool loading;
+  final bool loadingLater;
   final Object? error;
+  final Object? laterError;
 
   LocalHistoryPagingState copyWith({
     bool? enabled,
     bool? hasMore,
+    bool? hasLater,
     bool? loading,
+    bool? loadingLater,
     Object? error,
+    Object? laterError,
     bool clearError = false,
+    bool clearLaterError = false,
   }) => LocalHistoryPagingState(
     enabled: enabled ?? this.enabled,
     hasMore: hasMore ?? this.hasMore,
+    hasLater: hasLater ?? this.hasLater,
     loading: loading ?? this.loading,
+    loadingLater: loadingLater ?? this.loadingLater,
     error: clearError ? null : (error ?? this.error),
+    laterError: clearLaterError ? null : (laterError ?? this.laterError),
   );
+}
+
+class HistoryNavigationWindow {
+  const HistoryNavigationWindow({
+    required this.entries,
+    this.startTurnOrder,
+    this.endTurnOrderExclusive,
+    this.startOrdinal,
+    this.endOrdinalExclusive,
+  });
+
+  final List<ChatEntry> entries;
+  final int? startTurnOrder;
+  final int? endTurnOrderExclusive;
+  final int? startOrdinal;
+  final int? endOrdinalExclusive;
 }
 
 typedef DetachedHistoryPageLoader =
@@ -221,9 +256,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   final BridgeService _bridge;
   final StreamingStateCubit _streamingCubit;
   final ChatImagePayloadEncoder _imagePayloadEncoder;
+  final DraftService? _outgoingDrafts;
+  final String _outgoingDraftStorageKey;
   final ChatMessageHandler _handler = ChatMessageHandler();
   final bool detachedPreview;
   final List<ServerMessage> initialHistoryMessages;
+  final Stream<ConversationSyncV2EventMessage>? _detachedRuntimeOverlayStream;
 
   String? _detachedLiveRuntimeSessionId;
   int _detachedLiveRuntimeGeneration = 0;
@@ -281,6 +319,70 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   String? get detachedActionBrokerAuthorityGeneration =>
       _detachedAuthorityGeneration;
   String? get detachedActionBrokerExecutionHost => _detachedExecutionHost;
+
+  Map<String, Object?> get diagnosticRuntimeProjection => <String, Object?>{
+    'detachedPreview': detachedPreview,
+    'liveRuntimeSessionId': _detachedLiveRuntimeSessionId,
+    'liveRuntimeGeneration': _detachedLiveRuntimeGeneration,
+    'authorityObserved': _detachedAuthorityObserved,
+    'executionHost': _detachedExecutionHost,
+    'controlState': _detachedControlState,
+    'authorityGeneration': _detachedAuthorityGeneration,
+    'authorityLiveRuntimeGeneration': _detachedAuthorityLiveRuntimeGeneration,
+    'authoritySourceFingerprint': _detachedAuthoritySourceFingerprint,
+    'activeTurnId': _detachedActiveTurnId,
+    'preservedVisualTurnId': _detachedPreservedVisualTurnId,
+    'visualTurnValidationPending': _detachedVisualTurnValidationPending,
+    'pendingVisualMessageCount': _detachedPendingVisualMessages.length,
+    'timelineProjection': <String, Object?>{
+      'lastAction': _detachedProjectionLastAction,
+      'canonicalCount': _detachedProjectionCanonicalCount,
+      'outgoingOverlayCount': _detachedProjectionOutgoingOverlayCount,
+      'runtimeOverlayCount': _detachedProjectionRuntimeOverlayCount,
+      'composedCount': state.entries.length,
+      'duplicateCanonicalCount': _detachedProjectionDuplicateCanonicalCount,
+      'duplicateOverlayCount': _detachedProjectionDuplicateOverlayCount,
+      'rejectedRuntimeOverlayCount': _detachedRejectedRuntimeOverlayCount,
+      'runtimeOverlayOriginGeneration': _detachedRuntimeOverlayOriginGeneration,
+      'runtimeOverlayEventCount': _detachedRuntimeOverlayEventIds.length,
+      'pendingRuntimeOverlayCount': _pendingDetachedRuntimeOverlays.length,
+      'pendingRuntimeOverlayBytes': _pendingDetachedRuntimeOverlayBytes,
+      'runtimeAssistantAliasCount': _detachedRuntimeAssistantAliases.length,
+      'localOutgoingClientIdCount': _detachedLocalOverlayClientIds.length,
+    },
+    'rejectedAuthorityGeneration': _detachedRejectedAuthorityGeneration,
+    'providerProjectionCurrent': _detachedProviderProjectionCurrent,
+    'runtimeSessionIdForRead': runtimeSessionIdForRead,
+    'runtimeSessionIdForMutation': runtimeSessionIdForMutation(),
+    'canMutateAttachedRuntime': canMutateAttachedRuntime,
+    'settingsActionability': codexSettingsActionability.name,
+    'modelSettingsKnown': codexModelSettingsKnown,
+    'planModeKnown': codexPlanModeKnown,
+    'queuedInputLimit': _queuedInputLimit,
+    'queuedInputs': [
+      for (final item in queuedInputs.value)
+        <String, Object?>{
+          'itemId': item.itemId,
+          'text': item.text,
+          'createdAt': item.createdAt,
+          'updatedAt': item.updatedAt,
+          'clientMessageId': item.clientMessageId,
+          'deliveryStage': item.deliveryStage?.wireValue,
+          'deliveryError': item.deliveryError,
+        },
+    ],
+    'historyNavigationActive': historyNavigationActive,
+    'historyNavigationEntryCount': historyNavigation.value?.entries.length,
+    'localHistoryPaging': <String, Object?>{
+      'enabled': localHistoryPaging.value.enabled,
+      'hasMore': localHistoryPaging.value.hasMore,
+      'hasLater': localHistoryPaging.value.hasLater,
+      'loading': localHistoryPaging.value.loading,
+      'loadingLater': localHistoryPaging.value.loadingLater,
+      'error': localHistoryPaging.value.error?.toString(),
+      'laterError': localHistoryPaging.value.laterError?.toString(),
+    },
+  };
 
   bool get canMutateAttachedRuntime => _runtimeSessionIdForMutation() != null;
 
@@ -436,6 +538,26 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         sourceFingerprint.isNotEmpty;
   }
 
+  bool get _canUseDurableGoalTarget {
+    final codexSourceId = _bridge.codexSourceId?.trim();
+    return detachedPreview &&
+        _bridge.isConnected &&
+        _bridge.bridgeCapabilities.contains(
+          codexDurableThreadGoalsCapability,
+        ) &&
+        codexSourceId != null &&
+        codexSourceId.isNotEmpty;
+  }
+
+  CodexGoalRequestTarget? _durableGoalTarget({String? operationId}) {
+    if (!_canUseDurableGoalTarget) return null;
+    return CodexGoalRequestTarget.durableThread(
+      codexSourceId: _bridge.codexSourceId!.trim(),
+      threadId: sessionId,
+      operationId: operationId,
+    );
+  }
+
   String? _runtimeSessionIdForSettingsMutation() {
     if (!detachedPreview) return sessionId;
     if (_canBuildDurableSettingsMutationTarget) return sessionId;
@@ -512,6 +634,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   StreamSubscription<ServerMessage>? _subscription;
   StreamSubscription<ServerMessage>? _detachedSettingsSubscription;
+  StreamSubscription<ConversationSyncV2EventMessage>?
+  _detachedRuntimeOverlaySubscription;
   StreamSubscription<BridgeConnectionState>? _goalConnectionSubscription;
   StreamSubscription<List<SessionInfo>>? _goalSessionListSubscription;
   StreamSubscription<List<SessionInfo>>? _runtimeSnapshotSubscription;
@@ -521,6 +645,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   StreamSubscription<String>? _historySyncSubscription;
   StreamSubscription<BridgeConnectionState>?
   _statusRefreshConnectionSubscription;
+  StreamSubscription<BridgeConnectionState>?
+  _detachedOutgoingConnectionSubscription;
   StreamSubscription<LocalFeatureServerMessage>? _desktopContinuitySubscription;
   StreamSubscription<BridgeConnectionState>?
   _desktopContinuityConnectionSubscription;
@@ -567,6 +693,37 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool _goalUserRefreshPending = false;
   bool _codexGoalThreadReady = false;
   final Map<String, QueuedInputItem> _deliveryPendingInputs = {};
+  // A provider ACK may arrive before conversation_sync_v2 commits the user
+  // item. Keep that one local envelope across unrelated cache replacements;
+  // canonical history removes the correlation once it contains the client id.
+  static const _maxDetachedLocalOverlayClientIds = 512;
+  final Set<String> _detachedLocalOverlayClientIds = {};
+  // A live assistant completion is a presentation overlay until
+  // conversation_sync_v2 commits that stable item to SQLite. The cache stays
+  // the durable writer; these aliases only bridge the short commit gap.
+  static const _maxDetachedRuntimeAssistantAliases = 512;
+  final Set<String> _detachedRuntimeAssistantAliases = {};
+  static const _maxSubmittedClientMessageIds = 512;
+  final Set<String> _submittedClientMessageIds = {};
+  static const _maxDetachedRuntimeOverlayEventIds = 128;
+  static const _maxDetachedRuntimeOverlayEntries = 32;
+  static const _maxDetachedRuntimeOverlayBytes = 64 * 1024;
+  final Set<String> _detachedRuntimeOverlayEventIds = {};
+  final Map<String, _PendingDetachedRuntimeOverlay>
+  _pendingDetachedRuntimeOverlays = {};
+  int _pendingDetachedRuntimeOverlayBytes = 0;
+  int? _detachedRuntimeOverlayGeneration;
+  String? _detachedRuntimeOverlayOriginGeneration;
+  String? _detachedRuntimeOverlayTurnId;
+  String? _detachedRuntimeOverlayAuthorityGeneration;
+  String? _detachedRuntimeOverlayRuntimeSessionId;
+  int _detachedProjectionCanonicalCount = 0;
+  int _detachedProjectionOutgoingOverlayCount = 0;
+  int _detachedProjectionRuntimeOverlayCount = 0;
+  int _detachedProjectionDuplicateCanonicalCount = 0;
+  int _detachedProjectionDuplicateOverlayCount = 0;
+  String _detachedProjectionLastAction = 'initial';
+  int _detachedRejectedRuntimeOverlayCount = 0;
   Future<void> _inputDispatchTail = Future<void>.value();
   int _pendingInputDispatchCount = 0;
   final Set<String> _pendingInputDispatchIds = {};
@@ -616,6 +773,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   DetachedUserMessageIndexLoader? _detachedUserMessageIndexLoader;
   DetachedUserTurnLoader? _detachedUserTurnLoader;
   final Map<String, int> _providerTurnOrderById = {};
+  final List<String> _providerTurnIdsByOrder = [];
+  final ValueNotifier<HistoryNavigationWindow?> historyNavigation =
+      ValueNotifier(null);
+  LocalHistoryPagingState? _historyNavigationReturnPaging;
   final ValueNotifier<bool> historySyncing = ValueNotifier(false);
   final ValueNotifier<int> historyToolDetailRevision = ValueNotifier(0);
   final Map<String, HistoryToolDetailLoadState> _historyToolDetailStates = {};
@@ -624,6 +785,25 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   bool _localHistoryUserIndexComplete = false;
 
   bool get localHistoryUserIndexComplete => _localHistoryUserIndexComplete;
+  bool get historyNavigationActive => historyNavigation.value != null;
+  List<ChatEntry> get visibleEntries =>
+      historyNavigation.value?.entries ?? state.entries;
+
+  void exitHistoryNavigation() {
+    final navigation = historyNavigation.value;
+    if (navigation == null) return;
+    historyNavigation.value = null;
+    localHistoryPaging.value =
+        (navigation.startOrdinal != null
+            ? _currentLocalHistoryPagingState()
+            : _historyNavigationReturnPaging) ??
+        (detachedPreview
+            ? LocalHistoryPagingState(
+                enabled: _detachedHistoryPageLoader != null,
+              )
+            : _currentLocalHistoryPagingState());
+    _historyNavigationReturnPaging = null;
+  }
 
   /// Rebinds source- and revision-scoped durable history loaders without
   /// replacing the mounted chat Cubit.
@@ -643,7 +823,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _detachedUserMessageIndexLoader = userMessageIndexLoader;
     _detachedUserTurnLoader = userTurnLoader;
     _localHistoryUserIndexComplete = false;
-    _providerTurnOrderById.clear();
+    // A new content revision updates the live cache behind the historical
+    // viewport. Keep the mounted navigation window and its last complete
+    // index until the refreshed index commits, otherwise every live delta
+    // ejects the user back to the newest message mid-read.
     localHistoryIndexRevision.value += 1;
   }
 
@@ -836,6 +1019,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     CodexPermissionsMode? initialCodexPermissionsMode,
     String? initialProjectPath,
     ChatImagePayloadEncoder? imagePayloadEncoder,
+    DraftService? outgoingDrafts,
+    String? outgoingDraftStorageKey,
     this.detachedPreview = false,
     this.initialHistoryMessages = const [],
     String? initialLiveRuntimeSessionId,
@@ -843,6 +1028,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     DetachedHistoryToolDetailLoader? detachedHistoryToolDetailLoader,
     DetachedUserMessageIndexLoader? detachedUserMessageIndexLoader,
     DetachedUserTurnLoader? detachedUserTurnLoader,
+    Stream<ConversationSyncV2EventMessage>? detachedRuntimeOverlayStream,
     bool initialHistoryHasEarlier = false,
   }) : _bridge = bridge,
        _streamingCubit = streamingCubit,
@@ -850,6 +1036,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
        _detachedHistoryToolDetailLoader = detachedHistoryToolDetailLoader,
        _detachedUserMessageIndexLoader = detachedUserMessageIndexLoader,
        _detachedUserTurnLoader = detachedUserTurnLoader,
+       // Keep the public constructor label free of a private implementation
+       // name; the composition root injects durable outgoing recovery.
+       // ignore: prefer_initializing_formals
+       _outgoingDrafts = outgoingDrafts,
+       _outgoingDraftStorageKey =
+           outgoingDraftStorageKey?.trim().isNotEmpty == true
+           ? outgoingDraftStorageKey!.trim()
+           : sessionId,
+       // Keep the public constructor label free of a private implementation
+       // name; this stream is injected by the composition root.
+       // ignore: prefer_initializing_formals
+       _detachedRuntimeOverlayStream = detachedRuntimeOverlayStream,
        _imagePayloadEncoder =
            imagePayloadEncoder ?? _defaultChatImagePayloadEncoder,
        super(
@@ -922,15 +1120,31 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (isCodex) {
         _detachedSettingsSubscription = _bridge
             .messagesForSession(sessionId)
-            .where(_isDetachedSettingsResponse)
+            .where(_isDetachedControlResponse)
             .listen(_onMessage);
+        _detachedRuntimeOverlaySubscription = _detachedRuntimeOverlayStream
+            ?.where(
+              (message) =>
+                  message.event == ConversationSyncV2EventKind.runtimeOverlay,
+            )
+            .listen(_onDetachedRuntimeOverlay);
+        _detachedOutgoingConnectionSubscription = _bridge.connectionStatus
+            .listen(_onOutgoingConnectionState);
+        _goalConnectionSubscription = _bridge.connectionStatus.listen(
+          _onGoalConnectionState,
+        );
         codexModelCatalogRevision.value = _bridge.codexModelCatalogRevision;
         _codexModelCatalogSubscription = _bridge.codexModelCatalogChanges
             .listen((revision) => codexModelCatalogRevision.value = revision);
         _runtimeSnapshotSubscription = _bridge.sessionList.listen(
           _synchronizeDetachedCodexRuntimeSnapshot,
         );
+        _goalSessionListSubscription = _bridge.sessionList.listen(
+          _updateCodexRuntimeSupportFromSessions,
+        );
         _synchronizeDetachedCodexRuntimeSnapshot(_bridge.sessions);
+        _updateCodexRuntimeSupportFromSessions(_bridge.sessions);
+        requestGoal();
       }
       return;
     }
@@ -949,6 +1163,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     });
     _statusRefreshConnectionSubscription = _bridge.connectionStatus.listen(
       _onStatusRefreshConnectionState,
+    );
+    _detachedOutgoingConnectionSubscription = _bridge.connectionStatus.listen(
+      _onOutgoingConnectionState,
     );
     _runtimeSnapshotSubscription = _bridge.sessionList.listen(
       _synchronizeRuntimeSnapshot,
@@ -1014,7 +1231,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _startStatusRefreshTimer();
   }
 
-  bool _isDetachedSettingsResponse(ServerMessage message) {
+  bool _isDetachedControlResponse(ServerMessage message) {
+    if (message is GoalStateMessage) {
+      return message.sessionId == sessionId;
+    }
     if (message is SystemMessage) {
       return message.sessionId == sessionId &&
           message.provider == Provider.codex.value &&
@@ -1026,6 +1246,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return false;
     }
     final code = message.errorCode;
+    if ((code?.startsWith('goal_') ?? false) ||
+        message.goalChangeId?.trim().isNotEmpty == true) {
+      return true;
+    }
     return code == 'set_permission_mode_rejected' ||
         code == 'set_sandbox_mode_rejected' ||
         code == 'set_codex_model_rejected' ||
@@ -1035,6 +1259,240 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         code == 'codex_shared_runtime_settings_stale_authority' ||
         code == 'codex_shared_runtime_settings_operation_conflict' ||
         code == 'codex_shared_runtime_settings_busy';
+  }
+
+  void _onDetachedRuntimeOverlay(ConversationSyncV2EventMessage event) {
+    if (!detachedPreview || isClosed) return;
+    if (event.provider != Provider.codex.value ||
+        event.providerSessionId != sessionId) {
+      _detachedRejectedRuntimeOverlayCount += 1;
+      return;
+    }
+    final bridgeInstanceId = _bridge.bridgeInstanceId?.trim();
+    final codexSourceId = _bridge.codexSourceId?.trim();
+    if (bridgeInstanceId?.isNotEmpty != true ||
+        codexSourceId?.isNotEmpty != true ||
+        event.bridgeInstanceId != bridgeInstanceId ||
+        event.codexSourceId != codexSourceId) {
+      _detachedRejectedRuntimeOverlayCount += 1;
+      return;
+    }
+    final overlayId = event.overlayId;
+    final message = event.overlayMessage;
+    final originGeneration = event.originGeneration?.trim();
+    final eventRuntimeSessionId = event.runtimeSessionId?.trim();
+    final eventAuthorityGeneration = event.authorityGeneration?.trim();
+    final eventTurnId = event.turnId?.trim();
+    if (overlayId == null ||
+        message == null ||
+        originGeneration?.isNotEmpty != true ||
+        eventRuntimeSessionId?.isNotEmpty != true ||
+        eventAuthorityGeneration?.isNotEmpty != true ||
+        eventTurnId?.isNotEmpty != true) {
+      _detachedRejectedRuntimeOverlayCount += 1;
+      return;
+    }
+    if (_isOlderDetachedObserverGeneration(originGeneration!)) {
+      _detachedRejectedRuntimeOverlayCount += 1;
+      return;
+    }
+    final liveRuntimeSessionId = _detachedLiveRuntimeSessionId?.trim();
+    final sharedObserver = originGeneration.startsWith('observer:');
+    final runtimeFenceMatches = sharedObserver
+        ? eventRuntimeSessionId == originGeneration
+        : liveRuntimeSessionId?.isNotEmpty == true &&
+              eventRuntimeSessionId == liveRuntimeSessionId;
+    if (!runtimeFenceMatches) {
+      _detachedRejectedRuntimeOverlayCount += 1;
+      return;
+    }
+    final currentAuthorityGeneration = _detachedAuthorityGeneration?.trim();
+    if (eventAuthorityGeneration == _detachedRejectedAuthorityGeneration) {
+      _detachedRejectedRuntimeOverlayCount += 1;
+      return;
+    }
+    final activeTurnId = _detachedActiveTurnId?.trim();
+    final messageTurnId = _detachedRuntimeOverlayMessageTurnId(message)?.trim();
+    if (messageTurnId?.isNotEmpty == true && messageTurnId != eventTurnId) {
+      _detachedRejectedRuntimeOverlayCount += 1;
+      return;
+    }
+    if (_detachedRuntimeOverlayEventIds.contains(overlayId) ||
+        _pendingDetachedRuntimeOverlays.containsKey(overlayId)) {
+      return;
+    }
+    if (currentAuthorityGeneration?.isNotEmpty == true &&
+        activeTurnId?.isNotEmpty == true &&
+        eventAuthorityGeneration == currentAuthorityGeneration &&
+        eventTurnId == activeTurnId) {
+      _applyValidatedDetachedRuntimeOverlay(
+        overlayId: overlayId,
+        message: message,
+        originGeneration: originGeneration,
+        runtimeSessionId: eventRuntimeSessionId!,
+        authorityGeneration: eventAuthorityGeneration!,
+        turnId: eventTurnId!,
+      );
+      return;
+    }
+    if (_detachedRuntimeOverlayIsProvenStale(event)) {
+      _detachedRejectedRuntimeOverlayCount += 1;
+      return;
+    }
+    _quarantineDetachedRuntimeOverlay(event, message);
+  }
+
+  void _applyValidatedDetachedRuntimeOverlay({
+    required String overlayId,
+    required ServerMessage message,
+    required String originGeneration,
+    required String runtimeSessionId,
+    required String authorityGeneration,
+    required String turnId,
+  }) {
+    if (_isOlderDetachedObserverGeneration(originGeneration)) {
+      _detachedRejectedRuntimeOverlayCount += 1;
+      return;
+    }
+    if (!_detachedRuntimeOverlayEventIds.add(overlayId)) {
+      return;
+    }
+    while (_detachedRuntimeOverlayEventIds.length >
+        _maxDetachedRuntimeOverlayEventIds) {
+      _detachedRuntimeOverlayEventIds.remove(
+        _detachedRuntimeOverlayEventIds.first,
+      );
+    }
+    _detachedRuntimeOverlayOriginGeneration = originGeneration;
+    if (message is AssistantServerMessage) {
+      if (!_isDetachedLiveAssistantCompletion(message)) {
+        _detachedRejectedRuntimeOverlayCount += 1;
+        return;
+      }
+      _applyDetachedVisualMessage(message);
+    } else {
+      _onMessage(message);
+    }
+    if (_detachedRuntimeOverlayGeneration == _detachedLiveRuntimeGeneration) {
+      _detachedRuntimeOverlayTurnId = turnId;
+    }
+    _detachedRuntimeOverlayAuthorityGeneration = authorityGeneration;
+    _detachedRuntimeOverlayRuntimeSessionId = runtimeSessionId;
+    _trimDetachedRuntimeOverlayEntries();
+  }
+
+  void _quarantineDetachedRuntimeOverlay(
+    ConversationSyncV2EventMessage event,
+    ServerMessage message,
+  ) {
+    final overlayId = event.overlayId!;
+    final bytes = _detachedRuntimeOverlayMessageBytes(message);
+    if (bytes > _maxDetachedRuntimeOverlayBytes ||
+        _pendingDetachedRuntimeOverlays.length >=
+            _maxDetachedRuntimeOverlayEntries ||
+        _pendingDetachedRuntimeOverlayBytes + bytes >
+            _maxDetachedRuntimeOverlayBytes) {
+      _detachedRejectedRuntimeOverlayCount += 1;
+      logger.warning(
+        '[timeline_projection] event=runtime_overlay_quarantine_rejected '
+        'thread=$_projectionThreadToken reason=bounded_capacity',
+      );
+      return;
+    }
+    _pendingDetachedRuntimeOverlays[overlayId] = (event: event, bytes: bytes);
+    _pendingDetachedRuntimeOverlayBytes += bytes;
+    logger.info(
+      '[timeline_projection] event=runtime_overlay_quarantined '
+      'thread=$_projectionThreadToken pending='
+      '${_pendingDetachedRuntimeOverlays.length}',
+    );
+  }
+
+  bool _detachedRuntimeOverlayIsProvenStale(
+    ConversationSyncV2EventMessage event,
+  ) {
+    final projectedAt = _detachedProviderStatusObservedAt;
+    final eventAt = DateTime.tryParse(event.observedAt ?? '')?.toUtc();
+    return projectedAt != null &&
+        eventAt != null &&
+        projectedAt.isAfter(eventAt);
+  }
+
+  void _removePendingDetachedRuntimeOverlay(String overlayId) {
+    final removed = _pendingDetachedRuntimeOverlays.remove(overlayId);
+    if (removed == null) return;
+    final nextBytes = _pendingDetachedRuntimeOverlayBytes - removed.bytes;
+    _pendingDetachedRuntimeOverlayBytes = nextBytes < 0 ? 0 : nextBytes;
+  }
+
+  void _clearPendingDetachedRuntimeOverlays() {
+    _pendingDetachedRuntimeOverlays.clear();
+    _pendingDetachedRuntimeOverlayBytes = 0;
+  }
+
+  void _flushPendingDetachedRuntimeOverlays() {
+    if (_pendingDetachedRuntimeOverlays.isEmpty) return;
+    for (final pending in _pendingDetachedRuntimeOverlays.entries.toList()) {
+      final event = pending.value.event;
+      final overlayId = pending.key;
+      final message = event.overlayMessage;
+      final originGeneration = event.originGeneration?.trim();
+      final runtimeSessionId = event.runtimeSessionId?.trim();
+      final authorityGeneration = event.authorityGeneration?.trim();
+      final turnId = event.turnId?.trim();
+      final sharedObserver = originGeneration?.startsWith('observer:') == true;
+      final runtimeMatches = sharedObserver
+          ? runtimeSessionId == originGeneration
+          : runtimeSessionId?.isNotEmpty == true &&
+                runtimeSessionId == _detachedLiveRuntimeSessionId;
+      if (message == null ||
+          originGeneration?.isNotEmpty != true ||
+          runtimeSessionId?.isNotEmpty != true ||
+          authorityGeneration?.isNotEmpty != true ||
+          turnId?.isNotEmpty != true ||
+          !runtimeMatches ||
+          _isOlderDetachedObserverGeneration(originGeneration!)) {
+        _removePendingDetachedRuntimeOverlay(overlayId);
+        _detachedRejectedRuntimeOverlayCount += 1;
+        continue;
+      }
+      final currentAuthority = _detachedAuthorityGeneration?.trim();
+      final currentTurn = _detachedActiveTurnId?.trim();
+      if (currentAuthority == authorityGeneration && currentTurn == turnId) {
+        _removePendingDetachedRuntimeOverlay(overlayId);
+        _applyValidatedDetachedRuntimeOverlay(
+          overlayId: overlayId,
+          message: message,
+          originGeneration: originGeneration,
+          runtimeSessionId: runtimeSessionId!,
+          authorityGeneration: authorityGeneration!,
+          turnId: turnId!,
+        );
+        continue;
+      }
+      if (_detachedRuntimeOverlayIsProvenStale(event)) {
+        _removePendingDetachedRuntimeOverlay(overlayId);
+        _detachedRejectedRuntimeOverlayCount += 1;
+      }
+    }
+  }
+
+  bool _isOlderDetachedObserverGeneration(String candidate) {
+    final match = RegExp(r'^observer:(\d+):(\d+)$').firstMatch(candidate);
+    if (match == null) return false;
+    final connection = int.tryParse(match.group(1)!);
+    final observer = int.tryParse(match.group(2)!);
+    if (connection == null || observer == null) return false;
+    final current = _detachedRuntimeOverlayOriginGeneration;
+    final currentMatch = current == null
+        ? null
+        : RegExp(r'^observer:(\d+):(\d+)$').firstMatch(current);
+    if (currentMatch == null) return false;
+    final currentConnection = int.tryParse(currentMatch.group(1)!);
+    final currentObserver = int.tryParse(currentMatch.group(2)!);
+    if (currentConnection == null || currentObserver == null) return false;
+    return connection < currentConnection ||
+        (connection == currentConnection && observer < currentObserver);
   }
 
   void _restoreInitialHistoryMessages() {
@@ -1073,9 +1531,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       _detachedPendingVisualMessages.clear();
     }
     final generation = ++_detachedLiveRuntimeGeneration;
+    logger.info(
+      '[outgoing_recovery] event=runtime_binding_changed '
+      'thread=$_projectionThreadToken '
+      'from=${_projectionOpaqueToken('runtime', previousRuntimeSessionId)} '
+      'to=${_projectionOpaqueToken('runtime', next)} generation=$generation',
+    );
     unawaited(_subscription?.cancel());
     _subscription = null;
     _detachedLiveRuntimeSessionId = next;
+    final adoptsMatchingRuntimeOverlay =
+        previousRuntimeSessionId == null &&
+        next != null &&
+        _detachedRuntimeOverlayRuntimeSessionId == next &&
+        _detachedRuntimeOverlayGeneration == generation - 1;
     if (previousRuntimeSessionId != null &&
         previousRuntimeSessionId != next &&
         _detachedAuthorityGeneration != null) {
@@ -1083,9 +1552,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     _clearDetachedRuntimeTransients(
       previousRuntimeSessionId,
+      unconfirmedInputFailureReason: 'runtime_binding_changed_before_receipt',
       preserveProviderProjection: true,
       preserveVisualTimeline: true,
+      preserveRuntimeOverlay: adoptsMatchingRuntimeOverlay,
     );
+    if (adoptsMatchingRuntimeOverlay) {
+      _detachedRuntimeOverlayGeneration = generation;
+    }
     _detachedAuthorityObserved = false;
     _detachedExecutionHost = null;
     _detachedControlState = null;
@@ -1104,6 +1578,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
     _respondedToolUseIds.addAll(_bridge.respondedToolUseIds(next));
     _subscription = _bridge.messagesForSession(next).listen((message) {
+      if (message is InputAckMessage ||
+          message is InputDeliveryStatusMessage ||
+          message is InputRejectedMessage) {
+        logger.info(
+          '[outgoing_recovery] event=runtime_receipt_frame '
+          'thread=$_projectionThreadToken '
+          'runtime=${_projectionOpaqueToken('runtime', next)} '
+          'kind=${message.runtimeType}',
+        );
+      }
       if (isClosed ||
           generation != _detachedLiveRuntimeGeneration ||
           _detachedLiveRuntimeSessionId != next) {
@@ -1114,29 +1598,431 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           message is HistorySnapshotMessage ||
           message is HistoryDeltaMessage ||
           message is HistoryPageMessage ||
-          message is HistoryToolDetailsMessage) {
+          message is HistoryToolDetailsMessage ||
+          _isDetachedDurableTimelineFrame(message)) {
+        return;
+      }
+      if (_isDetachedRuntimeOverlayMessage(message)) {
+        _onDetachedDirectRuntimeOverlay(message);
         return;
       }
       if (_bufferDetachedVisualMessageUntilTurnValidation(message)) return;
       _onMessage(message);
     });
+    _restoreDetachedAcceptedUserOverlays(next);
     _synchronizeDetachedCodexRuntimeSnapshot(_bridge.sessions);
   }
 
-  void _clearDetachedRuntimeTransients(
-    String? previousRuntimeSessionId, {
-    bool preserveProviderProjection = false,
-    bool preserveVisualTimeline = false,
-  }) {
-    if (previousRuntimeSessionId != null) {
-      for (final item in _deliveryPendingInputs.values) {
-        _bridge.clearDeliveryPendingInput(
-          previousRuntimeSessionId,
-          itemId: item.itemId,
+  void _applyDetachedVisualMessage(ServerMessage message) {
+    if (message is! AssistantServerMessage ||
+        !_isDetachedLiveAssistantCompletion(message)) {
+      _onMessage(message);
+      return;
+    }
+
+    final timestamp = serverMessageTimestamp(message);
+    final entry = ServerChatEntry(
+      message,
+      timestamp: timestamp?.value.toLocal(),
+      timestampIsAuthoritative: timestamp?.isAuthoritative ?? false,
+    );
+    final incomingAliases = _entryExactAliasKeys(entry).toSet();
+    final existingIndex = state.entries.indexWhere(
+      (candidate) =>
+          incomingAliases.isNotEmpty &&
+          _entryExactAliasKeys(candidate).any(incomingAliases.contains),
+    );
+    if (existingIndex != -1) {
+      final existing = state.entries[existingIndex];
+      // A canonical SQLite item already owns this identity, or the same
+      // validated overlay arrived through another observer path. In both
+      // cases only close streaming and advance delivery state; never append.
+      _handler.resetTransientStreaming();
+      _applyUpdate(
+        const ChatStateUpdate(resetStreaming: true, markUserMessagesSent: true),
+        message,
+      );
+      if (_isDetachedRuntimeAssistantOverlay(existing)) {
+        final entries = List<ChatEntry>.of(state.entries);
+        entries[existingIndex] = _mergeEquivalentEntry(existing, entry);
+        emit(state.copyWith(entries: entries));
+      }
+      return;
+    }
+    _rememberDetachedRuntimeAssistantOverlay(entry);
+    // The direct completion is not a second durable transcript writer. It
+    // closes the exact live item and remains only until the matching SQLite
+    // row is committed and reconciled by stable provider identity.
+    _handler.resetTransientStreaming();
+    _applyUpdate(
+      ChatStateUpdate(
+        entriesToAdd: [entry],
+        resetStreaming: true,
+        markUserMessagesSent: true,
+      ),
+      message,
+    );
+    _detachedProjectionLastAction = 'runtime_overlay';
+    _detachedProjectionRuntimeOverlayCount = state.entries
+        .where(_isDetachedRuntimeOverlayEntry)
+        .length;
+    logger.info(
+      '[timeline_projection] event=assistant_item_completed '
+      'thread=$_projectionThreadToken '
+      'item=${_projectionOpaqueToken('item', message.message.id)} '
+      'turn=${_projectionOpaqueToken('turn', message.historyTurnId)}',
+    );
+  }
+
+  void _restoreDetachedAcceptedUserOverlays(String runtimeSessionId) {
+    if (!detachedPreview || !isCodex || isClosed) return;
+    final additions = <ChatEntry>[];
+    for (final message
+        in _bridge
+            .cachedSessionMessages(runtimeSessionId)
+            .whereType<UserInputMessage>()) {
+      final clientMessageId = message.clientMessageId?.trim();
+      // ACK projections have only the client id. Provider/turn/UUID-bearing
+      // rows are canonical transcript data and continue to come from SQLite.
+      if (clientMessageId?.isNotEmpty != true ||
+          message.providerItemId?.trim().isNotEmpty == true ||
+          message.historyTurnId?.trim().isNotEmpty == true ||
+          message.userMessageUuid?.trim().isNotEmpty == true) {
+        continue;
+      }
+      final existingIndex = state.entries.indexWhere(
+        (entry) =>
+            entry is UserChatEntry && entry.clientMessageId == clientMessageId,
+      );
+      final timestamp = serverMessageTimestamp(message);
+      _rememberDetachedLocalOverlayClientId(clientMessageId!);
+      if (existingIndex != -1) {
+        final existing = state.entries[existingIndex] as UserChatEntry;
+        final accepted = UserChatEntry(
+          existing.text.isNotEmpty ? existing.text : message.text,
+          sessionId: existing.sessionId ?? sessionId,
+          clientMessageId: clientMessageId,
+          providerItemId: existing.providerItemId,
+          historyTurnId: existing.historyTurnId,
+          imageBytesList: existing.imageBytesList,
+          imageUrls: existing.imageUrls.isNotEmpty
+              ? existing.imageUrls
+              : message.imageUrls,
+          imageCount: existing.imageCount > 0
+              ? existing.imageCount
+              : message.imageCount,
+          status: _mergeUserDeliveryStatus(
+            existing.status,
+            MessageStatus.bridgeAccepted,
+          ),
+          messageUuid: existing.messageUuid,
+          timestamp:
+              timestamp?.value.toLocal() ??
+              DateTime.tryParse(message.timestamp ?? '')?.toLocal() ??
+              existing.timestamp,
+          timestampIsAuthoritative:
+              timestamp?.isAuthoritative ??
+              (message.timestamp != null || existing.timestampIsAuthoritative),
         );
+        final entries = List<ChatEntry>.of(state.entries);
+        entries[existingIndex] = accepted;
+        emit(state.copyWith(entries: entries));
+        _detachedProjectionLastAction = 'bridge_receipt_restored';
+        continue;
+      }
+      additions.add(
+        UserChatEntry(
+          message.text,
+          sessionId: sessionId,
+          clientMessageId: clientMessageId,
+          imageCount: message.imageCount,
+          imageUrls: message.imageUrls,
+          status: MessageStatus.bridgeAccepted,
+          timestamp:
+              timestamp?.value.toLocal() ??
+              DateTime.tryParse(message.timestamp ?? '')?.toLocal(),
+          timestampIsAuthoritative:
+              timestamp?.isAuthoritative ?? message.timestamp != null,
+        ),
+      );
+    }
+    if (additions.isEmpty) return;
+    final appended = _appendEntriesDeduped(state.entries, additions);
+    if (!appended.didChange) return;
+    emit(state.copyWith(entries: appended.entries));
+    _detachedProjectionLastAction = 'bridge_receipt_restored';
+    logger.info(
+      '[timeline_projection] event=accepted_user_overlay_restored '
+      'thread=$_projectionThreadToken count=${additions.length}',
+    );
+  }
+
+  void _rememberDetachedRuntimeAssistantOverlay(ServerChatEntry entry) {
+    for (final alias in _entryExactAliasKeys(entry)) {
+      if (alias.startsWith('assistant:')) {
+        _detachedRuntimeAssistantAliases.add(alias);
       }
     }
+    while (_detachedRuntimeAssistantAliases.length >
+        _maxDetachedRuntimeAssistantAliases) {
+      _detachedRuntimeAssistantAliases.remove(
+        _detachedRuntimeAssistantAliases.first,
+      );
+    }
+  }
+
+  bool _isDetachedRuntimeAssistantOverlay(ChatEntry entry) {
+    if (entry is! ServerChatEntry || entry.message is! AssistantServerMessage) {
+      return false;
+    }
+    return _entryExactAliasKeys(
+      entry,
+    ).any(_detachedRuntimeAssistantAliases.contains);
+  }
+
+  void _consumeDetachedCanonicalAssistantAliases(
+    Iterable<ChatEntry> historyEntries,
+  ) {
+    if (_detachedRuntimeAssistantAliases.isEmpty) return;
+    for (final entry in historyEntries) {
+      if (entry is! ServerChatEntry ||
+          entry.message is! AssistantServerMessage) {
+        continue;
+      }
+      final aliases = _entryExactAliasKeys(entry).toList(growable: false);
+      if (aliases.any(_detachedRuntimeAssistantAliases.contains)) {
+        _detachedRuntimeAssistantAliases.removeAll(aliases);
+      }
+    }
+  }
+
+  String _projectionOpaqueToken(String namespace, String? value) {
+    final normalized = value?.trim();
+    if (normalized == null || normalized.isEmpty) return 'unknown';
+    return diagnosticToken(namespace, normalized);
+  }
+
+  bool _isDetachedLiveAssistantCompletion(AssistantServerMessage message) {
+    if (!_bridge.supportsConversationSyncV2) return false;
+    return message.message.id.trim().isNotEmpty &&
+        message.historyTurnId?.trim().isNotEmpty == true;
+  }
+
+  /// Stable transcript content for a detached durable thread has exactly one
+  /// writer: conversation_sync_v2 -> SQLite -> this Cubit. The attached
+  /// runtime stream remains responsible for control, approvals, receipts and
+  /// streaming deltas. A completed assistant item is accepted only through
+  /// the focused, generation-fenced conversation_runtime_overlay_v1 channel;
+  /// the ordinary session stream is rejected here with all other durable
+  /// user/assistant/tool content. Result/error/guardian/summary frames remain
+  /// bounded runtime UI/control facts. Replaying transcript content through
+  /// this generic path would create a second timeline writer.
+  bool _isDetachedDurableTimelineFrame(ServerMessage message) =>
+      _bridge.supportsConversationSyncV2 &&
+      (message is UserInputMessage ||
+          message is AssistantServerMessage ||
+          message is ToolResultMessage ||
+          (_usesValidatedRuntimeOverlayChannel &&
+              _isDetachedRuntimeOverlayMessage(message)));
+
+  bool _clearOutgoingDraft(String? clientMessageId) {
+    final normalized = clientMessageId?.trim();
+    final drafts = _outgoingDrafts;
+    if (drafts == null || normalized == null || normalized.isEmpty) {
+      return false;
+    }
+    return drafts.deletePendingSubmission(
+      _outgoingDraftStorageKey,
+      clientMessageId: normalized,
+    );
+  }
+
+  void _logOutgoingReceipt(
+    String evidence,
+    String? clientMessageId, {
+    required bool cleared,
+  }) {
+    logger.info(
+      '[outgoing_recovery] event=receipt_observed '
+      'thread=$_projectionThreadToken evidence=$evidence '
+      'client=${diagnosticToken('client', clientMessageId ?? 'none')} '
+      'cleared=$cleared '
+      'runtime=${_projectionOpaqueToken('runtime', runtimeSessionIdForRead)}',
+    );
+  }
+
+  void _markOutgoingDraftFailed(String? clientMessageId, String error) {
+    final normalized = clientMessageId?.trim();
+    final drafts = _outgoingDrafts;
+    if (drafts == null || normalized == null || normalized.isEmpty) return;
+    final pending = drafts.getPendingSubmission(_outgoingDraftStorageKey);
+    if (pending == null || pending.clientMessageId != normalized) return;
+    unawaited(
+      drafts.savePendingSubmission(
+        _outgoingDraftStorageKey,
+        PendingChatSubmissionDraft(
+          clientMessageId: pending.clientMessageId,
+          text: pending.text,
+          createdAt: pending.createdAt,
+          lastAttemptAt: pending.lastAttemptAt,
+          attemptCount: pending.attemptCount,
+          lastError: error,
+          images: pending.images,
+          mentionablePaths: pending.mentionablePaths,
+          additionalMentions: pending.additionalMentions,
+        ),
+      ),
+    );
+  }
+
+  void _recordOutgoingDraftAttempt(String clientMessageId) {
+    final drafts = _outgoingDrafts;
+    if (drafts == null) return;
+    final pending = drafts.getPendingSubmission(_outgoingDraftStorageKey);
+    if (pending == null || pending.clientMessageId != clientMessageId) return;
+    final now = DateTime.now().toUtc();
+    final lastAttemptAt = pending.lastAttemptAt;
+    final alreadyMarkedByAttachment =
+        lastAttemptAt != null &&
+        now.difference(lastAttemptAt.toUtc()).abs() <
+            const Duration(seconds: 5);
+    unawaited(
+      drafts.savePendingSubmission(
+        _outgoingDraftStorageKey,
+        PendingChatSubmissionDraft(
+          clientMessageId: pending.clientMessageId,
+          text: pending.text,
+          createdAt: pending.createdAt,
+          lastAttemptAt: alreadyMarkedByAttachment ? lastAttemptAt : now,
+          attemptCount: alreadyMarkedByAttachment
+              ? (pending.attemptCount < 1 ? 1 : pending.attemptCount)
+              : pending.attemptCount + 1,
+          lastError: null,
+          images: pending.images,
+          mentionablePaths: pending.mentionablePaths,
+          additionalMentions: pending.additionalMentions,
+        ),
+      ),
+    );
+  }
+
+  void _recordOutgoingDraftEvidence(ServerMessage message) {
+    switch (message) {
+      case InputAckMessage(:final clientMessageId):
+        // Any input_ack is direct proof that Bridge received this exact ID,
+        // whether it started immediately or entered Bridge's queue.
+        _logOutgoingReceipt(
+          'input_ack',
+          clientMessageId,
+          cleared: _clearOutgoingDraft(clientMessageId),
+        );
+      case InputDeliveryStatusMessage(
+        :final clientMessageId,
+        :final stage,
+        :final error,
+      ):
+        if (stage == InputDeliveryStage.providerAccepted) {
+          _logOutgoingReceipt(
+            'provider_accepted',
+            clientMessageId,
+            cleared: _clearOutgoingDraft(clientMessageId),
+          );
+        } else {
+          _markOutgoingDraftFailed(
+            clientMessageId,
+            error ?? 'provider_rejected',
+          );
+        }
+      case InputRejectedMessage(:final clientMessageId, :final reason):
+        _markOutgoingDraftFailed(
+          clientMessageId,
+          reason ?? 'bridge_rejected_input',
+        );
+      case ConversationQueueMessage(:final items):
+        for (final item in items) {
+          _logOutgoingReceipt(
+            'bridge_queue',
+            item.clientMessageId,
+            cleared: _clearOutgoingDraft(item.clientMessageId),
+          );
+        }
+      case UserInputMessage(:final clientMessageId):
+        _logOutgoingReceipt(
+          'canonical_user',
+          clientMessageId,
+          cleared: _clearOutgoingDraft(clientMessageId),
+        );
+      default:
+        return;
+    }
+  }
+
+  void _onOutgoingConnectionState(BridgeConnectionState connectionState) {
+    if (isClosed || connectionState != BridgeConnectionState.disconnected) {
+      return;
+    }
+    _failUnconfirmedInputs(
+      'bridge_disconnected_before_receipt',
+      bridgeSessionId: _detachedLiveRuntimeSessionId ?? sessionId,
+    );
+  }
+
+  void _failUnconfirmedInputs(
+    String reason, {
+    required String bridgeSessionId,
+  }) {
+    final unconfirmedClientIds = _deliveryPendingInputs.keys.toSet();
+    if (unconfirmedClientIds.isEmpty) return;
+    for (final clientMessageId in unconfirmedClientIds) {
+      _markOutgoingDraftFailed(clientMessageId, reason);
+      _bridge.clearDeliveryPendingInput(
+        bridgeSessionId,
+        itemId: '$deliveryPendingQueuedInputPrefix$clientMessageId',
+      );
+    }
     _deliveryPendingInputs.clear();
+    final nextEntries = state.entries
+        .map((entry) {
+          if (entry is! UserChatEntry ||
+              !unconfirmedClientIds.contains(entry.clientMessageId) ||
+              (entry.status != MessageStatus.sending &&
+                  entry.status != MessageStatus.queued)) {
+            return entry;
+          }
+          return UserChatEntry(
+            entry.text,
+            sessionId: entry.sessionId,
+            clientMessageId: entry.clientMessageId,
+            providerItemId: entry.providerItemId,
+            historyTurnId: entry.historyTurnId,
+            imageBytesList: entry.imageBytesList,
+            imageUrls: entry.imageUrls,
+            imageCount: entry.imageCount,
+            status: MessageStatus.failed,
+            messageUuid: entry.messageUuid,
+            timestamp: entry.timestamp,
+            timestampIsAuthoritative: entry.timestampIsAuthoritative,
+          );
+        })
+        .toList(growable: false);
+    emit(state.copyWith(entries: nextEntries));
+  }
+
+  bool get _usesValidatedRuntimeOverlayChannel =>
+      _detachedRuntimeOverlayStream != null &&
+      _bridge.bridgeCapabilities.contains(conversationRuntimeOverlayCapability);
+
+  void _clearDetachedRuntimeTransients(
+    String? previousRuntimeSessionId, {
+    required String unconfirmedInputFailureReason,
+    bool preserveProviderProjection = false,
+    bool preserveVisualTimeline = false,
+    bool preserveRuntimeOverlay = false,
+  }) {
+    _failUnconfirmedInputs(
+      unconfirmedInputFailureReason,
+      bridgeSessionId: previousRuntimeSessionId ?? sessionId,
+    );
     _setAuthoritativeQueuedInputs(const [], 1);
     _pendingPermissionRequests.clear();
     _clearPendingPermissionModeRollback(_pendingPermissionChangeId);
@@ -1145,11 +2031,21 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (!preserveVisualTimeline) {
       _resetDetachedVisualTimelineInternals();
     }
-    final durableEntries = preserveVisualTimeline
+    final filteredEntries = state.entries
+        .where(
+          (entry) =>
+              (preserveVisualTimeline || entry is! StreamingChatEntry) &&
+              (preserveRuntimeOverlay ||
+                  !_isDetachedRuntimeOverlayEntry(entry)),
+        )
+        .toList(growable: false);
+    final durableEntries = filteredEntries.length == state.entries.length
         ? state.entries
-        : state.entries
-              .where((entry) => entry is! StreamingChatEntry)
-              .toList(growable: false);
+        : filteredEntries;
+    if (!preserveRuntimeOverlay) {
+      _detachedRuntimeAssistantAliases.clear();
+      _resetDetachedRuntimeOverlayTracking();
+    }
     emit(
       state.copyWith(
         entries: durableEntries,
@@ -1168,8 +2064,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   bool _bufferDetachedVisualMessageUntilTurnValidation(ServerMessage message) {
+    final isLiveAssistantCompletion =
+        message is AssistantServerMessage &&
+        _isDetachedLiveAssistantCompletion(message);
     if (!_detachedVisualTurnValidationPending ||
-        (message is! StreamDeltaMessage && message is! ThinkingDeltaMessage)) {
+        (message is! StreamDeltaMessage &&
+            message is! ThinkingDeltaMessage &&
+            !isLiveAssistantCompletion)) {
       return false;
     }
     if (_detachedPendingVisualMessages.length >=
@@ -1179,7 +2080,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       _clearDetachedVisualTimeline();
       for (final pending in buffered) {
         if (isClosed) return true;
-        _onMessage(pending);
+        _applyDetachedVisualMessage(pending);
       }
       return true;
     }
@@ -1218,7 +2119,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (!active || result != 'none') return;
     for (final pending in buffered) {
       if (isClosed) return;
-      _onMessage(pending);
+      _applyDetachedVisualMessage(pending);
     }
   }
 
@@ -1232,6 +2133,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _detachedPreservedVisualTurnId = null;
     _detachedVisualTurnValidationPending = false;
     _detachedPendingVisualMessages.clear();
+    _detachedRuntimeAssistantAliases.clear();
   }
 
   void _clearDetachedVisualTimeline() {
@@ -1259,10 +2161,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         clearError: true,
       );
     }
-    // An empty cache row does not currently carry enough provenance to
-    // distinguish stale durable entries from accepted live/optimistic entries.
-    // Keep the visible projection until the cache protocol supplies that fence.
-    if (messages.isEmpty) return;
+    // Legacy Bridges do not carry an authoritative-empty/completeness fence.
+    // Their empty refresh can mean "history unavailable", so it must not
+    // erase the last readable durable window. V2 empty snapshots are staged
+    // atomically by SQLite and may authoritatively clear stale rows.
+    if (messages.isEmpty && !_bridge.supportsConversationSyncV2) return;
     try {
       final history = HistoryMessage(messages: messages);
       final update = _handler.handle(
@@ -1407,6 +2310,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         result: status.result,
         activeTurnId: activeTurnId,
       );
+      _reconcileDetachedRuntimeOverlayForStatus(
+        active: active,
+        activeTurnId: hasActiveTurnId ? activeTurnId : null,
+        authorityGeneration: authorityGeneration,
+      );
     }
     _detachedActiveTurnId = replaysRejectedAuthority || !hasActiveTurnId
         ? null
@@ -1422,6 +2330,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         status.controlState == 'steerable';
     _detachedProviderStatusObservedAt = observedAt;
     _detachedProviderStatusSignature = signature;
+    _flushPendingDetachedRuntimeOverlays();
     externalDesktopTurnSteerable.value =
         externallyOwnedCodexTurn && controllable;
     detachedLiveRuntimeRevision.value += 1;
@@ -1676,12 +2585,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     }
     _clearDetachedRuntimeTransients(
       _detachedLiveRuntimeSessionId,
+      unconfirmedInputFailureReason: 'source_identity_changed_before_receipt',
       // The first authoritative fingerprint confirms the provisional route;
       // it is not evidence that the already visible live stream came from a
       // different source. Two known, unequal fingerprints are a real source
       // replacement and still clear the old runtime projection.
       preserveVisualTimeline: firstAuthoritativeSource,
+      preserveRuntimeOverlay: firstAuthoritativeSource,
     );
+    if (!firstAuthoritativeSource) {
+      _detachedLocalOverlayClientIds.clear();
+    }
     _detachedProviderSourceFingerprint = normalized;
     _detachedProviderStatusObservedAt = null;
     _detachedProviderStatusSignature = null;
@@ -1726,6 +2640,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     bool? catalogUsable,
   }) {
     if (!detachedPreview || isClosed) return;
+    final entriesWithoutRuntimeOverlay = _withoutDetachedRuntimeOverlayEntries(
+      state.entries,
+    );
+    final runtimeOverlayChanged =
+        entriesWithoutRuntimeOverlay.length != state.entries.length;
+    _resetDetachedRuntimeOverlayTracking();
     final authorityChanged =
         _detachedProviderProjectionCurrent ||
         _detachedAuthorityObserved ||
@@ -1746,8 +2666,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     externalDesktopTurnSteerable.value = false;
     if (authorityChanged) {
       detachedLiveRuntimeRevision.value += 1;
+    }
+    if (authorityChanged || runtimeOverlayChanged) {
       emit(
         state.copyWith(
+          entries: entriesWithoutRuntimeOverlay,
           externalDesktopTurnActive: false,
           externalDesktopTurnId: null,
         ),
@@ -1790,15 +2713,316 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     codexSpeed: CodexSpeed.unknown,
   );
 
+  void _rememberDetachedLocalOverlayClientId(String clientMessageId) {
+    if (!detachedPreview || clientMessageId.isEmpty) return;
+    _detachedLocalOverlayClientIds.add(clientMessageId);
+    while (_detachedLocalOverlayClientIds.length >
+        _maxDetachedLocalOverlayClientIds) {
+      _detachedLocalOverlayClientIds.remove(
+        _detachedLocalOverlayClientIds.first,
+      );
+    }
+  }
+
+  bool _rememberSubmittedClientMessageId(String clientMessageId) {
+    if (_submittedClientMessageIds.contains(clientMessageId)) return false;
+    _submittedClientMessageIds.add(clientMessageId);
+    while (_submittedClientMessageIds.length > _maxSubmittedClientMessageIds) {
+      _submittedClientMessageIds.remove(_submittedClientMessageIds.first);
+    }
+    return true;
+  }
+
+  bool _isDetachedRuntimeOverlayMessage(ServerMessage message) =>
+      message is ResultMessage ||
+      message is ErrorMessage ||
+      message is GuardianApprovalMessage ||
+      message is ToolUseSummaryMessage;
+
+  String? _detachedRuntimeOverlayMessageTurnId(ServerMessage message) =>
+      switch (message) {
+        AssistantServerMessage(:final historyTurnId) => historyTurnId,
+        ResultMessage(:final historyTurnId) => historyTurnId,
+        ErrorMessage(:final historyTurnId) => historyTurnId,
+        GuardianApprovalMessage(:final historyTurnId) => historyTurnId,
+        ToolUseSummaryMessage(:final historyTurnId) => historyTurnId,
+        _ => null,
+      };
+
+  void _onDetachedDirectRuntimeOverlay(ServerMessage message) {
+    final messageTurnId = _detachedRuntimeOverlayMessageTurnId(message)?.trim();
+    final activeTurnId = _detachedActiveTurnId?.trim();
+    if (messageTurnId?.isNotEmpty == true &&
+        activeTurnId?.isNotEmpty == true &&
+        messageTurnId != activeTurnId) {
+      return;
+    }
+    _onMessage(message);
+    if (messageTurnId?.isNotEmpty == true) {
+      _detachedRuntimeOverlayTurnId = messageTurnId;
+    }
+    _detachedRuntimeOverlayRuntimeSessionId = _detachedLiveRuntimeSessionId;
+    _detachedRuntimeOverlayAuthorityGeneration = _detachedAuthorityGeneration;
+    _trimDetachedRuntimeOverlayEntries();
+  }
+
+  bool _isDetachedRuntimeOverlayEntry(ChatEntry entry) =>
+      _isDetachedRuntimeAssistantOverlay(entry) ||
+      (entry is ServerChatEntry &&
+          _isDetachedRuntimeOverlayMessage(entry.message));
+
+  List<ChatEntry> _withoutDetachedRuntimeOverlayEntries(
+    Iterable<ChatEntry> entries,
+  ) => entries
+      .where((entry) => !_isDetachedRuntimeOverlayEntry(entry))
+      .toList(growable: false);
+
+  void _resetDetachedRuntimeOverlayTracking() {
+    _clearPendingDetachedRuntimeOverlays();
+    _detachedRuntimeOverlayGeneration = null;
+    _detachedRuntimeOverlayOriginGeneration = null;
+    _detachedRuntimeOverlayTurnId = null;
+    _detachedRuntimeOverlayAuthorityGeneration = null;
+    _detachedRuntimeOverlayRuntimeSessionId = null;
+    _detachedRuntimeOverlayEventIds.clear();
+  }
+
+  void _clearDetachedRuntimeOverlay() {
+    final filtered = _withoutDetachedRuntimeOverlayEntries(state.entries);
+    _detachedRuntimeAssistantAliases.clear();
+    _resetDetachedRuntimeOverlayTracking();
+    if (filtered.length != state.entries.length) {
+      emit(state.copyWith(entries: filtered));
+    }
+  }
+
+  void _reconcileDetachedRuntimeOverlayForStatus({
+    required bool active,
+    required String? activeTurnId,
+    required String? authorityGeneration,
+  }) {
+    if (_detachedRuntimeOverlayGeneration == null) return;
+    if (_detachedRuntimeOverlayGeneration != _detachedLiveRuntimeGeneration) {
+      _clearDetachedRuntimeOverlay();
+      return;
+    }
+    final overlayRuntimeSessionId = _detachedRuntimeOverlayRuntimeSessionId;
+    final originGeneration = _detachedRuntimeOverlayOriginGeneration;
+    final sharedObserver = originGeneration?.startsWith('observer:') == true;
+    final runtimeFenceMatches = sharedObserver
+        ? overlayRuntimeSessionId == originGeneration
+        : overlayRuntimeSessionId?.isNotEmpty == true &&
+              overlayRuntimeSessionId == _detachedLiveRuntimeSessionId;
+    if (!runtimeFenceMatches) {
+      _clearDetachedRuntimeOverlay();
+      return;
+    }
+    final overlayAuthorityGeneration =
+        _detachedRuntimeOverlayAuthorityGeneration;
+    if (overlayAuthorityGeneration?.isNotEmpty != true ||
+        authorityGeneration?.isNotEmpty != true ||
+        overlayAuthorityGeneration != authorityGeneration) {
+      _clearDetachedRuntimeOverlay();
+      return;
+    }
+    if (!active || activeTurnId?.isNotEmpty != true) {
+      _clearDetachedRuntimeOverlay();
+      return;
+    }
+    final overlayTurnId = _detachedRuntimeOverlayTurnId;
+    if (overlayTurnId?.isNotEmpty != true || overlayTurnId != activeTurnId) {
+      _clearDetachedRuntimeOverlay();
+    }
+  }
+
+  int _detachedRuntimeOverlayEntryBytes(ChatEntry entry) {
+    if (entry is! ServerChatEntry || !_isDetachedRuntimeOverlayEntry(entry)) {
+      return 0;
+    }
+    return _detachedRuntimeOverlayMessageBytes(entry.message);
+  }
+
+  int _detachedRuntimeOverlayMessageBytes(ServerMessage message) {
+    try {
+      final wireShape = switch (message) {
+        AssistantServerMessage message => <String, dynamic>{
+          'type': 'assistant',
+          'message': <String, dynamic>{
+            'id': message.message.id,
+            'role': message.message.role,
+            'model': message.message.model,
+            'content': [
+              for (final content in message.message.content)
+                switch (content) {
+                  TextContent(:final text) => <String, dynamic>{
+                    'type': 'text',
+                    'text': text,
+                  },
+                  ThinkingContent(:final thinking) => <String, dynamic>{
+                    'type': 'thinking',
+                    'thinking': thinking,
+                  },
+                  ToolUseContent(:final id, :final name, :final input) =>
+                    <String, dynamic>{
+                      'type': 'tool_use',
+                      'id': id,
+                      'name': name,
+                      'input': input,
+                    },
+                },
+            ],
+          },
+          if (message.messageUuid != null) 'messageUuid': message.messageUuid,
+          if (message.historyTurnId != null)
+            'historyTurnId': message.historyTurnId,
+        },
+        ResultMessage message => <String, dynamic>{
+          'type': 'result',
+          'subtype': message.subtype,
+          if (message.result != null) 'result': message.result,
+          if (message.error != null) 'error': message.error,
+          if (message.cost != null) 'cost': message.cost,
+          if (message.duration != null) 'duration': message.duration,
+          if (message.sessionId != null) 'sessionId': message.sessionId,
+          if (message.stopReason != null) 'stopReason': message.stopReason,
+          if (message.inputTokens != null) 'inputTokens': message.inputTokens,
+          if (message.cachedInputTokens != null)
+            'cachedInputTokens': message.cachedInputTokens,
+          if (message.outputTokens != null)
+            'outputTokens': message.outputTokens,
+          if (message.toolCalls != null) 'toolCalls': message.toolCalls,
+          if (message.fileEdits != null) 'fileEdits': message.fileEdits,
+          if (message.historyTurnId != null)
+            'historyTurnId': message.historyTurnId,
+        },
+        ErrorMessage message => <String, dynamic>{
+          'type': 'error',
+          'message': message.message,
+          if (message.errorCode != null) 'errorCode': message.errorCode,
+          if (message.sessionId != null) 'sessionId': message.sessionId,
+          if (message.permissionChangeId != null)
+            'permissionChangeId': message.permissionChangeId,
+          if (message.goalChangeId != null)
+            'goalChangeId': message.goalChangeId,
+          if (message.historyTurnId != null)
+            'historyTurnId': message.historyTurnId,
+        },
+        GuardianApprovalMessage message => <String, dynamic>{
+          'type': 'guardian_approval',
+          'risk': message.risk.name,
+          'status': message.status.name,
+          'reason': message.reason,
+          if (message.authorization != null)
+            'authorization': message.authorization,
+          if (message.reviewId != null) 'reviewId': message.reviewId,
+          if (message.targetItemId != null)
+            'targetItemId': message.targetItemId,
+          if (message.action != null) 'action': message.action,
+          if (message.historyTurnId != null)
+            'historyTurnId': message.historyTurnId,
+        },
+        ToolUseSummaryMessage message => <String, dynamic>{
+          'type': 'tool_use_summary',
+          'summary': message.summary,
+          'precedingToolUseIds': message.precedingToolUseIds,
+          if (message.historyTurnId != null)
+            'historyTurnId': message.historyTurnId,
+        },
+        _ => const <String, dynamic>{},
+      };
+      return utf8.encode(jsonEncode(wireShape)).length;
+    } catch (_) {
+      return _maxDetachedRuntimeOverlayBytes;
+    }
+  }
+
+  void _trimDetachedRuntimeOverlayEntries() {
+    final overlayIndexes = <int>[];
+    var totalBytes = 0;
+    for (var index = 0; index < state.entries.length; index++) {
+      final entry = state.entries[index];
+      if (!_isDetachedRuntimeOverlayEntry(entry)) continue;
+      overlayIndexes.add(index);
+      totalBytes += _detachedRuntimeOverlayEntryBytes(entry);
+    }
+    if (overlayIndexes.length <= _maxDetachedRuntimeOverlayEntries &&
+        totalBytes <= _maxDetachedRuntimeOverlayBytes) {
+      return;
+    }
+    final remove = <int>{};
+    for (final index in overlayIndexes) {
+      if (overlayIndexes.length - remove.length <=
+              _maxDetachedRuntimeOverlayEntries &&
+          totalBytes <= _maxDetachedRuntimeOverlayBytes) {
+        break;
+      }
+      remove.add(index);
+      totalBytes -= _detachedRuntimeOverlayEntryBytes(state.entries[index]);
+    }
+    if (remove.isEmpty) return;
+    emit(
+      state.copyWith(
+        entries: [
+          for (var index = 0; index < state.entries.length; index++)
+            if (!remove.contains(index)) state.entries[index],
+        ],
+      ),
+    );
+  }
+
   /// Adds the user's first message to a detached durable view while the live
   /// runtime attaches. An online attachment remains an ordinary send; only a
   /// genuinely disconnected outbox item is presented as locally queued.
   bool showDeferredSubmission(
     String text, {
+    String? clientMessageId,
     List<({Uint8List bytes, String mimeType})>? images,
     bool queuedLocally = false,
   }) {
     if (!detachedPreview || isClosed || text.trim().isEmpty) return false;
+    final normalizedClientMessageId = clientMessageId?.trim();
+    if (normalizedClientMessageId?.isNotEmpty == true) {
+      _rememberDetachedLocalOverlayClientId(normalizedClientMessageId!);
+      final alreadyVisible = state.entries.any(
+        (entry) =>
+            entry is UserChatEntry &&
+            entry.clientMessageId == normalizedClientMessageId,
+      );
+      if (alreadyVisible) {
+        emit(
+          state.copyWith(
+            entries: state.entries
+                .map((entry) {
+                  if (entry is! UserChatEntry ||
+                      entry.clientMessageId != normalizedClientMessageId) {
+                    return entry;
+                  }
+                  return UserChatEntry(
+                    entry.text,
+                    sessionId: entry.sessionId ?? sessionId,
+                    clientMessageId: normalizedClientMessageId,
+                    providerItemId: entry.providerItemId,
+                    historyTurnId: entry.historyTurnId,
+                    imageBytesList:
+                        images?.map((image) => image.bytes).toList() ??
+                        entry.imageBytesList,
+                    imageUrls: entry.imageUrls,
+                    imageCount: images?.length ?? entry.imageCount,
+                    status: queuedLocally
+                        ? MessageStatus.queued
+                        : MessageStatus.sending,
+                    messageUuid: entry.messageUuid,
+                    timestamp: entry.timestamp,
+                    timestampIsAuthoritative: entry.timestampIsAuthoritative,
+                  );
+                })
+                .toList(growable: false),
+          ),
+        );
+        _detachedProjectionLastAction = 'outgoing_retry';
+        return true;
+      }
+    }
     emit(
       state.copyWith(
         entries: [
@@ -1806,6 +3030,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           UserChatEntry(
             text,
             sessionId: sessionId,
+            clientMessageId: normalizedClientMessageId,
             imageBytesList: images?.map((image) => image.bytes).toList(),
             imageCount: images?.length ?? 0,
             status: queuedLocally
@@ -1816,6 +3041,89 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         ],
       ),
     );
+    _detachedProjectionLastAction = 'outgoing_submit';
+    return true;
+  }
+
+  /// Restores a locally persisted submission as an explicit failure.
+  ///
+  /// Recovery is deliberately presentation-only: it never attaches a runtime
+  /// or writes to the Bridge. A later user tap may retry the same
+  /// [clientMessageId], preserving Bridge idempotency.
+  bool restoreFailedSubmission(
+    String text, {
+    required String clientMessageId,
+    List<({Uint8List bytes, String mimeType})>? images,
+    String? failureReason,
+  }) {
+    if (isClosed || text.trim().isEmpty) return false;
+    final normalizedClientMessageId = clientMessageId.trim();
+    if (normalizedClientMessageId.isEmpty) return false;
+    if (detachedPreview) {
+      _rememberDetachedLocalOverlayClientId(normalizedClientMessageId);
+    }
+    final existingIndex = state.entries.indexWhere(
+      (entry) =>
+          entry is UserChatEntry &&
+          entry.clientMessageId == normalizedClientMessageId,
+    );
+    final restored = UserChatEntry(
+      text,
+      sessionId: sessionId,
+      clientMessageId: normalizedClientMessageId,
+      imageBytesList: images?.map((image) => image.bytes).toList(),
+      imageCount: images?.length ?? 0,
+      status: MessageStatus.failed,
+      timestamp: DateTime.now().toUtc(),
+    );
+    if (existingIndex == -1) {
+      emit(state.copyWith(entries: [...state.entries, restored]));
+      _detachedProjectionLastAction = 'outgoing_restore_failed';
+      if (failureReason != null) {
+        _markOutgoingDraftFailed(normalizedClientMessageId, failureReason);
+      }
+      return true;
+    }
+    final entries = List<ChatEntry>.of(state.entries);
+    final existing = entries[existingIndex];
+    if (existing is UserChatEntry) {
+      final canonicalAlreadyCommitted =
+          existing.status == MessageStatus.sent ||
+          existing.providerItemId?.trim().isNotEmpty == true ||
+          existing.historyTurnId?.trim().isNotEmpty == true ||
+          existing.messageUuid?.trim().isNotEmpty == true;
+      if (canonicalAlreadyCommitted) {
+        _detachedLocalOverlayClientIds.remove(normalizedClientMessageId);
+        _logOutgoingReceipt(
+          'restore_skipped_canonical',
+          normalizedClientMessageId,
+          cleared: _clearOutgoingDraft(normalizedClientMessageId),
+        );
+        _detachedProjectionLastAction = 'outgoing_restore_skipped_canonical';
+        return false;
+      }
+      entries[existingIndex] = UserChatEntry(
+        existing.text.isEmpty ? text : existing.text,
+        sessionId: existing.sessionId ?? sessionId,
+        clientMessageId: normalizedClientMessageId,
+        providerItemId: existing.providerItemId,
+        historyTurnId: existing.historyTurnId,
+        imageBytesList:
+            images?.map((image) => image.bytes).toList() ??
+            existing.imageBytesList,
+        imageUrls: existing.imageUrls,
+        imageCount: images?.length ?? existing.imageCount,
+        status: MessageStatus.failed,
+        messageUuid: existing.messageUuid,
+        timestamp: existing.timestamp,
+        timestampIsAuthoritative: existing.timestampIsAuthoritative,
+      );
+    }
+    emit(state.copyWith(entries: entries));
+    _detachedProjectionLastAction = 'outgoing_restore_failed';
+    if (failureReason != null) {
+      _markOutgoingDraftFailed(normalizedClientMessageId, failureReason);
+    }
     return true;
   }
 
@@ -2783,6 +4091,26 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   void _updateGoalSupportFromSessions(List<SessionInfo> sessions) {
     if (!isCodex || isClosed) return;
+    if (detachedPreview &&
+        _bridge.bridgeCapabilities.contains(
+          codexDurableThreadGoalsCapability,
+        )) {
+      final shouldRequest =
+          !state.goalStateLoaded &&
+          state.goalMutation == null &&
+          !_goalReadPending;
+      if (state.goalSupport != CodexGoalSupport.supported ||
+          !state.advancedGoalControlSupported) {
+        emit(
+          state.copyWith(
+            goalSupport: CodexGoalSupport.supported,
+            advancedGoalControlSupported: true,
+          ),
+        );
+      }
+      if (shouldRequest) scheduleMicrotask(requestGoal);
+      return;
+    }
     final runtimeSessionId = runtimeSessionIdForRead;
     bool? supported;
     for (final session in sessions) {
@@ -2870,10 +4198,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     LocalSessionHistoryAvailabilityChange change,
   ) {
     if (isClosed || change.runtimeSessionId != sessionId) return;
+    if (!change.available) {
+      historyNavigation.value = null;
+      _historyNavigationReturnPaging = null;
+    }
     _localHistoryUserIndexComplete = false;
-    localHistoryPaging.value = change.available
-        ? _currentLocalHistoryPagingState()
-        : const LocalHistoryPagingState();
+    // A fresh Mirror revision updates the live cache behind an isolated
+    // history viewport. Keep the viewport's two independent edges intact;
+    // replacing them with the live-tail cursor would make a new message
+    // silently disable forward paging while the user is reading history.
+    if (!change.available || !historyNavigationActive) {
+      localHistoryPaging.value = change.available
+          ? _currentLocalHistoryPagingState()
+          : const LocalHistoryPagingState();
+    }
     localHistoryIndexRevision.value += 1;
   }
 
@@ -2917,11 +4255,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       localHistoryIndexRevision.value += 1;
     }
     _localHistoryPagingGeneration += 1;
+    historyNavigation.value = null;
+    _historyNavigationReturnPaging = null;
     localHistoryPaging.value = const LocalHistoryPagingState();
     _bridge.invalidateLocalSessionHistoryPaging(sessionId);
   }
 
   Future<bool> loadOlderLocalHistory() async {
+    if (historyNavigationActive) {
+      return _loadOlderHistoryNavigation();
+    }
     if (detachedPreview) {
       return _loadOlderDetachedHistory();
     }
@@ -2977,6 +4320,185 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
       logger.warning(
         '[session:$sessionId] Failed to load older local history',
+        error,
+        stackTrace,
+      );
+      localHistoryPaging.value = localHistoryPaging.value.copyWith(
+        loading: false,
+        error: error,
+      );
+      return false;
+    }
+  }
+
+  Future<bool> loadNewerLocalHistory() async {
+    if (!historyNavigationActive) return false;
+    final currentPaging = localHistoryPaging.value;
+    if (isClosed ||
+        !currentPaging.enabled ||
+        !currentPaging.hasLater ||
+        currentPaging.loading ||
+        currentPaging.loadingLater) {
+      return false;
+    }
+    final window = historyNavigation.value!;
+    localHistoryPaging.value = currentPaging.copyWith(
+      loadingLater: true,
+      clearLaterError: true,
+    );
+    try {
+      final endOrder = window.endTurnOrderExclusive;
+      if (endOrder != null) {
+        final requestedEnd = endOrder + _historyNavigationPageTurns;
+        final nextEnd = requestedEnd < _providerTurnIdsByOrder.length
+            ? requestedEnd
+            : _providerTurnIdsByOrder.length;
+        final loaded = await _loadDetachedTurnRange(endOrder, nextEnd);
+        if (isClosed || historyNavigation.value != window) return false;
+        final appended = <ChatEntry>[];
+        var committedEnd = endOrder;
+        while (committedEnd < nextEnd && loaded[committedEnd] != null) {
+          appended.addAll(loaded[committedEnd]!);
+          committedEnd += 1;
+        }
+        if (committedEnd == endOrder) {
+          throw StateError('Newer conversation history made no progress.');
+        }
+        historyNavigation.value = HistoryNavigationWindow(
+          entries: List.unmodifiable(
+            _mergeAdjacentHistoryEntries(window.entries, appended),
+          ),
+          startTurnOrder: window.startTurnOrder,
+          endTurnOrderExclusive: committedEnd,
+        );
+        localHistoryPaging.value = LocalHistoryPagingState(
+          enabled: true,
+          hasMore: currentPaging.hasMore,
+          hasLater: committedEnd < _providerTurnIdsByOrder.length,
+        );
+        return true;
+      }
+
+      final endOrdinal = window.endOrdinalExclusive;
+      if (endOrdinal == null || !_bridge.hasSessionHistoryWindowLoading) {
+        throw StateError('Newer history window is unavailable.');
+      }
+      final page = await _bridge.tryLoadLocalSessionHistoryWindow(
+        runtimeSessionId: sessionId,
+        startOrdinal: endOrdinal,
+      );
+      if (isClosed || historyNavigation.value != window) return false;
+      if (page == null || page.messages.isEmpty) {
+        throw StateError('Newer conversation history made no progress.');
+      }
+      final appended = _decodeLocalHistoryPage(page);
+      historyNavigation.value = HistoryNavigationWindow(
+        entries: List.unmodifiable(
+          _mergeAdjacentHistoryEntries(window.entries, appended),
+        ),
+        startOrdinal: window.startOrdinal,
+        endOrdinalExclusive: page.endOrdinalExclusive,
+      );
+      localHistoryPaging.value = LocalHistoryPagingState(
+        enabled: true,
+        hasMore: currentPaging.hasMore,
+        hasLater: page.hasLater,
+      );
+      return true;
+    } catch (error, stackTrace) {
+      if (isClosed || historyNavigation.value != window) return false;
+      logger.warning(
+        '[session:$sessionId] Failed to load newer history context',
+        error,
+        stackTrace,
+      );
+      localHistoryPaging.value = localHistoryPaging.value.copyWith(
+        loadingLater: false,
+        laterError: error,
+      );
+      return false;
+    }
+  }
+
+  Future<bool> _loadOlderHistoryNavigation() async {
+    final currentPaging = localHistoryPaging.value;
+    if (isClosed ||
+        !currentPaging.enabled ||
+        !currentPaging.hasMore ||
+        currentPaging.loading ||
+        currentPaging.loadingLater) {
+      return false;
+    }
+    final window = historyNavigation.value!;
+    localHistoryPaging.value = currentPaging.copyWith(
+      loading: true,
+      clearError: true,
+    );
+    try {
+      final startOrder = window.startTurnOrder;
+      if (startOrder != null) {
+        final requestedStart = startOrder - _historyNavigationPageTurns;
+        final nextStart = requestedStart > 0 ? requestedStart : 0;
+        final loaded = await _loadDetachedTurnRange(nextStart, startOrder);
+        if (isClosed || historyNavigation.value != window) return false;
+        final prepended = <ChatEntry>[];
+        var committedStart = startOrder;
+        for (var order = startOrder - 1; order >= nextStart; order--) {
+          final turn = loaded[order];
+          if (turn == null) break;
+          prepended.insertAll(0, turn);
+          committedStart = order;
+        }
+        if (committedStart == startOrder) {
+          throw StateError('Older conversation history made no progress.');
+        }
+        historyNavigation.value = HistoryNavigationWindow(
+          entries: List.unmodifiable(
+            _mergeAdjacentHistoryEntries(prepended, window.entries),
+          ),
+          startTurnOrder: committedStart,
+          endTurnOrderExclusive: window.endTurnOrderExclusive,
+        );
+        localHistoryPaging.value = LocalHistoryPagingState(
+          enabled: true,
+          hasMore: committedStart > 0,
+          hasLater: currentPaging.hasLater,
+        );
+        return true;
+      }
+
+      final startOrdinal = window.startOrdinal;
+      if (startOrdinal == null || !_bridge.hasSessionHistoryWindowLoading) {
+        throw StateError('Older history window is unavailable.');
+      }
+      final nextStart = startOrdinal > 200 ? startOrdinal - 200 : 0;
+      final page = await _bridge.tryLoadLocalSessionHistoryWindow(
+        runtimeSessionId: sessionId,
+        startOrdinal: nextStart,
+        limit: startOrdinal - nextStart,
+      );
+      if (isClosed || historyNavigation.value != window) return false;
+      if (page == null || page.messages.isEmpty) {
+        throw StateError('Older conversation history made no progress.');
+      }
+      final prepended = _decodeLocalHistoryPage(page);
+      historyNavigation.value = HistoryNavigationWindow(
+        entries: List.unmodifiable(
+          _mergeAdjacentHistoryEntries(prepended, window.entries),
+        ),
+        startOrdinal: page.startOrdinal,
+        endOrdinalExclusive: window.endOrdinalExclusive,
+      );
+      localHistoryPaging.value = LocalHistoryPagingState(
+        enabled: true,
+        hasMore: page.hasMore,
+        hasLater: currentPaging.hasLater,
+      );
+      return true;
+    } catch (error, stackTrace) {
+      if (isClosed || historyNavigation.value != window) return false;
+      logger.warning(
+        '[session:$sessionId] Failed to load older history context',
         error,
         stackTrace,
       );
@@ -3226,6 +4748,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       final clientMessageId = deliveryPendingClientMessageId(pending);
       if (clientMessageId == null) continue;
       _deliveryPendingInputs[clientMessageId] = pending;
+      if (detachedPreview) {
+        _rememberDetachedLocalOverlayClientId(clientMessageId);
+      }
       final alreadyVisible = state.entries.any(
         (entry) =>
             entry is UserChatEntry && entry.clientMessageId == clientMessageId,
@@ -3583,6 +5108,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         goal: incoming,
         goalStateLoaded: true,
         goalSupport: CodexGoalSupport.supported,
+        advancedGoalControlSupported:
+            state.advancedGoalControlSupported ||
+            _bridge.bridgeCapabilities.contains(
+              codexDurableThreadGoalsCapability,
+            ),
         goalLoadErrorKind: null,
         goalOperationSequence: incomingSequence ?? state.goalOperationSequence,
         goalMutation: acknowledgesPending ? null : state.goalMutation,
@@ -3666,6 +5196,151 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     };
   }
 
+  int _findClientEnvelopeIndex(
+    List<ChatEntry> entries,
+    String clientMessageId,
+  ) {
+    var canonicalFallback = -1;
+    var localEnvelope = -1;
+    for (var index = 0; index < entries.length; index++) {
+      final entry = entries[index];
+      if (entry is! UserChatEntry || entry.clientMessageId != clientMessageId) {
+        continue;
+      }
+      canonicalFallback = index;
+      if (entry.providerItemId?.isNotEmpty != true &&
+          entry.messageUuid?.isNotEmpty != true) {
+        // A provider row can arrive before its admission receipt. Prefer the
+        // optimistic envelope even when that provider row appears earlier in
+        // the list with the same exact client id.
+        localEnvelope = index;
+      }
+    }
+    return localEnvelope != -1 ? localEnvelope : canonicalFallback;
+  }
+
+  /// Binds Bridge admission identity to the exact optimistic envelope.
+  ///
+  /// The app-server can publish the canonical user item before or after the
+  /// admission response. Collapse rows only when the provider echoed the same
+  /// exact client id; turn id and text are not item identity.
+  List<ChatEntry>? _bindProviderTurnToClientEnvelope(
+    List<ChatEntry> entries, {
+    required String clientMessageId,
+    required String providerTurnId,
+  }) {
+    final localIndex = _findClientEnvelopeIndex(entries, clientMessageId);
+    if (localIndex == -1) return null;
+    final local = entries[localIndex] as UserChatEntry;
+    final canonicalIndexes = <int>[];
+    for (var index = 0; index < entries.length; index++) {
+      if (index == localIndex) continue;
+      final entry = entries[index];
+      if (entry is UserChatEntry &&
+          entry.historyTurnId == providerTurnId &&
+          (entry.providerItemId?.isNotEmpty == true ||
+              entry.messageUuid?.isNotEmpty == true)) {
+        if (entry.clientMessageId == null ||
+            entry.clientMessageId == clientMessageId) {
+          canonicalIndexes.add(index);
+        }
+      }
+    }
+
+    final exactClientIndexes = canonicalIndexes
+        .where((index) {
+          final canonical = entries[index] as UserChatEntry;
+          return canonical.clientMessageId == clientMessageId;
+        })
+        .toList(growable: false);
+    int? canonicalIndex;
+    if (exactClientIndexes.length == 1) {
+      canonicalIndex = exactClientIndexes.single;
+    }
+
+    if (canonicalIndex != null) {
+      final canonical = entries[canonicalIndex] as UserChatEntry;
+      final next = [...entries];
+      next[canonicalIndex] = UserChatEntry(
+        canonical.text,
+        sessionId: canonical.sessionId ?? local.sessionId,
+        clientMessageId: local.clientMessageId,
+        providerItemId: canonical.providerItemId ?? local.providerItemId,
+        historyTurnId: providerTurnId,
+        imageBytesList: canonical.imageBytesList.isNotEmpty
+            ? canonical.imageBytesList
+            : local.imageBytesList,
+        imageUrls: canonical.imageUrls.isNotEmpty
+            ? canonical.imageUrls
+            : local.imageUrls,
+        imageCount: canonical.imageCount > 0
+            ? canonical.imageCount
+            : local.imageCount,
+        status: local.status,
+        messageUuid: canonical.messageUuid ?? local.messageUuid,
+        timestamp: canonical.timestamp,
+        timestampIsAuthoritative: canonical.timestampIsAuthoritative,
+      );
+      next.removeAt(localIndex);
+      return next;
+    }
+
+    if (local.historyTurnId == providerTurnId) return null;
+    final next = [...entries];
+    next[localIndex] = UserChatEntry(
+      local.text,
+      sessionId: local.sessionId,
+      clientMessageId: local.clientMessageId,
+      providerItemId: local.providerItemId,
+      historyTurnId: providerTurnId,
+      imageBytesList: local.imageBytesList,
+      imageUrls: local.imageUrls,
+      imageCount: local.imageCount,
+      status: local.status,
+      messageUuid: local.messageUuid,
+      timestamp: local.timestamp,
+      timestampIsAuthoritative: local.timestampIsAuthoritative,
+    );
+    return next;
+  }
+
+  bool _canCarryUserIdentityAcrossCanonicalMerge(
+    UserChatEntry existing,
+    UserChatEntry incoming,
+  ) {
+    bool sameKnown(String? left, String? right) =>
+        left?.isNotEmpty == true && right?.isNotEmpty == true && left == right;
+
+    if (sameKnown(existing.providerItemId, incoming.providerItemId) ||
+        sameKnown(existing.messageUuid, incoming.messageUuid) ||
+        sameKnown(existing.clientMessageId, incoming.clientMessageId)) {
+      return true;
+    }
+    if (!isCodex) {
+      final existingIsLocalEnvelope =
+          existing.clientMessageId?.isNotEmpty == true &&
+          existing.providerItemId?.isNotEmpty != true &&
+          existing.messageUuid?.isNotEmpty != true &&
+          existing.historyTurnId?.isNotEmpty != true;
+      final incomingHasProviderEvidence =
+          incoming.providerItemId?.isNotEmpty == true ||
+          incoming.messageUuid?.isNotEmpty == true ||
+          incoming.historyTurnId?.isNotEmpty == true;
+      return existingIsLocalEnvelope && incomingHasProviderEvidence;
+    }
+    // A Codex turn may contain the root user input plus multiple steers.
+    // historyTurnId and equal text therefore define a container, not an item.
+    // Legacy providers that omit every item-level correlation must fail open
+    // instead of transferring a Mobile client id to an arbitrary Desktop
+    // steer in the same turn.
+    return false;
+  }
+
+  bool _hasUserItemIdentity(UserChatEntry entry) =>
+      entry.providerItemId?.isNotEmpty == true ||
+      entry.clientMessageId?.isNotEmpty == true ||
+      entry.messageUuid?.isNotEmpty == true;
+
   void _applyUpdate(
     ChatStateUpdate update,
     ServerMessage originalMsg, {
@@ -3675,6 +5350,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     bool isLocalMirrorSnapshot = false,
     bool discardLocalMirrorEntries = false,
   }) {
+    _recordOutgoingDraftEvidence(originalMsg);
     final messageHandler = sourceHandler ?? _handler;
     final current = state;
     final preservePendingCodexPermissions =
@@ -3761,9 +5437,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       int targetIndex = -1;
       final clientMessageId = update.userStatusClientMessageId;
       if (clientMessageId != null) {
-        targetIndex = entries.indexWhere(
-          (e) => e is UserChatEntry && e.clientMessageId == clientMessageId,
-        );
+        targetIndex = _findClientEnvelopeIndex(entries, clientMessageId);
       } else if (update.markUserMessagesQueued) {
         targetIndex = entries.indexWhere(
           (e) => e is UserChatEntry && e.status == MessageStatus.sending,
@@ -3800,6 +5474,21 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           entries[targetIndex] = updatedEntry;
           didModifyEntries = true;
         }
+      }
+    }
+
+    final admittedProviderTurnId = update.userStatusProviderTurnId?.trim();
+    final admittedClientMessageId = update.userStatusClientMessageId;
+    if (admittedProviderTurnId?.isNotEmpty == true &&
+        admittedClientMessageId?.isNotEmpty == true) {
+      final rebound = _bindProviderTurnToClientEnvelope(
+        entries,
+        clientMessageId: admittedClientMessageId!,
+        providerTurnId: admittedProviderTurnId!,
+      );
+      if (rebound != null) {
+        entries = rebound;
+        didModifyEntries = true;
       }
     }
 
@@ -3877,16 +5566,39 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           break;
         }
       }
-      // The app-server user item event does not always echo clientUserMessageId.
-      // Correlate it only with the oldest unresolved local envelope of the
-      // same shape. Never match two entries that already have provider ids.
-      if (matchedIndex == -1 && providerItemId?.isNotEmpty == true) {
-        matchedIndex = entries.indexWhere(
+      int uniqueUnresolvedUserIndex(bool Function(UserChatEntry) matches) {
+        var found = -1;
+        for (var index = 0; index < entries.length; index++) {
+          final entry = entries[index];
+          if (entry is! UserChatEntry || !matches(entry)) continue;
+          if (found != -1) return -1;
+          found = index;
+        }
+        return found;
+      }
+
+      // A provider item without an exact client/provider/UUID echo cannot be
+      // assigned to a local envelope. The turn can contain multiple same-text
+      // steers, so turn id and text are deliberately not admission evidence.
+      if (!isCodex &&
+          matchedIndex == -1 &&
+          providerItemId?.isNotEmpty == true) {
+        if (historyTurnId?.isNotEmpty == true) {
+          matchedIndex = uniqueUnresolvedUserIndex(
+            (entry) =>
+                entry.providerItemId?.isNotEmpty != true &&
+                entry.historyTurnId == historyTurnId,
+          );
+        }
+      }
+      if (!isCodex &&
+          matchedIndex == -1 &&
+          providerItemId?.isNotEmpty == true) {
+        matchedIndex = uniqueUnresolvedUserIndex(
           (entry) =>
-              entry is UserChatEntry &&
               entry.providerItemId?.isNotEmpty != true &&
               entry.clientMessageId?.isNotEmpty == true &&
-              entry.status != MessageStatus.sent &&
+              entry.messageUuid?.isNotEmpty != true &&
               entry.text == text &&
               entry.imageCount == imageCount &&
               (entry.historyTurnId?.isNotEmpty != true ||
@@ -3899,9 +5611,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (matchedIndex == -1 &&
           providerItemId == null &&
           clientMessageId == null) {
-        matchedIndex = entries.indexWhere(
+        matchedIndex = uniqueUnresolvedUserIndex(
           (entry) =>
-              entry is UserChatEntry &&
               entry.providerItemId?.isNotEmpty != true &&
               entry.messageUuid == null &&
               entry.status != MessageStatus.sent &&
@@ -3971,6 +5682,29 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     final nonStreamingEntries = update.entriesToAdd
         .where((e) => e is! StreamingChatEntry)
         .toList();
+    final hasDetachedRuntimeOverlay =
+        detachedPreview &&
+        nonStreamingEntries.any(_isDetachedRuntimeOverlayEntry);
+    if (hasDetachedRuntimeOverlay) {
+      final activeTurnId = _detachedActiveTurnId?.trim();
+      final overlayTurnId = _detachedRuntimeOverlayTurnId;
+      final startsNewOverlay =
+          _detachedRuntimeOverlayGeneration != _detachedLiveRuntimeGeneration ||
+          (overlayTurnId?.isNotEmpty == true &&
+              activeTurnId?.isNotEmpty == true &&
+              overlayTurnId != activeTurnId);
+      if (startsNewOverlay) {
+        final filtered = _withoutDetachedRuntimeOverlayEntries(entries);
+        if (filtered.length != entries.length) {
+          entries = filtered;
+          didModifyEntries = true;
+        }
+      }
+      _detachedRuntimeOverlayGeneration = _detachedLiveRuntimeGeneration;
+      _detachedRuntimeOverlayTurnId = activeTurnId?.isNotEmpty == true
+          ? activeTurnId
+          : null;
+    }
     if (update.replaceEntries) {
       // History is a full snapshot — replace all non-past-history entries
       // to prevent duplicates when get_history is received multiple times.
@@ -4011,10 +5745,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                 localMirrorPrefix > 0
             ? allExistingNonPast.skip(localMirrorPrefix).toList()
             : allExistingNonPast;
-        final mergedHistoryEntries = _mergeRicherLiveAssistantEntries(
-          existingEntries: existingNonPast,
-          historyEntries: nonStreamingEntries,
-        );
+        final mergedHistoryEntries =
+            detachedPreview && _bridge.supportsConversationSyncV2
+            ? nonStreamingEntries
+            : _mergeRicherLiveAssistantEntries(
+                existingEntries: existingNonPast,
+                historyEntries: nonStreamingEntries,
+              );
 
         final reconciledHistoryEntries = _mergeHistoryWithPreservedLiveEntries(
           existingNonPast: existingNonPast,
@@ -4041,7 +5778,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           growable: false,
         );
         final consumedExistingUserIndexes = <int>{};
-        UserChatEntry? takeExistingUserData(UserChatEntry incoming) {
+        ({UserChatEntry entry, bool carryIdentity})? takeExistingUserData(
+          UserChatEntry incoming,
+        ) {
           int find(bool Function(UserChatEntry candidate) matches) {
             for (var index = 0; index < existingUsers.length; index++) {
               if (consumedExistingUserIndexes.contains(index)) continue;
@@ -4088,6 +5827,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           if (matchIndex == -1) {
             matchIndex = find((candidate) {
               if (candidate.text != incoming.text) return false;
+              if (isCodex &&
+                  (_hasUserItemIdentity(candidate) ||
+                      _hasUserItemIdentity(incoming))) {
+                return false;
+              }
               final candidateProviderItemId = candidate.providerItemId;
               if (incomingProviderItemId?.isNotEmpty == true &&
                   candidateProviderItemId?.isNotEmpty == true) {
@@ -4108,38 +5852,90 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           }
           if (matchIndex == -1) return null;
           consumedExistingUserIndexes.add(matchIndex);
-          return existingUsers[matchIndex];
+          final existing = existingUsers[matchIndex];
+          return (
+            entry: existing,
+            carryIdentity: _canCarryUserIdentityAcrossCanonicalMerge(
+              existing,
+              incoming,
+            ),
+          );
         }
 
         if (existingUsers.isNotEmpty) {
           for (int i = 0; i < entries.length; i++) {
             final e = entries[i];
             if (e is! UserChatEntry) continue;
-            final existing = takeExistingUserData(e);
-            if (existing == null) continue;
+            final match = takeExistingUserData(e);
+            if (match == null) continue;
+            final existing = match.entry;
+            final carryIdentity = match.carryIdentity;
+            final carryPresentationData = carryIdentity || !isCodex;
             final needsImages =
-                e.imageBytesList.isEmpty && existing.imageBytesList.isNotEmpty;
+                carryPresentationData &&
+                e.imageBytesList.isEmpty &&
+                existing.imageBytesList.isNotEmpty;
+            final needsImageUrls =
+                carryPresentationData &&
+                e.imageUrls.isEmpty &&
+                existing.imageUrls.isNotEmpty;
+            final needsClientMessageId =
+                carryIdentity &&
+                e.clientMessageId?.isNotEmpty != true &&
+                existing.clientMessageId?.isNotEmpty == true;
+            final needsProviderItemId =
+                carryIdentity &&
+                e.providerItemId?.isNotEmpty != true &&
+                existing.providerItemId?.isNotEmpty == true;
+            final needsHistoryTurnId =
+                carryIdentity &&
+                e.historyTurnId?.isNotEmpty != true &&
+                existing.historyTurnId?.isNotEmpty == true;
+            final needsMessageUuid =
+                carryIdentity &&
+                e.messageUuid?.isNotEmpty != true &&
+                existing.messageUuid?.isNotEmpty == true;
+            final mergedStatus = carryIdentity
+                ? _mergeUserDeliveryStatus(existing.status, e.status)
+                : e.status;
             final existingTimestampIsPreferred =
+                carryPresentationData &&
                 existing.timestampIsAuthoritative &&
                 !e.timestampIsAuthoritative;
             final needsTimestamp =
-                existingTimestampIsPreferred ||
-                (!e.timestampIsAuthoritative &&
-                    existing.timestamp != e.timestamp);
-            if (needsImages || needsTimestamp) {
+                carryPresentationData &&
+                (existingTimestampIsPreferred ||
+                    (!e.timestampIsAuthoritative &&
+                        existing.timestamp != e.timestamp));
+            if (needsImages ||
+                needsImageUrls ||
+                needsClientMessageId ||
+                needsProviderItemId ||
+                needsHistoryTurnId ||
+                needsMessageUuid ||
+                mergedStatus != e.status ||
+                needsTimestamp) {
               entries[i] = UserChatEntry(
                 e.text,
                 sessionId: e.sessionId,
-                clientMessageId: e.clientMessageId,
-                providerItemId: e.providerItemId,
-                historyTurnId: e.historyTurnId,
+                clientMessageId: carryIdentity
+                    ? (e.clientMessageId ?? existing.clientMessageId)
+                    : e.clientMessageId,
+                providerItemId: carryIdentity
+                    ? (e.providerItemId ?? existing.providerItemId)
+                    : e.providerItemId,
+                historyTurnId: carryIdentity
+                    ? (e.historyTurnId ?? existing.historyTurnId)
+                    : e.historyTurnId,
                 imageBytesList: needsImages
                     ? existing.imageBytesList
                     : e.imageBytesList,
-                imageUrls: e.imageUrls,
+                imageUrls: needsImageUrls ? existing.imageUrls : e.imageUrls,
                 imageCount: e.imageCount,
-                status: e.status,
-                messageUuid: e.messageUuid,
+                status: mergedStatus,
+                messageUuid: carryIdentity
+                    ? (e.messageUuid ?? existing.messageUuid)
+                    : e.messageUuid,
                 timestamp: needsTimestamp ? existing.timestamp : e.timestamp,
                 timestampIsAuthoritative: needsTimestamp
                     ? existing.timestampIsAuthoritative
@@ -4211,6 +6007,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       nextEntries = nextEntries
           .where((entry) => !_isDismissedCodexWarningEntry(entry))
           .toList(growable: false);
+    }
+    if (didModifyEntries) {
+      nextEntries = _repairKnownTurnPlacement(nextEntries);
     }
     if (didModifyEntries && _historyToolDetailStates.isNotEmpty) {
       _pruneHistoryToolDetailStates(nextEntries);
@@ -4591,12 +6390,85 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     required List<ChatEntry> existingNonPast,
     required List<ChatEntry> historyEntries,
   }) {
+    if (detachedPreview && _bridge.supportsConversationSyncV2) {
+      final outgoingOverlays = existingNonPast
+          .whereType<UserChatEntry>()
+          .where(_shouldPreserveDetachedOverlayAcrossHistoryReplace)
+          .cast<ChatEntry>()
+          .toList(growable: false);
+      final runtimeOverlays = existingNonPast
+          .where(_isDetachedRuntimeOverlayEntry)
+          .toList(growable: false);
+      final projection = projectDetachedTimeline(
+        canonicalEntries: historyEntries,
+        outgoingOverlays: outgoingOverlays,
+        runtimeOverlays: runtimeOverlays,
+        exactAliases: _entryExactAliasKeys,
+        mergeEquivalent: _mergeEquivalentEntry,
+      );
+      _detachedProjectionCanonicalCount = projection.canonicalCount;
+      _detachedProjectionOutgoingOverlayCount = projection.outgoingOverlayCount;
+      _detachedProjectionRuntimeOverlayCount = projection.runtimeOverlayCount;
+      _detachedProjectionDuplicateCanonicalCount =
+          projection.duplicateCanonicalCount;
+      _detachedProjectionDuplicateOverlayCount =
+          projection.duplicateOverlayCount;
+      if (projection.duplicateCanonicalCount > 0) {
+        _detachedProjectionLastAction = 'canonical_rejected_duplicate';
+        logger.warning(
+          '[timeline_projection] event=canonical_rejected_duplicate '
+          'thread=$_projectionThreadToken '
+          'count=${projection.duplicateCanonicalCount}',
+        );
+        // A committed SQLite window should already have one row per stable
+        // provider item. Do not replace the last valid projection with a
+        // damaged snapshot merely because the reducer could collapse it.
+        return existingNonPast;
+      }
+      _detachedProjectionLastAction = 'canonical_commit';
+      for (final entry in historyEntries.whereType<UserChatEntry>()) {
+        final clientMessageId = entry.clientMessageId?.trim();
+        if (clientMessageId?.isNotEmpty == true) {
+          _detachedLocalOverlayClientIds.remove(clientMessageId);
+          _logOutgoingReceipt(
+            'canonical_commit',
+            clientMessageId,
+            cleared: _clearOutgoingDraft(clientMessageId),
+          );
+        }
+      }
+      _consumeDetachedCanonicalAssistantAliases(historyEntries);
+      if (projection.duplicateOverlayCount > 0) {
+        logger.warning(
+          '[timeline_projection] event=duplicates_collapsed '
+          'thread=$_projectionThreadToken '
+          'overlay=${projection.duplicateOverlayCount}',
+        );
+      }
+      return projection.entries;
+    }
     final lastUserIndex = existingNonPast.lastIndexWhere(
       (entry) => entry is UserChatEntry,
     );
-    final candidates = existingNonPast
-        .skip(lastUserIndex == -1 ? 0 : lastUserIndex)
-        .toList(growable: false);
+    final lastUserTurnId = lastUserIndex == -1
+        ? null
+        : _explicitHistoryTurnId(existingNonPast[lastUserIndex]);
+    final currentTurnStartIndex = lastUserTurnId == null
+        ? lastUserIndex
+        : existingNonPast.indexWhere(
+            (entry) => _explicitHistoryTurnId(entry) == lastUserTurnId,
+          );
+    final candidates = detachedPreview
+        ? existingNonPast
+              .where(_shouldPreserveDetachedOverlayAcrossHistoryReplace)
+              .toList(growable: false)
+        : existingNonPast
+              .skip(
+                currentTurnStartIndex == -1
+                    ? (lastUserIndex == -1 ? 0 : lastUserIndex)
+                    : currentTurnStartIndex,
+              )
+              .toList(growable: false);
     final historyCurrentUserIndex = lastUserIndex == -1
         ? -1
         : historyEntries.lastIndexWhere(
@@ -4604,6 +6476,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               entry,
               existingNonPast[lastUserIndex],
             ),
+          );
+    final historyCurrentTurnIndex = lastUserTurnId == null
+        ? historyCurrentUserIndex
+        : historyEntries.indexWhere(
+            (entry) => _explicitHistoryTurnId(entry) == lastUserTurnId,
           );
     // A durable page can receive a live assistant item before SQLite has
     // committed the optimistic user envelope that preceded it. In that case
@@ -4615,16 +6492,28 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         ? 0
         : lastUserIndex == -1
         ? 0
-        : historyCurrentUserIndex == -1
+        : historyCurrentTurnIndex == -1
         ? historyEntries.length
-        : historyCurrentUserIndex;
-    return _weavePreservedEntriesIntoCanonicalHistory(
+        : historyCurrentTurnIndex;
+    final merged = _weavePreservedEntriesIntoCanonicalHistory(
       canonicalEntries: historyEntries,
       existingEntries: candidates,
       minimumCanonicalIndex: minimumCanonicalIndex,
       unanchoredExistingBeforeCanonical: false,
       allowBroadLegacyAliases: true,
     );
+    if (detachedPreview && _detachedLocalOverlayClientIds.isNotEmpty) {
+      for (final entry in historyEntries.whereType<UserChatEntry>()) {
+        final clientMessageId = entry.clientMessageId?.trim();
+        if (clientMessageId?.isNotEmpty == true) {
+          _detachedLocalOverlayClientIds.remove(clientMessageId);
+        }
+      }
+    }
+    if (detachedPreview) {
+      _consumeDetachedCanonicalAssistantAliases(historyEntries);
+    }
+    return merged;
   }
 
   /// Keeps the downloaded mirror as a progressively pageable prefix while a
@@ -4854,6 +6743,30 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     );
     if (exactMatch != -1) return exactMatch;
 
+    // A Mobile-created envelope can receive a page-local provider UUID before
+    // SQLite backfills the authoritative turn. Match only that one-way shape,
+    // and choose the latest canonical occurrence because preserved live
+    // candidates begin at the latest local user turn.
+    if (existing is UserChatEntry &&
+        existing.clientMessageId?.isNotEmpty == true &&
+        existing.providerItemId?.isNotEmpty != true &&
+        existing.historyTurnId?.isNotEmpty != true &&
+        existing.messageUuid?.isNotEmpty == true) {
+      for (var index = end - 1; index >= start; index--) {
+        if (excludedIndexes.contains(index)) continue;
+        final candidate = canonicalEntries[index];
+        if (candidate is! UserChatEntry) continue;
+        if (candidate.text != existing.text ||
+            candidate.imageCount != existing.imageCount ||
+            candidate.messageUuid != existing.messageUuid ||
+            candidate.historyTurnId?.isNotEmpty != true ||
+            !_canCarryUserIdentityAcrossCanonicalMerge(existing, candidate)) {
+          continue;
+        }
+        return index;
+      }
+    }
+
     // Older history can omit one side of a pending user message's stable
     // correlation. Restrict that fallback to the same text/image signature
     // before applying the original equivalence predicate.
@@ -4970,25 +6883,70 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   Iterable<String> _entryExactAliasKeys(ChatEntry entry) sync* {
+    if (entry is UserChatEntry) {
+      final historyTurnId = entry.historyTurnId?.trim();
+      final providerItemId = entry.providerItemId?.trim();
+      if (providerItemId?.isNotEmpty == true) {
+        if (historyTurnId?.isNotEmpty == true) {
+          yield 'user:turn:$historyTurnId:provider:$providerItemId';
+        } else if (!detachedPreview) {
+          yield 'user:provider:$providerItemId';
+        }
+      }
+      final clientMessageId = entry.clientMessageId?.trim();
+      if (clientMessageId?.isNotEmpty == true) {
+        yield 'user:client:$clientMessageId';
+      }
+      final messageUuid = entry.messageUuid?.trim();
+      if (messageUuid?.isNotEmpty == true) {
+        if (historyTurnId?.isNotEmpty == true) {
+          yield 'user:turn:$historyTurnId:uuid:$messageUuid';
+        }
+        if (!detachedPreview && !_isPageLocalUserMessageUuid(messageUuid!)) {
+          yield 'user:uuid:$messageUuid';
+        }
+      }
+      return;
+    }
     if (entry case ServerChatEntry(
-      message: AssistantServerMessage(:final messageUuid, :final message),
+      message: AssistantServerMessage(
+        :final messageUuid,
+        :final historyTurnId,
+        :final message,
+      ),
     )) {
       final keys = <String>{};
-      if (message.id.isNotEmpty) keys.add('assistant:id:${message.id}');
-      if (messageUuid?.isNotEmpty == true) {
-        keys.add('assistant:uuid:$messageUuid');
+      final turnId = historyTurnId?.trim();
+      if (turnId?.isNotEmpty == true) {
+        if (message.id.isNotEmpty) {
+          keys.add(
+            _scopeServerMessageIdentity('assistant:id:${message.id}', turnId),
+          );
+        }
+        if (messageUuid?.isNotEmpty == true) {
+          keys.add(
+            _scopeServerMessageIdentity('assistant:uuid:$messageUuid', turnId),
+          );
+        }
       }
-      final stableKey = _serverMessageStableKey(entry.message);
-      if (stableKey != null) keys.add(stableKey);
+      if (!detachedPreview) {
+        if (message.id.isNotEmpty) keys.add('assistant:id:${message.id}');
+        if (messageUuid?.isNotEmpty == true) {
+          keys.add('assistant:uuid:$messageUuid');
+        }
+      }
       yield* keys;
       return;
     }
     if (entry case ServerChatEntry(
       message: ToolResultMessage(:final toolUseId),
     )) {
-      final keys = <String>{'tool_result:$toolUseId'};
+      final keys = <String>{};
       final stableKey = _serverMessageStableKey(entry.message);
       if (stableKey != null) keys.add(stableKey);
+      if (!detachedPreview) {
+        keys.add('tool_result:$toolUseId');
+      }
       yield* keys;
       return;
     }
@@ -5027,6 +6985,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   String _scopedWeakAliasKey(String scope, String weakKey) =>
       '$scope\u0000$weakKey';
 
+  bool _isPageLocalUserMessageUuid(String value) =>
+      value.startsWith('codex:user-turn:') || value.startsWith('legacy-turn:');
+
   int _firstIndexedAliasMatch(
     Map<String, _CanonicalAliasBucket> indexByKey,
     Iterable<String> keys,
@@ -5060,28 +7021,48 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     ChatEntry canonical,
   ) {
     if (existing is UserChatEntry && canonical is UserChatEntry) {
-      final preferredTimestamp = _preferredTimestamp(existing, canonical);
+      final carryIdentity = _canCarryUserIdentityAcrossCanonicalMerge(
+        existing,
+        canonical,
+      );
+      final carryPresentationData = carryIdentity || !isCodex;
+      final preferredTimestamp = carryPresentationData
+          ? _preferredTimestamp(existing, canonical)
+          : null;
       return UserChatEntry(
         canonical.text.isNotEmpty ? canonical.text : existing.text,
         sessionId: canonical.sessionId ?? existing.sessionId,
-        clientMessageId: existing.clientMessageId ?? canonical.clientMessageId,
-        providerItemId: canonical.providerItemId ?? existing.providerItemId,
-        historyTurnId: canonical.historyTurnId ?? existing.historyTurnId,
-        imageBytesList: existing.imageBytesList.isNotEmpty
+        clientMessageId: carryIdentity
+            ? (existing.clientMessageId ?? canonical.clientMessageId)
+            : canonical.clientMessageId,
+        providerItemId:
+            canonical.providerItemId ??
+            (carryIdentity ? existing.providerItemId : null),
+        historyTurnId:
+            canonical.historyTurnId ??
+            (carryIdentity ? existing.historyTurnId : null),
+        imageBytesList:
+            carryPresentationData && existing.imageBytesList.isNotEmpty
             ? existing.imageBytesList
             : canonical.imageBytesList,
-        imageUrls: canonical.imageUrls.isNotEmpty
-            ? canonical.imageUrls
-            : existing.imageUrls,
-        imageCount: canonical.imageCount > 0
-            ? canonical.imageCount
-            : existing.imageCount,
-        status: canonical.status == MessageStatus.sent
-            ? _preserveStagedUserStatus(existing.status)
-            : existing.status,
-        messageUuid: canonical.messageUuid ?? existing.messageUuid,
-        timestamp: preferredTimestamp?.value,
-        timestampIsAuthoritative: preferredTimestamp?.isAuthoritative ?? false,
+        imageUrls: carryPresentationData && canonical.imageUrls.isEmpty
+            ? existing.imageUrls
+            : canonical.imageUrls,
+        imageCount: carryPresentationData && canonical.imageCount == 0
+            ? existing.imageCount
+            : canonical.imageCount,
+        status: carryIdentity
+            ? (canonical.status == MessageStatus.sent
+                  ? _preserveStagedUserStatus(existing.status)
+                  : existing.status)
+            : canonical.status,
+        messageUuid:
+            canonical.messageUuid ??
+            (carryIdentity ? existing.messageUuid : null),
+        timestamp: preferredTimestamp?.value ?? canonical.timestamp,
+        timestampIsAuthoritative:
+            preferredTimestamp?.isAuthoritative ??
+            canonical.timestampIsAuthoritative,
       );
     }
     return _mergeEquivalentEntry(existing, canonical);
@@ -5089,11 +7070,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   bool _entriesEquivalentForTurnBoundary(ChatEntry a, ChatEntry b) {
     if (a is UserChatEntry && b is UserChatEntry) {
-      final aProviderItemId = a.providerItemId;
-      final bProviderItemId = b.providerItemId;
-      if (aProviderItemId?.isNotEmpty == true &&
-          bProviderItemId?.isNotEmpty == true) {
-        return aProviderItemId == bProviderItemId;
+      final aClientId = a.clientMessageId;
+      final bClientId = b.clientMessageId;
+      if (aClientId?.isNotEmpty == true && bClientId?.isNotEmpty == true) {
+        return aClientId == bClientId;
       }
       final aHistoryTurnId = a.historyTurnId;
       final bHistoryTurnId = b.historyTurnId;
@@ -5102,15 +7082,26 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           aHistoryTurnId != bHistoryTurnId) {
         return false;
       }
+      final aProviderItemId = a.providerItemId;
+      final bProviderItemId = b.providerItemId;
+      if (aProviderItemId?.isNotEmpty == true &&
+          bProviderItemId?.isNotEmpty == true) {
+        if (detachedPreview &&
+            (aHistoryTurnId?.isNotEmpty != true ||
+                bHistoryTurnId?.isNotEmpty != true)) {
+          return false;
+        }
+        return aProviderItemId == bProviderItemId;
+      }
       final aUuid = a.messageUuid;
       final bUuid = b.messageUuid;
       if (aUuid?.isNotEmpty == true && bUuid?.isNotEmpty == true) {
+        if (detachedPreview &&
+            (aHistoryTurnId?.isNotEmpty != true ||
+                bHistoryTurnId?.isNotEmpty != true)) {
+          return false;
+        }
         return aUuid == bUuid;
-      }
-      final aClientId = a.clientMessageId;
-      final bClientId = b.clientMessageId;
-      if (aClientId?.isNotEmpty == true && bClientId?.isNotEmpty == true) {
-        return aClientId == bClientId;
       }
       return _entriesEquivalent(a, b, allowWeakMatch: true);
     }
@@ -5199,6 +7190,87 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     return (entries: next, didChange: didChange);
   }
 
+  /// Repairs only entries whose provider turn identity proves that they sit
+  /// outside their user-turn interval. This is intentionally not a global
+  /// timestamp sort: provider order remains canonical, while an authoritative
+  /// timestamp is used only to place a late replay inside its already-known
+  /// turn.
+  List<ChatEntry> _repairKnownTurnPlacement(List<ChatEntry> entries) {
+    if (entries.length < 3) return entries;
+
+    final ranges = <String, ({int start, int end})>{};
+    String? openTurnId;
+    var openTurnStart = -1;
+    for (var index = 0; index < entries.length; index++) {
+      final entry = entries[index];
+      if (entry is! UserChatEntry) continue;
+      if (openTurnId != null) {
+        ranges[openTurnId] = (start: openTurnStart, end: index);
+      }
+      final turnId = entry.historyTurnId?.trim();
+      openTurnId = turnId?.isNotEmpty == true ? turnId : null;
+      openTurnStart = index;
+    }
+    if (openTurnId != null) {
+      ranges[openTurnId] = (start: openTurnStart, end: entries.length);
+    }
+    if (ranges.isEmpty) return entries;
+
+    final movedIndexes = <int>{};
+    final movedByTurn = <String, List<ChatEntry>>{};
+    for (var index = 0; index < entries.length; index++) {
+      final entry = entries[index];
+      if (entry is UserChatEntry) continue;
+      final turnId = _explicitHistoryTurnId(entry);
+      if (turnId == null) continue;
+      final range = ranges[turnId];
+      if (range == null || (index > range.start && index < range.end)) {
+        continue;
+      }
+      movedIndexes.add(index);
+      (movedByTurn[turnId] ??= <ChatEntry>[]).add(entry);
+    }
+    if (movedIndexes.isEmpty) return entries;
+
+    final retained = <ChatEntry>[
+      for (var index = 0; index < entries.length; index++)
+        if (!movedIndexes.contains(index)) entries[index],
+    ];
+    final repaired = <ChatEntry>[];
+    var cursor = 0;
+    while (cursor < retained.length) {
+      final entry = retained[cursor];
+      repaired.add(entry);
+      cursor += 1;
+      if (entry is! UserChatEntry) continue;
+      final turnId = entry.historyTurnId?.trim();
+      final moved = turnId?.isNotEmpty == true ? movedByTurn[turnId] : null;
+      if (moved == null || moved.isEmpty) continue;
+
+      final interval = <ChatEntry>[];
+      while (cursor < retained.length && retained[cursor] is! UserChatEntry) {
+        interval.add(retained[cursor]);
+        cursor += 1;
+      }
+      for (final lateEntry in moved) {
+        var insertionIndex = interval.length;
+        if (lateEntry.timestampIsAuthoritative) {
+          for (var index = 0; index < interval.length; index++) {
+            final existing = interval[index];
+            if (existing.timestampIsAuthoritative &&
+                existing.timestamp.isAfter(lateEntry.timestamp)) {
+              insertionIndex = index;
+              break;
+            }
+          }
+        }
+        interval.insert(insertionIndex, lateEntry);
+      }
+      repaired.addAll(interval);
+    }
+    return repaired;
+  }
+
   bool _canWeakMatchAppendedEntry(ChatEntry entry) {
     return entry is ServerChatEntry &&
         (entry.message is ResultMessage ||
@@ -5285,11 +7357,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     bool allowWeakMatch = false,
   }) {
     if (a is UserChatEntry && b is UserChatEntry) {
-      final aProviderItemId = a.providerItemId;
-      final bProviderItemId = b.providerItemId;
-      if (aProviderItemId?.isNotEmpty == true &&
-          bProviderItemId?.isNotEmpty == true) {
-        return aProviderItemId == bProviderItemId;
+      final aClientId = a.clientMessageId;
+      final bClientId = b.clientMessageId;
+      if (aClientId?.isNotEmpty == true && bClientId?.isNotEmpty == true) {
+        return aClientId == bClientId;
       }
       final aHistoryTurnId = a.historyTurnId;
       final bHistoryTurnId = b.historyTurnId;
@@ -5298,21 +7369,31 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           aHistoryTurnId != bHistoryTurnId) {
         return false;
       }
-      final aClientId = a.clientMessageId;
-      final bClientId = b.clientMessageId;
-      if (aClientId != null &&
-          aClientId.isNotEmpty &&
-          bClientId != null &&
-          aClientId == bClientId) {
-        return true;
+      final aProviderItemId = a.providerItemId;
+      final bProviderItemId = b.providerItemId;
+      if (aProviderItemId?.isNotEmpty == true &&
+          bProviderItemId?.isNotEmpty == true) {
+        if (detachedPreview &&
+            (aHistoryTurnId?.isNotEmpty != true ||
+                bHistoryTurnId?.isNotEmpty != true)) {
+          return false;
+        }
+        return aProviderItemId == bProviderItemId;
       }
       final aUuid = a.messageUuid;
       final bUuid = b.messageUuid;
-      if (aUuid != null &&
-          aUuid.isNotEmpty &&
-          bUuid != null &&
-          aUuid == bUuid) {
-        return true;
+      if (aUuid?.isNotEmpty == true && bUuid?.isNotEmpty == true) {
+        if (detachedPreview &&
+            (aHistoryTurnId?.isNotEmpty != true ||
+                bHistoryTurnId?.isNotEmpty != true)) {
+          return false;
+        }
+        return aUuid == bUuid;
+      }
+      if (isCodex && (_hasUserItemIdentity(a) || _hasUserItemIdentity(b))) {
+        // Do not use turn id or equal text as item identity. Both are shared
+        // by a root message and any number of steer inputs.
+        return false;
       }
     }
     if (a is ServerChatEntry && b is ServerChatEntry) {
@@ -5323,6 +7404,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (aHistoryTurnId?.isNotEmpty == true &&
           bHistoryTurnId?.isNotEmpty == true &&
           aHistoryTurnId != bHistoryTurnId) {
+        return false;
+      }
+      if (detachedPreview &&
+          ((aMessage is AssistantServerMessage &&
+                  bMessage is AssistantServerMessage) ||
+              (aMessage is ToolResultMessage &&
+                  bMessage is ToolResultMessage)) &&
+          (aHistoryTurnId?.isNotEmpty != true ||
+              bHistoryTurnId?.isNotEmpty != true)) {
+        // Current v2 canonical items are turn-scoped. If that structural
+        // identity is absent, retain both facts instead of collapsing turns
+        // by a provider ID that may be reused across pages or generations.
         return false;
       }
       if (aMessage is AssistantServerMessage &&
@@ -5371,10 +7464,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   String? _entryStableKey(ChatEntry entry) {
     if (entry is UserChatEntry) {
       final providerItemId = entry.providerItemId;
-      if (providerItemId != null && providerItemId.isNotEmpty) {
-        return 'user:provider:$providerItemId';
-      }
       final historyTurnId = entry.historyTurnId;
+      if (providerItemId != null && providerItemId.isNotEmpty) {
+        if (historyTurnId != null && historyTurnId.isNotEmpty) {
+          return 'user:turn:$historyTurnId:provider:$providerItemId';
+        }
+        if (!detachedPreview) return 'user:provider:$providerItemId';
+      }
       final clientMessageId = entry.clientMessageId;
       if (clientMessageId != null && clientMessageId.isNotEmpty) {
         if (historyTurnId != null && historyTurnId.isNotEmpty) {
@@ -5387,7 +7483,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         if (historyTurnId != null && historyTurnId.isNotEmpty) {
           return 'user:turn:$historyTurnId:uuid:$uuid';
         }
-        return 'user:uuid:$uuid';
+        if (!detachedPreview) return 'user:uuid:$uuid';
       }
       return null;
     }
@@ -5425,6 +7521,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         :final historyTurnId,
         :final message,
       ):
+        if (detachedPreview && historyTurnId?.trim().isNotEmpty != true) {
+          return null;
+        }
         if (messageUuid != null && messageUuid.isNotEmpty) {
           return _scopeServerMessageIdentity(
             'assistant:uuid:$messageUuid',
@@ -5439,6 +7538,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         }
         return null;
       case ToolResultMessage(:final toolUseId, :final historyTurnId):
+        if (detachedPreview && historyTurnId?.trim().isNotEmpty != true) {
+          return null;
+        }
         return _scopeServerMessageIdentity(
           'tool_result:$toolUseId',
           historyTurnId,
@@ -5463,6 +7565,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       switch (message) {
         AssistantServerMessage(:final historyTurnId) => historyTurnId,
         ToolResultMessage(:final historyTurnId) => historyTurnId,
+        ResultMessage(:final historyTurnId) => historyTurnId,
+        ErrorMessage(:final historyTurnId) => historyTurnId,
+        GuardianApprovalMessage(:final historyTurnId) => historyTurnId,
+        ToolUseSummaryMessage(:final historyTurnId) => historyTurnId,
         _ => null,
       };
 
@@ -5514,10 +7620,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         :final stopReason,
         :final result,
         :final error,
+        :final historyTurnId,
       ):
-        return ['result', subtype, stopReason, result, error].join('\u0001');
-      case ErrorMessage(:final message, :final errorCode):
-        return ['error', errorCode, message].join('\u0001');
+        return [
+          'result',
+          historyTurnId,
+          subtype,
+          stopReason,
+          result,
+          error,
+        ].join('\u0001');
+      case ErrorMessage(:final message, :final errorCode, :final historyTurnId):
+        return ['error', historyTurnId, errorCode, message].join('\u0001');
       case GuardianApprovalMessage(
         :final risk,
         :final status,
@@ -5526,9 +7640,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         :final reviewId,
         :final targetItemId,
         :final action,
+        :final historyTurnId,
       ):
         return [
           'guardian_approval',
+          historyTurnId,
           risk.name,
           status.name,
           authorization,
@@ -5537,9 +7653,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           if (action != null) jsonEncode(action),
           reason,
         ].join('\u0001');
-      case ToolUseSummaryMessage(:final summary, :final precedingToolUseIds):
+      case ToolUseSummaryMessage(
+        :final summary,
+        :final precedingToolUseIds,
+        :final historyTurnId,
+      ):
         return [
           'tool_use_summary',
+          historyTurnId,
           summary,
           ...precedingToolUseIds,
         ].join('\u0001');
@@ -5570,6 +7691,27 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           entry.message is! ConversationQueueMessage;
     }
     return false;
+  }
+
+  bool _shouldPreserveDetachedOverlayAcrossHistoryReplace(ChatEntry entry) {
+    if (_isDetachedRuntimeAssistantOverlay(entry)) return true;
+    if (entry is ServerChatEntry) {
+      final message = entry.message;
+      // These are bounded to the current runtime attachment and are not part
+      // of Codex turns/list. Keep them visible while SQLite replaces the
+      // durable transcript; reconnect/reopen may reconstruct terminal status
+      // from v2 status, but never fabricates missing historical UI events.
+      return _isDetachedRuntimeOverlayMessage(message) &&
+          _detachedRuntimeOverlayGeneration == _detachedLiveRuntimeGeneration;
+    }
+    if (entry is! UserChatEntry) return false;
+    if (entry.status != MessageStatus.sent) return true;
+    final clientMessageId = entry.clientMessageId?.trim();
+    // A sent local envelope can still be awaiting its first canonical cache
+    // row. Preserve only ids originated/restored by this Cubit; old runtime or
+    // polluted-cache rows with the same shape are not treated as overlays.
+    return clientMessageId?.isNotEmpty == true &&
+        _detachedLocalOverlayClientIds.contains(clientMessageId);
   }
 
   ChatEntry _mergeEquivalentEntry(ChatEntry existing, ChatEntry incoming) {
@@ -5790,18 +7932,23 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     bool beforeTrailingAssistant = false,
   }) {
     if (item == null) return entries;
-    final alreadyVisible = entries.any((entry) {
-      if (entry is! UserChatEntry) return false;
-      if (clientMessageId != null && entry.clientMessageId == clientMessageId) {
-        return true;
-      }
-      return entry.text == item.text && entry.status == MessageStatus.sent;
-    });
+    final effectiveClientMessageId =
+        clientMessageId ?? item.clientMessageId?.trim();
+    final alreadyVisible =
+        effectiveClientMessageId?.isNotEmpty == true &&
+        entries.any(
+          (entry) =>
+              entry is UserChatEntry &&
+              entry.clientMessageId == effectiveClientMessageId,
+        );
     if (alreadyVisible) return entries;
+    if (detachedPreview && effectiveClientMessageId?.isNotEmpty == true) {
+      _rememberDetachedLocalOverlayClientId(effectiveClientMessageId!);
+    }
     final entry = UserChatEntry(
       item.text,
       sessionId: sessionId,
-      clientMessageId: clientMessageId,
+      clientMessageId: effectiveClientMessageId,
       imageCount: item.imageCount,
       status: MessageStatus.sent,
     );
@@ -5851,6 +7998,25 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   // ---------------------------------------------------------------------------
 
   /// Send a user message, optionally with image attachments.
+  bool isLocalOnlySubmission(
+    String text, {
+    List<({Uint8List bytes, String mimeType})>? images,
+    Iterable<Map<String, String>>? additionalMentions,
+  }) {
+    if (!isCodex ||
+        (images != null && images.isNotEmpty) ||
+        (additionalMentions != null && additionalMentions.isNotEmpty)) {
+      return false;
+    }
+    final command = text.trim();
+    return command == '/goal' ||
+        command == '/goal edit' ||
+        command == '/goal pause' ||
+        command == '/goal resume' ||
+        command == '/goal clear' ||
+        command.startsWith('/goal ');
+  }
+
   bool sendMessage(
     String text, {
     String? clientMessageId,
@@ -5858,9 +8024,6 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     Iterable<String>? mentionablePaths,
     Iterable<Map<String, String>>? additionalMentions,
   }) {
-    final runtimeLease = _captureRuntimeMutationLease();
-    if (runtimeLease == null) return false;
-    final bridgeSessionId = runtimeLease.sessionId;
     final explicitMentions =
         additionalMentions?.toList(growable: false) ??
         const <Map<String, String>>[];
@@ -5896,9 +8059,28 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           }
       }
     }
+    final runtimeLease = _captureRuntimeMutationLease();
+    if (runtimeLease == null) return false;
     final isOffline = !_bridge.isConnected;
+    final effectiveClientMessageId = clientMessageId?.trim().isNotEmpty == true
+        ? clientMessageId!.trim()
+        : _uuid.v4();
+    final existingSubmission = state.entries
+        .whereType<UserChatEntry>()
+        .where((entry) => entry.clientMessageId == effectiveClientMessageId)
+        .firstOrNull;
+    final alreadyDispatched =
+        _submittedClientMessageIds.contains(effectiveClientMessageId) ||
+        _pendingInputDispatchIds.contains(effectiveClientMessageId) ||
+        _deliveryPendingInputs.containsKey(effectiveClientMessageId) ||
+        (existingSubmission != null &&
+            (existingSubmission.providerItemId?.isNotEmpty == true ||
+                existingSubmission.historyTurnId?.isNotEmpty == true ||
+                existingSubmission.messageUuid?.isNotEmpty == true ||
+                existingSubmission.status != MessageStatus.sending &&
+                    existingSubmission.status != MessageStatus.queued));
+    if (alreadyDispatched) return true;
     if (isCodex) {
-      if (isOffline && state.queuedInput != null) return false;
       final supportsMultiple = _bridge.bridgeCapabilities.contains(
         codexMultiInputQueueCapability,
       );
@@ -5912,13 +8094,6 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         return false;
       }
     }
-
-    final effectiveClientMessageId = clientMessageId?.trim().isNotEmpty == true
-        ? clientMessageId!.trim()
-        : _uuid.v4();
-    final baseSeq = isOffline
-        ? _bridge.cachedSessionHistorySeq(bridgeSessionId)
-        : null;
     final structuredMentions = isCodex
         ? _extractCodexStructuredInputs(
             text,
@@ -5930,37 +8105,108 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             mentions: const <Map<String, String>>[],
           );
 
-    final shouldUseOfflineQueuePanel = isCodex && isOffline;
+    if (isOffline) {
+      if (detachedPreview) {
+        _rememberDetachedLocalOverlayClientId(effectiveClientMessageId);
+      }
+      final existingIndex = state.entries.indexWhere(
+        (entry) =>
+            entry is UserChatEntry &&
+            entry.clientMessageId == effectiveClientMessageId,
+      );
+      final failed = UserChatEntry(
+        text,
+        sessionId: sessionId,
+        clientMessageId: effectiveClientMessageId,
+        imageBytesList: images?.map((image) => image.bytes).toList(),
+        imageCount: images?.length ?? 0,
+        status: MessageStatus.failed,
+      );
+      if (existingIndex == -1) {
+        emit(state.copyWith(entries: [...state.entries, failed]));
+      } else {
+        final existing = state.entries[existingIndex] as UserChatEntry;
+        final entries = List<ChatEntry>.of(state.entries);
+        entries[existingIndex] = UserChatEntry(
+          existing.text.isEmpty ? text : existing.text,
+          sessionId: existing.sessionId ?? sessionId,
+          clientMessageId: effectiveClientMessageId,
+          providerItemId: existing.providerItemId,
+          historyTurnId: existing.historyTurnId,
+          imageBytesList:
+              images?.map((image) => image.bytes).toList() ??
+              existing.imageBytesList,
+          imageUrls: existing.imageUrls,
+          imageCount: images?.length ?? existing.imageCount,
+          status: MessageStatus.failed,
+          messageUuid: existing.messageUuid,
+          timestamp: existing.timestamp,
+          timestampIsAuthoritative: existing.timestampIsAuthoritative,
+        );
+        emit(state.copyWith(entries: entries));
+      }
+      _markOutgoingDraftFailed(
+        effectiveClientMessageId,
+        'bridge_not_connected',
+      );
+      _detachedProjectionLastAction = 'outgoing_failed_offline';
+      return true;
+    }
+
+    if (!_rememberSubmittedClientMessageId(effectiveClientMessageId)) {
+      return true;
+    }
+    const int? baseSeq = null;
+
     // Whether the provider will accept this turn immediately or queue it is a
     // Bridge-owned fact. Keep one optimistic bubble until the authoritative
     // input_ack/conversation_queue response decides the final presentation.
-    final shouldAddLocalEntry = !shouldUseOfflineQueuePanel;
-    if (shouldAddLocalEntry) {
+    var submissionEntries = state.entries;
+    if (detachedPreview && _detachedRuntimeOverlayGeneration != null) {
+      submissionEntries = _withoutDetachedRuntimeOverlayEntries(
+        submissionEntries,
+      );
+      _detachedRuntimeAssistantAliases.clear();
+      _resetDetachedRuntimeOverlayTracking();
+    }
+    if (detachedPreview) {
+      _rememberDetachedLocalOverlayClientId(effectiveClientMessageId);
+    }
+    final existingIndex = submissionEntries.indexWhere(
+      (entry) =>
+          entry is UserChatEntry &&
+          entry.clientMessageId == effectiveClientMessageId,
+    );
+    if (existingIndex >= 0) {
+      final existing = submissionEntries[existingIndex] as UserChatEntry;
+      final nextEntries = List<ChatEntry>.of(submissionEntries);
+      nextEntries[existingIndex] = UserChatEntry(
+        existing.text,
+        sessionId: existing.sessionId ?? sessionId,
+        clientMessageId: effectiveClientMessageId,
+        providerItemId: existing.providerItemId,
+        historyTurnId: existing.historyTurnId,
+        imageBytesList: existing.imageBytesList,
+        imageUrls: existing.imageUrls,
+        imageCount: existing.imageCount,
+        status: MessageStatus.sending,
+        messageUuid: existing.messageUuid,
+        timestamp: existing.timestamp,
+        timestampIsAuthoritative: existing.timestampIsAuthoritative,
+      );
+      emit(state.copyWith(entries: nextEntries));
+    } else {
       final entry = UserChatEntry(
         text,
         sessionId: sessionId,
         clientMessageId: effectiveClientMessageId,
         imageBytesList: images?.map((i) => i.bytes).toList(),
-        status: isOffline ? MessageStatus.queued : MessageStatus.sending,
+        status: MessageStatus.sending,
       );
-      emit(state.copyWith(entries: [...state.entries, entry]));
-    } else if (shouldUseOfflineQueuePanel) {
-      emit(
-        state.copyWith(
-          queuedInput: QueuedInputItem(
-            itemId: '$offlineQueuedInputPrefix$effectiveClientMessageId',
-            text: text,
-            createdAt: DateTime.now().toUtc().toIso8601String(),
-            clientMessageId: effectiveClientMessageId,
-            imageCount: images?.length ?? 0,
-            skills: structuredMentions.skills,
-            mentions: structuredMentions.mentions,
-          ),
-        ),
-      );
+      emit(state.copyWith(entries: [...submissionEntries, entry]));
     }
 
-    final deliveryPendingItem = isCodex && !isOffline
+    final deliveryPendingItem = isCodex
         ? QueuedInputItem(
             itemId:
                 '$deliveryPendingQueuedInputPrefix$effectiveClientMessageId',
@@ -5973,6 +8219,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           )
         : null;
 
+    _recordOutgoingDraftAttempt(effectiveClientMessageId);
     _dispatchInputInOrder(
       runtimeLease: runtimeLease,
       text: text,
@@ -6110,7 +8357,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }) {
     logger.warning(
       '[session:$sessionId] Failed to prepare or send input '
-      'clientMessageId=$clientMessageId',
+      'client=${diagnosticToken('client', clientMessageId)}',
       error,
       stackTrace,
     );
@@ -6118,6 +8365,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _bridge.clearDeliveryPendingInput(
       bridgeSessionId,
       itemId: '$deliveryPendingQueuedInputPrefix$clientMessageId',
+    );
+    _markOutgoingDraftFailed(
+      clientMessageId,
+      error is _ExpiredRuntimeMutationLease
+          ? 'runtime_authority_changed_before_send'
+          : 'local_input_dispatch_failed',
     );
     if (isClosed) return;
 
@@ -6169,9 +8422,25 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   void requestGoal({bool userInitiated = false}) {
-    final runtimeSessionId = runtimeSessionIdForRead;
-    if (runtimeSessionId == null) return;
     if (!isCodex || state.goalMutation != null) return;
+    final durableTarget = _durableGoalTarget();
+    final targetSessionId = durableTarget?.threadId ?? runtimeSessionIdForRead;
+    if (targetSessionId == null) {
+      if (userInitiated) {
+        _setGoalOperationError(
+          'This conversation is not attached to a Goal-capable Bridge yet.',
+          kind: CodexGoalErrorKind.readFailed,
+        );
+        emit(
+          state.copyWith(
+            goalStateLoaded: false,
+            goalSupport: CodexGoalSupport.unknown,
+            goalLoadErrorKind: CodexGoalErrorKind.readFailed,
+          ),
+        );
+      }
+      return;
+    }
     final effectiveUserInitiated =
         userInitiated || (_goalReadAwaitingThread && _goalUserRefreshPending);
     if (state.goalSupport == CodexGoalSupport.unsupported &&
@@ -6201,8 +8470,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
       return;
     }
-    if (!_codexGoalThreadReady ||
-        state.claudeSessionId?.trim().isNotEmpty != true) {
+    if (durableTarget == null &&
+        (!_codexGoalThreadReady ||
+            state.claudeSessionId?.trim().isNotEmpty != true)) {
       // A resumed session can publish its durable id before app-server has
       // actually bound that thread. Keep one coalesced read intent and retry
       // only after system/init or a non-starting authoritative SessionInfo.
@@ -6244,7 +8514,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           ),
         );
       }
-      _bridge.send(ClientMessage.getGoal(runtimeSessionId));
+      _bridge.send(
+        ClientMessage.getGoal(targetSessionId, durableTarget: durableTarget),
+      );
     } catch (error) {
       _completeGoalRead();
       emit(
@@ -6278,14 +8550,21 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         tokenBudget: tokenBudget,
         expectedOperationSequence: state.goalOperationSequence,
       ),
-      (changeId, runtimeSessionId) => ClientMessage.setGoal(
-        sessionId: runtimeSessionId,
+      (changeId, targetSessionId, durableTarget) => ClientMessage.setGoal(
+        sessionId: targetSessionId,
         objective: normalized,
         status: CodexThreadGoalStatus.active,
         tokenBudget: tokenBudget,
         includeTokenBudget: includeTokenBudget,
         goalChangeId: changeId,
         expectedGoalOperationSequence: state.goalOperationSequence,
+        expectedGoalPresent: state.goal != null,
+        expectedGoalObjective: state.goal?.objective,
+        expectedGoalStatus: state.goal?.status,
+        expectedGoalTokenBudget: state.goal?.tokenBudget,
+        includeExpectedGoalTokenBudget: state.goal != null,
+        expectedGoalCreatedAt: state.goal?.createdAt,
+        durableTarget: durableTarget,
       ),
     );
   }
@@ -6317,13 +8596,20 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         tokenBudget: tokenBudget,
         expectedOperationSequence: state.goalOperationSequence,
       ),
-      (changeId, runtimeSessionId) => ClientMessage.setGoal(
-        sessionId: runtimeSessionId,
+      (changeId, targetSessionId, durableTarget) => ClientMessage.setGoal(
+        sessionId: targetSessionId,
         objective: includeObjective ? normalized : null,
         tokenBudget: tokenBudget,
         includeTokenBudget: includeTokenBudget,
         goalChangeId: changeId,
         expectedGoalOperationSequence: state.goalOperationSequence,
+        expectedGoalPresent: state.goal != null,
+        expectedGoalObjective: state.goal?.objective,
+        expectedGoalStatus: state.goal?.status,
+        expectedGoalTokenBudget: state.goal?.tokenBudget,
+        includeExpectedGoalTokenBudget: state.goal != null,
+        expectedGoalCreatedAt: state.goal?.createdAt,
+        durableTarget: durableTarget,
       ),
     );
   }
@@ -6369,14 +8655,21 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         tokenBudget: tokenBudget,
         expectedOperationSequence: state.goalOperationSequence,
       ),
-      (changeId, runtimeSessionId) => ClientMessage.setGoal(
-        sessionId: runtimeSessionId,
+      (changeId, targetSessionId, durableTarget) => ClientMessage.setGoal(
+        sessionId: targetSessionId,
         objective: normalizedObjective,
         status: CodexThreadGoalStatus.active,
         tokenBudget: tokenBudget,
         includeTokenBudget: includeTokenBudget,
         goalChangeId: changeId,
         expectedGoalOperationSequence: state.goalOperationSequence,
+        expectedGoalPresent: state.goal != null,
+        expectedGoalObjective: state.goal?.objective,
+        expectedGoalStatus: state.goal?.status,
+        expectedGoalTokenBudget: state.goal?.tokenBudget,
+        includeExpectedGoalTokenBudget: state.goal != null,
+        expectedGoalCreatedAt: state.goal?.createdAt,
+        durableTarget: durableTarget,
       ),
     );
   }
@@ -6395,11 +8688,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         status: status,
         expectedOperationSequence: state.goalOperationSequence,
       ),
-      (changeId, runtimeSessionId) => ClientMessage.setGoal(
-        sessionId: runtimeSessionId,
+      (changeId, targetSessionId, durableTarget) => ClientMessage.setGoal(
+        sessionId: targetSessionId,
         status: status,
         goalChangeId: changeId,
         expectedGoalOperationSequence: state.goalOperationSequence,
+        expectedGoalPresent: state.goal != null,
+        expectedGoalObjective: state.goal?.objective,
+        expectedGoalStatus: state.goal?.status,
+        expectedGoalTokenBudget: state.goal?.tokenBudget,
+        includeExpectedGoalTokenBudget: state.goal != null,
+        expectedGoalCreatedAt: state.goal?.createdAt,
+        durableTarget: durableTarget,
       ),
     );
   }
@@ -6412,24 +8712,42 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         kind: CodexGoalMutationKind.clear,
         expectedOperationSequence: state.goalOperationSequence,
       ),
-      (changeId, runtimeSessionId) => ClientMessage.clearGoal(
-        runtimeSessionId,
+      (changeId, targetSessionId, durableTarget) => ClientMessage.clearGoal(
+        targetSessionId,
         goalChangeId: changeId,
         expectedGoalOperationSequence: state.goalOperationSequence,
+        expectedGoalPresent: state.goal != null,
+        expectedGoalObjective: state.goal?.objective,
+        expectedGoalStatus: state.goal?.status,
+        expectedGoalTokenBudget: state.goal?.tokenBudget,
+        includeExpectedGoalTokenBudget: state.goal != null,
+        expectedGoalCreatedAt: state.goal?.createdAt,
+        durableTarget: durableTarget,
       ),
     );
   }
 
   bool _beginGoalMutation(
     CodexGoalMutation mutation,
-    ClientMessage Function(String changeId, String runtimeSessionId)
+    ClientMessage Function(
+      String changeId,
+      String targetSessionId,
+      CodexGoalRequestTarget? durableTarget,
+    )
     buildMessage,
   ) {
     if (!isCodex || state.goalMutation != null) return false;
-    final runtimeSessionId = _runtimeSessionIdForMutation(
-      allowSteerable: false,
-    );
-    if (runtimeSessionId == null) return false;
+    final durableTarget = _durableGoalTarget(operationId: mutation.id);
+    final targetSessionId =
+        durableTarget?.threadId ??
+        _runtimeSessionIdForMutation(allowSteerable: false);
+    if (targetSessionId == null) {
+      _setGoalOperationError(
+        'This conversation is not attached to a writable Goal target.',
+        kind: CodexGoalErrorKind.readFailed,
+      );
+      return false;
+    }
     if (state.goalSupport == CodexGoalSupport.unsupported) {
       _setGoalOperationError(
         'This Codex runtime does not support Goal controls.',
@@ -6486,7 +8804,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       requestGoal();
     });
     try {
-      _bridge.send(buildMessage(mutation.id, runtimeSessionId));
+      _bridge.send(buildMessage(mutation.id, targetSessionId, durableTarget));
       return true;
     } catch (error) {
       if (state.goalMutation?.id == mutation.id) {
@@ -7734,20 +10052,100 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   /// Execute a rewind operation.
   /// [mode] is one of: "conversation", "code", "both".
-  void rewind(String targetUuid, String mode) {
+  void rewind(String targetUuid, String mode, {String? historyTurnId}) {
+    if (!_bridge.isConnected) return;
     final runtimeSessionId = _runtimeSessionIdForMutation(
       allowSteerable: false,
     );
     if (runtimeSessionId == null) return;
-    _bridge.send(ClientMessage.rewind(runtimeSessionId, targetUuid, mode));
+    try {
+      _bridge.send(
+        ClientMessage.rewind(
+          runtimeSessionId,
+          targetUuid,
+          mode,
+          historyTurnId: historyTurnId,
+        ),
+      );
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[session:$sessionId] rewind was not sent on the live socket',
+        error,
+        stackTrace,
+      );
+    }
   }
 
-  void forkSession(String targetUuid) {
+  /// Starts the same edit flow as Codex Desktop's pencil action.
+  ///
+  /// Codex has no in-place message mutation RPC. The Bridge forks the durable
+  /// thread immediately before the selected provider turn, then the screen
+  /// moves the original text back into the composer. A detached cached thread
+  /// therefore uses its durable identity instead of silently requiring an
+  /// already attached runtime.
+  bool editCodexMessage(String targetUuid, {String? historyTurnId}) {
+    if (!isCodex || !_bridge.isConnected) return false;
+    final runtimeSessionId = _runtimeSessionIdForMutation(
+      allowSteerable: false,
+    );
+    if (runtimeSessionId != null) {
+      try {
+        _bridge.send(
+          ClientMessage.rewind(
+            runtimeSessionId,
+            targetUuid,
+            'conversation',
+            historyTurnId: historyTurnId,
+          ),
+        );
+        return true;
+      } catch (error, stackTrace) {
+        logger.warning(
+          '[session:$sessionId] Codex message edit was not sent',
+          error,
+          stackTrace,
+        );
+        return false;
+      }
+    }
+    final projectPath = state.projectPath?.trim();
+    if (!detachedPreview || projectPath == null || projectPath.isEmpty) {
+      return false;
+    }
+    try {
+      _bridge.send(
+        ClientMessage.rewind(
+          sessionId,
+          targetUuid,
+          'conversation',
+          historyTurnId: historyTurnId,
+          projectPath: projectPath,
+          codexSourceId: _bridge.codexSourceId,
+        ),
+      );
+      return true;
+    } catch (error, stackTrace) {
+      logger.warning(
+        '[session:$sessionId] detached Codex message edit was not sent',
+        error,
+        stackTrace,
+      );
+      return false;
+    }
+  }
+
+  void forkSession(String targetUuid, {String? historyTurnId}) {
     final runtimeSessionId = _runtimeSessionIdForMutation(
       allowSteerable: false,
     );
     if (runtimeSessionId == null) return;
-    _bridge.send(ClientMessage.forkSession(runtimeSessionId, targetUuid));
+    _bridge.send(
+      ClientMessage.forkSession(
+        runtimeSessionId,
+        targetUuid,
+        historyTurnId: historyTurnId,
+      ),
+    );
   }
 
   /// Hides one warning text for the lifetime of this open session screen.
@@ -7801,12 +10199,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         if (index != null) {
           _localHistoryUserIndexComplete = index.complete;
           _providerTurnOrderById.clear();
+          _providerTurnIdsByOrder.clear();
           final entries = <UserChatEntry>[];
           for (var order = 0; order < index.messages.length; order++) {
             final message = index.messages[order];
             final turnId = message.historyTurnId?.trim();
             if (turnId != null && turnId.isNotEmpty) {
-              _providerTurnOrderById.putIfAbsent(turnId, () => order);
+              if (!_providerTurnOrderById.containsKey(turnId)) {
+                _providerTurnOrderById[turnId] = _providerTurnIdsByOrder.length;
+                _providerTurnIdsByOrder.add(turnId);
+              }
             }
             entries.add(_userEntryFromHistoryIndex(message));
           }
@@ -7835,9 +10237,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _localHistoryUserIndexComplete = indexed != null;
     if (indexed == null) return allUserMessages;
     _providerTurnOrderById.clear();
+    _providerTurnIdsByOrder.clear();
     final result = <UserChatEntry>[];
     for (final indexedEntry in indexed) {
       final entry = _userEntryFromHistoryIndex(indexedEntry.message);
+      final turnId = indexedEntry.message.historyTurnId?.trim();
+      if (turnId != null && turnId.isNotEmpty) {
+        if (!_providerTurnOrderById.containsKey(turnId)) {
+          _providerTurnOrderById[turnId] = _providerTurnIdsByOrder.length;
+          _providerTurnIdsByOrder.add(turnId);
+        }
+      }
       _localHistoryOrdinalByNavigationEntry[entry] = indexedEntry.ordinal;
       result.add(entry);
     }
@@ -7889,26 +10299,36 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   Future<UserChatEntry?> revealUserMessage(UserChatEntry target) async {
-    UserChatEntry? findLoaded() {
-      for (final entry in state.entries.whereType<UserChatEntry>()) {
+    UserChatEntry? findLoaded(Iterable<ChatEntry> entries) {
+      for (final entry in entries.whereType<UserChatEntry>()) {
         if (_entriesEquivalentForTurnBoundary(entry, target)) return entry;
       }
       return null;
     }
 
-    var loaded = findLoaded();
+    var loaded = findLoaded(visibleEntries);
     if (loaded != null) return loaded;
+    loaded = findLoaded(state.entries);
+    if (loaded != null) {
+      exitHistoryNavigation();
+      return loaded;
+    }
     final providerTurnId = target.historyTurnId?.trim();
     final detachedTurnLoader = _detachedUserTurnLoader;
     if (providerTurnId != null &&
         providerTurnId.isNotEmpty &&
         detachedTurnLoader != null) {
       try {
-        final messages = await detachedTurnLoader(providerTurnId);
-        if (messages != null && messages.isNotEmpty && !isClosed) {
-          _mergeLoadedProviderTurn(providerTurnId, messages);
-          loaded = findLoaded();
+        if (_providerTurnOrderById.containsKey(providerTurnId)) {
+          loaded = await _openDetachedHistoryNavigation(providerTurnId, target);
           if (loaded != null) return loaded;
+        } else {
+          final messages = await detachedTurnLoader(providerTurnId);
+          if (messages != null && messages.isNotEmpty && !isClosed) {
+            _mergeLoadedProviderTurn(providerTurnId, messages);
+            loaded = findLoaded(state.entries);
+            if (loaded != null) return loaded;
+          }
         }
       } catch (error, stackTrace) {
         logger.warning(
@@ -7939,7 +10359,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       try {
         final page = await _bridge.tryLoadLocalSessionHistoryWindow(
           runtimeSessionId: sessionId,
-          startOrdinal: targetOrdinal,
+          startOrdinal: targetOrdinal > 100 ? targetOrdinal - 100 : 0,
         );
         if (isClosed || generation != _localHistoryPagingGeneration) {
           return null;
@@ -7948,11 +10368,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           localHistoryPaging.value = _currentLocalHistoryPagingState();
           return null;
         }
-        _replaceLocalMirrorWindow(page);
-        loaded = findLoaded();
+        _openLocalHistoryNavigation(page, returnPaging: currentPaging);
+        loaded = findLoaded(visibleEntries);
         localHistoryPaging.value = LocalHistoryPagingState(
           enabled: true,
           hasMore: page.hasMore,
+          hasLater: page.hasLater,
         );
         return loaded;
       } catch (error, stackTrace) {
@@ -8026,7 +10447,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
 
       publishBufferedPages();
-      loaded = findLoaded();
+      loaded = findLoaded(state.entries);
       localHistoryPaging.value = LocalHistoryPagingState(
         enabled: true,
         hasMore: hasMore,
@@ -8037,7 +10458,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       }
       try {
         publishBufferedPages();
-        loaded = findLoaded();
+        loaded = findLoaded(state.entries);
       } catch (_) {
         // Preserve the original read/decode error below.
       }
@@ -8052,6 +10473,158 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       );
     }
     return loaded;
+  }
+
+  static const _historyNavigationInitialRadius = 2;
+  static const _historyNavigationPageTurns = 3;
+
+  Future<UserChatEntry?> _openDetachedHistoryNavigation(
+    String providerTurnId,
+    UserChatEntry target,
+  ) async {
+    final targetOrder = _providerTurnOrderById[providerTurnId];
+    if (targetOrder == null || _providerTurnIdsByOrder.isEmpty) return null;
+    final start = targetOrder > _historyNavigationInitialRadius
+        ? targetOrder - _historyNavigationInitialRadius
+        : 0;
+    final desiredEnd = targetOrder + _historyNavigationInitialRadius + 1;
+    final end = desiredEnd < _providerTurnIdsByOrder.length
+        ? desiredEnd
+        : _providerTurnIdsByOrder.length;
+    final loaded = await _loadDetachedTurnRange(start, end);
+    if (isClosed || loaded[targetOrder] == null) return null;
+
+    var contiguousStart = targetOrder;
+    while (contiguousStart > start && loaded[contiguousStart - 1] != null) {
+      contiguousStart -= 1;
+    }
+    var contiguousEnd = targetOrder + 1;
+    while (contiguousEnd < end && loaded[contiguousEnd] != null) {
+      contiguousEnd += 1;
+    }
+    final entries = <ChatEntry>[
+      for (var order = contiguousStart; order < contiguousEnd; order++)
+        ...loaded[order]!,
+    ];
+    historyNavigation.value = HistoryNavigationWindow(
+      entries: List.unmodifiable(entries),
+      startTurnOrder: contiguousStart,
+      endTurnOrderExclusive: contiguousEnd,
+    );
+    _historyNavigationReturnPaging ??= localHistoryPaging.value;
+    localHistoryPaging.value = LocalHistoryPagingState(
+      enabled: true,
+      hasMore: contiguousStart > 0,
+      hasLater: contiguousEnd < _providerTurnIdsByOrder.length,
+    );
+    for (final entry in entries.whereType<UserChatEntry>()) {
+      if (_entriesEquivalentForTurnBoundary(entry, target)) return entry;
+    }
+    return null;
+  }
+
+  Future<Map<int, List<ChatEntry>?>> _loadDetachedTurnRange(
+    int start,
+    int end,
+  ) async {
+    final loader = _detachedUserTurnLoader;
+    if (loader == null || start >= end) return const {};
+    final results = <int, List<ServerMessage>?>{};
+    var nextOrder = start;
+
+    Future<void> worker() async {
+      while (!isClosed) {
+        final order = nextOrder;
+        if (order >= end) return;
+        nextOrder += 1;
+        final turnId = _providerTurnIdsByOrder[order];
+        try {
+          results[order] = await loader(turnId);
+        } catch (error, stackTrace) {
+          logger.warning(
+            '[session:$sessionId] Failed to load adjacent provider turn',
+            error,
+            stackTrace,
+          );
+          results[order] = null;
+        }
+      }
+    }
+
+    final workerCount = end - start > 1 ? 2 : 1;
+    await Future.wait(List.generate(workerCount, (_) => worker()));
+    final decoded = <int, List<ChatEntry>?>{};
+    for (var order = start; order < end; order++) {
+      final messages = results[order];
+      decoded[order] = messages == null || messages.isEmpty
+          ? null
+          : _decodeProviderTurn(_providerTurnIdsByOrder[order], messages);
+    }
+    return decoded;
+  }
+
+  List<ChatEntry> _decodeProviderTurn(
+    String providerTurnId,
+    List<ServerMessage> messages,
+  ) {
+    final decoded = _handler.handle(
+      HistoryMessage(messages: messages),
+      isBackground: true,
+      isCodex: isCodex,
+      ignoredToolUseIds: _respondedToolUseIds,
+    );
+    final entries = decoded.entriesToAdd
+        .where((entry) => entry is! StreamingChatEntry)
+        .toList(growable: false);
+    for (final entry in entries) {
+      _targetHistoryTurnByEntry[entry] = providerTurnId;
+    }
+    return entries;
+  }
+
+  void _openLocalHistoryNavigation(
+    LocalSessionHistoryPage page, {
+    required LocalHistoryPagingState returnPaging,
+  }) {
+    final entries = _decodeLocalHistoryPage(page);
+    if (entries.isEmpty) return;
+    _historyNavigationReturnPaging ??= returnPaging;
+    historyNavigation.value = HistoryNavigationWindow(
+      entries: List.unmodifiable(entries),
+      startOrdinal: page.startOrdinal,
+      endOrdinalExclusive: page.endOrdinalExclusive,
+    );
+  }
+
+  List<ChatEntry> _decodeLocalHistoryPage(LocalSessionHistoryPage page) {
+    if (page.messages.isEmpty) return const [];
+    final history = HistoryMessage(messages: page.messages);
+    final decoded = _handler.handle(
+      history,
+      isBackground: true,
+      isCodex: isCodex,
+      ignoredToolUseIds: _respondedToolUseIds,
+      historyTimestampAnchor: page.timestampAnchor,
+    );
+    return decoded.entriesToAdd
+        .where((entry) => entry is! StreamingChatEntry)
+        .toList(growable: false);
+  }
+
+  List<ChatEntry> _mergeAdjacentHistoryEntries(
+    List<ChatEntry> older,
+    List<ChatEntry> newer,
+  ) {
+    final merged = List<ChatEntry>.from(older);
+    for (final incoming in newer) {
+      final index = _indexOfEquivalentEntry(merged, incoming);
+      if (index == -1) {
+        merged.add(incoming);
+      } else {
+        merged[index] = _mergeCanonicalMirrorEntry(merged[index], incoming);
+      }
+    }
+    return merged;
   }
 
   void _mergeLoadedProviderTurn(
@@ -8137,59 +10710,6 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     return null;
   }
 
-  void _replaceLocalMirrorWindow(LocalSessionHistoryPage page) {
-    if (page.messages.isEmpty) return;
-    final history = HistoryMessage(messages: page.messages);
-    final decoded = _handler.handle(
-      history,
-      isBackground: true,
-      isCodex: isCodex,
-      ignoredToolUseIds: _respondedToolUseIds,
-      historyTimestampAnchor: page.timestampAnchor,
-    );
-    final mirrorEntries = decoded.entriesToAdd
-        .where((entry) => entry is! StreamingChatEntry)
-        .toList(growable: false);
-    if (mirrorEntries.isEmpty) return;
-
-    final pastEntries = state.entries
-        .take(_pastEntryCount)
-        .toList(growable: false);
-    final allExistingNonPast = state.entries
-        .skip(_pastEntryCount)
-        .toList(growable: false);
-    final existingMirrorPrefix = _localMirrorEntryCount.clamp(
-      0,
-      allExistingNonPast.length,
-    );
-    final canonicalTail = allExistingNonPast
-        .skip(existingMirrorPrefix)
-        .toList(growable: false);
-    final merged = _mergeCanonicalHistoryIntoPagedEntries(
-      existingEntries: mirrorEntries,
-      canonicalEntries: canonicalTail,
-    );
-    _localMirrorEntryCount = _mirrorPrefixExtent(
-      mergedEntries: merged,
-      mirrorEntries: mirrorEntries,
-    );
-    var nextEntries = <ChatEntry>[...pastEntries, ...merged];
-    if (_dismissedCodexWarningKeys.isNotEmpty) {
-      nextEntries = nextEntries
-          .where((entry) => !_isDismissedCodexWarningEntry(entry))
-          .toList(growable: false);
-    }
-    emit(
-      state.copyWith(
-        entries: nextEntries,
-        hiddenToolUseIds: {
-          ...state.hiddenToolUseIds,
-          ...decoded.toolUseIdsToHide,
-        },
-      ),
-    );
-  }
-
   /// Re-fetch session history from the bridge server.
   ///
   /// Resets [_pastHistoryLoaded] so the next [PastHistoryMessage] is processed,
@@ -8245,22 +10765,51 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// conversation is still waiting for its runtime authority projection. This
   /// lets the UI explain the real retry gate instead of making a tap appear to
   /// do nothing.
-  bool retryMessage(UserChatEntry entry) {
+  bool retryMessage(
+    UserChatEntry entry, {
+    String? text,
+    List<ChatImageAttachment>? images,
+    Iterable<String>? mentionablePaths,
+    Iterable<Map<String, String>>? additionalMentions,
+  }) {
+    if (!_bridge.isConnected) return false;
     final runtimeLease = _captureRuntimeMutationLease();
     if (runtimeLease == null) return false;
-    final clientMessageId = _uuid.v4();
+    final existingClientMessageId = entry.clientMessageId?.trim();
+    final clientMessageId = existingClientMessageId?.isNotEmpty == true
+        ? existingClientMessageId!
+        : _uuid.v4();
+    if (detachedPreview) {
+      _rememberDetachedLocalOverlayClientId(clientMessageId);
+    }
+    final retryText = text ?? entry.text;
     final retrySessionId = runtimeLease.sessionId;
     final isOffline = !_bridge.isConnected;
+    final retryImages = images?.toList(growable: false) ?? const [];
+    final structuredMentions = isCodex
+        ? _extractCodexStructuredInputs(
+            retryText,
+            mentionablePaths: mentionablePaths,
+            additionalMentions: additionalMentions,
+          )
+        : (
+            skills: const <Map<String, String>>[],
+            mentions: const <Map<String, String>>[],
+          );
     final baseSeq = isOffline
         ? _bridge.cachedSessionHistorySeq(retrySessionId)
         : null;
     final deliveryPendingItem = isCodex && !isOffline
         ? QueuedInputItem(
             itemId: '$deliveryPendingQueuedInputPrefix$clientMessageId',
-            text: entry.text,
+            text: retryText,
             createdAt: DateTime.now().toUtc().toIso8601String(),
             clientMessageId: clientMessageId,
-            imageCount: entry.imageCount,
+            imageCount: retryImages.isEmpty
+                ? entry.imageCount
+                : retryImages.length,
+            skills: structuredMentions.skills,
+            mentions: structuredMentions.mentions,
           )
         : null;
     emit(
@@ -8268,14 +10817,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         entries: state.entries.map((e) {
           if (identical(e, entry)) {
             return UserChatEntry(
-              entry.text,
+              retryText,
               sessionId: retrySessionId,
               clientMessageId: clientMessageId,
               providerItemId: entry.providerItemId,
               historyTurnId: entry.historyTurnId,
-              imageBytesList: entry.imageBytesList,
+              imageBytesList: retryImages.isEmpty
+                  ? entry.imageBytesList
+                  : retryImages.map((image) => image.bytes).toList(),
               imageUrls: entry.imageUrls,
-              imageCount: entry.imageCount,
+              imageCount: retryImages.isEmpty
+                  ? entry.imageCount
+                  : retryImages.length,
               status: isOffline ? MessageStatus.queued : MessageStatus.sending,
               messageUuid: entry.messageUuid,
               timestamp: entry.timestamp,
@@ -8290,14 +10843,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     // delivery correlation, and failure transition as a normal submission.
     // The old direct send could leave this bubble spinning forever when the
     // socket queued the frame or the runtime changed during dispatch.
+    _recordOutgoingDraftAttempt(clientMessageId);
     _dispatchInputInOrder(
       runtimeLease: runtimeLease,
-      text: entry.text,
+      text: retryText,
       clientMessageId: clientMessageId,
       baseSeq: baseSeq,
-      images: const [],
-      skills: const [],
-      mentions: const [],
+      images: retryImages,
+      skills: structuredMentions.skills,
+      mentions: structuredMentions.mentions,
       deliveryPendingItem: deliveryPendingItem,
     );
     return true;
@@ -8432,6 +10986,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _localHistoryAvailabilitySubscription?.cancel();
     _historySyncSubscription?.cancel();
     _statusRefreshConnectionSubscription?.cancel();
+    _detachedOutgoingConnectionSubscription?.cancel();
     codexModelCatalogRevision.dispose();
     codexServiceTierRaw.dispose();
     queuedInputs.dispose();
@@ -8440,7 +10995,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _desktopContinuitySubscription?.cancel();
     _desktopContinuityConnectionSubscription?.cancel();
     _deliveryPendingInputs.clear();
+    _detachedLocalOverlayClientIds.clear();
+    _detachedRuntimeAssistantAliases.clear();
+    _submittedClientMessageIds.clear();
+    _detachedRuntimeOverlayEventIds.clear();
+    _resetDetachedRuntimeOverlayTracking();
     _detachedSettingsSubscription?.cancel();
+    _detachedRuntimeOverlaySubscription?.cancel();
     _subscription?.cancel();
     _sideEffectsController.close();
     _bridge.invalidateLocalSessionHistoryPaging(sessionId);
@@ -8449,6 +11010,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _historyToolDetailStates.clear();
     _historyToolDetailFlights.clear();
     localHistoryPaging.dispose();
+    historyNavigation.dispose();
     historySyncing.dispose();
     return super.close();
   }

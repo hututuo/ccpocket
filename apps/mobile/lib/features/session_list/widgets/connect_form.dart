@@ -18,14 +18,12 @@ class ConnectForm extends StatelessWidget {
   final List<MachineWithStatus> machines;
   final String? startingMachineId;
   final String? updatingMachineId;
-  final String? latestBridgeVersion;
   final bool isRefreshingMachines;
   final ValueChanged<MachineWithStatus>? onConnectToMachine;
   final ValueChanged<MachineWithStatus>? onStartMachine;
   final ValueChanged<MachineWithStatus>? onEditMachine;
   final ValueChanged<MachineWithStatus>? onDeleteMachine;
   final ValueChanged<MachineWithStatus>? onToggleFavorite;
-  final ValueChanged<MachineWithStatus>? onUpdateMachine;
   final ValueChanged<MachineWithStatus>? onStopMachine;
   final ValueChanged<BridgeMachineGroup>? onRenameMachineGroup;
   final VoidCallback? onAddMachine;
@@ -47,14 +45,12 @@ class ConnectForm extends StatelessWidget {
     this.machines = const [],
     this.startingMachineId,
     this.updatingMachineId,
-    this.latestBridgeVersion,
     this.isRefreshingMachines = false,
     this.onConnectToMachine,
     this.onStartMachine,
     this.onEditMachine,
     this.onDeleteMachine,
     this.onToggleFavorite,
-    this.onUpdateMachine,
     this.onStopMachine,
     this.onRenameMachineGroup,
     this.onAddMachine,
@@ -282,14 +278,12 @@ class ConnectForm extends StatelessWidget {
               machines: machines,
               startingMachineId: startingMachineId,
               updatingMachineId: updatingMachineId,
-              latestBridgeVersion: latestBridgeVersion,
               isRefreshing: isRefreshingMachines,
               onConnect: onConnectToMachine!,
               onStart: onStartMachine!,
               onEdit: onEditMachine!,
               onDelete: onDeleteMachine!,
               onToggleFavorite: onToggleFavorite,
-              onUpdate: onUpdateMachine,
               onStop: onStopMachine,
               onRenameGroup: onRenameMachineGroup,
               onAddMachine: onAddMachine!,

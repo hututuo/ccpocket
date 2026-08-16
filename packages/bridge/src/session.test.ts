@@ -2151,6 +2151,7 @@ describe("SessionManager codex path", () => {
       clientMessageId: "mobile-receipt-1",
       stage: "provider_accepted",
       method: "turn/start",
+      providerTurnId: "turn-mobile-receipt-1",
       occurredAt: "2026-07-31T00:00:00.000Z",
       clientUserMessageIdAccepted: true,
     });
@@ -2174,6 +2175,7 @@ describe("SessionManager codex path", () => {
       stage: "provider_accepted",
       acceptedSeq: 7,
       queued: true,
+      providerTurnId: "turn-mobile-receipt-1",
       clientUserMessageIdAccepted: true,
     });
     expect(
@@ -2270,12 +2272,14 @@ describe("SessionManager codex path", () => {
         clientMessageId: identity.clientMessageId,
         stage: "provider_accepted",
         method: "turn/start",
+        providerTurnId: "turn-durable-input",
         occurredAt: "2026-08-01T02:00:01.000Z",
         clientUserMessageIdAccepted: true,
       });
       await vi.waitFor(() => {
         expect(ledger.get(identity)).toMatchObject({
           state: "provider_accepted",
+          providerTurnId: "turn-durable-input",
           clientUserMessageIdAccepted: true,
         });
         expect(

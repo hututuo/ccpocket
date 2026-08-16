@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:ccpocket/features/claude_session/claude_session_screen.dart';
 import 'package:ccpocket/features/chat_session/state/chat_session_cubit.dart';
@@ -29,6 +30,34 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'chat_screen/helpers/chat_test_helpers.dart';
 
 void main() {
+  test('Claude identity ignores a retained catalog from another source', () {
+    final retained = RecentSession(
+      sessionId: 'shared-thread',
+      provider: Provider.claude.value,
+      firstPrompt: 'retained old source',
+      created: '2026-08-10T00:00:00Z',
+      modified: '2026-08-10T00:00:00Z',
+      gitBranch: 'main',
+      projectPath: '/tmp/project',
+      isSidechain: false,
+    );
+
+    expect(
+      isCurrentCatalogIdentityProof(
+        hasUsableCatalogForCurrentTarget: false,
+        session: retained,
+      ),
+      isFalse,
+    );
+    expect(
+      isCurrentCatalogIdentityProof(
+        hasUsableCatalogForCurrentTarget: true,
+        session: retained,
+      ),
+      isTrue,
+    );
+  });
+
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
@@ -112,7 +141,7 @@ void main() {
   );
 
   testWidgets(
-    'authoritative empty and visible durable entries do not show recovery',
+    'complete snapshots hide recovery while visible incomplete snapshots keep it available',
     (tester) async {
       for (final provider in [Provider.codex.value, Provider.claude.value]) {
         for (final scenario in [
@@ -148,7 +177,7 @@ void main() {
             await tester.pump();
             expect(
               find.byKey(const ValueKey('durable_latest_turn_recovery_banner')),
-              findsNothing,
+              scenario.latestTurnComplete ? findsNothing : findsOneWidget,
               reason: '$provider ${scenario.latestTurnComplete}',
             );
           } finally {
@@ -351,127 +380,495 @@ void main() {
     },
   );
 
-  testWidgets('restored Codex submission resumes attachment after reconnect', (
-    tester,
-  ) async {
-    final bridge = MockBridgeService()
-      ..authenticatedBridgeInstanceId = 'bridge-restored-resume'
-      ..authenticatedCodexSourceId = 'source-restored-resume'
-      ..advertisedBridgeCapabilities = const {
-        conversationSyncV2Capability,
-        sessionRequestCorrelationCapability,
-      }
-      ..emitSessionList(const []);
-    final identity = bridge.dataSourceIdentity;
-    final target = SessionCatalogCacheTarget.fromBridge(
-      bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
-      codexSourceId: bridge.authenticatedCodexSourceId,
-    );
-    const metadata = RecentSession(
-      sessionId: 'thread-restored-resume',
-      provider: 'codex',
-      firstPrompt: 'Restored pending message',
-      created: '2026-08-01T00:00:00.000Z',
-      modified: '2026-08-01T00:01:00.000Z',
-      gitBranch: 'main',
-      projectPath: '/workspace/restored-resume',
-      isSidechain: false,
-      codexSourceId: 'source-restored-resume',
-    );
-    final sessionList = _ProjectionSessionListCubit(
-      bridge: bridge,
-      sourceFingerprint: target.fingerprint,
-      metadataAvailable: false,
-      status: const ConversationSyncV2Status(
+  testWidgets(
+    'restored Codex submission stays failed until an explicit retry',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-restored-resume'
+        ..authenticatedCodexSourceId = 'source-restored-resume'
+        ..advertisedBridgeCapabilities = const {
+          conversationSyncV2Capability,
+          sessionRequestCorrelationCapability,
+        }
+        ..emitSessionList(const []);
+      final identity = bridge.dataSourceIdentity;
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+        codexSourceId: bridge.authenticatedCodexSourceId,
+      );
+      const metadata = RecentSession(
+        sessionId: 'thread-restored-resume',
         provider: 'codex',
-        providerSessionId: 'thread-restored-resume',
-        activity: 'idle',
-        attention: 'none',
-        result: 'none',
-        runtimeAttachment: 'notLoaded',
-        source: 'appServer',
-        confidence: 'authoritative',
-        observedAt: '2026-08-01T00:01:00.000Z',
-        executionHost: 'unknown',
-        controlState: 'writable',
-      ),
-      metadata: metadata,
-    );
-    final prefs = await SharedPreferences.getInstance();
-    final drafts = DraftService(prefs);
-    await drafts.savePendingSubmission(
-      metadata.sessionId,
-      PendingChatSubmissionDraft(
-        clientMessageId: 'client-restored-resume',
-        text: 'Continue after reconnect',
-      ),
-    );
-    final repository = _CountingSessionCatalogCacheRepository(
-      SessionCatalogCacheDatabase(
-        databasePath: 'unused-restored-resume-cache.db',
-      ),
-      snapshots: const {},
-    );
-    final sync = ConversationContentSyncService(
-      bridge: BridgeServiceConversationContentSyncGateway(bridge),
-      cache: repository,
-    );
-
-    try {
-      await tester.pumpWidget(
-        await buildTestCodexSessionScreen(
-          bridge: bridge,
-          sessionId: 'pending-restored-runtime',
-          projectPath: metadata.projectPath,
-          isPending: true,
-          durableProviderSessionId: metadata.sessionId,
-          dataSourceIdentity: identity,
-          conversationContentSync: sync,
-          sessionListCubit: sessionList,
-          draftService: drafts,
+        firstPrompt: 'Restored pending message',
+        created: '2026-08-01T00:00:00.000Z',
+        modified: '2026-08-01T00:01:00.000Z',
+        gitBranch: 'main',
+        projectPath: '/workspace/restored-resume',
+        isSidechain: false,
+        codexSourceId: 'source-restored-resume',
+      );
+      final sessionList = _ProjectionSessionListCubit(
+        bridge: bridge,
+        sourceFingerprint: target.fingerprint,
+        metadataAvailable: false,
+        status: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'thread-restored-resume',
+          activity: 'idle',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'notLoaded',
+          source: 'appServer',
+          confidence: 'authoritative',
+          observedAt: '2026-08-01T00:01:00.000Z',
+          executionHost: 'unknown',
+          controlState: 'writable',
+        ),
+        metadata: metadata,
+      );
+      final prefs = await SharedPreferences.getInstance();
+      final drafts = DraftService(prefs);
+      final image = Uint8List.fromList([0x89, 0x50, 0x4e, 0x47]);
+      const clientMessageId = 'client-restored-resume';
+      await drafts.savePendingSubmission(
+        metadata.sessionId,
+        PendingChatSubmissionDraft(
+          clientMessageId: clientMessageId,
+          text: 'Continue after reconnect',
+          images: [(bytes: image, mimeType: 'image/png')],
         ),
       );
-      await tester.pump();
-      expect(
-        _sentWireMessages(
-          bridge,
-        ).where((message) => message['type'] == 'resume_session'),
-        isEmpty,
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(
+          databasePath: 'unused-restored-resume-cache.db',
+        ),
+        snapshots: const {},
+      );
+      final sync = ConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
       );
 
-      sessionList.replace(
-        sourceFingerprint: target.fingerprint,
-        status: sessionList.status,
-        metadata: metadata,
-        metadataAvailable: true,
-      );
-      for (var attempt = 0; attempt < 50; attempt++) {
-        if (_sentWireMessages(
-          bridge,
-        ).any((message) => message['type'] == 'resume_session')) {
-          break;
+      try {
+        await tester.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-restored-runtime',
+            projectPath: metadata.projectPath,
+            isPending: true,
+            durableProviderSessionId: metadata.sessionId,
+            dataSourceIdentity: identity,
+            conversationContentSync: sync,
+            sessionListCubit: sessionList,
+            draftService: drafts,
+            imagePayloadEncoder: (images) async => [
+              for (final image in images)
+                {
+                  'base64': base64Encode(image.bytes),
+                  'mimeType': image.mimeType,
+                },
+            ],
+          ),
+        );
+        await tester.pump();
+        final cubit = BlocProvider.of<ChatSessionCubit>(
+          tester.element(find.byKey(const ValueKey('message_input'))),
+        );
+        expect(
+          _sentWireMessages(
+            bridge,
+          ).where((message) => message['type'] == 'resume_session'),
+          isEmpty,
+        );
+        expect(
+          _sentWireMessages(
+            bridge,
+          ).where((message) => message['type'] == 'input'),
+          isEmpty,
+        );
+
+        sessionList.replace(
+          sourceFingerprint: target.fingerprint,
+          status: sessionList.status,
+          metadata: metadata,
+          metadataAvailable: true,
+        );
+        // Runtime/catalog readiness is deliberately not an implicit recovery
+        // trigger. Let all readiness callbacks settle before asserting that the
+        // old v1 draft did not acquire a runtime or emit input.
+        for (var attempt = 0; attempt < 50; attempt++) {
+          await tester.pump(const Duration(milliseconds: 10));
         }
-        await tester.pump(const Duration(milliseconds: 10));
-      }
 
-      final resumeMessages = _sentWireMessages(
-        bridge,
-      ).where((message) => message['type'] == 'resume_session').toList();
-      expect(resumeMessages, hasLength(1));
-      expect(resumeMessages.single['sessionId'], metadata.sessionId);
-      expect(
-        find.text('Connected. Loading live session status…'),
-        findsOneWidget,
+        expect(
+          _sentWireMessages(
+            bridge,
+          ).where((message) => message['type'] == 'resume_session'),
+          isEmpty,
+        );
+        expect(
+          _sentWireMessages(
+            bridge,
+          ).where((message) => message['type'] == 'input'),
+          isEmpty,
+        );
+        final restoredUsers = cubit.state.entries
+            .whereType<UserChatEntry>()
+            .toList();
+        expect(restoredUsers, hasLength(1));
+        expect(restoredUsers.single.text, 'Continue after reconnect');
+        expect(restoredUsers.single.clientMessageId, clientMessageId);
+        expect(restoredUsers.single.status, MessageStatus.failed);
+        expect(restoredUsers.single.imageCount, 1);
+        expect(restoredUsers.single.imageBytesList, hasLength(1));
+        expect(restoredUsers.single.imageBytesList.single, image);
+        expect(find.text('Tap to retry'), findsOneWidget);
+
+        // Only the user's explicit retry may enter attachment. It must keep the
+        // same optimistic bubble and client id; it must not send input before a
+        // runtime is attached.
+        bridge.connected = false;
+        await tester.tap(find.text('Tap to retry'));
+        await tester.pump();
+        expect(
+          _sentWireMessages(
+            bridge,
+          ).where((message) => message['type'] == 'resume_session'),
+          isEmpty,
+        );
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().single.status,
+          MessageStatus.failed,
+        );
+
+        bridge.connected = true;
+        await tester.tap(find.text('Tap to retry'));
+        await tester.pump();
+        for (var attempt = 0; attempt < 50; attempt++) {
+          if (_sentWireMessages(
+            bridge,
+          ).any((message) => message['type'] == 'resume_session')) {
+            break;
+          }
+          await tester.pump(const Duration(milliseconds: 10));
+        }
+        final explicitResumeMessages = _sentWireMessages(
+          bridge,
+        ).where((message) => message['type'] == 'resume_session').toList();
+        expect(explicitResumeMessages, hasLength(1));
+        expect(explicitResumeMessages.single['sessionId'], metadata.sessionId);
+        expect(
+          _sentWireMessages(
+            bridge,
+          ).where((message) => message['type'] == 'input'),
+          isEmpty,
+        );
+        final usersAfterRetry = cubit.state.entries
+            .whereType<UserChatEntry>()
+            .toList();
+        expect(usersAfterRetry, hasLength(1));
+        expect(usersAfterRetry.single.clientMessageId, clientMessageId);
+        expect(usersAfterRetry.single.imageBytesList.single, image);
+        expect(usersAfterRetry.single.status, MessageStatus.sending);
+
+        // Runtime attachment alone is not writable authority. Once the exact
+        // source-scoped status arrives, the explicit retry continues once
+        // with the original id and image payload.
+        bridge.emitMessage(
+          SystemMessage(
+            subtype: 'session_created',
+            sessionId: 'attached-restored-runtime',
+            claudeSessionId: metadata.sessionId,
+            provider: Provider.codex.value,
+            projectPath: metadata.projectPath,
+            resumeRequestId:
+                explicitResumeMessages.single['resumeRequestId'] as String,
+          ),
+        );
+        await tester.pump();
+        bridge.emitSessionList(const [
+          SessionInfo(
+            id: 'attached-restored-runtime',
+            provider: 'codex',
+            projectPath: '/workspace/restored-resume',
+            claudeSessionId: 'thread-restored-resume',
+            status: 'idle',
+            createdAt: '2026-08-14T05:29:59.000Z',
+            lastActivityAt: '2026-08-14T05:30:00.000Z',
+          ),
+        ]);
+        await tester.pump();
+        expect(cubit.detachedLiveRuntimeSessionId, 'attached-restored-runtime');
+        sessionList.replace(
+          sourceFingerprint: target.fingerprint,
+          status: const ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'thread-restored-resume',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'bridgeRuntime',
+            confidence: 'authoritative',
+            observedAt: '2026-08-14T05:30:00.000Z',
+            executionHost: 'bridge',
+            controlState: 'writable',
+            authorityGeneration: 'authority-restored-retry',
+          ),
+          metadata: metadata,
+          metadataAvailable: true,
+        );
+        for (var attempt = 0; attempt < 50; attempt++) {
+          if (_sentWireMessages(
+            bridge,
+          ).any((message) => message['type'] == 'input')) {
+            break;
+          }
+          await tester.pump(const Duration(milliseconds: 10));
+        }
+        final inputMessages = _sentWireMessages(
+          bridge,
+        ).where((message) => message['type'] == 'input').toList();
+        expect(inputMessages, hasLength(1));
+        expect(inputMessages.single['clientMessageId'], clientMessageId);
+        expect(inputMessages.single['images'], [
+          {'base64': 'iVBORw==', 'mimeType': 'image/png'},
+        ]);
+        expect(drafts.getPendingSubmission(metadata.sessionId), isNotNull);
+
+        bridge.emitMessage(
+          const InputAckMessage(
+            sessionId: 'attached-restored-runtime',
+            clientMessageId: clientMessageId,
+            stage: InputAckStage.bridgeAccepted,
+          ),
+          sessionId: 'attached-restored-runtime',
+        );
+        for (var attempt = 0; attempt < 50; attempt++) {
+          if (drafts.getPendingSubmission(metadata.sessionId) == null) break;
+          await tester.pump(const Duration(milliseconds: 10));
+        }
+        expect(cubit.isClosed, isFalse);
+        final mountedCubit = BlocProvider.of<ChatSessionCubit>(
+          tester.element(find.byKey(const ValueKey('message_input'))),
+        );
+        expect(identical(mountedCubit, cubit), isTrue);
+        expect(drafts.getPendingSubmission(metadata.sessionId), isNull);
+        expect(
+          tester
+              .widget<DurableSessionPreviewUpdater>(
+                find.byType(DurableSessionPreviewUpdater),
+              )
+              .onLiveRuntimeReady,
+          isNull,
+        );
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+        unawaited(sessionList.close());
+      }
+    },
+  );
+
+  testWidgets(
+    'attached durable Codex route still restores an unconfirmed draft as failed',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-attached-recovery'
+        ..authenticatedCodexSourceId = 'source-attached-recovery'
+        ..advertisedBridgeCapabilities = const {conversationSyncV2Capability};
+      const metadata = RecentSession(
+        sessionId: 'thread-attached-recovery',
+        provider: 'codex',
+        firstPrompt: 'Attached recovery',
+        created: '2026-08-14T05:59:00.000Z',
+        modified: '2026-08-14T06:00:00.000Z',
+        gitBranch: 'main',
+        projectPath: '/workspace/attached-recovery',
+        isSidechain: false,
+        codexSourceId: 'source-attached-recovery',
       );
-    } finally {
-      await tester.pumpWidget(const SizedBox.shrink());
-      await tester.pump();
-      await sync.dispose();
-      await repository.close();
-      bridge.dispose();
-      unawaited(sessionList.close());
-    }
-  });
+      bridge.emitSessionList(const [
+        SessionInfo(
+          id: 'runtime-attached-recovery',
+          provider: 'codex',
+          projectPath: '/workspace/attached-recovery',
+          claudeSessionId: 'thread-attached-recovery',
+          status: 'idle',
+          createdAt: '2026-08-14T05:59:00.000Z',
+          lastActivityAt: '2026-08-14T06:00:00.000Z',
+        ),
+      ]);
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+        codexSourceId: bridge.authenticatedCodexSourceId,
+      );
+      final sessionList = _ProjectionSessionListCubit(
+        bridge: bridge,
+        sourceFingerprint: target.fingerprint,
+        metadataAvailable: true,
+        status: const ConversationSyncV2Status(
+          provider: 'codex',
+          providerSessionId: 'thread-attached-recovery',
+          activity: 'idle',
+          attention: 'none',
+          result: 'none',
+          runtimeAttachment: 'loaded',
+          source: 'bridgeRuntime',
+          confidence: 'authoritative',
+          observedAt: '2026-08-14T06:00:00.000Z',
+          executionHost: 'bridge',
+          controlState: 'writable',
+          authorityGeneration: 'authority-attached-recovery',
+        ),
+        metadata: metadata,
+      );
+      final prefs = await SharedPreferences.getInstance();
+      final drafts = DraftService(prefs);
+      await drafts.savePendingSubmission(
+        'runtime-attached-recovery',
+        PendingChatSubmissionDraft(
+          clientMessageId: 'client-attached-recovery',
+          text: 'Recover me without replay',
+        ),
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(
+          databasePath: 'unused-attached-recovery-cache.db',
+        ),
+        snapshots: const {},
+      );
+      final sync = ConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+
+      try {
+        await tester.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'runtime-attached-recovery',
+            projectPath: metadata.projectPath,
+            isPending: false,
+            durableProviderSessionId: metadata.sessionId,
+            dataSourceIdentity: bridge.dataSourceIdentity,
+            conversationContentSync: sync,
+            sessionListCubit: sessionList,
+            draftService: drafts,
+          ),
+        );
+        await tester.pump();
+        final cubit = BlocProvider.of<ChatSessionCubit>(
+          tester.element(find.byKey(const ValueKey('message_input'))),
+        );
+        final user = cubit.state.entries.whereType<UserChatEntry>().single;
+        expect(user.clientMessageId, 'client-attached-recovery');
+        expect(user.status, MessageStatus.failed);
+        expect(
+          drafts.getPendingSubmission('runtime-attached-recovery'),
+          isNull,
+        );
+        expect(drafts.getPendingSubmission(metadata.sessionId), isNotNull);
+        expect(find.text('Tap to retry'), findsOneWidget);
+        expect(
+          _sentWireMessages(
+            bridge,
+          ).where((message) => message['type'] == 'input'),
+          isEmpty,
+        );
+
+        await tester.tap(find.text('Tap to retry'));
+        await tester.pump();
+        final inputs = _sentWireMessages(
+          bridge,
+        ).where((message) => message['type'] == 'input').toList();
+        expect(inputs, hasLength(1));
+        expect(inputs.single['sessionId'], 'runtime-attached-recovery');
+        expect(inputs.single['clientMessageId'], 'client-attached-recovery');
+        expect(
+          cubit.state.entries.whereType<UserChatEntry>().single.status,
+          MessageStatus.sending,
+        );
+
+        bridge.emitMessage(
+          const InputAckMessage(
+            sessionId: 'runtime-attached-recovery',
+            clientMessageId: 'client-attached-recovery',
+            stage: InputAckStage.bridgeAccepted,
+          ),
+          sessionId: 'runtime-attached-recovery',
+        );
+        await tester.pump();
+        expect(drafts.getPendingSubmission(metadata.sessionId), isNull);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+        unawaited(sessionList.close());
+      }
+    },
+  );
+
+  testWidgets(
+    'ordinary attached Codex route restores a runtime-key draft without replay',
+    (tester) async {
+      final bridge = MockBridgeService();
+      const sessionId = 'runtime-ordinary-attached-recovery';
+      const clientMessageId = 'client-ordinary-attached-recovery';
+      final prefs = await SharedPreferences.getInstance();
+      final drafts = DraftService(prefs);
+      await drafts.savePendingSubmission(
+        sessionId,
+        PendingChatSubmissionDraft(
+          clientMessageId: clientMessageId,
+          text: 'Recover ordinary attached input',
+        ),
+      );
+
+      try {
+        await tester.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: sessionId,
+            projectPath: '/workspace/ordinary-attached-recovery',
+            draftService: drafts,
+          ),
+        );
+        await tester.pump();
+        final cubit = BlocProvider.of<ChatSessionCubit>(
+          tester.element(find.byKey(const ValueKey('message_input'))),
+        );
+        final user = cubit.state.entries.whereType<UserChatEntry>().single;
+        expect(user.clientMessageId, clientMessageId);
+        expect(user.status, MessageStatus.failed);
+        expect(find.text('Tap to retry'), findsOneWidget);
+        expect(
+          _sentWireMessages(
+            bridge,
+          ).where((message) => message['type'] == 'input'),
+          isEmpty,
+        );
+
+        await tester.tap(find.text('Tap to retry'));
+        await tester.pump();
+        final inputs = _sentWireMessages(
+          bridge,
+        ).where((message) => message['type'] == 'input').toList();
+        expect(inputs, hasLength(1));
+        expect(inputs.single['sessionId'], sessionId);
+        expect(inputs.single['clientMessageId'], clientMessageId);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        bridge.dispose();
+      }
+    },
+  );
 
   testWidgets(
     'cache revisions update the detached cubit without rebuilding child state',
@@ -629,6 +1026,114 @@ void main() {
       );
     },
   );
+
+  testWidgets('live runtime callback retries after exact authority arrives', (
+    tester,
+  ) async {
+    final bridge = MockBridgeService()
+      ..advertisedBridgeCapabilities = const {conversationSyncV2Capability};
+    final streaming = StreamingStateCubit();
+    final cubit = ChatSessionCubit(
+      sessionId: 'authority-retry-thread',
+      provider: Provider.codex,
+      bridge: bridge,
+      streamingCubit: streaming,
+      detachedPreview: true,
+    );
+    final sessionList = _ProjectionSessionListCubit(
+      bridge: bridge,
+      sourceFingerprint: 'authority-retry-source',
+      status: const ConversationSyncV2Status(
+        provider: 'codex',
+        providerSessionId: 'authority-retry-thread',
+        activity: 'idle',
+        attention: 'none',
+        result: 'none',
+        runtimeAttachment: 'loaded',
+        source: 'bridgeRuntime',
+        confidence: 'authoritative',
+        observedAt: '2026-08-14T05:00:00.000Z',
+        executionHost: 'bridge',
+        controlState: 'writable',
+      ),
+      metadata: const RecentSession(
+        sessionId: 'authority-retry-thread',
+        provider: 'codex',
+        firstPrompt: 'Authority retry',
+        created: '2026-08-14T05:00:00.000Z',
+        modified: '2026-08-14T05:00:00.000Z',
+        gitBranch: 'main',
+        projectPath: '/authority-retry',
+        isSidechain: false,
+      ),
+    );
+    var callbackCount = 0;
+    final callbackTargets = <String?>[];
+    addTearDown(cubit.close);
+    addTearDown(streaming.close);
+    addTearDown(sessionList.close);
+    addTearDown(bridge.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MultiBlocProvider(
+          providers: [
+            BlocProvider<ChatSessionCubit>.value(value: cubit),
+            BlocProvider<SessionListCubit>.value(value: sessionList),
+          ],
+          child: Scaffold(
+            body: DurableSessionPreviewUpdater(
+              revision: 'authority-retry-preview',
+              messages: const [],
+              hasEarlier: false,
+              statusProvider: 'codex',
+              statusProviderSessionId: 'authority-retry-thread',
+              expectedSourceFingerprint: 'authority-retry-source',
+              liveRuntimeSessionId: 'authority-retry-runtime',
+              onLiveRuntimeReady: (cubit) {
+                callbackCount += 1;
+                final target = cubit.runtimeSessionIdForMutation();
+                callbackTargets.add(target);
+                return target != null;
+              },
+              child: const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(callbackCount, 1);
+    expect(callbackTargets, [isNull]);
+    expect(cubit.runtimeSessionIdForMutation(), isNull);
+
+    sessionList.replace(
+      sourceFingerprint: 'authority-retry-source',
+      status: const ConversationSyncV2Status(
+        provider: 'codex',
+        providerSessionId: 'authority-retry-thread',
+        activity: 'idle',
+        attention: 'none',
+        result: 'none',
+        runtimeAttachment: 'loaded',
+        source: 'bridgeRuntime',
+        confidence: 'authoritative',
+        observedAt: '2026-08-14T05:00:01.000Z',
+        executionHost: 'bridge',
+        controlState: 'writable',
+        authorityGeneration: 'authority-retry-generation',
+      ),
+      metadata: sessionList.metadata,
+      metadataAvailable: true,
+    );
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+
+    expect(cubit.runtimeSessionIdForMutation(), 'authority-retry-runtime');
+    expect(callbackCount, 2);
+    expect(callbackTargets, [isNull, 'authority-retry-runtime']);
+  });
 
   testWidgets(
     'focused settings hydrate an already mounted cold Codex page in place',
@@ -1276,6 +1781,7 @@ void main() {
             ],
             hasEarlier: false,
             turnsNextCursor: null,
+            windowComplete: true,
             latestTurnComplete: true,
             latestTurnGap: null,
             latestTurnGapCursor: null,
@@ -1361,24 +1867,31 @@ void main() {
         bridgeInstanceId: 'bridge-authenticated-upgrade',
         codexSourceId: 'source-authenticated-upgrade',
       );
+      final provisionalSnapshot = _previewSnapshot(
+        partitionId: provisionalTarget.fingerprint,
+        providerSessionId: 'durable-upgrade-thread',
+        revision: 'provisional-revision',
+        entryId: 'provisional-entry',
+        text: 'Provisional cached turn',
+      );
+      final authenticatedSnapshot = _previewSnapshot(
+        partitionId: authenticatedTarget.fingerprint,
+        providerSessionId: 'durable-upgrade-thread',
+        revision: 'authenticated-revision',
+        entryId: 'authenticated-entry',
+        text: 'Authenticated cached turn',
+      );
+      final authenticatedRead = Completer<ConversationHotWindowSnapshot?>();
       final repository = _CountingSessionCatalogCacheRepository(
         SessionCatalogCacheDatabase(databasePath: 'unused-upgrade-cache.db'),
         snapshots: {
-          provisionalTarget.fingerprint: _previewSnapshot(
-            partitionId: provisionalTarget.fingerprint,
-            providerSessionId: 'durable-upgrade-thread',
-            revision: 'provisional-revision',
-            entryId: 'provisional-entry',
-            text: 'Provisional cached turn',
-          ),
-          authenticatedTarget.fingerprint: _previewSnapshot(
-            partitionId: authenticatedTarget.fingerprint,
-            providerSessionId: 'durable-upgrade-thread',
-            revision: 'authenticated-revision',
-            entryId: 'authenticated-entry',
-            text: 'Authenticated cached turn',
-          ),
+          provisionalTarget.fingerprint: provisionalSnapshot,
+          authenticatedTarget.fingerprint: authenticatedSnapshot,
         },
+        queuedReads: [
+          Future.value(provisionalSnapshot),
+          authenticatedRead.future,
+        ],
       );
       final sync = _ControllableConversationContentSyncService(
         bridge: BridgeServiceConversationContentSyncGateway(bridge),
@@ -1423,6 +1936,15 @@ void main() {
           ),
         ]);
         await tester.pump();
+
+        // The stable identity read is deliberately still blocked. The route
+        // and authenticated source have already been confirmed, so the last
+        // committed route-keyed cache must stay visible rather than flashing a
+        // loader or an empty latest turn.
+        expect(find.text('Provisional cached turn'), findsOneWidget);
+        expect(find.text('Authenticated cached turn'), findsNothing);
+
+        authenticatedRead.complete(authenticatedSnapshot);
         await tester.pump();
         await tester.pump();
 
@@ -1893,7 +2415,11 @@ void main() {
 
         // The database commit epoch advances before its broadcast listener is
         // delivered. The in-flight stale read must still be rejected.
-        sync.advanceCacheCommitEpoch();
+        sync.advanceCacheCommitEpoch(
+          targetFingerprint: target.fingerprint,
+          provider: Provider.codex.value,
+          providerSessionId: 'durable-thread-race',
+        );
         firstRead.complete(staleSnapshot);
         await tester.pump();
         expect(find.text('Stale cached turn'), findsNothing);
@@ -1919,6 +2445,359 @@ void main() {
 
         expect(find.text('Committed cached turn'), findsOneWidget);
         expect(find.text('Stale cached turn'), findsNothing);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'unrelated timeline commits do not starve a focused cache preview read',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-unrelated-commit'
+        ..authenticatedCodexSourceId = 'codex-source-unrelated-commit'
+        ..mockLogicalConnectionIdentity = 'machine:unrelated-commit'
+        ..mockLastUrl = 'wss://unrelated-commit.test/socket';
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+        codexSourceId: bridge.authenticatedCodexSourceId,
+      );
+      final focusedRead = Completer<ConversationHotWindowSnapshot?>();
+      final focusedSnapshot = _previewSnapshot(
+        partitionId: target.fingerprint,
+        providerSessionId: 'focused-thread',
+        revision: 'focused-revision',
+        entryId: 'focused-entry',
+        text: 'Focused cached turn remains visible',
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(databasePath: 'unused-unrelated-cache.db'),
+        snapshots: const {},
+        queuedReads: [focusedRead.future],
+      );
+      final sync = _ControllableConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+
+      try {
+        await tester.pumpWidget(
+          await buildTestCodexSessionScreen(
+            bridge: bridge,
+            sessionId: 'pending-focused-runtime',
+            isPending: true,
+            durableProviderSessionId: 'focused-thread',
+            dataSourceIdentity: bridge.dataSourceIdentity,
+            conversationContentSync: sync,
+          ),
+        );
+        await tester.pump();
+        expect(repository.loadConversationWindowCalls, 1);
+
+        for (var index = 0; index < 20; index += 1) {
+          sync.emitTimelineCommit(
+            provider: Provider.codex.value,
+            providerSessionId: 'background-thread-$index',
+            revision: 'background-revision-$index',
+            targetFingerprint: target.fingerprint,
+          );
+        }
+        focusedRead.complete(focusedSnapshot);
+        for (
+          var attempt = 0;
+          attempt < 10 &&
+              find
+                  .text('Focused cached turn remains visible')
+                  .evaluate()
+                  .isEmpty;
+          attempt++
+        ) {
+          await tester.pump();
+        }
+
+        expect(
+          find.text('Focused cached turn remains visible'),
+          findsOneWidget,
+        );
+        expect(repository.loadConversationWindowCalls, 1);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'switching durable targets rebinds the preview while the old read is in flight',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-target-switch'
+        ..authenticatedCodexSourceId = 'codex-source-target-switch'
+        ..mockLogicalConnectionIdentity = 'machine:target-switch'
+        ..mockLastUrl = 'wss://target-switch.test/socket';
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+        codexSourceId: bridge.authenticatedCodexSourceId,
+      );
+      final oldRead = Completer<ConversationHotWindowSnapshot?>();
+      final oldSnapshot = _previewSnapshot(
+        partitionId: target.fingerprint,
+        providerSessionId: 'old-thread',
+        revision: 'old-revision',
+        entryId: 'old-entry',
+        text: 'Old target must stay hidden',
+      );
+      final newSnapshot = _previewSnapshot(
+        partitionId: target.fingerprint,
+        providerSessionId: 'new-thread',
+        revision: 'new-revision',
+        entryId: 'new-entry',
+        text: 'New target is visible',
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(databasePath: 'unused-target-switch.db'),
+        snapshots: const {},
+        queuedReads: [oldRead.future, Future.value(newSnapshot)],
+      );
+      final sync = _ControllableConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+
+      Future<Widget> build(String durableId) => buildTestCodexSessionScreen(
+        bridge: bridge,
+        sessionId: 'pending-$durableId',
+        isPending: true,
+        durableProviderSessionId: durableId,
+        dataSourceIdentity: bridge.dataSourceIdentity,
+        conversationContentSync: sync,
+      );
+
+      try {
+        await tester.pumpWidget(await build('old-thread'));
+        await tester.pump();
+        expect(repository.loadConversationWindowCalls, 1);
+
+        await tester.pumpWidget(await build('new-thread'));
+        for (
+          var attempt = 0;
+          attempt < 10 && find.text('New target is visible').evaluate().isEmpty;
+          attempt++
+        ) {
+          await tester.pump();
+        }
+        expect(repository.loadConversationWindowCalls, 2);
+        expect(find.text('New target is visible'), findsOneWidget);
+
+        oldRead.complete(oldSnapshot);
+        await tester.pump();
+        await tester.pump();
+        expect(find.text('Old target must stay hidden'), findsNothing);
+        expect(find.text('New target is visible'), findsOneWidget);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'a pending Codex preview cannot apply after the runtime attaches',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-codex-attach-race'
+        ..authenticatedCodexSourceId = 'codex-source-attach-race'
+        ..mockLogicalConnectionIdentity = 'machine:codex-attach-race'
+        ..mockLastUrl = 'wss://codex-attach-race.test/socket';
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+        codexSourceId: bridge.authenticatedCodexSourceId,
+      );
+      final pendingRead = Completer<ConversationHotWindowSnapshot?>();
+      final staleSnapshot = _previewSnapshot(
+        partitionId: target.fingerprint,
+        providerSessionId: 'codex-attach-thread',
+        revision: 'codex-stale-revision',
+        entryId: 'codex-stale-entry',
+        text: 'Detached Codex preview must not overwrite attached runtime',
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(databasePath: 'unused-codex-attach.db'),
+        snapshots: const {},
+        queuedReads: [pendingRead.future],
+      );
+      final sync = _ControllableConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+      final pendingSessionCreated = ValueNotifier<SystemMessage?>(null);
+
+      Future<Widget> build() => buildTestCodexSessionScreen(
+        bridge: bridge,
+        sessionId: 'pending-codex-runtime',
+        isPending: true,
+        durableProviderSessionId: 'codex-attach-thread',
+        pendingSessionCreated: pendingSessionCreated,
+        dataSourceIdentity: bridge.dataSourceIdentity,
+        conversationContentSync: sync,
+      );
+
+      try {
+        await tester.pumpWidget(await build());
+        await tester.pump();
+        expect(repository.loadConversationWindowCalls, 1);
+
+        pendingSessionCreated.value = const SystemMessage(
+          subtype: 'session_created',
+          sessionId: 'attached-runtime',
+        );
+        await tester.pump();
+        pendingRead.complete(staleSnapshot);
+        await tester.pump();
+        await tester.pump();
+
+        expect(repository.loadConversationWindowCalls, 1);
+        expect(
+          find.text(
+            'Detached Codex preview must not overwrite attached runtime',
+          ),
+          findsNothing,
+        );
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        pendingSessionCreated.dispose();
+        bridge.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'an attached Claude runtime does not start the detached cache preview loop',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-active-claude'
+        ..mockLogicalConnectionIdentity = 'machine:active-claude'
+        ..mockLastUrl = 'wss://active-claude.test/socket';
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(databasePath: 'unused-active-claude.db'),
+        snapshots: {
+          target.fingerprint: _previewSnapshot(
+            partitionId: target.fingerprint,
+            provider: Provider.claude.value,
+            providerSessionId: 'active-claude-thread',
+            revision: 'active-claude-cache',
+            entryId: 'active-claude-entry',
+            text: 'Detached cache must not replace the attached runtime',
+          ),
+        },
+      );
+      final sync = _ControllableConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+
+      try {
+        await tester.pumpWidget(
+          await buildTestClaudeSessionScreen(
+            bridge: bridge,
+            sessionId: 'active-claude-runtime',
+            isPending: false,
+            durableProviderSessionId: 'active-claude-thread',
+            dataSourceIdentity: bridge.dataSourceIdentity,
+            conversationContentSync: sync,
+          ),
+        );
+        for (var index = 0; index < 5; index += 1) {
+          await tester.pump();
+        }
+
+        expect(repository.loadConversationWindowCalls, 0);
+        expect(
+          find.text('Detached cache must not replace the attached runtime'),
+          findsNothing,
+        );
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await sync.dispose();
+        await repository.close();
+        bridge.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'a pending Claude preview cannot apply after the runtime attaches',
+    (tester) async {
+      final bridge = MockBridgeService()
+        ..authenticatedBridgeInstanceId = 'bridge-claude-attach-race'
+        ..mockLogicalConnectionIdentity = 'machine:claude-attach-race'
+        ..mockLastUrl = 'wss://claude-attach-race.test/socket';
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: bridge.authenticatedBridgeInstanceId,
+      );
+      final pendingRead = Completer<ConversationHotWindowSnapshot?>();
+      final staleSnapshot = _previewSnapshot(
+        partitionId: target.fingerprint,
+        provider: Provider.claude.value,
+        providerSessionId: 'claude-attach-thread',
+        revision: 'claude-stale-revision',
+        entryId: 'claude-stale-entry',
+        text: 'Detached preview must not overwrite attached runtime',
+      );
+      final repository = _CountingSessionCatalogCacheRepository(
+        SessionCatalogCacheDatabase(databasePath: 'unused-claude-attach.db'),
+        snapshots: const {},
+        queuedReads: [pendingRead.future],
+      );
+      final sync = _ControllableConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(bridge),
+        cache: repository,
+      );
+
+      Future<Widget> build({required bool pending}) =>
+          buildTestClaudeSessionScreen(
+            bridge: bridge,
+            sessionId: pending ? 'pending-claude-runtime' : 'attached-runtime',
+            isPending: pending,
+            durableProviderSessionId: 'claude-attach-thread',
+            dataSourceIdentity: bridge.dataSourceIdentity,
+            conversationContentSync: sync,
+          );
+
+      try {
+        await tester.pumpWidget(await build(pending: true));
+        await tester.pump();
+        expect(repository.loadConversationWindowCalls, 1);
+
+        await tester.pumpWidget(await build(pending: false));
+        await tester.pump();
+        pendingRead.complete(staleSnapshot);
+        await tester.pump();
+        await tester.pump();
+
+        expect(repository.loadConversationWindowCalls, 1);
+        expect(
+          find.text('Detached preview must not overwrite attached runtime'),
+          findsNothing,
+        );
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
@@ -2136,7 +3015,10 @@ ConversationHotWindowSnapshot _previewSnapshot({
       ConversationContentWireEntry(
         entryId: entryId,
         index: 0,
-        contentHash: 'hash-$entryId',
+        // The wire contract advances contentHash whenever the normalized
+        // message changes. Keep the fixture faithful so metadata-only commits
+        // can be distinguished from actual presentation updates.
+        contentHash: 'hash-$entryId-${text.hashCode}',
         rawMessage: {
           'type': 'user_input',
           'text': text,
@@ -2146,6 +3028,7 @@ ConversationHotWindowSnapshot _previewSnapshot({
     ],
     hasEarlier: false,
     turnsNextCursor: null,
+    windowComplete: true,
     latestTurnComplete: true,
     latestTurnGap: null,
     latestTurnGapCursor: null,
@@ -2185,6 +3068,7 @@ class _LatestTurnRecoveryHarness {
           entries: entries,
           hasEarlier: false,
           turnsNextCursor: null,
+          windowComplete: true,
           latestTurnComplete: latestTurnComplete,
           latestTurnGap: latestTurnComplete
               ? null
@@ -2307,6 +3191,7 @@ class _ControllableConversationContentSyncService
       StreamController<ConversationContentCacheUpdate>.broadcast();
   final List<ConversationContentTarget?> focusedTargets = [];
   int _testCacheCommitEpoch = 0;
+  final Map<String, int> _testCacheCommitEpochsByConversation = {};
 
   @override
   Stream<ConversationContentCacheUpdate> get updates => _testUpdates.stream;
@@ -2314,8 +3199,24 @@ class _ControllableConversationContentSyncService
   @override
   int get cacheCommitEpoch => _testCacheCommitEpoch;
 
-  void advanceCacheCommitEpoch() {
+  @override
+  int cacheCommitEpochFor({
+    required String targetFingerprint,
+    required String provider,
+    required String providerSessionId,
+  }) =>
+      _testCacheCommitEpochsByConversation['$targetFingerprint\u0000$provider\u0000$providerSessionId'] ??
+      0;
+
+  void advanceCacheCommitEpoch({
+    required String targetFingerprint,
+    required String provider,
+    required String providerSessionId,
+  }) {
     _testCacheCommitEpoch += 1;
+    final key = '$targetFingerprint\u0000$provider\u0000$providerSessionId';
+    _testCacheCommitEpochsByConversation[key] =
+        (_testCacheCommitEpochsByConversation[key] ?? 0) + 1;
   }
 
   @override
@@ -2340,10 +3241,15 @@ class _ControllableConversationContentSyncService
     required String revision,
     String? targetFingerprint,
   }) {
-    advanceCacheCommitEpoch();
+    final fingerprint = targetFingerprint ?? currentCacheTargetFingerprint;
+    advanceCacheCommitEpoch(
+      targetFingerprint: fingerprint,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
     _testUpdates.add(
       ConversationContentCacheUpdate(
-        targetFingerprint: targetFingerprint ?? currentCacheTargetFingerprint,
+        targetFingerprint: fingerprint,
         provider: provider,
         providerSessionId: providerSessionId,
         revision: revision,

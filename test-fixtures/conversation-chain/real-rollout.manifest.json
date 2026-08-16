@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "threadId": "019fe552-2d01-7730-aaf6-87ae94a777f7",
+  "sourcePathHint": "/Users/huyiyang/.codex/sessions/2026/08/09/rollout-2026-08-09T14-59-55-019fe552-2d01-7730-aaf6-87ae94a777f7.jsonl",
+  "stateDatabaseHint": "/Users/huyiyang/.codex/state_5.sqlite",
+  "prefixBytes": 772565254,
+  "prefixSha256": "865b002221f84f77e92345714d3b5413de1d9c79171ed725280322c96ae48532",
+  "prefixLines": 162298,
+  "rawTaskStartedTurns": 317,
+  "rawUserMessages": 338,
+  "latestTurnId": "019feeb3-8ba3-7712-a853-34b9763e871f",
+  "latestTurnRawItems": 192,
+  "expectedFocusedWindow": {
+    "windowComplete": false,
+    "latestTurnComplete": false,
+    "entryCount": 10,
+    "entryTypes": {
+      "assistant": 8,
+      "tool_result": 1,
+      "user_input": 1
+    },
+    "latestUserText": "其实不用脱敏是开发环境我怕你一搞又不真实了\n",
+    "latestUserClientMessageId": "f0453177-332d-46d6-97a6-7a894b821bca",
+    "entryIdsSha256": "34e0a1595eb6075cd083671ee0a191fa66f3f0e4397eaff40e3d9baebd468e54"
+  },
+  "notes": "The source is intentionally unredacted local development data. Tests read only the immutable prefix and never copy it into Git."
+}

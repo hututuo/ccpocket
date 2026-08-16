@@ -105,6 +105,7 @@ class ChatEntryWidget extends StatelessWidget {
             onRewind: onRewindMessage != null && user.messageUuid != null
                 ? () => onRewindMessage!(user)
                 : null,
+            rewindAsEdit: isCodex,
             imageUrls: user.imageUrls,
             httpBaseUrl: httpBaseUrl,
             imageBytesList: user.imageBytesList,

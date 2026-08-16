@@ -1,5 +1,5 @@
 import 'package:ccpocket/features/claude_session/widgets/rewind_action_sheet.dart';
-import 'package:ccpocket/features/codex_session/widgets/codex_rewind_dialog.dart';
+import 'package:ccpocket/features/codex_session/widgets/codex_edit_message_dialog.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/theme/app_theme.dart';
@@ -37,7 +37,9 @@ void main() {
     expect(find.textContaining('file'), findsNothing);
   });
 
-  testWidgets('codex rewind uses a confirmation dialog', (tester) async {
+  testWidgets('codex message edit explains the native branch semantics', (
+    tester,
+  ) async {
     var confirmed = false;
     await tester.pumpWidget(
       MaterialApp(
@@ -46,7 +48,7 @@ void main() {
         locale: const Locale('en'),
         theme: AppTheme.lightTheme,
         home: Scaffold(
-          body: CodexRewindDialog(
+          body: CodexEditMessageDialog(
             messageText: 'first codex turn',
             onConfirm: () {
               confirmed = true;
@@ -56,11 +58,14 @@ void main() {
       ),
     );
 
-    expect(find.text('Rewind conversation?'), findsOneWidget);
+    expect(find.text('Edit this message?'), findsOneWidget);
+    expect(find.textContaining('new branch'), findsOneWidget);
     expect(find.text('first codex turn'), findsOneWidget);
     expect(find.text('Restore conversation only'), findsNothing);
 
-    await tester.tap(find.byKey(const ValueKey('codex_rewind_confirm_button')));
+    await tester.tap(
+      find.byKey(const ValueKey('codex_edit_message_confirm_button')),
+    );
     expect(confirmed, isTrue);
   });
 }

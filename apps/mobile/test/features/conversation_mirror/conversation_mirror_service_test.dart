@@ -1664,7 +1664,7 @@ void main() {
   );
 
   test(
-    'a distant turn loads one 200-entry target window and resets older paging',
+    'a distant window leaves the live-tail paging cursor untouched',
     () async {
       await _seedLocalConversation(
         store,
@@ -1704,15 +1704,27 @@ void main() {
         'message-299',
       );
       expect(targetWindow.hasMore, isTrue);
+      expect(targetWindow.hasLater, isTrue);
+
+      final newer = await bridge.tryLoadLocalSessionHistoryWindow(
+        runtimeSessionId: 'runtime-1',
+        startOrdinal: 300,
+      );
+      expect(newer, isNotNull);
+      expect(newer!.messages, hasLength(200));
+      expect((newer.messages.first as UserInputMessage).text, 'message-300');
+      expect((newer.messages.last as UserInputMessage).text, 'message-499');
+      expect(newer.hasMore, isTrue);
+      expect(newer.hasLater, isTrue);
 
       final older = await bridge.tryLoadOlderLocalSessionHistory(
         runtimeSessionId: 'runtime-1',
       );
       expect(older, isNotNull);
-      expect(older!.messages, hasLength(100));
-      expect((older.messages.first as UserInputMessage).text, 'message-0');
-      expect((older.messages.last as UserInputMessage).text, 'message-99');
-      expect(older.hasMore, isFalse);
+      expect(older!.messages, hasLength(200));
+      expect((older.messages.first as UserInputMessage).text, 'message-2600');
+      expect((older.messages.last as UserInputMessage).text, 'message-2799');
+      expect(older.hasMore, isTrue);
     },
   );
 

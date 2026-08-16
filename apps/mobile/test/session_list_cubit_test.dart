@@ -290,11 +290,20 @@ class FakeConversationContentSyncService
   });
 
   final _updates = StreamController<ConversationSyncCacheUpdate>.broadcast();
+  int retryBootstrapCalls = 0;
+  String? lastRetryBootstrapReason;
 
   @override
   Stream<ConversationSyncCacheUpdate> get syncUpdates => _updates.stream;
 
   void emit(ConversationSyncCacheUpdate update) => _updates.add(update);
+
+  @override
+  bool retryBootstrap({String reason = 'manual_retry'}) {
+    retryBootstrapCalls += 1;
+    lastRetryBootstrapReason = reason;
+    return true;
+  }
 
   @override
   Future<void> dispose() async {
@@ -309,6 +318,9 @@ RecentSession _session({
   String modified = '2025-01-01T00:00:00Z',
   String? provider,
   String? codexSourceId,
+  String? projectGroupId,
+  String? projectGroupName,
+  bool projectless = false,
 }) {
   return RecentSession(
     sessionId: id,
@@ -319,6 +331,15 @@ RecentSession _session({
     modified: modified,
     gitBranch: 'main',
     projectPath: projectPath,
+    projectGroupKind: projectless
+        ? 'projectless'
+        : projectGroupId == null
+        ? null
+        : 'desktopProject',
+    projectGroupId: projectGroupId,
+    projectGroupName: projectGroupName,
+    projectGroupPath: projectGroupId == null ? null : '/workspace/project',
+    projectGroupingSnapshotComplete: projectless || projectGroupId != null,
     isSidechain: false,
   );
 }
@@ -567,11 +588,181 @@ void main() {
       },
     );
 
+    test('v2 startup without a sync service falls back to legacy', () async {
+      var projectHistoryRequested = false;
+      mockBridge
+        ..testSupportsConversationSyncV2 = true
+        ..onRequestProjectHistory = () => projectHistoryRequested = true;
+
+      expect(await cubit.refreshCatalog(startupBootstrap: true), isTrue);
+
+      expect(projectHistoryRequested, isTrue);
+      expect(mockBridge.sentMessages, hasLength(1));
+    });
+
+    test('v2 startup without a catalog cache falls back to legacy', () async {
+      await cubit.close();
+      var projectHistoryRequested = false;
+      mockBridge
+        ..testSupportsConversationSyncV2 = true
+        ..onRequestProjectHistory = () => projectHistoryRequested = true;
+      final sync = FakeConversationContentSyncService(
+        bridge: BridgeServiceConversationContentSyncGateway(mockBridge),
+        cache: FakeSessionCatalogCacheRepository(),
+      );
+      addTearDown(sync.dispose);
+      cubit = SessionListCubit(bridge: mockBridge, conversationSync: sync);
+
+      expect(await cubit.refreshCatalog(startupBootstrap: true), isTrue);
+
+      expect(projectHistoryRequested, isTrue);
+      expect(mockBridge.sentMessages, hasLength(1));
+    });
+
+    test(
+      'v2 startup with a sync service does not duplicate legacy reads',
+      () async {
+        await cubit.close();
+        var projectHistoryRequested = false;
+        mockBridge
+          ..testSupportsConversationSyncV2 = true
+          ..onRequestProjectHistory = () => projectHistoryRequested = true;
+        final cache = FakeSessionCatalogCacheRepository();
+        final sync = FakeConversationContentSyncService(
+          bridge: BridgeServiceConversationContentSyncGateway(mockBridge),
+          cache: cache,
+        );
+        addTearDown(sync.dispose);
+        cubit = SessionListCubit(
+          bridge: mockBridge,
+          catalogCache: cache,
+          conversationSync: sync,
+        );
+
+        expect(await cubit.refreshCatalog(startupBootstrap: true), isTrue);
+
+        expect(projectHistoryRequested, isTrue);
+        expect(mockBridge.sentMessages, isEmpty);
+
+        // An explicit/manual refresh still asks the Bridge for current filters.
+        projectHistoryRequested = false;
+        expect(await cubit.refreshCatalog(), isTrue);
+        expect(projectHistoryRequested, isTrue);
+        expect(mockBridge.sentMessages, hasLength(1));
+      },
+    );
+
+    test(
+      'v2 manual refresh restarts sync instead of duplicating legacy reads',
+      () async {
+        await cubit.close();
+        var projectHistoryRequested = false;
+        mockBridge
+          ..testSupportsConversationSyncV2 = true
+          ..onRequestProjectHistory = () => projectHistoryRequested = true;
+        final cache = FakeSessionCatalogCacheRepository();
+        final sync = FakeConversationContentSyncService(
+          bridge: BridgeServiceConversationContentSyncGateway(mockBridge),
+          cache: cache,
+        );
+        addTearDown(sync.dispose);
+        cubit = SessionListCubit(
+          bridge: mockBridge,
+          catalogCache: cache,
+          conversationSync: sync,
+        );
+
+        await cubit.refresh();
+
+        expect(mockBridge.sessionListRequestCount, 1);
+        expect(projectHistoryRequested, isTrue);
+        expect(mockBridge.sentMessages, isEmpty);
+        expect(sync.retryBootstrapCalls, 1);
+        expect(sync.lastRetryBootstrapReason, 'manual_catalog_refresh');
+      },
+    );
+
+    test(
+      'v2 lifecycle refresh leaves the service-owned resume subscription intact',
+      () async {
+        await cubit.close();
+        mockBridge
+          ..testSupportsConversationSyncV2 = true
+          ..onRequestProjectHistory = () {};
+        final cache = FakeSessionCatalogCacheRepository();
+        final sync = FakeConversationContentSyncService(
+          bridge: BridgeServiceConversationContentSyncGateway(mockBridge),
+          cache: cache,
+        );
+        addTearDown(sync.dispose);
+        cubit = SessionListCubit(
+          bridge: mockBridge,
+          catalogCache: cache,
+          conversationSync: sync,
+        );
+
+        await cubit.refresh(restartConversationSync: false);
+
+        expect(mockBridge.sessionListRequestCount, 1);
+        expect(mockBridge.sentMessages, isEmpty);
+        expect(sync.retryBootstrapCalls, 0);
+      },
+    );
+
+    test('legacy startup bootstrap keeps the catalog request', () async {
+      var projectHistoryRequested = false;
+      mockBridge
+        ..testSupportsConversationSyncV2 = false
+        ..onRequestProjectHistory = () => projectHistoryRequested = true;
+
+      expect(await cubit.refreshCatalog(startupBootstrap: true), isTrue);
+
+      expect(projectHistoryRequested, isTrue);
+      expect(mockBridge.sentMessages, hasLength(1));
+    });
+
     test('catalog bootstrap reports a dispatch failure', () async {
       mockBridge.throwOnSwitchFilter = true;
 
       expect(await cubit.refreshCatalog(), isFalse);
       expect(mockBridge.sentMessages, isEmpty);
+    });
+
+    test(
+      'manual catalog refresh waits for a matching network response',
+      () async {
+        var completed = false;
+        final refresh = cubit
+            .refreshCatalog(
+              waitForResponse: true,
+              responseTimeout: const Duration(seconds: 1),
+            )
+            .whenComplete(() => completed = true);
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+        expect(completed, isFalse);
+
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            sessions: [_session(id: 'manual-refresh')],
+            hasMore: false,
+            requestScope: 'list',
+            queryGeneration: 1,
+          ),
+        );
+
+        expect(await refresh, isTrue);
+        expect(completed, isTrue);
+      },
+    );
+
+    test('manual catalog refresh has a bounded response timeout', () async {
+      expect(
+        await cubit.refreshCatalog(
+          waitForResponse: true,
+          responseTimeout: const Duration(milliseconds: 40),
+        ),
+        isFalse,
+      );
     });
 
     test(
@@ -698,6 +889,8 @@ void main() {
       await pumpEventQueue();
       expect(cubit.state.sessions.single.sessionId, 'cached-v2');
       expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
+      expect(cubit.hasCompleteCatalogProviderPresence, isFalse);
+      expect(cubit.completeCatalogProviders, isEmpty);
 
       await cubit.close();
       cache.syncStates[target.fingerprint] = ConversationSyncCacheState(
@@ -710,6 +903,11 @@ void main() {
       await pumpEventQueue();
       expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
       expect(cubit.hasCachedCatalogForCurrentTarget, isTrue);
+      expect(cubit.hasCompleteCatalogProviderPresence, isTrue);
+      expect(cubit.completeCatalogProviders, {'claude'});
+
+      cubit.setSearchQuery('not in the visible projection');
+      expect(cubit.completeCatalogProviders, {'claude'});
     });
 
     test(
@@ -768,6 +966,24 @@ void main() {
           const ConversationSyncCacheUpdate(
             kind: ConversationSyncCacheUpdateKind.started,
             targetFingerprint: 'another-data-source',
+          ),
+        );
+        await pumpEventQueue();
+        expect(cubit.hasUsableCatalogForCurrentTarget, isTrue);
+
+        sync.emit(
+          ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.started,
+            targetFingerprint: target.fingerprint,
+          ),
+        );
+        await pumpEventQueue();
+        expect(cubit.hasUsableCatalogForCurrentTarget, isFalse);
+
+        sync.emit(
+          ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.priorityReady,
+            targetFingerprint: target.fingerprint,
           ),
         );
         await pumpEventQueue();
@@ -1742,7 +1958,7 @@ void main() {
     });
 
     test(
-      'incomplete catalog refreshes expand until the snapshot is complete',
+      'incomplete catalog refresh expands once to the bounded catalog window',
       () async {
         mockBridge.emitResponse(
           RecentSessionsMessage(
@@ -1780,7 +1996,7 @@ void main() {
         );
         await pumpEventQueue();
 
-        expect(mockBridge.catalogRequestLimits, [1000, 2200]);
+        expect(mockBridge.catalogRequestLimits, [1000]);
       },
     );
 
@@ -1805,6 +2021,193 @@ void main() {
       expect(cubit.state.isInitialLoading, isTrue);
       expect(mockBridge.sentMessages, isNotEmpty);
     });
+
+    test(
+      'Desktop project selection stays local and never becomes a path',
+      () async {
+        mockBridge.emitSessions([
+          _session(
+            id: 'thread-1',
+            projectPath: '/private/worktrees/a',
+            projectGroupId: 'project-1',
+            projectGroupName: 'Mobile',
+          ),
+        ]);
+        await Future.microtask(() {});
+        mockBridge.sentMessages.clear();
+
+        cubit.selectProject('desktop-project:project-1');
+        await Future.microtask(() {});
+
+        expect(cubit.currentProjectFilter, 'desktop-project:project-1');
+        expect(cubit.state.isInitialLoading, isFalse);
+        expect(mockBridge.currentProjectFilter, isNull);
+        expect(
+          mockBridge.sentMessages.last.toJson(),
+          isNot(contains('desktop-project:project-1')),
+        );
+      },
+    );
+
+    test(
+      'Desktop project toggles migrate legacy path presentation state',
+      () async {
+        await cubit.toggleProjectCollapsed('/private/worktrees/a');
+        await cubit.toggleProjectPinned('/private/worktrees/a');
+        mockBridge.emitSessions([
+          _session(
+            id: 'thread-1',
+            projectPath: '/private/worktrees/a',
+            projectGroupId: 'project-1',
+            projectGroupName: 'Mobile',
+          ),
+        ]);
+        await Future.microtask(() {});
+
+        await cubit.toggleProjectCollapsed('desktop-project:project-1');
+        await cubit.toggleProjectPinned('desktop-project:project-1');
+
+        expect(cubit.state.collapsedProjectPaths, isEmpty);
+        expect(cubit.state.pinnedProjectPaths, isEmpty);
+      },
+    );
+
+    test(
+      'ambiguous legacy paths do not control multiple Desktop projects',
+      () async {
+        const sharedPath = '/private/worktrees/shared';
+        await cubit.toggleProjectCollapsed(sharedPath);
+        await cubit.toggleProjectPinned(sharedPath);
+        mockBridge.emitSessions([
+          _session(
+            id: 'thread-a',
+            projectPath: sharedPath,
+            projectGroupId: 'project-a',
+            projectGroupName: 'Project A',
+          ),
+          _session(
+            id: 'thread-b',
+            projectPath: sharedPath,
+            projectGroupId: 'project-b',
+            projectGroupName: 'Project B',
+          ),
+        ]);
+        await Future.microtask(() {});
+
+        await cubit.toggleProjectCollapsed('desktop-project:project-a');
+        await cubit.toggleProjectPinned('desktop-project:project-a');
+
+        expect(cubit.state.collapsedProjectPaths, {
+          sharedPath,
+          'desktop-project:project-a',
+        });
+        expect(cubit.state.pinnedProjectPaths, {
+          sharedPath,
+          'desktop-project:project-a',
+        });
+
+        await cubit.toggleProjectCollapsed('desktop-project:project-b');
+        await cubit.toggleProjectPinned('desktop-project:project-b');
+        await cubit.toggleProjectCollapsed('desktop-project:project-a');
+        await cubit.toggleProjectPinned('desktop-project:project-a');
+
+        expect(cubit.state.collapsedProjectPaths, {
+          sharedPath,
+          'desktop-project:project-b',
+        });
+        expect(cubit.state.pinnedProjectPaths, {
+          sharedPath,
+          'desktop-project:project-b',
+        });
+      },
+    );
+
+    test(
+      'catalog lookup keeps a renamed thread available outside filters',
+      () async {
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            requestScope: 'catalog',
+            sessions: [
+              _session(
+                id: 'thread-visible',
+                projectPath: '/workspace/visible',
+                projectGroupId: 'project-visible',
+                projectGroupName: 'Visible',
+              ),
+              RecentSession(
+                sessionId: 'thread-renamed',
+                provider: Provider.codex.value,
+                name: 'Desktop renamed',
+                firstPrompt: 'Renamed thread',
+                created: '2025-01-01T00:00:00Z',
+                modified: '2025-01-01T01:00:00Z',
+                gitBranch: 'main',
+                projectPath: '/workspace/hidden',
+                isSidechain: false,
+              ),
+            ],
+          ),
+        );
+        await Future.microtask(() {});
+
+        cubit.selectProject('desktop-project:project-visible');
+        await Future.microtask(() {});
+
+        expect(
+          cubit
+              .catalogSessionFor(
+                'thread-renamed',
+                provider: Provider.codex.value,
+              )
+              ?.name,
+          'Desktop renamed',
+        );
+      },
+    );
+
+    test(
+      'catalog lookup prefers a newer visible rename over disk cache',
+      () async {
+        RecentSession named(String name) => RecentSession(
+          sessionId: 'thread-renamed',
+          provider: Provider.codex.value,
+          name: name,
+          firstPrompt: 'Renamed thread',
+          created: '2025-01-01T00:00:00Z',
+          modified: '2025-01-01T01:00:00Z',
+          gitBranch: 'main',
+          projectPath: '/workspace/project',
+          isSidechain: false,
+        );
+
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            requestScope: 'catalog',
+            sessions: [named('Cached title')],
+          ),
+        );
+        await Future.microtask(() {});
+
+        mockBridge.emitResponse(
+          RecentSessionsMessage(
+            requestScope: 'list',
+            sessions: [named('Desktop renamed')],
+          ),
+        );
+        await Future.microtask(() {});
+
+        expect(
+          cubit
+              .catalogSessionFor(
+                'thread-renamed',
+                provider: Provider.codex.value,
+              )
+              ?.name,
+          'Desktop renamed',
+        );
+      },
+    );
 
     test('setSearchQuery updates query', () {
       cubit.setSearchQuery('hello');
@@ -1982,6 +2385,29 @@ void main() {
       },
     );
 
+    test('Desktop project Show more only reveals cached rows', () async {
+      mockBridge.emitSessions([
+        for (var i = 0; i < 7; i++)
+          _session(
+            id: 's$i',
+            projectPath: '/private/worktrees/$i',
+            projectGroupId: 'project-1',
+            projectGroupName: 'Mobile',
+          ),
+      ]);
+      await Future.microtask(() {});
+      mockBridge.sentMessages.clear();
+
+      cubit.loadMoreProject('desktop-project:project-1');
+
+      expect(
+        cubit.state.projectSessionDisplayLimits['desktop-project:project-1'],
+        25,
+      );
+      expect(cubit.state.loadingProjectPaths, isEmpty);
+      expect(mockBridge.sentMessages, isEmpty);
+    });
+
     test(
       'offset-zero refresh preserves expanded project display limit',
       () async {
@@ -2027,6 +2453,26 @@ void main() {
         expect(cubit.state.exhaustedProjectPaths, contains('/a/proj1'));
       },
     );
+
+    test('project-scoped response preserves every other project', () async {
+      mockBridge.emitSessions([
+        _session(id: 'project-a-first', projectPath: '/a/proj1'),
+        _session(id: 'project-b-first', projectPath: '/b/proj2'),
+      ], hasMore: true);
+      await Future.microtask(() {});
+
+      cubit.loadMoreProject('/a/proj1');
+      mockBridge.emitProjectSessions('/a/proj1', [
+        _session(id: 'project-a-next', projectPath: '/a/proj1'),
+      ]);
+      await Future.microtask(() {});
+
+      expect(cubit.state.sessions.map((session) => session.sessionId).toSet(), {
+        'project-a-first',
+        'project-a-next',
+        'project-b-first',
+      });
+    });
 
     test('toggleProjectCollapsed persists collapsed project path', () async {
       await cubit.toggleProjectCollapsed('/a/proj1');

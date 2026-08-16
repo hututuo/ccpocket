@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 
@@ -17,6 +19,8 @@ class SessionListSliverAppBar extends StatelessWidget {
   final VoidCallback onDisconnect;
   final VoidCallback? onOpenArchivedSessions;
   final VoidCallback? onOpenFileBrowser;
+  final Future<void> Function()? onRefresh;
+  final bool isRefreshing;
   final bool forceElevated;
   final double? toolbarHeight;
   final String? bridgeLabel;
@@ -27,6 +31,8 @@ class SessionListSliverAppBar extends StatelessWidget {
     required this.onDisconnect,
     this.onOpenArchivedSessions,
     this.onOpenFileBrowser,
+    this.onRefresh,
+    this.isRefreshing = false,
     this.forceElevated = false,
     this.toolbarHeight,
     this.bridgeLabel,
@@ -48,6 +54,18 @@ class SessionListSliverAppBar extends StatelessWidget {
         child: _SessionListTitle(title: l.appTitle, subtitle: bridgeLabel),
       ),
       actions: [
+        if (onRefresh != null)
+          IconButton(
+            key: const ValueKey('refresh_sessions_button'),
+            icon: isRefreshing
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh),
+            onPressed: isRefreshing ? null : () => unawaited(onRefresh!.call()),
+            tooltip: l.refresh,
+          ),
         if (!compactActions && onOpenArchivedSessions != null)
           IconButton(
             key: const ValueKey('archived_sessions_button'),
@@ -111,6 +129,8 @@ class SessionListPaneHeader extends StatelessWidget {
   final VoidCallback? onOpenArchivedSessions;
   final VoidCallback? onDisconnect;
   final VoidCallback? onTogglePaneVisibility;
+  final Future<void> Function()? onRefresh;
+  final bool isRefreshing;
   final String? bridgeLabel;
 
   const SessionListPaneHeader({
@@ -122,6 +142,8 @@ class SessionListPaneHeader extends StatelessWidget {
     this.onOpenArchivedSessions,
     this.onDisconnect,
     this.onTogglePaneVisibility,
+    this.onRefresh,
+    this.isRefreshing = false,
     this.bridgeLabel,
   });
 
@@ -170,6 +192,21 @@ class SessionListPaneHeader extends StatelessWidget {
             else
               const Expanded(
                 child: MacOSWindowDragHandle(child: SizedBox.expand()),
+              ),
+            if (onRefresh != null)
+              _PaneHeaderActionButton(
+                key: const ValueKey('refresh_sessions_button'),
+                tooltip: l.refresh,
+                onPressed: isRefreshing
+                    ? null
+                    : () => unawaited(onRefresh!.call()),
+                icon: isRefreshing
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.refresh),
+                compact: chrome.useMacOSAdaptiveChrome,
               ),
             _PaneHeaderActionButton(
               key: const ValueKey('settings_button'),
@@ -392,7 +429,7 @@ class _SessionListTitle extends StatelessWidget {
 
 class _PaneHeaderActionButton extends StatelessWidget {
   final String tooltip;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
   final Widget icon;
   final bool compact;
 
@@ -415,6 +452,10 @@ class _PaneHeaderActionButton extends StatelessWidget {
               slot: WorkspacePaneSlot.left,
             ).compactButtonStyle()
           : null,
+      constraints: compact
+          ? const BoxConstraints.tightFor(width: 32, height: 32)
+          : null,
+      padding: compact ? EdgeInsets.zero : null,
       visualDensity: VisualDensity.compact,
       onPressed: onPressed,
       tooltip: tooltip,

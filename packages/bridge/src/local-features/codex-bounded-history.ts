@@ -233,22 +233,35 @@ export class CodexBoundedHistoryReader {
       timeoutMs: this.rpcTimeoutMs,
       ...(options.signal ? { signal: options.signal } : {}),
     };
-    const response = await process.requestReadOnlyRpc<{
-      data?: unknown;
-      nextCursor?: unknown;
-    }>(
-      method,
-      {
-        threadId,
-        ...(method === "thread/turns/list" && mode !== "turnsLegacy"
-          ? { itemsView: "full" }
-          : {}),
-        limit,
-        cursor: options.cursor ?? null,
-        sortDirection,
-      },
-      requestOptions,
-    );
+    const params = {
+      threadId,
+      ...(method === "thread/turns/list" && mode !== "turnsLegacy"
+        ? { itemsView: "full" as const }
+        : {}),
+      limit,
+      cursor: options.cursor ?? null,
+      sortDirection,
+    };
+    const listThreadTurns = (
+      process as Partial<Pick<CodexProcess, "listThreadTurns">>
+    ).listThreadTurns;
+    const listThreadItems = (
+      process as Partial<Pick<CodexProcess, "listThreadItems">>
+    ).listThreadItems;
+    // Production CodexProcess exposes the typed wrappers. A few intentionally
+    // minimal test/legacy adapters expose only requestReadOnlyRpc. Keep one
+    // validation and pagination implementation while accepting either
+    // transport injection boundary; do not duplicate provider semantics in
+    // those callers.
+    const response =
+      method === "thread/turns/list" && typeof listThreadTurns === "function"
+        ? await listThreadTurns.call(process, params, requestOptions)
+        : method === "thread/items/list" && typeof listThreadItems === "function"
+          ? await listThreadItems.call(process, params, requestOptions)
+          : await process.requestReadOnlyRpc<{
+              data?: unknown;
+              nextCursor?: unknown;
+            }>(method, params, requestOptions);
     if (!Array.isArray(response.data)) {
       throw new Error(`${method} returned invalid data`);
     }

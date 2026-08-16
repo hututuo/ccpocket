@@ -29,6 +29,45 @@ void main() {
     expect(find.text('メッセージを送信すると、各ターンの先頭がここに表示されます'), findsOneWidget);
   });
 
+  testWidgets('Codex turn history presents the pencil edit action', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        locale: const Locale('zh'),
+        theme: AppTheme.lightTheme,
+        home: Scaffold(
+          body: UserMessageHistorySheet(
+            messages: [
+              UserChatEntry(
+                '修改这一轮',
+                messageUuid: 'turn-edit',
+                status: MessageStatus.sent,
+              ),
+            ],
+            rewindAsEdit: true,
+            onScrollToMessage: (_) async => true,
+            onRewindMessage: (_) {},
+          ),
+        ),
+      ),
+    );
+
+    final editAction = find.byKey(const ValueKey('edit_turn_1'));
+    expect(editAction, findsOneWidget);
+    expect(
+      find.descendant(
+        of: editAction,
+        matching: find.byIcon(Icons.edit_outlined),
+      ),
+      findsOneWidget,
+    );
+    expect(find.byTooltip('编辑'), findsOneWidget);
+    expect(find.byKey(const ValueKey('rewind_turn_1')), findsNothing);
+  });
+
   testWidgets(
     'refreshes an already-open turn picker when the full index is ready',
     (tester) async {

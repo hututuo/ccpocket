@@ -144,7 +144,20 @@ export function assertSharedRuntimePilotRpcAllowed(
     method === "thread/rollback" ||
     method === "review/start"
   ) {
-    if (attachMode === "adoption" && gates.allowTurnStart) return;
+    // Goal is durable thread metadata and the official RPC is addressed by
+    // threadId. Permit an initialize-only process when the host's shared
+    // writer guard and per-thread coordinator already hold mutation
+    // authority; observers remain read-only and attached runtimes retain the
+    // existing adoption requirement.
+    if (
+      gates.allowTurnStart &&
+      (attachMode === "adoption" ||
+        (attachMode === null &&
+          (method === "thread/goal/set" ||
+            method === "thread/goal/clear")))
+    ) {
+      return;
+    }
     throw new Error(
       `${method} is disabled; a formal shared writer and the turn-start pilot gate are required`,
     );

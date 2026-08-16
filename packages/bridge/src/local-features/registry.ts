@@ -12,6 +12,15 @@ import { createFileBrowserHandlers } from "./slots/file-browser.js";
 import { createSessionInsightsHandlers } from "./slots/session-insights.js";
 import { createSideChatHandlers } from "./slots/side-chat.js";
 import { createSubagentsHandlers } from "./slots/subagents.js";
+import type { ConversationSyncV2Options } from "./conversation-sync-v2.js";
+
+export interface LocalFeaturesControllerOptions {
+  /**
+   * Provider/app-server seam for black-box chain tests. Production leaves this
+   * empty and therefore uses the normal provider readers.
+   */
+  conversationSyncV2?: ConversationSyncV2Options;
+}
 
 /**
  * The only concrete feature registry. Every slot exists in the foundation as
@@ -21,6 +30,7 @@ import { createSubagentsHandlers } from "./slots/subagents.js";
 export function createLocalFeaturesController(
   runtime: LocalFeatureRuntime,
   env: NodeJS.ProcessEnv = process.env,
+  options: LocalFeaturesControllerOptions = {},
 ): LocalFeaturesController {
   const appServerMode = readCodexAppServerMode(env);
   const desktopContinuityHandlers =
@@ -36,7 +46,7 @@ export function createLocalFeaturesController(
     ...desktopContinuityHandlers,
     ...createConversationMirrorHandlers(runtime),
     ...createConversationContentHandlers(runtime),
-    ...createConversationSyncV2Handlers(runtime),
+    ...createConversationSyncV2Handlers(runtime, options.conversationSyncV2),
     ...createFileBrowserHandlers(runtime),
     ...createSessionInsightsHandlers(runtime),
     ...createSubagentsHandlers(runtime),

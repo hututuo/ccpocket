@@ -155,6 +155,11 @@ describe("shared runtime Stage 1 pilot gates", () => {
       expect(() =>
         assertSharedRuntimePilotRpcAllowed(method, "observer", gates(env)),
       ).toThrow("formal shared writer");
+      if (method === "thread/goal/set" || method === "thread/goal/clear") {
+        expect(() =>
+          assertSharedRuntimePilotRpcAllowed(method, null, gates(env)),
+        ).not.toThrow();
+      }
     }
     expect(() =>
       assertSharedRuntimePilotRpcAllowed("plugin/install", null, gates(env)),

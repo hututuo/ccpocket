@@ -212,6 +212,7 @@ void main() {
             'codexProfiles': ['old-profile'],
             'defaultCodexProfile': 'old-profile',
             'bridgeVersion': '1.2.3',
+            'clientBridgeCompatibilityRevision': 3,
           }),
         );
         socket.add(
@@ -233,6 +234,7 @@ void main() {
       expect(bridge.projectHistory, ['/old-bridge/project']);
       expect(bridge.codexProfiles, ['old-profile']);
       expect(bridge.bridgeVersion, '1.2.3');
+      expect(bridge.clientBridgeCompatibilityRevision, 3);
 
       bridge.disconnect();
 
@@ -240,6 +242,7 @@ void main() {
       expect(bridge.projectHistory, isEmpty);
       expect(bridge.codexProfiles, isEmpty);
       expect(bridge.bridgeVersion, isNull);
+      expect(bridge.clientBridgeCompatibilityRevision, isNull);
 
       for (final socket in sockets) {
         await socket.close();
@@ -697,6 +700,309 @@ void main() {
         bridge.disconnect();
         await socket.close();
         await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test('v2 catalog ownership suppresses the legacy broad refresh', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final socketReady = Completer<WebSocket>();
+      server.transform(WebSocketTransformer()).listen((socket) {
+        socketReady.complete(socket);
+      });
+
+      final outgoing = <ClientMessage>[];
+      final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+      bridge.registerConversationSyncV2CatalogConsumer();
+      bridge.connect('ws://127.0.0.1:${server.port}');
+      final socket = await socketReady.future;
+      socket.add(
+        jsonEncode({
+          'type': 'session_list',
+          'sessions': [],
+          'bridgeCapabilities': [
+            sessionCatalogWatchCapability,
+            conversationSyncV2Capability,
+          ],
+        }),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      outgoing.clear();
+
+      socket.add(
+        jsonEncode({'type': sessionCatalogChangedMessageType, 'revision': 1}),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+
+      expect(
+        outgoing.where((message) => message.type == 'list_recent_sessions'),
+        isEmpty,
+      );
+
+      bridge.disconnect();
+      await socket.close();
+      await server.close(force: true);
+      bridge.unregisterConversationSyncV2CatalogConsumer();
+      bridge.dispose();
+    });
+
+    test(
+      'v2 capability without a local catalog consumer keeps legacy refresh',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+        });
+
+        final outgoing = <ClientMessage>[];
+        final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [],
+            'bridgeCapabilities': [
+              sessionCatalogWatchCapability,
+              conversationSyncV2Capability,
+            ],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        outgoing.clear();
+
+        socket.add(
+          jsonEncode({'type': sessionCatalogChangedMessageType, 'revision': 1}),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+
+        expect(
+          outgoing.where((message) => message.type == 'list_recent_sessions'),
+          hasLength(1),
+        );
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test('a queued legacy refresh is fenced after v2 adoption', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final socketReady = Completer<WebSocket>();
+      server.transform(WebSocketTransformer()).listen((socket) {
+        socketReady.complete(socket);
+      });
+
+      final outgoing = <ClientMessage>[];
+      final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+      bridge.connect('ws://127.0.0.1:${server.port}');
+      final socket = await socketReady.future;
+      socket.add(
+        jsonEncode({
+          'type': 'session_list',
+          'sessions': [],
+          'bridgeCapabilities': [sessionCatalogWatchCapability],
+        }),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      outgoing.clear();
+      socket.add(
+        jsonEncode({'type': sessionCatalogChangedMessageType, 'revision': 1}),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      bridge.registerConversationSyncV2CatalogConsumer();
+      socket.add(
+        jsonEncode({
+          'type': 'session_list',
+          'sessions': [],
+          'bridgeCapabilities': [
+            sessionCatalogWatchCapability,
+            conversationSyncV2Capability,
+          ],
+        }),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+
+      expect(
+        outgoing.where((message) => message.type == 'list_recent_sessions'),
+        isEmpty,
+      );
+
+      bridge.disconnect();
+      await socket.close();
+      await server.close(force: true);
+      bridge.unregisterConversationSyncV2CatalogConsumer();
+      bridge.dispose();
+    });
+
+    test(
+      'an in-flight automatic catalog response is ignored after v2 adoption',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+        });
+
+        final outgoing = <ClientMessage>[];
+        final published = <RecentSessionsMessage>[];
+        final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+        final publishedSub = bridge.recentSessionResponses.listen(
+          published.add,
+        );
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [],
+            'bridgeCapabilities': [sessionCatalogWatchCapability],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        outgoing.clear();
+
+        socket.add(
+          jsonEncode({'type': sessionCatalogChangedMessageType, 'revision': 1}),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        expect(
+          outgoing.where((message) => message.type == 'list_recent_sessions'),
+          hasLength(1),
+        );
+
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [],
+            'bridgeCapabilities': [
+              sessionCatalogWatchCapability,
+              conversationSyncV2Capability,
+            ],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        bridge.registerConversationSyncV2CatalogConsumer();
+        socket.add(
+          jsonEncode({
+            'type': 'recent_sessions',
+            'sessions': [
+              {
+                'sessionId': 'stale-catalog-thread',
+                'provider': 'codex',
+                'firstPrompt': 'stale catalog',
+                'created': '2026-08-11T00:00:00Z',
+                'modified': '2026-08-11T00:00:01Z',
+                'gitBranch': '',
+                'projectPath': '/stale',
+                'isSidechain': false,
+              },
+            ],
+            'hasMore': false,
+            'limit': 20,
+            'offset': 0,
+            'requestScope': 'catalog',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+
+        expect(bridge.recentSessions, isEmpty);
+        expect(published, isEmpty);
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        await publishedSub.cancel();
+        bridge.unregisterConversationSyncV2CatalogConsumer();
+        bridge.dispose();
+      },
+    );
+
+    test(
+      'queued automatic catalog work is removed after v2 adoption',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+        });
+
+        final outgoing = <ClientMessage>[];
+        final bridge = BridgeService()..onOutgoingMessage = outgoing.add;
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final socket = await socketReady.future;
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [],
+            'bridgeCapabilities': [sessionCatalogWatchCapability],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        outgoing.clear();
+
+        bridge.requestRecentSessions(limit: 20);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        expect(
+          outgoing.where((message) => message.type == 'list_recent_sessions'),
+          hasLength(1),
+        );
+        outgoing.clear();
+        socket.add(
+          jsonEncode({'type': sessionCatalogChangedMessageType, 'revision': 1}),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        expect(outgoing, isEmpty);
+
+        socket.add(
+          jsonEncode({
+            'type': 'session_list',
+            'sessions': [],
+            'bridgeCapabilities': [
+              sessionCatalogWatchCapability,
+              conversationSyncV2Capability,
+            ],
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        bridge.registerConversationSyncV2CatalogConsumer();
+        socket.add(
+          jsonEncode({
+            'type': 'recent_sessions',
+            'sessions': [
+              {
+                'sessionId': 'manual-thread',
+                'provider': 'codex',
+                'firstPrompt': 'manual query',
+                'created': '2026-08-11T00:00:00Z',
+                'modified': '2026-08-11T00:00:01Z',
+                'gitBranch': '',
+                'projectPath': '/manual',
+                'isSidechain': false,
+              },
+            ],
+            'hasMore': false,
+            'limit': 20,
+            'offset': 0,
+            'requestScope': 'list',
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+
+        expect(bridge.recentSessions.single.sessionId, 'manual-thread');
+        expect(
+          outgoing.where((message) => message.type == 'list_recent_sessions'),
+          isEmpty,
+        );
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.unregisterConversationSyncV2CatalogConsumer();
         bridge.dispose();
       },
     );
@@ -3026,12 +3332,12 @@ void main() {
       },
     );
 
-    test('unacked in-flight input is requeued when socket closes', () async {
+    test('unacked in-flight input is quarantined when socket closes', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final socketReady = Completer<WebSocket>();
 
       server.transform(WebSocketTransformer()).listen((socket) {
-        socketReady.complete(socket);
+        if (!socketReady.isCompleted) socketReady.complete(socket);
       });
 
       final bridge = BridgeService();
@@ -3054,13 +3360,8 @@ void main() {
 
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getStringList(_offlinePendingMessagesV2Key);
-      expect(raw, hasLength(1));
-      expect(_offlineEnvelopeMessage(raw!.single), {
-        'type': 'input',
-        'text': 'retry after reconnect',
-        'sessionId': 's1',
-        'clientMessageId': 'cm-retry',
-      });
+      expect(raw, isNull);
+      expect(bridge.queuedMessageCountForTest, 0);
 
       bridge.disconnect();
       await server.close(force: true);
@@ -3068,7 +3369,7 @@ void main() {
     });
 
     test(
-      'unacked input survives app disposal and replays idempotently',
+      'unacked input is quarantined on app disposal and never replays',
       () async {
         final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
         final firstSocketReady = Completer<WebSocket>();
@@ -3135,23 +3436,20 @@ void main() {
         firstBridge.dispose();
         await Future<void>.delayed(const Duration(milliseconds: 20));
         prefs = await SharedPreferences.getInstance();
-        expect(prefs.getStringList(_offlinePendingMessagesV2Key), hasLength(1));
+        expect(
+          prefs.getStringList(_offlinePendingMessagesV2Key),
+          hasLength(1),
+          reason:
+              'The transport journal is quarantined by the next startup; '
+              'DraftService owns the visible failed bubble.',
+        );
 
         final secondBridge = BridgeService();
         secondBridge.connect('ws://127.0.0.1:${server.port}');
         final secondSocket = await secondSocketReady.future;
         await _waitForBridgeConnection(secondBridge);
         await _authorizeLegacyBridge(secondBridge, secondSocket);
-        for (var attempt = 0; attempt < 100; attempt++) {
-          if (secondReceived.any(
-            (message) =>
-                message['type'] == 'input' &&
-                message['clientMessageId'] == 'cm-app-exit',
-          )) {
-            break;
-          }
-          await Future<void>.delayed(const Duration(milliseconds: 5));
-        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
 
         expect(
           secondReceived.where(
@@ -3159,23 +3457,8 @@ void main() {
                 message['type'] == 'input' &&
                 message['clientMessageId'] == 'cm-app-exit',
           ),
-          hasLength(1),
+          isEmpty,
         );
-        secondSocket.add(
-          jsonEncode({
-            'type': 'input_ack',
-            'sessionId': 's1',
-            'clientMessageId': 'cm-app-exit',
-            'queued': true,
-          }),
-        );
-        for (var attempt = 0; attempt < 100; attempt++) {
-          prefs = await SharedPreferences.getInstance();
-          if (prefs.getStringList(_offlinePendingMessagesV2Key) == null) {
-            break;
-          }
-          await Future<void>.delayed(const Duration(milliseconds: 5));
-        }
         raw = prefs.getStringList(_offlinePendingMessagesV2Key);
         expect(raw, isNull);
 
@@ -3229,37 +3512,26 @@ void main() {
       bridge.dispose();
     });
 
-    test(
-      'persists selected offline messages and excludes transient reads',
-      () async {
-        final bridge = BridgeService();
+    test('never persists offline input or transient reads', () async {
+      final bridge = BridgeService();
 
-        bridge.send(
-          ClientMessage.input(
-            'offline',
-            sessionId: 's1',
-            clientMessageId: 'cm-1',
-            baseSeq: 4,
-          ),
-        );
-        bridge.send(ClientMessage.getHistory('s1'));
-        await Future<void>.delayed(const Duration(milliseconds: 50));
+      bridge.send(
+        ClientMessage.input(
+          'offline',
+          sessionId: 's1',
+          clientMessageId: 'cm-1',
+          baseSeq: 4,
+        ),
+      );
+      bridge.send(ClientMessage.getHistory('s1'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
 
         final prefs = await SharedPreferences.getInstance();
         final raw = prefs.getStringList(_offlinePendingMessagesV2Key);
-        expect(raw, isNotNull);
-        expect(raw, hasLength(1));
-        expect(_offlineEnvelopeMessage(raw!.single), {
-          'type': 'input',
-          'text': 'offline',
-          'sessionId': 's1',
-          'clientMessageId': 'cm-1',
-          'baseSeq': 4,
-        });
+        expect(raw, isNull);
 
         bridge.dispose();
-      },
-    );
+    });
 
     test(
       'publishes offline pending start and resume actions with dedupe',
@@ -3786,61 +4058,48 @@ void main() {
       },
     );
 
-    test(
-      'updates and cancels offline pending input by clientMessageId',
-      () async {
-        final bridge = BridgeService();
-        await pumpEventQueue();
+    test('offline input has no editable transport outbox record', () async {
+      final bridge = BridgeService();
+      await pumpEventQueue();
 
-        bridge.send(
-          ClientMessage.input(
-            'Original',
-            sessionId: 's1',
-            clientMessageId: 'cm-1',
-            baseSeq: 2,
-            skills: const [
-              {'name': 'skill-a', 'path': '/tmp/skill-a/SKILL.md'},
-            ],
-          ),
-        );
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-
-        final updated = await bridge.updateOfflinePendingInput(
+      bridge.send(
+        ClientMessage.input(
+          'Original',
           sessionId: 's1',
           clientMessageId: 'cm-1',
-          text: 'Edited',
-          mentions: const [
-            {'name': 'Demo App', 'path': 'app://demo'},
+          baseSeq: 2,
+          skills: const [
+            {'name': 'skill-a', 'path': '/tmp/skill-a/SKILL.md'},
           ],
-        );
-        expect(updated, isTrue);
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
 
-        var prefs = await SharedPreferences.getInstance();
-        var raw = prefs.getStringList(_offlinePendingMessagesV2Key);
-        expect(raw, hasLength(1));
-        expect(_offlineEnvelopeMessage(raw!.single), {
-          'type': 'input',
-          'text': 'Edited',
-          'sessionId': 's1',
-          'clientMessageId': 'cm-1',
-          'baseSeq': 2,
-          'mentions': [
-            {'name': 'Demo App', 'path': 'app://demo'},
-          ],
-        });
+      final updated = await bridge.updateOfflinePendingInput(
+        sessionId: 's1',
+        clientMessageId: 'cm-1',
+        text: 'Edited',
+        mentions: const [
+          {'name': 'Demo App', 'path': 'app://demo'},
+        ],
+      );
+      expect(updated, isFalse);
 
-        final canceled = await bridge.cancelOfflinePendingInput(
-          sessionId: 's1',
-          clientMessageId: 'cm-1',
-        );
-        expect(canceled, isTrue);
-        prefs = await SharedPreferences.getInstance();
-        raw = prefs.getStringList(_offlinePendingMessagesV2Key);
-        expect(raw, isNull);
+      var prefs = await SharedPreferences.getInstance();
+      var raw = prefs.getStringList(_offlinePendingMessagesV2Key);
+      expect(raw, isNull);
 
-        bridge.dispose();
-      },
-    );
+      final canceled = await bridge.cancelOfflinePendingInput(
+        sessionId: 's1',
+        clientMessageId: 'cm-1',
+      );
+      expect(canceled, isFalse);
+      prefs = await SharedPreferences.getInstance();
+      raw = prefs.getStringList(_offlinePendingMessagesV2Key);
+      expect(raw, isNull);
+
+      bridge.dispose();
+    });
 
     test(
       'waits for authoritative identity then replays on another route to the '
@@ -3922,6 +4181,72 @@ void main() {
         );
         expect(bridge.queuedMessageCountForTest, 0);
 
+        final prefs = await SharedPreferences.getInstance();
+        expect(prefs.getStringList(_offlinePendingMessagesV2Key), isNull);
+
+        bridge.disconnect();
+        await socket.close();
+        await server.close(force: true);
+        bridge.dispose();
+      },
+    );
+
+    test(
+      'restored unconfirmed input is quarantined instead of replayed',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          _offlinePendingMessagesV2Key: [
+            _offlineEnvelope(
+              message: {
+                'type': 'input',
+                'text': 'Must require explicit retry',
+                'sessionId': 's1',
+                'clientMessageId': 'stale-client-id',
+              },
+              routeIdentity: 'logical:machine:old-route',
+              bridgeInstanceId: 'bridge-1',
+              codexSourceId: 'source-1',
+            ),
+          ],
+        });
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final socketReady = Completer<WebSocket>();
+        final received = <Map<String, dynamic>>[];
+        server.transform(WebSocketTransformer()).listen((socket) {
+          socketReady.complete(socket);
+          socket.listen((data) {
+            received.add(jsonDecode(data as String) as Map<String, dynamic>);
+          });
+        });
+
+        final bridge = BridgeService();
+        bridge.connect(
+          'ws://127.0.0.1:${server.port}',
+          logicalConnectionIdentity: 'machine:new-route',
+          expectedBridgeInstanceId: 'bridge-1',
+          expectedCodexSourceId: 'source-1',
+        );
+        final socket = await socketReady.future;
+        await _waitForBridgeConnection(bridge);
+        await _authorizeBridgeIdentity(
+          bridge,
+          socket,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'source-1',
+        );
+        for (var attempt = 0; attempt < 100; attempt++) {
+          final prefs = await SharedPreferences.getInstance();
+          if (prefs.getStringList(_offlinePendingMessagesV2Key) == null) {
+            break;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+        }
+
+        expect(
+          received.where((message) => message['type'] == 'input'),
+          isEmpty,
+        );
+        expect(bridge.queuedMessageCountForTest, 0);
         final prefs = await SharedPreferences.getInstance();
         expect(prefs.getStringList(_offlinePendingMessagesV2Key), isNull);
 

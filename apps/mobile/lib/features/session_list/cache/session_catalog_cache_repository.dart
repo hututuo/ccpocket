@@ -99,6 +99,7 @@ class ConversationHotWindowSnapshot {
     required this.entries,
     required this.hasEarlier,
     required this.turnsNextCursor,
+    required this.windowComplete,
     required this.latestTurnComplete,
     required this.latestTurnGap,
     required this.latestTurnGapCursor,
@@ -115,6 +116,7 @@ class ConversationHotWindowSnapshot {
 
   /// Opaque cursor for the next older turn page.
   final String? turnsNextCursor;
+  final bool windowComplete;
   final bool latestTurnComplete;
   final ConversationSyncV2LatestTurnGap? latestTurnGap;
 
@@ -122,6 +124,34 @@ class ConversationHotWindowSnapshot {
   final String? latestTurnGapCursor;
   final int sourceEntryCount;
   final DateTime cachedAt;
+}
+
+final Expando<String> _conversationPresentationRevisions = Expando<String>();
+
+/// Stable identity for the rendered message window.
+///
+/// SQLite commit time and provider revision can advance for metadata-only
+/// reconciliation. Replaying the same decoded messages for those commits makes
+/// a cached conversation look as if it was torn down and loaded again. Cache
+/// this bounded content fingerprint on the immutable snapshot instead.
+String conversationPresentationRevision(
+  ConversationHotWindowSnapshot snapshot,
+) {
+  final cached = _conversationPresentationRevisions[snapshot];
+  if (cached != null) return cached;
+  final hash = sha256.convert(
+    utf8.encode(
+      jsonEncode([
+        for (final entry in snapshot.entries)
+          [entry.entryId, entry.index, entry.contentHash],
+      ]),
+    ),
+  );
+  final revision =
+      '${snapshot.entries.length}:'
+      '$hash';
+  _conversationPresentationRevisions[snapshot] = revision;
+  return revision;
 }
 
 class ConversationUserIndexEntry {
@@ -241,12 +271,16 @@ class ConversationTimelinePageCommit {
     required this.pageStored,
     required this.windowCommitted,
     required this.baseRevisionMatched,
+    this.stageRejected = false,
+    this.committedRevision,
     this.lastAssistantOutputAt,
   });
 
   final bool pageStored;
   final bool windowCommitted;
   final bool baseRevisionMatched;
+  final bool stageRejected;
+  final String? committedRevision;
 
   /// Newest discrete assistant text timestamp introduced by this committed
   /// snapshot/patch, or null when the commit only changed tools/status.
@@ -328,6 +362,25 @@ String? _bridgePartitionIdentity({
   return source == null || source.isEmpty ? bridge : '$bridge\u0000$source';
 }
 
+Object? _decodeBoundedDiagnosticJson(
+  Object? value, {
+  required int maximumBytes,
+}) {
+  if (value is! String || value.isEmpty) return null;
+  if (value.length > maximumBytes || utf8.encode(value).length > maximumBytes) {
+    return <String, Object?>{
+      'omitted': true,
+      'reason': 'diagnostic_json_budget',
+      'characterCount': value.length,
+    };
+  }
+  try {
+    return jsonDecode(value);
+  } catch (_) {
+    return const <String, Object?>{'omitted': true, 'reason': 'malformed_json'};
+  }
+}
+
 class SessionCatalogCacheRepository {
   SessionCatalogCacheRepository(
     this.database, {
@@ -336,6 +389,9 @@ class SessionCatalogCacheRepository {
 
   static const maxEntriesPerPartition = 10_000;
   static const maxHotWindowEntries = 2_000;
+  static const _maxTimelineStageRows = maxHotWindowEntries * 2;
+  static const _maxTimelineStagePages = 128;
+  static const _maxTimelineStageBytes = 8 * 1024 * 1024;
   static const _maxIdentityLookupsPerQuery = 300;
   // Revision advertisement is only a reconnect optimization. Keep the initial
   // subscribe path deliberately small; omitted windows are safely replayed by
@@ -346,9 +402,15 @@ class SessionCatalogCacheRepository {
   final SessionCatalogCacheDatabase database;
   final Future<void> Function()? userCacheReadBarrierForTesting;
   Future<void> _mutationTail = Future<void>.value();
+  final Set<Future<void>> _readFlights = {};
+  final Map<String, Future<Map<String, Object?>?>> _diagnosticWindowFlights =
+      {};
   bool _closed = false;
 
-  Future<SessionCatalogCacheSnapshot?> load(
+  Future<SessionCatalogCacheSnapshot?> load(SessionCatalogCacheTarget target) =>
+      _trackRead(() => _load(target));
+
+  Future<SessionCatalogCacheSnapshot?> _load(
     SessionCatalogCacheTarget target,
   ) async {
     if (!target.isValid) return null;
@@ -558,7 +620,10 @@ class SessionCatalogCacheRepository {
     });
   }
 
-  Future<int> countSessions(SessionCatalogCacheTarget target) async {
+  Future<int> countSessions(SessionCatalogCacheTarget target) =>
+      _trackRead(() => _countSessions(target));
+
+  Future<int> _countSessions(SessionCatalogCacheTarget target) async {
     if (!target.isValid) return 0;
     await _mutationTail;
     final db = await database.database;
@@ -575,7 +640,9 @@ class SessionCatalogCacheRepository {
     return Sqflite.firstIntValue(rows) ?? 0;
   }
 
-  Future<int> countAllSessions() async {
+  Future<int> countAllSessions() => _trackRead(_countAllSessions);
+
+  Future<int> _countAllSessions() async {
     await _mutationTail;
     final db = await database.database;
     final rows = await db.rawQuery('''
@@ -585,7 +652,9 @@ class SessionCatalogCacheRepository {
     return Sqflite.firstIntValue(rows) ?? 0;
   }
 
-  Future<SessionCatalogCacheStats> cacheStats() async {
+  Future<SessionCatalogCacheStats> cacheStats() => _trackRead(_cacheStats);
+
+  Future<SessionCatalogCacheStats> _cacheStats() async {
     await _mutationTail;
     final db = await database.database;
     final rows = await db.rawQuery('''
@@ -603,6 +672,10 @@ class SessionCatalogCacheRepository {
   }
 
   Future<SessionCatalogCacheStats> cacheStatsForTarget(
+    SessionCatalogCacheTarget target,
+  ) => _trackRead(() => _cacheStatsForTarget(target));
+
+  Future<SessionCatalogCacheStats> _cacheStatsForTarget(
     SessionCatalogCacheTarget target,
   ) async {
     if (!target.isValid) return const SessionCatalogCacheStats.empty();
@@ -630,6 +703,10 @@ class SessionCatalogCacheRepository {
   }
 
   Future<List<SessionCatalogCachedConversation>> cachedConversations(
+    SessionCatalogCacheTarget target,
+  ) => _trackRead(() => _cachedConversations(target));
+
+  Future<List<SessionCatalogCachedConversation>> _cachedConversations(
     SessionCatalogCacheTarget target,
   ) async {
     if (!target.isValid) return const [];
@@ -704,7 +781,11 @@ class SessionCatalogCacheRepository {
   }
 
   Future<Map<SessionCatalogCacheIdentity, RecentSession>>
-  findSessionsByIdentities(
+  findSessionsByIdentities(Iterable<SessionCatalogCacheIdentity> identities) =>
+      _trackRead(() => _findSessionsByIdentities(identities));
+
+  Future<Map<SessionCatalogCacheIdentity, RecentSession>>
+  _findSessionsByIdentities(
     Iterable<SessionCatalogCacheIdentity> identities,
   ) async {
     final requested = identities.where((identity) => identity.isValid).toSet();
@@ -796,6 +877,19 @@ class SessionCatalogCacheRepository {
   Future<List<ConversationContentCursor>> knownConversationRevisions(
     SessionCatalogCacheTarget target, {
     int limit = 512,
+    bool includeIncomplete = false,
+  }) => _trackRead(
+    () => _knownConversationRevisions(
+      target,
+      limit: limit,
+      includeIncomplete: includeIncomplete,
+    ),
+  );
+
+  Future<List<ConversationContentCursor>> _knownConversationRevisions(
+    SessionCatalogCacheTarget target, {
+    int limit = 512,
+    bool includeIncomplete = false,
   }) async {
     if (!target.isValid || limit <= 0) return const [];
     await _mutationTail;
@@ -808,6 +902,7 @@ class SessionCatalogCacheRepository {
       FROM ${SessionCatalogCacheDatabase.hotWindowsTable} AS windows
       WHERE windows.partition_id = ?
         AND windows.entry_count BETWEEN 0 AND ?
+        ${includeIncomplete ? '' : 'AND windows.window_complete = 1'}
         AND NOT (
           windows.entry_count = 0
           AND windows.latest_turn_complete = 0
@@ -867,6 +962,7 @@ class SessionCatalogCacheRepository {
           provider: provider,
           providerSessionId: providerSessionId,
           revision: snapshot.revision,
+          windowComplete: snapshot.windowComplete,
         ),
       );
     }
@@ -874,6 +970,10 @@ class SessionCatalogCacheRepository {
   }
 
   Future<ConversationSyncCacheState> loadConversationSyncState(
+    SessionCatalogCacheTarget target,
+  ) => _trackRead(() => _loadConversationSyncState(target));
+
+  Future<ConversationSyncCacheState> _loadConversationSyncState(
     SessionCatalogCacheTarget target,
   ) async {
     if (!target.isValid) return const ConversationSyncCacheState.empty();
@@ -903,6 +1003,11 @@ class SessionCatalogCacheRepository {
   }
 
   Future<List<ConversationSyncV2Status>> loadConversationStatuses(
+    SessionCatalogCacheTarget target, {
+    int limit = 10_000,
+  }) => _trackRead(() => _loadConversationStatuses(target, limit: limit));
+
+  Future<List<ConversationSyncV2Status>> _loadConversationStatuses(
     SessionCatalogCacheTarget target, {
     int limit = 10_000,
   }) async {
@@ -937,7 +1042,60 @@ class SessionCatalogCacheRepository {
     return List.unmodifiable(statuses);
   }
 
+  Future<ConversationSyncV2Status?> loadConversationStatus({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) => _trackRead(
+    () => _loadConversationStatus(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    ),
+  );
+
+  Future<ConversationSyncV2Status?> _loadConversationStatus({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) async {
+    if (!target.isValid ||
+        (provider != 'claude' && provider != 'codex') ||
+        providerSessionId.trim().isEmpty ||
+        providerSessionId.length > 256) {
+      return null;
+    }
+    await _mutationTail;
+    final db = await database.database;
+    final partitionId = await _resolveReadablePartition(db, target);
+    if (partitionId == null) return null;
+    final rows = await db.query(
+      SessionCatalogCacheDatabase.statusesTable,
+      columns: ['status_json'],
+      where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+      whereArgs: [partitionId, provider, providerSessionId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(rows.single['status_json']! as String);
+      if (decoded is Map) {
+        return ConversationSyncV2Status.fromJson(
+          Map<String, dynamic>.from(decoded),
+        );
+      }
+    } catch (_) {
+      // Diagnostic reads are optional and must isolate a damaged cache row.
+    }
+    return null;
+  }
+
   Future<List<ConversationSyncV2ReadWatermark>> loadReadWatermarks(
+    SessionCatalogCacheTarget target, {
+    int limit = 512,
+  }) => _trackRead(() => _loadReadWatermarks(target, limit: limit));
+
+  Future<List<ConversationSyncV2ReadWatermark>> _loadReadWatermarks(
     SessionCatalogCacheTarget target, {
     int limit = 512,
   }) async {
@@ -961,6 +1119,48 @@ class SessionCatalogCacheRepository {
           readAt: row['read_at']! as String,
         ),
       ),
+    );
+  }
+
+  Future<ConversationSyncV2ReadWatermark?> loadReadWatermark({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) => _trackRead(
+    () => _loadReadWatermark(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    ),
+  );
+
+  Future<ConversationSyncV2ReadWatermark?> _loadReadWatermark({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) async {
+    if (!target.isValid ||
+        (provider != 'claude' && provider != 'codex') ||
+        providerSessionId.trim().isEmpty ||
+        providerSessionId.length > 256) {
+      return null;
+    }
+    await _mutationTail;
+    final db = await database.database;
+    final partitionId = await _resolveReadablePartition(db, target);
+    if (partitionId == null) return null;
+    final rows = await db.query(
+      SessionCatalogCacheDatabase.readWatermarksTable,
+      where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+      whereArgs: [partitionId, provider, providerSessionId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    final row = rows.single;
+    return ConversationSyncV2ReadWatermark(
+      provider: row['provider']! as String,
+      providerSessionId: row['provider_session_id']! as String,
+      readAt: row['read_at']! as String,
     );
   }
 
@@ -1089,12 +1289,12 @@ class SessionCatalogCacheRepository {
           {'partition_id': partitionId, 'priority_ready': 0, 'updated_at': now},
           conflictAlgorithm: ConflictAlgorithm.ignore,
         );
-        await transaction.update(
-          SessionCatalogCacheDatabase.syncStatesTable,
-          {'priority_ready': 0, 'updated_at': now},
-          where: 'partition_id = ?',
-          whereArgs: [partitionId],
-        );
+        // `priority_ready` describes the last atomically committed cache, not
+        // the in-flight subscription. SessionListCubit separately clears its
+        // live readiness when it receives `started`. Keeping the durable bit
+        // here means a failed refresh cannot erase the only readable fallback
+        // or make the next launch pretend that an already committed catalog is
+        // incomplete.
         await transaction.delete(
           SessionCatalogCacheDatabase.timelineStagesTable,
           where: 'partition_id = ? AND subscription_id <> ?',
@@ -1450,6 +1650,29 @@ class SessionCatalogCacheRepository {
                 thread.providerSessionId,
               ],
             );
+            await transaction.delete(
+              SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+              where:
+                  'partition_id = ? AND provider = ? '
+                  'AND provider_session_id = ?',
+              whereArgs: [
+                partitionId,
+                thread.provider,
+                thread.providerSessionId,
+              ],
+            );
+            await transaction.update(
+              SessionCatalogCacheDatabase.hotWindowsTable,
+              {'latest_turn_gap_cursor': null},
+              where:
+                  'partition_id = ? AND provider = ? '
+                  'AND provider_session_id = ?',
+              whereArgs: [
+                partitionId,
+                thread.provider,
+                thread.providerSessionId,
+              ],
+            );
           default:
             throw ArgumentError.value(scope, 'scope');
         }
@@ -1471,6 +1694,8 @@ class SessionCatalogCacheRepository {
     required List<String> deletes,
     required bool hasEarlier,
     String? turnsNextCursor,
+    bool? windowComplete,
+    bool advanceIncompleteWireRevision = false,
     bool latestTurnComplete = true,
     ConversationSyncV2LatestTurnGap? latestTurnGap,
     required int sourceEntryCount,
@@ -1484,9 +1709,15 @@ class SessionCatalogCacheRepository {
         ),
       );
     }
+    if (pageCount > _maxTimelineStagePages) {
+      return Future.error(
+        StateError('Conversation timeline page count exceeds the local bound.'),
+      );
+    }
     return _enqueueMutationResult(() async {
       final db = await database.database;
       return db.transaction((transaction) async {
+        final commitsCompleteWindow = windowComplete ?? latestTurnComplete;
         final latestTurnGapJson = _encodeLatestTurnGap(
           latestTurnComplete: latestTurnComplete,
           gap: latestTurnGap,
@@ -1516,6 +1747,7 @@ class SessionCatalogCacheRepository {
             'page_count': pageCount,
             'has_earlier': hasEarlier ? 1 : 0,
             'turns_next_cursor': turnsNextCursor,
+            'window_complete': commitsCompleteWindow ? 1 : 0,
             'latest_turn_complete': latestTurnComplete ? 1 : 0,
             'latest_turn_gap_json': latestTurnGapJson,
             'latest_turn_gap_cursor': null,
@@ -1539,6 +1771,7 @@ class SessionCatalogCacheRepository {
             stage['page_count'] != pageCount ||
             stage['has_earlier'] != (hasEarlier ? 1 : 0) ||
             stage['turns_next_cursor'] != turnsNextCursor ||
+            stage['window_complete'] != (commitsCompleteWindow ? 1 : 0) ||
             stage['latest_turn_complete'] != (latestTurnComplete ? 1 : 0) ||
             stage['latest_turn_gap_json'] != latestTurnGapJson ||
             stage['latest_turn_gap_cursor'] != null ||
@@ -1553,6 +1786,51 @@ class SessionCatalogCacheRepository {
           limit: 1,
         );
         if (duplicate.isEmpty) {
+          final stagedEntryStats = await transaction.rawQuery('''
+            SELECT
+              COUNT(*) AS row_count,
+              COALESCE(SUM(LENGTH(CAST(message_json AS BLOB))), 0) AS byte_count
+            FROM ${SessionCatalogCacheDatabase.timelineStageEntriesTable}
+            WHERE $keyWhere
+            ''', keyArgs);
+          final stagedDeleteStats = await transaction.rawQuery('''
+            SELECT
+              COUNT(*) AS row_count,
+              COALESCE(SUM(LENGTH(CAST(entry_id AS BLOB))), 0) AS byte_count
+            FROM ${SessionCatalogCacheDatabase.timelineStageDeletesTable}
+            WHERE $keyWhere
+            ''', keyArgs);
+          final stagedRows =
+              (stagedEntryStats.single['row_count']! as int) +
+              (stagedDeleteStats.single['row_count']! as int);
+          final stagedBytes =
+              (stagedEntryStats.single['byte_count']! as int) +
+              (stagedDeleteStats.single['byte_count']! as int);
+          final incomingBytes =
+              entries.fold<int>(
+                0,
+                (total, entry) =>
+                    total + utf8.encode(jsonEncode(entry.rawMessage)).length,
+              ) +
+              deletes.fold<int>(
+                0,
+                (total, entryId) => total + utf8.encode(entryId).length,
+              );
+          if (stagedRows + entries.length + deletes.length >
+                  _maxTimelineStageRows ||
+              stagedBytes + incomingBytes > _maxTimelineStageBytes) {
+            await transaction.delete(
+              SessionCatalogCacheDatabase.timelineStagesTable,
+              where: keyWhere,
+              whereArgs: keyArgs,
+            );
+            return const ConversationTimelinePageCommit(
+              pageStored: false,
+              windowCommitted: false,
+              baseRevisionMatched: true,
+              stageRejected: true,
+            );
+          }
           await transaction
               .insert(SessionCatalogCacheDatabase.timelineStagePagesTable, {
                 'partition_id': partitionId,
@@ -1615,17 +1893,33 @@ class SessionCatalogCacheRepository {
         if (entryCount > maxHotWindowEntries) {
           throw StateError('Conversation timeline exceeds the local bound.');
         }
+        final existingWindows = await transaction.query(
+          SessionCatalogCacheDatabase.hotWindowsTable,
+          columns: [
+            'revision',
+            'entry_count',
+            'has_earlier',
+            'turns_next_cursor',
+            'window_complete',
+            'source_entry_count',
+          ],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+          limit: 1,
+        );
+        final existingWindow = existingWindows.isEmpty
+            ? null
+            : existingWindows.single;
+        final additiveCommit = !commitsCompleteWindow && existingWindow != null;
+        // An incomplete window is an additive observation, never replacement
+        // authority. Old Bridges can still attach deletes or a newer wire
+        // revision to latestTurnComplete=false frames; both are intentionally
+        // ignored here. New Bridges are validated more strictly by the service.
         if (mode == 'patch') {
-          final windows = await transaction.query(
-            SessionCatalogCacheDatabase.hotWindowsTable,
-            columns: ['revision'],
-            where:
-                'partition_id = ? AND provider = ? '
-                'AND provider_session_id = ?',
-            whereArgs: [partitionId, provider, providerSessionId],
-            limit: 1,
-          );
-          if (windows.isEmpty || windows.single['revision'] != baseRevision) {
+          if (existingWindow == null ||
+              existingWindow['revision'] != baseRevision) {
             await transaction.delete(
               SessionCatalogCacheDatabase.timelineStagesTable,
               where: keyWhere,
@@ -1637,67 +1931,171 @@ class SessionCatalogCacheRepository {
               baseRevisionMatched: false,
             );
           }
-          await transaction.rawDelete(
-            '''
-            DELETE FROM ${SessionCatalogCacheDatabase.hotEntriesTable}
-            WHERE partition_id = ?
-              AND provider = ?
-              AND provider_session_id = ?
-              AND entry_id IN (
-                SELECT entry_id
-                FROM ${SessionCatalogCacheDatabase.timelineStageDeletesTable}
-                WHERE $keyWhere
-              )
-            ''',
-            [partitionId, provider, providerSessionId, ...keyArgs],
-          );
+          if (commitsCompleteWindow) {
+            await transaction.rawDelete(
+              '''
+              DELETE FROM ${SessionCatalogCacheDatabase.hotEntriesTable}
+              WHERE partition_id = ?
+                AND provider = ?
+                AND provider_session_id = ?
+                AND entry_id IN (
+                  SELECT entry_id
+                  FROM ${SessionCatalogCacheDatabase.timelineStageDeletesTable}
+                  WHERE $keyWhere
+                )
+              ''',
+              [partitionId, provider, providerSessionId, ...keyArgs],
+            );
+          }
         } else if (mode == 'snapshot') {
-          await transaction.delete(
+          if (!additiveCommit) {
+            await transaction.delete(
+              SessionCatalogCacheDatabase.hotEntriesTable,
+              where:
+                  'partition_id = ? AND provider = ? '
+                  'AND provider_session_id = ?',
+              whereArgs: [partitionId, provider, providerSessionId],
+            );
+            await transaction.insert(
+              SessionCatalogCacheDatabase.hotWindowsTable,
+              {
+                'partition_id': partitionId,
+                'provider': provider,
+                'provider_session_id': providerSessionId,
+                'revision': revision,
+                'entry_count': 0,
+                'has_earlier': hasEarlier ? 1 : 0,
+                'turns_next_cursor': turnsNextCursor,
+                'window_complete': commitsCompleteWindow ? 1 : 0,
+                'latest_turn_complete': latestTurnComplete ? 1 : 0,
+                'latest_turn_gap_json': latestTurnGapJson,
+                'latest_turn_gap_cursor': null,
+                'source_entry_count': sourceEntryCount,
+                'updated_at': now,
+              },
+              conflictAlgorithm: ConflictAlgorithm.replace,
+            );
+          }
+        } else {
+          throw StateError('Unsupported conversation timeline mode: $mode');
+        }
+        if (additiveCommit) {
+          final existingEntries = await transaction.query(
             SessionCatalogCacheDatabase.hotEntriesTable,
+            columns: ['entry_id', 'entry_index'],
             where:
                 'partition_id = ? AND provider = ? '
                 'AND provider_session_id = ?',
             whereArgs: [partitionId, provider, providerSessionId],
+            orderBy: 'entry_index ASC',
           );
-          await transaction.insert(
-            SessionCatalogCacheDatabase.hotWindowsTable,
-            {
-              'partition_id': partitionId,
-              'provider': provider,
-              'provider_session_id': providerSessionId,
-              'revision': revision,
-              'entry_count': 0,
-              'has_earlier': hasEarlier ? 1 : 0,
-              'turns_next_cursor': turnsNextCursor,
-              'latest_turn_complete': latestTurnComplete ? 1 : 0,
-              'latest_turn_gap_json': latestTurnGapJson,
-              'latest_turn_gap_cursor': null,
-              'source_entry_count': sourceEntryCount,
-              'updated_at': now,
-            },
-            conflictAlgorithm: ConflictAlgorithm.replace,
+          final stagedEntries = await transaction.query(
+            SessionCatalogCacheDatabase.timelineStageEntriesTable,
+            columns: [
+              'entry_id',
+              'entry_index',
+              'content_hash',
+              'message_json',
+            ],
+            where: keyWhere,
+            whereArgs: keyArgs,
+            orderBy: 'entry_index ASC',
           );
+          final existingIds = <String>[];
+          final existingPrefixIds = <String>{};
+          for (final row in existingEntries) {
+            final entryId = row['entry_id']! as String;
+            final entryIndex = row['entry_index']! as int;
+            existingIds.add(entryId);
+            if (entryIndex < 0) existingPrefixIds.add(entryId);
+          }
+          final stagedIds = stagedEntries
+              .map((row) => row['entry_id']! as String)
+              .toList(growable: false);
+          final mergedIds = _mergeAdditiveTimelineOrder(existingIds, stagedIds);
+          if (mergedIds == null) {
+            await transaction.delete(
+              SessionCatalogCacheDatabase.timelineStagesTable,
+              where: keyWhere,
+              whereArgs: keyArgs,
+            );
+            return const ConversationTimelinePageCommit(
+              pageStored: false,
+              windowCommitted: false,
+              baseRevisionMatched: true,
+              stageRejected: true,
+            );
+          }
+          var lastExistingPrefixPosition = -1;
+          for (var index = 0; index < mergedIds.length; index++) {
+            if (existingPrefixIds.contains(mergedIds[index])) {
+              lastExistingPrefixPosition = index;
+            }
+          }
+          final prefixExtent = lastExistingPrefixPosition + 1;
+          final indexById = <String, int>{
+            for (var index = 0; index < mergedIds.length; index++)
+              mergedIds[index]: index - prefixExtent,
+          };
+          final reorder = transaction.batch();
+          for (var index = 0; index < mergedIds.length; index++) {
+            reorder.update(
+              SessionCatalogCacheDatabase.hotEntriesTable,
+              {'entry_index': indexById[mergedIds[index]]},
+              where:
+                  'partition_id = ? AND provider = ? '
+                  'AND provider_session_id = ? AND entry_id = ?',
+              whereArgs: [
+                partitionId,
+                provider,
+                providerSessionId,
+                mergedIds[index],
+              ],
+            );
+          }
+          await reorder.commit(noResult: true);
+          final upserts = transaction.batch();
+          for (final row in stagedEntries) {
+            final entryId = row['entry_id']! as String;
+            final stableIndex = indexById[entryId];
+            if (stableIndex == null) {
+              throw StateError('Partial timeline entry has no stable order.');
+            }
+            upserts.insert(
+              SessionCatalogCacheDatabase.hotEntriesTable,
+              {
+                'partition_id': partitionId,
+                'provider': provider,
+                'provider_session_id': providerSessionId,
+                'entry_id': entryId,
+                'entry_index': stableIndex,
+                'content_hash': row['content_hash'],
+                'message_json': row['message_json'],
+              },
+              conflictAlgorithm: ConflictAlgorithm.replace,
+            );
+          }
+          await upserts.commit(noResult: true);
         } else {
-          throw StateError('Unsupported conversation timeline mode: $mode');
+          await transaction.rawInsert(
+            '''
+            INSERT OR REPLACE INTO
+              ${SessionCatalogCacheDatabase.hotEntriesTable} (
+                partition_id,
+                provider,
+                provider_session_id,
+                entry_id,
+                entry_index,
+                content_hash,
+                message_json
+              )
+            SELECT ?, ?, ?, entry_id, entry_index, content_hash, message_json
+            FROM ${SessionCatalogCacheDatabase.timelineStageEntriesTable}
+            WHERE $keyWhere
+            ''',
+            [partitionId, provider, providerSessionId, ...keyArgs],
+          );
         }
-        await transaction.rawInsert(
-          '''
-          INSERT OR REPLACE INTO
-            ${SessionCatalogCacheDatabase.hotEntriesTable} (
-              partition_id,
-              provider,
-              provider_session_id,
-              entry_id,
-              entry_index,
-              content_hash,
-              message_json
-            )
-          SELECT ?, ?, ?, entry_id, entry_index, content_hash, message_json
-          FROM ${SessionCatalogCacheDatabase.timelineStageEntriesTable}
-          WHERE $keyWhere
-          ''',
-          [partitionId, provider, providerSessionId, ...keyArgs],
-        );
         final committedRows = await transaction.rawQuery(
           '''
           SELECT
@@ -1716,17 +2114,123 @@ class SessionCatalogCacheRepository {
             committedCount != committedIndexCount) {
           throw StateError('Committed conversation timeline is invalid.');
         }
+        final committedRevision = additiveCommit
+            ? advanceIncompleteWireRevision
+                  ? revision
+                  : existingWindow['revision']! as String
+            : revision;
+        final committedHasEarlier = additiveCommit
+            ? (existingWindow['has_earlier']! as int) != 0 || hasEarlier
+            : hasEarlier;
+        final committedTurnsNextCursor = additiveCommit
+            ? (existingWindow['turns_next_cursor'] as String?) ??
+                  turnsNextCursor
+            : turnsNextCursor;
+        final existingSourceEntryCount = additiveCommit
+            ? existingWindow['source_entry_count']! as int
+            : 0;
+        final committedSourceEntryCount = [
+          existingSourceEntryCount,
+          sourceEntryCount,
+          committedCount,
+        ].reduce((left, right) => left > right ? left : right);
+        final repairStages = await transaction.query(
+          SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+          limit: 1,
+        );
+        final repairStage = repairStages.isEmpty ? null : repairStages.single;
+        var repairStageRowsStillCurrent = repairStage != null;
+        if (repairStage != null) {
+          final repairBaseRows = await transaction.query(
+            SessionCatalogCacheDatabase.latestTurnRepairBaseEntriesTable,
+            columns: ['entry_id', 'content_hash'],
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ? AND revision = ? AND turn_id = ?',
+            whereArgs: [
+              partitionId,
+              provider,
+              providerSessionId,
+              repairStage['revision'],
+              repairStage['turn_id'],
+            ],
+          );
+          final repairBaseHashes = <String, String>{
+            for (final row in repairBaseRows)
+              row['entry_id']! as String: row['content_hash']! as String,
+          };
+          final stagedRows = await transaction.query(
+            SessionCatalogCacheDatabase.latestTurnRepairEntriesTable,
+            columns: ['entry_id', 'content_hash'],
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ? AND revision = ? AND turn_id = ?',
+            whereArgs: [
+              partitionId,
+              provider,
+              providerSessionId,
+              repairStage['revision'],
+              repairStage['turn_id'],
+            ],
+          );
+          final stagedHashes = <String, String>{
+            for (final row in stagedRows)
+              row['entry_id']! as String: row['content_hash']! as String,
+          };
+          final currentRepairTurnRows = await transaction.query(
+            SessionCatalogCacheDatabase.hotEntriesTable,
+            columns: ['entry_id', 'content_hash', 'message_json'],
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, provider, providerSessionId],
+          );
+          for (final row in currentRepairTurnRows) {
+            try {
+              final raw = jsonDecode(row['message_json']! as String);
+              if (raw is! Map ||
+                  raw['historyTurnId'] != repairStage['turn_id']) {
+                continue;
+              }
+              final entryId = row['entry_id']! as String;
+              final contentHash = row['content_hash']! as String;
+              if (repairBaseHashes[entryId] != contentHash &&
+                  stagedHashes[entryId] != contentHash) {
+                repairStageRowsStillCurrent = false;
+                break;
+              }
+            } catch (_) {
+              repairStageRowsStillCurrent = false;
+              break;
+            }
+          }
+        }
+        final preserveRepairStage =
+            repairStage != null &&
+            repairStageRowsStillCurrent &&
+            repairStage['revision'] == revision &&
+            repairStage['revision'] == committedRevision &&
+            !latestTurnComplete &&
+            latestTurnGap?.repair == 'items_page' &&
+            latestTurnGap?.turnId == repairStage['turn_id'];
         await transaction.update(
           SessionCatalogCacheDatabase.hotWindowsTable,
           {
             'entry_count': committedCount,
-            'revision': revision,
-            'has_earlier': hasEarlier ? 1 : 0,
-            'turns_next_cursor': turnsNextCursor,
+            'revision': committedRevision,
+            'has_earlier': committedHasEarlier ? 1 : 0,
+            'turns_next_cursor': committedTurnsNextCursor,
+            'window_complete': commitsCompleteWindow ? 1 : 0,
             'latest_turn_complete': latestTurnComplete ? 1 : 0,
             'latest_turn_gap_json': latestTurnGapJson,
-            'latest_turn_gap_cursor': null,
-            'source_entry_count': sourceEntryCount,
+            'latest_turn_gap_cursor': preserveRepairStage
+                ? repairStage['expected_cursor']
+                : null,
+            'source_entry_count': committedSourceEntryCount,
             'updated_at': now,
           },
           where:
@@ -1734,6 +2238,19 @@ class SessionCatalogCacheRepository {
               'AND provider_session_id = ?',
           whereArgs: [partitionId, provider, providerSessionId],
         );
+        // A partial v2 live patch intentionally retains the acknowledged base
+        // revision. Keep a resumable item-page repair only while its exact
+        // revision, turn and repair family remain current. The terminal merge
+        // below reconciles live rows observed after this stage was created.
+        if (!preserveRepairStage) {
+          await transaction.delete(
+            SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, provider, providerSessionId],
+          );
+        }
         final lastAssistantOutputAt = await _latestStagedAssistantOutputAt(
           transaction,
           keyWhere: keyWhere,
@@ -1757,6 +2274,7 @@ class SessionCatalogCacheRepository {
           pageStored: true,
           windowCommitted: true,
           baseRevisionMatched: true,
+          committedRevision: committedRevision,
           lastAssistantOutputAt: advancedAssistantOutputAt,
         );
       });
@@ -1788,6 +2306,18 @@ class SessionCatalogCacheRepository {
     required SessionCatalogCacheTarget target,
     required String provider,
     required String providerSessionId,
+  }) => _trackRead(
+    () => _loadConversationWindow(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    ),
+  );
+
+  Future<ConversationHotWindowSnapshot?> _loadConversationWindow({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
   }) async {
     if (!target.isValid) return null;
     await _mutationTail;
@@ -1808,6 +2338,184 @@ class SessionCatalogCacheRepository {
       providerSessionId: providerSessionId,
       window: windows.single,
     );
+  }
+
+  /// Reads a bounded, newest-first diagnostic view without materializing the
+  /// complete hot window. The ordinary renderer keeps using
+  /// [loadConversationWindow]; this path exists only for explicit user reports
+  /// so a very large cached history cannot multiply memory usage during JSON
+  /// capture.
+  Future<Map<String, Object?>?> loadConversationDiagnosticWindow({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    int maximumEntries = 256,
+    int maximumEncodedBytes = 4 * 1024 * 1024,
+  }) {
+    if (_closed) {
+      return Future<Map<String, Object?>?>.error(
+        StateError('Session catalog cache repository is already closed.'),
+      );
+    }
+    if (!target.isValid ||
+        (provider != 'claude' && provider != 'codex') ||
+        providerSessionId.trim().isEmpty ||
+        providerSessionId.length > 256 ||
+        maximumEntries < 1 ||
+        maximumEntries > maxHotWindowEntries ||
+        maximumEncodedBytes < 1 ||
+        maximumEncodedBytes > 8 * 1024 * 1024) {
+      return Future.value(null);
+    }
+    final key =
+        '${target.fingerprint}\u0000$provider\u0000$providerSessionId'
+        '\u0000$maximumEntries\u0000$maximumEncodedBytes';
+    final existing = _diagnosticWindowFlights[key];
+    if (existing != null) return existing;
+    late final Future<Map<String, Object?>?> flight;
+    flight =
+        _loadConversationDiagnosticWindow(
+          target: target,
+          provider: provider,
+          providerSessionId: providerSessionId,
+          maximumEntries: maximumEntries,
+          maximumEncodedBytes: maximumEncodedBytes,
+        ).whenComplete(() {
+          if (identical(_diagnosticWindowFlights[key], flight)) {
+            _diagnosticWindowFlights.remove(key);
+          }
+        });
+    _diagnosticWindowFlights[key] = flight;
+    return flight;
+  }
+
+  Future<Map<String, Object?>?> _loadConversationDiagnosticWindow({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required int maximumEntries,
+    required int maximumEncodedBytes,
+  }) async {
+    await _mutationTail;
+    final db = await database.database;
+    final partitionId = await _resolveReadablePartition(db, target);
+    if (partitionId == null) return null;
+    final windows = await db.query(
+      SessionCatalogCacheDatabase.hotWindowsTable,
+      where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+      whereArgs: [partitionId, provider, providerSessionId],
+      limit: 1,
+    );
+    if (windows.isEmpty) return null;
+    final window = windows.single;
+    final totalEntryCount = window['entry_count'];
+    if (totalEntryCount is! int ||
+        totalEntryCount < 0 ||
+        totalEntryCount > maxHotWindowEntries) {
+      return null;
+    }
+    var encodedBytes = 0;
+    var inspectedEntries = 0;
+    var skippedOversizedEntries = 0;
+    var skippedMalformedEntries = 0;
+    final entries = <Map<String, Object?>>[];
+    int? beforeIndex;
+    while (inspectedEntries < maximumEntries &&
+        encodedBytes < maximumEncodedBytes) {
+      final rows = await db.rawQuery(
+        '''
+        SELECT entry_id, entry_index, content_hash,
+               LENGTH(CAST(message_json AS BLOB)) AS message_bytes,
+               CASE
+                 WHEN LENGTH(CAST(message_json AS BLOB)) <= ?
+                 THEN message_json
+                 ELSE NULL
+               END AS bounded_message_json
+        FROM ${SessionCatalogCacheDatabase.hotEntriesTable}
+        WHERE partition_id = ? AND provider = ? AND provider_session_id = ?
+          ${beforeIndex == null ? '' : 'AND entry_index < ?'}
+        ORDER BY entry_index DESC
+        LIMIT 1
+        ''',
+        <Object?>[
+          maximumEncodedBytes - encodedBytes,
+          partitionId,
+          provider,
+          providerSessionId,
+          ?beforeIndex,
+        ],
+      );
+      if (rows.isEmpty) break;
+      final row = rows.single;
+      final entryId = row['entry_id'];
+      final entryIndex = row['entry_index'];
+      final contentHash = row['content_hash'];
+      final messageBytes = row['message_bytes'];
+      final encodedMessage = row['bounded_message_json'];
+      inspectedEntries += 1;
+      if (entryIndex is int) beforeIndex = entryIndex;
+      if (entryId is! String ||
+          entryIndex is! int ||
+          contentHash is! String ||
+          messageBytes is! int) {
+        skippedMalformedEntries += 1;
+        continue;
+      }
+      if (encodedMessage is! String) {
+        skippedOversizedEntries += 1;
+        continue;
+      }
+      Object? decoded;
+      try {
+        decoded = jsonDecode(encodedMessage);
+      } catch (_) {
+        skippedMalformedEntries += 1;
+        continue;
+      }
+      if (decoded is! Map) {
+        skippedMalformedEntries += 1;
+        continue;
+      }
+      encodedBytes += messageBytes;
+      entries.add(<String, Object?>{
+        'entryId': entryId,
+        'index': entryIndex,
+        'contentHash': contentHash,
+        'rawMessage': Map<String, Object?>.from(decoded),
+      });
+    }
+    entries.sort(
+      (left, right) =>
+          (left['index']! as int).compareTo(right['index']! as int),
+    );
+    return <String, Object?>{
+      'partitionId': partitionId,
+      'provider': provider,
+      'providerSessionId': providerSessionId,
+      'revision': window['revision'],
+      'entryCount': totalEntryCount,
+      'capturedEntryCount': entries.length,
+      'omittedEntryCount': totalEntryCount - entries.length,
+      'inspectedEntryCount': inspectedEntries,
+      'skippedOversizedEntryCount': skippedOversizedEntries,
+      'skippedMalformedEntryCount': skippedMalformedEntries,
+      'rawMessageBytes': encodedBytes,
+      'hasEarlier': (window['has_earlier'] as int? ?? 0) != 0,
+      'turnsNextCursor': window['turns_next_cursor'],
+      'windowComplete': (window['window_complete'] as int? ?? 1) != 0,
+      'latestTurnComplete': (window['latest_turn_complete'] as int? ?? 1) != 0,
+      'latestTurnGap': _decodeBoundedDiagnosticJson(
+        window['latest_turn_gap_json'],
+        maximumBytes: 256 * 1024,
+      ),
+      'latestTurnGapCursor': window['latest_turn_gap_cursor'],
+      'sourceEntryCount': window['source_entry_count'],
+      'cachedAt': DateTime.fromMillisecondsSinceEpoch(
+        window['updated_at']! as int,
+        isUtc: true,
+      ).toIso8601String(),
+      'entries': entries,
+    };
   }
 
   Future<ConversationHotWindowSnapshot?> _decodeConversationWindow({
@@ -1881,6 +2589,7 @@ class SessionCatalogCacheRepository {
     try {
       final revision = window['revision'];
       final hasEarlier = window['has_earlier'];
+      final windowCompleteValue = window['window_complete'];
       final latestTurnCompleteValue = window['latest_turn_complete'];
       final sourceEntryCount = window['source_entry_count'];
       final updatedAt = window['updated_at'];
@@ -1888,6 +2597,7 @@ class SessionCatalogCacheRepository {
           revision.trim().isEmpty ||
           revision.length > 128 ||
           hasEarlier is! int ||
+          (windowCompleteValue != null && windowCompleteValue is! int) ||
           (latestTurnCompleteValue != null &&
               latestTurnCompleteValue is! int) ||
           sourceEntryCount is! int ||
@@ -1896,6 +2606,7 @@ class SessionCatalogCacheRepository {
         return null;
       }
       final latestTurnComplete = (latestTurnCompleteValue as int? ?? 1) != 0;
+      final windowComplete = (windowCompleteValue as int? ?? 1) != 0;
       final latestTurnGap = _decodeLatestTurnGap(
         latestTurnComplete: latestTurnComplete,
         encoded: window['latest_turn_gap_json'] as String?,
@@ -1908,6 +2619,7 @@ class SessionCatalogCacheRepository {
         entries: List<ConversationContentWireEntry>.unmodifiable(entries),
         hasEarlier: hasEarlier != 0,
         turnsNextCursor: window['turns_next_cursor'] as String?,
+        windowComplete: windowComplete,
         latestTurnComplete: latestTurnComplete,
         latestTurnGap: latestTurnGap,
         latestTurnGapCursor: latestTurnComplete
@@ -1929,6 +2641,7 @@ class SessionCatalogCacheRepository {
     required List<ConversationContentWireEntry> entries,
     required bool hasEarlier,
     String? turnsNextCursor,
+    bool windowComplete = true,
     bool latestTurnComplete = true,
     ConversationSyncV2LatestTurnGap? latestTurnGap,
     String? latestTurnGapCursor,
@@ -1959,6 +2672,7 @@ class SessionCatalogCacheRepository {
             'entry_count': entries.length,
             'has_earlier': hasEarlier ? 1 : 0,
             'turns_next_cursor': turnsNextCursor,
+            'window_complete': windowComplete ? 1 : 0,
             'latest_turn_complete': latestTurnComplete ? 1 : 0,
             'latest_turn_gap_json': latestTurnGapJson,
             'latest_turn_gap_cursor': latestTurnComplete
@@ -2004,7 +2718,11 @@ class SessionCatalogCacheRepository {
     final candidates = <ConversationContentWireEntry>[];
     final seen = <String>{};
     for (var index = 0; index < rawMessages.length; index++) {
-      final candidate = _historyPageEntry(rawMessages[index], index);
+      final candidate = _historyPageEntry(
+        rawMessages[index],
+        index,
+        pageScope: 'turns:${expectedCursor ?? 'start'}',
+      );
       if (candidate == null) continue;
       var entryId = candidate.entryId;
       if (!seen.add(entryId)) {
@@ -2066,6 +2784,20 @@ class SessionCatalogCacheRepository {
         final additions = candidates
             .where((entry) => !existingIds.contains(entry.entryId))
             .toList(growable: false);
+        final existingCountRows = await transaction.rawQuery(
+          '''
+          SELECT COUNT(*) AS entry_count
+          FROM ${SessionCatalogCacheDatabase.hotEntriesTable}
+          WHERE partition_id = ?
+            AND provider = ?
+            AND provider_session_id = ?
+          ''',
+          [partitionId, provider, providerSessionId],
+        );
+        final existingCount = Sqflite.firstIntValue(existingCountRows) ?? 0;
+        if (existingCount + additions.length > maxHotWindowEntries) {
+          return false;
+        }
         final minimumRows = await transaction.rawQuery(
           '''
           SELECT MIN(entry_index) AS minimum_index
@@ -2078,6 +2810,7 @@ class SessionCatalogCacheRepository {
         );
         final minimum = minimumRows.single['minimum_index'] as int? ?? 0;
         final firstIndex = minimum - additions.length;
+        if (firstIndex < -maxHotWindowEntries) return false;
         for (var index = 0; index < additions.length; index++) {
           final entry = additions[index];
           await _insertHotEntry(
@@ -2131,11 +2864,131 @@ class SessionCatalogCacheRepository {
     );
   }
 
-  /// Atomically merges one ascending item page into an incomplete newest turn.
+  /// Atomically captures the readable latest-turn baseline before a provider
+  /// page request is sent.
   ///
-  /// [nextCursor] is deliberately stored separately from [turnsNextCursor]:
-  /// the former continues repair of the current turn while the latter points
-  /// to an older turn page.
+  /// Creating this stage after the response arrives is unsafe: live timeline
+  /// commits during the network flight would be mistaken for the original
+  /// baseline and a terminal repair could delete or overwrite those newer
+  /// rows. A missing or superseded stage therefore fails closed.
+  Future<bool> prepareConversationLatestTurnItemsRepair({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String expectedRevision,
+    required String expectedTurnId,
+    required String? expectedCursor,
+  }) {
+    if (!target.isValid) return Future.value(false);
+    return _enqueueMutationResult(() async {
+      final db = await database.database;
+      return db.transaction((transaction) async {
+        final partitionId = await _resolveReadablePartition(
+          transaction,
+          target,
+        );
+        if (partitionId == null) return false;
+        final windows = await transaction.query(
+          SessionCatalogCacheDatabase.hotWindowsTable,
+          columns: [
+            'revision',
+            'latest_turn_complete',
+            'latest_turn_gap_json',
+            'latest_turn_gap_cursor',
+          ],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+          limit: 1,
+        );
+        if (windows.isEmpty) return false;
+        final window = windows.single;
+        final complete = (window['latest_turn_complete'] as int? ?? 1) != 0;
+        final gap = _decodeLatestTurnGap(
+          latestTurnComplete: complete,
+          encoded: window['latest_turn_gap_json'] as String?,
+        );
+        if (complete ||
+            window['revision'] != expectedRevision ||
+            gap?.repair != 'items_page' ||
+            gap?.turnId != expectedTurnId ||
+            window['latest_turn_gap_cursor'] != expectedCursor) {
+          return false;
+        }
+
+        final stages = await transaction.query(
+          SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+          limit: 1,
+        );
+        final stage = stages.isEmpty ? null : stages.single;
+        if (stage != null) {
+          return stage['revision'] == expectedRevision &&
+              stage['turn_id'] == expectedTurnId &&
+              stage['expected_cursor'] == expectedCursor;
+        }
+        if (expectedCursor != null) return false;
+
+        await transaction
+            .insert(SessionCatalogCacheDatabase.latestTurnRepairStagesTable, {
+              'partition_id': partitionId,
+              'provider': provider,
+              'provider_session_id': providerSessionId,
+              'revision': expectedRevision,
+              'turn_id': expectedTurnId,
+              'expected_cursor': null,
+              'page_depth': 0,
+              'entry_count': 0,
+              'byte_count': 0,
+              'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
+            });
+        final baseRows = await transaction.query(
+          SessionCatalogCacheDatabase.hotEntriesTable,
+          columns: ['entry_id', 'content_hash', 'message_json'],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+        );
+        for (final row in baseRows) {
+          try {
+            final decoded = jsonDecode(row['message_json']! as String);
+            if (decoded is! Map || decoded['historyTurnId'] != expectedTurnId) {
+              continue;
+            }
+            await transaction.insert(
+              SessionCatalogCacheDatabase.latestTurnRepairBaseEntriesTable,
+              {
+                'partition_id': partitionId,
+                'provider': provider,
+                'provider_session_id': providerSessionId,
+                'revision': expectedRevision,
+                'turn_id': expectedTurnId,
+                'entry_id': row['entry_id'],
+                'content_hash': row['content_hash'],
+              },
+            );
+          } catch (_) {
+            // A malformed legacy row remains readable but cannot establish a
+            // safe request-time identity fence for latest-turn replacement.
+          }
+        }
+        return true;
+      });
+    });
+  }
+
+  /// Stages one ascending item page for an incomplete newest turn.
+  ///
+  /// The readable hot window is deliberately left untouched until the final
+  /// page arrives. Publishing each page immediately used to append recovered
+  /// early items after already-visible later items, so the same turn jumped
+  /// around while repair progressed. The terminal page replaces only this
+  /// turn in one SQLite transaction, preserving older cached turns.
   Future<ConversationHotWindowSnapshot?> mergeConversationLatestTurnItemsPage({
     required SessionCatalogCacheTarget target,
     required String provider,
@@ -2143,10 +2996,17 @@ class SessionCatalogCacheRepository {
     required String expectedRevision,
     required String expectedTurnId,
     required List<Map<String, dynamic>> rawMessages,
+    required String? expectedCursor,
     required String? nextCursor,
+    bool pageComplete = true,
+    ConversationSyncV2LatestTurnGap? latestTurnGap,
   }) async {
     if (!target.isValid) return null;
-    final candidates = _historyPageEntries(rawMessages);
+    final candidates = _historyPageEntries(
+      rawMessages,
+      fallbackTurnId: expectedTurnId,
+      pageScope: 'items:${expectedCursor ?? 'start'}',
+    );
     final applied = await _enqueueMutationResult(() async {
       final db = await database.database;
       return db.transaction((transaction) async {
@@ -2162,6 +3022,7 @@ class SessionCatalogCacheRepository {
             'entry_count',
             'latest_turn_complete',
             'latest_turn_gap_json',
+            'source_entry_count',
           ],
           where:
               'partition_id = ? AND provider = ? '
@@ -2183,60 +3044,233 @@ class SessionCatalogCacheRepository {
           return false;
         }
 
+        final stages = await transaction.query(
+          SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+          limit: 1,
+        );
+        final stage = stages.isEmpty ? null : stages.single;
+        if (stage == null ||
+            stage['revision'] != expectedRevision ||
+            stage['turn_id'] != expectedTurnId ||
+            stage['expected_cursor'] != expectedCursor) {
+          return false;
+        }
+
+        if (nextCursor != null && nextCursor == expectedCursor) {
+          throw StateError(
+            'Conversation latest turn repair returned a repeated cursor.',
+          );
+        }
+
+        final pageDepth = stage['page_depth'] as int? ?? 0;
+        for (var itemOrder = 0; itemOrder < candidates.length; itemOrder++) {
+          final candidate = candidates[itemOrder];
+          final encoded = jsonEncode(candidate.rawMessage);
+          await transaction.insert(
+            SessionCatalogCacheDatabase.latestTurnRepairEntriesTable,
+            {
+              'partition_id': partitionId,
+              'provider': provider,
+              'provider_session_id': providerSessionId,
+              'revision': expectedRevision,
+              'turn_id': expectedTurnId,
+              'page_depth': pageDepth,
+              'item_order': itemOrder,
+              'entry_id': candidate.entryId,
+              'content_hash': candidate.contentHash,
+              'message_json': encoded,
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
+        final stagedStats = await transaction.rawQuery(
+          '''
+          SELECT
+            COUNT(*) AS entry_count,
+            COALESCE(SUM(LENGTH(CAST(message_json AS BLOB))), 0) AS byte_count
+          FROM ${SessionCatalogCacheDatabase.latestTurnRepairEntriesTable}
+          WHERE partition_id = ? AND provider = ?
+            AND provider_session_id = ? AND revision = ? AND turn_id = ?
+          ''',
+          [
+            partitionId,
+            provider,
+            providerSessionId,
+            expectedRevision,
+            expectedTurnId,
+          ],
+        );
+        final stagedEntryCount = stagedStats.single['entry_count']! as int;
+        final stagedByteCount = stagedStats.single['byte_count']! as int;
+        if (stagedEntryCount > maxHotWindowEntries ||
+            stagedByteCount > _maxTimelineStageBytes) {
+          throw StateError(
+            'Conversation latest turn repair exceeds the local safety bound.',
+          );
+        }
+        final completed = nextCursor == null && pageComplete;
+        if (!completed) {
+          await transaction.update(
+            SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+            {
+              'expected_cursor': nextCursor,
+              'page_depth': pageDepth + 1,
+              'entry_count': stagedEntryCount,
+              'byte_count': stagedByteCount,
+              'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
+            },
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, provider, providerSessionId],
+          );
+          await transaction.update(
+            SessionCatalogCacheDatabase.hotWindowsTable,
+            {
+              'latest_turn_gap_json': jsonEncode(
+                (pageComplete ? gap : (latestTurnGap ?? gap))!.toJson(),
+              ),
+              'latest_turn_gap_cursor': nextCursor,
+            },
+            where:
+                'partition_id = ? AND provider = ? '
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, provider, providerSessionId],
+          );
+          return true;
+        }
+
         final existingRows = await transaction.query(
           SessionCatalogCacheDatabase.hotEntriesTable,
-          columns: ['entry_id', 'entry_index'],
+          columns: ['entry_id', 'entry_index', 'content_hash', 'message_json'],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+          orderBy: 'entry_index ASC',
+        );
+        final retainedRows = existingRows
+            .where((row) {
+              try {
+                final raw = jsonDecode(row['message_json']! as String);
+                return raw is! Map || raw['historyTurnId'] != expectedTurnId;
+              } catch (_) {
+                return true;
+              }
+            })
+            .toList(growable: false);
+        final existingCurrentTurnRows = existingRows
+            .where((row) {
+              try {
+                final raw = jsonDecode(row['message_json']! as String);
+                return raw is Map && raw['historyTurnId'] == expectedTurnId;
+              } catch (_) {
+                return false;
+              }
+            })
+            .toList(growable: false);
+        final baseRows = await transaction.query(
+          SessionCatalogCacheDatabase.latestTurnRepairBaseEntriesTable,
+          columns: ['entry_id', 'content_hash'],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ? AND revision = ? AND turn_id = ?',
+          whereArgs: [
+            partitionId,
+            provider,
+            providerSessionId,
+            expectedRevision,
+            expectedTurnId,
+          ],
+        );
+        final baseHashes = <String, String>{
+          for (final row in baseRows)
+            row['entry_id']! as String: row['content_hash']! as String,
+        };
+        final stagedRows = await transaction.query(
+          SessionCatalogCacheDatabase.latestTurnRepairEntriesTable,
+          columns: ['entry_id', 'content_hash', 'message_json'],
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ? AND revision = ? AND turn_id = ?',
+          whereArgs: [
+            partitionId,
+            provider,
+            providerSessionId,
+            expectedRevision,
+            expectedTurnId,
+          ],
+          orderBy: 'page_depth ASC, item_order ASC',
+        );
+        final stagedById = <String, Map<String, Object?>>{
+          for (final row in stagedRows) row['entry_id']! as String: row,
+        };
+        final newLiveRows = <Map<String, Object?>>[];
+        for (final row in existingCurrentTurnRows) {
+          final entryId = row['entry_id']! as String;
+          final contentHash = row['content_hash']! as String;
+          final baseHash = baseHashes[entryId];
+          final stagedRow = stagedById[entryId];
+          if (baseHash == null || baseHash != contentHash) {
+            if (stagedRow != null && stagedRow['content_hash'] != contentHash) {
+              throw StateError(
+                'Conversation latest turn changed while its repair was active.',
+              );
+            }
+            if (stagedRow == null) newLiveRows.add(row);
+          }
+        }
+        final combinedCount =
+            retainedRows.length + stagedRows.length + newLiveRows.length;
+        if (combinedCount > maxHotWindowEntries) {
+          throw StateError(
+            'Conversation latest turn repair exceeds the local safety bound.',
+          );
+        }
+        await transaction.delete(
+          SessionCatalogCacheDatabase.hotEntriesTable,
           where:
               'partition_id = ? AND provider = ? '
               'AND provider_session_id = ?',
           whereArgs: [partitionId, provider, providerSessionId],
         );
-        final existingIndexes = <String, int>{
-          for (final row in existingRows)
-            row['entry_id']! as String: row['entry_index']! as int,
-        };
-        var nextIndex = existingRows.fold<int>(
-          -1,
-          (maximum, row) => (row['entry_index']! as int) > maximum
-              ? row['entry_index']! as int
-              : maximum,
-        );
-        final newEntryCount = candidates
-            .where((entry) => !existingIndexes.containsKey(entry.entryId))
-            .length;
-        if (existingRows.length + newEntryCount > maxHotWindowEntries) {
-          throw StateError(
-            'Conversation latest turn repair exceeds the local safety bound.',
-          );
+        var entryIndex = 0;
+        for (final row in [...retainedRows, ...stagedRows, ...newLiveRows]) {
+          await transaction
+              .insert(SessionCatalogCacheDatabase.hotEntriesTable, {
+                'partition_id': partitionId,
+                'provider': provider,
+                'provider_session_id': providerSessionId,
+                'entry_id': row['entry_id'],
+                'entry_index': entryIndex++,
+                'content_hash': row['content_hash'],
+                'message_json': row['message_json'],
+              });
         }
-        for (final candidate in candidates) {
-          final existingIndex = existingIndexes[candidate.entryId];
-          final entryIndex = existingIndex ?? ++nextIndex;
-          await _insertHotEntry(
-            transaction,
-            partitionId: partitionId,
-            provider: provider,
-            providerSessionId: providerSessionId,
-            entry: ConversationContentWireEntry(
-              entryId: candidate.entryId,
-              index: entryIndex,
-              contentHash: candidate.contentHash,
-              rawMessage: candidate.rawMessage,
-            ),
-          );
-        }
-        final completed = nextCursor == null;
         await transaction.update(
           SessionCatalogCacheDatabase.hotWindowsTable,
           {
-            'entry_count': existingRows.length + newEntryCount,
-            'latest_turn_complete': completed ? 1 : 0,
-            'latest_turn_gap_json': completed
-                ? null
-                : window['latest_turn_gap_json'],
-            'latest_turn_gap_cursor': completed ? null : nextCursor,
+            'entry_count': combinedCount,
+            'latest_turn_complete': 1,
+            'latest_turn_gap_json': null,
+            'latest_turn_gap_cursor': null,
+            'source_entry_count':
+                (window['source_entry_count']! as int) > combinedCount
+                ? window['source_entry_count']
+                : combinedCount,
             'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
           },
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+        );
+        await transaction.delete(
+          SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
           where:
               'partition_id = ? AND provider = ? '
               'AND provider_session_id = ?',
@@ -2253,8 +3287,11 @@ class SessionCatalogCacheRepository {
     );
   }
 
-  /// Atomically replaces the bounded recent window with a fresh latest-turn
-  /// page when the provider cannot expose an authoritative turn id.
+  /// Merges a bounded latest-turn summary without destroying richer rows.
+  ///
+  /// A turns-page summary does not prove coverage of the hot window or of the
+  /// latest turn's item list. It may enrich an incomplete cache, but only a
+  /// later complete canonical timeline may replace or mark that cache complete.
   Future<ConversationHotWindowSnapshot?>
   replaceConversationLatestTurnsRepairPage({
     required SessionCatalogCacheTarget target,
@@ -2265,7 +3302,10 @@ class SessionCatalogCacheRepository {
     required String? turnsNextCursor,
   }) async {
     if (!target.isValid) return null;
-    final entries = _historyPageEntries(rawMessages);
+    final entries = _historyPageEntries(
+      rawMessages,
+      pageScope: 'turns:${turnsNextCursor ?? 'end'}',
+    );
     if (entries.isEmpty) return null;
     if (entries.length > maxHotWindowEntries) {
       throw StateError(
@@ -2308,28 +3348,38 @@ class SessionCatalogCacheRepository {
             gap?.repair != 'turns_page') {
           return false;
         }
-        final preservedRows = await transaction.query(
+        final existingRows = await transaction.query(
           SessionCatalogCacheDatabase.hotEntriesTable,
-          columns: ['entry_id'],
+          columns: ['entry_id', 'entry_index'],
           where:
               'partition_id = ? AND provider = ? '
-              'AND provider_session_id = ? AND entry_index < 0',
+              'AND provider_session_id = ?',
           whereArgs: [partitionId, provider, providerSessionId],
         );
-        if (preservedRows.length + entries.length > maxHotWindowEntries) {
+        final indexById = <String, int>{
+          for (final row in existingRows)
+            row['entry_id']! as String: row['entry_index']! as int,
+        };
+        final hasPagedPrefix = existingRows.any(
+          (row) => (row['entry_index']! as int) < 0,
+        );
+        final newEntryCount = entries
+            .where((entry) => !indexById.containsKey(entry.entryId))
+            .length;
+        if (existingRows.length + newEntryCount > maxHotWindowEntries) {
           throw StateError(
             'Conversation latest turns repair exceeds the local safety bound.',
           );
         }
-        await transaction.delete(
-          SessionCatalogCacheDatabase.hotEntriesTable,
-          where:
-              'partition_id = ? AND provider = ? '
-              'AND provider_session_id = ? AND entry_index >= 0',
-          whereArgs: [partitionId, provider, providerSessionId],
+        var appendIndex = existingRows.fold<int>(
+          -1,
+          (maximum, row) => (row['entry_index']! as int) > maximum
+              ? row['entry_index']! as int
+              : maximum,
         );
-        for (var index = 0; index < entries.length; index++) {
-          final entry = entries[index];
+        for (final entry in entries) {
+          if (indexById.containsKey(entry.entryId)) continue;
+          final stableIndex = ++appendIndex;
           await _insertHotEntry(
             transaction,
             partitionId: partitionId,
@@ -2337,7 +3387,7 @@ class SessionCatalogCacheRepository {
             providerSessionId: providerSessionId,
             entry: ConversationContentWireEntry(
               entryId: entry.entryId,
-              index: index,
+              index: stableIndex,
               contentHash: entry.contentHash,
               rawMessage: entry.rawMessage,
             ),
@@ -2354,7 +3404,6 @@ class SessionCatalogCacheRepository {
           [partitionId, provider, providerSessionId],
         );
         final committedCount = Sqflite.firstIntValue(countRows) ?? 0;
-        final hasPagedPrefix = preservedRows.isNotEmpty;
         final sourceEntryCount = window['source_entry_count']! as int;
         await transaction.update(
           SessionCatalogCacheDatabase.hotWindowsTable,
@@ -2368,8 +3417,9 @@ class SessionCatalogCacheRepository {
             'turns_next_cursor': hasPagedPrefix
                 ? window['turns_next_cursor']
                 : turnsNextCursor,
-            'latest_turn_complete': 1,
-            'latest_turn_gap_json': null,
+            'window_complete': 0,
+            'latest_turn_complete': 0,
+            'latest_turn_gap_json': window['latest_turn_gap_json'],
             'latest_turn_gap_cursor': null,
             'source_entry_count': sourceEntryCount > committedCount
                 ? sourceEntryCount
@@ -2451,6 +3501,17 @@ class SessionCatalogCacheRepository {
             entry: entry,
           );
         }
+        // Legacy/v1 patches are authoritative mutations of the readable hot
+        // window but do not carry the v2 item-page staging generation. Any
+        // resumable repair created for the old window must therefore be
+        // invalidated before its next page can rewrite this newer patch.
+        await transaction.delete(
+          SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+          where:
+              'partition_id = ? AND provider = ? '
+              'AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+        );
         final countRows = await transaction.rawQuery(
           '''
           SELECT
@@ -2477,6 +3538,7 @@ class SessionCatalogCacheRepository {
             'entry_count': count,
             'has_earlier': hasEarlier ? 1 : 0,
             'turns_next_cursor': turnsNextCursor,
+            'window_complete': 1,
             'latest_turn_complete': latestTurnComplete ? 1 : 0,
             'latest_turn_gap_json': latestTurnGapJson,
             'latest_turn_gap_cursor': null,
@@ -2506,6 +3568,7 @@ class SessionCatalogCacheRepository {
       await db.transaction((transaction) async {
         for (final table in [
           SessionCatalogCacheDatabase.timelineStagesTable,
+          SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
           SessionCatalogCacheDatabase.hotWindowsTable,
           SessionCatalogCacheDatabase.userIndexStatesTable,
         ]) {
@@ -2528,6 +3591,7 @@ class SessionCatalogCacheRepository {
   }) async {
     for (final table in [
       SessionCatalogCacheDatabase.timelineStagesTable,
+      SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
       SessionCatalogCacheDatabase.hotWindowsTable,
       SessionCatalogCacheDatabase.statusesTable,
       SessionCatalogCacheDatabase.syncStatesTable,
@@ -2556,6 +3620,18 @@ class SessionCatalogCacheRepository {
   }
 
   Future<ConversationUserIndexSnapshot?> loadConversationUserIndex({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) => _trackRead(
+    () => _loadConversationUserIndex(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    ),
+  );
+
+  Future<ConversationUserIndexSnapshot?> _loadConversationUserIndex({
     required SessionCatalogCacheTarget target,
     required String provider,
     required String providerSessionId,
@@ -2629,6 +3705,18 @@ class SessionCatalogCacheRepository {
   /// Background warmup uses this probe so an unchanged large index does not
   /// materialize every user prompt in memory just to discover it is current.
   Future<ConversationUserIndexState?> loadConversationUserIndexState({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) => _trackRead(
+    () => _loadConversationUserIndexState(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    ),
+  );
+
+  Future<ConversationUserIndexState?> _loadConversationUserIndexState({
     required SessionCatalogCacheTarget target,
     required String provider,
     required String providerSessionId,
@@ -2872,6 +3960,20 @@ class SessionCatalogCacheRepository {
   }
 
   Future<ConversationUserTurnDetailSnapshot?> loadConversationUserTurnDetail({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String providerTurnId,
+  }) => _trackRead(
+    () => _loadConversationUserTurnDetail(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      providerTurnId: providerTurnId,
+    ),
+  );
+
+  Future<ConversationUserTurnDetailSnapshot?> _loadConversationUserTurnDetail({
     required SessionCatalogCacheTarget target,
     required String provider,
     required String providerSessionId,
@@ -3136,7 +4238,27 @@ class SessionCatalogCacheRepository {
     if (_closed) return;
     _closed = true;
     await _mutationTail;
+    while (_readFlights.isNotEmpty) {
+      await Future.wait(_readFlights.toList(growable: false));
+    }
+    await Future.wait(_diagnosticWindowFlights.values);
+    _diagnosticWindowFlights.clear();
     await database.close();
+  }
+
+  Future<T> _trackRead<T>(Future<T> Function() operation) {
+    if (_closed) {
+      return Future<T>.error(
+        StateError('Session catalog cache repository is already closed.'),
+      );
+    }
+    late final Future<void> settled;
+    final result = Future<T>.sync(operation);
+    settled = result
+        .then<void>((_) {}, onError: (Object _, StackTrace _) {})
+        .whenComplete(() => _readFlights.remove(settled));
+    _readFlights.add(settled);
+    return result;
   }
 
   Future<void> _enqueueMutation(Future<void> Function() operation) {
@@ -3203,39 +4325,57 @@ class SessionCatalogCacheRepository {
 
   static ConversationContentWireEntry? _historyPageEntry(
     Map<String, dynamic> rawMessage,
-    int index,
-  ) {
+    int index, {
+    String? fallbackTurnId,
+    String? pageScope,
+  }) {
     try {
-      ServerMessage.fromJson(rawMessage);
-      final encoded = jsonEncode(rawMessage);
+      final normalizedRawMessage = Map<String, dynamic>.from(rawMessage);
+      final explicitTurnId = (normalizedRawMessage['historyTurnId'] as String?)
+          ?.trim();
+      if (explicitTurnId?.isNotEmpty != true &&
+          fallbackTurnId?.trim().isNotEmpty == true) {
+        normalizedRawMessage['historyTurnId'] = fallbackTurnId!.trim();
+      }
+      ServerMessage.fromJson(normalizedRawMessage);
+      final encoded = jsonEncode(normalizedRawMessage);
       final contentHash = sha256.convert(utf8.encode(encoded)).toString();
-      final type = rawMessage['type'] as String? ?? 'unknown';
-      final historyTurnId = (rawMessage['historyTurnId'] as String?)?.trim();
+      final type = normalizedRawMessage['type'] as String? ?? 'unknown';
+      final historyTurnId = (normalizedRawMessage['historyTurnId'] as String?)
+          ?.trim();
       String scoped(String identity) => historyTurnId?.isNotEmpty == true
           ? 'turn:$historyTurnId:$identity'
-          : identity;
+          : 'occurrence:${pageScope ?? 'page'}:$index:$identity';
       String? identity;
       if (type == 'user_input') {
-        final providerItemId = (rawMessage['providerItemId'] as String?)
+        final clientMessageId =
+            (normalizedRawMessage['clientMessageId'] as String?)?.trim();
+        final providerItemId =
+            (normalizedRawMessage['providerItemId'] as String?)?.trim();
+        final legacyUuid = (normalizedRawMessage['userMessageUuid'] as String?)
             ?.trim();
-        final legacyUuid = (rawMessage['userMessageUuid'] as String?)?.trim();
-        identity = providerItemId?.isNotEmpty == true
-            ? 'user-provider:$providerItemId'
+        identity = clientMessageId?.isNotEmpty == true
+            ? scoped('user-client:$clientMessageId')
+            : providerItemId?.isNotEmpty == true
+            ? scoped('user-provider:$providerItemId')
             : legacyUuid?.isNotEmpty == true
             ? scoped('user:$legacyUuid')
-            : 'user:$contentHash';
+            : scoped('user:$contentHash');
       } else if (type == 'assistant') {
-        final nested = rawMessage['message'];
+        final nested = normalizedRawMessage['message'];
         final messageId = nested is Map ? nested['id'] as String? : null;
         final stableId =
-            (rawMessage['messageUuid'] as String?)?.trim().isNotEmpty == true
-            ? rawMessage['messageUuid'] as String
+            (normalizedRawMessage['messageUuid'] as String?)
+                    ?.trim()
+                    .isNotEmpty ==
+                true
+            ? normalizedRawMessage['messageUuid'] as String
             : messageId;
         identity = stableId?.trim().isNotEmpty == true
             ? scoped('assistant:$stableId')
             : 'assistant:$contentHash';
       } else if (type == 'tool_result') {
-        final toolUseId = rawMessage['toolUseId'] as String?;
+        final toolUseId = normalizedRawMessage['toolUseId'] as String?;
         identity = toolUseId?.trim().isNotEmpty == true
             ? scoped('tool-result:$toolUseId')
             : 'tool-result:$contentHash';
@@ -3244,7 +4384,7 @@ class SessionCatalogCacheRepository {
         entryId: identity ?? 'message:$type:$contentHash',
         index: index,
         contentHash: contentHash,
-        rawMessage: Map.unmodifiable(rawMessage),
+        rawMessage: Map.unmodifiable(normalizedRawMessage),
       );
     } catch (_) {
       return null;
@@ -3252,12 +4392,19 @@ class SessionCatalogCacheRepository {
   }
 
   static List<ConversationContentWireEntry> _historyPageEntries(
-    List<Map<String, dynamic>> rawMessages,
-  ) {
+    List<Map<String, dynamic>> rawMessages, {
+    String? fallbackTurnId,
+    String? pageScope,
+  }) {
     final entries = <ConversationContentWireEntry>[];
     final seen = <String>{};
     for (var index = 0; index < rawMessages.length; index++) {
-      final candidate = _historyPageEntry(rawMessages[index], index);
+      final candidate = _historyPageEntry(
+        rawMessages[index],
+        index,
+        fallbackTurnId: fallbackTurnId,
+        pageScope: pageScope,
+      );
       if (candidate == null) continue;
       var entryId = candidate.entryId;
       if (!seen.add(entryId)) {
@@ -3466,22 +4613,26 @@ class SessionCatalogCacheRepository {
     return sessions;
   }
 
-  /// Applies the same sparse Codex-settings semantics to persistent and
-  /// in-memory catalog projections.
+  /// Applies sparse Codex settings and provider-independent Desktop project
+  /// semantics to persistent and in-memory catalog projections.
   ///
   /// A regular catalog refresh is intentionally allowed to omit expensive
-  /// settings fields. Once a focused authoritative snapshot has been
-  /// committed, a later sparse refresh must not erase it. A complete incoming
-  /// snapshot is authoritative and may explicitly clear or replace fields.
+  /// settings fields or Desktop project metadata. Once an authoritative
+  /// snapshot has been committed, a later sparse refresh must not erase it.
+  /// A complete incoming snapshot is authoritative and may explicitly clear
+  /// or replace fields.
   static RecentSession mergeIncompleteCodexSettings({
     required RecentSession incoming,
     required RecentSession? cached,
   }) {
-    if (incoming.provider != Provider.codex.value ||
-        incoming.codexSettingsSnapshotComplete ||
-        cached == null) {
-      return incoming;
-    }
+    if (cached == null) return incoming;
+    final preserveSettings =
+        incoming.provider == Provider.codex.value &&
+        !incoming.codexSettingsSnapshotComplete;
+    final preserveProjectGrouping =
+        !incoming.projectGroupingSnapshotComplete &&
+        cached.projectGroupingSnapshotComplete;
+    if (!preserveSettings && !preserveProjectGrouping) return incoming;
     final collaborationKnown = incoming.codexCollaborationMode != null;
     final incomingHasPermissionFacts =
         incoming.codexApprovalPolicy != null ||
@@ -3494,7 +4645,9 @@ class SessionCatalogCacheRepository {
       codexSourceId: incoming.codexSourceId,
       rawPermissionMode:
           incoming.rawPermissionMode ??
-          (incomingHasPermissionFacts ? null : cached.rawPermissionMode),
+          (preserveSettings && !incomingHasPermissionFacts
+              ? cached.rawPermissionMode
+              : null),
       forkedFromThreadId: incoming.forkedFromThreadId,
       name: incoming.name,
       agentNickname: incoming.agentNickname,
@@ -3509,37 +4662,70 @@ class SessionCatalogCacheRepository {
       gitBranch: incoming.gitBranch,
       projectPath: incoming.projectPath,
       resumeCwd: incoming.resumeCwd,
+      projectGroupKind: preserveProjectGrouping
+          ? incoming.projectGroupKind ?? cached.projectGroupKind
+          : incoming.projectGroupKind,
+      projectGroupId: preserveProjectGrouping
+          ? incoming.projectGroupId ?? cached.projectGroupId
+          : incoming.projectGroupId,
+      projectGroupName: preserveProjectGrouping
+          ? incoming.projectGroupName ?? cached.projectGroupName
+          : incoming.projectGroupName,
+      projectGroupPath: preserveProjectGrouping
+          ? incoming.projectGroupPath ?? cached.projectGroupPath
+          : incoming.projectGroupPath,
+      projectGroupingSnapshotComplete:
+          incoming.projectGroupingSnapshotComplete || preserveProjectGrouping,
       isSidechain: incoming.isSidechain,
       codexApprovalPolicy:
-          incoming.codexApprovalPolicy ?? cached.codexApprovalPolicy,
+          incoming.codexApprovalPolicy ??
+          (preserveSettings ? cached.codexApprovalPolicy : null),
       codexApprovalsReviewer:
-          incoming.codexApprovalsReviewer ?? cached.codexApprovalsReviewer,
+          incoming.codexApprovalsReviewer ??
+          (preserveSettings ? cached.codexApprovalsReviewer : null),
       codexPermissionsMode:
           incoming.codexPermissionsMode ??
-          (incomingHasPermissionFacts ? null : cached.codexPermissionsMode),
+          (preserveSettings && !incomingHasPermissionFacts
+              ? cached.codexPermissionsMode
+              : null),
       executionMode:
           incoming.executionMode ??
-          (incoming.codexApprovalPolicy != null ? null : cached.executionMode),
-      planMode: collaborationKnown ? incoming.planMode : cached.planMode,
-      codexSandboxMode: incoming.codexSandboxMode ?? cached.codexSandboxMode,
+          (preserveSettings && incoming.codexApprovalPolicy == null
+              ? cached.executionMode
+              : null),
+      planMode: collaborationKnown || !preserveSettings
+          ? incoming.planMode
+          : cached.planMode,
+      codexSandboxMode:
+          incoming.codexSandboxMode ??
+          (preserveSettings ? cached.codexSandboxMode : null),
       codexCollaborationMode:
-          incoming.codexCollaborationMode ?? cached.codexCollaborationMode,
-      codexModel: incoming.codexModel ?? cached.codexModel,
-      codexProfile: incoming.codexProfile ?? cached.codexProfile,
+          incoming.codexCollaborationMode ??
+          (preserveSettings ? cached.codexCollaborationMode : null),
+      codexModel:
+          incoming.codexModel ?? (preserveSettings ? cached.codexModel : null),
+      codexProfile:
+          incoming.codexProfile ??
+          (preserveSettings ? cached.codexProfile : null),
       codexModelReasoningEffort:
           incoming.codexModelReasoningEffort ??
-          cached.codexModelReasoningEffort,
-      codexServiceTier: incoming.codexServiceTier ?? cached.codexServiceTier,
+          (preserveSettings ? cached.codexModelReasoningEffort : null),
+      codexServiceTier:
+          incoming.codexServiceTier ??
+          (preserveSettings ? cached.codexServiceTier : null),
       codexNetworkAccessEnabled:
           incoming.codexNetworkAccessEnabled ??
-          cached.codexNetworkAccessEnabled,
+          (preserveSettings ? cached.codexNetworkAccessEnabled : null),
       codexWebSearchMode:
-          incoming.codexWebSearchMode ?? cached.codexWebSearchMode,
+          incoming.codexWebSearchMode ??
+          (preserveSettings ? cached.codexWebSearchMode : null),
       codexAdditionalWritableRoots:
-          incoming.codexAdditionalWritableRoots.isNotEmpty
+          incoming.codexAdditionalWritableRoots.isNotEmpty || !preserveSettings
           ? incoming.codexAdditionalWritableRoots
           : cached.codexAdditionalWritableRoots,
-      codexSettingsSnapshotComplete: cached.codexSettingsSnapshotComplete,
+      codexSettingsSnapshotComplete:
+          incoming.codexSettingsSnapshotComplete ||
+          (preserveSettings && cached.codexSettingsSnapshotComplete),
     );
   }
 
@@ -4151,4 +5337,52 @@ class SessionCatalogCacheRepository {
 
 class _ConversationCacheBatchSuperseded implements Exception {
   const _ConversationCacheBatchSuperseded();
+}
+
+/// Merges an incomplete ordered observation into an existing hot window.
+///
+/// Existing rows keep their relative order. New rows are inserted immediately
+/// before the next overlapping stable-ID anchor; a trailing run is appended.
+/// Reversed anchors prove the partial projection is inconsistent with the
+/// committed cache, so the caller must reject it and wait for a complete
+/// replacement instead of guessing from timestamps.
+List<String>? _mergeAdditiveTimelineOrder(
+  List<String> existingIds,
+  List<String> incomingIds,
+) {
+  final existingPositions = <String, int>{
+    for (var index = 0; index < existingIds.length; index++)
+      existingIds[index]: index,
+  };
+  final incomingUnique = <String>[];
+  final seenIncoming = <String>{};
+  for (final entryId in incomingIds) {
+    if (seenIncoming.add(entryId)) incomingUnique.add(entryId);
+  }
+
+  var lastAnchorPosition = -1;
+  for (final entryId in incomingUnique) {
+    final position = existingPositions[entryId];
+    if (position == null) continue;
+    if (position <= lastAnchorPosition) return null;
+    lastAnchorPosition = position;
+  }
+
+  final beforeAnchor = <String, List<String>>{};
+  final pending = <String>[];
+  for (final entryId in incomingUnique) {
+    if (existingPositions.containsKey(entryId)) {
+      if (pending.isNotEmpty) {
+        beforeAnchor[entryId] = List<String>.of(pending);
+        pending.clear();
+      }
+    } else {
+      pending.add(entryId);
+    }
+  }
+
+  return [
+    for (final entryId in existingIds) ...[...?beforeAnchor[entryId], entryId],
+    ...pending,
+  ];
 }

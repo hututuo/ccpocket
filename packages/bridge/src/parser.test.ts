@@ -157,6 +157,7 @@ describe("parseClientMessage", () => {
           baseVersion: "1.107.2",
           buildNumber: "198",
           patchNumber: 7,
+          clientBridgeCompatibilityRevision: 1,
           hostSchemaVersion: 1,
           nativeCapabilities: { fileTransfer: 2, quickLook: 1 },
         },
@@ -167,6 +168,7 @@ describe("parseClientMessage", () => {
       type: "client_capabilities",
       mobileRuntime: {
         patchNumber: 7,
+        clientBridgeCompatibilityRevision: 1,
         hostSchemaVersion: 1,
         nativeCapabilities: { fileTransfer: 2, quickLook: 1 },
       },
@@ -181,6 +183,18 @@ describe("parseClientMessage", () => {
           mobileRuntime: {
             hostSchemaVersion: 1,
             nativeCapabilities: { fileTransfer: 0 },
+          },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        JSON.stringify({
+          type: "client_capabilities",
+          mobileRuntime: {
+            clientBridgeCompatibilityRevision: 0,
+            hostSchemaVersion: 1,
+            nativeCapabilities: {},
           },
         }),
       ),
@@ -939,6 +953,27 @@ describe("parseClientMessage", () => {
       goalChangeId: "goal-2",
       expectedGoalOperationSequence: 8,
     });
+    expect(
+      parseClientMessage(
+        '{"type":"get_goal","sessionId":"thread-1","goalTarget":"durable_thread","codexSourceId":"source-1","threadId":"thread-1"}',
+      ),
+    ).toEqual({
+      type: "get_goal",
+      sessionId: "thread-1",
+      goalTarget: "durable_thread",
+      codexSourceId: "source-1",
+      threadId: "thread-1",
+    });
+    expect(
+      parseClientMessage(
+        '{"type":"set_goal","sessionId":"thread-1","objective":"Durable Goal","goalTarget":"durable_thread","codexSourceId":"source-1","threadId":"thread-1","operationId":"goal-op-1","expectedGoalPresent":false}',
+      ),
+    ).toMatchObject({
+      type: "set_goal",
+      sessionId: "thread-1",
+      operationId: "goal-op-1",
+      expectedGoalPresent: false,
+    });
   });
 
   it("rejects invalid Codex goal messages", () => {
@@ -974,6 +1009,21 @@ describe("parseClientMessage", () => {
       ),
     ).toBeNull();
     expect(parseClientMessage('{"type":"clear_goal"}')).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"get_goal","sessionId":"thread-1","goalTarget":"durable_thread","codexSourceId":"source-1","threadId":"other"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"set_goal","sessionId":"thread-1","status":"paused","goalTarget":"durable_thread","codexSourceId":"source-1","threadId":"thread-1"}',
+      ),
+    ).toBeNull();
+    expect(
+      parseClientMessage(
+        '{"type":"clear_goal","sessionId":"thread-1","goalTarget":"durable_thread","codexSourceId":"source-1","threadId":"thread-1","operationId":"op","expectedGoalPresent":false,"expectedGoalObjective":"stale"}',
+      ),
+    ).toBeNull();
     for (const expectedGoalOperationSequence of [-1, 1.5, "1"]) {
       expect(
         parseClientMessage(
@@ -1634,6 +1684,35 @@ describe("parseClientMessage", () => {
     });
   });
 
+  it("parses an exact provider turn for rewind", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"rewind","sessionId":"s1","targetUuid":"uuid-abc","historyTurnId":"turn-provider-1","mode":"conversation"}',
+      ),
+    ).toMatchObject({
+      type: "rewind",
+      historyTurnId: "turn-provider-1",
+    });
+    expect(
+      parseClientMessage(
+        '{"type":"rewind","sessionId":"s1","targetUuid":"uuid-abc","historyTurnId":" ","mode":"conversation"}',
+      ),
+    ).toBeNull();
+  });
+
+  it("parses a detached durable Codex edit target", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"rewind","sessionId":"thread-1","targetUuid":"codex:user-turn:2","historyTurnId":"turn-provider-2","projectPath":"/tmp/project","codexSourceId":"source-1","mode":"conversation"}',
+      ),
+    ).toMatchObject({
+      type: "rewind",
+      sessionId: "thread-1",
+      projectPath: "/tmp/project",
+      codexSourceId: "source-1",
+    });
+  });
+
   it("parses rewind with mode=code", () => {
     const msg = parseClientMessage(
       '{"type":"rewind","sessionId":"s1","targetUuid":"uuid-abc","mode":"code"}',
@@ -1702,6 +1781,17 @@ describe("parseClientMessage", () => {
       type: "fork",
       sessionId: "s1",
       targetUuid: "codex:user-turn:1",
+    });
+  });
+
+  it("parses an exact provider turn for fork", () => {
+    expect(
+      parseClientMessage(
+        '{"type":"fork","sessionId":"s1","targetUuid":"codex:user-turn:1","historyTurnId":"turn-provider-1"}',
+      ),
+    ).toMatchObject({
+      type: "fork",
+      historyTurnId: "turn-provider-1",
     });
   });
 

@@ -6,6 +6,17 @@ import {
 
 const transferId = "transfer_12345678";
 const token = "a".repeat(43);
+const diagnosticReport = {
+  schemaVersion: 1 as const,
+  reportId: "report_20260812",
+  provider: "codex",
+  providerSessionId: "thread-123",
+  bridgeInstanceId: "bridge-test",
+  codexSourceId: "source-123",
+  capturedAtStart: "2026-08-12T00:00:00.000Z",
+  capturedAtEnd: "2026-08-12T00:01:00.000Z",
+  sha256: "a".repeat(64),
+};
 
 describe("file transfer v2 protocol", () => {
   it("accepts the frozen Mobile-owned upload identity", () => {
@@ -70,6 +81,47 @@ describe("file transfer v2 protocol", () => {
         },
       }),
     ).toBeNull();
+  });
+
+  it("accepts a diagnostic purpose only with its complete bounded metadata", () => {
+    expect(parseFileTransferClientMessage({
+      type: "file_transfer_upload_prepare_v2",
+      requestId: "diagnostic-request",
+      transferId,
+      resumeToken: token,
+      filename: "phone-report.json",
+      sizeBytes: 42,
+      purpose: "diagnostic_report",
+      diagnosticReport,
+    })).toMatchObject({ purpose: "diagnostic_report", diagnosticReport });
+    expect(parseFileTransferClientMessage({
+      type: "file_transfer_upload_prepare_v2",
+      requestId: "ordinary-request",
+      transferId,
+      resumeToken: token,
+      filename: "ordinary.json",
+      sizeBytes: 42,
+      diagnosticReport,
+    })).toBeNull();
+    expect(parseFileTransferClientMessage({
+      type: "file_transfer_upload_prepare_v2",
+      requestId: "diagnostic-missing",
+      transferId,
+      resumeToken: token,
+      filename: "phone-report.json",
+      sizeBytes: 42,
+      purpose: "diagnostic_report",
+    })).toBeNull();
+    expect(parseFileTransferClientMessage({
+      type: "file_transfer_upload_prepare_v2",
+      requestId: "diagnostic-too-large",
+      transferId,
+      resumeToken: token,
+      filename: "phone-report.json",
+      sizeBytes: 32 * 1024 * 1024 + 1,
+      purpose: "diagnostic_report",
+      diagnosticReport,
+    })).toBeNull();
   });
 
   it("accepts receive acknowledgements, resume, and direction-scoped cancel", () => {

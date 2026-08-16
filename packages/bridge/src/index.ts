@@ -9,7 +9,7 @@ import { GalleryStore } from "./gallery-store.js";
 import { printStartupInfo } from "./startup-info.js";
 import { MdnsAdvertiser, shouldAdvertiseMdns } from "./mdns.js";
 import { ProjectHistory } from "./project-history.js";
-import { getVersionInfo } from "./version.js";
+import { getPackageVersion, getVersionInfo } from "./version.js";
 import { fetchAllUsage } from "./usage.js";
 import { runDoctor } from "./doctor.js";
 import { DebugTraceStore } from "./debug-trace-store.js";
@@ -31,6 +31,7 @@ import { ArtifactRegistry } from "./artifact-registry.js";
 import { ArtifactManager } from "./artifact-manager.js";
 import { GeneratedArtifactStore } from "./generated-artifact-store.js";
 import { initializeFileTransferRuntime } from "./file-transfer-runtime.js";
+import { DiagnosticReportArchiver } from "./file-transfer-diagnostic.js";
 import { FileBrowserManager } from "./file-browser-manager.js";
 import {
   FileMutationAuthorizer,
@@ -81,6 +82,14 @@ export async function startServer() {
     authMode: process.env.BRIDGE_AUTH_MODE,
   });
   const API_KEY = connectionAuthentication.effectiveApiKey;
+  const unauthenticatedDiagnosticsRequested =
+    process.env.BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS === "1";
+  const explicitOpenAuthentication =
+    process.env.BRIDGE_AUTH_MODE?.trim().toLowerCase() === "open";
+  const allowUnauthenticatedDiagnosticReports =
+    connectionAuthentication.mode === "open" &&
+    explicitOpenAuthentication &&
+    unauthenticatedDiagnosticsRequested;
   const bridgeIdentity = await BridgeIdentityStore.load();
   assertSecureBridgeBinding({
     host: HOST,
@@ -154,6 +163,15 @@ export async function startServer() {
   console.log(
     `[bridge] Connection authentication mode: ${connectionAuthentication.mode}`,
   );
+  if (allowUnauthenticatedDiagnosticReports) {
+    console.warn(
+      "[bridge] Development-only unauthenticated session diagnostics are enabled; ordinary file mutation authorization is unchanged",
+    );
+  } else if (unauthenticatedDiagnosticsRequested) {
+    console.warn(
+      "[bridge] BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS is ignored unless BRIDGE_AUTH_MODE is explicitly set to open",
+    );
+  }
   if (FULL_DISK_READ_REQUESTED && !OWNER_FULL_DISK_READ) {
     console.warn(
       "[bridge] Full-disk phone browsing and out-of-project artifact previews " +
@@ -444,6 +462,22 @@ export async function startServer() {
     downloadDirectory: process.env.BRIDGE_FILE_TRANSFER_DOWNLOAD_DIR?.trim(),
     partialDirectory: process.env.BRIDGE_FILE_TRANSFER_PARTIAL_DIR?.trim(),
     fileMutationAuthorizer,
+    allowDiagnosticWithoutMutationAuthorization:
+      allowUnauthenticatedDiagnosticReports,
+    allowDiagnosticUploadContinuation:
+      connectionAuthentication.mode !== "open" ||
+      allowUnauthenticatedDiagnosticReports,
+    diagnosticContentPolicy: allowUnauthenticatedDiagnosticReports
+      ? "development_full_fidelity"
+      : "strict",
+    diagnosticReportArchiver: new DiagnosticReportArchiver({
+      bridgeInstanceId: promptHistoryStore.bridgeInstanceId,
+      codexSourceId: codexSourceIdentity(),
+      bridgeVersion: getPackageVersion(),
+      contentPolicy: allowUnauthenticatedDiagnosticReports
+        ? "development_full_fidelity"
+        : "strict",
+    }),
     warn: (message) => console.warn(`[bridge] ${message}`),
   });
   let fileTransfer = fileTransferRuntime?.manager;
@@ -550,7 +584,12 @@ export async function startServer() {
     }
 
     if (
-      requiresPrivateHttpAuthorization(req.method, req.url) &&
+      requiresPrivateHttpAuthorization(req.method, req.url, {
+        // Open mode is an explicit trusted-LAN development choice. Mobile
+        // still needs the read-only readiness contract before entering the
+        // application, while every other private HTTP surface remains closed.
+        allowOpenModeReadiness: connectionAuthentication.mode === "open",
+      }) &&
       !bridgeAuthenticator.acceptsPrivateHttpRequest(req)
     ) {
       bridgeAuthenticator.rejectPrivateHttpRequest(req, res);
@@ -577,6 +616,10 @@ export async function startServer() {
             ...(connectionAuthentication.mode === "open" ? ["none"] : []),
           ],
           pairingAvailable: !!devicePairing,
+        },
+        developmentDiagnostics: {
+          unauthenticatedSessionReports:
+            allowUnauthenticatedDiagnosticReports,
         },
         applicationReady: readiness.ready,
         degradedReasons: readiness.reasons,
@@ -733,6 +776,7 @@ export async function startServer() {
       apiKey: API_KEY,
       apiKeyAuthenticator: bridgeAuthenticator,
       authMode: connectionAuthentication.mode,
+      allowUnauthenticatedDiagnosticReports,
       bridgeIdentity,
       devicePairing,
       ownerFullDiskRead: OWNER_FULL_DISK_READ,

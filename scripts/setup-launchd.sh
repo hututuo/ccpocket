@@ -15,7 +15,9 @@
 #   BRIDGE_PORT     (default: 8765)
 #   BRIDGE_HOST     (default: 0.0.0.0)
 #   BRIDGE_API_KEY  (default: none)
+#   BRIDGE_AUTH_MODE (key, paired_or_key, or open; default: inferred)
 #   BRIDGE_REQUIRE_API_KEY (default: inferred from whether a key exists)
+#   BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS (development-only, default: 0)
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -26,7 +28,9 @@ PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 PORT="${BRIDGE_PORT:-8765}"
 HOST="${BRIDGE_HOST:-0.0.0.0}"
 API_KEY="${BRIDGE_API_KEY:-}"
+AUTH_MODE="${BRIDGE_AUTH_MODE:-}"
 REQUIRE_API_KEY="${BRIDGE_REQUIRE_API_KEY:-}"
+ALLOW_UNAUTHENTICATED_DIAGNOSTICS="${BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS:-0}"
 NO_START=false
 UNINSTALL=false
 
@@ -40,6 +44,7 @@ Options:
   --port <port>       Bridge port (default: 8765)
   --host <host>       Bind address (default: 0.0.0.0)
   --api-key <key>     Set the saved Bridge connection key
+  --auth-mode <mode>  Authentication mode: key, paired_or_key, or open
   --require-api-key   Require the configured connection key
   --no-require-api-key
                       Disable connection-key authentication
@@ -55,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     --port) [[ $# -lt 2 ]] && { echo "Error: --port requires a value"; exit 1; }; PORT="$2"; shift 2 ;;
     --host) [[ $# -lt 2 ]] && { echo "Error: --host requires a value"; exit 1; }; HOST="$2"; shift 2 ;;
     --api-key) [[ $# -lt 2 ]] && { echo "Error: --api-key requires a value"; exit 1; }; API_KEY="$2"; shift 2 ;;
+    --auth-mode) [[ $# -lt 2 ]] && { echo "Error: --auth-mode requires a value"; exit 1; }; AUTH_MODE="$2"; shift 2 ;;
     --require-api-key) REQUIRE_API_KEY=1; shift ;;
     --no-require-api-key) REQUIRE_API_KEY=0; shift ;;
     --no-start) NO_START=true; shift ;;
@@ -64,14 +70,33 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$ALLOW_UNAUTHENTICATED_DIAGNOSTICS" == 1 && -z "$AUTH_MODE" ]]; then
+  echo "Error: BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS requires an explicit BRIDGE_AUTH_MODE=open"
+  exit 1
+fi
+
+case "$AUTH_MODE" in
+  "") [[ -n "$API_KEY" ]] && AUTH_MODE=key || AUTH_MODE=open ;;
+  key|paired_or_key|open) ;;
+  *) echo "Error: BRIDGE_AUTH_MODE must be key, paired_or_key, or open"; exit 1 ;;
+esac
+
 case "$REQUIRE_API_KEY" in
   "") [[ -n "$API_KEY" ]] && REQUIRE_API_KEY=1 || REQUIRE_API_KEY=0 ;;
   1) REQUIRE_API_KEY=1 ;;
   0) REQUIRE_API_KEY=0 ;;
   *) echo "Error: BRIDGE_REQUIRE_API_KEY must be 1 or 0"; exit 1 ;;
 esac
-if [[ "$REQUIRE_API_KEY" == 1 && -z "$API_KEY" ]]; then
+if [[ "$AUTH_MODE" != open && "$REQUIRE_API_KEY" == 1 && -z "$API_KEY" ]]; then
   echo "Error: connection-key authentication is enabled but BRIDGE_API_KEY is empty"
+  exit 1
+fi
+case "$ALLOW_UNAUTHENTICATED_DIAGNOSTICS" in
+  0|1) ;;
+  *) echo "Error: BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS must be 1 or 0"; exit 1 ;;
+esac
+if [[ "$ALLOW_UNAUTHENTICATED_DIAGNOSTICS" == 1 && "$AUTH_MODE" != open ]]; then
+  echo "Error: BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS requires BRIDGE_AUTH_MODE=open"
   exit 1
 fi
 
@@ -111,12 +136,20 @@ ENV_BLOCK="        <key>BRIDGE_PORT</key>
 
 ENV_BLOCK="$ENV_BLOCK
         <key>BRIDGE_REQUIRE_API_KEY</key>
-        <string>$REQUIRE_API_KEY</string>"
+        <string>$REQUIRE_API_KEY</string>
+        <key>BRIDGE_AUTH_MODE</key>
+        <string>$AUTH_MODE</string>"
 
 if [ -n "$API_KEY" ]; then
   ENV_BLOCK="$ENV_BLOCK
         <key>BRIDGE_API_KEY</key>
         <string>$API_KEY</string>"
+fi
+
+if [ "$ALLOW_UNAUTHENTICATED_DIAGNOSTICS" = 1 ]; then
+  ENV_BLOCK="$ENV_BLOCK
+        <key>BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS</key>
+        <string>1</string>"
 fi
 
 # --- Generate plist ---

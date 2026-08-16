@@ -27,6 +27,12 @@ abstract class SessionListState with _$SessionListState {
     /// after debounce).
     @Default('') String searchQuery,
 
+    /// Presentation grouping selected in the Mobile UI.
+    ///
+    /// Desktop project IDs are intentionally not sent to legacy Bridge APIs as
+    /// filesystem paths. Legacy groups continue to store the raw path here.
+    String? selectedProjectKey,
+
     /// Accumulated project paths from all loaded sessions + project history.
     /// Used for the "New Session" project picker.
     @Default({}) Set<String> accumulatedProjectPaths,

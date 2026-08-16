@@ -622,6 +622,69 @@ class AppLocalizationsKo extends AppLocalizations {
   String get preparingCodexRuntime => 'Bridge가 온라인입니다. 공유 Codex 런타임을 준비하는 중...';
 
   @override
+  String get connectionPreparingTarget => '연결 대상을 준비하는 중…';
+
+  @override
+  String get connectionOpeningTransport => '네트워크 연결을 여는 중…';
+
+  @override
+  String get connectionNegotiatingTransport =>
+      '네트워크가 연결되었습니다. Bridge 기능을 협상하는 중…';
+
+  @override
+  String get connectionSendingCapabilities => '모바일 기능 정보를 전송하는 중…';
+
+  @override
+  String get connectionRequestingSessionList => '권한 있는 세션 목록을 요청하는 중…';
+
+  @override
+  String get connectionReceivingSessionList => '목록 데이터를 받았습니다. 읽는 중…';
+
+  @override
+  String get connectionDecodingSessionList => '세션 목록을 디코딩하는 중…';
+
+  @override
+  String get connectionValidatingSessionList => '세션 목록을 검증하는 중…';
+
+  @override
+  String get connectionAcceptingSessionAuthority =>
+      '현재 Bridge와 데이터 소스를 확인하는 중…';
+
+  @override
+  String get connectionResolvingBridgeIdentity => '컴퓨터와 Codex 소스를 식별하는 중…';
+
+  @override
+  String get connectionPublishingSessionList => '권한 있는 세션 목록을 게시하는 중…';
+
+  @override
+  String get connectionPreparingConversationSync => '증분 대화 동기화를 준비하는 중…';
+
+  @override
+  String get connectionStartingConversationSync => '증분 대화 동기화를 시작하는 중…';
+
+  @override
+  String get connectionSavingConversationCatalog => '대화 목록을 저장하는 중…';
+
+  @override
+  String get connectionSavingSessionStatus => '실시간 세션 상태를 저장하는 중…';
+
+  @override
+  String get connectionSavingPriorityTimelines => '최근 대화 내용을 저장하는 중…';
+
+  @override
+  String get connectionReloadingLocalProjection => '로컬 대화 화면을 다시 불러오는 중…';
+
+  @override
+  String connectionProgressWithCount(String label, int completed, int total) {
+    return '$label ($completed/$total)';
+  }
+
+  @override
+  String connectionProgressWhilePreparingRuntime(String label) {
+    return '$label (공유 Codex 런타임도 준비 중)';
+  }
+
+  @override
   String get codexRuntimeTakingLonger =>
       'Bridge 프로세스는 온라인이지만 공유 Codex 런타임은 아직 준비 중입니다. 계속 기다리거나 다시 시도하거나 취소할 수 있습니다.';
 
@@ -730,6 +793,9 @@ class AppLocalizationsKo extends AppLocalizations {
   String get allProjects => '모든 프로젝트';
 
   @override
+  String get unassignedProject => '프로젝트 미분류';
+
+  @override
   String get named => '이름 있음';
 
   @override
@@ -828,6 +894,21 @@ class AppLocalizationsKo extends AppLocalizations {
   String get bridgeUpdateAvailable => '업데이트 사용 가능';
 
   @override
+  String get clientBridgeMatched => '모바일 IPA와 Bridge가 일치합니다';
+
+  @override
+  String get clientBridgeBridgeOlder => 'Bridge가 오래되었습니다. 현재 IPA에 맞게 업데이트하세요';
+
+  @override
+  String get clientBridgeMobileOlder =>
+      '모바일 IPA가 오래되었습니다. 현재 Bridge에 맞게 업데이트하세요';
+
+  @override
+  String clientBridgeCompatibilityDetail(String bridgeVersion) {
+    return '현재 Bridge v$bridgeVersion';
+  }
+
+  @override
   String get bridgeUpdateRequiresSetup => 'SSH 및 Bridge 자동 시작 설정이 필요합니다';
 
   @override
@@ -909,10 +990,10 @@ class AppLocalizationsKo extends AppLocalizations {
   String get supportBannerAction => '후원 보기';
 
   @override
-  String get offline => '오프라인';
+  String get offline => 'Mac 또는 Bridge 오프라인';
 
   @override
-  String get unreachable => '연결 불가';
+  String get unreachable => '연결 시간 초과';
 
   @override
   String get checking => '확인 중...';
@@ -1545,11 +1626,15 @@ class AppLocalizationsKo extends AppLocalizations {
   String get rewindCannotRewindFiles => '파일을 되돌릴 수 없습니다';
 
   @override
-  String get codexRewindConfirmTitle => '대화를 되돌릴까요?';
+  String get codexEditMessageConfirmTitle => '이 메시지를 편집할까요?';
 
   @override
-  String get codexRewindConfirmBody =>
-      '채팅을 이 메시지 직전으로 복원하고, 메시지를 입력창에 다시 넣습니다. 파일 변경 사항은 그대로 유지됩니다.';
+  String get codexEditMessageConfirmBody =>
+      'Codex가 이 메시지 직전에서 새 분기를 만듭니다. 기존 분기와 파일 변경은 유지되며, 이 메시지는 수정 후 다시 보낼 수 있도록 입력창으로 돌아갑니다.';
+
+  @override
+  String get codexEditMessageUnavailable =>
+      '대화를 동기화하는 중이라 아직 편집할 수 없습니다. 새로고침한 뒤 다시 시도하세요.';
 
   @override
   String get fork => '분기';

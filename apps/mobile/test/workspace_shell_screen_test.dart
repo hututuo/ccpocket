@@ -21,7 +21,6 @@ import 'package:ccpocket/services/in_app_review_service.dart';
 import 'package:ccpocket/services/machine_manager_service.dart';
 import 'package:ccpocket/services/notification_service.dart';
 import 'package:ccpocket/services/revenuecat_service.dart';
-import 'package:ccpocket/services/ssh_startup_service.dart';
 import 'package:ccpocket/services/support_banner_service.dart';
 import 'package:ccpocket/theme/app_theme.dart';
 import 'package:ccpocket/widgets/session_card.dart';
@@ -54,11 +53,13 @@ class _MockBridgeService extends BridgeService {
   bool _hasAuthoritativeSessionList = false;
   RecentSessionsMessage? _lastRecentSessionsMessage;
   final String? _lastUrl;
+  final int? compatibilityRevision;
   bool disconnectCalled = false;
 
   _MockBridgeService({
     BridgeConnectionState initialState = BridgeConnectionState.connected,
     String? lastUrl,
+    this.compatibilityRevision = 1,
   }) : _state = initialState,
        _lastUrl = lastUrl;
 
@@ -109,6 +110,12 @@ class _MockBridgeService extends BridgeService {
 
   @override
   String? get lastUrl => _lastUrl;
+
+  @override
+  String? get bridgeVersion => recommendedBridgeVersion;
+
+  @override
+  int? get clientBridgeCompatibilityRevision => compatibilityRevision;
 
   @override
   String? get bridgeInstanceId => 'workspace-shell-test-bridge';
@@ -163,6 +170,10 @@ class _MockBridgeService extends BridgeService {
 
   void emitStopped(String sessionId) {
     _stoppedSessionsController.add(sessionId);
+  }
+
+  void emitMessage(ServerMessage message) {
+    _messageController.add(message);
   }
 
   void setGalleryImages(List<GalleryImage> images) {
@@ -249,21 +260,6 @@ class _FakeRevenueCatService extends RevenueCatService {
 class _SeededSettingsCubit extends SettingsCubit {
   _SeededSettingsCubit(super.prefs, {required String? activeMachineId}) {
     emit(state.copyWith(activeMachineId: activeMachineId));
-  }
-}
-
-class _FakeSshStartupService extends SshStartupService {
-  final Completer<SshResult> updateCompleter = Completer<SshResult>();
-
-  _FakeSshStartupService(super.machineManager);
-
-  @override
-  Future<SshResult> updateBridgeServer(
-    String machineId, {
-    String? password,
-    Future<String?> Function()? promptForPassword,
-  }) {
-    return updateCompleter.future;
   }
 }
 
@@ -647,6 +643,62 @@ void main() {
       expect(sourceA.workspaceStateKey, isNot(sourceB.workspaceStateKey));
     },
   );
+
+  testWidgets('rewind child replaces the selected durable Codex route', (
+    tester,
+  ) async {
+    final bridge = _MockBridgeService();
+    final settingsCubit = await _createSettingsCubit(bridge);
+    final draftService = DraftService(await SharedPreferences.getInstance());
+    final revenueCatService = _FakeRevenueCatService();
+    final supportBannerService = await _createSupportBannerService();
+    final shellKey = GlobalKey<WorkspaceShellScreenState>();
+
+    await tester.pumpWidget(
+      _buildWorkspaceApp(
+        bridge: bridge,
+        settingsCubit: settingsCubit,
+        draftService: draftService,
+        revenueCatService: revenueCatService,
+        supportBannerService: supportBannerService,
+        shellKey: shellKey,
+      ),
+    );
+    await _pumpUi(tester);
+
+    shellKey.currentState!.selectSession(
+      const WorkspaceSessionSelection(
+        sessionId: 'original-runtime',
+        durableProviderSessionId: 'original-thread',
+        projectPath: '/Users/demo/project',
+        provider: Provider.codex,
+      ),
+    );
+    await _pumpUi(tester);
+
+    bridge.emitMessage(
+      const SystemMessage(
+        subtype: 'session_created',
+        sessionId: 'child-runtime',
+        claudeSessionId: 'child-thread',
+        provider: 'codex',
+        projectPath: '/Users/demo/project',
+        sourceSessionId: 'original-runtime',
+      ),
+    );
+    await _pumpUi(tester);
+
+    expect(shellKey.currentState!.selectedSession?.sessionId, 'child-runtime');
+    expect(
+      shellKey.currentState!.selectedSession?.durableProviderSessionId,
+      'child-thread',
+    );
+    final visible = tester.widget<CodexSessionScreen>(
+      find.byType(CodexSessionScreen),
+    );
+    expect(visible.sessionId, 'child-runtime');
+    expect(visible.durableProviderSessionId, 'child-thread');
+  });
 
   testWidgets(
     'canonical identity migrates pane state without rebuilding the session',
@@ -1172,7 +1224,7 @@ void main() {
   });
 
   testWidgets(
-    'bridge update from settings disconnects and returns to machine list',
+    'compatibility reminder does not disconnect or run the public updater',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(1400, 900));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -1196,12 +1248,14 @@ void main() {
         ],
         sshPassword: 'secret',
       );
-      final sshService = _FakeSshStartupService(machineManagerService);
       final machineManagerCubit = MachineManagerCubit(
         machineManagerService,
-        sshService,
+        null,
       );
-      final bridge = _MockBridgeService(lastUrl: 'ws://100.64.0.1:8765');
+      final bridge = _MockBridgeService(
+        lastUrl: 'ws://100.64.0.1:8765',
+        compatibilityRevision: 2,
+      );
       final settingsCubit = _SeededSettingsCubit(
         await SharedPreferences.getInstance(),
         activeMachineId: 'machine-1',
@@ -1227,34 +1281,18 @@ void main() {
       shellKey.currentState!.openSettingsCenter(focusConnection: true);
       await _pumpUi(tester);
       expect(
-        find.byKey(const ValueKey('settings_update_bridge_button')),
+        find.byKey(const ValueKey('settings_client_bridge_compatibility_tile')),
         findsOneWidget,
       );
-
-      final updateButton = tester.widget<FilledButton>(
-        find.byKey(const ValueKey('settings_update_bridge_button')),
-      );
-      updateButton.onPressed!();
-      await tester.pump();
-
-      expect(bridge.disconnectCalled, isTrue);
-      expect(machineManagerCubit.state.updatingMachineId, 'machine-1');
       expect(
-        find.byKey(const ValueKey('embedded_settings_back_button')),
+        find.byKey(const ValueKey('settings_update_bridge_button')),
         findsNothing,
       );
-      expect(find.text('Machines'), findsOneWidget);
-
-      machineManagerService.replaceStatuses([
-        MachineWithStatus(
-          machine: machine,
-          status: MachineStatus.online,
-          versionInfo: BridgeVersionInfo(version: recommendedBridgeVersion),
-        ),
-      ]);
-      sshService.updateCompleter.complete(SshResult.success());
-      await tester.pump();
-      await tester.pump();
+      expect(bridge.disconnectCalled, isFalse);
+      expect(
+        find.byKey(const ValueKey('embedded_settings_back_button')),
+        findsOneWidget,
+      );
 
       await settingsCubit.close();
       await machineManagerCubit.close();

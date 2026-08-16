@@ -1,5 +1,104 @@
 # ccPocket Compatibility Decisions
 
+## 2026-08-10 historical message jumps use an isolated two-way viewport
+
+- Selecting a distant user message must not replace, truncate or rewind the
+  mounted conversation cache. The live/current timeline continues accepting
+  cache and socket updates behind an independent historical viewport.
+- The first reveal loads a bounded neighborhood around the target. Provider v2
+  uses the lightweight user-turn index and at most two concurrent exact-turn
+  reads; the legacy local mirror uses a centered random-access entry window.
+- The historical viewport has independent earlier and later boundaries.
+  Approaching either edge loads the adjacent bounded page, while failures stay
+  retryable at that edge. Returning to the latest timeline discards only the
+  viewport, not the cached conversation or its original paging cursor.
+- A live content revision may rebind source/revision-scoped loaders, but it
+  cannot close the historical viewport or move the reader. Provider identity,
+  revision and cache source fences remain authoritative; timestamps do not
+  order or merge history.
+- This is Mobile/cache behavior only. It does not alter provider history,
+  Bridge wire schema, canonical session files, deployment, OTA or IPA state.
+
+## 2026-08-10 Mobile project order and Desktop project mutation boundary
+
+- Mobile project sections use a persisted order scoped by
+  `bridgeInstanceId + codexSourceId`. The first complete order is adopted once;
+  activity, Working/Need You changes, catalog refreshes, pins and project
+  renames do not move existing sections. New sections append, and only an
+  explicit long-press drag changes the saved order.
+- Project groups and conversation rows keep stable keys while ordering changes,
+  so a refresh or runtime attachment must not destroy mounted row state.
+- Durable conversation names remain bidirectional through app-server
+  `thread/name/set` and `thread/name/updated`.
+- Desktop project names are not currently bidirectional. The inspected Desktop
+  build exposes rename only through its process-internal `localProjects` host
+  object and keeps the whole global-state map in memory. Bridge must not rewrite
+  `.codex-global-state.json`: such a write is not live, is overwritten by the
+  next Desktop persistence, and can lose unrelated concurrent state. A future
+  Mobile-to-Desktop rename requires a supported Desktop RPC or an explicitly
+  installed companion integration.
+- Archived Codex sessions are reconciled from official
+  `thread/list(archived:true)` into the source-bound archive projection. A
+  complete scan may remove stale rows for that exact source; partial/unsupported
+  scans preserve the prior projection and never cross source identities. A
+  legacy source-less row is bound only when the provider confirms the exact
+  durable thread ID; unmatched legacy rows are retained.
+- The file manager seeds Desktop, Downloads and Documents through the existing
+  per-Bridge pin store exactly once. Explicit unpin remains authoritative.
+- Connection refusal/non-success health checks are presented as “Mac or Bridge
+  offline”; a probe deadline is “Connection timed out”. These are diagnostic
+  outcomes, not claims that an IP address does or does not exist.
+- The live latest-tool row stays outside the bounded nested process scroller,
+  while only bounded structured Read/Search metadata is promoted into collapsed
+  Desktop-like activity summaries.
+- These are source and test changes only. They do not authorize Bridge
+  deployment, OTA/IPA publication, device installation or stable promotion.
+
+## 2026-08-09 Codex Desktop project identity is presentation authority
+
+- Codex app-server `cwd` remains the canonical provider/resume path, but it is
+  not Codex Desktop's project identity or user-facing project name.
+- Bridge reads `$CODEX_HOME/.codex-global-state.json` read-only and with bounded
+  caching. `local-projects`, `thread-project-assignments`, registered roots and
+  `projectless-thread-ids` provide Desktop-compatible grouping and names.
+- The additive `projectGroup*` projection never replaces `projectPath` or
+  `resumeCwd`. It only controls Mobile grouping, labels, local project filters,
+  collapse state and pins.
+- Different worktrees assigned to one Desktop project share its stable project
+  ID and current name. Explicitly projectless or unmatched Codex threads share
+  one localized projectless group rather than creating fake projects from temp
+  path basenames.
+- Desktop presentation grouping applies to every provider row, not only Codex
+  app-server rows. A Claude or legacy row whose path belongs to a Desktop
+  project joins that stable project ID; when the Desktop catalog is available,
+  unmatched rows join the single projectless bucket. If the catalog is
+  unavailable, Bridge keeps the legacy path grouping for compatibility.
+- A raw path is only a migration alias for collapse, pin and display-limit
+  preferences when exactly one current stable Desktop project owns it. Shared
+  parent roots and old worktree paths cannot control several project sections.
+- Project-scoped pagination merges into the committed catalog. It must never
+  replace sessions from unrelated projects or make their counts jump while one
+  section loads more rows.
+- Desktop project renames/reassignments invalidate the Bridge catalog without
+  reading conversation history. Mobile preserves a complete cached grouping
+  across sparse legacy refreshes, while a newer complete snapshot can rename,
+  move or clear the assignment.
+- Durable conversation titles are separate provider metadata. In shared mode,
+  Mobile writes through app-server `thread/name/set`; Desktop and Mobile both
+  consume `thread/name/updated` and the refreshed catalog, so either side's
+  rename converges without maintaining a second title authority. Project names
+  remain Desktop-owned and are not rewritten by Mobile.
+- Old Mobile ignores the fields; new Mobile with old/malformed/missing Desktop
+  state falls back to legacy path grouping. Bridge never writes Desktop global
+  state.
+- The current Bridge catalog retains its existing 1,000-thread scan bound.
+  Mobile must not repeatedly expand beyond that bound. True paging beyond it is
+  a separate cursor-protocol change and must not be represented as a complete
+  snapshot in the meantime.
+- The implementation contract is documented in
+  `docs/codex-desktop-project-sync.md`. Source completion does not authorize
+  Bridge deployment, OTA, IPA construction, device installation or stable.
+
 ## 2026-08-09 one repository root and one canonical development branch
 
 - The only CC Pocket source project root is
@@ -90,6 +189,15 @@
   startup-era snapshot. Accepted live content must be persisted promptly; an
   older snapshot/history page can fill a gap but cannot replace newer live or
   committed content.
+- A refresh that temporarily produces an empty, incomplete provider window is
+  additive whenever Mobile already has a committed window, even if the bounded
+  subscription cursor list did not declare that revision. It may publish a
+  repair gap and advance the revision, but it cannot delete the readable phone
+  window or replace it with a loading surface.
+- Cache commit time and provider metadata are not presentation revisions.
+  Mobile replays a durable timeline into the chat Cubit only when ordered entry
+  IDs, indexes or content hashes change, and retains the last visible window
+  while an authenticated route is canonicalized to the same Bridge/source.
 - Mutation authority and visual continuity are separate. An uncertain runtime
   generation revokes writes immediately, but it does not clear already shown
   messages, streaming output, durable identity or the reading anchor.
@@ -622,6 +730,8 @@
 - Pause and clear take effect at the boundary between Goal steps and do not interrupt the currently running turn. A `budgetLimited` Goal may resume only when the same update raises the token budget above usage or removes it.
 - Compatibility fields are optional and additive. New mobile advertises `goal_state_raw_status`; unknown future statuses remain visible but read-only at both UI and state-mutation boundaries. Older Bridge responses without `sessionId`, change IDs, or operation sequences are routed only when one live request owner can be identified uniquely and otherwise fail closed.
 - Bridge serializes Goal RPCs per active Codex session and exposes a Bridge-local writable operation sequence for optimistic concurrency. Stable polling reads do not advance it; mutations re-read the authoritative Goal immediately before the app-server write and reject a detected conflict. This narrows, but cannot eliminate, the app-server Goal API's lack of an atomic cross-connection compare-and-set primitive.
+- Durable Codex views address Goal RPCs by the provider `threadId`; they do not resume the thread or create a Bridge runtime merely to read or edit thread-level Goal metadata. The additive `codex_durable_thread_goals_v1` envelope binds the current `codexSourceId`, uses a mutation operation ID for idempotency, and compares the last observed Goal presence plus objective/status/budget/creation identity before writing. Usage-only token/time growth must not create a false edit conflict. Older Mobile/Bridge pairs retain the active-runtime path.
+- The top-right Goal manager performs a bounded authoritative refresh on entry; a previous read failure stays visible with an explicit retry action instead of restarting an opaque spinner. Composer `/goal <objective>` is consumed as `thread/goal/set` and never becomes a normal turn or chat-history item; submitting bare `/goal` opens management. Detached reads are event/open/reconnect driven rather than a five-second per-screen poll, and an unavailable legacy target must show an actionable error instead of an unbounded loading spinner.
 - Permission or sandbox restarts may resume only the exact Goal paused by that restart. The lease binds thread, objective, budget, creation time, pause watermark, and nondecreasing usage counters; a cleared, replaced, or edited Goal is never resumed accidentally.
 - Keep the feature in three dependency-ordered implementation commits: Bridge Goal runtime/protocol, mobile Goal state/protocol, and mobile Goal UI/localization. Remove it in reverse order and verify each remaining layer still builds and tests. Documentation may be a fourth commit.
 - This branch does not replace the live Bridge or install an iOS build. Deployment remains a separate explicit decision after review and compatibility gates.
@@ -754,6 +864,17 @@
   it in the session-list context menu or the conversation-level overflow menu.
   Keep the additive persisted-fork wire contract for old/new peer compatibility
   even though Mobile no longer presents a session-level entry.
+- Codex user-message history uses Desktop's pencil/edit semantics, not a
+  destructive "rewind" promise. Current app-server has no in-place edit RPC:
+  Mobile requests the exact durable thread, user item and provider turn;
+  Bridge verifies their relationship and calls `thread/fork(beforeTurnId)`.
+  The source branch and filesystem changes remain intact, the child replaces
+  the open route, and the selected text returns to the composer for editing and
+  resubmission. Detached cached threads use their durable thread/source/project
+  identity and must not silently require an already attached Bridge runtime.
+  `thread/rollback` is deprecated and is not an edit fallback; an old
+  app-server without turn-boundary fork support fails closed with an update
+  instruction. Claude conversation/code rewind remains a separate feature.
 - Completion detection must cover both transcript shapes: a live Bridge turn
   normally ends with `ResultMessage`, while Desktop/app-server history may omit
   that synthetic marker. In the latter shape, the next user turn closes the
@@ -1012,11 +1133,12 @@
   carries its stored ordinal internally so selecting a distant turn can read
   the 200-entry window beginning at that turn directly.
 - A distant selection keeps the picker visible behind a blocking loading
-  indicator. Mobile swaps in the target window only after the database read
-  completes, then performs the scroll; it must not progressively mount every
-  intervening page. Older drag paging continues immediately before the newly
-  selected window, and another History selection may jump to any newer or
-  older turn even when `hasMore` is false at the current window.
+  indicator. Mobile opens an isolated target-centered viewport only after the
+  database read completes, then performs the scroll; it must not progressively
+  mount every intervening page or replace the live cache. Earlier and later
+  drag paging continue immediately beside that viewport, and another History
+  selection may jump to any newer or older turn regardless of its current
+  boundary state.
 - `bounded_history_window_v1` is an additive client capability. A new Bridge
   sends only the latest 200 canonical entries to an opting-in Mobile; legacy
   clients continue receiving the prior full response. A new Mobile also bounds
@@ -1239,7 +1361,10 @@
   (`78%`). Conversation Sync v2 then records subscription/SQLite-committed
   catalog, status, timeline and priority-checkpoint pages through `98%`;
   projection reload and the complete application gate are `99%` and `100%`.
-  A legacy catalog keeps its correlated request/response milestones.
+  Before the v2 `sync_begin` event, the UI remains at the truthful `78%`
+  “preparing sync” step. A legacy catalog keeps its correlated
+  request/response milestones and legacy catalog wording; it must never claim
+  that Conversation Sync v2 started.
 - The activity ring is intentionally indeterminate and keeps rotating while
   work is active. The separate percentage and linear bar remain determinate;
   a stationary ring must never be used to represent a numeric checkpoint.
@@ -1252,6 +1377,41 @@
   checkpoint until the priority checkpoint. Once the application gate is
   ready, ongoing timeline patches no longer rebuild the entire connection
   screen merely to update startup progress.
+- Shared runtime readiness and conversation-sync commits are independent
+  startup lanes. The visible progress keeps showing committed catalog, status
+  and priority-timeline advancement while `/readyz` is still preparing, and
+  the localized label explicitly says that both are in progress. Runtime
+  readiness remains a mandatory final gate; displaying the parallel work must
+  never turn a 503/unknown runtime into application-ready.
+- The connection screen resolves its text from the same fine-grained progress
+  object used by the watchdog and diagnostics: transport open, capability
+  negotiation, authoritative list request/receive/decode/validate/accept,
+  Bridge/source identity, catalog/status/timeline SQLite commit and local
+  projection reload. Each changed checkpoint logs its stable step name, total
+  elapsed time and step elapsed time without endpoint, key, path, title or
+  thread identity.
+- On a `conversation_sync_v2` startup, `ConversationContentSyncService` is the
+  sole owner of the authoritative catalog/status/priority-timeline bootstrap.
+  `SessionListCubit` must not simultaneously send legacy
+  `list_recent_sessions`, because that duplicate provider scan competes with
+  the priority path. This optimization applies only when the v2 sync service
+  and its SQLite catalog cache are actually installed; isolated hosts fall
+  back to the legacy catalog request instead of waiting for a producer or
+  projection that does not exist. The cheap
+  Bridge-owned `list_project_history` remains so
+  a source switch can clear stale shortcuts. Manual refresh, filters/search and
+  old Bridges retain the existing legacy catalog request. UI and identity
+  consumers must read the committed `SessionListCubit` projection as well as
+  the legacy `BridgeService.recentSessions` cache, so skipping the duplicate
+  v2 provider scan cannot make an existing durable conversation look absent.
+  A same-socket Bridge/source authority change clears the previous source's
+  visible sync progress before the replacement subscription starts. Because
+  that replacement `session_list` frame is already decoded and validated when
+  its new identity is known, Bridge resets the old published milestone and
+  resumes at the truthful model-validated stage before accepting/publishing
+  the new authority.
+  Its progress watchdog and elapsed diagnostics also restart at that authority
+  boundary; elapsed values never combine work from two Codex sources.
 - Prompt History is excluded from the startup critical path. It starts once
   per authenticated socket only after application readiness, prefers stable
   Bridge identity across IP routes, skips unchanged revisions, serializes
@@ -1801,3 +1961,122 @@
   `key` 或持有 API key 的 `paired_or_key` 模式下保持原行为。`bridge_identity_v3`、
   配对消息和模型字段全部为加法能力。本节是源码与自动验证决定，不授权切换当前生产
   `BRIDGE_AUTH_MODE`、重启 Bridge、发布 OTA/IPA、安装设备或晋级 stable。
+
+## 2026-08-09 开放模式的应用就绪门禁
+
+- 显式 `BRIDGE_AUTH_MODE=open` 已经表示用户选择可信局域网无连接密钥开发模式。
+  在该模式下，Mobile 必须能够读取只读 `GET /readyz`，否则 WebSocket、目录和 v2
+  时间线即使全部成功提交，首页仍会被私有 HTTP 的 403 永久锁在应用就绪阶段。
+- 免鉴权例外只适用于 open 模式的 `GET /readyz`。`key`、`paired_or_key` 继续要求
+  既有 Bearer/设备会话；`/usage`、`/doctor`、`/pilot/diagnostics`、Gallery 写入和
+  其他私有 HTTP 表面不因本例外放宽。
+- Mobile 不以假进度或缓存绕过 readiness。Bridge 仍从真实 shared runtime、Action
+  Broker、terminal result 与 input delivery 状态计算 200/503；本变更只修正开放模式
+  下只读 readiness 状态无法穿过 LAN 代理的鉴权矛盾。
+
+## 2026-08-10 更新提示只比较本地 Mobile/Bridge 兼容修订
+
+- 本地兼容 fork 的连接页、首页和设置页不再请求 npm registry 或用官方
+  `@ccpocket/bridge` 最新版本号决定更新提示。公开版本号、compat 后缀和 IPA build
+  号仍用于诊断与发布记录，但不再承担 Mobile 与 Bridge 能否协同工作的判定。
+- Mobile 与 Bridge 分别内置单调递增的 `clientBridgeCompatibilityRevision`。Bridge 在
+  `/version` 和 `session_list` 中声明自己的修订，Mobile 在
+  `client_capabilities.mobileRuntime` 中声明自己的修订；所有字段均为加法字段，旧端
+  可以忽略。
+- 两端修订相同不提示；Bridge 修订缺失或较低时提示“Bridge 较旧”，Bridge 修订较高时
+  提示“手机 App 较旧”。提示只说明哪一端需要更新，不自动运行 npm 安装、不自动切换
+  Bridge runtime，也不自动发布或安装 IPA。
+- 兼容修订只在一端的新增行为需要另一端配合、旧组合应主动提醒时递增。纯 UI、纯性能、
+  文档、日志或保持 wire 兼容的修复不得为了追随 build 而递增，避免把版本号重新变成
+  虚假的兼容信号。
+- Shorebird owner/stable 通道和手动 Mobile 更新页继续作为本地 IPA/OTA 的交付机制；
+  它们不是官方 CC Pocket 版本比较，也不得覆盖本节的端到端兼容修订判断。
+
+## 2026-08-10 v2 同步恢复必须保留已提交缓存并缩小重置范围
+
+- `conversation_sync_v2` 的 patch 若与 Mobile 已提交 hot window 的
+  `baseRevision` 不一致，不得清空可见会话，也不得继续广告同一错误 revision 形成
+  `subscribe → patch reject → unsubscribe` 死循环。Mobile 保留旧窗口，只清理该 thread
+  的 staging，并在下一次订阅中仅省略该 thread 的 revision，要求 Bridge 返回完整
+  snapshot；snapshot 原子提交后再解除强制状态。
+- SQLite 的 `priority_ready` 表示上一份已经原子提交的可用缓存，不表示当前 WebSocket
+  同步是否完成。开始新订阅不得清零该持久位；当前连接的自动首页门禁继续只认内存中的
+  本代 `priorityReady` checkpoint，旧缓存只能通过用户显式选择进入。
+- v2 的手动刷新和停滞恢复只重启当前 conversation-sync subscription，不重连已认证
+  WebSocket、不重建 Bridge/source authority、不清空 SQLite、不重放 mutation，也不并行
+  发起 legacy `list_recent_sessions`。每次订阅尝试在异步读缓存前先撤销上一代 live
+  readiness；重试次数只在 priority checkpoint 或 sync-complete 后归零，watchdog 不得
+  重置指数退避。目录身份仍可单独刷新，代次隔离继续拒绝旧帧。
+- App 从后台恢复时，ConversationContentSyncService 自己恢复 v2 subscription；首页只刷新
+  session-list/项目元数据，不得再立刻拆掉该 subscription 做第二次重订阅。用户显式点击
+  刷新时才允许在同一 socket 上重启一次 v2。
+- Bridge 日志使用脱敏的 subscribe/checkpoint/complete/end 生命周期摘要，区分客户端主动
+  unsubscribe 与 socket disconnect；不逐条记录累计 ACK，也不记录 thread ID、标题、路径
+  或正文。LAN proxy 的暂时网卡空观测不得关闭健康 listener；只有连续确认的新地址才允许
+  rebind。
+
+## 2026-08-10 Desktop 内容必须有且只有一个实时入口
+
+- 已就绪的 formal shared attachment 会把同线程 app-server notification 送入既有 session
+  message stream；`executionHost=desktopAppServer` 只表示当前 turn 的发起方，不表示该 stream
+  缺失。因此 formal attachment 存在时不得再建第二个 observer。相反，只有目录/旧 runtime
+  记录、没有 `controlState` 的 detached 会话不具备直接消息流，必须保留有界、只读、
+  settings-neutral observer。`undefined controlState` 不能再被 `!== unavailable/reconciling`
+  误判成可用 attachment。正式 adoption 继续原子抢占 observer，重复消息由稳定 item identity
+  去重。
+- Codex daemon 的首次连接仍必须核验 CODEX_HOME、父目录权限、CLI 所有权与执行权限、
+  精确 CLI/app-server 版本、生命周期 backend、managed CLI 和 Unix socket identity。
+  核验成功后，只要 CLI file identity 和 socket inode/identity 均未变化，就复用该结果；
+  每次 attachment 仍重新执行路径、权限、所有权和 identity 检查。CLI 原地变化或 socket
+  被替换会立即失效并重新做完整版本核验。禁止用短 TTL 在 timeline 热路径反复同步
+  `spawnSync daemon version`，否则会阻塞 Node 事件循环，并让权威历史暂时不可用后退回旧
+  snapshot。
+
+## 2026-08-11 首页项目目录采用单一展示权威
+
+- 同一 provider 的首页项目目录只能由 provider catalog（包括其 SQLite 持久缓存）投影；
+  Conversation Mirror 不再与 catalog 并列成为第二个项目目录写入者。Mirror 只在该
+  provider 完全没有 catalog 行时作为临时回退，并且必须同时匹配当前认证的
+  `bridgeInstanceId`；Codex 还必须精确匹配当前 `codexSourceId`。
+- 项目不能按显示名称、路径 basename 或 IP 合并。项目身份继续使用 Bridge 投影的稳定
+  `projectGroupId`/`projectGroupingKey`，连接路线只负责连接，同一台电脑的缓存仍按
+  `bridgeInstanceId + codexSourceId` 隔离和复用。
+- 支持 `conversation_sync_v2` 时，catalog change 已由 v2 增量写入持久目录，Mobile 不得
+  再并行启动 legacy `list_recent_sessions` 全目录刷新。旧 Bridge 不声明 v2 时保留原有
+  有界 compatibility refresh。v2 consumer 接管前已经排队或发出的自动 `catalog`
+  请求必须按 request ID 隔离并丢弃迟到响应；用户手动搜索、筛选、分页和 `list`
+  请求不受影响。本决定不删除手机缓存、不改变 schema，也不授权发布或重启生产 Bridge。
+
+## 2026-08-13 手机错误现场使用真实会话诊断快照
+
+- 会话同步、排序、折叠或缓存异常必须能够从手机错误现场取证。诊断入口直接捕获现有
+  SQLite/Cubit、真实 ChatMessageList 展示投影、首页排序分组和有界 sync trace；禁止在
+  诊断层重写一套理想排序/折叠算法冒充手机实际状态。
+- 上报只由用户显式点击触发，并复用 `file_transfer_v2` 的暂存、续传、ACK、重连和
+  step-up 授权。不得新增平行上传通道或后台遥测。
+- 手机写盘前递归去凭据，Bridge 归档前再次 fail-closed 校验；报告精确绑定
+  `bridgeInstanceId + codexSourceId + provider + providerSessionId`。open-auth 不得广告或
+  使用诊断能力。
+- fail-closed 不得只拒绝响应后留下原始上传：确定性安全/身份/校验失败必须按完成文件
+  的原 inode 同时删除 Downloads payload 和持久状态；receipt 重放前重新核验不可变归档，
+  缺失归档不得报告成功。不同报告的解析归档全局串行，避免并发 16 MiB JSON 放大 RSS。
+- 手机 payload、Bridge envelope、结构条目、正文和事件环全部有界；Mac 归档目录采用
+  `0700/0600`、不跟随符号链接、不覆盖同名报告，并按时间、数量和总大小清理。
+- Bridge 同时只允许最多 4 份、合计 64 MiB 的诊断原始暂存；完成态不能绕过该预算，
+  归档与 receipt 复核采用有界串行/同回执合并，避免堆积数 GiB 原文或放大内存。
+- 断线或丢失结果后的相同上传依靠持久 receipt 幂等重放；源码和自动测试不代表真机
+  菜单、Face ID/密码、文件传输或错误现场已验收。详细流程见
+  `docs/mobile-session-diagnostic-report.md`。
+
+### 2026-08-13：open 开发模式允许显式启用会话诊断
+
+- 上述 open-auth 禁止规则继续作为正式默认值；不得因安装新版 Bridge 自动放宽。
+- 开发排障可由 owner 显式设置
+  `BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS=1`。该例外只允许用户显式触发的会话诊断
+  上传，并免除该诊断上传的密码/Face ID step-up；普通文件传输、文件浏览和修改继续
+  沿用它们既有的认证与授权策略，不因本开关扩大。
+- Mobile 不增加第二套入口。收到 Bridge 的 `file_transfer_diagnostic_report_v1` 能力后，
+  在会话右上角菜单显示“上报会话诊断”；只有同时收到窄化的
+  `file_transfer_diagnostic_report_no_step_up_v1`，才免除本次诊断的 step-up。旧 Mobile
+  仍按原授权失败关闭，不从普通文件上传能力推断开发例外。
+- 该开关属于开发配置，正式发布、外网暴露或不受信任局域网必须关闭。

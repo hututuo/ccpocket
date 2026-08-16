@@ -254,6 +254,46 @@ void main() {
       );
     });
 
+    test('groups worktrees by Desktop project identity and synced name', () {
+      final items = buildUnifiedSessionList(
+        runningSessions: const [],
+        recentSessions: [
+          _recent(
+            id: 'thread-main',
+            modified: '2026-07-25T03:00:00Z',
+            projectPath: '/workspace/ccpocket',
+            projectGroupId: 'project-ccpocket',
+            projectGroupName: 'CC Pocket Mobile',
+          ),
+          _recent(
+            id: 'thread-worktree',
+            modified: '2026-07-25T02:00:00Z',
+            projectPath: '/private/worktrees/feature-a',
+            projectGroupId: 'project-ccpocket',
+            projectGroupName: 'CC Pocket Mobile',
+          ),
+          _recent(
+            id: 'thread-projectless',
+            modified: '2026-07-25T01:00:00Z',
+            projectPath: '/private/tmp/scratch',
+            projectless: true,
+          ),
+        ],
+      );
+
+      expect(items[0].projectGroupingKey, 'desktop-project:project-ccpocket');
+      expect(items[0].projectGroupingName, 'CC Pocket Mobile');
+      expect(items[1].projectGroupingKey, items[0].projectGroupingKey);
+      expect(items[2].projectGroupingKey, desktopProjectlessGroupingKey);
+      expect(
+        orderProjectPathsForGroupedView(
+          knownProjectPaths: const [],
+          sessions: items,
+        ),
+        ['desktop-project:project-ccpocket', desktopProjectlessGroupingKey],
+      );
+    });
+
     test('keeps an explicit pin ahead of unread sessions', () {
       final pinned = _running(
         runtimeId: 'pinned-read',
@@ -675,6 +715,9 @@ RecentSession _recent({
   required String modified,
   String projectPath = '/repo',
   String? lastAssistantOutputAt,
+  String? projectGroupId,
+  String? projectGroupName,
+  bool projectless = false,
 }) => RecentSession(
   sessionId: id,
   provider: Provider.codex.value,
@@ -684,6 +727,15 @@ RecentSession _recent({
   lastAssistantOutputAt: lastAssistantOutputAt,
   gitBranch: 'main',
   projectPath: projectPath,
+  projectGroupKind: projectless
+      ? 'projectless'
+      : projectGroupId == null
+      ? null
+      : 'desktopProject',
+  projectGroupId: projectGroupId,
+  projectGroupName: projectGroupName,
+  projectGroupPath: projectGroupId == null ? null : '/workspace/ccpocket',
+  projectGroupingSnapshotComplete: projectless || projectGroupId != null,
   isSidechain: false,
 );
 

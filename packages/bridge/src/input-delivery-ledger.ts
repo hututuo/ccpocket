@@ -53,6 +53,7 @@ export interface DurableInputDeliveryRecord extends InputDeliveryIdentity {
   payload?: DurableInputPayload;
   containsImages: boolean;
   method?: DurableInputDeliveryMethod;
+  providerTurnId?: string;
   replaySafety: "queue_exact" | "client_message_id" | "none";
   clientUserMessageIdAccepted?: boolean;
   occurredAt: string;
@@ -86,6 +87,7 @@ export interface InputDeliveryProviderOutcome {
   stage: "provider_accepted" | "provider_rejected";
   method: DurableInputDeliveryMethod;
   occurredAt: string;
+  providerTurnId?: string;
   clientUserMessageIdAccepted?: boolean;
   error?: string;
 }
@@ -457,6 +459,9 @@ export class InputDeliveryLedger {
     const stage = normalizeProviderStage(outcome.stage);
     const method = normalizeMethod(outcome.method);
     const occurredAt = normalizeIso(outcome.occurredAt);
+    const providerTurnId = outcome.providerTurnId
+      ? normalizeId(outcome.providerTurnId, "provider turn")
+      : undefined;
     const error = normalizeOptionalError(outcome.error);
     return this.runMutation(async (next) => {
       const record = requireMutableRecord(next, identity);
@@ -478,6 +483,7 @@ export class InputDeliveryLedger {
       next.revision += 1;
       record.state = stage;
       record.method = method;
+      record.providerTurnId = providerTurnId;
       record.clientUserMessageIdAccepted = outcome.clientUserMessageIdAccepted;
       record.occurredAt = occurredAt;
       record.updatedAt = occurredAt;
@@ -922,6 +928,9 @@ function normalizePersistedRecord(
     ...(payload ? { payload } : {}),
     containsImages,
     ...(method ? { method } : {}),
+    ...(typeof raw.providerTurnId === "string"
+      ? { providerTurnId: normalizeId(raw.providerTurnId, "provider turn") }
+      : {}),
     replaySafety,
     ...(typeof raw.clientUserMessageIdAccepted === "boolean"
       ? { clientUserMessageIdAccepted: raw.clientUserMessageIdAccepted }

@@ -137,6 +137,10 @@ export class LocalFeaturesController {
     return observedInactive ? "inactive" : "unknown";
   }
 
+  listRuntimeConversationStates() {
+    return this.runtime.listRuntimeConversationStates?.() ?? [];
+  }
+
   async hasExternalCodexActivityVerified(
     session: LocalFeatureSession,
   ): Promise<boolean> {

@@ -1,6 +1,4 @@
-import 'package:ccpocket/constants/app_constants.dart';
-
-String get recommendedBridgeVersion => AppConstants.expectedBridgeVersion;
+const recommendedBridgeVersion = '1.69.6';
 
 String get olderThanRecommendedBridgeVersion {
   final parts = recommendedBridgeVersion.split('.').map(int.parse).toList();

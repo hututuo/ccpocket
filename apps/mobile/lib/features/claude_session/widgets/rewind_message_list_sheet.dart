@@ -13,6 +13,7 @@ class UserMessageHistoryLoaderSheet extends StatefulWidget {
   final ValueListenable<int>? refreshListenable;
   final Future<bool> Function(UserChatEntry message) onScrollToMessage;
   final void Function(UserChatEntry message)? onRewindMessage;
+  final bool rewindAsEdit;
 
   const UserMessageHistoryLoaderSheet({
     super.key,
@@ -21,6 +22,7 @@ class UserMessageHistoryLoaderSheet extends StatefulWidget {
     this.refreshListenable,
     required this.onScrollToMessage,
     this.onRewindMessage,
+    this.rewindAsEdit = false,
   });
 
   @override
@@ -101,6 +103,7 @@ class _UserMessageHistoryLoaderSheetState
         onRetryUserMessageIndex: _reload,
         onScrollToMessage: widget.onScrollToMessage,
         onRewindMessage: widget.onRewindMessage,
+        rewindAsEdit: widget.rewindAsEdit,
       );
     }
     if (_loadError != null && !_loading) {
@@ -130,7 +133,8 @@ class _UserMessageHistoryLoaderSheetState
 ///
 /// Provides two actions per message:
 /// - Tap message → [onScrollToMessage] (scroll chat to that position)
-/// - Tap rewind icon → [onRewindMessage] (only for messages with UUID)
+/// - Tap the provider action → [onRewindMessage] (only with a stable UUID).
+///   Claude presents rewind; Codex presents its pencil/edit-as-branch action.
 class UserMessageHistorySheet extends StatefulWidget {
   final List<UserChatEntry> messages;
   final bool userMessageIndexComplete;
@@ -139,6 +143,7 @@ class UserMessageHistorySheet extends StatefulWidget {
   final VoidCallback? onRetryUserMessageIndex;
   final Future<bool> Function(UserChatEntry message) onScrollToMessage;
   final void Function(UserChatEntry message)? onRewindMessage;
+  final bool rewindAsEdit;
 
   const UserMessageHistorySheet({
     super.key,
@@ -149,6 +154,7 @@ class UserMessageHistorySheet extends StatefulWidget {
     this.onRetryUserMessageIndex,
     required this.onScrollToMessage,
     this.onRewindMessage,
+    this.rewindAsEdit = false,
   });
 
   @override
@@ -293,6 +299,7 @@ class _UserMessageHistorySheetState extends State<UserMessageHistorySheet> {
                           message: msg,
                           index: widget.messages.length - index,
                           canRewind: canRewind,
+                          rewindAsEdit: widget.rewindAsEdit,
                           onTap: loading ? null : () => _scrollTo(msg),
                           onRewind: canRewind
                               ? () {
@@ -414,6 +421,7 @@ class _MessageTile extends StatelessWidget {
   final UserChatEntry message;
   final int index;
   final bool canRewind;
+  final bool rewindAsEdit;
   final VoidCallback? onTap;
   final VoidCallback? onRewind;
 
@@ -421,6 +429,7 @@ class _MessageTile extends StatelessWidget {
     required this.message,
     required this.index,
     this.canRewind = true,
+    this.rewindAsEdit = false,
     required this.onTap,
     this.onRewind,
   });
@@ -460,8 +469,17 @@ class _MessageTile extends StatelessWidget {
       ),
       trailing: canRewind
           ? IconButton(
-              icon: Icon(Icons.history, size: 18, color: colorScheme.primary),
-              tooltip: AppLocalizations.of(context).rewindToHere,
+              key: ValueKey(
+                rewindAsEdit ? 'edit_turn_$index' : 'rewind_turn_$index',
+              ),
+              icon: Icon(
+                rewindAsEdit ? Icons.edit_outlined : Icons.history,
+                size: 18,
+                color: colorScheme.primary,
+              ),
+              tooltip: rewindAsEdit
+                  ? AppLocalizations.of(context).edit
+                  : AppLocalizations.of(context).rewindToHere,
               visualDensity: VisualDensity.compact,
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 36, minHeight: 36),

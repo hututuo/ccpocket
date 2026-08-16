@@ -233,7 +233,7 @@ describe("ConversationContentSyncFeatureHandler", () => {
     expect(snapshot.latestTurnGap).not.toHaveProperty("turnId");
   });
 
-  it("stops serializing an oversized latest turn before compacting its tail", () => {
+  it("keeps the root and newest safe tail of an oversized active turn", () => {
     let poisonPayloadReads = 0;
     const poison = {
       type: "tool_result" as const,
@@ -292,7 +292,7 @@ describe("ConversationContentSyncFeatureHandler", () => {
       },
     );
 
-    expect(poisonPayloadReads).toBe(0);
+    expect(poisonPayloadReads).toBeLessThanOrEqual(1);
     expect(snapshot.cacheBytes).toBeLessThanOrEqual(512 * 1024);
     expect(snapshot.latestTurnComplete).toBe(false);
     expect(snapshot.latestTurnGap).toMatchObject({
@@ -300,6 +300,54 @@ describe("ConversationContentSyncFeatureHandler", () => {
       payloadOmitted: true,
       repair: "items_page",
     });
+    expect(
+      JSON.stringify(snapshot.entries.map((entry) => entry.message)),
+    ).toContain("still responsive");
+    expect(snapshot.entries.at(-1)?.sourceIndex).toBe(messages.length - 1);
+  });
+
+  it("marks a latest-only budget fallback as an incomplete whole window", () => {
+    const messages: ServerMessage[] = [];
+    for (let turn = 0; turn < 5; turn += 1) {
+      messages.push(
+        {
+          type: "user_input",
+          text: `prompt-${turn}-${"u".repeat(700)}`,
+          userMessageUuid: `user-${turn}`,
+          historyTurnId: `turn-${turn}`,
+        },
+        {
+          type: "assistant",
+          messageUuid: `assistant-${turn}`,
+          historyTurnId: `turn-${turn}`,
+          message: {
+            id: `assistant-${turn}`,
+            role: "assistant",
+            model: "test",
+            content: [{ type: "text", text: `answer-${turn}` }],
+          },
+        },
+      );
+    }
+
+    const snapshot = buildConversationContentSnapshot(
+      { provider: "codex", providerSessionId: "thread-latest-only" },
+      messages,
+      {
+        maxMessageTextBytes: 2 * 1024,
+        maxSnapshotBytes: 2 * 1024,
+      },
+    );
+
+    expect(snapshot.latestTurnComplete).toBe(true);
+    expect(snapshot.latestTurnGap).toBeUndefined();
+    expect(snapshot.windowComplete).toBe(false);
+    expect(snapshot.entries.map((entry) => entry.message)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ historyTurnId: "turn-4" }),
+      ]),
+    );
+    expect(snapshot.entries.length).toBeLessThan(messages.length);
   });
 
   it("bounds aggregate text per message without changing the wire envelope", async () => {

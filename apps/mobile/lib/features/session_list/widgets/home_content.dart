@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -8,6 +11,7 @@ import 'package:skeletonizer/skeletonizer.dart';
 
 import '../../../constants/app_constants.dart';
 import '../../../l10n/app_localizations.dart';
+import '../../../models/machine.dart';
 import '../../../models/messages.dart';
 import '../../../models/offline_pending_action.dart';
 import '../../../services/app_update_service.dart';
@@ -22,9 +26,12 @@ import '../../../widgets/pin_toggle_button.dart';
 import '../../../widgets/session_card.dart';
 import '../../../widgets/workspace_pane_chrome.dart';
 import '../../conversation_mirror/conversation_mirror_service.dart';
+import '../../conversation_mirror/storage/conversation_mirror_models.dart';
 import '../../conversation_mirror/conversation_mirror_target.dart';
 import '../../file_transfer/file_transfer_service.dart';
 import '../../file_transfer/received_file_inbox_banner.dart';
+import '../../diagnostics/home_diagnostic_projection.dart';
+import '../../mobile_update/mobile_update_screen.dart';
 import '../session_list_projection.dart';
 import '../state/session_list_cubit.dart';
 import '../state/session_list_state.dart';
@@ -39,13 +46,19 @@ import 'session_reconnect_banner.dart';
 import 'support_banner.dart';
 
 class _ProjectSessionGroup {
+  final String key;
   final String projectPath;
   final String projectName;
+  final Set<String> legacyProjectPaths;
+  final bool canLoadFromBridge;
   final List<UnifiedSessionListItem> sessions;
 
   const _ProjectSessionGroup({
+    required this.key,
     required this.projectPath,
     required this.projectName,
+    required this.legacyProjectPaths,
+    required this.canLoadFromBridge,
     required this.sessions,
   });
 }
@@ -53,26 +66,171 @@ class _ProjectSessionGroup {
 ValueKey<String> _conversationRowKey(String identityKey) =>
     ValueKey('conversation_$identityKey');
 
-List<_ProjectSessionGroup> _groupSessionsByProject({
-  required Iterable<String> projectPaths,
-  required List<UnifiedSessionListItem> sessions,
+/// Composes the Home catalog without letting the phone-resident Mirror become
+/// a second project-directory writer.
+///
+/// A complete provider catalog, even when restored from the durable SQLite
+/// cache, owns project identity and grouping for that provider. Mirror
+/// metadata is only a fallback when that complete projection proves no catalog
+/// row exists for the provider. The fallback is also fenced to the
+/// authenticated Bridge and Codex source so source-less or old-source copies
+/// cannot surface as another same-named project.
+List<RecentSession> composeHomeCatalogSessions({
+  required Iterable<RecentSession> providerSessions,
+  required bool catalogProviderPresenceComplete,
+  required Set<String> catalogProviders,
+  required Iterable<ConversationMirrorMetadata> mirrorMetadata,
+  required String? currentBridgeInstanceId,
+  required String? currentCodexSourceId,
 }) {
-  final grouped = <String, List<UnifiedSessionListItem>>{
-    for (final path in projectPaths)
-      if (path.isNotEmpty) path: <UnifiedSessionListItem>[],
-  };
+  final catalog = providerSessions.toList(growable: false);
+  final bridgeId = currentBridgeInstanceId?.trim();
+  final codexSourceId = currentCodexSourceId?.trim();
+  final byIdentity = <String, RecentSession>{};
+  if (catalogProviderPresenceComplete &&
+      bridgeId != null &&
+      bridgeId.isNotEmpty) {
+    for (final metadata in mirrorMetadata) {
+      final key = metadata.key;
+      if (key.bridgeInstanceId != bridgeId ||
+          catalogProviders.contains(key.provider)) {
+        continue;
+      }
+      if (key.provider == Provider.codex.value) {
+        if (codexSourceId == null ||
+            codexSourceId.isEmpty ||
+            key.codexSourceId != codexSourceId) {
+          continue;
+        }
+      }
+      final fallback = ConversationMirrorTarget.fromMetadata(
+        metadata,
+      ).toRecentSession();
+      final identity = providerSessionIdentityKey(
+        fallback.provider ?? Provider.claude.value,
+        fallback.sessionId,
+      );
+      byIdentity[identity] = fallback;
+    }
+  }
+  for (final session in catalog) {
+    final identity = providerSessionIdentityKey(
+      session.provider ?? Provider.claude.value,
+      session.sessionId,
+    );
+    byIdentity[identity] = session;
+  }
+  return List.unmodifiable(byIdentity.values);
+}
+
+List<_ProjectSessionGroup> _groupSessionsByProject({
+  required Iterable<String> projectKeys,
+  required List<UnifiedSessionListItem> sessions,
+  required String projectlessName,
+}) {
+  final sessionsByKey = <String, List<UnifiedSessionListItem>>{};
+  final pathByKey = <String, String>{};
+  final nameByKey = <String, String>{};
+  final legacyPathsByKey = <String, Set<String>>{};
+  final bridgePagingByKey = <String, bool>{};
   for (final session in sessions) {
-    grouped.putIfAbsent(session.projectPath, () => <UnifiedSessionListItem>[]);
-    grouped[session.projectPath]!.add(session);
+    final key = session.projectGroupingKey;
+    if (key.isEmpty) continue;
+    sessionsByKey
+        .putIfAbsent(key, () => <UnifiedSessionListItem>[])
+        .add(session);
+    pathByKey.putIfAbsent(key, () => session.effectiveProjectGroupPath);
+    nameByKey.putIfAbsent(
+      key,
+      () => session.isDesktopProjectless
+          ? projectlessName
+          : session.projectGroupingName,
+    );
+    final legacyPaths = legacyPathsByKey.putIfAbsent(key, () => <String>{});
+    if (session.projectPath.isNotEmpty) legacyPaths.add(session.projectPath);
+    if (session.effectiveProjectGroupPath.isNotEmpty) {
+      legacyPaths.add(session.effectiveProjectGroupPath);
+    }
+    bridgePagingByKey.putIfAbsent(key, () => key == session.projectPath);
   }
   return [
-    for (final entry in grouped.entries)
-      _ProjectSessionGroup(
-        projectPath: entry.key,
-        projectName: pathBasename(entry.key),
-        sessions: entry.value,
-      ),
+    for (final key in projectKeys)
+      if (key.isNotEmpty && (sessionsByKey[key]?.isNotEmpty ?? false))
+        _ProjectSessionGroup(
+          key: key,
+          projectPath: pathByKey[key] ?? key,
+          projectName: nameByKey[key] ?? pathBasename(key),
+          legacyProjectPaths: Set.unmodifiable(
+            legacyPathsByKey[key] ?? const <String>{},
+          ),
+          canLoadFromBridge: bridgePagingByKey[key] ?? true,
+          sessions: sessionsByKey[key] ?? const [],
+        ),
   ];
+}
+
+Map<String, Set<String>> _projectLegacyAliasOwners(
+  Iterable<UnifiedSessionListItem> sessions,
+) {
+  final owners = <String, Set<String>>{};
+  for (final session in sessions) {
+    final projectKey = session.projectGroupingKey;
+    if (projectKey.isEmpty) continue;
+    if (_isStableDesktopProjectKey(projectKey) &&
+        session.recent?.projectGroupingSnapshotComplete != true) {
+      continue;
+    }
+    for (final alias in {
+      session.projectPath,
+      session.effectiveProjectGroupPath,
+    }) {
+      if (alias.isEmpty) continue;
+      owners.putIfAbsent(alias, () => <String>{}).add(projectKey);
+    }
+  }
+  return owners;
+}
+
+bool _isStableDesktopProjectKey(String key) =>
+    key.startsWith('desktop-project:');
+
+bool _legacyAliasBelongsOnlyToGroup(
+  String alias,
+  _ProjectSessionGroup group,
+  Map<String, Set<String>> legacyAliasOwners,
+) {
+  final owners = legacyAliasOwners[alias];
+  return _isStableDesktopProjectKey(group.key) &&
+      owners?.length == 1 &&
+      owners?.single == group.key;
+}
+
+bool _groupContainsProjectKey(
+  Set<String> values,
+  _ProjectSessionGroup group,
+  Map<String, Set<String>> legacyAliasOwners,
+) =>
+    values.contains(group.key) ||
+    group.legacyProjectPaths.any(
+      (alias) =>
+          values.contains(alias) &&
+          _legacyAliasBelongsOnlyToGroup(alias, group, legacyAliasOwners),
+    );
+
+int _groupDisplayLimit(
+  Map<String, int> limits,
+  _ProjectSessionGroup group,
+  Map<String, Set<String>> legacyAliasOwners,
+) {
+  var result = limits[group.key] ?? 5;
+  for (final path in group.legacyProjectPaths) {
+    if (!_legacyAliasBelongsOnlyToGroup(path, group, legacyAliasOwners)) {
+      continue;
+    }
+    final legacy = limits[path];
+    if (legacy != null && legacy > result) result = legacy;
+  }
+  return result;
 }
 
 String _recentSessionCardText(
@@ -147,7 +305,10 @@ SessionInfo _sessionInfoForUnifiedCard(
     forkedFromSessionId: runtime?.forkedFromSessionId,
     forkedFromThreadId:
         runtime?.forkedFromThreadId ?? catalog.forkedFromThreadId,
-    name: preferOptional(runtime?.name, catalog.name),
+    // The catalog is provider-owned metadata. Its nullable name is also an
+    // authoritative clear, so a stale runtime attachment must not win after a
+    // Desktop rename or clear.
+    name: catalog.name,
     agentNickname: preferOptional(
       runtime?.agentNickname,
       catalog.agentNickname,
@@ -166,10 +327,11 @@ SessionInfo _sessionInfoForUnifiedCard(
     lastAssistantOutputAt:
         runtime?.lastAssistantOutputAt ?? catalog.lastAssistantOutputAt,
     gitBranch: preferRuntime(runtime?.gitBranch, catalog.gitBranch),
-    lastMessage: preferRuntime(
-      runtime?.lastMessage,
-      _recentSessionCardText(catalog, displayMode),
-    ),
+    // The display-mode chip is an explicit request to view provider catalog
+    // metadata (first prompt, last prompt, or summary). A transient runtime
+    // attachment often carries its own latest text; letting that value win
+    // made the chip appear to do nothing for watched/running conversations.
+    lastMessage: _recentSessionCardText(catalog, displayMode),
     worktreePath: runtime?.worktreePath,
     worktreeBranch: runtime?.worktreeBranch,
     permissionMode: runtime?.permissionMode ?? catalog.rawPermissionMode,
@@ -211,10 +373,14 @@ SessionInfo _sessionInfoForUnifiedCard(
 class HomeContent extends StatefulWidget {
   final BridgeConnectionState connectionState;
   final String? bridgeVersion;
-  final String? latestBridgeVersion;
+  final int? bridgeCompatibilityRevision;
   final List<SessionInfo> sessions;
   final List<OfflinePendingAction> offlinePendingActions;
   final List<RecentSession> recentSessions;
+  final bool catalogProviderPresenceComplete;
+  final Set<String> catalogProviders;
+  final String? currentBridgeInstanceId;
+  final String? currentCodexSourceId;
   final Set<String> accumulatedProjectPaths;
   final Set<String> collapsedProjectPaths;
   final Set<String> loadingProjectPaths;
@@ -222,6 +388,7 @@ class HomeContent extends StatefulWidget {
   final Map<String, int> projectSessionDisplayLimits;
   final Set<String> pinnedSessionKeys;
   final Set<String> pinnedProjectPaths;
+  final String projectOrderScope;
   final String searchQuery;
   final bool isLoadingMore;
   final bool isInitialLoading;
@@ -285,10 +452,14 @@ class HomeContent extends StatefulWidget {
     super.key,
     required this.connectionState,
     this.bridgeVersion,
-    this.latestBridgeVersion,
+    this.bridgeCompatibilityRevision,
     required this.sessions,
     this.offlinePendingActions = const [],
     required this.recentSessions,
+    this.catalogProviderPresenceComplete = false,
+    this.catalogProviders = const {},
+    this.currentBridgeInstanceId,
+    this.currentCodexSourceId,
     required this.accumulatedProjectPaths,
     this.collapsedProjectPaths = const {},
     this.loadingProjectPaths = const {},
@@ -296,6 +467,7 @@ class HomeContent extends StatefulWidget {
     this.projectSessionDisplayLimits = const {},
     this.pinnedSessionKeys = const {},
     this.pinnedProjectPaths = const {},
+    this.projectOrderScope = 'unknown-bridge',
     required this.searchQuery,
     required this.isLoadingMore,
     required this.isInitialLoading,
@@ -348,6 +520,12 @@ class HomeContentState extends State<HomeContent> {
   // Keep the established key so existing users retain their chosen layout.
   static const _groupRecentSessionsPreferenceKey =
       'session_list_group_recent_sessions';
+  static const _projectOrderPreferenceKey =
+      'session_list_project_order_by_source_v1';
+  static const _maximumStoredProjectScopes = 64;
+  static const _maximumStoredProjectsPerScope = 2048;
+  static const _maximumProjectOrderBytes = 1024 * 1024;
+  static Future<void>? _projectOrderGlobalWriteTail;
 
   bool _isSearching = false;
   bool _updateBannerDismissed = false;
@@ -355,6 +533,9 @@ class HomeContentState extends State<HomeContent> {
   bool _groupByProject = true;
   final _searchController = TextEditingController();
   SessionDisplayMode _displayMode = SessionDisplayMode.first;
+  List<String> _projectOrder = const [];
+  ({String scope, List<String> order})? _pendingProjectOrder;
+  String? _loadedProjectOrderScope;
   RevenueCatService? _revenueCatService;
   VoidCallback? _catalogStateListener;
   SupportBannerService? _supportBannerService;
@@ -371,7 +552,13 @@ class HomeContentState extends State<HomeContent> {
     final modeStr = prefs.getString(_displayModePreferenceKey);
     final groupByProject =
         prefs.getBool(_groupRecentSessionsPreferenceKey) ?? true;
+    final projectOrders = _readProjectOrders(prefs);
+    final scope = _normalizedProjectOrderScope(widget.projectOrderScope);
     if (!mounted) return;
+    if (scope != _normalizedProjectOrderScope(widget.projectOrderScope)) {
+      unawaited(_loadProjectOrderForCurrentScope());
+      return;
+    }
     setState(() {
       if (modeStr != null) {
         _displayMode = SessionDisplayMode.values.firstWhere(
@@ -380,6 +567,8 @@ class HomeContentState extends State<HomeContent> {
         );
       }
       _groupByProject = groupByProject;
+      _loadedProjectOrderScope = scope;
+      _projectOrder = List.unmodifiable(projectOrders[scope] ?? const []);
     });
   }
 
@@ -440,10 +629,230 @@ class HomeContentState extends State<HomeContent> {
       _updateBannerDismissed = false;
       _refreshSupportBannerVisibility();
     }
+    if (widget.projectOrderScope != oldWidget.projectOrderScope) {
+      unawaited(_loadProjectOrderForCurrentScope());
+    }
+  }
+
+  Future<void> _loadProjectOrderForCurrentScope() async {
+    final scope = _normalizedProjectOrderScope(widget.projectOrderScope);
+    if (_loadedProjectOrderScope == scope) return;
+    final prefs = await SharedPreferences.getInstance();
+    final orders = _readProjectOrders(prefs);
+    if (!mounted ||
+        scope != _normalizedProjectOrderScope(widget.projectOrderScope)) {
+      return;
+    }
+    setState(() {
+      _loadedProjectOrderScope = scope;
+      _projectOrder = List.unmodifiable(orders[scope] ?? const []);
+      _pendingProjectOrder = null;
+    });
+  }
+
+  List<String> _applyProjectOrder(List<String> naturalOrder) {
+    final currentScope = _normalizedProjectOrderScope(widget.projectOrderScope);
+    // A scope change can render once before SharedPreferences finishes
+    // loading. Never project the previous Bridge/source's manual order into
+    // that interim frame; use the new source's natural order until its own
+    // persisted order is available.
+    final persistedOrder = _loadedProjectOrderScope == currentScope
+        ? _projectOrder
+        : const <String>[];
+    final available = naturalOrder.toSet();
+    final result = <String>[
+      for (final key in persistedOrder)
+        if (available.remove(key)) key,
+      ...naturalOrder.where(available.contains),
+    ];
+    if (_loadedProjectOrderScope == currentScope) {
+      _ensureProjectOrderPersisted(result);
+    }
+    return List.unmodifiable(result);
+  }
+
+  void _ensureProjectOrderPersisted(List<String> order) {
+    final scope = _normalizedProjectOrderScope(widget.projectOrderScope);
+    if (_loadedProjectOrderScope != scope ||
+        _sameStringList(_projectOrder, order) ||
+        (_pendingProjectOrder?.scope == scope &&
+            _sameStringList(_pendingProjectOrder?.order, order))) {
+      return;
+    }
+    _pendingProjectOrder = (scope: scope, order: List.unmodifiable(order));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final pending = _pendingProjectOrder;
+      if (!mounted ||
+          pending == null ||
+          pending.scope != scope ||
+          _loadedProjectOrderScope != scope ||
+          _normalizedProjectOrderScope(widget.projectOrderScope) != scope) {
+        return;
+      }
+      _pendingProjectOrder = null;
+      // The current frame already rendered this exact natural order. Adopt it
+      // without another rebuild so stable conversation elements are not
+      // detached merely because presentation order was first persisted.
+      _projectOrder = pending.order;
+      unawaited(_persistProjectOrder(pending.order, scope: scope));
+    });
+  }
+
+  void _moveProject(
+    List<String> visibleOrder,
+    String source,
+    String target,
+    bool placeAfter,
+  ) {
+    if (_loadedProjectOrderScope !=
+        _normalizedProjectOrderScope(widget.projectOrderScope)) {
+      return;
+    }
+    if (source == target) return;
+    final order = <String>[
+      ..._projectOrder,
+      for (final key in visibleOrder)
+        if (!_projectOrder.contains(key)) key,
+    ];
+    if (!order.remove(source)) return;
+    var targetIndex = order.indexOf(target);
+    if (targetIndex < 0) return;
+    if (placeAfter) targetIndex += 1;
+    order.insert(targetIndex.clamp(0, order.length).toInt(), source);
+    setState(() {
+      _pendingProjectOrder = null;
+      _projectOrder = List.unmodifiable(order);
+    });
+    unawaited(
+      _persistProjectOrder(
+        order,
+        scope: _normalizedProjectOrderScope(widget.projectOrderScope),
+      ),
+    );
+  }
+
+  Future<void> _persistProjectOrder(
+    List<String> order, {
+    required String scope,
+  }) async {
+    final snapshot = order
+        .take(_maximumStoredProjectsPerScope)
+        .toList(growable: false);
+    Future<void> write() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final orders = _readProjectOrders(prefs);
+        orders.remove(scope);
+        orders[scope] = snapshot;
+        while (orders.length > _maximumStoredProjectScopes) {
+          orders.remove(orders.keys.first);
+        }
+        final encoded = _encodeProjectOrdersWithinBudget(
+          orders,
+          currentScope: scope,
+        );
+        await prefs.setString(_projectOrderPreferenceKey, encoded);
+      } catch (_) {
+        // Ordering is rebuildable presentation state. Keep the in-memory order
+        // usable and allow the next reorder to retry persistence.
+      }
+    }
+
+    final previous = _projectOrderGlobalWriteTail;
+    final operation = previous == null
+        ? Future<void>.sync(write)
+        : previous.then((_) => write());
+    late final Future<void> settled;
+    settled = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    _projectOrderGlobalWriteTail = settled;
+    unawaited(
+      settled.whenComplete(() {
+        if (identical(_projectOrderGlobalWriteTail, settled)) {
+          _projectOrderGlobalWriteTail = null;
+        }
+      }),
+    );
+    await operation;
+  }
+
+  static String _encodeProjectOrdersWithinBudget(
+    Map<String, List<String>> orders, {
+    required String currentScope,
+  }) {
+    while (true) {
+      final encoded = jsonEncode(orders);
+      if (utf8.encode(encoded).length <= _maximumProjectOrderBytes) {
+        return encoded;
+      }
+      if (orders.length > 1) {
+        orders.remove(orders.keys.first);
+        continue;
+      }
+      final current = orders[currentScope] ?? const <String>[];
+      if (current.isEmpty) return jsonEncode(<String, List<String>>{});
+      orders[currentScope] = current
+          .take(current.length ~/ 2)
+          .toList(growable: false);
+    }
+  }
+
+  static Map<String, List<String>> _readProjectOrders(
+    SharedPreferences preferences,
+  ) {
+    final raw = preferences.getString(_projectOrderPreferenceKey);
+    if (raw == null || raw.length > _maximumProjectOrderBytes) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return {};
+      final result = <String, List<String>>{};
+      for (final entry in decoded.entries.take(_maximumStoredProjectScopes)) {
+        final scope = _validProjectOrderValue(entry.key);
+        final values = entry.value;
+        if (scope == null || values is! List) continue;
+        final unique = <String>{};
+        for (final value in values.take(_maximumStoredProjectsPerScope)) {
+          final key = _validProjectOrderValue(value);
+          if (key != null) unique.add(key);
+        }
+        result[scope] = unique.toList(growable: false);
+      }
+      return result;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  static String _normalizedProjectOrderScope(String value) =>
+      _validProjectOrderValue(value) ?? 'unknown-bridge';
+
+  static String? _validProjectOrderValue(Object? value) {
+    if (value is! String) return null;
+    final normalized = value.trim();
+    if (normalized.isEmpty ||
+        normalized.length > 4096 ||
+        RegExp(r'[\x00-\x1f\x7f]').hasMatch(normalized)) {
+      return null;
+    }
+    return normalized;
+  }
+
+  static bool _sameStringList(List<String>? left, List<String>? right) {
+    if (identical(left, right)) return true;
+    if (left == null || right == null || left.length != right.length) {
+      return false;
+    }
+    for (var index = 0; index < left.length; index++) {
+      if (left[index] != right[index]) return false;
+    }
+    return true;
   }
 
   @override
   void dispose() {
+    HomeDiagnosticProjectionRegistry.instance.detach(this);
     if (_revenueCatService != null && _catalogStateListener != null) {
       _revenueCatService!.catalogState.removeListener(_catalogStateListener!);
     }
@@ -491,18 +900,25 @@ class HomeContentState extends State<HomeContent> {
     if (_updateBannerDismissed) return null;
     if (!BridgeUpdateBanner.shouldShow(
       widget.bridgeVersion,
-      AppConstants.expectedBridgeVersion,
-      latestBridgeVersion: widget.latestBridgeVersion,
+      bridgeCompatibilityRevision: widget.bridgeCompatibilityRevision,
     )) {
       return null;
     }
+    final compatibility = compareClientBridgeCompatibility(
+      bridgeRevision: widget.bridgeCompatibilityRevision,
+      mobileRevision: AppConstants.clientBridgeCompatibilityRevision,
+    );
     return BridgeUpdateBanner(
       currentVersion: widget.bridgeVersion!,
-      expectedVersion: AppConstants.expectedBridgeVersion,
-      latestBridgeVersion: widget.latestBridgeVersion,
-      onTap:
-          widget.onOpenBridgeSettings ??
-          () => context.pushRoute(SettingsRoute(focusConnection: true)),
+      bridgeCompatibilityRevision: widget.bridgeCompatibilityRevision,
+      onTap: compatibility == ClientBridgeCompatibility.mobileOlder
+          ? () => Navigator.of(context).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) => const MobileUpdateScreen(),
+              ),
+            )
+          : widget.onOpenBridgeSettings ??
+                () => context.pushRoute(SettingsRoute(focusConnection: true)),
       onDismiss: () => setState(() => _updateBannerDismissed = true),
     );
   }
@@ -511,8 +927,7 @@ class HomeContentState extends State<HomeContent> {
     return !_updateBannerDismissed &&
         BridgeUpdateBanner.shouldShow(
           widget.bridgeVersion,
-          AppConstants.expectedBridgeVersion,
-          latestBridgeVersion: widget.latestBridgeVersion,
+          bridgeCompatibilityRevision: widget.bridgeCompatibilityRevision,
         );
   }
 
@@ -653,7 +1068,6 @@ class HomeContentState extends State<HomeContent> {
     }
     final hasPendingActions = pendingStartActions.isNotEmpty;
     final mirrorService = context.watch<ConversationMirrorService?>();
-    final mirrorBridgeId = mirrorService?.currentBridgeInstanceId;
     final hasKnownProjects = widget.accumulatedProjectPaths.isNotEmpty;
     final isReconnecting =
         widget.connectionState == BridgeConnectionState.reconnecting;
@@ -679,24 +1093,25 @@ class HomeContentState extends State<HomeContent> {
         ? ReceivedFileInboxBanner(service: fileTransferService)
         : null;
 
-    // Keep a single conversation identity across live runtimes, the provider
-    // catalog, and phone-resident mirror fallbacks. The richer provider entry
-    // is appended last so it wins when a local fallback has the same identity.
+    // Keep one presentation writer per provider. The durable provider catalog
+    // owns project identity; Mirror participates only as a source-scoped
+    // fallback when that provider has no catalog rows yet.
     final catalogSessions =
-        <RecentSession>[
-          if (mirrorService != null)
-            for (final metadata in mirrorService.residentMetadata)
-              if (mirrorBridgeId == null ||
-                  metadata.key.bridgeInstanceId == mirrorBridgeId)
-                ConversationMirrorTarget.fromMetadata(
-                  metadata,
-                ).toRecentSession(),
-          ...widget.recentSessions,
-        ].where(
+        composeHomeCatalogSessions(
+          providerSessions: widget.recentSessions,
+          catalogProviderPresenceComplete:
+              widget.catalogProviderPresenceComplete,
+          catalogProviders: widget.catalogProviders,
+          mirrorMetadata:
+              mirrorService?.residentMetadata ??
+              const <ConversationMirrorMetadata>[],
+          currentBridgeInstanceId: widget.currentBridgeInstanceId,
+          currentCodexSourceId: widget.currentCodexSourceId,
+        ).where(
           (session) => recentSessionMatchesListFilters(
             session,
             providerFilter: widget.providerFilter,
-            projectPath: widget.currentProjectFilter,
+            projectPath: null,
             namedOnly: widget.namedOnly,
             searchQuery: widget.searchQuery,
           ),
@@ -705,12 +1120,12 @@ class HomeContentState extends State<HomeContent> {
       (session) => runningSessionMatchesListFilters(
         session,
         providerFilter: widget.providerFilter,
-        projectPath: widget.currentProjectFilter,
+        projectPath: null,
         namedOnly: widget.namedOnly,
         searchQuery: widget.searchQuery,
       ),
     );
-    final unifiedSessions = buildUnifiedSessionList(
+    final allUnifiedSessions = buildUnifiedSessionList(
       runningSessions: runningSessions,
       recentSessions: catalogSessions,
       pinnedSessionKeys: widget.pinnedSessionKeys,
@@ -718,6 +1133,26 @@ class HomeContentState extends State<HomeContent> {
       conversationStatuses: widget.conversationStatuses,
       unreadConversationKeys: widget.unreadConversationKeys,
     );
+    final hasActiveFilter =
+        widget.currentProjectFilter != null ||
+        widget.providerFilter != ProviderFilter.all ||
+        widget.namedOnly ||
+        widget.searchQuery.isNotEmpty;
+    final canUseLegacyProjectAliases =
+        !hasActiveFilter && !widget.isInitialLoading && !widget.hasMoreSessions;
+    final legacyAliasOwners = canUseLegacyProjectAliases
+        ? _projectLegacyAliasOwners(allUnifiedSessions)
+        : const <String, Set<String>>{};
+    final unifiedSessions = widget.currentProjectFilter == null
+        ? allUnifiedSessions
+        : allUnifiedSessions
+              .where(
+                (session) =>
+                    isDesktopProjectGroupingKey(widget.currentProjectFilter)
+                    ? session.projectGroupingKey == widget.currentProjectFilter
+                    : session.projectPath == widget.currentProjectFilter,
+              )
+              .toList(growable: false);
     final alwaysVisibleSessionKeys = {
       for (final item in unifiedSessions)
         if (sessionListItemBypassesDisplayLimit(
@@ -727,27 +1162,222 @@ class HomeContentState extends State<HomeContent> {
           item.identityKey,
     };
     final hasConversationSessions = unifiedSessions.isNotEmpty;
-    final allProjectPaths = orderProjectPathsForGroupedView(
+    final representedProjectPaths = {
+      for (final session in allUnifiedSessions) session.projectPath,
+    };
+    final effectivePinnedProjectKeys = {
+      ...widget.pinnedProjectPaths,
+      for (final entry in legacyAliasOwners.entries)
+        if (entry.value.length == 1 &&
+            _isStableDesktopProjectKey(entry.value.single) &&
+            widget.pinnedProjectPaths.contains(entry.key))
+          entry.value.single,
+    };
+    final naturalProjectKeys = orderProjectPathsForGroupedView(
       knownProjectPaths: <String>[
         if (widget.currentProjectFilter != null) widget.currentProjectFilter!,
-        if (widget.currentProjectFilter == null)
-          ...widget.accumulatedProjectPaths,
+        ...widget.accumulatedProjectPaths.where(
+          (path) => !representedProjectPaths.contains(path),
+        ),
       ],
-      sessions: unifiedSessions,
+      sessions: allUnifiedSessions,
       pinnedSessionKeys: widget.pinnedSessionKeys,
-      pinnedProjectPaths: widget.pinnedProjectPaths,
+      pinnedProjectPaths: effectivePinnedProjectKeys,
       unseenSessionIds: widget.unseenSessionIds,
     );
-    final groupedSessions = _groupSessionsByProject(
-      projectPaths: allProjectPaths,
-      sessions: unifiedSessions,
+    final allProjectKeys = _applyProjectOrder(naturalProjectKeys);
+    final allGroupedSessions = _groupSessionsByProject(
+      projectKeys: allProjectKeys,
+      sessions: allUnifiedSessions,
+      projectlessName: l.unassignedProject,
     );
+    final groupedSessions = widget.currentProjectFilter == null
+        ? allGroupedSessions
+        : !isDesktopProjectGroupingKey(widget.currentProjectFilter)
+        ? _groupSessionsByProject(
+            projectKeys: allProjectKeys,
+            sessions: unifiedSessions,
+            projectlessName: l.unassignedProject,
+          )
+        : allGroupedSessions
+              .where((group) => group.key == widget.currentProjectFilter)
+              .toList(growable: false);
 
-    final hasActiveFilter =
-        widget.currentProjectFilter != null ||
-        widget.providerFilter != ProviderFilter.all ||
-        widget.namedOnly ||
-        widget.searchQuery.isNotEmpty;
+    final bridgeInstanceId = widget.currentBridgeInstanceId?.trim();
+    if (bridgeInstanceId != null && bridgeInstanceId.isNotEmpty) {
+      HomeDiagnosticProjectionRegistry.instance.attach(
+        owner: this,
+        bridgeInstanceId: bridgeInstanceId,
+        codexSourceId: widget.currentCodexSourceId,
+        capture: (targetKey) {
+          const maximumDiagnosticRows = 1024;
+          const maximumDiagnosticGroups = 256;
+          const maximumDiagnosticGroupRows = 256;
+          final visibleRowKeys = <String>[];
+          var visibleRowCount = 0;
+          int? targetVisibleIndex;
+
+          void registerVisibleRow(UnifiedSessionListItem session) {
+            if (session.identityKey == targetKey) {
+              targetVisibleIndex = visibleRowCount;
+            }
+            if (visibleRowKeys.length < maximumDiagnosticRows) {
+              visibleRowKeys.add(session.identityKey);
+            }
+            visibleRowCount += 1;
+          }
+
+          if (!_groupByProject) {
+            for (final session in unifiedSessions) {
+              registerVisibleRow(session);
+            }
+          } else {
+            for (final group in groupedSessions) {
+              final collapsed = _groupContainsProjectKey(
+                widget.collapsedProjectPaths,
+                group,
+                legacyAliasOwners,
+              );
+              if (collapsed) continue;
+              final displayLimit = _groupDisplayLimit(
+                widget.projectSessionDisplayLimits,
+                group,
+                legacyAliasOwners,
+              );
+              final lastAlwaysVisibleIndex = group.sessions.lastIndexWhere(
+                (session) =>
+                    alwaysVisibleSessionKeys.contains(session.identityKey),
+              );
+              final effectiveDisplayLimit =
+                  lastAlwaysVisibleIndex + 1 > displayLimit
+                  ? lastAlwaysVisibleIndex + 1
+                  : displayLimit;
+              for (final session in group.sessions.take(
+                effectiveDisplayLimit,
+              )) {
+                registerVisibleRow(session);
+              }
+            }
+          }
+          final targetOrderedIndex = unifiedSessions.indexWhere(
+            (session) => session.identityKey == targetKey,
+          );
+          final capturedOrderedRows =
+              <({int index, UnifiedSessionListItem item})>[
+                for (
+                  var index = 0;
+                  index < unifiedSessions.length &&
+                      index < maximumDiagnosticRows;
+                  index += 1
+                )
+                  (index: index, item: unifiedSessions[index]),
+              ];
+          if (targetOrderedIndex >= maximumDiagnosticRows) {
+            capturedOrderedRows.add((
+              index: targetOrderedIndex,
+              item: unifiedSessions[targetOrderedIndex],
+            ));
+          }
+          if (targetVisibleIndex != null &&
+              !visibleRowKeys.contains(targetKey)) {
+            visibleRowKeys.add(targetKey);
+          }
+          return <String, Object?>{
+            'capturedAt': DateTime.now().toUtc().toIso8601String(),
+            'bridgeInstanceId': bridgeInstanceId,
+            'codexSourceId': widget.currentCodexSourceId,
+            'connectionState': widget.connectionState.name,
+            'displayMode': _displayMode.name,
+            'groupByProject': _groupByProject,
+            'isSearching': _isSearching,
+            'searchQuery': widget.searchQuery,
+            'providerFilter': widget.providerFilter.name,
+            'namedOnly': widget.namedOnly,
+            'currentProjectFilter': widget.currentProjectFilter,
+            'isInitialLoading': widget.isInitialLoading,
+            'isLoadingMore': widget.isLoadingMore,
+            'hasMoreSessions': widget.hasMoreSessions,
+            'orderedRowCount': unifiedSessions.length,
+            'visibleRowCount': visibleRowCount,
+            'targetOrderedIndex': targetOrderedIndex < 0
+                ? null
+                : targetOrderedIndex,
+            'targetVisibleIndex': targetVisibleIndex,
+            'omittedOrderedRowCount':
+                unifiedSessions.length - capturedOrderedRows.length,
+            'orderedRows': [
+              for (final captured in capturedOrderedRows)
+                <String, Object?>{
+                  'originalIndex': captured.index,
+                  'identityKey': captured.item.identityKey,
+                  'provider': captured.item.provider,
+                  'providerSessionId': captured.item.providerSessionId,
+                  'runtimeSessionId': captured.item.running?.id,
+                  'projectGroupingKey': captured.item.projectGroupingKey,
+                  'urgency': sessionListUrgencyFor(
+                    captured.item,
+                    unseenSessionIds: widget.unseenSessionIds,
+                  ).name,
+                  'hasRuntime': captured.item.running != null,
+                  'hasCatalog': captured.item.recent != null,
+                  'syncUnread': captured.item.syncUnread,
+                  'syncActivity': captured.item.syncStatus?.activity,
+                  'syncAttention': captured.item.syncStatus?.attention,
+                },
+            ],
+            'visibleRowKeys': visibleRowKeys,
+            'projectOrder': allProjectKeys.take(512).toList(growable: false),
+            'omittedProjectOrderCount': allProjectKeys.length > 512
+                ? allProjectKeys.length - 512
+                : 0,
+            'groups': [
+              for (final group in groupedSessions.take(maximumDiagnosticGroups))
+                <String, Object?>{
+                  'key': group.key,
+                  'projectPath': group.projectPath,
+                  'projectName': group.projectName,
+                  'collapsed': _groupContainsProjectKey(
+                    widget.collapsedProjectPaths,
+                    group,
+                    legacyAliasOwners,
+                  ),
+                  'pinned': _groupContainsProjectKey(
+                    widget.pinnedProjectPaths,
+                    group,
+                    legacyAliasOwners,
+                  ),
+                  'loadingMore': _groupContainsProjectKey(
+                    widget.loadingProjectPaths,
+                    group,
+                    legacyAliasOwners,
+                  ),
+                  'displayLimit': _groupDisplayLimit(
+                    widget.projectSessionDisplayLimits,
+                    group,
+                    legacyAliasOwners,
+                  ),
+                  'rowKeys': [
+                    for (final item in group.sessions.take(
+                      maximumDiagnosticGroupRows,
+                    ))
+                      item.identityKey,
+                  ],
+                  'omittedRowCount':
+                      group.sessions.length > maximumDiagnosticGroupRows
+                      ? group.sessions.length - maximumDiagnosticGroupRows
+                      : 0,
+                },
+            ],
+            'omittedGroupCount':
+                groupedSessions.length > maximumDiagnosticGroups
+                ? groupedSessions.length - maximumDiagnosticGroups
+                : 0,
+          };
+        },
+      );
+    } else {
+      HomeDiagnosticProjectionRegistry.instance.detach(this);
+    }
 
     Widget buildUnifiedSessionRow(UnifiedSessionListItem item) {
       final running = item.running;
@@ -1018,13 +1648,9 @@ class HomeContentState extends State<HomeContent> {
           onToggleSessionListMode: _toggleSessionListMode,
           providerFilter: widget.providerFilter,
           onToggleProviderFilter: widget.onToggleProvider,
-          projects:
-              prioritizePinned(
-                widget.accumulatedProjectPaths,
-                isPinned: widget.pinnedProjectPaths.contains,
-              ).map((path) {
-                return (path: path, name: pathBasename(path));
-              }).toList(),
+          projects: allGroupedSessions
+              .map((group) => (path: group.key, name: group.projectName))
+              .toList(growable: false),
           currentProjectFilter: widget.currentProjectFilter,
           onProjectFilterChanged: widget.onSelectProject,
           namedOnly: widget.namedOnly,
@@ -1068,30 +1694,52 @@ class HomeContentState extends State<HomeContent> {
           ] else
             for (final group in groupedSessions)
               _ProjectRecentSessionGroup(
+                key: ValueKey('project_group_${group.key}'),
                 group: group,
-                isCollapsed: widget.collapsedProjectPaths.contains(
-                  group.projectPath,
+                isCollapsed: _groupContainsProjectKey(
+                  widget.collapsedProjectPaths,
+                  group,
+                  legacyAliasOwners,
                 ),
-                isLoadingMore: widget.loadingProjectPaths.contains(
-                  group.projectPath,
+                isLoadingMore: _groupContainsProjectKey(
+                  widget.loadingProjectPaths,
+                  group,
+                  legacyAliasOwners,
                 ),
-                displayLimit:
-                    widget.projectSessionDisplayLimits[group.projectPath] ?? 5,
+                displayLimit: _groupDisplayLimit(
+                  widget.projectSessionDisplayLimits,
+                  group,
+                  legacyAliasOwners,
+                ),
                 alwaysVisibleSessionKeys: alwaysVisibleSessionKeys,
                 canLoadFromBridge:
+                    group.canLoadFromBridge &&
                     widget.currentProjectFilter == null &&
-                    !widget.exhaustedProjectPaths.contains(group.projectPath),
-                isPinned: widget.pinnedProjectPaths.contains(group.projectPath),
+                    !widget.exhaustedProjectPaths.contains(group.key),
+                isPinned: _groupContainsProjectKey(
+                  widget.pinnedProjectPaths,
+                  group,
+                  legacyAliasOwners,
+                ),
                 onToggleCollapsed: () =>
-                    widget.onToggleProjectCollapsed?.call(group.projectPath),
+                    widget.onToggleProjectCollapsed?.call(group.key),
                 onTogglePinned: widget.onToggleProjectPinned == null
                     ? null
-                    : () => widget.onToggleProjectPinned!(group.projectPath),
-                onLoadMore: () =>
-                    widget.onLoadMoreProject?.call(group.projectPath),
+                    : () => widget.onToggleProjectPinned!(group.key),
+                onLoadMore: () => widget.onLoadMoreProject?.call(group.key),
+                reorderEnabled:
+                    widget.currentProjectFilter == null &&
+                    _loadedProjectOrderScope ==
+                        _normalizedProjectOrderScope(
+                          widget.projectOrderScope,
+                        ) &&
+                    groupedSessions.length > 1,
+                onMoveProject: (source, target, placeAfter) =>
+                    _moveProject(allProjectKeys, source, target, placeAfter),
                 itemBuilder: buildUnifiedSessionRow,
               ),
           if (widget.currentProjectFilter != null &&
+              !isDesktopProjectGroupingKey(widget.currentProjectFilter) &&
               widget.hasMoreSessions) ...[
             const SizedBox(height: 8),
             _LoadMoreRecentSessionsButton(
@@ -1104,11 +1752,15 @@ class HomeContentState extends State<HomeContent> {
       ],
     ];
 
-    final childIndexByKey = <Key, int>{
-      for (var index = 0; index < contentEntries.length; index++)
-        if (contentEntries[index] case final UnifiedSessionListItem item)
-          _conversationRowKey(item.identityKey): index,
-    };
+    final childIndexByKey = <Key, int>{};
+    for (var index = 0; index < contentEntries.length; index++) {
+      final entry = contentEntries[index];
+      if (entry case final UnifiedSessionListItem item) {
+        childIndexByKey[_conversationRowKey(item.identityKey)] = index;
+      } else if (entry case final Widget widget when widget.key != null) {
+        childIndexByKey[widget.key!] = index;
+      }
+    }
 
     return ListView.builder(
       key: const ValueKey('session_list'),
@@ -1215,9 +1867,13 @@ class _ProjectRecentSessionGroup extends StatelessWidget {
   final VoidCallback onToggleCollapsed;
   final VoidCallback? onTogglePinned;
   final VoidCallback onLoadMore;
+  final bool reorderEnabled;
+  final void Function(String source, String target, bool placeAfter)
+  onMoveProject;
   final Widget Function(UnifiedSessionListItem item) itemBuilder;
 
   const _ProjectRecentSessionGroup({
+    super.key,
     required this.group,
     required this.isCollapsed,
     required this.isLoadingMore,
@@ -1228,6 +1884,8 @@ class _ProjectRecentSessionGroup extends StatelessWidget {
     required this.onToggleCollapsed,
     required this.onTogglePinned,
     required this.onLoadMore,
+    required this.reorderEnabled,
+    required this.onMoveProject,
     required this.itemBuilder,
   });
 
@@ -1244,18 +1902,19 @@ class _ProjectRecentSessionGroup extends StatelessWidget {
     final hasHiddenLoadedSessions =
         group.sessions.length > effectiveDisplayLimit;
     final canShowMore = hasHiddenLoadedSessions || canLoadFromBridge;
-    return Padding(
+    final content = Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _ProjectRecentSessionHeader(
-            projectPath: group.projectPath,
+            projectPath: group.key,
             projectName: group.projectName,
             isCollapsed: isCollapsed,
             isPinned: isPinned,
             onTap: onToggleCollapsed,
             onTogglePinned: onTogglePinned,
+            reorderEnabled: reorderEnabled,
           ),
           if (!isCollapsed) ...[
             const SizedBox(height: 4),
@@ -1277,7 +1936,7 @@ class _ProjectRecentSessionGroup extends StatelessWidget {
                 child: Padding(
                   padding: const EdgeInsets.only(left: 28, top: 2, bottom: 4),
                   child: InkWell(
-                    key: ValueKey('project_show_more_${group.projectPath}'),
+                    key: ValueKey('project_show_more_${group.key}'),
                     borderRadius: BorderRadius.circular(6),
                     onTap: onLoadMore,
                     child: Padding(
@@ -1309,6 +1968,32 @@ class _ProjectRecentSessionGroup extends StatelessWidget {
         ],
       ),
     );
+    if (!reorderEnabled) return content;
+    return Builder(
+      builder: (dropTargetContext) => DragTarget<String>(
+        key: ValueKey('project_drop_${group.key}'),
+        onWillAcceptWithDetails: (details) => details.data != group.key,
+        onAcceptWithDetails: (details) {
+          final renderObject = dropTargetContext.findRenderObject();
+          final box = renderObject is RenderBox ? renderObject : null;
+          final localOffset = box?.globalToLocal(details.offset);
+          final placeAfter =
+              box != null &&
+              localOffset != null &&
+              localOffset.dy > box.size.height / 2;
+          onMoveProject(details.data, group.key, placeAfter);
+        },
+        builder: (context, candidates, _) => DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: candidates.isEmpty
+                ? null
+                : Border.all(color: Theme.of(context).colorScheme.primary),
+          ),
+          child: content,
+        ),
+      ),
+    );
   }
 }
 
@@ -1319,6 +2004,7 @@ class _ProjectRecentSessionHeader extends StatelessWidget {
   final bool isPinned;
   final VoidCallback onTap;
   final VoidCallback? onTogglePinned;
+  final bool reorderEnabled;
 
   const _ProjectRecentSessionHeader({
     required this.projectPath,
@@ -1327,13 +2013,14 @@ class _ProjectRecentSessionHeader extends StatelessWidget {
     required this.isPinned,
     required this.onTap,
     required this.onTogglePinned,
+    required this.reorderEnabled,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    return Material(
+    final header = Material(
       color: Colors.transparent,
       child: InkWell(
         key: ValueKey('project_header_$projectPath'),
@@ -1374,6 +2061,33 @@ class _ProjectRecentSessionHeader extends StatelessWidget {
           ),
         ),
       ),
+    );
+    if (!reorderEnabled) return header;
+    return LongPressDraggable<String>(
+      key: ValueKey('project_drag_$projectPath'),
+      data: projectPath,
+      dragAnchorStrategy: pointerDragAnchorStrategy,
+      feedback: Material(
+        elevation: 6,
+        borderRadius: BorderRadius.circular(10),
+        color: colorScheme.surface,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 280),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: Text(
+              projectName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ),
+      ),
+      childWhenDragging: Opacity(opacity: 0.45, child: header),
+      child: header,
     );
   }
 }

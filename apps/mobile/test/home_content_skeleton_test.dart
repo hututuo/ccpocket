@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:ccpocket/features/conversation_mirror/storage/conversation_mirror_models.dart';
 import 'package:ccpocket/features/session_list/state/session_list_cubit.dart';
 import 'package:ccpocket/features/session_list/state/session_list_state.dart';
 import 'package:ccpocket/features/session_list/widgets/home_content.dart';
@@ -14,6 +15,7 @@ import 'package:ccpocket/services/support_banner_service.dart';
 import 'package:ccpocket/theme/app_theme.dart';
 import 'package:ccpocket/widgets/session_card.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -78,22 +80,47 @@ class _MockBridgeService extends BridgeService {
 
 RecentSession _session({
   required String id,
+  String? name,
+  String? provider,
+  String? firstPrompt,
+  String? lastPrompt,
+  String? summary,
   String projectPath = '/home/user/project-a',
   String modified = '2025-01-01T00:00:00Z',
+  String? projectGroupId,
+  String? projectGroupName,
+  bool? projectGroupingSnapshotComplete,
+  bool projectless = false,
 }) {
   return RecentSession(
     sessionId: id,
-    firstPrompt: 'test prompt for $id',
+    name: name,
+    provider: provider,
+    firstPrompt: firstPrompt ?? 'test prompt for $id',
+    lastPrompt: lastPrompt,
+    summary: summary,
     created: '2025-01-01T00:00:00Z',
     modified: modified,
     gitBranch: 'main',
     projectPath: projectPath,
+    projectGroupKind: projectless
+        ? 'projectless'
+        : projectGroupId == null
+        ? null
+        : 'desktopProject',
+    projectGroupId: projectGroupId,
+    projectGroupName: projectGroupName,
+    projectGroupPath: projectGroupId == null ? null : '/workspace/ccpocket',
+    projectGroupingSnapshotComplete:
+        projectGroupingSnapshotComplete ??
+        (projectless || projectGroupId != null),
     isSidechain: false,
   );
 }
 
 SessionInfo _runningSession({
   required String id,
+  String? name,
   String? providerSessionId,
   String projectPath = '/home/user/project-a',
   String status = 'running',
@@ -101,6 +128,7 @@ SessionInfo _runningSession({
 }) {
   return SessionInfo.fromJson({
     'id': id,
+    'name': ?name,
     'projectPath': projectPath,
     'status': status,
     'createdAt': '2025-01-01T12:00:00Z',
@@ -135,10 +163,14 @@ Widget _buildHomeContent({
   List<RecentSession> recentSessions = const [],
   Set<String> exhaustedProjectPaths = const {},
   Map<String, int> projectSessionDisplayLimits = const {},
+  Set<String> collapsedProjectPaths = const {},
+  Set<String> pinnedProjectPaths = const {},
   Set<String> unseenSessionIds = const {},
   Map<String, ConversationSyncV2Status> conversationStatuses = const {},
   Set<String> unreadConversationKeys = const {},
+  String projectOrderScope = 'test-bridge-source',
   String? currentProjectFilter,
+  ProviderFilter providerFilter = ProviderFilter.all,
   bool hasMoreSessions = false,
   bool isInitialLoading = false,
   bool showMacOSNativeAppBanner = false,
@@ -174,6 +206,9 @@ Widget _buildHomeContent({
             accumulatedProjectPaths: const {},
             exhaustedProjectPaths: exhaustedProjectPaths,
             projectSessionDisplayLimits: projectSessionDisplayLimits,
+            collapsedProjectPaths: collapsedProjectPaths,
+            pinnedProjectPaths: pinnedProjectPaths,
+            projectOrderScope: projectOrderScope,
             unseenSessionIds: unseenSessionIds,
             conversationStatuses: conversationStatuses,
             unreadConversationKeys: unreadConversationKeys,
@@ -206,7 +241,7 @@ Widget _buildHomeContent({
             onSelectProject: (_) {},
             onLoadMore: () {},
             onLoadMoreProject: (_) {},
-            providerFilter: ProviderFilter.all,
+            providerFilter: providerFilter,
             namedOnly: false,
             onToggleProvider: () {},
             onToggleNamed: () {},
@@ -220,6 +255,140 @@ Widget _buildHomeContent({
 }
 
 void main() {
+  group('composeHomeCatalogSessions', () {
+    ConversationMirrorMetadata mirror({
+      required String id,
+      required String bridgeId,
+      required String? sourceId,
+    }) => ConversationMirrorMetadata(
+      key: ConversationMirrorKey(
+        bridgeInstanceId: bridgeId,
+        provider: 'codex',
+        providerSessionId: id,
+        codexSourceId: sourceId,
+      ),
+      activeGeneration: 'generation-$id',
+      revision: 'revision-$id',
+      entryCount: 1,
+      bytes: 10,
+      autoSync: true,
+      projectPath: '/Users/test/AI agent/Codex',
+      lastSyncedAt: DateTime.utc(2026, 8, 11),
+      error: null,
+    );
+
+    test('provider catalog is the only project writer for its provider', () {
+      final result = composeHomeCatalogSessions(
+        providerSessions: [
+          _session(
+            id: 'catalog-thread',
+            provider: 'codex',
+            projectPath: '/Users/test/AI agent/Codex',
+            projectGroupId: 'desktop-codex',
+            projectGroupName: 'Codex',
+          ),
+        ],
+        catalogProviderPresenceComplete: true,
+        catalogProviders: const {'codex'},
+        mirrorMetadata: [
+          mirror(
+            id: 'mirror-only-thread',
+            bridgeId: 'bridge-current',
+            sourceId: 'source-current',
+          ),
+        ],
+        currentBridgeInstanceId: 'bridge-current',
+        currentCodexSourceId: 'source-current',
+      );
+
+      expect(result, hasLength(1));
+      expect(result.single.sessionId, 'catalog-thread');
+      expect(result.single.projectGroupingKey, 'desktop-project:desktop-codex');
+    });
+
+    test('Mirror fallback rejects another Bridge and Codex source', () {
+      final result = composeHomeCatalogSessions(
+        providerSessions: const [],
+        catalogProviderPresenceComplete: true,
+        catalogProviders: const {},
+        mirrorMetadata: [
+          mirror(
+            id: 'current',
+            bridgeId: 'bridge-current',
+            sourceId: 'source-current',
+          ),
+          mirror(
+            id: 'old-source',
+            bridgeId: 'bridge-current',
+            sourceId: 'source-old',
+          ),
+          mirror(
+            id: 'other-bridge',
+            bridgeId: 'bridge-other',
+            sourceId: 'source-current',
+          ),
+        ],
+        currentBridgeInstanceId: 'bridge-current',
+        currentCodexSourceId: 'source-current',
+      );
+
+      expect(result.map((session) => session.sessionId), ['current']);
+    });
+
+    test('filtered catalog rows cannot re-enable a Mirror writer', () {
+      final result = composeHomeCatalogSessions(
+        providerSessions: const [],
+        catalogProviderPresenceComplete: true,
+        catalogProviders: const {'codex'},
+        mirrorMetadata: [
+          mirror(
+            id: 'mirror-only-thread',
+            bridgeId: 'bridge-current',
+            sourceId: 'source-current',
+          ),
+        ],
+        currentBridgeInstanceId: 'bridge-current',
+        currentCodexSourceId: 'source-current',
+      );
+
+      expect(result, isEmpty);
+    });
+
+    test('incomplete provider presence keeps Mirror fail closed', () {
+      final result = composeHomeCatalogSessions(
+        providerSessions: const [],
+        catalogProviderPresenceComplete: false,
+        catalogProviders: const {},
+        mirrorMetadata: [
+          mirror(
+            id: 'mirror-only-thread',
+            bridgeId: 'bridge-current',
+            sourceId: 'source-current',
+          ),
+        ],
+        currentBridgeInstanceId: 'bridge-current',
+        currentCodexSourceId: 'source-current',
+      );
+
+      expect(result, isEmpty);
+    });
+
+    test('source-less Codex Mirror is rejected until identity is proven', () {
+      final result = composeHomeCatalogSessions(
+        providerSessions: const [],
+        catalogProviderPresenceComplete: true,
+        catalogProviders: const {},
+        mirrorMetadata: [
+          mirror(id: 'source-less', bridgeId: 'bridge-current', sourceId: null),
+        ],
+        currentBridgeInstanceId: 'bridge-current',
+        currentCodexSourceId: null,
+      );
+
+      expect(result, isEmpty);
+    });
+  });
+
   group('conversationDestructiveActionBlocked', () {
     ConversationSyncV2Status status({
       required String activity,
@@ -762,6 +931,592 @@ void main() {
       expect(find.text('project-b'), findsOneWidget);
     });
 
+    testWidgets(
+      'display mode uses catalog text even while a runtime is attached',
+      (tester) async {
+        await tester.pumpWidget(
+          _buildHomeContent(
+            sessions: [
+              _runningSession(
+                id: 'runtime-display-mode',
+                providerSessionId: 'thread-display-mode',
+              ),
+            ],
+            recentSessions: [
+              _session(
+                id: 'thread-display-mode',
+                firstPrompt: 'catalog first prompt',
+                lastPrompt: 'catalog last prompt',
+                summary: 'catalog summary',
+              ),
+            ],
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+        await tester.pump();
+
+        expect(find.text('catalog first prompt'), findsOneWidget);
+        expect(find.text('Working on something'), findsNothing);
+
+        await tester.tap(
+          find.byKey(const ValueKey('recent_display_mode_toggle')),
+        );
+        await tester.pump();
+        expect(find.text('catalog last prompt'), findsOneWidget);
+
+        await tester.tap(
+          find.byKey(const ValueKey('recent_display_mode_toggle')),
+        );
+        await tester.pump();
+        expect(find.text('catalog summary'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'grouped mode uses Desktop project names across worktree paths',
+      (tester) async {
+        await tester.pumpWidget(
+          _buildHomeContent(
+            recentSessions: [
+              _session(
+                id: 'desktop-main',
+                projectPath: '/workspace/ccpocket',
+                projectGroupId: 'project-ccpocket',
+                projectGroupName: 'CC Pocket Mobile',
+              ),
+              _session(
+                id: 'desktop-worktree',
+                projectPath: '/private/worktrees/feature-a',
+                projectGroupId: 'project-ccpocket',
+                projectGroupName: 'CC Pocket Mobile',
+              ),
+              _session(
+                id: 'desktop-projectless',
+                projectPath: '/private/tmp/scratch',
+                projectless: true,
+              ),
+            ],
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byKey(
+            const ValueKey('project_header_desktop-project:project-ccpocket'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('project_header_desktop-projectless')),
+          findsOneWidget,
+        );
+        expect(find.text('CC Pocket Mobile'), findsOneWidget);
+        expect(find.text('Not in a project'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'project sections keep their first persisted order on refresh',
+      (tester) async {
+        Future<void> pumpProjects({
+          required String projectAModified,
+          required String projectBModified,
+        }) => tester.pumpWidget(
+          _buildHomeContent(
+            recentSessions: [
+              _session(id: 'project-a-order', modified: projectAModified),
+              _session(
+                id: 'project-b-order',
+                projectPath: '/home/user/project-b',
+                modified: projectBModified,
+              ),
+            ],
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+
+        await pumpProjects(
+          projectAModified: '2025-01-02T00:00:00Z',
+          projectBModified: '2025-01-01T00:00:00Z',
+        );
+        await tester.pumpAndSettle();
+        final projectA = find.byKey(
+          const ValueKey('project_header_/home/user/project-a'),
+        );
+        final projectB = find.byKey(
+          const ValueKey('project_header_/home/user/project-b'),
+        );
+        expect(
+          tester.getTopLeft(projectA).dy,
+          lessThan(tester.getTopLeft(projectB).dy),
+        );
+
+        await pumpProjects(
+          projectAModified: '2025-01-02T00:00:00Z',
+          projectBModified: '2025-01-03T00:00:00Z',
+        );
+        await tester.pump();
+        expect(
+          tester.getTopLeft(projectA).dy,
+          lessThan(tester.getTopLeft(projectB).dy),
+        );
+      },
+    );
+
+    testWidgets('long press drag persists a manual project order', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(id: 'drag-a', modified: '2025-01-02T00:00:00Z'),
+            _session(
+              id: 'drag-b',
+              projectPath: '/home/user/project-b',
+              modified: '2025-01-01T00:00:00Z',
+            ),
+          ],
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          projectOrderScope: 'bridge-a|codex-a',
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final dragA = find.byKey(
+        const ValueKey('project_drag_/home/user/project-a'),
+      );
+      final dropB = find.byKey(
+        const ValueKey('project_drop_/home/user/project-b'),
+      );
+      final rowA = find.byKey(
+        const ValueKey('conversation_claude\u0000drag-a'),
+      );
+      final rowAElement = tester.element(rowA);
+      final gesture = await tester.startGesture(tester.getCenter(dragA));
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
+      await gesture.moveTo(
+        tester.getRect(dropB).bottomCenter - const Offset(0, 2),
+      );
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      final projectA = find.byKey(
+        const ValueKey('project_header_/home/user/project-a'),
+      );
+      final projectB = find.byKey(
+        const ValueKey('project_header_/home/user/project-b'),
+      );
+      expect(
+        tester.getTopLeft(projectB).dy,
+        lessThan(tester.getTopLeft(projectA).dy),
+      );
+      expect(tester.element(rowA), same(rowAElement));
+      final prefs = await SharedPreferences.getInstance();
+      await tester.runAsync(() async {
+        for (var attempt = 0; attempt < 20; attempt++) {
+          if (prefs.getString('session_list_project_order_by_source_v1') !=
+              null) {
+            return;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 1));
+        }
+      });
+      expect(
+        prefs.getString('session_list_project_order_by_source_v1'),
+        contains('/home/user/project-b'),
+      );
+
+      // Reusing the mounted HomeContent for another authenticated source must
+      // not show source A's saved order while source B's preferences load.
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(id: 'drag-a', modified: '2025-01-02T00:00:00Z'),
+            _session(
+              id: 'drag-b',
+              projectPath: '/home/user/project-b',
+              modified: '2025-01-01T00:00:00Z',
+            ),
+          ],
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          projectOrderScope: 'bridge-b|codex-b',
+        ),
+      );
+      expect(
+        tester.getTopLeft(projectA).dy,
+        lessThan(tester.getTopLeft(projectB).dy),
+      );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(id: 'drag-a', modified: '2025-01-02T00:00:00Z'),
+            _session(
+              id: 'drag-b',
+              projectPath: '/home/user/project-b',
+              modified: '2025-01-01T00:00:00Z',
+            ),
+          ],
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          projectOrderScope: 'bridge-a|codex-a',
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        tester.getTopLeft(projectB).dy,
+        lessThan(tester.getTopLeft(projectA).dy),
+      );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(id: 'drag-a', modified: '2025-01-02T00:00:00Z'),
+            _session(
+              id: 'drag-b',
+              projectPath: '/home/user/project-b',
+              modified: '2025-01-01T00:00:00Z',
+            ),
+          ],
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+          projectOrderScope: 'bridge-b|codex-b',
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        tester.getTopLeft(projectA).dy,
+        lessThan(tester.getTopLeft(projectB).dy),
+      );
+    });
+
+    testWidgets(
+      'Desktop grouping honors legacy collapse and display-limit keys',
+      (tester) async {
+        final sessions = [
+          for (var index = 0; index < 7; index++)
+            _session(
+              id: 'desktop-$index',
+              projectPath: '/private/worktrees/feature-a',
+              projectGroupId: 'project-ccpocket',
+              projectGroupName: 'CC Pocket Mobile',
+            ),
+        ];
+        await tester.pumpWidget(
+          _buildHomeContent(
+            recentSessions: sessions,
+            collapsedProjectPaths: const {'/private/worktrees/feature-a'},
+            projectSessionDisplayLimits: const {
+              '/private/worktrees/feature-a': 25,
+            },
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.byType(RunningSessionCard), findsNothing);
+
+        await tester.pumpWidget(
+          _buildHomeContent(
+            recentSessions: sessions,
+            projectSessionDisplayLimits: const {
+              '/private/worktrees/feature-a': 25,
+            },
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.byType(RunningSessionCard), findsNWidgets(7));
+      },
+    );
+
+    testWidgets(
+      'ambiguous legacy path does not collapse or expand two Desktop groups',
+      (tester) async {
+        tester.view.physicalSize = const Size(1200, 4000);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        const sharedPath = '/private/worktrees/shared';
+        final sessions = [
+          for (final project in ['project-a', 'project-b'])
+            for (var index = 0; index < 7; index++)
+              _session(
+                id: '$project-$index',
+                projectPath: sharedPath,
+                projectGroupId: project,
+                projectGroupName: project == 'project-a'
+                    ? 'Project A'
+                    : 'Project B',
+              ),
+        ];
+
+        await tester.pumpWidget(
+          _buildHomeContent(
+            recentSessions: sessions,
+            collapsedProjectPaths: const {sharedPath},
+            projectSessionDisplayLimits: const {sharedPath: 25},
+            isInitialLoading: false,
+            cubit: cubit,
+            draftService: draftService,
+            revenueCatService: revenueCatService,
+            supportBannerService: supportBannerService,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byKey(
+            const ValueKey('project_header_desktop-project:project-a'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(
+            const ValueKey('project_header_desktop-project:project-b'),
+          ),
+          findsOneWidget,
+        );
+        expect(find.byType(RunningSessionCard), findsNWidgets(10));
+      },
+    );
+
+    testWidgets('projectless group ignores legacy path presentation state', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(
+              id: 'projectless-a',
+              projectPath: '/private/tmp/projectless-a',
+              projectless: true,
+            ),
+            _session(
+              id: 'projectless-b',
+              projectPath: '/private/tmp/projectless-b',
+              projectless: true,
+            ),
+          ],
+          collapsedProjectPaths: const {'/private/tmp/projectless-a'},
+          projectSessionDisplayLimits: const {'/private/tmp/projectless-a': 25},
+          pinnedProjectPaths: const {'/private/tmp/projectless-a'},
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('project_header_desktop-projectless')),
+        findsOneWidget,
+      );
+      expect(find.byType(RunningSessionCard), findsNWidgets(2));
+    });
+
+    testWidgets('filtered catalog never resolves a partial legacy alias', (
+      tester,
+    ) async {
+      const sharedPath = '/private/worktrees/provider-shared';
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(
+              id: 'claude-visible',
+              provider: 'claude',
+              projectPath: sharedPath,
+              projectGroupId: 'project-a',
+              projectGroupName: 'Project A',
+            ),
+            _session(
+              id: 'codex-hidden',
+              provider: 'codex',
+              projectPath: sharedPath,
+              projectGroupId: 'project-b',
+              projectGroupName: 'Project B',
+            ),
+          ],
+          providerFilter: ProviderFilter.claude,
+          collapsedProjectPaths: const {sharedPath},
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('project_header_desktop-project:project-a')),
+        findsOneWidget,
+      );
+      expect(find.byType(RunningSessionCard), findsOneWidget);
+    });
+
+    testWidgets('incomplete Desktop grouping never claims a legacy alias', (
+      tester,
+    ) async {
+      const legacyPath = '/private/worktrees/incomplete-grouping';
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(
+              id: 'incomplete-grouping-session',
+              projectPath: legacyPath,
+              projectGroupId: 'project-incomplete',
+              projectGroupName: 'Incomplete Project',
+              projectGroupingSnapshotComplete: false,
+            ),
+          ],
+          collapsedProjectPaths: const {legacyPath},
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(
+          const ValueKey('project_header_desktop-project:project-incomplete'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.byType(RunningSessionCard), findsOneWidget);
+    });
+
+    testWidgets('raw project filter survives a Desktop projectless regroup', (
+      tester,
+    ) async {
+      const legacyPath = '/private/tmp/legacy-filter';
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(
+              id: 'legacy-filter-session',
+              projectPath: legacyPath,
+              projectless: true,
+            ),
+            _session(
+              id: 'unrelated-projectless-session',
+              projectPath: '/private/tmp/unrelated',
+              projectless: true,
+            ),
+          ],
+          currentProjectFilter: legacyPath,
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('project_header_desktop-projectless')),
+        findsOneWidget,
+      );
+      expect(find.byType(RunningSessionCard), findsOneWidget);
+      expect(find.textContaining('legacy-filter-session'), findsOneWidget);
+      expect(
+        find.textContaining('unrelated-projectless-session'),
+        findsNothing,
+      );
+    });
+
+    testWidgets('legacy worktree pin keeps its Desktop project group first', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _buildHomeContent(
+          recentSessions: [
+            _session(
+              id: 'older-pinned',
+              projectPath: '/private/worktrees/pinned',
+              projectGroupId: 'project-pinned',
+              projectGroupName: 'Pinned project',
+              modified: '2025-01-01T00:00:00Z',
+            ),
+            _session(
+              id: 'newer-ordinary',
+              projectPath: '/private/worktrees/ordinary',
+              projectGroupId: 'project-ordinary',
+              projectGroupName: 'Ordinary project',
+              modified: '2025-01-02T00:00:00Z',
+            ),
+          ],
+          pinnedProjectPaths: const {'/private/worktrees/pinned'},
+          isInitialLoading: false,
+          cubit: cubit,
+          draftService: draftService,
+          revenueCatService: revenueCatService,
+          supportBannerService: supportBannerService,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final pinnedHeader = find.byKey(
+        const ValueKey('project_header_desktop-project:project-pinned'),
+      );
+      final ordinaryHeader = find.byKey(
+        const ValueKey('project_header_desktop-project:project-ordinary'),
+      );
+      expect(pinnedHeader, findsOneWidget);
+      expect(ordinaryHeader, findsOneWidget);
+      expect(
+        tester.getTopLeft(pinnedHeader).dy,
+        lessThan(tester.getTopLeft(ordinaryHeader).dy),
+      );
+    });
+
     testWidgets('recent chats mode uses global load more pagination', (
       tester,
     ) async {
@@ -905,6 +1660,40 @@ void main() {
       );
       expect(find.byType(RunningSessionCard), findsNWidgets(2));
     });
+
+    testWidgets(
+      'provider catalog rename and clear override stale runtime title',
+      (tester) async {
+        Future<void> pumpWithName(String? catalogName) async {
+          await tester.pumpWidget(
+            _buildHomeContent(
+              sessions: [
+                _runningSession(
+                  id: 'runtime-1',
+                  providerSessionId: 'thread-1',
+                  name: 'Stale runtime title',
+                ),
+              ],
+              recentSessions: [_session(id: 'thread-1', name: catalogName)],
+              isInitialLoading: false,
+              cubit: cubit,
+              draftService: draftService,
+              revenueCatService: revenueCatService,
+              supportBannerService: supportBannerService,
+            ),
+          );
+          await tester.pump();
+        }
+
+        await pumpWithName('Desktop renamed');
+        expect(find.text('Desktop renamed'), findsOneWidget);
+        expect(find.text('Stale runtime title'), findsNothing);
+
+        await pumpWithName(null);
+        expect(find.text('Desktop renamed'), findsNothing);
+        expect(find.text('Stale runtime title'), findsNothing);
+      },
+    );
 
     testWidgets(
       'keeps one row element when a durable conversation gains a runtime',

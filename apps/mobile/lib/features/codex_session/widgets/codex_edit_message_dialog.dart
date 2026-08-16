@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../../../l10n/app_localizations.dart';
 
-class CodexRewindDialog extends StatelessWidget {
-  const CodexRewindDialog({
+/// Confirms the native Codex edit-as-branch operation.
+class CodexEditMessageDialog extends StatelessWidget {
+  const CodexEditMessageDialog({
     super.key,
     required this.messageText,
     required this.onConfirm,
@@ -20,16 +21,19 @@ class CodexRewindDialog extends StatelessWidget {
     final trimmed = messageText.trim();
 
     return AlertDialog(
-      title: Text(l.codexRewindConfirmTitle),
+      title: Text(l.codexEditMessageConfirmTitle),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(l.codexRewindConfirmBody, style: theme.textTheme.bodyMedium),
+          Text(
+            l.codexEditMessageConfirmBody,
+            style: theme.textTheme.bodyMedium,
+          ),
           if (trimmed.isNotEmpty) ...[
             const SizedBox(height: 16),
             Container(
-              key: const ValueKey('codex_rewind_message_preview'),
+              key: const ValueKey('codex_edit_message_preview'),
               constraints: const BoxConstraints(maxHeight: 120),
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -51,14 +55,14 @@ class CodexRewindDialog extends StatelessWidget {
       ),
       actions: [
         TextButton(
-          key: const ValueKey('codex_rewind_cancel_button'),
+          key: const ValueKey('codex_edit_message_cancel_button'),
           onPressed: () => Navigator.of(context).pop(false),
           child: Text(l.cancel),
         ),
         FilledButton(
-          key: const ValueKey('codex_rewind_confirm_button'),
+          key: const ValueKey('codex_edit_message_confirm_button'),
           onPressed: onConfirm,
-          child: Text(l.rewind),
+          child: Text(l.edit),
         ),
       ],
     );

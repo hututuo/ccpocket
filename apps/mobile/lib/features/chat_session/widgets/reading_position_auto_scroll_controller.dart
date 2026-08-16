@@ -42,8 +42,45 @@ class ReadingPositionAutoScrollController extends SimpleAutoScrollController {
 
   _AnchorMutation? _anchorMutation;
   int _generation = 0;
+  int _programmaticScrollGeneration = 0;
+  bool _programmaticScrollPending = false;
 
   bool get hasAnchorMutation => _anchorMutation != null;
+  bool get suppressPassiveExtentCorrection =>
+      hasAnchorMutation || _programmaticScrollPending;
+
+  void _markProgrammaticScroll() {
+    final generation = ++_programmaticScrollGeneration;
+    _programmaticScrollPending = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_programmaticScrollGeneration != generation) return;
+      _programmaticScrollPending = false;
+    });
+  }
+
+  @override
+  void jumpTo(double value) {
+    _markProgrammaticScroll();
+    super.jumpTo(value);
+  }
+
+  @override
+  Future<void> animateTo(
+    double offset, {
+    required Duration duration,
+    required Curve curve,
+  }) async {
+    final generation = ++_programmaticScrollGeneration;
+    _programmaticScrollPending = true;
+    try {
+      await super.animateTo(offset, duration: duration, curve: curve);
+    } finally {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_programmaticScrollGeneration != generation) return;
+        _programmaticScrollPending = false;
+      });
+    }
+  }
 
   int? beginAnchorMutation(GlobalKey anchorKey) {
     final layoutOffset = _sliverMainAxisOffsetFor(anchorKey);

@@ -46,15 +46,49 @@ class CodexSessionCubit extends ChatSessionCubit {
     super.initialCodexApprovalsReviewer,
     super.initialCodexPermissionsMode,
     super.initialProjectPath,
+    super.outgoingDrafts,
+    super.outgoingDraftStorageKey,
     super.detachedPreview,
     super.initialHistoryMessages,
     super.detachedHistoryPageLoader,
     super.detachedHistoryToolDetailLoader,
     super.detachedUserMessageIndexLoader,
     super.detachedUserTurnLoader,
+    super.detachedRuntimeOverlayStream,
     super.initialHistoryHasEarlier,
     super.initialLiveRuntimeSessionId,
+    super.imagePayloadEncoder,
   }) : super(provider: Provider.codex);
+
+  @override
+  bool isLocalOnlySubmission(
+    String text, {
+    List<({Uint8List bytes, String mimeType})>? images,
+    Iterable<Map<String, String>>? additionalMentions,
+  }) {
+    if (super.isLocalOnlySubmission(
+      text,
+      images: images,
+      additionalMentions: additionalMentions,
+    )) {
+      return true;
+    }
+    if ((images != null && images.isNotEmpty) ||
+        (additionalMentions != null && additionalMentions.isNotEmpty)) {
+      return false;
+    }
+    return switch (text.trim()) {
+      '/permissions' ||
+      '/plan' ||
+      '/skills' ||
+      '/compact' ||
+      '/review' ||
+      '/mcp' ||
+      '/model' ||
+      '/context' => true,
+      _ => false,
+    };
+  }
 
   @override
   bool sendMessage(

@@ -276,6 +276,7 @@ describe("CodexProcess (app-server)", () => {
         clientMessageId: "mobile-accepted",
         stage: "provider_accepted",
         method: "turn/steer",
+        providerTurnId: "turn-1",
         clientUserMessageIdAccepted: true,
       }),
       expect.objectContaining({
@@ -405,6 +406,62 @@ describe("CodexProcess (app-server)", () => {
     });
     expect(request).toHaveBeenNthCalledWith(3, "thread/goal/clear", {
       threadId: "thread-1",
+    });
+  });
+
+  it("addresses a durable goal by thread id without resuming the thread", async () => {
+    const proc = new CodexProcess("linux");
+    const goal = {
+      threadId: "thread-durable",
+      objective: "Durable Goal",
+      status: "active",
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: 10,
+      updatedAt: 11,
+    };
+    const request = vi
+      .spyOn(proc as any, "request")
+      .mockResolvedValueOnce({ goal: null })
+      .mockResolvedValueOnce({ goal: null })
+      .mockResolvedValueOnce({ goal })
+      .mockResolvedValueOnce({ goal })
+      .mockResolvedValueOnce({ cleared: true });
+
+    await expect(proc.getGoalSnapshotById("thread-durable")).resolves.toEqual({
+      goal: null,
+      stable: true,
+    });
+    await expect(
+      proc.setGoalById(
+        "thread-durable",
+        { objective: "Durable Goal", status: "active" },
+        { validateCurrentGoal: (current) => expect(current).toBeNull() },
+      ),
+    ).resolves.toEqual(goal);
+    await expect(
+      proc.clearGoalById("thread-durable", {
+        validateCurrentGoal: (current) => expect(current).toEqual(goal),
+      }),
+    ).resolves.toBe(true);
+
+    expect(request).toHaveBeenNthCalledWith(1, "thread/goal/get", {
+      threadId: "thread-durable",
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "thread/goal/get", {
+      threadId: "thread-durable",
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "thread/goal/set", {
+      threadId: "thread-durable",
+      objective: "Durable Goal",
+      status: "active",
+    });
+    expect(request).toHaveBeenNthCalledWith(4, "thread/goal/get", {
+      threadId: "thread-durable",
+    });
+    expect(request).toHaveBeenNthCalledWith(5, "thread/goal/clear", {
+      threadId: "thread-durable",
     });
   });
 
@@ -1431,6 +1488,37 @@ describe("CodexProcess (app-server)", () => {
     });
     await expect(rollback).resolves.toEqual({ id: "thread-fork-child" });
     expect(internal.sharedRuntimeOwnedForkThreadIds.size).toBe(0);
+  });
+
+  it("forks an exact thread boundary without rebinding the parent", async () => {
+    const proc = new CodexProcess("linux", () => true);
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+    const internal = proc as any;
+    internal.stopped = false;
+    internal._threadId = "thread-parent";
+
+    const fork = proc.forkThreadById("thread-parent", {
+      beforeTurnId: "turn-edit-target",
+    });
+    const request = nextOutgoingRequest(child);
+    expect(request).toMatchObject({
+      method: "thread/fork",
+      params: {
+        threadId: "thread-parent",
+        beforeTurnId: "turn-edit-target",
+        persistExtendedHistory: true,
+      },
+    });
+    internal.handleRpcResponse({
+      id: request.id,
+      result: { thread: { id: "thread-before-target" } },
+    });
+
+    await expect(fork).resolves.toMatchObject({
+      threadId: "thread-before-target",
+    });
+    expect(proc.sessionId).toBe("thread-parent");
   });
 
   it("rechecks the shared writer lease at the provider mutation boundary", async () => {
@@ -4829,6 +4917,20 @@ describe("CodexProcess (app-server)", () => {
     proc.stop();
   });
 
+  it("fails closed on a malformed strict thread/list response", async () => {
+    const proc = new CodexProcess("linux");
+    vi.spyOn(proc as any, "request").mockResolvedValue({ nextCursor: null });
+
+    await expect(
+      proc.listThreads({ requireCanonicalResultShape: true }),
+    ).rejects.toThrow("thread/list returned a non-canonical result");
+    await expect(proc.listThreads()).resolves.toEqual({
+      data: [],
+      nextCursor: null,
+    });
+    proc.stop();
+  });
+
   it("lists loaded threads through the bounded read-only RPC", async () => {
     const proc = new CodexProcess("linux");
     const request = vi.spyOn(proc as any, "request").mockResolvedValue({
@@ -5503,7 +5605,9 @@ describe("CodexProcess (app-server)", () => {
   it("ignores placeholder codex model names from resume state", async () => {
     const proc = new CodexProcess("linux");
     const messages: unknown[] = [];
+    const deliveries: unknown[] = [];
     proc.on("message", (msg) => messages.push(msg));
+    proc.on("input_delivery", (event) => deliveries.push(event));
 
     proc.start("/tmp/project-placeholder", {
       sandboxMode: "workspace-write",
@@ -5565,6 +5669,22 @@ describe("CodexProcess (app-server)", () => {
       "mobile-message-loop",
     );
     expect(turnReq.params).not.toHaveProperty("collaborationMode");
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        id: turnReq.id,
+        result: { turn: { id: "turn-admitted-loop" } },
+      })}\n`,
+    );
+    await tick();
+    expect(deliveries).toContainEqual(
+      expect.objectContaining({
+        clientMessageId: "mobile-message-loop",
+        stage: "provider_accepted",
+        method: "turn/start",
+        providerTurnId: "turn-admitted-loop",
+      }),
+    );
 
     proc.stop();
   });

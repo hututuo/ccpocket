@@ -312,6 +312,155 @@ void main() {
   });
 
   test(
+    'same-socket source replacement restarts bootstrap milestones',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final sockets = <WebSocket>[];
+      var listRequests = 0;
+      server.transform(WebSocketTransformer()).listen((socket) {
+        sockets.add(socket);
+        socket.listen((data) {
+          final message = jsonDecode(data as String) as Map<String, dynamic>;
+          if (message['type'] != 'list_sessions') return;
+          listRequests += 1;
+          socket.add(
+            jsonEncode({
+              'type': 'session_list',
+              'sessions': const [],
+              'bridgeInstanceId': 'bridge-a',
+              'codexSourceId': listRequests == 1 ? 'source-a' : 'source-b',
+            }),
+          );
+        });
+      });
+
+      final bridge = BridgeService(
+        authoritativeSessionListTimeout: _testAuthorityTimeout,
+      )..reconnectDelayForTest = (_) => Duration.zero;
+      try {
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        await _waitUntil(() => bridge.codexSourceId == 'source-a');
+        logger.cleanHistory();
+
+        expect(
+          await bridge.refreshAuthoritativeSessionList(
+            timeout: const Duration(seconds: 1),
+          ),
+          isTrue,
+        );
+        expect(bridge.codexSourceId, 'source-b');
+
+        final diagnostics = _connectionDiagnostics().join('\n');
+        expect(diagnostics, contains('state=idle reason=data_source_changed'));
+        expect(diagnostics, contains('state=sessionListModelValidated'));
+        expect(diagnostics, contains('state=sessionListPublished'));
+      } finally {
+        await _closeFixture(bridge, server, sockets);
+      }
+    },
+  );
+
+  test(
+    'manual catalog refresh waits for a newer authoritative generation',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final sockets = <WebSocket>[];
+      var listRequests = 0;
+      server.transform(WebSocketTransformer()).listen((socket) {
+        sockets.add(socket);
+        socket.listen((data) {
+          final message = jsonDecode(data as String) as Map<String, dynamic>;
+          if (message['type'] != 'list_sessions') return;
+          listRequests += 1;
+          socket.add(
+            jsonEncode({'type': 'session_list', 'sessions': const []}),
+          );
+        });
+      });
+
+      final bridge = BridgeService(
+        authoritativeSessionListTimeout: _testAuthorityTimeout,
+      )..reconnectDelayForTest = (_) => Duration.zero;
+      try {
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        await _waitUntil(
+          () => bridge.hasAuthoritativeSessionListForCurrentConnection,
+        );
+        final previousGeneration = bridge.authoritativeSessionListGeneration;
+
+        expect(
+          await bridge.refreshAuthoritativeSessionList(
+            timeout: const Duration(seconds: 1),
+          ),
+          isTrue,
+        );
+        expect(listRequests, greaterThanOrEqualTo(2));
+        expect(
+          bridge.authoritativeSessionListGeneration,
+          greaterThan(previousGeneration),
+        );
+      } finally {
+        await _closeFixture(bridge, server, sockets);
+      }
+    },
+  );
+
+  test(
+    'manual catalog refresh rejects a replacement socket generation',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final sockets = <WebSocket>[];
+      final requestsByConnection = <int, int>{};
+      server.transform(WebSocketTransformer()).listen((socket) {
+        sockets.add(socket);
+        final connectionNumber = sockets.length;
+        socket.listen((data) async {
+          final message = jsonDecode(data as String) as Map<String, dynamic>;
+          if (message['type'] != 'list_sessions') return;
+          final requestNumber = requestsByConnection.update(
+            connectionNumber,
+            (value) => value + 1,
+            ifAbsent: () => 1,
+          );
+          if (connectionNumber == 1 && requestNumber > 1) {
+            await socket.close();
+            return;
+          }
+          socket.add(
+            jsonEncode({'type': 'session_list', 'sessions': const []}),
+          );
+        });
+      });
+
+      final bridge = BridgeService(
+        authoritativeSessionListTimeout: _testAuthorityTimeout,
+      )..reconnectDelayForTest = (_) => Duration.zero;
+      try {
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        await _waitUntil(
+          () => bridge.hasAuthoritativeSessionListForCurrentConnection,
+        );
+
+        expect(
+          await bridge.refreshAuthoritativeSessionList(
+            timeout: const Duration(milliseconds: 350),
+          ),
+          isFalse,
+        );
+        await _waitUntil(
+          () =>
+              sockets.length >= 2 &&
+              bridge.hasAuthoritativeSessionListForCurrentConnection,
+        );
+        expect(requestsByConnection[1], greaterThanOrEqualTo(2));
+        expect(requestsByConnection[2], greaterThanOrEqualTo(1));
+      } finally {
+        await _closeFixture(bridge, server, sockets);
+      }
+    },
+  );
+
+  test(
     'malformed session_list reconnects immediately with a precise stage',
     () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

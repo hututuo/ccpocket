@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "windowSequence": [
+    {
+      "count": 71,
+      "complete": true
+    },
+    {
+      "count": 1,
+      "complete": false
+    },
+    {
+      "count": 72,
+      "complete": true
+    },
+    {
+      "count": 1,
+      "complete": false
+    },
+    {
+      "count": 72,
+      "complete": true
+    },
+    {
+      "count": 2,
+      "complete": false
+    },
+    {
+      "count": 73,
+      "complete": true
+    },
+    {
+      "count": 3,
+      "complete": false
+    },
+    {
+      "count": 91,
+      "complete": true
+    },
+    {
+      "count": 47,
+      "complete": false
+    },
+    {
+      "count": 126,
+      "complete": true
+    },
+    {
+      "count": 47,
+      "complete": false
+    },
+    {
+      "count": 126,
+      "complete": true
+    },
+    {
+      "count": 9,
+      "complete": false
+    },
+    {
+      "count": 120,
+      "complete": true
+    },
+    {
+      "count": 9,
+      "complete": false
+    }
+  ],
+  "protocolWireFixture": {
+    "path": "test-fixtures/conversation-chain/protocol-wire.jsonl",
+    "sha256": "28a24db71400e29346d55aa4d727fede3492203dce05f699bbbcf4082ad11bd3",
+    "frameCount": 127,
+    "v2FrameCount": 126,
+    "provenance": "test-fixtures/conversation-chain/protocol-wire.provenance.json",
+    "source": "normalized capture from fake Provider boundary through production BridgeWebSocketServer; see provenance for scope"
+  },
+  "invariants": [
+    "Only complete windows may replace and advance the canonical revision.",
+    "Incomplete windows are additive and may not delete committed entries.",
+    "Provider turn identity is a hard layout boundary.",
+    "Commit precedes ACK; SQLite is the source restored after restart.",
+    "Equal text with different stable IDs remains multiple facts."
+  ],
+  "headlessProvider": {
+    "thread": {
+      "id": "chain-thread-00000000-0000-4000-8000-000000000001",
+      "preview": "真实 Bridge 黑盒接收端",
+      "createdAt": 1786420000,
+      "cwd": "/workspace/conversation-chain",
+      "modelProvider": "openai",
+      "gitBranch": "codex/chain",
+      "name": "conversation-chain",
+      "model": "gpt-5.6-sol",
+      "reasoningEffort": "ultra"
+    },
+    "canonical": {
+      "entryCount": 126,
+      "startedAt": "2026-08-11T00:00:00.000Z",
+      "userText": "1",
+      "assistantText": "相同文本也必须按稳定身份保留。"
+    },
+    "previewTurns": [],
+    "expected": {
+      "userTexts": [
+        "1",
+        "1"
+      ],
+      "assistantText": "相同文本也必须按稳定身份保留。",
+      "assistantTextCount": 2,
+      "toolResultCount": 1,
+      "turnIds": [
+        "provider-turn-one",
+        "provider-turn-two"
+      ],
+      "latestTurnKey": "turn:provider-turn-two"
+    }
+  }
+}

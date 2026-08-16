@@ -57,6 +57,10 @@ import {
   type CodexThreadSummary,
 } from "./codex-process.js";
 import { codexSourceIdentity } from "./codex-home.js";
+import {
+  readCodexDesktopProjectCatalog,
+  type CodexDesktopProjectGrouping,
+} from "./codex-desktop-project-catalog.js";
 import { readCodexAppServerMode } from "./codex-app-server-config.js";
 import type {
   CodexSharedRuntimeControl,
@@ -171,6 +175,7 @@ import { fetchAllUsage } from "./usage.js";
 import type { PromptHistoryBackupStore } from "./prompt-history-backup.js";
 import type { PromptHistoryStore } from "./prompt-history-store.js";
 import { getPackageVersion } from "./version.js";
+import { CLIENT_BRIDGE_COMPATIBILITY_REVISION } from "./client-bridge-compatibility.js";
 import {
   isPathWithinAllowedDirectory,
   resolvePlatformPath,
@@ -185,6 +190,7 @@ import { ArtifactManager, ArtifactResolveError } from "./artifact-manager.js";
 import { validateFileTransferPeerBaseUrl } from "./file-transfer-utils.js";
 import { createPathArtifactCandidate } from "./artifact-candidates.js";
 import { createLocalFeaturesController } from "./local-features/registry.js";
+import type { ConversationSyncV2Options } from "./local-features/conversation-sync-v2.js";
 import { CodexBoundedHistoryReader } from "./local-features/codex-bounded-history.js";
 import type { LocalFeaturesController } from "./local-features/controller.js";
 import type {
@@ -205,6 +211,9 @@ import {
   CODEX_ACTION_BROKER_CAPABILITY,
   CONVERSATION_CONTENT_EVENT_CAPABILITY,
   CONVERSATION_ITEMS_BY_ID_CAPABILITY,
+  CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
+  CONVERSATION_SYNC_FOCUS_REFRESH_CAPABILITY,
+  CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
   CONVERSATION_USER_INDEX_CAPABILITY,
   CONVERSATION_MIRROR_SOURCE_IDENTITY_CAPABILITY,
   CONVERSATION_SYNC_V2_CAPABILITY,
@@ -236,6 +245,8 @@ import {
 } from "./bridge-identity.js";
 import {
   FILE_TRANSFER_CAPABILITY,
+  FILE_TRANSFER_DIAGNOSTIC_REPORT_CAPABILITY,
+  FILE_TRANSFER_DIAGNOSTIC_REPORT_NO_STEP_UP_CAPABILITY,
   isFileTransferClientMessage,
   isFileTransferServerMessageType,
 } from "./file-transfer-protocol.js";
@@ -324,6 +335,22 @@ type DurableCodexSettingsContext = {
 type SharedCodexSettingsOperation = {
   fingerprint: string;
   promise: Promise<void>;
+  createdAt: number;
+  settledAt?: number;
+};
+type DurableCodexGoalMessage = Extract<
+  ClientMessage,
+  { type: "get_goal" | "set_goal" | "clear_goal" }
+>;
+type DurableCodexGoalEnvelope = {
+  goalTarget: "durable_thread";
+  codexSourceId: string;
+  threadId: string;
+  operationId?: string;
+};
+type DurableCodexGoalOperation = {
+  fingerprint: string;
+  promise: Promise<CodexGoal | null>;
   createdAt: number;
   settledAt?: number;
 };
@@ -447,6 +474,8 @@ const CODEX_HOME_IDENTITY_CAPABILITY = "codex_home_identity_v1";
 const CODEX_RUNTIME_DETACH_CAPABILITY = "codex_runtime_detach_v1";
 const CODEX_DURABLE_THREAD_SETTINGS_CAPABILITY =
   "codex_durable_thread_settings_v1";
+const CODEX_DURABLE_THREAD_GOALS_CAPABILITY =
+  "codex_durable_thread_goals_v1";
 const BRIDGE_APPLICATION_READINESS_CAPABILITY =
   "bridge_application_readiness_v1";
 const PUSH_NOTIFICATION_PREFERENCES_CAPABILITY =
@@ -479,6 +508,8 @@ const BOUNDED_HISTORY_WINDOW_ENTRIES = 200;
 const CODEX_CANONICAL_HISTORY_PAGE_TURNS = 5;
 const MAX_CODEX_PROVIDER_HISTORY_CURSORS = 64;
 const ARCHIVED_SESSION_LIST_LIMIT = 1_000;
+const CODEX_ARCHIVE_SCAN_PAGE_SIZE = 100;
+const CODEX_ARCHIVE_SCAN_MAX_PAGES = 20;
 const CODEX_GOAL_RAW_STATUS_CAPABILITY = "goal_state_raw_status";
 const KNOWN_CODEX_GOAL_STATUSES = new Set([
   "active",
@@ -1005,6 +1036,147 @@ function countCodexUserTurnsInSession(session: SessionInfo): number {
   return Math.max(count, maxOrdinal);
 }
 
+function codexHistoryTurnIdsForUser(
+  session: SessionInfo,
+  targetUuid: string,
+): string[] {
+  const turnIds = new Set<string>();
+  if (Array.isArray(session.pastMessages)) {
+    for (const rawMessage of session.pastMessages) {
+      if (!isRecord(rawMessage)) continue;
+      const message = rawMessage as Partial<SessionHistoryMessage>;
+      if (
+        message.role === "user" &&
+        message.uuid === targetUuid &&
+        typeof message.historyTurnId === "string" &&
+        message.historyTurnId.trim()
+      ) {
+        turnIds.add(message.historyTurnId.trim());
+      }
+    }
+  }
+  for (const message of session.history) {
+    if (
+      message.type === "user_input" &&
+      message.userMessageUuid === targetUuid &&
+      typeof message.historyTurnId === "string" &&
+      message.historyTurnId.trim()
+    ) {
+      turnIds.add(message.historyTurnId.trim());
+    }
+  }
+  return [...turnIds];
+}
+
+function codexHistoryTurnIdsForPersistedUser(
+  history: SessionHistoryMessage[],
+  targetUuid: string,
+): string[] {
+  const turnIds = new Set<string>();
+  for (const message of history) {
+    if (
+      message.role === "user" &&
+      message.uuid === targetUuid &&
+      typeof message.historyTurnId === "string" &&
+      message.historyTurnId.trim()
+    ) {
+      turnIds.add(message.historyTurnId.trim());
+    }
+  }
+  return [...turnIds];
+}
+
+function exactCodexForkBoundaryTurnId(
+  value: string | undefined,
+): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) return undefined;
+  // These are Bridge pagination fallbacks, not app-server turn identities.
+  if (
+    normalized.startsWith("legacy-turn:") ||
+    normalized.startsWith("codex:user-turn:")
+  ) {
+    return undefined;
+  }
+  return normalized;
+}
+
+type CodexForkBoundaryResolution =
+  | { turnId: string; error?: never }
+  | { turnId?: never; error: string };
+
+function resolveCodexForkBoundaryTurnId(
+  session: SessionInfo,
+  targetUuid: string,
+  requestedTurnId?: string,
+): CodexForkBoundaryResolution {
+  return resolveCodexForkBoundaryFromObservedTurns(
+    codexHistoryTurnIdsForUser(session, targetUuid),
+    requestedTurnId,
+  );
+}
+
+function resolveCodexForkBoundaryFromPersistedHistory(
+  history: SessionHistoryMessage[],
+  targetUuid: string,
+  requestedTurnId?: string,
+): CodexForkBoundaryResolution {
+  return resolveCodexForkBoundaryFromObservedTurns(
+    codexHistoryTurnIdsForPersistedUser(history, targetUuid),
+    requestedTurnId,
+  );
+}
+
+function resolveCodexForkBoundaryFromObservedTurns(
+  observedValues: string[],
+  requestedTurnId?: string,
+): CodexForkBoundaryResolution {
+  const observedTurnIds = observedValues
+    .map(exactCodexForkBoundaryTurnId)
+    .filter((turnId): turnId is string => turnId !== undefined);
+  const requestedExactTurnId = exactCodexForkBoundaryTurnId(requestedTurnId);
+
+  // A legacy/page-local id is not an app-server boundary. Prefer the
+  // provider turn already observed for this exact user message instead of
+  // falling back to ordinal rollback.
+  if (!requestedExactTurnId) {
+    if (observedTurnIds.length === 1) return { turnId: observedTurnIds[0] };
+    if (observedTurnIds.length > 1) {
+      return {
+        error:
+          "Selected Codex message has an ambiguous turn boundary; refresh and retry",
+      };
+    }
+    return {
+      error:
+        "Exact Codex turn boundary is unavailable; refresh the conversation and retry",
+    };
+  }
+
+  // A client-provided provider turn is accepted only when the Bridge can
+  // prove that it belongs to the selected user message. This prevents a stale
+  // Mobile cache from forking at a different, otherwise valid turn id.
+  if (observedTurnIds.length === 0) {
+    return {
+      error:
+        "Codex turn boundary is not confirmed by the current conversation; refresh and retry",
+    };
+  }
+  if (observedTurnIds.length > 1) {
+    return {
+      error:
+        "Selected Codex message has an ambiguous turn boundary; refresh and retry",
+    };
+  }
+  if (!observedTurnIds.includes(requestedExactTurnId)) {
+    return {
+      error:
+        "Codex turn boundary does not match the selected message; refresh and retry",
+    };
+  }
+  return { turnId: requestedExactTurnId };
+}
+
 function nextCodexUserTurnUuid(session: SessionInfo): string {
   return codexUserTurnUuid(countCodexUserTurnsInSession(session) + 1);
 }
@@ -1227,6 +1399,20 @@ function isUnsupportedCodexRpc(err: unknown): boolean {
   );
 }
 
+function isUnsupportedCodexForkBoundary(err: unknown): boolean {
+  if (!(err instanceof CodexRpcError) || err.method !== "thread/fork") {
+    return false;
+  }
+  const detail = `${err.message} ${JSON.stringify(err.data ?? "")}`;
+  return (
+    (err.code === -32602 || /invalid params/i.test(detail)) &&
+    /beforeTurnId|lastTurnId/i.test(detail) &&
+    /unknown|unexpected|unsupported|invalid (?:field|parameter|params)/i.test(
+      detail,
+    )
+  );
+}
+
 type SessionLifecycleErrorCode =
   | "session_active"
   | "session_not_archived"
@@ -1397,6 +1583,7 @@ function normalizeNonNegativeLimit(
 function codexThreadToRecentSession(
   thread: CodexThreadSummary,
   indexed?: CodexSessionIndexMetadata,
+  projectGrouping?: CodexDesktopProjectGrouping,
 ): Record<string, unknown> {
   const projectPath = normalizeWorktreePath(thread.cwd);
   const resumeCwd =
@@ -1424,9 +1611,30 @@ function codexThreadToRecentSession(
     gitBranch: thread.gitBranch ?? "",
     projectPath,
     ...(resumeCwd ? { resumeCwd } : {}),
+    ...(projectGrouping ?? {}),
     isSidechain: false,
     ...(indexed?.codexSettings ? { codexSettings: indexed.codexSettings } : {}),
   };
+}
+
+function codexThreadMatchesRecentSearch(
+  thread: CodexThreadSummary,
+  projectGrouping: CodexDesktopProjectGrouping | undefined,
+  normalizedQuery: string,
+): boolean {
+  return [
+    thread.name,
+    thread.preview,
+    thread.cwd,
+    thread.gitBranch,
+    thread.agentNickname,
+    thread.agentRole,
+    projectGrouping?.projectGroupName,
+  ].some(
+    (value) =>
+      typeof value === "string" &&
+      value.toLocaleLowerCase().includes(normalizedQuery),
+  );
 }
 
 function canonicalRecentProjectPath(
@@ -1469,11 +1677,28 @@ function mergeRecentSessionPages(sessions: unknown[]): unknown[] {
   );
 }
 
+/**
+ * The unauthenticated development exception is deliberately narrower than the
+ * file-transfer and file-browser surfaces. It admits only a diagnostic upload
+ * without changing any other file-transfer or file-browser route.
+ */
+function isOpenDiagnosticDevelopmentMessage(msg: ClientMessage): boolean {
+  if (
+    msg.type === "file_transfer_upload_prepare_v2" &&
+    msg.purpose === "diagnostic_report"
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export interface BridgeServerOptions {
   server: HttpServer;
   apiKey?: string;
   apiKeyAuthenticator?: BridgeApiKeyAuthenticator;
   authMode?: BridgeAuthMode;
+  /** Explicit development-only escape hatch for session diagnostics on open connections. */
+  allowUnauthenticatedDiagnosticReports?: boolean;
   bridgeIdentity?: BridgeIdentityStore;
   devicePairing?: BridgeDevicePairing;
   ownerFullDiskRead?: boolean;
@@ -1503,6 +1728,17 @@ export interface BridgeServerOptions {
   sessionCatalogMonitorFactory?: (
     onChanged: (revision: number, change?: SessionCatalogChange) => void,
   ) => SessionCatalogMonitorControl;
+  /**
+   * Raw Codex app-server boundary used by the black-box chain harness.
+   *
+   * The harness may substitute the Provider/app-server process, but the
+   * Bridge catalog, normalization, synchronization, framing, and WebSocket
+   * code remain the production implementation. Ordinary hosts omit this and
+   * receive a real CodexProcess.
+   */
+  codexProcessFactory?: () => CodexProcess;
+  /** Provider/app-server seam used by the real-WebSocket chain harness. */
+  conversationSyncV2Options?: ConversationSyncV2Options;
 }
 
 export interface SessionCatalogMonitorControl {
@@ -1544,6 +1780,7 @@ export class BridgeWebSocketServer {
   private sessionManager: SessionManager;
   private readonly apiKeyAuthenticator: BridgeApiKeyAuthenticator;
   private readonly authMode: BridgeAuthMode;
+  private readonly allowUnauthenticatedDiagnosticReports: boolean;
   private readonly bridgeIdentity: BridgeIdentityStore | null;
   private readonly devicePairing: BridgeDevicePairing | null;
   private readonly ownerFullDiskRead: boolean;
@@ -1583,6 +1820,7 @@ export class BridgeWebSocketServer {
   private archiveStore: ArchiveStore;
   private archiveStoreReady: Promise<void>;
   private archiveStoreInitializationError: Error | null = null;
+  private codexArchiveRefreshInFlight: Promise<void> | null = null;
   private codexLifecycleMutations = new Map<string, Promise<void>>();
   private codexProfiles: string[] = [];
   private defaultCodexProfile: string | undefined;
@@ -1658,6 +1896,7 @@ export class BridgeWebSocketServer {
    * lease can move while a standalone process is initializing.
    */
   private readonly codexSharedRuntimeMutationAllowed?: () => boolean;
+  private readonly codexProcessFactory: () => CodexProcess;
   private codexActionBrokerNotificationUnsubscribe?: () => void;
   private readonly codexActionPushProjectionStates = new Map<
     PushLocale,
@@ -1683,6 +1922,10 @@ export class BridgeWebSocketServer {
     string,
     SharedCodexSettingsOperation
   >();
+  private readonly durableCodexGoalOperations = new Map<
+    string,
+    DurableCodexGoalOperation
+  >();
   private backgroundActivityBroadcastScheduled = false;
   private readonly sessionCatalogMonitor: SessionCatalogMonitorControl;
   private resumeOperations = new Map<string, ResumeOperation>();
@@ -1694,12 +1937,17 @@ export class BridgeWebSocketServer {
     );
   }
 
+  private get durableCodexThreadGoalsSupported(): boolean {
+    return this.durableCodexThreadSettingsSupported;
+  }
+
   constructor(options: BridgeServerOptions) {
     const {
       server,
       apiKey,
       apiKeyAuthenticator,
       authMode,
+      allowUnauthenticatedDiagnosticReports,
       bridgeIdentity,
       devicePairing,
       ownerFullDiskRead,
@@ -1727,11 +1975,15 @@ export class BridgeWebSocketServer {
       terminalResultLedger,
       inputDeliveryLedger,
       sessionCatalogMonitorFactory,
+      codexProcessFactory,
+      conversationSyncV2Options,
     } = options;
     this.apiKeyAuthenticator =
       apiKeyAuthenticator ?? new BridgeApiKeyAuthenticator(apiKey);
     this.authMode =
       authMode ?? (this.apiKeyAuthenticator.isConfigured ? "key" : "open");
+    this.allowUnauthenticatedDiagnosticReports =
+      this.authMode === "open" && allowUnauthenticatedDiagnosticReports === true;
     this.bridgeIdentity = bridgeIdentity ?? null;
     this.devicePairing = devicePairing ?? null;
     this.ownerFullDiskRead = ownerFullDiskRead === true;
@@ -1770,6 +2022,13 @@ export class BridgeWebSocketServer {
           daemonActionBrokerRuntime.health.ready === true &&
           daemonActionBrokerRuntime.health.writerLeaseHeld === true
       : undefined;
+    this.codexProcessFactory =
+      codexProcessFactory ??
+      (() =>
+        new CodexProcess(
+          this.platform,
+          this.codexSharedRuntimeMutationAllowed,
+        ));
     this.inputDeliveryLedger =
       inputDeliveryLedger && this.bridgeInstanceId ? inputDeliveryLedger : null;
     this.sessionCatalogMonitor = sessionCatalogMonitorFactory
@@ -1933,6 +2192,7 @@ export class BridgeWebSocketServer {
             },
           }
         : undefined,
+      this.codexProcessFactory,
     );
     this.codexGoals = new CodexGoalController({
       getSession: (sessionId) => this.sessionManager.get(sessionId),
@@ -2069,7 +2329,7 @@ export class BridgeWebSocketServer {
           requestTimeoutMs,
         ),
       createDedicatedCodexProcess: () =>
-        new CodexProcess(this.platform, this.codexSharedRuntimeMutationAllowed),
+        this.codexProcessFactory(),
       createPersistedCodexChildSession: (parentSessionId, childOptions) =>
         this.createPersistedCodexChildSession(parentSessionId, childOptions),
       createEphemeralCodexChildSession: (parentSessionId, childOptions) =>
@@ -2191,7 +2451,16 @@ export class BridgeWebSocketServer {
         this.clientSupportedServerMessages
           .get(client as WebSocket)
           ?.has(messageType) ?? false,
-    });
+    }, process.env, { conversationSyncV2: conversationSyncV2Options });
+    if (
+      this.fileTransfer &&
+      typeof (this.fileTransfer as FileTransferManager).setDiagnosticRuntimeStateProvider ===
+        "function"
+    ) {
+      this.fileTransfer.setDiagnosticRuntimeStateProvider(() =>
+        this.localFeatures.listRuntimeConversationStates(),
+      );
+    }
     this.codexActionBrokerNotificationUnsubscribe =
       this.codexActionBrokerRuntime?.subscribe((update) => {
         try {
@@ -2701,13 +2970,16 @@ export class BridgeWebSocketServer {
     sessionId: string,
     targetUuid: string,
     mode: "conversation" | "code" | "both",
+    historyTurnId?: string,
+    sourceSessionIdForClient = sessionId,
   ): Promise<void> {
     if (mode !== "conversation") {
       this.send(ws, {
         type: "rewind_result",
         success: false,
         mode,
-        error: "Codex only supports conversation rewind",
+        sessionId: sourceSessionIdForClient,
+        error: "Codex message editing does not restore files",
       });
       return;
     }
@@ -2718,6 +2990,7 @@ export class BridgeWebSocketServer {
         type: "rewind_result",
         success: false,
         mode,
+        sessionId: sourceSessionIdForClient,
         error: `Session ${sessionId} not found`,
       });
       return;
@@ -2725,25 +2998,27 @@ export class BridgeWebSocketServer {
     const codexProcess = session.process as CodexProcess;
     if (
       session.provider !== "codex" ||
-      typeof codexProcess.rollbackThread !== "function"
+      typeof codexProcess.forkThreadById !== "function"
     ) {
       this.send(ws, {
         type: "rewind_result",
         success: false,
         mode,
+        sessionId: sourceSessionIdForClient,
         error: "Session is not a Codex session",
       });
       return;
     }
     const mutationBlock = await this.codexThreadMutationBlock(
       session,
-      "rewind this conversation",
+      "edit this message",
     );
     if (mutationBlock) {
       this.send(ws, {
         type: "rewind_result",
         success: false,
         mode,
+        sessionId: sourceSessionIdForClient,
         error: mutationBlock.message,
       });
       return;
@@ -2756,7 +3031,8 @@ export class BridgeWebSocketServer {
         type: "rewind_result",
         success: false,
         mode,
-        error: "Cannot rewind while Codex is running",
+        sessionId: sourceSessionIdForClient,
+        error: "Cannot edit a message while Codex is running",
       });
       return;
     }
@@ -2765,7 +3041,8 @@ export class BridgeWebSocketServer {
         type: "rewind_result",
         success: false,
         mode,
-        error: "Cannot rewind while Codex has queued input",
+        sessionId: sourceSessionIdForClient,
+        error: "Cannot edit a message while Codex has queued input",
       });
       return;
     }
@@ -2777,18 +3054,8 @@ export class BridgeWebSocketServer {
         type: "rewind_result",
         success: false,
         mode,
-        error: "Invalid Codex rewind target",
-      });
-      return;
-    }
-
-    const numTurns = totalUserTurns - targetOrdinal + 1;
-    if (numTurns <= 0) {
-      this.send(ws, {
-        type: "rewind_result",
-        success: false,
-        mode,
-        error: "Invalid Codex rewind target",
+        sessionId: sourceSessionIdForClient,
+        error: "Invalid Codex edit target",
       });
       return;
     }
@@ -2799,7 +3066,8 @@ export class BridgeWebSocketServer {
         type: "rewind_result",
         success: false,
         mode,
-        error: "No Codex thread ID available for rewind",
+        sessionId: sourceSessionIdForClient,
+        error: "No Codex thread ID available for editing",
       });
       return;
     }
@@ -2813,14 +3081,42 @@ export class BridgeWebSocketServer {
         }
       : undefined;
 
-    const rolledBackThread = await codexProcess.rollbackThread(numTurns);
+    const boundary = resolveCodexForkBoundaryTurnId(
+      session,
+      targetUuid,
+      historyTurnId,
+    );
+    if (boundary.error) {
+      this.send(ws, {
+        type: "rewind_result",
+        success: false,
+        mode,
+        sessionId: sourceSessionIdForClient,
+        error: boundary.error,
+      });
+      return;
+    }
+    const exactTurnId = boundary.turnId;
+    let forked: {
+      threadId: string;
+      thread: Record<string, unknown>;
+    };
+    try {
+      forked = await codexProcess.forkThreadById(threadId, {
+        beforeTurnId: exactTurnId,
+      });
+    } catch (error) {
+      if (!isUnsupportedCodexForkBoundary(error)) throw error;
+      throw new Error(
+        "This Codex app-server does not support message editing. Update Codex and try again.",
+      );
+    }
 
     const pastMessages = this.codexHistoryFromThreadOrFallback({
-      thread: rolledBackThread,
+      thread: forked.thread,
       expectedUserTurns: targetOrdinal - 1,
       fallback: buildCodexHistoryPrefix(session, targetOrdinal - 1),
     });
-    this.destroySession(sessionId);
     const newSessionId = this.sessionManager.create(
       projectPath,
       undefined,
@@ -2829,15 +3125,20 @@ export class BridgeWebSocketServer {
       "codex",
       this.withCodexAutoReviewPolicy({
         ...(codexSettings ?? {}),
-        threadId,
+        threadId: forked.threadId,
       } as CodexStartOptions),
     );
     const newSession = this.sessionManager.get(newSessionId);
+    if (newSession) {
+      newSession.forkedFromSessionId = session.id;
+      newSession.forkedFromThreadId = threadId;
+    }
 
     this.send(ws, {
       type: "rewind_result",
       success: true,
       mode,
+      sessionId: sourceSessionIdForClient,
     });
     this.send(
       ws,
@@ -2848,10 +3149,207 @@ export class BridgeWebSocketServer {
         session: newSession,
         approvalsReviewer: newSession?.codexSettings?.approvalsReviewer,
         sandboxMode: newSession?.codexSettings?.sandboxMode,
-        sourceSessionId: sessionId,
+        sourceSessionId: sourceSessionIdForClient,
       }),
     );
     this.sendSessionList(ws);
+  }
+
+  /**
+   * Implements Codex Desktop's pencil semantics for a durable thread that has
+   * no Bridge runtime: fork before the selected user turn, preserve the source
+   * branch, and register the child as the replacement conversation.
+   */
+  private async editPersistedCodexConversation(
+    ws: WebSocket,
+    threadId: string,
+    targetUuid: string,
+    rawProjectPath: string,
+    codexSourceId?: string,
+    historyTurnId?: string,
+  ): Promise<void> {
+    this.assertCodexSourceMatches("codex", codexSourceId);
+    this.assertSharedCodexWriterAvailable("edit a Codex message");
+
+    const releaseThreadOperation =
+      await this.acquireCodexThreadOperation(threadId);
+    try {
+      const runningSession = this.findRunningCodexSession(threadId);
+      if (runningSession) {
+        await this.rewindCodexConversation(
+          ws,
+          runningSession.id,
+          targetUuid,
+          "conversation",
+          historyTurnId,
+          threadId,
+        );
+        return;
+      }
+
+      await this.requireArchiveStoreReady();
+      if (this.archiveStore.isArchived(threadId, "codex", this.codexSourceId)) {
+        throw new Error(
+          "The Codex thread is archived. Restore it before editing a message.",
+        );
+      }
+      if (
+        this.localFeatures.conversationActivity("codex", threadId) ===
+        "active"
+      ) {
+        throw new Error("Cannot edit a message while Codex is running");
+      }
+
+      const requestedProjectPath = resolvePlatformPath(
+        rawProjectPath,
+        this.platform,
+      );
+      const worktreeMapping = this.worktreeStore.get(threadId);
+      const projectPath = resolvePlatformPath(
+        worktreeMapping?.projectPath ?? requestedProjectPath,
+        this.platform,
+      );
+      if (!this.isExistingProjectPathAllowed(projectPath)) {
+        this.send(ws, this.buildPathNotAllowedError(rawProjectPath));
+        return;
+      }
+
+      let worktreeOpts: WorktreeOptions | undefined;
+      if (worktreeMapping) {
+        worktreeOpts = worktreeExists(worktreeMapping.worktreePath)
+          ? {
+              existingWorktreePath: worktreeMapping.worktreePath,
+              worktreeBranch: worktreeMapping.worktreeBranch,
+            }
+          : {
+              useWorktree: true,
+              worktreeBranch: worktreeMapping.worktreeBranch,
+            };
+      }
+
+      let sourceHistory: SessionHistoryMessage[] = [];
+      let targetIndex = -1;
+      let childProjectPath = projectPath;
+      let forked:
+        | { threadId: string; thread: Record<string, unknown> }
+        | undefined;
+      await this.withCodexLifecycleProcess(projectPath, async (process) => {
+        const thread = await process.readThread(threadId, true);
+        const threadCwd =
+          typeof thread.cwd === "string" ? thread.cwd.trim() : "";
+        if (!worktreeMapping && threadCwd) {
+          childProjectPath = resolvePlatformPath(
+            normalizeWorktreePath(threadCwd),
+            this.platform,
+          );
+          if (!this.isExistingProjectPathAllowed(childProjectPath)) {
+            throw new SessionLifecycleError(
+              "path_not_allowed",
+              "The Codex thread belongs to a project outside the Bridge allowed directories.",
+            );
+          }
+        }
+        const rawStatus = isRecord(thread.status)
+          ? thread.status.type
+          : undefined;
+        if (rawStatus === "active") {
+          throw new Error("Cannot edit a message while Codex is running");
+        }
+        if (
+          rawStatus !== "idle" &&
+          rawStatus !== "notLoaded" &&
+          rawStatus !== "systemError"
+        ) {
+          throw new Error(
+            "Codex thread status is not confirmed; refresh and try again before editing.",
+          );
+        }
+
+        sourceHistory = codexThreadToSessionHistory(thread);
+        const boundary = resolveCodexForkBoundaryFromPersistedHistory(
+          sourceHistory,
+          targetUuid,
+          historyTurnId,
+        );
+        if (boundary.error) throw new Error(boundary.error);
+        targetIndex = sourceHistory.findIndex(
+          (message) =>
+            message.role === "user" &&
+            message.uuid === targetUuid &&
+            exactCodexForkBoundaryTurnId(message.historyTurnId) ===
+              boundary.turnId,
+        );
+        if (targetIndex < 0) {
+          throw new Error(
+            "Selected Codex message is no longer present; refresh and try again.",
+          );
+        }
+        try {
+          forked = await process.forkThreadById(threadId, {
+            beforeTurnId: boundary.turnId,
+          });
+        } catch (error) {
+          if (!isUnsupportedCodexForkBoundary(error)) throw error;
+          throw new Error(
+            "This Codex app-server does not support message editing. Update Codex and try again.",
+          );
+        }
+      });
+      if (!forked || targetIndex < 0) {
+        throw new Error("Codex did not create the edited conversation branch");
+      }
+
+      const prefix = sourceHistory.slice(0, targetIndex);
+      const expectedUserTurns = countCodexHistoryUserTurns(prefix);
+      const pastMessages = this.codexHistoryFromThreadOrFallback({
+        thread: forked.thread,
+        expectedUserTurns,
+        fallback: prefix,
+      });
+      const indexedMetadata = (
+        await getCodexSessionIndexMetadata([threadId], {
+          authoritativeCodexSettings: true,
+        })
+      ).get(threadId);
+      const newSessionId = this.sessionManager.create(
+        childProjectPath,
+        undefined,
+        pastMessages,
+        worktreeOpts,
+        "codex",
+        this.withCodexAutoReviewPolicy({
+          ...(indexedMetadata?.codexSettings ?? {}),
+          threadId: forked.threadId,
+        } as CodexStartOptions),
+      );
+      const newSession = this.sessionManager.get(newSessionId);
+      if (newSession) {
+        newSession.forkedFromThreadId = threadId;
+      }
+
+      this.send(ws, {
+        type: "rewind_result",
+        success: true,
+        mode: "conversation",
+        sessionId: threadId,
+      });
+      this.send(
+        ws,
+        this.buildSessionCreatedMessage({
+          sessionId: newSessionId,
+          provider: "codex",
+          projectPath: childProjectPath,
+          session: newSession,
+          approvalsReviewer: newSession?.codexSettings?.approvalsReviewer,
+          sandboxMode: newSession?.codexSettings?.sandboxMode,
+          sourceSessionId: threadId,
+        }),
+      );
+      this.sendSessionList(ws);
+      this.projectHistory?.addProject(childProjectPath);
+    } finally {
+      releaseThreadOperation();
+    }
   }
 
   private async forkCodexSession(
@@ -2860,6 +3358,7 @@ export class BridgeWebSocketServer {
     targetUuid: string,
     persistedProjectPath?: string,
     codexSourceId?: string,
+    historyTurnId?: string,
   ): Promise<void> {
     this.assertCodexSourceMatches("codex", codexSourceId);
     if (
@@ -2892,7 +3391,7 @@ export class BridgeWebSocketServer {
     const codexProcess = session.process as CodexProcess;
     if (
       session.provider !== "codex" ||
-      typeof codexProcess.forkThread !== "function"
+      typeof codexProcess.forkThreadById !== "function"
     ) {
       this.send(ws, {
         type: "error",
@@ -2957,19 +3456,66 @@ export class BridgeWebSocketServer {
         }
       : undefined;
 
-    const forked = await codexProcess.forkThread();
-    const forkedThreadId = forked.threadId;
-    const turnsToDrop = totalUserTurns - targetOrdinal;
-    let forkedThread: unknown = forked.thread;
-    if (turnsToDrop > 0) {
-      forkedThread = await codexProcess.rollbackThreadById(
-        forkedThreadId,
-        turnsToDrop,
-      );
+    const parentThreadId = codexProcess.sessionId ?? session.claudeSessionId;
+    if (!parentThreadId) {
+      throw new Error("No Codex thread ID available for fork");
     }
+    const turnsToDrop = totalUserTurns - targetOrdinal;
+    // `latest` is a complete fork and needs no turn boundary. Older targets
+    // must be proven against the current session before any mutation.
+    const boundary =
+      turnsToDrop > 0
+        ? resolveCodexForkBoundaryTurnId(
+            session,
+            targetUuid,
+            historyTurnId,
+          )
+        : undefined;
+    if (boundary?.error) {
+      this.send(ws, {
+        type: "error",
+        message: boundary.error,
+        errorCode: "fork_failed",
+      });
+      return;
+    }
+    const exactTurnId = boundary?.turnId;
+    let forked: {
+      threadId: string;
+      thread: Record<string, unknown>;
+    };
+    if (turnsToDrop > 0 && exactTurnId) {
+      try {
+        forked = await codexProcess.forkThreadById(parentThreadId, {
+          lastTurnId: exactTurnId,
+        });
+      } catch (error) {
+        if (!isUnsupportedCodexForkBoundary(error)) throw error;
+        forked = await codexProcess.forkThreadById(parentThreadId);
+        forked = {
+          threadId: forked.threadId,
+          thread: await codexProcess.rollbackThreadById(
+            forked.threadId,
+            turnsToDrop,
+          ),
+        };
+      }
+    } else {
+      forked = await codexProcess.forkThreadById(parentThreadId);
+      if (turnsToDrop > 0) {
+        forked = {
+          threadId: forked.threadId,
+          thread: await codexProcess.rollbackThreadById(
+            forked.threadId,
+            turnsToDrop,
+          ),
+        };
+      }
+    }
+    const forkedThreadId = forked.threadId;
 
     const pastMessages = this.codexHistoryFromThreadOrFallback({
-      thread: forkedThread,
+      thread: forked.thread,
       expectedUserTurns: targetOrdinal,
       fallback: buildCodexHistoryPrefix(session, targetOrdinal),
     });
@@ -2987,8 +3533,7 @@ export class BridgeWebSocketServer {
     const newSession = this.sessionManager.get(newSessionId);
     if (newSession) {
       newSession.forkedFromSessionId = session.id;
-      newSession.forkedFromThreadId =
-        session.claudeSessionId ?? codexProcess.sessionId ?? undefined;
+      newSession.forkedFromThreadId = parentThreadId;
     }
 
     this.send(
@@ -5395,7 +5940,14 @@ export class BridgeWebSocketServer {
         return;
       }
 
-      console.log(`[ws] Received: ${msg.type}`);
+      // Cumulative sync ACKs can arrive hundreds of times during one bounded
+      // bootstrap. Logging each frame adds synchronous stdout pressure and
+      // hides the lifecycle messages needed to diagnose a real disconnect.
+      // ConversationSyncV2 emits one sanitized subscribe/checkpoint/complete/
+      // unsubscribe summary instead.
+      if (msg.type !== "conversation_sync_ack") {
+        console.log(`[ws] Received: ${msg.type}`);
+      }
       void this.handleClientMessage(msg, ws).catch((error) => {
         console.error(
           `[ws] Failed to handle ${msg.type}:`,
@@ -5467,9 +6019,13 @@ export class BridgeWebSocketServer {
       });
       return;
     }
+    const openDiagnosticDevelopmentMessage =
+      this.allowUnauthenticatedDiagnosticReports &&
+      isOpenDiagnosticDevelopmentMessage(msg);
     if (
       this.ownerFullDiskRead &&
       authState?.kind === "open" &&
+      !openDiagnosticDevelopmentMessage &&
       (msg.type.startsWith("file_browser") ||
         msg.type.startsWith("file_mutation") ||
         msg.type.startsWith("file_transfer") ||
@@ -5480,6 +6036,19 @@ export class BridgeWebSocketServer {
         type: "error",
         errorCode: "owner_authentication_required",
         message: "This Bridge surface requires an API key or paired device.",
+      });
+      return;
+    }
+    if (
+      authState?.kind === "open" &&
+      msg.type === "file_transfer_upload_prepare_v2" &&
+      msg.purpose === "diagnostic_report" &&
+      !this.allowUnauthenticatedDiagnosticReports
+    ) {
+      this.send(ws, {
+        type: "error",
+        errorCode: "owner_authentication_required",
+        message: "Diagnostic reports require an authenticated Bridge connection.",
       });
       return;
     }
@@ -5579,6 +6148,16 @@ export class BridgeWebSocketServer {
         ws,
         msg as SharedCodexSettingsMessage,
         durableSettingsEnvelope,
+      );
+      return;
+    }
+
+    const durableGoalEnvelope = this.durableCodexGoalEnvelope(msg);
+    if (durableGoalEnvelope) {
+      await this.handleDurableCodexGoal(
+        ws,
+        msg as DurableCodexGoalMessage,
+        durableGoalEnvelope,
       );
       return;
     }
@@ -11490,33 +12069,52 @@ export class BridgeWebSocketServer {
       }
 
       case "rewind": {
-        const session = this.sessionManager.get(msg.sessionId);
-        if (!session) {
-          this.send(ws, {
-            type: "rewind_result",
-            success: false,
-            mode: msg.mode,
-            error: `Session ${msg.sessionId} not found`,
-          });
-          return;
-        }
-
         const handleError = (err: unknown) => {
           const errMsg = err instanceof Error ? err.message : String(err);
           this.send(ws, {
             type: "rewind_result",
             success: false,
             mode: msg.mode,
+            sessionId: msg.sessionId,
             error: errMsg,
           });
         };
+        const requestedPersistedEdit = msg.projectPath !== undefined;
+        const session =
+          this.sessionManager.get(msg.sessionId) ??
+          (requestedPersistedEdit
+            ? this.findRunningCodexSession(msg.sessionId)
+            : undefined);
+        if (!session) {
+          if (requestedPersistedEdit && msg.mode === "conversation") {
+            this.editPersistedCodexConversation(
+              ws,
+              msg.sessionId,
+              msg.targetUuid,
+              msg.projectPath!,
+              msg.codexSourceId,
+              msg.historyTurnId,
+            ).catch(handleError);
+            break;
+          }
+          this.send(ws, {
+            type: "rewind_result",
+            success: false,
+            mode: msg.mode,
+            sessionId: msg.sessionId,
+            error: `Session ${msg.sessionId} not found`,
+          });
+          return;
+        }
 
         if (session.provider === "codex") {
           this.rewindCodexConversation(
             ws,
-            msg.sessionId,
+            session.id,
             msg.targetUuid,
             msg.mode,
+            msg.historyTurnId,
+            requestedPersistedEdit ? msg.sessionId : session.id,
           ).catch(handleError);
           break;
         }
@@ -11638,6 +12236,7 @@ export class BridgeWebSocketServer {
           msg.targetUuid,
           msg.projectPath,
           msg.codexSourceId,
+          msg.historyTurnId,
         ).catch((err) => {
           const lifecycleFailure =
             err instanceof SessionLifecycleError
@@ -12658,6 +13257,305 @@ export class BridgeWebSocketServer {
     };
   }
 
+  private durableCodexGoalEnvelope(
+    msg: ClientMessage,
+  ): DurableCodexGoalEnvelope | null {
+    if (
+      msg.type !== "get_goal" &&
+      msg.type !== "set_goal" &&
+      msg.type !== "clear_goal"
+    ) {
+      return null;
+    }
+    if (msg.goalTarget !== "durable_thread") return null;
+    const codexSourceId = msg.codexSourceId?.trim();
+    const threadId = msg.threadId?.trim();
+    const operationId =
+      msg.type === "get_goal" ? undefined : msg.operationId?.trim();
+    if (!codexSourceId || !threadId || msg.sessionId !== threadId) return null;
+    if (msg.type !== "get_goal" && !operationId) return null;
+    return {
+      goalTarget: "durable_thread",
+      codexSourceId,
+      threadId,
+      ...(operationId ? { operationId } : {}),
+    };
+  }
+
+  private assertDurableCodexGoalSource(
+    envelope: DurableCodexGoalEnvelope,
+  ): void {
+    if (envelope.codexSourceId !== this.codexSourceId) {
+      throw new SessionLifecycleError(
+        "archive_identity_mismatch",
+        "This Goal belongs to a different configured Codex source.",
+      );
+    }
+  }
+
+  private assertDurableCodexGoalWriter(): void {
+    if (
+      !this.durableCodexThreadGoalsSupported ||
+      this.sharedRuntimeControl?.ready !== true ||
+      this.codexActionBrokerRuntime?.health.ready !== true ||
+      this.codexActionBrokerRuntime.health.writerLeaseHeld !== true
+    ) {
+      throw new SharedCodexSettingsRejectedError(
+        "codex_durable_thread_goals_unavailable",
+        "Durable Codex Goal updates are unavailable until the shared writer is ready.",
+      );
+    }
+  }
+
+  private assertDurableCodexGoalExpectation(
+    message: Extract<
+      DurableCodexGoalMessage,
+      { type: "set_goal" | "clear_goal" }
+    >,
+    current: CodexGoal | null,
+  ): void {
+    if (
+      message.expectedGoalPresent !== undefined &&
+      message.expectedGoalPresent !== (current !== null)
+    ) {
+      throw new CodexGoalConflictError(
+        message.expectedGoalOperationSequence,
+        undefined,
+      );
+    }
+    if (
+      current !== null &&
+      (message.expectedGoalObjective !== current.objective ||
+        message.expectedGoalStatus !== current.status ||
+        message.expectedGoalTokenBudget !== current.tokenBudget ||
+        message.expectedGoalCreatedAt !== current.createdAt)
+    ) {
+      throw new CodexGoalConflictError(
+        message.expectedGoalOperationSequence,
+        undefined,
+      );
+    }
+  }
+
+  private durableCodexGoalFingerprint(
+    message: Extract<
+      DurableCodexGoalMessage,
+      { type: "set_goal" | "clear_goal" }
+    >,
+  ): string {
+    return JSON.stringify({
+      type: message.type,
+      goalChangeId: message.goalChangeId,
+      objective: message.type === "set_goal" ? message.objective : undefined,
+      status: message.type === "set_goal" ? message.status : undefined,
+      tokenBudget:
+        message.type === "set_goal" ? message.tokenBudget : undefined,
+      expectedGoalPresent: message.expectedGoalPresent,
+      expectedGoalObjective: message.expectedGoalObjective,
+      expectedGoalStatus: message.expectedGoalStatus,
+      expectedGoalTokenBudget: message.expectedGoalTokenBudget,
+      expectedGoalCreatedAt: message.expectedGoalCreatedAt,
+    });
+  }
+
+  private pruneDurableCodexGoalOperations(now = Date.now()): void {
+    for (const [key, operation] of this.durableCodexGoalOperations) {
+      if (
+        operation.settledAt !== undefined &&
+        now - operation.settledAt > SHARED_CODEX_SETTINGS_OPERATION_TTL_MS
+      ) {
+        this.durableCodexGoalOperations.delete(key);
+      }
+    }
+    while (
+      this.durableCodexGoalOperations.size >=
+      SHARED_CODEX_SETTINGS_OPERATION_MAX
+    ) {
+      const oldest = [...this.durableCodexGoalOperations].find(
+        ([, operation]) => operation.settledAt !== undefined,
+      )?.[0];
+      if (oldest === undefined) break;
+      this.durableCodexGoalOperations.delete(oldest);
+    }
+  }
+
+  private async readDurableCodexGoal(threadId: string): Promise<CodexGoal | null> {
+    const process = await this.createStandaloneCodexProcess();
+    try {
+      return (await process.getGoalSnapshotById(threadId)).goal;
+    } finally {
+      process.stop();
+    }
+  }
+
+  private runDurableCodexGoalMutation(
+    message: Extract<
+      DurableCodexGoalMessage,
+      { type: "set_goal" | "clear_goal" }
+    >,
+    envelope: DurableCodexGoalEnvelope,
+  ): Promise<CodexGoal | null> {
+    this.assertDurableCodexGoalSource(envelope);
+    this.assertDurableCodexGoalWriter();
+    this.pruneDurableCodexGoalOperations();
+    const operationId = envelope.operationId!;
+    const key = [envelope.codexSourceId, envelope.threadId, operationId].join(
+      "\u0000",
+    );
+    const fingerprint = this.durableCodexGoalFingerprint(message);
+    const existing = this.durableCodexGoalOperations.get(key);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) {
+        throw new SharedCodexSettingsRejectedError(
+          "codex_durable_thread_goal_operation_conflict",
+          "This Goal operation ID was already used for a different update.",
+        );
+      }
+      return existing.promise;
+    }
+    if (
+      this.durableCodexGoalOperations.size >=
+      SHARED_CODEX_SETTINGS_OPERATION_MAX
+    ) {
+      throw new SharedCodexSettingsRejectedError(
+        "codex_durable_thread_goals_busy",
+        "Too many durable Goal operations are still pending.",
+      );
+    }
+
+    const promise = (async () => {
+      const release = await this.acquireCodexThreadOperation(envelope.threadId);
+      try {
+        this.assertDurableCodexGoalWriter();
+        const process = await this.createStandaloneCodexProcess();
+        try {
+          if (message.type === "set_goal") {
+            return await process.setGoalById(
+              envelope.threadId,
+              {
+                ...(message.objective !== undefined
+                  ? { objective: message.objective }
+                  : {}),
+                ...(message.status !== undefined
+                  ? { status: message.status }
+                  : {}),
+                ...(message.tokenBudget !== undefined
+                  ? { tokenBudget: message.tokenBudget }
+                  : {}),
+              },
+              {
+                validateCurrentGoal: (current) => {
+                  this.assertDurableCodexGoalWriter();
+                  this.assertDurableCodexGoalExpectation(message, current);
+                },
+              },
+            );
+          }
+          await process.clearGoalById(envelope.threadId, {
+            validateCurrentGoal: (current) => {
+              this.assertDurableCodexGoalWriter();
+              this.assertDurableCodexGoalExpectation(message, current);
+            },
+          });
+          return null;
+        } finally {
+          process.stop();
+        }
+      } finally {
+        release();
+      }
+    })();
+    const operation: DurableCodexGoalOperation = {
+      fingerprint,
+      promise,
+      createdAt: Date.now(),
+    };
+    this.durableCodexGoalOperations.set(key, operation);
+    void promise.then(
+      () => {
+        operation.settledAt = Date.now();
+      },
+      () => {
+        operation.settledAt = Date.now();
+      },
+    );
+    return promise;
+  }
+
+  private async handleDurableCodexGoal(
+    ws: WebSocket,
+    message: DurableCodexGoalMessage,
+    envelope: DurableCodexGoalEnvelope,
+  ): Promise<void> {
+    try {
+      this.assertDurableCodexGoalSource(envelope);
+      if (!this.durableCodexThreadGoalsSupported) {
+        throw new SharedCodexSettingsRejectedError(
+          "codex_durable_thread_goals_unavailable",
+          "This Bridge cannot address Goals on detached Codex threads.",
+        );
+      }
+      if (message.type === "get_goal") {
+        const goal = await this.readDurableCodexGoal(envelope.threadId);
+        if (!this.clientSupportsRawCodexGoalStatus(ws, goal)) {
+          this.sendGoalStatusUnsupported(ws, envelope.threadId);
+          return;
+        }
+        this.send(ws, {
+          type: "goal_state",
+          sessionId: envelope.threadId,
+          goal,
+        });
+        return;
+      }
+
+      const goal = await this.runDurableCodexGoalMutation(message, envelope);
+      if (!this.clientSupportsRawCodexGoalStatus(ws, goal)) {
+        this.sendGoalStatusUnsupported(
+          ws,
+          envelope.threadId,
+          message.goalChangeId,
+        );
+        return;
+      }
+      const response = {
+        type: "goal_state",
+        sessionId: envelope.threadId,
+        goal,
+        ...(message.goalChangeId
+          ? { goalChangeId: message.goalChangeId }
+          : {}),
+      };
+      this.broadcast(response);
+      if (!this.wss.clients.has(ws)) this.send(ws, response);
+    } catch (error) {
+      const conflict = error instanceof CodexGoalConflictError;
+      this.send(ws, {
+        type: "error",
+        sessionId: envelope.threadId,
+        message: conflict
+          ? "The Goal changed before this update could be applied. Refresh and try again."
+          : errorMessageOf(error),
+        errorCode: conflict
+          ? "goal_conflict"
+          : message.type === "get_goal"
+            ? isUnsupportedCodexGoalRpc(error)
+              ? "goal_get_unsupported"
+              : "goal_get_failed"
+            : message.type === "set_goal"
+              ? isUnsupportedCodexGoalRpc(error)
+                ? "goal_set_unsupported"
+                : "goal_set_failed"
+              : isUnsupportedCodexGoalRpc(error)
+                ? "goal_clear_unsupported"
+                : "goal_clear_failed",
+        ...(message.type !== "get_goal" && message.goalChangeId
+          ? { goalChangeId: message.goalChangeId }
+          : {}),
+      });
+    }
+  }
+
   private async resolveDurableCodexSettingsContext(
     threadId: string,
   ): Promise<DurableCodexSettingsContext> {
@@ -13585,6 +14483,8 @@ export class BridgeWebSocketServer {
       defaultCodexProfile: this.defaultCodexProfile,
       codexAutoReviewDisabled: this.codexAutoReviewDisabled,
       bridgeVersion: getPackageVersion(),
+      clientBridgeCompatibilityRevision:
+        CLIENT_BRIDGE_COMPATIBILITY_REVISION,
       bridgeCapabilities: [
         CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
@@ -13596,6 +14496,9 @@ export class BridgeWebSocketServer {
         CODEX_RUNTIME_DETACH_CAPABILITY,
         ...(this.durableCodexThreadSettingsSupported
           ? [CODEX_DURABLE_THREAD_SETTINGS_CAPABILITY]
+          : []),
+        ...(this.durableCodexThreadGoalsSupported
+          ? [CODEX_DURABLE_THREAD_GOALS_CAPABILITY]
           : []),
         BRIDGE_APPLICATION_READINESS_CAPABILITY,
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
@@ -13618,7 +14521,10 @@ export class BridgeWebSocketServer {
         BRIDGE_IDENTITY_V2_CAPABILITY,
         ...(this.bridgeIdentity ? [BRIDGE_IDENTITY_V3_CAPABILITY] : []),
         CONVERSATION_SYNC_V2_CAPABILITY,
+        CONVERSATION_SYNC_FOCUS_REFRESH_CAPABILITY,
+        CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
         CONVERSATION_ITEMS_BY_ID_CAPABILITY,
+        CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
         CONVERSATION_USER_INDEX_CAPABILITY,
         APP_SERVER_STATUS_CAPABILITY,
         ...(this.codexActionBrokerRuntime
@@ -13637,10 +14543,17 @@ export class BridgeWebSocketServer {
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileBrowser ? [FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
+        ...(this.fileTransfer?.diagnosticReportsAvailable
+          ? [FILE_TRANSFER_DIAGNOSTIC_REPORT_CAPABILITY]
+          : []),
+        ...(this.fileTransfer?.diagnosticReportsAvailable &&
+        this.allowUnauthenticatedDiagnosticReports
+          ? [FILE_TRANSFER_DIAGNOSTIC_REPORT_NO_STEP_UP_CAPABILITY]
+          : []),
         ...(this.fileBrowser && this.fileMutationAuthorizer
           ? [FILE_MUTATION_AUTH_CAPABILITY]
           : []),
-        ...(this.fileTransfer && this.fileBrowser && this.fileMutationAuthorizer
+        ...(this.fileTransfer && this.fileMutationAuthorizer
           ? [FILE_TRANSFER_UPLOAD_AUTH_CAPABILITY]
           : []),
       ],
@@ -13690,6 +14603,8 @@ export class BridgeWebSocketServer {
       defaultCodexProfile: this.defaultCodexProfile,
       codexAutoReviewDisabled: this.codexAutoReviewDisabled,
       bridgeVersion: getPackageVersion(),
+      clientBridgeCompatibilityRevision:
+        CLIENT_BRIDGE_COMPATIBILITY_REVISION,
       bridgeCapabilities: [
         CODEX_PERMISSION_APPLY_STRATEGY_CAPABILITY,
         CODEX_SESSION_LIFECYCLE_CAPABILITY,
@@ -13701,6 +14616,9 @@ export class BridgeWebSocketServer {
         CODEX_RUNTIME_DETACH_CAPABILITY,
         ...(this.durableCodexThreadSettingsSupported
           ? [CODEX_DURABLE_THREAD_SETTINGS_CAPABILITY]
+          : []),
+        ...(this.durableCodexThreadGoalsSupported
+          ? [CODEX_DURABLE_THREAD_GOALS_CAPABILITY]
           : []),
         BRIDGE_APPLICATION_READINESS_CAPABILITY,
         PUSH_NOTIFICATION_PREFERENCES_CAPABILITY,
@@ -13723,7 +14641,10 @@ export class BridgeWebSocketServer {
         BRIDGE_IDENTITY_V2_CAPABILITY,
         ...(this.bridgeIdentity ? [BRIDGE_IDENTITY_V3_CAPABILITY] : []),
         CONVERSATION_SYNC_V2_CAPABILITY,
+        CONVERSATION_SYNC_FOCUS_REFRESH_CAPABILITY,
+        CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
         CONVERSATION_ITEMS_BY_ID_CAPABILITY,
+        CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
         CONVERSATION_USER_INDEX_CAPABILITY,
         APP_SERVER_STATUS_CAPABILITY,
         ...(this.codexActionBrokerRuntime
@@ -13742,10 +14663,17 @@ export class BridgeWebSocketServer {
         ...(this.fileBrowser ? [FILE_BROWSER_CAPABILITY] : []),
         ...(this.fileBrowser ? [FILE_BROWSER_PROJECT_PREVIEW_CAPABILITY] : []),
         ...(this.fileTransfer ? [FILE_TRANSFER_CAPABILITY] : []),
+        ...(this.fileTransfer?.diagnosticReportsAvailable
+          ? [FILE_TRANSFER_DIAGNOSTIC_REPORT_CAPABILITY]
+          : []),
+        ...(this.fileTransfer?.diagnosticReportsAvailable &&
+        this.allowUnauthenticatedDiagnosticReports
+          ? [FILE_TRANSFER_DIAGNOSTIC_REPORT_NO_STEP_UP_CAPABILITY]
+          : []),
         ...(this.fileBrowser && this.fileMutationAuthorizer
           ? [FILE_MUTATION_AUTH_CAPABILITY]
           : []),
-        ...(this.fileTransfer && this.fileBrowser && this.fileMutationAuthorizer
+        ...(this.fileTransfer && this.fileMutationAuthorizer
           ? [FILE_TRANSFER_UPLOAD_AUTH_CAPABILITY]
           : []),
       ],
@@ -14379,6 +15307,16 @@ export class BridgeWebSocketServer {
   ): Promise<void> {
     try {
       await this.requireArchiveStoreReady();
+      try {
+        await this.refreshCodexArchiveStoreFromProvider();
+      } catch (error) {
+        // Older app-server versions do not expose archived thread/list. Keep
+        // the last durable local projection instead of turning a read-only
+        // provider compatibility failure into an empty/error screen.
+        console.warn(
+          `[archive-store] Failed to refresh Codex archives: ${errorMessageOf(error)}`,
+        );
+      }
       const sessions = this.archiveStore.list(
         ARCHIVED_SESSION_LIST_LIMIT + 1,
         this.codexSourceId,
@@ -14401,6 +15339,120 @@ export class BridgeWebSocketServer {
         error: errorMessageOf(error),
         errorCode: "local_store_failed",
       });
+    }
+  }
+
+  private refreshCodexArchiveStoreFromProvider(): Promise<void> {
+    const existing = this.codexArchiveRefreshInFlight;
+    if (existing) return existing;
+    const operation = this.refreshCodexArchiveStoreFromProviderOnce();
+    let tracked!: Promise<void>;
+    tracked = operation.finally(() => {
+      if (this.codexArchiveRefreshInFlight === tracked) {
+        this.codexArchiveRefreshInFlight = null;
+      }
+    });
+    this.codexArchiveRefreshInFlight = tracked;
+    return tracked;
+  }
+
+  private async refreshCodexArchiveStoreFromProviderOnce(): Promise<void> {
+    const expectedArchiveRevision = this.archiveStore.revision;
+    const activeProcess = this.getActiveCodexProcess();
+    const process = activeProcess ?? (await this.createStandaloneCodexProcess());
+    const isStandalone = activeProcess === null;
+    const entries = [] as Array<{
+      sessionId: string;
+      provider: "codex";
+      codexSourceId: string;
+      projectPath: string;
+      archivedAt: string;
+      name?: string;
+      firstPrompt?: string;
+      modified?: string;
+    }>;
+    let cursor: string | null | undefined;
+    let complete = true;
+    let pages = 0;
+    try {
+      do {
+        const remaining = ARCHIVED_SESSION_LIST_LIMIT + 1 - entries.length;
+        if (remaining <= 0 || pages >= CODEX_ARCHIVE_SCAN_MAX_PAGES) {
+          complete = false;
+          break;
+        }
+        const pageLimit = Math.min(CODEX_ARCHIVE_SCAN_PAGE_SIZE, remaining);
+        const page = await process.listThreads({
+          archived: true,
+          limit: pageLimit,
+          ...(cursor != null ? { cursor } : {}),
+          sourceKinds: CODEX_RECENT_THREAD_SOURCE_KINDS,
+          requireCanonicalResultShape: true,
+        });
+        pages += 1;
+        if (page.nextCursor == null && page.data.length >= pageLimit) {
+          // Some compatibility servers cap a full page but omit the cursor.
+          // Treat that shape as partial so unseen local rows are never
+          // destructively reconciled away.
+          complete = false;
+        }
+        for (const thread of page.data) {
+          const projectPath = thread.cwd.trim();
+          if (!projectPath) {
+            complete = false;
+            continue;
+          }
+          const modified = threadTimestampToIso(thread.updatedAt);
+          const created = threadTimestampToIso(thread.createdAt);
+          entries.push({
+            sessionId: thread.id,
+            provider: "codex",
+            codexSourceId: this.codexSourceId,
+            projectPath,
+            archivedAt: modified || created || new Date(0).toISOString(),
+            ...(thread.name ? { name: thread.name } : {}),
+            ...(thread.preview ? { firstPrompt: thread.preview } : {}),
+            ...(modified ? { modified } : {}),
+          });
+          if (entries.length > ARCHIVED_SESSION_LIST_LIMIT) {
+            complete = false;
+            break;
+          }
+        }
+        cursor = page.nextCursor;
+        if (entries.length > ARCHIVED_SESSION_LIST_LIMIT) break;
+      } while (cursor != null);
+      if (cursor != null) complete = false;
+      // A legacy server that ignores the archived filter returns the same
+      // leading IDs for archived and active thread/list. Reject that shape
+      // instead of importing active conversations as archives.
+      if (entries.length > 0) {
+        const activePage = await process.listThreads({
+          archived: false,
+          limit: CODEX_ARCHIVE_SCAN_PAGE_SIZE,
+          sourceKinds: CODEX_RECENT_THREAD_SOURCE_KINDS,
+          requireCanonicalResultShape: true,
+        });
+        const activeIds = new Set(activePage.data.map((thread) => thread.id));
+        if (entries.some((entry) => activeIds.has(entry.sessionId))) {
+          throw new Error("thread/list archived filter is unsupported");
+        }
+      } else {
+        // An empty result cannot distinguish a genuinely empty archive from a
+        // compatibility server that silently omitted list data. Preserve the
+        // durable local projection; explicit unarchive still removes rows.
+        complete = false;
+      }
+      await this.archiveStore.reconcileCodexSourceSnapshot(
+        {
+          entries: entries.slice(0, ARCHIVED_SESSION_LIST_LIMIT + 1),
+          complete,
+        },
+        this.codexSourceId,
+        expectedArchiveRevision,
+      );
+    } finally {
+      if (isStandalone) process.stop();
     }
   }
 
@@ -15038,13 +16090,22 @@ export class BridgeWebSocketServer {
       const requestedProjectPath = msg.projectPath
         ? canonicalRecentProjectPath(msg.projectPath, this.platform)
         : null;
+      const desktopProjects = await readCodexDesktopProjectCatalog();
+      const normalizedSearchQuery = msg.searchQuery?.trim().toLocaleLowerCase();
+      const searchesDesktopProjectName =
+        normalizedSearchQuery !== undefined &&
+        normalizedSearchQuery.length > 0 &&
+        desktopProjects.matchesProjectName(normalizedSearchQuery);
 
       do {
         const remainingScanBudget =
           CODEX_RECENT_THREAD_MAX_SCANNED_THREADS - scannedThreads;
         const request: Parameters<CodexProcess["listThreads"]>[0] = {
           limit: Math.min(serverPageSize, remainingScanBudget),
-          searchTerm: msg.searchQuery,
+          // app-server cannot see Desktop's presentation-only project names.
+          // When the query matches one, scan a bounded unfiltered catalog and
+          // apply the combined thread/project search locally.
+          searchTerm: searchesDesktopProjectName ? undefined : msg.searchQuery,
           sourceKinds: CODEX_RECENT_THREAD_SOURCE_KINDS,
         };
         if (cursor != null) request.cursor = cursor;
@@ -15064,6 +16125,17 @@ export class BridgeWebSocketServer {
           }
           if (archivedIds.has(thread.id)) continue;
           if (msg.namedOnly && !thread.name) continue;
+          if (
+            searchesDesktopProjectName &&
+            normalizedSearchQuery &&
+            !codexThreadMatchesRecentSearch(
+              thread,
+              desktopProjects.groupingFor(thread.id, thread.cwd),
+              normalizedSearchQuery,
+            )
+          ) {
+            continue;
+          }
           visibleThreads.push(thread);
         }
         cursor = result.nextCursor;
@@ -15081,7 +16153,11 @@ export class BridgeWebSocketServer {
         pageThreads.map((thread) => thread.id),
       );
       const sessions = pageThreads.map((thread) =>
-        codexThreadToRecentSession(thread, indexedById.get(thread.id)),
+        codexThreadToRecentSession(
+          thread,
+          indexedById.get(thread.id),
+          desktopProjects.groupingFor(thread.id, thread.cwd),
+        ),
       );
       return {
         sessions,
@@ -15101,10 +16177,7 @@ export class BridgeWebSocketServer {
     projectPath?: string,
     requestTimeoutMs?: number,
   ): Promise<CodexProcess> {
-    const proc = new CodexProcess(
-      this.platform,
-      this.codexSharedRuntimeMutationAllowed,
-    );
+    const proc = this.codexProcessFactory();
     try {
       // launchd starts the Bridge with `/` as its process cwd. A read-only
       // app-server bootstrapped there cannot resolve project-local metadata
@@ -15852,6 +16925,22 @@ export class BridgeWebSocketServer {
       }
     }
     if (!this.shouldSendToClient(ws, msg)) return null;
+    if (
+      msg.type === "session_list" &&
+      this.connectionAuth.get(ws)?.kind === "open" &&
+      !this.allowUnauthenticatedDiagnosticReports &&
+      Array.isArray(msg.bridgeCapabilities)
+    ) {
+      return {
+        ...msg,
+        bridgeCapabilities: msg.bridgeCapabilities.filter(
+          (capability) =>
+            capability !== FILE_TRANSFER_DIAGNOSTIC_REPORT_CAPABILITY &&
+            capability !==
+              FILE_TRANSFER_DIAGNOSTIC_REPORT_NO_STEP_UP_CAPABILITY,
+        ),
+      };
+    }
     if (!("messages" in msg) || !Array.isArray(msg.messages)) return msg;
     const messages = msg.messages as unknown[];
 
@@ -16206,6 +17295,9 @@ export class BridgeWebSocketServer {
       occurredAt: receipt.occurredAt,
       acceptedSeq: receipt.acceptedSeq,
       queued: receipt.queued,
+      ...(receipt.providerTurnId
+        ? { providerTurnId: receipt.providerTurnId }
+        : {}),
       ...(receipt.clientUserMessageIdAccepted === undefined
         ? {}
         : {

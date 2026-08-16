@@ -16,6 +16,7 @@ import {
   scanJsonlDir,
   getAllRecentSessions,
   getCodexSessionIndexMetadata,
+  loadCodexSessionNames,
   getCodexSessionHistory,
   resolveCodexSessionJsonlPath,
   readClaudeJsonlHistoryWindow,
@@ -237,7 +238,10 @@ describe("codexThreadToSessionHistory", () => {
                 type: "dynamicToolCall",
                 id: "tool-time",
                 tool: "Read",
-                arguments: { path: "/tmp/example.txt" },
+                arguments: {
+                  path: "/tmp/example.txt",
+                  privatePayload: "stays behind the disclosure",
+                },
                 status: "completed",
                 contentItems: [{ type: "inputText", text: "contents" }],
               },
@@ -315,6 +319,95 @@ describe("codexThreadToSessionHistory", () => {
         authoritative: true,
       },
     ]);
+    expect(history[2]).toMatchObject({
+      role: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          name: "Read",
+          input: {
+            path: "/tmp/example.txt",
+            arguments: { path: "/tmp/example.txt" },
+            status: "completed",
+          },
+        },
+      ],
+    });
+    expect(
+      (history[2] as { content: Array<{ input: Record<string, unknown> }> })
+        .content[0]?.input.privatePayload,
+    ).toBeUndefined();
+  });
+
+  it("keeps reasoning identities stable across full and focused projections", () => {
+    const reasoning = {
+      type: "reasoning",
+      id: "reasoning-stable",
+      summary: ["checking the same turn"],
+    };
+    const full = codexThreadToSessionHistory({
+      turns: [
+        {
+          id: "turn-stable-reasoning",
+          items: [
+            {
+              type: "userMessage",
+              id: "user-stable-reasoning",
+              content: [{ type: "text", text: "inspect" }],
+            },
+            reasoning,
+          ],
+        },
+      ],
+    });
+    const focused = codexThreadToSessionHistory({
+      turns: [
+        {
+          id: "turn-stable-reasoning",
+          items: [reasoning],
+        },
+      ],
+    });
+    const fullReasoning = full.find(
+      (message) => message.rawItemId === "reasoning-stable",
+    );
+    const focusedReasoning = focused.find(
+      (message) => message.rawItemId === "reasoning-stable",
+    );
+    expect(fullReasoning).toMatchObject({
+      uuid: "reasoning-stable",
+      rawItemId: "reasoning-stable",
+      historyTurnId: "turn-stable-reasoning",
+    });
+    expect(focusedReasoning?.uuid).toBe(fullReasoning?.uuid);
+  });
+
+  it("keeps an anonymous item identity stable when its payload grows", () => {
+    const project = (summary: string[]) =>
+      codexThreadToSessionHistory({
+        turns: [
+          {
+            id: "turn-anonymous-growth",
+            items: [
+              {
+                type: "userMessage",
+                id: "user-anonymous-growth",
+                content: [{ type: "text", text: "inspect" }],
+              },
+              { type: "reasoning", summary },
+            ],
+          },
+        ],
+      }).find(
+        (message) =>
+          Array.isArray(message.content) &&
+          message.content[0]?.type === "thinking",
+      );
+
+    const partial = project(["checking"]);
+    const complete = project(["checking", "finished"]);
+    expect(partial?.uuid).toBe("codex-item-turn-anonymous-growth-1");
+    expect(complete?.uuid).toBe(partial?.uuid);
   });
 
   it("keeps exact event time when a mirror consumes a supplemented thread", () => {
@@ -1223,6 +1316,25 @@ describe("codex sessions integration", () => {
     rmSync(tempHome, { recursive: true, force: true });
   });
 
+  it("treats the latest empty Codex thread name as an authoritative clear", async () => {
+    const isolatedHome = join(tempHome, "clear-name-codex-home");
+    mkdirSync(isolatedHome, { recursive: true });
+    process.env.CODEX_HOME = isolatedHome;
+    writeFileSync(
+      join(isolatedHome, "session_index.jsonl"),
+      [
+        JSON.stringify({ id: "thread-clear", thread_name: "Before" }),
+        JSON.stringify({ id: "thread-other", thread_name: "Keep" }),
+        JSON.stringify({ id: "thread-clear", thread_name: "" }),
+      ].join("\n"),
+    );
+
+    const names = await loadCodexSessionNames();
+
+    expect(names.has("thread-clear")).toBe(false);
+    expect(names.get("thread-other")).toBe("Keep");
+  });
+
   it("uses CODEX_HOME instead of mixing an isolated app-server with ~/.codex", async () => {
     const selectedThreadId = "019c56c0-d4d8-7b22-9e3c-200664d68020";
     const defaultThreadId = "019c56c0-d4d8-7b22-9e3c-200664d68021";
@@ -1414,6 +1526,113 @@ describe("codex sessions integration", () => {
       "claude",
       "codex",
     ]);
+  });
+
+  it("applies Desktop project grouping and project-name search to Claude rows", async () => {
+    const sharedSessionId = "claude-desktop-shared";
+    const unmatchedSessionId = "claude-desktop-unmatched";
+    const sharedDir = join(
+      tempHome,
+      ".claude",
+      "projects",
+      "-tmp-desktop-shared",
+    );
+    const unmatchedDir = join(
+      tempHome,
+      ".claude",
+      "projects",
+      "-private-tmp-desktop-unmatched",
+    );
+    const codexHome = join(tempHome, ".codex");
+    const globalStatePath = join(codexHome, ".codex-global-state.json");
+    mkdirSync(codexHome, { recursive: true });
+    mkdirSync(sharedDir, { recursive: true });
+    mkdirSync(unmatchedDir, { recursive: true });
+    writeFileSync(
+      globalStatePath,
+      JSON.stringify({
+        "local-projects": {
+          "project-shared": {
+            id: "project-shared",
+            name: "Shared Workspace",
+            rootPaths: ["/tmp/desktop-shared"],
+          },
+          "project-other": {
+            id: "project-other",
+            name: "Other Workspace",
+            rootPaths: ["/tmp/desktop-other"],
+          },
+        },
+        "thread-project-assignments": {
+          // Desktop assignments are Codex-only even when a Claude-local ID
+          // happens to contain the same text.
+          [sharedSessionId]: { projectId: "project-other" },
+        },
+        "projectless-thread-ids": [],
+      }),
+    );
+    writeFileSync(
+      join(sharedDir, `${sharedSessionId}.jsonl`),
+      JSON.stringify({
+        type: "user",
+        uuid: "claude-desktop-shared-user",
+        cwd: "/tmp/desktop-shared",
+        timestamp: "2026-03-01T00:00:00.000Z",
+        message: { role: "user", content: "shared Claude conversation" },
+      }),
+    );
+    writeFileSync(
+      join(unmatchedDir, `${unmatchedSessionId}.jsonl`),
+      JSON.stringify({
+        type: "user",
+        uuid: "claude-desktop-unmatched-user",
+        cwd: "/private/tmp/desktop-unmatched",
+        timestamp: "2026-03-01T00:00:01.000Z",
+        message: { role: "user", content: "unmatched Claude conversation" },
+      }),
+    );
+
+    try {
+      const { sessions } = await getAllRecentSessions({
+        provider: "claude",
+        limit: 200,
+        metadataOnly: true,
+      });
+      const shared = sessions.find(
+        (session) => session.sessionId === sharedSessionId,
+      );
+      const unmatched = sessions.find(
+        (session) => session.sessionId === unmatchedSessionId,
+      );
+
+      expect(shared).toMatchObject({
+        provider: "claude",
+        projectGroupKind: "desktopProject",
+        projectGroupingSnapshotComplete: true,
+        projectGroupId: "project-shared",
+        projectGroupName: "Shared Workspace",
+        projectGroupPath: "/tmp/desktop-shared",
+      });
+      expect(unmatched).toMatchObject({
+        provider: "claude",
+        projectGroupKind: "projectless",
+        projectGroupingSnapshotComplete: true,
+      });
+
+      const searched = await getAllRecentSessions({
+        provider: "claude",
+        searchQuery: "shared workspace",
+        limit: 20,
+        metadataOnly: true,
+      });
+      expect(searched.sessions.map((session) => session.sessionId)).toContain(
+        sharedSessionId,
+      );
+    } finally {
+      rmSync(globalStatePath, { force: true });
+      rmSync(sharedDir, { recursive: true, force: true });
+      rmSync(unmatchedDir, { recursive: true, force: true });
+    }
   });
 
   it("includes codex sessions in getAllRecentSessions", async () => {
@@ -2405,6 +2624,73 @@ describe("codex sessions integration", () => {
     expect(history[0].content[0].text).toBe("show me the diff");
     expect(history[1].role).toBe("assistant");
     expect(history[1].content[0].text).toBe("Here is the diff summary.");
+  });
+
+  it("keeps response item ids as boundaries between identical commentary updates", async () => {
+    const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68020";
+    const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
+    mkdirSync(codexDir, { recursive: true });
+    const commentary = "Still investigating the same subsystem.";
+    const lines = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: threadId, cwd: "/tmp/project-a" },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "turn-commentary" },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "agent_message", phase: "commentary", message: commentary },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          id: "msg-commentary-a",
+          role: "assistant",
+          phase: "commentary",
+          internal_chat_message_metadata_passthrough: {
+            turn_id: "turn-commentary",
+          },
+          content: [{ type: "output_text", text: commentary }],
+        },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "agent_message", phase: "commentary", message: commentary },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          id: "msg-commentary-b",
+          role: "assistant",
+          phase: "commentary",
+          internal_chat_message_metadata_passthrough: {
+            turn_id: "turn-commentary",
+          },
+          content: [{ type: "output_text", text: commentary }],
+        },
+      }),
+    ];
+    writeFileSync(
+      join(codexDir, `rollout-2026-02-13T11-26-43-${threadId}.jsonl`),
+      lines.join("\n"),
+    );
+
+    const history = await getCodexSessionHistory(threadId);
+    const assistants = history.filter((message) => message.role === "assistant");
+    expect(assistants).toHaveLength(2);
+    expect(assistants.map((message) => message.uuid)).toEqual([
+      "msg-commentary-a",
+      "msg-commentary-b",
+    ]);
+    expect(assistants.map((message) => message.historyTurnId)).toEqual([
+      "turn-commentary",
+      "turn-commentary",
+    ]);
   });
 
   it("keeps repeated JSONL tool ids isolated by active provider turn", async () => {

@@ -229,6 +229,10 @@ void main() {
       return PendingChatSubmissionDraft(
         clientMessageId: clientMessageId,
         text: text,
+        createdAt: DateTime.utc(2026, 8, 12, 16, 52, 41),
+        lastAttemptAt: DateTime.utc(2026, 8, 14, 4, 43, 19),
+        attemptCount: 2,
+        lastError: 'attachment interrupted',
         images: [
           (bytes: Uint8List.fromList([7, 8, 9]), mimeType: 'image/png'),
         ],
@@ -251,6 +255,10 @@ void main() {
       expect(restored, isNotNull);
       expect(restored!.clientMessageId, 'client-1');
       expect(restored.text, 'Review @lib/main.dart');
+      expect(restored.createdAt, DateTime.utc(2026, 8, 12, 16, 52, 41));
+      expect(restored.lastAttemptAt, DateTime.utc(2026, 8, 14, 4, 43, 19));
+      expect(restored.attemptCount, 2);
+      expect(restored.lastError, 'attachment interrupted');
       expect(restored.images.single.bytes, [7, 8, 9]);
       expect(restored.images.single.mimeType, 'image/png');
       expect(restored.mentionablePaths, ['lib/main.dart']);
@@ -258,6 +266,34 @@ void main() {
         {'name': 'report.json', 'path': '/tmp/report.json'},
       ]);
     });
+
+    test(
+      'legacy pending input is marked with an epoch creation time',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          'draft_pending_submission_v1_legacy': jsonEncode({
+            'clientMessageId': 'legacy-client',
+            'text': 'Legacy submission',
+            'createdAt': 42,
+            'lastAttemptAt': const <String>[],
+            'images': const [],
+            'mentionablePaths': const [],
+            'additionalMentions': const [],
+          }),
+        });
+        final prefs = await SharedPreferences.getInstance();
+        final restored = DraftService(prefs).getPendingSubmission('legacy');
+
+        expect(restored, isNotNull);
+        expect(
+          restored!.createdAt,
+          DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+        );
+        expect(restored.lastAttemptAt, isNull);
+        expect(restored.attemptCount, 0);
+        expect(restored.lastError, isNull);
+      },
+    );
 
     test('does not overwrite a different queued submission', () async {
       await draftService.savePendingSubmission(

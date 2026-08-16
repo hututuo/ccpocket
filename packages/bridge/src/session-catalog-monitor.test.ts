@@ -1,3 +1,5 @@
+import { EventEmitter } from "node:events";
+import { watch as nodeWatch, type FSWatcher } from "node:fs";
 import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,29 +34,49 @@ describe("SessionCatalogMonitor", () => {
       provider?: string;
       providerSessionId?: string;
     }> = [];
+    type WatchCallback = (
+      eventType: "rename" | "change",
+      filename: string | Buffer | null,
+    ) => void;
+    const watchCallbacks = new Map<string, WatchCallback>();
+    const watchFactory = ((
+      directory: string,
+      _options: unknown,
+      callback: WatchCallback,
+    ) => {
+      const watcher = new EventEmitter() as FSWatcher;
+      watcher.close = vi.fn(() => watcher.emit("close"));
+      watcher.ref = () => watcher;
+      watcher.unref = () => watcher;
+      watchCallbacks.set(directory, callback);
+      return watcher;
+    }) as unknown as typeof nodeWatch;
     const monitor = new SessionCatalogMonitor({
       roots: [{ path: root, kind: "claudeProjects", maxDepth: 1 }],
       initialRevision: 0,
       debounceMs: 20,
       minIntervalMs: 40,
       retryMs: 50,
+      watchFactory,
       onChanged: (revision, change) => changes.push(change ?? { revision }),
     });
     await monitor.start();
 
-    // A provider is the single writer for one rollout. Keep the two writes
-    // inside the debounce window without racing two appendFile handles against
-    // the same file, which is not a supported Node filesystem contract and
-    // can suppress the macOS watch event entirely.
-    await appendFile(sessionFile, '{"type":"assistant"}\n');
-    await appendFile(sessionFile, '{"type":"result"}\n');
+    // This test owns the debounce/close contract, not macOS FSEvents delivery.
+    // Other cases below retain real fs.watch integration. Drive the installed
+    // child watcher deterministically so a lost OS notification cannot make
+    // this lifecycle assertion randomly time out.
+    const projectWatcher = watchCallbacks.get(project);
+    expect(projectWatcher).toBeDefined();
+    projectWatcher!("change", "session-1.jsonl");
+    projectWatcher!("change", "session-1.jsonl");
     await vi.waitFor(() => expect(changes).toHaveLength(1), {
       timeout: WATCH_EVENT_TIMEOUT_MS,
     });
     expect(changes[0]).toMatchObject({ revision: 1 });
 
     monitor.close();
-    await appendFile(sessionFile, '{"type":"assistant"}\n');
+    projectWatcher!("change", "session-1.jsonl");
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(changes).toHaveLength(1);
   });
@@ -314,6 +336,31 @@ describe("SessionCatalogMonitor", () => {
     });
     expect(monitor.currentRevision).toBeGreaterThanOrEqual(before);
     expect(monitor.currentRevision).toBeLessThanOrEqual(Date.now());
+    monitor.close();
+  });
+
+  it("invalidates the catalog when Desktop project assignments change", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ccpocket-catalog-monitor-"));
+    temporaryDirectories.push(root);
+    const globalState = join(root, ".codex-global-state.json");
+    await writeFile(globalState, '{"local-projects":{}}');
+    const changes: number[] = [];
+    const monitor = new SessionCatalogMonitor({
+      roots: [{ path: root, kind: "codexRoot", maxDepth: 0 }],
+      initialRevision: 0,
+      debounceMs: 10,
+      minIntervalMs: 20,
+      onChanged: (revision) => changes.push(revision),
+    });
+    await monitor.start();
+
+    await writeFile(
+      globalState,
+      '{"local-projects":{"project":{"name":"Renamed"}}}',
+    );
+    await vi.waitFor(() => expect(changes).toEqual([1]), {
+      timeout: WATCH_EVENT_TIMEOUT_MS,
+    });
     monitor.close();
   });
 });

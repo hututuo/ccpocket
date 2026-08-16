@@ -6,6 +6,10 @@ import {
   type CodexThreadSourceKind,
   type CodexThreadSummary,
 } from "../codex-process.js";
+import {
+  readCodexDesktopProjectCatalog,
+  type CodexDesktopProjectGrouping,
+} from "../codex-desktop-project-catalog.js";
 import { readCodexAppServerMode } from "../codex-app-server-config.js";
 import {
   SharedCodexContentObserverCoordinator,
@@ -42,15 +46,19 @@ import {
   type ConversationContentSnapshot,
   type ConversationContentSnapshotEntry,
 } from "./conversation-content-sync.js";
+import { CodexBoundedHistoryReader } from "./codex-bounded-history.js";
 import type { CodexDesktopToolTimeline } from "./codex-tool-history.js";
 import { sessionHistoryToServerMessages } from "./codex-thread-history.js";
 import {
   APP_SERVER_STATUS_CAPABILITY,
+  CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
   CONVERSATION_SYNC_V2_CAPABILITY,
+  CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
   CONVERSATION_USER_INDEX_CAPABILITY,
   type ConversationSyncCatalogEntry,
   type ConversationSyncClientMessage,
   type ConversationSyncReadWatermark,
+  type ConversationRuntimeOverlayMessage,
   type ConversationSyncServerMessage,
   type ConversationSyncStatus,
   type ConversationSyncTarget,
@@ -116,20 +124,28 @@ const MAX_TIMELINE_BYTES = 512 * 1024;
 const MAX_MESSAGE_TEXT_BYTES = 40 * 1024;
 const MAX_TIMELINE_PAGE_ENTRIES = 24;
 const MAX_SNAPSHOT_TARGETS = 32;
+const MAX_PARTIAL_UNION_ENTRIES = 2_000;
+const MAX_PARTIAL_UNION_TARGETS = 32;
 const MAX_STATE_HISTORY = 4;
 const MAX_THREAD_STATES = 512;
 const PROVIDER_HISTORY_CONCURRENCY = 2;
+const CONVERSATION_SYNC_TRACE_WINDOW_MS = 60_000;
+const CONVERSATION_SYNC_TRACE_MAX_PER_WINDOW = 240;
 const PROVIDER_HISTORY_RETRY_DELAYS_MS = [
   2_000, 5_000, 15_000, 30_000,
 ] as const;
 const FULL_RECENT_TURNS = 3;
 const MAX_TURN_DETAIL_CACHE_BYTES = 16 * 1024 * 1024;
 const MAX_TURN_DETAIL_CACHE_ENTRIES = 128;
+const MAX_TURN_ITEM_FALLBACK_CACHE_BYTES = 16 * 1024 * 1024;
+const MAX_TURN_ITEM_FALLBACK_CACHE_ENTRIES = 8;
+const TURN_ITEM_FALLBACK_CACHE_TTL_MS = 60_000;
 const MAX_TOOL_DETAIL_COMPONENT_BYTES = 3 * 1024;
 const MAX_TOOL_DETAIL_ATTACHMENTS = 4;
 const MAX_CODEX_TURN_SCAN_PAGES = 50;
 const CODEX_TURN_SCAN_PAGE_SIZE = 20;
 const LEGACY_WINDOW_CURSOR_PREFIX = "ccp-legacy-window-v1:";
+const CODEX_TURN_ITEM_CURSOR_PREFIX = "ccp-codex-turn-items-v1:";
 const MAX_CODEX_RAW_TURN_ITEMS = 256;
 const MAX_CODEX_RAW_TURN_BYTES = 192 * 1024;
 const MAX_CODEX_RAW_ITEM_BYTES = 32 * 1024;
@@ -153,6 +169,10 @@ const LIVE_CONTENT_SETTLE_MS = 100;
 const LIVE_CONTENT_MAX_WAIT_MS = 1_000;
 const MAX_SHARED_OBSERVER_LIVE_MESSAGES = 256;
 const MAX_SHARED_OBSERVER_LIVE_BYTES_PER_THREAD = 512 * 1024;
+const MAX_SHARED_OBSERVER_LIVE_THREADS = 64;
+const MAX_SHARED_OBSERVER_LIVE_BYTES_TOTAL = 8 * 1024 * 1024;
+const MAX_RUNTIME_OVERLAY_IDS_PER_SUBSCRIPTION = 128;
+const MAX_PENDING_RUNTIME_OVERLAY_BYTES = 1024 * 1024;
 const MAX_SHARED_OBSERVER_INLINE_IMAGES = 4;
 const MAX_SHARED_OBSERVER_INLINE_IMAGE_BASE64_BYTES = 8 * 1024 * 1024;
 const CATALOG_CONNECTION_REUSE_MS = 5_000;
@@ -211,14 +231,47 @@ export interface ConversationSyncCatalogSeed {
 interface CatalogRecord extends ConversationSyncCatalogSeed {}
 
 interface SyncTimelineSnapshot extends ConversationContentSnapshot {
+  /**
+   * Bridge-side provider/catalog token that caused this snapshot read.
+   *
+   * This is deliberately separate from `revision`, which is the content
+   * digest committed by Mobile. app-server can grow an active turn without
+   * advancing thread/list recency, so using one token for both roles pins a
+   * stale window under an otherwise valid catalog revision.
+   */
+  sourceRevision: string;
   /** Internal-only marker; never serialized onto the wire. */
   providerHistoryUnavailable?: boolean;
+  /** Internal-only identity needed to reconcile an id-less latest-turn read. */
+  latestTurnAnonymousIdentity?: AnonymousConversationTurnIdentity;
+  /** Internal-only chronological identities for the bounded anonymous turns. */
+  anonymousTurnIdentities?: AnonymousConversationTurnIdentity[];
+}
+
+interface SyncTimelineSnapshotFlight {
+  sourceRevision: string;
+  forceProviderRead: boolean;
+  promise: Promise<SyncTimelineSnapshot>;
+}
+
+interface PendingFocusRevalidation {
+  key: ConversationKey;
+  refreshRequestId?: string;
 }
 
 interface OutboundFrame {
   sequence: number;
   bytes: number;
   message: ConversationSyncServerMessage;
+}
+
+interface PendingRuntimeOverlay {
+  key: ConversationKey;
+  payload: Extract<
+    ConversationSyncEventPayload,
+    { event: "runtime_overlay" }
+  >;
+  bytes: number;
 }
 
 interface FrameCommit {
@@ -240,7 +293,25 @@ interface SyncSubscription {
   pendingStatusState?: string;
   threadStates: Map<ConversationKey, string>;
   pendingThreadStates: Map<ConversationKey, string>;
+  pendingThreadSequences: Map<ConversationKey, number>;
+  forceReplacementThreadKeys: Set<ConversationKey>;
+  /** Threads enriched by a non-replacing projection in this subscription. */
+  partialThreadKeys: Set<ConversationKey>;
+  /** Last partial content digest sent, used only for in-subscription dedupe. */
+  partialThreadProjections: Map<ConversationKey, string>;
+  /**
+   * Proven ID unions for incomplete additive delivery. Bodies intentionally
+   * remain in the canonical snapshot cache / Mobile cache instead of being
+   * duplicated per subscription.
+   */
+  partialUnionEntries: Map<
+    ConversationKey,
+    { baseRevision: string; entryIds: Set<string> }
+  >;
   readWatermarks: Map<ConversationKey, string>;
+  runtimeOverlayIds: Set<string>;
+  pendingRuntimeOverlays: Map<string, PendingRuntimeOverlay>;
+  pendingRuntimeOverlayBytes: number;
   nextSequence: number;
   outstandingBytes: number;
   outstanding: Map<number, number>;
@@ -250,11 +321,17 @@ interface SyncSubscription {
   syncing: boolean;
   dirty: boolean;
   fullSyncRequested: boolean;
+  /** Recheck active/focused Codex content once after the interactive gap. */
+  revalidateActiveBootstrap: boolean;
+  revalidatedActiveBootstrapKeys: Set<ConversationKey>;
   dirtyThreadKeys: Set<ConversationKey>;
+  pendingFocusRevalidation?: PendingFocusRevalidation;
   capacityWaiters: Set<() => void>;
+  startedAtMs: number;
+  bootstrapEnqueued: boolean;
 }
 
-interface ConversationSyncV2Options {
+export interface ConversationSyncV2Options {
   catalogReader?: () => Promise<ConversationSyncCatalogSeed[]>;
   /** Test seam for authoritative Codex thread settings scans. */
   focusedCodexMetadataReader?: (
@@ -340,9 +417,15 @@ interface ConversationHistoryReadRequest {
 interface ConversationHistoryWindow {
   messages: ServerMessage[];
   nextTurnCursor: string | null;
+  /** Whether this reader result covers the complete bounded hot window. */
+  windowComplete?: boolean;
   turnDetails?: ConversationTurnDetails[];
   latestTurnComplete?: boolean;
   latestTurnGap?: ConversationContentLatestTurnGap;
+  /** Internal-only fallback identity for an app-server turn without an id. */
+  latestTurnAnonymousIdentity?: AnonymousConversationTurnIdentity;
+  /** Internal-only chronological identities for the bounded anonymous turns. */
+  anonymousTurnIdentities?: AnonymousConversationTurnIdentity[];
   /**
    * Cursor this bounded window actually consumed. A reader must echo an
    * opaque non-null request cursor here; otherwise the fallback cannot prove
@@ -363,6 +446,15 @@ interface NormalizedConversationTurn {
   itemsView: "summary" | "full";
   latestTurnComplete?: boolean;
   latestTurnGap?: ConversationContentLatestTurnGap;
+  anonymousIdentity?: AnonymousConversationTurnIdentity;
+}
+
+interface AnonymousConversationTurnIdentity {
+  anchor: string;
+  rootAnchor: string;
+  contentAnchor: string;
+  turnId: string;
+  occurrence: number;
 }
 
 interface ConversationTurnDetails {
@@ -380,6 +472,8 @@ interface ConversationItemsPage {
   data: unknown[];
   nextCursor: string | null;
   turnDetails?: ConversationTurnDetails;
+  pageComplete?: boolean;
+  latestTurnGap?: ConversationContentLatestTurnGap;
 }
 
 interface TimelinePatchPage {
@@ -394,6 +488,13 @@ type CodexReadRunner = <T>(
 interface CachedTurnDetails {
   details: Map<string, HistoryToolDetailPayload>;
   bytes: number;
+}
+
+interface CachedCodexTurnItems {
+  turn: Record<string, unknown>;
+  snapshotId: string;
+  bytes: number;
+  cachedAt: number;
 }
 
 interface LiveContentRevision {
@@ -442,6 +543,20 @@ interface ExternalCodexLiveMessage {
   message: ServerMessage;
   observedAt: string;
   bytes: number;
+  /**
+   * Independent producer of this projection. Runtime session fanout and the
+   * shared app-server observer can report the same provider item with
+   * different temporary ids; keeping their provenance lets the canonical
+   * merge reconcile them without treating two events from one producer as
+   * aliases.
+   */
+  projectionSource:
+    | "runtime"
+    | "sharedObserver"
+    | "externalObserver"
+    | "providerRefresh";
+  /** Internal per-turn identity when the provider omits a durable turn id. */
+  identityScope?: string;
 }
 
 /**
@@ -507,11 +622,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   >();
   private readonly snapshots = new Map<
     ConversationKey,
-    ConversationContentSnapshot[]
+    SyncTimelineSnapshot[]
   >();
   private readonly snapshotFlights = new Map<
     ConversationKey,
-    Promise<SyncTimelineSnapshot>
+    SyncTimelineSnapshotFlight
   >();
   private readonly providerHistoryFailures = new Map<
     ConversationKey,
@@ -529,6 +644,17 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private readonly terminalResultScope?: TerminalResultScope;
   private terminalResultWrites: Promise<void> = Promise.resolve();
   private readonly turnDetailCache = new Map<string, CachedTurnDetails>();
+  private readonly codexTurnItemFallbackCache = new Map<
+    string,
+    CachedCodexTurnItems
+  >();
+  private readonly codexTurnFallbackReader = new CodexBoundedHistoryReader({
+    pageSize: CODEX_TURN_SCAN_PAGE_SIZE,
+    maxPages: MAX_CODEX_TURN_SCAN_PAGES,
+    maxEntries: MAX_CODEX_TURN_SCAN_PAGES * CODEX_TURN_SCAN_PAGE_SIZE,
+    rpcTimeoutMs: CODEX_HISTORY_RPC_TIMEOUT_MS,
+  });
+  private codexTurnItemFallbackCacheBytes = 0;
   private readonly liveContentRevisions = new Map<
     ConversationKey,
     LiveContentRevision
@@ -568,6 +694,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     Map<string, ExternalCodexLiveMessage>
   >();
   private readonly sharedObserverLiveBytes = new Map<ConversationKey, number>();
+  private sharedObserverLiveTotalBytes = 0;
   private readonly externalCodexDiscoveredRunning = new Map<
     string,
     ExternalCodexSnapshot
@@ -873,6 +1000,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     } else {
       subscription.outbound.length = 0;
       subscription.queuedBytes = 0;
+      this.clearRuntimeOverlayTracking(subscription);
       this.wakeCapacityWaiters(subscription);
       if (!this.hasInteractiveClients()) {
         this.priorityCodexSettingsQueue.clear();
@@ -978,6 +1106,37 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     } else if (message.type === "user_input") {
       this.clearTerminalResult(target, observedAt);
     }
+    if (
+      target.provider === "codex" &&
+      isConversationRuntimeOverlayMessage(message)
+    ) {
+      const runtimeState = (
+        this.runtime.listRuntimeConversationStates?.() ?? []
+      ).find(
+        (state) =>
+          state.bridgeSessionId === session.id &&
+          state.provider === target.provider &&
+          state.providerSessionId === target.providerSessionId,
+      );
+      const turnId = message.historyTurnId ?? runtimeState?.activeTurnId;
+      const authorityGeneration = runtimeState?.authorityGeneration;
+      const runtimeStateCanEmitOverlay =
+        runtimeState !== undefined &&
+        runtimeState.activeTurnId === turnId &&
+        (runtimeState.processStatus === "running" ||
+          runtimeState.processStatus === "waiting_approval" ||
+          runtimeState.processStatus === "compacting");
+      if (turnId && authorityGeneration && runtimeStateCanEmitOverlay) {
+        this.publishRuntimeOverlay(target, {
+          message,
+          observedAt,
+          turnId,
+          originGeneration: `runtime:${session.id}:${authorityGeneration}`,
+          runtimeSessionId: session.id,
+          authorityGeneration,
+        });
+      }
+    }
     if (!this.hasInteractiveClients()) return;
 
     if (isStreamingConversationDelta(message)) {
@@ -995,6 +1154,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           `runtime:${identity}`,
           message,
           observedAt,
+          "runtime",
         );
       }
       this.publishLiveContent(
@@ -1198,6 +1358,15 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       }
       return;
     }
+    if (event.method === "thread/name/updated") {
+      // The shared control stream deliberately strips the title payload, but
+      // the exact thread identity is enough to invalidate the provider-owned
+      // catalog row. Re-read thread/list so Desktop and Mobile converge on the
+      // same persisted name without waiting for a filesystem watcher.
+      this.catalogDirty = true;
+      this.requestSharedControlReconcile({ catalog: true, status: false });
+      return;
+    }
     const previous =
       this.sharedRuntimeStatuses.get(key) ??
       this.catalog.get(key)?.status ??
@@ -1290,12 +1459,18 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         )
         .map((subscription) => subscription.focusedKey!),
     );
-    const alreadyObservedRuntimeThreads = new Set(
+    const directlyStreamedRuntimeThreads = new Set(
       (this.runtime.listRuntimeConversationStates?.() ?? [])
         .filter(
           (state) =>
             state.provider === "codex" &&
             state.providerSessionId &&
+            // A usable formal attachment forwards app-server notifications
+            // through SessionManager regardless of whether the active turn
+            // was initiated by Bridge or Desktop. Detached catalog entries
+            // have no controlState and must not suppress the read-only content
+            // observer merely because a SessionInfo record still exists.
+            state.controlState !== undefined &&
             state.controlState !== "unavailable" &&
             state.controlState !== "reconciling",
         )
@@ -1306,7 +1481,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         .filter(
           ([, record]) =>
             record.entry.provider === "codex" &&
-            !alreadyObservedRuntimeThreads.has(record.entry.providerSessionId),
+            !directlyStreamedRuntimeThreads.has(
+              record.entry.providerSessionId,
+            ),
         )
         .map(([key, record]) => {
           const status = this.sharedRuntimeStatuses.get(key) ?? record.status;
@@ -1353,6 +1530,28 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       event.observedAt,
       false,
     );
+    if (isConversationRuntimeOverlayMessage(message)) {
+      const key = targetKey(target);
+      const projectedTurnId =
+        event.turnId ?? this.sharedRuntimeStatuses.get(key)?.activeTurnId;
+      const terminal = this.resultLedger.get(key);
+      const turnAlreadyTerminal =
+        projectedTurnId !== undefined && terminal?.turnId === projectedTurnId;
+      if (projectedTurnId && !turnAlreadyTerminal) {
+        const observerGeneration =
+          `observer:${event.connectionGeneration}:${event.observerGeneration}`;
+        this.publishRuntimeOverlay(target, {
+          message,
+          observedAt: event.observedAt,
+          turnId: projectedTurnId,
+          originGeneration: observerGeneration,
+          runtimeSessionId: observerGeneration,
+          authorityGeneration: sharedControlAuthorityGeneration(
+            event.connectionGeneration,
+          ),
+        });
+      }
+    }
     if (message.type === "result") {
       const terminal = terminalResultFromServerMessage(message);
       if (terminal) {
@@ -1380,9 +1579,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
     const remembered = this.rememberSharedObserverMessage(
       target,
-      `${event.turnId ?? "turn-unknown"}:${identity}`,
+      `${event.turnId ?? event.anonymousTurnScope ?? `observer:${event.observerGeneration}:turn-unknown`}:${identity}`,
       message,
       event.observedAt,
+      "sharedObserver",
+      event.turnId ? undefined : event.anonymousTurnScope,
     );
     if (!remembered) {
       this.queueLiveContent(target, event.observedAt, "latestTurn");
@@ -1403,6 +1604,318 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       assistantTextCatalogActivity(message, event.observedAt),
       "direct",
     );
+  }
+
+  private publishRuntimeOverlay(
+    target: ConversationSyncTarget,
+    input: {
+      message: ConversationRuntimeOverlayMessage;
+      observedAt: string;
+      turnId: string;
+      originGeneration: string;
+      runtimeSessionId: string;
+      authorityGeneration: string;
+    },
+  ): void {
+    const key = targetKey(target);
+    const turnScope = input.turnId ?? "turnless";
+    const overlayId = createHash("sha256")
+      .update(
+        stableJson({
+          source: this.runtime.codexSourceId ?? "legacy",
+          key,
+          turnScope,
+          message: stableObservedMessagePayload(input.message),
+        }),
+      )
+      .digest("hex");
+    for (const [client, subscription] of this.subscriptions) {
+      if (
+        !subscription.interactive ||
+        subscription.focusedKey !== key ||
+        !this.runtime.supports(
+          client,
+          CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
+        ) ||
+        subscription.runtimeOverlayIds.has(overlayId) ||
+        subscription.pendingRuntimeOverlays.has(overlayId)
+      ) {
+        continue;
+      }
+      const payload: ConversationSyncEventPayload = {
+        event: "runtime_overlay",
+        ...target,
+        overlayId,
+        observedAt: input.observedAt,
+        originGeneration: input.originGeneration,
+        runtimeSessionId: input.runtimeSessionId,
+        authorityGeneration: input.authorityGeneration,
+        turnId: input.turnId,
+        message: input.message,
+      };
+      const bytes = this.eventPayloadBytes(subscription, payload);
+      if (bytes > MAX_FRAME_BYTES) {
+        console.warn(
+          `[conversation-sync-v2] runtime overlay dropped ` +
+            `target=${traceTarget(key)} reason=frame_size`,
+        );
+        continue;
+      }
+      if (
+        this.runtimeOverlayAuthorityIsSequenced(
+          client,
+          subscription,
+          key,
+          payload,
+        ) &&
+        subscription.queuedBytes + bytes <= MAX_QUEUED_BYTES
+      ) {
+        this.sendRuntimeOverlayEvent(
+          client,
+          subscription,
+          overlayId,
+          payload,
+        );
+        continue;
+      }
+      if (
+        this.enqueuePendingRuntimeOverlay(subscription, overlayId, {
+          key,
+          payload,
+          bytes,
+        })
+      ) {
+        this.scheduleSync(client, subscription);
+      }
+    }
+  }
+
+  private sendRuntimeOverlayEvent(
+    client: object,
+    subscription: SyncSubscription,
+    overlayId: string,
+    payload: Extract<
+      ConversationSyncEventPayload,
+      { event: "runtime_overlay" }
+    >,
+  ): number {
+    const previousSequence = subscription.nextSequence;
+    this.rememberRuntimeOverlayId(subscription, overlayId);
+    try {
+      return this.sendEvent(client, subscription, payload);
+    } catch (error) {
+      // sendEvent records the frame in the outbound queue before asking the
+      // socket runtime to write it. When that write throws, outbound remains
+      // the sole retry source and the ID must stay remembered. Only undo the
+      // ID when the frame was rejected before it entered the queue.
+      if (subscription.nextSequence === previousSequence) {
+        subscription.runtimeOverlayIds.delete(overlayId);
+      }
+      throw error;
+    }
+  }
+
+  private rememberRuntimeOverlayId(
+    subscription: SyncSubscription,
+    overlayId: string,
+  ): void {
+    subscription.runtimeOverlayIds.add(overlayId);
+    while (
+      subscription.runtimeOverlayIds.size >
+      MAX_RUNTIME_OVERLAY_IDS_PER_SUBSCRIPTION
+    ) {
+      subscription.runtimeOverlayIds.delete(
+        subscription.runtimeOverlayIds.values().next().value!,
+      );
+    }
+  }
+
+  private enqueuePendingRuntimeOverlay(
+    subscription: SyncSubscription,
+    overlayId: string,
+    overlay: PendingRuntimeOverlay,
+  ): boolean {
+    if (subscription.pendingRuntimeOverlays.has(overlayId)) return true;
+    if (
+      subscription.pendingRuntimeOverlays.size >=
+        MAX_RUNTIME_OVERLAY_IDS_PER_SUBSCRIPTION ||
+      subscription.pendingRuntimeOverlayBytes + overlay.bytes >
+        MAX_PENDING_RUNTIME_OVERLAY_BYTES
+    ) {
+      console.warn(
+        `[conversation-sync-v2] runtime overlay rejected ` +
+          `target=${traceTarget(overlay.key)} reason=pending_capacity ` +
+          `pending=${subscription.pendingRuntimeOverlays.size} ` +
+          `bytes=${subscription.pendingRuntimeOverlayBytes}`,
+      );
+      return false;
+    }
+    subscription.pendingRuntimeOverlays.set(overlayId, overlay);
+    subscription.pendingRuntimeOverlayBytes += overlay.bytes;
+    return true;
+  }
+
+  private runtimeOverlayAuthorityMatches(
+    key: ConversationKey,
+    payload: Extract<
+      ConversationSyncEventPayload,
+      { event: "runtime_overlay" }
+    >,
+  ): boolean {
+    const status = this.statusProjection.get(key);
+    return (
+      status?.authorityGeneration === payload.authorityGeneration &&
+      status.activeTurnId === payload.turnId
+    );
+  }
+
+  private runtimeOverlayAuthorityIsSequenced(
+    client: object,
+    subscription: SyncSubscription,
+    key: ConversationKey,
+    payload: Extract<
+      ConversationSyncEventPayload,
+      { event: "runtime_overlay" }
+    >,
+  ): boolean {
+    if (!this.runtimeOverlayAuthorityMatches(key, payload)) return false;
+    const statusState = this.statusStateForClient(client);
+    return (
+      subscription.statusState === statusState ||
+      subscription.pendingStatusState === statusState
+    );
+  }
+
+  private clearPendingRuntimeOverlays(subscription: SyncSubscription): void {
+    subscription.pendingRuntimeOverlays.clear();
+    subscription.pendingRuntimeOverlayBytes = 0;
+  }
+
+  private clearRuntimeOverlayTracking(subscription: SyncSubscription): void {
+    this.clearPendingRuntimeOverlays(subscription);
+    subscription.runtimeOverlayIds.clear();
+  }
+
+  private dropPendingRuntimeOverlay(
+    subscription: SyncSubscription,
+    overlayId: string,
+    overlay: PendingRuntimeOverlay,
+  ): void {
+    subscription.pendingRuntimeOverlays.delete(overlayId);
+    subscription.pendingRuntimeOverlayBytes = Math.max(
+      0,
+      subscription.pendingRuntimeOverlayBytes - overlay.bytes,
+    );
+  }
+
+  private runtimeOverlayAuthorityIsSuperseded(
+    key: ConversationKey,
+    payload: Extract<
+      ConversationSyncEventPayload,
+      { event: "runtime_overlay" }
+    >,
+  ): boolean {
+    const status = this.statusProjection.get(key);
+    if (!status?.authorityGeneration) return false;
+    if (status.authorityGeneration !== payload.authorityGeneration) {
+      return true;
+    }
+    if (status.activeTurnId !== undefined) {
+      return status.activeTurnId !== payload.turnId;
+    }
+    if (status.activity === "working" || status.activity === "compacting") {
+      return false;
+    }
+    const statusObservedAt = Date.parse(status.observedAt);
+    const overlayObservedAt = Date.parse(payload.observedAt);
+    return (
+      Number.isFinite(statusObservedAt) &&
+      Number.isFinite(overlayObservedAt) &&
+      statusObservedAt >= overlayObservedAt
+    );
+  }
+
+  private async sendPendingRuntimeOverlays(
+    client: object,
+    subscription: SyncSubscription,
+  ): Promise<boolean> {
+    for (const [overlayId, overlay] of [
+      ...subscription.pendingRuntimeOverlays,
+    ]) {
+      if (subscription.focusedKey !== overlay.key) {
+        this.dropPendingRuntimeOverlay(subscription, overlayId, overlay);
+        continue;
+      }
+      if (
+        this.runtimeOverlayAuthorityIsSuperseded(
+          overlay.key,
+          overlay.payload,
+        )
+      ) {
+        this.dropPendingRuntimeOverlay(subscription, overlayId, overlay);
+        console.warn(
+          `[conversation-sync-v2] pending runtime overlay dropped ` +
+            `target=${traceTarget(overlay.key)} reason=authority_superseded`,
+        );
+        continue;
+      }
+      if (
+        !this.runtimeOverlayAuthorityIsSequenced(
+          client,
+          subscription,
+          overlay.key,
+          overlay.payload,
+        )
+      ) {
+        continue;
+      }
+      if (
+        !(await this.waitForOutboundCapacity(
+          client,
+          subscription,
+          overlay.payload,
+        ))
+      ) {
+        return false;
+      }
+      if (
+        !this.runtimeOverlayAuthorityIsSequenced(
+          client,
+          subscription,
+          overlay.key,
+          overlay.payload,
+        )
+      ) {
+        if (
+          this.runtimeOverlayAuthorityIsSuperseded(
+            overlay.key,
+            overlay.payload,
+          )
+        ) {
+          this.dropPendingRuntimeOverlay(subscription, overlayId, overlay);
+        }
+        continue;
+      }
+      this.dropPendingRuntimeOverlay(subscription, overlayId, overlay);
+      try {
+        this.sendRuntimeOverlayEvent(
+          client,
+          subscription,
+          overlayId,
+          overlay.payload,
+        );
+      } catch (error) {
+        if (!subscription.runtimeOverlayIds.has(overlayId)) {
+          this.enqueuePendingRuntimeOverlay(
+            subscription,
+            overlayId,
+            overlay,
+          );
+        }
+        throw error;
+      }
+    }
+    return true;
   }
 
   private forwardSharedObserverContextUsage(
@@ -1479,11 +1992,13 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         providerSessionId: input.threadId,
       }),
     )?.entry;
-    const projectLabel = entry?.projectPath
-      ?.replace(/[\\/]+$/, "")
-      .split(/[\\/]/)
-      .filter(Boolean)
-      .at(-1);
+    const projectLabel =
+      entry?.projectGroupName ??
+      entry?.projectPath
+        ?.replace(/[\\/]+$/, "")
+        .split(/[\\/]/)
+        .filter(Boolean)
+        .at(-1);
     const name = entry?.name?.trim();
     const label = name
       ? projectLabel
@@ -1505,6 +2020,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     itemKey: string,
     message: ServerMessage,
     observedAt: string,
+    projectionSource: "runtime" | "sharedObserver",
+    identityScope?: string,
   ): boolean {
     const key = targetKey(target);
     const bytes = Buffer.byteLength(stableJson(message), "utf8");
@@ -1512,10 +2029,17 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const messages =
       this.sharedObserverLiveMessages.get(key) ??
       new Map<string, ExternalCodexLiveMessage>();
-    let totalBytes = this.sharedObserverLiveBytes.get(key) ?? 0;
+    const previousThreadBytes = this.sharedObserverLiveBytes.get(key) ?? 0;
+    let totalBytes = previousThreadBytes;
     const previous = messages.get(itemKey);
     if (previous) totalBytes = Math.max(0, totalBytes - previous.bytes);
-    messages.set(itemKey, { message, observedAt, bytes });
+    messages.set(itemKey, {
+      message,
+      observedAt,
+      bytes,
+      projectionSource,
+      ...(identityScope ? { identityScope } : {}),
+    });
     totalBytes += bytes;
     while (
       messages.size > MAX_SHARED_OBSERVER_LIVE_MESSAGES ||
@@ -1534,10 +2058,29 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const retained = messages.has(itemKey);
     this.sharedObserverLiveMessages.set(key, messages);
     this.sharedObserverLiveBytes.set(key, totalBytes);
-    return retained;
+    this.sharedObserverLiveTotalBytes = Math.max(
+      0,
+      this.sharedObserverLiveTotalBytes - previousThreadBytes + totalBytes,
+    );
+    while (
+      this.sharedObserverLiveMessages.size > MAX_SHARED_OBSERVER_LIVE_THREADS ||
+      this.sharedObserverLiveTotalBytes > MAX_SHARED_OBSERVER_LIVE_BYTES_TOTAL
+    ) {
+      const oldestKey = this.sharedObserverLiveMessages.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.deleteSharedObserverLiveMessages(oldestKey);
+    }
+    return (
+      retained && this.sharedObserverLiveMessages.get(key)?.has(itemKey) === true
+    );
   }
 
   private deleteSharedObserverLiveMessages(key: ConversationKey): void {
+    this.sharedObserverLiveTotalBytes = Math.max(
+      0,
+      this.sharedObserverLiveTotalBytes -
+        (this.sharedObserverLiveBytes.get(key) ?? 0),
+    );
     this.sharedObserverLiveMessages.delete(key);
     this.sharedObserverLiveBytes.delete(key);
   }
@@ -1765,7 +2308,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
 
   disconnect(client: object): void {
     const subscription = this.subscriptions.get(client);
-    if (subscription) this.wakeCapacityWaiters(subscription);
+    if (subscription) {
+      this.logSubscriptionEnd(subscription, "socket_disconnect");
+      this.clearRuntimeOverlayTracking(subscription);
+      this.wakeCapacityWaiters(subscription);
+    }
     this.subscriptions.delete(client);
     if (!this.hasInteractiveClients()) {
       this.priorityCodexSettingsQueue.clear();
@@ -1786,6 +2333,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.sharedContentObservers?.close();
     this.cancelSharedControlRecovery();
     for (const subscription of this.subscriptions.values()) {
+      this.clearRuntimeOverlayTracking(subscription);
       this.wakeCapacityWaiters(subscription);
     }
     this.subscriptions.clear();
@@ -1796,6 +2344,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     }
     this.providerHistoryFailures.clear();
     this.turnDetailCache.clear();
+    this.codexTurnItemFallbackCache.clear();
+    this.codexTurnItemFallbackCacheBytes = 0;
     this.liveContentRevisions.clear();
     this.pendingLiveContent.clear();
     this.catalogProjection.clear();
@@ -1806,6 +2356,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.sharedRuntimeStatuses.clear();
     this.sharedObserverLiveMessages.clear();
     this.sharedObserverLiveBytes.clear();
+    this.sharedObserverLiveTotalBytes = 0;
     this.sharedControlRecoveryTargets.clear();
     this.focusedCodexSettingsFlights.clear();
     this.focusedCodexSettingsAttempts.clear();
@@ -1837,8 +2388,13 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       return;
     }
     const threadStates = new Map<ConversationKey, string>();
+    const forceReplacementThreadKeys = new Set<ConversationKey>();
     for (const state of message.threadContentStates) {
-      threadStates.set(targetKey(state), state.revision);
+      const key = targetKey(state);
+      threadStates.set(key, state.revision);
+      if (state.forceReplacement === true) {
+        forceReplacementThreadKeys.add(key);
+      }
     }
     const readWatermarks = new Map<ConversationKey, string>();
     for (const watermark of message.readWatermarks) {
@@ -1862,7 +2418,15 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       statusState: message.statusState,
       threadStates,
       pendingThreadStates: new Map(),
+      pendingThreadSequences: new Map(),
+      forceReplacementThreadKeys,
+      partialThreadKeys: new Set(),
+      partialThreadProjections: new Map(),
+      partialUnionEntries: new Map(),
       readWatermarks,
+      runtimeOverlayIds: new Set(),
+      pendingRuntimeOverlays: new Map(),
+      pendingRuntimeOverlayBytes: 0,
       nextSequence: 0,
       outstandingBytes: 0,
       outstanding: new Map(),
@@ -1872,10 +2436,19 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       syncing: false,
       dirty: false,
       fullSyncRequested: true,
+      revalidateActiveBootstrap: deliveryMode === "interactive",
+      revalidatedActiveBootstrapKeys: new Set(),
       dirtyThreadKeys: new Set(),
       capacityWaiters: new Set(),
+      startedAtMs: Date.now(),
+      bootstrapEnqueued: false,
     };
     this.subscriptions.set(client, subscription);
+    console.log(
+      `[conversation-sync-v2] client subscribed ` +
+        `threadStates=${threadStates.size} readWatermarks=${readWatermarks.size} ` +
+        `delivery=${deliveryMode}`,
+    );
     this.pruneFocusedCodexSettingsRetries();
     if (subscription.interactive || subscription.notificationOnly) {
       this.reconcileSharedContentObservers();
@@ -1922,7 +2495,15 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         }
       }
       if (commit.thread) {
-        subscription.pendingThreadStates.delete(commit.thread.key);
+        if (
+          subscription.pendingThreadSequences.get(commit.thread.key) ===
+            sequence &&
+          subscription.pendingThreadStates.get(commit.thread.key) ===
+            commit.thread.revision
+        ) {
+          subscription.pendingThreadStates.delete(commit.thread.key);
+          subscription.pendingThreadSequences.delete(commit.thread.key);
+        }
         subscription.threadStates.set(
           commit.thread.key,
           commit.thread.revision,
@@ -1965,8 +2546,20 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     if (!subscription || subscription.id !== message.subscriptionId) {
       return;
     }
-    subscription.focusedKey = message.focused
+    const nextFocusedKey = message.focused
       ? targetKey(message.focused)
+      : undefined;
+    if (subscription.focusedKey !== nextFocusedKey) {
+      this.clearRuntimeOverlayTracking(subscription);
+    }
+    subscription.focusedKey = nextFocusedKey;
+    subscription.pendingFocusRevalidation = subscription.focusedKey
+      ? {
+          key: subscription.focusedKey,
+          ...(message.refresh === true
+            ? { refreshRequestId: message.requestId }
+            : {}),
+        }
       : undefined;
     this.pruneFocusedCodexSettingsRetries();
     if (message.focused?.provider === "codex") {
@@ -1986,9 +2579,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     });
     if (!message.focused) return;
     // A user opening or explicitly retrying a conversation is an intentional
-    // recovery signal. It may bypass the background cooldown once; another
-    // real provider failure immediately installs the next bounded delay.
-    this.clearProviderHistoryFailure(targetKey(message.focused));
+    // recovery signal. Make the existing retry immediately due without
+    // deleting its failure count: repeated provider failures must still climb
+    // the shared 2/5/15/30 second backoff instead of restarting at 2 seconds.
+    this.makeProviderHistoryRetryDue(targetKey(message.focused));
     if (
       message.focused.provider === "codex" &&
       this.legacyCodexMonitoringEnabled
@@ -2021,6 +2615,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   ): void {
     const subscription = this.subscriptions.get(client);
     if (!subscription || subscription.id !== message.subscriptionId) return;
+    this.logSubscriptionEnd(subscription, "client_unsubscribe");
+    this.clearRuntimeOverlayTracking(subscription);
     this.sendEvent(client, subscription, {
       event: "unsubscribed",
       requestId: message.requestId,
@@ -2036,6 +2632,26 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       this.requestSharedCodexReadProcessClose();
     }
     this.reconcileSharedContentObservers();
+  }
+
+  private logSubscriptionEnd(
+    subscription: SyncSubscription,
+    reason: "client_unsubscribe" | "socket_disconnect",
+  ): void {
+    const message =
+      `[conversation-sync-v2] subscription ended reason=${reason} ` +
+      `ageMs=${Math.max(0, Date.now() - subscription.startedAtMs)} ` +
+      `lastSequence=${Math.max(0, subscription.nextSequence)} ` +
+      `outstandingFrames=${subscription.outstanding.size} ` +
+      `outstandingBytes=${subscription.outstandingBytes} ` +
+      `queuedFrames=${subscription.outbound.length} ` +
+      `pendingRuntimeOverlays=${subscription.pendingRuntimeOverlays.size} ` +
+      `bootstrapEnqueued=${subscription.bootstrapEnqueued}`;
+    if (subscription.bootstrapEnqueued) {
+      console.log(message);
+    } else {
+      console.warn(message);
+    }
   }
 
   private scheduleSync(
@@ -2092,6 +2708,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     client: object,
     subscription: SyncSubscription,
   ): Promise<void> {
+    const focusRevalidation = subscription.pendingFocusRevalidation;
+    const focusRefreshRequestId = focusRevalidation?.refreshRequestId;
+    const focusRevalidationKey = focusRevalidation?.key;
+    const incompleteRevalidationKeys = new Set<ConversationKey>();
     const fullSyncRequested = subscription.fullSyncRequested;
     subscription.fullSyncRequested = false;
     const dirtyThreadKeys = new Set(subscription.dirtyThreadKeys);
@@ -2136,11 +2756,25 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       });
     }
     if (!(await this.sendCatalogChanges(client, subscription))) {
+      for (const key of dirtyThreadKeys) {
+        subscription.dirtyThreadKeys.add(key);
+      }
       subscription.fullSyncRequested ||= fullSyncRequested;
       subscription.dirty = true;
       return;
     }
     if (!(await this.sendStatusChanges(client, subscription))) {
+      for (const key of dirtyThreadKeys) {
+        subscription.dirtyThreadKeys.add(key);
+      }
+      subscription.fullSyncRequested ||= fullSyncRequested;
+      subscription.dirty = true;
+      return;
+    }
+    if (!(await this.sendPendingRuntimeOverlays(client, subscription))) {
+      for (const key of dirtyThreadKeys) {
+        subscription.dirtyThreadKeys.add(key);
+      }
       subscription.fullSyncRequested ||= fullSyncRequested;
       subscription.dirty = true;
       return;
@@ -2148,20 +2782,43 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
 
     if (fullSyncRequested) {
       const ordered = fullSyncOrdered ?? this.orderedRecords(subscription);
-      const priority = ordered.filter((record, index) =>
-        this.isPriorityRecord(record, index, subscription),
-      );
+      const priority: CatalogRecord[] = [];
+      const priorityRevalidateKeys = new Set<ConversationKey>();
+      for (let index = 0; index < ordered.length; index += 1) {
+        const record = ordered[index]!;
+        if (!this.isPriorityRecord(record, index, subscription)) continue;
+        priority.push(record);
+        const key = targetKey(record.entry);
+        if (
+          subscription.revalidateActiveBootstrap &&
+          record.entry.provider === "codex" &&
+          !subscription.revalidatedActiveBootstrapKeys.has(key) &&
+          (key === subscription.focusedKey ||
+            record.status.activity === "working" ||
+            record.status.activity === "compacting")
+        ) {
+          priorityRevalidateKeys.add(key);
+        }
+      }
       const priorityComplete = await this.sendTimelineRecords(
         client,
         subscription,
         priority,
         "priority",
+        priorityRevalidateKeys,
+        incompleteRevalidationKeys,
       );
-      this.sendEvent(client, subscription, {
+      const priorityCheckpointSequence = this.sendEvent(client, subscription, {
         event: "sync_checkpoint",
         phase: "priority",
         hasMore: !priorityComplete || ordered.length > priority.length,
       });
+      traceConversationSync(
+        `[conversation-sync-v2] priority checkpoint ` +
+          `sequence=${priorityCheckpointSequence} timelines=${priority.length} ` +
+          `complete=${priorityComplete} ` +
+          `elapsedMs=${Math.max(0, Date.now() - subscription.startedAtMs)}`,
+      );
       if (!priorityComplete) {
         subscription.fullSyncRequested = true;
         subscription.dirty = true;
@@ -2181,6 +2838,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         subscription,
         recent,
         "recent",
+        undefined,
+        incompleteRevalidationKeys,
       );
       this.sendEvent(client, subscription, {
         event: "sync_checkpoint",
@@ -2196,11 +2855,20 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       const dirtyRecords = [...dirtyThreadKeys]
         .map((key) => this.catalog.get(key))
         .filter((record): record is CatalogRecord => record !== undefined);
+      const dirtyRevalidateKeys = new Set<ConversationKey>();
+      for (const record of dirtyRecords) {
+        const key = targetKey(record.entry);
+        if (key === focusRevalidationKey) {
+          dirtyRevalidateKeys.add(key);
+        }
+      }
       const dirtyComplete = await this.sendTimelineRecords(
         client,
         subscription,
         dirtyRecords,
         "priority",
+        dirtyRevalidateKeys,
+        incompleteRevalidationKeys,
       );
       this.sendEvent(client, subscription, {
         event: "sync_checkpoint",
@@ -2225,8 +2893,13 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     for (const [key, revision] of subscription.pendingThreadStates) {
       desiredThreadStates.set(key, revision);
     }
-    this.sendEvent(client, subscription, {
+    const completeSequence = this.sendEvent(client, subscription, {
       event: "sync_complete",
+      ...(focusRefreshRequestId &&
+      (!focusRevalidationKey ||
+        !incompleteRevalidationKeys.has(focusRevalidationKey))
+        ? { requestId: focusRefreshRequestId }
+        : {}),
       nextState: {
         catalogState: this.catalogState,
         statusState,
@@ -2238,6 +2911,27 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           })),
       },
     });
+    if (fullSyncRequested && !subscription.bootstrapEnqueued) {
+      subscription.bootstrapEnqueued = true;
+      traceConversationSync(
+        `[conversation-sync-v2] bootstrap complete ` +
+          `sequence=${completeSequence} elapsedMs=${Math.max(
+            0,
+            Date.now() - subscription.startedAtMs,
+          )}`,
+      );
+    }
+    if (
+      focusRevalidation &&
+      !incompleteRevalidationKeys.has(focusRevalidation.key) &&
+      subscription.pendingFocusRevalidation === focusRevalidation
+    ) {
+      subscription.pendingFocusRevalidation = undefined;
+    }
+    if (fullSyncRequested) {
+      subscription.revalidateActiveBootstrap = false;
+      subscription.revalidatedActiveBootstrapKeys.clear();
+    }
   }
 
   private async sendCatalogChanges(
@@ -2259,14 +2953,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         scope: "catalog",
         reason: "state_unavailable",
       });
-      // A client whose global catalog cursor can no longer be continued may
-      // also hold per-thread revisions from a cache generation the Bridge can
-      // no longer relate to the current catalog. Preserve user read
-      // watermarks, but force one bounded hot-window bootstrap.
-      subscription.threadStates.clear();
-      subscription.pendingThreadStates.clear();
+      // Catalog lineage and per-thread content lineage are independent. A
+      // catalog reset must not discard the only base revision the client still
+      // has for a durable hot window; destroyed thread keys are handled by the
+      // catalog diff below. Keeping these states also lets an incomplete
+      // provider projection use additive delivery after a Bridge restart.
     }
     const current = this.catalogProjection;
+    this.prunePartialUnionState(subscription, current);
     const changes: Array<
       | { kind: "created"; value: ConversationSyncCatalogEntry }
       | { kind: "updated"; value: ConversationSyncCatalogEntry }
@@ -2414,6 +3108,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     subscription: SyncSubscription,
     records: CatalogRecord[],
     phase: "priority" | "recent" | "cold",
+    revalidateKeys: ReadonlySet<ConversationKey> = new Set(),
+    incompleteRevalidationKeys: Set<ConversationKey> = new Set(),
   ): Promise<boolean> {
     for (
       let offset = 0;
@@ -2436,10 +3132,65 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           const known =
             subscription.pendingThreadStates.get(key) ??
             subscription.threadStates.get(key);
-          if (known === this.timelineRevisionFor(record)) return null;
+          const sourceRevision = this.timelineRevisionFor(record);
+          const failure = this.providerHistoryFailures.get(key);
+          const retryDue =
+            failure?.revision === sourceRevision &&
+            Date.now() >= failure.retryAt;
+          const revalidate = revalidateKeys.has(key) || retryDue;
+          const cached = this.snapshots
+            .get(key)
+            ?.filter(
+              (snapshot) => snapshot.sourceRevision === sourceRevision,
+            )
+            .at(-1);
+          const knownBaseNeedsReplacement =
+            known !== undefined &&
+            (subscription.forceReplacementThreadKeys.has(key) ||
+              subscription.partialThreadKeys.has(key));
+          if (
+            !revalidate &&
+            cached &&
+            known === cached.revision &&
+            !knownBaseNeedsReplacement
+          ) {
+            return null;
+          }
           try {
-            return await this.snapshotFor(record);
+            const snapshot = await this.snapshotFor(record, {
+              forceProviderRead: revalidate,
+            });
+            const currentRecord = this.catalog.get(key);
+            if (!currentRecord) return null;
+            const currentSourceRevision =
+              this.timelineRevisionFor(currentRecord);
+            if (snapshot.sourceRevision !== currentSourceRevision) {
+              if (revalidate) incompleteRevalidationKeys.add(key);
+              traceConversationSync(
+                `[conversation-sync-v2] timeline superseded ` +
+                  `target=${traceTarget(key)} ` +
+                  `read=${shortRevision(snapshot.sourceRevision)} ` +
+                  `current=${shortRevision(currentSourceRevision)}`,
+              );
+              subscription.dirtyThreadKeys.add(key);
+              subscription.dirty = true;
+              return null;
+            }
+            const revalidationIncomplete =
+              snapshot.providerHistoryUnavailable === true ||
+              !snapshot.windowComplete;
+            if (revalidate && revalidationIncomplete) {
+              incompleteRevalidationKeys.add(key);
+            } else if (revalidate) {
+              subscription.revalidatedActiveBootstrapKeys.add(key);
+            }
+            // An explicit refresh must perform the provider read, but it does
+            // not need to resend or rewrite an identical committed window.
+            return known === snapshot.revision && !knownBaseNeedsReplacement
+              ? null
+              : snapshot;
           } catch (error) {
+            if (revalidate) incompleteRevalidationKeys.add(key);
             const shouldReport =
               !(error instanceof ProviderHistoryBackoffError) ||
               error.shouldReport;
@@ -2485,13 +3236,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
 
   private async snapshotFor(
     record: CatalogRecord,
+    options: { forceProviderRead?: boolean } = {},
   ): Promise<SyncTimelineSnapshot> {
     const key = targetKey(record.entry);
     // Capture the revision before the provider read begins. Runtime messages
     // can mutate the catalog record while this await is in flight; labelling
     // an older read with that newer revision would make every subscriber treat
     // missing content as committed and suppress the required follow-up read.
-    const requestedRevision = this.timelineRevisionFor(record);
+    const requestedSourceRevision = this.timelineRevisionFor(record);
     const target: ConversationSyncTarget = {
       provider: record.entry.provider,
       providerSessionId: record.entry.providerSessionId,
@@ -2501,13 +3253,32 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       record.status.activity === "compacting";
     const cached = this.snapshots
       .get(key)
-      ?.find((snapshot) => snapshot.revision === requestedRevision);
-    if (cached) return cached;
+      ?.filter(
+        (snapshot) => snapshot.sourceRevision === requestedSourceRevision,
+      )
+      .at(-1);
+    if (cached && options.forceProviderRead !== true) return cached;
     const existing = this.snapshotFlights.get(key);
-    if (existing) return existing;
+    if (existing) {
+      if (
+        existing.sourceRevision === requestedSourceRevision &&
+        (options.forceProviderRead !== true || existing.forceProviderRead)
+      ) {
+        return existing.promise;
+      }
+      // A forced focus/read must not be satisfied by an older background
+      // flight. Preserve per-thread provider concurrency by waiting for that
+      // flight, then start the exact requested generation.
+      try {
+        await existing.promise;
+      } catch {
+        // The exact retry below owns failure/backoff reporting.
+      }
+      return this.snapshotFor(this.catalog.get(key) ?? record, options);
+    }
     const failure = this.providerHistoryFailures.get(key);
     if (failure) {
-      if (failure.revision !== requestedRevision) {
+      if (failure.revision !== requestedSourceRevision) {
         this.clearProviderHistoryFailure(key);
       } else if (Date.now() < failure.retryAt) {
         throw new ProviderHistoryBackoffError(false);
@@ -2517,8 +3288,56 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const previousSnapshot = this.snapshots.get(key)?.at(-1);
     const sharedMessagesAtReadStart = this.sharedObserverLiveMessages.get(key);
     let providerHistoryUnavailable = false;
-    const historySource = (
+    const forceLatestTurnRead =
+      options.forceProviderRead === true &&
       target.provider === "codex" &&
+      previousSnapshot !== undefined &&
+      previousSnapshot.windowComplete &&
+      previousSnapshot.sourceRevision === requestedSourceRevision;
+    if (options.forceProviderRead === true) {
+      traceConversationSync(
+        `[conversation-sync-v2] timeline read target=${traceTarget(key)} ` +
+          `scope=${forceLatestTurnRead ? "latest_turn" : "full"} ` +
+          `source=${shortRevision(requestedSourceRevision)} ` +
+          `previous=${shortRevision(previousSnapshot?.revision)}`,
+      );
+    }
+    const readLatestTurnOrFull = async (): Promise<{
+      window: ConversationHistoryWindow;
+      canonicalMessages: ServerMessage[];
+    }> => {
+      const readFull = async () => {
+        const full = normalizeHistoryWindow(
+          await this.historyReader(target),
+          true,
+        );
+        return { window: full, canonicalMessages: full.messages };
+      };
+      // An id-less latest turn cannot prove whether a same-root response is
+      // growth of the old turn or a new legal turn. Re-read the bounded full
+      // window instead of guessing from one anonymous item sequence.
+      if (previousSnapshot!.latestTurnAnonymousIdentity) {
+        return readFull();
+      }
+      const latest = normalizeLatestHistoryForMerge(
+        previousSnapshot!,
+        await this.latestTurnHistoryReader(target),
+      );
+      const merged = mergeSnapshotWithLatestTurn(previousSnapshot!, latest);
+      if (merged) {
+        return { window: merged, canonicalMessages: latest.messages };
+      }
+      // A complete latest-turn response without one exact provider turn id
+      // cannot safely delete stale items from the previous projection. Fall
+      // back to the authoritative bounded window instead of calling a union
+      // complete and making removed thinking/tool output permanent.
+      return readFull();
+    };
+    const historySource = (
+      forceLatestTurnRead
+        ? readLatestTurnOrFull()
+        : target.provider === "codex" &&
+      options.forceProviderRead !== true &&
       sharedMessagesAtReadStart &&
       previousSnapshot &&
       liveAtReadStart?.readScope === "direct"
@@ -2529,15 +3348,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         : target.provider === "codex" &&
             previousSnapshot &&
             liveAtReadStart?.readScope === "latestTurn"
-          ? this.latestTurnHistoryReader(target).then((history) => {
-              const latest = normalizeHistoryWindow(history);
-              return {
-                window: mergeSnapshotWithLatestTurn(previousSnapshot, latest),
-                canonicalMessages: latest.messages,
-              };
-            })
+          ? readLatestTurnOrFull()
           : this.historyReader(target).then((history) => {
-              const window = normalizeHistoryWindow(history);
+              const window = normalizeHistoryWindow(history, true);
               return { window, canonicalMessages: window.messages };
             })
     ).catch((error) => {
@@ -2546,13 +3359,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       console.warn(
         `[conversation-sync-v2] Canonical timeline temporarily unavailable (${kind})`,
       );
-      this.recordProviderHistoryFailure(key, requestedRevision);
+      this.recordProviderHistoryFailure(key, requestedSourceRevision);
       return {
         window: previousSnapshot
           ? historyWindowFromSnapshot(previousSnapshot)
           : {
               messages: [],
               nextTurnCursor: null,
+              windowComplete: false,
               latestTurnComplete: false,
             },
         canonicalMessages: undefined,
@@ -2560,45 +3374,85 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     });
     const flight = historySource
       .then(({ window, canonicalMessages }) => {
-        if (!providerHistoryUnavailable) {
-          this.clearProviderHistoryFailure(key);
-        }
+        const reconciledWindow = previousSnapshot
+          ? reconcileAnonymousFullWindow(previousSnapshot, window)
+          : window;
+        const reconciledCanonicalMessages =
+          canonicalMessages === undefined
+            ? undefined
+            : canonicalMessages === window.messages
+              ? reconciledWindow.messages
+              : canonicalMessages;
         const externalMessages = this.externalCodexLiveMessages.get(key);
         const sharedMessages = this.sharedObserverLiveMessages.get(key);
-        const externalMergedMessages = mergeExternalCodexMessages(
-          window.messages,
+        const externalSources = observedMessageSources(
+          "external",
           externalMessages?.values() ?? [],
         );
-        const mergedMessages = mergeObservedMessagesReplacingStable(
-          externalMergedMessages,
+        const sharedSources = observedMessageSources(
+          "shared",
           sharedMessages?.values() ?? [],
+        );
+        const providerWindowIncomplete =
+          reconciledCanonicalMessages !== undefined &&
+          reconciledWindow.latestTurnComplete === false;
+        const effectiveWindow =
+          providerWindowIncomplete && previousSnapshot
+            ? (mergeSnapshotWithLatestTurn(
+                previousSnapshot,
+                reconciledWindow,
+              ) ?? reconciledWindow)
+            : reconciledWindow;
+        const mergedMessages = mergeObservedMessageSources(
+          effectiveWindow.messages,
+          [...externalSources, ...sharedSources],
+          preferNonRegressiveLatestTurnMessage,
         );
         const canonicalHistoryCoversExternalMessages =
           externalMessages === undefined ||
-          (canonicalMessages !== undefined &&
+          (reconciledCanonicalMessages !== undefined &&
+            !providerWindowIncomplete &&
             !this.liveContentRevisions.has(key) &&
-            canonicalHistoryCoversDurableExternalMessages(
-              canonicalMessages,
-              externalMessages.values(),
+            canonicalHistoryCoversObservedSources(
+              reconciledCanonicalMessages,
+              externalSources,
             ));
         const canonicalHistoryCoversSharedMessages =
           sharedMessages === undefined ||
-          (canonicalMessages !== undefined &&
-            canonicalHistoryCoversDurableExternalMessages(
-              canonicalMessages,
-              sharedMessages.values(),
+          (reconciledCanonicalMessages !== undefined &&
+            !providerWindowIncomplete &&
+            canonicalHistoryCoversObservedSources(
+              reconciledCanonicalMessages,
+              sharedSources,
             ));
+        if (
+          options.forceProviderRead === true &&
+          (externalSources.length > 0 || sharedSources.length > 0)
+        ) {
+          traceConversationSync(
+            `[conversation-sync-v2] timeline reconcile ` +
+              `target=${traceTarget(key)} ` +
+              `canonical=${effectiveWindow.messages.length} ` +
+              `observed=${observedMessageSourceSummary([
+                ...externalSources,
+                ...sharedSources,
+              ])} ` +
+              `merged=${mergedMessages.length} ` +
+              `externalCovered=${canonicalHistoryCoversExternalMessages} ` +
+              `sharedCovered=${canonicalHistoryCoversSharedMessages}`,
+          );
+        }
         const messages =
           canonicalHistoryCoversExternalMessages &&
           canonicalHistoryCoversSharedMessages
-            ? window.messages
+            ? effectiveWindow.messages
             : mergedMessages;
         const hasFreshObservedContent =
           (externalMessages?.size ?? 0) > 0 || (sharedMessages?.size ?? 0) > 0;
         if (providerHistoryUnavailable && !hasFreshObservedContent) {
           throw new ProviderHistoryBackoffError(true);
         }
-        for (const turn of window.turnDetails ?? []) {
+        for (const turn of reconciledWindow.turnDetails ?? []) {
           this.rememberTurnDetails(target, turn);
         }
         const built = buildConversationContentSnapshot(target, messages, {
@@ -2610,8 +3464,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           record.entry.firstPrompt?.trim() || record.entry.summary?.trim(),
         );
         const providerHistoryIndicatesContent =
-          window.nextTurnCursor != null ||
-          (window.turnDetails?.length ?? 0) > 0 ||
+          effectiveWindow.nextTurnCursor != null ||
+          (effectiveWindow.turnDetails?.length ?? 0) > 0 ||
           (externalMessages?.size ?? 0) > 0 ||
           (sharedMessages?.size ?? 0) > 0;
         const catalogIndicatesPriorActivity =
@@ -2625,9 +3479,29 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           (catalogHasVisibleContent ||
             providerHistoryIndicatesContent ||
             catalogIndicatesPriorActivity);
+        if (
+          (catalogContentMissing || providerWindowIncomplete) &&
+          !providerHistoryUnavailable
+        ) {
+          // An empty canonical response for a thread that the catalog says has
+          // content is a transient consistency gap, not a stable empty
+          // timeline. Keep the explicit gap and arm the same bounded retry
+          // used for provider failures.
+          this.recordProviderHistoryFailure(key, requestedSourceRevision);
+        } else if (!providerHistoryUnavailable) {
+          // Only a usable canonical response proves recovery. Clearing before
+          // this check would reset consecutive empty/provider failures back to
+          // the first retry tier forever.
+          this.clearProviderHistoryFailure(key);
+        }
         const latestTurnGap = mergeLatestTurnGaps(
-          mergeLatestTurnGaps(window.latestTurnGap, built.latestTurnGap),
-          providerHistoryUnavailable || catalogContentMissing
+          mergeLatestTurnGaps(
+            effectiveWindow.latestTurnGap,
+            built.latestTurnGap,
+          ),
+          providerHistoryUnavailable ||
+            catalogContentMissing ||
+            providerWindowIncomplete
             ? {
                 missingEntryCount: 1,
                 payloadOmitted: false,
@@ -2635,28 +3509,73 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
               }
             : undefined,
         );
-        const snapshot = {
+        const windowComplete =
+          effectiveWindow.windowComplete !== false &&
+          built.windowComplete &&
+          !providerHistoryUnavailable &&
+          !catalogContentMissing &&
+          !providerWindowIncomplete &&
+          canonicalHistoryCoversExternalMessages &&
+          canonicalHistoryCoversSharedMessages;
+        const contentRevision = hashState([
+          CONTENT_STATE_SCHEMA_VERSION,
+          "conversation-timeline-content-v2",
+          target.provider,
+          target.providerSessionId,
+          built.revision,
+          built.hasEarlier ||
+            effectiveWindow.nextTurnCursor != null ||
+            catalogContentMissing,
+          effectiveWindow.nextTurnCursor ?? null,
+          effectiveWindow.latestTurnComplete !== false &&
+            built.latestTurnComplete &&
+            latestTurnGap === undefined,
+          latestTurnGap ?? null,
+          providerHistoryUnavailable,
+          windowComplete,
+        ]);
+        const snapshot: SyncTimelineSnapshot = {
           ...built,
-          revision: providerHistoryUnavailable
-            ? providerRevision(
-                target,
-                `provider-unavailable:${requestedRevision}`,
-              )
-            : requestedRevision,
+          revision: contentRevision,
+          sourceRevision: requestedSourceRevision,
+          windowComplete,
+          ...(effectiveWindow.latestTurnAnonymousIdentity
+            ? {
+                latestTurnAnonymousIdentity:
+                  effectiveWindow.latestTurnAnonymousIdentity,
+              }
+            : {}),
+          ...(effectiveWindow.anonymousTurnIdentities
+            ? {
+                anonymousTurnIdentities:
+                  effectiveWindow.anonymousTurnIdentities,
+              }
+            : {}),
           ...(providerHistoryUnavailable
             ? { providerHistoryUnavailable: true }
             : {}),
           hasEarlier:
             built.hasEarlier ||
-            window.nextTurnCursor != null ||
+            effectiveWindow.nextTurnCursor != null ||
             catalogContentMissing,
-          turnsNextCursor: window.nextTurnCursor,
+          turnsNextCursor: effectiveWindow.nextTurnCursor,
           latestTurnComplete:
-            window.latestTurnComplete !== false &&
+            effectiveWindow.latestTurnComplete !== false &&
             built.latestTurnComplete &&
             latestTurnGap === undefined,
           ...(latestTurnGap ? { latestTurnGap } : {}),
         };
+        if (options.forceProviderRead === true) {
+          traceConversationSync(
+            `[conversation-sync-v2] timeline normalized ` +
+              `target=${traceTarget(key)} ` +
+              `source=${shortRevision(requestedSourceRevision)} ` +
+              `content=${shortRevision(snapshot.revision)} ` +
+              `messages=${messages.length} entries=${snapshot.entries.length} ` +
+              `latestComplete=${snapshot.latestTurnComplete} ` +
+              `gapTurn=${traceTurn(snapshot.latestTurnGap?.turnId)}`,
+          );
+        }
         // Both cases are provisional under the catalog revision: canonical
         // history can materialize later without advancing app-server recency.
         // A reconnect must reread the provider instead of pinning a blank or
@@ -2664,9 +3583,15 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         if (
           !providerHistoryUnavailable &&
           !catalogContentMissing &&
+          !providerWindowIncomplete &&
+          snapshot.windowComplete &&
           canonicalHistoryCoversExternalMessages &&
-          (canonicalHistoryCoversSharedMessages || sharedMessages !== undefined)
+          canonicalHistoryCoversSharedMessages
         ) {
+          // Never promote an observer/runtime-only projection into the next
+          // snapshot's canonical base. Snapshot entries do not persist their
+          // producer/scope metadata, so doing so would erase the provenance
+          // needed to keep repeated anonymous turns distinct.
           this.rememberSnapshot(key, snapshot);
         }
         if (
@@ -2690,7 +3615,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         const currentLive = this.liveContentRevisions.get(key);
         if (
           !providerHistoryUnavailable &&
-          currentLive?.revision === requestedRevision
+          currentLive?.revision === requestedSourceRevision
         ) {
           // The scoped provider read (or direct stable merge) has satisfied
           // this exact revision. A later delta will promote the scope again.
@@ -2699,11 +3624,15 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         return snapshot;
       })
       .finally(() => {
-        if (this.snapshotFlights.get(key) === flight) {
+        if (this.snapshotFlights.get(key)?.promise === flight) {
           this.snapshotFlights.delete(key);
         }
       });
-    this.snapshotFlights.set(key, flight);
+    this.snapshotFlights.set(key, {
+      sourceRevision: requestedSourceRevision,
+      forceProviderRead: options.forceProviderRead === true,
+      promise: flight,
+    });
     return flight;
   }
 
@@ -2724,27 +3653,71 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     timelineCount: number,
   ): void {
     const key = targetKey(record.entry);
-    const known = subscription.threadStates.get(key);
+    const known =
+      subscription.pendingThreadStates.get(key) ??
+      subscription.threadStates.get(key);
+    if (
+      !snapshot.windowComplete &&
+      !this.runtime.supports(
+        client,
+        CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
+      )
+    ) {
+      // Old v2 clients treat every timeline page as replacement-authoritative.
+      // Suppress a partial window rather than make an existing readable cache
+      // shrink or oscillate. Live runtime overlays remain independently usable.
+      traceConversationSync(
+        `[conversation-sync-v2] partial timeline suppressed ` +
+          `target=${traceTarget(key)} reason=client_without_coverage_capability`,
+      );
+      return;
+    }
     const base = known
       ? this.snapshots
           .get(key)
           ?.find((candidate) => candidate.revision === known)
       : undefined;
-    const sent = base
-      ? this.sendTimelinePatch(
+    const preserveKnownWindow =
+      known !== undefined && !snapshot.windowComplete;
+    if (
+      preserveKnownWindow &&
+      !this.admitPartialUnion(subscription, key, known, snapshot, base)
+    ) {
+      traceConversationSync(
+        `[conversation-sync-v2] partial timeline suppressed ` +
+          `target=${traceTarget(key)} reason=unprovable_or_unbounded_union`,
+      );
+      return;
+    }
+    if (
+      preserveKnownWindow &&
+      subscription.partialThreadProjections.get(key) === snapshot.revision
+    ) {
+      traceConversationSync(
+        `[conversation-sync-v2] partial timeline unchanged ` +
+          `target=${traceTarget(key)} content=${shortRevision(snapshot.revision)}`,
+      );
+      return;
+    }
+    const requiresCompleteReplacement =
+      snapshot.windowComplete &&
+      (subscription.partialThreadKeys.has(key) ||
+        subscription.forceReplacementThreadKeys.has(key));
+    const sent = preserveKnownWindow
+      ? this.sendTimelineAdditivePatch(
           client,
           subscription,
-          base,
+          known,
           snapshot,
           phase,
           timelineIndex,
           timelineCount,
         )
-      : known && snapshot.providerHistoryUnavailable
-        ? this.sendTimelineAdditivePatch(
+      : base && !requiresCompleteReplacement
+        ? this.sendTimelinePatch(
             client,
             subscription,
-            known,
+            base,
             snapshot,
             phase,
             timelineIndex,
@@ -2761,7 +3734,104 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         timelineCount,
       );
     }
-    subscription.pendingThreadStates.set(key, snapshot.revision);
+    traceConversationSync(
+      `[conversation-sync-v2] timeline enqueued ` +
+        `target=${traceTarget(key)} phase=${phase} ` +
+        `batch=${traceBatch(subscription.batchId)} ` +
+        `mode=${sent ? "patch" : "snapshot"} ` +
+        `source=${shortRevision(snapshot.sourceRevision)} ` +
+        `base=${shortRevision(known)} content=${shortRevision(snapshot.revision)} ` +
+        `entries=${snapshot.entries.length} ` +
+        `windowComplete=${snapshot.windowComplete} ` +
+        `latestComplete=${snapshot.latestTurnComplete} ` +
+        `gapTurn=${traceTurn(snapshot.latestTurnGap?.turnId)}`,
+    );
+    const committedRevision = preserveKnownWindow ? known : snapshot.revision;
+    if (!snapshot.windowComplete) {
+      if (!preserveKnownWindow) {
+        this.rememberPartialUnion(
+          subscription,
+          key,
+          committedRevision,
+          new Set(snapshot.entries.map((entry) => entry.entryId)),
+        );
+      }
+      subscription.partialThreadKeys.add(key);
+      subscription.partialThreadProjections.set(key, snapshot.revision);
+    } else {
+      subscription.partialThreadKeys.delete(key);
+      subscription.partialThreadProjections.delete(key);
+      subscription.partialUnionEntries.delete(key);
+      subscription.forceReplacementThreadKeys.delete(key);
+    }
+    subscription.pendingThreadStates.set(key, committedRevision);
+    subscription.pendingThreadSequences.set(
+      key,
+      subscription.nextSequence - 1,
+    );
+  }
+
+  private admitPartialUnion(
+    subscription: SyncSubscription,
+    key: ConversationKey,
+    baseRevision: string,
+    snapshot: SyncTimelineSnapshot,
+    base: ConversationContentSnapshot | undefined,
+  ): boolean {
+    const previous = subscription.partialUnionEntries.get(key);
+    let entryIds: Set<string>;
+    if (previous?.baseRevision === baseRevision) {
+      entryIds = new Set(previous.entryIds);
+    } else {
+      // Once an incomplete body has been delivered, losing its compact union
+      // proof must fail closed. Reconstructing from only the old canonical
+      // base could let disjoint partial windows grow the phone cache without
+      // a bound. A later complete snapshot is forced to replace it.
+      if (subscription.partialThreadKeys.has(key)) return false;
+      if (!base || base.revision !== baseRevision) return false;
+      entryIds = new Set(base.entries.map((entry) => entry.entryId));
+    }
+    for (const entry of snapshot.entries) entryIds.add(entry.entryId);
+    if (entryIds.size > MAX_PARTIAL_UNION_ENTRIES) return false;
+    this.rememberPartialUnion(subscription, key, baseRevision, entryIds);
+    return true;
+  }
+
+  private rememberPartialUnion(
+    subscription: SyncSubscription,
+    key: ConversationKey,
+    baseRevision: string,
+    entryIds: Set<string>,
+  ): void {
+    if (entryIds.size > MAX_PARTIAL_UNION_ENTRIES) return;
+    // Refresh insertion order so the map also acts as a small LRU. Evicted
+    // keys remain in partialThreadKeys, which suppresses further incomplete
+    // delivery until a complete replacement arrives.
+    subscription.partialUnionEntries.delete(key);
+    subscription.partialUnionEntries.set(key, { baseRevision, entryIds });
+    while (
+      subscription.partialUnionEntries.size > MAX_PARTIAL_UNION_TARGETS
+    ) {
+      const oldest = subscription.partialUnionEntries.keys().next().value;
+      if (oldest === undefined) break;
+      subscription.partialUnionEntries.delete(oldest);
+    }
+  }
+
+  private prunePartialUnionState(
+    subscription: SyncSubscription,
+    catalog: ReadonlyMap<ConversationKey, ConversationSyncCatalogEntry>,
+  ): void {
+    for (const key of subscription.partialThreadKeys) {
+      if (catalog.has(key)) continue;
+      subscription.partialThreadKeys.delete(key);
+      subscription.partialThreadProjections.delete(key);
+      subscription.partialUnionEntries.delete(key);
+      subscription.forceReplacementThreadKeys.delete(key);
+      subscription.pendingThreadStates.delete(key);
+      subscription.pendingThreadSequences.delete(key);
+      subscription.threadStates.delete(key);
+    }
   }
 
   private sendTimelineAdditivePatch(
@@ -2773,11 +3843,16 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     timelineIndex: number,
     timelineCount: number,
   ): boolean {
+    // Incomplete windows cannot delete, but their overlapping stable IDs are
+    // still required as order anchors by Mobile. Sending only changed rows
+    // makes a widened [older, existing-tail] projection indistinguishable from
+    // a new live tail and would append older messages after newer ones.
+    const upserts = snapshot.entries;
     const pages = this.timelinePatchPages(
       subscription,
       baseRevision,
       snapshot,
-      snapshot.entries,
+      upserts,
       [],
       phase,
       timelineIndex,
@@ -2790,7 +3865,11 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         event: "timeline_page",
         provider: snapshot.provider,
         providerSessionId: snapshot.providerSessionId,
-        revision: snapshot.revision,
+        // A partial projection may enrich the local readable union, but it
+        // cannot advance the canonical replacement lineage. Keeping the
+        // committed revision at the acknowledged base makes reconnects safe
+        // even when the Bridge has restarted and forgotten that base body.
+        revision: baseRevision,
         baseRevision,
         mode: "patch",
         phase,
@@ -2800,16 +3879,17 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         pageCount: pages.length,
         entries: page.entries.map(toWireConversationContentEntry),
         deletes: [],
-        hasEarlier: true,
+        hasEarlier: snapshot.hasEarlier,
         turnsNextCursor: snapshot.turnsNextCursor,
-        latestTurnComplete: false,
+        windowComplete: false,
+        latestTurnComplete: snapshot.latestTurnComplete,
         latestTurnGap: snapshot.latestTurnGap,
         sourceEntryCount: snapshot.sourceEntryCount,
       });
     }
     if (finalSequence < 0) return false;
     this.mergeCommit(subscription, finalSequence, {
-      thread: { key: targetKey(snapshot), revision: snapshot.revision },
+      thread: { key: targetKey(snapshot), revision: baseRevision },
     });
     return true;
   }
@@ -2868,6 +3948,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         deletes: page.deletes,
         hasEarlier: snapshot.hasEarlier,
         turnsNextCursor: snapshot.turnsNextCursor,
+        windowComplete: snapshot.windowComplete,
         latestTurnComplete: snapshot.latestTurnComplete,
         latestTurnGap: snapshot.latestTurnGap,
         sourceEntryCount: snapshot.sourceEntryCount,
@@ -2909,6 +3990,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       deletes: [],
       hasEarlier: snapshot.hasEarlier,
       turnsNextCursor: snapshot.turnsNextCursor,
+      windowComplete: snapshot.windowComplete,
       latestTurnComplete: snapshot.latestTurnComplete,
       latestTurnGap: snapshot.latestTurnGap,
       sourceEntryCount: snapshot.sourceEntryCount,
@@ -2984,6 +4066,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         deletes: [],
         hasEarlier: snapshot.hasEarlier,
         turnsNextCursor: snapshot.turnsNextCursor,
+        windowComplete: snapshot.windowComplete,
         latestTurnComplete: snapshot.latestTurnComplete,
         latestTurnGap: snapshot.latestTurnGap,
         sourceEntryCount: snapshot.sourceEntryCount,
@@ -3023,6 +4106,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         deletes: [],
         hasEarlier: snapshot.hasEarlier,
         turnsNextCursor: snapshot.turnsNextCursor,
+        windowComplete: snapshot.windowComplete,
         latestTurnComplete: snapshot.latestTurnComplete,
         latestTurnGap: snapshot.latestTurnGap,
         sourceEntryCount: snapshot.sourceEntryCount,
@@ -4626,7 +5710,9 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     let totalBytes = this.externalCodexLiveBytes.get(key) ?? 0;
     const storageItemKey = event.turnId
       ? `turn:${event.turnId}:${event.itemKey}`
-      : event.itemKey;
+      : event.anonymousTurnScope
+        ? `anonymous:${event.anonymousTurnScope}:${event.itemKey}`
+        : event.itemKey;
     const previous = messages.get(storageItemKey);
     if (previous) totalBytes = Math.max(0, totalBytes - previous.bytes);
     // Map#set replaces an existing value without changing insertion order.
@@ -4637,6 +5723,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       message,
       observedAt,
       bytes,
+      projectionSource: "externalObserver",
+      ...(!event.turnId && event.anonymousTurnScope
+        ? { identityScope: event.anonymousTurnScope }
+        : {}),
     });
     totalBytes += bytes;
     while (
@@ -4978,7 +6068,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
 
   private rememberSnapshot(
     key: ConversationKey,
-    snapshot: ConversationContentSnapshot,
+    snapshot: SyncTimelineSnapshot,
   ): void {
     const existing = this.snapshots.get(key) ?? [];
     this.snapshots.delete(key);
@@ -4999,6 +6089,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     const failure = this.providerHistoryFailures.get(key);
     if (failure?.timer) clearTimeout(failure.timer);
     this.providerHistoryFailures.delete(key);
+  }
+
+  private makeProviderHistoryRetryDue(key: ConversationKey): void {
+    const failure = this.providerHistoryFailures.get(key);
+    if (!failure) return;
+    if (failure.timer) clearTimeout(failure.timer);
+    failure.timer = undefined;
+    failure.retryAt = Date.now();
   }
 
   private recordProviderHistoryFailure(
@@ -5087,6 +6185,70 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.turnDetailCache.delete(key);
     this.turnDetailCache.set(key, cached);
     return details;
+  }
+
+  private async withCachedCodexTurnItems(
+    threadId: string,
+    turnId: string,
+    requestedSnapshotId: string | null,
+    operation: () => Promise<Record<string, unknown>>,
+  ): Promise<CachedCodexTurnItems> {
+    const now = Date.now();
+    const requestedKey = requestedSnapshotId
+      ? `${threadId}\0${turnId}\0${requestedSnapshotId}`
+      : null;
+    const cached = requestedKey
+      ? this.codexTurnItemFallbackCache.get(requestedKey)
+      : undefined;
+    if (cached && now - cached.cachedAt <= TURN_ITEM_FALLBACK_CACHE_TTL_MS) {
+      this.codexTurnItemFallbackCache.delete(requestedKey!);
+      this.codexTurnItemFallbackCache.set(requestedKey!, cached);
+      return cached;
+    }
+    if (cached && requestedKey) {
+      this.codexTurnItemFallbackCache.delete(requestedKey);
+      this.codexTurnItemFallbackCacheBytes -= cached.bytes;
+    }
+
+    const turn = await operation();
+    const serialized = JSON.stringify(turn);
+    const bytes = Buffer.byteLength(serialized, "utf8");
+    const snapshotId = createHash("sha256")
+      .update(serialized)
+      .digest("base64url")
+      .slice(0, 24);
+    if (requestedSnapshotId && requestedSnapshotId !== snapshotId) {
+      throw new Error(
+        "Codex turn changed while its item cursor was active; refresh the focused conversation",
+      );
+    }
+    const result = { turn, snapshotId, bytes, cachedAt: now };
+    if (bytes > MAX_TURN_ITEM_FALLBACK_CACHE_BYTES) return result;
+    const key = `${threadId}\0${turnId}\0${snapshotId}`;
+    const previous = this.codexTurnItemFallbackCache.get(key);
+    if (previous) {
+      this.codexTurnItemFallbackCache.delete(key);
+      this.codexTurnItemFallbackCacheBytes -= previous.bytes;
+    }
+    this.codexTurnItemFallbackCache.set(key, {
+      turn,
+      snapshotId,
+      bytes,
+      cachedAt: now,
+    });
+    this.codexTurnItemFallbackCacheBytes += bytes;
+    while (
+      this.codexTurnItemFallbackCache.size >
+        MAX_TURN_ITEM_FALLBACK_CACHE_ENTRIES ||
+      this.codexTurnItemFallbackCacheBytes > MAX_TURN_ITEM_FALLBACK_CACHE_BYTES
+    ) {
+      const oldestKey = this.codexTurnItemFallbackCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      const oldest = this.codexTurnItemFallbackCache.get(oldestKey);
+      this.codexTurnItemFallbackCache.delete(oldestKey);
+      if (oldest) this.codexTurnItemFallbackCacheBytes -= oldest.bytes;
+    }
+    return result;
   }
 
   private ensureTimers(): void {
@@ -5377,6 +6539,8 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       ...(message.turnId ? { turnId: message.turnId } : {}),
       data: page.data,
       nextCursor: page.nextCursor,
+      ...(page.pageComplete === false ? { pageComplete: false } : {}),
+      ...(page.latestTurnGap ? { latestTurnGap: page.latestTurnGap } : {}),
     });
     let page: ConversationItemsPage;
     try {
@@ -5394,6 +6558,14 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
             signal,
             (operation) => this.withSharedCodexReadProcess(operation),
             this.desktopToolTimelineReader,
+            (threadId, turnId, snapshotId, operation) =>
+              this.withCachedCodexTurnItems(
+                threadId,
+                turnId,
+                snapshotId,
+                operation,
+              ),
+            this.codexTurnFallbackReader,
             pageFits,
           );
       if (!pageFits(page)) {
@@ -5678,116 +6850,992 @@ async function inspectDurableCodexThread(
   });
 }
 
-function mergeExternalCodexMessages(
-  history: readonly ServerMessage[],
-  observed: Iterable<ExternalCodexLiveMessage>,
-): ServerMessage[] {
-  const merged = [...history];
-  const canonicalUsers = history
-    .map((message, index) => ({ message, index }))
-    .filter((entry) => entry.message.type === "user_input");
-  const matchedCanonicalUsers = new Set<number>();
-  const identities = new Set(
-    history.map(observedMessageIdentity).filter((value) => value !== null),
-  );
-  for (const entry of observed) {
-    if (entry.message.type === "user_input") {
-      const matchingCanonical = canonicalUsers.find(
-        (candidate) =>
-          !matchedCanonicalUsers.has(candidate.index) &&
-          equivalentObservedUserMessage(candidate.message, entry.message),
-      );
-      if (matchingCanonical) {
-        matchedCanonicalUsers.add(matchingCanonical.index);
-        continue;
-      }
-    }
-    const identity = observedMessageIdentity(entry.message);
-    if (identity && identities.has(identity)) continue;
-    merged.push(entry.message);
-    if (identity) identities.add(identity);
-  }
-  return merged;
-}
-
 function mergeObservedMessagesReplacingStable(
   history: readonly ServerMessage[],
   observed: Iterable<ExternalCodexLiveMessage>,
+  selectReplacement: (
+    previous: ServerMessage,
+    incoming: ServerMessage,
+  ) => ServerMessage = (_previous, incoming) => incoming,
 ): ServerMessage[] {
-  const merged = [...history];
-  const canonicalUsers = merged
-    .map((message, index) => ({ message, index }))
-    .filter((entry) => entry.message.type === "user_input");
-  const matchedCanonicalUsers = new Set<number>();
-  const identities = new Map<string, number>();
-  merged.forEach((message, index) => {
-    const identity = observedMessageIdentity(message);
-    if (identity) identities.set(identity, index);
-  });
+  return mergeObservedMessageSources(
+    history,
+    [{ source: "observed", observed: [...observed] }],
+    selectReplacement,
+  );
+}
+
+interface ObservedMessageSource {
+  source: string;
+  /** Repeatable by merge, coverage and diagnostic passes. */
+  observed: readonly ExternalCodexLiveMessage[];
+}
+
+function observedMessageSources(
+  fallbackSource: string,
+  observed: Iterable<ExternalCodexLiveMessage>,
+): ObservedMessageSource[] {
+  const grouped = new Map<string, ExternalCodexLiveMessage[]>();
   for (const entry of observed) {
-    if (entry.message.type === "user_input") {
-      const matchingCanonical = canonicalUsers.find(
-        (candidate) =>
-          !matchedCanonicalUsers.has(candidate.index) &&
-          equivalentObservedUserMessage(candidate.message, entry.message),
-      );
-      if (matchingCanonical) {
-        matchedCanonicalUsers.add(matchingCanonical.index);
+    const source = entry.projectionSource;
+    const entries = grouped.get(source) ?? [];
+    entries.push(entry);
+    grouped.set(source, entries);
+  }
+  return [...grouped].map(([source, entries]) => ({
+    source: `${fallbackSource}:${source}`,
+    observed: entries,
+  }));
+}
+
+function observedMessageSourceSummary(
+  sources: readonly ObservedMessageSource[],
+): string {
+  if (sources.length === 0) return "none";
+  return sources
+    .map((source) => {
+      let count = 0;
+      for (const _entry of source.observed) count += 1;
+      return `${source.source}:${count}`;
+    })
+    .join(",");
+}
+
+interface ObservedMessageAliasGroup {
+  output: ServerMessage;
+  outputIdentityScope?: string;
+  aliases: Array<{
+    source: string;
+    message: ServerMessage;
+    identityScope?: string;
+  }>;
+  sources: Set<string>;
+}
+
+/**
+ * Reconciles aliases only across independent provider projections. The first
+ * (canonical) representation owns the stable wire position and id. Later
+ * sources may prove that their differently named item is the same logical
+ * message, but ambiguous matches fail open and remain separate.
+ */
+function mergeObservedMessageSources(
+  history: readonly ServerMessage[],
+  sources: readonly ObservedMessageSource[],
+  selectReplacement: (
+    previous: ServerMessage,
+    incoming: ServerMessage,
+  ) => ServerMessage = (_previous, incoming) => incoming,
+): ServerMessage[] {
+  const resolvedSources = sources.map((source) =>
+    resolveObservedTurnScopes(history, source),
+  );
+  const groups: ObservedMessageAliasGroup[] = history.map((message) => ({
+    output: message,
+    aliases: [{ source: "canonical", message }],
+    sources: new Set(["canonical"]),
+  }));
+  const identities = new Map<string, Set<number>>();
+  const baseIdentities = new Map<string, Set<number>>();
+  const turnlessIdentities = new Map<string, Set<number>>();
+  const assistantAliases = new Map<string, Set<number>>();
+  const assistantAliasCountsBySource = new Map<
+    string,
+    ReadonlyMap<string, number>
+  >();
+  const replaceGroupOutput = (
+    group: ObservedMessageAliasGroup,
+    incoming: ServerMessage,
+  ): void => {
+    const previous = group.output;
+    const replacement = selectReplacement(previous, incoming);
+    if (
+      group.sources.has("canonical") &&
+      previous.type === "user_input" &&
+      replacement.type === "user_input"
+    ) {
+      // A live observer may carry a richer payload, but provider item and turn
+      // identities from the canonical app-server window remain authoritative.
+      group.output = {
+        ...previous,
+        ...replacement,
+        providerItemId: previous.providerItemId ?? replacement.providerItemId,
+        historyTurnId: previous.historyTurnId ?? replacement.historyTurnId,
+        clientMessageId:
+          previous.clientMessageId ?? replacement.clientMessageId,
+        userMessageUuid:
+          previous.userMessageUuid ?? replacement.userMessageUuid,
+      };
+      return;
+    }
+    group.output = replacement;
+  };
+  const countAssistantAliases = (
+    messages: Iterable<ServerMessage>,
+  ): Map<string, number> => {
+    const counts = new Map<string, number>();
+    for (const message of messages) {
+      const alias = observedAssistantAliasKey(message);
+      if (!alias) continue;
+      counts.set(alias, (counts.get(alias) ?? 0) + 1);
+    }
+    return counts;
+  };
+  assistantAliasCountsBySource.set("canonical", countAssistantAliases(history));
+  const registerIdentity = (identity: string | null, index: number): void => {
+    if (!identity) return;
+    const matches = identities.get(identity) ?? new Set<number>();
+    matches.add(index);
+    identities.set(identity, matches);
+  };
+  const registerBaseIdentity = (
+    identity: string | null,
+    index: number,
+  ): void => {
+    if (!identity) return;
+    const matches = baseIdentities.get(identity) ?? new Set<number>();
+    matches.add(index);
+    baseIdentities.set(identity, matches);
+  };
+  const registerTurnlessIdentity = (
+    identity: string | null,
+    index: number,
+  ): void => {
+    if (!identity) return;
+    const matches = turnlessIdentities.get(identity) ?? new Set<number>();
+    matches.add(index);
+    turnlessIdentities.set(identity, matches);
+  };
+  const registerAssistantAlias = (
+    message: ServerMessage,
+    index: number,
+  ): void => {
+    const alias = observedAssistantAliasKey(message);
+    if (!alias) return;
+    const matches = assistantAliases.get(alias) ?? new Set<number>();
+    matches.add(index);
+    assistantAliases.set(alias, matches);
+  };
+  groups.forEach((group, index) => {
+    const baseIdentity = observedMessageIdentity(group.output);
+    registerIdentity(baseIdentity, index);
+    registerBaseIdentity(baseIdentity, index);
+    registerTurnlessIdentity(
+      turnlessObservedMessageIdentity(group.output),
+      index,
+    );
+    registerAssistantAlias(group.output, index);
+  });
+
+  for (const source of resolvedSources) {
+    const observedEntries = [...source.observed];
+    const sourceAssistantAliasCounts = countAssistantAliases(
+      observedEntries.map((entry) => entry.message),
+    );
+    assistantAliasCountsBySource.set(
+      source.source,
+      sourceAssistantAliasCounts,
+    );
+    for (const entry of observedEntries) {
+      const message = entry.message;
+      const baseIdentity = observedMessageIdentity(message);
+      const turnlessIdentity = turnlessObservedMessageIdentity(message);
+      const identity = entry.identityScope
+        ? scopedObservedMessageIdentity(baseIdentity, entry.identityScope)
+        : baseIdentity;
+      const exactCandidates = identity
+        ? [...(identities.get(identity) ?? [])].filter((index) =>
+            projectionSourceMayAlias(
+              groups[index]!,
+              source.source,
+              message,
+              entry.identityScope,
+            ),
+          )
+        : [];
+      if (exactCandidates.length === 1) {
+        const index = exactCandidates[0]!;
+        const group = groups[index]!;
+        const groupIdentity = group.outputIdentityScope
+          ? scopedObservedMessageIdentity(
+              observedMessageIdentity(group.output),
+              group.outputIdentityScope,
+            )
+          : observedMessageIdentity(group.output);
+        if (groupIdentity === identity) {
+          replaceGroupOutput(group, message);
+        }
+        group.aliases.push({
+          source: source.source,
+          message,
+          ...(entry.identityScope
+            ? { identityScope: entry.identityScope }
+            : {}),
+        });
+        group.sources.add(source.source);
+        registerIdentity(identity, index);
+        registerBaseIdentity(baseIdentity, index);
+        registerTurnlessIdentity(turnlessIdentity, index);
+        registerAssistantAlias(message, index);
         continue;
       }
-    }
-    const identity = observedMessageIdentity(entry.message);
-    if (!identity) {
-      merged.push(entry.message);
-      continue;
-    }
-    const existing = identities.get(identity);
-    if (existing === undefined) {
-      identities.set(identity, merged.length);
-      merged.push(entry.message);
-    } else {
-      // Stable app-server item ids are update identities. Preserve their
-      // timeline position while replacing a tool-start shell or partial final
-      // message with its newer observer projection.
-      merged[existing] = entry.message;
+
+      // A scoped anonymous item may still be the same provider item as one
+      // canonical projection. Match that stable base identity only across
+      // independent sources; once this source already contributed to the
+      // group, a second anonymous scope must remain a distinct turn.
+      const crossSourceStableCandidates = baseIdentity
+        ? [...(baseIdentities.get(baseIdentity) ?? [])].filter(
+            (index) => {
+              const group = groups[index]!;
+              return (
+                projectionSourceMayAlias(
+                  group,
+                  source.source,
+                  message,
+                  entry.identityScope,
+                ) &&
+                anonymousScopesMayAlias(
+                  group.aliases,
+                  message,
+                  entry.identityScope,
+                )
+              );
+            },
+          )
+        : [];
+      if (crossSourceStableCandidates.length === 1) {
+        const index = crossSourceStableCandidates[0]!;
+        const group = groups[index]!;
+        if (observedMessageIdentity(group.output) === baseIdentity) {
+          replaceGroupOutput(group, message);
+        }
+        group.aliases.push({
+          source: source.source,
+          message,
+          ...(entry.identityScope
+            ? { identityScope: entry.identityScope }
+            : {}),
+        });
+        group.sources.add(source.source);
+        registerIdentity(identity, index);
+        registerBaseIdentity(baseIdentity, index);
+        registerTurnlessIdentity(turnlessIdentity, index);
+        registerAssistantAlias(message, index);
+        continue;
+      }
+
+      // Canonical app-server items usually carry historyTurnId while a legacy
+      // observer may not. Reconcile that one missing-field difference only
+      // when stable id, content and source timestamp independently agree.
+      const crossTurnStableCandidates = turnlessIdentity
+        ? [...(turnlessIdentities.get(turnlessIdentity) ?? [])].filter(
+            (index) => {
+              const group = groups[index]!;
+              return (
+                projectionSourceMayAlias(
+                  group,
+                  source.source,
+                  message,
+                  entry.identityScope,
+                ) &&
+                group.aliases.some((candidate) =>
+                  equivalentTurnlessStableMessage(candidate.message, message),
+                )
+              );
+            },
+          )
+        : [];
+      if (crossTurnStableCandidates.length === 1) {
+        const index = crossTurnStableCandidates[0]!;
+        const group = groups[index]!;
+        // Keep the canonical turn identity and wire position. The observer's
+        // missing turn id is not evidence that the canonical field is stale.
+        group.aliases.push({
+          source: source.source,
+          message,
+          ...(entry.identityScope
+            ? { identityScope: entry.identityScope }
+            : {}),
+        });
+        group.sources.add(source.source);
+        registerIdentity(identity, index);
+        registerBaseIdentity(baseIdentity, index);
+        registerTurnlessIdentity(turnlessIdentity, index);
+        registerAssistantAlias(message, index);
+        continue;
+      }
+
+      const assistantAlias = observedAssistantAliasKey(message);
+      const possibleAliasIndices = assistantAlias
+        ? [...(assistantAliases.get(assistantAlias) ?? [])]
+        : message.type === "user_input"
+          ? groups.map((_group, index) => index)
+          : [];
+      const aliasCandidates = possibleAliasIndices.filter((index) => {
+        const group = groups[index]!;
+        const assistantCardinalityMatches =
+          assistantAlias === null ||
+          group.aliases.some((candidate) => {
+            const candidateCount = assistantAliasCountsBySource
+              .get(candidate.source)
+              ?.get(assistantAlias);
+            return (
+              candidateCount !== undefined &&
+              candidateCount === sourceAssistantAliasCounts.get(assistantAlias)
+            );
+          });
+        return (
+          projectionSourceMayAlias(
+            group,
+            source.source,
+            message,
+            entry.identityScope,
+          ) &&
+          assistantCardinalityMatches &&
+          group.aliases.some((candidate) =>
+            equivalentObservedMessageAlias(candidate.message, message),
+          )
+        );
+      });
+      if (aliasCandidates.length === 1) {
+        const index = aliasCandidates[0]!;
+        const group = groups[index]!;
+        // Keep the canonical output identity. Recording every representation
+        // enables a third source to match transitively without mutating the
+        // message that Mobile already cached.
+        group.aliases.push({
+          source: source.source,
+          message,
+          ...(entry.identityScope
+            ? { identityScope: entry.identityScope }
+            : {}),
+        });
+        group.sources.add(source.source);
+        registerIdentity(identity, index);
+        registerBaseIdentity(baseIdentity, index);
+        registerTurnlessIdentity(turnlessIdentity, index);
+        registerAssistantAlias(message, index);
+        continue;
+      }
+
+      const index = groups.length;
+      groups.push({
+        output: message,
+        ...(entry.identityScope
+          ? { outputIdentityScope: entry.identityScope }
+          : {}),
+        aliases: [
+          {
+            source: source.source,
+            message,
+            ...(entry.identityScope
+              ? { identityScope: entry.identityScope }
+              : {}),
+          },
+        ],
+        sources: new Set([source.source]),
+      });
+      registerIdentity(identity, index);
+      registerBaseIdentity(baseIdentity, index);
+      registerTurnlessIdentity(turnlessIdentity, index);
+      registerAssistantAlias(message, index);
     }
   }
-  return merged;
+  return groups.map((group) => group.output);
+}
+
+/**
+ * Desktop's rollout observer sees task/turn fences that older app-server event
+ * projections expose only as an anonymous scope. A later thread/turns read,
+ * however, carries the official provider turn id. Bind the two representations
+ * through an exact, unique client admission id before attempting message
+ * aliases. This prevents one physical user/assistant exchange from being
+ * appended twice merely because the app-server assigned a provider item id
+ * while the live observer retained its desktop-event id.
+ *
+ * Ambiguous/reused client ids fail open: no scope is assigned and both facts
+ * remain visible. Content equality is required so a corrupt producer cannot
+ * use a reused admission id to overwrite a different prompt.
+ */
+function resolveObservedTurnScopes(
+  history: readonly ServerMessage[],
+  source: ObservedMessageSource,
+): ObservedMessageSource {
+  const canonicalByClientId = new Map<string, ServerMessage[]>();
+  for (const message of history) {
+    if (message.type !== "user_input") continue;
+    const clientMessageId = message.clientMessageId?.trim();
+    const turnId = message.historyTurnId?.trim();
+    if (!clientMessageId || !turnId) continue;
+    const values = canonicalByClientId.get(clientMessageId) ?? [];
+    values.push(message);
+    canonicalByClientId.set(clientMessageId, values);
+  }
+  if (canonicalByClientId.size === 0) return source;
+
+  const scopeTurns = new Map<string, string>();
+  const ambiguousScopes = new Set<string>();
+  for (const entry of source.observed) {
+    const scope = entry.identityScope?.trim();
+    const message = entry.message;
+    if (!scope || message.type !== "user_input") continue;
+    const clientMessageId = message.clientMessageId?.trim();
+    if (!clientMessageId) continue;
+    const candidates = (canonicalByClientId.get(clientMessageId) ?? []).filter(
+      (candidate) =>
+        candidate.type === "user_input" &&
+        candidate.text === message.text &&
+        (candidate.imageCount ?? 0) === (message.imageCount ?? 0),
+    );
+    if (candidates.length !== 1) {
+      ambiguousScopes.add(scope);
+      scopeTurns.delete(scope);
+      continue;
+    }
+    const turnId =
+      candidates[0]!.type === "user_input"
+        ? candidates[0]!.historyTurnId?.trim()
+        : undefined;
+    if (!turnId) continue;
+    const previous = scopeTurns.get(scope);
+    if (previous && previous !== turnId) {
+      ambiguousScopes.add(scope);
+      scopeTurns.delete(scope);
+      continue;
+    }
+    if (!ambiguousScopes.has(scope)) scopeTurns.set(scope, turnId);
+  }
+  if (scopeTurns.size === 0) return source;
+  return {
+    ...source,
+    observed: source.observed.map((entry) => {
+      const scope = entry.identityScope?.trim();
+      const turnId = scope ? scopeTurns.get(scope) : undefined;
+      return turnId
+        ? { ...entry, message: annotateObservedTurn(entry.message, turnId) }
+        : entry;
+    }),
+  };
+}
+
+function scopedObservedMessageIdentity(
+  identity: string | null,
+  scope: string,
+): string | null {
+  if (!identity) return null;
+  return `scope:${scope}:${identity}`;
+}
+
+function projectionSourceMayAlias(
+  group: ObservedMessageAliasGroup,
+  source: string,
+  incoming: ServerMessage,
+  incomingScope: string | undefined,
+): boolean {
+  if (!group.sources.has(source)) return true;
+  return group.aliases.some((alias) => {
+    if (alias.source !== source) return false;
+    if (
+      alias.identityScope &&
+      incomingScope &&
+      alias.identityScope !== incomingScope
+    ) {
+      return false;
+    }
+    return equivalentStrongSameProjectionAlias(alias.message, incoming);
+  });
+}
+
+function equivalentStrongSameProjectionAlias(
+  first: ServerMessage,
+  second: ServerMessage,
+): boolean {
+  const firstTurn =
+    first.type === "user_input" ||
+    first.type === "assistant" ||
+    first.type === "tool_result"
+      ? first.historyTurnId?.trim()
+      : undefined;
+  const secondTurn =
+    second.type === "user_input" ||
+    second.type === "assistant" ||
+    second.type === "tool_result"
+      ? second.historyTurnId?.trim()
+      : undefined;
+  if (firstTurn && secondTurn && firstTurn !== secondTurn) return false;
+  if (first.type === "user_input" && second.type === "user_input") {
+    if (!equivalentObservedUserMessage(first, second)) return false;
+    const firstProvider = first.providerItemId?.trim();
+    const secondProvider = second.providerItemId?.trim();
+    if (firstProvider && secondProvider && firstProvider === secondProvider) {
+      return true;
+    }
+    const firstClient = first.clientMessageId?.trim();
+    const secondClient = second.clientMessageId?.trim();
+    const firstUuid = first.userMessageUuid?.trim();
+    const secondUuid = second.userMessageUuid?.trim();
+    return Boolean(
+      firstClient &&
+        secondClient &&
+        firstClient === secondClient &&
+        firstUuid &&
+        secondUuid &&
+        firstUuid === secondUuid,
+    );
+  }
+  if (first.type === "assistant" && second.type === "assistant") {
+    const firstId = (first.messageUuid ?? first.message.id)?.trim();
+    const secondId = (second.messageUuid ?? second.message.id)?.trim();
+    return Boolean(firstId && secondId && firstId === secondId);
+  }
+  if (first.type === "tool_result" && second.type === "tool_result") {
+    return first.toolUseId.trim() === second.toolUseId.trim();
+  }
+  return false;
+}
+
+function anonymousScopesMayAlias(
+  aliases: ReadonlyArray<{
+    message: ServerMessage;
+    identityScope?: string;
+  }>,
+  incoming: ServerMessage,
+  incomingScope: string | undefined,
+): boolean {
+  if (!incomingScope) return true;
+  const scoped = aliases.filter((alias) => alias.identityScope);
+  if (scoped.length === 0) return true;
+  return scoped.some((alias) => {
+    if (alias.identityScope === incomingScope) return true;
+    if (alias.message.type === "user_input" && incoming.type === "user_input") {
+      return equivalentObservedUserMessage(alias.message, incoming);
+    }
+    if (alias.message.type !== incoming.type) return false;
+    if (
+      stableObservedMessagePayload(alias.message) !==
+      stableObservedMessagePayload(incoming)
+    ) {
+      return false;
+    }
+    const firstTimestamp = observedMessageTimestamp(alias.message);
+    const secondTimestamp = observedMessageTimestamp(incoming);
+    if (!firstTimestamp || !secondTimestamp) return false;
+    const firstMs = Date.parse(firstTimestamp);
+    const secondMs = Date.parse(secondTimestamp);
+    return (
+      Number.isFinite(firstMs) &&
+      Number.isFinite(secondMs) &&
+      Math.abs(firstMs - secondMs) <= 1_000
+    );
+  });
+}
+
+function observedMessageTimestamp(message: ServerMessage): string | undefined {
+  if (message.sourceTimestamp) return message.sourceTimestamp;
+  const record = message as unknown as Record<string, unknown>;
+  if (typeof record.timestamp === "string") return record.timestamp;
+  return typeof record.receivedAt === "string" ? record.receivedAt : undefined;
+}
+
+function turnlessObservedMessageIdentity(
+  message: ServerMessage,
+): string | null {
+  if (message.type === "user_input") {
+    const clientMessageId = message.clientMessageId?.trim();
+    if (clientMessageId) return `user:client:${clientMessageId}`;
+    const providerItemId = message.providerItemId?.trim();
+    if (providerItemId) return `user:provider:${providerItemId}`;
+    const userMessageUuid = message.userMessageUuid?.trim();
+    if (userMessageUuid) return `user:uuid:${userMessageUuid}`;
+    return null;
+  }
+  if (message.type === "assistant") {
+    return `assistant:${message.messageUuid ?? message.message.id}`;
+  }
+  if (message.type === "tool_result") {
+    return `tool-result:${message.toolUseId}`;
+  }
+  return null;
+}
+
+function equivalentTurnlessStableMessage(
+  first: ServerMessage,
+  second: ServerMessage,
+): boolean {
+  if (first.type === "user_input" && second.type === "user_input") {
+    return equivalentObservedUserMessage(first, second);
+  }
+  if (first.type !== second.type) return false;
+  const firstPayload = { ...first } as Record<string, unknown>;
+  const secondPayload = { ...second } as Record<string, unknown>;
+  delete firstPayload.historyTurnId;
+  delete secondPayload.historyTurnId;
+  if (
+    stableObservedMessagePayload(firstPayload as unknown as ServerMessage) !==
+    stableObservedMessagePayload(secondPayload as unknown as ServerMessage)
+  ) {
+    return false;
+  }
+  const firstTimestamp = observedMessageTimestamp(first);
+  const secondTimestamp = observedMessageTimestamp(second);
+  if (!firstTimestamp || !secondTimestamp) return false;
+  const firstMs = Date.parse(firstTimestamp);
+  const secondMs = Date.parse(secondTimestamp);
+  return (
+    Number.isFinite(firstMs) &&
+    Number.isFinite(secondMs) &&
+    Math.abs(firstMs - secondMs) <= 1_000
+  );
+}
+
+function equivalentObservedMessageAlias(
+  first: ServerMessage,
+  second: ServerMessage,
+): boolean {
+  if (first.type === "user_input" && second.type === "user_input") {
+    return equivalentObservedUserMessage(first, second);
+  }
+  if (first.type !== "assistant" || second.type !== "assistant") return false;
+  const firstId = (first.messageUuid ?? first.message.id)?.trim();
+  const secondId = (second.messageUuid ?? second.message.id)?.trim();
+  if (!firstId || !secondId || firstId === secondId) return false;
+  return observedAssistantAliasKey(first) === observedAssistantAliasKey(second);
+}
+
+function observedAssistantAliasKey(message: ServerMessage): string | null {
+  if (message.type !== "assistant") return null;
+  const turnId = message.historyTurnId?.trim();
+  if (!turnId) return null;
+  return `assistant:${turnId}:content:${createHash("sha256")
+    .update(stableJson(message.message.content))
+    .digest("hex")}`;
 }
 
 function historyWindowFromSnapshot(
-  snapshot: ConversationContentSnapshot,
+  snapshot: SyncTimelineSnapshot,
 ): ConversationHistoryWindow {
   return {
     messages: snapshot.entries.map((entry) => entry.message),
     nextTurnCursor: snapshot.turnsNextCursor ?? null,
+    windowComplete: snapshot.windowComplete,
     latestTurnComplete: snapshot.latestTurnComplete,
+    ...(snapshot.latestTurnAnonymousIdentity
+      ? { latestTurnAnonymousIdentity: snapshot.latestTurnAnonymousIdentity }
+      : {}),
+    ...(snapshot.anonymousTurnIdentities
+      ? { anonymousTurnIdentities: snapshot.anonymousTurnIdentities }
+      : {}),
     ...(snapshot.latestTurnGap
       ? { latestTurnGap: snapshot.latestTurnGap }
       : {}),
   };
 }
 
-function mergeSnapshotWithLatestTurn(
-  snapshot: ConversationContentSnapshot,
-  latest: ConversationHistoryWindow,
+function reconcileAnonymousFullWindow(
+  previous: SyncTimelineSnapshot,
+  incoming: ConversationHistoryWindow,
 ): ConversationHistoryWindow {
+  const previousIdentities = previous.anonymousTurnIdentities ?? [];
+  const incomingIdentities = incoming.anonymousTurnIdentities ?? [];
+  if (previousIdentities.length === 0 || incomingIdentities.length === 0) {
+    return incoming;
+  }
+  const aligned = alignAnonymousTurnIdentities(
+    previousIdentities,
+    incomingIdentities,
+  );
+  const replacements = new Map<
+    string,
+    AnonymousConversationTurnIdentity
+  >();
+  const matchedPreviousTurnIds = new Set<string>();
+  const matchedIncomingTurnIds = new Set<string>();
+  for (const [previousIndex, incomingIndex] of aligned) {
+    const prior = previousIdentities[previousIndex]!;
+    const next = incomingIdentities[incomingIndex]!;
+    matchedPreviousTurnIds.add(prior.turnId);
+    matchedIncomingTurnIds.add(next.turnId);
+    replacements.set(next.turnId, {
+      ...next,
+      turnId: prior.turnId,
+      occurrence: prior.occurrence,
+    });
+  }
+
+  const previousLatest = previous.latestTurnAnonymousIdentity;
+  const incomingLatest = incoming.latestTurnAnonymousIdentity;
+  if (
+    previousLatest &&
+    incomingLatest &&
+    !matchedPreviousTurnIds.has(previousLatest.turnId) &&
+    !matchedIncomingTurnIds.has(incomingLatest.turnId) &&
+    previousLatest.rootAnchor === incomingLatest.rootAnchor
+  ) {
+    // If the previous latest content still exists earlier in the new bounded
+    // window, LCS already matched it and this is a new same-root turn. Only an
+    // unmatched latest-to-latest pair is an evolving physical turn.
+    replacements.set(incomingLatest.turnId, {
+      ...incomingLatest,
+      turnId: previousLatest.turnId,
+      occurrence: previousLatest.occurrence,
+    });
+  }
+  if (replacements.size === 0) return incoming;
+
+  const replacementTurnId = (turnId: string | undefined) =>
+    turnId ? (replacements.get(turnId)?.turnId ?? turnId) : turnId;
+  const identities = incomingIdentities.map(
+    (identity) => replacements.get(identity.turnId) ?? identity,
+  );
+  return {
+    ...incoming,
+    messages: incoming.messages.map((message) => {
+      const turnId = conversationMessageTurnId(message);
+      const replacement = replacementTurnId(turnId);
+      return replacement && replacement !== turnId
+        ? ({ ...message, historyTurnId: replacement } as ServerMessage)
+        : message;
+    }),
+    turnDetails: incoming.turnDetails?.map((turn) => ({
+      ...turn,
+      turnId: replacementTurnId(turn.turnId) ?? turn.turnId,
+    })),
+    latestTurnGap: incoming.latestTurnGap
+      ? {
+          ...incoming.latestTurnGap,
+          ...(replacementTurnId(incoming.latestTurnGap.turnId)
+            ? {
+                turnId: replacementTurnId(incoming.latestTurnGap.turnId),
+              }
+            : {}),
+        }
+      : undefined,
+    anonymousTurnIdentities: identities,
+    latestTurnAnonymousIdentity: incomingLatest
+      ? (replacements.get(incomingLatest.turnId) ?? incomingLatest)
+      : undefined,
+  };
+}
+
+function alignAnonymousTurnIdentities(
+  previous: readonly AnonymousConversationTurnIdentity[],
+  incoming: readonly AnonymousConversationTurnIdentity[],
+): Array<readonly [number, number]> {
+  const stablePairs = alignAnonymousIdentityRange(
+    previous,
+    incoming,
+    0,
+    previous.length,
+    0,
+    incoming.length,
+    (
+      left: AnonymousConversationTurnIdentity,
+      right: AnonymousConversationTurnIdentity,
+    ) =>
+      left.anchor === right.anchor ||
+      left.contentAnchor === right.contentAnchor,
+  );
+  const pairs: Array<readonly [number, number]> = [];
+  let previousStart = 0;
+  let incomingStart = 0;
+  for (const [previousIndex, incomingIndex] of stablePairs) {
+    pairs.push(
+      ...alignAnonymousIdentityRange(
+        previous,
+        incoming,
+        previousStart,
+        previousIndex,
+        incomingStart,
+        incomingIndex,
+        (left, right) => left.rootAnchor === right.rootAnchor,
+      ),
+      [previousIndex, incomingIndex],
+    );
+    previousStart = previousIndex + 1;
+    incomingStart = incomingIndex + 1;
+  }
+  pairs.push(
+    ...alignAnonymousIdentityRange(
+      previous,
+      incoming,
+      previousStart,
+      previous.length,
+      incomingStart,
+      incoming.length,
+      (left, right) => left.rootAnchor === right.rootAnchor,
+    ),
+  );
+  return pairs;
+}
+
+function alignAnonymousIdentityRange(
+  previous: readonly AnonymousConversationTurnIdentity[],
+  incoming: readonly AnonymousConversationTurnIdentity[],
+  previousStart: number,
+  previousEnd: number,
+  incomingStart: number,
+  incomingEnd: number,
+  equivalent: (
+    left: AnonymousConversationTurnIdentity,
+    right: AnonymousConversationTurnIdentity,
+  ) => boolean,
+): Array<readonly [number, number]> {
+  const previousLength = previousEnd - previousStart;
+  const incomingLength = incomingEnd - incomingStart;
+  const lengths = Array.from({ length: previousLength + 1 }, () =>
+    Array<number>(incomingLength + 1).fill(0),
+  );
+  for (let left = previousLength - 1; left >= 0; left -= 1) {
+    for (let right = incomingLength - 1; right >= 0; right -= 1) {
+      lengths[left]![right] = equivalent(
+        previous[previousStart + left]!,
+        incoming[incomingStart + right]!,
+      )
+        ? 1 + lengths[left + 1]![right + 1]!
+        : Math.max(lengths[left + 1]![right]!, lengths[left]![right + 1]!);
+    }
+  }
+  const pairs: Array<readonly [number, number]> = [];
+  let left = 0;
+  let right = 0;
+  while (left < previousLength && right < incomingLength) {
+    if (
+      equivalent(
+        previous[previousStart + left]!,
+        incoming[incomingStart + right]!,
+      ) &&
+      lengths[left]![right] === 1 + lengths[left + 1]![right + 1]!
+    ) {
+      pairs.push([previousStart + left, incomingStart + right]);
+      left += 1;
+      right += 1;
+    } else if (lengths[left + 1]![right]! >= lengths[left]![right + 1]!) {
+      left += 1;
+    } else {
+      right += 1;
+    }
+  }
+  return pairs;
+}
+
+function mergeSnapshotWithLatestTurn(
+  snapshot: SyncTimelineSnapshot,
+  latest: ConversationHistoryWindow,
+): ConversationHistoryWindow | null {
+  if (
+    snapshot.latestTurnAnonymousIdentity ||
+    latest.latestTurnAnonymousIdentity
+  ) {
+    return null;
+  }
   const base = snapshot.entries.map((entry) => entry.message);
+  if (latest.latestTurnComplete !== false) {
+    const turnIds = new Set(
+      latest.messages
+        .map(conversationMessageTurnId)
+        .filter((turnId): turnId is string => turnId !== undefined),
+    );
+    if (turnIds.size !== 1) return null;
+    const turnId = turnIds.values().next().value!;
+    return {
+      messages: [
+        ...base.filter((message) => conversationMessageTurnId(message) !== turnId),
+        ...latest.messages,
+      ],
+      nextTurnCursor: snapshot.turnsNextCursor ?? latest.nextTurnCursor,
+      turnDetails: latest.turnDetails,
+      windowComplete: snapshot.windowComplete,
+      latestTurnComplete: true,
+    };
+  }
   const messages = mergeObservedMessagesReplacingStable(
     base,
     latest.messages.map((message) => ({
       message,
       observedAt: "",
       bytes: 0,
+      projectionSource: "providerRefresh" as const,
     })),
+    preferNonRegressiveLatestTurnMessage,
   );
   return {
     messages,
     nextTurnCursor: snapshot.turnsNextCursor ?? latest.nextTurnCursor,
     turnDetails: latest.turnDetails,
+    windowComplete:
+      snapshot.windowComplete && latest.latestTurnComplete !== false,
     latestTurnComplete: latest.latestTurnComplete,
     ...(latest.latestTurnGap ? { latestTurnGap: latest.latestTurnGap } : {}),
   };
+}
+
+function conversationMessageTurnId(message: ServerMessage): string | undefined {
+  const value = (message as { historyTurnId?: unknown }).historyTurnId;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized || undefined;
+}
+
+function normalizeLatestHistoryForMerge(
+  previous: SyncTimelineSnapshot,
+  history: Awaited<ReturnType<ConversationHistoryReader>>,
+): ConversationHistoryWindow {
+  const latest = normalizeHistoryWindow(history, false);
+  if (previous.entries.length > 0 && latest.messages.length === 0) {
+    throw new Error("Latest conversation turn is temporarily unavailable.");
+  }
+  return latest;
+}
+
+function preferNonRegressiveLatestTurnMessage(
+  previous: ServerMessage,
+  incoming: ServerMessage,
+): ServerMessage {
+  const timestampPreserved =
+    previous.sourceTimestampIsAuthoritative === true &&
+    incoming.sourceTimestampIsAuthoritative !== true
+      ? ({
+          ...incoming,
+          ...(previous.sourceTimestamp
+            ? { sourceTimestamp: previous.sourceTimestamp }
+            : {}),
+          sourceTimestampIsAuthoritative: true,
+        } as ServerMessage)
+      : incoming;
+  if (
+    previous.type !== timestampPreserved.type ||
+    (timestampPreserved.type !== "assistant" &&
+      timestampPreserved.type !== "tool_result")
+  ) {
+    return timestampPreserved;
+  }
+  try {
+    const previousBytes = Buffer.byteLength(
+      stableObservedMessagePayload(previous),
+      "utf8",
+    );
+    const incomingBytes = Buffer.byteLength(
+      stableObservedMessagePayload(timestampPreserved),
+      "utf8",
+    );
+    // Same-source active-turn reads are eventually consistent. A shorter
+    // copy of the same stable item is normally an older partial response, not
+    // a deletion. Preserve the richer committed copy until the provider's
+    // catalog revision advances and a full window authoritatively replaces it.
+    return incomingBytes >= previousBytes ? timestampPreserved : previous;
+  } catch {
+    return previous;
+  }
+}
+
+function stableObservedMessagePayload(message: ServerMessage): string {
+  const payload = { ...message } as Record<string, unknown>;
+  delete payload.receivedAt;
+  delete payload.timestamp;
+  delete payload.sourceTimestamp;
+  delete payload.sourceTimestampIsAuthoritative;
+  delete payload.historySeq;
+  return stableJson(payload);
 }
 
 function annotateObservedTurn(
@@ -5862,11 +7910,11 @@ function mergeLiveReadScope(
   return rank[first] >= rank[second] ? first : second;
 }
 
-function canonicalHistoryCoversDurableExternalMessages(
+function canonicalHistoryCoversObservedSources(
   history: readonly ServerMessage[],
-  observed: Iterable<ExternalCodexLiveMessage>,
+  sources: readonly ObservedMessageSource[],
 ): boolean {
-  const entries = [...observed];
+  const entries = sources.flatMap((source) => [...source.observed]);
   const durable = entries.filter(
     (entry) =>
       entry.message.type !== "thinking_delta" &&
@@ -5877,27 +7925,55 @@ function canonicalHistoryCoversDurableExternalMessages(
   // provider items. Keep them while canonical history is wholly empty, then
   // require only stable user/assistant/tool identities to be represented.
   if (hasTransient && history.length === 0) return false;
-  return mergeExternalCodexMessages(history, durable).length === history.length;
+  const durableEntries = new Set(durable);
+  const merged = mergeObservedMessageSources(
+    history,
+    sources
+      .map((source) => ({
+        source: source.source,
+        observed: [...source.observed].filter((entry) =>
+          durableEntries.has(entry),
+        ),
+      }))
+      .filter((source) => source.observed.length > 0),
+    preferNonRegressiveLatestTurnMessage,
+  );
+  if (merged.length !== history.length) return false;
+  const mismatchIndex = merged.findIndex(
+    (message, index) =>
+      stableObservedMessagePayload(message) !==
+      stableObservedMessagePayload(history[index]!),
+  );
+  if (mismatchIndex >= 0) {
+    const canonical = history[mismatchIndex]!;
+    const projected = merged[mismatchIndex]!;
+    traceConversationSync(
+      `[conversation-sync-v2] observed coverage mismatch ` +
+        `index=${mismatchIndex} canonicalType=${canonical.type} ` +
+        `projectedType=${projected.type} ` +
+        `canonicalId=${hashState(observedMessageIdentity(canonical)).slice(0, 12)} ` +
+        `projectedId=${hashState(observedMessageIdentity(projected)).slice(0, 12)} ` +
+        `canonicalPayload=${hashState(stableObservedMessagePayload(canonical)).slice(0, 12)} ` +
+        `projectedPayload=${hashState(stableObservedMessagePayload(projected)).slice(0, 12)}`,
+    );
+    return false;
+  }
+  return true;
 }
 
 function observedMessageIdentity(message: ServerMessage): string | null {
   if (message.type === "user_input") {
-    const providerItemId = message.providerItemId?.trim();
-    if (providerItemId) return `user:provider:${providerItemId}`;
     const turnId = message.historyTurnId?.trim();
     const turnScope = turnId ? `turn:${turnId}:` : "";
-    const clientMessageId =
-      "clientMessageId" in message &&
-      typeof message.clientMessageId === "string"
-        ? message.clientMessageId
-        : undefined;
+    const clientMessageId = message.clientMessageId?.trim();
+    if (clientMessageId) {
+      return `user:${turnScope}client:${clientMessageId}`;
+    }
+    const providerItemId = message.providerItemId?.trim();
+    if (providerItemId) return `user:${turnScope}provider:${providerItemId}`;
     const userMessageUuid = message.userMessageUuid?.trim();
     if (userMessageUuid) {
       return `user:${turnScope}uuid:${userMessageUuid}`;
-    }
-    const normalizedClientMessageId = clientMessageId?.trim();
-    if (normalizedClientMessageId) {
-      return `user:${turnScope}client:${normalizedClientMessageId}`;
     }
     return `user:${turnScope}hash:${createHash("sha256")
       .update(stableJson(message))
@@ -5928,27 +8004,9 @@ function equivalentObservedUserMessage(
   if (canonical.type !== "user_input" || live.type !== "user_input") {
     return false;
   }
-  const canonicalProviderItemId = canonical.providerItemId?.trim();
-  const liveProviderItemId = live.providerItemId?.trim();
-  if (
-    canonicalProviderItemId &&
-    liveProviderItemId &&
-    canonicalProviderItemId !== liveProviderItemId
-  ) {
-    return false;
-  }
   const canonicalTurnId = canonical.historyTurnId?.trim();
   const liveTurnId = live.historyTurnId?.trim();
   if (canonicalTurnId && liveTurnId && canonicalTurnId !== liveTurnId) {
-    return false;
-  }
-  const canonicalClientMessageId = canonical.clientMessageId?.trim();
-  const liveClientMessageId = live.clientMessageId?.trim();
-  if (
-    canonicalClientMessageId &&
-    liveClientMessageId &&
-    canonicalClientMessageId !== liveClientMessageId
-  ) {
     return false;
   }
   if (
@@ -5959,14 +8017,42 @@ function equivalentObservedUserMessage(
   }
   const canonicalTimestamp = canonical.sourceTimestamp ?? canonical.timestamp;
   const liveTimestamp = live.sourceTimestamp ?? live.timestamp;
-  if (!canonicalTimestamp || !liveTimestamp) return false;
-  const canonicalTime = Date.parse(canonicalTimestamp);
-  const liveTime = Date.parse(liveTimestamp);
-  return (
-    Number.isFinite(canonicalTime) &&
-    Number.isFinite(liveTime) &&
-    Math.abs(canonicalTime - liveTime) <= 1_000
-  );
+  const timestampsMatch = (): boolean => {
+    if (!canonicalTimestamp || !liveTimestamp) return false;
+    const canonicalTime = Date.parse(canonicalTimestamp);
+    const liveTime = Date.parse(liveTimestamp);
+    return (
+      Number.isFinite(canonicalTime) &&
+      Number.isFinite(liveTime) &&
+      Math.abs(canonicalTime - liveTime) <= 1_000
+    );
+  };
+  const canonicalClientMessageId = canonical.clientMessageId?.trim();
+  const liveClientMessageId = live.clientMessageId?.trim();
+  if (canonicalClientMessageId && liveClientMessageId) {
+    if (canonicalClientMessageId !== liveClientMessageId) return false;
+    // Explicit equal turn identities make the client admission id decisive.
+    // If either source lacks a turn id, require the provider UUID and a near
+    // timestamp as independent evidence so a reused client id fails open.
+    if (canonicalTurnId && liveTurnId) return true;
+    const canonicalUuid = canonical.userMessageUuid?.trim();
+    const liveUuid = live.userMessageUuid?.trim();
+    return (
+      canonicalUuid !== undefined &&
+      liveUuid !== undefined &&
+      canonicalUuid === liveUuid &&
+      timestampsMatch()
+    );
+  }
+  const canonicalProviderItemId = canonical.providerItemId?.trim();
+  const liveProviderItemId = live.providerItemId?.trim();
+  if (canonicalProviderItemId && liveProviderItemId) {
+    return canonicalProviderItemId === liveProviderItemId;
+  }
+  const canonicalUuid = canonical.userMessageUuid?.trim();
+  const liveUuid = live.userMessageUuid?.trim();
+  if (canonicalUuid && liveUuid && canonicalUuid === liveUuid) return true;
+  return timestampsMatch();
 }
 
 async function readUnifiedCatalog(
@@ -6029,14 +8115,21 @@ async function readCodexCatalog(
       }
 
       // thread/list is the fast authority for identity, recency and runtime
-      // status, but it does not currently expose the selected model, effort
-      // or service tier. Resolve those three facts in one bounded rollout
-      // metadata pass; a failure only leaves the optional settings unknown.
-      const metadata = await getCodexSessionIndexMetadata(
-        threads.map((thread) => thread.id),
-      ).catch(() => new Map<string, CodexSessionIndexMetadata>());
+      // status, but it does not expose durable settings or Desktop's local
+      // project presentation. Resolve both optional projections in bounded,
+      // cached reads; either may fail without making the catalog unavailable.
+      const [metadata, desktopProjects] = await Promise.all([
+        getCodexSessionIndexMetadata(threads.map((thread) => thread.id)).catch(
+          () => new Map<string, CodexSessionIndexMetadata>(),
+        ),
+        readCodexDesktopProjectCatalog(),
+      ]);
       return threads.map((thread) =>
-        buildConversationSyncCodexCatalogSeed(thread, metadata.get(thread.id)),
+        buildConversationSyncCodexCatalogSeed(
+          thread,
+          metadata.get(thread.id),
+          desktopProjects.groupingFor(thread.id, thread.cwd),
+        ),
       );
     });
   } catch (error) {
@@ -6097,10 +8190,20 @@ async function readRecentCodexConversationHistory(
   target: ConversationSyncTarget,
   desktopToolTimelineReader: DesktopToolTimelineReader,
 ): Promise<ConversationHistoryWindow> {
+  const trace = traceTarget(targetKey(target));
+  const startedAt = Date.now();
   const timeline = readOptionalDesktopToolTimeline(
     desktopToolTimelineReader,
     target.providerSessionId,
-  );
+  ).then((value) => {
+    traceConversationSync(
+      `[conversation-sync-v2] provider timeline enrichment ` +
+        `target=${trace} events=${value?.events.length ?? 0} ` +
+        `timestamps=${value?.itemTimestamps?.size ?? 0} ` +
+        `elapsedMs=${Math.max(0, Date.now() - startedAt)}`,
+    );
+    return value;
+  });
   const [page, desktopToolTimeline] = await Promise.all([
     process.listThreadTurns(
       {
@@ -6113,7 +8216,24 @@ async function readRecentCodexConversationHistory(
         itemsView: "full",
       },
       { timeoutMs: CODEX_HISTORY_RPC_TIMEOUT_MS },
-    ),
+    ).then((value) => {
+      const latest = value.data[0];
+      const latestRecord =
+        latest && typeof latest === "object" && !Array.isArray(latest)
+          ? (latest as Record<string, unknown>)
+          : undefined;
+      traceConversationSync(
+        `[conversation-sync-v2] provider turns read ` +
+          `target=${trace} scope=recent turns=${value.data.length} ` +
+          `latestTurn=${traceTurn(
+            typeof latestRecord?.id === "string" ? latestRecord.id : undefined,
+          )} ` +
+          `latestItems=${
+            Array.isArray(latestRecord?.items) ? latestRecord.items.length : 0
+          } elapsedMs=${Math.max(0, Date.now() - startedAt)}`,
+      );
+      return value;
+    }),
     timeline,
   ]);
   const turns = [...page.data].reverse();
@@ -6122,6 +8242,7 @@ async function readRecentCodexConversationHistory(
     "full",
     target.providerSessionId,
     desktopToolTimeline,
+    "hot-window",
   );
   const fullStart = Math.max(0, normalized.turns.length - FULL_RECENT_TURNS);
   const latestTurn = normalized.turns.at(-1);
@@ -6134,6 +8255,15 @@ async function readRecentCodexConversationHistory(
     nextTurnCursor: page.nextCursor,
     turnDetails: normalized.turnDetails,
     latestTurnComplete: latestTurn?.latestTurnComplete ?? true,
+    anonymousTurnIdentities: normalized.turns
+      .map((turn) => turn.anonymousIdentity)
+      .filter(
+        (identity): identity is AnonymousConversationTurnIdentity =>
+          identity !== undefined,
+      ),
+    ...(latestTurn?.anonymousIdentity
+      ? { latestTurnAnonymousIdentity: latestTurn.anonymousIdentity }
+      : {}),
     ...(latestTurn?.latestTurnGap
       ? { latestTurnGap: latestTurn.latestTurnGap }
       : {}),
@@ -6144,6 +8274,7 @@ async function readLatestCodexTurnHistory(
   process: CodexProcess,
   target: ConversationSyncTarget,
 ): Promise<ConversationHistoryWindow> {
+  const startedAt = Date.now();
   const page = await process.listThreadTurns(
     {
       threadId: target.providerSessionId,
@@ -6153,10 +8284,27 @@ async function readLatestCodexTurnHistory(
     },
     { timeoutMs: CODEX_HISTORY_RPC_TIMEOUT_MS },
   );
+  const latest = page.data[0];
+  const latestRecord =
+    latest && typeof latest === "object" && !Array.isArray(latest)
+      ? (latest as Record<string, unknown>)
+      : undefined;
+  traceConversationSync(
+    `[conversation-sync-v2] provider turns read ` +
+      `target=${traceTarget(targetKey(target))} scope=latest turns=${page.data.length} ` +
+      `latestTurn=${traceTurn(
+        typeof latestRecord?.id === "string" ? latestRecord.id : undefined,
+      )} ` +
+      `latestItems=${
+        Array.isArray(latestRecord?.items) ? latestRecord.items.length : 0
+      } elapsedMs=${Math.max(0, Date.now() - startedAt)}`,
+  );
   const normalized = normalizeCodexTurns(
     [...page.data].reverse(),
     "full",
     target.providerSessionId,
+    undefined,
+    "hot-window",
   );
   const latestTurn = normalized.turns.at(-1);
   return {
@@ -6164,6 +8312,15 @@ async function readLatestCodexTurnHistory(
     nextTurnCursor: page.nextCursor,
     turnDetails: normalized.turnDetails,
     latestTurnComplete: latestTurn?.latestTurnComplete ?? true,
+    anonymousTurnIdentities: normalized.turns
+      .map((turn) => turn.anonymousIdentity)
+      .filter(
+        (identity): identity is AnonymousConversationTurnIdentity =>
+          identity !== undefined,
+      ),
+    ...(latestTurn?.anonymousIdentity
+      ? { latestTurnAnonymousIdentity: latestTurn.anonymousIdentity }
+      : {}),
     ...(latestTurn?.latestTurnGap
       ? { latestTurnGap: latestTurn.latestTurnGap }
       : {}),
@@ -6257,6 +8414,7 @@ async function readTurnsPage(
             message.itemsView ?? "summary",
             message.providerSessionId,
             await timeline,
+            message.cursor == null ? "hot-window" : `page:${message.cursor}`,
           );
           const candidate = projectTurnsPage(message, {
             data: normalized.turns,
@@ -6398,23 +8556,49 @@ async function readItemsPage(
   signal: AbortSignal,
   runCodexRead: CodexReadRunner,
   desktopToolTimelineReader: DesktopToolTimelineReader,
+  withCachedCodexTurnItems: (
+    threadId: string,
+    turnId: string,
+    snapshotId: string | null,
+    operation: () => Promise<Record<string, unknown>>,
+  ) => Promise<CachedCodexTurnItems>,
+  codexTurnFallbackReader: CodexBoundedHistoryReader,
   pageFits: (page: ConversationItemsPage) => boolean,
 ): Promise<ConversationItemsPage> {
   if (message.provider === "codex") {
     try {
       return await runCodexRead(async (process) => {
-        const timeline = readOptionalDesktopToolTimeline(
-          desktopToolTimelineReader,
-          message.providerSessionId,
-        );
+        // The Desktop timeline is only needed when the client explicitly asks
+        // for tool details. Starting that rollout read for an ordinary item
+        // repair would turn every missing-page recovery into a second history
+        // scan, including for very large threads.
+        const timeline = message.toolUseIds
+          ? readOptionalDesktopToolTimeline(
+              desktopToolTimelineReader,
+              message.providerSessionId,
+            )
+          : Promise.resolve(undefined);
         const turnId = message.turnId ?? "paged-items";
         let lastPage: ConversationItemsPage | undefined;
         for (const limit of decreasingPageLimits(message.limit ?? 200)) {
           signal.throwIfAborted();
           let messages: ServerMessage[];
           let nextCursor: string | null = null;
-          let usedTurnsFallback = false;
           try {
+            if (
+              message.cursor?.startsWith(CODEX_TURN_ITEM_CURSOR_PREFIX) &&
+              message.turnId
+            ) {
+              return await readCodexTurnItemsFallbackPage(
+                process,
+                message,
+                signal,
+                await timeline,
+                withCachedCodexTurnItems,
+                codexTurnFallbackReader,
+                pageFits,
+              );
+            }
             const page = await process.listThreadItems(
               {
                 threadId: message.providerSessionId,
@@ -6432,21 +8616,22 @@ async function readItemsPage(
             messages = codexTurnMessages(
               { id: turnId, items },
               message.providerSessionId,
-              await timeline,
+              message.toolUseIds ? await timeline : undefined,
             );
             nextCursor = page.nextCursor;
           } catch (error) {
             if (!message.turnId || !isUnsupportedAppServerRead(error)) {
               throw error;
             }
-            messages = await findCodexTurnMessages(
+            return await readCodexTurnItemsFallbackPage(
               process,
-              message.providerSessionId,
-              message.turnId,
+              message,
               signal,
               await timeline,
+              withCachedCodexTurnItems,
+              codexTurnFallbackReader,
+              pageFits,
             );
-            usedTurnsFallback = true;
           }
           const details = historyToolDetailPayloads(
             messages,
@@ -6467,9 +8652,15 @@ async function readItemsPage(
                 turnDetails,
               };
           if (pageFits(candidate)) return candidate;
-          if (usedTurnsFallback || message.toolUseIds) {
+          if (message.toolUseIds) {
             throw oversizedItemsPageError();
           }
+          const projected = projectConversationItemsPage(
+            messages,
+            nextCursor,
+            pageFits,
+          );
+          if (projected) return projected;
           lastPage = candidate;
         }
         if (!lastPage) {
@@ -6482,6 +8673,120 @@ async function readItemsPage(
     }
   }
   return readLegacyItemsPage(message, historyReader, pageFits);
+}
+
+async function readCodexTurnItemsFallbackPage(
+  process: CodexProcess,
+  message: Extract<
+    ConversationSyncClientMessage,
+    { type: "conversation_items_page" }
+  >,
+  signal: AbortSignal,
+  desktopToolTimeline: CodexDesktopToolTimeline | undefined,
+  withCachedCodexTurnItems: (
+    threadId: string,
+    turnId: string,
+    snapshotId: string | null,
+    operation: () => Promise<Record<string, unknown>>,
+  ) => Promise<CachedCodexTurnItems>,
+  codexTurnFallbackReader: CodexBoundedHistoryReader,
+  pageFits: (page: ConversationItemsPage) => boolean,
+): Promise<ConversationItemsPage> {
+  const turnId = message.turnId;
+  if (!turnId) throw new Error("Codex item paging requires a turn id");
+  const requestedIds = message.toolUseIds;
+  const cursor = decodeCodexTurnItemCursor(message.cursor, turnId);
+  const cachedTurn = await withCachedCodexTurnItems(
+    message.providerSessionId,
+    turnId,
+    cursor.snapshotId,
+    () =>
+      findCodexTurn(
+        process,
+        message.providerSessionId,
+        turnId,
+        signal,
+        codexTurnFallbackReader,
+      ),
+  );
+  const turn = cachedTurn.turn;
+  const items = Array.isArray(turn.items) ? turn.items : [];
+  if (message.cursor && cursor.offset >= items.length) {
+    throw new Error("Codex turn item cursor is outside the current turn");
+  }
+  if (requestedIds) {
+    const messages = codexTurnMessages(
+      turn,
+      message.providerSessionId,
+      desktopToolTimeline,
+    );
+    const candidate = historyToolDetailsPage(
+      message,
+      historyToolDetailPayloads(messages, requestedIds),
+    );
+    if (!pageFits(candidate)) throw oversizedItemsPageError();
+    return candidate;
+  }
+
+  let lastPage: ConversationItemsPage | undefined;
+  for (const limit of decreasingPageLimits(message.limit ?? 200)) {
+    signal.throwIfAborted();
+    const rawPage = paginateArray(
+      items,
+      String(cursor.offset),
+      limit,
+      message.sortDirection ?? "asc",
+    );
+    const identifiedItems = rawPage.data.map((rawItem, pageIndex) => {
+      if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) {
+        return rawItem;
+      }
+      const item = rawItem as Record<string, unknown>;
+      if (typeof item.id === "string" && item.id.length > 0) return item;
+      const sourceOffset =
+        message.sortDirection === "desc"
+          ? items.length - 1 - (cursor.offset + pageIndex)
+          : cursor.offset + pageIndex;
+      return {
+        ...item,
+        id: `ccp-fallback-${turnId}-${sourceOffset}-${createHash("sha256")
+          .update(stableJson(item))
+          .digest("hex")
+          .slice(0, 16)}`,
+      };
+    });
+    const messages = annotateTurnMessages(
+      codexTurnMessages(
+        { ...turn, items: identifiedItems },
+        message.providerSessionId,
+      ),
+      turnId,
+    );
+    const nextCursor =
+      rawPage.nextCursor == null
+        ? null
+        : encodeCodexTurnItemCursor(
+            turnId,
+            Number.parseInt(rawPage.nextCursor, 10),
+            cachedTurn.snapshotId,
+          );
+    const candidate: ConversationItemsPage = {
+      data: messages,
+      nextCursor,
+    };
+    if (pageFits(candidate)) return candidate;
+    const projected = projectConversationItemsPage(
+      messages,
+      nextCursor,
+      pageFits,
+    );
+    if (projected) return projected;
+    lastPage = candidate;
+  }
+  if (!lastPage) {
+    throw new Error("Codex fallback item page did not return a bounded result");
+  }
+  throw oversizedItemsPageError();
 }
 
 async function readLegacyItemsPage(
@@ -6548,12 +8853,13 @@ async function readLegacyItemsPage(
   }
   let lastPage: ConversationItemsPage | undefined;
   for (const limit of decreasingPageLimits(message.limit ?? 50)) {
-    const candidate = paginateArray(
+    const page = paginateArray(
       annotated,
       localCursor,
       limit,
       message.sortDirection ?? "asc",
     );
+    const candidate: ConversationItemsPage = page;
     if (pageFits(candidate)) return candidate;
     lastPage = candidate;
   }
@@ -6561,6 +8867,63 @@ async function readLegacyItemsPage(
     throw new Error("Legacy items page did not return a bounded result");
   }
   throw oversizedItemsPageError();
+}
+
+/**
+ * Keeps a latest-turn repair advancing when one provider item expands into a
+ * wire message that cannot fit the 64 KiB envelope.
+ *
+ * Tool bodies are already available through historyToolDetailGaps and the
+ * explicit by-id detail request.  The repair lane therefore projects only the
+ * conversational/process spine and records tool gaps instead of allowing one
+ * multi-megabyte command/compaction payload to block every later commentary
+ * and the final answer behind the same opaque provider cursor.
+ */
+function projectConversationItemsPage(
+  messages: readonly ServerMessage[],
+  nextCursor: string | null,
+  pageFits: (page: ConversationItemsPage) => boolean,
+): ConversationItemsPage | undefined {
+  const projected = selectTurnAwareHistoryWindow(
+    messages.map((message, sourceIndex) => ({ message, sourceIndex })),
+    {
+      rootTurns: 1,
+      toolCalls: 0,
+      envelopeEntries: messages.length,
+      maxRetainedEntries: Math.max(messages.length, 1),
+      preserveLatestRootTurnTools: false,
+    },
+  ).map((entry) => entry.message);
+  if (projected.length === 0) return undefined;
+
+  const candidate: ConversationItemsPage = {
+    data: projected.map(stabilizeProjectedToolGapEnvelope),
+    nextCursor,
+  };
+  return pageFits(candidate) ? candidate : undefined;
+}
+
+function stabilizeProjectedToolGapEnvelope(message: ServerMessage): ServerMessage {
+  if (
+    message.type !== "assistant" ||
+    message.message.content.length > 0 ||
+    !message.historyToolDetailGaps?.length
+  ) {
+    return message;
+  }
+  const stableId = `history-tool-gap-envelope:${createHash("sha256")
+    .update(
+      JSON.stringify(
+        message.historyToolDetailGaps.map((gap) => gap.gapId).sort(),
+      ),
+    )
+    .digest("hex")
+    .slice(0, 24)}`;
+  return {
+    ...message,
+    messageUuid: stableId,
+    message: { ...message.message, id: stableId },
+  };
 }
 
 function decreasingPageLimits(requestedLimit: number): number[] {
@@ -6576,6 +8939,48 @@ function decreasingPageLimits(requestedLimit: number): number[] {
 interface LegacyWindowCursor {
   sourceCursor: string | null;
   offset: number;
+}
+
+function decodeCodexTurnItemCursor(
+  cursor: string | undefined,
+  expectedTurnId: string,
+): { offset: number; snapshotId: string | null } {
+  if (!cursor) return { offset: 0, snapshotId: null };
+  if (!cursor.startsWith(CODEX_TURN_ITEM_CURSOR_PREFIX)) {
+    throw new Error("Invalid Codex turn item cursor");
+  }
+  try {
+    const decoded = JSON.parse(
+      Buffer.from(
+        cursor.slice(CODEX_TURN_ITEM_CURSOR_PREFIX.length),
+        "base64url",
+      ).toString("utf8"),
+    ) as { turnId?: unknown; offset?: unknown; snapshotId?: unknown };
+    if (
+      decoded.turnId === expectedTurnId &&
+      typeof decoded.offset === "number" &&
+      Number.isSafeInteger(decoded.offset) &&
+      decoded.offset >= 0 &&
+      typeof decoded.snapshotId === "string" &&
+      decoded.snapshotId.length > 0
+    ) {
+      return { offset: decoded.offset, snapshotId: decoded.snapshotId };
+    }
+  } catch {
+    // Invalid cursor is rejected below rather than replayed from offset zero.
+  }
+  throw new Error("Invalid Codex turn item cursor");
+}
+
+function encodeCodexTurnItemCursor(
+  turnId: string,
+  offset: number,
+  snapshotId: string,
+): string {
+  return `${CODEX_TURN_ITEM_CURSOR_PREFIX}${Buffer.from(
+    JSON.stringify({ turnId, offset, snapshotId }),
+    "utf8",
+  ).toString("base64url")}`;
 }
 
 function decodeLegacyWindowCursor(
@@ -6758,10 +9163,16 @@ function projectedSnapshotBudget(textBudget: number): number {
 
 function normalizeHistoryWindow(
   history: ServerMessage[] | ConversationHistoryWindow,
+  windowComplete = true,
 ): ConversationHistoryWindow {
   return Array.isArray(history)
-    ? { messages: history, nextTurnCursor: null }
-    : history;
+    ? { messages: history, nextTurnCursor: null, windowComplete }
+    : {
+        ...history,
+        windowComplete:
+          history.windowComplete ??
+          (history.latestTurnComplete !== false && windowComplete),
+      };
 }
 
 function normalizeCodexTurns(
@@ -6769,29 +9180,71 @@ function normalizeCodexTurns(
   itemsView: "summary" | "full",
   threadId: string,
   desktopToolTimeline?: CodexDesktopToolTimeline,
+  fallbackNamespace = "hot-window",
 ): {
   turns: NormalizedConversationTurn[];
   turnDetails: ConversationTurnDetails[];
 } {
   const turns: NormalizedConversationTurn[] = [];
   const turnDetails: ConversationTurnDetails[] = [];
-  rawTurns.forEach((rawTurn, index) => {
+  const anonymousOccurrences = new Map<string, number>();
+  rawTurns.forEach((rawTurn) => {
     if (!rawTurn || typeof rawTurn !== "object") return;
     const turn = rawTurn as Record<string, unknown>;
     const rawId = turn.id;
     const rawItems = Array.isArray(turn.items) ? turn.items : [];
-    const firstItem =
-      rawItems[0] && typeof rawItems[0] === "object"
-        ? (rawItems[0] as Record<string, unknown>)
-        : undefined;
-    const firstItemId =
-      typeof firstItem?.id === "string" ? firstItem.id : "anonymous";
+    const explicitTurnId =
+      typeof rawId === "string" && rawId.trim() ? rawId.trim() : undefined;
+    const bounded = boundCodexRawTurnForConversion(
+      turn,
+      explicitTurnId ?? "anonymous-codex-turn",
+    );
+    const boundedItems = Array.isArray(bounded.turn.items)
+      ? bounded.turn.items
+      : [];
+    const contentAnchor = hashState([
+      "anonymous-turn-content-v1",
+      stableAnonymousCodexValue(boundedItems),
+    ]);
+    const rootAnchor = hashState([
+      "anonymous-turn-root-v1",
+      boundedItems[0] === undefined
+        ? null
+        : stableAnonymousCodexValue(boundedItems[0]),
+    ]);
+    const anonymousAnchor = anonymousCodexTurnAnchor(
+      turn,
+      boundedItems,
+      fallbackNamespace,
+      contentAnchor,
+    );
+    const anonymousOccurrence =
+      anonymousOccurrences.get(anonymousAnchor) ?? 0;
+    anonymousOccurrences.set(anonymousAnchor, anonymousOccurrence + 1);
+    const anonymousIdentityParts: unknown[] = [
+      threadId,
+      "anonymous-codex-turn-v2",
+      anonymousAnchor,
+      anonymousOccurrence,
+    ];
+    if (fallbackNamespace.startsWith("page:")) {
+      anonymousIdentityParts.splice(2, 0, fallbackNamespace);
+    }
     const turnId =
-      typeof rawId === "string" && rawId.trim()
-        ? rawId.trim()
-        : `turn:${hashState([threadId, index, firstItemId]).slice(0, 24)}`;
+      explicitTurnId ??
+      `turn:${hashState(anonymousIdentityParts).slice(0, 24)}`;
+    const anonymousIdentity: AnonymousConversationTurnIdentity | undefined =
+      explicitTurnId
+        ? undefined
+        : {
+            anchor: anonymousAnchor,
+            rootAnchor,
+            contentAnchor,
+            turnId,
+            occurrence: anonymousOccurrence,
+          };
     const items = rawItems;
-    const bounded = boundCodexRawTurnForConversion(turn, turnId);
+    bounded.turn.id = turnId;
     const fullMessages = annotateTurnMessages(
       codexTurnMessages(bounded.turn, threadId, desktopToolTimeline),
       turnId,
@@ -6819,9 +9272,81 @@ function normalizeCodexTurns(
             },
           }
         : {}),
+      ...(anonymousIdentity ? { anonymousIdentity } : {}),
     });
   });
   return { turns, turnDetails };
+}
+
+/**
+ * Intrinsic fallback identity for old app-servers that omit a turn id.
+ *
+ * The previous fallback used distance-from-newest, which renamed every old
+ * turn whenever a newer turn was appended.  Prefer immutable provider time or
+ * the first item (normally the root user item); an occurrence ordinal in
+ * chronological order keeps genuinely identical anonymous turns distinct.
+ * The namespace is used only for an entirely empty, timestamp-free turn where
+ * no cross-page identity can be proved.
+ */
+function anonymousCodexTurnAnchor(
+  turn: Record<string, unknown>,
+  rawItems: readonly unknown[],
+  fallbackNamespace: string,
+  contentAnchor: string,
+): string {
+  const startedAt = stableCodexTurnTime(turn.startedAt);
+  const completedAt = stableCodexTurnTime(turn.completedAt);
+  // startedAt is immutable once observed; completedAt may appear later and
+  // must not rename an already-running turn.
+  if (startedAt !== undefined) {
+    return hashState(["anonymous-turn-started-at", startedAt]);
+  }
+  if (completedAt !== undefined) {
+    return hashState(["anonymous-turn-completed-at", completedAt]);
+  }
+  if (rawItems.length > 0) {
+    // With neither provider id nor time, the first item alone is not a unique
+    // turn identity: repeated prompts are legal. The complete bounded turn
+    // payload distinguishes completed same-root turns and remains stable when
+    // the surrounding hot window slides. Active anonymous turns deliberately
+    // use a full bounded re-read instead of the latest-only shortcut above.
+    return contentAnchor;
+  }
+  return hashState(["empty-anonymous-turn", fallbackNamespace]);
+}
+
+function stableCodexTurnTime(value: unknown): string | number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) return value.trim();
+  return undefined;
+}
+
+function stableAnonymousCodexValue(value: unknown, depth = 0): unknown {
+  if (
+    value == null ||
+    typeof value === "boolean" ||
+    typeof value === "number"
+  ) {
+    return value;
+  }
+  if (typeof value === "string") return value;
+  if (depth >= 4) return null;
+  if (Array.isArray(value)) {
+    return value.slice(0, 32).map((item) =>
+      stableAnonymousCodexValue(item, depth + 1),
+    );
+  }
+  if (typeof value !== "object") return String(value);
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.keys(record)
+      .sort()
+      .slice(0, 64)
+      .map((key) => [
+        key,
+        stableAnonymousCodexValue(record[key], depth + 1),
+      ]),
+  );
 }
 
 interface BoundedCodexRawTurn {
@@ -6861,12 +9386,29 @@ function boundCodexRawTurnForConversion(
   turnId: string,
 ): BoundedCodexRawTurn {
   const items = Array.isArray(turn.items) ? turn.items : [];
-  const projectedItems: unknown[] = [];
+  const projectedItems: Array<{ sourceIndex: number; value: unknown }> = [];
   let remaining = MAX_CODEX_RAW_TURN_BYTES;
   let payloadOmitted = false;
   let projectedPayloadOmissions = 0;
 
-  for (let index = 0; index < items.length; index += 1) {
+  // An active app-server turn can contain megabytes of completed command
+  // output before its newest reasoning/tool item. A forward-only byte budget
+  // therefore preserves the prompt but silently freezes the visible process
+  // near the beginning of the turn. Keep the official root item plus a
+  // bounded newest-first tail, then restore provider order for conversion.
+  // The omitted middle remains explicitly repairable through items_page.
+  const candidateIndexes: number[] = [];
+  if (items.length > 0) candidateIndexes.push(0);
+  for (
+    let index = items.length - 1;
+    index > 0 && candidateIndexes.length < MAX_CODEX_RAW_TURN_ITEMS;
+    index -= 1
+  ) {
+    candidateIndexes.push(index);
+  }
+  if (candidateIndexes.length < items.length) payloadOmitted = true;
+
+  for (const index of candidateIndexes) {
     if (projectedItems.length >= MAX_CODEX_RAW_TURN_ITEMS || remaining < 128) {
       payloadOmitted = true;
       break;
@@ -6875,14 +9417,21 @@ function boundCodexRawTurnForConversion(
       remaining: Math.min(remaining, MAX_CODEX_RAW_ITEM_BYTES),
       omitted: false,
     };
-    const projected = projectCodexRawValue(items[index], budget, 0);
+    let projected: unknown;
+    try {
+      projected = projectCodexRawValue(items[index], budget, 0);
+    } catch {
+      // Provider JSON is plain data, but keep the projection fail-closed if a
+      // test seam or future adapter supplies an accessor that throws.
+      payloadOmitted = true;
+      continue;
+    }
     if (
       !projected ||
       typeof projected !== "object" ||
       Array.isArray(projected)
     ) {
       payloadOmitted = true;
-      projectedPayloadOmissions += 1;
       continue;
     }
     const itemBytes = Buffer.byteLength(JSON.stringify(projected), "utf8");
@@ -6890,7 +9439,7 @@ function boundCodexRawTurnForConversion(
       payloadOmitted = true;
       break;
     }
-    projectedItems.push(projected);
+    projectedItems.push({ sourceIndex: index, value: projected });
     remaining -= itemBytes;
     if (budget.omitted) {
       payloadOmitted = true;
@@ -6899,6 +9448,7 @@ function boundCodexRawTurnForConversion(
   }
 
   const missingWholeItems = Math.max(0, items.length - projectedItems.length);
+  projectedItems.sort((left, right) => left.sourceIndex - right.sourceIndex);
   return {
     turn: {
       id: turnId,
@@ -6908,7 +9458,7 @@ function boundCodexRawTurnForConversion(
       ...(typeof turn.completedAt === "number"
         ? { completedAt: turn.completedAt }
         : {}),
-      items: projectedItems,
+      items: projectedItems.map((entry) => entry.value),
     },
     missingItemCount: missingWholeItems + projectedPayloadOmissions,
     payloadOmitted: payloadOmitted || missingWholeItems > 0,
@@ -7270,13 +9820,14 @@ function unwrapCodexThreadItem(value: unknown): unknown {
     : value;
 }
 
-async function findCodexTurnMessages(
+async function findCodexTurn(
   process: CodexProcess,
   threadId: string,
   turnId: string,
   signal: AbortSignal,
-  desktopToolTimeline?: CodexDesktopToolTimeline,
-): Promise<ServerMessage[]> {
+  boundedReader: CodexBoundedHistoryReader,
+): Promise<Record<string, unknown>> {
+  const seenCursors = new Set<string>();
   let cursor: string | null = null;
   for (
     let pageIndex = 0;
@@ -7284,33 +9835,33 @@ async function findCodexTurnMessages(
     pageIndex += 1
   ) {
     signal.throwIfAborted();
-    const page = await process.listThreadTurns(
-      {
-        threadId,
-        cursor,
-        limit: CODEX_TURN_SCAN_PAGE_SIZE,
-        sortDirection: "desc",
-        itemsView: "full",
-      },
-      { signal, timeoutMs: CODEX_HISTORY_RPC_TIMEOUT_MS },
-    );
-    const found = page.data.find((rawTurn) => {
+    const page = await boundedReader.readPage(process, threadId, {
+      cursor,
+      limit: CODEX_TURN_SCAN_PAGE_SIZE,
+      sortDirection: "desc",
+      preference: "turns",
+      signal,
+    });
+    const turns = Array.isArray(page.thread.turns)
+      ? page.thread.turns
+      : [];
+    const found = turns.find((rawTurn) => {
       if (!rawTurn || typeof rawTurn !== "object" || Array.isArray(rawTurn)) {
         return false;
       }
       return (rawTurn as Record<string, unknown>).id === turnId;
     });
     if (found && typeof found === "object" && !Array.isArray(found)) {
-      return annotateTurnMessages(
-        codexTurnMessages(
-          found as Record<string, unknown>,
-          threadId,
-          desktopToolTimeline,
-        ),
-        turnId,
-      );
+      return found as Record<string, unknown>;
     }
     if (!page.nextCursor) break;
+    if (
+      page.nextCursor === cursor ||
+      seenCursors.has(page.nextCursor)
+    ) {
+      throw new Error("Codex turn pagination returned a repeated cursor");
+    }
+    seenCursors.add(page.nextCursor);
     cursor = page.nextCursor;
   }
   throw new Error("Requested Codex turn is outside the bounded read window");
@@ -7346,6 +9897,24 @@ function sessionSeed(session: SessionIndexEntry): ConversationSyncCatalogSeed {
       ...target,
       revision: providerRevision(target, session.modified),
       projectPath: session.projectPath,
+      ...(session.projectGroupKind
+        ? { projectGroupKind: session.projectGroupKind }
+        : {}),
+      ...(session.projectGroupId
+        ? { projectGroupId: session.projectGroupId }
+        : {}),
+      ...(session.projectGroupName
+        ? { projectGroupName: session.projectGroupName }
+        : {}),
+      ...(session.projectGroupPath
+        ? { projectGroupPath: session.projectGroupPath }
+        : {}),
+      ...(session.projectGroupingSnapshotComplete !== undefined
+        ? {
+            projectGroupingSnapshotComplete:
+              session.projectGroupingSnapshotComplete,
+          }
+        : {}),
       ...(session.name ? { name: session.name } : {}),
       ...(session.summary ? { summary: session.summary } : {}),
       ...(session.firstPrompt ? { firstPrompt: session.firstPrompt } : {}),
@@ -7373,6 +9942,26 @@ function normalizeCatalogEntry(
   );
   const forkedFromThreadId = validCatalogLineageId(entry.forkedFromThreadId);
   const parentThreadId = validCatalogLineageId(entry.parentThreadId);
+  const projectGroupId = validCatalogLineageId(entry.projectGroupId);
+  const projectGroupName = truncateCatalogText(
+    entry.projectGroupName,
+    MAX_CATALOG_NAME_LENGTH,
+  );
+  const projectGroupPath = truncateCatalogText(
+    entry.projectGroupPath,
+    MAX_CATALOG_PATH_LENGTH,
+  );
+  const projectGroupKind =
+    entry.projectGroupKind === "projectless"
+      ? entry.projectGroupKind
+      : entry.projectGroupKind === "desktopProject" &&
+          projectGroupId &&
+          projectGroupName
+        ? entry.projectGroupKind
+        : undefined;
+  const projectGroupingSnapshotComplete =
+    entry.projectGroupingSnapshotComplete === true &&
+    projectGroupKind !== undefined;
   const model = validCatalogSetting(entry.model, MAX_CATALOG_MODEL_LENGTH);
   const modelReasoningEffort = validCatalogSetting(
     entry.modelReasoningEffort,
@@ -7408,6 +9997,21 @@ function normalizeCatalogEntry(
     revision: entry.revision,
     projectPath:
       truncateCatalogText(entry.projectPath, MAX_CATALOG_PATH_LENGTH) ?? "",
+    ...(projectGroupKind ? { projectGroupKind } : {}),
+    ...(projectGroupKind === "desktopProject" && projectGroupId
+      ? { projectGroupId }
+      : {}),
+    ...(projectGroupKind === "desktopProject" && projectGroupName
+      ? { projectGroupName }
+      : {}),
+    ...(projectGroupKind === "desktopProject" && projectGroupPath
+      ? { projectGroupPath }
+      : {}),
+    ...(projectGroupingSnapshotComplete
+      ? { projectGroupingSnapshotComplete: true }
+      : entry.projectGroupingSnapshotComplete === false
+        ? { projectGroupingSnapshotComplete: false }
+        : {}),
     ...(name ? { name } : {}),
     ...(summary ? { summary } : {}),
     ...(firstPrompt ? { firstPrompt } : {}),
@@ -7562,49 +10166,80 @@ function mergeIncompleteCodexCatalogSettings(
   incoming: ConversationSyncCatalogEntry,
   previous: ConversationSyncCatalogEntry,
 ): ConversationSyncCatalogEntry {
-  if (
-    incoming.provider !== "codex" ||
-    previous.provider !== "codex" ||
-    incoming.codexSettingsSnapshotComplete === true
-  ) {
-    return incoming;
-  }
+  if (incoming.provider !== previous.provider) return incoming;
+  const preserveCodexSettings =
+    incoming.provider === "codex" &&
+    incoming.codexSettingsSnapshotComplete !== true;
+  const preserveProjectGrouping =
+    incoming.projectGroupingSnapshotComplete !== true &&
+    previous.projectGroupingSnapshotComplete === true;
+  if (!preserveCodexSettings && !preserveProjectGrouping) return incoming;
   return {
     ...incoming,
-    ...(incoming.model === undefined && previous.model !== undefined
+    ...(preserveProjectGrouping
+      ? {
+          ...(previous.projectGroupKind
+            ? { projectGroupKind: previous.projectGroupKind }
+            : {}),
+          ...(previous.projectGroupId
+            ? { projectGroupId: previous.projectGroupId }
+            : {}),
+          ...(previous.projectGroupName
+            ? { projectGroupName: previous.projectGroupName }
+            : {}),
+          ...(previous.projectGroupPath
+            ? { projectGroupPath: previous.projectGroupPath }
+            : {}),
+          projectGroupingSnapshotComplete: true,
+        }
+      : {}),
+    ...(preserveCodexSettings &&
+    incoming.model === undefined &&
+    previous.model !== undefined
       ? { model: previous.model }
       : {}),
-    ...(incoming.modelReasoningEffort === undefined &&
+    ...(preserveCodexSettings &&
+    incoming.modelReasoningEffort === undefined &&
     previous.modelReasoningEffort !== undefined
       ? { modelReasoningEffort: previous.modelReasoningEffort }
       : {}),
-    ...(incoming.serviceTier === undefined && previous.serviceTier !== undefined
+    ...(preserveCodexSettings &&
+    incoming.serviceTier === undefined &&
+    previous.serviceTier !== undefined
       ? { serviceTier: previous.serviceTier }
       : {}),
-    ...(incoming.approvalPolicy === undefined &&
+    ...(preserveCodexSettings &&
+    incoming.approvalPolicy === undefined &&
     previous.approvalPolicy !== undefined
       ? { approvalPolicy: previous.approvalPolicy }
       : {}),
-    ...(incoming.approvalsReviewer === undefined &&
+    ...(preserveCodexSettings &&
+    incoming.approvalsReviewer === undefined &&
     previous.approvalsReviewer !== undefined
       ? { approvalsReviewer: previous.approvalsReviewer }
       : {}),
-    ...(incoming.sandboxMode === undefined && previous.sandboxMode !== undefined
+    ...(preserveCodexSettings &&
+    incoming.sandboxMode === undefined &&
+    previous.sandboxMode !== undefined
       ? { sandboxMode: previous.sandboxMode }
       : {}),
-    ...(incoming.collaborationMode === undefined &&
+    ...(preserveCodexSettings &&
+    incoming.collaborationMode === undefined &&
     previous.collaborationMode !== undefined
       ? { collaborationMode: previous.collaborationMode }
       : {}),
-    ...(incoming.networkAccessEnabled === undefined &&
+    ...(preserveCodexSettings &&
+    incoming.networkAccessEnabled === undefined &&
     previous.networkAccessEnabled !== undefined
       ? { networkAccessEnabled: previous.networkAccessEnabled }
       : {}),
-    ...(incoming.webSearchMode === undefined &&
+    ...(preserveCodexSettings &&
+    incoming.webSearchMode === undefined &&
     previous.webSearchMode !== undefined
       ? { webSearchMode: previous.webSearchMode }
       : {}),
-    ...(previous.codexSettingsSnapshotComplete === true
+    ...(preserveCodexSettings &&
+    previous.codexSettingsSnapshotComplete === true
       ? { codexSettingsSnapshotComplete: true }
       : {}),
   };
@@ -7621,6 +10256,7 @@ function isLowSurrogate(value: number): boolean {
 export function buildConversationSyncCodexCatalogSeed(
   thread: CodexThreadSummary,
   metadata?: CodexSessionIndexMetadata,
+  projectGrouping?: CodexDesktopProjectGrouping,
 ): ConversationSyncCatalogSeed {
   const target = {
     provider: "codex" as const,
@@ -7637,6 +10273,7 @@ export function buildConversationSyncCodexCatalogSeed(
         String(thread.recencyAt ?? thread.updatedAt),
       ),
       projectPath: thread.cwd,
+      ...(projectGrouping ?? {}),
       ...(thread.name ? { name: thread.name } : {}),
       ...(metadata?.summary ? { summary: metadata.summary } : {}),
       ...(metadata?.firstPrompt ? { firstPrompt: metadata.firstPrompt } : {}),
@@ -8272,6 +10909,54 @@ function hashState(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex");
 }
 
+let conversationSyncTraceWindowStartedAt = 0;
+let conversationSyncTraceCount = 0;
+
+function traceConversationSync(message: string): void {
+  if (process.env.CCPOCKET_SYNC_TRACE === "0") return;
+  const now = Date.now();
+  if (
+    conversationSyncTraceWindowStartedAt === 0 ||
+    now - conversationSyncTraceWindowStartedAt >=
+      CONVERSATION_SYNC_TRACE_WINDOW_MS
+  ) {
+    conversationSyncTraceWindowStartedAt = now;
+    conversationSyncTraceCount = 0;
+  }
+  if (conversationSyncTraceCount >= CONVERSATION_SYNC_TRACE_MAX_PER_WINDOW) {
+    if (
+      conversationSyncTraceCount === CONVERSATION_SYNC_TRACE_MAX_PER_WINDOW
+    ) {
+      console.warn(
+        "[conversation-sync-v2] trace rate limit reached; " +
+          "set CCPOCKET_SYNC_TRACE=0 to disable",
+      );
+    }
+    conversationSyncTraceCount += 1;
+    return;
+  }
+  conversationSyncTraceCount += 1;
+  console.log(message);
+}
+
+function traceTarget(key: ConversationKey): string {
+  return hashState(["conversation-sync-target", key]).slice(0, 12);
+}
+
+function traceTurn(turnId: string | undefined): string {
+  return turnId
+    ? hashState(["conversation-sync-turn", turnId]).slice(0, 12)
+    : "none";
+}
+
+function traceBatch(batchId: string): string {
+  return hashState(["conversation-sync-batch", batchId]).slice(0, 12);
+}
+
+function shortRevision(revision: string | undefined): string {
+  return revision?.slice(0, 12) ?? "none";
+}
+
 function providerRevision(
   target: ConversationSyncTarget,
   sourceRevision: string,
@@ -8349,6 +11034,18 @@ function isConversationTimelineMessage(message: ServerMessage): boolean {
     message.type === "history_snapshot" ||
     message.type === "tool_use_summary" ||
     message.type === "user_input"
+  );
+}
+
+function isConversationRuntimeOverlayMessage(
+  message: ServerMessage,
+): message is ConversationRuntimeOverlayMessage {
+  return (
+    message.type === "assistant" ||
+    message.type === "result" ||
+    message.type === "error" ||
+    message.type === "guardian_approval" ||
+    message.type === "tool_use_summary"
   );
 }
 

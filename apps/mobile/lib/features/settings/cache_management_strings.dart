@@ -92,36 +92,87 @@ class CacheManagementStrings {
   }
 
   String get byDataSourceSection {
-    if (_zh) return '按 Bridge 与数据源管理';
-    if (_ja) return 'Bridge とデータソース別';
-    if (_ko) return 'Bridge 및 데이터 소스별';
-    return 'By Bridge & data source';
+    if (_zh) return '按电脑与数据源管理';
+    if (_ja) return 'コンピュータとデータソース別';
+    if (_ko) return '컴퓨터 및 데이터 소스별';
+    return 'By computer & data source';
+  }
+
+  String machineCacheSubtitle({
+    required int routes,
+    required int sources,
+    required int summaries,
+    required int windows,
+    required bool stableIdentity,
+  }) {
+    if (_zh) {
+      final identity = stableIdentity ? '' : ' · 尚未验证电脑身份';
+      return '$routes 条连接路线 · $sources 个数据源 · '
+          '$summaries 个摘要 · $windows 个最近窗口$identity';
+    }
+    if (_ja) {
+      final identity = stableIdentity ? '' : ' · コンピュータ未確認';
+      return '接続経路 $routes 件 · データソース $sources 件 · '
+          '概要 $summaries 件 · 最近 $windows 件$identity';
+    }
+    if (_ko) {
+      final identity = stableIdentity ? '' : ' · 컴퓨터 신원 미확인';
+      return '연결 경로 $routes개 · 데이터 소스 $sources개 · '
+          '요약 $summaries개 · 최근 창 $windows개$identity';
+    }
+    final identity = stableIdentity ? '' : ' · computer identity unverified';
+    return '$routes routes · $sources data sources · $summaries summaries · '
+        '$windows recent windows$identity';
+  }
+
+  String dataSourceTitle({
+    required String? source,
+    required String? bridge,
+    required bool legacyRoute,
+  }) {
+    if (legacyRoute) {
+      if (_zh) return '旧版路线缓存';
+      if (_ja) return '従来の接続経路キャッシュ';
+      if (_ko) return '기존 연결 경로 캐시';
+      return 'Legacy route cache';
+    }
+    if (source == null) {
+      final bridgeText = bridge == null ? '' : ' · $bridge';
+      if (_zh) return 'Bridge 数据源$bridgeText';
+      if (_ja) return 'Bridge データソース$bridgeText';
+      if (_ko) return 'Bridge 데이터 소스$bridgeText';
+      return 'Bridge data source$bridgeText';
+    }
+    if (_zh) return 'Codex 数据源 · $source';
+    if (_ja) return 'Codex データソース · $source';
+    if (_ko) return 'Codex 데이터 소스 · $source';
+    return 'Codex data source · $source';
   }
 
   String dataSourceSubtitle({
     required int routes,
-    required String? source,
+    required String? legacyRouteLabel,
     required int summaries,
     required int windows,
   }) {
-    final sourceText = source == null ? '' : ' · $source';
+    final routeLabel = legacyRouteLabel == null ? '' : ' · $legacyRouteLabel';
     if (_zh) {
-      return '$routes 条连接路线$sourceText · $summaries 个摘要 · $windows 个最近窗口';
+      return '$routes 条连接路线$routeLabel · $summaries 个摘要 · $windows 个最近窗口';
     }
     if (_ja) {
-      return '接続経路 $routes 件$sourceText · 概要 $summaries 件 · 最近 $windows 件';
+      return '接続経路 $routes 件$routeLabel · 概要 $summaries 件 · 最近 $windows 件';
     }
     if (_ko) {
-      return '연결 경로 $routes개$sourceText · 요약 $summaries개 · 최근 창 $windows개';
+      return '연결 경로 $routes개$routeLabel · 요약 $summaries개 · 최근 창 $windows개';
     }
-    return '$routes routes$sourceText · $summaries summaries · $windows recent windows';
+    return '$routes routes$routeLabel · $summaries summaries · $windows recent windows';
   }
 
   String get clearThisDataSource {
-    if (_zh) return '清理这台 Bridge 的可重建缓存';
-    if (_ja) return 'この Bridge の再構築可能なキャッシュを消去';
-    if (_ko) return '이 Bridge의 재구성 가능한 캐시 지우기';
-    return 'Clear rebuildable cache for this Bridge';
+    if (_zh) return '清理这个数据源的可重建缓存';
+    if (_ja) return 'このデータソースの再構築可能なキャッシュを消去';
+    if (_ko) return '이 데이터 소스의 재구성 가능한 캐시 지우기';
+    return 'Clear rebuildable cache for this data source';
   }
 
   String dataSourceCleared(String name) {

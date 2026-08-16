@@ -198,6 +198,7 @@ export interface MobileRuntimeCapabilities {
   baseVersion?: string;
   buildNumber?: string;
   patchNumber?: number;
+  clientBridgeCompatibilityRevision?: number;
   hostSchemaVersion: number;
   nativeCapabilities: Record<string, number>;
 }
@@ -353,7 +354,13 @@ export type ClientMessage =
       serviceTier: string;
       sessionId?: string;
     } & CodexSettingsMutationEnvelope)
-  | { type: "get_goal"; sessionId: string }
+  | {
+      type: "get_goal";
+      sessionId: string;
+      goalTarget?: "durable_thread";
+      codexSourceId?: string;
+      threadId?: string;
+    }
   | {
       type: "set_goal";
       sessionId: string;
@@ -362,12 +369,30 @@ export type ClientMessage =
       tokenBudget?: number | null;
       goalChangeId?: string;
       expectedGoalOperationSequence?: number;
+      expectedGoalPresent?: boolean;
+      expectedGoalObjective?: string;
+      expectedGoalStatus?: CodexGoalWritableStatus;
+      expectedGoalTokenBudget?: number | null;
+      expectedGoalCreatedAt?: number;
+      goalTarget?: "durable_thread";
+      codexSourceId?: string;
+      threadId?: string;
+      operationId?: string;
     }
   | {
       type: "clear_goal";
       sessionId: string;
       goalChangeId?: string;
       expectedGoalOperationSequence?: number;
+      expectedGoalPresent?: boolean;
+      expectedGoalObjective?: string;
+      expectedGoalStatus?: CodexGoalWritableStatus;
+      expectedGoalTokenBudget?: number | null;
+      expectedGoalCreatedAt?: number;
+      goalTarget?: "durable_thread";
+      codexSourceId?: string;
+      threadId?: string;
+      operationId?: string;
     }
   | ({
       type: "set_sandbox_mode";
@@ -518,6 +543,11 @@ export type ClientMessage =
       type: "rewind";
       sessionId: string;
       targetUuid: string;
+      /** Exact provider turn used by modern app-server fork boundaries. */
+      historyTurnId?: string;
+      /** Present when editing a detached durable Codex thread. */
+      projectPath?: string;
+      codexSourceId?: string;
       mode: "conversation" | "code" | "both";
     }
   | { type: "rewind_dry_run"; sessionId: string; targetUuid: string }
@@ -526,6 +556,8 @@ export type ClientMessage =
       /** Bridge runtime id, or a durable Codex thread id with projectPath. */
       sessionId: string;
       targetUuid: string;
+      /** Exact provider turn used by modern app-server fork boundaries. */
+      historyTurnId?: string;
       /** Present only when forking a persisted conversation from the list. */
       projectPath?: string;
       codexSourceId?: string;
@@ -852,6 +884,8 @@ export type ServerMessage = (
       outputTokens?: number;
       toolCalls?: number;
       fileEdits?: number;
+      /** Bridge-internal provider turn fence for transient runtime UI. */
+      historyTurnId?: string;
     }
   | {
       type: "guardian_approval";
@@ -862,6 +896,8 @@ export type ServerMessage = (
       reviewId?: string;
       targetItemId?: string;
       action?: Record<string, unknown>;
+      /** Bridge-internal provider turn fence for transient runtime UI. */
+      historyTurnId?: string;
     }
   | {
       type: "error";
@@ -876,6 +912,8 @@ export type ServerMessage = (
        * remain backward compatible.
        */
       guardianReview?: GuardianReviewDetails;
+      /** Bridge-internal provider turn fence for transient runtime UI. */
+      historyTurnId?: string;
     }
   | {
       type: "session_link_resolution";
@@ -964,6 +1002,7 @@ export type ServerMessage = (
       stage: "provider_accepted" | "provider_rejected";
       provider: "codex";
       method: "turn/start" | "turn/steer";
+      providerTurnId?: string;
       occurredAt: string;
       acceptedSeq?: number;
       queued?: boolean;
@@ -1024,6 +1063,7 @@ export type ServerMessage = (
       codexSourceId: string;
       allowedDirs: string[];
       bridgeCapabilities: string[];
+      clientBridgeCompatibilityRevision?: number;
       [key: string]: unknown;
     }
   | {
@@ -1055,7 +1095,13 @@ export type ServerMessage = (
     }
   | { type: "worktree_list"; worktrees: WorktreeInfo[]; mainBranch?: string }
   | { type: "worktree_removed"; worktreePath: string }
-  | { type: "tool_use_summary"; summary: string; precedingToolUseIds: string[] }
+  | {
+      type: "tool_use_summary";
+      summary: string;
+      precedingToolUseIds: string[];
+      /** Bridge-internal provider turn fence for transient runtime UI. */
+      historyTurnId?: string;
+    }
   | {
       type: "rewind_preview";
       canRewind: boolean;
@@ -1068,6 +1114,7 @@ export type ServerMessage = (
       type: "rewind_result";
       success: boolean;
       mode: "conversation" | "code" | "both";
+      sessionId?: string;
       error?: string;
     }
   | {
@@ -1437,6 +1484,97 @@ function hasValidCodexSettingsMutationEnvelope(
   );
 }
 
+function hasValidCodexGoalEnvelope(
+  msg: Record<string, unknown>,
+  mutation: boolean,
+): boolean {
+  if (msg.goalTarget === undefined) {
+    return (
+      msg.codexSourceId === undefined &&
+      msg.threadId === undefined &&
+      msg.operationId === undefined
+    );
+  }
+  return (
+    msg.goalTarget === "durable_thread" &&
+    isValidWireIdentifier(msg.sessionId) &&
+    isValidWireIdentifier(msg.codexSourceId, 128) &&
+    isValidWireIdentifier(msg.threadId) &&
+    msg.sessionId === msg.threadId &&
+    (mutation
+      ? isValidWireIdentifier(msg.operationId, 128)
+      : msg.operationId === undefined)
+  );
+}
+
+function hasValidCodexGoalExpectation(msg: Record<string, unknown>): boolean {
+  if (
+    msg.expectedGoalPresent !== undefined &&
+    typeof msg.expectedGoalPresent !== "boolean"
+  ) {
+    return false;
+  }
+  const versionFields = [
+    msg.expectedGoalObjective,
+    msg.expectedGoalStatus,
+    msg.expectedGoalTokenBudget,
+    msg.expectedGoalCreatedAt,
+  ];
+  const hasVersionField = versionFields.some((value) => value !== undefined);
+  if (msg.expectedGoalPresent === false && hasVersionField) return false;
+  if (msg.goalTarget === "durable_thread") {
+    if (typeof msg.expectedGoalPresent !== "boolean") return false;
+    if (
+      msg.expectedGoalPresent === true &&
+      (msg.expectedGoalObjective === undefined ||
+        msg.expectedGoalStatus === undefined ||
+        !("expectedGoalTokenBudget" in msg) ||
+        msg.expectedGoalCreatedAt === undefined)
+    ) {
+      return false;
+    }
+  }
+  if (
+    msg.expectedGoalObjective !== undefined &&
+    (typeof msg.expectedGoalObjective !== "string" ||
+      msg.expectedGoalObjective.length === 0 ||
+      msg.expectedGoalObjective.length > 4000)
+  ) {
+    return false;
+  }
+  if (
+    msg.expectedGoalStatus !== undefined &&
+    ![
+      "active",
+      "paused",
+      "blocked",
+      "usageLimited",
+      "budgetLimited",
+      "complete",
+    ].includes(String(msg.expectedGoalStatus))
+  ) {
+    return false;
+  }
+  if (
+    msg.expectedGoalTokenBudget !== undefined &&
+    msg.expectedGoalTokenBudget !== null &&
+    (typeof msg.expectedGoalTokenBudget !== "number" ||
+      !Number.isSafeInteger(msg.expectedGoalTokenBudget) ||
+      msg.expectedGoalTokenBudget <= 0)
+  ) {
+    return false;
+  }
+  if (
+    msg.expectedGoalCreatedAt !== undefined &&
+    (typeof msg.expectedGoalCreatedAt !== "number" ||
+      !Number.isSafeInteger(msg.expectedGoalCreatedAt) ||
+      msg.expectedGoalCreatedAt < 0)
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export function parseClientMessage(data: string): ClientMessage | null {
   try {
     const msg = JSON.parse(data) as Record<string, unknown>;
@@ -1655,6 +1793,7 @@ export function parseClientMessage(data: string): ClientMessage | null {
                 "baseVersion",
                 "buildNumber",
                 "patchNumber",
+                "clientBridgeCompatibilityRevision",
                 "hostSchemaVersion",
                 "nativeCapabilities",
               ].includes(key),
@@ -1676,6 +1815,13 @@ export function parseClientMessage(data: string): ClientMessage | null {
             (!Number.isInteger(runtime.patchNumber) ||
               Number(runtime.patchNumber) < 0 ||
               Number(runtime.patchNumber) > 1_000_000)
+          )
+            return null;
+          if (
+            runtime.clientBridgeCompatibilityRevision !== undefined &&
+            (!Number.isInteger(runtime.clientBridgeCompatibilityRevision) ||
+              Number(runtime.clientBridgeCompatibilityRevision) < 1 ||
+              Number(runtime.clientBridgeCompatibilityRevision) > 1_000_000)
           )
             return null;
           if (
@@ -2086,9 +2232,12 @@ export function parseClientMessage(data: string): ClientMessage | null {
         break;
       case "get_goal":
         if (typeof msg.sessionId !== "string") return null;
+        if (!hasValidCodexGoalEnvelope(msg, false)) return null;
         break;
       case "clear_goal":
         if (typeof msg.sessionId !== "string") return null;
+        if (!hasValidCodexGoalEnvelope(msg, true)) return null;
+        if (!hasValidCodexGoalExpectation(msg)) return null;
         if (
           msg.goalChangeId !== undefined &&
           (typeof msg.goalChangeId !== "string" ||
@@ -2105,6 +2254,8 @@ export function parseClientMessage(data: string): ClientMessage | null {
         break;
       case "set_goal": {
         if (typeof msg.sessionId !== "string") return null;
+        if (!hasValidCodexGoalEnvelope(msg, true)) return null;
+        if (!hasValidCodexGoalExpectation(msg)) return null;
         const hasObjective = msg.objective !== undefined;
         const hasStatus = msg.status !== undefined;
         const hasTokenBudget = msg.tokenBudget !== undefined;
@@ -2640,6 +2791,18 @@ export function parseClientMessage(data: string): ClientMessage | null {
           msg.mode !== "both"
         )
           return null;
+        if (
+          msg.historyTurnId !== undefined &&
+          !isValidWireIdentifier(msg.historyTurnId, 256)
+        )
+          return null;
+        if (
+          (msg.projectPath !== undefined &&
+            !isValidWireIdentifier(msg.projectPath, 16_384)) ||
+          (msg.codexSourceId !== undefined &&
+            !isValidWireIdentifier(msg.codexSourceId, 512))
+        )
+          return null;
         break;
       case "rewind_dry_run":
         if (
@@ -2658,6 +2821,11 @@ export function parseClientMessage(data: string): ClientMessage | null {
         if (
           msg.codexSourceId !== undefined &&
           !isValidWireIdentifier(msg.codexSourceId, 128)
+        )
+          return null;
+        if (
+          msg.historyTurnId !== undefined &&
+          !isValidWireIdentifier(msg.historyTurnId, 256)
         )
           return null;
         break;

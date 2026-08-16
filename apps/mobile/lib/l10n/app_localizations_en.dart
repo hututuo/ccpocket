@@ -635,6 +635,79 @@ class AppLocalizationsEn extends AppLocalizations {
       'Bridge is online. Preparing the shared Codex runtime...';
 
   @override
+  String get connectionPreparingTarget => 'Preparing the connection target…';
+
+  @override
+  String get connectionOpeningTransport => 'Opening the network connection…';
+
+  @override
+  String get connectionNegotiatingTransport =>
+      'Network connected. Negotiating Bridge capabilities…';
+
+  @override
+  String get connectionSendingCapabilities => 'Sending Mobile capabilities…';
+
+  @override
+  String get connectionRequestingSessionList =>
+      'Requesting the authoritative session catalog…';
+
+  @override
+  String get connectionReceivingSessionList =>
+      'Catalog data received. Reading it…';
+
+  @override
+  String get connectionDecodingSessionList => 'Decoding the session catalog…';
+
+  @override
+  String get connectionValidatingSessionList =>
+      'Validating the session catalog…';
+
+  @override
+  String get connectionAcceptingSessionAuthority =>
+      'Confirming the current Bridge and data source…';
+
+  @override
+  String get connectionResolvingBridgeIdentity =>
+      'Identifying the computer and Codex source…';
+
+  @override
+  String get connectionPublishingSessionList =>
+      'Publishing the authoritative session catalog…';
+
+  @override
+  String get connectionPreparingConversationSync =>
+      'Preparing incremental conversation sync…';
+
+  @override
+  String get connectionStartingConversationSync =>
+      'Starting incremental conversation sync…';
+
+  @override
+  String get connectionSavingConversationCatalog =>
+      'Saving the conversation catalog…';
+
+  @override
+  String get connectionSavingSessionStatus => 'Saving live session status…';
+
+  @override
+  String get connectionSavingPriorityTimelines =>
+      'Saving recent conversation content…';
+
+  @override
+  String get connectionReloadingLocalProjection =>
+      'Reloading the local conversation view…';
+
+  @override
+  String connectionProgressWithCount(String label, int completed, int total) {
+    return '$label ($completed/$total)';
+  }
+
+  @override
+  String connectionProgressWhilePreparingRuntime(String label) {
+    return '$label (also preparing the shared Codex runtime)';
+  }
+
+  @override
   String get codexRuntimeTakingLonger =>
       'The Bridge process is online, but the shared Codex runtime is still preparing. You can keep waiting, retry, or cancel.';
 
@@ -746,6 +819,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get allProjects => 'All Projects';
 
   @override
+  String get unassignedProject => 'Not in a project';
+
+  @override
   String get named => 'Named';
 
   @override
@@ -845,6 +921,22 @@ class AppLocalizationsEn extends AppLocalizations {
   String get bridgeUpdateAvailable => 'Update available';
 
   @override
+  String get clientBridgeMatched => 'The mobile IPA and Bridge match';
+
+  @override
+  String get clientBridgeBridgeOlder =>
+      'Bridge is older; update it to match this IPA';
+
+  @override
+  String get clientBridgeMobileOlder =>
+      'The mobile IPA is older; update it to match this Bridge';
+
+  @override
+  String clientBridgeCompatibilityDetail(String bridgeVersion) {
+    return 'Current Bridge v$bridgeVersion';
+  }
+
+  @override
   String get bridgeUpdateRequiresSetup =>
       'Requires SSH and Bridge auto-start setup';
 
@@ -931,10 +1023,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get supportBannerAction => 'View support';
 
   @override
-  String get offline => 'Offline';
+  String get offline => 'Mac or Bridge offline';
 
   @override
-  String get unreachable => 'Unreachable';
+  String get unreachable => 'Connection timed out';
 
   @override
   String get checking => 'Checking...';
@@ -1595,11 +1687,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get rewindCannotRewindFiles => 'Cannot rewind files';
 
   @override
-  String get codexRewindConfirmTitle => 'Rewind conversation?';
+  String get codexEditMessageConfirmTitle => 'Edit this message?';
 
   @override
-  String get codexRewindConfirmBody =>
-      'Restore the chat to just before this message and put the message back in the composer. File changes stay untouched.';
+  String get codexEditMessageConfirmBody =>
+      'Codex will create a new branch before this message. The original branch and file changes stay intact. This message returns to the composer so you can edit and send it again.';
+
+  @override
+  String get codexEditMessageUnavailable =>
+      'This conversation is still syncing and cannot be edited yet. Refresh it and try again.';
 
   @override
   String get fork => 'Fork';

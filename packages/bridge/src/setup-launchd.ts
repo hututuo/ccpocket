@@ -56,6 +56,7 @@ interface SetupOptions {
   port?: string;
   host?: string;
   apiKey?: string;
+  authMode?: string;
   requireApiKey?: boolean;
   publicWsUrl?: string;
   artifactBaseUrl?: string;
@@ -73,16 +74,31 @@ interface SetupOptions {
 export function setupLaunchd(opts: SetupOptions): void {
   const port = parseBridgePort(opts.port ?? process.env.BRIDGE_PORT);
   const host = opts.host ?? process.env.BRIDGE_HOST ?? DEFAULT_BRIDGE_HOST;
+  const rawAuthMode = opts.authMode ?? process.env.BRIDGE_AUTH_MODE;
+  const unauthenticatedDiagnosticsRequested =
+    process.env.BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS === "1";
+  if (
+    unauthenticatedDiagnosticsRequested &&
+    rawAuthMode?.trim().toLowerCase() !== "open"
+  ) {
+    throw new Error(
+      "BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS requires an explicit BRIDGE_AUTH_MODE=open",
+    );
+  }
   const connectionAuthentication = resolveBridgeConnectionAuthentication({
     apiKey: opts.apiKey ?? process.env.BRIDGE_API_KEY,
     requireApiKey:
       opts.requireApiKey ?? process.env.BRIDGE_REQUIRE_API_KEY,
+    authMode: rawAuthMode,
   });
   const apiKey = connectionAuthentication.configuredApiKey ?? "";
   const allowUnauthenticatedRemote =
     process.env.BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE === "1" ||
     (connectionAuthentication.explicitlyConfigured &&
       !connectionAuthentication.required);
+  const allowUnauthenticatedDiagnostics =
+    unauthenticatedDiagnosticsRequested &&
+    connectionAuthentication.mode === "open";
   assertSecureBridgeBinding({
     host,
     apiKey: connectionAuthentication.effectiveApiKey,
@@ -150,6 +166,8 @@ export function setupLaunchd(opts: SetupOptions): void {
         <string>${host}</string>
         <key>BRIDGE_REQUIRE_API_KEY</key>
         <string>${connectionAuthentication.required ? "1" : "0"}</string>
+        <key>BRIDGE_AUTH_MODE</key>
+        <string>${connectionAuthentication.mode}</string>
         <key>BRIDGE_CLI_ENTRY</key>
         <string>${escapeXml(bridgeCliEntry)}</string>`;
 
@@ -162,6 +180,12 @@ export function setupLaunchd(opts: SetupOptions): void {
   if (allowUnauthenticatedRemote) {
     envBlock += `
         <key>BRIDGE_ALLOW_UNAUTHENTICATED_REMOTE</key>
+        <string>1</string>`;
+  }
+
+  if (allowUnauthenticatedDiagnostics) {
+    envBlock += `
+        <key>BRIDGE_ALLOW_UNAUTHENTICATED_DIAGNOSTICS</key>
         <string>1</string>`;
   }
 

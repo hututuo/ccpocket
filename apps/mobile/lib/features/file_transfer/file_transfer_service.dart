@@ -15,6 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../models/messages.dart';
 import '../../services/bridge_service.dart';
 import '../../services/notification_service.dart';
+import '../diagnostics/diagnostic_sanitizer.dart';
 import 'adaptive_transfer_chunk_sizer.dart';
 import 'file_transfer_cancellation.dart';
 import 'file_transfer_http.dart';
@@ -88,10 +89,7 @@ class FileTransferSelection {
 }
 
 class FileTransferUploadTicket {
-  const FileTransferUploadTicket({
-    required this.id,
-    required this.completion,
-  });
+  const FileTransferUploadTicket({required this.id, required this.completion});
 
   final String id;
   final Future<FileTransferRecord> completion;
@@ -185,6 +183,15 @@ class BridgeServiceFileTransferGateway implements FileTransferBridgeGateway {
           identity: _bridge.logicalConnectionIdentity,
           supported: _bridge.bridgeCapabilities.contains(
             fileTransferCapability,
+          ),
+          diagnostic: _bridge.bridgeCapabilities.contains(
+            fileTransferDiagnosticReportCapability,
+          ),
+          uploadAuth: _bridge.bridgeCapabilities.contains(
+            fileTransferUploadAuthCapability,
+          ),
+          diagnosticNoStepUp: _bridge.bridgeCapabilities.contains(
+            fileTransferDiagnosticReportNoStepUpCapability,
           ),
         ),
       )
@@ -355,8 +362,8 @@ class FileTransferService extends ChangeNotifier {
   final Map<String, AdaptiveTransferChunkSizer> _chunkSizers = {};
   final Map<String, int> _completionRecoveryAttempts = {};
   final Map<String, Completer<FileTransferRecord>> _uploadCompletions = {};
-  final Map<String, FileMutationAuthorization>
-  _uploadMutationAuthorizations = {};
+  final Map<String, FileMutationAuthorization> _uploadMutationAuthorizations =
+      {};
   final Set<Future<void>> _backgroundOperations = {};
   List<ReceivedFileTransfer> _receivedFiles = const [];
   Set<String> _unreadReceivedPaths = const {};
@@ -387,7 +394,15 @@ class FileTransferService extends ChangeNotifier {
   int _queuedReceiveBytes = 0;
   int _reservedReceiveBytes = 0;
   DateTime? _lastProgressNotify;
-  ({bool connected, String? identity, bool supported})? _lastCapabilitySnapshot;
+  ({
+    bool connected,
+    String? identity,
+    bool supported,
+    bool diagnostic,
+    bool uploadAuth,
+    bool diagnosticNoStepUp,
+  })?
+  _lastCapabilitySnapshot;
   List<Future<void>>? _subscriptionCancellations;
   Future<void>? _closeFuture;
 
@@ -396,6 +411,13 @@ class FileTransferService extends ChangeNotifier {
   bool get isConnected => _bridge.isConnected;
   bool get supportedByBridge =>
       _bridge.capabilities.contains(fileTransferCapability);
+  bool get diagnosticReportsSupportedByBridge =>
+      _bridge.capabilities.contains(fileTransferDiagnosticReportCapability);
+  bool get diagnosticReportMutationAuthRequired =>
+      uploadMutationAuthRequired &&
+      !_bridge.capabilities.contains(
+        fileTransferDiagnosticReportNoStepUpCapability,
+      );
   bool get uploadMutationAuthRequired =>
       _bridge.capabilities.contains(fileTransferUploadAuthCapability);
   bool get uploadAvailable =>
@@ -461,8 +483,7 @@ class FileTransferService extends ChangeNotifier {
     _receivedFiles = files;
     _unreadReceivedPaths = {
       for (final file in files)
-        if (file.modifiedAt.microsecondsSinceEpoch >
-            _receivedSeenBeforeMicros)
+        if (file.modifiedAt.microsecondsSinceEpoch > _receivedSeenBeforeMicros)
           file.path,
     };
     _notify(force: true);
@@ -544,6 +565,55 @@ class FileTransferService extends ChangeNotifier {
     );
   }
 
+  /// Queues a diagnostic report through the same staged, resumable upload
+  /// pipeline as ordinary files. No alternate transport or queue is created;
+  /// only the optional purpose/metadata travels with the existing checkpoint.
+  Future<FileTransferUploadTicket> enqueueDiagnosticReport({
+    required String filename,
+    required Stream<List<int>> bytes,
+    int? expectedSizeBytes,
+    required DiagnosticReportMetadata metadata,
+    FileMutationAuthorizationCallback? authorizeMutation,
+  }) async {
+    if (!diagnosticReportsSupportedByBridge) {
+      throw const FileTransferException('diagnostic_report_unsupported');
+    }
+    final identity = _requireUploadIngressReady(
+      rejectIfBusy: diagnosticReportMutationAuthRequired,
+    );
+    if (expectedSizeBytes == null ||
+        expectedSizeBytes < 0 ||
+        expectedSizeBytes > maxDiagnosticReportBytes) {
+      throw const FileTransferException('diagnostic_report_too_large');
+    }
+    _validateIngressMetadata(filename, expectedSizeBytes);
+    final normalizedMetadata = normalizeDiagnosticReportMetadata(metadata);
+    if (sanitizeDiagnosticValue(normalizedMetadata).redactedCredentialCount >
+        0) {
+      throw const FileTransferException('diagnostic_sensitive_field');
+    }
+    await _markTransientStorage(identity);
+    final pickerRoot = await _storage.pickerStagingDirectory();
+    await _requireCapacity(pickerRoot.path, expectedSizeBytes);
+    final staged = await _storage.stageExternalFile(
+      filename: filename,
+      bytes: bytes,
+      maxSizeBytes: maxDiagnosticReportBytes,
+      expectedSizeBytes: expectedSizeBytes,
+    );
+    return _enqueueUploadSelection(
+      FileTransferSelection(
+        path: staged.file.path,
+        filename: staged.filename,
+        sizeBytes: staged.sizeBytes,
+      ),
+      identity: identity,
+      purpose: 'diagnostic_report',
+      metadata: normalizedMetadata,
+      authorizeMutation: authorizeMutation,
+    );
+  }
+
   Stream<List<int>> _capacityCheckedDropStream(
     Stream<List<int>> source,
     String targetPath,
@@ -585,6 +655,8 @@ class FileTransferService extends ChangeNotifier {
   Future<FileTransferUploadTicket> _enqueueUploadSelection(
     FileTransferSelection selection, {
     required String identity,
+    String? purpose,
+    DiagnosticReportMetadata? metadata,
     FileMutationAuthorizationCallback? authorizeMutation,
   }) async {
     _validateSelection(selection);
@@ -601,6 +673,8 @@ class FileTransferService extends ChangeNotifier {
       filename: selection.filename,
       sizeBytes: selection.sizeBytes,
       pickerCopy: File(selection.path),
+      purpose: purpose,
+      metadata: metadata,
     );
     try {
       final authorization = await _authorizeUploadMutation(
@@ -621,10 +695,7 @@ class FileTransferService extends ChangeNotifier {
     _uploadRecoveryQueue.add(checkpoint);
     _notify(force: true);
     _launch(_drainAndScheduleRecovery());
-    return FileTransferUploadTicket(
-      id: localId,
-      completion: completion.future,
-    );
+    return FileTransferUploadTicket(id: localId, completion: completion.future);
   }
 
   void pauseActive() {
@@ -713,6 +784,22 @@ class FileTransferService extends ChangeNotifier {
   void _handleMessage(LocalFeatureServerMessage message) {
     if (message is FileTransferOfferMessage) {
       _launch(_handleOffer(message));
+      return;
+    }
+    if (message is LocalFeatureRequestErrorMessage &&
+        message.featureId == 'file_transfer' &&
+        message.requestType == 'file_transfer_upload_prepare_v2') {
+      final pending = _pendingUploadResponse;
+      if (pending != null &&
+          (message.requestId == null ||
+              message.requestId == pending.requestId)) {
+        final error = FileTransferException(
+          message.errorCode ?? 'upload_prepare_failed',
+          message.message,
+        );
+        if (!pending.ready.isCompleted) pending.ready.completeError(error);
+        if (!pending.result.isCompleted) pending.result.completeError(error);
+      }
       return;
     }
     final cancelPending = _pendingCancel;
@@ -1066,6 +1153,15 @@ class FileTransferService extends ChangeNotifier {
               );
             }
           } else {
+            if (work is _UploadWork &&
+                work.checkpoint.purpose == 'diagnostic_report') {
+              try {
+                await _cleanupWork(work);
+              } catch (_) {
+                // Keep the terminal error authoritative. The storage startup
+                // sweep will retry cleanup of any durable sidecar left behind.
+              }
+            }
             _remember(
               _recordForWork(
                 work,
@@ -1882,7 +1978,8 @@ class FileTransferService extends ChangeNotifier {
     final mutationAuthorization = _uploadMutationAuthorizations.remove(
       checkpoint.transferId,
     );
-    if (uploadMutationAuthRequired && mutationAuthorization == null) {
+    if (_uploadMutationAuthorizationRequired(checkpoint) &&
+        mutationAuthorization == null) {
       throw const FileTransferException(
         'step_up_required',
         'Password or Face ID approval is required',
@@ -1921,6 +2018,8 @@ class FileTransferService extends ChangeNotifier {
         filename: checkpoint.filename,
         sizeBytes: checkpoint.sizeBytes,
         mutationAuthorization: mutationAuthorization,
+        purpose: checkpoint.purpose,
+        diagnosticReport: checkpoint.metadata,
       ),
     );
     final first = await _waitWithCancellation<Object>(
@@ -2082,9 +2181,19 @@ class FileTransferService extends ChangeNotifier {
     FileTransferUploadResultMessage result,
   ) async {
     final savedFilename = result.filename;
+    final expectedPurpose = checkpoint.purpose ?? 'file';
+    final resultPurpose = result.purpose ?? 'file';
+    final expectedReportId = checkpoint.metadata?['reportId'];
+    final metadataMatches = expectedPurpose == 'diagnostic_report'
+        ? expectedReportId is String &&
+              resultPurpose == 'diagnostic_report' &&
+              result.reportId == expectedReportId
+        : result.reportId == null;
     if (!result.success ||
         result.transferId != checkpoint.transferId ||
         result.sizeBytes != checkpoint.sizeBytes ||
+        resultPurpose != expectedPurpose ||
+        !metadataMatches ||
         !_isSafeTransferLeaf(savedFilename)) {
       throw FileTransferException(
         result.errorCode ?? 'upload_failed',
@@ -2167,12 +2276,26 @@ class FileTransferService extends ChangeNotifier {
     };
   }
 
-  ({bool connected, String? identity, bool supported}) _capabilitySnapshot() =>
-      (
-        connected: _bridge.isConnected,
-        identity: _stableIdentity,
-        supported: _bridge.capabilities.contains(fileTransferCapability),
-      );
+  ({
+    bool connected,
+    String? identity,
+    bool supported,
+    bool diagnostic,
+    bool uploadAuth,
+    bool diagnosticNoStepUp,
+  })
+  _capabilitySnapshot() => (
+    connected: _bridge.isConnected,
+    identity: _stableIdentity,
+    supported: _bridge.capabilities.contains(fileTransferCapability),
+    diagnostic: _bridge.capabilities.contains(
+      fileTransferDiagnosticReportCapability,
+    ),
+    uploadAuth: _bridge.capabilities.contains(fileTransferUploadAuthCapability),
+    diagnosticNoStepUp: _bridge.capabilities.contains(
+      fileTransferDiagnosticReportNoStepUpCapability,
+    ),
+  );
 
   void _handleCapabilityChange() {
     final snapshot = _capabilitySnapshot();
@@ -2668,7 +2791,7 @@ class FileTransferService extends ChangeNotifier {
     UploadTransferCheckpoint checkpoint,
     FileMutationAuthorizationCallback? authorizeMutation,
   ) async {
-    if (!uploadMutationAuthRequired) return null;
+    if (!_uploadMutationAuthorizationRequired(checkpoint)) return null;
     if (authorizeMutation == null) {
       throw const FileTransferException('mutation_auth_required');
     }
@@ -2683,6 +2806,16 @@ class FileTransferService extends ChangeNotifier {
       throw const FileTransferException('mutation_auth_cancelled');
     }
     return authorization;
+  }
+
+  bool _uploadMutationAuthorizationRequired(
+    UploadTransferCheckpoint checkpoint,
+  ) {
+    if (!uploadMutationAuthRequired) return false;
+    if (checkpoint.purpose == 'diagnostic_report') {
+      return diagnosticReportMutationAuthRequired;
+    }
+    return true;
   }
 
   void _validateIngressMetadata(String filename, int? sizeBytes) {

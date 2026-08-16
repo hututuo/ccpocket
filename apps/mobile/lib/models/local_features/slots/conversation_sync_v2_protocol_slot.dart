@@ -1,10 +1,15 @@
 part of '../../messages.dart';
 
 const conversationSyncV2Capability = 'conversation_sync_v2';
+const conversationWindowCoverageCapability =
+    'conversation_sync_window_coverage_v1';
+const conversationSyncFocusRefreshCapability =
+    'conversation_sync_focus_refresh_v1';
 const conversationItemsByIdCapability = 'conversation_items_by_id_v1';
 const conversationUserIndexCapability = 'conversation_user_index_v1';
 const appServerStatusV1Capability = 'app_server_status_v1';
 const bridgeIdentityV2Capability = 'bridge_identity_v2';
+const conversationRuntimeOverlayCapability = 'conversation_runtime_overlay_v1';
 
 const _conversationSyncMaxCatalogChanges = 512;
 const _conversationSyncMaxStatuses = 512;
@@ -26,6 +31,8 @@ class _ConversationSyncV2ProtocolSlot implements LocalFeatureProtocolSlot {
   @override
   List<String> get supportedServerMessageTypes => const [
     conversationSyncV2Capability,
+    conversationWindowCoverageCapability,
+    conversationRuntimeOverlayCapability,
     conversationUserIndexCapability,
     appServerStatusV1Capability,
   ];
@@ -42,6 +49,7 @@ enum ConversationSyncV2EventKind {
   catalogChanges('catalog_changes'),
   statusChanges('status_changes'),
   timelinePage('timeline_page'),
+  runtimeOverlay('runtime_overlay'),
   syncCheckpoint('sync_checkpoint'),
   syncComplete('sync_complete'),
   syncReset('sync_reset'),
@@ -94,14 +102,17 @@ class ConversationSyncV2ThreadState extends ConversationSyncV2Target {
     required super.provider,
     required super.providerSessionId,
     required this.revision,
+    this.forceReplacement = false,
   });
 
   final String revision;
+  final bool forceReplacement;
 
   @override
   Map<String, dynamic> toJson() => <String, dynamic>{
     ...super.toJson(),
     'revision': revision,
+    if (forceReplacement) 'forceReplacement': true,
   };
 }
 
@@ -131,6 +142,11 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
     required this.modifiedAt,
     required this.recencyAt,
     required this.availability,
+    this.projectGroupKind,
+    this.projectGroupId,
+    this.projectGroupName,
+    this.projectGroupPath,
+    this.projectGroupingSnapshotComplete = false,
     this.name,
     this.summary,
     this.firstPrompt,
@@ -154,6 +170,11 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
   final String modifiedAt;
   final String recencyAt;
   final String availability;
+  final String? projectGroupKind;
+  final String? projectGroupId;
+  final String? projectGroupName;
+  final String? projectGroupPath;
+  final bool projectGroupingSnapshotComplete;
   final String? name;
   final String? summary;
   final String? firstPrompt;
@@ -183,6 +204,25 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
         'Unsupported conversation availability: $availability',
       );
     }
+    final projectGroupKind = _conversationSyncProjectGroupKind(
+      json['projectGroupKind'],
+    );
+    final projectGroupId = _conversationSyncOptionalString(
+      json,
+      'projectGroupId',
+      maximumLength: 256,
+    );
+    final projectGroupName = _conversationSyncOptionalDisplayString(
+      json,
+      'projectGroupName',
+      maximumLength: 512,
+    );
+    final projectGroupingSnapshotComplete =
+        json['projectGroupingSnapshotComplete'] == true &&
+        (projectGroupKind == 'projectless' ||
+            (projectGroupKind == 'desktopProject' &&
+                projectGroupId != null &&
+                projectGroupName != null));
     return ConversationSyncV2CatalogEntry(
       provider: _conversationSyncProvider(json['provider']),
       providerSessionId: _conversationSyncString(
@@ -201,6 +241,15 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
       modifiedAt: _conversationSyncIsoDate(json, 'modifiedAt'),
       recencyAt: _conversationSyncIsoDate(json, 'recencyAt'),
       availability: availability,
+      projectGroupKind: projectGroupKind,
+      projectGroupId: projectGroupId,
+      projectGroupName: projectGroupName,
+      projectGroupPath: _conversationSyncOptionalString(
+        json,
+        'projectGroupPath',
+        maximumLength: 4096,
+      ),
+      projectGroupingSnapshotComplete: projectGroupingSnapshotComplete,
       name: _conversationSyncOptionalDisplayString(
         json,
         'name',
@@ -285,6 +334,11 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
         gitBranch: '',
         projectPath: projectPath,
         resumeCwd: projectPath,
+        projectGroupKind: projectGroupKind,
+        projectGroupId: projectGroupId,
+        projectGroupName: projectGroupName,
+        projectGroupPath: projectGroupPath,
+        projectGroupingSnapshotComplete: projectGroupingSnapshotComplete,
         isSidechain: false,
         codexModel: model,
         codexModelReasoningEffort: modelReasoningEffort,
@@ -302,6 +356,11 @@ class ConversationSyncV2CatalogEntry extends ConversationSyncV2Target {
 
 String? _conversationSyncCollaborationMode(Object? value) =>
     value == 'plan' || value == 'default' ? value as String : null;
+
+String? _conversationSyncProjectGroupKind(Object? value) =>
+    value == 'desktopProject' || value == 'projectless'
+    ? value as String
+    : null;
 
 class ConversationSyncV2Status extends ConversationSyncV2Target {
   const ConversationSyncV2Status({
@@ -507,9 +566,16 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
     this.deletes = const [],
     this.hasEarlier,
     this.turnsNextCursor,
+    this.windowComplete,
     this.latestTurnComplete,
     this.latestTurnGap,
     this.sourceEntryCount,
+    this.overlayId,
+    this.observedAt,
+    this.originGeneration,
+    this.runtimeSessionId,
+    this.authorityGeneration,
+    this.overlayMessage,
     this.phase,
     this.hasMore,
     this.nextState,
@@ -519,6 +585,7 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
     this.turnId,
     this.data = const [],
     this.nextCursor,
+    this.pageComplete,
     this.focused,
     this.errorCode,
     this.error,
@@ -553,9 +620,16 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
   final List<String> deletes;
   final bool? hasEarlier;
   final String? turnsNextCursor;
+  final bool? windowComplete;
   final bool? latestTurnComplete;
   final ConversationSyncV2LatestTurnGap? latestTurnGap;
   final int? sourceEntryCount;
+  final String? overlayId;
+  final String? observedAt;
+  final String? originGeneration;
+  final String? runtimeSessionId;
+  final String? authorityGeneration;
+  final ServerMessage? overlayMessage;
   final String? phase;
   final bool? hasMore;
   final ConversationSyncV2NextState? nextState;
@@ -565,9 +639,14 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
   final String? turnId;
   final List<Object?> data;
   final String? nextCursor;
+  final bool? pageComplete;
   final ConversationSyncV2Target? focused;
   final String? errorCode;
   final String? error;
+
+  /// Whole-window replacement authority. Older Bridges did not send the
+  /// explicit field, so a latest-turn repair is conservatively additive.
+  bool get effectiveWindowComplete => windowComplete ?? false;
 
   @override
   String? get sessionId => providerSessionId ?? target?.providerSessionId;
@@ -578,6 +657,12 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
       for (final rawTurn in data) {
         if (rawTurn is! Map) {
           throw const FormatException('Conversation turn page is malformed.');
+        }
+        final turnId = (rawTurn['turnId'] as String?)?.trim();
+        if (turnId == null || turnId.isEmpty) {
+          throw const FormatException(
+            'Conversation turn page is missing its turn identity.',
+          );
         }
         final rawMessages = rawTurn['messages'];
         if (rawMessages is! List) {
@@ -592,6 +677,15 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
             );
           }
           final message = Map<String, dynamic>.from(rawMessage);
+          final messageTurnId = (message['historyTurnId'] as String?)?.trim();
+          if (messageTurnId != null &&
+              messageTurnId.isNotEmpty &&
+              messageTurnId != turnId) {
+            throw const FormatException(
+              'Conversation page message belongs to a different turn.',
+            );
+          }
+          message['historyTurnId'] = turnId;
           ServerMessage.fromJson(message);
           messages.add(Map.unmodifiable(message));
         }
@@ -749,6 +843,7 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
         'turnsNextCursor',
         maximumLength: 512,
       ),
+      windowComplete: _conversationSyncOptionalBool(json, 'windowComplete'),
       latestTurnComplete: _conversationSyncOptionalBool(
         json,
         'latestTurnComplete',
@@ -761,6 +856,28 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
         'sourceEntryCount',
         minimum: 0,
       ),
+      overlayId: _conversationSyncOptionalString(
+        json,
+        'overlayId',
+        maximumLength: 128,
+      ),
+      observedAt: _conversationSyncOptionalIsoDate(json['observedAt']),
+      originGeneration: _conversationSyncOptionalString(
+        json,
+        'originGeneration',
+        maximumLength: 256,
+      ),
+      runtimeSessionId: _conversationSyncOptionalString(
+        json,
+        'runtimeSessionId',
+        maximumLength: 256,
+      ),
+      authorityGeneration: _conversationSyncOptionalString(
+        json,
+        'authorityGeneration',
+        maximumLength: 256,
+      ),
+      overlayMessage: _conversationSyncRuntimeOverlayMessage(json['message']),
       phase: _conversationSyncOptionalString(json, 'phase', maximumLength: 16),
       hasMore: json['hasMore'] as bool?,
       nextState: _conversationSyncNextState(json['nextState']),
@@ -782,6 +899,7 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
         'nextCursor',
         maximumLength: 512,
       ),
+      pageComplete: _conversationSyncOptionalBool(json, 'pageComplete'),
       focused: _conversationSyncOptionalTarget(json['focused']),
       errorCode: _conversationSyncOptionalString(
         json,
@@ -900,12 +1018,14 @@ ClientMessage conversationSyncV2Focus({
   required String requestId,
   required String subscriptionId,
   ConversationSyncV2Target? focused,
+  bool refresh = false,
 }) => ClientMessage._(<String, dynamic>{
   'type': 'conversation_sync_focus',
   'protocolVersion': 2,
   'requestId': requestId,
   'subscriptionId': subscriptionId,
   'focused': ?focused?.toJson(),
+  if (refresh) 'refresh': true,
 }, delivery: ClientMessageDelivery.ephemeral);
 
 ClientMessage conversationSyncV2Unsubscribe({
@@ -1008,6 +1128,9 @@ void _validateConversationSyncEvent(ConversationSyncV2EventMessage message) {
               message.latestTurnGap == null) ||
           (message.latestTurnComplete == false &&
               message.latestTurnGap != null);
+      final windowMetadataValid =
+          !(message.windowComplete == true &&
+              message.latestTurnComplete == false);
       if (!validPage ||
           message.provider == null ||
           message.providerSessionId == null ||
@@ -1019,9 +1142,22 @@ void _validateConversationSyncEvent(ConversationSyncV2EventMessage message) {
           message.hasEarlier == null ||
           message.sourceEntryCount == null ||
           !latestTurnMetadataValid ||
+          !windowMetadataValid ||
           !timelinePositionComplete ||
           !timelinePositionValid) {
         throw const FormatException('Timeline page is incomplete.');
+      }
+    case ConversationSyncV2EventKind.runtimeOverlay:
+      if (message.provider != 'codex' ||
+          message.providerSessionId == null ||
+          message.overlayId == null ||
+          message.observedAt == null ||
+          message.originGeneration == null ||
+          message.runtimeSessionId == null ||
+          message.authorityGeneration == null ||
+          message.turnId == null ||
+          message.overlayMessage == null) {
+        throw const FormatException('Runtime overlay is incomplete.');
       }
     case ConversationSyncV2EventKind.syncCheckpoint:
       if (!const {'priority', 'recent', 'cold'}.contains(message.phase) ||
@@ -1042,7 +1178,8 @@ void _validateConversationSyncEvent(ConversationSyncV2EventMessage message) {
     case ConversationSyncV2EventKind.itemsPageResponse:
       if (message.requestId == null ||
           message.provider == null ||
-          message.providerSessionId == null) {
+          message.providerSessionId == null ||
+          (message.pageComplete == false && message.latestTurnGap == null)) {
         throw const FormatException(
           'Conversation page response is incomplete.',
         );
@@ -1246,4 +1383,32 @@ String _conversationSyncIsoDate(Map<String, dynamic> json, String key) {
     throw FormatException('Conversation sync $key is not an ISO date.');
   }
   return value;
+}
+
+String? _conversationSyncOptionalIsoDate(Object? raw) {
+  if (raw == null) return null;
+  if (raw is! String || raw.length > 64 || DateTime.tryParse(raw) == null) {
+    throw const FormatException(
+      'Conversation sync optional ISO date is invalid.',
+    );
+  }
+  return raw;
+}
+
+ServerMessage? _conversationSyncRuntimeOverlayMessage(Object? raw) {
+  if (raw == null) return null;
+  if (raw is! Map) {
+    throw const FormatException('Conversation runtime overlay is malformed.');
+  }
+  final message = ServerMessage.fromJson(Map<String, dynamic>.from(raw));
+  if (message is AssistantServerMessage ||
+      message is ResultMessage ||
+      message is ErrorMessage ||
+      message is GuardianApprovalMessage ||
+      message is ToolUseSummaryMessage) {
+    return message;
+  }
+  throw const FormatException(
+    'Conversation runtime overlay type is unsupported.',
+  );
 }

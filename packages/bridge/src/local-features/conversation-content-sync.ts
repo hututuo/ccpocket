@@ -103,6 +103,12 @@ export interface ConversationContentLatestTurnGap {
 export interface ConversationContentSnapshot extends ConversationContentTarget {
   revision: string;
   entries: ConversationContentSnapshotEntry[];
+  /**
+   * True only when this projection covers the complete bounded hot window and
+   * may replace a previously committed window. A complete latest turn can
+   * still have an incomplete hot window after byte-budget fallback.
+   */
+  windowComplete: boolean;
   hasEarlier: boolean;
   /// Opaque app-server/provider cursor for the next older turn page.
   turnsNextCursor?: string | null;
@@ -724,7 +730,9 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
             maxSnapshotBytes: this.maxSnapshotBytes,
           });
           this.publishSnapshot(task.key, snapshot);
-          this.rememberSnapshot(task.key, snapshot);
+          if (snapshot.windowComplete) {
+            this.rememberSnapshot(task.key, snapshot);
+          }
         } catch (error) {
           this.sendTargetErrors(
             task,
@@ -790,7 +798,21 @@ export class ConversationContentSyncFeatureHandler implements LocalFeatureHandle
     allowDeferral = true,
   ): void {
     if (!subscription.interactive || !this.clientReady(client)) return;
+    // v1 has no coverage field or provisional overlay lineage. Publishing a
+    // partial projection would make older Mobile replace its readable cache as
+    // if the subset were authoritative. Keep the last complete v1 window; the
+    // live session stream still carries current focused progress.
     const pendingRevision = subscription.pendingRevisions.get(key);
+    if (!snapshot.windowComplete) {
+      // v1 has no coverage bit. An incomplete snapshot is safe only as the
+      // first bootstrap for a client that has no readable window at all. Once
+      // a local or pending revision exists, preserve it until a complete
+      // replacement is available.
+      if (pendingRevision || subscription.cursors.has(key)) return;
+      this.sendSnapshot(client, subscription, snapshot);
+      subscription.pendingRevisions.set(key, snapshot.revision);
+      return;
+    }
     if (pendingRevision === snapshot.revision) return;
     const canReplayAfterAck =
       snapshot.cacheBytes <= this.maxCachedTargetBytes &&
@@ -1162,6 +1184,7 @@ export function buildConversationContentSnapshot(
     limits.maxMessageTextBytes,
     limits.maxSnapshotBytes,
   );
+  let windowComplete = true;
 
   // The ordinary fast path retains the existing exact window. Only if the
   // serialized 512 KiB budget is exceeded do we project heavy tool payloads
@@ -1178,6 +1201,7 @@ export function buildConversationContentSnapshot(
       latestTurnId,
     ).cacheBytes > limits.maxSnapshotBytes;
   if (initialSnapshotTooLarge) {
+    windowComplete = false;
     const latestSelected = selected.filter(
       (entry) => entry.sourceIndex >= latestTurnStart,
     );
@@ -1198,31 +1222,45 @@ export function buildConversationContentSnapshot(
     ) {
       candidates = preparedLatest;
     } else {
-      const compactionStages = [
-        { envelopeEntries: 300, messageBytes: limits.maxMessageTextBytes },
-        { envelopeEntries: 128, messageBytes: 8 * 1024 },
-        { envelopeEntries: 64, messageBytes: 4 * 1024 },
-        { envelopeEntries: 32, messageBytes: 2 * 1024 },
-        { envelopeEntries: 16, messageBytes: 1024 },
-        { envelopeEntries: 8, messageBytes: 512 },
-        { envelopeEntries: 4, messageBytes: 256 },
-        { envelopeEntries: 2, messageBytes: 128 },
-        { envelopeEntries: 0, messageBytes: MIN_MAX_MESSAGE_TEXT_BYTES },
+      // When one active turn itself exceeds the snapshot budget, preserving
+      // only its conversational spine can leave the visible process anchored
+      // near the beginning for hours. Retain the root user plus a bounded
+      // newest tail first. Missing middle entries remain an explicit
+      // latestTurnGap and are still available through items_page.
+      const tailStages = [
+        { entries: 64, messageBytes: 4 * 1024 },
+        { entries: 48, messageBytes: 4 * 1024 },
+        { entries: 32, messageBytes: 4 * 1024 },
+        { entries: 24, messageBytes: 2 * 1024 },
+        { entries: 16, messageBytes: 2 * 1024 },
+        { entries: 8, messageBytes: 1024 },
+        { entries: 4, messageBytes: 512 },
+        { entries: 2, messageBytes: 256 },
+        { entries: 1, messageBytes: 128 },
       ] as const;
-      let compacted: PreparedSnapshotEntry[] | undefined;
-      for (const stage of compactionStages) {
-        const projected = selectTurnAwareHistoryWindow(source, {
-          preserveLatestRootTurnTools: false,
-          toolCalls: 0,
-          envelopeEntries: stage.envelopeEntries,
-        });
-        const projectedLatest = projected.filter(
-          (entry) => entry.sourceIndex >= latestTurnStart,
+      const latestSpine = selectTurnAwareHistoryWindow(latestSelected, {
+        rootTurns: 1,
+        preserveLatestRootTurnTools: false,
+        toolCalls: 0,
+        envelopeEntries: 0,
+      });
+      let latestTail: PreparedSnapshotEntry[] | undefined;
+      for (const stage of tailStages) {
+        const byIndex = new Map<number, (typeof latestSelected)[number]>();
+        for (const entry of latestSpine) {
+          byIndex.set(entry.sourceIndex, entry);
+        }
+        for (const entry of latestSelected.slice(-stage.entries)) {
+          byIndex.set(entry.sourceIndex, entry);
+        }
+        const selectedTail = [...byIndex.values()].sort(
+          (left, right) => left.sourceIndex - right.sourceIndex,
         );
         const prepared = prepareSnapshotEntries(
-          projectedLatest,
+          selectedTail,
           Math.min(limits.maxMessageTextBytes, stage.messageBytes),
           limits.maxSnapshotBytes,
+          { skipMalformed: true },
         );
         if (!prepared) continue;
         if (
@@ -1234,16 +1272,61 @@ export function buildConversationContentSnapshot(
             latestTurnId,
           ).cacheBytes <= limits.maxSnapshotBytes
         ) {
-          compacted = prepared;
+          latestTail = prepared;
           break;
         }
       }
-      if (!compacted) {
-        throw new Error(
-          "Latest conversation turn structure exceeds safe snapshot byte budget",
-        );
+
+      if (latestTail) {
+        candidates = latestTail;
+      } else {
+        const compactionStages = [
+          { envelopeEntries: 300, messageBytes: limits.maxMessageTextBytes },
+          { envelopeEntries: 128, messageBytes: 8 * 1024 },
+          { envelopeEntries: 64, messageBytes: 4 * 1024 },
+          { envelopeEntries: 32, messageBytes: 2 * 1024 },
+          { envelopeEntries: 16, messageBytes: 1024 },
+          { envelopeEntries: 8, messageBytes: 512 },
+          { envelopeEntries: 4, messageBytes: 256 },
+          { envelopeEntries: 2, messageBytes: 128 },
+          { envelopeEntries: 0, messageBytes: MIN_MAX_MESSAGE_TEXT_BYTES },
+        ] as const;
+        let compacted: PreparedSnapshotEntry[] | undefined;
+        for (const stage of compactionStages) {
+          const projected = selectTurnAwareHistoryWindow(source, {
+            preserveLatestRootTurnTools: false,
+            toolCalls: 0,
+            envelopeEntries: stage.envelopeEntries,
+          });
+          const projectedLatest = projected.filter(
+            (entry) => entry.sourceIndex >= latestTurnStart,
+          );
+          const prepared = prepareSnapshotEntries(
+            projectedLatest,
+            Math.min(limits.maxMessageTextBytes, stage.messageBytes),
+            limits.maxSnapshotBytes,
+          );
+          if (!prepared) continue;
+          if (
+            materializeCandidateSnapshot(
+              target,
+              prepared,
+              rawMessages,
+              latestTurnStart,
+              latestTurnId,
+            ).cacheBytes <= limits.maxSnapshotBytes
+          ) {
+            compacted = prepared;
+            break;
+          }
+        }
+        if (!compacted) {
+          throw new Error(
+            "Latest conversation turn structure exceeds safe snapshot byte budget",
+          );
+        }
+        candidates = compacted;
       }
-      candidates = compacted;
     }
   }
   if (!candidates) {
@@ -1283,6 +1366,7 @@ export function buildConversationContentSnapshot(
     rawMessages,
     latestTurnStart,
     latestTurnId,
+    windowComplete && entries.length === candidates.length,
   );
   while (
     snapshot.cacheBytes > limits.maxSnapshotBytes &&
@@ -1295,6 +1379,7 @@ export function buildConversationContentSnapshot(
       rawMessages,
       latestTurnStart,
       latestTurnId,
+      windowComplete && entries.length === candidates.length,
     );
   }
   if (snapshot.cacheBytes > limits.maxSnapshotBytes) {
@@ -1314,12 +1399,22 @@ function prepareSnapshotEntries(
   values: readonly { sourceIndex: number; message: ServerMessage }[],
   maxMessageTextBytes: number,
   maxSnapshotBytes: number,
+  options: { skipMalformed?: boolean } = {},
 ): PreparedSnapshotEntry[] | undefined {
   const usedIds = new Map<string, number>();
   const entries: PreparedSnapshotEntry[] = [];
   let serializedEntriesBytes = 2;
   for (const value of values) {
-    const bounded = boundHistoryMessage(value.message, maxMessageTextBytes);
+    let bounded: BoundedHistoryMessage;
+    try {
+      bounded = boundHistoryMessage(value.message, maxMessageTextBytes);
+    } catch (error) {
+      if (!options.skipMalformed) throw error;
+      // Keep one malformed provider payload from blocking the remaining
+      // bounded tail. The missing source index is represented by the snapshot
+      // gap and can be retried through the read-only paging route.
+      continue;
+    }
     const message = bounded.message;
     const serialized = safeJsonSerialize(message, maxSnapshotBytes);
     if (!serialized) {
@@ -1365,6 +1460,7 @@ function materializeCandidateSnapshot(
   rawMessages: readonly ServerMessage[],
   latestTurnStart: number,
   latestTurnId?: string,
+  windowComplete = true,
 ): ConversationContentSnapshot {
   const entries = preparedEntries.map(
     ({ payloadOmitted: _, serializedEntryBytes: __, ...entry }) => entry,
@@ -1414,6 +1510,7 @@ function materializeCandidateSnapshot(
     rawMessages.length,
     latestTurnComplete,
     latestTurnGap,
+    windowComplete && latestTurnComplete,
   );
 }
 
@@ -1464,11 +1561,13 @@ function materializeSnapshot(
   sourceEntryCount: number,
   latestTurnComplete = true,
   latestTurnGap?: ConversationContentLatestTurnGap,
+  windowComplete = true,
 ): ConversationContentSnapshot {
   const revision = sha256(
     JSON.stringify({
       sourceEntryCount,
       hasEarlier,
+      windowComplete,
       latestTurnComplete,
       latestTurnGap,
       entries: entries.map((entry) => [
@@ -1482,6 +1581,7 @@ function materializeSnapshot(
     ...target,
     revision,
     entries,
+    windowComplete,
     hasEarlier,
     latestTurnComplete,
     ...(latestTurnGap ? { latestTurnGap } : {}),

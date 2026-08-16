@@ -281,6 +281,12 @@ enum Provider {
 String providerSessionIdentityKey(String provider, String sessionId) =>
     '$provider\u0000$sessionId';
 
+const desktopProjectlessGroupingKey = 'desktop-projectless';
+
+bool isDesktopProjectGroupingKey(String? value) =>
+    value == desktopProjectlessGroupingKey ||
+    (value?.startsWith('desktop-project:') ?? false);
+
 String? sanitizeCodexModelName(String? model) {
   final normalized = model?.trim();
   if (normalized == null || normalized.isEmpty || normalized == 'codex') {
@@ -1001,6 +1007,9 @@ SessionListMessage _sessionListFromJson(Map<String, dynamic> json) {
     defaultCodexProfile: json['defaultCodexProfile'] as String?,
     codexAutoReviewDisabled: json['codexAutoReviewDisabled'] as bool? ?? false,
     bridgeVersion: json['bridgeVersion'] as String?,
+    clientBridgeCompatibilityRevision: _intFromJson(
+      json['clientBridgeCompatibilityRevision'],
+    ),
     bridgeCapabilities:
         (json['bridgeCapabilities'] as List?)?.whereType<String>().toList() ??
         const [],
@@ -1400,6 +1409,7 @@ sealed class ServerMessage {
         outputTokens: json['outputTokens'] as int?,
         toolCalls: json['toolCalls'] as int?,
         fileEdits: json['fileEdits'] as int?,
+        historyTurnId: json['historyTurnId'] as String?,
       ),
       'guardian_approval' => GuardianApprovalMessage.fromJson(json),
       'error' =>
@@ -1410,6 +1420,7 @@ sealed class ServerMessage {
               sessionId: json['sessionId'] as String?,
               permissionChangeId: json['permissionChangeId'] as String?,
               goalChangeId: json['goalChangeId'] as String?,
+              historyTurnId: json['historyTurnId'] as String?,
             ),
       sessionLinkProgressCapability => SessionLinkProgressMessage.fromJson(
         json,
@@ -1646,6 +1657,7 @@ sealed class ServerMessage {
                 ?.whereType<String>()
                 .toList() ??
             const [],
+        historyTurnId: json['historyTurnId'] as String?,
       ),
       'user_input' => UserInputMessage(
         text: json['text'] as String? ?? '',
@@ -1676,6 +1688,7 @@ sealed class ServerMessage {
       'rewind_result' => RewindResultMessage(
         success: json['success'] as bool? ?? false,
         mode: json['mode'] as String? ?? 'both',
+        sessionId: json['sessionId'] as String?,
         error: json['error'] as String?,
       ),
       'input_ack' => InputAckMessage(
@@ -2403,6 +2416,7 @@ class ResultMessage implements ServerMessage {
   final int? outputTokens;
   final int? toolCalls;
   final int? fileEdits;
+  final String? historyTurnId;
   const ResultMessage({
     required this.subtype,
     this.result,
@@ -2416,6 +2430,7 @@ class ResultMessage implements ServerMessage {
     this.outputTokens,
     this.toolCalls,
     this.fileEdits,
+    this.historyTurnId,
   });
 }
 
@@ -2425,6 +2440,7 @@ class ErrorMessage implements ServerMessage {
   final String? sessionId;
   final String? permissionChangeId;
   final String? goalChangeId;
+  final String? historyTurnId;
 
   const ErrorMessage({
     required this.message,
@@ -2432,6 +2448,7 @@ class ErrorMessage implements ServerMessage {
     this.sessionId,
     this.permissionChangeId,
     this.goalChangeId,
+    this.historyTurnId,
   });
 }
 
@@ -2641,6 +2658,7 @@ class GuardianApprovalMessage implements ServerMessage {
   final String? reviewId;
   final String? targetItemId;
   final Map<String, dynamic>? action;
+  final String? historyTurnId;
   const GuardianApprovalMessage({
     required this.risk,
     this.status = GuardianApprovalStatus.approved,
@@ -2649,6 +2667,7 @@ class GuardianApprovalMessage implements ServerMessage {
     this.reviewId,
     this.targetItemId,
     this.action,
+    this.historyTurnId,
   });
 
   factory GuardianApprovalMessage.fromJson(Map<String, dynamic> json) {
@@ -2661,6 +2680,7 @@ class GuardianApprovalMessage implements ServerMessage {
       reviewId: json['reviewId'] as String?,
       targetItemId: json['targetItemId'] as String?,
       action: rawAction is Map ? Map<String, dynamic>.from(rawAction) : null,
+      historyTurnId: json['historyTurnId'] as String?,
     );
   }
 }
@@ -2670,14 +2690,26 @@ GuardianApprovalMessage? _guardianReviewFromErrorJson(
 ) {
   final rawReview = json['guardianReview'];
   if (rawReview is Map) {
-    return GuardianApprovalMessage.fromJson(
-      Map<String, dynamic>.from(rawReview),
-    );
+    final normalized = Map<String, dynamic>.from(rawReview);
+    normalized['historyTurnId'] ??= json['historyTurnId'];
+    return GuardianApprovalMessage.fromJson(normalized);
   }
   if (json['errorCode'] != 'codex_warning') return null;
   final rawMessage = json['message'];
   if (rawMessage is! String) return null;
-  return _guardianReviewFromLegacyWarning(rawMessage);
+  final parsed = _guardianReviewFromLegacyWarning(rawMessage);
+  final historyTurnId = json['historyTurnId'] as String?;
+  if (parsed == null || historyTurnId == null) return parsed;
+  return GuardianApprovalMessage(
+    risk: parsed.risk,
+    status: parsed.status,
+    reason: parsed.reason,
+    authorization: parsed.authorization,
+    reviewId: parsed.reviewId,
+    targetItemId: parsed.targetItemId,
+    action: parsed.action,
+    historyTurnId: historyTurnId,
+  );
 }
 
 GuardianApprovalMessage? _guardianReviewFromLegacyWarning(String message) {
@@ -3566,6 +3598,7 @@ class SessionListMessage implements ServerMessage {
   final String? defaultCodexProfile;
   final bool codexAutoReviewDisabled;
   final String? bridgeVersion;
+  final int? clientBridgeCompatibilityRevision;
   final List<String> bridgeCapabilities;
   const SessionListMessage({
     required this.sessions,
@@ -3582,6 +3615,7 @@ class SessionListMessage implements ServerMessage {
     this.defaultCodexProfile,
     this.codexAutoReviewDisabled = false,
     this.bridgeVersion,
+    this.clientBridgeCompatibilityRevision,
     this.bridgeCapabilities = const [],
   });
 }
@@ -3979,9 +4013,13 @@ class ToolUseSummaryMessage implements ServerMessage {
   /// IDs of the tool_use calls that this summary replaces
   final List<String> precedingToolUseIds;
 
+  /// Provider turn fence used by the legacy direct-runtime fallback.
+  final String? historyTurnId;
+
   const ToolUseSummaryMessage({
     required this.summary,
     this.precedingToolUseIds = const [],
+    this.historyTurnId,
   });
 }
 
@@ -4043,10 +4081,12 @@ class RewindPreviewMessage implements ServerMessage {
 class RewindResultMessage implements ServerMessage {
   final bool success;
   final String mode;
+  final String? sessionId;
   final String? error;
   const RewindResultMessage({
     required this.success,
     required this.mode,
+    this.sessionId,
     this.error,
   });
 }
@@ -4102,6 +4142,7 @@ class InputDeliveryStatusMessage implements ServerMessage {
   final InputDeliveryStage stage;
   final String provider;
   final String method;
+  final String? providerTurnId;
   final String occurredAt;
   final int? acceptedSeq;
   final bool queued;
@@ -4114,6 +4155,7 @@ class InputDeliveryStatusMessage implements ServerMessage {
     required this.stage,
     required this.provider,
     required this.method,
+    this.providerTurnId,
     required this.occurredAt,
     this.acceptedSeq,
     this.queued = false,
@@ -4127,6 +4169,7 @@ class InputDeliveryStatusMessage implements ServerMessage {
     final stage = InputDeliveryStage.fromWireValue(json['stage']);
     final provider = json['provider'];
     final method = json['method'];
+    final providerTurnId = json['providerTurnId'];
     final occurredAt = json['occurredAt'];
     final acceptedSeq = json['acceptedSeq'];
     final queued = json['queued'];
@@ -4139,6 +4182,10 @@ class InputDeliveryStatusMessage implements ServerMessage {
         stage == null ||
         provider != Provider.codex.value ||
         (method != 'turn/start' && method != 'turn/steer') ||
+        (providerTurnId != null &&
+            (providerTurnId is! String ||
+                providerTurnId.trim().isEmpty ||
+                providerTurnId.length > 256)) ||
         occurredAt is! String ||
         DateTime.tryParse(occurredAt) == null ||
         (acceptedSeq != null && acceptedSeq is! int) ||
@@ -4154,6 +4201,7 @@ class InputDeliveryStatusMessage implements ServerMessage {
       stage: stage,
       provider: provider as String,
       method: method as String,
+      providerTurnId: providerTurnId as String?,
       occurredAt: occurredAt,
       acceptedSeq: acceptedSeq as int?,
       queued: queued as bool? ?? false,
@@ -4965,6 +5013,11 @@ class RecentSession {
   final String gitBranch;
   final String projectPath;
   final String? resumeCwd;
+  final String? projectGroupKind;
+  final String? projectGroupId;
+  final String? projectGroupName;
+  final String? projectGroupPath;
+  final bool projectGroupingSnapshotComplete;
   final bool isSidechain;
   final String? codexApprovalPolicy;
   final String? codexApprovalsReviewer;
@@ -5005,6 +5058,11 @@ class RecentSession {
     required this.gitBranch,
     required this.projectPath,
     this.resumeCwd,
+    this.projectGroupKind,
+    this.projectGroupId,
+    this.projectGroupName,
+    this.projectGroupPath,
+    this.projectGroupingSnapshotComplete = false,
     required this.isSidechain,
     this.codexApprovalPolicy,
     this.codexApprovalsReviewer,
@@ -5044,6 +5102,29 @@ class RecentSession {
 
   factory RecentSession.fromJson(Map<String, dynamic> json) {
     final codexSettings = json['codexSettings'] as Map<String, dynamic>?;
+    String? boundedProjectString(String key, int maximumLength) {
+      final raw = json[key];
+      if (raw is! String) return null;
+      final normalized = raw.trim();
+      return normalized.isNotEmpty && normalized.length <= maximumLength
+          ? normalized
+          : null;
+    }
+
+    final projectGroupKind =
+        json['projectGroupKind'] == 'desktopProject' ||
+            json['projectGroupKind'] == 'projectless'
+        ? json['projectGroupKind'] as String
+        : null;
+    final projectGroupId = boundedProjectString('projectGroupId', 256);
+    final projectGroupName = boundedProjectString('projectGroupName', 512);
+    final projectGroupPath = boundedProjectString('projectGroupPath', 4096);
+    final projectGroupingSnapshotComplete =
+        json['projectGroupingSnapshotComplete'] == true &&
+        (projectGroupKind == 'projectless' ||
+            (projectGroupKind == 'desktopProject' &&
+                projectGroupId?.trim().isNotEmpty == true &&
+                projectGroupName?.trim().isNotEmpty == true));
     return RecentSession(
       sessionId: json['sessionId'] as String,
       provider: json['provider'] as String?,
@@ -5063,6 +5144,11 @@ class RecentSession {
       gitBranch: json['gitBranch'] as String? ?? '',
       projectPath: json['projectPath'] as String? ?? '',
       resumeCwd: json['resumeCwd'] as String?,
+      projectGroupKind: projectGroupKind,
+      projectGroupId: projectGroupId,
+      projectGroupName: projectGroupName,
+      projectGroupPath: projectGroupPath,
+      projectGroupingSnapshotComplete: projectGroupingSnapshotComplete,
       isSidechain: json['isSidechain'] as bool? ?? false,
       codexApprovalPolicy: resolveCodexApprovalPolicy(
         approvalPolicy: codexSettings?['approvalPolicy'] as String?,
@@ -5118,6 +5204,11 @@ class RecentSession {
     'gitBranch': gitBranch,
     'projectPath': projectPath,
     'resumeCwd': resumeCwd,
+    'projectGroupKind': projectGroupKind,
+    'projectGroupId': projectGroupId,
+    'projectGroupName': projectGroupName,
+    'projectGroupPath': projectGroupPath,
+    'projectGroupingSnapshotComplete': projectGroupingSnapshotComplete,
     'isSidechain': isSidechain,
     'executionMode': executionMode,
     'planMode': planMode,
@@ -5138,10 +5229,28 @@ class RecentSession {
     'codexSettingsSnapshotComplete': codexSettingsSnapshotComplete,
   };
 
-  /// Extract project name from path (last segment)
-  String get projectName {
-    return pathBasename(projectPath);
+  bool get hasDesktopProjectGroup =>
+      projectGroupKind == 'desktopProject' &&
+      projectGroupId?.trim().isNotEmpty == true &&
+      projectGroupName?.trim().isNotEmpty == true;
+
+  bool get isDesktopProjectless => projectGroupKind == 'projectless';
+
+  String get projectGroupingKey {
+    if (hasDesktopProjectGroup) return 'desktop-project:$projectGroupId';
+    if (isDesktopProjectless) return desktopProjectlessGroupingKey;
+    return projectPath;
   }
+
+  String get effectiveProjectGroupPath =>
+      hasDesktopProjectGroup && projectGroupPath?.trim().isNotEmpty == true
+      ? projectGroupPath!
+      : projectPath;
+
+  /// Desktop's user-facing project name wins over a filesystem basename.
+  String get projectName => hasDesktopProjectGroup
+      ? projectGroupName!.trim()
+      : pathBasename(projectPath);
 
   /// Display text: summary if available, otherwise firstPrompt
   String get displayText {
@@ -5171,6 +5280,11 @@ class RecentSession {
       gitBranch: gitBranch,
       projectPath: projectPath,
       resumeCwd: resumeCwd,
+      projectGroupKind: projectGroupKind,
+      projectGroupId: projectGroupId,
+      projectGroupName: projectGroupName,
+      projectGroupPath: projectGroupPath,
+      projectGroupingSnapshotComplete: projectGroupingSnapshotComplete,
       isSidechain: isSidechain,
       codexApprovalPolicy: codexApprovalPolicy,
       codexApprovalsReviewer: codexApprovalsReviewer,
@@ -5211,6 +5325,11 @@ class RecentSession {
       gitBranch: gitBranch,
       projectPath: projectPath,
       resumeCwd: resumeCwd,
+      projectGroupKind: projectGroupKind,
+      projectGroupId: projectGroupId,
+      projectGroupName: projectGroupName,
+      projectGroupPath: projectGroupPath,
+      projectGroupingSnapshotComplete: projectGroupingSnapshotComplete,
       isSidechain: isSidechain,
       codexApprovalPolicy: codexApprovalPolicy,
       codexApprovalsReviewer: codexApprovalsReviewer,
@@ -5254,6 +5373,11 @@ class RecentSession {
       gitBranch: gitBranch,
       projectPath: projectPath,
       resumeCwd: resumeCwd,
+      projectGroupKind: projectGroupKind,
+      projectGroupId: projectGroupId,
+      projectGroupName: projectGroupName,
+      projectGroupPath: projectGroupPath,
+      projectGroupingSnapshotComplete: projectGroupingSnapshotComplete,
       isSidechain: isSidechain,
       codexApprovalPolicy: approvalPolicy,
       codexApprovalsReviewer: approvalsReviewer,
@@ -5634,9 +5758,35 @@ class CodexSettingsMutationTarget {
         };
 }
 
+/// Exact durable-thread target for Codex Goal RPCs.
+///
+/// [sessionId] remains on the outer message for legacy response routing. New
+/// Bridges use this envelope to address the provider thread directly without
+/// resuming it or creating a Bridge runtime. Mutations reuse their
+/// [operationId] as an idempotency key; reads intentionally omit it.
+class CodexGoalRequestTarget {
+  const CodexGoalRequestTarget.durableThread({
+    required this.codexSourceId,
+    required this.threadId,
+    this.operationId,
+  });
+
+  final String codexSourceId;
+  final String threadId;
+  final String? operationId;
+
+  Map<String, dynamic> get wireFields => <String, dynamic>{
+    'goalTarget': 'durable_thread',
+    'codexSourceId': codexSourceId,
+    'threadId': threadId,
+    if (operationId != null) 'operationId': operationId,
+  };
+}
+
 const turnAwareHistoryWindowCapability = 'turn_aware_history_window_v1';
 const codexRuntimeDetachCapability = 'codex_runtime_detach_v1';
 const codexDurableThreadSettingsCapability = 'codex_durable_thread_settings_v1';
+const codexDurableThreadGoalsCapability = 'codex_durable_thread_goals_v1';
 const historyPageCapability = 'history_page_v1';
 const historyToolDetailCapability = 'history_tool_detail_v1';
 const sessionActivityAtCapability = 'session_activity_at_v1';
@@ -6012,9 +6162,13 @@ class ClientMessage {
     );
   }
 
-  factory ClientMessage.getGoal(String sessionId) => ClientMessage._({
+  factory ClientMessage.getGoal(
+    String sessionId, {
+    CodexGoalRequestTarget? durableTarget,
+  }) => ClientMessage._({
     'type': 'get_goal',
     'sessionId': sessionId,
+    ...?durableTarget?.wireFields,
   }, delivery: ClientMessageDelivery.ephemeral);
 
   factory ClientMessage.setGoal({
@@ -6025,6 +6179,13 @@ class ClientMessage {
     bool includeTokenBudget = false,
     String? goalChangeId,
     int? expectedGoalOperationSequence,
+    bool? expectedGoalPresent,
+    String? expectedGoalObjective,
+    CodexThreadGoalStatus? expectedGoalStatus,
+    int? expectedGoalTokenBudget,
+    bool includeExpectedGoalTokenBudget = false,
+    int? expectedGoalCreatedAt,
+    CodexGoalRequestTarget? durableTarget,
   }) => ClientMessage._({
     'type': 'set_goal',
     'sessionId': sessionId,
@@ -6033,17 +6194,40 @@ class ClientMessage {
     if (includeTokenBudget) 'tokenBudget': tokenBudget,
     'goalChangeId': ?goalChangeId,
     'expectedGoalOperationSequence': ?expectedGoalOperationSequence,
+    'expectedGoalPresent': ?expectedGoalPresent,
+    'expectedGoalObjective': ?expectedGoalObjective,
+    if (expectedGoalStatus != null)
+      'expectedGoalStatus': expectedGoalStatus.value,
+    if (includeExpectedGoalTokenBudget)
+      'expectedGoalTokenBudget': expectedGoalTokenBudget,
+    'expectedGoalCreatedAt': ?expectedGoalCreatedAt,
+    ...?durableTarget?.wireFields,
   }, delivery: ClientMessageDelivery.ephemeral);
 
   factory ClientMessage.clearGoal(
     String sessionId, {
     String? goalChangeId,
     int? expectedGoalOperationSequence,
+    bool? expectedGoalPresent,
+    String? expectedGoalObjective,
+    CodexThreadGoalStatus? expectedGoalStatus,
+    int? expectedGoalTokenBudget,
+    bool includeExpectedGoalTokenBudget = false,
+    int? expectedGoalCreatedAt,
+    CodexGoalRequestTarget? durableTarget,
   }) => ClientMessage._({
     'type': 'clear_goal',
     'sessionId': sessionId,
     'goalChangeId': ?goalChangeId,
     'expectedGoalOperationSequence': ?expectedGoalOperationSequence,
+    'expectedGoalPresent': ?expectedGoalPresent,
+    'expectedGoalObjective': ?expectedGoalObjective,
+    if (expectedGoalStatus != null)
+      'expectedGoalStatus': expectedGoalStatus.value,
+    if (includeExpectedGoalTokenBudget)
+      'expectedGoalTokenBudget': expectedGoalTokenBudget,
+    'expectedGoalCreatedAt': ?expectedGoalCreatedAt,
+    ...?durableTarget?.wireFields,
   }, delivery: ClientMessageDelivery.ephemeral);
 
   factory ClientMessage.setSandboxMode(
@@ -6440,13 +6624,24 @@ class ClientMessage {
   factory ClientMessage.rewind(
     String sessionId,
     String targetUuid,
-    String mode,
-  ) => ClientMessage._({
-    'type': 'rewind',
-    'sessionId': sessionId,
-    'targetUuid': targetUuid,
-    'mode': mode,
-  });
+    String mode, {
+    String? historyTurnId,
+    String? projectPath,
+    String? codexSourceId,
+  }) => ClientMessage._(
+    {
+      'type': 'rewind',
+      'sessionId': sessionId,
+      'targetUuid': targetUuid,
+      'historyTurnId': ?historyTurnId,
+      'projectPath': ?projectPath,
+      'codexSourceId': ?codexSourceId,
+      'mode': mode,
+    },
+    // A rewind/edit changes provider history. Replaying it after reconnect
+    // could target a different revision, so it must remain live-socket only.
+    delivery: ClientMessageDelivery.ephemeral,
+  );
 
   factory ClientMessage.rewindDryRun(String sessionId, String targetUuid) =>
       ClientMessage._({
@@ -6455,12 +6650,16 @@ class ClientMessage {
         'targetUuid': targetUuid,
       });
 
-  factory ClientMessage.forkSession(String sessionId, String targetUuid) =>
-      ClientMessage._({
-        'type': 'fork',
-        'sessionId': sessionId,
-        'targetUuid': targetUuid,
-      });
+  factory ClientMessage.forkSession(
+    String sessionId,
+    String targetUuid, {
+    String? historyTurnId,
+  }) => ClientMessage._({
+    'type': 'fork',
+    'sessionId': sessionId,
+    'targetUuid': targetUuid,
+    'historyTurnId': ?historyTurnId,
+  });
 
   /// Fork a persisted Codex thread that is not currently a Bridge runtime.
   /// Older apps keep using [forkSession]; a newer Bridge recognizes the

@@ -234,6 +234,14 @@ void main() {
           attachedCubit.runtimeSessionIdForMutation(allowSteerable: false),
           'live-codex-runtime',
         );
+        bridge.emitMessage(
+          InputAckMessage(
+            sessionId: 'live-codex-runtime',
+            clientMessageId: input['clientMessageId'] as String?,
+            stage: InputAckStage.bridgeAccepted,
+          ),
+        );
+        await pumpN($.tester);
 
         bridge.sentMessages.clear();
         await $.tester.enterText(
@@ -454,6 +462,14 @@ void main() {
         expect(input['sessionId'], isNot('runtime-before-stop'));
         expect(input['text'], 'Continue after runtime replacement');
         expect(findAllSentMessages(bridge, 'resume_session'), hasLength(1));
+        bridge.emitMessage(
+          InputAckMessage(
+            sessionId: 'runtime-after-stop',
+            clientMessageId: input['clientMessageId'] as String?,
+            stage: InputAckStage.bridgeAccepted,
+          ),
+        );
+        await pumpN($.tester);
 
         stoppedCubit.updateDetachedLiveRuntime('runtime-inline-replacement');
         stoppedCubit.updateDetachedProviderStatus(
@@ -586,11 +602,25 @@ void main() {
     patrolWidgetTest('H2d: Codex compact command sends the direct request', (
       $,
     ) async {
-      await $.pumpWidget(await buildTestCodexSessionScreen(bridge: bridge));
+      SharedPreferences.setMockInitialValues({});
+      final drafts = DraftService(await SharedPreferences.getInstance());
+      await $.pumpWidget(
+        await buildTestCodexSessionScreen(bridge: bridge, draftService: drafts),
+      );
       await pumpN($.tester);
       await emitAndPump($.tester, bridge, [
+        const SystemMessage(
+          subtype: 'session_created',
+          sessionId: testSessionId,
+          provider: 'codex',
+        ),
         const StatusMessage(status: ProcessStatus.idle),
       ]);
+      final cubit = BlocProvider.of<ChatSessionCubit>(
+        $.tester.element(find.byKey(const ValueKey('message_input'))),
+      );
+      expect(cubit.detachedPreview, isFalse);
+      expect(cubit.runtimeSessionIdForMutation(), testSessionId);
 
       await $.tester.enterText(
         find.byKey(const ValueKey('message_input')),
@@ -612,6 +642,65 @@ void main() {
       expect(compact!['sessionId'], testSessionId);
       expect(compact['requestId'], isNotEmpty);
       expect(findSentMessage(bridge, 'input'), isNull);
+      expect(drafts.getPendingSubmission(testSessionId), isNull);
+    });
+
+    patrolWidgetTest('H2e: Codex input persists until Bridge receipt', (
+      $,
+    ) async {
+      SharedPreferences.setMockInitialValues({});
+      final drafts = DraftService(await SharedPreferences.getInstance());
+      await $.pumpWidget(
+        await buildTestCodexSessionScreen(bridge: bridge, draftService: drafts),
+      );
+      await pumpN($.tester);
+      await emitAndPump($.tester, bridge, [
+        const SystemMessage(
+          subtype: 'session_created',
+          sessionId: testSessionId,
+          provider: 'codex',
+        ),
+        const StatusMessage(status: ProcessStatus.idle),
+      ]);
+      final cubit = BlocProvider.of<ChatSessionCubit>(
+        $.tester.element(find.byKey(const ValueKey('message_input'))),
+      );
+      expect(cubit.detachedPreview, isFalse);
+      expect(cubit.runtimeSessionIdForMutation(), testSessionId);
+
+      await $.tester.enterText(
+        find.byKey(const ValueKey('message_input')),
+        'Persist until receipt',
+      );
+      await pumpN($.tester);
+      await $(#send_button).tap();
+      await pumpN($.tester);
+      await $.tester.pump(const Duration(seconds: 1));
+      final input = findSentMessage(bridge, 'input');
+      expect(
+        input,
+        isNotNull,
+        reason: bridge.sentMessages
+            .map(decodeClientMessage)
+            .toList()
+            .toString(),
+      );
+      final clientMessageId = input!['clientMessageId']! as String;
+      expect(
+        drafts.getPendingSubmission(testSessionId)?.clientMessageId,
+        clientMessageId,
+      );
+
+      bridge.emitMessage(
+        InputAckMessage(
+          sessionId: testSessionId,
+          clientMessageId: clientMessageId,
+          stage: InputAckStage.bridgeAccepted,
+        ),
+        sessionId: testSessionId,
+      );
+      await pumpN($.tester);
+      expect(drafts.getPendingSubmission(testSessionId), isNull);
     });
 
     patrolWidgetTest('H3: Running shows stop button', ($) async {

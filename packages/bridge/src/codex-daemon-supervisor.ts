@@ -25,7 +25,6 @@ interface CodexDaemonVersionResponse {
 // truthful daemon failure instead of racing startup and silently choosing a
 // different authority.
 const CODEX_DAEMON_VERSION_TIMEOUT_MS = 10_000;
-const CODEX_DAEMON_VERIFICATION_CACHE_TTL_MS = 2_000;
 const CODEX_DAEMON_VERIFICATION_CACHE_MAX_ENTRIES = 64;
 
 export interface CodexDaemonSocketIdentity {
@@ -43,7 +42,6 @@ export interface VerifiedCodexDaemon {
 
 export interface CodexDaemonSupervisorDependencies {
   getUid?: () => number;
-  now?: () => number;
   runVersion?: (
     cliPath: string,
     codexHome: string,
@@ -60,7 +58,6 @@ interface FileIdentity {
 
 interface CachedCodexDaemonVerification {
   verified: VerifiedCodexDaemon;
-  verifiedAtMs: number;
   cliIdentity: FileIdentity;
   socketIdentity: FileIdentity;
 }
@@ -269,17 +266,21 @@ export function verifyCodexDaemon(
     config.expectedAppServerVersion ?? config.expectedVersion,
     String(uid),
   ].join("\u0000");
-  const now = dependencies.now ?? Date.now;
-  const cacheLookupNowMs = now();
   const cached = daemonVerificationCache.get(cacheKey);
-  const cacheAgeMs = cached ? cacheLookupNowMs - cached.verifiedAtMs : -1;
   if (
     cached &&
-    cacheAgeMs >= 0 &&
-    cacheAgeMs <= CODEX_DAEMON_VERIFICATION_CACHE_TTL_MS &&
     matchesFileIdentity(cliStats, cached.cliIdentity) &&
     matchesFileIdentity(socketStats, cached.socketIdentity)
   ) {
+    // The exact CLI and Unix socket identities are the security boundary. A
+    // daemon restart must replace the socket inode, while an in-place CLI edit
+    // changes its file identity; both invalidate this cache immediately. Do
+    // not periodically spawn a synchronous `daemon version` subprocess while
+    // those identities are unchanged: every Codex read attachment passes
+    // through this function, and a two-second TTL turned ordinary timeline
+    // hydration into repeated event-loop stalls and transient history loss.
+    // Ownership, path containment and permission checks above still run for
+    // every attachment.
     daemonVerificationCache.delete(cacheKey);
     daemonVerificationCache.set(cacheKey, cached);
     return {
@@ -360,7 +361,6 @@ export function verifyCodexDaemon(
   };
   cacheVerification(cacheKey, {
     verified,
-    verifiedAtMs: now(),
     cliIdentity: fileIdentity(verifiedCliStats),
     socketIdentity: fileIdentity(verifiedSocketStats),
   });

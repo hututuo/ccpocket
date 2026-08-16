@@ -26,6 +26,7 @@ import '../../services/notification_service.dart';
 import '../../utils/diff_parser.dart';
 import '../../widgets/workspace_pane_chrome.dart';
 import 'session_list_screen.dart';
+import 'state/session_list_cubit.dart';
 
 const _twoPaneBreakpoint = 600.0;
 const _threePaneBreakpoint = 1100.0;
@@ -1331,8 +1332,16 @@ class _WorkspaceContentHost extends StatelessWidget {
     final selection = this.selection;
     final shell = WorkspaceShellScreen.maybeOf(context);
     final bridge = context.read<BridgeService>();
+    final durableCatalogHasSessions = context.select<SessionListCubit, bool>(
+      (sessionList) =>
+          (sessionList.hasUsableCatalogForCurrentTarget ||
+              sessionList.hasCachedCatalogForCurrentTarget) &&
+          sessionList.state.sessions.isNotEmpty,
+    );
     final hasSessions =
-        bridge.sessions.isNotEmpty || bridge.recentSessions.isNotEmpty;
+        bridge.sessions.isNotEmpty ||
+        bridge.recentSessions.isNotEmpty ||
+        durableCatalogHasSessions;
 
     switch (overlay) {
       case _WorkspaceCenterOverlay.settings:

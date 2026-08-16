@@ -241,10 +241,24 @@ ChatProcessLayout buildChatProcessLayout(
         ? entries[turnStart] as UserChatEntry
         : null;
     final turnContentStart = userEntry == null ? turnStart : turnStart + 1;
+    var providerTurnId = chatEntryHistoryTurnId(entries[turnStart]);
     var turnEnd = turnContentStart;
-    while (turnEnd < entries.length &&
-        entries[turnEnd] is! UserChatEntry &&
-        !_isManualContextCompactionEntry(entries[turnEnd])) {
+    while (turnEnd < entries.length) {
+      final candidate = entries[turnEnd];
+      if (_isManualContextCompactionEntry(candidate)) break;
+      final candidateTurnId = chatEntryHistoryTurnId(candidate);
+      if (candidate is UserChatEntry &&
+          (providerTurnId == null ||
+              candidateTurnId == null ||
+              candidateTurnId != providerTurnId)) {
+        break;
+      }
+      if (providerTurnId != null &&
+          candidateTurnId != null &&
+          candidateTurnId != providerTurnId) {
+        break;
+      }
+      providerTurnId ??= candidateTurnId;
       turnEnd++;
     }
 
@@ -252,12 +266,20 @@ ChatProcessLayout buildChatProcessLayout(
     // after its UserChatEntry has already been paged out. Treat that leading
     // range as one partial turn so its thought/tool hierarchy keeps the same
     // two-level disclosure instead of falling back to independent bubbles.
-    final partialTurnKey = _partialTurnKey(entries, turnContentStart, turnEnd);
-    final turnKey = userEntry == null ? partialTurnKey : _turnKey(userEntry);
-    if (userEntry != null &&
-        partialTurnKey != 'partial:empty' &&
-        partialTurnKey != turnKey) {
-      turnKeyAliases[partialTurnKey] = turnKey;
+    final legacyPartialTurnKey = _partialTurnKey(
+      entries,
+      turnContentStart,
+      turnEnd,
+    );
+    final providerTurnKey = providerTurnId == null
+        ? null
+        : 'turn:$providerTurnId';
+    final userTurnKey = userEntry == null ? null : _turnKey(userEntry);
+    final turnKey = providerTurnKey ?? userTurnKey ?? legacyPartialTurnKey;
+    for (final alias in [legacyPartialTurnKey, userTurnKey]) {
+      if (alias != null && alias != 'partial:empty' && alias != turnKey) {
+        turnKeyAliases[alias] = turnKey;
+      }
     }
     final isLatestTurn = turnEnd == entries.length;
     final isActive = isLatestTurn && latestTurnIsActive;
@@ -671,6 +693,14 @@ String _turnKey(UserChatEntry entry) {
 /// absent; otherwise Flutter row state and process expansion can alias across
 /// paged turns.
 String chatUserEntryStableIdentity(UserChatEntry entry) {
+  final clientId = entry.clientMessageId?.trim();
+  // Mobile-created client ids are UUIDs and already globally unique. Keep
+  // them as the presentation identity even after the provider backfills its
+  // item/turn ids, otherwise one optimistic bubble is rebuilt under a new key
+  // while it changes from sending -> sent.
+  if (clientId?.isNotEmpty == true && _looksLikeUuid(clientId!)) {
+    return 'client:$clientId';
+  }
   final providerItemId = entry.providerItemId?.trim();
   if (providerItemId?.isNotEmpty == true) {
     return 'provider:$providerItemId';
@@ -682,7 +712,6 @@ String chatUserEntryStableIdentity(UserChatEntry entry) {
         ? 'turn:$historyTurnId:uuid:$messageUuid'
         : 'uuid:$messageUuid';
   }
-  final clientId = entry.clientMessageId?.trim();
   if (clientId?.isNotEmpty == true) {
     return historyTurnId?.isNotEmpty == true
         ? 'turn:$historyTurnId:client:$clientId'
@@ -691,7 +720,24 @@ String chatUserEntryStableIdentity(UserChatEntry entry) {
   return 'time:${entry.timestamp.microsecondsSinceEpoch}:${entry.text.length}';
 }
 
-String _partialTurnKey(List<ChatEntry> entries, int start, int end) {
+final _uuidIdentityPattern = RegExp(
+  r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$',
+);
+bool _looksLikeUuid(String value) => _uuidIdentityPattern.hasMatch(value);
+
+bool _looksGloballyUniqueProviderId(String value) =>
+    value.isNotEmpty &&
+    !value.startsWith('codex-item-') &&
+    !value.startsWith('codex:user-turn:') &&
+    !value.startsWith('legacy-turn:');
+
+String _partialTurnKey(
+  List<ChatEntry> entries,
+  int start,
+  int end, {
+  String? providerTurnId,
+}) {
+  if (providerTurnId != null) return 'turn:$providerTurnId';
   for (var index = start; index < end; index++) {
     final entry = entries[index];
     if (entry is! ServerChatEntry) continue;
@@ -707,10 +753,29 @@ String _partialTurnKey(List<ChatEntry> entries, int start, int end) {
       return 'partial:tool:${message.precedingToolUseIds.first}';
     }
   }
-  final timestamp = start < entries.length
+  final timestamp = start < end && start < entries.length
       ? _processEntryIdentity(entries[start])
       : 'empty';
   return 'partial:$timestamp';
+}
+
+String? chatEntryHistoryTurnId(ChatEntry entry) {
+  final value = switch (entry) {
+    UserChatEntry(:final historyTurnId) => historyTurnId,
+    ServerChatEntry(:final message) => switch (message) {
+      AssistantServerMessage(:final historyTurnId) => historyTurnId,
+      ToolResultMessage(:final historyTurnId) => historyTurnId,
+      ToolUseSummaryMessage(:final historyTurnId) => historyTurnId,
+      GuardianApprovalMessage(:final historyTurnId) => historyTurnId,
+      ResultMessage(:final historyTurnId) => historyTurnId,
+      ErrorMessage(:final historyTurnId) => historyTurnId,
+      SystemMessage(:final historyTurnId) => historyTurnId,
+      _ => null,
+    },
+    StreamingChatEntry() => null,
+  };
+  final normalized = value?.trim();
+  return normalized == null || normalized.isEmpty ? null : normalized;
 }
 
 String _processEntryIdentity(ChatEntry entry) {
@@ -747,13 +812,22 @@ String chatAssistantEntryStableIdentity(
   String scoped(String kind, String value) => historyTurnId?.isNotEmpty == true
       ? 'turn:$historyTurnId:$kind:$value'
       : '$kind:$value';
-  final uuid = serverMessage.messageUuid?.trim();
-  if (uuid?.isNotEmpty == true) return scoped('uuid', uuid!);
   final messageId = message.id.trim();
+  if (messageId.isNotEmpty && _looksGloballyUniqueProviderId(messageId)) {
+    return 'id:$messageId';
+  }
+  final uuid = serverMessage.messageUuid?.trim();
+  if (uuid?.isNotEmpty == true && _looksGloballyUniqueProviderId(uuid!)) {
+    return 'uuid:$uuid';
+  }
+  if (uuid?.isNotEmpty == true) return scoped('uuid', uuid!);
   if (messageId.isNotEmpty) return scoped('id', messageId);
   for (final content in message.content) {
     if (content case ToolUseContent(:final id) when id.trim().isNotEmpty) {
-      return scoped('tool', id.trim());
+      final toolId = id.trim();
+      return _looksGloballyUniqueProviderId(toolId)
+          ? 'tool:$toolId'
+          : scoped('tool', toolId);
     }
   }
   final signature = message.content
@@ -780,6 +854,9 @@ String chatToolResultEntryStableIdentity(
   final toolUseId = message.toolUseId.trim();
   final historyTurnId = message.historyTurnId?.trim();
   if (toolUseId.isNotEmpty) {
+    if (_looksGloballyUniqueProviderId(toolUseId)) {
+      return 'tool-result:$toolUseId';
+    }
     return historyTurnId?.isNotEmpty == true
         ? 'turn:$historyTurnId:tool-result:$toolUseId'
         : 'tool-result:$toolUseId';

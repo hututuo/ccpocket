@@ -70,9 +70,11 @@ class ConversationContentCursor extends ConversationContentTarget {
     required super.provider,
     required super.providerSessionId,
     required this.revision,
+    this.windowComplete = true,
   });
 
   final String revision;
+  final bool windowComplete;
 
   @override
   Map<String, dynamic> toJson() => <String, dynamic>{

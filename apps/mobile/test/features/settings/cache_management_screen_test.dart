@@ -2,6 +2,7 @@ import 'package:ccpocket/features/conversation_mirror/storage/conversation_mirro
 import 'package:ccpocket/features/session_list/cache/session_catalog_cache_repository.dart';
 import 'package:ccpocket/features/settings/cache_management_screen.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
+import 'package:ccpocket/models/machine.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -10,14 +11,14 @@ class _FakeCacheManagementBackend extends ChangeNotifier
   _FakeCacheManagementBackend({
     required this.catalogEntries,
     required List<ConversationMirrorMetadata> localCopies,
-    List<CacheManagementDataSource> dataSources = const [],
-  }) : _dataSources = dataSources.toList() {
+    List<CacheManagementMachine> machines = const [],
+  }) : _machines = machines.toList() {
     _localCopies.addAll(localCopies);
   }
 
   int catalogEntries;
   final List<ConversationMirrorMetadata> _localCopies = [];
-  final List<CacheManagementDataSource> _dataSources;
+  final List<CacheManagementMachine> _machines;
   int clearCalls = 0;
   final List<String> clearedDataSources = [];
   final List<String> removedCachedConversations = [];
@@ -36,8 +37,8 @@ class _FakeCacheManagementBackend extends ChangeNotifier
       );
 
   @override
-  Future<List<CacheManagementDataSource>> dataSourceCaches() async =>
-      List.unmodifiable(_dataSources);
+  Future<List<CacheManagementMachine>> machineCaches() async =>
+      List.unmodifiable(_machines);
 
   @override
   Future<Map<ConversationMirrorKey, String>> localCopyDisplayNames() async =>
@@ -52,14 +53,18 @@ class _FakeCacheManagementBackend extends ChangeNotifier
   @override
   Future<void> clearDataSource(CacheManagementDataSource dataSource) async {
     clearedDataSources.add(dataSource.target.fingerprint);
-    final index = _dataSources.indexOf(dataSource);
-    _dataSources[index] = CacheManagementDataSource(
-      target: dataSource.target,
-      displayName: dataSource.displayName,
-      codexSourceId: dataSource.codexSourceId,
-      routeCount: dataSource.routeCount,
-      stats: const SessionCatalogCacheStats.empty(),
-      conversations: const [],
+    _replaceDataSource(
+      dataSource,
+      CacheManagementDataSource(
+        target: dataSource.target,
+        bridgeInstanceId: dataSource.bridgeInstanceId,
+        codexSourceId: dataSource.codexSourceId,
+        routeCount: dataSource.routeCount,
+        usesStableIdentity: dataSource.usesStableIdentity,
+        legacyRouteLabel: dataSource.legacyRouteLabel,
+        stats: const SessionCatalogCacheStats.empty(),
+        conversations: const [],
+      ),
     );
   }
 
@@ -69,21 +74,50 @@ class _FakeCacheManagementBackend extends ChangeNotifier
     SessionCatalogCachedConversation conversation,
   ) async {
     removedCachedConversations.add(conversation.providerSessionId);
-    final index = _dataSources.indexOf(dataSource);
     final conversations = dataSource.conversations
         .where((candidate) => candidate != conversation)
         .toList();
-    _dataSources[index] = CacheManagementDataSource(
-      target: dataSource.target,
-      displayName: dataSource.displayName,
-      codexSourceId: dataSource.codexSourceId,
-      routeCount: dataSource.routeCount,
-      stats: SessionCatalogCacheStats(
-        sessionSummaries: dataSource.stats.sessionSummaries,
-        conversationWindows: conversations.length,
+    _replaceDataSource(
+      dataSource,
+      CacheManagementDataSource(
+        target: dataSource.target,
+        bridgeInstanceId: dataSource.bridgeInstanceId,
+        codexSourceId: dataSource.codexSourceId,
+        routeCount: dataSource.routeCount,
+        usesStableIdentity: dataSource.usesStableIdentity,
+        legacyRouteLabel: dataSource.legacyRouteLabel,
+        stats: SessionCatalogCacheStats(
+          sessionSummaries: dataSource.stats.sessionSummaries,
+          conversationWindows: conversations.length,
+        ),
+        conversations: conversations,
       ),
-      conversations: conversations,
     );
+  }
+
+  void _replaceDataSource(
+    CacheManagementDataSource current,
+    CacheManagementDataSource replacement,
+  ) {
+    for (
+      var machineIndex = 0;
+      machineIndex < _machines.length;
+      machineIndex++
+    ) {
+      final machine = _machines[machineIndex];
+      final sourceIndex = machine.dataSources.indexOf(current);
+      if (sourceIndex == -1) continue;
+      final sources = machine.dataSources.toList();
+      sources[sourceIndex] = replacement;
+      _machines[machineIndex] = CacheManagementMachine(
+        id: machine.id,
+        displayName: machine.displayName,
+        routeCount: machine.routeCount,
+        hasStableIdentity: machine.hasStableIdentity,
+        dataSources: sources,
+      );
+      return;
+    }
   }
 
   @override
@@ -127,7 +161,7 @@ void main() {
       expect(find.textContaining('0 个会话摘要 · 0 个最近消息窗口'), findsOneWidget);
 
       final removeButton = find.byKey(
-        const ValueKey('remove_downloaded_history_bridge-b_provider-session-1'),
+        ValueKey<Object>(('remove_downloaded_history', second.key)),
       );
       await tester.ensureVisible(removeButton);
       await tester.tap(removeButton);
@@ -141,15 +175,11 @@ void main() {
 
       expect(backend.removedKeys, [second.key]);
       expect(
-        find.byKey(
-          const ValueKey('downloaded_history_bridge-b_provider-session-1'),
-        ),
+        find.byKey(ValueKey<Object>(('downloaded_history', second.key))),
         findsNothing,
       );
       expect(
-        find.byKey(
-          const ValueKey('downloaded_history_bridge-a_provider-session-1'),
-        ),
+        find.byKey(ValueKey<Object>(('downloaded_history', first.key))),
         findsOneWidget,
       );
     },
@@ -165,22 +195,31 @@ void main() {
     final backend = _FakeCacheManagementBackend(
       catalogEntries: 12,
       localCopies: const [],
-      dataSources: [
-        CacheManagementDataSource(
-          target: target,
+      machines: [
+        CacheManagementMachine(
+          id: 'signed:studio-mac',
           displayName: '我的 Mac',
-          codexSourceId: 'source-a',
           routeCount: 2,
-          stats: const SessionCatalogCacheStats(
-            sessionSummaries: 12,
-            conversationWindows: 1,
-          ),
-          conversations: [
-            SessionCatalogCachedConversation(
-              provider: 'codex',
-              providerSessionId: 'cached-thread',
-              entryCount: 27,
-              updatedAt: DateTime.utc(2026, 7, 30, 1, 2),
+          hasStableIdentity: true,
+          dataSources: [
+            CacheManagementDataSource(
+              target: target,
+              bridgeInstanceId: 'bridge-a',
+              codexSourceId: 'source-a',
+              routeCount: 2,
+              usesStableIdentity: true,
+              stats: const SessionCatalogCacheStats(
+                sessionSummaries: 12,
+                conversationWindows: 1,
+              ),
+              conversations: [
+                SessionCatalogCachedConversation(
+                  provider: 'codex',
+                  providerSessionId: 'cached-thread',
+                  entryCount: 27,
+                  updatedAt: DateTime.utc(2026, 7, 30, 1, 2),
+                ),
+              ],
             ),
           ],
         ),
@@ -201,6 +240,7 @@ void main() {
     expect(find.textContaining('2 条连接路线'), findsOneWidget);
     await tester.tap(find.text('我的 Mac'));
     await tester.pumpAndSettle();
+    expect(find.textContaining('Codex 数据源'), findsOneWidget);
     expect(find.textContaining('cached…read'), findsOneWidget);
     await tester.tap(find.byTooltip('删除这条最近会话缓存'));
     await tester.pumpAndSettle();
@@ -217,17 +257,182 @@ void main() {
     await tester.pumpAndSettle();
     expect(backend.clearedDataSources, [target.fingerprint]);
   });
+
+  test('cache management reuses computer identity and preserves sources', () {
+    final groups = groupCacheManagementRoutes([
+      _route(
+        id: 'lan',
+        host: '192.168.1.20',
+        signedId: 'signed-studio',
+        bridgeId: 'bridge-studio',
+        sourceId: 'source-a',
+      ),
+      _route(
+        id: 'tailnet',
+        host: '100.64.0.20',
+        signedId: 'signed-studio',
+        bridgeId: 'bridge-studio',
+        sourceId: 'source-a',
+      ),
+      _route(
+        id: 'alternate-source',
+        host: 'studio.local',
+        signedId: 'signed-studio',
+        bridgeId: 'bridge-studio',
+        sourceId: 'source-b',
+      ),
+    ]);
+
+    expect(groups, hasLength(1));
+    expect(groups.single.machine.displayName, 'Studio Mac');
+    expect(groups.single.machine.routes, hasLength(3));
+    expect(groups.single.sources, hasLength(2));
+    expect(
+      groups.single.sources.map((source) => source.codexSourceId).toSet(),
+      {'source-a', 'source-b'},
+    );
+    expect(
+      groups.single.sources
+          .singleWhere((source) => source.codexSourceId == 'source-a')
+          .routeCount,
+      2,
+    );
+  });
+
+  test('unproven routes remain isolated even when their names match', () {
+    final groups = groupCacheManagementRoutes([
+      _route(id: 'lan', host: '192.168.1.20', name: 'Studio Mac'),
+      _route(id: 'tailnet', host: '100.64.0.20', name: 'Studio Mac'),
+    ]);
+
+    expect(groups, hasLength(2));
+    expect(
+      groups.every((group) => group.sources.single.routeCount == 1),
+      isTrue,
+    );
+    expect(
+      groups.every((group) => !group.sources.single.usesStableIdentity),
+      isTrue,
+    );
+  });
+
+  test('signed route never guesses another route Codex source', () {
+    final groups = groupCacheManagementRoutes([
+      _route(
+        id: 'authenticated-lan',
+        host: '192.168.1.20',
+        signedId: 'signed-studio',
+        bridgeId: 'bridge-studio',
+        sourceId: 'source-a',
+      ),
+      _route(
+        id: 'signed-tailnet',
+        host: '100.64.0.20',
+        signedId: 'signed-studio',
+      ),
+    ]);
+
+    expect(groups, hasLength(1));
+    expect(groups.single.sources, hasLength(2));
+    expect(
+      groups.single.sources.map((source) => source.codexSourceId).toSet(),
+      {'source-a', null},
+    );
+    expect(
+      groups.single.sources.every((source) => source.routeCount == 1),
+      isTrue,
+    );
+    expect(
+      groups.single.sources.every((source) => source.usesStableIdentity),
+      isTrue,
+    );
+  });
+
+  testWidgets('downloaded copies keep provider and Codex source identity', (
+    tester,
+  ) async {
+    final sourceA = _metadata(
+      bridgeId: 'bridge-shared',
+      project: 'source-a',
+      sourceId: 'source-a',
+    );
+    final sourceB = _metadata(
+      bridgeId: 'bridge-shared',
+      project: 'source-b',
+      sourceId: 'source-b',
+    );
+    final backend = _FakeCacheManagementBackend(
+      catalogEntries: 0,
+      localCopies: [sourceA, sourceB],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('zh'),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: CacheManagementScreen(backend: backend),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(ValueKey<Object>(('downloaded_history', sourceA.key))),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(ValueKey<Object>(('downloaded_history', sourceB.key))),
+      findsOneWidget,
+    );
+    await tester.tap(
+      find.byKey(ValueKey<Object>(('remove_downloaded_history', sourceB.key))),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('confirm_remove_downloaded_history')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(backend.removedKeys, [sourceB.key]);
+    expect(
+      find.byKey(ValueKey<Object>(('downloaded_history', sourceA.key))),
+      findsOneWidget,
+    );
+  });
+}
+
+MachineWithStatus _route({
+  required String id,
+  required String host,
+  String? name,
+  String? signedId,
+  String? bridgeId,
+  String? sourceId,
+}) {
+  return MachineWithStatus(
+    machine: Machine(
+      id: id,
+      host: host,
+      name: name,
+      bridgeIdentityId: signedId,
+      bridgeComputerName: signedId == null ? null : 'Studio Mac',
+      bridgeInstanceId: bridgeId,
+      codexSourceId: sourceId,
+    ),
+  );
 }
 
 ConversationMirrorMetadata _metadata({
   required String bridgeId,
   required String project,
+  String? sourceId,
 }) {
   return ConversationMirrorMetadata(
     key: ConversationMirrorKey(
       bridgeInstanceId: bridgeId,
       provider: 'codex',
       providerSessionId: 'provider-session-1',
+      codexSourceId: sourceId,
     ),
     activeGeneration: 'active',
     revision: 'revision',

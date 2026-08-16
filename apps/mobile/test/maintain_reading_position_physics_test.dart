@@ -34,6 +34,21 @@ void main() {
       expect(adjusted, 80);
     });
 
+    test('compensates when canonical reconciliation shrinks the tail', () {
+      final physics = MaintainReadingPositionPhysics(
+        shouldMaintain: () => true,
+      );
+
+      final adjusted = physics.adjustPositionForNewDimensions(
+        oldPosition: _metrics(pixels: 360, maxScrollExtent: 1120),
+        newPosition: _metrics(pixels: 360, maxScrollExtent: 1000),
+        isScrolling: false,
+        velocity: 0,
+      );
+
+      expect(adjusted, 240);
+    });
+
     test('does not compensate outside streaming', () {
       final physics = MaintainReadingPositionPhysics(
         shouldMaintain: () => false,

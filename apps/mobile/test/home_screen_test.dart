@@ -7,6 +7,10 @@ import 'package:flutter/material.dart';
 import 'package:ccpocket/features/session_list/widgets/connect_form.dart';
 import 'package:ccpocket/features/conversation_content_sync/conversation_content_sync_service.dart';
 import 'package:ccpocket/l10n/app_localizations.dart';
+import 'package:ccpocket/l10n/app_localizations_en.dart';
+import 'package:ccpocket/l10n/app_localizations_ja.dart';
+import 'package:ccpocket/l10n/app_localizations_ko.dart';
+import 'package:ccpocket/l10n/app_localizations_zh.dart';
 import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/features/session_list/session_list_screen.dart';
 import 'package:ccpocket/features/settings/state/settings_state.dart';
@@ -318,11 +322,14 @@ void main() {
           hasAuthoritativeRecentSessions: true,
         );
 
-      gate.update(
-        state: BridgeConnectionState.reconnecting,
-        targetKey: 'machine:a',
-        hasAuthoritativeSessionList: false,
-        hasAuthoritativeRecentSessions: false,
+      expect(
+        gate.update(
+          state: BridgeConnectionState.reconnecting,
+          targetKey: 'machine:a',
+          hasAuthoritativeSessionList: false,
+          hasAuthoritativeRecentSessions: false,
+        ),
+        isTrue,
       );
       expect(
         gate.shouldShowConnectedUi(BridgeConnectionState.reconnecting),
@@ -390,7 +397,32 @@ void main() {
         hasAuthoritativeSessionList: false,
         hasAuthoritativeRecentSessions: false,
       );
-      expect(presentation, BridgeConnectionState.reconnecting);
+      expect(presentation, BridgeConnectionState.connected);
+      expect(gate.shouldShowConnectedUi(presentation), isTrue);
+    });
+
+    test('temporary catalog replacement does not impersonate a reconnect', () {
+      final gate = SessionHomeConnectionGate()
+        ..update(
+          state: BridgeConnectionState.connected,
+          targetKey: 'machine:a',
+          hasAuthoritativeSessionList: true,
+          hasAuthoritativeRecentSessions: true,
+        );
+
+      gate.update(
+        state: BridgeConnectionState.connected,
+        targetKey: 'machine:a',
+        hasAuthoritativeSessionList: true,
+        hasAuthoritativeRecentSessions: false,
+      );
+
+      final presentation = gate.presentationState(
+        transportState: BridgeConnectionState.connected,
+        hasAuthoritativeSessionList: true,
+        hasAuthoritativeRecentSessions: false,
+      );
+      expect(presentation, BridgeConnectionState.connected);
       expect(gate.shouldShowConnectedUi(presentation), isTrue);
     });
   });
@@ -422,6 +454,7 @@ void main() {
       bool hasSessionList = false,
       bool hasRecentSessions = false,
       bool autoConnecting = false,
+      bool supportsConversationSyncV2 = true,
       BridgeApplicationReadiness applicationReadiness =
           BridgeApplicationReadiness.legacyUnsupported,
       BridgeConnectionBootstrapPhase bootstrapPhase =
@@ -433,6 +466,7 @@ void main() {
       hasAuthoritativeSessionList: hasSessionList,
       hasAuthoritativeRecentSessions: hasRecentSessions,
       autoConnecting: autoConnecting,
+      supportsConversationSyncV2: supportsConversationSyncV2,
       applicationReadiness: applicationReadiness,
       bootstrapPhase: bootstrapPhase,
       conversationSyncUpdate: conversationSyncUpdate,
@@ -450,14 +484,14 @@ void main() {
           state: BridgeConnectionState.connecting,
           bootstrapPhase: BridgeConnectionBootstrapPhase.openingTransport,
         )?.percent,
-        8,
+        5,
       );
       expect(
         progress(
           state: BridgeConnectionState.connected,
           bootstrapPhase: BridgeConnectionBootstrapPhase.sessionListRequested,
         )?.percent,
-        32,
+        30,
       );
       expect(
         progress(
@@ -481,7 +515,7 @@ void main() {
           bootstrapPhase:
               BridgeConnectionBootstrapPhase.sessionListModelValidated,
         )?.percent,
-        56,
+        58,
       );
       expect(
         progress(
@@ -489,14 +523,14 @@ void main() {
           bootstrapPhase:
               BridgeConnectionBootstrapPhase.sessionListAuthorityAccepted,
         )?.percent,
-        64,
+        68,
       );
       expect(
         progress(
           state: BridgeConnectionState.connected,
           bootstrapPhase: BridgeConnectionBootstrapPhase.identityResolved,
         )?.percent,
-        72,
+        74,
       );
       expect(
         progress(
@@ -509,7 +543,7 @@ void main() {
             pageCount: 1,
           ),
         )?.percent,
-        92,
+        88,
       );
       expect(
         progress(
@@ -522,7 +556,7 @@ void main() {
             pageCount: 4,
           ),
         )?.percent,
-        92,
+        88,
       );
       expect(
         progress(
@@ -538,7 +572,7 @@ void main() {
             phase: 'priority',
           ),
         )?.percent,
-        93,
+        90,
       );
       expect(
         progress(
@@ -563,23 +597,126 @@ void main() {
           .where(
             (phase) =>
                 phase != BridgeConnectionBootstrapPhase.idle &&
-                phase != BridgeConnectionBootstrapPhase.reconnectScheduled,
+                phase != BridgeConnectionBootstrapPhase.reconnectScheduled &&
+                phase !=
+                    BridgeConnectionBootstrapPhase.conversationCatalogReceived,
           )
           .map((phase) => phase.percent)
+          .followedBy(const [84, 88, 96, 97, 98])
           .toList();
 
-      expect(percentages.first, 8);
-      expect(percentages.last, 96);
+      expect(percentages.first, 5);
+      expect(percentages.last, 98);
       expect(
         List.generate(
           percentages.length - 1,
           (index) => percentages[index + 1] - percentages[index],
-        ).every((gap) => gap == 8),
+        ).every((gap) => gap > 0 && gap <= 10),
         isTrue,
       );
     });
 
-    test('keeps progress monotonic across repeated sync begin markers', () {
+    test(
+      'does not hide committed content progress behind runtime readiness',
+      () {
+        final current = progress(
+          state: BridgeConnectionState.connected,
+          hasSessionList: true,
+          applicationReadiness: BridgeApplicationReadiness.preparing,
+          bootstrapPhase: BridgeConnectionBootstrapPhase.sessionListPublished,
+          conversationSyncUpdate: const ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.timeline,
+            pageIndex: 0,
+            pageCount: 1,
+            timelineIndex: 2,
+            timelineCount: 4,
+            phase: 'priority',
+          ),
+        );
+
+        expect(
+          current?.stage,
+          BridgeConnectionEntryStage.savingPriorityTimelines,
+        );
+        expect(current?.percent, 94);
+        expect(current?.waitingForCodexRuntime, isTrue);
+        expect(current?.completedUnits, 3);
+        expect(current?.totalUnits, 4);
+      },
+    );
+
+    test('uses the same detailed step for localized UI text', () {
+      const current = BridgeConnectionEntryProgress(
+        stage: BridgeConnectionEntryStage.savingPriorityTimelines,
+        fraction: 0.94,
+        completedUnits: 3,
+        totalUnits: 4,
+        waitingForCodexRuntime: true,
+      );
+
+      expect(
+        bridgeConnectionProgressLabelFor(AppLocalizationsZh(), current),
+        '正在保存最近会话内容…（3/4）（同时准备共享 Codex 运行时）',
+      );
+      expect(
+        bridgeConnectionProgressLabelFor(AppLocalizationsEn(), current),
+        contains('3/4'),
+      );
+      expect(
+        bridgeConnectionProgressLabelFor(AppLocalizationsJa(), current),
+        contains('3/4'),
+      );
+      expect(
+        bridgeConnectionProgressLabelFor(AppLocalizationsKo(), current),
+        contains('3/4'),
+      );
+    });
+
+    test('uses a truthful pre-sync step before sync_begin arrives', () {
+      final current = progress(
+        state: BridgeConnectionState.connected,
+        hasSessionList: true,
+        applicationReadiness: BridgeApplicationReadiness.preparing,
+        bootstrapPhase: BridgeConnectionBootstrapPhase.sessionListPublished,
+      );
+
+      expect(
+        current?.stage,
+        BridgeConnectionEntryStage.preparingConversationSync,
+      );
+      expect(current?.percent, 78);
+      expect(current?.waitingForCodexRuntime, isTrue);
+    });
+
+    test('keeps legacy Bridge catalog progress distinct from v2 sync', () {
+      final requested = progress(
+        state: BridgeConnectionState.connected,
+        hasSessionList: true,
+        supportsConversationSyncV2: false,
+        bootstrapPhase:
+            BridgeConnectionBootstrapPhase.conversationCatalogRequested,
+      );
+      final received = progress(
+        state: BridgeConnectionState.connected,
+        hasSessionList: true,
+        supportsConversationSyncV2: false,
+        bootstrapPhase:
+            BridgeConnectionBootstrapPhase.conversationCatalogReceived,
+      );
+
+      expect(
+        requested?.stage,
+        BridgeConnectionEntryStage.loadingLegacyConversationCatalog,
+      );
+      expect(requested?.percent, 80);
+      expect(received?.percent, 98);
+      expect(
+        bridgeConnectionProgressLabelFor(AppLocalizationsZh(), requested!),
+        AppLocalizationsZh().loadingConversationCatalog,
+      );
+    });
+
+    test('a replacement subscription cannot rewind committed progress', () {
       const current = ConversationSyncCacheUpdate(
         kind: ConversationSyncCacheUpdateKind.timeline,
         pageIndex: 0,
@@ -605,6 +742,73 @@ void main() {
       );
     });
 
+    test('in-flight v2 pages wait instead of restarting the subscription', () {
+      for (final kind in [
+        ConversationSyncCacheUpdateKind.catalog,
+        ConversationSyncCacheUpdateKind.status,
+        ConversationSyncCacheUpdateKind.timeline,
+        ConversationSyncCacheUpdateKind.priorityReady,
+      ]) {
+        expect(
+          shouldWaitForInFlightConversationSyncOnStall(
+            supportsConversationSyncV2: true,
+            update: ConversationSyncCacheUpdate(kind: kind),
+          ),
+          isTrue,
+          reason: '$kind is committed in-flight v2 progress',
+        );
+      }
+
+      for (final kind in [
+        ConversationSyncCacheUpdateKind.started,
+        ConversationSyncCacheUpdateKind.focusApplied,
+        ConversationSyncCacheUpdateKind.readWatermark,
+        ConversationSyncCacheUpdateKind.completed,
+        ConversationSyncCacheUpdateKind.reset,
+      ]) {
+        expect(
+          shouldWaitForInFlightConversationSyncOnStall(
+            supportsConversationSyncV2: true,
+            update: ConversationSyncCacheUpdate(kind: kind),
+          ),
+          isFalse,
+          reason: '$kind is not an in-flight bootstrap page',
+        );
+      }
+      expect(
+        shouldWaitForInFlightConversationSyncOnStall(
+          supportsConversationSyncV2: false,
+          update: const ConversationSyncCacheUpdate(
+            kind: ConversationSyncCacheUpdateKind.timeline,
+          ),
+        ),
+        isFalse,
+      );
+    });
+
+    test('a same-socket source change clears stale completed progress', () {
+      const completed = ConversationSyncCacheUpdate(
+        kind: ConversationSyncCacheUpdateKind.completed,
+      );
+
+      expect(
+        shouldResetConversationSyncProgressForAuthority(
+          previousAuthorityKey: 'epoch-7/source-a',
+          nextAuthorityKey: 'epoch-7/source-a',
+          currentProgress: completed,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldResetConversationSyncProgressForAuthority(
+          previousAuthorityKey: 'epoch-7/source-a',
+          nextAuthorityKey: 'epoch-7/source-b',
+          currentProgress: completed,
+        ),
+        isTrue,
+      );
+    });
+
     test('disappears only after both authoritative datasets are ready', () {
       expect(
         progress(
@@ -625,20 +829,22 @@ void main() {
       );
 
       expect(current?.stage, BridgeConnectionEntryStage.preparingCodexRuntime);
-      expect(current?.percent, 84);
+      expect(current?.percent, 99);
     });
   });
 
   group('Bridge connection progress watchdog', () {
     BridgeConnectionProgressWatchdogSnapshot snapshot({
       int generation = 1,
+      int connectionEpoch = 1,
       BridgeConnectionEntryStage stage =
-          BridgeConnectionEntryStage.loadingConversationCatalog,
+          BridgeConnectionEntryStage.savingConversationCatalog,
       int percent = 84,
       String progressKey = 'page:0',
       String phaseKey = 'epoch:1:catalog',
     }) => BridgeConnectionProgressWatchdogSnapshot(
       generation: generation,
+      connectionEpoch: connectionEpoch,
       stage: stage,
       percent: percent,
       progressKey: progressKey,
@@ -715,12 +921,24 @@ void main() {
 
         watchdog.observe(snapshot(generation: 1));
         async.elapse(const Duration(seconds: 9));
-        watchdog.observe(snapshot(generation: 2, phaseKey: 'epoch:2:catalog'));
+        watchdog.observe(
+          snapshot(
+            generation: 2,
+            connectionEpoch: 2,
+            phaseKey: 'epoch:2:catalog',
+          ),
+        );
         async.elapse(const Duration(seconds: 1));
         expect(stalls, 0);
         async.elapse(const Duration(seconds: 9));
         expect(stalls, 1);
       });
+    });
+
+    test('elapsed diagnostics reset only when the socket epoch changes', () {
+      expect(shouldResetConnectionProgressDiagnosticsForEpoch(null, 4), isTrue);
+      expect(shouldResetConnectionProgressDiagnosticsForEpoch(4, 4), isFalse);
+      expect(shouldResetConnectionProgressDiagnosticsForEpoch(4, 5), isTrue);
     });
 
     test('structured authentication failure cancels the generic warning', () {

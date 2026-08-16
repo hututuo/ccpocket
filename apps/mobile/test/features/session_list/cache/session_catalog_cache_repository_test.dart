@@ -70,6 +70,60 @@ void main() {
     expect(first.aliasKeys.join(), isNot(contains('codex-home-a')));
   });
 
+  test('presentation revision ignores metadata-only cache commits', () {
+    ConversationHotWindowSnapshot snapshot({
+      required String revision,
+      required String contentHash,
+      required DateTime cachedAt,
+    }) => ConversationHotWindowSnapshot(
+      partitionId: 'partition',
+      provider: Provider.codex.value,
+      providerSessionId: 'thread',
+      revision: revision,
+      entries: [
+        ConversationContentWireEntry(
+          entryId: 'user-1',
+          index: 0,
+          contentHash: contentHash,
+          rawMessage: const {'type': 'user_input', 'text': 'Cached prompt'},
+        ),
+      ],
+      hasEarlier: false,
+      turnsNextCursor: null,
+      windowComplete: true,
+      latestTurnComplete: true,
+      latestTurnGap: null,
+      latestTurnGapCursor: null,
+      sourceEntryCount: 1,
+      cachedAt: cachedAt,
+    );
+
+    final first = snapshot(
+      revision: 'revision-1',
+      contentHash: 'content-1',
+      cachedAt: DateTime.utc(2026, 8, 10, 1),
+    );
+    final metadataOnly = snapshot(
+      revision: 'revision-2',
+      contentHash: 'content-1',
+      cachedAt: DateTime.utc(2026, 8, 10, 2),
+    );
+    final changed = snapshot(
+      revision: 'revision-3',
+      contentHash: 'content-2',
+      cachedAt: DateTime.utc(2026, 8, 10, 3),
+    );
+
+    expect(
+      conversationPresentationRevision(metadataOnly),
+      conversationPresentationRevision(first),
+    );
+    expect(
+      conversationPresentationRevision(changed),
+      isNot(conversationPresentationRevision(first)),
+    );
+  });
+
   test('keeps display lookups isolated by Codex source', () async {
     final sourceATarget = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-shared',
@@ -758,6 +812,105 @@ void main() {
     expect(patched?.entries.single.entryId, 'entry-2');
   });
 
+  test(
+    'diagnostic reads stay target-scoped and bounded at the newest tail',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-diagnostic',
+        codexSourceId: 'source-diagnostic',
+      );
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-diagnostic',
+        revision: 'revision-diagnostic',
+        entries: [
+          for (var index = 0; index < 20; index += 1)
+            _assistantEntry(
+              'entry-$index',
+              index,
+              text: 'tail-$index ${'x' * 600}',
+            ),
+        ],
+        hasEarlier: true,
+        sourceEntryCount: 2000,
+      );
+      await repository.applyConversationStatusBatch(
+        target: target,
+        statusState: 'status-diagnostic',
+        changes: const [
+          ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'thread-diagnostic',
+            activity: 'working',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'loaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-12T00:03:00.000Z',
+          ),
+          ConversationSyncV2Status(
+            provider: 'codex',
+            providerSessionId: 'other-thread',
+            activity: 'idle',
+            attention: 'none',
+            result: 'none',
+            runtimeAttachment: 'notLoaded',
+            source: 'appServer',
+            confidence: 'authoritative',
+            observedAt: '2026-08-12T00:02:00.000Z',
+          ),
+        ],
+      );
+      await repository.storeReadWatermark(
+        target: target,
+        watermark: const ConversationSyncV2ReadWatermark(
+          provider: 'codex',
+          providerSessionId: 'thread-diagnostic',
+          readAt: '2026-08-12T00:04:00.000Z',
+        ),
+      );
+
+      final snapshot = await repository.loadConversationDiagnosticWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-diagnostic',
+        maximumEntries: 5,
+        maximumEncodedBytes: 2000,
+      );
+      final entries = (snapshot!['entries']! as List).cast<Map>();
+      expect(snapshot['entryCount'], 20);
+      expect(snapshot['inspectedEntryCount'], lessThanOrEqualTo(5));
+      expect(snapshot['rawMessageBytes'], lessThanOrEqualTo(2000));
+      expect(entries, isNotEmpty);
+      expect(entries.last['index'], 19);
+      expect(snapshot['omittedEntryCount'], 20 - entries.length);
+      expect(
+        await repository.loadConversationStatus(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-diagnostic',
+        ),
+        isA<ConversationSyncV2Status>().having(
+          (status) => status.activity,
+          'activity',
+          'working',
+        ),
+      );
+      expect(
+        (await repository.loadReadWatermark(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-diagnostic',
+        ))?.readAt,
+        // The production store clamps a phone-ahead read watermark to the
+        // authoritative status observation time before persisting it.
+        '2026-08-12T00:03:00.000Z',
+      );
+    },
+  );
+
   test('thread reset preserves the last committed hot window', () async {
     final target = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-thread-reset',
@@ -790,6 +943,27 @@ void main() {
     expect(retained?.revision, 'revision-before-reset');
     expect(retained?.entries.single.entryId, 'visible-before-reset');
   });
+
+  test(
+    'starting a refresh preserves the last committed priority cache',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-priority-refresh',
+        codexSourceId: 'source-priority-refresh',
+      );
+      await repository.markConversationPriorityReady(target);
+
+      await repository.beginConversationSync(
+        target: target,
+        subscriptionId: 'subscription-refresh',
+      );
+
+      expect(
+        (await repository.loadConversationSyncState(target)).priorityReady,
+        isTrue,
+      );
+    },
+  );
 
   test('advertises only readable complete hot-window revisions', () async {
     final target = SessionCatalogCacheTarget.fromBridge(
@@ -1209,6 +1383,179 @@ void main() {
     },
   );
 
+  test(
+    'persists Desktop project identity across sparse refreshes and moves',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-project-groups',
+        codexSourceId: 'source-project-groups',
+      );
+      await repository.applyConversationCatalogBatch(
+        target: target,
+        codexSourceId: 'source-project-groups',
+        catalogState: 'catalog-project-1',
+        created: const [
+          ConversationSyncV2CatalogEntry(
+            provider: 'codex',
+            providerSessionId: 'thread-project',
+            revision: 'revision-project-1',
+            projectPath: '/private/worktrees/feature-a',
+            projectGroupKind: 'desktopProject',
+            projectGroupId: 'project-ccpocket',
+            projectGroupName: 'CC Pocket Mobile',
+            projectGroupPath: '/workspace/ccpocket',
+            projectGroupingSnapshotComplete: true,
+            createdAt: '2026-08-09T00:00:00.000Z',
+            modifiedAt: '2026-08-09T00:01:00.000Z',
+            recencyAt: '2026-08-09T00:01:00.000Z',
+            availability: 'durable',
+          ),
+        ],
+        updated: const [],
+        destroyed: const [],
+      );
+
+      await repository.upsertResponse(
+        target: target,
+        response: const RecentSessionsMessage(
+          requestScope: 'catalog',
+          sessions: [
+            RecentSession(
+              sessionId: 'thread-project',
+              provider: 'codex',
+              firstPrompt: 'Sparse refresh',
+              created: '2026-08-09T00:00:00.000Z',
+              modified: '2026-08-09T00:02:00.000Z',
+              gitBranch: 'main',
+              projectPath: '/private/worktrees/feature-a',
+              isSidechain: false,
+            ),
+          ],
+        ),
+      );
+
+      var session = (await repository.load(target))!.sessions.single;
+      expect(session.projectGroupingKey, 'desktop-project:project-ccpocket');
+      expect(session.projectName, 'CC Pocket Mobile');
+      expect(session.effectiveProjectGroupPath, '/workspace/ccpocket');
+      expect(session.projectGroupingSnapshotComplete, isTrue);
+
+      await repository.applyConversationCatalogBatch(
+        target: target,
+        codexSourceId: 'source-project-groups',
+        catalogState: 'catalog-project-2',
+        created: const [],
+        updated: const [
+          ConversationSyncV2CatalogEntry(
+            provider: 'codex',
+            providerSessionId: 'thread-project',
+            revision: 'revision-project-2',
+            projectPath: '/private/worktrees/feature-a',
+            projectGroupKind: 'projectless',
+            projectGroupingSnapshotComplete: true,
+            createdAt: '2026-08-09T00:00:00.000Z',
+            modifiedAt: '2026-08-09T00:03:00.000Z',
+            recencyAt: '2026-08-09T00:03:00.000Z',
+            availability: 'durable',
+          ),
+        ],
+        destroyed: const [],
+      );
+
+      session = (await repository.load(target))!.sessions.single;
+      expect(session.projectGroupingKey, desktopProjectlessGroupingKey);
+      expect(session.projectGroupId, isNull);
+      expect(session.projectGroupName, isNull);
+      expect(session.projectGroupingSnapshotComplete, isTrue);
+    },
+  );
+
+  test(
+    'preserves Claude Desktop grouping across sparse legacy refreshes',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-claude-project-groups',
+        codexSourceId: 'source-claude-project-groups',
+      );
+      await repository.applyConversationCatalogBatch(
+        target: target,
+        codexSourceId: 'source-claude-project-groups',
+        catalogState: 'catalog-claude-project-1',
+        created: const [
+          ConversationSyncV2CatalogEntry(
+            provider: 'claude',
+            providerSessionId: 'claude-project-thread',
+            revision: 'revision-claude-project-1',
+            projectPath: '/workspace/claude-project',
+            projectGroupKind: 'desktopProject',
+            projectGroupId: 'project-shared',
+            projectGroupName: 'Shared Workspace',
+            projectGroupPath: '/workspace/shared',
+            projectGroupingSnapshotComplete: true,
+            createdAt: '2026-08-09T00:00:00.000Z',
+            modifiedAt: '2026-08-09T00:01:00.000Z',
+            recencyAt: '2026-08-09T00:01:00.000Z',
+            availability: 'durable',
+          ),
+        ],
+        updated: const [],
+        destroyed: const [],
+      );
+
+      await repository.upsertResponse(
+        target: target,
+        response: const RecentSessionsMessage(
+          requestScope: 'catalog',
+          sessions: [
+            RecentSession(
+              sessionId: 'claude-project-thread',
+              provider: 'claude',
+              firstPrompt: 'Sparse Claude refresh',
+              created: '2026-08-09T00:00:00.000Z',
+              modified: '2026-08-09T00:02:00.000Z',
+              gitBranch: 'main',
+              projectPath: '/workspace/claude-project',
+              isSidechain: false,
+            ),
+          ],
+        ),
+      );
+
+      var session = (await repository.load(target))!.sessions.single;
+      expect(session.projectGroupingKey, 'desktop-project:project-shared');
+      expect(session.projectName, 'Shared Workspace');
+      expect(session.effectiveProjectGroupPath, '/workspace/shared');
+      expect(session.projectGroupingSnapshotComplete, isTrue);
+
+      await repository.applyConversationCatalogBatch(
+        target: target,
+        codexSourceId: 'source-claude-project-groups',
+        catalogState: 'catalog-claude-project-2',
+        created: const [],
+        updated: const [
+          ConversationSyncV2CatalogEntry(
+            provider: 'claude',
+            providerSessionId: 'claude-project-thread',
+            revision: 'revision-claude-project-2',
+            projectPath: '/workspace/claude-project',
+            projectGroupKind: 'projectless',
+            projectGroupingSnapshotComplete: true,
+            createdAt: '2026-08-09T00:00:00.000Z',
+            modifiedAt: '2026-08-09T00:03:00.000Z',
+            recencyAt: '2026-08-09T00:03:00.000Z',
+            availability: 'durable',
+          ),
+        ],
+        destroyed: const [],
+      );
+
+      session = (await repository.load(target))!.sessions.single;
+      expect(session.projectGroupingKey, desktopProjectlessGroupingKey);
+      expect(session.projectGroupId, isNull);
+      expect(session.projectGroupingSnapshotComplete, isTrue);
+    },
+  );
+
   test('rejects direct partial catalog and status page mutations', () async {
     final target = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-partial-pages',
@@ -1455,6 +1802,41 @@ void main() {
         'entry-3',
       ]);
 
+      final incompleteRefresh = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-1',
+        provider: 'codex',
+        providerSessionId: 'thread-stage',
+        revision: 'revision-3',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: const [],
+        deletes: const [],
+        hasEarlier: true,
+        latestTurnComplete: false,
+        latestTurnGap: const ConversationSyncV2LatestTurnGap(
+          missingEntryCount: 1,
+          payloadOmitted: false,
+          repair: 'turns_page',
+        ),
+        sourceEntryCount: 2,
+      );
+      expect(incompleteRefresh.windowCommitted, isTrue);
+      final preservedWindow = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-stage',
+      );
+      expect(preservedWindow?.revision, 'revision-2');
+      expect(preservedWindow?.windowComplete, isFalse);
+      expect(preservedWindow?.latestTurnComplete, isFalse);
+      expect(preservedWindow?.entries.map((entry) => entry.entryId), [
+        'entry-2',
+        'entry-3',
+      ]);
+
       final db = await database.database;
       expect(
         Sqflite.firstIntValue(
@@ -1467,6 +1849,401 @@ void main() {
       );
     },
   );
+
+  test(
+    'nonempty partial windows never shrink or advance a complete cache',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-partial-monotonic',
+        codexSourceId: 'source-partial-monotonic',
+      );
+      const threadId = 'thread-partial-monotonic';
+      final baseline = List.generate(
+        72,
+        (index) => _entry('baseline-$index', index, 'idle'),
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-complete',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'complete-1',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: baseline,
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: true,
+        sourceEntryCount: 72,
+      );
+
+      for (final partialSize in const [1, 2, 9, 47]) {
+        final observed = [
+          ...baseline.sublist(72 - partialSize),
+          _entry('live-$partialSize', 72, 'working'),
+        ];
+        final commit = await repository.stageConversationTimelinePage(
+          target: target,
+          subscriptionId: 'subscription-partial-$partialSize',
+          provider: 'codex',
+          providerSessionId: threadId,
+          revision: 'partial-$partialSize',
+          baseRevision: null,
+          mode: 'snapshot',
+          pageIndex: 0,
+          pageCount: 1,
+          entries: observed,
+          deletes: baseline
+              .take(partialSize)
+              .map((entry) => entry.entryId)
+              .toList(),
+          hasEarlier: true,
+          windowComplete: false,
+          sourceEntryCount: 72 + partialSize,
+        );
+        expect(commit.windowCommitted, isTrue);
+        expect(commit.committedRevision, 'complete-1');
+
+        final cached = await repository.loadConversationWindow(
+          target: target,
+          provider: 'codex',
+          providerSessionId: threadId,
+        );
+        expect(cached?.revision, 'complete-1');
+        expect(cached?.windowComplete, isFalse);
+        expect(
+          cached?.entries.map((entry) => entry.entryId),
+          containsAll(baseline.map((entry) => entry.entryId)),
+        );
+        expect(
+          cached?.entries.map((entry) => entry.index).toSet().length,
+          cached?.entries.length,
+        );
+        expect(
+          (await repository.knownConversationRevisions(
+            target,
+          )).where((cursor) => cursor.providerSessionId == threadId),
+          isEmpty,
+        );
+      }
+
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-complete-2',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'complete-2',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: baseline.take(3).toList(),
+        deletes: const [],
+        hasEarlier: false,
+        windowComplete: true,
+        sourceEntryCount: 3,
+      );
+      final repaired = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      expect(repaired?.revision, 'complete-2');
+      expect(repaired?.windowComplete, isTrue);
+      expect(repaired?.entries.map((entry) => entry.entryId), [
+        'baseline-0',
+        'baseline-1',
+        'baseline-2',
+      ]);
+    },
+  );
+
+  test(
+    'wider incomplete windows insert older rows before stable tail anchors',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-partial-order',
+        codexSourceId: 'source-partial-order',
+      );
+      const threadId = 'thread-partial-order';
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-partial-tail',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'partial-order-base',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [
+          _entry('tail-b1', 0, 'working'),
+          _entry('tail-b2', 1, 'working'),
+        ],
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: false,
+        sourceEntryCount: 2,
+      );
+
+      final widened = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-partial-wider',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'partial-order-base',
+        baseRevision: 'partial-order-base',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [
+          _entry('older-a1', 0, 'idle'),
+          _entry('older-a2', 1, 'idle'),
+          _entry('tail-b1', 2, 'working'),
+          _entry('tail-b2', 3, 'working'),
+        ],
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: false,
+        sourceEntryCount: 4,
+      );
+      expect(widened.windowCommitted, isTrue);
+      var cached = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      expect(cached?.entries.map((entry) => entry.entryId), [
+        'older-a1',
+        'older-a2',
+        'tail-b1',
+        'tail-b2',
+      ]);
+
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-partial-new-tail',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'partial-order-base',
+        baseRevision: 'partial-order-base',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [
+          _entry('tail-b1', 0, 'working'),
+          _entry('tail-b2', 1, 'working'),
+          _entry('latest-c1', 2, 'working'),
+        ],
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: false,
+        sourceEntryCount: 5,
+      );
+      cached = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      expect(cached?.entries.map((entry) => entry.entryId), [
+        'older-a1',
+        'older-a2',
+        'tail-b1',
+        'tail-b2',
+        'latest-c1',
+      ]);
+    },
+  );
+
+  test(
+    'incomplete windows validate and preserve anchors across a paged negative prefix',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-negative-prefix-order',
+        codexSourceId: 'source-negative-prefix-order',
+      );
+      const threadId = 'thread-negative-prefix-order';
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-negative-prefix-base',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'negative-prefix-base',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [
+          _entry('tail-b1', 0, 'working'),
+          _entry('tail-b2', 1, 'working'),
+        ],
+        deletes: const [],
+        hasEarlier: true,
+        turnsNextCursor: 'older-prefix-cursor',
+        windowComplete: false,
+        sourceEntryCount: 2,
+      );
+      await repository.prependConversationTurnsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: threadId,
+        expectedRevision: 'negative-prefix-base',
+        expectedCursor: 'older-prefix-cursor',
+        rawMessages: const [
+          {
+            'type': 'user_input',
+            'text': 'paged prefix',
+            'userMessageUuid': 'prefix-user',
+            'historyTurnId': 'turn-prefix',
+          },
+        ],
+        nextCursor: 'older-prefix-cursor-2',
+      );
+
+      final widened = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-negative-prefix-wider',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'negative-prefix-base',
+        baseRevision: 'negative-prefix-base',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [
+          _entry('older-before-prefix', 0, 'idle'),
+          const ConversationContentWireEntry(
+            entryId: 'turn:turn-prefix:user:prefix-user',
+            index: 1,
+            contentHash: 'hash-prefix-user',
+            rawMessage: {
+              'type': 'user_input',
+              'text': 'paged prefix',
+              'userMessageUuid': 'prefix-user',
+              'historyTurnId': 'turn-prefix',
+            },
+          ),
+          _entry('tail-b1', 2, 'working'),
+          _entry('tail-b2', 3, 'working'),
+        ],
+        deletes: const [],
+        hasEarlier: true,
+        turnsNextCursor: 'older-prefix-cursor-2',
+        windowComplete: false,
+        sourceEntryCount: 4,
+      );
+      expect(widened.windowCommitted, isTrue);
+      var cached = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      expect(cached?.entries.map((entry) => entry.entryId), [
+        'older-before-prefix',
+        'turn:turn-prefix:user:prefix-user',
+        'tail-b1',
+        'tail-b2',
+      ]);
+      expect(cached?.entries.map((entry) => entry.index), [-2, -1, 0, 1]);
+
+      final reversed = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-negative-prefix-reversed',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'negative-prefix-base',
+        baseRevision: 'negative-prefix-base',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [
+          _entry('tail-b1', 0, 'working'),
+          const ConversationContentWireEntry(
+            entryId: 'turn:turn-prefix:user:prefix-user',
+            index: 1,
+            contentHash: 'hash-prefix-user',
+            rawMessage: {
+              'type': 'user_input',
+              'text': 'paged prefix',
+              'userMessageUuid': 'prefix-user',
+              'historyTurnId': 'turn-prefix',
+            },
+          ),
+        ],
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: false,
+        sourceEntryCount: 4,
+      );
+      expect(reversed.stageRejected, isTrue);
+      cached = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      expect(cached?.entries.map((entry) => entry.entryId), [
+        'older-before-prefix',
+        'turn:turn-prefix:user:prefix-user',
+        'tail-b1',
+        'tail-b2',
+      ]);
+    },
+  );
+
+  test('rejects cumulative timeline staging before all pages arrive', () async {
+    final target = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-stage-bound',
+      codexSourceId: 'source-stage-bound',
+    );
+    const threadId = 'thread-stage-bound';
+    ConversationTimelinePageCommit? rejected;
+    for (var page = 0; page < 63; page++) {
+      final commit = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-stage-bound',
+        provider: 'codex',
+        providerSessionId: threadId,
+        revision: 'revision-stage-bound',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: page,
+        pageCount: 64,
+        entries: List.generate(64, (offset) {
+          final index = page * 64 + offset;
+          return _entry('stage-$index', index, 'payload-$index');
+        }),
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: true,
+        sourceEntryCount: 4096,
+      );
+      if (commit.stageRejected) {
+        rejected = commit;
+        break;
+      }
+      expect(commit.windowCommitted, isFalse);
+    }
+    expect(rejected?.stageRejected, isTrue);
+
+    final db = await database.database;
+    for (final table in [
+      SessionCatalogCacheDatabase.timelineStagesTable,
+      SessionCatalogCacheDatabase.timelineStagePagesTable,
+      SessionCatalogCacheDatabase.timelineStageEntriesTable,
+      SessionCatalogCacheDatabase.timelineStageDeletesTable,
+    ]) {
+      expect(
+        await db.query(
+          table,
+          where: 'provider_session_id = ?',
+          whereArgs: [threadId],
+        ),
+        isEmpty,
+      );
+    }
+  });
 
   test(
     'persists assistant text ordering checkpoints across tool patches and catalog refreshes',
@@ -1791,7 +2568,10 @@ void main() {
       );
       repository = SessionCatalogCacheRepository(database);
       final upgraded = await database.database;
-      expect(await upgraded.getVersion(), 7);
+      expect(
+        await upgraded.getVersion(),
+        SessionCatalogCacheDatabase.schemaVersion,
+      );
       expect(
         await upgraded.query(
           SessionCatalogCacheDatabase.partitionsTable,
@@ -1810,6 +2590,9 @@ void main() {
           SessionCatalogCacheDatabase.userIndexEntriesTable,
           SessionCatalogCacheDatabase.userTurnDetailsTable,
           SessionCatalogCacheDatabase.userTurnDetailItemsTable,
+          SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+          SessionCatalogCacheDatabase.latestTurnRepairEntriesTable,
+          SessionCatalogCacheDatabase.latestTurnRepairBaseEntriesTable,
         ]),
       );
       final itemForeignKeys = await upgraded.rawQuery(
@@ -1892,6 +2675,113 @@ void main() {
       expect(reopenedDetail?.complete, isTrue);
       expect(
         await (await database.database).rawQuery('PRAGMA foreign_key_check'),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
+    'migrates v7 windows conservatively when latest turns were incomplete',
+    () async {
+      await repository.close();
+      if (await File(databasePath).exists()) {
+        await File(databasePath).delete();
+      }
+      final legacy = await databaseFactoryFfi.openDatabase(
+        databasePath,
+        options: OpenDatabaseOptions(
+          version: 7,
+          onCreate: (db, _) async {
+            await db.execute('''
+              CREATE TABLE ${SessionCatalogCacheDatabase.hotWindowsTable} (
+                partition_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                provider_session_id TEXT NOT NULL,
+                revision TEXT NOT NULL,
+                entry_count INTEGER NOT NULL,
+                has_earlier INTEGER NOT NULL,
+                turns_next_cursor TEXT,
+                latest_turn_complete INTEGER NOT NULL DEFAULT 1,
+                latest_turn_gap_json TEXT,
+                latest_turn_gap_cursor TEXT,
+                source_entry_count INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+              )
+            ''');
+            await db.execute('''
+              CREATE TABLE ${SessionCatalogCacheDatabase.timelineStagesTable} (
+                partition_id TEXT NOT NULL,
+                subscription_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                provider_session_id TEXT NOT NULL,
+                revision TEXT NOT NULL,
+                base_revision TEXT,
+                mode TEXT NOT NULL,
+                page_count INTEGER NOT NULL,
+                has_earlier INTEGER NOT NULL,
+                turns_next_cursor TEXT,
+                latest_turn_complete INTEGER NOT NULL DEFAULT 1,
+                latest_turn_gap_json TEXT,
+                latest_turn_gap_cursor TEXT,
+                source_entry_count INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+              )
+            ''');
+            for (final complete in [0, 1]) {
+              await db.insert(SessionCatalogCacheDatabase.hotWindowsTable, {
+                'partition_id': 'legacy-v7-$complete',
+                'provider': 'codex',
+                'provider_session_id': 'thread-$complete',
+                'revision': 'revision-$complete',
+                'entry_count': 0,
+                'has_earlier': complete == 0 ? 1 : 0,
+                'turns_next_cursor': null,
+                'latest_turn_complete': complete,
+                'latest_turn_gap_json': null,
+                'latest_turn_gap_cursor': null,
+                'source_entry_count': 0,
+                'updated_at': complete,
+              });
+              await db.insert(SessionCatalogCacheDatabase.timelineStagesTable, {
+                'partition_id': 'legacy-v7-$complete',
+                'subscription_id': 'subscription-$complete',
+                'provider': 'codex',
+                'provider_session_id': 'thread-$complete',
+                'revision': 'revision-$complete',
+                'base_revision': null,
+                'mode': 'snapshot',
+                'page_count': 1,
+                'has_earlier': complete == 0 ? 1 : 0,
+                'turns_next_cursor': null,
+                'latest_turn_complete': complete,
+                'latest_turn_gap_json': null,
+                'latest_turn_gap_cursor': null,
+                'source_entry_count': 0,
+                'created_at': complete,
+              });
+            }
+          },
+        ),
+      );
+      await legacy.close();
+
+      database = SessionCatalogCacheDatabase(
+        databasePath: databasePath,
+        openDatabase: openFfi,
+      );
+      repository = SessionCatalogCacheRepository(database);
+      final upgraded = await database.database;
+      final windows = await upgraded.query(
+        SessionCatalogCacheDatabase.hotWindowsTable,
+        columns: ['latest_turn_complete', 'window_complete'],
+        orderBy: 'latest_turn_complete ASC',
+      );
+      expect(windows, [
+        {'latest_turn_complete': 0, 'window_complete': 0},
+        {'latest_turn_complete': 1, 'window_complete': 0},
+      ]);
+      expect(
+        await upgraded.query(SessionCatalogCacheDatabase.timelineStagesTable),
         isEmpty,
       );
     },
@@ -2042,7 +2932,10 @@ void main() {
     );
     repository = SessionCatalogCacheRepository(database);
     final repaired = await database.database;
-    expect(await repaired.getVersion(), 7);
+    expect(
+      await repaired.getVersion(),
+      SessionCatalogCacheDatabase.schemaVersion,
+    );
     final detailColumns = await repaired.rawQuery(
       'PRAGMA table_info(${SessionCatalogCacheDatabase.userTurnDetailsTable})',
     );
@@ -2109,13 +3002,57 @@ void main() {
         mode: 'snapshot',
         pageIndex: 0,
         pageCount: 1,
-        entries: [_entry('current-entry', 0, 'running')],
+        entries: const [
+          ConversationContentWireEntry(
+            entryId: 'older-entry',
+            index: 0,
+            contentHash: 'hash-older-entry',
+            rawMessage: {
+              'type': 'assistant',
+              'historyTurnId': 'turn-older',
+              'message': {
+                'id': 'older-entry',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'Older answer'},
+                ],
+              },
+            },
+          ),
+          ConversationContentWireEntry(
+            entryId: 'turn:turn-current:assistant:stale-late',
+            index: 1,
+            contentHash: 'hash-stale-late',
+            rawMessage: {
+              'type': 'assistant',
+              'historyTurnId': 'turn-current',
+              'message': {
+                'id': 'stale-late',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'Stale later fragment'},
+                ],
+              },
+            },
+          ),
+        ],
         deletes: const [],
         hasEarlier: true,
         turnsNextCursor: 'older-turns-cursor',
         latestTurnComplete: false,
         latestTurnGap: gap,
         sourceEntryCount: 3,
+      );
+      expect(
+        await repository.prepareConversationLatestTurnItemsRepair(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-latest-turn',
+          expectedRevision: 'revision-latest-turn',
+          expectedTurnId: 'turn-current',
+          expectedCursor: null,
+        ),
+        isTrue,
       );
 
       final first = await repository.mergeConversationLatestTurnItemsPage(
@@ -2131,11 +3068,16 @@ void main() {
             'userMessageUuid': 'user-current',
           },
         ],
+        expectedCursor: null,
         nextCursor: 'current-turn-page-2',
       );
       expect(first?.latestTurnComplete, isFalse);
       expect(first?.latestTurnGapCursor, 'current-turn-page-2');
       expect(first?.turnsNextCursor, 'older-turns-cursor');
+      expect(first?.entries.map((entry) => entry.entryId), [
+        'older-entry',
+        'turn:turn-current:assistant:stale-late',
+      ]);
 
       await repository.close();
       database = SessionCatalogCacheDatabase(
@@ -2151,6 +3093,53 @@ void main() {
       expect(rebuilt?.latestTurnGap?.turnId, 'turn-current');
       expect(rebuilt?.latestTurnGapCursor, 'current-turn-page-2');
       expect(rebuilt?.turnsNextCursor, 'older-turns-cursor');
+
+      const terminalGap = ConversationSyncV2LatestTurnGap(
+        turnId: 'turn-current',
+        missingEntryCount: 1,
+        payloadOmitted: true,
+        repair: 'items_page',
+      );
+      final oversizedTerminal = await repository
+          .mergeConversationLatestTurnItemsPage(
+            target: target,
+            provider: 'codex',
+            providerSessionId: 'thread-latest-turn',
+            expectedRevision: 'revision-latest-turn',
+            expectedTurnId: 'turn-current',
+            rawMessages: const [
+              {
+                'type': 'assistant',
+                'message': {
+                  'id': 'assistant-current',
+                  'role': 'assistant',
+                  'content': [
+                    {'type': 'text', 'text': 'Current answer'},
+                  ],
+                },
+              },
+            ],
+            expectedCursor: 'current-turn-page-2',
+            nextCursor: 'current-turn-page-3',
+            pageComplete: false,
+            latestTurnGap: terminalGap,
+          );
+      expect(oversizedTerminal?.latestTurnComplete, isFalse);
+      expect(oversizedTerminal?.latestTurnGap?.turnId, terminalGap.turnId);
+      expect(
+        oversizedTerminal?.latestTurnGap?.missingEntryCount,
+        terminalGap.missingEntryCount,
+      );
+      expect(
+        oversizedTerminal?.latestTurnGap?.payloadOmitted,
+        terminalGap.payloadOmitted,
+      );
+      expect(oversizedTerminal?.latestTurnGap?.repair, terminalGap.repair);
+      expect(oversizedTerminal?.latestTurnGapCursor, 'current-turn-page-3');
+      expect(oversizedTerminal?.entries.map((entry) => entry.entryId), [
+        'older-entry',
+        'turn:turn-current:assistant:stale-late',
+      ]);
 
       final complete = await repository.mergeConversationLatestTurnItemsPage(
         target: target,
@@ -2170,22 +3159,608 @@ void main() {
             },
           },
         ],
+        expectedCursor: 'current-turn-page-3',
         nextCursor: null,
       );
       expect(complete?.latestTurnComplete, isTrue);
+      expect(complete?.windowComplete, isFalse);
       expect(complete?.latestTurnGap, isNull);
       expect(complete?.latestTurnGapCursor, isNull);
       expect(complete?.turnsNextCursor, 'older-turns-cursor');
       expect(
         complete?.entries.map((entry) => entry.entryId),
         containsAll([
-          'current-entry',
-          'user:user-current',
-          'assistant:assistant-current',
+          'older-entry',
+          'turn:turn-current:user:user-current',
+          'turn:turn-current:assistant:assistant-current',
+        ]),
+      );
+      expect(
+        complete?.entries.map((entry) => entry.entryId),
+        isNot(contains('turn:turn-current:assistant:stale-late')),
+      );
+    },
+  );
+
+  test(
+    'an advancing provider window invalidates an in-flight latest-turn repair',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-latest-turn-generation',
+        codexSourceId: 'source-latest-turn-generation',
+      );
+      const originalGap = ConversationSyncV2LatestTurnGap(
+        turnId: 'turn-original',
+        missingEntryCount: 2,
+        payloadOmitted: true,
+        repair: 'items_page',
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-latest-turn-generation-original',
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-generation',
+        revision: 'revision-original',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: const [
+          ConversationContentWireEntry(
+            entryId: 'turn:turn-original:assistant:stale',
+            index: 0,
+            contentHash: 'hash-original-stale',
+            rawMessage: {
+              'type': 'assistant',
+              'historyTurnId': 'turn-original',
+              'message': {
+                'id': 'original-stale',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'Original stale fragment'},
+                ],
+              },
+            },
+          ),
+        ],
+        deletes: const [],
+        hasEarlier: true,
+        latestTurnComplete: false,
+        latestTurnGap: originalGap,
+        sourceEntryCount: 3,
+      );
+      expect(
+        await repository.prepareConversationLatestTurnItemsRepair(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-latest-turn-generation',
+          expectedRevision: 'revision-original',
+          expectedTurnId: 'turn-original',
+          expectedCursor: null,
+        ),
+        isTrue,
+      );
+
+      final firstRepairPage = await repository
+          .mergeConversationLatestTurnItemsPage(
+            target: target,
+            provider: 'codex',
+            providerSessionId: 'thread-latest-turn-generation',
+            expectedRevision: 'revision-original',
+            expectedTurnId: 'turn-original',
+            rawMessages: const [
+              {
+                'type': 'user_input',
+                'text': 'Original prompt',
+                'userMessageUuid': 'original-user',
+              },
+            ],
+            expectedCursor: null,
+            nextCursor: 'original-page-2',
+          );
+      expect(firstRepairPage?.latestTurnGapCursor, 'original-page-2');
+
+      const replacementGap = ConversationSyncV2LatestTurnGap(
+        turnId: 'turn-replacement',
+        missingEntryCount: 1,
+        payloadOmitted: true,
+        repair: 'items_page',
+      );
+      final replacement = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-latest-turn-generation-replacement',
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-generation',
+        revision: 'revision-replacement',
+        baseRevision: 'revision-original',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: const [
+          ConversationContentWireEntry(
+            entryId: 'turn:turn-original:assistant:stale',
+            index: 0,
+            contentHash: 'hash-original-stale',
+            rawMessage: {
+              'type': 'assistant',
+              'historyTurnId': 'turn-original',
+              'message': {
+                'id': 'original-stale',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'Original stale fragment'},
+                ],
+              },
+            },
+          ),
+          ConversationContentWireEntry(
+            entryId: 'turn:turn-replacement:assistant:stale',
+            index: 1,
+            contentHash: 'hash-replacement-stale',
+            rawMessage: {
+              'type': 'assistant',
+              'historyTurnId': 'turn-replacement',
+              'message': {
+                'id': 'replacement-stale',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'text', 'text': 'Replacement stale fragment'},
+                ],
+              },
+            },
+          ),
+        ],
+        deletes: const [],
+        hasEarlier: true,
+        advanceIncompleteWireRevision: true,
+        latestTurnComplete: false,
+        latestTurnGap: replacementGap,
+        sourceEntryCount: 4,
+      );
+      expect(replacement.windowCommitted, isTrue);
+      expect(replacement.committedRevision, 'revision-replacement');
+
+      final db = await database.database;
+      expect(
+        await db.query(
+          SessionCatalogCacheDatabase.latestTurnRepairStagesTable,
+          where: 'provider_session_id = ?',
+          whereArgs: ['thread-latest-turn-generation'],
+        ),
+        isEmpty,
+      );
+
+      final staleContinuation = await repository
+          .mergeConversationLatestTurnItemsPage(
+            target: target,
+            provider: 'codex',
+            providerSessionId: 'thread-latest-turn-generation',
+            expectedRevision: 'revision-original',
+            expectedTurnId: 'turn-original',
+            rawMessages: const [],
+            expectedCursor: 'original-page-2',
+            nextCursor: null,
+          );
+      expect(staleContinuation, isNull);
+
+      expect(
+        await repository.prepareConversationLatestTurnItemsRepair(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-latest-turn-generation',
+          expectedRevision: 'revision-replacement',
+          expectedTurnId: 'turn-replacement',
+          expectedCursor: null,
+        ),
+        isTrue,
+      );
+
+      final replacementRepair = await repository
+          .mergeConversationLatestTurnItemsPage(
+            target: target,
+            provider: 'codex',
+            providerSessionId: 'thread-latest-turn-generation',
+            expectedRevision: 'revision-replacement',
+            expectedTurnId: 'turn-replacement',
+            rawMessages: const [
+              {
+                'type': 'assistant',
+                'message': {
+                  'id': 'replacement-complete',
+                  'role': 'assistant',
+                  'content': [
+                    {'type': 'text', 'text': 'Replacement complete answer'},
+                  ],
+                },
+              },
+            ],
+            expectedCursor: null,
+            nextCursor: null,
+          );
+      expect(replacementRepair?.latestTurnComplete, isTrue);
+      expect(
+        replacementRepair?.entries.map((entry) => entry.entryId),
+        contains('turn:turn-replacement:assistant:replacement-complete'),
+      );
+      expect(
+        replacementRepair?.entries.map((entry) => entry.entryId),
+        isNot(contains('turn:turn-replacement:assistant:stale')),
+      );
+    },
+  );
+
+  test(
+    'a duplicate incomplete provider window preserves a resumable repair',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-latest-turn-resume',
+        codexSourceId: 'source-latest-turn-resume',
+      );
+      const gap = ConversationSyncV2LatestTurnGap(
+        turnId: 'turn-resume',
+        missingEntryCount: 2,
+        payloadOmitted: false,
+        repair: 'items_page',
+      );
+      const shell = ConversationContentWireEntry(
+        entryId: 'turn:turn-resume:assistant:shell',
+        index: 0,
+        contentHash: 'hash-resume-shell',
+        rawMessage: {
+          'type': 'assistant',
+          'historyTurnId': 'turn-resume',
+          'message': {
+            'id': 'resume-shell',
+            'role': 'assistant',
+            'content': [
+              {'type': 'text', 'text': 'Visible tail shell'},
+            ],
+          },
+        },
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-latest-turn-resume-initial',
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-resume',
+        revision: 'revision-resume',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: const [shell],
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: false,
+        latestTurnComplete: false,
+        latestTurnGap: gap,
+        sourceEntryCount: 3,
+      );
+      expect(
+        await repository.prepareConversationLatestTurnItemsRepair(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-latest-turn-resume',
+          expectedRevision: 'revision-resume',
+          expectedTurnId: 'turn-resume',
+          expectedCursor: null,
+        ),
+        isTrue,
+      );
+      await repository.mergeConversationLatestTurnItemsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-resume',
+        expectedRevision: 'revision-resume',
+        expectedTurnId: 'turn-resume',
+        rawMessages: const [
+          {
+            'type': 'user_input',
+            'text': 'Resume prompt',
+            'userMessageUuid': 'resume-user',
+          },
+        ],
+        expectedCursor: null,
+        nextCursor: 'resume-page-2',
+      );
+
+      final duplicate = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-latest-turn-resume-duplicate',
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-resume',
+        revision: 'revision-resume',
+        baseRevision: 'revision-resume',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: const [shell],
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: false,
+        latestTurnComplete: false,
+        latestTurnGap: gap,
+        sourceEntryCount: 3,
+      );
+      expect(duplicate.windowCommitted, isTrue);
+      final afterDuplicate = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-resume',
+      );
+      expect(afterDuplicate?.latestTurnGapCursor, 'resume-page-2');
+
+      final completed = await repository.mergeConversationLatestTurnItemsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-resume',
+        expectedRevision: 'revision-resume',
+        expectedTurnId: 'turn-resume',
+        rawMessages: const [
+          {
+            'type': 'assistant',
+            'historyTurnId': 'turn-resume',
+            'message': {
+              'id': 'resume-complete',
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'Resume complete answer'},
+              ],
+            },
+          },
+        ],
+        expectedCursor: 'resume-page-2',
+        nextCursor: null,
+      );
+      expect(completed?.latestTurnComplete, isTrue);
+      expect(
+        completed?.entries.map((entry) => entry.entryId),
+        containsAll([
+          'turn:turn-resume:user:resume-user',
+          'turn:turn-resume:assistant:resume-complete',
         ]),
       );
     },
   );
+
+  test(
+    'a live row written during request flight invalidates the late repair',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-latest-turn-flight',
+        codexSourceId: 'source-latest-turn-flight',
+      );
+      const gap = ConversationSyncV2LatestTurnGap(
+        turnId: 'turn-flight',
+        missingEntryCount: 1,
+        payloadOmitted: true,
+        repair: 'items_page',
+      );
+      const shell = ConversationContentWireEntry(
+        entryId: 'turn:turn-flight:assistant:shell',
+        index: 0,
+        contentHash: 'hash-flight-shell',
+        rawMessage: {
+          'type': 'assistant',
+          'historyTurnId': 'turn-flight',
+          'message': {
+            'id': 'flight-shell',
+            'role': 'assistant',
+            'content': [
+              {'type': 'text', 'text': 'Visible shell'},
+            ],
+          },
+        },
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-flight-initial',
+        provider: 'codex',
+        providerSessionId: 'thread-flight',
+        revision: 'revision-flight',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: const [shell],
+        deletes: const [],
+        hasEarlier: true,
+        latestTurnComplete: false,
+        latestTurnGap: gap,
+        sourceEntryCount: 2,
+      );
+      expect(
+        await repository.prepareConversationLatestTurnItemsRepair(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread-flight',
+          expectedRevision: 'revision-flight',
+          expectedTurnId: 'turn-flight',
+          expectedCursor: null,
+        ),
+        isTrue,
+      );
+
+      const live = ConversationContentWireEntry(
+        entryId: 'turn:turn-flight:assistant:live',
+        index: 1,
+        contentHash: 'hash-flight-live',
+        rawMessage: {
+          'type': 'assistant',
+          'historyTurnId': 'turn-flight',
+          'message': {
+            'id': 'flight-live',
+            'role': 'assistant',
+            'content': [
+              {'type': 'text', 'text': 'Arrived while request was in flight'},
+            ],
+          },
+        },
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-flight-live',
+        provider: 'codex',
+        providerSessionId: 'thread-flight',
+        revision: 'revision-flight',
+        baseRevision: 'revision-flight',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: const [live],
+        deletes: const [],
+        hasEarlier: true,
+        latestTurnComplete: false,
+        latestTurnGap: gap,
+        sourceEntryCount: 3,
+      );
+
+      final late = await repository.mergeConversationLatestTurnItemsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-flight',
+        expectedRevision: 'revision-flight',
+        expectedTurnId: 'turn-flight',
+        rawMessages: const [
+          {
+            'type': 'assistant',
+            'historyTurnId': 'turn-flight',
+            'message': {
+              'id': 'provider-old-terminal',
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'Older provider page'},
+              ],
+            },
+          },
+        ],
+        expectedCursor: null,
+        nextCursor: null,
+      );
+      expect(late, isNull);
+      final cached = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-flight',
+      );
+      expect(
+        cached?.entries.map((entry) => entry.entryId),
+        contains('turn:turn-flight:assistant:live'),
+      );
+      expect(cached?.latestTurnComplete, isFalse);
+      expect(cached?.latestTurnGap?.turnId, 'turn-flight');
+    },
+  );
+
+  test('thread reset clears the orphaned latest-turn repair cursor', () async {
+    final target = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-latest-turn-reset',
+      codexSourceId: 'source-latest-turn-reset',
+    );
+    const gap = ConversationSyncV2LatestTurnGap(
+      turnId: 'turn-reset',
+      missingEntryCount: 1,
+      payloadOmitted: false,
+      repair: 'items_page',
+    );
+    await repository.stageConversationTimelinePage(
+      target: target,
+      subscriptionId: 'subscription-latest-turn-reset',
+      provider: 'codex',
+      providerSessionId: 'thread-latest-turn-reset',
+      revision: 'revision-reset',
+      baseRevision: null,
+      mode: 'snapshot',
+      pageIndex: 0,
+      pageCount: 1,
+      entries: [_entry('reset-shell', 0, 'shell')],
+      deletes: const [],
+      hasEarlier: true,
+      windowComplete: false,
+      latestTurnComplete: false,
+      latestTurnGap: gap,
+      sourceEntryCount: 2,
+    );
+    expect(
+      await repository.prepareConversationLatestTurnItemsRepair(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-reset',
+        expectedRevision: 'revision-reset',
+        expectedTurnId: 'turn-reset',
+        expectedCursor: null,
+      ),
+      isTrue,
+    );
+    await repository.mergeConversationLatestTurnItemsPage(
+      target: target,
+      provider: 'codex',
+      providerSessionId: 'thread-latest-turn-reset',
+      expectedRevision: 'revision-reset',
+      expectedTurnId: 'turn-reset',
+      rawMessages: const [
+        {
+          'type': 'user_input',
+          'text': 'Reset prompt',
+          'userMessageUuid': 'reset-user',
+        },
+      ],
+      expectedCursor: null,
+      nextCursor: 'reset-page-2',
+    );
+
+    await repository.resetConversationSyncScope(
+      target: target,
+      scope: 'thread',
+      thread: const ConversationSyncV2Target(
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-reset',
+      ),
+    );
+    final reset = await repository.loadConversationWindow(
+      target: target,
+      provider: 'codex',
+      providerSessionId: 'thread-latest-turn-reset',
+    );
+    expect(reset?.latestTurnGapCursor, isNull);
+    expect(reset?.entries, isNotEmpty);
+
+    expect(
+      await repository.prepareConversationLatestTurnItemsRepair(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-latest-turn-reset',
+        expectedRevision: 'revision-reset',
+        expectedTurnId: 'turn-reset',
+        expectedCursor: null,
+      ),
+      isTrue,
+    );
+
+    final restarted = await repository.mergeConversationLatestTurnItemsPage(
+      target: target,
+      provider: 'codex',
+      providerSessionId: 'thread-latest-turn-reset',
+      expectedRevision: 'revision-reset',
+      expectedTurnId: 'turn-reset',
+      rawMessages: const [
+        {
+          'type': 'assistant',
+          'historyTurnId': 'turn-reset',
+          'message': {
+            'id': 'reset-complete',
+            'role': 'assistant',
+            'content': [
+              {'type': 'text', 'text': 'Reset complete answer'},
+            ],
+          },
+        },
+      ],
+      expectedCursor: null,
+      nextCursor: null,
+    );
+    expect(restarted?.latestTurnComplete, isTrue);
+  });
 
   test(
     'falls back to safe latest-turn repair for damaged cache metadata',
@@ -2266,12 +3841,13 @@ void main() {
             'type': 'user_input',
             'text': 'Earlier prompt',
             'userMessageUuid': 'user-earlier',
+            'historyTurnId': 'turn-earlier',
           },
         ],
         nextCursor: 'cursor-2',
       );
       expect(first?.entries.map((entry) => entry.entryId), [
-        'user:user-earlier',
+        'turn:turn-earlier:user:user-earlier',
         'current-entry',
       ]);
       expect(first?.turnsNextCursor, 'cursor-2');
@@ -2288,12 +3864,13 @@ void main() {
             'type': 'user_input',
             'text': 'Earlier prompt',
             'userMessageUuid': 'user-earlier',
+            'historyTurnId': 'turn-earlier',
           },
         ],
         nextCursor: null,
       );
       expect(repeated?.entries.map((entry) => entry.entryId), [
-        'user:user-earlier',
+        'turn:turn-earlier:user:user-earlier',
         'current-entry',
       ]);
       expect(repeated?.turnsNextCursor, isNull);
@@ -2337,22 +3914,107 @@ void main() {
             'text': 'first prompt',
             'providerItemId': 'provider-user-first',
             'userMessageUuid': 'codex:user-turn:1',
+            'historyTurnId': 'provider-turn-first',
           },
           {
             'type': 'user_input',
             'text': 'second prompt',
             'providerItemId': 'provider-user-second',
             'userMessageUuid': 'codex:user-turn:1',
+            'historyTurnId': 'provider-turn-second',
           },
         ],
         nextCursor: null,
       );
 
       expect(snapshot?.entries.map((entry) => entry.entryId), [
-        'user-provider:provider-user-first',
-        'user-provider:provider-user-second',
+        'turn:provider-turn-first:user-provider:provider-user-first',
+        'turn:provider-turn-second:user-provider:provider-user-second',
         'current-entry',
       ]);
+    },
+  );
+
+  test(
+    'prepends no-turn assistant id occurrences without cross-page collapse',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-no-turn-assistant-pages',
+        codexSourceId: 'source-no-turn-assistant-pages',
+      );
+      await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription-no-turn-assistant-pages',
+        provider: 'codex',
+        providerSessionId: 'thread-no-turn-assistant-pages',
+        revision: 'revision-no-turn-assistant-pages',
+        baseRevision: null,
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [_entry('current-entry', 0, 'idle')],
+        deletes: const [],
+        hasEarlier: true,
+        turnsNextCursor: 'cursor-no-turn-1',
+        sourceEntryCount: 3,
+      );
+
+      await repository.prependConversationTurnsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-no-turn-assistant-pages',
+        expectedRevision: 'revision-no-turn-assistant-pages',
+        expectedCursor: 'cursor-no-turn-1',
+        rawMessages: const [
+          {
+            'type': 'assistant',
+            'messageUuid': 'reused-assistant',
+            'message': {
+              'id': 'reused-assistant',
+              'role': 'assistant',
+              'model': 'gpt-test',
+              'content': [
+                {'type': 'text', 'text': 'later occurrence'},
+              ],
+            },
+          },
+        ],
+        nextCursor: 'cursor-no-turn-2',
+      );
+      final snapshot = await repository.prependConversationTurnsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread-no-turn-assistant-pages',
+        expectedRevision: 'revision-no-turn-assistant-pages',
+        expectedCursor: 'cursor-no-turn-2',
+        rawMessages: const [
+          {
+            'type': 'assistant',
+            'messageUuid': 'reused-assistant',
+            'message': {
+              'id': 'reused-assistant',
+              'role': 'assistant',
+              'model': 'gpt-test',
+              'content': [
+                {'type': 'text', 'text': 'earlier occurrence'},
+              ],
+            },
+          },
+        ],
+        nextCursor: null,
+      );
+
+      expect(snapshot?.entries, hasLength(3));
+      expect(
+        snapshot?.entries
+            .where((entry) => entry.entryId.contains('assistant:reused'))
+            .map((entry) => entry.entryId)
+            .toSet(),
+        {
+          'occurrence:turns:cursor-no-turn-1:0:assistant:reused-assistant',
+          'occurrence:turns:cursor-no-turn-2:0:assistant:reused-assistant',
+        },
+      );
     },
   );
 

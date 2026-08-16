@@ -233,6 +233,7 @@ export interface InputDeliveryReceipt {
   queued: boolean;
   provider?: "codex";
   method?: "turn/start" | "turn/steer";
+  providerTurnId?: string;
   occurredAt: string;
   clientUserMessageIdAccepted?: boolean;
   error?: string;
@@ -462,6 +463,7 @@ export class SessionManager {
   private artifactManager: ArtifactManager | null;
   private codexQueueDrainHooks: CodexQueueDrainHooks;
   private codexSharedRuntimeMutationAllowed?: CodexSharedRuntimeMutationGuard;
+  private readonly codexProcessFactory: () => CodexProcess;
   private readonly inputDeliveryLedger?: InputDeliveryLedger;
   private readonly inputDeliveryScope?: InputDeliveryScope;
   private readonly inputDeliveryRestoredThreads = new WeakMap<
@@ -511,6 +513,7 @@ export class SessionManager {
       ledger: InputDeliveryLedger;
       scope: InputDeliveryScope;
     },
+    codexProcessFactory?: () => CodexProcess,
   ) {
     this.onMessage = onMessage;
     this.imageStore = imageStore ?? null;
@@ -521,6 +524,13 @@ export class SessionManager {
     this.artifactManager = artifactManager ?? null;
     this.codexQueueDrainHooks = codexQueueDrainHooks;
     this.codexSharedRuntimeMutationAllowed = codexSharedRuntimeMutationAllowed;
+    this.codexProcessFactory =
+      codexProcessFactory ??
+      (() =>
+        new CodexProcess(
+          process.platform,
+          this.codexSharedRuntimeMutationAllowed,
+        ));
     this.inputDeliveryLedger = inputDelivery?.ledger;
     this.inputDeliveryScope = inputDelivery?.scope;
   }
@@ -671,10 +681,7 @@ export class SessionManager {
     const effectiveProvider = provider ?? "claude";
     const proc =
       effectiveProvider === "codex"
-        ? new CodexProcess(
-            process.platform,
-            this.codexSharedRuntimeMutationAllowed,
-          )
+        ? this.codexProcessFactory()
         : new SdkProcess();
 
     // Handle worktree: reuse existing or create new
@@ -1439,6 +1446,9 @@ export class SessionManager {
             occurredAt: receipt.occurredAt,
             acceptedSeq: receipt.acceptedSeq,
             queued: receipt.queued,
+            ...(receipt.providerTurnId
+              ? { providerTurnId: receipt.providerTurnId }
+              : {}),
             ...(receipt.clientUserMessageIdAccepted === undefined
               ? {}
               : {
@@ -2496,6 +2506,9 @@ export class SessionManager {
             provider: "codex" as const,
             method: record.method ?? ("turn/start" as const),
           }),
+      ...(record.providerTurnId
+        ? { providerTurnId: record.providerTurnId }
+        : {}),
       occurredAt: record.occurredAt,
       ...(record.clientUserMessageIdAccepted === undefined
         ? {}
@@ -2521,6 +2534,9 @@ export class SessionManager {
         occurredAt: receipt.occurredAt,
         acceptedSeq: receipt.acceptedSeq,
         queued: receipt.queued,
+        ...(receipt.providerTurnId
+          ? { providerTurnId: receipt.providerTurnId }
+          : {}),
         ...(receipt.clientUserMessageIdAccepted === undefined
           ? {}
           : {
@@ -3335,6 +3351,9 @@ export class SessionManager {
             queued: existing?.queued ?? false,
             provider: "codex",
             method: event.method,
+            ...(event.providerTurnId
+              ? { providerTurnId: event.providerTurnId }
+              : {}),
             occurredAt: event.occurredAt,
             ...(event.clientUserMessageIdAccepted === undefined
               ? {}
@@ -3362,6 +3381,9 @@ export class SessionManager {
           stage: event.stage,
           method: event.method,
           occurredAt: event.occurredAt,
+          ...(event.providerTurnId
+            ? { providerTurnId: event.providerTurnId }
+            : {}),
           ...(event.clientUserMessageIdAccepted === undefined
             ? {}
             : {

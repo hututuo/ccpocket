@@ -30,6 +30,8 @@ export interface SharedCodexContentObserverMessage {
   observerGeneration: number;
   observedAt: string;
   turnId?: string;
+  /** Opaque per-turn scope used only when the app-server omits turnId. */
+  anonymousTurnScope?: string;
   message: ServerMessage;
 }
 
@@ -39,6 +41,7 @@ export interface SharedCodexContentObserverCompletion {
   observerGeneration: number;
   observedAt: string;
   turnId?: string;
+  anonymousTurnScope?: string;
 }
 
 /**
@@ -84,6 +87,8 @@ interface ObserverRecord {
   graceTimer?: ReturnType<typeof setTimeout>;
   attaching: boolean;
   lastUsed: number;
+  anonymousTurnSequence: number;
+  anonymousTurnScope?: string;
 }
 
 function boundedPositiveInteger(value: number | undefined, fallback: number) {
@@ -367,19 +372,35 @@ export class SharedCodexContentObserverCoordinator {
       onYield: () => {},
       attaching: true,
       lastUsed: ++this.usageSequence,
+      anonymousTurnSequence: 0,
     };
     record.onMessage = (message) => {
       if (!isObservedMessage(message) || !this.isCurrent(record)) return;
       const observedAt = new Date(this.now()).toISOString();
+      const turnId = process.activeTurnId;
+      if (turnId) {
+        // A real turn id supersedes any temporary no-id scope from attachment
+        // startup. Never carry that fallback into a later anonymous turn.
+        record.anonymousTurnScope = undefined;
+      } else if (!record.anonymousTurnScope) {
+        record.anonymousTurnScope =
+          `observer:${observerGeneration}:turn:${++record.anonymousTurnSequence}`;
+      }
       const event = {
         threadId: interest.threadId,
         connectionGeneration,
         observerGeneration,
         observedAt,
-        ...(process.activeTurnId ? { turnId: process.activeTurnId } : {}),
+        ...(turnId ? { turnId } : {}),
+        ...(!turnId && record.anonymousTurnScope
+          ? { anonymousTurnScope: record.anonymousTurnScope }
+          : {}),
       };
       this.onMessage({ ...event, message });
-      if (message.type === "result") this.onCompletion(event);
+      if (message.type === "result") {
+        this.onCompletion(event);
+        record.anonymousTurnScope = undefined;
+      }
     };
     record.onExit = () => {
       if (!this.isCurrent(record)) return;

@@ -31,7 +31,9 @@ import '../session_list/pending_session_binding.dart';
 import '../session_list/workspace_shell_screen.dart';
 import '../conversation_content_sync/conversation_content_sync_service.dart';
 import '../conversation_content_sync/conversation_route_focus_restorer.dart';
+import '../diagnostics/session_diagnostic_report.dart';
 import '../session_list/cache/session_catalog_cache_repository.dart';
+import '../session_list/state/session_list_cubit.dart';
 import '../session_link/widgets/session_unavailable_view.dart';
 import '../settings/state/settings_cubit.dart';
 import '../../widgets/approval_bar.dart';
@@ -47,6 +49,7 @@ import '../../widgets/workspace_pane_chrome.dart';
 import '../chat_session/state/chat_session_cubit.dart';
 import '../chat_session/state/chat_session_state.dart';
 import '../chat_session/state/streaming_state_cubit.dart';
+import '../chat_session/session_manual_refresh.dart';
 import '../chat_session/widgets/bottom_overlay_layout.dart';
 import '../chat_session/widgets/chat_input_with_overlays.dart';
 import '../chat_session/widgets/chat_message_list.dart';
@@ -71,6 +74,12 @@ const _fileListRefreshToolNames = {
   'NotebookEdit',
   'Bash',
 };
+
+@visibleForTesting
+bool isCurrentCatalogIdentityProof({
+  required bool hasUsableCatalogForCurrentTarget,
+  required RecentSession? session,
+}) => hasUsableCatalogForCurrentTarget && session != null;
 
 class _NoopListenable implements Listenable {
   const _NoopListenable();
@@ -185,11 +194,13 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   StreamSubscription<ConversationContentCacheUpdate>? _cachedPreviewSub;
   StreamSubscription<List<SessionInfo>>? _identitySessionListSub;
   StreamSubscription<List<RecentSession>>? _identityRecentSessionsSub;
+  StreamSubscription<void>? _identityCatalogSub;
   ConversationHotWindowSnapshot? _cachedPreview;
   Object? _cachedPreviewLoadError;
   bool _cachedPreviewErrorSnackbarVisible = false;
   bool _loadingCachedPreview = false;
   bool _cachedPreviewDirty = false;
+  int _cachedPreviewLoadGeneration = 0;
   String? _expectedCacheTargetFingerprint;
   String? _cachedPreviewTargetFingerprint;
   String? _loadingCachedPreviewTargetFingerprint;
@@ -198,11 +209,15 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   final Object _sessionRouteOwner = Object();
   Object? _sessionRouteIdentity;
   late BridgeDataSourceIdentity _dataSourceIdentity;
+  bool _diagnosticReportsSupported = false;
 
   @override
   void initState() {
     super.initState();
     final bridge = context.read<BridgeService>();
+    _diagnosticReportsSupported = bridge.bridgeCapabilities.contains(
+      fileTransferDiagnosticReportCapability,
+    );
     _dataSourceIdentity =
         widget.dataSourceIdentity ?? bridge.dataSourceIdentity;
     _sessionId = widget.sessionId;
@@ -219,8 +234,8 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
 
     if (_isPending) {
       _listenForSessionCreated();
+      _startDurablePreview();
     }
-    _startDurablePreview();
     _listenForSessionSwitch();
     _listenForSessionStopped();
     _listenForAuthoritativeDataSourceIdentity(bridge);
@@ -228,12 +243,30 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
 
   void _listenForAuthoritativeDataSourceIdentity(BridgeService bridge) {
     _identitySessionListSub = bridge.sessionList.listen((_) {
+      _reconcileDiagnosticReportCapability(bridge);
       _reconcileAuthoritativeDataSourceIdentity(bridge);
     });
     _identityRecentSessionsSub = bridge.recentSessionsStream.listen((_) {
       _reconcileAuthoritativeDataSourceIdentity(bridge);
     });
+    try {
+      _identityCatalogSub = context
+          .read<SessionListCubit>()
+          .catalogSnapshotChanges
+          .listen((_) => _reconcileAuthoritativeDataSourceIdentity(bridge));
+    } catch (_) {
+      // Isolated widget hosts may not provide the durable catalog projection.
+    }
     _reconcileAuthoritativeDataSourceIdentity(bridge);
+  }
+
+  void _reconcileDiagnosticReportCapability(BridgeService bridge) {
+    if (!mounted) return;
+    final supported = bridge.bridgeCapabilities.contains(
+      fileTransferDiagnosticReportCapability,
+    );
+    if (supported == _diagnosticReportsSupported) return;
+    setState(() => _diagnosticReportsSupported = supported);
   }
 
   void _reconcileAuthoritativeDataSourceIdentity(BridgeService bridge) {
@@ -250,6 +283,20 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
           (session.id == _sessionId ||
               session.claudeSessionId == providerSessionId),
     );
+    var durableCatalogConfirmsThread = false;
+    try {
+      final catalog = context.read<SessionListCubit>();
+      durableCatalogConfirmsThread = isCurrentCatalogIdentityProof(
+        hasUsableCatalogForCurrentTarget:
+            catalog.hasUsableCatalogForCurrentTarget,
+        session: catalog.catalogSessionFor(
+          providerSessionId,
+          provider: Provider.claude.value,
+        ),
+      );
+    } catch (_) {
+      // Legacy and isolated hosts can still confirm through BridgeService.
+    }
     final catalogConfirmsThread =
         bridge.hasAuthoritativeRecentSessionsForCurrentConnection &&
         bridge.recentSessions.any(
@@ -257,7 +304,11 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
               session.provider == Provider.claude.value &&
               session.sessionId == providerSessionId,
         );
-    if (!runtimeConfirmsThread && !catalogConfirmsThread) return;
+    if (!runtimeConfirmsThread &&
+        !catalogConfirmsThread &&
+        !durableCatalogConfirmsThread) {
+      return;
+    }
 
     final authenticatedIdentity = bridge.dataSourceIdentity;
     final next = _dataSourceIdentity.reconciledWithAuthenticated(
@@ -300,6 +351,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   }
 
   void _startDurablePreview() {
+    if (!_isPending || _cachedPreviewSub != null) return;
     final durableId = widget.durableProviderSessionId;
     if (durableId == null || durableId.isEmpty) return;
     try {
@@ -329,6 +381,20 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     }
   }
 
+  void _invalidateDurablePreviewLoad() {
+    _cachedPreviewLoadGeneration += 1;
+    _loadingCachedPreview = false;
+    _loadingCachedPreviewTargetFingerprint = null;
+    _cachedPreviewDirty = false;
+  }
+
+  void _restartDurablePreview() {
+    unawaited(_cachedPreviewSub?.cancel());
+    _cachedPreviewSub = null;
+    _invalidateDurablePreviewLoad();
+    _startDurablePreview();
+  }
+
   void _restoreDurableConversationFocusIfCurrentSource() {
     final durableId = widget.durableProviderSessionId?.trim();
     if (durableId == null || durableId.isEmpty) return;
@@ -350,6 +416,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
   }
 
   void _reloadDurablePreviewForCurrentTarget() {
+    if (!_isPending) return;
     final durableId = widget.durableProviderSessionId;
     if (durableId == null || durableId.isEmpty) return;
     ConversationContentSyncService sync;
@@ -374,6 +441,8 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       // Without a rebuild, a canonical catalog can finish in the background
       // while the page keeps the provisional fingerprint until re-entry.
       setState(() => _expectedCacheTargetFingerprint = targetFingerprint);
+      _restartDurablePreview();
+      return;
     }
     if (sync.matchesCurrentDataSource(
       _dataSourceIdentity,
@@ -389,14 +458,15 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
             _loadingCachedPreviewTargetFingerprint == targetFingerprint)) {
       return;
     }
-    if (_cachedPreview != null &&
-        _cachedPreviewTargetFingerprint != targetFingerprint) {
-      setState(() => _cachedPreview = null);
-    }
+    // Authentication can canonicalize an IP/route cache key to the stable
+    // Bridge identity without changing the visible conversation. Retain the
+    // last committed window until the confirmed target finishes loading; the
+    // source-conflict fence above still rejects a different machine.
     _loadDurablePreview();
   }
 
   void _loadDurablePreview() {
+    if (!_isPending) return;
     final durableId = widget.durableProviderSessionId;
     if (durableId == null) return;
     ConversationContentSyncService sync;
@@ -426,7 +496,13 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     _loadingCachedPreview = true;
     _loadingCachedPreviewTargetFingerprint = targetFingerprint;
     _cachedPreviewDirty = false;
-    final cacheCommitEpoch = sync.cacheCommitEpoch;
+    final loadGeneration = ++_cachedPreviewLoadGeneration;
+    int currentCacheCommitEpoch() => sync.cacheCommitEpochFor(
+      targetFingerprint: targetFingerprint,
+      provider: Provider.claude.value,
+      providerSessionId: durableId,
+    );
+    final cacheCommitEpoch = currentCacheCommitEpoch();
     unawaited(
       sync
           .loadCachedWindow(
@@ -435,6 +511,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
             expectedDataSourceIdentity: _dataSourceIdentity,
           )
           .then((snapshot) {
+            if (loadGeneration != _cachedPreviewLoadGeneration) return;
             if (!mounted ||
                 widget.durableProviderSessionId != durableId ||
                 !_isPending ||
@@ -442,12 +519,14 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
                   _dataSourceIdentity,
                   provider: Provider.claude.value,
                 )) {
-              if (mounted && widget.durableProviderSessionId == durableId) {
+              if (mounted &&
+                  _isPending &&
+                  widget.durableProviderSessionId == durableId) {
                 _cachedPreviewDirty = true;
               }
               return;
             }
-            if (sync.cacheCommitEpoch != cacheCommitEpoch) {
+            if (currentCacheCommitEpoch() != cacheCommitEpoch) {
               _cachedPreviewDirty = true;
               return;
             }
@@ -468,10 +547,13 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
           })
           .catchError((Object error) {
             debugPrint('Failed to load cached Claude preview: $error');
-            if (!mounted || widget.durableProviderSessionId != durableId) {
+            if (loadGeneration != _cachedPreviewLoadGeneration) return;
+            if (!mounted ||
+                !_isPending ||
+                widget.durableProviderSessionId != durableId) {
               return;
             }
-            if (sync.cacheCommitEpoch != cacheCommitEpoch) {
+            if (currentCacheCommitEpoch() != cacheCommitEpoch) {
               _cachedPreviewDirty = true;
               return;
             }
@@ -494,9 +576,15 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
                 .whenComplete(() => _cachedPreviewErrorSnackbarVisible = false);
           })
           .whenComplete(() {
-            if (mounted && widget.durableProviderSessionId == durableId) {
+            if (mounted &&
+                loadGeneration == _cachedPreviewLoadGeneration &&
+                widget.durableProviderSessionId == durableId) {
               _loadingCachedPreview = false;
               _loadingCachedPreviewTargetFingerprint = null;
+              if (!_isPending) {
+                _cachedPreviewDirty = false;
+                return;
+              }
               if (sync.hasAuthoritativeDataSourceConflict(
                 _dataSourceIdentity,
                 provider: Provider.claude.value,
@@ -537,12 +625,31 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     return (loaded: result.loaded, hasMore: result.hasMore);
   }
 
-  Future<bool> _repairLatestTurn() async =>
-      (await context.read<ConversationContentSyncService>().repairLatestTurn(
+  Future<bool> _repairLatestTurn() async {
+    final sync = context.read<ConversationContentSyncService>();
+    final preview = _cachedPreview;
+    if (preview != null &&
+        !preview.windowComplete &&
+        (preview.latestTurnComplete ||
+            preview.latestTurnGap?.repair == 'turns_page')) {
+      await sync.refreshFocusedConversation(
         provider: Provider.claude.value,
         providerSessionId: widget.durableProviderSessionId!,
         expectedDataSourceIdentity: _dataSourceIdentity,
-      )).loaded;
+      );
+      final repaired = await sync.loadCachedWindow(
+        provider: Provider.claude.value,
+        providerSessionId: widget.durableProviderSessionId!,
+        expectedDataSourceIdentity: _dataSourceIdentity,
+      );
+      return repaired?.windowComplete == true;
+    }
+    return (await sync.repairLatestTurn(
+      provider: Provider.claude.value,
+      providerSessionId: widget.durableProviderSessionId!,
+      expectedDataSourceIdentity: _dataSourceIdentity,
+    )).loaded;
+  }
 
   bool _isCurrentDurablePreviewTargetConfirmed() {
     try {
@@ -806,6 +913,9 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       _sandboxMode = sandboxModeFromRaw(msg.sandboxMode) ?? _sandboxMode;
       _isPending = false;
     });
+    unawaited(_cachedPreviewSub?.cancel());
+    _cachedPreviewSub = null;
+    _invalidateDurablePreviewLoad();
     _syncSessionRouteIdentity();
   }
 
@@ -870,6 +980,8 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       provider: Provider.claude.value,
     );
     final identityChanged = nextIdentity != _dataSourceIdentity;
+    final durableProviderSessionChanged =
+        oldWidget.durableProviderSessionId != widget.durableProviderSessionId;
     final pendingLifecycleChanged =
         oldWidget.pendingSessionCreated != widget.pendingSessionCreated ||
         oldWidget.isPending != widget.isPending;
@@ -901,13 +1013,25 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       _sandboxMode = sandboxModeFromRaw(widget.initialSandboxMode);
       _explorerCurrentPath = explorerHistory.currentPath;
       _recentPeekedFiles = explorerHistory.recentPeekedFiles;
+      if (durableProviderSessionChanged) {
+        _cachedPreview = null;
+        _cachedPreviewTargetFingerprint = null;
+        _cachedPreviewLoadError = null;
+      }
     });
     _syncSessionRouteIdentity();
-    if (identityChanged) {
-      _reloadDurablePreviewForCurrentTarget();
+    if (_isPending && (identityChanged || durableProviderSessionChanged)) {
+      _restartDurablePreview();
     }
     if (_isPending && pendingLifecycleChanged) {
       _listenForSessionCreated();
+      if (!identityChanged && !durableProviderSessionChanged) {
+        _startDurablePreview();
+      }
+    } else if (!_isPending && pendingLifecycleChanged) {
+      unawaited(_cachedPreviewSub?.cancel());
+      _cachedPreviewSub = null;
+      _invalidateDurablePreviewLoad();
     }
   }
 
@@ -929,6 +1053,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     _cachedPreviewSub?.cancel();
     _identitySessionListSub?.cancel();
     _identityRecentSessionsSub?.cancel();
+    _identityCatalogSub?.cancel();
     final durableId = widget.durableProviderSessionId;
     if (durableId != null) {
       try {
@@ -947,8 +1072,10 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     final cachedPreview = _cachedPreview;
     final latestTurnRecoveryVisible =
         cachedPreview != null &&
-        cachedPreview.entries.isEmpty &&
-        !cachedPreview.latestTurnComplete &&
+        (!cachedPreview.windowComplete || !cachedPreview.latestTurnComplete) &&
+        (cachedPreview.entries.isEmpty ||
+            cachedPreview.latestTurnGap?.payloadOmitted == true ||
+            (cachedPreview.latestTurnGap?.missingEntryCount ?? 0) > 0) &&
         _isCurrentDurablePreviewTargetConfirmed();
     if (_isPending && durableId != null) {
       return ConversationRouteFocusRestorer(
@@ -956,6 +1083,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
         child: _ChatScreenProviders(
           key: ValueKey('durable-claude-$durableId'),
           sessionId: durableId,
+          durableProviderSessionId: durableId,
           projectPath: _projectPath,
           gitBranch: _gitBranch,
           worktreePath: _worktreePath,
@@ -964,9 +1092,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
           detachedPreview: true,
           previewRevision: cachedPreview == null
               ? ''
-              : '${cachedPreview.revision}:'
-                    '${cachedPreview.entries.length}:'
-                    '${cachedPreview.cachedAt.microsecondsSinceEpoch}',
+              : conversationPresentationRevision(cachedPreview),
           historyRevision: cachedPreview?.revision ?? '',
           initialHistoryMessages:
               cachedPreview?.entries
@@ -983,6 +1109,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
           onBackToSessions: widget.onBackToSessions,
           hideSessionBackButton: widget.hideSessionBackButton,
           dataSourceIdentity: _dataSourceIdentity,
+          diagnosticReportsSupported: _diagnosticReportsSupported,
         ),
       );
     }
@@ -1030,6 +1157,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
     final providers = _ChatScreenProviders(
       key: ValueKey(_sessionId),
       sessionId: _sessionId,
+      durableProviderSessionId: durableId,
       projectPath: _projectPath,
       gitBranch: _gitBranch,
       worktreePath: _worktreePath,
@@ -1042,6 +1170,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
       onBackToSessions: widget.onBackToSessions,
       hideSessionBackButton: widget.hideSessionBackButton,
       dataSourceIdentity: _dataSourceIdentity,
+      diagnosticReportsSupported: _diagnosticReportsSupported,
     );
     return durableId == null
         ? providers
@@ -1055,6 +1184,7 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
 /// Wrapper that creates screen-scoped cubits once per session.
 class _ChatScreenProviders extends StatelessWidget {
   final String sessionId;
+  final String? durableProviderSessionId;
   final String? projectPath;
   final String? gitBranch;
   final String? worktreePath;
@@ -1078,10 +1208,12 @@ class _ChatScreenProviders extends StatelessWidget {
   final ChatComposerSubmission? initialSubmission;
   final ValueChanged<ChatComposerSubmission>? onInitialSubmissionConsumed;
   final BridgeDataSourceIdentity dataSourceIdentity;
+  final bool diagnosticReportsSupported;
 
   const _ChatScreenProviders({
     super.key,
     required this.sessionId,
+    this.durableProviderSessionId,
     this.projectPath,
     this.gitBranch,
     this.worktreePath,
@@ -1105,6 +1237,7 @@ class _ChatScreenProviders extends StatelessWidget {
     this.initialSubmission,
     this.onInitialSubmissionConsumed,
     required this.dataSourceIdentity,
+    required this.diagnosticReportsSupported,
   });
 
   @override
@@ -1211,6 +1344,7 @@ class _ChatScreenProviders extends StatelessWidget {
         detachedUserTurnLoader: userTurnLoader,
         child: _ChatScreenBody(
           sessionId: sessionId,
+          durableProviderSessionId: durableProviderSessionId,
           projectPath: projectPath,
           gitBranch: gitBranch,
           worktreePath: worktreePath,
@@ -1220,6 +1354,7 @@ class _ChatScreenProviders extends StatelessWidget {
           deferredSubmissionPending: deferredSubmissionPending,
           onDeferredSubmit: onDeferredSubmit,
           dataSourceIdentity: dataSourceIdentity,
+          diagnosticReportsSupported: diagnosticReportsSupported,
           latestTurnRecoveryVisible: latestTurnRecoveryVisible,
           onLatestTurnRecoveryRetry: onLatestTurnRecoveryRetry,
         ),
@@ -1230,6 +1365,7 @@ class _ChatScreenProviders extends StatelessWidget {
 
 class _ChatScreenBody extends HookWidget {
   final String sessionId;
+  final String? durableProviderSessionId;
   final String? projectPath;
   final String? gitBranch;
   final String? worktreePath;
@@ -1241,9 +1377,11 @@ class _ChatScreenBody extends HookWidget {
   final LatestTurnRepairCallback? onLatestTurnRecoveryRetry;
   final ChatComposerSubmitCallback? onDeferredSubmit;
   final BridgeDataSourceIdentity dataSourceIdentity;
+  final bool diagnosticReportsSupported;
 
   const _ChatScreenBody({
     required this.sessionId,
+    this.durableProviderSessionId,
     this.projectPath,
     this.gitBranch,
     this.worktreePath,
@@ -1255,12 +1393,14 @@ class _ChatScreenBody extends HookWidget {
     this.onLatestTurnRecoveryRetry,
     this.onDeferredSubmit,
     required this.dataSourceIdentity,
+    required this.diagnosticReportsSupported,
   });
 
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
     final appColors = Theme.of(context).extension<AppColors>()!;
+    final bridge = context.read<BridgeService>();
     final shell = WorkspaceShellScreen.maybeOf(context);
     final presentationListenable = shell?.presentationListenable;
     final workspaceStateKey = workspaceSessionStateKey(
@@ -1291,6 +1431,30 @@ class _ChatScreenBody extends HookWidget {
     final chatInputController = useMemoized(ComposerTextEditingController.new);
     useEffect(() => chatInputController.dispose, [chatInputController]);
     final draftService = context.read<DraftService>();
+    final manualRefreshRunning = useState(false);
+
+    Future<void> refreshConversation() async {
+      if (manualRefreshRunning.value) return;
+      manualRefreshRunning.value = true;
+      ConversationContentSyncService? contentSync;
+      try {
+        contentSync = context.read<ConversationContentSyncService>();
+      } catch (_) {}
+      try {
+        await refreshSessionFromBridge(
+          bridge: bridge,
+          chatSession: context.read<ChatSessionCubit>(),
+          contentSync: contentSync,
+          provider: Provider.claude.value,
+          pageSessionId: sessionId,
+          expectedDataSourceIdentity: dataSourceIdentity,
+          runtimeSessionId: detachedPreview ? null : sessionId,
+          detachedPreview: detachedPreview,
+        );
+      } finally {
+        if (context.mounted) manualRefreshRunning.value = false;
+      }
+    }
 
     // --- Draft persistence: restore on mount, auto-save on change ---
     useEffect(() {
@@ -1322,6 +1486,9 @@ class _ChatScreenBody extends HookWidget {
     // Collapse tool results notifier
     final collapseToolResults = useMemoized(() => ValueNotifier<int>(0));
     useEffect(() => collapseToolResults.dispose, const []);
+    final diagnosticController = useMemoized(
+      ChatMessageListDiagnosticController.new,
+    );
 
     // Scroll-to-user-entry notifier (set by message history sheet)
     final scrollToUserEntry = useMemoized(
@@ -1359,6 +1526,7 @@ class _ChatScreenBody extends HookWidget {
       final queuedLocally = !context.read<BridgeService>().isConnected;
       chatSessionCubit.showDeferredSubmission(
         submission.text,
+        clientMessageId: submission.clientMessageId,
         images: submission.images,
         queuedLocally: queuedLocally,
       );
@@ -1672,6 +1840,7 @@ class _ChatScreenBody extends HookWidget {
                       SessionNameTitle(
                         sessionId: sessionId,
                         projectPath: effectiveProjectPath,
+                        provider: Provider.claude.value,
                       ),
                     ),
                     flexibleSpace: StatusLineFlexibleSpace(
@@ -1679,6 +1848,28 @@ class _ChatScreenBody extends HookWidget {
                       inPlanMode: inPlanMode,
                     ),
                     actions: [
+                      IconButton(
+                        key: const ValueKey(
+                          'appbar_refresh_conversation_button',
+                        ),
+                        icon: manualRefreshRunning.value
+                            ? const SizedBox.square(
+                                dimension: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.refresh, size: 18),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 32,
+                          minHeight: 32,
+                        ),
+                        tooltip: l.refresh,
+                        onPressed: manualRefreshRunning.value
+                            ? null
+                            : () => unawaited(refreshConversation()),
+                      ),
                       if (effectiveProjectPath != null)
                         IconButton(
                           key: const ValueKey('appbar_explore_button'),
@@ -1832,6 +2023,32 @@ class _ChatScreenBody extends HookWidget {
                               _openInTerminal(context, effectiveProjectPath);
                             case 'collapse_all':
                               collapseToolResults.value++;
+                            case 'diagnostic_report':
+                              final diagnosticSessionId =
+                                  durableProviderSessionId?.trim().isNotEmpty ==
+                                      true
+                                  ? durableProviderSessionId!.trim()
+                                  : sessionState.claudeSessionId?.trim();
+                              if (diagnosticSessionId == null ||
+                                  diagnosticSessionId.isEmpty) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('持久会话身份尚未同步，暂不能上报诊断。'),
+                                  ),
+                                );
+                                return;
+                              }
+                              unawaited(
+                                uploadCurrentSessionDiagnosticReport(
+                                  context: context,
+                                  provider: Provider.claude.value,
+                                  providerSessionId: diagnosticSessionId,
+                                  detachedPreview: detachedPreview,
+                                  expectedDataSourceIdentity:
+                                      dataSourceIdentity,
+                                  presentation: diagnosticController,
+                                ),
+                              );
                           }
                         },
                         itemBuilder: (context) {
@@ -1894,6 +2111,29 @@ class _ChatScreenBody extends HookWidget {
                                 contentPadding: EdgeInsets.zero,
                               ),
                             ),
+                            if (diagnosticReportsSupported)
+                              PopupMenuItem(
+                                key: const ValueKey(
+                                  'menu_session_diagnostic_report',
+                                ),
+                                value: 'diagnostic_report',
+                                child: ListTile(
+                                  leading: const Icon(
+                                    Icons.bug_report_outlined,
+                                    size: 20,
+                                  ),
+                                  title: Text(
+                                    Localizations.localeOf(
+                                              context,
+                                            ).languageCode ==
+                                            'zh'
+                                        ? '上报会话诊断'
+                                        : 'Upload session diagnostics',
+                                  ),
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                ),
+                              ),
                             PopupMenuItem(
                               key: const ValueKey('menu_collapse_all'),
                               value: 'collapse_all',
@@ -1967,7 +2207,6 @@ class _ChatScreenBody extends HookWidget {
                   ),
                 if (detachedPreview &&
                     latestTurnRecoveryVisible &&
-                    sessionState.entries.isEmpty &&
                     onLatestTurnRecoveryRetry != null)
                   DurableLatestTurnRecoveryBanner(
                     onRetry: onLatestTurnRecoveryRetry!,
@@ -2090,6 +2329,7 @@ class _ChatScreenBody extends HookWidget {
                       onFilePeekOpened: context
                           .read<ChatSessionCubit>()
                           .recordPeekedFile,
+                      diagnosticController: diagnosticController,
                     ),
                   ),
                 ),

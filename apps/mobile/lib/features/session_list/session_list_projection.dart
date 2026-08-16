@@ -36,6 +36,16 @@ class UnifiedSessionListItem {
 
   String get projectPath => running?.projectPath ?? recent?.projectPath ?? '';
 
+  String get projectGroupingKey => recent?.projectGroupingKey ?? projectPath;
+
+  String get projectGroupingName =>
+      recent?.projectName ?? pathBasename(projectPath);
+
+  String get effectiveProjectGroupPath =>
+      recent?.effectiveProjectGroupPath ?? projectPath;
+
+  bool get isDesktopProjectless => recent?.isDesktopProjectless ?? false;
+
   String? get providerSessionId {
     final runningId = running?.claudeSessionId?.trim();
     if (runningId != null && runningId.isNotEmpty) return runningId;
@@ -249,7 +259,7 @@ List<String> orderProjectPathsForGroupedView({
   }
 
   for (final item in sessions) {
-    final path = item.projectPath;
+    final path = item.projectGroupingKey;
     includePath(path);
     final pinKey = item.pinKey;
     if (pinKey != null && pinnedSessionKeys.contains(pinKey)) {
@@ -328,7 +338,11 @@ bool recentSessionMatchesListFilters(
   required bool namedOnly,
   required String searchQuery,
 }) {
-  if (projectPath != null && session.projectPath != projectPath) return false;
+  if (projectPath != null &&
+      session.projectGroupingKey != projectPath &&
+      session.projectPath != projectPath) {
+    return false;
+  }
   final provider = session.provider ?? Provider.claude.value;
   if (providerFilter != ProviderFilter.all && provider != providerFilter.name) {
     return false;
@@ -344,6 +358,7 @@ bool recentSessionMatchesListFilters(
     session.summary,
     session.firstPrompt,
     session.lastPrompt,
+    session.projectGroupName,
     session.projectPath,
     session.resumeCwd,
     session.gitBranch,

@@ -76,6 +76,12 @@ class _MutableChatSessionCubit extends ChatSessionCubit {
   void prependEntryForTest(ChatEntry entry) {
     emit(state.copyWith(entries: [entry, ...state.entries]));
   }
+
+  void replaceEntryForTest(int index, ChatEntry entry) {
+    final entries = List<ChatEntry>.from(state.entries);
+    entries[index] = entry;
+    emit(state.copyWith(entries: entries));
+  }
 }
 
 IconData? _iconForKey(WidgetTester tester, String key) =>
@@ -262,12 +268,198 @@ void main() {
       await _expandToolResult(tester, 2);
       expect(find.text('third result'), findsOneWidget);
       scrollController.jumpTo(0);
-      await tester.pump();
+      await tester.pumpAndSettle();
       expect(find.text('Final answer'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await cubit.close();
     },
   );
+
+  testWidgets(
+    'diagnostic controller captures raw order and the folded UI projection',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final bridge = _Bridge();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
+      final cubit = _MutableChatSessionCubit(
+        sessionId: 'session-diagnostic',
+        bridge: bridge,
+        streamingCubit: streaming,
+        provider: Provider.codex,
+      );
+      final scrollController = ReadingPositionAutoScrollController();
+      final diagnostic = ChatMessageListDiagnosticController();
+      addTearDown(bridge.dispose);
+      addTearDown(streaming.close);
+      addTearDown(scrollController.dispose);
+      addTearDown(() async {
+        if (!cubit.isClosed) await cubit.close();
+      });
+
+      await tester.pumpWidget(
+        RepositoryProvider<BridgeService>.value(
+          value: bridge,
+          child: MultiBlocProvider(
+            providers: [
+              BlocProvider<ChatSessionCubit>.value(value: cubit),
+              BlocProvider<StreamingStateCubit>.value(value: streaming),
+            ],
+            child: MaterialApp(
+              localizationsDelegates: AppLocalizations.localizationsDelegates,
+              supportedLocales: AppLocalizations.supportedLocales,
+              theme: AppTheme.darkTheme,
+              home: Scaffold(
+                body: ChatMessageList(
+                  sessionId: 'session-diagnostic',
+                  scrollController: scrollController,
+                  httpBaseUrl: null,
+                  onRetryMessage: null,
+                  collapseToolResults: null,
+                  isCodex: true,
+                  diagnosticController: diagnostic,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      bridge.emit(HistoryMessage(messages: _history()), 'session-diagnostic');
+      await tester.pump();
+
+      final snapshot = diagnostic.capture();
+      expect(snapshot['available'], isTrue);
+      final entries = (snapshot['entries']! as List).cast<Map>();
+      expect(entries, isNotEmpty);
+      expect(
+        entries.map((entry) => entry['index']),
+        orderedEquals(List<int>.generate(entries.length, (index) => index)),
+      );
+      final intermediate = entries.where(
+        (entry) => entry['renderRole'] == 'intermediateSummary',
+      );
+      final members = entries.where(
+        (entry) => entry['renderRole'] == 'foldedIntermediateMember',
+      );
+      expect(intermediate, isNotEmpty);
+      expect(members, isNotEmpty);
+      expect(
+        members.every((entry) => entry['visibleTopLevel'] == false),
+        isTrue,
+      );
+      final visible = (snapshot['visibleTopLevelStableKeys']! as List)
+          .cast<String>();
+      expect(visible.length, lessThan(entries.length));
+      expect(snapshot['presentationRevision'], hasLength(64));
+      expect(snapshot['tailContentRevision'], hasLength(64));
+      final stableObservation = diagnostic.observeTemporalChanges(
+        duration: const Duration(milliseconds: 300),
+        interval: const Duration(milliseconds: 100),
+      );
+      await tester.pump(const Duration(milliseconds: 400));
+      final stableTemporal = await stableObservation;
+      expect(stableTemporal['postTriggerObservedChangeCount'], 0);
+      final contentObservation = diagnostic.observeTemporalChanges(
+        duration: const Duration(milliseconds: 400),
+        interval: const Duration(milliseconds: 100),
+      );
+      final finalAssistantIndex = cubit.state.entries.indexWhere(
+        (entry) =>
+            entry is ServerChatEntry &&
+            entry.message is AssistantServerMessage &&
+            (entry.message as AssistantServerMessage).message.id == 'final',
+      );
+      expect(finalAssistantIndex, isNonNegative);
+      final originalFinal = cubit.state.entries[finalAssistantIndex];
+      cubit.replaceEntryForTest(
+        finalAssistantIndex,
+        ServerChatEntry(
+          AssistantServerMessage(
+            message: const AssistantMessage(
+              id: 'final',
+              role: 'assistant',
+              content: [
+                TextContent(
+                  text: 'Final answer changed under the same identity',
+                ),
+              ],
+              model: 'codex',
+            ),
+          ),
+          timestamp: originalFinal.timestamp,
+          timestampIsAuthoritative: originalFinal.timestampIsAuthoritative,
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      final contentTemporal = await contentObservation;
+      final changedContentSnapshot = diagnostic.capture();
+      expect(
+        changedContentSnapshot['tailContentRevision'],
+        isNot(snapshot['tailContentRevision']),
+      );
+      expect(
+        changedContentSnapshot['presentationRevision'],
+        isNot(snapshot['presentationRevision']),
+      );
+      expect(contentTemporal['postTriggerObservedChangeCount'], greaterThan(0));
+      final revisionBeforeStreaming =
+          changedContentSnapshot['presentationRevision'];
+      final temporalObservation = diagnostic.observeTemporalChanges(
+        duration: const Duration(milliseconds: 400),
+        interval: const Duration(milliseconds: 100),
+      );
+      streaming.appendThinking('new live reasoning delta');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      final streamingSnapshot = diagnostic.capture();
+      expect(
+        streamingSnapshot['presentationRevision'],
+        isNot(revisionBeforeStreaming),
+      );
+      final temporal = await temporalObservation;
+      expect(temporal['observedChangeCount'], greaterThan(0));
+      expect(temporal['noObservedChanges'], isFalse);
+      final temporalSamples = (temporal['samples']! as List).cast<Map>();
+      expect(
+        temporalSamples.any(
+          (sample) => (sample['streaming'] as Map?)?['isStreaming'] == true,
+        ),
+        isTrue,
+      );
+      streaming.reset();
+      await tester.pump();
+      final abaObservation = diagnostic.observeTemporalChanges(
+        duration: const Duration(milliseconds: 400),
+        interval: const Duration(milliseconds: 100),
+      );
+      streaming.appendThinking('transient ABA reasoning');
+      await tester.pump(const Duration(milliseconds: 100));
+      streaming.reset();
+      await tester.pump(const Duration(milliseconds: 400));
+      final abaTemporal = await abaObservation;
+      expect(abaTemporal['observedChangeCount'], greaterThanOrEqualTo(2));
+      expect(abaTemporal['noObservedChanges'], isFalse);
+      final abaSamples = (abaTemporal['samples']! as List).cast<Map>();
+      expect(
+        abaSamples.any(
+          (sample) => (sample['streaming'] as Map?)?['isStreaming'] == true,
+        ),
+        isTrue,
+      );
+      expect((abaSamples.last['streaming'] as Map?)?['isStreaming'], isFalse);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await cubit.close();
+    },
+  );
+
+  test('diagnostic controller reports when the real list is not attached', () {
+    expect(ChatMessageListDiagnosticController().capture(), {
+      'available': false,
+      'reason': 'chatMessageListNotAttached',
+    });
+  });
 
   testWidgets('expanding an intermediate fold keeps its visible row anchored', (
     tester,
@@ -401,6 +593,71 @@ void main() {
       expect(tester.getTopLeft(disclosure).dy, closeTo(expandedY, 1));
       expect(tester.takeException(), isNull);
       await cubit.close();
+    },
+  );
+
+  testWidgets(
+    'non-streaming canonical replacement keeps the visible row anchored while the tail shrinks and grows',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 500));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final bridge = _Bridge();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
+      final cubit = ChatSessionCubit(
+        sessionId: 'session-canonical-anchor',
+        bridge: bridge,
+        streamingCubit: streaming,
+        provider: Provider.codex,
+        detachedPreview: true,
+        initialHistoryMessages: _anchoringCanonicalWindow(tailParagraphs: 28),
+      );
+      final scrollController = ReadingPositionAutoScrollController();
+      addTearDown(bridge.dispose);
+      addTearDown(streaming.close);
+      addTearDown(scrollController.dispose);
+      addTearDown(() async {
+        if (!cubit.isClosed) await cubit.close();
+      });
+
+      await tester.pumpWidget(
+        _chatHarness(
+          bridge: bridge,
+          cubit: cubit,
+          streaming: streaming,
+          scrollController: scrollController,
+          sessionId: 'session-canonical-anchor',
+        ),
+      );
+      await tester.pump();
+
+      final disclosure = find.byKey(
+        const ValueKey('chat_intermediate_disclosure_client:turn-anchor'),
+      );
+      for (var step = 0; step <= 30; step++) {
+        scrollController.jumpTo(
+          scrollController.position.maxScrollExtent * step / 30,
+        );
+        await tester.pump();
+        if (disclosure.evaluate().isNotEmpty) break;
+      }
+      expect(disclosure, findsOneWidget);
+      final initialY = tester.getTopLeft(disclosure).dy;
+
+      cubit.updateDetachedPreviewHistory(
+        _anchoringCanonicalWindow(tailParagraphs: 3),
+      );
+      await tester.pump();
+      expect(tester.getTopLeft(disclosure).dy, closeTo(initialY, 1));
+      final shrunkenY = tester.getTopLeft(disclosure).dy;
+
+      cubit.updateDetachedPreviewHistory(
+        _anchoringCanonicalWindow(tailParagraphs: 36),
+      );
+      await tester.pump();
+      expect(tester.getTopLeft(disclosure).dy, closeTo(shrunkenY, 1));
+      expect(streaming.state.isStreaming, isFalse);
+      expect(tester.takeException(), isNull);
     },
   );
 
@@ -1107,6 +1364,62 @@ void main() {
   );
 
   testWidgets(
+    'latest tool control stays fixed while expanded process details scroll',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final bridge = _Bridge();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
+      final cubit = ChatSessionCubit(
+        sessionId: 'session-active-many',
+        bridge: bridge,
+        streamingCubit: streaming,
+        provider: Provider.codex,
+      );
+      final scrollController = ReadingPositionAutoScrollController();
+      addTearDown(bridge.dispose);
+      addTearDown(streaming.close);
+      addTearDown(scrollController.dispose);
+      addTearDown(() async {
+        if (!cubit.isClosed) await cubit.close();
+      });
+
+      await tester.pumpWidget(
+        _chatHarness(
+          bridge: bridge,
+          cubit: cubit,
+          streaming: streaming,
+          scrollController: scrollController,
+          sessionId: 'session-active-many',
+        ),
+      );
+      bridge.emit(
+        HistoryMessage(messages: _activeHistoryWithManyDetails()),
+        'session-active-many',
+      );
+      await tester.pump();
+
+      final toolLine = find.byType(ChatCurrentToolActivityLine);
+      await tester.tap(toolLine);
+      await tester.pump();
+      final details = find.byKey(const ValueKey('process_details_scroll_view'));
+      expect(details, findsOneWidget);
+
+      final before = tester.getTopLeft(toolLine).dy;
+      await tester.drag(details, const Offset(0, -500));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ChatCurrentToolActivityLine), findsOneWidget);
+      expect(tester.getTopLeft(toolLine).dy, closeTo(before, 0.5));
+      await tester.tap(toolLine);
+      await tester.pump();
+      expect(details, findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'current Guardian review appears once below its tool and hides after three seconds',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(430, 900));
@@ -1614,6 +1927,34 @@ List<ServerMessage> _activeHistory() => [
   const StatusMessage(status: ProcessStatus.running),
 ];
 
+List<ServerMessage> _activeHistoryWithManyDetails() => [
+  const UserInputMessage(text: 'investigate', clientMessageId: 'turn-active'),
+  AssistantServerMessage(
+    message: AssistantMessage(
+      id: 'current-many',
+      role: 'assistant',
+      content: [
+        const ThinkingContent(thinking: 'current thought'),
+        const TextContent(text: 'Checking the current files.'),
+        for (var index = 0; index < 12; index++)
+          ToolUseContent(
+            id: 'many-active-tool-$index',
+            name: 'Read',
+            input: {'file_path': 'file-$index.txt'},
+          ),
+      ],
+      model: 'codex',
+    ),
+  ),
+  for (var index = 0; index < 11; index++)
+    ToolResultMessage(
+      toolUseId: 'many-active-tool-$index',
+      toolName: 'Read',
+      content: 'result $index',
+    ),
+  const StatusMessage(status: ProcessStatus.running),
+];
+
 List<ServerMessage> _guardianActiveHistory() => [
   const UserInputMessage(text: 'run it', clientMessageId: 'turn-guardian'),
   AssistantServerMessage(
@@ -1865,6 +2206,34 @@ List<ServerMessage> _anchoringHistory({
       ),
   ];
 }
+
+List<ServerMessage> _anchoringCanonicalWindow({required int tailParagraphs}) =>
+    [
+      ..._anchoringHistory(toolCount: 4),
+      const UserInputMessage(
+        text: 'canonical tail request',
+        clientMessageId: 'canonical-tail-client',
+        providerItemId: 'canonical-tail-user',
+        historyTurnId: 'canonical-tail-turn',
+      ),
+      AssistantServerMessage(
+        historyTurnId: 'canonical-tail-turn',
+        messageUuid: 'canonical-tail-assistant',
+        message: AssistantMessage(
+          id: 'canonical-tail-assistant',
+          role: 'assistant',
+          content: [
+            TextContent(
+              text: List<String>.filled(
+                tailParagraphs,
+                'Canonical cache content changes height without streaming.',
+              ).join('\n\n'),
+            ),
+          ],
+          model: 'codex',
+        ),
+      ),
+    ];
 
 List<ServerMessage> _partialTurnWindowHistory(int updateCount) {
   final messages = <ServerMessage>[];

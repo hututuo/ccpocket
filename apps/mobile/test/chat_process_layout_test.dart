@@ -690,8 +690,8 @@ void main() {
     final firstKey = layout.turnForEntry(1)!.key;
     final secondKey = layout.turnForEntry(3)!.key;
 
-    expect(firstKey, 'turn:provider-turn-one:uuid:codex:user-turn:1');
-    expect(secondKey, 'turn:provider-turn-two:uuid:codex:user-turn:1');
+    expect(firstKey, 'turn:provider-turn-one');
+    expect(secondKey, 'turn:provider-turn-two');
     expect(firstKey, isNot(secondKey));
     expect(
       chatUserEntryStableIdentity(first),
@@ -700,6 +700,106 @@ void main() {
     expect(
       chatMessageEntryStableKey(first),
       isNot(chatMessageEntryStableKey(second)),
+    );
+  });
+
+  test('mobile UUID client key survives provider identity backfill', () {
+    const clientId = '011848d7-cd43-4f6e-ba7b-3fcd8af165dc';
+    final optimistic = UserChatEntry('same bubble', clientMessageId: clientId);
+    final canonical = UserChatEntry(
+      'same bubble',
+      clientMessageId: clientId,
+      providerItemId: 'provider-user-item',
+      historyTurnId: 'provider-turn',
+      messageUuid: 'codex:user-turn:596',
+    );
+
+    expect(chatUserEntryStableIdentity(optimistic), 'client:$clientId');
+    expect(
+      chatUserEntryStableIdentity(canonical),
+      chatUserEntryStableIdentity(optimistic),
+    );
+    expect(
+      chatMessageEntryStableKey(canonical),
+      chatMessageEntryStableKey(optimistic),
+    );
+  });
+
+  test('provider-global assistant key survives turn provenance backfill', () {
+    const providerId = 'msg_019fe754-99d6-78d0-9a89-a43a24cd64de';
+    final live = AssistantServerMessage(
+      message: const AssistantMessage(
+        id: providerId,
+        role: 'assistant',
+        content: [TextContent(text: 'stable progress')],
+        model: 'codex',
+      ),
+    );
+    final hydrated = AssistantServerMessage(
+      message: const AssistantMessage(
+        id: providerId,
+        role: 'assistant',
+        content: [TextContent(text: 'stable progress')],
+        model: 'codex',
+      ),
+      historyTurnId: 'provider-turn',
+    );
+
+    expect(
+      chatAssistantEntryStableIdentity(live, DateTime(2026)),
+      chatAssistantEntryStableIdentity(hydrated, DateTime(2026)),
+    );
+  });
+
+  test('provider-global tool key survives turn provenance backfill', () {
+    const toolId = 'call_kE8JWc9WSFkIsllwRIYtIZXK';
+    const live = ToolResultMessage(toolUseId: toolId, content: 'done');
+    const hydrated = ToolResultMessage(
+      toolUseId: toolId,
+      content: 'done',
+      historyTurnId: 'provider-turn',
+    );
+
+    expect(
+      chatToolResultEntryStableIdentity(live, DateTime(2026)),
+      chatToolResultEntryStableIdentity(hydrated, DateTime(2026)),
+    );
+  });
+
+  test('arbitrary provider ids survive turn provenance backfill', () {
+    const assistantId = 'assistant-runtime-opaque-id';
+    const toolId = 'tool-runtime-opaque-id';
+    final liveAssistant = AssistantServerMessage(
+      message: const AssistantMessage(
+        id: assistantId,
+        role: 'assistant',
+        content: [TextContent(text: 'stable progress')],
+        model: 'codex',
+      ),
+    );
+    final hydratedAssistant = AssistantServerMessage(
+      historyTurnId: 'provider-turn',
+      message: const AssistantMessage(
+        id: assistantId,
+        role: 'assistant',
+        content: [TextContent(text: 'stable progress')],
+        model: 'codex',
+      ),
+    );
+    const liveTool = ToolResultMessage(toolUseId: toolId, content: 'done');
+    const hydratedTool = ToolResultMessage(
+      toolUseId: toolId,
+      content: 'done',
+      historyTurnId: 'provider-turn',
+    );
+
+    expect(
+      chatAssistantEntryStableIdentity(liveAssistant, DateTime(2026)),
+      chatAssistantEntryStableIdentity(hydratedAssistant, DateTime(2026)),
+    );
+    expect(
+      chatToolResultEntryStableIdentity(liveTool, DateTime(2026)),
+      chatToolResultEntryStableIdentity(hydratedTool, DateTime(2026)),
     );
   });
 
@@ -762,6 +862,166 @@ void main() {
       chatMessageEntryStableKey(first),
       isNot(chatMessageEntryStableKey(second)),
     );
+  });
+
+  test('splits rootless bounded history by explicit provider turn fences', () {
+    AssistantServerMessage assistant(String id, String turnId, String text) =>
+        AssistantServerMessage(
+          messageUuid: id,
+          historyTurnId: turnId,
+          message: AssistantMessage(
+            id: id,
+            role: 'assistant',
+            content: [
+              const ThinkingContent(thinking: 'checking'),
+              ToolUseContent(
+                id: 'legacy-tool',
+                name: 'Read',
+                input: const {'file_path': 'same.txt'},
+              ),
+              TextContent(text: text),
+            ],
+            model: 'codex',
+          ),
+        );
+
+    final entries = <ChatEntry>[
+      ServerChatEntry(
+        assistant('assistant-one-progress', 'provider-turn-one', 'one'),
+      ),
+      ServerChatEntry(
+        const ToolResultMessage(
+          toolUseId: 'legacy-tool',
+          content: 'first result',
+          historyTurnId: 'provider-turn-one',
+        ),
+      ),
+      ServerChatEntry(
+        assistant('assistant-one-final', 'provider-turn-one', 'done one'),
+      ),
+      ServerChatEntry(
+        const ResultMessage(
+          subtype: 'success',
+          historyTurnId: 'provider-turn-one',
+        ),
+      ),
+      ServerChatEntry(
+        assistant('assistant-two-progress', 'provider-turn-two', 'two'),
+      ),
+      ServerChatEntry(
+        const ToolResultMessage(
+          toolUseId: 'legacy-tool',
+          content: 'second result',
+          historyTurnId: 'provider-turn-two',
+        ),
+      ),
+      ServerChatEntry(
+        assistant('assistant-two-final', 'provider-turn-two', 'done two'),
+      ),
+      ServerChatEntry(
+        const ResultMessage(
+          subtype: 'success',
+          historyTurnId: 'provider-turn-two',
+        ),
+      ),
+    ];
+
+    final layout = buildChatProcessLayout(entries, latestTurnIsActive: true);
+    final firstTurn = layout.turnForEntry(0)!;
+    final secondTurn = layout.turnForEntry(4)!;
+
+    expect(firstTurn.key, 'turn:provider-turn-one');
+    expect(secondTurn.key, 'turn:provider-turn-two');
+    expect(firstTurn.key, isNot(secondTurn.key));
+    expect(firstTurn.intermediateOutputCount, 1);
+    expect(secondTurn.intermediateOutputCount, 1);
+    expect(firstTurn.finalAssistantEntryIndex, 2);
+    expect(firstTurn.isActive, isFalse);
+    expect(secondTurn.isActive, isTrue);
+    expect(firstTurn.segments.first.latestTool?.output, 'first result');
+    expect(secondTurn.segments.first.latestTool?.output, 'second result');
+    expect(layout.turnForEntry(2), same(firstTurn));
+    expect(layout.turnForEntry(6), same(secondTurn));
+  });
+
+  test('keeps a same-turn steer inside one provider turn', () {
+    final entries = <ChatEntry>[
+      UserChatEntry(
+        'initial request',
+        clientMessageId: 'initial-client',
+        historyTurnId: 'provider-turn-steer',
+      ),
+      ServerChatEntry(
+        AssistantServerMessage(
+          historyTurnId: 'provider-turn-steer',
+          message: const AssistantMessage(
+            id: 'steer-progress',
+            role: 'assistant',
+            content: [TextContent(text: 'Progress before steer')],
+            model: 'codex',
+          ),
+        ),
+      ),
+      UserChatEntry(
+        'steer the active turn',
+        clientMessageId: 'steer-client',
+        historyTurnId: 'provider-turn-steer',
+      ),
+      ServerChatEntry(
+        AssistantServerMessage(
+          historyTurnId: 'provider-turn-steer',
+          message: const AssistantMessage(
+            id: 'steer-final',
+            role: 'assistant',
+            content: [TextContent(text: 'Final after steer')],
+            model: 'codex',
+          ),
+        ),
+      ),
+      ServerChatEntry(
+        const ResultMessage(
+          subtype: 'success',
+          historyTurnId: 'provider-turn-steer',
+        ),
+      ),
+    ];
+
+    final layout = buildChatProcessLayout(entries);
+    final turn = layout.turnForEntry(1)!;
+    expect(turn.key, 'turn:provider-turn-steer');
+    expect(layout.latestTurnKey, turn.key);
+    expect(layout.turnForEntry(3), same(turn));
+    expect(turn.finalAssistantEntryIndex, 3);
+  });
+
+  test('provider turn key survives user-root paging out and back in', () {
+    final rooted = <ChatEntry>[
+      UserChatEntry(
+        'root',
+        clientMessageId: 'provider-root-client',
+        historyTurnId: 'provider-turn-stable-root',
+      ),
+      ServerChatEntry(
+        AssistantServerMessage(
+          historyTurnId: 'provider-turn-stable-root',
+          message: const AssistantMessage(
+            id: 'provider-root-answer',
+            role: 'assistant',
+            content: [TextContent(text: 'answer')],
+            model: 'codex',
+          ),
+        ),
+      ),
+    ];
+    final rootless = rooted.sublist(1);
+
+    final rootedKey = buildChatProcessLayout(rooted).turnForEntry(1)!.key;
+    final rootlessKey = buildChatProcessLayout(rootless).turnForEntry(0)!.key;
+    final restoredKey = buildChatProcessLayout(rooted).turnForEntry(1)!.key;
+
+    expect(rootedKey, 'turn:provider-turn-stable-root');
+    expect(rootlessKey, rootedKey);
+    expect(restoredKey, rootedKey);
   });
 }
 

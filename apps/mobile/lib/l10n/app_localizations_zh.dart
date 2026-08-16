@@ -616,6 +616,67 @@ class AppLocalizationsZh extends AppLocalizations {
   String get preparingCodexRuntime => 'Bridge 已在线，正在准备共享 Codex 运行时...';
 
   @override
+  String get connectionPreparingTarget => '正在准备连接目标…';
+
+  @override
+  String get connectionOpeningTransport => '正在建立网络连接…';
+
+  @override
+  String get connectionNegotiatingTransport => '网络已连接，正在协商 Bridge 能力…';
+
+  @override
+  String get connectionSendingCapabilities => '正在发送手机端能力信息…';
+
+  @override
+  String get connectionRequestingSessionList => '正在请求权威会话目录…';
+
+  @override
+  String get connectionReceivingSessionList => '已收到目录数据，正在读取…';
+
+  @override
+  String get connectionDecodingSessionList => '正在解码会话目录…';
+
+  @override
+  String get connectionValidatingSessionList => '正在校验会话目录…';
+
+  @override
+  String get connectionAcceptingSessionAuthority => '正在确认当前 Bridge 与数据源…';
+
+  @override
+  String get connectionResolvingBridgeIdentity => '正在识别电脑与 Codex 数据源…';
+
+  @override
+  String get connectionPublishingSessionList => '正在发布权威会话目录…';
+
+  @override
+  String get connectionPreparingConversationSync => '正在准备增量会话同步…';
+
+  @override
+  String get connectionStartingConversationSync => '正在启动增量会话同步…';
+
+  @override
+  String get connectionSavingConversationCatalog => '正在保存会话目录…';
+
+  @override
+  String get connectionSavingSessionStatus => '正在保存会话运行状态…';
+
+  @override
+  String get connectionSavingPriorityTimelines => '正在保存最近会话内容…';
+
+  @override
+  String get connectionReloadingLocalProjection => '正在重载本地会话视图…';
+
+  @override
+  String connectionProgressWithCount(String label, int completed, int total) {
+    return '$label（$completed/$total）';
+  }
+
+  @override
+  String connectionProgressWhilePreparingRuntime(String label) {
+    return '$label（同时准备共享 Codex 运行时）';
+  }
+
+  @override
   String get codexRuntimeTakingLonger =>
       'Bridge 进程已在线，但共享 Codex 运行时仍在准备。你可以继续等待、重试或取消。';
 
@@ -721,6 +782,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get allProjects => '全部项目';
 
   @override
+  String get unassignedProject => '未归入项目';
+
+  @override
   String get named => '已命名';
 
   @override
@@ -819,6 +883,20 @@ class AppLocalizationsZh extends AppLocalizations {
   String get bridgeUpdateAvailable => '有可用更新';
 
   @override
+  String get clientBridgeMatched => '手机 IPA 与 Bridge 已匹配';
+
+  @override
+  String get clientBridgeBridgeOlder => 'Bridge 较旧，请更新以匹配当前 IPA';
+
+  @override
+  String get clientBridgeMobileOlder => '手机 IPA 较旧，请更新以匹配当前 Bridge';
+
+  @override
+  String clientBridgeCompatibilityDetail(String bridgeVersion) {
+    return '当前 Bridge v$bridgeVersion';
+  }
+
+  @override
   String get bridgeUpdateRequiresSetup => '需要 SSH 和 Bridge 自动启动设置';
 
   @override
@@ -899,10 +977,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get supportBannerAction => '查看支持';
 
   @override
-  String get offline => '离线';
+  String get offline => '电脑或 Bridge 未在线';
 
   @override
-  String get unreachable => '不可达';
+  String get unreachable => '连接超时';
 
   @override
   String get checking => '检查中...';
@@ -1506,10 +1584,14 @@ class AppLocalizationsZh extends AppLocalizations {
   String get rewindCannotRewindFiles => '无法回退文件';
 
   @override
-  String get codexRewindConfirmTitle => '回退对话？';
+  String get codexEditMessageConfirmTitle => '编辑这条消息？';
 
   @override
-  String get codexRewindConfirmBody => '将聊天恢复到此消息之前，并把该消息放回输入框。文件更改会保留。';
+  String get codexEditMessageConfirmBody =>
+      'Codex 会在这条消息之前创建一个新分支。原分支和文件更改会保留；这条消息会回到输入框，修改后可以重新发送。';
+
+  @override
+  String get codexEditMessageUnavailable => '会话仍在同步，暂时不能编辑。请刷新后重试。';
 
   @override
   String get fork => '分叉';
