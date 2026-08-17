@@ -5,13 +5,19 @@ function getPathApi(platform: NodeJS.Platform) {
 }
 
 export function stripWindowsExtendedPathPrefix(input: string): string {
-  if (!input.startsWith("\\\\?\\")) return input;
+  // Windows APIs and cross-platform file pickers may serialize the same
+  // extended-length path with either backslashes (`\\\\?\\C:\\...`) or
+  // forward slashes (`//?/C:/...`). Normalize only the separator spelling
+  // used for prefix detection; the platform path API performs the remaining
+  // normalization later.
+  const prefixCandidate = input.replaceAll("/", "\\");
+  if (!prefixCandidate.startsWith("\\\\?\\")) return input;
 
-  if (input.startsWith("\\\\?\\UNC\\")) {
-    return `\\\\${input.slice("\\\\?\\UNC\\".length)}`;
+  if (prefixCandidate.startsWith("\\\\?\\UNC\\")) {
+    return `\\\\${prefixCandidate.slice("\\\\?\\UNC\\".length)}`;
   }
 
-  const trimmed = input.slice("\\\\?\\".length);
+  const trimmed = prefixCandidate.slice("\\\\?\\".length);
   return /^[A-Za-z]:[\\/]/.test(trimmed) ? trimmed : input;
 }
 
