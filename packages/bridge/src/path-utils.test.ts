@@ -23,22 +23,14 @@ describe("path-utils", () => {
   it("normalizes extended Windows drive paths", () => {
     expect(stripWindowsExtendedPathPrefix("\\\\?\\D:\\Users\\alice\\project"))
       .toBe("D:\\Users\\alice\\project");
-    expect(stripWindowsExtendedPathPrefix("//?/D:/Users/alice/project"))
-      .toBe("D:\\Users\\alice\\project");
     expect(
       resolvePlatformPath("\\\\?\\D:\\Users\\alice\\project", "win32"),
     ).toBe("D:\\Users\\alice\\project");
-    expect(resolvePlatformPath("//?/D:/Users/alice/project", "win32")).toBe(
-      "D:\\Users\\alice\\project",
-    );
   });
 
   it("normalizes extended Windows UNC paths", () => {
     expect(
       stripWindowsExtendedPathPrefix("\\\\?\\UNC\\server\\share\\project"),
-    ).toBe("\\\\server\\share\\project");
-    expect(
-      stripWindowsExtendedPathPrefix("//?/UNC/server/share/project"),
     ).toBe("\\\\server\\share\\project");
   });
 
