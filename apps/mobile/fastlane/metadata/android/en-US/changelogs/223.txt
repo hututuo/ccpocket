@@ -1,6 +1,6 @@
 • Stable chat position during streaming, long output, keyboard changes, and session switches.
 • Select and copy message text and code blocks, with clearer compact approvals.
-• Paste images from the iOS edit menu, use GIF/WebP, and optionally open the gallery directly from chat.
+• Use GIF/WebP, pan zoomed gallery images, and optionally open the gallery directly from chat.
 • More reliable notifications, reconnects, session recovery, archive retries, and session/gallery loading.
 • Optional hidden-folder browsing and consistent Codex project settings.
 • Update Bridge to 1.72.3 for full compatibility.
