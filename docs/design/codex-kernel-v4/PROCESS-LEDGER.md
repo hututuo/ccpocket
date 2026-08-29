@@ -28,3 +28,9 @@
 | D09 | 最终审核包 | NOT_STARTED |  | 停在 USER_REVIEW_PENDING |
 
 失败记录不得覆盖；每次集成记录来源 branch/commit、冲突决策、验证结果和最后安全回退点。
+
+## 根决策断点
+
+| ID | 内容 | 状态 | 验证 | 安全回退 |
+|---|---|---|---|---|
+| R00 | 一次完成两个累计设计阶段；Phase 2 复用 Phase 1 语义和窄接口，不建立第二套架构 | STATIC_VERIFIED | `03-CUMULATIVE-DESIGN-AND-FREEZE-GATES.md`; `git diff --check` | `fc850e00` |
