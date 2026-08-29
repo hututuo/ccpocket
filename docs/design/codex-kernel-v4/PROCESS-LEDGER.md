@@ -48,3 +48,9 @@ R02 根裁决：跨进程 `SourcePartition` 固定为 `bridgeIdentityId + bridge
 R04 根裁决：统一 owner 为 `OperationKernel`；删除重复的 `RETRY_START_AS_NEW` discriminant，重发只能是带 `retryOfOperationId` 的新 `START_TURN`；`EXPIRE_INTERACTION` 明确为内部 transition；fingerprint 使用 RFC 8785 且不改写 Unicode；control envelope 回到 64 KiB；`OUTCOME_UNKNOWN` 是不可再 dispatch 的 terminal，后续只追加只读 reconcile observation；settings 未知字段不得盲目回写。
 
 R05 是“集成前全部 OPEN”的机械基线，不能作为最终 closure 结果。用户已授权本地累计完成两个设计阶段，故原 `Phase 1 后暂停 Phase 2` 条款被当前任务授权取代；只有实施仍受审核后另行授权约束。最终矩阵必须由根 Agent 对已集成合同逐行升级，U/实验仍保持未闭合。
+
+## 隔离异常记录
+
+| ID | 时间 | 事实 | 处理 | 复核 |
+|---|---|---|---|---|
+| F-001 | 2026-08-30 00:43–00:47 +08:00 | 审查 worker 将 `docs/design/codex-kernel-v4/drafts/.probe`（6 bytes，SHA-256 `25be3235…`）和未完成 `AUDIT-COVERAGE-CLOSURE.csv`（12,322 bytes，SHA-256 `4b327709…`）误写到 dirty main；它们不在任务开始的既有 untracked 清单中，且与 worker 最终文件 hash 不同 | 根 Agent 只删除这两个可明确归因的临时文件及空目录；未触碰用户既有 untracked 文件 | main HEAD `a706200233c55cc82d7a17e433f80f132d0f280d`、tree `ac85f620445151f45eda856f55f4b96ee442f41a`；status 恢复为原 5 项 untracked |
