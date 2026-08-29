@@ -47,8 +47,8 @@ not independent product cores or independent databases.
 
 | Semantic | Unique owner | Execution location | Durable authority | Mobile role |
 |---|---|---|---|---|
-| operation admission, fingerprint, state and events | `OperationScheduler` | Bridge single-writer application service | Bridge operation ledger after acceptance; Provider remains authority for side effects | protected local intent until accepted, then replica |
-| Provider-mutating lane and next-turn backlog | `OperationScheduler` | Bridge | Bridge lane/queue ledger | projection and user edit/cancel requests only |
+| operation admission, fingerprint, state and events | `OperationKernel` | Bridge single-writer application service；scheduler 只是其内部组件 | Bridge operation ledger after acceptance; Provider remains authority for side effects | protected local intent until accepted, then replica |
+| Provider-mutating lane and next-turn backlog | `OperationKernel` | Bridge | Bridge lane/queue ledger | projection and user edit/cancel requests only |
 | current Provider execution/result | `CodexProviderAdapter` evidence consumed by `OperationReconciler` | Provider I/O plus Bridge read-only reconcile | Provider durable/event evidence | replica; never infers from spinner or timeout |
 | interaction open/resolved fact | `InteractionBroker` | Bridge over current Provider runtime | Provider open/resolved evidence; Bridge owns claim arbitration | claim/respond surface and replica |
 | authenticated actor | connection/authentication context | Bridge transport boundary | authenticated principal registry outside the Session Kernel | never self-asserts authority |
@@ -73,7 +73,7 @@ state, settings head, Goal head, or durable relations.
 Every operation and durable relation uses:
 
 ```text
-SourcePartition = (bridgeInstanceId, codexSourceId)
+SourcePartition = (bridgeIdentityId, bridgeInstanceId, codexSourceId)
 ThreadLocator   = (SourcePartition, providerThreadId)
 OperationKey    = (ThreadLocator, operationId)
 ```
@@ -89,7 +89,12 @@ The transport provides an immutable per-frame execution context:
 
 ```ts
 interface AuthenticatedExecutionContextV1 {
-  bridgeInstanceId: string;
+  source: {
+    bridgeIdentityId: string;
+    bridgeInstanceId: string;
+    codexSourceId: string;
+  };
+  sourceEpoch: string;
   connectionEpoch: string;
   actorPrincipalId: string;
   actorDeviceKeyId: string;
@@ -113,10 +118,8 @@ mutation kind + schema version + ThreadLocator or creation target
 ```
 
 Excluded fields are transport timestamp, request trace, route, UI label, retry
-counter, and connection epoch. Strings are UTF-8 NFC; maps have schema-defined
-keys and order; absent and explicit null are distinct only where the schema
-says so; binary content is represented by immutable `ContentRef` digest, never
-inline bytes. JSON `stringify` of an arbitrary map is not the contract.
+counter, and connection epoch. Canonical bytes use RFC 8785 JSON Canonicalization
+Scheme over the schema-validated typed value；字符串代码点不另做 NFC/NFD 改写，避免改变用户输入。Absent 和 explicit null 只有在 schema 明确区分时才能并存；binary content 只使用 immutable `ContentRef` digest，绝不 inline。普通 JSON `stringify` 或 arbitrary map 不是合同。
 
 Admission transaction:
 
@@ -139,7 +142,7 @@ The three user-visible concepts are deliberately different.
 | Concept | Owner | Durable identity | Meaning | Never means |
 |---|---|---|---|---|
 | online outgoing | Mobile until Bridge admission, then operation replica | `operationId` | the user initiated a submission and the socket may or may not have delivered it | Bridge queue position or Provider execution |
-| Bridge queue entry | Bridge `OperationScheduler` | `queueEntryId`, root `START_TURN operationId`, `laneRevision` | Bridge durably accepted a future turn but cannot dispatch it yet | ordinary socket in-flight or offline draft |
+| Bridge queue entry | Bridge `OperationKernel` | `queueEntryId`, root `START_TURN operationId`, `laneRevision` | Bridge durably accepted a future turn but cannot dispatch it yet | ordinary socket in-flight or offline draft |
 | Mobile offline intent | Mobile `LocalIntentStore` | `operationId` plus source/thread hint and fingerprint | user intent held locally while no authenticated source is writable | automatic remote dispatch permission |
 
 Safe default while U-001 remains unresolved is `HOLD_FOR_CONFIRMATION` for a
@@ -219,6 +222,12 @@ record `DISPATCH_PREPARED`. A second transaction changes the attempt to
 - compact: certified compact terminal plus subsequent repair-read boundary;
 - review/fork/persisted Side Chat: proven child/turn and durable relation;
 - archive/rename/delete: Provider lifecycle readback.
+
+`OUTCOME_UNKNOWN` 是不可再 dispatch 的 dispatch terminal，不是“稍后可重试”状态。
+后续 reconcile 只能追加新的 observation/resolution event，并派生
+`RECONCILED_EXECUTED / RECONCILED_NOT_EXECUTED / STILL_UNKNOWN` 视图；原始
+`OUTCOME_UNKNOWN` event、attempt 和 payload digest 永不覆盖或删除。只有新的
+operation ID 才能表达用户再次执行的意图。
 
 ### 4.4 Retry is a policy, not a generic mutation
 
@@ -319,6 +328,11 @@ interface ThreadSettingsSnapshotV1 {
 Unknown future values remain displayable but read-only. Service tier absence
 does not make model/effort unknown. A sparse catalog value may enrich an older
 value but may not clear it. Only `COMPLETE` can authoritatively clear a field.
+Unknown fields/enums can be retained in the snapshot `extensions` for
+round-trip display, but mutations never echo them blindly. If the available
+Provider API requires replacing a whole settings object and the adapter cannot
+prove preservation of every unknown value, the mutation fails with
+`UNKNOWN_SETTING_PRESERVATION_UNPROVEN`.
 
 ### 6.2 Typed mutations and ACK/conflict
 
@@ -508,7 +522,7 @@ optional.
 | `relation.snapshot/delta.v1` | source-scoped relations with revision and gap semantics |
 | `ephemeral_child.snapshot.v1` | current runtime-fenced registry only, never durable replay |
 
-Common limits: 256 KiB control envelope; IDs at most 256 UTF-8 bytes (operation
+Common limits: 64 KiB control envelope; IDs at most 256 UTF-8 bytes (operation
 and request IDs at most 128); ordinary text 32 KiB; interaction answer 64 KiB;
 structured refs 64; queue 16; no inline artifact/image/file bytes. Oversize is
 `PAYLOAD_TOO_LARGE` before admission and cannot create a partial operation.
@@ -525,8 +539,10 @@ SQLite can reject invalid state directly.
 
 ### 10.1 Bridge
 
-- `session` and every dependent row use a composite source/thread key; Provider
-  thread ID is unique only inside `(bridge_instance_id, codex_source_id)`.
+- `session` and every dependent row use a composite source/thread key;跨端 Provider
+  thread ID is unique only inside `(bridge_identity_id, bridge_instance_id,
+  codex_source_id)`。Bridge-local DDL 可由 installation metadata 隐式固定前两项，
+  但 wire、manifest、Mobile 与 export 仍必须显式完整。
 - `operation` primary key is source/thread/operation; actor principal and
   fingerprint are immutable; state is a constrained enum; `OUTCOME_UNKNOWN`
   cannot carry replay permission.
@@ -608,8 +624,8 @@ The integrated DDL test must reject:
 
 | Current source | Observed behavior/fact | Phase 1 cut point |
 |---|---|---|
-| `packages/bridge/src/input-delivery-ledger.ts` (`recoveryPlan`, `admit`, `updateQueued`, `markDispatching`) | JSON ledger has source/thread/client identity and limit 16, but can replay some `provider_dispatching` start records via `clientUserMessageId`; queue edits lack expected revision | characterize, then replace replay decision and revision ownership with OperationScheduler; do not inherit the file schema as target DDL |
-| `packages/bridge/src/session.ts` (`restoreInputDeliveryState`, `queueCodexInputDurably`, `drainCodexQueue`, `steerCodexQueuedInput`) | memory queue plus ledger; queue is removed and user history echoed around Provider dispatch | move queue CAS/dispatch barrier to OperationScheduler; canonical user item enters only through receive/materialization |
+| `packages/bridge/src/input-delivery-ledger.ts` (`recoveryPlan`, `admit`, `updateQueued`, `markDispatching`) | JSON ledger has source/thread/client identity and limit 16, but can replay some `provider_dispatching` start records via `clientUserMessageId`; queue edits lack expected revision | characterize, then replace replay decision and revision ownership with OperationKernel; do not inherit the file schema as target DDL |
+| `packages/bridge/src/session.ts` (`restoreInputDeliveryState`, `queueCodexInputDurably`, `drainCodexQueue`, `steerCodexQueuedInput`) | memory queue plus ledger; queue is removed and user history echoed around Provider dispatch | move queue CAS/dispatch barrier to OperationKernel; canonical user item enters only through receive/materialization |
 | `packages/bridge/src/websocket.ts` `case "input"`, queue cases, `forkCodexSession`, durable settings/Goal handlers | giant router coordinates admission, history append, Provider call, settings, Goal, fork | retain transport/auth validation; dispatch to typed application services |
 | `packages/bridge/src/codex-process.ts` (`sendInputStructured`, `steer*`, `compactThread`, `forkThreadById`, Goal/settings RPCs) | real Provider adapter and build-specific behavior | retain behind finite typed provider adapter; it cannot decide Bridge operation success or Mobile projection |
 | `packages/bridge/src/codex-action-broker*.ts` | durable identity-only claims and response ambiguity already exist | retain useful generation/claim evidence; replace client `claimantId` with authenticated context and converge states with Interaction contract |
@@ -658,7 +674,10 @@ interface RelationPortV1 {
 
 `MutationV1`, `SettingsMutationV1`, `GoalMutationV1`,
 `InteractionResponseV1`, and `RelationMutationV1` are closed generated unions
-of the rows in the companion matrix, not `{kind:string,payload:Map}`.
+of the applicable client-command rows in the companion matrix, not
+`{kind:string,payload:Map}`。`EXPIRE_INTERACTION` 是内部 state transition，不进入
+client union；retry/resend 继续使用新的 `START_TURN` 加 `retryOfOperationId`，不再定义
+第二个 `RETRY_START_AS_NEW` discriminant。
 
 ## 14. Open facts and Phase 2 remainder
 
