@@ -10,7 +10,7 @@
 - branch：`codex/v4-design-audit-coverage-20260830`
 - 起点/当前基线：`d152b118045264abeb8a1760b94113e323e46283`
 - 输入目录：`/Users/developer/Documents/Downloads/CCPocket-Codex-Kernel-Redesign-20260829-baseline-amendment-two-stage-v4`
-- 输入锁记录的完整设计 source：`codex/codex-kernel-v4-local-design-20260830@a706200233c55cc82d7a17e433f80f132d0f280d`，tree=`ac85f620445151f45eda856f55f4b96ee442f41a`；这与本审计 worktree 的 `d152b118` 不同，不能混作同一 source HEAD。
+- 产品源码事实基线是 `a706200233c55cc82d7a17e433f80f132d0f280d`，tree=`ac85f620445151f45eda856f55f4b96ee442f41a`；`d152b118` 是从该源码基线创建的设计载体提交，只新增设计文件。二者不是冲突的源码 HEAD：前者绑定产品事实，后者绑定设计过程。真正实施时仍须重新绑定用户批准的 exact upstream HEAD/tree。
 - 输入锁中的 v4 ZIP SHA-256：`d0f597cc089850214ec5aece824a3eb0265e20e0ce0e0bbef27add1381f0e257`；原设计 ZIP：`d5c33a5455a1f1375efd4b68e0bb91844a5e6467c7115b3a204b4ea1faeeef76`；历史审计补遗 ZIP：`d45f622d5f0824e91b8254d31cb2a62629d1f29e9d23ced6b4f2f0ac45bbc02c`。
 - 本次仅应产生 `AUDIT-COVERAGE-CLOSURE.csv` 与本报告；没有启动服务、连接 `8765`、改配置、迁移数据、构建 App、安装、部署、OTA 或发布。
 
@@ -65,13 +65,13 @@ CSV 的固定列为：`id,class,required_design_artifact,phase,closure_rule,evid
 
 ## 7. 必须由根 Agent 裁决
 
-1. 解决本 worktree `d152b118`、输入锁 source `a706200`、目标 upstream checkout 与原设计 ZIP 之间的精确身份绑定；未绑定前 D-001/P0-10 不得关闭。
+1. 继续区分设计载体 `d152b118+` 与产品事实基线 `a706200/tree ac85f6…`，并在实施开始时绑定用户批准的 exact upstream checkout；设计包不得把 carrier commit 冒充产品源码版本。
 2. 审核 C-01/C-02/C-09 是否真的覆盖 52/52，确认每项唯一 owner、源码位置、阶段、验收和 rollback，而不是只接受表格存在。
 3. 在 C-07 中确认 D-008/D-009 的已固定产品语义，并从原始提案删除三选一/错误 Goal authority 的残留；不得新增第三套 timeline 或 document authority。
 4. 对 U-001..U-009 作显式用户裁决；推荐默认不构成决定，未裁决策略不能写入不可迁移的永久 Schema。
 5. 为 UNK-001..UNK-014 指定目标 Codex build、fixture、probe 命令、原始输出位置和“失败时禁用/fail-closed”结果；历史 0.146.0 事实不能替代目标版本实验。
 6. 确认 P-001..P-026 的 Phase 1 core contract/interface 与 Phase 2 feature-local 边界；只有实际核心压力才可新增 typed seam，不得预建多核心、万能 gateway 或九套空接口。
-7. 在 C-13 记录 `PHASE1_AMENDMENT_ACCEPTED` 前暂停 Phase 2；源码实施 C0-C6、生产 `8765`、Bridge/App 构建、IPA/OTA、安装、真机和 stable 均仍是独立授权门禁。
+7. 原输入要求 Phase 1 后暂停，但用户已在本任务明确授权本地一次完成 Phase 1 与 Phase 2 设计；因此 Phase 2 设计可继续累计收口。该授权不包含任何源码实施 C0-C6、生产 `8765`、Bridge/App 构建、IPA/OTA、安装、真机或 stable；最终仍停在 `USER_REVIEW_PENDING`。
 
 ## 8. 已执行检查
 

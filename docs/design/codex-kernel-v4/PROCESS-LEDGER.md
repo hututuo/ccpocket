@@ -38,9 +38,12 @@
 | R02 | 集成 Phase 1 identity/receive 草案并关闭 root identity/live owner 问题 | DRAFTED | source `codex/v4-design-p1-identity-read-20260830@0cd9bbeb`; integration `9d524919`; CSV 37×22 parse/no blanks; `git diff --check` | `3af1e030` |
 | R03 | 集成 52 项 current-source reuse/disposition 事实表 | DRAFTED | source `codex/v4-design-source-reuse-20260830@c3b3dcc9`; integration `76aabf65`; 52×9 parse/no missing paths; root CodeGraph structural cross-check | `10134dec` |
 | R04 | 集成 Phase 1 operation/interaction/settings/Goal/relation 草案并去重合同 | DRAFTED | source `codex/v4-design-p1-operations-20260830@e1c8dbf2`; integration `331e7ea0`; root 38×23 parse/no blanks; `git diff --check` | `fc8f5b18` |
+| R05 | 集成 112 行 pre-integration 审查/需求/实验 closure 基线 | DRAFTED | source `codex/v4-design-audit-coverage-20260830@49482abf`; integration `69a2066b`; 112×9/unique/no blanks; 23/23 artifact refs | `28769262` |
 
 R01 复核发现：草案沿用了原提案 `P-001…P-027` 表示 Provider probe，同时 Phase 2 又用 `P-001…P-026` 表示产品能力，存在 ID 冲突；最终集成必须把前者迁移到独立 `E-CODEX-*` 实验 ID。`design` 状态也必须在最终包改为 `USER_REVIEW_PENDING`，不能继续写成 `NOT_RUN`。该问题保留在账本中，不能用后续通过结果覆盖。
 
 R02 根裁决：跨进程 `SourcePartition` 固定为 `bridgeIdentityId + bridgeInstanceId + codexSourceId`；`BridgeInstanceId` 迁到独立 `BridgeInstallationStore`；`CodexSourceId` 由 `SourceRegistry` 生成并持久化，路径只作 locator；Provider refresh 从 live producer 列表移除，严格走 durable read/candidate/verify/commit。上述修改只变更设计文档，没有实施源码或运行验证。
 
 R04 根裁决：统一 owner 为 `OperationKernel`；删除重复的 `RETRY_START_AS_NEW` discriminant，重发只能是带 `retryOfOperationId` 的新 `START_TURN`；`EXPIRE_INTERACTION` 明确为内部 transition；fingerprint 使用 RFC 8785 且不改写 Unicode；control envelope 回到 64 KiB；`OUTCOME_UNKNOWN` 是不可再 dispatch 的 terminal，后续只追加只读 reconcile observation；settings 未知字段不得盲目回写。
+
+R05 是“集成前全部 OPEN”的机械基线，不能作为最终 closure 结果。用户已授权本地累计完成两个设计阶段，故原 `Phase 1 后暂停 Phase 2` 条款被当前任务授权取代；只有实施仍受审核后另行授权约束。最终矩阵必须由根 Agent 对已集成合同逐行升级，U/实验仍保持未闭合。
