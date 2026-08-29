@@ -301,7 +301,7 @@ The current `file-mutation-auth.ts` securely stores password/device enrollment, 
 
 | Kind | Required exact fields | Default UX |
 |---|---|---|
-| `createFile`, `mkdir`, `upload` | canonical parent identity, normalized name, expected absence, size/digest where applicable | confirm target; no overwrite |
+| `createFile`, `mkdir`, `upload` | canonical parent identity, validated basename preserving Unicode code points, expected absence, size/digest where applicable | confirm target; no overwrite |
 | `write`, `append`, `overwrite`, `replace` | canonical target, expected file identity/revision, byte range or replacement digest/size | explicit destructive label; temp + atomic replace |
 | `rename`, `move` | canonical source identity, canonical target parent/name, target expected absence | show old/new paths |
 | `trash` | canonical target and identity | default delete action; reversible where platform supports |

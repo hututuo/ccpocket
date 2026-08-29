@@ -14,7 +14,7 @@
 6. 数据身份不使用 IP、route、路径、标题、正文、时间戳、到达顺序、rowid 或 generation。
 7. cache 复用不创造 authority；内容不完整时可以显示已证明的片段，但片段内部和片段之间的顺序都必须有 proof。
 8. 任何 Provider call 已经开始但结果无法证明时，operation 进入不可重新 dispatch 的 `OUTCOME_UNKNOWN`。
-9. control/live plane 使用 UTF-8 JSON，单 envelope 上限 64 KiB；大内容走 HTTP content plane，以 digest、ETag、Range 和短期 ticket 校验。
+9. control/live plane 使用 UTF-8 JSON；serialized envelope 硬上限 65,536 bytes，通用 payload budget 57,344 bytes。大内容走分页或 HTTP content plane，以 digest、ETag、Range 和短期 ticket 校验。
 10. V2、Mirror writer、legacy runtime、旧数据库迁移和双写不进入新运行时；Claude 只有不可达的 typed `NOT_IMPLEMENTED` seam。
 
 ## 2. 身份、定位和 fence
@@ -34,7 +34,7 @@
 | `ItemRef` | `TurnRef + providerItemId` | `CanonicalTimeline` | 是 | body digest、列表 index |
 | `OperationRef` | `SourcePartition + operationId`，并绑定 exact typed target | `OperationKernel` | 是 | clientMessageId 的别名 |
 | `InteractionRef` | `SourcePartition + thread/turn/request/variant` | `InteractionBroker` | 是/按 variant | notification action ID |
-| `ContentRef` | content-addressed digest、size、media type 与安全分类 | `ContentStore` | 引用持久 | 路径或下载 ticket |
+| `ContentRef` | content-addressed digest、size、media type 与安全分类 | `ContentReferenceService` | 引用持久 | 路径或下载 ticket |
 
 `providerKind` 在当前产品中是编译期常量 `codex`。它可以出现在诊断 provenance，但不得进入身份键、wire union、DDL discriminator 或 Mobile route。未来 Claude 若实现，必须通过新 ADR 证明是否需要扩展 identity，而不是提前把 provider-neutral 字段铺满全系统。
 
@@ -293,16 +293,23 @@ P-001–P-026 的绑定规则：
 
 ## 9. Error、unknown 与 capability 规则
 
-所有跨边界失败使用 typed union，至少覆盖：
+所有跨边界失败使用 registry 中唯一 code，并另带稳定 `errorClass`，禁止 TS/Dart/adapter 自造别名：
 
-- `UNSUPPORTED_CAPABILITY` / `UNSUPPORTED_MESSAGE`；
-- `INVALID_TARGET` / `SOURCE_FENCE_MISMATCH` / `STALE_REVISION`；
-- `AUTHENTICATION_REQUIRED` / `AUTHORITY_DENIED` / `ACTOR_MISMATCH`；
-- `CAPACITY_EXCEEDED` / `PAYLOAD_TOO_LARGE` / `CONTENT_INTEGRITY_FAILED`；
-- `CONFLICT` / `FINGERPRINT_CONFLICT` / `LEASE_CONFLICT`；
-- `PROVIDER_UNAVAILABLE` / `PROVIDER_REJECTED` / `PROVIDER_SHAPE_UNKNOWN`；
-- `OUTCOME_UNKNOWN` / `RECONCILE_REQUIRED`；
-- `STORAGE_CORRUPT` / `CHECKPOINT_GAP` / `SNAPSHOT_REQUIRED`。
+| errorClass | 代表 code | 精确定义 |
+|---|---|---|
+| `UNSUPPORTED` | `CAPABILITY_UNSUPPORTED`, `MESSAGE_KIND_UNSUPPORTED` | peer/build 从未实现该能力或 kind |
+| `UNAVAILABLE` | `CAPABILITY_UNAVAILABLE`, `PROVIDER_UNAVAILABLE` | 能力已知，但当前 runtime/policy/resource 不可用 |
+| `TARGET` | `INVALID_TARGET`, `SOURCE_FENCE_MISMATCH`, `STALE_REVISION` | exact target 或 fence 不成立 |
+| `AUTHENTICATION` | `AUTHENTICATION_REQUIRED`, `ACTOR_FIELD_FORBIDDEN` | 未认证或 payload 试图自报 actor |
+| `AUTHORITY` | `AUTHORITY_DENIED`, `ACTOR_ASSURANCE_REQUIRED`, `OPERATION_ACTOR_MISMATCH` | 已认证但无权，或同 operation 被另一 actor 查询/修改 |
+| `CAPACITY` | `CAPACITY_EXCEEDED`, `CONTROL_ENVELOPE_TOO_LARGE`, `PAYLOAD_TOO_LARGE`, `RESPONSE_TOO_LARGE` | 明确 byte/count/deadline 上限超出 |
+| `INTEGRITY` | `CONTENT_INTEGRITY_FAILED`, `MANIFEST_MISMATCH`, `DIGEST_MISMATCH` | bytes/manifest/readback 不一致 |
+| `CONFLICT` | `OPERATION_FINGERPRINT_CONFLICT`, `QUEUE_REVISION_CONFLICT`, `LEASE_CONFLICT`, `UNKNOWN_SETTING_PRESERVATION_UNPROVEN` | 同稳定身份的语义、CAS 或未知字段保留冲突 |
+| `PROVIDER` | `PROVIDER_REJECTED`, `PROVIDER_SHAPE_UNKNOWN` | Provider 明确拒绝，或返回未认证 shape |
+| `AMBIGUITY` | `OUTCOME_UNKNOWN`, `RECONCILE_REQUIRED` | 已可能产生副作用，不能自动重放 |
+| `STORAGE` | `STORAGE_CORRUPT`, `CHECKPOINT_GAP`, `SNAPSHOT_REQUIRED` | 本地 durable apply/recovery 无法继续 |
+
+`CAPABILITY_UNSUPPORTED` 与 `CAPABILITY_UNAVAILABLE` 不是别名；前者需要升级/禁用，后者可以在同 capability 下等 runtime/policy 恢复。不得保留 generic `FINGERPRINT_CONFLICT`、`ACTOR_MISMATCH`、`PARTIAL_UPDATE_UNSAFE` 等第二名称。
 
 error 必须指出 retry class（never、same-request lookup、after-refresh、new-operation-only、user-action）并限制 diagnostic fields。error message 只用于显示，不驱动状态机。
 
@@ -314,6 +321,19 @@ unknown field/enum/item 的统一政策：
 4. unknown required enum/message 阻断该 feature apply 并请求 capability/snapshot repair；
 5. unknown timeline item 保留 strong identity、order anchor 和 typed placeholder，不丢弃相邻已知 item；
 6. opaque Provider DTO 只能停留在 adapter/evidence blob，不能进入 domain/wire/DDL。
+
+### 9.1 control serialization budgets
+
+| 边界 | 最大 serialized UTF-8 bytes | 超限处理 |
+|---|---:|---|
+| 完整 control/live envelope | 65,536 | 在 admission/decode 前 `CONTROL_ENVELOPE_TOO_LARGE` |
+| 通用 payload/content body | 57,344 | 分页、ContentRef 或该 message 的 typed too-large error |
+| 普通 outgoing text | 32,768 | `PAYLOAD_TOO_LARGE`；不自动转文件或裁剪 |
+| Provider timeline inline text | 40,960 | 生成 payload Gap/ContentRef；不静默裁正文 |
+| Interaction answer body | 49,152 | `RESPONSE_TOO_LARGE`；secret answer 不落 ContentRef |
+| MCP catalog/result wire page | 57,344 | generation-scoped pagination；单 item 仍超限则 `MCP_ITEM_TOO_LARGE` |
+
+所有数值按最终 JSON UTF-8 bytes 计算，不按 Dart/JS 字符数。per-message body limit 不能代替 envelope limit；必须有 payload 本身 65,536 bytes、加 header 后超限的故意失败向量。Provider adapter 内部允许的 256 KiB read buffer 只是输入防护，不是 WebSocket wire budget。
 
 ## 10. 生命周期
 

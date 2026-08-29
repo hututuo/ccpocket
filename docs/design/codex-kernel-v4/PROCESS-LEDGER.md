@@ -44,6 +44,8 @@
 | R08 | 集成并对齐 P-001–P-013 device/files/media/Git/capture 设计 | DRAFTED | source `12b647be`; follow-up `bb8fb837`; integrations `819d48a8`/`e7edd899`; CSV 13×17/无空白；root content/operation closure | `239cab16` |
 | R09 | 统一 SourcePartition、OperationKey、domain owner 与 operation lifecycle owner | DRAFTED | migration uses full triple/no provider key；operation matrix 38×24；ContentRef family and Product variants frozen；`git diff --check` | `e7edd899` |
 | R10 | 集成 K-001–K-026 核心能力完整语义与源码接回表 | DRAFTED | source `codex/v4-design-kernel-capability-completion-20260830@2e255c2e`; integration `d69ce614`; CSV 26×19/无空白/源码路径存在；root writer/content naming aligned | `f01dc469` |
+| R11 | 收敛唯一 writer、ThreadState 与 RelationGraph owner 名称 | DRAFTED | identity/operation/K/source disposition 四组草案统一 `CanonicalTimelineWriter`、`ReplicaApplyCoordinator`、`ThreadState`、`RelationGraph`；矩阵维度保持 37×22/38×24/26×19/52×9 | `db578d4b` |
+| R12 | 冻结 actor、catalog/timeline、content roles、状态轴、容量、error 与 Unicode 语义 | DRAFTED | strict actor union；Catalog/Timeline writer 分离；5-role content model；OUTCOME_UNKNOWN 正交轴；65536/57344/49152 budgets；error class/code；no Unicode normalization | `db578d4b` |
 
 R01 复核发现：草案沿用了原提案 `P-001…P-027` 表示 Provider probe，同时 Phase 2 又用 `P-001…P-026` 表示产品能力，存在 ID 冲突；最终集成必须把前者迁移到独立 `E-CODEX-*` 实验 ID。`design` 状态也必须在最终包改为 `USER_REVIEW_PENDING`，不能继续写成 `NOT_RUN`。该问题保留在账本中，不能用后续通过结果覆盖。
 
@@ -58,6 +60,10 @@ R07 根裁决：P-024/P-026 属于 ProductPlatform/Mobile shared host，不归 S
 R08/R09 根裁决：unfinished bytes 使用 `ContentOffer`，finalized bytes 使用带 required SHA-256 的 `ContentRef`，HTTP lease 统一为 sealed-target `ContentAccessTicket`，composer 使用 immutable `ComposerAttachmentRef`。Product mutation 以 namespaced sealed variant 注册进同一个 operation registry；旧 route-keyed/二元 data cache `NO_IMPORT/NO_RUNTIME_MIGRATION`。mutable Git/event index 分页，可复用/导出 bytes 才物化 ContentRef。`OperationKey=(SourcePartition,operationId)`；operation lifecycle writer 与 domain aggregate owner 在矩阵中分列，InteractionBroker/Product service 不写 operation ledger。
 
 R10 只把 26 项行为、owner、源码和验收压力完整化，不把 donor tests 的存在标成已运行。根集成把 worker 的 `CanonicalProjectionWriter`/`ReplicaApplyWriter` 别名统一回唯一 owner `CanonicalTimelineWriter`/`ReplicaApplyCoordinator`，并把资源 lease 与附件统一为 `ContentAccessTicket`/`ComposerAttachmentRef`；最终 operation 状态名称仍须由协议 registry 单一生成后再升为静态验证。
+
+R11 根裁决：settings 与 Goal 都是 `ThreadState` 的两个 typed aggregate/port，不另立 writer；Plan item 归 `CanonicalTimeline`，ExitPlan 归 `InteractionBroker`。ephemeral Side Chat 是 `RelationGraph` 的 runtime-fenced memory-only namespace，不另立 `EphemeralChildRegistry` 核心 owner。实现可以有内部类，但 manifest/registry/DDL writer 只能登记根 owner。
+
+R12 根裁决：authenticated actor 是 paired/api-key/open 的 discriminated union，业务 payload actor 字段直接拒绝；catalog 与 timeline 分别由 `ConversationCatalogWriter`/`CanonicalTimelineWriter` 写，可共享物理 coordinator 但不共享逻辑 head。Content 分 semantic/ref mint/byte backend/retention/ticket 五责。`OUTCOME_UNKNOWN` 只属 immutable operation dispatch terminal，reconcile 与 Interaction/Relation 状态均为独立轴。wire 按最终 UTF-8 bytes 限 65,536，通用 payload 57,344，interaction answer 49,152；error 使用 parent class+唯一 code；title/basename 不做任何 Unicode normalization。
 
 ## 隔离异常记录
 

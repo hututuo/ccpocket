@@ -52,6 +52,7 @@ CC Pocket host/composition roots
 
 ## 4. Bridge 与 Mobile 的唯一写入口
 
+- Bridge catalog：`ConversationCatalogWriter`；只提交 catalog row/head/coverage，不写 timeline body。
 - Bridge canonical timeline：`CanonicalTimelineWriter`；任何 observer、Product module、transport handler、Operation 或 Relation 不能直接写 timeline。
 - Bridge operation/queue：`OperationKernel`；Feature handler 只能提交 typed operation。
 - Bridge interaction claim：`InteractionBroker`；actor 由 authenticated connection context 注入。
@@ -85,4 +86,3 @@ CC Pocket host/composition roots
 - 当前 `conversation-sync-v2`、Mirror、legacy Side Chat、巨型 router/Cubit、重复 ledger/cache/pending map 只作行为与失败证据，不成为 production fallback。
 - 最终实施宿主使用用户要求的 pinned open-source CC Pocket baseline；当前 `a706...` 是产品能力、源码接缝和回归证据 donor。实施开始前必须重新绑定届时批准的 exact upstream HEAD/tree，不能从本设计载体 branch 推断。
 - 每项 source disposition 必须是 `KEEP / ADAPT / REWRITE / DELETE / DEFER_UNREACHABLE`，并绑定行为、测试、首个 vertical slice 和回退。
-

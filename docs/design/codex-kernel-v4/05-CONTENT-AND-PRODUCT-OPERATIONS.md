@@ -20,7 +20,7 @@
 |---|---|
 | `contentRefId` | SourcePartition 内稳定 opaque ref；不是路径、URL 或 ticket |
 | `sourcePartition` | 完整三元组，不允许二元缩写 |
-| `ownerFeatureId` | 创建和 retention policy 的唯一 owner |
+| `ownerFeatureId` | lineage/retention policy 的登记 owner；不是任意 mint/ticket 权限 |
 | `lineage` | artifact/gallery/messageImage/capture/transfer/gitMaterialization/eventExport 等 sealed union |
 | `mediaType` | 规范化 MIME；unknown 使用 typed octet-stream，不猜扩展名 |
 | `sizeBytes` | verified UInt64；所有消费者先做容量检查 |
@@ -31,7 +31,19 @@
 
 物理 blob store 可以按 SHA-256 去重，但 `ContentRef` 的授权、lineage 和 retention 永远按 SourcePartition/ref 隔离；digest 相同不能跨 source 推导访问权。
 
-### 1.3 `ContentAccessTicket`
+### 1.3 Content 的五种责任
+
+| 责任 | 唯一 owner | 说明 |
+|---|---|---|
+| semantic/schema | `ContentContractRegistry` | 定义 Offer/Ref/Ticket/Attachment、lineage、error、limit；机器源唯一 |
+| ref mint 与 lineage commit | `ContentReferenceService` | 只有 finalize verification 通过后 mint ContentRef；feature backend 不能自造 ref |
+| bytes | `ContentBlobBackendRegistry` | 每个 lineage/namespace 恰好一个已注册 backend；现有 Artifact/Image/Gallery/Transfer/Capture store 作为 backend 适配 |
+| retention | feature `ContentNamespacePolicy` + `ContentGcCoordinator` | feature 声明 pin/TTL/size/clear，GC 统一执行；不能跨 namespace 删除 |
+| ticket | `ContentAccessTicketIssuer` | 从 authenticated context 对 Offer 或 Ref 发短期 sealed-target ticket；backend 不自行发 URL/token |
+
+这些都是 ProductPlatform shared service 的窄职责，不是 Session Kernel 新核心。物理实现可以把 reference、backend registry、ticket issuer 组合进同一进程服务，但 registry/manifest 必须保留五列，禁止多个 writer 或一个“万能 ContentStore”绕过 lineage/retention policy。
+
+### 1.4 `ContentAccessTicket`
 
 短期、可撤销、method/range 受限的 HTTP capability。它绑定：ticketId、authenticated actor、完整 SourcePartition、sourceEpoch、connection-or-lease generation、sealed target、issued/expiry、revocation epoch、nonce：
 
@@ -85,6 +97,8 @@ ProductPlatform mutation 使用与 Session Kernel mutation 相同的 `OperationH
 | A3 | permanent delete、revert all、forced worktree remove、trust revoke、删除唯一 recording | 红色 destructive sheet + exact effect disclosure | file permanent delete 使用 exact step-up；其他动作默认 authenticated actor + red confirmation，未来提高 assurance 必须新 policy revision |
 
 所有 tier 都需要 OperationKernel precondition 和 typed fingerprint。确认 UI 不是 authority；Bridge 必须重新验证 target/generation/actor。Git hunk SHA-1 只是 stale domain evidence，不是 operation fingerprint 或 content digest。
+
+字符串 canonicalization 只做 Schema 明示的 validation：按 UTF-8 bytes 检查长度，拒绝 NUL/控制符、路径分隔符、`.`/`..` 等危险结构；不做 NFC/NFD/NFKC、locale case-fold 或平台文件系统 normalization。title 原样通过或整项拒绝。若 landing collision policy 生成可见 suffix，request 必须同时携带原始 `requestedName` 与预览确认过的 `effectiveName`，fingerprint 同时覆盖二者；Bridge 仍在 commit 时 no-clobber 复核。
 
 ## 5. 大对象承载
 

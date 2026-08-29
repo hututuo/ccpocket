@@ -52,13 +52,13 @@ not independent product cores or independent databases.
 | current Provider execution/result | `CodexProviderAdapter` evidence consumed by `OperationReconciler` | Provider I/O plus Bridge read-only reconcile | Provider durable/event evidence | replica; never infers from spinner or timeout |
 | interaction open/resolved fact | `InteractionBroker` | Bridge over current Provider runtime | Provider open/resolved evidence; Bridge owns claim arbitration | claim/respond surface and replica |
 | authenticated actor | connection/authentication context | Bridge transport boundary | authenticated principal registry outside the Session Kernel | never self-asserts authority |
-| complete thread settings snapshot and revision | `ThreadSettingsState` | Bridge writer over Provider `thread/settings/*` | Provider thread settings; Bridge caches a complete/sparse typed snapshot | selected values become authoritative only from correlated ACK/snapshot |
-| Goal | `GoalStatePort` | Bridge writer over Provider Goal RPCs | Provider thread Goal | typed read/mutation surface; no Goal store authority |
-| Plan item | `TimelineRepository` from Provider materialization/live | Provider/Bridge read pipeline | Provider item evidence | renders and updates by stable item identity |
-| collaboration mode | `ThreadSettingsState` | Bridge/Provider settings | Provider thread setting | settings projection |
+| complete thread settings snapshot and revision | `ThreadState` | Bridge writer over Provider `thread/settings/*` | Provider thread settings; Bridge caches a complete/sparse typed snapshot | selected values become authoritative only from correlated ACK/snapshot |
+| Goal | `ThreadState` | Bridge writer over Provider Goal RPCs | Provider thread Goal | typed read/mutation surface; no Goal store authority |
+| Plan item | `CanonicalTimeline` from Provider materialization/live | Provider/Bridge read pipeline | Provider item evidence | renders and updates by stable item identity |
+| collaboration mode | `ThreadState` | Bridge/Provider settings | Provider thread setting | settings projection |
 | ExitPlan | `InteractionBroker` | exact Provider runtime | Provider request/resolution | claim/respond UI |
 | durable relations | `RelationGraph` | Bridge writer from Provider result/evidence | Provider relation when available; otherwise CC Pocket relation record tied to a proven child | replica/navigation |
-| ephemeral Side Chat registry | `EphemeralChildRegistry` | Bridge memory, runtime/source fenced | no durable conversation authority | memory projection; disappears on fence loss |
+| ephemeral Side Chat registry | `RelationGraph` | Bridge memory, runtime/source fenced | no durable conversation authority | memory projection; disappears on fence loss |
 | subagent lifecycle | `RelationGraph` plus child conversation status projection | Provider read/live adapter | Provider child/source evidence | bounded list/watch/navigation |
 | Mobile offline intent | `LocalIntentStore` | Mobile durable writer | user intent only, never remote queue/execution fact | owns hold/confirm/cancel until Bridge acceptance |
 
@@ -70,7 +70,7 @@ state, settings head, Goal head, or durable relations.
 `operation_lifecycle_owner` is always `OperationKernel` for a client mutation,
 while `domain_effect_owner` owns the target aggregate and executes only after
 admission. `EXPIRE_INTERACTION` is the sole listed internal transition and has
-no operation lifecycle. `InteractionBroker`, `ThreadSettingsState`,
+no operation lifecycle. `InteractionBroker`, `ThreadState`,
 `RelationGraph` and Product services never write the operation/dispatch ledger.
 
 ## 3. Identity, actor, and fingerprint
@@ -95,9 +95,32 @@ returns a child ID, the result records the child `ThreadLocator`.
 
 ### 3.2 Authenticated actor
 
-The transport provides an immutable per-frame execution context:
+The transport provides an immutable per-frame execution context. Actor is a
+discriminated union; an API key or open connection never fabricates a device
+key:
 
 ```ts
+type AuthenticatedActorV1 =
+  | {
+      kind: "paired_device";
+      principalId: string;
+      deviceKeyId: string;
+      trustRevision: string;
+      assurance: "paired_signature";
+    }
+  | {
+      kind: "api_key";
+      principalId: string;
+      credentialRevision: string;
+      assurance: "connection_key";
+    }
+  | {
+      kind: "open_connection";
+      principalId: string;
+      connectionEpoch: string;
+      assurance: "open_local";
+    };
+
 interface AuthenticatedExecutionContextV1 {
   source: {
     bridgeIdentityId: string;
@@ -106,16 +129,17 @@ interface AuthenticatedExecutionContextV1 {
   };
   sourceEpoch: string;
   connectionEpoch: string;
-  actorPrincipalId: string;
-  actorDeviceKeyId: string;
-  authenticationStrength: "paired_signature" | "connection_key" | "open_local";
+  actor: AuthenticatedActorV1;
+  capabilitySnapshotId: string;
 }
 ```
 
-`actorPrincipalId` and `actorDeviceKeyId` are injected after authentication.
-Operation and Interaction request bodies do not contain an authoritative
-`claimantId`, `deviceId`, or `authenticated=true`. If a transition requires a
-paired actor or step-up proof, `open_local` fails with `ACTOR_ASSURANCE_REQUIRED`.
+The complete actor union is injected after authentication. Operation and
+Interaction request bodies containing `actor`, `actorPrincipalId`,
+`actorDeviceKeyId`, `claimantId`, `deviceId`, `authenticationStrength` or
+`authenticated=true` fail `ACTOR_FIELD_FORBIDDEN`; there is no reachable
+compatibility equality parser. If a transition requires a paired actor or
+step-up proof, `open_local` fails with `ACTOR_ASSURANCE_REQUIRED`.
 
 ### 3.3 Canonical fingerprint
 
@@ -205,8 +229,15 @@ ACCEPTED -> QUEUED | BLOCKED_PRECONDITION | READY
 READY -> DISPATCH_PREPARED -> DISPATCHING
 DISPATCHING -> DEFINITIVE_NOT_DISPATCHED | PROVIDER_ACCEPTED | REJECTED_NO_SIDE_EFFECT | OUTCOME_UNKNOWN
 PROVIDER_ACCEPTED -> AWAITING_CANONICAL -> CANONICAL_OBSERVED -> SUCCEEDED | FAILED
-OUTCOME_UNKNOWN -> RECONCILING -> CANONICAL_OBSERVED | NOT_EXECUTED_PROVEN | OUTCOME_UNKNOWN
 ```
+
+`OUTCOME_UNKNOWN` is an immutable dispatch terminal, not a state with an
+outgoing edge. A separate append-only reconciliation axis records
+`RECONCILE_REQUESTED` followed by `RECONCILED_EXECUTED`,
+`RECONCILED_NOT_EXECUTED`, or `STILL_UNKNOWN`. Those observations may derive a
+current UI resolution and unblock later operations when proof is sufficient,
+but they never rewrite the original terminal or authorize the original payload
+to dispatch again.
 
 Before Provider I/O, one transaction must capture the exact dispatch payload
 digest and queue revisions, set the lane owner, create `dispatch_attempt`, and
@@ -532,9 +563,10 @@ optional.
 | `relation.snapshot/delta.v1` | source-scoped relations with revision and gap semantics |
 | `ephemeral_child.snapshot.v1` | current runtime-fenced registry only, never durable replay |
 
-Common limits: 64 KiB control envelope; IDs at most 256 UTF-8 bytes (operation
-and request IDs at most 128); ordinary text 32 KiB; interaction answer 64 KiB;
-structured refs 64; queue 16; no inline artifact/image/file bytes. Oversize is
+Common limits: serialized UTF-8 control envelope at most 65,536 bytes and its
+payload at most 57,344 bytes; IDs at most 256 UTF-8 bytes (operation and request
+IDs at most 128); ordinary text 32,768 bytes; serialized interaction answer body
+49,152 bytes; structured refs 64; queue 16; no inline artifact/image/file bytes. Oversize is
 `PAYLOAD_TOO_LARGE` before admission and cannot create a partial operation.
 
 Durable server events require source partition, stream, sequence, aggregate
@@ -642,7 +674,7 @@ The integrated DDL test must reject:
 | `packages/bridge/src/local-features/slots/codex-action-broker-protocol.ts` | `respond_codex_action` accepts payload `claimantId` | delete as authority; optional echoed ID is equality check only |
 | `packages/bridge/src/codex-goal-controller.ts` | Provider-backed per-session serialization and semantic conflict checks | adapt to source-scoped GoalStatePort plus operation ledger/readback |
 | `packages/bridge/src/local-features/codex-core-actions.ts` | compact/review have typed feature messages but only in-memory active set and request result | port each mutation to operation admission/barrier; keep MCP status read outside mutation lane |
-| `packages/bridge/src/local-features/{persisted-side-chat,ephemeral-side-chat,subagents}.ts` | both Side Chat modes and bounded subagent reads exist | preserve product effects; publish through RelationGraph/EphemeralChildRegistry, not a second protocol/history core |
+| `packages/bridge/src/local-features/{persisted-side-chat,ephemeral-side-chat,subagents}.ts` | both Side Chat modes and bounded subagent reads exist | preserve product effects; publish through RelationGraph, not a second protocol/history core |
 | `apps/mobile/lib/services/bridge_service.dart` (`send`, offline queue restore/flush) | transport, ephemeral RPC and persistent offline policy are mixed; input restart recovery already avoids automatic resend | split transport from LocalIntentStore/typed clients; keep authenticated identity fence |
 | `apps/mobile/lib/features/chat_session/state/chat_session_cubit.dart` | pending/canonical correlation, queue/settings/Goal/Interaction state and retry live together | consume repositories; retain page view state only |
 | `apps/mobile/lib/models/messages.dart` and local-feature protocol slots | large mixed wire/domain/presentation types | generated finite cross-language DTO at wire boundary; handwritten domain/presentation mapping |

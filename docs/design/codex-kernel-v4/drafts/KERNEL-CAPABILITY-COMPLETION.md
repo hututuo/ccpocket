@@ -10,7 +10,7 @@
 - 当前源码事实仍绑定 `main@a706200233c55cc82d7a17e433f80f132d0f280d`、tree `ac85f620445151f45eda856f55f4b96ee442f41a`；本轮只静态确认 donor source/test 路径存在，不把源码存在写成运行时证明。
 - `SourcePartition` 永远是 `(bridgeIdentityId, bridgeInstanceId, codexSourceId)`；route、IP、URL、标题、正文、时间、runtime session ID 都不是数据身份。
 - actor 只由 Bridge authenticated connection context 注入。任何业务 payload 中的 `actor/deviceId/claimantId` 都没有授权力。
-- Provider durable history 是历史事实权威。Provider refresh 是 bounded durable read，必须走 evidence → candidate → verification → `CanonicalTimelineWriter`；它不是 live producer。
+- Provider durable history 是历史事实权威。Provider thread-history refresh 是 bounded durable read，必须走 evidence → candidate → verification → `CanonicalTimelineWriter`；catalog refresh 同样经验证但由 `ConversationCatalogWriter` 提交。二者都不是 live producer。
 - operation admission、fingerprint、lane、dispatch barrier、terminal 和 reconcile 只归 `OperationKernel`。`OUTCOME_UNKNOWN` 永不自动重发。
 - Bridge timeline 只有 `CanonicalTimelineWriter`；Mobile replica 只有 `ReplicaApplyCoordinator`。UI、feature handler、observer、resource service、diagnostics 和 transport 都不能成为第二 writer。
 - live 只有 generation/source-fenced memory overlay；只有 strong Provider turn/item identity 能原位晋升。
@@ -40,7 +40,7 @@ CSV 中的 `SOURCE_PRESENT_STATIC` 只表示本轮在绑定源码树中确认路
 
 ### 3.1 K-003：ConversationCatalog 只有一个目录事实入口
 
-`ConversationCatalog` 以 `(SourcePartition, providerThreadId)` 为 row identity。Provider catalog refresh 进入 Phase 1 `P1-RD-003` bounded read，并由 `CanonicalTimelineWriter` 提交 catalog head；不允许 V2、Mirror 或 legacy recent list 同时写目录。
+`ConversationCatalog` 以 `(SourcePartition, providerThreadId)` 为 row identity。Provider catalog refresh 进入 Phase 1 `P1-RD-003` bounded read，并由 `ConversationCatalogWriter` 提交 catalog head；不允许 V2、Mirror 或 legacy recent list 同时写目录。
 
 目录必须同时表达：
 
@@ -131,6 +131,8 @@ stop、steer、compact、review、retry-as-new 和 reconcile 均使用 finite ty
 
 Approval、Question、MCP elicitation、ExitPlan 共享 `InteractionBroker` 的 exact source/thread/turn/request/runtime fence、单 ACTIVE claim 和 response barrier，但各自使用独立 typed prompt/response。unknown/plugin install/auth form 只读且 manual。
 
+Interaction/Relation 与 response/create Operation 是正交状态轴。`OUTCOME_UNKNOWN` 只属于 `OperationKernel` 的 immutable dispatch terminal；它不能成为 Interaction、ExitPlan、Side Chat 或 relation state。发生未知结果时，domain aggregate 保持 open/unresolved 或 absent，reconcile 只追加 operation observation，直到 Provider exact fact 使对应 aggregate 独立跃迁。
+
 自动批准策略由 Phase 1 已登记的 `AutoApprovalPolicyStore` 在 Bridge 持久化；它不是第二 Interaction store。策略 mutation 使用 `OP-038/OP-039`，actor 由 server context 注入。只有当前 Bridge-owned、live、可 claim 的 request 才能评估；Desktop/private other-owner request 不可批准。rule unknown、shell parse ambiguity、`rm` 与其他 destructive/Git worktree-destroying operation、question、plugin/connector、auth form 全部 fail closed。
 
 Mobile 只显示 policy revision、enabled/disabled/pending、匹配规则和 bounded audit fact。离线 emergency disable 可保留 protected local intent，但在 Bridge ACK 前必须显示 pending，不能声称电脑已关闭策略。
@@ -157,9 +159,9 @@ context、token、account quota 和 model-specific quota 以 `(SourcePartition, 
 
 ### 7.2 K-024：timeline 只持有 ref，resource service 才持有 bytes
 
-`CanonicalTimeline` 只提交 `IMAGE_REF`/`ARTIFACT_REF` 及 immutable digest、mime/size/provenance；Bridge ProductPlatform 的现有 `ImageStore`、`ArtifactManager`、`GeneratedArtifactStore` 与 Mobile preview/gallery/share/download 解析 bytes。control wire 不出现 raw base64、本机 path 或 bearer token。
+`CanonicalTimeline` 只提交 `IMAGE_REF`/`ARTIFACT_REF` 及 immutable digest、mime/size/provenance。`ContentReferenceService` 独占 ref mint/lineage commit，`ContentAccessTicketIssuer` 独占短期授权；Bridge ProductPlatform 的现有 `ImageStore`、`ArtifactManager`、`GeneratedArtifactStore` 只能作为各自 lineage 的 registered byte backend，feature policy 声明 retention，GC coordinator 执行。control wire 不出现 raw base64、本机 path 或 bearer token。
 
-ref 必须绑定 source、content digest、authorization/expiry 和 range policy。过期、缺失、过大、unsupported mime 或 digest mismatch 显示 typed fallback，并保留 metadata、retry/download/share 中仍安全可用的动作。collapsed result 不 fetch。任何 resource failure 都不能删除 canonical item 或把它改写成文本。
+durable ref 绑定 source、content digest、lineage 和 object generation；authorization、method/range 与 expiry 只属于 `ContentAccessTicket`。ticket 过期、content 缺失/过大、unsupported mime 或 digest mismatch 显示 typed fallback，并保留 metadata、retry/download/share 中仍安全可用的动作。collapsed result 不 fetch。任何 resource failure 都不能删除 canonical item 或把它改写成文本。
 
 ### 7.3 K-025：诊断快照读取真实状态，不重写业务算法
 
@@ -187,7 +189,7 @@ status key 绑定 SourcePartition/thread 和 schema revision；旧 sourceEpoch/a
 
 | 数据 | 唯一存储归属 | 明确禁止 |
 |---|---|---|
-| catalog/timeline/coverage/gap/head/publication | Phase 1 logical Bridge cache + Mobile rebuildable replica；分别由 canonical/Mobile sole writer 写 | 第二 DB、Mirror/V2/legacy writer、observer/live body 写入 |
+| catalog/timeline/coverage/gap/head/publication | Phase 1 logical Bridge cache + Mobile rebuildable replica；Bridge catalog/timeline 分别由 ConversationCatalogWriter/CanonicalTimelineWriter 写，Mobile 由 ReplicaApplyCoordinator 写 | 第二 DB、Mirror/V2/legacy writer、observer/live body 写入 |
 | operation/queue/interaction/settings/Goal/relation projection | Phase 1 已定义的 root logical ledgers/heads；Mobile 只收 durable projection | UI/Cubit/private feature table成为 authority |
 | live/ephemeral Side Chat/historical viewport/fold state | bounded memory；fold/viewport 是 mounted presentation state | durable history、sync stream、诊断 payload表 |
 | draft/local intent/local preference | Mobile protected local-state repositories，独立于 rebuildable replica | replica/session delete cascade、cache clear、route alias重绑 |

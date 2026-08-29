@@ -2,7 +2,7 @@
 
 状态：`DRAFT_FOR_ROOT_INTEGRATION / DESIGN_ONLY / IMPLEMENTATION_NOT_AUTHORIZED`
 
-本草案只修订原 `CCPocket-Codex-Kernel-Redesign-20260829` 的单一 Codex Session Kernel。它不建立第二个 history core、Mirror writer、V2 adapter、legacy runtime 或多 Provider 产品核心；`CatalogRead`、`CanonicalProjectionWriter`、`LiveObservation` 仍是同一 Session Kernel 内部 owner。设备/route/配对仍由现有宿主模块提供 authenticated source port，不迁入 Session Kernel。
+本草案只修订原 `CCPocket-Codex-Kernel-Redesign-20260829` 的单一 Codex Session Kernel。它不建立第二个 history core、Mirror writer、V2 adapter、legacy runtime 或多 Provider 产品核心；`ConversationCatalog/ConversationCatalogWriter`、`CanonicalTimeline/CanonicalTimelineWriter`、`LiveOverlay` 是同一 Session Kernel 内部互不越权的 owner。设备/route/配对仍由现有宿主模块提供 authenticated source port，不迁入 Session Kernel。
 
 ## 0. 绑定身份、事实等级与边界
 
@@ -73,7 +73,7 @@
 | SF-004 | `authorityGeneration` | exact runtime attachment/control owner/active turn 变化时推进 | SessionManager / control projection | stop/steer/interaction/live attachment | history revision或 source switch代替品 |
 | SF-005 | `producerEpoch` | direct runtime、shared observer、detached observer 每个 live producer 生命周期的 opaque generation | LiveObservation owner | 丢弃 producer 的迟到 live | 跨 producer order；Provider refresh 属于 durable read，不是 live producer |
 | SF-006 | `subscriptionId + streamSeq` | 一个 authenticated sourceEpoch 下的 durable publication delivery order | Bridge Sync publisher | replay、gap、ACK | timeline item order |
-| SF-007 | `headVersion/headDigest` | CanonicalProjectionWriter 每次成功 head CAS 产生的本地 commit version/hash | Bridge writer；Mobile replica同值 | cache reuse、base CAS、publication apply | Provider revision或 live generation |
+| SF-007 | `headVersion/headDigest` | CanonicalTimelineWriter 每次成功 head CAS 产生的本地 commit version/hash | Bridge writer；Mobile replica同值 | cache reuse、base CAS、publication apply | Provider revision或 live generation |
 | SF-008 | `capabilitySnapshotId` | exact Provider build + method/schema/probe result 的 immutable fingerprint | Codex adapter certification owner | read strategy、evidence compatibility | 静态 generated type 版本 |
 
 任何 API 只接收自己需要的精确 fence。不得重新引入一个万能 `generation` 字段。
@@ -132,7 +132,7 @@ interface ExecutionContext {
 ```
 
 - `principalId` 是 server-side 派生的非 secret 标识；日志只记录 actor kind 和脱敏 digest。
-- payload 不允许提供可授权的 `actor/deviceId`。为迁移期解析旧字段时，字段必须与 context 一致，否则 `ACTOR_MISMATCH`；一致也不增加权限。
+- payload 中出现 `actor`、`actorPrincipalId`、`actorDeviceKeyId`、`claimantId`、`deviceId`、`authenticationStrength` 或等价授权字段时，Schema 直接以 `ACTOR_FIELD_FORBIDDEN` 拒绝。旧字段 parser 不进入 reachable runtime；diagnostic importer 也只能记录其存在，不能 equality-accept 或提升权限。
 - paired device 的 durable claim 可在重新认证后恢复；API-key/open actor 的 connection claim 默认在断线后失效。是否允许 API-key actor 获取跨断线 durable interaction claim 交给 operation/interaction 草案，不在 receive path 猜测。
 - `open_connection` 只能访问显式允许的低权限 read surface；owner full-disk、diagnostic upload、mutation 和 durable interaction claim 继续 fail closed，除非另有已固定窄能力。
 
@@ -335,7 +335,7 @@ U-006（容量/保留/静态保护）仍为 `USER_DECISION_REQUIRED`。Phase 1 �
 
 ### 6.1 三类 live producer 只有一个 owner
 
-现源码中的 direct runtime、shared observer 与 detached/external observer 进入同一个 `LiveObservationCore`。Provider refresh 不属于 live：它只能进入 `CatalogRead` 的 evidence→candidate→verify→canonical 路径；在 canonical commit 前既不可见也不能发 live overlay。
+现源码中的 direct runtime、shared observer 与 detached/external observer 进入同一个 `LiveOverlay`。Provider refresh 不属于 live：catalog refresh 进入 `ConversationCatalog` 的 evidence→candidate→verify→`ConversationCatalogWriter` 路径，thread history refresh 进入 `CanonicalTimelineWriter` 路径；在对应 commit 前既不可见也不能发 live overlay。
 
 `LiveSourceArbiter` 对每个 SourcePartition/thread 选择一个 active direct producer：formal shared attachment 存在时不再创建第二 observer；只有 detached 且无 direct stream 时才建立 bounded read-only observer。切换窗口可能短暂重叠，但跨 producer alias 只允许 strong provider turn/item ID；否则保留独立 unanchored activity，不能正文去重。
 
@@ -382,7 +382,7 @@ canonical item 是事实权威。payload 冲突时 canonical 替换显示，live
 
 ### 7.1 Bridge 唯一 writer transaction
 
-`CanonicalProjectionWriter.commit(candidate, expectedHeadVersion)` 是唯一可修改 materialization/head/publication 的入口。Adapter、observer、WebSocket handler、feature UI 均无写权限。
+`CanonicalTimelineWriter.commit(candidate, expectedHeadVersion)` 是唯一可修改 materialization/head/publication 的入口。Adapter、observer、WebSocket handler、feature UI 均无写权限。
 
 一个 commit transaction 必须：
 
@@ -401,7 +401,7 @@ canonical item 是事实权威。payload 冲突时 canonical 替换显示，live
 
 本草案不新增平行协议，只要求最终 durable/live envelope 至少表达：
 
-- `authority.bind`：`bridgeInstanceId/codexSourceId/sourceEpoch/capabilitySnapshotId`；actor 不回显 secret；
+- `authority.bind`：完整 `SourcePartition={bridgeIdentityId,bridgeInstanceId,codexSourceId}`、`sourceEpoch/capabilitySnapshotId`；actor 只回显 kind 与脱敏 principal digest，不回显 secret；
 - durable server envelope：强制 `subscriptionId/streamId/streamSeq/messageId/sourceEpoch`；
 - catalog/read publication：`materializationId/headVersion/baseHeadVersion/readSpecDigest/coverage/islands/gaps/manifestHash/pageIndex/pageCount`；
 - page item：strong provider identity或明确 `READ_LOCAL` locator、content hash、segment ordinal、ContentRef；
@@ -414,7 +414,7 @@ Provider raw cursor、local file path、raw app-server DTO、route URL、正文 
 
 ### 7.3 Mobile 唯一 apply writer
 
-`ReplicaApplyWriter`（当前 `ConversationContentSyncService → SessionCatalogCacheRepository` 路径的收敛目标）顺序固定：
+`ReplicaApplyCoordinator`（当前 `ConversationContentSyncService → SessionCatalogCacheRepository` 路径的收敛目标）顺序固定：
 
 ```text
 frame validation
@@ -547,7 +547,7 @@ DDL/guard 故意失败样本必须证明：cross-source session merge、cross-th
 | `packages/bridge/src/local-features/conversation-content-sync.ts` `messageIdentity` | 仍以serialized hash/source index/synthetic ID形成entry ID | `AMEND` identity strength + evidence scope；hash只做integrity |
 | `packages/bridge/src/local-features/slots/conversation-sync-v2-protocol.ts` | identity/source/sequence/runtime overlay字段和容量解析已有事实 | `REPLACE_WITH_FINAL_PHASE1_WIRE`；保留有用边界，不保留v2/Claude/weak target |
 | `apps/mobile/lib/features/session_list/cache/session_catalog_cache_database.dart` | source partition、hot window、staging、FK已存在；仍是单window模型 | `MINE_SCHEMA_TESTS`；改islands/edges/head/inbox约束 |
-| `apps/mobile/lib/features/session_list/cache/session_catalog_cache_repository.dart` | atomic staging/commit、last-good、thread-scoped reset、alias merge存在 | `KEEP_BEHAVIOR_AMEND_OWNER`；删除provisional route merge，收敛ReplicaApplyWriter |
+| `apps/mobile/lib/features/session_list/cache/session_catalog_cache_repository.dart` | atomic staging/commit、last-good、thread-scoped reset、alias merge存在 | `KEEP_BEHAVIOR_AMEND_OWNER`；删除provisional route merge，收敛ReplicaApplyCoordinator |
 | `apps/mobile/lib/features/conversation_content_sync/conversation_content_sync_service.dart` | source/subscription/sequence fence、commit后ACK、runtime overlay不入SQLite已有 | `KEEP_CHARACTERIZATION`；移除v2/legacy并补manifest readback ACK |
 | `apps/mobile/lib/features/chat_session/state/chat_session_cubit.dart` | focused overlay有authority/origin generation fence | `KEEP_UI_EFFECT`；Cubit只消费Repository+LiveOverlay，不拥有matching/durable write |
 
@@ -582,7 +582,7 @@ DDL/guard 故意失败样本必须证明：cross-source session merge、cross-th
 2. Bridge installation identity 固定由独立 `BridgeInstallationStore` 持有；实施时可复用现有私有状态目录与原子文件工具，但不得继续借宿 `PromptHistoryStore` 或把它等同 `BridgeIdentityStore`。
 3. U-006 cache retention/capacity/at-rest protection 的用户待决表达；本草案不默认 TTL/LRU/SQLCipher。
 4. U-007 certified Codex build/range policy；在用户裁决前，adapter按一个精确build fail closed 是最安全施工假设，但不能写成永久产品决定。
-5. Provider refresh 已从 live producer 列表移除，固定进入 `CatalogRead`/`CanonicalProjectionWriter` 路径；最终 registry 只需统一其 read reason 名称。
+5. Provider refresh 已从 live producer 列表移除；catalog 固定进入 `ConversationCatalogWriter`，thread/turn/item 固定进入 `CanonicalTimelineWriter`。两者可以共享同一物理 transaction coordinator，但 namespace、CAS head 与逻辑 owner 不得混写。
 6. sender-local outgoing→canonical user item correlation 由 operation草案提供；receive草案明确拒绝text/time兜底，但不重复定义operation ledger。
 7. 最终 DDL agent 决定在原20/19表内复用/重命名还是增加最少的page-evidence/stage表；必须满足本章复合约束和故意失败vectors，表数本身不是目标。
 
