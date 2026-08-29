@@ -43,6 +43,7 @@
 | R07 | 集成并对齐 P-014–P-026 native/product shell 设计 | DRAFTED | source `6bf661eb`; follow-up `500269ac`; integrations `ee267415`/`7a7293e9`; CSV 13×14/无空白；`git diff --check` | `00e8418d` |
 | R08 | 集成并对齐 P-001–P-013 device/files/media/Git/capture 设计 | DRAFTED | source `12b647be`; follow-up `bb8fb837`; integrations `819d48a8`/`e7edd899`; CSV 13×17/无空白；root content/operation closure | `239cab16` |
 | R09 | 统一 SourcePartition、OperationKey、domain owner 与 operation lifecycle owner | DRAFTED | migration uses full triple/no provider key；operation matrix 38×24；ContentRef family and Product variants frozen；`git diff --check` | `e7edd899` |
+| R10 | 集成 K-001–K-026 核心能力完整语义与源码接回表 | DRAFTED | source `codex/v4-design-kernel-capability-completion-20260830@2e255c2e`; integration `d69ce614`; CSV 26×19/无空白/源码路径存在；root writer/content naming aligned | `f01dc469` |
 
 R01 复核发现：草案沿用了原提案 `P-001…P-027` 表示 Provider probe，同时 Phase 2 又用 `P-001…P-026` 表示产品能力，存在 ID 冲突；最终集成必须把前者迁移到独立 `E-CODEX-*` 实验 ID。`design` 状态也必须在最终包改为 `USER_REVIEW_PENDING`，不能继续写成 `NOT_RUN`。该问题保留在账本中，不能用后续通过结果覆盖。
 
@@ -55,6 +56,8 @@ R05 是“集成前全部 OPEN”的机械基线，不能作为最终 closure �
 R07 根裁决：P-024/P-026 属于 ProductPlatform/Mobile shared host，不归 Session Kernel；P-025 只有 authoritative effort 归 `ThreadState/settings`，motion/status/insights 均为只读展示；notification action 必须覆盖 approval/question/MCP elicitation/ExitPlan 的 typed variant，未知 variant fail closed。若旧 native action host 不能无损携带 variant/actionId，只允许 Open App，不能猜测并提交交互响应。
 
 R08/R09 根裁决：unfinished bytes 使用 `ContentOffer`，finalized bytes 使用带 required SHA-256 的 `ContentRef`，HTTP lease 统一为 sealed-target `ContentAccessTicket`，composer 使用 immutable `ComposerAttachmentRef`。Product mutation 以 namespaced sealed variant 注册进同一个 operation registry；旧 route-keyed/二元 data cache `NO_IMPORT/NO_RUNTIME_MIGRATION`。mutable Git/event index 分页，可复用/导出 bytes 才物化 ContentRef。`OperationKey=(SourcePartition,operationId)`；operation lifecycle writer 与 domain aggregate owner 在矩阵中分列，InteractionBroker/Product service 不写 operation ledger。
+
+R10 只把 26 项行为、owner、源码和验收压力完整化，不把 donor tests 的存在标成已运行。根集成把 worker 的 `CanonicalProjectionWriter`/`ReplicaApplyWriter` 别名统一回唯一 owner `CanonicalTimelineWriter`/`ReplicaApplyCoordinator`，并把资源 lease 与附件统一为 `ContentAccessTicket`/`ComposerAttachmentRef`；最终 operation 状态名称仍须由协议 registry 单一生成后再升为静态验证。
 
 ## 隔离异常记录
 

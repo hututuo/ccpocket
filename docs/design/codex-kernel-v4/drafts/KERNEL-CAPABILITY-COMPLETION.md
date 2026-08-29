@@ -10,9 +10,9 @@
 - 当前源码事实仍绑定 `main@a706200233c55cc82d7a17e433f80f132d0f280d`、tree `ac85f620445151f45eda856f55f4b96ee442f41a`；本轮只静态确认 donor source/test 路径存在，不把源码存在写成运行时证明。
 - `SourcePartition` 永远是 `(bridgeIdentityId, bridgeInstanceId, codexSourceId)`；route、IP、URL、标题、正文、时间、runtime session ID 都不是数据身份。
 - actor 只由 Bridge authenticated connection context 注入。任何业务 payload 中的 `actor/deviceId/claimantId` 都没有授权力。
-- Provider durable history 是历史事实权威。Provider refresh 是 bounded durable read，必须走 evidence → candidate → verification → `CanonicalProjectionWriter`；它不是 live producer。
+- Provider durable history 是历史事实权威。Provider refresh 是 bounded durable read，必须走 evidence → candidate → verification → `CanonicalTimelineWriter`；它不是 live producer。
 - operation admission、fingerprint、lane、dispatch barrier、terminal 和 reconcile 只归 `OperationKernel`。`OUTCOME_UNKNOWN` 永不自动重发。
-- Bridge timeline 只有 `CanonicalProjectionWriter`；Mobile replica 只有 `ReplicaApplyWriter`。UI、feature handler、observer、resource service、diagnostics 和 transport 都不能成为第二 writer。
+- Bridge timeline 只有 `CanonicalTimelineWriter`；Mobile replica 只有 `ReplicaApplyCoordinator`。UI、feature handler、observer、resource service、diagnostics 和 transport 都不能成为第二 writer。
 - live 只有 generation/source-fenced memory overlay；只有 strong Provider turn/item identity 能原位晋升。
 - 不存在可达的 V2、Mirror writer、legacy runtime、dual read/write 或 Claude route/wire/DDL/capability。旧源码只作 donor behavior、失败证据和 characterization tests。
 - 不创建新 core、owner、DB、event bus 或通用 gateway。本文出现的 controller/presenter 是现有 root owner 下的 Phase 2 适配器，不是新的事实权威。
@@ -40,7 +40,7 @@ CSV 中的 `SOURCE_PRESENT_STATIC` 只表示本轮在绑定源码树中确认路
 
 ### 3.1 K-003：ConversationCatalog 只有一个目录事实入口
 
-`ConversationCatalog` 以 `(SourcePartition, providerThreadId)` 为 row identity。Provider catalog refresh 进入 Phase 1 `P1-RD-003` bounded read，并由 `CanonicalProjectionWriter` 提交 catalog head；不允许 V2、Mirror 或 legacy recent list 同时写目录。
+`ConversationCatalog` 以 `(SourcePartition, providerThreadId)` 为 row identity。Provider catalog refresh 进入 Phase 1 `P1-RD-003` bounded read，并由 `CanonicalTimelineWriter` 提交 catalog head；不允许 V2、Mirror 或 legacy recent list 同时写目录。
 
 目录必须同时表达：
 
