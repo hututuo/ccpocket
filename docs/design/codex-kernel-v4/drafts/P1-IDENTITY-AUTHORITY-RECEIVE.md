@@ -34,7 +34,7 @@
 | P1-R03 | Provider thread/turn/item + runtime fence | `AMEND` | 加入 computer/Bridge identity/Bridge instance/route/Codex source 分层；业务 key 使用完整 source partition | P0-02/K-002/P-001 |
 | P1-R04 | 客户端 `device_id` 参与 interaction claim | `DELETE` | actor 只由 authenticated connection context 注入；payload 中同名字段至多做一致性检查 | P0-03 |
 | P1-R05 | `EvidencePage`、segment、edge、last-good | `KEEP_AND_AMEND` | 把 Provider build/capability/read request/response/coverage/order evidence 变成可持久、可核验字段 | P0-14/P1-01/P1-09/P1-10 |
-| P1-R06 | app-server page 或 rollout reader 可作为 bounded reader | `KEEP_CONDITIONAL` | 每个策略须按精确 build 认证；无安全 reader 时 capability fail closed | C-E01/UNK-002/UNK-012 |
+| P1-R06 | app-server page 或 rollout reader 可作为 bounded reader | `KEEP_CONDITIONAL` | 每个策略须按精确 build 认证；无安全 reader 时 capability fail closed | E-CODEX-READ-CONTRACT/UNK-002/UNK-012 |
 | P1-R07 | timestamp/body/index fallback item identity | `DELETE` | 无 stable ID 时只建立 read-local structural locator，不能跨 read 合并或连 island | 当前 `sessions-index.ts` / `conversation-content-sync.ts` / `conversation-sync-v2.ts` 弱兜底 |
 | P1-R08 | partial cache + gap + order proof | `KEEP_AND_AMEND` | coverage island 为第一等对象；无 proof 的边界永久保持 typed Gap，直到新 evidence 关闭 | FIXED_DECISION/P0-14 |
 | P1-R09 | last-good | `KEEP_AND_AMEND` | head 是 per source/thread/read-semantics 的 CAS；empty 必须有 exact-scope completeness proof | FIXED_DECISION/P0-14 |
@@ -51,12 +51,12 @@
 | semantic_id | 术语 | 定义 | 唯一 owner / 执行位置 | durability | 明确不是 |
 |---|---|---|---|---|---|
 | SID-001 | `Computer` | Mobile 产品层的一台电脑展示主体；由用户别名和一个已验证 Bridge signing identity 归组 routes | 现有 `MachineManagerService` / device-route repository | Mobile local product state | 不是 IP、route、Bridge data partition 或硬件 UUID |
-| SID-002 | `BridgeIdentityId` | Bridge Ed25519 public key 派生的签名身份，用于证明多 route 指向同一 Bridge signing installation | `BridgeIdentityStore` 与 Mobile key pinning | Bridge 0600 identity file + Mobile trust record | 不是鉴权 secret，不是 `bridgeInstanceId`，不直接作为 cache key |
-| SID-003 | `BridgeInstanceId` | Bridge 可持久状态实例的随机 opaque ID；Bridge 状态重建或明确重置后可以变化 | Bridge composition root 的 installation-state owner；不继续让 prompt-history 文件偶然成为语义 owner | Bridge private state | 不是 process PID、binary version、route 或 signing key |
+| SID-002 | `BridgeIdentityId` | Bridge Ed25519 public key 派生的签名身份，用于证明多 route 指向同一 Bridge signing installation；它是跨 Bridge 的 source partition 前缀 | `BridgeIdentityStore` 与 Mobile key pinning | Bridge 0600 identity file + Mobile trust record | 不是鉴权 secret，不是 `bridgeInstanceId`，不是 route |
+| SID-003 | `BridgeInstanceId` | Bridge 可持久状态实例的随机 opaque ID；Bridge 状态重建或明确重置后可以变化 | 独立 `BridgeInstallationStore`；原子创建并存于 Bridge private state，prompt-history 只能读取，不能继续拥有它 | Bridge private state | 不是 process PID、binary version、route 或 signing key |
 | SID-004 | `ConnectionRouteId` | 一条可独立编辑、排序、删除的 LAN/Tailscale/DNS/SSH 连接配置；当前 `Machine.id` 继续承担此语义 | Mobile `MachineManagerService` | Mobile local | 不是 computer/data/source identity |
 | SID-005 | `AuthenticatedActor` | 当前业务 envelope 的调用主体，由完成认证的 WebSocket connection context 注入；类型为 paired-device、API-key credential 或受限 open connection | Bridge transport auth context；application service 只接收已注入 actor | connection-lifetime；paired device trust 独立持久 | 不是 payload 自报 device ID、URL token 字符串或 route ID |
-| SID-006 | `CodexSourceId` | 一个明确的 Codex durable session/config/lifecycle authority；默认由 `CODEX_HOME` 派生，或由显式 `BRIDGE_CODEX_SOURCE_ID` 声明 sequential shared authority | `codex-home.ts` + Bridge source registry | Bridge configuration/state | 不是目录路径、app-server process 或 Bridge identity |
-| SID-007 | `SourcePartition` | canonical 数据分区 `(bridgeInstanceId, codexSourceId)`；Codex-first 下 provider literal 为 `codex`，不再把 route 加入 key | Session Kernel Identity owner；Bridge/Mobile DDL 复合主键 | durable | 不是缓存 alias；旧 endpoint partition 不得晋升为 canonical |
+| SID-006 | `CodexSourceId` | Bridge `SourceRegistry` 首次登记一个 Codex authority 时生成并持久化的 opaque ID；`CODEX_HOME`、账号、配置和 app-server 只作当前绑定/再认证事实 | `SourceRegistry`；`codex-home.ts` 只提供 locator/config 输入 | Bridge private state | 不是目录路径或其 hash、app-server process、route、Bridge identity |
+| SID-007 | `SourcePartition` | 跨 Bridge/Mobile canonical 数据分区 `(bridgeIdentityId, bridgeInstanceId, codexSourceId)`；Bridge 本机表可把前两项作为 installation metadata 的隐式常量，但 wire、manifest、Mobile FK 和导出必须显式完整 | Session Kernel Identity owner；Bridge/Mobile DDL 复合归属 | durable | 不是缓存 alias；旧 endpoint partition 不得晋升为 canonical |
 | SID-008 | `ConversationId` | `(SourcePartition, providerThreadId)` 的 typed tuple；不再生成第二个与 Provider thread 竞争的 durable session ID | Session Kernel Catalog owner | durable provider fact/cache locator | 不是 runtime session ID、标题、项目路径 |
 | SID-009 | `RuntimeAttachmentId` | Bridge 当前 active attachment 的临时别名，用于定位 process/control；可变且只在 authority fence 内有效 | `SessionManager` | memory / diagnostic projection | 不是 conversation identity |
 | SID-010 | `ProviderTurnId` | Provider 返回且在目标 build 上经 probe 证明稳定的 turn identity | Codex adapter | durable provider fact | 缺失时不得用 startedAt/completedAt/turn ordinal 补成 stable ID |
@@ -68,10 +68,10 @@
 | semantic_id | 术语 | 定义/失效事件 | owner | 允许用途 | 禁止用途 |
 |---|---|---|---|---|---|
 | SF-001 | `connectionEpoch` | Mobile 每建立/替换一个 socket 单调推进；旧 socket frame 立即失效 | Mobile transport | 拒绝旧 connection work | cache identity、timeline order |
-| SF-002 | `sourceEpoch` | 每次 authenticated `(bridgeInstanceId,codexSourceId)` 初次绑定或同 socket replacement 时由 Bridge 生成的新 epoch | Bridge Identity/Authority owner | fence durable subscription、read flight、mutation admission | source identity 本身 |
+| SF-002 | `sourceEpoch` | 每次 authenticated `SourcePartition` 初次绑定或同 socket replacement 时由 Bridge 生成的新 epoch | Bridge Identity/Authority owner | fence durable subscription、read flight、mutation admission | source identity 本身 |
 | SF-003 | `providerInstanceEpoch` | app-server/read process/socket identity变化时推进 | Codex adapter/runtime owner | fence in-flight Provider read 与 live observation | durable turn/item identity |
 | SF-004 | `authorityGeneration` | exact runtime attachment/control owner/active turn 变化时推进 | SessionManager / control projection | stop/steer/interaction/live attachment | history revision或 source switch代替品 |
-| SF-005 | `producerEpoch` | runtime/sharedObserver/externalObserver/providerRefresh 每个 producer 生命周期的 opaque generation | LiveObservation owner | 丢弃 producer 的迟到 live | 跨 producer order |
+| SF-005 | `producerEpoch` | direct runtime、shared observer、detached observer 每个 live producer 生命周期的 opaque generation | LiveObservation owner | 丢弃 producer 的迟到 live | 跨 producer order；Provider refresh 属于 durable read，不是 live producer |
 | SF-006 | `subscriptionId + streamSeq` | 一个 authenticated sourceEpoch 下的 durable publication delivery order | Bridge Sync publisher | replay、gap、ACK | timeline item order |
 | SF-007 | `headVersion/headDigest` | CanonicalProjectionWriter 每次成功 head CAS 产生的本地 commit version/hash | Bridge writer；Mobile replica同值 | cache reuse、base CAS、publication apply | Provider revision或 live generation |
 | SF-008 | `capabilitySnapshotId` | exact Provider build + method/schema/probe result 的 immutable fingerprint | Codex adapter certification owner | read strategy、evidence compatibility | 静态 generated type 版本 |
@@ -102,7 +102,7 @@ authenticated WebSocket
 1. `ROUTE_SELECTED`：只知道 route；允许 transport 打开，不允许读取 canonical partition；
 2. `BRIDGE_SIGNATURE_VERIFIED`：可验证 route grouping，仍不能推断 source；
 3. `ACTOR_AUTHENTICATED`：connection context 已有 actor；open 模式只能得到受限 anonymous actor；
-4. `SOURCE_ASSERTED`：Bridge 给出 `bridgeInstanceId/codexSourceId`、sourceEpoch 和 capability snapshot；
+4. `SOURCE_ASSERTED`：Bridge 给出完整 `bridgeIdentityId/bridgeInstanceId/codexSourceId`、sourceEpoch 和 capability snapshot；
 5. `SOURCE_VERIFIED`：Mobile 与用户选择/route hint 校验，无 mismatch；
 6. `REPLICA_BOUND`：选择精确 SourcePartition，才可 subscribe/publish/ACK/重放 mutation；
 7. `APPLICATION_READY`：catalog/status/priority head 与 runtime readiness 各自达门禁。
@@ -121,7 +121,12 @@ type AuthenticatedActor =
 
 interface ExecutionContext {
   actor: AuthenticatedActor;
-  source: { bridgeInstanceId: string; codexSourceId: string; sourceEpoch: string };
+  source: {
+    bridgeIdentityId: string;
+    bridgeInstanceId: string;
+    codexSourceId: string;
+    sourceEpoch: string;
+  };
   routeClass: 'lan' | 'tailscale' | 'dns' | 'ssh_tunnel' | 'loopback' | 'unknown';
 }
 ```
@@ -186,7 +191,7 @@ interface EvidencePage<T> {
 
 每个 `capabilitySnapshotId` 至少固定：CLI label、managed app-server label、executable SHA-256、protocol/schema digest、method/parameter/result/error binding、page/cursor/terminal/empty semantics、turn/item identity strength、单页容量和超限行为。
 
-当前源码证明 `CodexProcess` 有 `listThreads`、`listThreadTurns`、`listThreadItems` 的 bounded-shaped 调用入口，但没有证明目标 runtime 接受所有方法、cursor 在并发 mutation 下稳定、`null` cursor 等于完整、turn/item ID 跨 live/read/restart/compact 稳定，或数组顺序可跨页拼接。因此这些全部是 `EXPERIMENT_REQUIRED`，由 C-E01/C-E02/C-E04 关闭。
+当前源码证明 `CodexProcess` 有 `listThreads`、`listThreadTurns`、`listThreadItems` 的 bounded-shaped 调用入口，但没有证明目标 runtime 接受所有方法、cursor 在并发 mutation 下稳定、`null` cursor 等于完整、turn/item ID 跨 live/read/restart/compact 稳定，或数组顺序可跨页拼接。因此这些全部是 `EXPERIMENT_REQUIRED`，分别由 `E-CODEX-READ-CONTRACT`、`E-CODEX-LIVE-IDENTITY` 与 `E-CORE-ORDER-PROOF` 关闭。
 
 ### 4.3 catalog read
 
@@ -230,7 +235,7 @@ CREATED → READING → VERIFYING → VERIFIED → COMMITTED
 ### 5.1 cache key
 
 ```text
-CachePartition = (bridgeInstanceId, codexSourceId)
+CachePartition = (bridgeIdentityId, bridgeInstanceId, codexSourceId)
 ConversationCache = CachePartition + providerThreadId
 MaterializationScope = ConversationCache + canonicalReadSpecDigest
 Island = MaterializationScope + materializationId + segmentId
@@ -248,7 +253,7 @@ Mobile compatible last-good coverage
 
 Mobile hit必须使 Bridge content request 为 0；Bridge hit必须使 Provider content request 为 0。唯一允许 Provider contact 的 reason：`CACHE_MISS`、`EXPLICIT_REFRESH`、`INTEGRITY_FAILURE`、`RECORDED_EVICTION`、`CAPABILITY_INCOMPATIBLE`、`PROVIDER_INVALIDATION_PROVEN`、`GAP_REPAIR`。reconnect、reopen、widget rebuild、elapsed time、route change但source相同都不是 read reason。
 
-二次打开若需要 metadata/order-proof read，必须记录 `SECOND_READ_REASON`、requests/bytes/latency，并由 C-E03 验证预算；在证据前不得声称“零 Provider read”。
+二次打开若需要 metadata/order-proof read，必须记录 `SECOND_READ_REASON`、requests/bytes/latency，并由 `E-CORE-CACHE-REUSE` 验证预算；在证据前不得声称“零 Provider read”。
 
 ### 5.3 coverage island
 
@@ -328,9 +333,9 @@ U-006（容量/保留/静态保护）仍为 `USER_DECISION_REQUIRED`。Phase 1 �
 
 ## 6. Live overlay、唯一入口和 canonical promotion
 
-### 6.1 四类 producer 不是四个 writer
+### 6.1 三类 live producer 只有一个 owner
 
-现源码中的 producer 为 `runtime`、`sharedObserver`、`externalObserver`、`providerRefresh`。它们进入同一个 `LiveObservationCore`；`providerRefresh` 在完成 evidence verification 前也只是 observed candidate，不是 canonical writer。
+现源码中的 direct runtime、shared observer 与 detached/external observer 进入同一个 `LiveObservationCore`。Provider refresh 不属于 live：它只能进入 `CatalogRead` 的 evidence→candidate→verify→canonical 路径；在 canonical commit 前既不可见也不能发 live overlay。
 
 `LiveSourceArbiter` 对每个 SourcePartition/thread 选择一个 active direct producer：formal shared attachment 存在时不再创建第二 observer；只有 detached 且无 direct stream 时才建立 bounded read-only observer。切换窗口可能短暂重叠，但跨 producer alias 只允许 strong provider turn/item ID；否则保留独立 unanchored activity，不能正文去重。
 
@@ -356,7 +361,7 @@ ANCHORED/DISPLAYED → CONFLICT → REPAIR_REQUESTED
 - 不写 `segment_item`、`sync_event`、Mobile inbox、replica、隐藏 temporary history 或 diagnostic payload table；
 - durable stream gap 由 canonical snapshot/reread修复，live gap 不 replay 成历史；
 - Bridge/Mobile crash 后 overlay 丢失是预期行为；last-good 保持可读；
-- current source bounds 作为初始防护：每 thread `<=256` live records / `<=512 KiB`，最多 `64` threads / `8 MiB` total；每 subscription pending overlay `<=1 MiB`、dedupe IDs `<=128`。超限发送 `LIVE_OVERFLOW` metadata并触发 bounded repair，不截断成 canonical；这些数值需 C-E02/C-E08 实测后冻结。
+- current source bounds 作为初始防护：每 thread `<=256` live records / `<=512 KiB`，最多 `64` threads / `8 MiB` total；每 subscription pending overlay `<=1 MiB`、dedupe IDs `<=128`。超限发送 `LIVE_OVERFLOW` metadata并触发 bounded repair，不截断成 canonical；这些数值需 `E-CODEX-LIVE-IDENTITY` 与 `E-CORE-REPLICA-ACK` 实测后冻结。
 
 ### 6.4 promote 规则
 
@@ -458,7 +463,7 @@ frame validation
 | `provider_build` | 保存 CLI/app-server labels、binary hash、schema digest；不可只存 version string |
 | `provider_instance` | 复合归属 SourcePartition + providerInstanceEpoch + capabilitySnapshotId；process identity变化不可覆盖旧 row |
 | `capability_snapshot` | immutable，唯一 `(provider_build_id, adapter_schema_digest, probe_digest)`；保存 method/cursor/identity/order capability flags |
-| `session` | PK/UNIQUE 改为 `(bridge_instance_id,codex_source_id,provider_thread_id)`；删除 provider thread global UNIQUE |
+| `session` | 跨端自然键为 `(bridge_identity_id,bridge_instance_id,codex_source_id,provider_thread_id)`；Bridge-local DDL 可由 installation metadata 隐式约束前两项，但禁止 provider thread global UNIQUE |
 | `materialization_attempt` | 增 `scope_kind/scope_id/read_spec_digest/source_epoch/provider_instance_epoch/capability_snapshot_id/status/error_code/response_manifest_hash/head_eligible` |
 | `materialization_segment` | 复合 FK 回 attempt/source/scope；存 request/response cursor、snapshot token、terminal、coverage、order proof、raw digest/bytes；page ordinal unique |
 | `segment_item` | 复合 FK 含 source/thread/segment；`identity_strength` enum；strong ID unique scope为 source/thread/turn/item；READ_LOCAL key只在segment unique |
@@ -473,7 +478,7 @@ DDL/guard 故意失败样本必须证明：cross-source session merge、cross-th
 
 | 现有语义 | 必需修订 |
 |---|---|
-| route alias/provisional partition | canonical replica只能由 verified `(bridgeInstanceId,codexSourceId)` 建立；endpoint/logical alias仅作为外部 hint，不可成为 partition PK |
+| route alias/provisional partition | canonical replica只能由 verified `(bridgeIdentityId,bridgeInstanceId,codexSourceId)` 建立；endpoint/logical alias仅作为外部 hint，不可成为 partition PK |
 | `conversation_hot_windows` 单窗口 | 改为 head + islands/segments/items/edges/gaps；允许partial islands，不用一个 `entry_index` 假装全局连续 |
 | timeline staging | manifest/page均绑定 sourceEpoch/subscription/materialization/head base；旧generation staging可清，active head不清 |
 | inbox/checkpoint | stream/subscription/source/seq/hash均非空；duplicate相同hash幂等，不同hash quarantine |
@@ -489,12 +494,12 @@ DDL/guard 故意失败样本必须证明：cross-source session merge、cross-th
 | Turn/item request | 200 rows | reject/decrease limit；不能截断并前进 cursor | current source/client parser bound；Provider semantics `EXPERIMENT_REQUIRED` |
 | Control frame | 64 KiB；content budget 56 KiB | 分页/ContentRef/typed error | current source bound |
 | Timeline publication page | 24 entries | next page | current source bound |
-| One hot materialization | 512 KiB inline | payload Gap/ContentRef；不得静默裁正文 | current source bound，需 C-E08 |
+| One hot materialization | 512 KiB inline | payload Gap/ContentRef；不得静默裁正文 | current source bound，需 `E-CORE-REPLICA-ACK` |
 | Inline message text | 40 KiB | ContentRef或PAYLOAD Gap | current source bound |
 | Mobile local conversation product ceiling | 100,000 normalized entries / 64 MiB；render约200 envelopes | eviction/paging/explicit error，不降低产品上限 | accepted product boundary |
 | Mobile staging | 2,000 rows / 128 pages / 8 MiB | abort candidate，last-good不变 | current source bound |
 | Durable sync backpressure | 2 MiB outstanding+queued threshold | pause producer，超时typed gap | current source bound |
-| Live per thread/global | 256 / 512 KiB；64 threads / 8 MiB | drop oldest overlay + `LIVE_OVERFLOW` + repair | current source bound，需 C-E02 |
+| Live per thread/global | 256 / 512 KiB；64 threads / 8 MiB | drop oldest overlay + `LIVE_OVERFLOW` + repair | current source bound，需 `E-CODEX-LIVE-IDENTITY` |
 
 缓存永久保留/自适应 LRU/TTL/静态加密由 U-006 决定；Provider支持版本范围由 U-007 决定。边界未决不允许无界默认。
 
@@ -529,8 +534,8 @@ DDL/guard 故意失败样本必须证明：cross-source session merge、cross-th
 | 源码 | 当前事实 | 目标处置 |
 |---|---|---|
 | `packages/bridge/src/bridge-identity.ts` `BridgeIdentityStore` | Ed25519 signing identity、signed `bridgeInstanceId` response 已存在 | `KEEP` security seam；补统一 instance owner/actor/source binding |
-| `packages/bridge/src/prompt-history-store.ts` `bridgeInstanceId` | stable random instance 当前偶然存于 prompt-history store | `AMEND`：提升为 installation identity owner，prompt history只消费 |
-| `packages/bridge/src/codex-home.ts` `codexSourceIdentity` | CODEX_HOME derived / explicit shared source ID 已存在 | `KEEP`，纳入SourcePartition和sourceEpoch |
+| `packages/bridge/src/prompt-history-store.ts` `bridgeInstanceId` | stable random instance 当前偶然存于 prompt-history store | `REWRITE_OWNER`：迁到独立 `BridgeInstallationStore`；prompt history只消费 |
+| `packages/bridge/src/codex-home.ts` `codexSourceIdentity` | CODEX_HOME derived / explicit shared source ID 已存在 | `MINE_BINDING_FACTS`：路径可作 locator，最终 ID 由 `SourceRegistry` 生成并持久化，禁止用路径或路径 hash 作身份 |
 | `packages/bridge/src/websocket.ts` `connectionAuth` / `sendSessionList` | paired device可得到server-side deviceId；API-key/open无统一 typed actor；session_list发布identity | `AMEND` transport context；业务handler不读payload actor |
 | `apps/mobile/lib/models/machine.dart` | `Machine.id` 是route，保存Bridge identity/instance/source hint | `KEEP` route语义；Computer grouping留产品层 |
 | `apps/mobile/lib/models/bridge_data_source_identity.dart` | authenticated pair和legacy route fallback并存 | `DELETE` legacy canonical fallback；route只作hint/offline locator |
@@ -550,11 +555,11 @@ DDL/guard 故意失败样本必须证明：cross-source session merge、cross-th
 
 | ID | 实验 | 必须输出 | 失败时设计动作 |
 |---|---|---|---|
-| C-E01 | 精确Codex build的catalog/turn/item RPC、cursor、terminal、empty、order | build/binary/schema digest、raw request/response digest、de-identified fixtures、limits/latency | 禁用未证read strategy；不退回unbounded whole-read |
-| C-E02 | runtime/shared/external observer在duplicate/reorder/reconnect/source switch下覆盖 | 每producer generation、strong ID覆盖率、gap/duplicate矩阵、memory peak | live只显示separate activity；缺失全靠durable reread |
-| C-E03 | 同range首次/二次打开 | Mobile/Bridge/Provider request counts、bytes、latency、SECOND_READ_REASON | 无法零读则冻结明确proof-read预算，不假称cache hit |
-| C-E04 | split/reorder/duplicate/inclusive cursor/cycle fixtures + real样本 | 每条visible adjacency的proof path | 无proof island保持Gap |
-| C-E08 | WSS→staging→SQLite→readback→ACK→Repository/UI | 每kill点、commit/readback receipt、replay、RSS/frame budgets | commit/readback前禁止publish/ACK |
+| E-CODEX-READ-CONTRACT | 精确Codex build的catalog/turn/item RPC、cursor、terminal、empty、order | build/binary/schema digest、raw request/response digest、de-identified fixtures、limits/latency | 禁用未证read strategy；不退回unbounded whole-read |
+| E-CODEX-LIVE-IDENTITY | runtime/shared/detached observer在duplicate/reorder/reconnect/source switch下覆盖 | 每producer generation、strong ID覆盖率、gap/duplicate矩阵、memory peak | live只显示separate activity；缺失全靠durable reread |
+| E-CORE-CACHE-REUSE | 同range首次/二次打开 | Mobile/Bridge/Provider request counts、bytes、latency、SECOND_READ_REASON | 无法零读则冻结明确proof-read预算，不假称cache hit |
+| E-CORE-ORDER-PROOF | split/reorder/duplicate/inclusive cursor/cycle fixtures + real样本 | 每条visible adjacency的proof path | 无proof island保持Gap |
+| E-CORE-REPLICA-ACK | WSS→staging→SQLite→readback→ACK→Repository/UI | 每kill点、commit/readback receipt、replay、RSS/frame budgets | commit/readback前禁止publish/ACK |
 
 所有实验仅在隔离 state dir、测试端口 `8766`、throwaway threads 上另行授权执行。本草案未运行这些实验，状态全部 `NOT_RUN`。
 
@@ -574,10 +579,10 @@ DDL/guard 故意失败样本必须证明：cross-source session merge、cross-th
 ## 15. 仍需根 Agent 统一裁决/集成的项目
 
 1. 最终 wire agent 对消息名和 durable envelope 的统一命名；本草案只冻结必备语义，避免与 operation/interaction/wire 草案产生第二协议。
-2. Bridge installation identity 是否从 `PromptHistoryStore` 物理迁到 `BridgeIdentityStore` 的具体文件归属；语义必须唯一，但可选择最小迁移路径。
+2. Bridge installation identity 固定由独立 `BridgeInstallationStore` 持有；实施时可复用现有私有状态目录与原子文件工具，但不得继续借宿 `PromptHistoryStore` 或把它等同 `BridgeIdentityStore`。
 3. U-006 cache retention/capacity/at-rest protection 的用户待决表达；本草案不默认 TTL/LRU/SQLCipher。
 4. U-007 certified Codex build/range policy；在用户裁决前，adapter按一个精确build fail closed 是最安全施工假设，但不能写成永久产品决定。
-5. `providerRefresh` 在最终 owner map 中命名为 read candidate producer 还是从 live producer列表移除；无论命名如何，它在 verification/commit前绝不是 canonical writer。
+5. Provider refresh 已从 live producer 列表移除，固定进入 `CatalogRead`/`CanonicalProjectionWriter` 路径；最终 registry 只需统一其 read reason 名称。
 6. sender-local outgoing→canonical user item correlation 由 operation草案提供；receive草案明确拒绝text/time兜底，但不重复定义operation ledger。
 7. 最终 DDL agent 决定在原20/19表内复用/重命名还是增加最少的page-evidence/stage表；必须满足本章复合约束和故意失败vectors，表数本身不是目标。
 
