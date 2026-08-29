@@ -15,6 +15,8 @@
 
 真正开工时必须重新记录 repo、worktree、branch、完整 HEAD/tree、dirty state、Codex/Node/Dart/Flutter/SQLite/Xcode/iOS 版本；上述身份只能证明设计输入，不能替代开工时事实。
 
+实验 ID 使用独立 namespace，避免与产品能力 `P-001–P-026` 冲突：原提案的 27 个 Codex Provider probe 记为 `E-CODEX-001–027`，核心全链实验记为 `E-CORE-001–008`，产品/Native 实验记为 `E-PRODUCT-001–008`。最终实验 registry 必须把每个 ID 绑定到前置条件、原始证据、命令、期望与失效影响。
+
 ## 2. 全波次不变量
 
 1. Provider durable history 始终是会话事实权威；Bridge 持久层是可验证、可复用 cache，不是第二 Provider history。
@@ -66,7 +68,7 @@ docs/design/codex-kernel-v4/validation/runs/<UTC-run-id>/
 
 ### I00 — 事实冻结与实施工作树
 
-- 输入：用户已接受的 Phase 1 累计设计、source lock、P0/P1 closure register、当前 source map、原 P-001/P-019/P-022 probes。
+- 输入：用户已接受的 Phase 1 累计设计、source lock、P0/P1 closure register、当前 source map、`E-CODEX-001/E-CODEX-019/E-CODEX-022` probes。
 - 可改：实施专用 docs/ledger、隔离 probe harness、脱敏 fixtures；不得改 production composition。
 - 不得触碰：`index.ts`、`websocket.ts`、`session.ts`、`codex-process.ts` 生产路径，Mobile composition roots，任何现有 DB、`8765`、系统/用户配置。
 - 门禁：精确 target Codex build/binary hash、方法面、schema/capability snapshot；可复现 fact-pack；每个 load-bearing 假设标 `SOURCE_PRESENT/PROVIDER_VERIFIED/...`。
@@ -84,7 +86,7 @@ docs/design/codex-kernel-v4/validation/runs/<UTC-run-id>/
 
 ### I02 — Bridge read-only receive/cache/order 内存切片
 
-- 输入：I01 generated contracts、I00 Provider facts、P-002–P-004/P-006/P-018/P-021/P-024/P-025、C-E01/C-E03/C-E04。
+- 输入：I01 generated contracts、I00 Provider facts、`E-CODEX-002–004/E-CODEX-006/E-CODEX-018/E-CODEX-021/E-CODEX-024/E-CODEX-025`、`E-CORE-001/E-CORE-003/E-CORE-004`。
 - 可改：`packages/bridge/src/conversation-core/{domain,ports,receive,repository,adapters/codex,testing}/**`；`codex-process.ts` 只允许一个只读、typed、默认未接 production route 的 seam。
 - 不得触碰：`websocket.ts` routing、`SessionManager` mutation、Action Broker、InputDeliveryLedger、生产 catalog/history owner。
 - 门禁：一 source/一 thread/一 bounded range 从 raw→candidate→verified canonical；disjoint islands 显式 Gap；arrival/time permutation 不改变 durable order；warm memory cache 零 Provider body read。
@@ -111,7 +113,7 @@ docs/design/codex-kernel-v4/validation/runs/<UTC-run-id>/
 
 ### I05 — Mobile SQLite replica、ACK 与 Repository publication
 
-- 输入：I04 Repository、accepted Mobile DDL、C-E08 commit chain、I03 durable events。
+- 输入：I04 Repository、accepted Mobile DDL、`E-CORE-008` commit chain、I03 durable events。
 - 可改：`apps/mobile/lib/conversation_core/{storage,repository,testing}/**`；只创建新 `conversation_replica_v4.db`，protected local-state namespace 独立。
 - 不得触碰：旧 `ccpocket.db`、Mirror DB、现有 draft/queue/credentials/settings/transfer checkpoints、旧 UI publication owners。
 - 门禁：WSS fixture→staging→SQLite commit→readback→ACK→Repository publish；restart 恢复；source partition；draft/intent survival；200-entry render window 与大历史有界读取。
@@ -120,7 +122,7 @@ docs/design/codex-kernel-v4/validation/runs/<UTC-run-id>/
 
 ### I06 — live overlay、fence 与 durable repair
 
-- 输入：I03/I05 committed chain、P-005/P-007/P-013/P-027、C-E02。
+- 输入：I03/I05 committed chain、`E-CODEX-005/E-CODEX-007/E-CODEX-013/E-CODEX-027`、`E-CORE-002`。
 - 可改：Bridge/Mobile 新 `conversation-core` live modules 和 tests；仍不接旧 UI owner。
 - 不得触碰：durable tables 增加 live body、第二 observer、production connection、旧 runtime continuity fallback。
 - 门禁：同一 item live→canonical 原位晋升；disconnect/restart/source switch/runtime replacement 清 overlay 并 bounded repair；DB audit 证明无 live body。
@@ -129,7 +131,7 @@ docs/design/codex-kernel-v4/validation/runs/<UTC-run-id>/
 
 ### I07 — 单个 `START_TURN` operation
 
-- 输入：I01 operation contract、I03 durable ledger、I05 local intent/repository、P-008–P-010/P-023、C-E05/C-E06。
+- 输入：I01 operation contract、I03 durable ledger、I05 local intent/repository、`E-CODEX-008–010/E-CODEX-023`、`E-CORE-005/E-CORE-006`。
 - 可改：Bridge/Mobile 新 `operation/**`；Provider adapter 只增加 typed `START_TURN`；专用 test transport。
 - 不得触碰：queue/steer/stop/interaction breadth、generic command、旧 input ledger production owner、真实 user thread。
 - 门禁：admission+digest durable commit→dispatch barrier→Provider receipt/correlation→canonical user item→terminal/reconcile；same ID+digest converges，digest conflict rejects。
@@ -138,7 +140,7 @@ docs/design/codex-kernel-v4/validation/runs/<UTC-run-id>/
 
 ### I08 — queue、edit/cancel、steer 与 stop
 
-- 输入：I07 operation kernel、accepted queue/lane/revision contract、P-011。
+- 输入：I07 operation kernel、accepted queue/lane/revision contract、`E-CODEX-011`。
 - 可改：新 operation queue modules、typed Mobile controllers/Repository projections；一次只增加一种 action。
 - 不得触碰：reorder（未确认能力）、offline draft 与 Bridge queue 合并、Mobile queue authority、generic replay。
 - 门禁：online in-flight、offline intent、Bridge queue、Provider accepted 四态分离；exact item/revision update/cancel；每次 input-ready 最多 dispatch FIFO 队首；steer/stop 前置条件与 terminal 完整。
@@ -147,7 +149,7 @@ docs/design/codex-kernel-v4/validation/runs/<UTC-run-id>/
 
 ### I09 — Interaction 与多设备 claim
 
-- 输入：I07 dispatch/reconcile、authenticated actor、P-012/P-026、C-E07。
+- 输入：I07 dispatch/reconcile、authenticated actor、`E-CODEX-012/E-CODEX-026`、`E-CORE-007`。
 - 可改：新 `interaction/**`、Mobile interaction controller/renderer、typed approval/question/MCP/ExitPlan variants。
 - 不得触碰：client-self-reported actor、第二 pending store、notification delivery 写 timeline、未知 interaction 自动批准。
 - 门禁：exact source/thread/turn/request；single active renewable claim；response 复用 operation path；两设备收敛；restart/open enumeration completeness 有事实证据或明确降级。
@@ -156,7 +158,7 @@ docs/design/codex-kernel-v4/validation/runs/<UTC-run-id>/
 
 ### I10 — settings、Goal、Plan、relations 与 child conversations
 
-- 输入：I09 Interaction、accepted thread-state/relation contracts、P-014–P-017。
+- 输入：I09 Interaction、accepted thread-state/relation contracts、`E-CODEX-014–017`。
 - 可改：新 settings/thread-state/relation modules；Goal Provider adapter；Plan timeline/settings/ExitPlan projection；Fork/review/persisted+ephemeral Side Chat/subagent adapters。
 - 不得触碰：CC-owned Goal document、Plan 单一混合 authority、第三 timeline、legacy Side Chat runtime、child history store。
 - 门禁：Goal get/set/clear 冲突；Plan item原位更新；collaboration=settings；ExitPlan=Interaction；relation source/boundary/parent-child proof；child 复用普通 repository/live。
@@ -174,7 +176,7 @@ docs/design/codex-kernel-v4/validation/runs/<UTC-run-id>/
 
 ### I12 — 设备、routes、配对与 readiness（P-001–P-004）
 
-- 输入：authenticated execution context、route/source fence、Repository publication、Phase 2 feature designs、P-E01。
+- 输入：authenticated execution context、route/source fence、Repository publication、Phase 2 feature designs、`E-PRODUCT-001`。
 - 可改：现有 identity/pairing/auth/readiness/discovery/machine modules及其 UI/tests；在原 owner 内最小适配。
 - 不得触碰：route/IP 作为数据身份、冷启动自动连 WS、连接 key 与文件 mutation step-up 混用、未 ready source 发布。
 - 门禁：signed computer grouping 不合并 route records；pair/revoke/key recovery；route switch不串 cache/queue；transport/auth/catalog/application ready 分层；旧 epoch丢弃。
@@ -183,7 +185,7 @@ docs/design/codex-kernel-v4/validation/runs/<UTC-run-id>/
 
 ### I13 — 文件、content plane、transfer、mutation、preview 与 media（P-005–P-011）
 
-- 输入：ContentRef/resource ticket、ExecutionContext、protected namespace、composer ingress、P-E02–P-E05。
+- 输入：ContentRef/resource ticket、ExecutionContext、protected namespace、composer ingress、`E-PRODUCT-002–005`。
 - 可改：现有 file browser/transfer/mutation/artifact/preview/gallery/image Bridge/Mobile/native modules；bytes 走 HTTP/content plane。
 - 不得触碰：WS 大正文、真实 path/token 过线、partial file 可见、`faceIdPassed` 布尔授权、万能 file/resource core、旧 DB 迁移。
 - 门禁：browse/read、opaque ref、Range/ETag/digest/resume、15 GiB/2 GiB bounds、no-overwrite/atomic landing、Quick Look fallback、received inbox、composer attachment 全部独立 E2E。
@@ -201,7 +203,7 @@ docs/design/codex-kernel-v4/validation/runs/<UTC-run-id>/
 
 ### I15 — 通知、后台、权限、更新、native host 与 cache（P-014–P-017/P-024/P-026）
 
-- 输入：post-commit projection、Interaction、lifecycle fence、protected namespace、P-E06/P-E07。
+- 输入：post-commit projection、Interaction、lifecycle fence、protected namespace、`E-PRODUCT-006/E-PRODUCT-007`。
 - 可改：现有 notification/background/permission/update/mobile-host/cache modules和逐 plugin native tests。
 - 不得触碰：通知成为 canonical、后台常驻承诺、启动即弹权限、万能 native gateway、版本号冒充兼容性、broad clear 删除 protected state。
 - 门禁：in-app/local/remote 分开；force-quit foreground repair；per-plugin capability/API/epoch；late callback丢弃；namespace clear/restart存活；source/build/deploy/IPA/OTA/install/device/stable UI准确。
@@ -210,7 +212,7 @@ docs/design/codex-kernel-v4/validation/runs/<UTC-run-id>/
 
 ### I16 — voice、icon、commerce、shell、本地化与 effort 视觉（P-018–P-023/P-025）
 
-- 输入：composer ingress、settings ACK、Phase 2 UI/native designs、P-E08。
+- 输入：composer ingress、settings ACK、Phase 2 UI/native designs、`E-PRODUCT-008`。
 - 可改：现有 voice/icon/RevenueCat/router/shell/ARB/translation/effort motion/status UI及 tests。
 - 不得触碰：自动发送语音 partial、commerce限制核心、动态翻译 command/path/secret、可达 Claude runtime/route、视觉状态成为 domain authority。
 - 门禁：voice partial/final/cancel/selection；icon readback rollback；purchase/restore不影响核心；route inventory与离线内容；ARB完整；六档 effort ACK/conflict；72×6 Max/Ultra几何、速度、RTL、reduced motion、frame budget、GPL attribution。
@@ -223,7 +225,7 @@ docs/design/codex-kernel-v4/validation/runs/<UTC-run-id>/
 - 可改：tests、harness、sanitized evidence、确定性修复；修复必须回到 owning stage 的模块并新增 commit。
 - 不得触碰：production `8765`、真实用户 thread mutation、部署配置、发布元数据、门禁降级。
 - 门禁：8766+独立 state dir 的 WSS→Bridge DB→Mobile DB→ACK→Repository→UI；短/长/同名/fork/tool密集/断线/多设备；冷暖性能、内存/帧/容量、安全、Codex build drift。
-- 故障/实验：所有原 P-001–P-027、C-E01–C-E08 和适用 P-E01–P-E08；结果只可 PASS/FAIL/NOT_RUN/BLOCKED。
+- 故障/实验：所有 `E-CODEX-001–027`、`E-CORE-001–008` 和适用 `E-PRODUCT-001–008`；结果只可 PASS/FAIL/NOT_RUN/BLOCKED。
 - 回退/数据：`R-I17` 是候选前最后源码回退点；所有 fixture/state隔离，raw evidence脱敏并 hash。
 
 ### I18 — 候选切换演练与封印
