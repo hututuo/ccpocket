@@ -20,10 +20,10 @@
 | D01 | Phase 1 identity/authority/receive/cache/order/live | DRAFTED | source `codex/v4-design-p1-identity-read-20260830@0cd9bbeb`; integrated and root-amended | 无生产路由 |
 | D02 | Phase 1 operation/queue/interaction/state/relation | DRAFTED | source `codex/v4-design-p1-operations-20260830@e1c8dbf2`; integrated and root-amended | 无 provider mutation |
 | D03 | Phase 1 wire/schema/DDL/ports/semantic SSOT | IN_PROGRESS | Sol xhigh branch `codex/v4-design-p1-protocol-storage-20260830` | 无 DB 创建/迁移 |
-| D04 | Phase 2 device/route/files/media/Git/capture | IN_PROGRESS | Sol xhigh branch `codex/v4-design-p2-device-files-20260830` | 无 native/runtime 变更 |
+| D04 | Phase 2 device/route/files/media/Git/capture | DRAFTED | source `12b647be`; follow-up `bb8fb837`; integrated, root-aligned and candidate bindings closed | 无 native/runtime 变更 |
 | D05 | Phase 2 notification/background/native/shell/visual | DRAFTED | source `codex/v4-design-p2-native-product-20260830@6bf661eb`; follow-up `500269ac`; integrated and root-aligned | 无 App 构建/发布 |
 | D06 | 52 能力、25 审查问题、9 决定与实验闭环 | IN_PROGRESS | Luna max audit/source branches | 设计闭环不冒充 runtime |
-| D07 | 累计 FULL_DESIGN 与实施/回退计划 | NOT_STARTED |  | 审核前不实施 |
+| D07 | 累计 FULL_DESIGN 与实施/回退计划 | IN_PROGRESS | `04-UNIFIED-DOMAIN-AND-DATAFLOW.md`; `05-CONTENT-AND-PRODUCT-OPERATIONS.md` | 审核前不实施 |
 | D08 | 机器验证与独立审查 | NOT_STARTED |  | P0/P1 清零后才打包 |
 | D09 | 最终审核包 | NOT_STARTED |  | 停在 USER_REVIEW_PENDING |
 
@@ -41,6 +41,8 @@
 | R05 | 集成 112 行 pre-integration 审查/需求/实验 closure 基线 | DRAFTED | source `codex/v4-design-audit-coverage-20260830@49482abf`; integration `69a2066b`; 112×9/unique/no blanks; 23/23 artifact refs | `28769262` |
 | R06 | 收口 9 项历史用户决定，区分 7 项待审与 2 项已固定 | STATIC_VERIFIED | `matrices/USER-DECISION-REQUIRED.csv`; 9×8/unique/no blanks; U-008/U-009 user-fixed | `819d48a8` |
 | R07 | 集成并对齐 P-014–P-026 native/product shell 设计 | DRAFTED | source `6bf661eb`; follow-up `500269ac`; integrations `ee267415`/`7a7293e9`; CSV 13×14/无空白；`git diff --check` | `00e8418d` |
+| R08 | 集成并对齐 P-001–P-013 device/files/media/Git/capture 设计 | DRAFTED | source `12b647be`; follow-up `bb8fb837`; integrations `819d48a8`/`e7edd899`; CSV 13×17/无空白；root content/operation closure | `239cab16` |
+| R09 | 统一 SourcePartition、OperationKey、domain owner 与 operation lifecycle owner | DRAFTED | migration uses full triple/no provider key；operation matrix 38×24；ContentRef family and Product variants frozen；`git diff --check` | `e7edd899` |
 
 R01 复核发现：草案沿用了原提案 `P-001…P-027` 表示 Provider probe，同时 Phase 2 又用 `P-001…P-026` 表示产品能力，存在 ID 冲突；最终集成必须把前者迁移到独立 `E-CODEX-*` 实验 ID。`design` 状态也必须在最终包改为 `USER_REVIEW_PENDING`，不能继续写成 `NOT_RUN`。该问题保留在账本中，不能用后续通过结果覆盖。
 
@@ -51,6 +53,8 @@ R04 根裁决：统一 owner 为 `OperationKernel`；删除重复的 `RETRY_STAR
 R05 是“集成前全部 OPEN”的机械基线，不能作为最终 closure 结果。用户已授权本地累计完成两个设计阶段，故原 `Phase 1 后暂停 Phase 2` 条款被当前任务授权取代；只有实施仍受审核后另行授权约束。最终矩阵必须由根 Agent 对已集成合同逐行升级，U/实验仍保持未闭合。
 
 R07 根裁决：P-024/P-026 属于 ProductPlatform/Mobile shared host，不归 Session Kernel；P-025 只有 authoritative effort 归 `ThreadState/settings`，motion/status/insights 均为只读展示；notification action 必须覆盖 approval/question/MCP elicitation/ExitPlan 的 typed variant，未知 variant fail closed。若旧 native action host 不能无损携带 variant/actionId，只允许 Open App，不能猜测并提交交互响应。
+
+R08/R09 根裁决：unfinished bytes 使用 `ContentOffer`，finalized bytes 使用带 required SHA-256 的 `ContentRef`，HTTP lease 统一为 sealed-target `ContentAccessTicket`，composer 使用 immutable `ComposerAttachmentRef`。Product mutation 以 namespaced sealed variant 注册进同一个 operation registry；旧 route-keyed/二元 data cache `NO_IMPORT/NO_RUNTIME_MIGRATION`。mutable Git/event index 分页，可复用/导出 bytes 才物化 ContentRef。`OperationKey=(SourcePartition,operationId)`；operation lifecycle writer 与 domain aggregate owner 在矩阵中分列，InteractionBroker/Product service 不写 operation ledger。
 
 ## 隔离异常记录
 

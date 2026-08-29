@@ -6,15 +6,15 @@
 
 ## 1. 切换单位
 
-### 1.1 SourceKey
+### 1.1 SourcePartition
 
 所有远端会话能力按以下组合切换：
 
 ```text
-SourceKey = bridgeInstanceId + codexSourceId + provider
+SourcePartition = bridgeIdentityId + bridgeInstanceId + codexSourceId
 ```
 
-`bridgeIdentityId` 用于电脑/路线归组，route/endpoint 用于 transport，authenticated device principal 用于 actor；它们都不能替代 SourceKey。thread/turn/item 再位于 SourceKey 内。
+完整三元组同时约束 activation、cache、checkpoint、wire、Mobile FK 与 export。`providerKind` 在本版本只是编译期常量 `codex`，不进入 identity 或 activation key。route/endpoint 只用于 transport，authenticated device principal 只用于 actor；它们都不能替代 SourcePartition。thread/turn/item 再位于 SourcePartition 内。
 
 ### 1.2 FeatureKey
 
@@ -30,7 +30,7 @@ core.thread_state_relation
 product.<capability-id>
 ```
 
-远端 feature 以 `(SourceKey, FeatureKey)` 为 activation key。本机 UI/native-only feature 以 `(MobileInstallKey, FeatureKey)` 为 activation key；若它还消费 Bridge/source，则必须同时绑定 SourceKey。`MobileInstallKey` 只用于本机交付隔离，不参与会话数据身份。
+远端 feature 以 `(SourcePartition, FeatureKey)` 为 activation key。本机 UI/native-only feature 以 `(MobileInstallKey, FeatureKey)` 为 activation key；若它还消费 Bridge/source，则必须同时绑定 SourcePartition。`MobileInstallKey` 只用于本机交付隔离，不参与会话数据身份。
 
 ### 1.3 一个 active owner
 
@@ -51,7 +51,7 @@ ROLLBACK_BLOCKED
 
 | 字段 | 要求 |
 |---|---|
-| `sourceKey` / `mobileInstallKey` | 精确 activation scope |
+| `sourcePartition` / `mobileInstallKey` | 精确 activation scope |
 | `featureKey` | 单一 feature；不允许“all”跳过逐项证据 |
 | `previousRelease` | 完整 source/build/runtime/artifact identity |
 | `targetRelease` | source HEAD/tree、Bridge/App build、Codex binary、schema/generator hash |
@@ -94,7 +94,7 @@ manifest 不得含 token、API key、真实会话正文或用户文件内容。
 - v4 operation、interaction、cutover ledger，任何 `DISPATCHING/OUTCOME_UNKNOWN` 记录，transfer checkpoint、proof/audit、draft/local intent和用户文件一律保留。
 - whole-version rollback 后旧版本只打开它原有、未改写的 DB；它不得读取、降级或清理 v4 DB。重新进入 v4 时继续按 ledger reconcile。
 
-## 4. SourceKey 状态机
+## 4. SourcePartition 状态机
 
 ```text
 UNBOUND
@@ -126,18 +126,18 @@ post-dispatch ambiguity  -> ROLLBACK_BLOCKED
 
 1. 用户接受 Phase 1/Phase 2累计设计；C0–C6不作为外部 Phase 2设计前置。
 2. 本地实施按 I00–I17完成；所有选定 H gate为 PASS。
-3. 重新核对 target source、运行 artifact、Codex binary、SourceKey和dirty state。
+3. 重新核对 target source、运行 artifact、Codex binary、SourcePartition和dirty state。
 4. 取得候选 rehearsal授权；这仍不授权 production `8765`或发布。
 
 ### Step 1 — 隔离候选
 
-- 使用 test port（默认 `8766`）、独立 Bridge/Mobile state dir、throwaway SourceKey/thread和脱敏 fixtures。
+- 使用 test port（默认 `8766`）、独立 Bridge/Mobile state dir、throwaway SourcePartition/thread和脱敏 fixtures。
 - 候选包 architecture grep 证明无 V2/Mirror/legacy fallback/dual writer active path。
 - 运行 read-only全链、live修复、single operation fault matrix；不得连接真实 production source。
 
-### Step 2 — SourceKey read-only 切换
+### Step 2 — SourcePartition read-only 切换
 
-1. 停止该 SourceKey 的旧 catalog/history/Mirror publication owner。
+1. 停止该 SourcePartition 的旧 catalog/history/Mirror publication owner。
 2. 校验 authentication、Bridge instance、Codex source、Provider build/capability。
 3. 激活 `core.read`，只允许 bounded Provider read和v4 cache/replica commit。
 4. 验证 cold read、warm zero-read、partial Gap、last-good、restart。
@@ -145,7 +145,7 @@ post-dispatch ambiguity  -> ROLLBACK_BLOCKED
 
 ### Step 3 — live 切换
 
-1. 确认该 SourceKey没有旧 observer/live publisher。
+1. 确认该 SourcePartition没有旧 observer/live publisher。
 2. 激活 `core.live`，验证 generation/source fence和canonical原位晋升。
 3. 故障时禁用 candidate live并停止 candidate；不得恢复同一 binary中的旧 observer。
 
@@ -153,7 +153,7 @@ post-dispatch ambiguity  -> ROLLBACK_BLOCKED
 
 1. 单独授权一个 throwaway/明确可辨认的 `START_TURN` canary。
 2. admission durable commit后才 dispatch；捕获 receipt、durable reread和canonical item。
-3. 只有 terminal correlation明确时推进；任何 `OUTCOME_UNKNOWN` 立即进入 `ROLLBACK_BLOCKED`，停止该 SourceKey所有Provider mutations。
+3. 只有 terminal correlation明确时推进；任何 `OUTCOME_UNKNOWN` 立即进入 `ROLLBACK_BLOCKED`，停止该 SourcePartition所有Provider mutations。
 
 ### Step 5 — core feature 逐项激活
 
@@ -175,44 +175,44 @@ Phase 2云端/外部设计可以在 Phase 1接受后并行完成；这里仅指�
 
 | FeatureKey | 当前候选 owner/热点 | v4 target owner/publication | activation 原子边界 | 失败时 |
 |---|---|---|---|---|
-| `core.read` | Bridge `sessions-index.ts`、`session-catalog-monitor.ts`、`local-features/conversation-sync-v2.ts`；Mobile catalog cache/Mirror publishers | Bridge `conversation-core/receive+storage` → durable event；Mobile `conversation_core/storage+repository` | 同一 SourceKey先停止全部旧 catalog/history/Mirror publication，再开始v4 snapshot；首个v4 Repository revision前不显示新数据 | 停整个candidate或保持feature unavailable；不重新路由旧owner |
+| `core.read` | Bridge `sessions-index.ts`、`session-catalog-monitor.ts`、`local-features/conversation-sync-v2.ts`；Mobile catalog cache/Mirror publishers | Bridge `conversation-core/receive+storage` → durable event；Mobile `conversation_core/storage+repository` | 同一 SourcePartition先停止全部旧 catalog/history/Mirror publication，再开始v4 snapshot；首个v4 Repository revision前不显示新数据 | 停整个candidate或保持feature unavailable；不重新路由旧owner |
 | `core.live` | `codex-process.ts` notifications、旧 continuity/conversation-sync-v2、`ChatSessionCubit` live reducer | Bridge/Mobile `conversation-core/live` → focused Repository overlay | old observer unsubscribe/ownership release与v4 generation activation形成一个fenced transaction | 丢memory overlay并停candidate live；不持久化、不建第二observer |
 | `core.start_turn` | `websocket.ts` input route、`session.ts`、`input-delivery-ledger.ts`、Mobile `BridgeService.send`/Cubit outgoing reducer | v4 `operation` admission/ledger/adapter → Repository receipt/canonical correlation | 旧 input dispatch停止且无in-flight后，v4 admission才可接受首个operation | pre-dispatch可整体回退；post-dispatch按UNKNOWN协议阻断 |
 | `core.queue_control` | 旧 input ledger/queue route、Mobile offline queue与queue panel state | v4 operation queue/lane + local intent projection | 按action kind逐个切换；query/update/cancel capability与handler/Repository同一commit激活 | action变UNAVAILABLE；不落回旧queue handler |
-| `core.interaction` | `codex-action-broker*.ts`、`websocket.ts` pending maps、Mobile pending interaction handlers | v4 Interaction Broker/claim ledger → typed controller | 旧broker停止对该SourceKey response；open interactions枚举/claim迁入同一新owner后才开放UI | 关闭受影响interaction kind；manual path仍在同一v4 broker |
-| `core.thread_state_relation` | `codex-goal-controller.ts`、core-actions、persisted/ephemeral Side Chat、subagents local features | v4 settings/thread-state/relation owner + ordinary child Repository | Goal/Plan/Side Chat/Fork/subagent按kind独立切；父子/SourceKey proof先于UI entry | kind变UNAVAILABLE；不恢复CC-owned Goal、第三timeline或legacy Side Chat |
+| `core.interaction` | `codex-action-broker*.ts`、`websocket.ts` pending maps、Mobile pending interaction handlers | v4 Interaction Broker/claim ledger → typed controller | 旧 broker 停止 response；不导入 pending map，只有从当前 authenticated Provider/runtime fact 以 exact identity 重新 materialize 的 interaction 才开放 UI | 关闭受影响 interaction kind；manual path仍在同一 v4 broker |
+| `core.thread_state_relation` | `codex-goal-controller.ts`、core-actions、persisted/ephemeral Side Chat、subagents local features | v4 settings/thread-state/relation owner + ordinary child Repository | Goal/Plan/Side Chat/Fork/subagent按kind独立切；父子/SourcePartition proof先于UI entry | kind变UNAVAILABLE；不恢复CC-owned Goal、第三timeline或legacy Side Chat |
 | `core.ui_projection` | `BridgeService` raw dispatch、`messages.dart` mixed models、`ChatSessionCubit`/`SessionListCubit` data reducers | typed envelope → SQLite → Repository → focused controller → thin Cubit/UI | 一个screen/feature只有在旧subscription/reducer停止后订阅v4 Repository | 撤该UI adapter；不让raw frame/旧cache重新成为隐藏owner |
 
 ## 7. Phase 2 capability 切换表
 
 | Capability | Stage | activation scope | 前置 | 切换成功证据 | 回退动作 |
 |---|---|---|---|---|---|
-| P-001 computer/routes | I12 | SourceKey + Mobile install | core.read、identity contract | signed grouping、route records独立、source cache不串 | 撤 route adapter/UI；保留 identity contract和route records |
+| P-001 computer/routes | I12 | SourcePartition + Mobile install | core.read、identity contract | signed grouping、route records独立、source cache不串 | 撤 route adapter/UI；保留 identity contract和route records |
 | P-002 identity/pairing | I12 | Bridge instance + device principal | authenticated context | challenge/pair/revoke/key recovery E2E | 关闭 pairing入口；保留 trust/revocation记录，不降级 payload actor |
 | P-003 discovery | I12 | Mobile install + route | route/source fence | discover/select/cancel/timeout，未自动连 WS | 撤 discovery adapter；已有手工route保持 |
-| P-004 readiness | I12 | SourceKey + connection epoch | P-001–P-003 | transport/auth/catalog/application-ready分层 | 撤进度/UI adapter；不能用 connected布尔代替 ready |
-| P-005 file browser | I13 | SourceKey + actor | ContentRef/execution context | browse/search/pagination/path security E2E | 关闭入口；不删除 pin/cache/user files |
-| P-006 transfer | I13 | SourceKey + transfer ID + Mobile install | protected checkpoint/content plane | resume/digest/atomic landing/inbox | 停新 transfer；保留 checkpoint、partial temp和已落盘文件 |
-| P-007 drop/attachments | I13 | Mobile install + focused SourceKey/thread | composer ingress、P-006 | Home/composer分流且显式 send前无 operation | 撤 ingress UI；保留 draft/attachment/transfer事实 |
-| P-008 mutation auth | I13 | SourceKey + actor + exact target | authenticated actor/resource scope | password/Secure Enclave proof、replay/path-swap拒绝 | 关闭 mutation；保留enrollment/revocation/audit，不信任布尔 fallback |
+| P-004 readiness | I12 | SourcePartition + connection epoch | P-001–P-003 | transport/auth/catalog/application-ready分层 | 撤进度/UI adapter；不能用 connected布尔代替 ready |
+| P-005 file browser | I13 | SourcePartition + actor | ContentRef/execution context | browse/search/pagination/path security E2E | 关闭入口；不删除 pin/cache/user files |
+| P-006 transfer | I13 | SourcePartition + transfer ID + Mobile install | protected checkpoint/content plane | resume/digest/atomic landing/inbox | 停新 transfer；保留 checkpoint、partial temp和已落盘文件 |
+| P-007 drop/attachments | I13 | Mobile install + focused SourcePartition/thread | composer ingress、P-006 | Home/composer分流且显式 send前无 operation | 撤 ingress UI；保留 draft/attachment/transfer事实 |
+| P-008 mutation auth | I13 | SourcePartition + actor + exact target | authenticated actor/resource scope | password/Secure Enclave proof、replay/path-swap拒绝 | 关闭 mutation；保留enrollment/revocation/audit，不信任布尔 fallback |
 | P-009 preview | I13 | Mobile install + ContentRef | P-010 ticket | Quick Look/fallback/share/download/back行为 | 撤 preview adapter；保留文件/ref，不外部上传 |
-| P-010 artifact refs | I13 | SourceKey + resource/version | typed ticket | opaque ref、range/digest/expiry/revoke | 关闭发券/入口；保留store/audit，不暴露path/token |
-| P-011 gallery/images | I13 | SourceKey + media lineage | P-010/content plane | 三类media分页、缺失降级、下载分享 | 撤media adapter/UI；保留opaque refs和已下载文件 |
-| P-012 Git/worktrees | I14 | SourceKey + workspace/repo | typed product action | read facts、单独授权mutation、stale conflict | 关闭adapter/UI；不自动逆转Git mutation |
-| P-013 capture | I14 | SourceKey + capture ID | permission + ContentRef | start/stop/list/play/delete/share/capacity | 关闭capture入口；不删除已有capture |
-| P-014 notifications | I15 | SourceKey + device install | post-commit projection/Interaction | in-app/local/remote分开，exact action revalidation | 关闭通道/adapter；不改canonical/read watermark |
-| P-015 background | I15 | Mobile install + SourceKey cursor | lifecycle fence | finite lease/stop/force-quit/foreground repair | 关闭可选后台路径；前台repair保留 |
+| P-010 artifact refs | I13 | SourcePartition + resource/version | typed ticket | opaque ref、range/digest/expiry/revoke | 关闭发券/入口；保留store/audit，不暴露path/token |
+| P-011 gallery/images | I13 | SourcePartition + media lineage | P-010/content plane | 三类media分页、缺失降级、下载分享 | 撤media adapter/UI；保留opaque refs和已下载文件 |
+| P-012 Git/worktrees | I14 | SourcePartition + workspace/repo | typed product action | read facts、单独授权mutation、stale conflict | 关闭adapter/UI；不自动逆转Git mutation |
+| P-013 capture | I14 | SourcePartition + capture ID | permission + ContentRef | start/stop/list/play/delete/share/capacity | 关闭capture入口；不删除已有capture |
+| P-014 notifications | I15 | SourcePartition + device install | post-commit projection/Interaction | in-app/local/remote分开，exact action revalidation | 关闭通道/adapter；不改canonical/read watermark |
+| P-015 background | I15 | Mobile install + SourcePartition cursor | lifecycle fence | finite lease/stop/force-quit/foreground repair | 关闭可选后台路径；前台repair保留 |
 | P-016 permissions | I15 | Mobile install + plugin version | native snapshot | status/request/open-settings/unsupported | 关闭feature UI；不自动prompt、不伪造grant |
 | P-017 updates | I15 | Mobile install + Bridge revision | delivery-state contract | 检查/下载/重启状态准确且无自动发布 | 撤update adapter/UI；不改变channel或已安装版本 |
 | P-018 voice | I16 | Mobile install + composer | composer ingress | partial/final/cancel/selection，未自动send | 关闭voice；保留draft原文 |
 | P-019 app icon | I16 | Mobile install + native API | native snapshot | set/readback/failure rollback | 恢复真实readback UI；不影响core |
 | P-020 commerce | I16 | Mobile install + store scope | none on Session Kernel | offering/purchase/restore/offline，core永久免费 | 关闭commerce UI；保留store事实，不锁core |
 | P-021 shell services | I16 | Mobile install | router slots | route/offline/accessibility/review cooldown | 撤局部route/service；不动Session Kernel |
-| P-022 host routes | I16 | Mobile install + SourceKey where needed | product router | Explore/Setup/QR/Settings/Debug保留，Claude不可达 | 撤route改动；Claude仍为unreachable typed seam |
+| P-022 host routes | I16 | Mobile install + SourcePartition where needed | product router | Explore/Setup/QR/Settings/Debug保留，Claude不可达 | 撤route改动；Claude仍为unreachable typed seam |
 | P-023 localization | I16 | Mobile install + locale | read-only presentation | ARB完整、动态文本allowlist、原文保留 | 关闭翻译；显示原文，不清用户内容 |
 | P-024 native host | I15 | MobileInstallKey | exact base IPA/plugin versions | per-plugin snapshot、epoch、late callback丢弃 | 关闭不支持adapter；需要新base IPA的feature隐藏 |
-| P-025 effort/motion | I16 | SourceKey settings + Mobile install | settings ACK | 六档真实ACK；Max/Ultra几何/性能/视觉/许可 | 撤motion/UI；保留authoritative settings值 |
-| P-026 cache management | I15 | SourceKey + Mobile install namespace | protected namespace | per-namespace clear/readback/restart且protected存活 | 关闭clear action；不执行broad cleanup |
+| P-025 effort/motion | I16 | SourcePartition settings + Mobile install | settings ACK | 六档真实ACK；Max/Ultra几何/性能/视觉/许可 | 撤motion/UI；保留authoritative settings值 |
+| P-026 cache management | I15 | SourcePartition + Mobile install namespace | protected namespace | per-namespace clear/readback/restart且protected存活 | 关闭clear action；不执行broad cleanup |
 
 表中“关闭”表示 feature 在 v4 candidate 中变为明确 `UNAVAILABLE/UPDATE_REQUIRED`，不是转发到 V2、旧 Bridge handler、Mirror或legacy runtime。
 
@@ -225,7 +225,7 @@ Phase 2云端/外部设计可以在 Phase 1接受后并行完成；这里仅指�
 | live故障，无mutation | 是 | 停candidate；overlay随进程消失；旧版本重读自身权威路径 | 持久化live body；把v4 replica写回旧DB |
 | mutation已明确未写Provider | 是 | ledger记录definitive no-write后整体恢复 | 凭timeout猜未写 |
 | mutation已有明确terminal/provider durable correlation | 条件允许 | 先封印terminal evidence；确保旧版本不会重放同一operation | 删除operation ledger或重复发送canary |
-| `DISPATCHING/OUTCOME_UNKNOWN` | 否，先阻断 | 停该SourceKey所有mutation；保留v4 runtime/reader做只读reconcile；必要时请求用户决定 | 启动不知道v4 ledger的旧mutation owner；自动重发；清ledger |
+| `DISPATCHING/OUTCOME_UNKNOWN` | 否，先阻断 | 停该SourcePartition所有mutation；保留v4 runtime/reader做只读reconcile；必要时请求用户决定 | 启动不知道v4 ledger的旧mutation owner；自动重发；清ledger |
 | active interaction response ambiguous | 否，先阻断 | 同上；只读枚举/Provider事实收口或让interaction自然过期 | 从另一个broker重复respond |
 | transfer中断 | 核心可回退；transfer数据保留 | 停新transfer；保留checkpoint/temp；恢复时按同一identity验证 | 删除partial/checkpoint；把partial暴露为完成文件 |
 | Mobile/native故障 | 需安装授权 | 保留新旧DB；安装精确 previous app/base only after authorization | 用OTA跨native差异；自动降级/安装 |
@@ -236,7 +236,7 @@ Phase 2云端/外部设计可以在 Phase 1接受后并行完成；这里仅指�
 这是唯一会主动阻止 whole-version mutation rollback 的核心状态：
 
 1. 原子写入 `ROLLBACK_BLOCKED` 与 source/operation/attempt/digest/provider correlation evidence。
-2. 撤销该 SourceKey 的新 mutation admission；read/resource可继续，前提是不会改变 Provider。
+2. 撤销该 SourcePartition 的新 mutation admission；read/resource可继续，前提是不会改变 Provider。
 3. 使用同一 v4 build或与其 ledger/schema兼容的 recovery reader做 bounded durable reread；禁止调用 mutation API探测。
 4. 观察到唯一 canonical user item/turn时收口为已执行；有确证未写时收口为definitive no-write；证据不足继续UNKNOWN。
 5. 只有所有未知operation收口，或用户明确接受冻结/人工处理方案后，才可恢复任何mutation owner。

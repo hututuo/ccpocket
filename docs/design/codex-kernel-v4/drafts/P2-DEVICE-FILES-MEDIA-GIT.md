@@ -6,7 +6,7 @@ Baseline: `d152b118045264abeb8a1760b94113e323e46283`
 
 Phase 1 alignment freeze: `2876926238d89dd63864081574508baf6ffe2a51`
 
-Binding status: `FROZEN_BINDING` for SourcePartition, AuthenticatedExecutionContext and OperationKernel; `CANDIDATE_BINDING` only where protocol-storage has not finalized ContentRef/ResourceTicket naming
+Binding status: `FROZEN_BINDING` for SourcePartition, AuthenticatedExecutionContext, OperationKernel, ContentOffer/ContentRef/ContentAccessTicket and ComposerAttachmentRef
 
 Default disposition: `KEEP_EFFECT / REUSE_EXISTING`
 
@@ -23,7 +23,7 @@ The design is based on the local input lock, the v4 peripheral capsules/pressure
 | Mark | Meaning in this draft |
 |---|---|
 | `FROZEN_BINDING` | Bind directly to the root Phase 1 contract. This draft may add a product adapter but cannot fork, narrow or rename the authoritative semantics. |
-| `CANDIDATE_BINDING` | Protocol-storage has not finalized the ContentRef/ResourceTicket family name/schema. The semantics stay opaque, immutable and source-scoped; no provisional Phase 2 type may become authoritative. |
+| `FROZEN_BINDING` | Root decisions and Phase 1 machine sources own the contract; Phase 2 consumes it without adding authority or duplicate fields. |
 | `NO_CORE_CHANGE` | The capability can be completed behind an existing product boundary. It may consume a frozen core interface without changing it. |
 | `USE_EXISTING` | The frozen interface, once verified, is sufficient; implement only an adapter at the product boundary. |
 | `AMEND` | Retained disposition vocabulary only; no current row requests a Phase 1 amendment. Any later pressure requires an explicit root contract revision and never authorizes a Phase 2 fork. |
@@ -37,15 +37,15 @@ The design is based on the local input lock, the v4 peripheral capsules/pressure
 | P-002 | `FROZEN_BINDING: AuthenticatedExecutionContext / OperationKernel` | `NO_CORE_CHANGE / USE_EXISTING` | Adapt existing signed identity, pairing and connection-auth stores; pairing bootstrap is the pre-auth exception. |
 | P-003 | `FROZEN_BINDING: AuthenticatedExecutionContext.source/sourceEpoch` | `NO_CORE_CHANGE / USE_EXISTING` | `NEW_MINIMAL` expiring discovery-candidate DTO; saved route remains existing product data. |
 | P-004 | `FROZEN_BINDING: AuthenticatedExecutionContext.sourceEpoch`; product-local readiness snapshot | `NO_CORE_CHANGE / USE_EXISTING` | Reuse current Bridge readiness and Mobile progress/watchdog orchestration. |
-| P-005 | `FROZEN_BINDING: AuthenticatedExecutionContext`; `CANDIDATE_BINDING: ContentRef family` | `NO_CORE_CHANGE / USE_EXISTING` | Add bounded search as a feature protocol; keep browser feature-owned. |
-| P-006 | `FROZEN_BINDING: SourcePartition / AuthenticatedExecutionContext / OperationKernel`; `CANDIDATE_BINDING: ContentRef family` | `NO_CORE_CHANGE / USE_EXISTING` | Keep transfer state machine; add ordinary-transfer digest manifest. |
-| P-007 | `FROZEN_BINDING: OperationKernel`; `CANDIDATE_BINDING: ContentRef/attachment naming` | `NO_CORE_CHANGE / USE_EXISTING` | Reuse drop/picker staging; only explicit Send enters OperationKernel. |
+| P-005 | `FROZEN_BINDING: AuthenticatedExecutionContext / ContentRef / ContentAccessTicket` | `NO_CORE_CHANGE / USE_EXISTING` | Add bounded search as a feature protocol; keep browser feature-owned. |
+| P-006 | `FROZEN_BINDING: SourcePartition / AuthenticatedExecutionContext / OperationKernel / ContentOffer / ContentRef` | `NO_CORE_CHANGE / USE_EXISTING` | Keep transfer state machine; add ordinary-transfer digest manifest. |
+| P-007 | `FROZEN_BINDING: OperationKernel / ContentRef / ComposerAttachmentRef` | `NO_CORE_CHANGE / USE_EXISTING` | Reuse drop/picker staging; only explicit Send enters OperationKernel. |
 | P-008 | `FROZEN_BINDING: AuthenticatedExecutionContext / OperationKernel` | `NO_CORE_CHANGE / USE_EXISTING` | Extend exact-operation proof as an OperationKernel precondition. |
-| P-009 | `FROZEN_BINDING: AuthenticatedExecutionContext`; `CANDIDATE_BINDING: ContentRef` | `NO_CORE_CHANGE / USE_EXISTING` | Keep Quick Look-first preview and bounded fallback. |
-| P-010 | `FROZEN_BINDING: AuthenticatedExecutionContext`; `CANDIDATE_BINDING: ContentRef / ResourceTicket family` | `NO_CORE_CHANGE / USE_EXISTING` | Adapt current artifact registry and short lease after final protocol naming. |
-| P-011 | `FROZEN_BINDING: AuthenticatedExecutionContext / OperationKernel`; `CANDIDATE_BINDING: ContentRef lineage` | `NO_CORE_CHANGE / USE_EXISTING` | Adapt existing gallery/image stores with auth, paging and retention. |
+| P-009 | `FROZEN_BINDING: AuthenticatedExecutionContext / ContentRef / ContentAccessTicket` | `NO_CORE_CHANGE / USE_EXISTING` | Keep Quick Look-first preview and bounded fallback. |
+| P-010 | `FROZEN_BINDING: AuthenticatedExecutionContext / ContentRef / ContentAccessTicket` | `NO_CORE_CHANGE / USE_EXISTING` | Adapt current artifact registry and short lease to the frozen protocol names. |
+| P-011 | `FROZEN_BINDING: AuthenticatedExecutionContext / OperationKernel / ContentOffer / ContentRef` | `NO_CORE_CHANGE / USE_EXISTING` | Adapt existing gallery/image stores with auth, paging and retention. |
 | P-012 | `FROZEN_BINDING: AuthenticatedExecutionContext / OperationKernel` | `NO_CORE_CHANGE / USE_EXISTING` | Git reads remain product service; every Git mutation uses OperationKernel. |
-| P-013 | `FROZEN_BINDING: AuthenticatedExecutionContext / OperationKernel`; `CANDIDATE_BINDING: ContentRef` | `NO_CORE_CHANGE / USE_EXISTING` | Extend existing screenshot/event-recording product lifecycle. |
+| P-013 | `FROZEN_BINDING: AuthenticatedExecutionContext / OperationKernel / ContentOffer / ContentRef` | `NO_CORE_CHANGE / USE_EXISTING` | Extend existing screenshot/event-recording product lifecycle. |
 
 Phase 2 must use the frozen owners above exactly. `NEW_MINIMAL` remains limited to feature protocols and executors; it never creates a second identity, execution-context, mutation or operation-state owner.
 
@@ -98,7 +98,7 @@ The HTTP content plane carries byte ranges and upload chunks. Its bearer/ticket 
 | Resume | Stable transfer ID/checkpoint within retention; source identity + ETag + size must match |
 | Digest | Whole-file SHA-256 for ordinary transfer is a required addition; ETag remains the version/resume validator, not the digest |
 
-Current source has ordinary-transfer ETag and stat identity, while SHA-256 is implemented for the diagnostic-report path. The v4 target therefore adds a streaming whole-file SHA-256 manifest/result for normal upload and download. The producer computes it without full buffering; the receiver verifies it before atomic landing. Protocol v2 remains a compatibility path, but its UI must say “completed” rather than “digest verified”.
+Current source has ordinary-transfer ETag and stat identity, while SHA-256 is implemented for the diagnostic-report path. The v4 target therefore adds a streaming whole-file SHA-256 manifest/result for normal upload and download. The producer computes it without full buffering; the receiver verifies it before atomic landing. The independent file-transfer `FT/2` may remain a compatibility path, but its UI must say “completed” rather than “digest verified”; it is not Conversation Sync V2.
 
 ### 2.5 Shared lifecycle grammar
 
@@ -136,9 +136,9 @@ Mobile owns editing, sorting, credential references, health presentation and rou
 | Source | Disposition |
 |---|---|
 | `apps/mobile/lib/models/machine.dart`, `machine_route_grouping.dart` | `KEEP + ADAPT`: preserve route/group facts; bind IDs to frozen identity types. |
-| `machine_manager_service.dart`, manager Cubit/cards/edit sheets | `KEEP + ADAPT`: add explicit stable ordering and route-independent cache migration. |
+| `machine_manager_service.dart`, manager Cubit/cards/edit sheets | `KEEP + ADAPT`: add explicit stable ordering; keep route preference independent from data caches. |
 | SSH startup/tunnel services, connection URL parser | `KEEP`: route mechanisms only. |
-| Route-keyed data/cache ownership or silent signed-ID rebind | `DELETE` after migration; never keep as fallback authority. |
+| Route-keyed data/cache ownership or silent signed-ID rebind | `DELETE`; no runtime migration or fallback authority. |
 
 ### Acceptance and rollback
 
@@ -233,11 +233,11 @@ Reuse current list default/max 100/200, stat/roots limits, 4096-byte relative pa
 
 Actual source has no usable search request or search UI despite the package map claiming it. Add `NEW_MINIMAL` `file_browser_search_v1` behind the existing local-feature slot: root-scoped query, cursor, max 200 results/page, serialized control page at most 64 KiB, server total/deadline/byte budget, cancellation, hidden-file flag, directory revision and `truncated` reason. Search results expire with their cursor and must be re-statted before open/download/mutation.
 
-Pins currently include logical route identity. Migrate pin scope to the complete frozen SourcePartition after proof; read legacy keys once and rewrite only when all three identity components are confirmed. Route change must not hide pins for the same partition.
+Pins currently include logical route identity. New pins use the complete frozen SourcePartition. Legacy route-keyed/two-component pin caches remain unopened and are not rewritten; users may repin after the complete partition is proven. Route change must not hide new pins for the same partition.
 
 ### Source disposition, acceptance and rollback
 
-`file-browser-manager.ts`, POSIX backend/helper, slot protocol, Mobile service/screen and tests are `KEEP + ADAPT`; add search in those modules rather than a new file core. `file_peek` remains a small-file convenience client of the same safe read/preview path. Retire route-keyed pin ownership after migration. Acceptance covers 100k-entry folders, Unicode/hidden names, cursor expiry, symlink swaps, file replacement after list, owner `/` read, open-mode denial, source switch and 2 GiB boundary. Rollback hides search and continues existing paged list/stat/preview/download; it does not loosen roots.
+`file-browser-manager.ts`, POSIX backend/helper, slot protocol, Mobile service/screen and tests are `KEEP + ADAPT`; add search in those modules rather than a new file core. `file_peek` remains a small-file convenience client of the same safe read/preview path. Route-keyed/two-component pins stay unopened. Acceptance covers 100k-entry folders, Unicode/hidden names, cursor expiry, symlink swaps, file replacement after list, owner `/` read, open-mode denial, source switch and 2 GiB boundary. Rollback hides search and continues existing paged list/stat/preview/download; it does not loosen roots.
 
 ## 8. P-006 — Resumable file transfer
 
@@ -253,9 +253,9 @@ Current states (`queued`, `preparing`, `transferring`, `paused`, `succeeded`, `f
 
 ### Byte protocol and integrity
 
-Keep v2 WS control and HTTP bytes, HEAD/PATCH offsets, single-range GET, exact If-Range ETag, 16 MiB max chunk, adaptive 1–16 MiB Mobile chunks, 15 GiB max, 24-hour default leases and seven-day state retention. Preserve Bridge active-download bound 4, 60-second idle and 15-minute request total, Mobile receive queue 8/30 GiB, 512 MiB reserve and native iOS 15/API v2 fail-closed gate.
+Keep independent file-transfer `FT/2` control and HTTP bytes, HEAD/PATCH offsets, single-range GET, exact If-Range ETag, 16 MiB max chunk, adaptive 1–16 MiB Mobile chunks, 15 GiB max, 24-hour default leases and seven-day state retention. Preserve Bridge active-download bound 4, 60-second idle and 15-minute request total, Mobile receive queue 8/30 GiB, 512 MiB reserve and native iOS 15/API FT/2 fail-closed gate.
 
-Add an ordinary-transfer digest extension (`NEW_MINIMAL`, preferably additive protocol v3). A Mac-to-phone offer carries the Bridge-computed `digestAlgorithm=sha256`, 64-hex digest, size and immutable source generation. For phone-to-Mac, Mobile hashes while streaming and sends an explicit `upload_finalize_v3(expectedOffset, sha256)` after the last PATCH; Bridge independently hashes the private partial and stays in `verifying` until they match. Completion receipts return the verified digest. The receiver cannot expose or atomically land the final file before digest success. ETag remains required for range resume. Diagnostic-report SHA-256 cannot be reused as proof that ordinary transfer already implements this.
+Add an ordinary-transfer digest extension (`NEW_MINIMAL`, additive `FT/3`). A Mac-to-phone offer carries the Bridge-computed `digestAlgorithm=sha256`, 64-hex digest, size and immutable source generation. For phone-to-Mac, Mobile hashes while streaming and sends an explicit `upload_finalize_ft3(expectedOffset, sha256)` after the last PATCH; Bridge independently hashes the private partial and stays in `verifying` until they match. Completion receipts return the verified digest. The receiver cannot expose or atomically land the final file before digest success. ETag remains required for range resume. Diagnostic-report SHA-256 cannot be reused as proof that ordinary transfer already implements this.
 
 Landing uses a private same-volume partial and atomic hard-link/rename-style no-clobber commit with deterministic collision suffix. A crash during commit is reconciled using the persisted identity/receipt. Never overwrite a destination chosen earlier, even if it appears between prepare and commit.
 
@@ -263,11 +263,11 @@ Landing uses a private same-volume partial and atomic hard-link/rename-style no-
 
 Bridge owns source stat/canonicalization, download leases, upload partials/reservations, HTTP enforcement, digest/landing and crash recovery. The Mac landing is a typed OperationKernel mutation: admission binds the frozen execution context and RFC 8785 semantic fingerprint before the transfer executor may commit; progress offsets and content SHA-256 remain transfer evidence, not operation identity. Mobile owns pick/drop, security-scoped input staging, checkpoints, destination capacity, adaptive chunks, inbox/unread and native Files export. iOS `FileTransferPlugin.swift` owns native file coordination and no-clobber export; Flutter fails closed on iOS <15 or native API mismatch.
 
-Protocol v2 remains resumable and safe by ETag/identity but is labeled not digest-verified. v3 composer path requires `savedPath`; if only v2 is available, ordinary transfer may complete but the composer attachment remains unsupported rather than guessing a path.
+`FT/2` remains resumable and safe by ETag/identity but is labeled not digest-verified. `FT/3` composer path requires a finalized ContentRef; if only FT/2 is available, ordinary transfer may complete but the composer attachment remains unsupported rather than guessing a path.
 
 ### Source disposition, acceptance and rollback
 
-All `file-transfer-*` Bridge modules, Mobile transfer services/storage/HTTP/UI, native plugin and focused tests are `KEEP + ADAPT`. Add digest fields/calculation and canonical partition migration; do not rewrite the transfer engine. Acceptance covers 0/1 byte, 15 GiB exact and +1 rejection, network loss at every chunk boundary, Bridge/app restart, ETag/digest mismatch, disk exhaustion, name collision, symlink/source replacement, cancel/expiry and native export. Physical-device tests must cover background/foreground, Files picker, low disk and share. Rollback negotiates v2 with truthful integrity labeling and disables digest-required consumers; it never disables no-overwrite/atomic landing.
+All `file-transfer-*` Bridge modules, Mobile transfer services/storage/HTTP/UI, native plugin and focused tests are `KEEP + ADAPT`. Add digest fields/calculation and complete SourcePartition scope; do not rewrite the transfer engine. Acceptance covers 0/1 byte, 15 GiB exact and +1 rejection, network loss at every chunk boundary, Bridge/app restart, ETag/digest mismatch, disk exhaustion, name collision, symlink/source replacement, cancel/expiry and native export. Physical-device tests must cover background/foreground, Files picker, low disk and share. Rollback negotiates FT/2 with truthful integrity labeling and disables digest-required consumers; it never disables no-overwrite/atomic landing.
 
 ## 9. P-007 — iOS ingress, Home drop and composer attachment
 
@@ -277,17 +277,17 @@ One serial ingress classifier receives picker, paste or drag/drop items. PNG/JPE
 
 Home drop immediately asks for a Mac destination/authorization as required, enqueues transfer, and reports a transfer receipt. It never selects a session, changes composer draft or synthesizes chat.
 
-Composer ingress creates feature-local attachments in `uploading`, `ready`, `failed`, `cancelled`. A ready large attachment contains an opaque landing/attachment reference; current providers are adapted at send time (`@savedPath` for Claude, structured mention for Codex). Send is disabled while any required item is uploading. Only the user's explicit Send submits current text plus immutable attachment/content refs through OperationKernel; feature-local staging cannot write operation or timeline state.
+Composer ingress creates feature-local attachments in `uploading`, `ready`, `failed`, `cancelled`. A ready large attachment contains a finalized `ContentRef` and immutable `ComposerAttachmentRef`; the Codex adapter resolves only the registered structured attachment form at send time. Claude remains an unreachable `NOT_IMPLEMENTED` seam and has no attachment path. Send is disabled while any required item is uploading. Only the user's explicit Send submits current text plus immutable attachment/content refs through OperationKernel; feature-local staging cannot write operation or timeline state.
 
 ### Privacy, lifecycle and failures
 
 Security-scoped picker access is released after staging. Partial phone/Mac files follow transfer retention. Removing a composer chip cancels its transfer when safe and removes only feature-local draft state. Draft persistence stores attachment IDs/status, never tokens or raw bytes beyond the bounded inline image case.
 
-Errors distinguish unsupported provider, picker permission, item-provider read failure, unknown/too-large size, capacity, transfer paused/expired, digest failure, mutation step-up failure, missing v3 landing receipt, connection/source change and explicit send failure. A ready attachment survives route switch only after the same Bridge/source is proved.
+Errors distinguish unsupported Codex attachment capability, picker permission, item-provider read failure, unknown/too-large size, capacity, transfer paused/expired, digest failure, mutation step-up failure, missing FT/3 landing receipt, connection/source change and explicit send failure. A ready attachment survives route switch only after the same Bridge/source is proved.
 
 ### Source disposition, acceptance and rollback
 
-`file_drop_ingress.dart`, chat input/drop zones, transfer staging and provider mention adapters are `KEEP + ADAPT`. Operation ownership is `FROZEN_BINDING / USE_EXISTING`; only ContentRef/attachment protocol naming remains `CANDIDATE_BINDING`. Delete any compatibility path that sends a message before landing or treats Home drop as attachment. Acceptance covers multi-item ordering, inline boundary, unknown size, drop cancellation, reconnect, route/source mismatch, explicit send once, no-send removal and old-Bridge v2 unsupported composer behavior. Physical-device validation must use Files/iCloud security-scoped URLs and real drag/drop/paste. Rollback keeps Home transfer and inline images, while disabling large composer attachments on an incompatible Bridge.
+`file_drop_ingress.dart`, chat input/drop zones, transfer staging and Codex mention adapters are `KEEP + ADAPT`. Operation ownership and ContentRef/ComposerAttachmentRef naming are `FROZEN_BINDING / USE_EXISTING`. Delete any compatibility path that sends a message before landing or treats Home drop as attachment. Acceptance covers multi-item ordering, inline boundary, unknown size, drop cancellation, reconnect, route/source mismatch, explicit send once, no-send removal and FT/2-only unsupported composer behavior. Physical-device validation must use Files/iCloud security-scoped URLs and real drag/drop/paste. Rollback keeps Home transfer and inline images when they meet the frozen source/actor contract, while disabling large composer attachments on an incompatible file-transfer host.
 
 ## 10. P-008 — Full-disk read and exact file mutation proof
 
@@ -331,7 +331,7 @@ The resource limit is 2 GiB. Renderer memory and automatic staging limits may be
 
 ### Source disposition, acceptance and rollback
 
-This uses `FROZEN_BINDING: AuthenticatedExecutionContext` and `CANDIDATE_BINDING: ContentRef` with `NO_CORE_CHANGE / USE_EXISTING`. `ArtifactQuickLookPlugin.swift`, preview screen/service, HTML document builder, line preview and tests are `KEEP`. Adapt only the ref/ticket adapter and error taxonomy. Acceptance covers native can/cannot preview, QL exception fallback, HTML script/navigation sandbox, 64 MiB auto boundary, 2 GiB hard boundary, expired ticket renewal, offline metadata and temp cleanup. Physical-device Quick Look and share sheet are separate gates. Rollback disables a failing renderer and leaves download/share/metadata; it never broadens file access.
+This uses `FROZEN_BINDING: AuthenticatedExecutionContext / ContentRef / ContentAccessTicket` with `NO_CORE_CHANGE / USE_EXISTING`. `ArtifactQuickLookPlugin.swift`, preview screen/service, HTML document builder, line preview and tests are `KEEP`. Adapt only the ref/ticket adapter and error taxonomy. Acceptance covers native can/cannot preview, QL exception fallback, HTML script/navigation sandbox, 64 MiB auto boundary, 2 GiB hard boundary, expired ticket renewal, offline metadata and temp cleanup. Physical-device Quick Look and share sheet are separate gates. Rollback disables a failing renderer and leaves download/share/metadata; it never broadens file access.
 
 ## 12. P-010 — Agent artifacts and resource tickets
 
@@ -343,15 +343,15 @@ Opening resolves the ref through the authenticated control plane. Bridge validat
 
 ### Ticket amendment
 
-Protocol-storage still owes the final ContentRef/ResourceTicket family name and schema. The `CANDIDATE_BINDING` must preserve these required semantics without creating a Phase 2 authority:
+The root contract freezes `ContentOffer` for unfinished work, finalized durable `ContentRef`, and short-lived `ContentAccessTicket`; `ComposerAttachmentRef` is the immutable composer input. The machine registry/schema must preserve these semantics without creating a Phase 2 authority:
 
 - actor, complete SourcePartition, source epoch and connection/lease generation;
 - content/object generation and current file identity;
 - allowed methods (`HEAD`, `GET`) and range/size ceiling;
-- MIME/type, ETag and optional/required SHA-256 metadata;
+- MIME/type and object generation; required SHA-256 belongs to finalized `ContentRef`, while HTTP ETag/Digest proves the served generation;
 - issued/expiry/revocation and single-origin audience.
 
-Artifact durable registry retention remains feature-owned (currently up to 5000 entries and 180 days). Short tickets stay in memory and are renewable; revocation, file replacement or owner mismatch invalidates them. Artifact share/download delegates to preview/transfer and does not grant directory browsing. Final protocol naming is pending; the identity, method/range, expiry and revocation invariants are not.
+Artifact durable registry retention remains feature-owned (currently up to 5000 entries and 180 days). Short tickets stay in memory and are renewable; revocation, file replacement or owner mismatch invalidates them. Artifact share/download delegates to preview/transfer and does not grant directory browsing. Tickets do not duplicate the content digest and never become durable timeline data.
 
 ### Execution, source disposition and acceptance
 
@@ -379,7 +379,7 @@ Viewer states are `thumbnail`, `loadingFull`, `ready`, `expiredRenewable`, `sour
 
 ### Binding, source disposition and acceptance
 
-Content-ref lineage remains `CANDIDATE_BINDING`; actor/source and mutation ownership are frozen through `AuthenticatedExecutionContext` and `OperationKernel`. Gallery upload/delete are typed OperationKernel mutations, while list/read/zoom stay product reads. `gallery-store.ts`, `image-store.ts`, Gallery screen/widgets, message/generated image viewers and tests are `KEEP + ADAPT`; unauthenticated individual GET, full-list reads and project-name ownership are `REWRITE`. Acceptance probes unauthenticated URLs, cross-actor/SourcePartition refs, >100 items paging, retention, expired in-memory image, malformed formats, 10 MiB boundary, thumbnail/full generation and delete ownership. Physical-device validation covers zoom, memory pressure, download/share and offline thumbnails. Rollback disables uploads/delete and uses authenticated read-only paging; never restore open GET.
+ContentOffer/ContentRef lineage is `FROZEN_BINDING`; actor/source and mutation ownership are frozen through `AuthenticatedExecutionContext` and `OperationKernel`. Gallery upload/delete are typed OperationKernel mutations, while list/read/zoom stay product reads. `gallery-store.ts`, `image-store.ts`, Gallery screen/widgets, message/generated image viewers and tests are `KEEP + ADAPT`; unauthenticated individual GET, full-list reads and project-name ownership are `REWRITE`. Acceptance probes unauthenticated URLs, cross-actor/SourcePartition refs, >100 items paging, retention, expired in-memory image, malformed formats, 10 MiB boundary, thumbnail/full generation and delete ownership. Physical-device validation covers zoom, memory pressure, download/share and offline thumbnails. Rollback disables uploads/delete and uses authenticated read-only paging; never restore open GET.
 
 ## 14. P-012 — Git and worktrees
 
@@ -439,11 +439,11 @@ Event recording is off unless the server/user explicitly enables it. UI entry is
 
 Redact or exclude bearer tokens, API keys, pairing secrets, file-transfer tickets, push tokens, mutation proofs and raw large content. The product must tell the user that prompts, responses, paths and approvals may be recorded. Body text, screen pixels and file bytes have independent privacy toggles; enabling event records never grants screenshot or file-content capture.
 
-Recording states are `disabled`, `armed`, `recording`, `finalizing`, `ready`, `replaying`, `failed`, `deleting`. Enable/stop/export/delete are typed OperationKernel mutations; event append is the executor's bounded internal effect for an already admitted recording scope. A missing/truncated/corrupt JSONL row produces a bounded partial-replay warning; it does not crash or inject messages into a live Bridge. Replay uses `ReplayBridgeService` in an isolated read-only runtime and cannot send provider, Git, file or release mutations. JSONL/video bytes use the authenticated content plane or pending ContentRef-family handle; list/state control frames stay below 64 KiB. Sharing exports a redacted artifact through P-010/P-006. Delete removes JSONL/meta only after explicit confirmation and never deletes the source session.
+Recording states are `disabled`, `armed`, `recording`, `finalizing`, `ready`, `replaying`, `failed`, `deleting`. Enable/stop/export/delete are typed OperationKernel mutations; event append is the executor's bounded internal effect for an already admitted recording scope. A missing/truncated/corrupt JSONL row produces a bounded partial-replay warning; it does not crash or inject messages into a live Bridge. Replay uses `ReplayBridgeService` in an isolated read-only runtime and cannot send provider, Git, file or release mutations. JSONL/video bytes use the authenticated content plane through ContentOffer then finalized ContentRef; list/state control frames stay below 64 KiB. Sharing exports a redacted artifact through P-010/P-006. Delete removes JSONL/meta only after explicit confirmation and never deletes the source session.
 
 ### Current gaps, source disposition and acceptance
 
-`screenshot.ts`, screenshot sheet, `recording-store.ts`, `recorded_event.dart`, loader, replay service and debug replay UI are `KEEP + ADAPT`. Silent stale-window fullscreen fallback is `REWRITE`. ScreenCaptureKit recording and event-record delete/share/paging/retention/redaction/finalization are `NEW_MINIMAL` additions inside CaptureService. The current whole-file `readFile`/unbounded list and recording metadata path exposure are `REWRITE`; no Session Kernel change is needed. Mutation ownership is `FROZEN_BINDING: AuthenticatedExecutionContext / OperationKernel`; completed screenshot/video/event export consumes the pending `CANDIDATE_BINDING: ContentRef` family with `NO_CORE_CHANGE / USE_EXISTING`.
+`screenshot.ts`, screenshot sheet, `recording-store.ts`, `recorded_event.dart`, loader, replay service and debug replay UI are `KEEP + ADAPT`. Silent stale-window fullscreen fallback is `REWRITE`. ScreenCaptureKit recording and event-record delete/share/paging/retention/redaction/finalization are `NEW_MINIMAL` additions inside CaptureService. The current whole-file `readFile`/unbounded list and recording metadata path exposure are `REWRITE`; no Session Kernel change is needed. Mutation ownership and completed content are `FROZEN_BINDING: AuthenticatedExecutionContext / OperationKernel / ContentOffer / ContentRef` with `NO_CORE_CHANGE / USE_EXISTING`.
 
 Acceptance covers macOS permission denied/granted, stale window, full screen/window privacy, video target/audio consent, start/stop/target loss, 30-minute/2 GiB/capacity stop, playable container/digest, temp cleanup, Gallery failure, secrets in every message type, active-event-record crash, corrupt/truncated JSONL, bounded paging/retention, delete during playback/replay, isolated replay mutation attempts and share cancellation. Source tests do not satisfy macOS Screen Recording permission, ScreenCaptureKit runtime or physical-device playback/share acceptance. Rollback disables video first, then screenshot/event endpoints independently, and retains existing files for owner-local recovery; it must not expose unredacted recordings over the network.
 
@@ -453,8 +453,8 @@ Acceptance covers macOS permission denied/granted, stale window, full screen/win
 |---|---|---|---|---|
 | Device/routes | Machine grouping/cards, secure credentials, connection mechanisms | Frozen SourcePartition, explicit ordering, full-partition caches | Any screen-local socket-ready decision | Route-as-data-identity and silent signed rebind |
 | Pairing/readiness | Signed identity, pairing, connection bearer, readiness managers/watchdogs | Actor injection and source/generation snapshot | Client-asserted assurance | Open owner access, WS-open-as-ready |
-| Browser/transfer | Root-scoped browser, POSIX safety, transfer engine, HTTP Range/offset, native plugin | Search, canonical checkpoint scope, whole-file digest | Upload-only mutation descriptor | Route-keyed cache authority after migration |
-| Preview/artifact | Opaque artifact IDs, registry, Quick Look/fallback, bounded short lease | Pending ContentRef/ResourceTicket name adapter | Durable raw URL/path assumptions | Any absolute-path exposure |
+| Browser/transfer | Root-scoped browser, POSIX safety, transfer engine, HTTP Range/offset, native plugin | Search, canonical checkpoint scope, whole-file digest | Upload-only mutation descriptor | Route-keyed cache authority or runtime migration |
+| Preview/artifact | Opaque artifact IDs, registry, Quick Look/fallback, bounded short lease | ContentOffer/ContentRef/ContentAccessTicket adapter | Durable raw URL/path assumptions | Any absolute-path exposure |
 | Gallery/media | Existing stores, thumbnails, viewers and Gallery UI | Auth, lineage, paging, retention | Open individual GET/full-list reads/name-based ownership | Base64 large-byte path |
 | Git | Typed git/worktree commands, hunk fingerprints, UI/Cubits | OperationKernel variants, workspace generation, bounded diff reads | Destructive preflight and forced-remove disclosure | Generic shell fallback/automatic remote mutation |
 | Capture | macOS screenshot, Gallery copy, event JSONL/replay | Privacy, state, ScreenCaptureKit video, bounded list/export/delete | Silent broader capture, whole-file/unredacted network read | Implicit recording or replay-to-live mutation |
@@ -477,24 +477,24 @@ Minimum adversarial scenarios across the phase are stale route/source/generation
 ## 18. Integration order and rollback points
 
 1. Bind frozen SourcePartition, AuthenticatedExecutionContext and OperationKernel through adapters; keep all product services read-only initially.
-2. Migrate route-scoped/two-component product caches and checkpoints to confirmed complete SourcePartition scope and prove route switching.
+2. Start Kernel/product data caches empty under the complete SourcePartition; preserve independently valid route preferences but do not import route-keyed/two-component data caches or checkpoints.
 3. Enable browser search, authenticated media paging and preview/artifact ticket renewal.
-4. Enable transfer digest v3 and composer attachment receipt; retain truthful v2 compatibility.
+4. Enable digest-capable file-transfer `FT/3` and `ComposerAttachmentRef`; if the independent existing file-transfer `FT/2` is retained, name and gate it explicitly and never confuse it with Conversation Sync V2.
 5. Register exact manual file mutation variants in OperationKernel and add proof preconditions operation by operation, starting with no-overwrite upload/create and trash before permanent delete.
 6. Register Git mutation variants in OperationKernel, then add repository generation and worktree destructive preflight.
 7. Add capture privacy and event-record finalization/paging/export/delete; then gate ScreenCaptureKit video behind its own native/runtime/device acceptance.
 
 Each step is an independent commit/feature flag and can fall back to the prior read-only surface. No rollback rewrites persistent signed identity, committed user files, Git history or canonical Session Kernel data.
 
-## 19. Remaining root adjudication
+## 19. Root adjudication closure
 
-The following are still open after binding the frozen Phase 1 contracts:
+`05-CONTENT-AND-PRODUCT-OPERATIONS.md` closes the remaining cross-phase questions:
 
-1. Protocol-storage final names and exact schemas for ContentRef, ResourceTicket and composer attachment references, including lineage, renewal, method/range, ETag/digest and revocation fields.
-2. Which typed Product Platform mutation variants/extension registry OperationKernel exposes for transfer landing, manual file mutations, Gallery delete, Git actions and capture lifecycle; the owner, context, RFC 8785 fingerprint and 64 KiB limit are already fixed.
-3. Migration treatment for legacy route-keyed and two-component `(bridgeInstanceId, codexSourceId)` product caches/checkpoints when `bridgeIdentityId` is absent or conflicts. They must remain quarantined rather than merge speculatively.
-4. Whether whole-file SHA-256 is duplicated in the common ResourceTicket or remains transfer-specific; ordinary transfer verification before atomic landing is required either way.
-5. The assurance/confirmation policy per Git mutation (stage, commit, remote action, revert, forced worktree remove). All use OperationKernel; file biometric proof is not implicitly shared.
-6. Whether large Git diff/event-record reads use one common ContentRef-family content-plane mechanism or separate bounded paging contracts; both must keep every control frame within 64 KiB.
+1. The names are `ContentOffer`, finalized durable `ContentRef`, short-lived `ContentAccessTicket` and immutable `ComposerAttachmentRef`.
+2. Product mutations are namespaced sealed variants in the one central operation registry; `OperationKernel` owns their common lifecycle and product services execute admitted effects.
+3. Legacy route-keyed/two-component data caches and checkpoints are `NO_IMPORT / NO_RUNTIME_MIGRATION`; independently valid route preferences may remain product-local.
+4. Required SHA-256 belongs to finalized `ContentRef`; the ticket does not duplicate it.
+5. Git uses the A0–A3 assurance/confirmation matrix and never implicitly borrows the file biometric proof.
+6. Mutable Git/event indexes use generation-scoped bounded paging; stable reusable/export bytes materialize to `ContentRef` and use the common content plane.
 
-Only the ContentRef/ResourceTicket family remains `CANDIDATE_BINDING`. Feature-local protocols may be refined, but they cannot publish a second SourcePartition, execution context, mutation owner, operation fingerprint or operation-state authority.
+All Phase 2 core-facing bindings are therefore frozen at the design level. Exact machine fields remain subject to registry/schema validation, but feature-local protocols cannot publish a second SourcePartition, execution context, mutation owner, operation fingerprint or operation-state authority.

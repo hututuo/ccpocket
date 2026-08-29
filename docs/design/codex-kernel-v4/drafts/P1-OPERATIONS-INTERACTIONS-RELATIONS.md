@@ -66,6 +66,13 @@ No Product Platform module, UI Cubit, transport router, notification handler,
 or feature slot may write canonical timeline, operation state, interaction
 state, settings head, Goal head, or durable relations.
 
+`P1-OPERATION-STATE-MATRIX.csv` therefore records two owners separately:
+`operation_lifecycle_owner` is always `OperationKernel` for a client mutation,
+while `domain_effect_owner` owns the target aggregate and executes only after
+admission. `EXPIRE_INTERACTION` is the sole listed internal transition and has
+no operation lifecycle. `InteractionBroker`, `ThreadSettingsState`,
+`RelationGraph` and Product services never write the operation/dispatch ledger.
+
 ## 3. Identity, actor, and fingerprint
 
 ### 3.1 Stable target identity
@@ -75,13 +82,16 @@ Every operation and durable relation uses:
 ```text
 SourcePartition = (bridgeIdentityId, bridgeInstanceId, codexSourceId)
 ThreadLocator   = (SourcePartition, providerThreadId)
-OperationKey    = (ThreadLocator, operationId)
+OperationKey    = (SourcePartition, operationId)
 ```
 
 `runtimeSessionId`, route, IP, DNS, title, text, wall clock, and array position
-are not components of `ThreadLocator`. An operation that creates a new thread
-uses a source-scoped creation target plus its proven parent locator; after the
-Provider returns a child ID, the result records the child `ThreadLocator`.
+are not components of `ThreadLocator` or `OperationKey`. Every operation also
+stores one schema-validated exact target. Session operations target a
+`ThreadLocator`/Turn/Item/Interaction; Product Platform operations target their
+sealed product descriptor. An operation that creates a new thread uses a
+source-scoped creation target plus its proven parent locator; after the Provider
+returns a child ID, the result records the child `ThreadLocator`.
 
 ### 3.2 Authenticated actor
 
