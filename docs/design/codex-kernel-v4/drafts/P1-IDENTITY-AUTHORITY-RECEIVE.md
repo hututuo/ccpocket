@@ -32,7 +32,7 @@
 | P1-R01 | 一个 Codex Session Kernel，内部 owner 分责 | `KEEP` | 不拆多核心，不增加另一个 timeline DB/runtime | v4 固定方向；P0-12/P1-05 |
 | P1-R02 | Provider durable history 是最终历史事实权威 | `KEEP` | cache 只能保存验证后的 materialization；不能反写 Provider | FIXED_DECISION |
 | P1-R03 | Provider thread/turn/item + runtime fence | `AMEND` | 加入 computer/Bridge identity/Bridge instance/route/Codex source 分层；业务 key 使用完整 source partition | P0-02/K-002/P-001 |
-| P1-R04 | 客户端 `device_id` 参与 interaction claim | `DELETE` | actor 只由 authenticated connection context 注入；payload 中同名字段至多做一致性检查 | P0-03 |
+| P1-R04 | 客户端 `device_id` 参与 interaction claim | `DELETE` | actor 只由 authenticated connection context 注入；reachable payload 中同名/等价字段直接 `ACTOR_FIELD_FORBIDDEN` | P0-03 |
 | P1-R05 | `EvidencePage`、segment、edge、last-good | `KEEP_AND_AMEND` | 把 Provider build/capability/read request/response/coverage/order evidence 变成可持久、可核验字段 | P0-14/P1-01/P1-09/P1-10 |
 | P1-R06 | app-server page 或 rollout reader 可作为 bounded reader | `KEEP_CONDITIONAL` | 每个策略须按精确 build 认证；无安全 reader 时 capability fail closed | E-CODEX-READ-CONTRACT/UNK-002/UNK-012 |
 | P1-R07 | timestamp/body/index fallback item identity | `DELETE` | 无 stable ID 时只建立 read-local structural locator，不能跨 read 合并或连 island | 当前 `sessions-index.ts` / `conversation-content-sync.ts` / `conversation-sync-v2.ts` 弱兜底 |
@@ -510,7 +510,7 @@ DDL/guard 故意失败样本必须证明：cross-source session merge、cross-th
 | FV-ID-01 | 两 route 指向同 signed Bridge/source | UI可归组 routes；data只有一个partition；route记录仍两条 |
 | FV-ID-02 | 同 endpoint 更换 Bridge signing key/instance | handshake mismatch；旧partition不写不清；新partition隔离 |
 | FV-ID-03 | 同 thread ID 出现在两个 CodexSourceId | 两份独立 session/cache/head；任何 global unique/merge失败 |
-| FV-ID-04 | payload 自报另一 paired device ID | `ACTOR_MISMATCH`；server context actor不变 |
+| FV-ID-04 | payload 自报另一 paired device ID | `ACTOR_FIELD_FORBIDDEN`；server context actor不变 |
 | FV-ID-05 | 旧 sourceEpoch frame/ACK/repair token | `STALE_SOURCE_EPOCH`；当前head/checkpoint不动 |
 | FV-RD-01 | catalog cursor重复/不前进/在并发mutation后回卷 | partial+Gap；不标complete；last-good保留 |
 | FV-RD-02 | turn/item无Provider ID，内容和时间与另一turn相同 | 建两个read-local locators；不得dedupe/拼接 |

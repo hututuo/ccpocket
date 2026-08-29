@@ -37,7 +37,7 @@ device acceptance was performed.
 | provider Plan plus CC annotations/product document | `DELETE_REPLACE` | Plan items are timeline facts, collaboration is settings, and ExitPlan is Interaction. No Plan document writer remains. |
 | Side Chat as a user choice among persisted/ephemeral/Fork | `DELETE_REPLACE` | Persisted and ephemeral Side Chat both exist; ordinary Fork is a separate relation type and operation. |
 | subagent custom history surface | `AMEND` | A subagent is a Provider relation to an ordinary child conversation plus source-fenced live lifecycle. Reads/watch remain bounded; no third timeline. |
-| `source_device_id` accepted from business payload | `DELETE_REPLACE` | Actor is injected from authenticated connection context. Payload actor fields, if retained for diagnostics, are equality assertions only. |
+| `source_device_id` accepted from business payload | `DELETE_REPLACE` | Actor is injected from authenticated connection context. Reachable business Schema rejects every payload actor-equivalent field with `ACTOR_FIELD_FORBIDDEN`; diagnostics only records that a forbidden field existed. |
 | `automatic_retry_permitted` boolean | `DELETE_REPLACE` | Replay permission is derived from immutable command-specific evidence; it is never a client flag or manually toggled column. |
 
 ## 2. One Session Kernel, unique internal owners
@@ -147,9 +147,15 @@ Each mutation has a generated `fingerprintVersion` and a typed canonicalizer.
 The digest input is:
 
 ```text
-mutation kind + schema version + ThreadLocator or creation target
+OperationKey + mutation kind + schema version
++ exact schema-validated typed target
 + semantic payload + semantic preconditions
 ```
+
+`ThreadLocator` is one target variant, not a mandatory wrapper. Product
+operations use their sealed file/Git/gallery/capture/connectivity target;
+omitting any target subkind, object generation, revision or destructive mode
+from the fingerprint is a contract failure.
 
 Excluded fields are transport timestamp, request trace, route, UI label, retry
 counter, and connection epoch. Canonical bytes use RFC 8785 JSON Canonicalization
@@ -671,7 +677,7 @@ The integrated DDL test must reject:
 | `packages/bridge/src/websocket.ts` `case "input"`, queue cases, `forkCodexSession`, durable settings/Goal handlers | giant router coordinates admission, history append, Provider call, settings, Goal, fork | retain transport/auth validation; dispatch to typed application services |
 | `packages/bridge/src/codex-process.ts` (`sendInputStructured`, `steer*`, `compactThread`, `forkThreadById`, Goal/settings RPCs) | real Provider adapter and build-specific behavior | retain behind finite typed provider adapter; it cannot decide Bridge operation success or Mobile projection |
 | `packages/bridge/src/codex-action-broker*.ts` | durable identity-only claims and response ambiguity already exist | retain useful generation/claim evidence; replace client `claimantId` with authenticated context and converge states with Interaction contract |
-| `packages/bridge/src/local-features/slots/codex-action-broker-protocol.ts` | `respond_codex_action` accepts payload `claimantId` | delete as authority; optional echoed ID is equality check only |
+| `packages/bridge/src/local-features/slots/codex-action-broker-protocol.ts` | `respond_codex_action` accepts payload `claimantId` | delete the field and reject it in reachable Schema; actor comes only from authenticated context |
 | `packages/bridge/src/codex-goal-controller.ts` | Provider-backed per-session serialization and semantic conflict checks | adapt to source-scoped GoalStatePort plus operation ledger/readback |
 | `packages/bridge/src/local-features/codex-core-actions.ts` | compact/review have typed feature messages but only in-memory active set and request result | port each mutation to operation admission/barrier; keep MCP status read outside mutation lane |
 | `packages/bridge/src/local-features/{persisted-side-chat,ephemeral-side-chat,subagents}.ts` | both Side Chat modes and bounded subagent reads exist | preserve product effects; publish through RelationGraph, not a second protocol/history core |

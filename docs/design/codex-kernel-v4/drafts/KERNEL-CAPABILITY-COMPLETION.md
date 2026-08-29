@@ -9,7 +9,7 @@
 - 设计载体起点：`6f659ad7534b28cd1aac299e4a5da5cf4ec48ea7`。
 - 当前源码事实仍绑定 `main@a706200233c55cc82d7a17e433f80f132d0f280d`、tree `ac85f620445151f45eda856f55f4b96ee442f41a`；本轮只静态确认 donor source/test 路径存在，不把源码存在写成运行时证明。
 - `SourcePartition` 永远是 `(bridgeIdentityId, bridgeInstanceId, codexSourceId)`；route、IP、URL、标题、正文、时间、runtime session ID 都不是数据身份。
-- actor 只由 Bridge authenticated connection context 注入。任何业务 payload 中的 `actor/deviceId/claimantId` 都没有授权力。
+- actor 只由 Bridge authenticated connection context 以 paired/API-key/open discriminated union 注入。任何业务 payload 中的 `actor/deviceId/claimantId/authenticationStrength` 都以 `ACTOR_FIELD_FORBIDDEN` 拒绝。
 - Provider durable history 是历史事实权威。Provider thread-history refresh 是 bounded durable read，必须走 evidence → candidate → verification → `CanonicalTimelineWriter`；catalog refresh 同样经验证但由 `ConversationCatalogWriter` 提交。二者都不是 live producer。
 - operation admission、fingerprint、lane、dispatch barrier、terminal 和 reconcile 只归 `OperationKernel`。`OUTCOME_UNKNOWN` 永不自动重发。
 - Bridge timeline 只有 `CanonicalTimelineWriter`；Mobile replica 只有 `ReplicaApplyCoordinator`。UI、feature handler、observer、resource service、diagnostics 和 transport 都不能成为第二 writer。

@@ -87,6 +87,23 @@ ProductPlatform mutation 使用与 Session Kernel mutation 相同的 `OperationH
 
 暂停/恢复 transfer、选择本地 route、编辑 Mobile preference 等纯本地且可逆的动作可以是 feature-local state transition；一旦请求 Bridge 执行有副作用的动作，就必须使用 registry 中的 typed operation。
 
+variant 也不能用内部 string/map 吞掉不同危险语义。至少冻结以下 sealed subkind 与 cross-field constraints：
+
+| Variant | Sealed subkind | 必需约束 |
+|---|---|---|
+| `FILE_CREATE` | `EMPTY_FILE`, `DIRECTORY` | parent identity/revision、validated basename、expected absence；不得携带 content bytes |
+| `TRANSFER_LAND_FINALIZE` | `NEW_FILE`, `COMPOSER_ATTACHMENT`, `GALLERY_IMPORT` | exact Offer/transfer receipt、destination parent、effectiveName、expected absence、digest/size；只接收 finalized FT/3 |
+| `FILE_WRITE` | `REPLACE_WHOLE`, `APPEND` | exact file identity/revision、expected size/digest；不支持的 range/patch mode 不能落入 extension map |
+| `FILE_MOVE` | `RENAME_SAME_PARENT`, `MOVE_TO_PARENT` | source identity、source parent revision、target parent revision/name/absence；跨 volume policy 明示 |
+| `FILE_TRASH` / `FILE_DELETE_PERMANENT` | 无 generic mode | exact identity/revision；permanent delete 必须 A3 exact proof |
+| `GIT_STAGE` / `GIT_UNSTAGE` | `FILE`, `HUNK` | repo generation、path、index/worktree generation；HUNK 必带 stale hunk evidence |
+| `GIT_REVERT` | `FILE`, `HUNK`, `ALL_TRACKED`, `ALL_WITH_UNTRACKED` | destructive tier随 scope 提升；`ALL_WITH_UNTRACKED` 明确列举即将删除的 untracked set |
+| `WORKTREE_REMOVE` | `NORMAL`, `FORCE` | exact worktree identity、dirty/locked/branch facts；FORCE 为 A3 |
+| `VIDEO_RECORDING_START` | target=`DISPLAY|WINDOW`; audio=`NONE|MIC|SYSTEM|MIC_AND_SYSTEM` | target generation、permission snapshot、duration/byte budget、显式 audio consent |
+| `CAPTURE_EXPORT` | `ORIGINAL`, `REDACTED_EVENT_ARCHIVE` | finalized ContentRef、redaction policy revision、destination/recipient disclosure |
+
+Schema 使用 `oneOf + const` 使互斥字段不能并存；fingerprint 覆盖 subkind 和全部有效 precondition。未来增加 subkind 是 protocol/ADR 变更，不是在 executor 加默认分支。
+
 ## 4. assurance 与确认
 
 | Tier | 动作 | 默认 UX | step-up |
