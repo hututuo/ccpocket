@@ -8,7 +8,8 @@
 
 - 默认保留现有用户效果和现有 Dart/Swift/service/test 模块；只有 owner 错误、不安全边界、Claude 可达性或无法验收的回调所有权才 `ADAPT/REWRITE/DELETE`。
 - 通知、后台、权限、更新、商业支持、图标、翻译、native callback、动效和 cache UI 都是 Product Platform/UI 状态，不进入 Session Kernel。
-- Phase 2 只消费 Phase 1 接受后的最小语义接缝，不自行重开核心：post-commit projection、exact Interaction revalidation、durable cursor/foreground repair、local composer ingress、native lifecycle fence、K-015 authoritative settings mutation/ACK、protected local-state namespace。
+- Session Kernel 是唯一的会话语义 owner。P-024 native lifecycle/capability 属于 `ProductPlatform/Mobile shared host`，P-026 namespace registry 属于 `Mobile shared host/local-state owners`；二者都不是第二个 Session Kernel core。P-025 的 authoritative effort 归 Session Kernel `ThreadState/settings`，fire/status motion 只归 Product UI 展示。
+- Phase 2 只消费已接受的 Session Kernel 最小接缝（post-commit projection、exact InteractionBroker revalidation、durable cursor/foreground repair、local composer ingress、K-015 settings mutation/ACK），并定义 P-024/P-026 的 product shared-host contracts；feature 不自行建立第二 owner。
 - 通知是 committed fact 的投影，不是 conversation fact；通知送达、点击、系统权限、APNs token、位置租约、RevenueCat entitlement、选中图标、译文和动画帧都不得成为 canonical history。
 - installed source、Bridge build/deploy、Mobile build、base IPA、签名安装、真机行为、owner patch 和 stable promotion 是独立门禁。设置页不得把它们压成一个 “updated” 布尔值。
 - `stable` 是默认更新通道。owner 只用于本地 owner 设备。应用内没有 stable 发布/晋级动作；stable 仍需用户当次明确授权和发布脚本的 `--confirm-stable`。
@@ -28,25 +29,34 @@
 | P-021 | review/banner/licenses/changelog/auth help 已存在；Changelog 目前依赖网络 | `ADAPT` | ShellServices |
 | P-022 | Explore/Setup/QR/Settings/Debug 等已存在，但 router、workspace、resume/new-session 仍有大量 Claude 可达路径 | `REWRITE + DELETE` | Product router；Claude 仅 internal seam |
 | P-023 | en/zh/ja/ko 四份 ARB 各 1,199 keys 且 key 集相同；Apple Translation host 尚不存在 | `KEEP fixed l10n + ADAPT optional translation` | Localization + narrow NativeTranslationPort |
-| P-024 | MobileHostSnapshot schema v1 有 18 个 capability，但没有统一 lifecycle epoch；fence 散落在 plugin generation/runId | `ADAPT` | NativeCapabilityHost + 独立 plugin adapters |
-| P-025 | authoritative effort 调用链、固定 72×6 fire、ACK rollback、GPL 归属和测试均存在 | `KEEP + ADAPT` | K-015 settings owner + presentation-only motion |
-| P-026 | cache UI 可清 catalog/source/conversation，完整副本另删；尚无统一 protected namespace registry | `ADAPT + narrow REWRITE` | LocalStateNamespaceManager + existing stores |
+| P-024 | MobileHostSnapshot schema v1 有 18 个 capability，但没有统一 lifecycle epoch；fence 散落在 plugin generation/runId | `ADAPT` | ProductPlatform/Mobile NativeCapabilityHost + 独立 plugin adapters |
+| P-025 | authoritative effort 调用链、固定 72×6 fire、ACK rollback、GPL 归属和测试均存在 | `KEEP + ADAPT` | Session Kernel ThreadState/settings owner + presentation-only motion |
+| P-026 | cache UI 可清 catalog/source/conversation，完整副本另删；尚无统一 protected namespace registry | `ADAPT + narrow REWRITE` | Mobile shared-host LocalStateNamespaceManager + existing stores |
 
-## 3. 只消费的 Phase 1 接缝
+## 3. 依赖合同与唯一 owner
 
-最终类型名由 root 与 Phase 1 草案统一；本稿只绑定以下语义，不能用相似的 feature-local 第二实现替代。
+最终类型名由 root 与 Phase 1 草案统一；本稿只绑定以下语义，不能用相似的 feature-local 第二实现替代。全篇 `SourcePartition` 固定为 `(bridgeIdentityId, bridgeInstanceId, codexSourceId)`；`threadId` 另列。`actor` 只从当前认证连接/会话上下文取得，绝不信任 notification payload、route、缓存或 native callback 自报的 actor。
+
+### 3.1 Session Kernel / ThreadState 接缝
 
 | 接缝 | 消费者 | 调用方向 | Phase 2 只需要的语义 | 明确不进入接口 |
 |---|---|---|---|---|
-| S-05 post-commit projection | P-014、P-025 status/insights | Kernel/Repository → feature | source/thread、committed event id/revision、typed event、occurredAt、redacted presentation metadata | APNs token、OS delivery、banner、动画、译文 |
-| exact Interaction revalidation | P-014 notification action | feature → Interaction owner | authenticated connection actor、source/thread/turn/request、authority epoch、allowed action、claim/result | notification payload 自报 authority、系统 action delivery 状态 |
-| durable cursor + foreground repair | P-015 | feature → Repository/read owner | source epoch、已有 cursor/coverage、deadline/cancel、bounded delta、repair result | location、battery、entitlement、后台永久 socket |
+| S-05 post-commit projection | P-014、P-025 status/insights | Session Kernel Repository → feature | SourcePartition、thread、committed event id/revision、typed event、occurredAt、redacted presentation metadata | APNs token、OS delivery、banner、动画、译文 |
+| exact InteractionBroker revalidation | P-014 notification action | feature → Session Kernel InteractionBroker | authenticated-context actor、SourcePartition/thread/turn/interaction、variant、authority epoch、allowedActions、claim/result | notification payload 自报 actor/authority、系统 action delivery 状态 |
+| durable cursor + foreground repair | P-015 | feature → Session Kernel Repository/read owner | SourcePartition/source epoch、已有 cursor/coverage、deadline/cancel、bounded delta、repair result | location、battery、entitlement、后台永久 socket |
 | S-09 local composer ingress | P-018 | speech feature → composer owner | draft revision、replace range、partial/final/cancel、result | audio、recognizer object、自动 send/operation |
-| P-024 lifecycle/capability fence | P-014–P-019、P-023–P-024 | Dart ↔ native adapter | capability id/version、host epoch、lifecycle epoch、request id、terminal callback key | 万能 raw method map、OS object、actor/identity |
-| K-015 settings mutation | P-025 | UI → settings owner → Provider | target source/thread、settings revision、model support、effort、next-turn timing、mutation id、ACK/conflict/rollback | thumb position、fire grid、FPS、palette |
-| P-026 namespace protection | P-026 | cache UI → local-state owners | namespace id/classification、source partition、clear epoch、atomic result/readback | arbitrary path/glob、generic clear-all、canonical history delete |
+| K-015 settings mutation | P-025 | UI → Session Kernel ThreadState/settings owner → Provider | target SourcePartition/thread、settings revision、model support、effort、next-turn timing、mutation id、ACK/conflict/rollback | thumb position、fire grid、FPS、palette |
 
-若上述接缝在 Phase 1 接受稿缺失，本稿产生的是 `MINIMAL_CORE_AMENDMENT_REQUEST`，而不是在 notification/background/cache 调用点自行补 owner。
+若上述 Session Kernel 接缝在 Phase 1 接受稿缺失，本稿产生的是 `MINIMAL_CORE_AMENDMENT_REQUEST`，而不是在 notification/background/voice/effort 调用点自行补 owner。
+
+### 3.2 ProductPlatform / Mobile shared-host contracts
+
+| 合同 | 消费者 | 唯一 owner | 语义 | 禁止 |
+|---|---|---|---|---|
+| P-024 lifecycle/capability fence | P-014–P-019、P-023–P-024 | ProductPlatform/Mobile native host | capability id/version、host epoch、lifecycle epoch、request id、terminal callback key | Session Kernel ownership、万能 raw method map、OS object、actor/identity |
+| P-026 namespace protection | P-026 | Mobile shared host + 各 local-state owner | namespace id/classification、可选 SourcePartition、clear epoch、atomic result/readback | Session Kernel ownership、arbitrary path/glob、generic clear-all、canonical history delete |
+
+shared-host contract 缺失时只提交 product-platform amendment；不得把 host lifecycle、cache registry 或 clear epoch 塞进 Session Kernel。
 
 ## 4. 跨能力宿主规则
 
@@ -109,13 +119,24 @@ feature error 至少保留：`unsupported`、`requires_base_app_update`、`permi
 
 ### 5.2 投影、去重、unread 与动作
 
-- event inventory 固定为 `approval_required`、`ask_user_question`、`session_completed`、`session_failed`、`session_progress`。未知 future event 默认不订阅，critical event 需独立版本/偏好后才开启。
+- presentation inventory 保留 completed/failed/progress，并把 action-required 视为 committed InteractionBroker 投影。现有 `approval_required`、`ask_user_question` label 只是已实现别名，不是 broker variant 的封闭列表；target typed mapping 必须覆盖 `approval`、`question`、`mcp_elicitation`、`exit_plan`。未知 future event 不订阅；未知 Interaction variant fail closed：不显示 OS action button、不 claim/提交结果，但保留 needs-you/unread 和打开 App 的安全入口。
 - projector 只读消费已提交 typed event；progress 只能来自变更后的 tool stage，维持 45 s/session rate limit。
 - 沿用当前 bounded hints：256 sessions、128 permission ids/session、2,048 Codex action request ids。eviction 最坏只允许一次后续重复，不能丢 conversation fact。
 - `deliveryId` 只做 notification delivery ACK/dedupe。OS 显示失败不 ACK；Bridge 断线后不盲目循环显示。推送 relay 在没有 server-side delivery dedupe 前保持 at-most-once retry 语义。
 - unread 完全由 committed assistant output/read watermark 决定。notification delivered/opened/dismissed 不创建或清除 unread；点击进入 exact thread 后，正常可见/ack 流程才推进 watermark。
-- notification action payload 只是 lookup hint。打开后必须重新取得当前 source/thread/turn pending Interaction/CAB snapshot，核对 authenticated actor、authority epoch、allowed action 和 claim。已解决/过期/换 source 显示 “已处理或不再可用”，绝不重放旧 approve/reject。
-- native cold-launch action queue 按 `(source, thread, request, decision)` latest-only 去重；Dart ready 后仍要执行上一条 revalidation。队列有界，超界丢最旧并只留诊断，不自动批准。
+- notification action payload 只是 `{SourcePartition, threadId, turnId, interactionId, interactionVariant, actionId}` lookup hint，不含可信 actor/authority。打开后必须从当前认证上下文取得 actor，重新读取 InteractionBroker snapshot，核对完整 SourcePartition、variant、authority epoch、allowedActions、claim 与当前 schema/revision。已解决、过期、换 partition、variant/action 不匹配均显示 “已处理或不再可用”，绝不重放旧结果。
+
+| InteractionBroker variant | typed action adapter | fail-closed fence |
+|---|---|---|
+| approval | 只提交 broker 当前 `allowedActions` 中的 approve/reject 类 action | tool/request/authority epoch 任一变化即 stale |
+| question | 按当前 question schema/option ids 提交 typed answer | 旧 option、旧 schema revision 或自由文本不合法即拒绝 |
+| MCP elicitation | 按当前 elicitation schema 提交 typed response/cancel | 不接受 notification payload 自带 form/schema/actor |
+| ExitPlan | 只转发 broker 当前公开的 typed plan response action | 不把通用 approve/reject 猜成 ExitPlan 语义 |
+| unknown | 无 action adapter | 无按钮、无 claim、无 fallback generic submit |
+
+native action host 只负责回传 opaque lookup hint，不解释 broker 语义。若当前 `notificationApprovalActions:2` payload/category 无法无损携带 `interactionVariant/actionId`，必须经 P-024 增加独立 capability 或 API version 并走新 base IPA；旧 host 对 question/MCP elicitation/ExitPlan 只显示 “Open App”，不得把它们降格成 approval。
+
+- native cold-launch action queue 按 `(SourcePartition, threadId, interactionId, actionId)` latest-only 去重；Dart ready 后仍要执行上一条 broker revalidation。队列有界，超界丢最旧并只留诊断，绝不自动提交 Interaction。
 
 ### 5.3 存储、隐私、生命周期
 
@@ -125,8 +146,8 @@ feature error 至少保留：`unsupported`、`requires_base_app_update`、`permi
 
 ### 5.4 验收与回退
 
-- Bridge projector tests：五 event、45 s rate、privacy、bounded dedupe、legacy token subscription、late Interaction。
-- Dart tests：偏好默认、当前会话抑制、本地 permission user gesture、malformed payload、source mismatch、duplicate action。
+- Bridge projector tests：completion/failure/progress、四种 Interaction variant、unknown variant fail closed、45 s rate、privacy、bounded dedupe、legacy token subscription、late Interaction。
+- Dart tests：偏好默认、当前会话抑制、本地 permission user gesture、malformed payload、SourcePartition/actor mismatch、四 variant typed adapter、unknown/duplicate action。
 - XCTest：cold/warm action queue、host epoch replacement、duplicate terminal callback。
 - 真机：本地通知；final re-signed IPA 的 entitlement/profile、APNs registration、真实 push。dummy Firebase 只允许标 `REMOTE_NOT_AVAILABLE`。
 - 回退：关闭 notification adapters/capability 后保留 unread、chat 和 foreground catch-up；不得回退成 notification writer 或 background full sync。
@@ -352,6 +373,8 @@ translation cache key 为 `(sha256(sourceText), sourceLanguage, targetLanguage, 
 
 ### 15.1 Snapshot 与 plugin inventory
 
+P-024 是 ProductPlatform/Mobile shared native-host contract，只管理 compiled platform capability 与 callback lifecycle；它不拥有 thread、event、Interaction、settings 或 source identity，也不是 Session Kernel 子核心。
+
 保留 schema v1 的严格 parse bounds（最多 64 capabilities，id 1–64 ASCII alnum，version 1–1000，probe 2 s），schema v2 additive 增加 host/lifecycle epoch。当前 iOS capability 事实包括 permissionHost 3、fileTransfer 2、quickLook/share/notifications/speech/webView/secureStorage/database/clipboard/dragDrop/photoLibrary/biometrics/fileMutationBiometricAuth/backgroundContinuation/backgroundRefreshWarmRuntime/backgroundLocationKeepAlive 1、notificationApprovalActions 2。未来 translation 独立加 `systemTranslation:1`。
 
 snapshot 只说明 compiled host 能力；permission granted、APS provisioning、Firebase real config、RevenueCat offering、Bridge capability 和当前 OS resource state 必须各自 readback，不能由 snapshot 推断。
@@ -375,7 +398,7 @@ AppDelegate/engine rebind 创建新 host epoch并注入各 plugin context。每�
 
 必验六档为 `low/medium/high/xhigh/max/ultra`。`none/minimal` 只在 model catalog 明确广告时保留为兼容选择；future unknown effort 可显示 raw read-only，不得误标成 High。可选档位来自 authoritative `session_list/model/list` catalog，不由 slider invent。
 
-选择请求携带 source/thread、settings revision、model、effort、target=`next_turn`、mutation id/epoch；保持 speed/service tier/sandbox/permission/collaboration 等非目标字段。当前 turn 不声称被改。外部 Desktop owner 活跃且无可写 authority 时 fail closed `settings_owned_elsewhere`。
+选择请求携带 SourcePartition/thread、settings revision、model、effort、target=`next_turn`、mutation id/epoch；保持 speed/service tier/sandbox/permission/collaboration 等非目标字段。当前 turn 不声称被改。唯一 authoritative owner 是 Session Kernel ThreadState/settings；外部 Desktop owner 活跃且无可写 authority 时 fail closed `settings_owned_elsewhere`。
 
 UI 可以显示 `pending effort`，但 provider/Bridge authoritative ACK 才替换 committed setting。ACK 必须匹配 mutation/source epoch；late ACK 只能更新下一次 rollback base，不能覆盖更晚 pending mutation。rejected、unsupported tier、conflict、disconnect-before-admission 回到最后 authoritative projection；`OUTCOME_UNKNOWN` 先 read-only reconcile，不盲重发。
 
@@ -417,7 +440,9 @@ Painter/animation 不得推断 working、effort、quota 或 write session state�
 
 ### 17.1 Namespace registry
 
-Settings → Storage & Cache 不再调用 `clearAll/path glob`。每个 owner 注册 typed descriptor：
+P-026 是 Mobile shared host 与各 local-state owner 的保护合同，不拥有 Session Kernel 事实；registry 只分类/路由 clear，不能成为 conversation data owner。
+
+Settings → Storage & Cache 不再调用 `clearAll/path glob`。每个 owner 注册 typed descriptor；`sourcePartition` 若存在，严格使用 `(bridgeIdentityId, bridgeInstanceId, codexSourceId)`：
 
 ```text
 LocalStateNamespaceDescriptor {
@@ -459,13 +484,13 @@ clear 请求为 `{namespaceId, sourcePartition?, expectedClearEpoch, requestId}`
 - fault injection：clear 中 crash/rollback、concurrent writer、late callback、source switch、restart/readback、low space。
 - survival matrix：draft、pending submission、offline queue、credentials、settings、read watermark、transfer checkpoint/partial 均 byte-for-byte/semantic survive。
 - full-copy delete 单独 confirm，删除失败保留 metadata/retry；普通 clear 后 full copies仍可打开。
-- 回退 cache UI/action 时保留 Phase 1 protected namespace contract；绝不恢复 destructive broad clear。
+- 回退 cache UI/action 时保留 Mobile shared-host protected namespace contract；绝不恢复 destructive broad clear，也不把 registry 下沉到 Session Kernel。
 
 ## 18. 兼容矩阵
 
 | 组合 | 行为 |
 |---|---|
-| new Dart + old native host | 每项 missing capability fail closed；固定 l10n、core chat 可用；translation/epoch-dependent action 隐藏 |
+| new Dart + old native host | 每项 missing capability fail closed；固定 l10n、core chat 可用；translation/epoch-dependent action 隐藏；无法 typed 携带的 question/MCP elicitation/ExitPlan notification 只 Open App |
 | old Dart + new native host | 新 plugin dormant；旧 method 保持兼容；native 不主动 prompt |
 | new Mobile + old Bridge | notification-only/action/cursor capability 缺失时降级 local/in-app/foreground repair；不发 unknown wire |
 | old Mobile + new Bridge | Bridge 只按 advertised capability 发旧流；不把 progress/notification action 自动开启 |
@@ -494,7 +519,7 @@ clear 请求为 `{namespaceId, sourcePartition?, expectedClearEpoch, requestId}`
 
 ## 20. 建议实施与回退顺序
 
-1. 先集成 accepted Phase 1 seams 与 product-level type adapters；没有接口则提交最小 amendment request。
+1. 先集成 accepted Session Kernel seams 与 ProductPlatform/Mobile shared-host type adapters；缺 Kernel 接口提交最小 core amendment，缺 P-024/P-026 提交 product-platform amendment。
 2. native host epoch/conformance先行，但每个 plugin commit 独立；新 base IPA 只在用户授权的 release task 处理。
 3. notification/background/permission 分三组实现，notification-only location 独立可关闭。
 4. update、voice、icon、Supporter、shell、localization 分离提交；Claude unreachable 是独立 deletion/rewrite commit。
