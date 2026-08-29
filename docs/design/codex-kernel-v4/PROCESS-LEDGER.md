@@ -36,6 +36,7 @@
 | R00 | 一次完成两个累计设计阶段；Phase 2 复用 Phase 1 语义和窄接口，不建立第二套架构 | STATIC_VERIFIED | `03-CUMULATIVE-DESIGN-AND-FREEZE-GATES.md`; `git diff --check` | `fc850e00` |
 | R01 | 集成实施、验证、迁移与逐 feature cutover 草案 | DRAFTED | source `codex/v4-design-implementation-validation-20260830@bb82d659`; integration `32389376`; 3 files/537 lines; source branch clean | `83f78cfb` |
 | R02 | 集成 Phase 1 identity/receive 草案并关闭 root identity/live owner 问题 | DRAFTED | source `codex/v4-design-p1-identity-read-20260830@0cd9bbeb`; integration `9d524919`; CSV 37×22 parse/no blanks; `git diff --check` | `3af1e030` |
+| R03 | 集成 52 项 current-source reuse/disposition 事实表 | DRAFTED | source `codex/v4-design-source-reuse-20260830@c3b3dcc9`; integration `76aabf65`; 52×9 parse/no missing paths; root CodeGraph structural cross-check | `10134dec` |
 
 R01 复核发现：草案沿用了原提案 `P-001…P-027` 表示 Provider probe，同时 Phase 2 又用 `P-001…P-026` 表示产品能力，存在 ID 冲突；最终集成必须把前者迁移到独立 `E-CODEX-*` 实验 ID。`design` 状态也必须在最终包改为 `USER_REVIEW_PENDING`，不能继续写成 `NOT_RUN`。该问题保留在账本中，不能用后续通过结果覆盖。
 

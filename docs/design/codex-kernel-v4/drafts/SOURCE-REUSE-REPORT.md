@@ -16,7 +16,7 @@ Evidence levels in the CSV are deliberately uniform:
 
 - `E2_STATIC_RG_TEST_PATHS` means the current path and representative test paths exist and the named symbols/seams were checked with `rg`; tests were not executed.
 - `E3_STATIC_RG_TEST_PATHS_NATIVE` means the same static evidence also includes a native host file.
-- `CODEGRAPH_UNAVAILABLE` means the target project was not indexed and the CodeGraph call returned no project index. The package's CodeGraph map remains a structural reference only.
+- `CODEGRAPH_UNAVAILABLE` 只描述该 Luna worker 的隔离 worktree 没有可用 index；根 Agent 随后在当前仓库索引上复核了 receive/send/product composition 热点。两者都只是静态结构证据，不能替代 compiler、Provider/SQLite 实验、runtime route、UI 或 device 验收。
 - `RUNTIME_NOT_RUN` means there is no live-process, provider, database, Flutter, simulator, device, or native runtime claim in this audit.
 
 The CSV map-path check was run in the target worktree with Ruby `CSV`: every current Bridge, Mobile, native, and representative-test path in `CAPABILITY-CURRENT-TO-TARGET-MAP.csv` resolved to an existing filesystem path. The same parser verified 52 data rows, nine fields per row, and only allowed disposition values. `git diff --check` is a required final gate after these two draft files are committed.
@@ -84,8 +84,8 @@ These are explicit reconciliation points, not decisions made by this worker:
 | Current-map path existence | PASS | 0 missing Bridge/Mobile/native/test paths |
 | CSV parse/shape | PASS | Ruby CSV parsed 52 rows, 9 fields, allowed dispositions |
 | Source/static symbol audit | PASS | Target checkout searched with `rg`; representative seams recorded |
-| CodeGraph | NOT_AVAILABLE | Target project not indexed; package map treated as structural reference only |
-| `git diff --check` | NOT_RUN | Must run after final report edits, before commit |
+| CodeGraph | ROOT_STRUCTURAL_CROSSCHECK / WORKER_NOT_AVAILABLE | 根 Agent 已查询当前仓库；worker worktree 无 index；均不作正确性门禁 |
+| `git diff --check` | PASS | source commit `c3b3dcc9eb1d98ddc33c2a899d5f40a319213637` and root integration check |
 | Bridge/provider runtime | NOT_RUN | Explicit task boundary; no service or port 8765 |
 | Flutter/native/device/E2E | NOT_RUN | Explicit task boundary |
 | Build/release/install/publish | NOT_RUN | Explicit task boundary |
