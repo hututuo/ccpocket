@@ -39,6 +39,7 @@
 | R03 | 集成 52 项 current-source reuse/disposition 事实表 | DRAFTED | source `codex/v4-design-source-reuse-20260830@c3b3dcc9`; integration `76aabf65`; 52×9 parse/no missing paths; root CodeGraph structural cross-check | `10134dec` |
 | R04 | 集成 Phase 1 operation/interaction/settings/Goal/relation 草案并去重合同 | DRAFTED | source `codex/v4-design-p1-operations-20260830@e1c8dbf2`; integration `331e7ea0`; root 38×23 parse/no blanks; `git diff --check` | `fc8f5b18` |
 | R05 | 集成 112 行 pre-integration 审查/需求/实验 closure 基线 | DRAFTED | source `codex/v4-design-audit-coverage-20260830@49482abf`; integration `69a2066b`; 112×9/unique/no blanks; 23/23 artifact refs | `28769262` |
+| R06 | 收口 9 项历史用户决定，区分 7 项待审与 2 项已固定 | STATIC_VERIFIED | `matrices/USER-DECISION-REQUIRED.csv`; 9×8/unique/no blanks; U-008/U-009 user-fixed | `819d48a8` |
 
 R01 复核发现：草案沿用了原提案 `P-001…P-027` 表示 Provider probe，同时 Phase 2 又用 `P-001…P-026` 表示产品能力，存在 ID 冲突；最终集成必须把前者迁移到独立 `E-CODEX-*` 实验 ID。`design` 状态也必须在最终包改为 `USER_REVIEW_PENDING`，不能继续写成 `NOT_RUN`。该问题保留在账本中，不能用后续通过结果覆盖。
 

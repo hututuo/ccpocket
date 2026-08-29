@@ -31,5 +31,6 @@
 
 ## 当前仍需用户裁决
 
-只保留 v4 中 U-001–U-009 的真实产品取舍。任何新取舍必须进入 `USER_DECISION_REQUIRED`，不得由设计 Agent 默认为永久合同。
+U-001–U-007 仍是会改变体验、安全、容量或发布策略的真实产品取舍；详见 `matrices/USER-DECISION-REQUIRED.csv`。设计给出安全推荐但不冒充用户决定。
 
+U-008 已按用户最新要求关闭为默认 `NO_IMPORT`；U-009 已关闭为 Claude private/unregistered `NOT_IMPLEMENTED` seam，不新增 cloud core。任何新取舍必须进入 `USER_DECISION_REQUIRED`，不得由设计 Agent 默认为永久合同。
