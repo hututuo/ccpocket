@@ -215,3 +215,22 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   column gate 与 `(providerTurnId,itemOrdinal)` 唯一/跨页校验。worker 正在修订并复看，当前不集成。
 - 上述均是 pre-integration review，不改变根分支已通过的 K00 工具测试，也不把 worker 测试写成
   Bridge/Mobile runtime PASS。没有运行 Provider、产品 DB、8765/8766、simulator 或发布动作。
+
+## 10. 2026-08-30 K02 稳定身份与私有状态集成
+
+- identity worker 的首次实现 `507a237d` 与 lifecycle 加固 `b53f6074` 在根分支分别重放为
+  `663d62e4`、`ee836cd5`，保留两个独立回退点。它建立持久 Ed25519 `bridgeIdentityId`、独立
+  `bridgeInstanceId`，以及只保存 locator digest 的 Codex source registry；route、IP、path 和原始
+  locator 不成为 identity，也不写入 registry。
+- 首次复核发现 crash 后 lock 永久残留及 close/fsync 生命周期缺口后，没有覆盖失败记录；第二笔
+  提交改为 bounded private owner metadata、dead-PID+grace reclaim、claim/tombstone、token+inode
+  所有权检查，live/unknown/corrupt owner fail closed；POSIX 强制 directory fsync，Windows 仅容忍
+  明确不支持的 errno；`close()` 共享完成 Promise、等待已启动 mutation 并拒绝未启动队列。
+- 根环境用固定 Node `22.23.1` 复跑三个 identity focused files：3 files / 27 tests PASS；`mise`
+  对无关 Shorebird registry 发出既有 warning，但命令 exit 0。完整 Bridge `tsc --noEmit` PASS；
+  默认 Node `26.4.0` 完整 Bridge Vitest 为 46 files / 1,145 tests PASS。该 full PASS 仍不是后续
+  persistent store 的固定 Node 22 ABI 门禁。
+- identity 目前只作为未接 composition 的 authority module；authenticated connection、Provider
+  process epoch、wire welcome 和 Mobile binding 仍未接入，故 K02 继续 `IN_PROGRESS`。
+- 本次没有打开产品 state/DB，没有启动 Bridge/Provider/端口/simulator，也没有 merge、push、
+  部署、发布、OTA、stable 或真机安装。
