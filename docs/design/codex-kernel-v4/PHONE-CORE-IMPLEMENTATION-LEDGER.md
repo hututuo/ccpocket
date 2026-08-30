@@ -251,3 +251,15 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   active Registry、Bridge/Mobile 和 runtime test 实现。
 - 正式 derived outputs 继续 `NOT_GENERATED`；本节没有运行 Provider、DB、端口、Mobile、simulator
   或任何发布动作。
+
+## 12. 2026-08-30 图片 ingress 实现形态修订
+
+- 第 11 节记录的 `e615860c` 仍保留为设计历史，但其中 WebSocket chunk 形态已标记
+  `SUPERSEDED`。根复核现有 bounded HTTP PUT transport 素材后，以 `eb8d28fa` 收敛为双平面窄接口：
+  WebSocket 只做 typed `message_image.prepare/commit`，exact image bytes 通过 actor/source/upload/
+  method/length/expiry 绑定的短期 HTTP PUT ticket 流式上传。
+- 该修订避免 Base64 与 chunk 状态进入核心 JSON wire，也不引入 destination path、overwrite policy
+  或 legacy file-finalize authority；只有 commit 重算长度和 SHA-256 后生成的 ContentRef 才能进入
+  TurnInput/OperationKernel。它保留单图 10 MiB、单 turn 5 图的当前产品边界。
+- Registry、Bridge image content store、Mobile transport 接线和 crash/reconcile tests 均仍
+  `NOT_IMPLEMENTED / NOT_RUN`；本节仅关闭实施前的协议形态冲突。
