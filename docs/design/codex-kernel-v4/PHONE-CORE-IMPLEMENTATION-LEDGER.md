@@ -263,3 +263,18 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   TurnInput/OperationKernel。它保留单图 10 MiB、单 turn 5 图的当前产品边界。
 - Registry、Bridge image content store、Mobile transport 接线和 crash/reconcile tests 均仍
   `NOT_IMPLEMENTED / NOT_RUN`；本节仅关闭实施前的协议形态冲突。
+
+## 13. 2026-08-30 K01/K02 根级 authority 对齐复核
+
+- K02 worker `d74895e2` 已关闭前一轮全部 P1/P2，并通过 focused 65/65、full Bridge
+  44 files / 1,137 tests、tsc 与独立复审；该正向事实保留。但根复核决定暂不集成，因为实现仍与
+  已接受的精确运行事实合同不完全同构。
+- 未关闭项：adapter 只请求 `itemsView=full`，没有先用 cached `notLoaded` turn index；read
+  evidence 缺 exact provider method/build/result/evidence digest；普通 `JSON.stringify` 不能冒充
+  RFC 8785；Item 被错误地按 thread-global itemId 去重而非 Turn+Item 组合；oversized/not-full Gap
+  未保存完整 bytes/evidence/repair disposition 与相对位置，coverage island 可能跨过未加载 turn。
+  worker 已在原提交后追加修订，仍禁止 `thread/read` 或虚构 item paging fallback。
+- opaque cursor 无法证明全会话绝对零点。权威设计 `8a761580` 因此明确：newest window 以 0
+  局部锚定，older prepend 使用递减 signed safe `turnOrdinal/timelineOrdinal`，`itemOrdinal` 保持
+  turn-local 非负；不得为了把数值改成非负而移动已加载 identity。Mobile repository 同步返工。
+- 本节没有启动 Codex/Bridge/DB/端口/Mobile/simulator，也没有改变发布授权。
