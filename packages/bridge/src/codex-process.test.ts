@@ -1668,6 +1668,132 @@ describe("CodexProcess (app-server)", () => {
     });
   });
 
+  it("reads bounded turn and item pages with opaque cursors", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+
+    const turnsPromise = proc.listThreadTurns({
+      threadId: "thr_page",
+      limit: 2,
+      cursor: null,
+      sortDirection: "desc",
+      itemsView: "full",
+    });
+    const turnsRequest = nextOutgoingRequest(child);
+    expect(turnsRequest).toMatchObject({
+      method: "thread/turns/list",
+      params: {
+        threadId: "thr_page",
+        limit: 2,
+        cursor: null,
+        sortDirection: "desc",
+        itemsView: "full",
+      },
+    });
+    (proc as any).handleRpcEnvelope({
+      id: turnsRequest.id,
+      result: {
+        data: [
+          { id: "turn-2", items: [] },
+          { id: "turn-1", items: [] },
+        ],
+        nextCursor: "older-cursor",
+        backwardsCursor: "newer-cursor",
+      },
+    });
+    await expect(turnsPromise).resolves.toEqual({
+      data: [
+        { id: "turn-2", items: [] },
+        { id: "turn-1", items: [] },
+      ],
+      nextCursor: "older-cursor",
+      backwardsCursor: "newer-cursor",
+    });
+
+    const itemsPromise = proc.listThreadItems({
+      threadId: "thr_page",
+      turnId: "turn-2",
+      limit: 3,
+      sortDirection: "asc",
+    });
+    const itemsRequest = nextOutgoingRequest(child);
+    expect(itemsRequest).toMatchObject({
+      method: "thread/items/list",
+      params: {
+        threadId: "thr_page",
+        turnId: "turn-2",
+        limit: 3,
+        sortDirection: "asc",
+      },
+    });
+    (proc as any).handleRpcEnvelope({
+      id: itemsRequest.id,
+      result: {
+        data: [
+          { turnId: "turn-2", item: { id: "item-1", type: "agentMessage" } },
+        ],
+        nextCursor: null,
+      },
+    });
+    await expect(itemsPromise).resolves.toEqual({
+      data: [
+        {
+          turnId: "turn-2",
+          item: { id: "item-1", type: "agentMessage" },
+        },
+      ],
+      nextCursor: null,
+      backwardsCursor: null,
+    });
+
+    const timelinePromise = proc.listThreadTimeline({
+      threadId: "thr_page",
+      limit: 4,
+      cursor: "timeline-cursor",
+    });
+    const timelineRequest = nextOutgoingRequest(child);
+    expect(timelineRequest).toMatchObject({
+      method: "thread/timeline/list",
+      params: {
+        threadId: "thr_page",
+        limit: 4,
+        cursor: "timeline-cursor",
+      },
+    });
+    (proc as any).handleRpcEnvelope({
+      id: timelineRequest.id,
+      result: {
+        data: [{ type: "item", position: 4, turnId: "turn-2", item: {} }],
+        nextCursor: "timeline-next",
+        activeRealtimeSessionAtPageStart: null,
+      },
+    });
+    await expect(timelinePromise).resolves.toEqual({
+      data: [{ type: "item", position: 4, turnId: "turn-2", item: {} }],
+      nextCursor: "timeline-next",
+      activeRealtimeSessionAtPageStart: null,
+    });
+    proc.stop();
+  });
+
+  it("rejects malformed paged history responses", async () => {
+    const proc = new CodexProcess("linux");
+    const child = new FakeChildProcess();
+    attachFakeTransport(proc as any, child);
+
+    const turnsPromise = proc.listThreadTurns({ threadId: "thr_bad" });
+    const request = nextOutgoingRequest(child);
+    (proc as any).handleRpcEnvelope({
+      id: request.id,
+      result: { data: [], nextCursor: 42 },
+    });
+    await expect(turnsPromise).rejects.toThrow(
+      "Codex history nextCursor is invalid",
+    );
+    proc.stop();
+  });
+
   it("reads Browser Use auto-review policy without RPC params", async () => {
     const proc = new CodexProcess("linux");
     const child = new FakeChildProcess();

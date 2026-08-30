@@ -124,6 +124,32 @@ export interface CodexThreadSummary {
   name: string | null;
 }
 
+export type CodexHistorySortDirection = "asc" | "desc";
+export type CodexTurnItemsView = "notLoaded" | "summary" | "full";
+
+export interface CodexThreadTurnsPage {
+  data: Record<string, unknown>[];
+  nextCursor: string | null;
+  backwardsCursor: string | null;
+}
+
+export interface CodexThreadItemEntry {
+  turnId: string;
+  item: Record<string, unknown>;
+}
+
+export interface CodexThreadItemsPage {
+  data: CodexThreadItemEntry[];
+  nextCursor: string | null;
+  backwardsCursor: string | null;
+}
+
+export interface CodexThreadTimelinePage {
+  data: Record<string, unknown>[];
+  nextCursor: string | null;
+  activeRealtimeSessionAtPageStart: string | null;
+}
+
 export type CodexThreadSourceKind =
   | "cli"
   | "vscode"
@@ -606,6 +632,108 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       throw new Error("thread/read returned no thread");
     }
     return thread;
+  }
+
+  async listThreadTurns(params: {
+    threadId: string;
+    limit?: number;
+    cursor?: string | null;
+    sortDirection?: CodexHistorySortDirection;
+    itemsView?: CodexTurnItemsView;
+  }): Promise<CodexThreadTurnsPage> {
+    const result = (await this.request("thread/turns/list", {
+      threadId: params.threadId,
+      ...(params.limit !== undefined ? { limit: params.limit } : {}),
+      ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
+      ...(params.sortDirection !== undefined
+        ? { sortDirection: params.sortDirection }
+        : {}),
+      ...(params.itemsView !== undefined
+        ? { itemsView: params.itemsView }
+        : {}),
+    })) as Record<string, unknown>;
+    const data = result.data;
+    if (
+      !Array.isArray(data) ||
+      data.some((entry) => asRecord(entry) === undefined)
+    ) {
+      throw new Error("thread/turns/list returned invalid data");
+    }
+    return {
+      data: data as Record<string, unknown>[],
+      nextCursor: optionalCursor(result.nextCursor, "nextCursor"),
+      backwardsCursor: optionalCursor(
+        result.backwardsCursor,
+        "backwardsCursor",
+      ),
+    };
+  }
+
+  async listThreadItems(params: {
+    threadId: string;
+    turnId?: string | null;
+    limit?: number;
+    cursor?: string | null;
+    sortDirection?: CodexHistorySortDirection;
+  }): Promise<CodexThreadItemsPage> {
+    const result = (await this.request("thread/items/list", {
+      threadId: params.threadId,
+      ...(params.turnId !== undefined ? { turnId: params.turnId } : {}),
+      ...(params.limit !== undefined ? { limit: params.limit } : {}),
+      ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
+      ...(params.sortDirection !== undefined
+        ? { sortDirection: params.sortDirection }
+        : {}),
+    })) as Record<string, unknown>;
+    if (!Array.isArray(result.data)) {
+      throw new Error("thread/items/list returned invalid data");
+    }
+    const data = result.data.map((entry) => {
+      const record = asRecord(entry);
+      if (!record || typeof record.turnId !== "string") {
+        throw new Error("thread/items/list returned invalid entry");
+      }
+      const item = asRecord(record.item);
+      if (!item) {
+        throw new Error("thread/items/list returned invalid item");
+      }
+      return { turnId: record.turnId, item };
+    });
+    return {
+      data,
+      nextCursor: optionalCursor(result.nextCursor, "nextCursor"),
+      backwardsCursor: optionalCursor(
+        result.backwardsCursor,
+        "backwardsCursor",
+      ),
+    };
+  }
+
+  async listThreadTimeline(params: {
+    threadId: string;
+    limit?: number;
+    cursor?: string | null;
+  }): Promise<CodexThreadTimelinePage> {
+    const result = (await this.request("thread/timeline/list", {
+      threadId: params.threadId,
+      ...(params.limit !== undefined ? { limit: params.limit } : {}),
+      ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
+    })) as Record<string, unknown>;
+    const data = result.data;
+    if (
+      !Array.isArray(data) ||
+      data.some((entry) => asRecord(entry) === undefined)
+    ) {
+      throw new Error("thread/timeline/list returned invalid data");
+    }
+    return {
+      data: data as Record<string, unknown>[],
+      nextCursor: optionalCursor(result.nextCursor, "nextCursor"),
+      activeRealtimeSessionAtPageStart: optionalCursor(
+        result.activeRealtimeSessionAtPageStart,
+        "activeRealtimeSessionAtPageStart",
+      ),
+    };
   }
 
   async rollbackThread(numTurns: number): Promise<Record<string, unknown>> {
@@ -5031,6 +5159,14 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function optionalCursor(value: unknown, name: string): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") {
+    throw new Error(`Codex history ${name} is invalid`);
+  }
+  return value;
 }
 
 function stringValue(value: unknown): string | undefined {

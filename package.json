@@ -26,6 +26,7 @@
     "conversation:contract:validate": "npm run validate --workspace=packages/conversation-contract",
     "conversation:contract:check": "npm run check --workspace=packages/conversation-contract",
     "conversation:contract:golden": "npm run golden --workspace=packages/conversation-contract",
+    "conversation:codex:probe-read": "tsx scripts/probe-codex-phone-core-read.ts",
     "functions:typecheck": "npm --prefix functions run typecheck",
     "functions:build": "npm --prefix functions run build",
     "functions:deploy": "firebase deploy --only functions --project ccpocket-ca33b",
