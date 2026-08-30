@@ -532,3 +532,33 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   replay 必须同时保留旧严格门禁与新 JCS suites，不能用 donor 的较早 package skeleton 覆盖根工具；
   manifest follow-up 保持单独可移植。正式 mapped generation 继续 `NOT_RUN`，第 22 节四个真实目标仍
   `ABSENT`。
+
+## 24. 2026-08-30 K00 materialization preimage 根级裁决
+
+- 根对 Contract B1 的未提交快照做了独立只读裁决；authority 为 clean
+  `8a761580056ce91c37275dd0776c0bb5be11f70e`，候选仍停在
+  `254eeb7aff6744f2de4e58b18cb7650a0addffd2` 上的六文件 dirty rework。结论为
+  `P0_BLOCKED`，因此没有提交、重放或正式生成。
+- 权威 byte shape 必须区分两种类型：materialization preimage 使用包含
+  `materializationId` 的 typed `MaterializationSubjectV1`；Gap repair 与 dominance 使用不含该 ID 的
+  stable subject scope。当前候选把 scope-only `TimelineSubjectV1` 与 sibling `materializationId`
+  拼接到各个 JCS object，不与权威 closed bytes 等价。
+- Page 的唯一 Gap authority 是 exact `{items,gaps}` page body；Coverage 按 `gapOrdinal` 包含同一组
+  typed Gap 并在 empty branch 纳入 exact typed empty proof；Order 只包含 ordered
+  island/TurnSpine/Item/predecessor 与 edge-bound proof digest reference，禁止复制 Gap array 或 full proof。
+  Manifest 必须包含 algorithm version、base/candidate head、ordered page digests、domain counts 与
+  order/coverage digest；Begin 只能结构化删除 `block.beginHeaderDigest`；Receipt 必须与完整 sealed
+  receipt 同构且只删除 `receiptDigest`。
+- Receipt 沿用 `FROZEN_RFC8785_JCS / R59_MATERIALIZATION_RECEIPT_V1`，不得新增
+  `digestDomain`。这也明确限制第 23 节 JCS 波的完成范围：其 const-domain fixture helper 可以累计进入
+  hardened Tooling，但在 final Registry 提供 derivation mode 后仍须增加 mode-aware generated helper；
+  不能把所有 `*PreimageV1` 强制解释成 `DOMAIN_SEPARATED_JCS`。
+- 当前候选的 flat order、`proofKind=ADJACENCY` 自证、empty proof 未进 coverage digest、双 live begin
+  shape、缩水 receipt、无 dependency DAG/cycle gate、raw Set dominance、未绑定 boundary 的 repair intent
+  均为未关闭 P0。Contract worker 已移除混入的 B2 `machines`，继续只返工 B1；只有这些 P0 与
+  P0-01..P0-17 独立 mutation matrix 全部关闭后才允许冻结并复审。
+- PVMC-1 可保留 09 明确限定的 Timeline-only active profile，但类型和 manifest 必须如实标注该 scope，
+  不得用 Timeline-only 产物宣称 Catalog/full Materialization authority。完整 machine/digest registry、
+  exact read-evidence/read-body/domain-count 命名仍待根级 compact normative schema 冻结。
+- 本裁决没有运行测试、生成、Provider、Bridge、DB、端口、Mobile、simulator 或 candidate，也没有执行
+  merge、push、deploy、release、OTA、stable 或真机安装。
