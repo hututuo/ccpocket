@@ -1,4 +1,4 @@
-// @generated from conversation contract 07db48c0fa1b872cc1ad12deb7a1454dccf61ff8414727f2e02d985ecf3cf1b2; DO NOT EDIT.
+// @generated from conversation contract cdd9b5622b7af2917865f30af72cb96a976289ab0569f5464b5dba1b9ba15d6d; DO NOT EDIT.
 /* eslint-disable */
 
 import { createHash } from 'node:crypto';
@@ -22,6 +22,26 @@ export interface CanonicalProfileProbePreimageV1 {
   readonly "negativeZero": number;
 }
 
+export type FixtureAmbiguousOneOf = string | string;
+
+export type FixtureCanonicalOrderSet = ReadonlyArray<FixtureOneOf>;
+
+export interface FixtureConstrainedRecord {
+  readonly "nullableValue": string | null;
+  readonly "fixed": "FIXED";
+  readonly "version": 1;
+  readonly "bounded": number;
+  readonly "disabled": false;
+  readonly "items": ReadonlyArray<FixtureConstraintItem>;
+  readonly "tags": ReadonlyArray<string>;
+}
+
+export interface FixtureConstraintItem {
+  readonly "identity": { readonly "id": string };
+  readonly "ordinal": number;
+  readonly "label": string;
+}
+
 export interface FixtureEnvelope {
   readonly "id": string;
   readonly "source": FixtureSourceRef;
@@ -30,6 +50,8 @@ export interface FixtureEnvelope {
   readonly "metadata"?: Readonly<Record<string, string>>;
   readonly "__proto__"?: string;
 }
+
+export type FixtureOneOf = { readonly "left": string } | { readonly "right": number };
 
 export interface FixturePageBodyV1 {
   readonly "items": ReadonlyArray<string>;
@@ -44,6 +66,8 @@ export interface FixtureSourceRef {
   readonly "bridgeInstanceId": string;
   readonly "sourceOrdinal": number;
 }
+
+export type FixtureUntaggedPreimageV1 = { readonly "digestDomain": "ccpocket.fixture-untagged.v1"; readonly "left": string | null } | { readonly "digestDomain": "ccpocket.fixture-untagged.v1"; readonly "right": number };
 
 export interface GapRepairIntentPreimageV1 {
   readonly "digestDomain": "ccpocket.gap-repair-intent.v1";
@@ -118,20 +142,26 @@ export interface ProviderReadEvidencePreimageV1 {
 export type Sha256Hex64 = string;
 
 type ContractNode =
-  | { readonly kind: 'string' | 'integer' | 'boolean' }
-  | { readonly kind: 'enum'; readonly values: ReadonlyArray<string> }
+  | { readonly kind: 'string'; readonly const?: string; readonly pattern?: string }
+  | { readonly kind: 'integer'; readonly const?: number; readonly minimum?: number; readonly maximum?: number }
+  | { readonly kind: 'boolean'; readonly const?: boolean }
+  | { readonly kind: 'enum'; readonly values: ReadonlyArray<string>; readonly const?: string }
   | { readonly kind: 'ref'; readonly target: string }
-  | { readonly kind: 'array'; readonly items: ContractNode }
+  | { readonly kind: 'nullable'; readonly inner: ContractNode }
+  | { readonly kind: 'array'; readonly items: ContractNode; readonly minItems?: number; readonly maxItems?: number; readonly uniqueItems?: boolean; readonly uniqueBy?: ReadonlyArray<string>; readonly orderBy?: ReadonlyArray<string> }
   | { readonly kind: 'map'; readonly values: ContractNode }
   | { readonly kind: 'object'; readonly fields: ReadonlyArray<ContractField> }
+  | { readonly kind: 'oneOf'; readonly variants: ReadonlyArray<ContractNode> }
   | { readonly kind: 'union'; readonly discriminator: string; readonly variants: ReadonlyArray<ContractVariant> };
 type ContractField = { readonly name: string; readonly required: boolean; readonly type: ContractNode };
 type ContractVariant = { readonly tag: string; readonly fields: ReadonlyArray<ContractField> };
-type JsonSnapshot = string | number | boolean | JsonSnapshot[] | JsonSnapshotObject;
+type JsonSnapshot = null | string | number | boolean | JsonSnapshot[] | JsonSnapshotObject;
 type JsonSnapshotObject = { readonly [key: string]: JsonSnapshot };
-type SnapshotState = { readonly active: WeakSet<object>; nodes: number };
+type SnapshotState = { readonly active: Set<object>; nodes: number };
 type DigestDomainRule =
+  | null
   | { readonly kind: 'object'; readonly value: string }
+  | { readonly kind: 'oneOf'; readonly values: ReadonlyArray<string> }
   | { readonly kind: 'union'; readonly discriminator: string; readonly variants: ReadonlyArray<{ readonly tag: string; readonly value: string }> };
 
 const contractNodes = {
@@ -248,6 +278,152 @@ const contractNodes = {
       }
     ]
   },
+  "FixtureAmbiguousOneOf": {
+    "kind": "oneOf",
+    "variants": [
+      {
+        "kind": "string",
+        "pattern": "^a"
+      },
+      {
+        "kind": "string",
+        "pattern": "a$"
+      }
+    ]
+  },
+  "FixtureCanonicalOrderSet": {
+    "kind": "array",
+    "items": {
+      "kind": "ref",
+      "target": "FixtureOneOf"
+    },
+    "minItems": 1,
+    "maxItems": 3,
+    "orderBy": [
+      "$"
+    ]
+  },
+  "FixtureConstrainedRecord": {
+    "kind": "object",
+    "fields": [
+      {
+        "name": "nullableValue",
+        "required": true,
+        "type": {
+          "kind": "nullable",
+          "inner": {
+            "kind": "string",
+            "pattern": "^value-[0-9]+$"
+          }
+        }
+      },
+      {
+        "name": "fixed",
+        "required": true,
+        "type": {
+          "kind": "string",
+          "const": "FIXED"
+        }
+      },
+      {
+        "name": "version",
+        "required": true,
+        "type": {
+          "kind": "integer",
+          "const": 1
+        }
+      },
+      {
+        "name": "bounded",
+        "required": true,
+        "type": {
+          "kind": "integer",
+          "minimum": 1,
+          "maximum": 3
+        }
+      },
+      {
+        "name": "disabled",
+        "required": true,
+        "type": {
+          "kind": "boolean",
+          "const": false
+        }
+      },
+      {
+        "name": "items",
+        "required": true,
+        "type": {
+          "kind": "array",
+          "items": {
+            "kind": "ref",
+            "target": "FixtureConstraintItem"
+          },
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueBy": [
+            "identity.id"
+          ],
+          "orderBy": [
+            "ordinal"
+          ]
+        }
+      },
+      {
+        "name": "tags",
+        "required": true,
+        "type": {
+          "kind": "array",
+          "items": {
+            "kind": "string",
+            "pattern": "^[a-z]+$"
+          },
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true
+        }
+      }
+    ]
+  },
+  "FixtureConstraintItem": {
+    "kind": "object",
+    "fields": [
+      {
+        "name": "identity",
+        "required": true,
+        "type": {
+          "kind": "object",
+          "fields": [
+            {
+              "name": "id",
+              "required": true,
+              "type": {
+                "kind": "string",
+                "pattern": "^[a-z]+$"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "ordinal",
+        "required": true,
+        "type": {
+          "kind": "integer",
+          "minimum": 0,
+          "maximum": 3
+        }
+      },
+      {
+        "name": "label",
+        "required": true,
+        "type": {
+          "kind": "string",
+          "pattern": "^item-[a-z]+$"
+        }
+      }
+    ]
+  },
   "FixtureEnvelope": {
     "kind": "object",
     "fields": [
@@ -298,6 +474,35 @@ const contractNodes = {
         "type": {
           "kind": "string"
         }
+      }
+    ]
+  },
+  "FixtureOneOf": {
+    "kind": "oneOf",
+    "variants": [
+      {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "left",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      },
+      {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "right",
+            "required": true,
+            "type": {
+              "kind": "integer"
+            }
+          }
+        ]
       }
     ]
   },
@@ -391,6 +596,56 @@ const contractNodes = {
         "type": {
           "kind": "integer"
         }
+      }
+    ]
+  },
+  "FixtureUntaggedPreimageV1": {
+    "kind": "oneOf",
+    "variants": [
+      {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "digestDomain",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "ccpocket.fixture-untagged.v1"
+            }
+          },
+          {
+            "name": "left",
+            "required": true,
+            "type": {
+              "kind": "nullable",
+              "inner": {
+                "kind": "string"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "digestDomain",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "ccpocket.fixture-untagged.v1"
+            }
+          },
+          {
+            "name": "right",
+            "required": true,
+            "type": {
+              "kind": "integer",
+              "minimum": 0,
+              "maximum": 9
+            }
+          }
+        ]
       }
     ]
   },
@@ -900,6 +1155,10 @@ const digestDomainRules = {
     "kind": "object",
     "value": "ccpocket.canonical-profile-probe.v1"
   },
+  "FixtureUntaggedPreimageV1": {
+    "kind": "object",
+    "value": "ccpocket.fixture-untagged.v1"
+  },
   "GapRepairIntentPreimageV1": {
     "kind": "object",
     "value": "ccpocket.gap-repair-intent.v1"
@@ -1011,6 +1270,150 @@ function arrayDescriptors(value: ReadonlyArray<unknown>, path: string): Map<numb
   return result;
 }
 
+function dereferenceContractNode(node: ContractNode, path: string): ContractNode {
+  const seen = new Set<string>();
+  let current = node;
+  while (current.kind === 'ref') {
+    if (seen.has(current.target) || !Object.hasOwn(contractNodes, current.target)) throw new TypeError(path + ': invalid selector type reference');
+    seen.add(current.target);
+    current = contractNodes[current.target];
+  }
+  return current;
+}
+
+function selectedContractNodes(itemNode: ContractNode, selector: string, path: string): ReadonlyArray<ContractNode> {
+  if (selector === '$') return [dereferenceContractNode(itemNode, path)];
+  let nodes: ReadonlyArray<ContractNode> = [itemNode];
+  for (const segment of selector.split('.')) {
+    const next: ContractNode[] = [];
+    for (const rawNode of nodes) {
+      const node = dereferenceContractNode(rawNode, path);
+      if (node.kind === 'object') {
+        const field = node.fields.find((candidate) => candidate.name === segment);
+        if (!field) throw new TypeError(path + ': unknown collection selector ' + selector);
+        next.push(field.type);
+      } else if (node.kind === 'union') {
+        if (segment === node.discriminator) {
+          next.push({ kind: 'enum', values: node.variants.map((variant) => variant.tag) });
+        } else {
+          for (const variant of node.variants) {
+            const field = variant.fields.find((candidate) => candidate.name === segment);
+            if (!field) throw new TypeError(path + ': selector ' + selector + ' is absent from ' + variant.tag);
+            next.push(field.type);
+          }
+        }
+      } else if (node.kind === 'oneOf') {
+        for (const variant of node.variants) next.push(...selectedContractNodes(variant, segment, path));
+      } else {
+        throw new TypeError(path + ': collection selectors require object, union, or oneOf items');
+      }
+    }
+    nodes = next;
+  }
+  return nodes;
+}
+
+function selectorEnumOrder(itemNode: ContractNode, selector: string, path: string): ReadonlyArray<string> | undefined {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const selected of selectedContractNodes(itemNode, selector, path)) {
+    let node = dereferenceContractNode(selected, path);
+    if (node.kind === 'nullable') node = dereferenceContractNode(node.inner, path);
+    if (node.kind !== 'enum') continue;
+    for (const value of node.values) if (!seen.has(value)) { seen.add(value); result.push(value); }
+  }
+  return result.length === 0 ? undefined : result;
+}
+
+function snapshotSelectorValue(value: JsonSnapshot, selector: string, path: string): JsonSnapshot {
+  let current = value;
+  for (const segment of selector.split('.')) {
+    if (current === null || typeof current !== 'object' || Array.isArray(current) || !Object.hasOwn(current, segment)) {
+      throw new TypeError(path + '.' + selector + ': required collection selector');
+    }
+    current = current[segment];
+  }
+  return current;
+}
+
+function compareUtf16(left: string, right: string): number {
+  const length = Math.min(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = left.charCodeAt(index) - right.charCodeAt(index);
+    if (difference !== 0) return difference;
+  }
+  return left.length - right.length;
+}
+
+function compareConstraintScalar(left: JsonSnapshot, right: JsonSnapshot, enumOrder: ReadonlyArray<string> | undefined): number {
+  if (left === right) return 0;
+  if (left === null) return -1;
+  if (right === null) return 1;
+  if (enumOrder && typeof left === 'string' && typeof right === 'string') {
+    const leftRank = enumOrder.indexOf(left);
+    const rightRank = enumOrder.indexOf(right);
+    if (leftRank !== -1 && rightRank !== -1) return leftRank - rightRank;
+  }
+  if (typeof left === 'number' && typeof right === 'number') return left - right;
+  if (typeof left === 'boolean' && typeof right === 'boolean') return left ? 1 : -1;
+  if (typeof left === 'string' && typeof right === 'string') return compareUtf16(left, right);
+  throw new TypeError('orderBy values have incompatible scalar types');
+}
+
+function compareCanonicalBytes(left: JsonSnapshot, right: JsonSnapshot): number {
+  const leftBytes = utf8Encoder.encode(canonicalJson(left));
+  const rightBytes = utf8Encoder.encode(canonicalJson(right));
+  const length = Math.min(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = leftBytes[index] - rightBytes[index];
+    if (difference !== 0) return difference;
+  }
+  return leftBytes.length - rightBytes.length;
+}
+
+function compareArrayEntries(left: JsonSnapshot, right: JsonSnapshot, selectors: ReadonlyArray<string>, itemNode: ContractNode, path: string): number {
+  for (const selector of selectors) {
+    const comparison = selector === '$'
+      ? compareCanonicalBytes(left, right)
+      : compareConstraintScalar(
+          snapshotSelectorValue(left, selector, path),
+          snapshotSelectorValue(right, selector, path),
+          selectorEnumOrder(itemNode, selector, path + '.' + selector),
+        );
+    if (comparison !== 0) return comparison;
+  }
+  return 0;
+}
+
+function assertArrayConstraints(node: ContractNode & { readonly kind: 'array' }, values: ReadonlyArray<JsonSnapshot>, path: string): void {
+  const minimum = node.minItems ?? 0;
+  const maximum = node.maxItems ?? Number.MAX_SAFE_INTEGER;
+  if (values.length < minimum || values.length > maximum) throw new TypeError(path + ': expected between ' + minimum + ' and ' + maximum + ' items');
+  if (node.uniqueItems) {
+    const seen = new Set<string>();
+    for (let index = 0; index < values.length; index += 1) {
+      const key = canonicalJson(values[index]);
+      if (seen.has(key)) throw new TypeError(path + '[' + index + ']: duplicate array item');
+      seen.add(key);
+    }
+  }
+  if (node.uniqueBy) {
+    const seen = new Set<string>();
+    for (let index = 0; index < values.length; index += 1) {
+      const key = canonicalJson(node.uniqueBy.map((selector) => snapshotSelectorValue(values[index], selector, path + '[' + index + ']')));
+      if (seen.has(key)) throw new TypeError(path + '[' + index + ']: duplicate uniqueBy fields ' + node.uniqueBy.join(', '));
+      seen.add(key);
+    }
+  }
+  if (node.orderBy) {
+    for (let index = 1; index < values.length; index += 1) {
+      if (compareArrayEntries(values[index - 1], values[index], node.orderBy, node.items, path + '[' + index + ']') > 0) {
+        throw new TypeError(path + '[' + index + ']: out of order by ' + node.orderBy.join(', '));
+      }
+    }
+  }
+}
+
 function snapshotFields(
   fields: ReadonlyArray<ContractField>,
   value: unknown,
@@ -1049,12 +1452,27 @@ function snapshotNode(node: ContractNode, value: unknown, path: string, depth: n
   switch (node.kind) {
     case 'string':
       if (typeof value !== 'string') throw new TypeError(path + ': expected string');
-      assertUnicodeScalarString(value, path); return value;
-    case 'integer': if (!Number.isSafeInteger(value)) throw new TypeError(path + ': expected safe integer'); return value as number;
-    case 'boolean': if (typeof value !== 'boolean') throw new TypeError(path + ': expected boolean'); return value;
+      assertUnicodeScalarString(value, path);
+      if (Object.hasOwn(node, 'const') && value !== node.const) throw new TypeError(path + ': invalid const');
+      if (node.pattern !== undefined && !new RegExp(node.pattern, 'u').test(value)) throw new TypeError(path + ': pattern mismatch');
+      return value;
+    case 'integer': {
+      if (!Number.isSafeInteger(value)) throw new TypeError(path + ': expected safe integer');
+      const integer = value as number;
+      if (integer < (node.minimum ?? Number.MIN_SAFE_INTEGER) || integer > (node.maximum ?? Number.MAX_SAFE_INTEGER)) throw new TypeError(path + ': integer outside bounds');
+      if (Object.hasOwn(node, 'const') && integer !== node.const) throw new TypeError(path + ': invalid const');
+      return integer;
+    }
+    case 'boolean':
+      if (typeof value !== 'boolean') throw new TypeError(path + ': expected boolean');
+      if (Object.hasOwn(node, 'const') && value !== node.const) throw new TypeError(path + ': invalid const');
+      return value;
     case 'enum':
       if (typeof value !== 'string' || !node.values.includes(value)) throw new TypeError(path + ': invalid enum');
+      if (Object.hasOwn(node, 'const') && value !== node.const) throw new TypeError(path + ': invalid const');
       assertUnicodeScalarString(value, path); return value;
+    case 'nullable':
+      return value === null ? null : snapshotNode(node.inner, value, path, depth + 1, state);
     case 'ref': {
       if (!Object.hasOwn(contractNodes, node.target)) throw new TypeError(path + ': unknown type ' + node.target);
       const target = contractNodes[node.target];
@@ -1067,8 +1485,10 @@ function snapshotNode(node: ContractNode, value: unknown, path: string, depth: n
       state.active.add(value);
       try {
         const descriptors = arrayDescriptors(value, path);
-        return Array.from({ length: value.length }, (_, index) =>
+        const result = Array.from({ length: value.length }, (_, index) =>
           snapshotNode(node.items, descriptors.get(index)?.value, path + '[' + index + ']', depth + 1, state));
+        assertArrayConstraints(node, result, path);
+        return result;
       } finally { state.active.delete(value); }
     }
     case 'map': {
@@ -1090,6 +1510,21 @@ function snapshotNode(node: ContractNode, value: unknown, path: string, depth: n
       if (state.active.has(value)) throw new TypeError(path + ': cyclic value');
       state.active.add(value);
       try { return snapshotFields(node.fields, value, path, depth, state, undefined); } finally { state.active.delete(value); }
+    case 'oneOf': {
+      const matches: Array<{ readonly snapshot: JsonSnapshot; readonly nodes: number }> = [];
+      for (const variant of node.variants) {
+        const branchState: SnapshotState = { active: new Set(state.active), nodes: state.nodes };
+        try {
+          matches.push({ snapshot: snapshotNode(variant, value, path, depth + 1, branchState), nodes: branchState.nodes });
+        } catch (error) {
+          if (!(error instanceof TypeError)) throw error;
+        }
+      }
+      if (matches.length === 0) throw new TypeError(path + ': NO_ONE_OF_VARIANT');
+      if (matches.length > 1) throw new TypeError(path + ': AMBIGUOUS_ONE_OF_VARIANT');
+      state.nodes = matches[0].nodes;
+      return matches[0].snapshot;
+    }
     case 'union': {
       if (value === null || typeof value !== 'object') throw new TypeError(path + ': expected union object');
       if (state.active.has(value)) throw new TypeError(path + ': cyclic value');
@@ -1108,16 +1543,21 @@ function snapshotNode(node: ContractNode, value: unknown, path: string, depth: n
 function snapshotContractType(typeId: string, value: unknown): JsonSnapshot {
   if (!Object.hasOwn(contractNodes, typeId)) throw new TypeError('unknown contract type ' + typeId);
   const node = contractNodes[typeId];
-  const snapshot = snapshotNode(node, value, '$', 0, { active: new WeakSet<object>(), nodes: 0 });
+  const snapshot = snapshotNode(node, value, '$', 0, { active: new Set<object>(), nodes: 0 });
   assertSemanticType(typeId, snapshot, '$');
   return snapshot;
 }
 
 function assertDigestDomain(typeId: string, value: JsonSnapshot): void {
   const rule = digestDomainRules[typeId];
-  if (!rule || typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError(typeId + ': invalid digest preimage authority');
+  if (!Object.hasOwn(digestDomainRules, typeId) || typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError(typeId + ': invalid digest preimage authority');
+  if (rule === null) return;
   if (rule.kind === 'object') {
     if (value.digestDomain !== rule.value) throw new TypeError(typeId + '.digestDomain: invalid digest domain');
+    return;
+  }
+  if (rule.kind === 'oneOf') {
+    if (typeof value.digestDomain !== 'string' || !rule.values.includes(value.digestDomain)) throw new TypeError(typeId + '.digestDomain: invalid digest domain');
     return;
   }
   const tag = value[rule.discriminator];
@@ -1126,6 +1566,7 @@ function assertDigestDomain(typeId: string, value: JsonSnapshot): void {
 }
 
 function canonicalJson(value: JsonSnapshot): string {
+  if (value === null) return 'null';
   if (typeof value === 'string') return JSON.stringify(value);
   if (typeof value === 'number') return Object.is(value, -0) ? '0' : String(value);
   if (typeof value === 'boolean') return value ? 'true' : 'false';
@@ -1151,12 +1592,52 @@ export function encodeCanonicalProfileProbePreimageV1(value: CanonicalProfilePro
   return snapshotContractType("CanonicalProfileProbePreimageV1", value);
 }
 
+export function decodeFixtureAmbiguousOneOf(value: unknown): FixtureAmbiguousOneOf {
+  return snapshotContractType("FixtureAmbiguousOneOf", value) as unknown as FixtureAmbiguousOneOf;
+}
+
+export function encodeFixtureAmbiguousOneOf(value: FixtureAmbiguousOneOf): unknown {
+  return snapshotContractType("FixtureAmbiguousOneOf", value);
+}
+
+export function decodeFixtureCanonicalOrderSet(value: unknown): FixtureCanonicalOrderSet {
+  return snapshotContractType("FixtureCanonicalOrderSet", value) as unknown as FixtureCanonicalOrderSet;
+}
+
+export function encodeFixtureCanonicalOrderSet(value: FixtureCanonicalOrderSet): unknown {
+  return snapshotContractType("FixtureCanonicalOrderSet", value);
+}
+
+export function decodeFixtureConstrainedRecord(value: unknown): FixtureConstrainedRecord {
+  return snapshotContractType("FixtureConstrainedRecord", value) as unknown as FixtureConstrainedRecord;
+}
+
+export function encodeFixtureConstrainedRecord(value: FixtureConstrainedRecord): unknown {
+  return snapshotContractType("FixtureConstrainedRecord", value);
+}
+
+export function decodeFixtureConstraintItem(value: unknown): FixtureConstraintItem {
+  return snapshotContractType("FixtureConstraintItem", value) as unknown as FixtureConstraintItem;
+}
+
+export function encodeFixtureConstraintItem(value: FixtureConstraintItem): unknown {
+  return snapshotContractType("FixtureConstraintItem", value);
+}
+
 export function decodeFixtureEnvelope(value: unknown): FixtureEnvelope {
   return snapshotContractType("FixtureEnvelope", value) as unknown as FixtureEnvelope;
 }
 
 export function encodeFixtureEnvelope(value: FixtureEnvelope): unknown {
   return snapshotContractType("FixtureEnvelope", value);
+}
+
+export function decodeFixtureOneOf(value: unknown): FixtureOneOf {
+  return snapshotContractType("FixtureOneOf", value) as unknown as FixtureOneOf;
+}
+
+export function encodeFixtureOneOf(value: FixtureOneOf): unknown {
+  return snapshotContractType("FixtureOneOf", value);
 }
 
 export function decodeFixturePageBodyV1(value: unknown): FixturePageBodyV1 {
@@ -1189,6 +1670,14 @@ export function decodeFixtureSourceRef(value: unknown): FixtureSourceRef {
 
 export function encodeFixtureSourceRef(value: FixtureSourceRef): unknown {
   return snapshotContractType("FixtureSourceRef", value);
+}
+
+export function decodeFixtureUntaggedPreimageV1(value: unknown): FixtureUntaggedPreimageV1 {
+  return snapshotContractType("FixtureUntaggedPreimageV1", value) as unknown as FixtureUntaggedPreimageV1;
+}
+
+export function encodeFixtureUntaggedPreimageV1(value: FixtureUntaggedPreimageV1): unknown {
+  return snapshotContractType("FixtureUntaggedPreimageV1", value);
 }
 
 export function decodeGapRepairIntentPreimageV1(value: unknown): GapRepairIntentPreimageV1 {
@@ -1277,6 +1766,14 @@ export function canonicalBytesCanonicalProfileProbePreimageV1(value: CanonicalPr
 
 export function digestCanonicalProfileProbePreimageV1(value: CanonicalProfileProbePreimageV1): string {
   return createHash('sha256').update(canonicalBytesCanonicalProfileProbePreimageV1(value)).digest('hex');
+}
+
+export function canonicalBytesFixtureUntaggedPreimageV1(value: FixtureUntaggedPreimageV1): Uint8Array {
+  return canonicalBytesForPreimage("FixtureUntaggedPreimageV1", value);
+}
+
+export function digestFixtureUntaggedPreimageV1(value: FixtureUntaggedPreimageV1): string {
+  return createHash('sha256').update(canonicalBytesFixtureUntaggedPreimageV1(value)).digest('hex');
 }
 
 export function canonicalBytesGapRepairIntentPreimageV1(value: GapRepairIntentPreimageV1): Uint8Array {

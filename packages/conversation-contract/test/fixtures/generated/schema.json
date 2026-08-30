@@ -3,10 +3,10 @@
     "CanonicalProfileProbePreimageV1": {
       "additionalProperties": false,
       "properties": {
-        "1": {
+        "\r": {
           "type": "string"
         },
-        "\r": {
+        "1": {
           "type": "string"
         },
         "digestDomain": {
@@ -77,6 +77,131 @@
       ],
       "type": "object"
     },
+    "FixtureAmbiguousOneOf": {
+      "oneOf": [
+        {
+          "pattern": "^a",
+          "type": "string"
+        },
+        {
+          "pattern": "a$",
+          "type": "string"
+        }
+      ]
+    },
+    "FixtureCanonicalOrderSet": {
+      "items": {
+        "$ref": "#/$defs/FixtureOneOf"
+      },
+      "maxItems": 3,
+      "minItems": 1,
+      "type": "array",
+      "x-ccpocket-orderBy": [
+        "$"
+      ]
+    },
+    "FixtureConstrainedRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "bounded": {
+          "maximum": 3,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "disabled": {
+          "const": false,
+          "type": "boolean"
+        },
+        "fixed": {
+          "const": "FIXED",
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/FixtureConstraintItem"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "type": "array",
+          "x-ccpocket-orderBy": [
+            "ordinal"
+          ],
+          "x-ccpocket-uniqueBy": [
+            "identity.id"
+          ]
+        },
+        "nullableValue": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "pattern": "^value-[0-9]+$",
+              "type": "string"
+            }
+          ]
+        },
+        "tags": {
+          "items": {
+            "pattern": "^[a-z]+$",
+            "type": "string"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "version": {
+          "const": 1,
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bounded",
+        "disabled",
+        "fixed",
+        "items",
+        "nullableValue",
+        "tags",
+        "version"
+      ],
+      "type": "object"
+    },
+    "FixtureConstraintItem": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "pattern": "^[a-z]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        },
+        "label": {
+          "pattern": "^item-[a-z]+$",
+          "type": "string"
+        },
+        "ordinal": {
+          "maximum": 3,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "identity",
+        "label",
+        "ordinal"
+      ],
+      "type": "object"
+    },
     "FixtureEnvelope": {
       "additionalProperties": false,
       "properties": {
@@ -109,6 +234,36 @@
         "source"
       ],
       "type": "object"
+    },
+    "FixtureOneOf": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "left": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "left"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "right": {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "right"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "FixturePageBodyV1": {
       "additionalProperties": false,
@@ -200,6 +355,53 @@
         "sourceOrdinal"
       ],
       "type": "object"
+    },
+    "FixtureUntaggedPreimageV1": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "digestDomain": {
+              "const": "ccpocket.fixture-untagged.v1",
+              "type": "string"
+            },
+            "left": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "required": [
+            "digestDomain",
+            "left"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "digestDomain": {
+              "const": "ccpocket.fixture-untagged.v1",
+              "type": "string"
+            },
+            "right": {
+              "maximum": 9,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "digestDomain",
+            "right"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "GapRepairIntentPreimageV1": {
       "additionalProperties": false,
@@ -588,14 +790,29 @@
       "type": "string"
     }
   },
-  "$id": "urn:ccpocket:conversation-contract:fixture.active:07db48c0fa1b872cc1ad12deb7a1454dccf61ff8414727f2e02d985ecf3cf1b2",
+  "$id": "urn:ccpocket:conversation-contract:fixture.active:cdd9b5622b7af2917865f30af72cb96a976289ab0569f5464b5dba1b9ba15d6d",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "oneOf": [
     {
       "$ref": "#/$defs/CanonicalProfileProbePreimageV1"
     },
     {
+      "$ref": "#/$defs/FixtureAmbiguousOneOf"
+    },
+    {
+      "$ref": "#/$defs/FixtureCanonicalOrderSet"
+    },
+    {
+      "$ref": "#/$defs/FixtureConstrainedRecord"
+    },
+    {
       "$ref": "#/$defs/FixtureEnvelope"
+    },
+    {
+      "$ref": "#/$defs/FixtureOneOf"
+    },
+    {
+      "$ref": "#/$defs/FixtureUntaggedPreimageV1"
     },
     {
       "$ref": "#/$defs/GapRepairIntentPreimageV1"

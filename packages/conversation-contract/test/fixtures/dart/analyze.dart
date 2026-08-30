@@ -48,4 +48,31 @@ void main() {
   final nonStringMap = envelope(1);
   nonStringMap['metadata'] = <Object?, Object?>{1: 'not a string key'};
   expectFormatException(() => decodeFixtureEnvelope(nonStringMap));
+
+  final constrained = decodeFixtureConstrainedRecord({
+    'nullableValue': null,
+    'fixed': 'FIXED',
+    'version': 1,
+    'bounded': 2,
+    'disabled': false,
+    'items': [
+      {
+        'identity': {'id': 'a'},
+        'ordinal': 0,
+        'label': 'item-a',
+      },
+    ],
+    'tags': ['alpha'],
+  });
+  final String? nullableValue = constrained.nullableValue;
+  final FixtureOneOf oneOf = decodeFixtureOneOf({'left': 'typed'});
+  final List<FixtureOneOf> canonicalOrder = decodeFixtureCanonicalOrderSet([
+    {'left': 'a'},
+    {'right': 1},
+  ]);
+  if (nullableValue != null ||
+      oneOf is! FixtureOneOfVariant1 ||
+      canonicalOrder.length != 2) {
+    throw StateError('Generated nullable or oneOf Dart type mismatch');
+  }
 }

@@ -1,19 +1,37 @@
-import { jsonEqual } from './canonical.mjs';
+import {existsSync, lstatSync, readFileSync} from 'node:fs';
+import {Buffer} from 'node:buffer';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+
+import { canonicalize, compareUtf16, jsonEqual } from './canonical.mjs';
+import { validateDigestAuthority } from './b1-digest-authority.mjs';
+import { discoverDigestPreimages } from './digest-preimages.mjs';
 import { validateGeneratedNames } from './names.mjs';
+import { evaluateSemanticRule } from './semantic-oracle.mjs';
 
 const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]*$/;
 const REASON_PATTERN = /^[A-Z][A-Z0-9_]*$/;
+const SHA256_HEX64 = /^[0-9a-f]{64}$/;
+const DIGEST_AUTHORITY_KEYS = [
+  'digestDerivations',
+  'digestEqualityReferences',
+  'digestDependencyEdges',
+  'digestPostDerivationGuards',
+];
 const NODE_KINDS = new Set([
   'array',
   'boolean',
   'enum',
   'integer',
   'map',
+  'nullable',
   'object',
+  'oneOf',
   'ref',
   'string',
   'union',
 ]);
+const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
 function fail(path, message) {
   throw new Error(`${path}: ${message}`);
@@ -36,6 +54,18 @@ function requireArray(value, path) {
 function requireString(value, path) {
   if (typeof value !== 'string' || value.length === 0) {
     fail(path, 'expected a non-empty string');
+  }
+  return value;
+}
+
+function requireText(value, path) {
+  if (typeof value !== 'string') fail(path, 'expected a string');
+  return value;
+}
+
+function requireSafeInteger(value, path, {nonNegative = false} = {}) {
+  if (!Number.isSafeInteger(value) || nonNegative && value < 0) {
+    fail(path, nonNegative ? 'expected a non-negative safe integer' : 'expected a safe integer');
   }
   return value;
 }
@@ -79,6 +109,9 @@ function validateFields(fields, path, visitNode, forbiddenNames = new Set()) {
     if (forbiddenNames.has(name)) fail(`${fieldPath}.name`, `reserved field ${JSON.stringify(name)}`);
     seen.add(name);
     if (typeof field.required !== 'boolean') fail(`${fieldPath}.required`, 'expected a boolean');
+    if (!field.required && field.type?.kind === 'nullable') {
+      fail(`${fieldPath}.type`, 'nullable fields must be required so absence and null remain distinct');
+    }
     visitNode(field.type, `${fieldPath}.type`);
   }
 }
@@ -89,10 +122,47 @@ function visitDslNode(node, path, references) {
   if (!NODE_KINDS.has(kind)) fail(`${path}.kind`, `unsupported node kind ${JSON.stringify(kind)}`);
 
   switch (kind) {
-    case 'string':
-    case 'integer':
+    case 'string': {
+      requireKeys(object, ['kind', 'const', 'pattern'], ['kind'], path);
+      if (Object.hasOwn(object, 'const')) requireText(object.const, `${path}.const`);
+      if (Object.hasOwn(object, 'pattern')) {
+        const pattern = requireText(object.pattern, `${path}.pattern`);
+        try {
+          new RegExp(pattern, 'u');
+        } catch {
+          fail(`${path}.pattern`, 'expected a valid ECMAScript Unicode regular expression');
+        }
+        if (Object.hasOwn(object, 'const') && !new RegExp(pattern, 'u').test(object.const)) {
+          fail(`${path}.const`, 'does not match pattern');
+        }
+      }
+      break;
+    }
+    case 'integer': {
+      requireKeys(object, ['kind', 'const', 'minimum', 'maximum'], ['kind'], path);
+      const minimum = Object.hasOwn(object, 'minimum')
+        ? requireSafeInteger(object.minimum, `${path}.minimum`)
+        : Number.MIN_SAFE_INTEGER;
+      const maximum = Object.hasOwn(object, 'maximum')
+        ? requireSafeInteger(object.maximum, `${path}.maximum`)
+        : Number.MAX_SAFE_INTEGER;
+      if (minimum > maximum) fail(path, 'minimum must not exceed maximum');
+      if (Object.hasOwn(object, 'const')) {
+        const value = requireSafeInteger(object.const, `${path}.const`);
+        if (value < minimum || value > maximum) fail(`${path}.const`, 'must be within minimum and maximum');
+      }
+      break;
+    }
     case 'boolean':
-      requireKeys(object, ['kind'], ['kind'], path);
+      requireKeys(object, ['kind', 'const'], ['kind'], path);
+      if (Object.hasOwn(object, 'const') && typeof object.const !== 'boolean') {
+        fail(`${path}.const`, 'expected a boolean');
+      }
+      break;
+    case 'nullable':
+      requireKeys(object, ['kind', 'inner'], ['kind', 'inner'], path);
+      if (object.inner?.kind === 'nullable') fail(`${path}.inner`, 'nested nullable nodes are redundant');
+      visitDslNode(object.inner, `${path}.inner`, references);
       break;
     case 'ref': {
       requireKeys(object, ['kind', 'target'], ['kind', 'target'], path);
@@ -100,18 +170,48 @@ function visitDslNode(node, path, references) {
       references.push({ path: `${path}.target`, target });
       break;
     }
-    case 'array':
-      requireKeys(object, ['kind', 'items'], ['kind', 'items'], path);
+    case 'array': {
+      requireKeys(
+        object,
+        ['kind', 'items', 'minItems', 'maxItems', 'uniqueItems', 'uniqueBy', 'orderBy'],
+        ['kind', 'items'],
+        path,
+      );
+      const minimum = Object.hasOwn(object, 'minItems')
+        ? requireSafeInteger(object.minItems, `${path}.minItems`, {nonNegative: true})
+        : 0;
+      const maximum = Object.hasOwn(object, 'maxItems')
+        ? requireSafeInteger(object.maxItems, `${path}.maxItems`, {nonNegative: true})
+        : Number.MAX_SAFE_INTEGER;
+      if (minimum > maximum) fail(path, 'minItems must not exceed maxItems');
+      if (Object.hasOwn(object, 'uniqueItems') && typeof object.uniqueItems !== 'boolean') {
+        fail(`${path}.uniqueItems`, 'expected a boolean');
+      }
+      for (const selectorKey of ['uniqueBy', 'orderBy']) {
+        if (!Object.hasOwn(object, selectorKey)) continue;
+        const selectors = uniqueStrings(object[selectorKey], `${path}.${selectorKey}`);
+        if (selectors.length === 0) fail(`${path}.${selectorKey}`, 'must contain at least one field selector');
+        for (const [index, selector] of selectors.entries()) {
+          if (selector.split('.').some((segment) => segment.length === 0)) {
+            fail(`${path}.${selectorKey}[${index}]`, 'field paths must contain non-empty dot-separated segments');
+          }
+        }
+      }
       visitDslNode(object.items, `${path}.items`, references);
       break;
+    }
     case 'map':
       requireKeys(object, ['kind', 'values'], ['kind', 'values'], path);
       visitDslNode(object.values, `${path}.values`, references);
       break;
     case 'enum':
-      requireKeys(object, ['kind', 'values'], ['kind', 'values'], path);
+      requireKeys(object, ['kind', 'values', 'const'], ['kind', 'values'], path);
       if (uniqueStrings(object.values, `${path}.values`).length === 0) {
         fail(`${path}.values`, 'an enum must have at least one value');
+      }
+      if (Object.hasOwn(object, 'const')) {
+        const value = requireText(object.const, `${path}.const`);
+        if (!object.values.includes(value)) fail(`${path}.const`, 'must be one of the enum values');
       }
       break;
     case 'object':
@@ -119,6 +219,15 @@ function visitDslNode(node, path, references) {
       validateFields(object.fields, `${path}.fields`, (child, childPath) =>
         visitDslNode(child, childPath, references));
       break;
+    case 'oneOf': {
+      requireKeys(object, ['kind', 'variants'], ['kind', 'variants'], path);
+      const variants = requireArray(object.variants, `${path}.variants`);
+      if (variants.length < 2) fail(`${path}.variants`, 'oneOf must have at least two variants');
+      for (const [index, variant] of variants.entries()) {
+        visitDslNode(variant, `${path}.variants[${index}]`, references);
+      }
+      break;
+    }
     case 'union': {
       requireKeys(object, ['kind', 'discriminator', 'variants'], ['kind', 'discriminator', 'variants'], path);
       const discriminator = requireString(object.discriminator, `${path}.discriminator`);
@@ -145,21 +254,222 @@ function visitDslNode(node, path, references) {
   }
 }
 
+function dereferenceNode(node, definitions, path) {
+  let current = node;
+  const seen = new Set();
+  while (current.kind === 'ref') {
+    if (seen.has(current.target)) fail(path, `selector reference cycle through ${current.target}`);
+    seen.add(current.target);
+    const definition = definitions.get(current.target);
+    if (!definition) fail(path, `selector references unknown definition ${current.target}`);
+    current = definition.node;
+  }
+  return current;
+}
+
+function selectedFieldNodes(itemNode, selector, definitions, path) {
+  if (selector === '$') {
+    const node = dereferenceNode(itemNode, definitions, path);
+    if (!['object', 'union', 'oneOf'].includes(node.kind)) {
+      fail(path, 'the $ orderBy selector requires object, union, or oneOf array items');
+    }
+    return [node];
+  }
+  let nodes = [itemNode];
+  for (const segment of selector.split('.')) {
+    const next = [];
+    for (const rawNode of nodes) {
+      const node = dereferenceNode(rawNode, definitions, path);
+      if (node.kind === 'object') {
+        const field = node.fields.find((candidate) => candidate.name === segment);
+        if (!field) fail(path, `unknown item field selector ${JSON.stringify(selector)}`);
+        if (!field.required) fail(path, `item field selector ${JSON.stringify(selector)} must be required`);
+        next.push(field.type);
+        continue;
+      }
+      if (node.kind === 'union') {
+        if (segment === node.discriminator) {
+          next.push({kind: 'enum', values: node.variants.map((variant) => variant.tag)});
+          continue;
+        }
+        for (const variant of node.variants) {
+          const field = variant.fields.find((candidate) => candidate.name === segment);
+          if (!field) {
+            fail(path, `item field selector ${JSON.stringify(selector)} is absent from variant ${JSON.stringify(variant.tag)}`);
+          }
+          if (!field.required) {
+            fail(path, `item field selector ${JSON.stringify(selector)} must be required in variant ${JSON.stringify(variant.tag)}`);
+          }
+          next.push(field.type);
+        }
+        continue;
+      }
+      if (node.kind === 'oneOf') {
+        for (const variant of node.variants) next.push(...selectedFieldNodes(variant, segment, definitions, path));
+        continue;
+      }
+      fail(path, 'field selectors require object, union, or oneOf array items');
+    }
+    nodes = next;
+  }
+  return nodes;
+}
+
+function isOrderableSelectorNode(rawNode, definitions, path) {
+  const node = dereferenceNode(rawNode, definitions, path);
+  if (node.kind === 'nullable') return isOrderableSelectorNode(node.inner, definitions, path);
+  return ['string', 'integer', 'boolean', 'enum'].includes(node.kind);
+}
+
+function validateArrayConstraintSelectors(node, path, definitions) {
+  switch (node.kind) {
+    case 'array':
+      for (const selectorKey of ['uniqueBy', 'orderBy']) {
+        for (const [index, selector] of (node[selectorKey] ?? []).entries()) {
+          const selectorPath = `${path}.${selectorKey}[${index}]`;
+          if (selector === '$' && selectorKey !== 'orderBy') {
+            fail(selectorPath, 'the $ selector is supported only by orderBy');
+          }
+          const selected = selectedFieldNodes(node.items, selector, definitions, selectorPath);
+          if (selectorKey === 'orderBy' && selector !== '$') {
+            for (const selectedNode of selected) {
+              if (!isOrderableSelectorNode(selectedNode, definitions, selectorPath)) {
+                fail(selectorPath, 'orderBy selectors must resolve to string, integer, boolean, enum, or nullable forms of those scalars');
+              }
+            }
+          }
+        }
+      }
+      validateArrayConstraintSelectors(node.items, `${path}.items`, definitions);
+      break;
+    case 'nullable':
+      validateArrayConstraintSelectors(node.inner, `${path}.inner`, definitions);
+      break;
+    case 'map':
+      validateArrayConstraintSelectors(node.values, `${path}.values`, definitions);
+      break;
+    case 'object':
+      for (const [index, field] of node.fields.entries()) {
+        if (!field.required && dereferenceNode(field.type, definitions, `${path}.fields[${index}].type`).kind === 'nullable') {
+          fail(`${path}.fields[${index}].type`, 'nullable fields must be required so absence and null remain distinct');
+        }
+        validateArrayConstraintSelectors(field.type, `${path}.fields[${index}].type`, definitions);
+      }
+      break;
+    case 'union':
+      for (const [variantIndex, variant] of node.variants.entries()) {
+        for (const [fieldIndex, field] of variant.fields.entries()) {
+          if (!field.required && dereferenceNode(
+            field.type,
+            definitions,
+            `${path}.variants[${variantIndex}].fields[${fieldIndex}].type`,
+          ).kind === 'nullable') {
+            fail(
+              `${path}.variants[${variantIndex}].fields[${fieldIndex}].type`,
+              'nullable fields must be required so absence and null remain distinct',
+            );
+          }
+          validateArrayConstraintSelectors(
+            field.type,
+            `${path}.variants[${variantIndex}].fields[${fieldIndex}].type`,
+            definitions,
+          );
+        }
+      }
+      break;
+    case 'oneOf':
+      for (const [index, variant] of node.variants.entries()) {
+        validateArrayConstraintSelectors(variant, `${path}.variants[${index}]`, definitions);
+      }
+      break;
+    case 'ref':
+    case 'string':
+    case 'integer':
+    case 'boolean':
+    case 'enum':
+      break;
+    default:
+      fail(path, `unhandled node kind ${node.kind}`);
+  }
+}
+
 function addGlobalId(seen, id, path) {
   if (seen.has(id)) fail(path, `identifier ${JSON.stringify(id)} is already used at ${seen.get(id)}`);
   seen.set(id, path);
 }
 
-function simpleInventory(values, name, globalIds) {
+function simpleInventory(values, name, globalIds, {executableBinding = false, metadata = [], owners} = {}) {
   const ids = new Map();
   for (const [index, raw] of requireArray(values, name).entries()) {
     const path = `${name}[${index}]`;
-    const item = requireKeys(raw, ['id'], ['id'], path);
+    const allowed = executableBinding
+      ? ['id', 'ownerRef', 'path', 'command', 'evidence']
+      : ['id', ...metadata];
+    const item = requireKeys(raw, allowed, executableBinding
+      ? ['id', 'ownerRef', 'path', 'command', 'evidence']
+      : ['id'], path);
     const id = requireId(item.id, `${path}.id`);
+    if (executableBinding) {
+      requireId(item.ownerRef, `${path}.ownerRef`);
+      if (!owners?.has(item.ownerRef)) fail(`${path}.ownerRef`, `unknown owner ${item.ownerRef}`);
+      requireString(item.path, `${path}.path`);
+      requireString(item.command, `${path}.command`);
+      requireString(item.evidence, `${path}.evidence`);
+      validateExecutableBinding(item, path, {test: name.endsWith('executableTests')});
+    }
     addGlobalId(globalIds, id, `${path}.id`);
     ids.set(id, item);
   }
   return ids;
+}
+
+function validateRepoRelativePath(value, pathName, {file = false, mustExist = true} = {}) {
+  if (value.startsWith('/') || value.includes('\\') || value.split('/').includes('..')) {
+    fail(pathName, 'must be a repository-relative path');
+  }
+  const resolved = path.resolve(REPOSITORY_ROOT, value);
+  if (!resolved.startsWith(`${REPOSITORY_ROOT}${path.sep}`) || mustExist && !existsSync(resolved)) {
+    fail(pathName, `path does not exist: ${value}`);
+  }
+  if (file) {
+    if (!path.extname(resolved)) fail(pathName, 'must name a file');
+    let stat;
+    try {
+      stat = lstatSync(resolved);
+    } catch {
+      stat = null;
+    }
+    if (!stat || !stat.isFile() || stat.isSymbolicLink()) {
+      fail(pathName, 'must name an existing regular non-symlink file');
+    }
+  }
+  return resolved;
+}
+
+function validateEvidenceReference(value, pathName) {
+  const evidenceParts = value.split('#');
+  if (evidenceParts.length > 2 || evidenceParts[0].length === 0) {
+    fail(pathName, 'expected path or path#anchor');
+  }
+  const evidencePath = evidenceParts[0];
+  const resolvedEvidence = validateRepoRelativePath(evidencePath, pathName, {file: true});
+  const anchor = evidenceParts.length === 2 ? evidenceParts[1] : null;
+  if (anchor !== null && (anchor.length === 0 || !readFileSync(resolvedEvidence, 'utf8').includes(anchor))) {
+    fail(pathName, `anchor is not present in ${evidencePath}`);
+  }
+  return {evidencePath, resolvedEvidence};
+}
+
+function validateExecutableBinding(item, pathName, {test = false} = {}) {
+  const {evidencePath} = validateEvidenceReference(item.evidence, `${pathName}.evidence`);
+  if (!item.command.includes(evidencePath)) {
+    fail(`${pathName}.command`, `must invoke evidence path ${evidencePath}`);
+  }
+  if (test && item.path !== evidencePath) {
+    fail(`${pathName}.path`, `must equal evidence path ${evidencePath}`);
+  } else {
+    validateRepoRelativePath(item.path, `${pathName}.path`, {mustExist: false});
+  }
 }
 
 function validateZeroSemantics(value, path) {
@@ -174,15 +484,20 @@ function validateZeroSemantics(value, path) {
 }
 
 export function validateInputs(registryInput, vectorsInput) {
+  const activeProfileIdHint = registryInput?.activeProfileId;
+  const pvmcRegistry = activeProfileIdHint === 'pvmc1.phone-core.v1';
   const registry = requireKeys(
     registryInput,
     [
       'formatVersion', 'activeProfileId', 'profiles', 'definitions', 'owners',
       'consumers', 'executableTests', 'hardRules', 'vectorSets',
+      ...DIGEST_AUTHORITY_KEYS,
     ],
     [
       'formatVersion', 'activeProfileId', 'profiles', 'definitions', 'owners',
       'consumers', 'executableTests', 'hardRules', 'vectorSets',
+      'digestDerivations',
+      ...(pvmcRegistry ? DIGEST_AUTHORITY_KEYS.slice(1) : []),
     ],
     'registry',
   );
@@ -296,31 +611,61 @@ export function validateInputs(registryInput, vectorsInput) {
   for (const [index, rootRef] of activeProfile.rootTypeRefs.entries()) {
     collectDefinition(rootRef, `registry.profiles[active].rootTypeRefs[${index}]`);
   }
+  for (const id of activeDefinitionIds) {
+    validateArrayConstraintSelectors(
+      definitions.get(id).node,
+      `registry.definitions[${JSON.stringify(id)}].node`,
+      definitions,
+    );
+  }
   validateGeneratedNames(activeDefinitionIds, definitions);
 
-  const owners = simpleInventory(registry.owners, 'registry.owners', globalIds);
-  const consumers = simpleInventory(registry.consumers, 'registry.consumers', globalIds);
-  const executableTests = simpleInventory(registry.executableTests, 'registry.executableTests', globalIds);
+  const owners = simpleInventory(registry.owners, 'registry.owners', globalIds, {metadata: ['role', 'path']});
+  if (pvmcRegistry) {
+    for (const [id, owner] of owners) {
+      validateRepoRelativePath(owner.path, `registry.owners.${id}.path`);
+    }
+  }
+  const consumers = simpleInventory(registry.consumers, 'registry.consumers', globalIds, {
+    executableBinding: pvmcRegistry,
+    owners,
+  });
+  const executableTests = simpleInventory(registry.executableTests, 'registry.executableTests', globalIds, {
+    executableBinding: pvmcRegistry,
+    owners,
+  });
+  const digestAuthority = pvmcRegistry
+    ? validateDigestAuthority(registry, {
+        activeProfileId,
+        activeDefinitionIds,
+        definitions,
+        owners,
+      })
+    : {
+        digestDerivations: requireArray(registry.digestDerivations, 'registry.digestDerivations'),
+        digestEqualityReferences: [],
+        digestDependencyEdges: [],
+        digestPostDerivationGuards: [],
+        digestDerivationsById: new Map(),
+      };
 
   const hardRules = new Map();
   for (const [index, raw] of requireArray(registry.hardRules, 'registry.hardRules').entries()) {
     const path = `registry.hardRules[${index}]`;
-    const base = requireKeys(raw, [
+    const commonFields = [
       'id', 'profileId', 'ownerRef', 'consumerRef', 'executableTestRef',
       'failureReason', 'zeroSemantics',
-    ], ['id', 'profileId'], path);
+    ];
+    const base = requireKeys(raw, [...commonFields, 'oracleRef', 'evidenceRef'], ['id', 'profileId'], path);
     const id = requireId(base.id, `${path}.id`);
     addGlobalId(globalIds, id, `${path}.id`);
     const profileId = requireId(base.profileId, `${path}.profileId`);
     if (!profiles.has(profileId)) fail(`${path}.profileId`, `unknown profile ${profileId}`);
     if (profileId !== activeProfileId) continue;
-    requireKeys(raw, [
-      'id', 'profileId', 'ownerRef', 'consumerRef', 'executableTestRef',
-      'failureReason', 'zeroSemantics',
-    ], [
-      'id', 'profileId', 'ownerRef', 'consumerRef', 'executableTestRef',
-      'failureReason', 'zeroSemantics',
-    ], path);
+    const activeFields = pvmcRegistry
+      ? [...commonFields, 'oracleRef', 'evidenceRef']
+      : commonFields;
+    requireKeys(raw, activeFields, activeFields, path);
     const ownerRef = requireId(raw.ownerRef, `${path}.ownerRef`);
     const consumerRef = requireId(raw.consumerRef, `${path}.consumerRef`);
     const executableTestRef = requireId(raw.executableTestRef, `${path}.executableTestRef`);
@@ -332,6 +677,11 @@ export function validateInputs(registryInput, vectorsInput) {
       fail(`${path}.failureReason`, 'expected a stable uppercase reason other than NONE');
     }
     validateZeroSemantics(raw.zeroSemantics, `${path}.zeroSemantics`);
+    if (pvmcRegistry) {
+      requireId(raw.oracleRef, `${path}.oracleRef`);
+      requireString(raw.evidenceRef, `${path}.evidenceRef`);
+      validateEvidenceReference(raw.evidenceRef, `${path}.evidenceRef`);
+    }
     hardRules.set(id, raw);
   }
   if (hardRules.size === 0) {
@@ -359,7 +709,7 @@ export function validateInputs(registryInput, vectorsInput) {
     const path = `vectors.vectors[${index}]`;
     const base = requireKeys(raw, [
       'id', 'profileId', 'vectorSetRef', 'ruleRef', 'typeRef', 'valid',
-      'expectedReason', 'expectedZeroSideEffects', 'value',
+      'expectedReason', 'expectedTypeError', 'expectedZeroSideEffects', 'expectedPostState', 'value',
     ], ['id', 'profileId'], path);
     const id = requireId(base.id, `${path}.id`);
     addGlobalId(globalIds, id, `${path}.id`);
@@ -368,7 +718,7 @@ export function validateInputs(registryInput, vectorsInput) {
     if (profileId !== activeProfileId) continue;
     const vector = requireKeys(raw, [
       'id', 'profileId', 'vectorSetRef', 'ruleRef', 'typeRef', 'valid',
-      'expectedReason', 'expectedZeroSideEffects', 'value',
+      'expectedReason', 'expectedTypeError', 'expectedZeroSideEffects', 'expectedPostState', 'value',
     ], [
       'id', 'profileId', 'vectorSetRef', 'ruleRef', 'typeRef', 'valid',
       'expectedReason', 'value',
@@ -382,12 +732,27 @@ export function validateInputs(registryInput, vectorsInput) {
     if (!activeDefinitionIds.has(typeRef)) fail(`${path}.typeRef`, `type ${typeRef} is not in the active closure`);
     if (typeof vector.valid !== 'boolean') fail(`${path}.valid`, 'expected a boolean');
     const expectedReason = requireString(vector.expectedReason, `${path}.expectedReason`);
+    const valueErrors = validateValue(typeRef, vector.value, { definitions });
+    const expectedTypeError = Object.hasOwn(vector, 'expectedTypeError')
+      ? requireString(vector.expectedTypeError, `${path}.expectedTypeError`)
+      : null;
+    if (expectedTypeError !== null) {
+      if (!pvmcRegistry) fail(`${path}.expectedTypeError`, 'is reserved for the active PVMC Registry');
+      if (vector.valid) fail(`${path}.expectedTypeError`, 'valid vectors cannot expect a type error');
+      if (expectedTypeError !== 'NO_ONE_OF_VARIANT') {
+        fail(`${path}.expectedTypeError`, 'only NO_ONE_OF_VARIANT is supported');
+      }
+      if (valueErrors.length !== 1 || !valueErrors[0].includes('NO_ONE_OF_VARIANT')) {
+        fail(`${path}.value`, `expected exact NO_ONE_OF_VARIANT, got ${valueErrors[0] ?? 'no type error'}`);
+      }
+    } else if (pvmcRegistry && valueErrors.length > 0) {
+      fail(`${path}.value`, `vector is not executable: ${valueErrors[0]}`);
+    }
     if (vector.valid) {
       if (expectedReason !== 'NONE') fail(`${path}.expectedReason`, 'valid vectors must expect NONE');
       if (Object.hasOwn(vector, 'expectedZeroSideEffects')) {
         fail(`${path}.expectedZeroSideEffects`, 'valid vectors must not declare failure side effects');
       }
-      const valueErrors = validateValue(typeRef, vector.value, { definitions });
       if (valueErrors.length > 0) fail(`${path}.value`, `valid vector fails its type: ${valueErrors[0]}`);
     } else {
       if (expectedReason !== rule.failureReason) {
@@ -399,6 +764,32 @@ export function validateInputs(registryInput, vectorsInput) {
       validateZeroSemantics(vector.expectedZeroSideEffects, `${path}.expectedZeroSideEffects`);
       if (!jsonEqual(vector.expectedZeroSideEffects, rule.zeroSemantics)) {
         fail(`${path}.expectedZeroSideEffects`, `must exactly match ${ruleRef}.zeroSemantics`);
+      }
+      if (pvmcRegistry) {
+        if (vector.expectedPostState !== 'UNCHANGED') {
+          fail(`${path}.expectedPostState`, 'negative vectors must expect UNCHANGED post-state');
+        }
+        let outcome;
+        try {
+          outcome = evaluateSemanticRule(vector.value, rule.oracleRef);
+        } catch (error) {
+          fail(`${path}.value`, `semantic oracle failed: ${error.message}`);
+        }
+        if (outcome.valid !== false || outcome.reason !== expectedReason || outcome.postState !== 'UNCHANGED' ||
+            !jsonEqual(outcome.sideEffects ?? {}, vector.expectedZeroSideEffects)) {
+          fail(`${path}.value`, `semantic oracle mismatch: expected ${expectedReason}/UNCHANGED/zero, got ${outcome.reason}/${outcome.postState}`);
+        }
+      }
+    }
+    if (pvmcRegistry && vector.valid) {
+      let outcome;
+      try {
+        outcome = evaluateSemanticRule(vector.value, rule.oracleRef);
+      } catch (error) {
+        fail(`${path}.value`, `semantic oracle failed: ${error.message}`);
+      }
+      if (!outcome.valid || outcome.reason !== 'NONE' || outcome.postState !== 'APPLIED') {
+        fail(`${path}.value`, `semantic oracle mismatch: expected NONE/APPLIED, got ${outcome.reason}/${outcome.postState}`);
       }
     }
     activeVectors.push(vector);
@@ -417,7 +808,7 @@ export function validateInputs(registryInput, vectorsInput) {
     }
   }
 
-  return {
+  const model = {
     registry,
     vectorsDocument,
     activeProfile,
@@ -430,31 +821,134 @@ export function validateInputs(registryInput, vectorsInput) {
     hardRules,
     vectorSets,
     activeVectors,
+    ...digestAuthority,
   };
+  discoverDigestPreimages(model);
+  return model;
+}
+
+function runtimeSelectorValue(value, selector, path) {
+  let current = value;
+  for (const segment of selector.split('.')) {
+    if (!isObject(current) || !Object.hasOwn(current, segment)) {
+      throw new TypeError(`${path}.${selector} is required by the array selector`);
+    }
+    current = current[segment];
+  }
+  return current;
+}
+
+function selectorEnumOrder(itemNode, selector, definitions, path) {
+  const values = [];
+  const seen = new Set();
+  for (const rawNode of selectedFieldNodes(itemNode, selector, definitions, path)) {
+    let node = dereferenceNode(rawNode, definitions, path);
+    if (node.kind === 'nullable') node = dereferenceNode(node.inner, definitions, path);
+    if (node.kind !== 'enum') continue;
+    for (const value of node.values) {
+      if (seen.has(value)) continue;
+      seen.add(value);
+      values.push(value);
+    }
+  }
+  return values.length > 0 ? values : null;
+}
+
+function compareConstraintScalar(left, right, enumOrder) {
+  if (left === right) return 0;
+  if (left === null) return -1;
+  if (right === null) return 1;
+  if (enumOrder && typeof left === 'string' && typeof right === 'string') {
+    const leftRank = enumOrder.indexOf(left);
+    const rightRank = enumOrder.indexOf(right);
+    if (leftRank !== -1 && rightRank !== -1) return leftRank - rightRank;
+  }
+  if (typeof left === 'number' && typeof right === 'number') return left - right;
+  if (typeof left === 'boolean' && typeof right === 'boolean') return left ? 1 : -1;
+  if (typeof left === 'string' && typeof right === 'string') return compareUtf16(left, right);
+  throw new TypeError('orderBy values have incompatible scalar types');
+}
+
+function compareCanonicalBytes(left, right) {
+  return Buffer.compare(
+    Buffer.from(canonicalize(left), 'utf8'),
+    Buffer.from(canonicalize(right), 'utf8'),
+  );
+}
+
+function compareArrayEntries(left, right, selectors, itemNode, definitions, path) {
+  for (const selector of selectors) {
+    const comparison = selector === '$'
+      ? compareCanonicalBytes(left, right)
+      : compareConstraintScalar(
+        runtimeSelectorValue(left, selector, path),
+        runtimeSelectorValue(right, selector, path),
+        selectorEnumOrder(itemNode, selector, definitions, `${path}.${selector}`),
+      );
+    if (comparison !== 0) return comparison;
+  }
+  return 0;
 }
 
 export function validateValue(typeRef, value, model) {
   const errors = [];
+  try {
+    canonicalize(value);
+  } catch (error) {
+    return [`$ failed strict I-JSON admission: ${error.message}`];
+  }
   const visit = (node, current, path, stack) => {
     switch (node.kind) {
       case 'string':
-        if (typeof current !== 'string') errors.push(`${path} must be a string`);
+        if (typeof current !== 'string') {
+          errors.push(`${path} must be a string`);
+        } else {
+          if (Object.hasOwn(node, 'const') && current !== node.const) {
+            errors.push(`${path} must equal ${JSON.stringify(node.const)}`);
+          }
+          if (node.pattern !== undefined && !new RegExp(node.pattern, 'u').test(current)) {
+            errors.push(`${path} must match ${JSON.stringify(node.pattern)}`);
+          }
+        }
+        break;
+      case 'nullable':
+        if (current !== null) visit(node.inner, current, path, stack);
         break;
       case 'integer':
-        if (!Number.isSafeInteger(current)) errors.push(`${path} must be a safe integer`);
+        if (!Number.isSafeInteger(current)) {
+          errors.push(`${path} must be a safe integer`);
+        } else {
+          const minimum = node.minimum ?? Number.MIN_SAFE_INTEGER;
+          const maximum = node.maximum ?? Number.MAX_SAFE_INTEGER;
+          if (current < minimum || current > maximum) {
+            errors.push(`${path} must be between ${minimum} and ${maximum}`);
+          }
+          if (Object.hasOwn(node, 'const') && current !== node.const) {
+            errors.push(`${path} must equal ${node.const}`);
+          }
+        }
         break;
       case 'boolean':
-        if (typeof current !== 'boolean') errors.push(`${path} must be a boolean`);
+        if (typeof current !== 'boolean') {
+          errors.push(`${path} must be a boolean`);
+        } else if (Object.hasOwn(node, 'const') && current !== node.const) {
+          errors.push(`${path} must equal ${node.const}`);
+        }
         break;
       case 'enum':
         if (typeof current !== 'string' || !node.values.includes(current)) {
           errors.push(`${path} must be one of ${node.values.join(', ')}`);
+        } else if (Object.hasOwn(node, 'const') && current !== node.const) {
+          errors.push(`${path} must equal ${JSON.stringify(node.const)}`);
         }
         break;
       case 'ref': {
         const definition = model.definitions.get(node.target);
         if (!definition) {
           errors.push(`${path} references unknown type ${node.target}`);
+        } else if (node.target === 'Sha256Hex64' &&
+            (typeof current !== 'string' || !SHA256_HEX64.test(current))) {
+          errors.push(`${path} must be a lowercase SHA-256 hex digest`);
         } else if (stack.length > 512) {
           errors.push(`${path} exceeds the reference depth limit`);
         } else {
@@ -463,8 +957,53 @@ export function validateValue(typeRef, value, model) {
         break;
       }
       case 'array':
-        if (!Array.isArray(current)) errors.push(`${path} must be an array`);
-        else current.forEach((entry, index) => visit(node.items, entry, `${path}[${index}]`, stack));
+        if (!Array.isArray(current)) {
+          errors.push(`${path} must be an array`);
+        } else {
+          const minimum = node.minItems ?? 0;
+          const maximum = node.maxItems ?? Number.MAX_SAFE_INTEGER;
+          if (current.length < minimum || current.length > maximum) {
+            errors.push(`${path} must contain between ${minimum} and ${maximum} items`);
+          }
+          for (let index = 0; index < current.length; index += 1) {
+            visit(node.items, current[index], `${path}[${index}]`, stack);
+          }
+          try {
+            if (node.uniqueItems) {
+              const seen = new Set();
+              for (const [index, entry] of current.entries()) {
+                const key = canonicalize(entry);
+                if (seen.has(key)) errors.push(`${path}[${index}] duplicates an earlier item`);
+                seen.add(key);
+              }
+            }
+            if (node.uniqueBy) {
+              const seen = new Set();
+              for (const [index, entry] of current.entries()) {
+                const key = canonicalize(node.uniqueBy.map((selector) =>
+                  runtimeSelectorValue(entry, selector, `${path}[${index}]`)));
+                if (seen.has(key)) errors.push(`${path}[${index}] duplicates uniqueBy fields ${node.uniqueBy.join(', ')}`);
+                seen.add(key);
+              }
+            }
+            if (node.orderBy) {
+              for (let index = 1; index < current.length; index += 1) {
+                if (compareArrayEntries(
+                  current[index - 1],
+                  current[index],
+                  node.orderBy,
+                  node.items,
+                  model.definitions,
+                  `${path}[${index}]`,
+                ) > 0) {
+                  errors.push(`${path}[${index}] is out of order by ${node.orderBy.join(', ')}`);
+                }
+              }
+            }
+          } catch (error) {
+            errors.push(`${path} has invalid collection metadata: ${error.message}`);
+          }
+        }
         break;
       case 'map':
         if (!isObject(current)) errors.push(`${path} must be an object map`);
@@ -486,6 +1025,21 @@ export function validateValue(typeRef, value, model) {
         for (const key of Object.keys(current)) {
           if (!fields.has(key)) errors.push(`${path}.${key} is not allowed`);
         }
+        break;
+      }
+      case 'oneOf': {
+        let syntheticTypeRef = '__GeneratedOneOfBranch';
+        while (model.definitions.has(syntheticTypeRef)) syntheticTypeRef += '_';
+        let matches = 0;
+        for (const variant of node.variants) {
+          const definitions = new Map(model.definitions);
+          definitions.set(syntheticTypeRef, {node: variant, profiles: [model.activeProfileId]});
+          if (validateValue(syntheticTypeRef, current, {...model, definitions}).length === 0) {
+            matches += 1;
+          }
+        }
+        if (matches === 0) errors.push(`${path} NO_ONE_OF_VARIANT: must match one oneOf variant`);
+        if (matches > 1) errors.push(`${path} AMBIGUOUS_ONE_OF_VARIANT: matches ${matches} oneOf variants`);
         break;
       }
       case 'union': {
@@ -516,6 +1070,10 @@ export function validateValue(typeRef, value, model) {
   };
   const definition = model.definitions.get(typeRef);
   if (!definition) return [`$ references unknown type ${typeRef}`];
+  if (typeRef === 'Sha256Hex64' &&
+      (typeof value !== 'string' || !SHA256_HEX64.test(value))) {
+    errors.push('$ must be a lowercase SHA-256 hex digest');
+  }
   visit(definition.node, value, '$', [typeRef]);
   return errors;
 }

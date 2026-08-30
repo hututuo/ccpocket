@@ -16,6 +16,7 @@ import {
 import path from 'node:path';
 
 import { canonicalJson, digestBytes, digestJson } from './canonical.mjs';
+import { digestAuthoritySource } from './b1-digest-authority.mjs';
 import {
   CANONICALIZATION_PROFILE,
   discoverDigestPreimages,
@@ -402,6 +403,7 @@ function activeSource(model) {
     hardRules,
     vectorSets: [...model.vectorSets.values()].sort(byId),
     vectors: [...model.activeVectors].sort(byId),
+    ...digestAuthoritySource(model),
   };
 }
 

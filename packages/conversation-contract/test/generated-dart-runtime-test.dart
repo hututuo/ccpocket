@@ -91,6 +91,12 @@ DigestResult evaluate(String typeId, Object? value) {
         bytes: canonicalBytesGapRepairIntentPreimageV1(typed),
         digest: digestGapRepairIntentPreimageV1(typed),
       );
+    case 'FixtureUntaggedPreimageV1':
+      final typed = decodeFixtureUntaggedPreimageV1(value);
+      return (
+        bytes: canonicalBytesFixtureUntaggedPreimageV1(typed),
+        digest: digestFixtureUntaggedPreimageV1(typed),
+      );
     default:
       fail('missing typed helper for $typeId');
   }
@@ -209,6 +215,120 @@ void main() {
     evaluate('OperationFingerprintPreimageV1', tampered).digest !=
         operation['sha256'],
     'valid tamper changes digest',
+  );
+
+  final constrained = <String, Object?>{
+    'nullableValue': null,
+    'fixed': 'FIXED',
+    'version': 1,
+    'bounded': 2,
+    'disabled': false,
+    'items': <Object?>[
+      {
+        'identity': {'id': 'a'},
+        'ordinal': 0,
+        'label': 'item-a',
+      },
+      {
+        'identity': {'id': 'b'},
+        'ordinal': 1,
+        'label': 'item-b',
+      },
+    ],
+    'tags': <Object?>['alpha', 'beta'],
+  };
+  final decodedConstrained = decodeFixtureConstrainedRecord(constrained);
+  expect(
+    decodedConstrained.nullableValue == null &&
+        decodedConstrained.items.length == 2,
+    'required nullable and constrained collection decode',
+  );
+  expect(
+    decodeFixtureConstrainedRecord({...constrained, 'nullableValue': 'value-7'})
+            .nullableValue ==
+        'value-7',
+    'required nullable non-null branch',
+  );
+  expectThrows(
+    () => decodeFixtureConstrainedRecord(
+      {...constrained}..remove('nullableValue'),
+    ),
+    'required nullable absence',
+  );
+  expectThrows(
+    () => decodeFixtureConstrainedRecord({...constrained, 'fixed': 'WRONG'}),
+    'string const',
+  );
+  expectThrows(
+    () => decodeFixtureConstrainedRecord({...constrained, 'bounded': 4}),
+    'integer maximum',
+  );
+  expectThrows(
+    () => decodeFixtureConstrainedRecord({...constrained, 'disabled': true}),
+    'boolean const',
+  );
+  expectThrows(
+    () =>
+        decodeFixtureConstrainedRecord({...constrained, 'items': <Object?>[]}),
+    'minItems',
+  );
+  expectThrows(
+    () => decodeFixtureConstrainedRecord({
+      ...constrained,
+      'items': <Object?>[
+        (constrained['items']! as List<Object?>)[0],
+        {
+          'identity': {'id': 'a'},
+          'ordinal': 1,
+          'label': 'item-b',
+        },
+      ],
+    }),
+    'uniqueBy',
+  );
+  expectThrows(
+    () => decodeFixtureConstrainedRecord({
+      ...constrained,
+      'items': (constrained['items']! as List<Object?>).reversed.toList(),
+    }),
+    'orderBy',
+  );
+  expectThrows(
+    () => decodeFixtureConstrainedRecord({
+      ...constrained,
+      'tags': <Object?>['alpha', 'alpha'],
+    }),
+    'uniqueItems',
+  );
+
+  expect(
+    (encodeFixtureOneOf(decodeFixtureOneOf({'left': 'ok'})) as Map)['left'] ==
+        'ok',
+    'oneOf left branch',
+  );
+  expect(
+    (encodeFixtureOneOf(decodeFixtureOneOf({'right': 1})) as Map)['right'] == 1,
+    'oneOf right branch',
+  );
+  expectThrows(
+    () => decodeFixtureOneOf(<String, Object?>{}),
+    'oneOf no branch',
+  );
+  expectThrows(
+    () => decodeFixtureAmbiguousOneOf('a'),
+    'oneOf ambiguous branch',
+  );
+  final canonicalOrder = <Object?>[
+    {'left': 'a'},
+    {'right': 1},
+  ];
+  expect(
+    decodeFixtureCanonicalOrderSet(canonicalOrder).length == 2,
+    'whole-item canonical order',
+  );
+  expectThrows(
+    () => decodeFixtureCanonicalOrderSet(canonicalOrder.reversed.toList()),
+    'whole-item canonical order rejection',
   );
 
   final manifest = cases.firstWhere(

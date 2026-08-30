@@ -157,6 +157,16 @@
       "sha256": "657637ada1310808559a32916b543c38cfdbcaa64d293213b6b62322988a756d"
     },
     {
+      "id": "fixture-untagged-nullable-preimage",
+      "typeId": "FixtureUntaggedPreimageV1",
+      "value": {
+        "digestDomain": "ccpocket.fixture-untagged.v1",
+        "left": null
+      },
+      "canonicalUtf8Hex": "7b22646967657374446f6d61696e223a226363706f636b65742e666978747572652d756e7461676765642e7631222c226c656674223a6e756c6c7d",
+      "sha256": "2044dea5ec075774f4d22b38c85fd02ed70b98970b00aaded3dcdd94c65d00ef"
+    },
+    {
       "id": "gap-repair-intent",
       "typeId": "GapRepairIntentPreimageV1",
       "value": {

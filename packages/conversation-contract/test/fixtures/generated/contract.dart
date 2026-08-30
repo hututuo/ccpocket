@@ -1,5 +1,5 @@
-// @generated from conversation contract 07db48c0fa1b872cc1ad12deb7a1454dccf61ff8414727f2e02d985ecf3cf1b2; DO NOT EDIT.
-// ignore_for_file: unnecessary_cast
+// @generated from conversation contract cdd9b5622b7af2917865f30af72cb96a976289ab0569f5464b5dba1b9ba15d6d; DO NOT EDIT.
+// ignore_for_file: unnecessary_cast, unused_element, unused_element_parameter
 
 import 'dart:convert';
 import 'dart:typed_data';
@@ -31,6 +31,23 @@ String _expectString(Object? value, String path) {
   return value;
 }
 
+String _expectConstrainedString(
+  Object? value,
+  String path, {
+  String? constValue,
+  String? pattern,
+}) {
+  final text = _expectString(value, path);
+  if (constValue != null && text != constValue)
+    throw FormatException('$path: invalid const');
+  if (pattern != null && !RegExp(pattern).hasMatch(text))
+    throw FormatException('$path: pattern mismatch');
+  return text;
+}
+
+String _expectConstString(Object? value, String path, String constValue) =>
+    _expectConstrainedString(value, path, constValue: constValue);
+
 String _expectSha256Hex64(Object? value, String path) {
   final text = _expectString(value, path);
   if (!_sha256Hex64.hasMatch(text))
@@ -52,14 +69,164 @@ int _expectInt(Object? value, String path) {
   throw FormatException('$path: expected safe integer');
 }
 
+int _expectConstrainedInt(
+  Object? value,
+  String path, {
+  int? constValue,
+  int minimum = -9007199254740991,
+  int maximum = 9007199254740991,
+}) {
+  final integer = _expectInt(value, path);
+  if (integer < minimum || integer > maximum)
+    throw FormatException('$path: integer outside bounds');
+  if (constValue != null && integer != constValue)
+    throw FormatException('$path: invalid const');
+  return integer;
+}
+
 bool _expectBool(Object? value, String path) {
   if (value is! bool) throw FormatException('$path: expected boolean');
   return value;
 }
 
+bool _expectConstBool(Object? value, String path, bool constValue) {
+  final boolean = _expectBool(value, path);
+  if (boolean != constValue) throw FormatException('$path: invalid const');
+  return boolean;
+}
+
 List<Object?> _expectList(Object? value, String path) {
   if (value is! List) throw FormatException('$path: expected array');
   return value.cast<Object?>();
+}
+
+final class _CollectionSelector {
+  const _CollectionSelector(this.path, [this.enumOrder]);
+
+  final String path;
+  final List<String>? enumOrder;
+}
+
+Object? _selectorValue(Object? value, String selector, String path) {
+  var current = value;
+  for (final segment in selector.split('.')) {
+    final object = _expectMap(current, path);
+    if (!object.containsKey(segment))
+      throw FormatException('$path.$segment: required collection selector');
+    current = object[segment];
+  }
+  return current;
+}
+
+int _compareConstraintScalar(
+  Object? left,
+  Object? right,
+  List<String>? enumOrder,
+) {
+  if (left == right) return 0;
+  if (left == null) return -1;
+  if (right == null) return 1;
+  if (enumOrder != null && left is String && right is String) {
+    final leftRank = enumOrder.indexOf(left);
+    final rightRank = enumOrder.indexOf(right);
+    if (leftRank >= 0 && rightRank >= 0) return leftRank.compareTo(rightRank);
+  }
+  if (left is int && right is int) return left.compareTo(right);
+  if (left is bool && right is bool) return left ? 1 : -1;
+  if (left is String && right is String) return _compareUtf16(left, right);
+  throw const FormatException('orderBy values have incompatible scalar types');
+}
+
+int _compareCollectionEntries(
+  Object? left,
+  Object? right,
+  List<_CollectionSelector> selectors,
+  String path,
+) {
+  for (final selector in selectors) {
+    final comparison = selector.path == r'$'
+        ? _compareCanonicalBytes(left, right)
+        : _compareConstraintScalar(
+            _selectorValue(left, selector.path, path),
+            _selectorValue(right, selector.path, path),
+            selector.enumOrder,
+          );
+    if (comparison != 0) return comparison;
+  }
+  return 0;
+}
+
+int _compareCanonicalBytes(Object? left, Object? right) {
+  final leftBytes = utf8.encode(_canonicalJson(left, 0, _CanonicalBudget()));
+  final rightBytes = utf8.encode(_canonicalJson(right, 0, _CanonicalBudget()));
+  final length = leftBytes.length < rightBytes.length
+      ? leftBytes.length
+      : rightBytes.length;
+  for (var index = 0; index < length; index += 1) {
+    final difference = leftBytes[index] - rightBytes[index];
+    if (difference != 0) return difference;
+  }
+  return leftBytes.length.compareTo(rightBytes.length);
+}
+
+List<T> _decodeList<T>(
+  Object? value,
+  String path,
+  T Function(Object?) decode, {
+  int minItems = 0,
+  int maxItems = 9007199254740991,
+  bool uniqueItems = false,
+  List<String> uniqueBy = const [],
+  List<_CollectionSelector> orderBy = const [],
+  Object? Function(T)? snapshot,
+}) {
+  final input = _expectList(value, path);
+  if (input.length < minItems || input.length > maxItems) {
+    throw FormatException(
+      '$path: expected between $minItems and $maxItems items',
+    );
+  }
+  final result = input.map(decode).toList(growable: false);
+  if (!uniqueItems && uniqueBy.isEmpty && orderBy.isEmpty) return result;
+  if (snapshot == null)
+    throw StateError('$path: collection constraint snapshot is missing');
+  final snapshots = result.map(snapshot).toList(growable: false);
+  if (uniqueItems) {
+    final seen = <String>{};
+    for (var index = 0; index < snapshots.length; index += 1) {
+      final key = _canonicalJson(snapshots[index], 0, _CanonicalBudget());
+      if (!seen.add(key))
+        throw FormatException('$path[$index]: duplicate array item');
+    }
+  }
+  if (uniqueBy.isNotEmpty) {
+    final seen = <String>{};
+    for (var index = 0; index < snapshots.length; index += 1) {
+      final fields = uniqueBy
+          .map(
+            (selector) =>
+                _selectorValue(snapshots[index], selector, '$path[$index]'),
+          )
+          .toList(growable: false);
+      final key = _canonicalJson(fields, 0, _CanonicalBudget());
+      if (!seen.add(key))
+        throw FormatException('$path[$index]: duplicate uniqueBy fields');
+    }
+  }
+  if (orderBy.isNotEmpty) {
+    for (var index = 1; index < snapshots.length; index += 1) {
+      if (_compareCollectionEntries(
+            snapshots[index - 1],
+            snapshots[index],
+            orderBy,
+            '$path[$index]',
+          ) >
+          0) {
+        throw FormatException('$path[$index]: collection is out of order');
+      }
+    }
+  }
+  return result;
 }
 
 Map<String, Object?> _expectMap(Object? value, String path) {
@@ -155,6 +322,7 @@ final class _CanonicalBudget {
 
 String _canonicalJson(Object? value, int depth, _CanonicalBudget budget) {
   budget.enter(depth);
+  if (value == null) return 'null';
   if (value is String) return _canonicalString(value);
   if (value is int) return _expectInt(value, r'$').toString();
   if (value is bool) return value ? 'true' : 'false';
@@ -180,6 +348,12 @@ void _expectDigestDomain(String typeId, Map<String, Object?> json) {
       if (json['digestDomain'] != "ccpocket.canonical-profile-probe.v1")
         throw FormatException(
           'CanonicalProfileProbePreimageV1.digestDomain: invalid digest domain',
+        );
+      return;
+    case "FixtureUntaggedPreimageV1":
+      if (json['digestDomain'] != "ccpocket.fixture-untagged.v1")
+        throw FormatException(
+          'FixtureUntaggedPreimageV1.digestDomain: invalid digest domain',
         );
       return;
     case "GapRepairIntentPreimageV1":
@@ -389,6 +563,219 @@ final class CanonicalProfileProbePreimageV1 {
   };
 }
 
+sealed class FixtureAmbiguousOneOf {
+  const FixtureAmbiguousOneOf();
+
+  factory FixtureAmbiguousOneOf.fromJsonValue(Object? value) {
+    FixtureAmbiguousOneOf? matched;
+    var matchCount = 0;
+    try {
+      final decoded = _expectConstrainedString(
+        value,
+        "FixtureAmbiguousOneOf<oneOf:1>",
+        pattern: "^a",
+      );
+      matched = FixtureAmbiguousOneOfVariant1(decoded);
+      matchCount += 1;
+    } on FormatException {
+      // A different closed branch may still match.
+    }
+    try {
+      final decoded = _expectConstrainedString(
+        value,
+        "FixtureAmbiguousOneOf<oneOf:2>",
+        pattern: "a\$",
+      );
+      matched = FixtureAmbiguousOneOfVariant2(decoded);
+      matchCount += 1;
+    } on FormatException {
+      // A different closed branch may still match.
+    }
+    if (matchCount == 0)
+      throw const FormatException('FixtureAmbiguousOneOf: NO_ONE_OF_VARIANT');
+    if (matchCount > 1)
+      throw const FormatException(
+        'FixtureAmbiguousOneOf: AMBIGUOUS_ONE_OF_VARIANT',
+      );
+    return matched!;
+  }
+
+  Object? toJson();
+}
+
+final class FixtureAmbiguousOneOfVariant1 extends FixtureAmbiguousOneOf {
+  const FixtureAmbiguousOneOfVariant1(this.value);
+
+  final String value;
+
+  @override
+  Object? toJson() => value;
+}
+
+final class FixtureAmbiguousOneOfVariant2 extends FixtureAmbiguousOneOf {
+  const FixtureAmbiguousOneOfVariant2(this.value);
+
+  final String value;
+
+  @override
+  Object? toJson() => value;
+}
+
+typedef FixtureCanonicalOrderSet = List<FixtureOneOf>;
+
+final class FixtureConstrainedRecord {
+  const FixtureConstrainedRecord({
+    required this.nullableValue,
+    required this.fixed,
+    required this.version,
+    required this.bounded,
+    required this.disabled,
+    required this.items,
+    required this.tags,
+  });
+
+  final String? nullableValue;
+  final String fixed;
+  final int version;
+  final int bounded;
+  final bool disabled;
+  final List<FixtureConstraintItem> items;
+  final List<String> tags;
+
+  factory FixtureConstrainedRecord.fromJson(Map<String, Object?> json) {
+    _expectKeys(
+      json,
+      const {
+        "nullableValue",
+        "fixed",
+        "version",
+        "bounded",
+        "disabled",
+        "items",
+        "tags",
+      },
+      const {
+        "nullableValue",
+        "fixed",
+        "version",
+        "bounded",
+        "disabled",
+        "items",
+        "tags",
+      },
+      "FixtureConstrainedRecord",
+    );
+    return FixtureConstrainedRecord(
+      nullableValue: (json["nullableValue"] == null
+          ? null
+          : _expectConstrainedString(
+              json["nullableValue"],
+              "FixtureConstrainedRecord.nullableValue",
+              pattern: "^value-[0-9]+\$",
+            )),
+      fixed: _expectConstrainedString(
+        json["fixed"],
+        "FixtureConstrainedRecord.fixed",
+        constValue: "FIXED",
+      ),
+      version: _expectConstrainedInt(
+        json["version"],
+        "FixtureConstrainedRecord.version",
+        constValue: 1,
+      ),
+      bounded: _expectConstrainedInt(
+        json["bounded"],
+        "FixtureConstrainedRecord.bounded",
+        minimum: 1,
+        maximum: 3,
+      ),
+      disabled: _expectConstBool(
+        json["disabled"],
+        "FixtureConstrainedRecord.disabled",
+        false,
+      ),
+      items: _decodeList<FixtureConstraintItem>(
+        json["items"],
+        "FixtureConstrainedRecord.items",
+        (value) => FixtureConstraintItem.fromJson(
+          _expectMap(value, "FixtureConstrainedRecord.items[]"),
+        ),
+        minItems: 1,
+        maxItems: 3,
+        uniqueBy: const ["identity.id"],
+        orderBy: const [_CollectionSelector("ordinal")],
+        snapshot: (value) => value.toJson(),
+      ),
+      tags: _decodeList<String>(
+        json["tags"],
+        "FixtureConstrainedRecord.tags",
+        (value) => _expectConstrainedString(
+          value,
+          "FixtureConstrainedRecord.tags[]",
+          pattern: "^[a-z]+\$",
+        ),
+        minItems: 1,
+        maxItems: 3,
+        uniqueItems: true,
+        snapshot: (value) => value,
+      ),
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+    "nullableValue": (nullableValue == null ? null : nullableValue!),
+    "fixed": fixed,
+    "version": version,
+    "bounded": bounded,
+    "disabled": disabled,
+    "items": items.map((value) => value.toJson()).toList(growable: false),
+    "tags": tags.map((value) => value).toList(growable: false),
+  };
+}
+
+final class FixtureConstraintItem {
+  const FixtureConstraintItem({
+    required this.identity,
+    required this.ordinal,
+    required this.label,
+  });
+
+  final FixtureConstraintItemIdentity identity;
+  final int ordinal;
+  final String label;
+
+  factory FixtureConstraintItem.fromJson(Map<String, Object?> json) {
+    _expectKeys(
+      json,
+      const {"identity", "ordinal", "label"},
+      const {"identity", "ordinal", "label"},
+      "FixtureConstraintItem",
+    );
+    return FixtureConstraintItem(
+      identity: FixtureConstraintItemIdentity.fromJson(
+        _expectMap(json["identity"], "FixtureConstraintItem.identity"),
+      ),
+      ordinal: _expectConstrainedInt(
+        json["ordinal"],
+        "FixtureConstraintItem.ordinal",
+        minimum: 0,
+        maximum: 3,
+      ),
+      label: _expectConstrainedString(
+        json["label"],
+        "FixtureConstraintItem.label",
+        pattern: "^item-[a-z]+\$",
+      ),
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+    "identity": identity.toJson(),
+    "ordinal": ordinal,
+    "label": label,
+  };
+}
+
 final class FixtureEnvelope {
   const FixtureEnvelope({
     required this.id,
@@ -449,6 +836,58 @@ final class FixtureEnvelope {
   };
 }
 
+sealed class FixtureOneOf {
+  const FixtureOneOf();
+
+  factory FixtureOneOf.fromJsonValue(Object? value) {
+    FixtureOneOf? matched;
+    var matchCount = 0;
+    try {
+      final decoded = FixtureOneOfVariant1Value.fromJson(
+        _expectMap(value, "FixtureOneOf<oneOf:1>"),
+      );
+      matched = FixtureOneOfVariant1(decoded);
+      matchCount += 1;
+    } on FormatException {
+      // A different closed branch may still match.
+    }
+    try {
+      final decoded = FixtureOneOfVariant2Value.fromJson(
+        _expectMap(value, "FixtureOneOf<oneOf:2>"),
+      );
+      matched = FixtureOneOfVariant2(decoded);
+      matchCount += 1;
+    } on FormatException {
+      // A different closed branch may still match.
+    }
+    if (matchCount == 0)
+      throw const FormatException('FixtureOneOf: NO_ONE_OF_VARIANT');
+    if (matchCount > 1)
+      throw const FormatException('FixtureOneOf: AMBIGUOUS_ONE_OF_VARIANT');
+    return matched!;
+  }
+
+  Object? toJson();
+}
+
+final class FixtureOneOfVariant1 extends FixtureOneOf {
+  const FixtureOneOfVariant1(this.value);
+
+  final FixtureOneOfVariant1Value value;
+
+  @override
+  Object? toJson() => value.toJson();
+}
+
+final class FixtureOneOfVariant2 extends FixtureOneOf {
+  const FixtureOneOfVariant2(this.value);
+
+  final FixtureOneOfVariant2Value value;
+
+  @override
+  Object? toJson() => value.toJson();
+}
+
 final class FixturePageBodyV1 {
   const FixturePageBodyV1({required this.items, required this.gaps});
 
@@ -463,12 +902,16 @@ final class FixturePageBodyV1 {
       "FixturePageBodyV1",
     );
     return FixturePageBodyV1(
-      items: _expectList(json["items"], "FixturePageBodyV1.items")
-          .map((value) => _expectString(value, "FixturePageBodyV1.items[]"))
-          .toList(growable: false),
-      gaps: _expectList(json["gaps"], "FixturePageBodyV1.gaps")
-          .map((value) => _expectString(value, "FixturePageBodyV1.gaps[]"))
-          .toList(growable: false),
+      items: _decodeList<String>(
+        json["items"],
+        "FixturePageBodyV1.items",
+        (value) => _expectString(value, "FixturePageBodyV1.items[]"),
+      ),
+      gaps: _decodeList<String>(
+        json["gaps"],
+        "FixturePageBodyV1.gaps",
+        (value) => _expectString(value, "FixturePageBodyV1.gaps[]"),
+      ),
     );
   }
 
@@ -537,12 +980,12 @@ final class FixturePayloadProgress extends FixturePayload {
         "FixturePayloadProgress.complete",
       ),
       labels: json.containsKey("labels")
-          ? _expectList(json["labels"], "FixturePayloadProgress.labels")
-                .map(
-                  (value) =>
-                      _expectString(value, "FixturePayloadProgress.labels[]"),
-                )
-                .toList(growable: false)
+          ? _decodeList<String>(
+              json["labels"],
+              "FixturePayloadProgress.labels",
+              (value) =>
+                  _expectString(value, "FixturePayloadProgress.labels[]"),
+            )
           : null,
     );
   }
@@ -606,6 +1049,64 @@ final class FixtureSourceRef {
     "bridgeInstanceId": bridgeInstanceId,
     "sourceOrdinal": sourceOrdinal,
   };
+}
+
+sealed class FixtureUntaggedPreimageV1 {
+  const FixtureUntaggedPreimageV1();
+
+  factory FixtureUntaggedPreimageV1.fromJsonValue(Object? value) {
+    FixtureUntaggedPreimageV1? matched;
+    var matchCount = 0;
+    try {
+      final decoded = FixtureUntaggedPreimageV1Variant1Value.fromJson(
+        _expectMap(value, "FixtureUntaggedPreimageV1<oneOf:1>"),
+      );
+      matched = FixtureUntaggedPreimageV1Variant1(decoded);
+      matchCount += 1;
+    } on FormatException {
+      // A different closed branch may still match.
+    }
+    try {
+      final decoded = FixtureUntaggedPreimageV1Variant2Value.fromJson(
+        _expectMap(value, "FixtureUntaggedPreimageV1<oneOf:2>"),
+      );
+      matched = FixtureUntaggedPreimageV1Variant2(decoded);
+      matchCount += 1;
+    } on FormatException {
+      // A different closed branch may still match.
+    }
+    if (matchCount == 0)
+      throw const FormatException(
+        'FixtureUntaggedPreimageV1: NO_ONE_OF_VARIANT',
+      );
+    if (matchCount > 1)
+      throw const FormatException(
+        'FixtureUntaggedPreimageV1: AMBIGUOUS_ONE_OF_VARIANT',
+      );
+    return matched!;
+  }
+
+  Object? toJson();
+}
+
+final class FixtureUntaggedPreimageV1Variant1
+    extends FixtureUntaggedPreimageV1 {
+  const FixtureUntaggedPreimageV1Variant1(this.value);
+
+  final FixtureUntaggedPreimageV1Variant1Value value;
+
+  @override
+  Object? toJson() => value.toJson();
+}
+
+final class FixtureUntaggedPreimageV1Variant2
+    extends FixtureUntaggedPreimageV1 {
+  const FixtureUntaggedPreimageV1Variant2(this.value);
+
+  final FixtureUntaggedPreimageV1Variant2Value value;
+
+  @override
+  Object? toJson() => value.toJson();
 }
 
 final class GapRepairIntentPreimageV1 {
@@ -806,18 +1307,14 @@ final class MaterializationCoveragePreimageV1 {
               "MaterializationCoveragePreimageV1.payloadCoverage",
             ),
           ),
-      gapOrdinals:
-          _expectList(
-                json["gapOrdinals"],
-                "MaterializationCoveragePreimageV1.gapOrdinals",
-              )
-              .map(
-                (value) => _expectInt(
-                  value,
-                  "MaterializationCoveragePreimageV1.gapOrdinals[]",
-                ),
-              )
-              .toList(growable: false),
+      gapOrdinals: _decodeList<int>(
+        json["gapOrdinals"],
+        "MaterializationCoveragePreimageV1.gapOrdinals",
+        (value) => _expectInt(
+          value,
+          "MaterializationCoveragePreimageV1.gapOrdinals[]",
+        ),
+      ),
     );
   }
 
@@ -884,18 +1381,14 @@ final class MaterializationManifestPreimageV1 {
         json["pageCount"],
         "MaterializationManifestPreimageV1.pageCount",
       ),
-      orderedPageDigests:
-          _expectList(
-                json["orderedPageDigests"],
-                "MaterializationManifestPreimageV1.orderedPageDigests",
-              )
-              .map(
-                (value) => _expectSha256Hex64(
-                  value,
-                  "MaterializationManifestPreimageV1.orderedPageDigests[]",
-                ),
-              )
-              .toList(growable: false),
+      orderedPageDigests: _decodeList<Sha256Hex64>(
+        json["orderedPageDigests"],
+        "MaterializationManifestPreimageV1.orderedPageDigests",
+        (value) => _expectSha256Hex64(
+          value,
+          "MaterializationManifestPreimageV1.orderedPageDigests[]",
+        ),
+      ),
       orderDigest: _expectSha256Hex64(
         json["orderDigest"],
         "MaterializationManifestPreimageV1.orderDigest",
@@ -975,18 +1468,14 @@ final class MaterializationOrderPreimageV1CATALOG
           "MaterializationOrderPreimageV1CATALOG.source",
         ),
       ),
-      orderedSessionIds:
-          _expectList(
-                json["orderedSessionIds"],
-                "MaterializationOrderPreimageV1CATALOG.orderedSessionIds",
-              )
-              .map(
-                (value) => _expectString(
-                  value,
-                  "MaterializationOrderPreimageV1CATALOG.orderedSessionIds[]",
-                ),
-              )
-              .toList(growable: false),
+      orderedSessionIds: _decodeList<String>(
+        json["orderedSessionIds"],
+        "MaterializationOrderPreimageV1CATALOG.orderedSessionIds",
+        (value) => _expectString(
+          value,
+          "MaterializationOrderPreimageV1CATALOG.orderedSessionIds[]",
+        ),
+      ),
     );
   }
 
@@ -1037,18 +1526,14 @@ final class MaterializationOrderPreimageV1TIMELINE
           "MaterializationOrderPreimageV1TIMELINE.source",
         ),
       ),
-      orderedTimelineIds:
-          _expectList(
-                json["orderedTimelineIds"],
-                "MaterializationOrderPreimageV1TIMELINE.orderedTimelineIds",
-              )
-              .map(
-                (value) => _expectString(
-                  value,
-                  "MaterializationOrderPreimageV1TIMELINE.orderedTimelineIds[]",
-                ),
-              )
-              .toList(growable: false),
+      orderedTimelineIds: _decodeList<String>(
+        json["orderedTimelineIds"],
+        "MaterializationOrderPreimageV1TIMELINE.orderedTimelineIds",
+        (value) => _expectString(
+          value,
+          "MaterializationOrderPreimageV1TIMELINE.orderedTimelineIds[]",
+        ),
+      ),
     );
   }
 
@@ -1392,6 +1877,148 @@ enum CanonicalProfileProbePreimageV1DigestDomain {
   }
 }
 
+final class FixtureConstraintItemIdentity {
+  const FixtureConstraintItemIdentity({required this.id});
+
+  final String id;
+
+  factory FixtureConstraintItemIdentity.fromJson(Map<String, Object?> json) {
+    _expectKeys(
+      json,
+      const {"id"},
+      const {"id"},
+      "FixtureConstraintItemIdentity",
+    );
+    return FixtureConstraintItemIdentity(
+      id: _expectConstrainedString(
+        json["id"],
+        "FixtureConstraintItemIdentity.id",
+        pattern: "^[a-z]+\$",
+      ),
+    );
+  }
+
+  Map<String, Object?> toJson() => {"id": id};
+}
+
+final class FixtureOneOfVariant1Value {
+  const FixtureOneOfVariant1Value({required this.left});
+
+  final String left;
+
+  factory FixtureOneOfVariant1Value.fromJson(Map<String, Object?> json) {
+    _expectKeys(
+      json,
+      const {"left"},
+      const {"left"},
+      "FixtureOneOfVariant1Value",
+    );
+    return FixtureOneOfVariant1Value(
+      left: _expectString(json["left"], "FixtureOneOfVariant1Value.left"),
+    );
+  }
+
+  Map<String, Object?> toJson() => {"left": left};
+}
+
+final class FixtureOneOfVariant2Value {
+  const FixtureOneOfVariant2Value({required this.right});
+
+  final int right;
+
+  factory FixtureOneOfVariant2Value.fromJson(Map<String, Object?> json) {
+    _expectKeys(
+      json,
+      const {"right"},
+      const {"right"},
+      "FixtureOneOfVariant2Value",
+    );
+    return FixtureOneOfVariant2Value(
+      right: _expectInt(json["right"], "FixtureOneOfVariant2Value.right"),
+    );
+  }
+
+  Map<String, Object?> toJson() => {"right": right};
+}
+
+final class FixtureUntaggedPreimageV1Variant1Value {
+  const FixtureUntaggedPreimageV1Variant1Value({
+    required this.digestDomain,
+    required this.left,
+  });
+
+  final String digestDomain;
+  final String? left;
+
+  factory FixtureUntaggedPreimageV1Variant1Value.fromJson(
+    Map<String, Object?> json,
+  ) {
+    _expectKeys(
+      json,
+      const {"digestDomain", "left"},
+      const {"digestDomain", "left"},
+      "FixtureUntaggedPreimageV1Variant1Value",
+    );
+    return FixtureUntaggedPreimageV1Variant1Value(
+      digestDomain: _expectConstrainedString(
+        json["digestDomain"],
+        "FixtureUntaggedPreimageV1Variant1Value.digestDomain",
+        constValue: "ccpocket.fixture-untagged.v1",
+      ),
+      left: (json["left"] == null
+          ? null
+          : _expectString(
+              json["left"],
+              "FixtureUntaggedPreimageV1Variant1Value.left",
+            )),
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+    "digestDomain": digestDomain,
+    "left": (left == null ? null : left!),
+  };
+}
+
+final class FixtureUntaggedPreimageV1Variant2Value {
+  const FixtureUntaggedPreimageV1Variant2Value({
+    required this.digestDomain,
+    required this.right,
+  });
+
+  final String digestDomain;
+  final int right;
+
+  factory FixtureUntaggedPreimageV1Variant2Value.fromJson(
+    Map<String, Object?> json,
+  ) {
+    _expectKeys(
+      json,
+      const {"digestDomain", "right"},
+      const {"digestDomain", "right"},
+      "FixtureUntaggedPreimageV1Variant2Value",
+    );
+    return FixtureUntaggedPreimageV1Variant2Value(
+      digestDomain: _expectConstrainedString(
+        json["digestDomain"],
+        "FixtureUntaggedPreimageV1Variant2Value.digestDomain",
+        constValue: "ccpocket.fixture-untagged.v1",
+      ),
+      right: _expectConstrainedInt(
+        json["right"],
+        "FixtureUntaggedPreimageV1Variant2Value.right",
+        minimum: 0,
+        maximum: 9,
+      ),
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+    "digestDomain": digestDomain,
+    "right": right,
+  };
+}
+
 enum GapRepairIntentPreimageV1DigestDomain {
   ccpocketGapRepairIntentV1("ccpocket.gap-repair-intent.v1");
 
@@ -1708,9 +2335,43 @@ Object? encodeCanonicalProfileProbePreimageV1(
   CanonicalProfileProbePreimageV1 value,
 ) => value.toJson();
 
+FixtureAmbiguousOneOf decodeFixtureAmbiguousOneOf(Object? value) =>
+    FixtureAmbiguousOneOf.fromJsonValue(value);
+Object? encodeFixtureAmbiguousOneOf(FixtureAmbiguousOneOf value) =>
+    value.toJson();
+
+FixtureCanonicalOrderSet decodeFixtureCanonicalOrderSet(Object? value) =>
+    _decodeList<FixtureOneOf>(
+      value,
+      "FixtureCanonicalOrderSet",
+      (value) => FixtureOneOf.fromJsonValue(value),
+      minItems: 1,
+      maxItems: 3,
+      orderBy: const [_CollectionSelector("\$")],
+      snapshot: (value) => value.toJson(),
+    );
+Object? encodeFixtureCanonicalOrderSet(FixtureCanonicalOrderSet value) =>
+    value.map((value) => value.toJson()).toList(growable: false);
+
+FixtureConstrainedRecord decodeFixtureConstrainedRecord(Object? value) =>
+    FixtureConstrainedRecord.fromJson(
+      _expectMap(value, "FixtureConstrainedRecord"),
+    );
+Object? encodeFixtureConstrainedRecord(FixtureConstrainedRecord value) =>
+    value.toJson();
+
+FixtureConstraintItem decodeFixtureConstraintItem(Object? value) =>
+    FixtureConstraintItem.fromJson(_expectMap(value, "FixtureConstraintItem"));
+Object? encodeFixtureConstraintItem(FixtureConstraintItem value) =>
+    value.toJson();
+
 FixtureEnvelope decodeFixtureEnvelope(Object? value) =>
     FixtureEnvelope.fromJson(_expectMap(value, "FixtureEnvelope"));
 Object? encodeFixtureEnvelope(FixtureEnvelope value) => value.toJson();
+
+FixtureOneOf decodeFixtureOneOf(Object? value) =>
+    FixtureOneOf.fromJsonValue(value);
+Object? encodeFixtureOneOf(FixtureOneOf value) => value.toJson();
 
 FixturePageBodyV1 decodeFixturePageBodyV1(Object? value) =>
     FixturePageBodyV1.fromJson(_expectMap(value, "FixturePageBodyV1"));
@@ -1727,6 +2388,11 @@ Object? encodeFixturePriority(FixturePriority value) => value.wire;
 FixtureSourceRef decodeFixtureSourceRef(Object? value) =>
     FixtureSourceRef.fromJson(_expectMap(value, "FixtureSourceRef"));
 Object? encodeFixtureSourceRef(FixtureSourceRef value) => value.toJson();
+
+FixtureUntaggedPreimageV1 decodeFixtureUntaggedPreimageV1(Object? value) =>
+    FixtureUntaggedPreimageV1.fromJsonValue(value);
+Object? encodeFixtureUntaggedPreimageV1(FixtureUntaggedPreimageV1 value) =>
+    value.toJson();
 
 GapRepairIntentPreimageV1 decodeGapRepairIntentPreimageV1(Object? value) =>
     GapRepairIntentPreimageV1.fromJson(
@@ -1830,6 +2496,23 @@ String digestCanonicalProfileProbePreimageV1(
 ) => sha256
     .convert(canonicalBytesCanonicalProfileProbePreimageV1(value))
     .toString();
+
+Uint8List canonicalBytesFixtureUntaggedPreimageV1(
+  FixtureUntaggedPreimageV1 value,
+) {
+  final snapshot = decodeFixtureUntaggedPreimageV1(
+    encodeFixtureUntaggedPreimageV1(value),
+  );
+  final json = _expectMap(
+    encodeFixtureUntaggedPreimageV1(snapshot),
+    "FixtureUntaggedPreimageV1",
+  );
+  _expectDigestDomain("FixtureUntaggedPreimageV1", json);
+  return _canonicalBytes(json);
+}
+
+String digestFixtureUntaggedPreimageV1(FixtureUntaggedPreimageV1 value) =>
+    sha256.convert(canonicalBytesFixtureUntaggedPreimageV1(value)).toString();
 
 Uint8List canonicalBytesGapRepairIntentPreimageV1(
   GapRepairIntentPreimageV1 value,

@@ -22,19 +22,47 @@ function objectSchema(fields, schemaForNode, extraProperties = {}) {
 export function generateSchema(model, sourceDigest) {
   const schemaForNode = (node) => {
     switch (node.kind) {
-      case 'string': return {type: 'string'};
-      case 'integer':
+      case 'string':
         return {
-          type: 'integer',
-          minimum: Number.MIN_SAFE_INTEGER,
-          maximum: Number.MAX_SAFE_INTEGER,
+          type: 'string',
+          ...(Object.hasOwn(node, 'const') ? {const: node.const} : {}),
+          ...(node.pattern !== undefined ? {pattern: node.pattern} : {}),
         };
-      case 'boolean': return {type: 'boolean'};
-      case 'enum': return {type: 'string', enum: [...node.values]};
+      case 'integer': {
+        const schema = {
+          type: 'integer',
+          minimum: node.minimum ?? Number.MIN_SAFE_INTEGER,
+          maximum: node.maximum ?? Number.MAX_SAFE_INTEGER,
+        };
+        if (Object.hasOwn(node, 'const')) schema.const = node.const;
+        return schema;
+      }
+      case 'boolean':
+        return {
+          type: 'boolean',
+          ...(Object.hasOwn(node, 'const') ? {const: node.const} : {}),
+        };
+      case 'enum':
+        return {
+          type: 'string',
+          enum: [...node.values],
+          ...(Object.hasOwn(node, 'const') ? {const: node.const} : {}),
+        };
       case 'ref': return {$ref: `#/$defs/${node.target}`};
-      case 'array': return {type: 'array', items: schemaForNode(node.items)};
+      case 'nullable': return {anyOf: [{type: 'null'}, schemaForNode(node.inner)]};
+      case 'array':
+        return {
+          type: 'array',
+          items: schemaForNode(node.items),
+          ...(node.minItems !== undefined ? {minItems: node.minItems} : {}),
+          ...(node.maxItems !== undefined ? {maxItems: node.maxItems} : {}),
+          ...(node.uniqueItems !== undefined ? {uniqueItems: node.uniqueItems} : {}),
+          ...(node.uniqueBy !== undefined ? {'x-ccpocket-uniqueBy': [...node.uniqueBy]} : {}),
+          ...(node.orderBy !== undefined ? {'x-ccpocket-orderBy': [...node.orderBy]} : {}),
+        };
       case 'map': return {type: 'object', additionalProperties: schemaForNode(node.values)};
       case 'object': return objectSchema(node.fields, schemaForNode);
+      case 'oneOf': return {oneOf: node.variants.map(schemaForNode)};
       case 'union':
         return {
           oneOf: node.variants.map((variant) => objectSchema(
@@ -56,7 +84,13 @@ export function generateSchema(model, sourceDigest) {
       if (node.kind !== 'string') {
         throw new Error(`${SHA256_HEX_TYPE_ID} must be a string definition`);
       }
-      definitions[id] = {type: 'string', pattern: '^[0-9a-f]{64}$'};
+      if (node.pattern !== undefined && node.pattern !== '^[0-9a-f]{64}$') {
+        throw new Error(`${SHA256_HEX_TYPE_ID} must use the exact lowercase hex64 pattern`);
+      }
+      if (Object.hasOwn(node, 'const') && !/^[0-9a-f]{64}$/.test(node.const)) {
+        throw new Error(`${SHA256_HEX_TYPE_ID} const must be lowercase hex64`);
+      }
+      definitions[id] = {...schemaForNode(node), pattern: '^[0-9a-f]{64}$'};
     } else {
       definitions[id] = schemaForNode(node);
     }

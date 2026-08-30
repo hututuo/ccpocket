@@ -8,8 +8,12 @@ function dartString(value) {
   return JSON.stringify(value).replace(/\$/g, '\\$');
 }
 
+function hasOwn(value, key) {
+  return Object.hasOwn(value, key);
+}
+
 function collectDeclarations(node, name, declarations) {
-  if (['object', 'enum', 'union'].includes(node.kind)) {
+  if (['object', 'enum', 'union', 'oneOf'].includes(node.kind)) {
     if (declarations.has(name)) throw new Error(`Dart declaration name collision: ${name}`);
     declarations.set(name, node);
   }
@@ -22,8 +26,14 @@ function collectDeclarations(node, name, declarations) {
         collectDeclarations(field.type, `${variantName}${pascalName(field.name)}`, declarations);
       }
     }
+  } else if (node.kind === 'oneOf') {
+    for (const [index, variant] of node.variants.entries()) {
+      collectDeclarations(variant, `${name}Variant${index + 1}Value`, declarations);
+    }
   } else if (node.kind === 'array') {
     collectDeclarations(node.items, `${name}Item`, declarations);
+  } else if (node.kind === 'nullable') {
+    collectDeclarations(node.inner, `${name}Value`, declarations);
   } else if (node.kind === 'map') {
     collectDeclarations(node.values, `${name}Value`, declarations);
   }
@@ -36,26 +46,131 @@ function dartType(node, name) {
     case 'boolean': return 'bool';
     case 'enum':
     case 'object':
+    case 'oneOf':
     case 'union': return name;
     case 'ref': return pascalName(node.target);
+    case 'nullable': return `${dartType(node.inner, `${name}Value`)}?`;
     case 'array': return `List<${dartType(node.items, `${name}Item`)}>`;
     case 'map': return `Map<String, ${dartType(node.values, `${name}Value`)}>`;
     default: throw new Error(`unsupported Dart node kind ${node.kind}`);
   }
 }
 
-function refNode(node, definitions) {
-  return node.kind === 'ref' ? definitions.get(node.target).node : node;
+function dereferenceNode(node, definitions) {
+  let current = node;
+  const seen = new Set();
+  while (current.kind === 'ref') {
+    if (seen.has(current.target)) throw new Error(`Dart selector reference cycle through ${current.target}`);
+    seen.add(current.target);
+    current = definitions.get(current.target).node;
+  }
+  return current;
+}
+
+function selectedFieldNodes(itemNode, selector, definitions) {
+  if (selector === '$') return [dereferenceNode(itemNode, definitions)];
+  let nodes = [itemNode];
+  for (const segment of selector.split('.')) {
+    const next = [];
+    for (const rawNode of nodes) {
+      const node = dereferenceNode(rawNode, definitions);
+      if (node.kind === 'object') {
+        next.push(node.fields.find((field) => field.name === segment).type);
+      } else if (node.kind === 'union') {
+        if (segment === node.discriminator) {
+          next.push({kind: 'enum', values: node.variants.map((variant) => variant.tag)});
+        } else {
+          for (const variant of node.variants) {
+            next.push(variant.fields.find((field) => field.name === segment).type);
+          }
+        }
+      } else if (node.kind === 'oneOf') {
+        for (const variant of node.variants) {
+          next.push(...selectedFieldNodes(variant, segment, definitions));
+        }
+      } else {
+        throw new Error(`Dart collection selector ${selector} does not resolve through an object`);
+      }
+    }
+    nodes = next;
+  }
+  return nodes;
+}
+
+function selectorEnumOrder(itemNode, selector, definitions) {
+  const values = [];
+  const seen = new Set();
+  for (const rawNode of selectedFieldNodes(itemNode, selector, definitions)) {
+    let node = dereferenceNode(rawNode, definitions);
+    if (node.kind === 'nullable') node = dereferenceNode(node.inner, definitions);
+    if (node.kind !== 'enum') continue;
+    for (const value of node.values) {
+      if (seen.has(value)) continue;
+      seen.add(value);
+      values.push(value);
+    }
+  }
+  return values;
+}
+
+function dartStringList(values) {
+  return `[${values.map(dartString).join(', ')}]`;
+}
+
+function dartArrayConstraintArguments(node, name, definitions) {
+  const argumentsList = [];
+  if (node.minItems !== undefined) argumentsList.push(`minItems: ${node.minItems}`);
+  if (node.maxItems !== undefined) argumentsList.push(`maxItems: ${node.maxItems}`);
+  if (node.uniqueItems !== undefined) argumentsList.push(`uniqueItems: ${node.uniqueItems}`);
+  if (node.uniqueBy !== undefined) {
+    argumentsList.push(`uniqueBy: const ${dartStringList(node.uniqueBy)}`);
+  }
+  if (node.orderBy !== undefined) {
+    const selectors = node.orderBy.map((selector) => {
+      const enumOrder = selectorEnumOrder(node.items, selector, definitions);
+      return `_CollectionSelector(${dartString(selector)}${enumOrder.length > 0 ? `, ${dartStringList(enumOrder)}` : ''})`;
+    });
+    argumentsList.push(`orderBy: const [${selectors.join(', ')}]`);
+  }
+  if (node.uniqueItems || node.uniqueBy !== undefined || node.orderBy !== undefined) {
+    argumentsList.push(`snapshot: (value) => ${encodeExpression(node.items, 'value', `${name}Item`, definitions)}`);
+  }
+  return argumentsList.length > 0 ? `, ${argumentsList.join(', ')}` : '';
 }
 
 function decodeExpression(node, expression, name, path, definitions) {
   switch (node.kind) {
-    case 'string': return `_expectString(${expression}, ${dartString(path)})`;
-    case 'integer': return `_expectInt(${expression}, ${dartString(path)})`;
-    case 'boolean': return `_expectBool(${expression}, ${dartString(path)})`;
-    case 'enum': return `${name}.fromWire(_expectString(${expression}, ${dartString(path)}))`;
+    case 'string': {
+      if (!hasOwn(node, 'const') && node.pattern === undefined) {
+        return `_expectString(${expression}, ${dartString(path)})`;
+      }
+      const argumentsList = [expression, dartString(path)];
+      if (hasOwn(node, 'const')) argumentsList.push(`constValue: ${dartString(node.const)}`);
+      if (node.pattern !== undefined) argumentsList.push(`pattern: ${dartString(node.pattern)}`);
+      return `_expectConstrainedString(${argumentsList.join(', ')})`;
+    }
+    case 'integer': {
+      if (!hasOwn(node, 'const') && node.minimum === undefined && node.maximum === undefined) {
+        return `_expectInt(${expression}, ${dartString(path)})`;
+      }
+      const argumentsList = [expression, dartString(path)];
+      if (hasOwn(node, 'const')) argumentsList.push(`constValue: ${node.const}`);
+      if (node.minimum !== undefined) argumentsList.push(`minimum: ${node.minimum}`);
+      if (node.maximum !== undefined) argumentsList.push(`maximum: ${node.maximum}`);
+      return `_expectConstrainedInt(${argumentsList.join(', ')})`;
+    }
+    case 'boolean': return hasOwn(node, 'const')
+      ? `_expectConstBool(${expression}, ${dartString(path)}, ${node.const})`
+      : `_expectBool(${expression}, ${dartString(path)})`;
+    case 'enum': {
+      const decoded = hasOwn(node, 'const')
+        ? `_expectConstString(${expression}, ${dartString(path)}, ${dartString(node.const)})`
+        : `_expectString(${expression}, ${dartString(path)})`;
+      return `${name}.fromWire(${decoded})`;
+    }
     case 'object':
     case 'union': return `${name}.fromJson(_expectMap(${expression}, ${dartString(path)}))`;
+    case 'oneOf': return `${name}.fromJsonValue(${expression})`;
     case 'ref': {
       if (node.target === SHA256_HEX_TYPE_ID) {
         return `_expectSha256Hex64(${expression}, ${dartString(path)})`;
@@ -63,8 +178,10 @@ function decodeExpression(node, expression, name, path, definitions) {
       const target = definitions.get(node.target);
       return decodeExpression(target.node, expression, pascalName(node.target), path, definitions);
     }
+    case 'nullable':
+      return `(${expression} == null ? null : ${decodeExpression(node.inner, expression, `${name}Value`, path, definitions)})`;
     case 'array':
-      return `_expectList(${expression}, ${dartString(path)}).map((value) => ${decodeExpression(node.items, 'value', `${name}Item`, `${path}[]`, definitions)}).toList(growable: false)`;
+      return `_decodeList<${dartType(node.items, `${name}Item`)}>(${expression}, ${dartString(path)}, (value) => ${decodeExpression(node.items, 'value', `${name}Item`, `${path}[]`, definitions)}${dartArrayConstraintArguments(node, name, definitions)})`;
     case 'map':
       return `_expectMap(${expression}, ${dartString(path)}).map((key, value) => MapEntry(key, ${decodeExpression(node.values, 'value', `${name}Value`, `${path}.*`, definitions)}))`;
     default: throw new Error(`unsupported Dart decode node kind ${node.kind}`);
@@ -78,11 +195,14 @@ function encodeExpression(node, expression, name, definitions) {
     case 'boolean': return expression;
     case 'enum': return `${expression}.wire`;
     case 'object':
+    case 'oneOf':
     case 'union': return `${expression}.toJson()`;
     case 'ref': {
       const target = definitions.get(node.target);
       return encodeExpression(target.node, expression, pascalName(node.target), definitions);
     }
+    case 'nullable':
+      return `(${expression} == null ? null : ${encodeExpression(node.inner, `${expression}!`, `${name}Value`, definitions)})`;
     case 'array':
       return `${expression}.map((value) => ${encodeExpression(node.items, 'value', `${name}Item`, definitions)}).toList(growable: false)`;
     case 'map':
@@ -125,7 +245,7 @@ function objectMembers(name, fields, definitions) {
   const declarations = fields.map((field) => {
     const member = dartMemberName(field.name);
     const type = dartType(field.type, `${name}${pascalName(field.name)}`);
-    return `  final ${type}${field.required ? '' : '?'} ${member};`;
+    return `  final ${type}${field.required || field.type.kind === 'nullable' ? '' : '?'} ${member};`;
   }).join('\n');
   const parameters = fields.map((field) => {
     const member = dartMemberName(field.name);
@@ -212,10 +332,49 @@ function unionDeclaration(name, node, definitions) {
   return `${base}\n\n${variants}`;
 }
 
+function oneOfDeclaration(name, node, definitions) {
+  const attempts = node.variants.map((variant, index) => {
+    const variantName = `${name}Variant${index + 1}`;
+    const valueName = `${variantName}Value`;
+    return `    try {\n` +
+      `      final decoded = ${decodeExpression(variant, 'value', valueName, `${name}<oneOf:${index + 1}>`, definitions)};\n` +
+      `      matched = ${variantName}(decoded);\n` +
+      `      matchCount += 1;\n` +
+      `    } on FormatException {\n` +
+      `      // A different closed branch may still match.\n` +
+      `    }`;
+  }).join('\n');
+  const base = `sealed class ${name} {\n` +
+    `  const ${name}();\n\n` +
+    `  factory ${name}.fromJsonValue(Object? value) {\n` +
+    `    ${name}? matched;\n` +
+    `    var matchCount = 0;\n` +
+    `${attempts}\n` +
+    `    if (matchCount == 0) throw const FormatException('${name}: NO_ONE_OF_VARIANT');\n` +
+    `    if (matchCount > 1) throw const FormatException('${name}: AMBIGUOUS_ONE_OF_VARIANT');\n` +
+    `    return matched!;\n` +
+    `  }\n\n` +
+    `  Object? toJson();\n` +
+    `}`;
+  const variants = node.variants.map((variant, index) => {
+    const variantName = `${name}Variant${index + 1}`;
+    const valueName = `${variantName}Value`;
+    const type = dartType(variant, valueName);
+    return `final class ${variantName} extends ${name} {\n` +
+      `  const ${variantName}(this.value);\n\n` +
+      `  final ${type} value;\n\n` +
+      `  @override\n` +
+      `  Object? toJson() => ${encodeExpression(variant, 'value', valueName, definitions)};\n` +
+      `}`;
+  }).join('\n\n');
+  return `${base}\n\n${variants}`;
+}
+
 function declaration(name, node, definitions) {
   switch (node.kind) {
     case 'enum': return enumDeclaration(name, node);
     case 'object': return objectDeclaration(name, node, definitions);
+    case 'oneOf': return oneOfDeclaration(name, node, definitions);
     case 'union': return unionDeclaration(name, node, definitions);
     default: return `typedef ${name} = ${dartType(node, name)};`;
   }
@@ -223,9 +382,18 @@ function declaration(name, node, definitions) {
 
 function digestDomainCase(preimage) {
   const rule = preimage.domainRule;
+  if (rule === null) {
+    return `    case ${dartString(preimage.typeId)}:\n` +
+      `      return;`;
+  }
   if (rule.kind === 'object') {
     return `    case ${dartString(preimage.typeId)}:\n` +
       `      if (json['digestDomain'] != ${dartString(rule.value)}) throw FormatException('${preimage.typeId}.digestDomain: invalid digest domain');\n` +
+      `      return;`;
+  }
+  if (rule.kind === 'oneOf') {
+    return `    case ${dartString(preimage.typeId)}:\n` +
+      `      if (!(const ${dartStringList(rule.values)}).contains(json['digestDomain'])) throw FormatException('${preimage.typeId}.digestDomain: invalid digest domain');\n` +
       `      return;`;
   }
   const variants = rule.variants.map((variant) =>
@@ -278,7 +446,7 @@ export function generateDart(model, sourceDigest) {
   const domainCases = preimages.map(digestDomainCase).join('\n');
   const digests = preimages.map(digestHelpers).join('\n\n');
   return `// @generated from conversation contract ${sourceDigest}; DO NOT EDIT.\n` +
-    `// ignore_for_file: unnecessary_cast\n\n` +
+    `// ignore_for_file: unnecessary_cast, unused_element, unused_element_parameter\n\n` +
     `import 'dart:convert';\n` +
     `import 'dart:typed_data';\n\n` +
     `import 'package:crypto/crypto.dart';\n\n` +
@@ -302,6 +470,14 @@ export function generateDart(model, sourceDigest) {
     `  _expectUnicodeScalarString(value, path);\n` +
     `  return value;\n` +
     `}\n\n` +
+    `String _expectConstrainedString(Object? value, String path, {String? constValue, String? pattern}) {\n` +
+    `  final text = _expectString(value, path);\n` +
+    `  if (constValue != null && text != constValue) throw FormatException('$path: invalid const');\n` +
+    `  if (pattern != null && !RegExp(pattern).hasMatch(text)) throw FormatException('$path: pattern mismatch');\n` +
+    `  return text;\n` +
+    `}\n\n` +
+    `String _expectConstString(Object? value, String path, String constValue) =>\n` +
+    `    _expectConstrainedString(value, path, constValue: constValue);\n\n` +
     `String _expectSha256Hex64(Object? value, String path) {\n` +
     `  final text = _expectString(value, path);\n` +
     `  if (!_sha256Hex64.hasMatch(text)) throw FormatException('$path: expected lowercase SHA-256 hex64');\n` +
@@ -316,13 +492,129 @@ export function generateDart(model, sourceDigest) {
     `  }\n` +
     `  throw FormatException('$path: expected safe integer');\n` +
     `}\n\n` +
+    `int _expectConstrainedInt(\n` +
+    `  Object? value,\n` +
+    `  String path, {\n` +
+    `  int? constValue,\n` +
+    `  int minimum = -9007199254740991,\n` +
+    `  int maximum = 9007199254740991,\n` +
+    `}) {\n` +
+    `  final integer = _expectInt(value, path);\n` +
+    `  if (integer < minimum || integer > maximum) throw FormatException('$path: integer outside bounds');\n` +
+    `  if (constValue != null && integer != constValue) throw FormatException('$path: invalid const');\n` +
+    `  return integer;\n` +
+    `}\n\n` +
     `bool _expectBool(Object? value, String path) {\n` +
     `  if (value is! bool) throw FormatException('$path: expected boolean');\n` +
     `  return value;\n` +
     `}\n\n` +
+    `bool _expectConstBool(Object? value, String path, bool constValue) {\n` +
+    `  final boolean = _expectBool(value, path);\n` +
+    `  if (boolean != constValue) throw FormatException('$path: invalid const');\n` +
+    `  return boolean;\n` +
+    `}\n\n` +
     `List<Object?> _expectList(Object? value, String path) {\n` +
     `  if (value is! List) throw FormatException('$path: expected array');\n` +
     `  return value.cast<Object?>();\n` +
+    `}\n\n` +
+    `final class _CollectionSelector {\n` +
+    `  const _CollectionSelector(this.path, [this.enumOrder]);\n\n` +
+    `  final String path;\n` +
+    `  final List<String>? enumOrder;\n` +
+    `}\n\n` +
+    `Object? _selectorValue(Object? value, String selector, String path) {\n` +
+    `  var current = value;\n` +
+    `  for (final segment in selector.split('.')) {\n` +
+    `    final object = _expectMap(current, path);\n` +
+    `    if (!object.containsKey(segment)) throw FormatException('$path.$segment: required collection selector');\n` +
+    `    current = object[segment];\n` +
+    `  }\n` +
+    `  return current;\n` +
+    `}\n\n` +
+    `int _compareConstraintScalar(Object? left, Object? right, List<String>? enumOrder) {\n` +
+    `  if (left == right) return 0;\n` +
+    `  if (left == null) return -1;\n` +
+    `  if (right == null) return 1;\n` +
+    `  if (enumOrder != null && left is String && right is String) {\n` +
+    `    final leftRank = enumOrder.indexOf(left);\n` +
+    `    final rightRank = enumOrder.indexOf(right);\n` +
+    `    if (leftRank >= 0 && rightRank >= 0) return leftRank.compareTo(rightRank);\n` +
+    `  }\n` +
+    `  if (left is int && right is int) return left.compareTo(right);\n` +
+    `  if (left is bool && right is bool) return left ? 1 : -1;\n` +
+    `  if (left is String && right is String) return _compareUtf16(left, right);\n` +
+    `  throw const FormatException('orderBy values have incompatible scalar types');\n` +
+    `}\n\n` +
+    `int _compareCollectionEntries(\n` +
+    `  Object? left,\n` +
+    `  Object? right,\n` +
+    `  List<_CollectionSelector> selectors,\n` +
+    `  String path,\n` +
+    `) {\n` +
+    `  for (final selector in selectors) {\n` +
+    `    final comparison = selector.path == r'$'\n` +
+    `        ? _compareCanonicalBytes(left, right)\n` +
+    `        : _compareConstraintScalar(\n` +
+    `            _selectorValue(left, selector.path, path),\n` +
+    `            _selectorValue(right, selector.path, path),\n` +
+    `            selector.enumOrder,\n` +
+    `          );\n` +
+    `    if (comparison != 0) return comparison;\n` +
+    `  }\n` +
+    `  return 0;\n` +
+    `}\n\n` +
+    `int _compareCanonicalBytes(Object? left, Object? right) {\n` +
+    `  final leftBytes = utf8.encode(_canonicalJson(left, 0, _CanonicalBudget()));\n` +
+    `  final rightBytes = utf8.encode(_canonicalJson(right, 0, _CanonicalBudget()));\n` +
+    `  final length = leftBytes.length < rightBytes.length ? leftBytes.length : rightBytes.length;\n` +
+    `  for (var index = 0; index < length; index += 1) {\n` +
+    `    final difference = leftBytes[index] - rightBytes[index];\n` +
+    `    if (difference != 0) return difference;\n` +
+    `  }\n` +
+    `  return leftBytes.length.compareTo(rightBytes.length);\n` +
+    `}\n\n` +
+    `List<T> _decodeList<T>(\n` +
+    `  Object? value,\n` +
+    `  String path,\n` +
+    `  T Function(Object?) decode, {\n` +
+    `  int minItems = 0,\n` +
+    `  int maxItems = 9007199254740991,\n` +
+    `  bool uniqueItems = false,\n` +
+    `  List<String> uniqueBy = const [],\n` +
+    `  List<_CollectionSelector> orderBy = const [],\n` +
+    `  Object? Function(T)? snapshot,\n` +
+    `}) {\n` +
+    `  final input = _expectList(value, path);\n` +
+    `  if (input.length < minItems || input.length > maxItems) {\n` +
+    `    throw FormatException('$path: expected between $minItems and $maxItems items');\n` +
+    `  }\n` +
+    `  final result = input.map(decode).toList(growable: false);\n` +
+    `  if (!uniqueItems && uniqueBy.isEmpty && orderBy.isEmpty) return result;\n` +
+    `  if (snapshot == null) throw StateError('$path: collection constraint snapshot is missing');\n` +
+    `  final snapshots = result.map(snapshot).toList(growable: false);\n` +
+    `  if (uniqueItems) {\n` +
+    `    final seen = <String>{};\n` +
+    `    for (var index = 0; index < snapshots.length; index += 1) {\n` +
+    `      final key = _canonicalJson(snapshots[index], 0, _CanonicalBudget());\n` +
+    `      if (!seen.add(key)) throw FormatException('$path[$index]: duplicate array item');\n` +
+    `    }\n` +
+    `  }\n` +
+    `  if (uniqueBy.isNotEmpty) {\n` +
+    `    final seen = <String>{};\n` +
+    `    for (var index = 0; index < snapshots.length; index += 1) {\n` +
+    `      final fields = uniqueBy.map((selector) => _selectorValue(snapshots[index], selector, '$path[$index]')).toList(growable: false);\n` +
+    `      final key = _canonicalJson(fields, 0, _CanonicalBudget());\n` +
+    `      if (!seen.add(key)) throw FormatException('$path[$index]: duplicate uniqueBy fields');\n` +
+    `    }\n` +
+    `  }\n` +
+    `  if (orderBy.isNotEmpty) {\n` +
+    `    for (var index = 1; index < snapshots.length; index += 1) {\n` +
+    `      if (_compareCollectionEntries(snapshots[index - 1], snapshots[index], orderBy, '$path[$index]') > 0) {\n` +
+    `        throw FormatException('$path[$index]: collection is out of order');\n` +
+    `      }\n` +
+    `    }\n` +
+    `  }\n` +
+    `  return result;\n` +
     `}\n\n` +
     `Map<String, Object?> _expectMap(Object? value, String path) {\n` +
     `  if (value is! Map) throw FormatException('$path: expected object');\n` +
@@ -388,6 +680,7 @@ export function generateDart(model, sourceDigest) {
     `}\n\n` +
     `String _canonicalJson(Object? value, int depth, _CanonicalBudget budget) {\n` +
     `  budget.enter(depth);\n` +
+    `  if (value == null) return 'null';\n` +
     `  if (value is String) return _canonicalString(value);\n` +
     `  if (value is int) return _expectInt(value, r'\$').toString();\n` +
     `  if (value is bool) return value ? 'true' : 'false';\n` +

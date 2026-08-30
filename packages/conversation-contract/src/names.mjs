@@ -129,7 +129,7 @@ function checkDartEnumMembers(node, name) {
 }
 
 function visitDartNode(node, name, globals, owner, {declare = true} = {}) {
-  if (declare && ['object', 'enum', 'union'].includes(node.kind)) {
+  if (declare && ['object', 'enum', 'union', 'oneOf'].includes(node.kind)) {
     registerName(globals, name, owner, 'Dart top-level');
   }
 
@@ -168,8 +168,29 @@ function visitDartNode(node, name, globals, owner, {declare = true} = {}) {
         }
       }
       break;
+    case 'oneOf':
+      for (const [index, variant] of node.variants.entries()) {
+        const variantName = `${name}Variant${index + 1}`;
+        registerName(
+          globals,
+          variantName,
+          `${owner} oneOf variant ${index + 1}`,
+          'Dart top-level',
+        );
+        checkDartMembers([{name: 'value'}], variantName);
+        visitDartNode(
+          variant,
+          `${variantName}Value`,
+          globals,
+          `${owner} oneOf variant ${index + 1} value`,
+        );
+      }
+      break;
     case 'array':
       visitDartNode(node.items, `${name}Item`, globals, `${owner} array item`);
+      break;
+    case 'nullable':
+      visitDartNode(node.inner, `${name}Value`, globals, `${owner} nullable value`);
       break;
     case 'map':
       visitDartNode(node.values, `${name}Value`, globals, `${owner} map value`);

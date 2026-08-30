@@ -1,12 +1,118 @@
 {
   "formatVersion": 1,
   "activeProfileId": "fixture.active",
+  "digestDerivations": [
+    {
+      "id": "FIXTURE-DR-CANONICAL-PROFILE-PROBE",
+      "profileId": "fixture.active",
+      "ownerRef": "fixture.owner",
+      "derivationMode": "DOMAIN_SEPARATED_JCS",
+      "ownedFieldPaths": [],
+      "preimageTypeRef": "CanonicalProfileProbePreimageV1",
+      "digestDomain": "ccpocket.canonical-profile-probe.v1"
+    },
+    {
+      "id": "FIXTURE-DR-FIXTURE-UNTAGGED",
+      "profileId": "fixture.active",
+      "ownerRef": "fixture.owner",
+      "derivationMode": "DOMAIN_SEPARATED_JCS",
+      "ownedFieldPaths": [],
+      "preimageTypeRef": "FixtureUntaggedPreimageV1",
+      "digestDomain": "ccpocket.fixture-untagged.v1"
+    },
+    {
+      "id": "FIXTURE-DR-GAP-REPAIR-INTENT",
+      "profileId": "fixture.active",
+      "ownerRef": "fixture.owner",
+      "derivationMode": "DOMAIN_SEPARATED_JCS",
+      "ownedFieldPaths": [],
+      "preimageTypeRef": "GapRepairIntentPreimageV1",
+      "digestDomain": "ccpocket.gap-repair-intent.v1"
+    },
+    {
+      "id": "FIXTURE-DR-MATERIALIZATION-BEGIN-HEADER",
+      "profileId": "fixture.active",
+      "ownerRef": "fixture.owner",
+      "derivationMode": "DOMAIN_SEPARATED_JCS",
+      "ownedFieldPaths": [],
+      "preimageTypeRef": "MaterializationBeginHeaderPreimageV1",
+      "digestDomain": "ccpocket.materialization-begin.v1"
+    },
+    {
+      "id": "FIXTURE-DR-MATERIALIZATION-COVERAGE",
+      "profileId": "fixture.active",
+      "ownerRef": "fixture.owner",
+      "derivationMode": "DOMAIN_SEPARATED_JCS",
+      "ownedFieldPaths": [],
+      "preimageTypeRef": "MaterializationCoveragePreimageV1",
+      "digestDomain": "ccpocket.materialization-coverage.v1"
+    },
+    {
+      "id": "FIXTURE-DR-MATERIALIZATION-MANIFEST",
+      "profileId": "fixture.active",
+      "ownerRef": "fixture.owner",
+      "derivationMode": "DOMAIN_SEPARATED_JCS",
+      "ownedFieldPaths": [],
+      "preimageTypeRef": "MaterializationManifestPreimageV1",
+      "digestDomain": "ccpocket.materialization-manifest.v1"
+    },
+    {
+      "id": "FIXTURE-DR-MATERIALIZATION-ORDER",
+      "profileId": "fixture.active",
+      "ownerRef": "fixture.owner",
+      "derivationMode": "DOMAIN_SEPARATED_JCS",
+      "ownedFieldPaths": [],
+      "preimageTypeRef": "MaterializationOrderPreimageV1",
+      "digestDomain": "ccpocket.materialization-order.v1"
+    },
+    {
+      "id": "FIXTURE-DR-MATERIALIZATION-PAGE",
+      "profileId": "fixture.active",
+      "ownerRef": "fixture.owner",
+      "derivationMode": "DOMAIN_SEPARATED_JCS",
+      "ownedFieldPaths": [],
+      "preimageTypeRef": "MaterializationPagePreimageV1",
+      "digestDomain": "ccpocket.materialization-page.v1"
+    },
+    {
+      "id": "FIXTURE-DR-MATERIALIZATION-RECEIPT",
+      "profileId": "fixture.active",
+      "ownerRef": "fixture.owner",
+      "derivationMode": "DOMAIN_SEPARATED_JCS",
+      "ownedFieldPaths": [],
+      "preimageTypeRef": "MaterializationReceiptPreimageV1",
+      "digestDomain": "ccpocket.materialization-receipt.v1"
+    },
+    {
+      "id": "FIXTURE-DR-OPERATION-FINGERPRINT",
+      "profileId": "fixture.active",
+      "ownerRef": "fixture.owner",
+      "derivationMode": "DOMAIN_SEPARATED_JCS",
+      "ownedFieldPaths": [],
+      "preimageTypeRef": "OperationFingerprintPreimageV1",
+      "digestDomain": "ccpocket.operation-fingerprint.v1"
+    },
+    {
+      "id": "FIXTURE-DR-PROVIDER-READ-EVIDENCE",
+      "profileId": "fixture.active",
+      "ownerRef": "fixture.owner",
+      "derivationMode": "DOMAIN_SEPARATED_JCS",
+      "ownedFieldPaths": [],
+      "preimageTypeRef": "ProviderReadEvidencePreimageV1",
+      "digestDomain": "ccpocket.provider-read-evidence.v1"
+    }
+  ],
   "profiles": [
     {
       "id": "fixture.active",
       "status": "active",
       "rootTypeRefs": [
         "FixtureEnvelope",
+        "FixtureConstrainedRecord",
+        "FixtureOneOf",
+        "FixtureCanonicalOrderSet",
+        "FixtureAmbiguousOneOf",
+        "FixtureUntaggedPreimageV1",
         "CanonicalProfileProbePreimageV1",
         "ProviderReadEvidencePreimageV1",
         "OperationFingerprintPreimageV1",
@@ -90,6 +196,120 @@
         "kind": "object",
         "fields": [
           {"name": "future", "required": true, "type": {"kind": "boolean"}}
+        ]
+      }
+    },
+    {
+      "id": "FixtureConstraintItem",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "identity",
+            "required": true,
+            "type": {
+              "kind": "object",
+              "fields": [
+                {"name": "id", "required": true, "type": {"kind": "string", "pattern": "^[a-z]+$"}}
+              ]
+            }
+          },
+          {"name": "ordinal", "required": true, "type": {"kind": "integer", "minimum": 0, "maximum": 3}},
+          {"name": "label", "required": true, "type": {"kind": "string", "pattern": "^item-[a-z]+$"}}
+        ]
+      }
+    },
+    {
+      "id": "FixtureConstrainedRecord",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "nullableValue", "required": true, "type": {"kind": "nullable", "inner": {"kind": "string", "pattern": "^value-[0-9]+$"}}},
+          {"name": "fixed", "required": true, "type": {"kind": "string", "const": "FIXED"}},
+          {"name": "version", "required": true, "type": {"kind": "integer", "const": 1}},
+          {"name": "bounded", "required": true, "type": {"kind": "integer", "minimum": 1, "maximum": 3}},
+          {"name": "disabled", "required": true, "type": {"kind": "boolean", "const": false}},
+          {
+            "name": "items",
+            "required": true,
+            "type": {
+              "kind": "array",
+              "items": {"kind": "ref", "target": "FixtureConstraintItem"},
+              "minItems": 1,
+              "maxItems": 3,
+              "uniqueBy": ["identity.id"],
+              "orderBy": ["ordinal"]
+            }
+          },
+          {
+            "name": "tags",
+            "required": true,
+            "type": {
+              "kind": "array",
+              "items": {"kind": "string", "pattern": "^[a-z]+$"},
+              "minItems": 1,
+              "maxItems": 3,
+              "uniqueItems": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "FixtureOneOf",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "oneOf",
+        "variants": [
+          {"kind": "object", "fields": [{"name": "left", "required": true, "type": {"kind": "string"}}]},
+          {"kind": "object", "fields": [{"name": "right", "required": true, "type": {"kind": "integer"}}]}
+        ]
+      }
+    },
+    {
+      "id": "FixtureAmbiguousOneOf",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "oneOf",
+        "variants": [
+          {"kind": "string", "pattern": "^a"},
+          {"kind": "string", "pattern": "a$"}
+        ]
+      }
+    },
+    {
+      "id": "FixtureCanonicalOrderSet",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "array",
+        "items": {"kind": "ref", "target": "FixtureOneOf"},
+        "minItems": 1,
+        "maxItems": 3,
+        "orderBy": ["$"]
+      }
+    },
+    {
+      "id": "FixtureUntaggedPreimageV1",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "oneOf",
+        "variants": [
+          {
+            "kind": "object",
+            "fields": [
+              {"name": "digestDomain", "required": true, "type": {"kind": "string", "const": "ccpocket.fixture-untagged.v1"}},
+              {"name": "left", "required": true, "type": {"kind": "nullable", "inner": {"kind": "string"}}}
+            ]
+          },
+          {
+            "kind": "object",
+            "fields": [
+              {"name": "digestDomain", "required": true, "type": {"kind": "string", "const": "ccpocket.fixture-untagged.v1"}},
+              {"name": "right", "required": true, "type": {"kind": "integer", "minimum": 0, "maximum": 9}}
+            ]
+          }
         ]
       }
     },

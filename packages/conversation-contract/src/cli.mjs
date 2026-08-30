@@ -22,6 +22,8 @@ import {
 import { parseStrictJson } from './strict-json.mjs';
 import { validateInputs } from './validate.mjs';
 
+export { parseStrictJson } from './strict-json.mjs';
+
 const execFileAsync = promisify(execFile);
 const EXPECTED_DART_FORMATTER_VERSION = '3.13.0';
 const MISE_FLUTTER_VERSION = '3.47.0';

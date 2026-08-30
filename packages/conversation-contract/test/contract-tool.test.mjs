@@ -60,11 +60,17 @@ test('validates the active profile and excludes planned inventory', async () => 
   const value = await model();
   assert.deepEqual([...value.activeDefinitionIds].sort(), [
     'CanonicalProfileProbePreimageV1',
+    'FixtureAmbiguousOneOf',
+    'FixtureCanonicalOrderSet',
+    'FixtureConstrainedRecord',
+    'FixtureConstraintItem',
     'FixtureEnvelope',
+    'FixtureOneOf',
     'FixturePageBodyV1',
     'FixturePayload',
     'FixturePriority',
     'FixtureSourceRef',
+    'FixtureUntaggedPreimageV1',
     'GapRepairIntentPreimageV1',
     'MaterializationBeginHeaderPreimageV1',
     'MaterializationCoveragePreimageV1',
@@ -117,6 +123,22 @@ test('generation is byte deterministic and manifest digests bind artifacts', asy
     Number.MAX_SAFE_INTEGER,
   );
   assert.equal(schema.$defs.Sha256Hex64.pattern, '^[0-9a-f]{64}$');
+  const constrained = schema.$defs.FixtureConstrainedRecord.properties;
+  assert.deepEqual(constrained.nullableValue.anyOf[0], {type: 'null'});
+  assert.equal(constrained.nullableValue.anyOf[1].pattern, '^value-[0-9]+$');
+  assert.equal(constrained.fixed.const, 'FIXED');
+  assert.equal(constrained.version.const, 1);
+  assert.equal(constrained.bounded.minimum, 1);
+  assert.equal(constrained.bounded.maximum, 3);
+  assert.equal(constrained.disabled.const, false);
+  assert.equal(constrained.items.minItems, 1);
+  assert.equal(constrained.items.maxItems, 3);
+  assert.deepEqual(constrained.items['x-ccpocket-uniqueBy'], ['identity.id']);
+  assert.deepEqual(constrained.items['x-ccpocket-orderBy'], ['ordinal']);
+  assert.equal(constrained.tags.uniqueItems, true);
+  assert.equal(schema.$defs.FixtureOneOf.oneOf.length, 2);
+  assert.deepEqual(schema.$defs.FixtureCanonicalOrderSet['x-ccpocket-orderBy'], ['$']);
+  assert.equal(schema.$defs.FixtureUntaggedPreimageV1.oneOf.length, 2);
   const sha256Hex64 = new RegExp(schema.$defs.Sha256Hex64.pattern);
   assert.match('a'.repeat(64), sha256Hex64);
   assert.doesNotMatch('A'.repeat(64), sha256Hex64);
@@ -128,9 +150,13 @@ test('generation is byte deterministic and manifest digests bind artifacts', asy
   }
   assert.match(first.get('schema.json'), /draft\/2020-12/);
   assert.match(first.get('contract.ts'), /export function decodeFixtureEnvelope/);
+  assert.match(first.get('contract.ts'), /readonly "nullableValue": string \| null/);
+  assert.match(first.get('contract.ts'), /export type FixtureOneOf =/);
   assert.match(first.get('contract.ts'), /export function canonicalBytesOperationFingerprintPreimageV1/);
   assert.doesNotMatch(first.get('contract.ts'), /canonicalBytesFixtureEnvelope/);
   assert.match(first.get('contract.dart'), /sealed class FixturePayload/);
+  assert.match(first.get('contract.dart'), /sealed class FixtureOneOf/);
+  assert.match(first.get('contract.dart'), /final String\? nullableValue/);
   assert.match(first.get('contract.dart'), /cost\\\$x/);
   assert.match(first.get('contract.dart'), /String digestMaterializationReceiptPreimageV1/);
 
@@ -154,9 +180,42 @@ test('applies SHA-256 schema format only to the exact named scalar', async () =>
   assert.deepEqual(schema.$defs.Sha256Hex64Display, {type: 'string'});
 });
 
-test('authorizes only closed const-domain PreimageV1 definitions for digest generation', async () => {
+test('requires explicit closed digest derivations for generated helpers', async () => {
   const registry = await load('registry.json');
   const vectors = await load('vectors.json');
+
+  const omitted = structuredClone(registry);
+  omitted.digestDerivations = omitted.digestDerivations.filter(
+    (row) => row.preimageTypeRef !== 'OperationFingerprintPreimageV1',
+  );
+  assert.doesNotMatch(
+    generateArtifacts(validateInputs(omitted, vectors)).get('contract.ts'),
+    /digestOperationFingerprintPreimageV1/,
+  );
+
+  const explicitFrozen = structuredClone(registry);
+  explicitFrozen.definitions.push({
+    id: 'FixtureFrozenReceiptV1',
+    profiles: [explicitFrozen.activeProfileId],
+    node: {
+      kind: 'object',
+      fields: [{name: 'receiptId', required: true, type: {kind: 'string'}}],
+    },
+  });
+  explicitFrozen.profiles.find((profile) => profile.id === explicitFrozen.activeProfileId)
+    .rootTypeRefs.push('FixtureFrozenReceiptV1');
+  explicitFrozen.digestDerivations.push({
+    id: 'FIXTURE-DR-Z-FROZEN-RECEIPT',
+    profileId: explicitFrozen.activeProfileId,
+    ownerRef: 'fixture.owner',
+    derivationMode: 'FROZEN_RFC8785_JCS',
+    ownedFieldPaths: [],
+    preimageTypeRef: 'FixtureFrozenReceiptV1',
+    formulaId: 'FIXTURE_FROZEN_RECEIPT_V1',
+  });
+  const explicitArtifacts = generateArtifacts(validateInputs(explicitFrozen, vectors));
+  assert.match(explicitArtifacts.get('contract.ts'), /digestFixtureFrozenReceiptV1/);
+  assert.match(explicitArtifacts.get('contract.dart'), /digestFixtureFrozenReceiptV1/);
 
   const missingDomain = structuredClone(registry);
   const missingDefinition = missingDomain.definitions.find(
@@ -179,7 +238,7 @@ test('authorizes only closed const-domain PreimageV1 definitions for digest gene
   };
   assert.throws(
     () => generateArtifacts(validateInputs(nonConstDomain, vectors)),
-    /digestDomain must be a single-valued enum const/,
+    /digestDomain must be a string const or single-valued enum const/,
   );
 
   const openPreimage = structuredClone(registry);
@@ -327,6 +386,32 @@ test('preflights complete Dart and TypeScript generated namespaces', async () =>
     /Dart top-level name collision for VariantOwnerSameTag/,
   );
 
+  const nullableNestedCollision = structuredClone(registry);
+  addActiveDefinition(nullableNestedCollision, 'NullableOwner', {
+    kind: 'object',
+    fields: [{
+      name: 'child',
+      required: true,
+      type: {kind: 'nullable', inner: {kind: 'object', fields: []}},
+    }],
+  });
+  addActiveDefinition(nullableNestedCollision, 'NullableOwnerChildValue', {kind: 'string'});
+  assert.throws(
+    () => validateInputs(nullableNestedCollision, vectors),
+    /Dart top-level name collision for NullableOwnerChildValue/,
+  );
+
+  const oneOfVariantCollision = structuredClone(registry);
+  addActiveDefinition(oneOfVariantCollision, 'Choice', {
+    kind: 'oneOf',
+    variants: [{kind: 'string'}, {kind: 'integer'}],
+  });
+  addActiveDefinition(oneOfVariantCollision, 'ChoiceVariant1', {kind: 'string'});
+  assert.throws(
+    () => validateInputs(oneOfVariantCollision, vectors),
+    /Dart top-level name collision for ChoiceVariant1/,
+  );
+
   for (const id of ['String', 'ExpectString']) {
     const reserved = structuredClone(registry);
     addActiveDefinition(reserved, id, {kind: 'string'});
@@ -430,6 +515,98 @@ test('Dart emits valid constructors for empty objects and union variants', async
   assert.match(dart, /const EmptyUnionEmpty\(\);/);
   assert.match(dart, /return EmptyUnionEmpty\(\);/);
   assert.doesNotMatch(dart, /const Empty(?:Object|UnionEmpty)\(\{\s*\}\);/);
+});
+
+test('validates nullable, scalar constraints, collection metadata, and exact oneOf branches', async () => {
+  const value = await model();
+  const valid = {
+    nullableValue: null,
+    fixed: 'FIXED',
+    version: 1,
+    bounded: 2,
+    disabled: false,
+    items: [
+      {identity: {id: 'a'}, ordinal: 0, label: 'item-a'},
+      {identity: {id: 'b'}, ordinal: 1, label: 'item-b'},
+    ],
+    tags: ['alpha', 'beta'],
+  };
+  assert.deepEqual(validateValue('FixtureConstrainedRecord', valid, value), []);
+  assert.deepEqual(validateValue('FixtureConstrainedRecord', {...valid, nullableValue: 'value-9'}, value), []);
+  assert.match(validateValue('FixtureConstrainedRecord', {...valid, fixed: 'wrong'}, value)[0], /must equal/);
+  assert.match(validateValue('FixtureConstrainedRecord', {...valid, bounded: 4}, value)[0], /between 1 and 3/);
+  assert.match(validateValue('FixtureConstrainedRecord', {...valid, items: []}, value)[0], /between 1 and 3 items/);
+  assert.match(
+    validateValue('FixtureConstrainedRecord', {
+      ...valid,
+      items: [valid.items[0], {...valid.items[1], identity: {id: 'a'}}],
+    }, value)[0],
+    /duplicates uniqueBy/,
+  );
+  assert.match(
+    validateValue('FixtureConstrainedRecord', {...valid, items: [...valid.items].reverse()}, value)[0],
+    /out of order/,
+  );
+  assert.match(validateValue('FixtureConstrainedRecord', {...valid, tags: ['alpha', 'alpha']}, value)[0], /duplicates/);
+  assert.deepEqual(validateValue('FixtureOneOf', {left: 'ok'}, value), []);
+  assert.match(validateValue('FixtureOneOf', {}, value)[0], /NO_ONE_OF_VARIANT/);
+  assert.match(validateValue('FixtureAmbiguousOneOf', 'a', value)[0], /AMBIGUOUS_ONE_OF_VARIANT/);
+  const canonicalOrder = [{left: 'a'}, {right: 1}];
+  assert.deepEqual(validateValue('FixtureCanonicalOrderSet', canonicalOrder, value), []);
+  assert.match(
+    validateValue('FixtureCanonicalOrderSet', [...canonicalOrder].reverse(), value)[0],
+    /out of order/,
+  );
+});
+
+test('fails closed on malformed constraint and oneOf DSL metadata', async () => {
+  const registry = await load('registry.json');
+  const vectors = await load('vectors.json');
+  const rejects = [
+    [{kind: 'integer', minimum: 2, maximum: 1}, /minimum must not exceed maximum/],
+    [{kind: 'string', pattern: '['}, /valid ECMAScript Unicode regular expression/],
+    [{kind: 'array', items: {kind: 'string'}, minItems: -1}, /non-negative safe integer/],
+    [{kind: 'array', items: {kind: 'string'}, uniqueBy: ['id']}, /selectors require object/],
+    [{kind: 'array', items: {kind: 'string'}, orderBy: ['$']}, /\$ orderBy selector requires object/],
+    [{kind: 'array', items: {kind: 'object', fields: []}, uniqueBy: ['$']}, /supported only by orderBy/],
+    [{kind: 'oneOf', variants: [{kind: 'string'}]}, /at least two variants/],
+    [{kind: 'string', minimum: 0}, /unknown field/],
+  ];
+  for (const [node, expected] of rejects) {
+    const invalid = structuredClone(registry);
+    addActiveDefinition(invalid, `Invalid${invalid.definitions.length}`, node);
+    assert.throws(() => validateInputs(invalid, vectors), expected);
+  }
+
+  const optionalNullable = structuredClone(registry);
+  addActiveDefinition(optionalNullable, 'OptionalNullable', {
+    kind: 'object',
+    fields: [{name: 'ambiguous', required: false, type: {kind: 'nullable', inner: {kind: 'string'}}}],
+  });
+  assert.throws(
+    () => validateInputs(optionalNullable, vectors),
+    /nullable fields must be required/,
+  );
+});
+
+test('temporary generation and check preserve nullable, constraints, and oneOf artifacts', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-dsl-'));
+  try {
+    const args = [
+      '--registry', path.join(fixtures, 'registry.json'),
+      '--vectors', path.join(fixtures, 'vectors.json'),
+      '--out', directory,
+    ];
+    await run(['generate', ...args]);
+    await assert.doesNotReject(run(['check', ...args]));
+    const schema = JSON.parse(await readFile(path.join(directory, 'schema.json'), 'utf8'));
+    assert.equal(schema.$defs.FixtureConstrainedRecord.properties.items.minItems, 1);
+    assert.equal(schema.$defs.FixtureUntaggedPreimageV1.oneOf.length, 2);
+    assert.match(await readFile(path.join(directory, 'contract.ts'), 'utf8'), /NO_ONE_OF_VARIANT/);
+    assert.match(await readFile(path.join(directory, 'contract.dart'), 'utf8'), /AMBIGUOUS_ONE_OF_VARIANT/);
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
 });
 
 test('CLI rejects duplicate JSON object keys without echoing their values', async () => {

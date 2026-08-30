@@ -85,6 +85,13 @@ const typedHelpers = {
       generated.digestGapRepairIntentPreimageV1(typed),
     ];
   },
+  FixtureUntaggedPreimageV1(value) {
+    const typed = generated.decodeFixtureUntaggedPreimageV1(value);
+    return [
+      generated.canonicalBytesFixtureUntaggedPreimageV1(typed),
+      generated.digestFixtureUntaggedPreimageV1(typed),
+    ];
+  },
 };
 
 test('generated TypeScript matches independently stored canonical-byte and digest goldens', async () => {
@@ -224,5 +231,110 @@ test('generated TypeScript enforces the fixed canonical node budget', async () =
   assert.throws(
     () => generated.digestMaterializationOrderPreimageV1(overLimit),
     /node limit exceeded/,
+  );
+});
+
+test('generated TypeScript enforces nullable, closed constraints, and exact oneOf matching', () => {
+  const valid = {
+    nullableValue: null,
+    fixed: 'FIXED',
+    version: 1,
+    bounded: 2,
+    disabled: false,
+    items: [
+      {identity: {id: 'a'}, ordinal: 0, label: 'item-a'},
+      {identity: {id: 'b'}, ordinal: 1, label: 'item-b'},
+    ],
+    tags: ['alpha', 'beta'],
+  };
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(generated.decodeFixtureConstrainedRecord(valid))),
+    valid,
+  );
+  assert.equal(
+    generated.decodeFixtureConstrainedRecord({...valid, nullableValue: 'value-7'}).nullableValue,
+    'value-7',
+  );
+  const missingNullable = structuredClone(valid);
+  delete missingNullable.nullableValue;
+  assert.throws(() => generated.decodeFixtureConstrainedRecord(missingNullable), /required/);
+  assert.throws(() => generated.decodeFixtureConstrainedRecord({...valid, nullableValue: 'wrong'}), /pattern/);
+  assert.throws(() => generated.decodeFixtureConstrainedRecord({...valid, fixed: 'WRONG'}), /const/);
+  assert.throws(() => generated.decodeFixtureConstrainedRecord({...valid, version: 2}), /const/);
+  assert.throws(() => generated.decodeFixtureConstrainedRecord({...valid, bounded: 4}), /bounds/);
+  assert.throws(() => generated.decodeFixtureConstrainedRecord({...valid, disabled: true}), /const/);
+  assert.throws(() => generated.decodeFixtureConstrainedRecord({...valid, items: []}), /between 1 and 3/);
+  assert.throws(
+    () => generated.decodeFixtureConstrainedRecord({...valid, items: [valid.items[0], {...valid.items[1], identity: {id: 'a'}}]}),
+    /duplicate uniqueBy/,
+  );
+  assert.throws(
+    () => generated.decodeFixtureConstrainedRecord({...valid, items: [...valid.items].reverse()}),
+    /out of order/,
+  );
+  assert.throws(() => generated.decodeFixtureConstrainedRecord({...valid, tags: ['alpha', 'alpha']}), /duplicate array item/);
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(generated.decodeFixtureOneOf({left: 'ok'}))),
+    {left: 'ok'},
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(generated.decodeFixtureOneOf({right: 1}))),
+    {right: 1},
+  );
+  assert.throws(() => generated.decodeFixtureOneOf({}), /NO_ONE_OF_VARIANT/);
+  assert.throws(() => generated.decodeFixtureOneOf({left: 'ok', right: 1}), /NO_ONE_OF_VARIANT/);
+  assert.equal(generated.decodeFixtureAmbiguousOneOf('ab'), 'ab');
+  assert.throws(() => generated.decodeFixtureAmbiguousOneOf('a'), /AMBIGUOUS_ONE_OF_VARIANT/);
+  const canonicalOrder = [{left: 'a'}, {right: 1}];
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(generated.decodeFixtureCanonicalOrderSet(canonicalOrder))),
+    canonicalOrder,
+  );
+  assert.throws(
+    () => generated.decodeFixtureCanonicalOrderSet([...canonicalOrder].reverse()),
+    /out of order/,
+  );
+});
+
+test('generated TypeScript decoder admits only strict plain contract data', () => {
+  const valid = {
+    nullableValue: null,
+    fixed: 'FIXED',
+    version: 1,
+    bounded: 2,
+    disabled: false,
+    items: [{identity: {id: 'a'}, ordinal: 0, label: 'item-a'}],
+    tags: ['alpha'],
+  };
+
+  const sparse = structuredClone(valid);
+  sparse.items = new Array(1);
+  assert.throws(() => generated.decodeFixtureConstrainedRecord(sparse), /sparse arrays/);
+
+  let getterReads = 0;
+  const accessor = structuredClone(valid);
+  Object.defineProperty(accessor, 'bounded', {
+    enumerable: true,
+    get() {
+      getterReads += 1;
+      return 2;
+    },
+  });
+  assert.throws(() => generated.decodeFixtureConstrainedRecord(accessor), /own data field/);
+  assert.equal(getterReads, 0);
+
+  const hidden = structuredClone(valid);
+  Object.defineProperty(hidden, 'hidden', {enumerable: false, value: true});
+  assert.throws(() => generated.decodeFixtureConstrainedRecord(hidden), /own data field/);
+
+  const symbol = structuredClone(valid);
+  symbol[Symbol('hidden')] = true;
+  assert.throws(() => generated.decodeFixtureConstrainedRecord(symbol), /symbol fields/);
+
+  class ExoticRecord {}
+  assert.throws(
+    () => generated.decodeFixtureConstrainedRecord(Object.assign(new ExoticRecord(), structuredClone(valid))),
+    /plain data object/,
   );
 });
