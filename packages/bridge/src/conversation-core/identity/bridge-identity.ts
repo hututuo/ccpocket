@@ -15,6 +15,9 @@ import {
   atomicPrivateWrite,
   preparePrivateStateDirectory,
   readBoundedPrivateFile,
+  acquireStateWriterLease,
+  STATE_WRITER_LEASE_SUFFIX,
+  type StateMutationLockOptions,
 } from "./private-state.js";
 
 export const BRIDGE_IDENTITY_VERSION = 1 as const;
@@ -34,6 +37,7 @@ interface BridgeIdentityFileData {
 
 export interface BridgeIdentityStoreOptions {
   stateDir?: string;
+  lockOptions?: StateMutationLockOptions;
 }
 
 export interface BridgeNonceProofInput {
@@ -56,10 +60,16 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+function hasExactKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
-  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+  return (
+    actual.length === expected.length &&
+    actual.every((key, index) => key === expected[index])
+  );
 }
 
 function encodeBase64Url(value: Buffer): string {
@@ -84,7 +94,9 @@ function rawEd25519PublicKey(publicKey: KeyObject): Buffer {
   const exported = publicKey.export({ format: "der", type: "spki" });
   if (
     exported.length !== ED25519_SPKI_PREFIX.length + 32 ||
-    !exported.subarray(0, ED25519_SPKI_PREFIX.length).equals(ED25519_SPKI_PREFIX)
+    !exported
+      .subarray(0, ED25519_SPKI_PREFIX.length)
+      .equals(ED25519_SPKI_PREFIX)
   ) {
     throw new Error("Bridge identity public key is not canonical Ed25519");
   }
@@ -108,10 +120,23 @@ function publicKeyFromRaw(value: string): KeyObject {
 }
 
 function normalizeMethods(methods: readonly string[]): string[] {
-  if (methods.length > 32 || methods.some((method) => !METHOD_PATTERN.test(method))) {
+  if (
+    methods.length > 32 ||
+    methods.some((method) => !METHOD_PATTERN.test(method))
+  ) {
     throw new Error("Bridge identity methods are invalid");
   }
   return [...new Set(methods)].sort();
+}
+
+function arraysEqual(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
 }
 
 function assertProofValue(value: string, description: string): void {
@@ -120,7 +145,10 @@ function assertProofValue(value: string, description: string): void {
   }
 }
 
-function parseIdentityFile(contents: string, path: string): {
+function parseIdentityFile(
+  contents: string,
+  path: string,
+): {
   privateKey: KeyObject;
   publicKey: string;
 } {
@@ -128,7 +156,9 @@ function parseIdentityFile(contents: string, path: string): {
   try {
     parsed = JSON.parse(contents);
   } catch (error) {
-    throw new Error(`Bridge identity state is malformed: ${path}`, { cause: error });
+    throw new Error(`Bridge identity state is malformed: ${path}`, {
+      cause: error,
+    });
   }
   if (
     !isPlainObject(parsed) ||
@@ -161,12 +191,17 @@ function parseIdentityFile(contents: string, path: string): {
       parsed.publicKey,
       "Bridge identity public key",
     );
-    if (persistedPublic.length !== 32 || !derivedPublic.equals(persistedPublic)) {
+    if (
+      persistedPublic.length !== 32 ||
+      !derivedPublic.equals(persistedPublic)
+    ) {
       throw new Error("Bridge identity key mismatch");
     }
     return { privateKey, publicKey: encodeBase64Url(derivedPublic) };
   } catch (error) {
-    throw new Error(`Bridge identity key material is invalid: ${path}`, { cause: error });
+    throw new Error(`Bridge identity key material is invalid: ${path}`, {
+      cause: error,
+    });
   }
 }
 
@@ -200,7 +235,9 @@ export function canonicalBridgeIdentityPayload(input: {
     throw new Error("Bridge identity proof version is unsupported");
   }
   if (!isValidIdentityNonce(input.nonce)) {
-    throw new Error("Bridge identity nonce must be base64url with 16..96 characters");
+    throw new Error(
+      "Bridge identity nonce must be base64url with 16..96 characters",
+    );
   }
   assertProofValue(input.bridgeIdentityId, "Bridge identity ID");
   assertProofValue(input.bridgeInstanceId, "Bridge instance ID");
@@ -242,7 +279,10 @@ export function verifyEd25519Signature(
 
 export function verifyBridgeIdentityProof(proof: BridgeIdentityProof): boolean {
   try {
-    if (proof.bridgeIdentityId !== deriveBridgeIdentityId(proof.publicKey)) return false;
+    if (proof.bridgeIdentityId !== deriveBridgeIdentityId(proof.publicKey))
+      return false;
+    const canonicalMethods = normalizeMethods(proof.methods);
+    if (!arraysEqual(proof.methods, canonicalMethods)) return false;
     const payload = canonicalBridgeIdentityPayload(proof);
     return (
       proof.signedPayload === payload &&
@@ -256,66 +296,109 @@ export function verifyBridgeIdentityProof(proof: BridgeIdentityProof): boolean {
 export class BridgeIdentityStore {
   readonly stateDir: string;
   readonly identityFile: string;
+  readonly writerLeaseFile: string;
   readonly bridgeIdentityId: string;
   readonly publicKey: string;
   private readonly privateKey: KeyObject;
+  private readonly writerLeaseRelease: () => Promise<void>;
+  private closed = false;
+  private closePromise: Promise<void> | undefined;
 
   private constructor(input: {
     stateDir: string;
     identityFile: string;
+    writerLeaseFile: string;
+    writerLeaseRelease: () => Promise<void>;
     privateKey: KeyObject;
     publicKey: string;
   }) {
     this.stateDir = input.stateDir;
     this.identityFile = input.identityFile;
+    this.writerLeaseFile = input.writerLeaseFile;
+    this.writerLeaseRelease = input.writerLeaseRelease;
     this.privateKey = input.privateKey;
     this.publicKey = input.publicKey;
     this.bridgeIdentityId = deriveBridgeIdentityId(input.publicKey);
   }
 
-  static async load(options: BridgeIdentityStoreOptions = {}): Promise<BridgeIdentityStore> {
+  static async load(
+    options: BridgeIdentityStoreOptions = {},
+  ): Promise<BridgeIdentityStore> {
     const requestedStateDir =
-      options.stateDir ?? process.env.CCPOCKET_STATE_DIR ?? join(homedir(), ".ccpocket");
+      options.stateDir ??
+      process.env.CCPOCKET_STATE_DIR ??
+      join(homedir(), ".ccpocket");
     const stateDir = await preparePrivateStateDirectory(requestedStateDir);
     const identityFile = join(stateDir, BRIDGE_IDENTITY_FILE);
-    const releaseLock = await acquireStateMutationLock(
-      identityFile,
-      "Bridge identity state",
+    const lockOptions = { ...options.lockOptions };
+    const writerLeaseStateFile = `${stateDir}.bridge-identity-writer`;
+    const writerLeaseFile = `${writerLeaseStateFile}${STATE_WRITER_LEASE_SUFFIX}.lock`;
+    const writerLeaseRelease = await acquireStateWriterLease(
+      writerLeaseStateFile,
+      "Bridge identity writer lease",
+      lockOptions,
     );
     try {
-      const contents = await readBoundedPrivateFile(
+      const releaseLock = await acquireStateMutationLock(
         identityFile,
-        MAX_IDENTITY_FILE_BYTES,
         "Bridge identity state",
+        lockOptions,
       );
-      let material: { privateKey: KeyObject; publicKey: string };
-      if (contents === undefined) {
-        const generated = generateKeyPairSync("ed25519");
-        const publicKey = encodeBase64Url(rawEd25519PublicKey(generated.publicKey));
-        const privateKey = generated.privateKey;
-        const privateKeyDer = privateKey.export({ format: "der", type: "pkcs8" });
-        const data: BridgeIdentityFileData = {
-          version: BRIDGE_IDENTITY_VERSION,
-          publicKey,
-          privateKey: encodeBase64Url(privateKeyDer),
-        };
-        await atomicPrivateWrite(
+      try {
+        const contents = await readBoundedPrivateFile(
           identityFile,
-          `${JSON.stringify(data)}\n`,
           MAX_IDENTITY_FILE_BYTES,
           "Bridge identity state",
         );
-        material = { privateKey, publicKey };
-      } else {
-        material = parseIdentityFile(contents, identityFile);
+        let material: { privateKey: KeyObject; publicKey: string };
+        if (contents === undefined) {
+          const generated = generateKeyPairSync("ed25519");
+          const publicKey = encodeBase64Url(
+            rawEd25519PublicKey(generated.publicKey),
+          );
+          const privateKey = generated.privateKey;
+          const privateKeyDer = privateKey.export({
+            format: "der",
+            type: "pkcs8",
+          });
+          const data: BridgeIdentityFileData = {
+            version: BRIDGE_IDENTITY_VERSION,
+            publicKey,
+            privateKey: encodeBase64Url(privateKeyDer),
+          };
+          await atomicPrivateWrite(
+            identityFile,
+            `${JSON.stringify(data)}\n`,
+            MAX_IDENTITY_FILE_BYTES,
+            "Bridge identity state",
+            { syncDirectory: lockOptions.syncDirectory },
+          );
+          material = { privateKey, publicKey };
+        } else {
+          material = parseIdentityFile(contents, identityFile);
+        }
+        return new BridgeIdentityStore({
+          stateDir,
+          identityFile,
+          writerLeaseFile,
+          writerLeaseRelease,
+          ...material,
+        });
+      } finally {
+        await releaseLock();
       }
-      return new BridgeIdentityStore({ stateDir, identityFile, ...material });
-    } finally {
-      await releaseLock();
+    } catch (error) {
+      await writerLeaseRelease().catch(() => undefined);
+      throw error;
     }
   }
 
+  private assertOpen(): void {
+    if (this.closed) throw new Error("Bridge identity store is closed");
+  }
+
   sign(payload: string | Buffer): string {
+    this.assertOpen();
     return encodeBase64Url(
       ed25519Sign(
         null,
@@ -325,11 +408,17 @@ export class BridgeIdentityStore {
     );
   }
 
-  verify(payload: string | Buffer, signature: string, publicKey = this.publicKey): boolean {
+  verify(
+    payload: string | Buffer,
+    signature: string,
+    publicKey = this.publicKey,
+  ): boolean {
+    this.assertOpen();
     return verifyEd25519Signature(publicKey, payload, signature);
   }
 
   createNonceProof(input: BridgeNonceProofInput): BridgeIdentityProof {
+    this.assertOpen();
     const methods = normalizeMethods(input.methods);
     const unsigned = {
       version: BRIDGE_IDENTITY_VERSION,
@@ -350,5 +439,12 @@ export class BridgeIdentityStore {
 
   response(input: BridgeNonceProofInput): BridgeIdentityProof {
     return this.createNonceProof(input);
+  }
+
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    this.closed = true;
+    this.closePromise = this.writerLeaseRelease();
+    return this.closePromise;
   }
 }
