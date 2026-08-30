@@ -469,3 +469,24 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   不集成。根级 Store focused/full/build/worker/crash/runtime 继续 `NOT_RUN`。
 - donor 仅使用临时测试 DB；没有打开产品 DB，没有启动 Provider、Bridge 或端口，没有执行 Mobile、
   simulator、merge、push、deploy、release、OTA、stable 或真机安装。
+
+## 21. 2026-08-30 K00 strict input/JCS 基础波闭合
+
+- Contract authority rework 在被拒绝的 runtime-fact parent 后保留三笔独立基础波：
+  `7755c3bcde262232edae590ac288dd95131b8055`（strict canonical gates）→
+  `3641b38eb639463899cea9c2a963e050794bcb91`（bounded parser/single snapshot）→
+  `254eeb7aff6744f2de4e58b18cb7650a0addffd2`（fatal UTF-8/safe integer/sticky scan，tree
+  `ce85c34ddea6c18e1d0012605bd56b3b4f3abc73`）。这些提交只在 donor 分支冻结，尚未重放到实施根。
+- Wave A.1 的独立复审曾明确给出 `P0=0/P1=2/P2=2`：文件读取仍会替换非法 UTF-8，parser 仍接受
+  decimal/unsafe integer，number scan 仍依赖 suffix slice；该失败记录不被覆盖。A.2 作为单独三文件
+  follow-up 关闭这些 P1：Buffer + fatal `TextDecoder`、parser `Number.isSafeInteger`、`-0` 归一为 0，
+  sticky regex + cursor 只截取最终 token。
+- A.2 immutable archive 的 Node `22.23.1` 复审结果：focused canonical/strict-input 10/10、合并原
+  package tests 14/14、独立 adversarial probe failure count 0；真实非法 UTF-8 文件、decimal、unsafe
+  integer、non-finite 和畸形 numeric suffix 均拒绝，safe min/max、`-0`、`1e3` 接受。1,048,576-byte、
+  depth 512、node 100,000 边界接受，逐项 +1 拒绝；single descriptor snapshot、Unicode scalar、
+  duplicate key 与 dense programmatic validation 无回归。最终基础波为 `P0=0/P1=0`。
+- 两个 P2 继续由 generated-JCS 波负责：固定 TS/Dart canonical bytes + SHA-256 golden，以及机器化
+  runtime import allowlist，禁止产品源码调用 generic `jcsDigest/digestJson`。由于父 Registry/Vectors
+  的 semantic authority 仍在并发返工，根不会只取基础波而暂时带入被拒绝的 contract parent；正式
+  mapped generation 继续 `FORBIDDEN / NOT_RUN`。
