@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readlink,
   readdir,
   realpath,
   rename,
@@ -441,6 +442,43 @@ test('writeArtifacts rejects unsafe outputs, preserves symlink victims, and seri
   }
 });
 
+test('standalone output rejects user symlink ancestors but accepts the macOS root alias', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-standalone-root-'));
+  try {
+    const lexicalRoot = path.join(directory, 'lexical');
+    const outside = path.join(directory, 'outside');
+    await mkdir(lexicalRoot);
+    await mkdir(outside);
+    await symlink(outside, path.join(lexicalRoot, 'nested-link'));
+    await assert.rejects(
+      writeArtifacts(
+        path.join(lexicalRoot, 'nested-link/generated'),
+        fixtureArtifacts('nested-link'),
+      ),
+      /must not be a symbolic link/,
+    );
+    await assert.rejects(readFile(path.join(outside, 'generated/schema.json')), /ENOENT/);
+
+    if (process.platform === 'darwin' &&
+        (await lstat('/var')).isSymbolicLink() &&
+        await realpath('/var') === '/private/var') {
+      const aliasRoot = await mkdtemp('/var/tmp/ccpocket-contract-system-alias-');
+      try {
+        const output = path.join(aliasRoot, 'generated');
+        await writeArtifacts(output, fixtureArtifacts('system-alias'));
+        assert.equal(
+          await readFile(path.join(output, 'schema.json'), 'utf8'),
+          fixtureArtifacts('system-alias').get('schema.json'),
+        );
+      } finally {
+        await rm(aliasRoot, {recursive: true, force: true});
+      }
+    }
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
 test('target-map generation rejects a nested symlink escape below the real project root', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-escape-'));
   try {
@@ -479,6 +517,213 @@ test('target-map generation rejects a nested symlink escape below the real proje
     );
   } finally {
     await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('mapped target parent replacement is rejected before mutation', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-parent-swap-'));
+  try {
+    const project = path.join(directory, 'project');
+    const outside = path.join(directory, 'outside');
+    const targets = new Map([
+      ['schema.json', path.join(project, 'docs/generated/schema.json')],
+      ['profile-manifest.json', path.join(project, 'docs/generated/profile-manifest.json')],
+      ['contract.ts', path.join(project, 'bridge/generated/contract.ts')],
+      ['contract.dart', path.join(project, 'mobile/generated/contract.dart')],
+    ]);
+    const previous = fixtureArtifacts('parent-before');
+    await mkdir(project);
+    await mkdir(outside);
+    await writeFile(path.join(outside, 'contract.ts'), 'outside victim', 'utf8');
+    await writeArtifactTargets(targets, previous, {projectRoot: project});
+
+    const contractParent = path.dirname(targets.get('contract.ts'));
+    const heldParent = path.join(project, 'bridge/generated-held');
+    let swapped = false;
+    await assert.rejects(
+      writeArtifactTargets(targets, fixtureArtifacts('parent-after'), {
+        projectRoot: project,
+        hooks: {
+          async beforeMutation(details) {
+            if (swapped ||
+                details.operation !== 'backup-target' ||
+                details.filename !== 'contract.ts') return;
+            swapped = true;
+            await rename(contractParent, heldParent);
+            await symlink(outside, contractParent);
+          },
+        },
+      }),
+      /bound directory was externally replaced/,
+    );
+    assert.equal(await readFile(path.join(outside, 'contract.ts'), 'utf8'), 'outside victim');
+    assert.equal(
+      await readFile(path.join(heldParent, 'contract.ts'), 'utf8'),
+      previous.get('contract.ts'),
+    );
+    assert.equal(await readFile(targets.get('schema.json'), 'utf8'), previous.get('schema.json'));
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('mapped target parent replacement after mutation stops recovery with evidence', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-parent-post-swap-'));
+  try {
+    const project = path.join(directory, 'project');
+    const outside = path.join(directory, 'outside');
+    const targets = new Map([
+      ['schema.json', path.join(project, 'docs/generated/schema.json')],
+      ['profile-manifest.json', path.join(project, 'docs/generated/profile-manifest.json')],
+      ['contract.ts', path.join(project, 'bridge/generated/contract.ts')],
+      ['contract.dart', path.join(project, 'mobile/generated/contract.dart')],
+    ]);
+    const previous = fixtureArtifacts('post-parent-before');
+    await mkdir(project);
+    await mkdir(outside);
+    await writeFile(path.join(outside, 'contract.ts'), 'outside victim', 'utf8');
+    await writeArtifactTargets(targets, previous, {projectRoot: project});
+
+    const contractParent = path.dirname(targets.get('contract.ts'));
+    const heldParent = path.join(project, 'bridge/generated-held');
+    let swapped = false;
+    await assert.rejects(
+      writeArtifactTargets(targets, fixtureArtifacts('post-parent-after'), {
+        projectRoot: project,
+        hooks: {
+          async afterMutation(details) {
+            if (swapped ||
+                details.operation !== 'backup-target' ||
+                details.filename !== 'contract.ts') return;
+            swapped = true;
+            await rename(contractParent, heldParent);
+            await symlink(outside, contractParent);
+          },
+        },
+      }),
+      /automatic recovery stopped.*bound directory was externally replaced.*invalid backup/,
+    );
+    assert.equal(await readFile(path.join(outside, 'contract.ts'), 'utf8'), 'outside victim');
+    assert.equal(await readFile(targets.get('schema.json'), 'utf8'), previous.get('schema.json'));
+    const entries = await readdir(project);
+    assert.equal(entries.includes(TRANSACTION_LOCK_NAME), true);
+    const stage = entries.find((name) => name.startsWith(TRANSACTION_STAGE_PREFIX));
+    assert.ok(stage);
+    assert.equal(
+      await readFile(path.join(project, stage, 'backup/contract.ts'), 'utf8'),
+      previous.get('contract.ts'),
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('stage new and backup directory replacement is detected without touching victims', async (t) => {
+  for (const stageChild of ['new', 'backup']) {
+    await t.test(stageChild, async () => {
+      const directory = await mkdtemp(
+        path.join(tmpdir(), `ccpocket-contract-stage-${stageChild}-`),
+      );
+      try {
+        const project = path.join(directory, 'project');
+        const outside = path.join(directory, 'outside');
+        const targets = new Map(GENERATED_FILES.map((filename) => [
+          filename,
+          path.join(project, filename),
+        ]));
+        await mkdir(project);
+        await mkdir(outside);
+        await writeFile(path.join(outside, 'victim.txt'), 'outside victim', 'utf8');
+        if (stageChild === 'backup') {
+          await writeArtifactTargets(targets, fixtureArtifacts('stage-before'), {
+            projectRoot: project,
+          });
+        }
+
+        let swapped = false;
+        await assert.rejects(
+          writeArtifactTargets(targets, fixtureArtifacts('stage-after'), {
+            projectRoot: project,
+            hooks: {
+              async beforeMutation(details) {
+                const shouldSwap = stageChild === 'new'
+                  ? details.operation === 'write-staged-artifact' && details.filename === 'schema.json'
+                  : details.operation === 'backup-target' && details.filename === 'schema.json';
+                if (swapped || !shouldSwap) return;
+                swapped = true;
+                const child = stageChild === 'new'
+                  ? details.newDirectory
+                  : details.backupDirectory;
+                await rename(child, `${child}-held`);
+                await symlink(outside, child);
+              },
+            },
+          }),
+          /automatic recovery stopped.*bound directory was externally replaced/,
+        );
+        assert.equal(await readFile(path.join(outside, 'victim.txt'), 'utf8'), 'outside victim');
+        for (const filename of GENERATED_FILES) {
+          await assert.rejects(readFile(path.join(outside, filename), 'utf8'), /ENOENT/);
+        }
+        const entries = await readdir(project);
+        assert.equal(entries.includes(TRANSACTION_LOCK_NAME), true);
+        assert.equal(entries.some((name) => name.startsWith(TRANSACTION_STAGE_PREFIX)), true);
+      } finally {
+        await rm(directory, {recursive: true, force: true});
+      }
+    });
+  }
+});
+
+test('stage child identity is bound to the directory created by the transaction', async (t) => {
+  for (const stageChild of ['new', 'backup']) {
+    await t.test(stageChild, async () => {
+      const directory = await mkdtemp(
+        path.join(tmpdir(), `ccpocket-contract-stage-created-${stageChild}-`),
+      );
+      try {
+        const project = path.join(directory, 'project');
+        const outside = path.join(directory, 'outside');
+        const targets = new Map(GENERATED_FILES.map((filename) => [
+          filename,
+          path.join(project, filename),
+        ]));
+        await mkdir(project);
+        await mkdir(outside);
+        await writeFile(path.join(outside, 'victim.txt'), 'outside victim', 'utf8');
+
+        let swapped = false;
+        await assert.rejects(
+          writeArtifactTargets(targets, fixtureArtifacts('created-stage-after'), {
+            projectRoot: project,
+            hooks: {
+              async afterMutation(details) {
+                const operation = stageChild === 'new'
+                  ? 'create-stage-new-directory'
+                  : 'create-stage-backup-directory';
+                if (swapped || details.operation !== operation) return;
+                swapped = true;
+                const child = stageChild === 'new'
+                  ? details.newDirectory
+                  : details.backupDirectory;
+                await rename(child, `${child}-held`);
+                await symlink(outside, child);
+              },
+            },
+          }),
+          /automatic recovery stopped.*bound directory must not be a symbolic link/,
+        );
+        assert.equal(await readFile(path.join(outside, 'victim.txt'), 'utf8'), 'outside victim');
+        for (const filename of GENERATED_FILES) {
+          await assert.rejects(readFile(path.join(outside, filename), 'utf8'), /ENOENT/);
+        }
+        const entries = await readdir(project);
+        assert.equal(entries.includes(TRANSACTION_LOCK_NAME), true);
+        assert.equal(entries.some((name) => name.startsWith(TRANSACTION_STAGE_PREFIX)), true);
+      } finally {
+        await rm(directory, {recursive: true, force: true});
+      }
+    });
   }
 });
 
@@ -549,6 +794,15 @@ test('mapped project targets generate and check one exact artifact set', async (
     await mkdir(staleStage);
     await assert.rejects(run(['check', ...args]), /unfinished transaction/);
     await rm(staleStage, {recursive: true});
+
+    const deepStage = path.join(
+      await realpath(directory),
+      'docs',
+      `${TRANSACTION_STAGE_PREFIX}deep-stale`,
+    );
+    await mkdir(deepStage);
+    await assert.rejects(run(['check', ...args]), /unfinished transaction/);
+    await rm(deepStage, {recursive: true});
 
     const stale = path.join(directory, 'docs/generated/old-schema.json');
     await writeFile(stale, '{}\n', 'utf8');
@@ -648,6 +902,54 @@ test('transaction faults during backup or install restore the complete prior art
   }
 });
 
+test('rollback restores a prior symlink as the same symlink object', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-symlink-rollback-'));
+  try {
+    const targets = new Map(GENERATED_FILES.map((filename) => [
+      filename,
+      path.join(directory, 'generated', filename),
+    ]));
+    await mkdir(path.join(directory, 'generated'));
+    const victim = path.join(directory, 'victim.txt');
+    await writeFile(victim, 'symlink victim', 'utf8');
+    await symlink(victim, targets.get('schema.json'));
+    const symlinkIdentity = await lstat(targets.get('schema.json'), {bigint: true});
+    const previous = fixtureArtifacts('symlink-before');
+    for (const filename of GENERATED_FILES.filter((name) => name !== 'schema.json')) {
+      await writeFile(targets.get(filename), previous.get(filename), 'utf8');
+    }
+
+    await assert.rejects(
+      writeArtifactTargets(targets, fixtureArtifacts('symlink-after'), {
+        projectRoot: directory,
+        hooks: {
+          afterInstall(record) {
+            if (record.filename === 'schema.json') {
+              throw new Error('injected symlink rollback failure');
+            }
+          },
+        },
+      }),
+      /injected symlink rollback failure/,
+    );
+    const restoredSymlink = await lstat(targets.get('schema.json'), {bigint: true});
+    assert.equal(restoredSymlink.isSymbolicLink(), true);
+    assert.equal(restoredSymlink.dev, symlinkIdentity.dev);
+    assert.equal(restoredSymlink.ino, symlinkIdentity.ino);
+    assert.equal(await readlink(targets.get('schema.json')), victim);
+    assert.equal(await readFile(victim, 'utf8'), 'symlink victim');
+    for (const filename of GENERATED_FILES.filter((name) => name !== 'schema.json')) {
+      assert.equal(await readFile(targets.get(filename), 'utf8'), previous.get(filename));
+    }
+    assert.deepEqual(
+      (await readdir(directory)).filter((name) => name.startsWith('.ccpocket-contract')),
+      [],
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
 test('rollback never deletes an externally replaced target and retains recovery evidence', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-external-'));
   try {
@@ -715,7 +1017,7 @@ test('rollback never deletes an externally replaced target and retains recovery 
   }
 });
 
-test('rollback cleanup failure keeps the transaction lock and stage visible', async () => {
+test('rollback lock-cleanup failure keeps the transaction lock and stage visible', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-cleanup-'));
   try {
     const targets = new Map(GENERATED_FILES.map((filename) => [
@@ -731,7 +1033,7 @@ test('rollback cleanup failure keeps the transaction lock and stage visible', as
           afterBackup() {
             throw new Error('injected transaction failure');
           },
-          beforeStageCleanup() {
+          beforeLockCleanup() {
             throw new Error('injected cleanup failure');
           },
         },
@@ -743,6 +1045,42 @@ test('rollback cleanup failure keeps the transaction lock and stage visible', as
     }
     const entries = await readdir(await realpath(directory));
     assert.equal(entries.includes(TRANSACTION_LOCK_NAME), true);
+    assert.equal(entries.some((name) => name.startsWith(TRANSACTION_STAGE_PREFIX)), true);
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('post-lock cleanup failure retains stage residue and reports the absent-lock possibility', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-post-lock-cleanup-'));
+  try {
+    const targets = new Map(GENERATED_FILES.map((filename) => [
+      filename,
+      path.join(directory, filename),
+    ]));
+    const previous = fixtureArtifacts('V');
+    await writeArtifactTargets(targets, previous, {projectRoot: directory});
+    await assert.rejects(
+      writeArtifactTargets(targets, fixtureArtifacts('W'), {
+        projectRoot: directory,
+        hooks: {
+          afterBackup() {
+            throw new Error('injected transaction failure');
+          },
+          beforeMutation(details) {
+            if (details.operation === 'cleanup-staged-artifact') {
+              throw new Error('injected post-lock cleanup failure');
+            }
+          },
+        },
+      }),
+      /inspect last-known transaction locations.*lock .*either may already be absent.*injected post-lock cleanup failure/,
+    );
+    for (const filename of GENERATED_FILES) {
+      assert.equal(await readFile(targets.get(filename), 'utf8'), previous.get(filename));
+    }
+    const entries = await readdir(await realpath(directory));
+    assert.equal(entries.includes(TRANSACTION_LOCK_NAME), false);
     assert.equal(entries.some((name) => name.startsWith(TRANSACTION_STAGE_PREFIX)), true);
   } finally {
     await rm(directory, {recursive: true, force: true});

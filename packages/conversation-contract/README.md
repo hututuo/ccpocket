@@ -36,18 +36,33 @@ node src/cli.mjs check --format-dart --registry <registry.json> --vectors <vecto
 `generate` writes deterministic `schema.json`, `contract.ts`, `contract.dart`,
 and `profile-manifest.json`. The production path pins Dart `3.13.0` and formats
 the Dart artifact before its digest is calculated. `check` repeats that process
-and fails on byte drift or unexpected regular files in an artifact directory.
-Generation rejects symlink/non-directory outputs, uses an exclusive lock and
-unpredictable transaction staging, and never follows a pre-existing artifact
-symlink. Target maps canonicalize the real project root first, then reject any
-symlink or realpath escape below that root. Rollback deletes an installed file
-only after its device, inode, size, and digest still match the transaction; if
-external replacement or cleanup failure makes recovery unsafe, the lock, stage,
-and backup remain as explicit recovery evidence. `check` rejects non-regular
-targets, every unexpected directory entry, and unfinished lock/stage residue.
-No timestamp, host path, or random value enters an output. The CLI uses Dart
-from `PATH`, or the project's `mise` Flutter `3.47.0` tool when Dart is not
-already available.
+and fails on byte drift or unexpected entries in an artifact directory.
+Generation walks every standalone output component and rejects user-level
+symlinks/non-directories. On macOS it recognizes only a root-owned `/name ->
+/private/name` system alias (for example `/var -> /private/var`) before applying
+the same component checks. Target maps canonicalize the configured project root,
+then reject any symlink or realpath escape below it. An exclusive lock and
+unpredictable stage are used; the target parents and the stage `new`/`backup`
+directories are held open and their lexical path, realpath, device, and inode are
+rechecked before and after every mutation. A failed pre-mutation recheck touches
+no victim; post-mutation drift stops automatic recovery instead of guessing.
+Node does not expose `renameat`/`linkat`, so this tooling does not claim to be a
+security boundary against a malicious process running as the same account that
+wins the interval between the last recheck and the filesystem syscall.
+
+Rollback removes an installed file only after its device, inode, size, and
+digest still match the transaction. A prior target, including a symlink, is
+restored by renaming the exact backup object instead of creating a hard link.
+Cleanup validates the complete stage inventory before removing the lock; a
+failure before lock removal retains lock plus stage, while a later cleanup
+failure can retain stage residue with the lock already absent. The reported
+last-known recovery locations explicitly allow either residue to be absent;
+callers must inspect them rather than assume that every residue survives.
+`check` rejects non-regular targets, every unexpected artifact-directory entry,
+and lock/stage residue at every ancestor on the mapped target paths. No
+timestamp, host path, or random value enters an output. The CLI uses Dart from
+`PATH`, or the project's `mise` Flutter `3.47.0` tool when Dart is not already
+available.
 
 The root `conversation:contract:*` scripts are the formal project gate. They
 consume only `docs/design/codex-kernel-v4/contracts/contract-registry.json` and
