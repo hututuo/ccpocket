@@ -322,3 +322,35 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   既有测试覆盖缺口，不是编译失败。返工需新增 sourceEpoch lifecycle、outer methods mismatch、
   two-process writer lease、namespace fsync 和 same-token replacement 回归，再由根复核后集成。
 - 本复核/返工未启动 Bridge/Provider/DB/端口/simulator，也未改变任何发布授权。
+
+## 16. 2026-08-30 15:24 +08 详细接手断点
+
+- 用户要求生成详细接手文档；根任务没有为赶文档集成尚未根审的 worker commit。当前根分支
+  `e32ed79c8301c9b6e59becc118541eb0986af847`、tree
+  `55343e8e08b9148afc82a824030e430952d548be`、status clean。完整恢复说明写入
+  `docs/design/codex-kernel-v4/IMPLEMENTATION-HANDOFF-20260830.md`。
+- K00 runtime-fact contract 已收束为 clean donor `3f59c433`（parent `eb2b98b9`）：85
+  definitions、81 vectors、23 rules/tests；compact page/commit、4 MiB/256 KiB 分层、typed empty、
+  HTTP image ingress、server fingerprint、Provider evidence、signed prepend 均已进入 Registry/Vectors。
+  worker validate/temp generate/audit PASS；正式四目标仍 `NOT_GENERATED`。
+- K00 tooling `45ccc633` 的第二份对抗复审仍为 `P0=0/P1=4/P2=2`，重新打开 standalone
+  parent symlink、mapped parent TOCTOU、stage new/backup replacement 和 symlink rollback 四个 P1；
+  因此正式 mapped generate 继续禁止，既有 15/15 PASS 不删除但不能提升 gate。
+- K02 identity 修复 donor `3aef924d` clean，关闭 ephemeral sourceEpoch、outer proof methods、
+  cross-process writer lease、namespace fsync 与 replacement release；Node22 focused 34、tsc PASS，尚未
+  根集成。
+- K01/K02 adapter final donor 为 `d74895e2 -> 7bc5ca1b`，tree `eb92170a` clean；targeted
+  80/80、full Bridge 45/1152、tsc、独立 reviewer PASS。它按最终裁决接受预算内 1001 items，
+  render 200；300 live observations 全接收而 overlay 保留 latest 200，并产生 eviction/repair evidence。
+  runtime/router/DB/Mobile composition 仍 `NOT_RUN / NOT_IMPLEMENTED`。
+- K03 Bridge Store rework donor `c67e538` clean，独立 review `P0=0/P1=0`；Node22 fresh install/
+  rebuild、focused 29/29、full Bridge 43/1124、tsc/build/compiled-worker smoke PASS。根分支旧
+  `9c1a87c7` 仍是失败 checkpoint；新 Store 尚未根集成或运行真实 DB/Bridge。
+- K03 Mobile Repository `c3cdc2e7 -> cf0ad5ec` 的首轮 reviewer 与 37/37 tests 曾 PASS，但 Sol
+  xhigh 对抗复审为 `FAIL P0=1/P1=5/P2=2`，因此禁止集成：第二 digest/evidence authority、same-epoch
+  complete omission 假 canonical、runtime projection rewind/重复 publish、foreign schema 弱 gate、
+  多表容量/回收无界、recursive JSON StackOverflow；另有 singleton writer 与 3347 行 giant module
+  P2。正向测试事实保留，不能冒充可集成。
+- 本断点仍未运行正式 generation、Bridge/Provider/产品 DB/8765/8766/Mobile integration、simulator、
+  candidate、真机、merge、push、部署、发布、OTA 或 stable。磁盘即时可用约 14 GiB；未经授权未做
+  清理。
