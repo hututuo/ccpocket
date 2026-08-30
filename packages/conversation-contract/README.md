@@ -29,16 +29,24 @@ positive and one negative vector.
 node src/cli.mjs validate --registry <registry.json> --vectors <vectors.json>
 node src/cli.mjs generate --format-dart --registry <registry.json> --vectors <vectors.json> --out <dir>
 node src/cli.mjs check --format-dart --registry <registry.json> --vectors <vectors.json> --out <dir>
+node src/cli.mjs generate --format-dart --registry <registry.json> --vectors <vectors.json> --target-map <map.json>
+node src/cli.mjs check --format-dart --registry <registry.json> --vectors <vectors.json> --target-map <map.json>
 ```
 
 `generate` writes deterministic `schema.json`, `contract.ts`, `contract.dart`,
 and `profile-manifest.json`. The production path pins Dart `3.13.0` and formats
 the Dart artifact before its digest is calculated. `check` repeats that process
-in a temporary directory and fails on byte drift. No timestamp, host path, or
-random value enters an output. The CLI uses Dart from `PATH`, or the project's
-`mise` Flutter `3.47.0` tool when Dart is not already available.
+and fails on byte drift or unexpected regular files in an artifact directory.
+Generation rejects symlink/non-directory outputs, uses an exclusive lock and
+unpredictable transaction staging, and never follows a pre-existing artifact
+symlink. No timestamp, host path, or random value enters an output. The CLI uses
+Dart from `PATH`, or the project's `mise` Flutter `3.47.0` tool when Dart is not
+already available.
 
-The root `conversation:contract:*` scripts currently exercise package-internal
-fixtures only. The implementation owner must explicitly replace their inputs
-and output paths when the reviewed PVMC-1 registry is added; the fixture is not
-a protocol authority.
+The root `conversation:contract:*` scripts are the formal project gate. They
+consume only `docs/design/codex-kernel-v4/contracts/contract-registry.json` and
+`contracts/vectors/phone-core-vectors.json`, then use `project-targets.json` to
+check the four reviewed docs/Bridge/Mobile derived targets. The package-local
+`generate`, `validate`, and `check` scripts deliberately exercise only the
+`test/fixtures` model. They are generator regression tests, not a formal
+protocol, release, or product acceptance gate.

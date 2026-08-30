@@ -1,4 +1,4 @@
-// @generated from conversation contract 1eb501a44b01fccb6727ceefb71e98de643554896d9ceb8a7d0d9446cda22851; DO NOT EDIT.
+// @generated from conversation contract e4f018a0338b9ce09d8df016d1f2fc325c5a81b460db8251a6b868897378393b; DO NOT EDIT.
 /* eslint-disable */
 
 export interface FixtureEnvelope {
@@ -7,11 +7,12 @@ export interface FixtureEnvelope {
   readonly "priority": FixturePriority;
   readonly "payload": FixturePayload;
   readonly "metadata"?: Readonly<Record<string, string>>;
+  readonly "__proto__"?: string;
 }
 
 export type FixturePayload = { readonly "kind": "text"; readonly "text": string } | { readonly "kind": "progress"; readonly "complete": boolean; readonly "labels"?: ReadonlyArray<string> };
 
-export type FixturePriority = "normal" | "high_priority";
+export type FixturePriority = "normal" | "high_priority" | "cost$x" | "quote\"slash\\cost$x";
 
 export interface FixtureSourceRef {
   readonly "bridgeInstanceId": string;
@@ -73,6 +74,13 @@ const contractNodes = {
             "kind": "string"
           }
         }
+      },
+      {
+        "name": "__proto__",
+        "required": false,
+        "type": {
+          "kind": "string"
+        }
       }
     ]
   },
@@ -120,7 +128,9 @@ const contractNodes = {
     "kind": "enum",
     "values": [
       "normal",
-      "high_priority"
+      "high_priority",
+      "cost$x",
+      "quote\"slash\\cost$x"
     ]
   },
   "FixtureSourceRef": {
@@ -156,8 +166,8 @@ function assertNode(node: ContractNode, value: unknown, path: string, depth: num
     case 'boolean': if (typeof value !== 'boolean') throw new TypeError(path + ': expected boolean'); return;
     case 'enum': if (typeof value !== 'string' || !node.values.includes(value)) throw new TypeError(path + ': invalid enum'); return;
     case 'ref': {
+      if (!Object.hasOwn(contractNodes, node.target)) throw new TypeError(path + ': unknown type ' + node.target);
       const target = contractNodes[node.target];
-      if (!target) throw new TypeError(path + ': unknown type ' + node.target);
       assertNode(target, value, path, depth + 1); return;
     }
     case 'array':
@@ -189,8 +199,8 @@ function assertFields(fields: ReadonlyArray<ContractField>, value: unknown, path
 }
 
 export function assertContractType(typeId: string, value: unknown): void {
+  if (!Object.hasOwn(contractNodes, typeId)) throw new TypeError('unknown contract type ' + typeId);
   const node = contractNodes[typeId];
-  if (!node) throw new TypeError('unknown contract type ' + typeId);
   assertNode(node, value, '$', 0);
 }
 

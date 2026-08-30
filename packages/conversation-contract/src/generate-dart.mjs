@@ -1,7 +1,7 @@
 import { dartMemberName, enumMemberName, pascalName } from './names.mjs';
 
 function dartString(value) {
-  return JSON.stringify(value);
+  return JSON.stringify(value).replace(/\$/g, '\\$');
 }
 
 function collectDeclarations(node, name, declarations) {
@@ -147,12 +147,18 @@ function objectMembers(name, fields, definitions) {
 
 function objectDeclaration(name, node, definitions) {
   const members = objectMembers(name, node.fields, definitions);
+  const constructor = members.parameters.length > 0
+    ? `  const ${name}({\n${members.parameters}\n  });`
+    : `  const ${name}();`;
+  const construction = members.decoders.length > 0
+    ? `    return ${name}(\n${members.decoders}\n    );`
+    : `    return ${name}();`;
   return `final class ${name} {\n` +
-    `  const ${name}({\n${members.parameters}\n  });\n\n` +
+    `${constructor}\n\n` +
     `${members.declarations}\n\n` +
     `  factory ${name}.fromJson(Map<String, Object?> json) {\n` +
     `    _expectKeys(json, const {${members.requiredKeys.join(', ')}}, const {${members.allowedKeys.join(', ')}}, ${dartString(name)});\n` +
-    `    return ${name}(\n${members.decoders}\n    );\n` +
+    `${construction}\n` +
     `  }\n\n` +
     `  Map<String, Object?> toJson() => {\n${members.encoders}\n  };\n` +
     `}`;
@@ -177,13 +183,19 @@ function unionDeclaration(name, node, definitions) {
     const members = objectMembers(variantName, variant.fields, definitions);
     const required = [dartString(node.discriminator), ...members.requiredKeys];
     const allowed = [dartString(node.discriminator), ...members.allowedKeys];
+    const constructor = members.parameters.length > 0
+      ? `  const ${variantName}({\n${members.parameters}\n  });`
+      : `  const ${variantName}();`;
+    const construction = members.decoders.length > 0
+      ? `    return ${variantName}(\n${members.decoders}\n    );`
+      : `    return ${variantName}();`;
     return `final class ${variantName} extends ${name} {\n` +
-      `  const ${variantName}({\n${members.parameters}\n  });\n\n` +
+      `${constructor}\n\n` +
       `${members.declarations}\n\n` +
       `  factory ${variantName}.fromJson(Map<String, Object?> json) {\n` +
       `    _expectKeys(json, const {${required.join(', ')}}, const {${allowed.join(', ')}}, ${dartString(variantName)});\n` +
       `    if (json[${dartString(node.discriminator)}] != ${dartString(variant.tag)}) throw const FormatException('Union discriminator mismatch');\n` +
-      `    return ${variantName}(\n${members.decoders}\n    );\n` +
+      `${construction}\n` +
       `  }\n\n` +
       `  @override\n` +
       `  Map<String, Object?> toJson() => {\n` +
@@ -230,8 +242,13 @@ export function generateDart(model, sourceDigest) {
     `  return value;\n` +
     `}\n\n` +
     `int _expectInt(Object? value, String path) {\n` +
-    `  if (value is! int) throw FormatException('$path: expected integer');\n` +
-    `  return value;\n` +
+    `  const minimum = -9007199254740991;\n` +
+    `  const maximum = 9007199254740991;\n` +
+    `  if (value is int && value >= minimum && value <= maximum) return value;\n` +
+    `  if (value is double && value.isFinite && value.truncateToDouble() == value && value >= minimum && value <= maximum) {\n` +
+    `    return value.toInt();\n` +
+    `  }\n` +
+    `  throw FormatException('$path: expected safe integer');\n` +
     `}\n\n` +
     `bool _expectBool(Object? value, String path) {\n` +
     `  if (value is! bool) throw FormatException('$path: expected boolean');\n` +
@@ -243,7 +260,13 @@ export function generateDart(model, sourceDigest) {
     `}\n\n` +
     `Map<String, Object?> _expectMap(Object? value, String path) {\n` +
     `  if (value is! Map) throw FormatException('$path: expected object');\n` +
-    `  try { return value.cast<String, Object?>(); } on TypeError { throw FormatException('$path: expected string-key object'); }\n` +
+    `  final result = <String, Object?>{};\n` +
+    `  for (final entry in value.entries) {\n` +
+    `    final key = entry.key;\n` +
+    `    if (key is! String) throw FormatException('$path: expected string-key object');\n` +
+    `    result[key] = entry.value;\n` +
+    `  }\n` +
+    `  return result;\n` +
     `}\n\n` +
     `void _expectKeys(Map<String, Object?> json, Set<String> required, Set<String> allowed, String path) {\n` +
     `  for (final key in required) { if (!json.containsKey(key)) throw FormatException('$path.$key: required'); }\n` +

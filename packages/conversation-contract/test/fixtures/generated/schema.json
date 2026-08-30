@@ -3,6 +3,9 @@
     "FixtureEnvelope": {
       "additionalProperties": false,
       "properties": {
+        "__proto__": {
+          "type": "string"
+        },
         "id": {
           "type": "string"
         },
@@ -75,7 +78,9 @@
     "FixturePriority": {
       "enum": [
         "normal",
-        "high_priority"
+        "high_priority",
+        "cost$x",
+        "quote\"slash\\cost$x"
       ],
       "type": "string"
     },
@@ -98,7 +103,7 @@
       "type": "object"
     }
   },
-  "$id": "urn:ccpocket:conversation-contract:fixture.active:1eb501a44b01fccb6727ceefb71e98de643554896d9ceb8a7d0d9446cda22851",
+  "$id": "urn:ccpocket:conversation-contract:fixture.active:e4f018a0338b9ce09d8df016d1f2fc325c5a81b460db8251a6b868897378393b",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "oneOf": [
     {

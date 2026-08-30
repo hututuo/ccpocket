@@ -1,8 +1,8 @@
 {
   "artifactDigests": {
-    "contract.dart": "57e486dc050793e6b40d114a116de22fa9a2c9accfa1f6398e173d8acc0e14b3",
-    "contract.ts": "c31aeae8b0d94cdf004e3d8004b0fb4df12d547ddf745691746ae95f3dcd0c0a",
-    "schema.json": "66a7593a4069036b6d6f60033cf270e030358931b639487bfed97e89fa2e5ae0"
+    "contract.dart": "a5b72c0312907d089d63af20552ef89c058f90af3fe01e173b271fb324afd7a2",
+    "contract.ts": "8ab7952d1dcdfa5e78f25b664db482e541db81bb8b425c0a321453d2e537ef6e",
+    "schema.json": "7f77a5f7c31d516f99b0df6915b11a65c0233e91957997676054091f18eac469"
   },
   "dartFormatterVersion": "3.13.0",
   "formatVersion": 1,
@@ -10,7 +10,7 @@
   "hardRuleIds": [
     "fixture.rule.type-shape"
   ],
-  "profileDigest": "1eb501a44b01fccb6727ceefb71e98de643554896d9ceb8a7d0d9446cda22851",
+  "profileDigest": "e4f018a0338b9ce09d8df016d1f2fc325c5a81b460db8251a6b868897378393b",
   "profileId": "fixture.active",
   "typeIds": [
     "FixtureEnvelope",

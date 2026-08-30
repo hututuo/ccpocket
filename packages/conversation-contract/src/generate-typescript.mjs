@@ -34,7 +34,8 @@ function declaration(id, node) {
 
 export function generateTypeScript(model, sourceDigest) {
   const ids = [...model.activeDefinitionIds].sort();
-  const nodes = Object.fromEntries(ids.map((id) => [id, model.definitions.get(id).node]));
+  const nodes = Object.create(null);
+  for (const id of ids) nodes[id] = model.definitions.get(id).node;
   const declarations = ids.map((id) => declaration(id, nodes[id])).join('\n\n');
   const codecs = ids.map((id) => {
     const name = pascalName(id);
@@ -73,8 +74,8 @@ export function generateTypeScript(model, sourceDigest) {
 `    case 'boolean': if (typeof value !== 'boolean') throw new TypeError(path + ': expected boolean'); return;\n` +
 `    case 'enum': if (typeof value !== 'string' || !node.values.includes(value)) throw new TypeError(path + ': invalid enum'); return;\n` +
 `    case 'ref': {\n` +
+`      if (!Object.hasOwn(contractNodes, node.target)) throw new TypeError(path + ': unknown type ' + node.target);\n` +
 `      const target = contractNodes[node.target];\n` +
-`      if (!target) throw new TypeError(path + ': unknown type ' + node.target);\n` +
 `      assertNode(target, value, path, depth + 1); return;\n` +
 `    }\n` +
 `    case 'array':\n` +
@@ -104,8 +105,8 @@ export function generateTypeScript(model, sourceDigest) {
 `  }\n` +
 `}\n\n` +
 `export function assertContractType(typeId: string, value: unknown): void {\n` +
+`  if (!Object.hasOwn(contractNodes, typeId)) throw new TypeError('unknown contract type ' + typeId);\n` +
 `  const node = contractNodes[typeId];\n` +
-`  if (!node) throw new TypeError('unknown contract type ' + typeId);\n` +
 `  assertNode(node, value, '$', 0);\n` +
 `}\n\n` +
 `${codecs}\n`;

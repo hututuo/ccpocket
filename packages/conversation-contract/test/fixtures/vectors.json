@@ -12,9 +12,10 @@
       "value": {
         "id": "envelope-1",
         "source": {"bridgeInstanceId": "bridge-1", "sourceOrdinal": 7},
-        "priority": "normal",
+        "priority": "cost$x",
         "payload": {"kind": "text", "text": "hello"},
-        "metadata": {"fixture": "yes"}
+        "metadata": {"fixture": "yes"},
+        "__proto__": "safe"
       }
     },
     {

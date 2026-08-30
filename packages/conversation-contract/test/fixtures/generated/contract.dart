@@ -1,4 +1,4 @@
-// @generated from conversation contract 1eb501a44b01fccb6727ceefb71e98de643554896d9ceb8a7d0d9446cda22851; DO NOT EDIT.
+// @generated from conversation contract e4f018a0338b9ce09d8df016d1f2fc325c5a81b460db8251a6b868897378393b; DO NOT EDIT.
 // ignore_for_file: unnecessary_cast
 
 String _expectString(Object? value, String path) {
@@ -7,8 +7,17 @@ String _expectString(Object? value, String path) {
 }
 
 int _expectInt(Object? value, String path) {
-  if (value is! int) throw FormatException('$path: expected integer');
-  return value;
+  const minimum = -9007199254740991;
+  const maximum = 9007199254740991;
+  if (value is int && value >= minimum && value <= maximum) return value;
+  if (value is double &&
+      value.isFinite &&
+      value.truncateToDouble() == value &&
+      value >= minimum &&
+      value <= maximum) {
+    return value.toInt();
+  }
+  throw FormatException('$path: expected safe integer');
 }
 
 bool _expectBool(Object? value, String path) {
@@ -23,11 +32,14 @@ List<Object?> _expectList(Object? value, String path) {
 
 Map<String, Object?> _expectMap(Object? value, String path) {
   if (value is! Map) throw FormatException('$path: expected object');
-  try {
-    return value.cast<String, Object?>();
-  } on TypeError {
-    throw FormatException('$path: expected string-key object');
+  final result = <String, Object?>{};
+  for (final entry in value.entries) {
+    final key = entry.key;
+    if (key is! String)
+      throw FormatException('$path: expected string-key object');
+    result[key] = entry.value;
   }
+  return result;
 }
 
 void _expectKeys(
@@ -52,6 +64,7 @@ final class FixtureEnvelope {
     required this.priority,
     required this.payload,
     this.metadata,
+    this.proto,
   });
 
   final String id;
@@ -59,12 +72,13 @@ final class FixtureEnvelope {
   final FixturePriority priority;
   final FixturePayload payload;
   final Map<String, String>? metadata;
+  final String? proto;
 
   factory FixtureEnvelope.fromJson(Map<String, Object?> json) {
     _expectKeys(
       json,
       const {"id", "source", "priority", "payload"},
-      const {"id", "source", "priority", "payload", "metadata"},
+      const {"id", "source", "priority", "payload", "metadata", "__proto__"},
       "FixtureEnvelope",
     );
     return FixtureEnvelope(
@@ -86,6 +100,9 @@ final class FixtureEnvelope {
               ),
             )
           : null,
+      proto: json.containsKey("__proto__")
+          ? _expectString(json["__proto__"], "FixtureEnvelope.__proto__")
+          : null,
     );
   }
 
@@ -96,6 +113,7 @@ final class FixtureEnvelope {
     "payload": payload.toJson(),
     if (metadata != null)
       "metadata": metadata!.map((key, value) => MapEntry(key, value)),
+    if (proto != null) "__proto__": proto!,
   };
 }
 
@@ -179,7 +197,9 @@ final class FixturePayloadProgress extends FixturePayload {
 
 enum FixturePriority {
   normal("normal"),
-  highPriority("high_priority");
+  highPriority("high_priority"),
+  costX("cost\$x"),
+  quoteSlashCostX("quote\"slash\\cost\$x");
 
   const FixturePriority(this.wire);
 

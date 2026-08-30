@@ -5,11 +5,11 @@ export function sortJson(value) {
     return value.map(sortJson);
   }
   if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((key) => [key, sortJson(value[key])]),
-    );
+    const sorted = Object.create(null);
+    for (const key of Object.keys(value).sort()) {
+      sorted[key] = sortJson(value[key]);
+    }
+    return sorted;
   }
   return value;
 }

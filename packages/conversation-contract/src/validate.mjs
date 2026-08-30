@@ -1,4 +1,5 @@
 import { jsonEqual } from './canonical.mjs';
+import { validateGeneratedNames } from './names.mjs';
 
 const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]*$/;
 const REASON_PATTERN = /^[A-Z][A-Z0-9_]*$/;
@@ -172,12 +173,6 @@ function validateZeroSemantics(value, path) {
   return object;
 }
 
-function publicName(id) {
-  const words = id.split(/[^A-Za-z0-9]+/).filter(Boolean);
-  const joined = words.map((word) => `${word[0].toUpperCase()}${word.slice(1)}`).join('');
-  return joined || 'GeneratedType';
-}
-
 export function validateInputs(registryInput, vectorsInput) {
   const registry = requireKeys(
     registryInput,
@@ -203,7 +198,14 @@ export function validateInputs(registryInput, vectorsInput) {
     if (!['active', 'planned', 'disabled'].includes(profile.status)) {
       fail(`${path}.status`, 'expected active, planned, or disabled');
     }
-    uniqueStrings(profile.rootTypeRefs, `${path}.rootTypeRefs`, { identifiers: true });
+    const rootTypeRefs = uniqueStrings(
+      profile.rootTypeRefs,
+      `${path}.rootTypeRefs`,
+      {identifiers: true},
+    );
+    if (profile.status === 'active' && rootTypeRefs.length === 0) {
+      fail(`${path}.rootTypeRefs`, 'an active profile must have at least one root type');
+    }
     profiles.set(id, profile);
   }
   const activeProfileId = requireId(registry.activeProfileId, 'registry.activeProfileId');
@@ -232,6 +234,10 @@ export function validateInputs(registryInput, vectorsInput) {
     definitions.set(id, definition);
     definitionRefs.set(id, references);
   }
+  if (![...definitions.values()].some((definition) =>
+    definition.profiles.includes(activeProfileId))) {
+    fail('registry.definitions', 'the active profile must have at least one definition');
+  }
   for (const [sourceId, references] of definitionRefs) {
     const source = definitions.get(sourceId);
     for (const reference of references) {
@@ -245,6 +251,35 @@ export function validateInputs(registryInput, vectorsInput) {
     }
   }
 
+  const definitionStates = new Map();
+  const definitionStack = [];
+  const assertAcyclicDefinition = (id, path) => {
+    const definition = definitions.get(id);
+    if (!definition) fail(path, `unknown definition ${JSON.stringify(id)}`);
+    if (!definition.profiles.includes(activeProfileId)) {
+      fail(path, `definition ${id} is not enabled for ${activeProfileId}`);
+    }
+    const state = definitionStates.get(id);
+    if (state === 'visiting') {
+      const cycleStart = definitionStack.indexOf(id);
+      const cycle = [...definitionStack.slice(cycleStart), id];
+      fail(path, `active definition dependency cycle: ${cycle.join(' -> ')}`);
+    }
+    if (state === 'visited') return;
+    definitionStates.set(id, 'visiting');
+    definitionStack.push(id);
+    for (const reference of definitionRefs.get(id)) {
+      assertAcyclicDefinition(reference.target, reference.path);
+    }
+    definitionStack.pop();
+    definitionStates.set(id, 'visited');
+  };
+  for (const [id, definition] of definitions) {
+    if (definition.profiles.includes(activeProfileId)) {
+      assertAcyclicDefinition(id, `registry.definitions[${JSON.stringify(id)}]`);
+    }
+  }
+
   const activeDefinitionIds = new Set();
   const collectDefinition = (id, path) => {
     const definition = definitions.get(id);
@@ -254,19 +289,14 @@ export function validateInputs(registryInput, vectorsInput) {
     }
     if (activeDefinitionIds.has(id)) return;
     activeDefinitionIds.add(id);
-    for (const reference of definitionRefs.get(id)) collectDefinition(reference.target, reference.path);
+    for (const reference of definitionRefs.get(id)) {
+      collectDefinition(reference.target, reference.path);
+    }
   };
   for (const [index, rootRef] of activeProfile.rootTypeRefs.entries()) {
     collectDefinition(rootRef, `registry.profiles[active].rootTypeRefs[${index}]`);
   }
-  const generatedNames = new Map();
-  for (const id of activeDefinitionIds) {
-    const name = publicName(id);
-    if (generatedNames.has(name)) {
-      fail('registry.definitions', `active identifiers ${generatedNames.get(name)} and ${id} generate the same public name ${name}`);
-    }
-    generatedNames.set(name, id);
-  }
+  validateGeneratedNames(activeDefinitionIds, definitions);
 
   const owners = simpleInventory(registry.owners, 'registry.owners', globalIds);
   const consumers = simpleInventory(registry.consumers, 'registry.consumers', globalIds);
@@ -304,6 +334,9 @@ export function validateInputs(registryInput, vectorsInput) {
     validateZeroSemantics(raw.zeroSemantics, `${path}.zeroSemantics`);
     hardRules.set(id, raw);
   }
+  if (hardRules.size === 0) {
+    fail('registry.hardRules', 'the active profile must have at least one hard rule');
+  }
 
   const vectorSets = new Map();
   for (const [index, raw] of requireArray(registry.vectorSets, 'registry.vectorSets').entries()) {
@@ -314,6 +347,9 @@ export function validateInputs(registryInput, vectorsInput) {
     const profileId = requireId(vectorSet.profileId, `${path}.profileId`);
     if (!profiles.has(profileId)) fail(`${path}.profileId`, `unknown profile ${profileId}`);
     if (profileId === activeProfileId) vectorSets.set(id, vectorSet);
+  }
+  if (vectorSets.size === 0) {
+    fail('registry.vectorSets', 'the active profile must have at least one vector set');
   }
 
   const vectorsDocument = requireKeys(vectorsInput, ['formatVersion', 'vectors'], ['formatVersion', 'vectors'], 'vectors');

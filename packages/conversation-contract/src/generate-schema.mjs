@@ -1,7 +1,10 @@
 import { canonicalJson } from './canonical.mjs';
 
 function objectSchema(fields, schemaForNode, extraProperties = {}) {
-  const properties = {...extraProperties};
+  const properties = Object.create(null);
+  for (const [key, value] of Object.entries(extraProperties)) {
+    properties[key] = value;
+  }
   const required = Object.keys(extraProperties);
   for (const field of fields) {
     properties[field.name] = schemaForNode(field.type);
@@ -45,9 +48,10 @@ export function generateSchema(model, sourceDigest) {
   };
 
   const definitionIds = [...model.activeDefinitionIds].sort();
-  const definitions = Object.fromEntries(
-    definitionIds.map((id) => [id, schemaForNode(model.definitions.get(id).node)]),
-  );
+  const definitions = Object.create(null);
+  for (const id of definitionIds) {
+    definitions[id] = schemaForNode(model.definitions.get(id).node);
+  }
   const roots = [...model.activeProfile.rootTypeRefs].sort().map((id) => ({$ref: `#/$defs/${id}`}));
   const document = {
     $schema: 'https://json-schema.org/draft/2020-12/schema',

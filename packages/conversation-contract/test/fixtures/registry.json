@@ -19,7 +19,7 @@
       "profiles": ["fixture.active"],
       "node": {
         "kind": "enum",
-        "values": ["normal", "high_priority"]
+        "values": ["normal", "high_priority", "cost$x", "quote\"slash\\cost$x"]
       }
     },
     {
@@ -66,7 +66,8 @@
           {"name": "source", "required": true, "type": {"kind": "ref", "target": "FixtureSourceRef"}},
           {"name": "priority", "required": true, "type": {"kind": "ref", "target": "FixturePriority"}},
           {"name": "payload", "required": true, "type": {"kind": "ref", "target": "FixturePayload"}},
-          {"name": "metadata", "required": false, "type": {"kind": "map", "values": {"kind": "string"}}}
+          {"name": "metadata", "required": false, "type": {"kind": "map", "values": {"kind": "string"}}},
+          {"name": "__proto__", "required": false, "type": {"kind": "string"}}
         ]
       }
     },
