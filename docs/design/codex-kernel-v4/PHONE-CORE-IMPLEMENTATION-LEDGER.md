@@ -446,3 +446,26 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   repository 自身安全缺口。合同最终定稿前不在 Mobile 层手写第二套 digest/schema 权威，也不回放该
   候选。复审未启动 Bridge、DB、端口、simulator，未执行 merge、push、deploy、release、OTA、stable
   或真机安装。
+
+## 20. 2026-08-30 K03 Bridge Store 本地安全返工冻结
+
+- contract-independent Store safety 返工已冻结为 donor
+  `446e3c3d1ec3ec51f1b82b8ae27d022c9ea26133`（tree
+  `2a470b00e92534f208aefc669e8e57e18bb3b0a8`，parent/rollback
+  `c67e53855145c48928868bd93a479d56cec5e774`）。worktree clean，精确只改
+  `conversation-core-store.ts`、`schema.ts` 与 `conversation-core-store.test.ts` 三个文件；根只核对了
+  commit/tree/parent、文件范围和 `git show --check`，尚未把该提交重放到实施根。
+- 该提交关闭 Store-local 缺口：同 conflict family 的 `OUTCOME_UNKNOWN` idle-dispatch barrier；过期
+  interaction claim 的同事务 reclaim/expiry；signed ordinals 与 `(providerTurnId,itemId)` identity；
+  source epoch 在任何 expiry normalization 前验证；现有 DB 必须通过 exact schema version 与
+  `sqlite_master` shape gate；structural/payload Gap、island/coverage、duplicate open expiry、safe-integer
+  DDL 与 100k 规模线性验证均进入对抗测试。
+- donor 固定 Node `22.23.1` 证据为 Store focused 42/42、serialized full Bridge 43 files/1137、
+  TypeScript、build 全部 PASS；compiled dedicated-worker smoke 返回 schemaVersion 3、WAL、quick_check
+  ok、foreign-key violations 0。独立 final review 对 Store-local 给出 `P0=0/P1=0/P2=0`。
+- 该 PASS 不解除 generated authority 阻断：Store 仍维护手写 Timeline/gap/island types、canonical JSON、
+  validation/schema，尚未绑定正式 generated adapter、profile/schema digest。reviewer 将这一边界明确记为
+  `P1 BLOCKED`；只有 K00 closed generated contract 落地后才能消除第二权威并重新根审，故本提交当前
+  不集成。根级 Store focused/full/build/worker/crash/runtime 继续 `NOT_RUN`。
+- donor 仅使用临时测试 DB；没有打开产品 DB，没有启动 Provider、Bridge 或端口，没有执行 Mobile、
+  simulator、merge、push、deploy、release、OTA、stable 或真机安装。
