@@ -39,8 +39,8 @@ function expectRegistryFailure(mutate, pattern) {
 
 test('validates and normalizes the complete active digest authority', () => {
   const model = validateDigestAuthorityRegistry(registry());
-  assert.equal(model.digestDerivations.length, 18);
-  assert.equal(model.digestEqualityReferences.length, 134);
+  assert.equal(model.digestDerivations.length, 19);
+  assert.equal(model.digestEqualityReferences.length, 143);
   assert.equal(model.digestDependencyEdges.length, 50);
   assert.equal(model.digestPostDerivationGuards.length, 1);
   assert.equal(
@@ -52,6 +52,11 @@ test('validates and normalizes the complete active digest authority', () => {
       row.fieldPath === 'CodexAdapterCertificationPreimageV1.providerBuildDigest')
       ?.equalityTargetDigestId,
     'DR-CODEX-EXECUTABLE',
+  );
+  assert.equal(
+    model.digestDerivationsById.get('DR-PVMC1-MACHINE-TRANSITION-SQL')
+      .ownedFieldPaths[0],
+    'MachineTransitionSqlV1.sqlSha256',
   );
   assert.deepEqual(
     [...new Set([

@@ -418,6 +418,40 @@ function digestHelpers(preimage) {
     `String digest${name}(${name} value) => sha256.convert(canonicalBytes${name}(value)).toString();`;
 }
 
+function pvmc1AuthorityExports(model) {
+  if (model.machineAuthority === null) return '';
+  const machineRecordsJson = JSON.stringify(model.machineAuthority.machineRecords);
+  const allowedEdges = model.machineAuthority.machineEdgeAuthorities.map((row) =>
+    `${row.coordinate.machineId}\u0000${row.coordinate.from}\u0000${row.coordinate.to}`);
+  const routes = model.machineAuthority.projectionRoutes.map((row) => row.registryId);
+  const sql = model.machineAuthority.machineTransitionSql.manifest;
+  const transactionManifestIds = model.transactionAuthority?.transactionManifests.map((row) =>
+    row.manifestId) ?? [];
+  const transactionKillPointIds = model.transactionAuthority?.transactionKillPoints.map((row) =>
+    row.killPointId).sort() ?? [];
+  const bridgeRoutePointIds = model.transactionAuthority?.bridgeRoutePointBindings.map((row) =>
+    row.bridgeMarkerId) ?? [];
+  const stringSet = (values) => `<String>{${values.map(dartString).join(', ')}}`;
+  return `const String pvmc1MachineRecordsJson = ${dartString(machineRecordsJson)};\n\n` +
+    `const List<String> pvmc1DurableRouteIds = ${dartStringList(routes)};\n\n` +
+    `const Set<String> _pvmc1AllowedMachineEdgeKeys = ${stringSet(allowedEdges)};\n\n` +
+    `bool isAllowedPvmc1MachineEdge(String machineId, String from, String to) =>\n` +
+    `    _pvmc1AllowedMachineEdgeKeys.contains('$machineId\\u0000$from\\u0000$to');\n\n` +
+    `const int pvmc1MachineTransitionSqlRowCount = ${sql.rowCount};\n` +
+    `const String pvmc1MachineTransitionSqlSha256 = ${dartString(sql.sqlSha256)};\n` +
+    `const String pvmc1MachineTransitionSqlUtf8Base64 = ${dartString(sql.sqlUtf8Base64)};\n\n` +
+    `Uint8List pvmc1MachineTransitionSqlBytes() {\n` +
+    `  final bytes = Uint8List.fromList(base64Decode(pvmc1MachineTransitionSqlUtf8Base64));\n` +
+    `  if (sha256.convert(bytes).toString() != pvmc1MachineTransitionSqlSha256) {\n` +
+    `    throw StateError('PVMC1 machine SQL digest mismatch');\n` +
+    `  }\n` +
+    `  return bytes;\n` +
+    `}\n\n` +
+    `const List<String> pvmc1TransactionManifestIds = ${dartStringList(transactionManifestIds)};\n\n` +
+    `const List<String> pvmc1TransactionKillPointIds = ${dartStringList(transactionKillPointIds)};\n\n` +
+    `const List<String> pvmc1BridgeRoutePointIds = ${dartStringList(bridgeRoutePointIds)};`;
+}
+
 export function generateDart(model, sourceDigest) {
   const ids = [...model.activeDefinitionIds].sort();
   const preimages = discoverDigestPreimages(model);
@@ -445,6 +479,7 @@ export function generateDart(model, sourceDigest) {
   }).join('\n\n');
   const domainCases = preimages.map(digestDomainCase).join('\n');
   const digests = preimages.map(digestHelpers).join('\n\n');
+  const authorityExports = pvmc1AuthorityExports(model);
   return `// @generated from conversation contract ${sourceDigest}; DO NOT EDIT.\n` +
     `// ignore_for_file: unnecessary_cast, unused_element, unused_element_parameter\n\n` +
     `import 'dart:convert';\n` +
@@ -701,5 +736,6 @@ export function generateDart(model, sourceDigest) {
     `}\n\n` +
     `${blocks.join('\n\n')}\n\n` +
     `${codecs}\n` +
-    (digests ? `\n${digests}\n` : '');
+    (digests ? `\n${digests}\n` : '') +
+    (authorityExports ? `\n${authorityExports}\n` : '');
 }

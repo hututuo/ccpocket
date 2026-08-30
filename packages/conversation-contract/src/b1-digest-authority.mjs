@@ -215,6 +215,12 @@ function expectedTargetDigestId(fieldPath) {
   }
   if (fieldName === 'beginHeaderDigest') return 'DR-BEGIN-HEADER';
   if (fieldName === 'receiptDigest') return 'DR-RECEIPT';
+  if (fieldName === 'operationFingerprint' || fieldName === 'storedOperationFingerprint') {
+    return 'DR-OPERATION-FINGERPRINT';
+  }
+  if (fieldName === 'sqlSha256') {
+    return 'DR-PVMC1-MACHINE-TRANSITION-SQL';
+  }
   if (fieldPath === 'OperationFingerprintV1.value') return 'DR-OPERATION-FINGERPRINT';
   fail(`registry.digestEqualityReferences.${fieldPath}`, 'has no unique digest target');
 }

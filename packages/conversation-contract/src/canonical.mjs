@@ -210,12 +210,12 @@ function prettyValue(value, indent, level) {
 }
 
 /** Human-readable deterministic projection; digests always use canonicalize(). */
-export function canonicalJson(value, space = 2) {
+export function canonicalJson(value, space = 2, options) {
   if (!Number.isInteger(space) || space < 0 || space > 10) throw new RangeError('space must be between 0 and 10');
   // Canonicalize once, then pretty-print an immutable parsed snapshot. This
   // keeps a dynamic Proxy from being observed a second time by the pretty
   // printer with values different from the bytes that were validated.
-  const snapshot = JSON.parse(canonicalize(value));
+  const snapshot = JSON.parse(canonicalize(value, options));
   return prettyValue(snapshot, space, 0) + '\n';
 }
 
@@ -227,8 +227,8 @@ function sortJson(value) {
   return value;
 }
 
-export function digestJson(value) {
-  return jcsDigest(value);
+export function digestJson(value, options) {
+  return jcsDigest(value, options);
 }
 
 export function digestBytes(value) {

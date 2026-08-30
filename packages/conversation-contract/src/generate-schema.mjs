@@ -102,6 +102,24 @@ export function generateSchema(model, sourceDigest) {
     title: `CC Pocket conversation contract (${model.activeProfileId})`,
     oneOf: roots,
     $defs: definitions,
+    ...(model.machineAuthority === null ? {} : {
+      'x-ccpocket-pvmc1-authority': {
+        machineIds: model.machineAuthority.machineRecords.map((row) => row.machineId),
+        machineEdgeIds: model.machineAuthority.machineEdgeAuthorities.map((row) => row.edgeId),
+        forbiddenEdgeMarkerIds: model.machineAuthority.forbiddenEdgeMarkers.map((row) =>
+          row.markerId),
+        durableRouteIds: model.machineAuthority.projectionRoutes.map((row) => row.registryId),
+        machineTransitionSql: model.machineAuthority.machineTransitionSql.manifest,
+        ...(model.transactionAuthority === null ? {} : {
+          transactionManifestIds: model.transactionAuthority.transactionManifests.map((row) =>
+            row.manifestId),
+          transactionKillPointIds: model.transactionAuthority.transactionKillPoints.map((row) =>
+            row.killPointId).sort(),
+          bridgeRoutePointIds: model.transactionAuthority.bridgeRoutePointBindings.map((row) =>
+            row.bridgeMarkerId),
+        }),
+      },
+    }),
   };
-  return canonicalJson(document);
+  return canonicalJson(document, 2, {maxDepth: 512, maxNodes: 1_000_000});
 }

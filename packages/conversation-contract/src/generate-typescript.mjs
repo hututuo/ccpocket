@@ -60,6 +60,39 @@ function digestHelpers(preimage) {
     `}`;
 }
 
+function pvmc1AuthorityExports(model) {
+  if (model.machineAuthority === null) return '';
+  const machineRecords = model.machineAuthority.machineRecords;
+  const allowedEdges = model.machineAuthority.machineEdgeAuthorities.map((row) =>
+    `${row.coordinate.machineId}\u0000${row.coordinate.from}\u0000${row.coordinate.to}`);
+  const routes = model.machineAuthority.projectionRoutes.map((row) => row.registryId);
+  const sql = model.machineAuthority.machineTransitionSql.manifest;
+  const transactionManifestIds = model.transactionAuthority?.transactionManifests.map((row) =>
+    row.manifestId) ?? [];
+  const transactionKillPointIds = model.transactionAuthority?.transactionKillPoints.map((row) =>
+    row.killPointId).sort() ?? [];
+  const bridgeRoutePointIds = model.transactionAuthority?.bridgeRoutePointBindings.map((row) =>
+    row.bridgeMarkerId) ?? [];
+  return `export const pvmc1MachineRecords = ${JSON.stringify(machineRecords, null, 2)} as const;\n\n` +
+    `export const pvmc1DurableRouteIds = ${JSON.stringify(routes, null, 2)} as const;\n\n` +
+    `const pvmc1AllowedMachineEdgeKeys = new Set<string>(${JSON.stringify(allowedEdges, null, 2)});\n\n` +
+    `export function isAllowedPvmc1MachineEdge(machineId: string, from: string, to: string): boolean {\n` +
+    `  return pvmc1AllowedMachineEdgeKeys.has(machineId + "\\u0000" + from + "\\u0000" + to);\n` +
+    `}\n\n` +
+    `export const pvmc1MachineTransitionSqlRowCount = ${sql.rowCount} as const;\n` +
+    `export const pvmc1MachineTransitionSqlSha256 = ${quoted(sql.sqlSha256)} as const;\n` +
+    `export const pvmc1MachineTransitionSqlUtf8Base64 = ${quoted(sql.sqlUtf8Base64)} as const;\n\n` +
+    `export function pvmc1MachineTransitionSqlBytes(): Uint8Array {\n` +
+    `  const bytes = Uint8Array.from(Buffer.from(pvmc1MachineTransitionSqlUtf8Base64, 'base64'));\n` +
+    `  const digest = createHash('sha256').update(bytes).digest('hex');\n` +
+    `  if (digest !== pvmc1MachineTransitionSqlSha256) throw new TypeError('PVMC1 machine SQL digest mismatch');\n` +
+    `  return bytes;\n` +
+    `}\n\n` +
+    `export const pvmc1TransactionManifestIds = ${JSON.stringify(transactionManifestIds, null, 2)} as const;\n\n` +
+    `export const pvmc1TransactionKillPointIds = ${JSON.stringify(transactionKillPointIds, null, 2)} as const;\n\n` +
+    `export const pvmc1BridgeRoutePointIds = ${JSON.stringify(bridgeRoutePointIds, null, 2)} as const;`;
+}
+
 export function generateTypeScript(model, sourceDigest) {
   const ids = [...model.activeDefinitionIds].sort();
   const nodes = Object.create(null);
@@ -70,6 +103,7 @@ export function generateTypeScript(model, sourceDigest) {
   const declarations = ids.map((id) => declaration(id, nodes[id])).join('\n\n');
   const codecs = ids.map(codec).join('\n\n');
   const digests = preimages.map(digestHelpers).join('\n\n');
+  const authorityExports = pvmc1AuthorityExports(model);
 
   return `// @generated from conversation contract ${sourceDigest}; DO NOT EDIT.\n` +
 `/* eslint-disable */\n\n` +
@@ -458,5 +492,6 @@ export function generateTypeScript(model, sourceDigest) {
 `  snapshotContractType(typeId, value);\n` +
 `}\n\n` +
 `${codecs}\n` +
-(digests ? `\n${digests}\n` : '');
+(digests ? `\n${digests}\n` : '') +
+(authorityExports ? `\n${authorityExports}\n` : '');
 }

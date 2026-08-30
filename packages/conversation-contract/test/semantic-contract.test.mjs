@@ -65,6 +65,10 @@ const vectorsPath = path.join(repositoryRoot, 'docs/design/codex-kernel-v4/contr
 // Deliberately duplicated from the sealed oracle, rather than read from the
 // Registry, so a registry/vector mutation cannot self-certify its zero shape.
 const ZERO_BY_ORACLE = Object.freeze({
+  'machine.authority': {artifacts: 0, durableRows: 0},
+  'machine.sql-exact-bytes': {artifacts: 0, durableRows: 0},
+  'operation.admission-lookup': {attemptsCreated: 0, eventRows: 0, newOperationIds: 0, operationsCreated: 0, outboxRows: 0, providerCalls: 0, resends: 0},
+  'transaction.authority': {artifacts: 0, durableRows: 0},
   'wire.closed-normalized-shape': {durableRows: 0, wireWrites: 0},
   'identity.source-fence': {admissionRows: 0, interactionRows: 0, providerCalls: 0, publicationRows: 0, queueRows: 0, visibleResults: 0},
   'timeline.typed-empty': {canonicalCommits: 0, lastGoodDeletes: 0},

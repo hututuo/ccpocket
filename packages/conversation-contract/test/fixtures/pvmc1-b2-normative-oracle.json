@@ -1,0 +1,1455 @@
+{
+  "formatVersion": 1,
+  "profileId": "pvmc1.phone-core.v1",
+  "status": "INDEPENDENT_TEST_ORACLE_NOT_GENERATION_SOURCE",
+  "authorityAmendmentSha256": "317dfd46692e628c70a7a8a989debf9f8fd9384b19a257c7c2655bf7d4c7f6ab",
+  "implementationRulingSha256": "cc04279cd24e1e27346aaa93389a737ba236b27b804634f201ad496429227991",
+  "counts": {
+    "machines": 17,
+    "stateOccurrences": 123,
+    "allowedEdges": 151,
+    "terminals": 64,
+    "cartesianPairs": 1023,
+    "forbiddenEdges": 872
+  },
+  "durableRoutes": [
+    {
+      "registryId": "sync.gap.v1",
+      "normativeOrdinal": 0
+    },
+    {
+      "registryId": "materialization.begin.v1:TIMELINE",
+      "normativeOrdinal": 1
+    },
+    {
+      "registryId": "materialization.page.v1:TIMELINE",
+      "normativeOrdinal": 2
+    },
+    {
+      "registryId": "materialization.commit.v1:TIMELINE",
+      "normativeOrdinal": 3
+    },
+    {
+      "registryId": "operation.state.v1",
+      "normativeOrdinal": 4
+    },
+    {
+      "registryId": "queue.snapshot.v1",
+      "normativeOrdinal": 5
+    },
+    {
+      "registryId": "interaction.snapshot.v1",
+      "normativeOrdinal": 6
+    }
+  ],
+  "machines": [
+    {
+      "machineId": "SM-SOURCE",
+      "stateTypeRef": "SmSourceStateV1",
+      "states": [
+        "UNBOUND",
+        "TRANSPORT_CONNECTED",
+        "AUTHENTICATED",
+        "SOURCE_ASSERTED",
+        "SOURCE_VERIFIED",
+        "REPLICA_BOUND",
+        "APPLICATION_READY",
+        "AUTH_FAILED",
+        "IDENTITY_MISMATCH",
+        "SOURCE_MISMATCH",
+        "REVOKED",
+        "OFFLINE_LAST_GOOD"
+      ],
+      "terminalStates": [
+        "AUTH_FAILED",
+        "IDENTITY_MISMATCH",
+        "SOURCE_MISMATCH",
+        "REVOKED",
+        "OFFLINE_LAST_GOOD"
+      ],
+      "edges": [
+        [
+          "UNBOUND",
+          "TRANSPORT_CONNECTED"
+        ],
+        [
+          "TRANSPORT_CONNECTED",
+          "AUTHENTICATED"
+        ],
+        [
+          "TRANSPORT_CONNECTED",
+          "AUTH_FAILED"
+        ],
+        [
+          "AUTHENTICATED",
+          "SOURCE_ASSERTED"
+        ],
+        [
+          "AUTHENTICATED",
+          "IDENTITY_MISMATCH"
+        ],
+        [
+          "SOURCE_ASSERTED",
+          "SOURCE_VERIFIED"
+        ],
+        [
+          "SOURCE_ASSERTED",
+          "SOURCE_MISMATCH"
+        ],
+        [
+          "SOURCE_VERIFIED",
+          "REPLICA_BOUND"
+        ],
+        [
+          "SOURCE_VERIFIED",
+          "REVOKED"
+        ],
+        [
+          "REPLICA_BOUND",
+          "APPLICATION_READY"
+        ],
+        [
+          "REPLICA_BOUND",
+          "REVOKED"
+        ],
+        [
+          "REPLICA_BOUND",
+          "OFFLINE_LAST_GOOD"
+        ],
+        [
+          "APPLICATION_READY",
+          "REVOKED"
+        ],
+        [
+          "APPLICATION_READY",
+          "OFFLINE_LAST_GOOD"
+        ]
+      ],
+      "semanticOwner": "SourceRegistry",
+      "authoritativeWriter": "SourceRegistry",
+      "storage": {
+        "mode": "EVIDENCE_DERIVED",
+        "host": "BRIDGE",
+        "databaseId": "NONE",
+        "coordinates": []
+      },
+      "replica": null,
+      "authoritativeRoutes": [],
+      "wireProjection": "AUTHENTICATED_BIND_CAPABILITY_CONTROL",
+      "unknownPolicy": "FAIL_CLOSED_OLD_REPLICA_READ_ONLY",
+      "machineOrdinal": 0,
+      "initialState": "UNBOUND"
+    },
+    {
+      "machineId": "SM-READ-ATTEMPT",
+      "stateTypeRef": "SmReadAttemptStateV1",
+      "states": [
+        "CREATED",
+        "READING",
+        "VERIFYING",
+        "VERIFIED",
+        "COMMITTED",
+        "EVIDENCE_REUSED",
+        "FAILED",
+        "REJECTED",
+        "QUARANTINED",
+        "CAS_CONFLICT"
+      ],
+      "terminalStates": [
+        "COMMITTED",
+        "EVIDENCE_REUSED",
+        "FAILED",
+        "REJECTED",
+        "QUARANTINED",
+        "CAS_CONFLICT"
+      ],
+      "edges": [
+        [
+          "CREATED",
+          "READING"
+        ],
+        [
+          "CREATED",
+          "FAILED"
+        ],
+        [
+          "READING",
+          "VERIFYING"
+        ],
+        [
+          "READING",
+          "FAILED"
+        ],
+        [
+          "VERIFYING",
+          "VERIFIED"
+        ],
+        [
+          "VERIFYING",
+          "REJECTED"
+        ],
+        [
+          "VERIFYING",
+          "QUARANTINED"
+        ],
+        [
+          "VERIFIED",
+          "COMMITTED"
+        ],
+        [
+          "VERIFIED",
+          "EVIDENCE_REUSED"
+        ],
+        [
+          "VERIFIED",
+          "CAS_CONFLICT"
+        ]
+      ],
+      "semanticOwner": "CanonicalTimelineWriter",
+      "authoritativeWriter": "CanonicalTimelineWriter",
+      "storage": {
+        "mode": "SQL_STATE_COLUMN",
+        "host": "BRIDGE",
+        "databaseId": "BRIDGE_CONVERSATION_CORE",
+        "coordinates": [
+          {
+            "coordinateId": "BRIDGE.timeline_read_attempt.state",
+            "tableName": "timeline_read_attempt",
+            "stateColumnName": "state",
+            "storageRole": "MUTABLE_STATE"
+          },
+          {
+            "coordinateId": "BRIDGE.timeline_read_evidence.immutable",
+            "tableName": "timeline_read_evidence",
+            "stateColumnName": null,
+            "storageRole": "IMMUTABLE_FACT"
+          }
+        ]
+      },
+      "replica": null,
+      "authoritativeRoutes": [
+        "sync.gap.v1"
+      ],
+      "wireProjection": "NO_STANDALONE_DURABLE_KIND",
+      "unknownPolicy": "TYPED_GAP_OR_FAILED_ATTEMPT_HEAD_UNCHANGED",
+      "machineOrdinal": 1,
+      "initialState": "CREATED"
+    },
+    {
+      "machineId": "SM-MATERIALIZATION",
+      "stateTypeRef": "SmMaterializationStateV1",
+      "states": [
+        "STAGING",
+        "SEALED",
+        "REJECTED",
+        "QUARANTINED"
+      ],
+      "terminalStates": [
+        "SEALED",
+        "REJECTED",
+        "QUARANTINED"
+      ],
+      "edges": [
+        [
+          "STAGING",
+          "SEALED"
+        ],
+        [
+          "STAGING",
+          "REJECTED"
+        ],
+        [
+          "STAGING",
+          "QUARANTINED"
+        ]
+      ],
+      "semanticOwner": "CanonicalTimelineWriter",
+      "authoritativeWriter": "CanonicalTimelineWriter",
+      "storage": {
+        "mode": "SQL_STATE_COLUMN",
+        "host": "BRIDGE",
+        "databaseId": "BRIDGE_CONVERSATION_CORE",
+        "coordinates": [
+          {
+            "coordinateId": "BRIDGE.timeline_materialization.state",
+            "tableName": "timeline_materialization",
+            "stateColumnName": "state",
+            "storageRole": "MUTABLE_STATE"
+          }
+        ]
+      },
+      "replica": {
+        "tableName": "m_timeline_materialization",
+        "stateColumnName": "state",
+        "routes": [
+          "materialization.begin.v1:TIMELINE",
+          "materialization.page.v1:TIMELINE",
+          "materialization.commit.v1:TIMELINE"
+        ]
+      },
+      "authoritativeRoutes": [
+        "materialization.begin.v1:TIMELINE",
+        "materialization.page.v1:TIMELINE"
+      ],
+      "wireProjection": "MATERIALIZATION_BEGIN_PAGE_COMMIT_TIMELINE",
+      "unknownPolicy": "SNAPSHOT_REPAIR",
+      "machineOrdinal": 2,
+      "initialState": "STAGING"
+    },
+    {
+      "machineId": "SM-TIMELINE-HEAD",
+      "stateTypeRef": "SmTimelineHeadStateV1",
+      "states": [
+        "ABSENT",
+        "PRESENT",
+        "TOMBSTONED_PROVEN"
+      ],
+      "terminalStates": [
+        "TOMBSTONED_PROVEN"
+      ],
+      "edges": [
+        [
+          "ABSENT",
+          "PRESENT"
+        ],
+        [
+          "PRESENT",
+          "PRESENT"
+        ],
+        [
+          "PRESENT",
+          "TOMBSTONED_PROVEN"
+        ]
+      ],
+      "semanticOwner": "CanonicalTimelineWriter",
+      "authoritativeWriter": "CanonicalTimelineWriter",
+      "storage": {
+        "mode": "SQL_STATE_COLUMN",
+        "host": "BRIDGE",
+        "databaseId": "BRIDGE_CONVERSATION_CORE",
+        "coordinates": [
+          {
+            "coordinateId": "BRIDGE.timeline_head.state",
+            "tableName": "timeline_head",
+            "stateColumnName": "state",
+            "storageRole": "MUTABLE_STATE"
+          }
+        ]
+      },
+      "replica": {
+        "tableName": "m_timeline_head",
+        "stateColumnName": "state",
+        "routes": [
+          "materialization.commit.v1:TIMELINE"
+        ]
+      },
+      "authoritativeRoutes": [
+        "materialization.commit.v1:TIMELINE"
+      ],
+      "wireProjection": "VERIFIED_MATERIALIZATION_COMMIT_ONLY",
+      "unknownPolicy": "PRESERVE_LAST_GOOD",
+      "machineOrdinal": 3,
+      "initialState": "ABSENT"
+    },
+    {
+      "machineId": "SM-GAP-REPAIR",
+      "stateTypeRef": "SmGapRepairStateV1",
+      "states": [
+        "ACTIVE",
+        "HEAD_ADVANCED",
+        "EVIDENCE_REUSED",
+        "FAILED",
+        "STALE"
+      ],
+      "terminalStates": [
+        "HEAD_ADVANCED",
+        "EVIDENCE_REUSED",
+        "FAILED",
+        "STALE"
+      ],
+      "edges": [
+        [
+          "ACTIVE",
+          "HEAD_ADVANCED"
+        ],
+        [
+          "ACTIVE",
+          "EVIDENCE_REUSED"
+        ],
+        [
+          "ACTIVE",
+          "FAILED"
+        ],
+        [
+          "ACTIVE",
+          "STALE"
+        ]
+      ],
+      "semanticOwner": "TimelineRead",
+      "authoritativeWriter": "TimelineRead",
+      "storage": {
+        "mode": "MEMORY_ONLY",
+        "host": "BRIDGE",
+        "databaseId": "NONE",
+        "coordinates": []
+      },
+      "replica": null,
+      "authoritativeRoutes": [],
+      "wireProjection": "GAP_REPAIR_REQUEST_RESULT",
+      "unknownPolicy": "REJECT_UNKNOWN_INTENT",
+      "machineOrdinal": 4,
+      "initialState": "ACTIVE"
+    },
+    {
+      "machineId": "SM-LIVE",
+      "stateTypeRef": "SmLiveStateV1",
+      "states": [
+        "OBSERVED",
+        "ANCHORED",
+        "DISPLAYED",
+        "PROMOTED",
+        "RETIRED",
+        "UNANCHORED_ACTIVITY",
+        "CONFLICT_REPAIR_REQUIRED",
+        "DROPPED_STALE_FENCE",
+        "DROPPED_CAPACITY",
+        "EXPIRED",
+        "LOST_ON_RESTART"
+      ],
+      "terminalStates": [
+        "RETIRED",
+        "UNANCHORED_ACTIVITY",
+        "CONFLICT_REPAIR_REQUIRED",
+        "DROPPED_STALE_FENCE",
+        "DROPPED_CAPACITY",
+        "EXPIRED",
+        "LOST_ON_RESTART"
+      ],
+      "edges": [
+        [
+          "OBSERVED",
+          "ANCHORED"
+        ],
+        [
+          "OBSERVED",
+          "UNANCHORED_ACTIVITY"
+        ],
+        [
+          "OBSERVED",
+          "DROPPED_STALE_FENCE"
+        ],
+        [
+          "OBSERVED",
+          "DROPPED_CAPACITY"
+        ],
+        [
+          "OBSERVED",
+          "EXPIRED"
+        ],
+        [
+          "OBSERVED",
+          "LOST_ON_RESTART"
+        ],
+        [
+          "ANCHORED",
+          "DISPLAYED"
+        ],
+        [
+          "DISPLAYED",
+          "PROMOTED"
+        ],
+        [
+          "DISPLAYED",
+          "CONFLICT_REPAIR_REQUIRED"
+        ],
+        [
+          "PROMOTED",
+          "RETIRED"
+        ]
+      ],
+      "semanticOwner": "LiveOverlay",
+      "authoritativeWriter": "LiveOverlay",
+      "storage": {
+        "mode": "MEMORY_ONLY",
+        "host": "BRIDGE",
+        "databaseId": "NONE",
+        "coordinates": []
+      },
+      "replica": null,
+      "authoritativeRoutes": [],
+      "wireProjection": "EPHEMERAL_PROVIDER_NOTIFICATION",
+      "unknownPolicy": "WEAK_IDENTITY_UNANCHORED_ACTIVITY",
+      "machineOrdinal": 5,
+      "initialState": "OBSERVED"
+    },
+    {
+      "machineId": "SM-OPERATION",
+      "stateTypeRef": "SmOperationStateV1",
+      "states": [
+        "RECEIVED",
+        "REJECTED_BEFORE_ADMISSION",
+        "ADMITTED",
+        "QUEUED",
+        "BLOCKED_PRECONDITION",
+        "READY",
+        "DISPATCHING",
+        "PROVIDER_ACCEPTED",
+        "AWAITING_EFFECT_OBSERVATION",
+        "SUCCEEDED",
+        "FAILED_DEFINITIVE",
+        "OUTCOME_UNKNOWN",
+        "CANCELLED_PRE_DISPATCH"
+      ],
+      "terminalStates": [
+        "REJECTED_BEFORE_ADMISSION",
+        "SUCCEEDED",
+        "FAILED_DEFINITIVE",
+        "OUTCOME_UNKNOWN",
+        "CANCELLED_PRE_DISPATCH"
+      ],
+      "edges": [
+        [
+          "RECEIVED",
+          "REJECTED_BEFORE_ADMISSION"
+        ],
+        [
+          "RECEIVED",
+          "ADMITTED"
+        ],
+        [
+          "ADMITTED",
+          "QUEUED"
+        ],
+        [
+          "ADMITTED",
+          "BLOCKED_PRECONDITION"
+        ],
+        [
+          "ADMITTED",
+          "READY"
+        ],
+        [
+          "ADMITTED",
+          "CANCELLED_PRE_DISPATCH"
+        ],
+        [
+          "QUEUED",
+          "READY"
+        ],
+        [
+          "QUEUED",
+          "CANCELLED_PRE_DISPATCH"
+        ],
+        [
+          "BLOCKED_PRECONDITION",
+          "READY"
+        ],
+        [
+          "BLOCKED_PRECONDITION",
+          "CANCELLED_PRE_DISPATCH"
+        ],
+        [
+          "READY",
+          "DISPATCHING"
+        ],
+        [
+          "READY",
+          "CANCELLED_PRE_DISPATCH"
+        ],
+        [
+          "DISPATCHING",
+          "PROVIDER_ACCEPTED"
+        ],
+        [
+          "DISPATCHING",
+          "FAILED_DEFINITIVE"
+        ],
+        [
+          "DISPATCHING",
+          "OUTCOME_UNKNOWN"
+        ],
+        [
+          "PROVIDER_ACCEPTED",
+          "AWAITING_EFFECT_OBSERVATION"
+        ],
+        [
+          "AWAITING_EFFECT_OBSERVATION",
+          "SUCCEEDED"
+        ],
+        [
+          "AWAITING_EFFECT_OBSERVATION",
+          "FAILED_DEFINITIVE"
+        ]
+      ],
+      "semanticOwner": "OperationKernel",
+      "authoritativeWriter": "OperationKernel",
+      "storage": {
+        "mode": "SQL_STATE_COLUMN",
+        "host": "BRIDGE",
+        "databaseId": "BRIDGE_CONVERSATION_CORE",
+        "coordinates": [
+          {
+            "coordinateId": "BRIDGE.operation.lifecycle_state",
+            "tableName": "operation",
+            "stateColumnName": "lifecycle_state",
+            "storageRole": "MUTABLE_STATE"
+          }
+        ]
+      },
+      "replica": {
+        "tableName": "m_operation",
+        "stateColumnName": "lifecycle_state",
+        "routes": [
+          "operation.state.v1"
+        ]
+      },
+      "authoritativeRoutes": [
+        "operation.state.v1"
+      ],
+      "wireProjection": "OPERATION_SUBMIT_STATE",
+      "unknownPolicy": "PAUSE_FEATURE_STREAM",
+      "machineOrdinal": 6,
+      "initialState": "RECEIVED"
+    },
+    {
+      "machineId": "SM-DISPATCH-ATTEMPT",
+      "stateTypeRef": "SmDispatchAttemptStateV1",
+      "states": [
+        "PREPARED",
+        "DEFINITIVE_NOT_DISPATCHED",
+        "CALL_STARTED",
+        "PROVIDER_ACCEPTED",
+        "PROVIDER_REJECTED_NO_SIDE_EFFECT",
+        "OUTCOME_UNKNOWN"
+      ],
+      "terminalStates": [
+        "DEFINITIVE_NOT_DISPATCHED",
+        "PROVIDER_ACCEPTED",
+        "PROVIDER_REJECTED_NO_SIDE_EFFECT",
+        "OUTCOME_UNKNOWN"
+      ],
+      "edges": [
+        [
+          "PREPARED",
+          "DEFINITIVE_NOT_DISPATCHED"
+        ],
+        [
+          "PREPARED",
+          "CALL_STARTED"
+        ],
+        [
+          "CALL_STARTED",
+          "PROVIDER_ACCEPTED"
+        ],
+        [
+          "CALL_STARTED",
+          "PROVIDER_REJECTED_NO_SIDE_EFFECT"
+        ],
+        [
+          "CALL_STARTED",
+          "OUTCOME_UNKNOWN"
+        ]
+      ],
+      "semanticOwner": "OperationKernel",
+      "authoritativeWriter": "OperationKernel",
+      "storage": {
+        "mode": "SQL_STATE_COLUMN",
+        "host": "BRIDGE",
+        "databaseId": "BRIDGE_CONVERSATION_CORE",
+        "coordinates": [
+          {
+            "coordinateId": "BRIDGE.dispatch_attempt.state",
+            "tableName": "dispatch_attempt",
+            "stateColumnName": "state",
+            "storageRole": "MUTABLE_STATE"
+          }
+        ]
+      },
+      "replica": {
+        "tableName": "m_operation",
+        "stateColumnName": "dispatch_attempt_state",
+        "routes": [
+          "operation.state.v1"
+        ]
+      },
+      "authoritativeRoutes": [
+        "operation.state.v1"
+      ],
+      "wireProjection": "PROJECTED_BY_OPERATION_STATE",
+      "unknownPolicy": "PAUSE_FEATURE_STREAM",
+      "machineOrdinal": 7,
+      "initialState": "PREPARED"
+    },
+    {
+      "machineId": "SM-EFFECT-OBSERVATION",
+      "stateTypeRef": "SmEffectObservationStateV1",
+      "states": [
+        "NONE",
+        "PENDING",
+        "OBSERVED_MATCH",
+        "OBSERVED_CONFLICT",
+        "OBSERVATION_UNAVAILABLE"
+      ],
+      "terminalStates": [
+        "OBSERVED_MATCH",
+        "OBSERVED_CONFLICT",
+        "OBSERVATION_UNAVAILABLE"
+      ],
+      "edges": [
+        [
+          "NONE",
+          "PENDING"
+        ],
+        [
+          "PENDING",
+          "OBSERVED_MATCH"
+        ],
+        [
+          "PENDING",
+          "OBSERVED_CONFLICT"
+        ],
+        [
+          "PENDING",
+          "OBSERVATION_UNAVAILABLE"
+        ]
+      ],
+      "semanticOwner": "OperationKernel",
+      "authoritativeWriter": "OperationKernel",
+      "storage": {
+        "mode": "SQL_STATE_COLUMN",
+        "host": "BRIDGE",
+        "databaseId": "BRIDGE_CONVERSATION_CORE",
+        "coordinates": [
+          {
+            "coordinateId": "BRIDGE.operation.effect_observation_state",
+            "tableName": "operation",
+            "stateColumnName": "effect_observation_state",
+            "storageRole": "MUTABLE_STATE"
+          }
+        ]
+      },
+      "replica": {
+        "tableName": "m_operation",
+        "stateColumnName": "effect_observation_state",
+        "routes": [
+          "operation.state.v1"
+        ]
+      },
+      "authoritativeRoutes": [
+        "operation.state.v1"
+      ],
+      "wireProjection": "PROJECTED_BY_OPERATION_STATE",
+      "unknownPolicy": "CANNOT_PROVE_SUCCESS",
+      "machineOrdinal": 8,
+      "initialState": "NONE"
+    },
+    {
+      "machineId": "SM-RECONCILE",
+      "stateTypeRef": "SmReconcileStateV1",
+      "states": [
+        "ABSENT",
+        "REQUESTED",
+        "STILL_UNKNOWN",
+        "EXECUTED_MATCHED",
+        "EXECUTED_CONFLICT",
+        "NOT_EXECUTED_PROVEN"
+      ],
+      "terminalStates": [
+        "EXECUTED_MATCHED",
+        "EXECUTED_CONFLICT",
+        "NOT_EXECUTED_PROVEN"
+      ],
+      "edges": [
+        [
+          "ABSENT",
+          "REQUESTED"
+        ],
+        [
+          "REQUESTED",
+          "STILL_UNKNOWN"
+        ],
+        [
+          "REQUESTED",
+          "EXECUTED_MATCHED"
+        ],
+        [
+          "REQUESTED",
+          "EXECUTED_CONFLICT"
+        ],
+        [
+          "REQUESTED",
+          "NOT_EXECUTED_PROVEN"
+        ],
+        [
+          "STILL_UNKNOWN",
+          "REQUESTED"
+        ]
+      ],
+      "semanticOwner": "OperationKernel",
+      "authoritativeWriter": "OperationKernel",
+      "storage": {
+        "mode": "APPEND_ONLY_NO_MUTABLE_STATE",
+        "host": "BRIDGE",
+        "databaseId": "BRIDGE_CONVERSATION_CORE",
+        "coordinates": [
+          {
+            "coordinateId": "BRIDGE.reconcile_attempt.immutable",
+            "tableName": "reconcile_attempt",
+            "stateColumnName": null,
+            "storageRole": "IMMUTABLE_FACT"
+          },
+          {
+            "coordinateId": "BRIDGE.reconcile_resolution.immutable",
+            "tableName": "reconcile_resolution",
+            "stateColumnName": null,
+            "storageRole": "IMMUTABLE_ENVELOPE"
+          }
+        ]
+      },
+      "replica": {
+        "tableName": "m_operation",
+        "stateColumnName": "reconcile_state",
+        "routes": [
+          "operation.state.v1"
+        ]
+      },
+      "authoritativeRoutes": [
+        "operation.state.v1"
+      ],
+      "wireProjection": "RECONCILE_REQUEST_RESULT_VIA_OPERATION_STATE",
+      "unknownPolicy": "PAUSE_FEATURE_STREAM",
+      "machineOrdinal": 9,
+      "initialState": "ABSENT"
+    },
+    {
+      "machineId": "SM-LOCAL-INTENT",
+      "stateTypeRef": "SmLocalIntentStateV1",
+      "states": [
+        "DRAFT",
+        "HELD_OFFLINE",
+        "READY_TO_SUBMIT",
+        "SUBMITTING",
+        "BRIDGE_ACCEPTED",
+        "ADMISSION_UNKNOWN",
+        "LOCAL_CANCELLED",
+        "LOCAL_ERROR"
+      ],
+      "terminalStates": [
+        "BRIDGE_ACCEPTED",
+        "LOCAL_CANCELLED",
+        "LOCAL_ERROR"
+      ],
+      "edges": [
+        [
+          "DRAFT",
+          "HELD_OFFLINE"
+        ],
+        [
+          "DRAFT",
+          "LOCAL_CANCELLED"
+        ],
+        [
+          "DRAFT",
+          "LOCAL_ERROR"
+        ],
+        [
+          "HELD_OFFLINE",
+          "READY_TO_SUBMIT"
+        ],
+        [
+          "HELD_OFFLINE",
+          "LOCAL_CANCELLED"
+        ],
+        [
+          "HELD_OFFLINE",
+          "LOCAL_ERROR"
+        ],
+        [
+          "READY_TO_SUBMIT",
+          "SUBMITTING"
+        ],
+        [
+          "READY_TO_SUBMIT",
+          "LOCAL_CANCELLED"
+        ],
+        [
+          "READY_TO_SUBMIT",
+          "LOCAL_ERROR"
+        ],
+        [
+          "SUBMITTING",
+          "BRIDGE_ACCEPTED"
+        ],
+        [
+          "SUBMITTING",
+          "ADMISSION_UNKNOWN"
+        ],
+        [
+          "SUBMITTING",
+          "LOCAL_ERROR"
+        ],
+        [
+          "ADMISSION_UNKNOWN",
+          "BRIDGE_ACCEPTED"
+        ],
+        [
+          "ADMISSION_UNKNOWN",
+          "LOCAL_ERROR"
+        ]
+      ],
+      "semanticOwner": "LocalIntentRepository",
+      "authoritativeWriter": "LocalIntentRepository",
+      "storage": {
+        "mode": "SQL_STATE_COLUMN",
+        "host": "MOBILE",
+        "databaseId": "MOBILE_CONVERSATION_REPLICA_V5",
+        "coordinates": [
+          {
+            "coordinateId": "MOBILE.protected_local_intent.state",
+            "tableName": "protected_local_intent",
+            "stateColumnName": "state",
+            "storageRole": "MUTABLE_STATE"
+          }
+        ]
+      },
+      "replica": null,
+      "authoritativeRoutes": [],
+      "wireProjection": "OPERATION_QUERY_SNAPSHOT_ONLY",
+      "unknownPolicy": "NO_DURABLE_EVENT_NO_AUTOMATIC_RESEND",
+      "machineOrdinal": 10,
+      "initialState": "DRAFT"
+    },
+    {
+      "machineId": "SM-QUEUE-ENTRY",
+      "stateTypeRef": "SmQueueEntryStateV1",
+      "states": [
+        "QUEUED",
+        "DISPATCH_OWNED",
+        "CONSUMED",
+        "CANCELLED"
+      ],
+      "terminalStates": [
+        "CONSUMED",
+        "CANCELLED"
+      ],
+      "edges": [
+        [
+          "QUEUED",
+          "QUEUED"
+        ],
+        [
+          "QUEUED",
+          "DISPATCH_OWNED"
+        ],
+        [
+          "QUEUED",
+          "CANCELLED"
+        ],
+        [
+          "DISPATCH_OWNED",
+          "CONSUMED"
+        ]
+      ],
+      "semanticOwner": "OperationKernel",
+      "authoritativeWriter": "OperationKernel",
+      "storage": {
+        "mode": "SQL_STATE_COLUMN",
+        "host": "BRIDGE",
+        "databaseId": "BRIDGE_CONVERSATION_CORE",
+        "coordinates": [
+          {
+            "coordinateId": "BRIDGE.queue_entry.state",
+            "tableName": "queue_entry",
+            "stateColumnName": "state",
+            "storageRole": "MUTABLE_STATE"
+          }
+        ]
+      },
+      "replica": {
+        "tableName": "m_queue_entry",
+        "stateColumnName": "state",
+        "routes": [
+          "queue.snapshot.v1"
+        ]
+      },
+      "authoritativeRoutes": [
+        "queue.snapshot.v1"
+      ],
+      "wireProjection": "QUEUE_SNAPSHOT",
+      "unknownPolicy": "SNAPSHOT_REPAIR",
+      "machineOrdinal": 11,
+      "initialState": "QUEUED"
+    },
+    {
+      "machineId": "SM-INTERACTION",
+      "stateTypeRef": "SmInteractionStateV1",
+      "states": [
+        "OPEN_UNCLAIMED",
+        "OPEN_CLAIMED",
+        "RESPONSE_PENDING",
+        "RESOLVED",
+        "WITHDRAWN",
+        "STALE",
+        "EXPIRED"
+      ],
+      "terminalStates": [
+        "RESOLVED",
+        "WITHDRAWN",
+        "STALE",
+        "EXPIRED"
+      ],
+      "edges": [
+        [
+          "OPEN_UNCLAIMED",
+          "OPEN_CLAIMED"
+        ],
+        [
+          "OPEN_UNCLAIMED",
+          "RESOLVED"
+        ],
+        [
+          "OPEN_UNCLAIMED",
+          "WITHDRAWN"
+        ],
+        [
+          "OPEN_UNCLAIMED",
+          "STALE"
+        ],
+        [
+          "OPEN_UNCLAIMED",
+          "EXPIRED"
+        ],
+        [
+          "OPEN_CLAIMED",
+          "OPEN_UNCLAIMED"
+        ],
+        [
+          "OPEN_CLAIMED",
+          "RESPONSE_PENDING"
+        ],
+        [
+          "OPEN_CLAIMED",
+          "RESOLVED"
+        ],
+        [
+          "OPEN_CLAIMED",
+          "WITHDRAWN"
+        ],
+        [
+          "OPEN_CLAIMED",
+          "STALE"
+        ],
+        [
+          "OPEN_CLAIMED",
+          "EXPIRED"
+        ],
+        [
+          "RESPONSE_PENDING",
+          "RESOLVED"
+        ],
+        [
+          "RESPONSE_PENDING",
+          "WITHDRAWN"
+        ],
+        [
+          "RESPONSE_PENDING",
+          "STALE"
+        ],
+        [
+          "RESPONSE_PENDING",
+          "EXPIRED"
+        ]
+      ],
+      "semanticOwner": "InteractionBroker",
+      "authoritativeWriter": "InteractionBroker",
+      "storage": {
+        "mode": "SQL_STATE_COLUMN",
+        "host": "BRIDGE",
+        "databaseId": "BRIDGE_CONVERSATION_CORE",
+        "coordinates": [
+          {
+            "coordinateId": "BRIDGE.interaction.state",
+            "tableName": "interaction",
+            "stateColumnName": "state",
+            "storageRole": "MUTABLE_STATE"
+          }
+        ]
+      },
+      "replica": {
+        "tableName": "m_interaction",
+        "stateColumnName": "state",
+        "routes": [
+          "interaction.snapshot.v1"
+        ]
+      },
+      "authoritativeRoutes": [
+        "interaction.snapshot.v1"
+      ],
+      "wireProjection": "INTERACTION_SNAPSHOT",
+      "unknownPolicy": "PAUSE_FEATURE_STREAM",
+      "machineOrdinal": 12,
+      "initialState": "OPEN_UNCLAIMED"
+    },
+    {
+      "machineId": "SM-CLAIM",
+      "stateTypeRef": "SmClaimStateV1",
+      "states": [
+        "NONE",
+        "ACTIVE",
+        "RELEASED",
+        "EXPIRED",
+        "CONSUMED",
+        "REVOKED"
+      ],
+      "terminalStates": [
+        "RELEASED",
+        "EXPIRED",
+        "CONSUMED",
+        "REVOKED"
+      ],
+      "edges": [
+        [
+          "NONE",
+          "ACTIVE"
+        ],
+        [
+          "ACTIVE",
+          "RELEASED"
+        ],
+        [
+          "ACTIVE",
+          "EXPIRED"
+        ],
+        [
+          "ACTIVE",
+          "CONSUMED"
+        ],
+        [
+          "ACTIVE",
+          "REVOKED"
+        ]
+      ],
+      "semanticOwner": "InteractionBroker",
+      "authoritativeWriter": "InteractionBroker",
+      "storage": {
+        "mode": "SQL_STATE_COLUMN",
+        "host": "BRIDGE",
+        "databaseId": "BRIDGE_CONVERSATION_CORE",
+        "coordinates": [
+          {
+            "coordinateId": "BRIDGE.interaction_claim.state",
+            "tableName": "interaction_claim",
+            "stateColumnName": "state",
+            "storageRole": "MUTABLE_STATE"
+          }
+        ]
+      },
+      "replica": {
+        "tableName": "m_interaction",
+        "stateColumnName": "claim_state",
+        "routes": [
+          "interaction.snapshot.v1"
+        ]
+      },
+      "authoritativeRoutes": [
+        "interaction.snapshot.v1"
+      ],
+      "wireProjection": "TYPED_CLAIM_CONTROLS_VIA_INTERACTION_SNAPSHOT",
+      "unknownPolicy": "NO_INDEPENDENT_DURABLE_KIND",
+      "machineOrdinal": 13,
+      "initialState": "NONE"
+    },
+    {
+      "machineId": "SM-DURABLE-DELIVERY",
+      "stateTypeRef": "SmDurableDeliveryStateV1",
+      "states": [
+        "COMMITTED",
+        "QUEUED",
+        "SENT",
+        "PAUSED_BACKPRESSURE",
+        "ACKED",
+        "SNAPSHOT_REQUIRED",
+        "EXPIRED_AFTER_POLICY"
+      ],
+      "terminalStates": [
+        "ACKED",
+        "SNAPSHOT_REQUIRED",
+        "EXPIRED_AFTER_POLICY"
+      ],
+      "edges": [
+        [
+          "COMMITTED",
+          "QUEUED"
+        ],
+        [
+          "QUEUED",
+          "SENT"
+        ],
+        [
+          "QUEUED",
+          "PAUSED_BACKPRESSURE"
+        ],
+        [
+          "QUEUED",
+          "EXPIRED_AFTER_POLICY"
+        ],
+        [
+          "PAUSED_BACKPRESSURE",
+          "QUEUED"
+        ],
+        [
+          "SENT",
+          "ACKED"
+        ],
+        [
+          "SENT",
+          "SNAPSHOT_REQUIRED"
+        ]
+      ],
+      "semanticOwner": "SyncProjection",
+      "authoritativeWriter": "SyncProjectionDeliveryWriter",
+      "storage": {
+        "mode": "SQL_AUXILIARY",
+        "host": "BRIDGE",
+        "databaseId": "BRIDGE_CONVERSATION_CORE",
+        "coordinates": [
+          {
+            "coordinateId": "BRIDGE.durable_delivery_head.state",
+            "tableName": "durable_delivery_head",
+            "stateColumnName": "state",
+            "storageRole": "AUXILIARY_MUTABLE_STATE"
+          },
+          {
+            "coordinateId": "BRIDGE.event_fact.immutable",
+            "tableName": "event_fact",
+            "stateColumnName": null,
+            "storageRole": "IMMUTABLE_FACT"
+          },
+          {
+            "coordinateId": "BRIDGE.outbox_envelope.immutable",
+            "tableName": "outbox_envelope",
+            "stateColumnName": null,
+            "storageRole": "IMMUTABLE_ENVELOPE"
+          }
+        ]
+      },
+      "replica": null,
+      "authoritativeRoutes": [
+        "sync.gap.v1",
+        "materialization.begin.v1:TIMELINE",
+        "materialization.page.v1:TIMELINE",
+        "materialization.commit.v1:TIMELINE",
+        "operation.state.v1",
+        "queue.snapshot.v1",
+        "interaction.snapshot.v1"
+      ],
+      "wireProjection": "SEVEN_DURABLE_ROUTES",
+      "unknownPolicy": "FAIL_BEFORE_QUEUED",
+      "eventFactOwnerSelector": "EVENT_KEY_OWNER_V1",
+      "machineOrdinal": 14,
+      "initialState": "COMMITTED"
+    },
+    {
+      "machineId": "SM-REPLICA-APPLY",
+      "stateTypeRef": "SmReplicaApplyStateV1",
+      "states": [
+        "RECEIVED",
+        "STAGED",
+        "APPLIED",
+        "READBACK_VERIFIED",
+        "PUBLISHED",
+        "ACKED",
+        "REJECTED",
+        "SNAPSHOT_REQUIRED"
+      ],
+      "terminalStates": [
+        "ACKED",
+        "REJECTED",
+        "SNAPSHOT_REQUIRED"
+      ],
+      "edges": [
+        [
+          "RECEIVED",
+          "STAGED"
+        ],
+        [
+          "RECEIVED",
+          "REJECTED"
+        ],
+        [
+          "RECEIVED",
+          "SNAPSHOT_REQUIRED"
+        ],
+        [
+          "STAGED",
+          "APPLIED"
+        ],
+        [
+          "STAGED",
+          "REJECTED"
+        ],
+        [
+          "STAGED",
+          "SNAPSHOT_REQUIRED"
+        ],
+        [
+          "APPLIED",
+          "READBACK_VERIFIED"
+        ],
+        [
+          "APPLIED",
+          "REJECTED"
+        ],
+        [
+          "APPLIED",
+          "SNAPSHOT_REQUIRED"
+        ],
+        [
+          "READBACK_VERIFIED",
+          "PUBLISHED"
+        ],
+        [
+          "READBACK_VERIFIED",
+          "REJECTED"
+        ],
+        [
+          "READBACK_VERIFIED",
+          "SNAPSHOT_REQUIRED"
+        ],
+        [
+          "PUBLISHED",
+          "ACKED"
+        ],
+        [
+          "PUBLISHED",
+          "REJECTED"
+        ],
+        [
+          "PUBLISHED",
+          "SNAPSHOT_REQUIRED"
+        ]
+      ],
+      "semanticOwner": "ReplicaApplyCoordinator",
+      "authoritativeWriter": "ReplicaApplyCoordinator",
+      "storage": {
+        "mode": "SQL_STATE_COLUMN",
+        "host": "MOBILE",
+        "databaseId": "MOBILE_CONVERSATION_REPLICA_V5",
+        "coordinates": [
+          {
+            "coordinateId": "MOBILE.m_inbox_event.apply_state",
+            "tableName": "m_inbox_event",
+            "stateColumnName": "apply_state",
+            "storageRole": "MUTABLE_STATE"
+          }
+        ]
+      },
+      "replica": null,
+      "authoritativeRoutes": [],
+      "wireProjection": "ACK_OR_SNAPSHOT_REPAIR",
+      "unknownPolicy": "REJECT_SEQUENCE_BASE_MANIFEST_GAP",
+      "machineOrdinal": 15,
+      "initialState": "RECEIVED"
+    },
+    {
+      "machineId": "SM-CONTENT-OFFER",
+      "stateTypeRef": "SmContentOfferStateV1",
+      "states": [
+        "OFFERED",
+        "TRANSFERRING",
+        "VERIFYING",
+        "FINALIZING",
+        "FINALIZED",
+        "FAILED",
+        "CANCELLED",
+        "EXPIRED"
+      ],
+      "terminalStates": [
+        "FINALIZED",
+        "FAILED",
+        "CANCELLED",
+        "EXPIRED"
+      ],
+      "edges": [
+        [
+          "OFFERED",
+          "TRANSFERRING"
+        ],
+        [
+          "OFFERED",
+          "FAILED"
+        ],
+        [
+          "OFFERED",
+          "CANCELLED"
+        ],
+        [
+          "OFFERED",
+          "EXPIRED"
+        ],
+        [
+          "TRANSFERRING",
+          "VERIFYING"
+        ],
+        [
+          "TRANSFERRING",
+          "FAILED"
+        ],
+        [
+          "TRANSFERRING",
+          "CANCELLED"
+        ],
+        [
+          "TRANSFERRING",
+          "EXPIRED"
+        ],
+        [
+          "VERIFYING",
+          "FINALIZING"
+        ],
+        [
+          "VERIFYING",
+          "FAILED"
+        ],
+        [
+          "VERIFYING",
+          "CANCELLED"
+        ],
+        [
+          "VERIFYING",
+          "EXPIRED"
+        ],
+        [
+          "FINALIZING",
+          "FINALIZED"
+        ],
+        [
+          "FINALIZING",
+          "FAILED"
+        ]
+      ],
+      "semanticOwner": "ContentReferenceService",
+      "authoritativeWriter": "ContentReferenceService",
+      "storage": {
+        "mode": "SQL_STATE_COLUMN",
+        "host": "BRIDGE",
+        "databaseId": "BRIDGE_CONVERSATION_CORE",
+        "coordinates": [
+          {
+            "coordinateId": "BRIDGE.content_offer.state",
+            "tableName": "content_offer",
+            "stateColumnName": "state",
+            "storageRole": "MUTABLE_STATE"
+          }
+        ]
+      },
+      "replica": null,
+      "authoritativeRoutes": [],
+      "wireProjection": "SEALED_MESSAGE_IMAGE_PREPARE_COMMIT",
+      "unknownPolicy": "NO_TICKET_OR_REFERENCE",
+      "ownerFeature": "MESSAGE_IMAGE",
+      "machineOrdinal": 16,
+      "initialState": "OFFERED"
+    }
+  ]
+}
