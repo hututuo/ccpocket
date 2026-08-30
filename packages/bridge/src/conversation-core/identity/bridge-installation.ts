@@ -164,7 +164,7 @@ export class BridgeInstallationStore {
   private readonly now: () => number;
   private state: BridgeInstallationFileData;
   private closed = false;
-  private pendingOperations = 0;
+  private closePromise: Promise<void> | undefined;
   private operations: Promise<void> = Promise.resolve();
 
   private constructor(input: {
@@ -237,14 +237,9 @@ export class BridgeInstallationStore {
   }
 
   private runExclusive<T>(operation: () => Promise<T>): Promise<T> {
-    this.pendingOperations += 1;
     const wrapped = async (): Promise<T> => {
-      try {
-        return await operation();
-      } finally {
-        this.pendingOperations -= 1;
-        this.releaseWriterIfClosed();
-      }
+      if (this.closed) throw new Error("Bridge installation store is closed");
+      return operation();
     };
     const result = this.operations.then(wrapped, wrapped);
     this.operations = result.then(
@@ -259,7 +254,6 @@ export class BridgeInstallationStore {
       throw new Error("Codex source locator digest must be 64 lowercase hex characters");
     }
     return this.runExclusive(async () => {
-      if (this.closed) throw new Error("Bridge installation store is closed");
       const releaseLock = await acquireStateMutationLock(
         this.installationFile,
         "Bridge installation state",
@@ -333,16 +327,14 @@ export class BridgeInstallationStore {
     return this.state.sourceBindings.map(cloneBinding);
   }
 
-  close(): void {
-    if (this.closed) return;
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
-    this.releaseWriterIfClosed();
-  }
-
-  private releaseWriterIfClosed(): void {
-    if (!this.closed || this.pendingOperations !== 0) return;
-    if (ACTIVE_WRITERS.get(this.writerKey) === this) {
-      ACTIVE_WRITERS.delete(this.writerKey);
-    }
+    this.closePromise = this.operations.finally(() => {
+      if (ACTIVE_WRITERS.get(this.writerKey) === this) {
+        ACTIVE_WRITERS.delete(this.writerKey);
+      }
+    });
+    return this.closePromise;
   }
 }
