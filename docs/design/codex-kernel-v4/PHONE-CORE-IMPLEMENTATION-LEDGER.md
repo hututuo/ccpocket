@@ -505,3 +505,30 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   `ABSENT`，对应 contracts/Bridge/Mobile 目录下 transaction residue 为 0。
 - 本勘误只修正证据身份，不运行 generate/check，不创建目录或产物，也不改变任何集成、运行时或发布
   授权。
+
+## 23. 2026-08-30 typed TS/Dart JCS 生成波冻结并通过复审
+
+- generated-JCS donor 在旧 runtime-fact base `3f59c433` 上冻结为两笔：
+  `02dc14d39c7afaef7a6c6b690868bd2bf87c62e7`（tree
+  `4225ea5517244e7459c29a94c02a1626b0f95e28`）生成 closed typed canonical bytes/SHA-256；
+  `5cf27330b5ba7290b71675a89d2d608fe73db591`（tree
+  `1aa576ba5697cce8ee6a3297efde85d8c3fdfc19`）单独把 canonicalization profile 与
+  `digestPreimageTypeIds` 写入 manifest。donor status clean，范围只在
+  `packages/conversation-contract/**`。
+- 生成器只授权 active reachable、closed object/union、ID 以 `PreimageV1` 结尾且每个 branch 有
+  required single-value const `digestDomain` 的本批 `DOMAIN_SEPARATED_JCS` 家族；runtime 不暴露
+  generic hash。exact `Sha256Hex64` 同时进入 Schema/TS/Dart runtime，lookalike type 不继承约束；
+  safe integer、Unicode scalar、dense/plain data、const domain、depth 512/node 100,000 均在 hash 前
+  重验。per-preimage byte ceiling 没有被猜成全局常量，仍须 final Registry semantic metadata 提供。
+- 11 个 TS↔Dart fixed goldens 覆盖两个 materialization-order union branch、UTF-16 key order、控制字符、
+  NFC/NFD、safe min/max、negative zero 和 typed DAG preimages；独立 `{}` bytes `7b7d`/SHA-256
+  `44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a` 也被固定。repo runtime
+  import-boundary test 禁止产品调用 tooling-only `jcsDigest/digestJson`。
+- donor 固定 Node `22.23.1` 为 Node 10/10，Dart `3.13.0` 为 11/11；package check、strict generated
+  TypeScript、Dart analyze/format、临时 generate/check/四文件 byte compare 全部 PASS，临时目录已删除。
+  独立 final review 为 `LGTM / P0=0/P1=0/P2=0`。
+- 当前不直接 cherry-pick：donor base 早于根已集成的 formal scripts、strict fixture tsc/Dart roundtrip 与
+  hardened multi-target transaction，`package.json`、`generate.mjs`、tests 存在明确累计合并点。最终根
+  replay 必须同时保留旧严格门禁与新 JCS suites，不能用 donor 的较早 package skeleton 覆盖根工具；
+  manifest follow-up 保持单独可移植。正式 mapped generation 继续 `NOT_RUN`，第 22 节四个真实目标仍
+  `ABSENT`。
