@@ -562,3 +562,28 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   exact read-evidence/read-body/domain-count 命名仍待根级 compact normative schema 冻结。
 - 本裁决没有运行测试、生成、Provider、Bridge、DB、端口、Mobile、simulator 或 candidate，也没有执行
   merge、push、deploy、release、OTA、stable 或真机安装。
+
+## 25. 2026-08-30 K02 Identity lifecycle fencing 根级重放
+
+- 已接受 donor `3aef924d70cba85659cd7574a26839696c92b552` 的六文件补丁先对根执行
+  `git apply --check`，随后在实施分支重放为
+  `2dda10f0937e2e5876aa6e6d92f28bae219541f9`（tree
+  `b0048c73d588c67cfec7ec98734b32046aee89a1`，parent/rollback
+  `0374ccbc06b6306c26dfee611b4ebcdf501655f1`）。范围只有
+  `conversation-core/identity` 的三组实现/测试；未修改 Contract、Adapter、Store、Mobile 或 composition。
+- 修订保留 stable source binding，但 authenticated source epoch 改为内存 lifecycle fence；同时闭合
+  outer signed methods equality、跨进程 writer lease、parent namespace fsync 与 same-token/inode replacement
+  release。根固定 Node `22.23.1` 复跑 identity 3 files / 34 tests PASS，Bridge
+  `tsc --noEmit` PASS。
+- Node 22 完整 Bridge 原生命令实际收集到 46 files：45 files / 1,129 tests PASS；Store 文件的 23 项因
+  共享 `better_sqlite3.node` 是 Node 26 ABI 147，而 Node 22 需要 ABI 127，统一报 native module ABI
+  mismatch，记为 `BLOCKED_ENVIRONMENT`，不是源码断言失败。根没有为此 rebuild/install 或改写共享
+  dependencies。最初附带 Jest 专用 `--runInBand` 的调用在收集前被 Vitest 以 unknown option 拒绝，
+  不记作测试结果；随后已用项目原生命令重跑。
+- 当前匹配该 native module 的默认 Node `26.4.0` 完整 Bridge 为 46 files / 1,152 tests PASS。该结果只
+  证明当前树无跨模块源码回归，不能替代 Store 的固定 Node 22 clean-install/compiled-worker 门禁；后者
+  仍引用第 20 节隔离 donor 证据，根级 Node 22 Store 集成继续 `NOT_RUN / ABI_BLOCKED`。
+- Identity authority module 仍未接 authenticated websocket、Provider process epoch 或 generated wire；
+  `resolveCodexSource()` 只能在认证完成后一次性 bind，composition 不得拆成 lookup+bind 竞态。Adapter
+  四提交仍未重放。未启动 Provider、Bridge、DB、端口、Mobile、simulator 或 candidate，也未执行
+  merge、push、deploy、release、OTA、stable 或真机安装。
