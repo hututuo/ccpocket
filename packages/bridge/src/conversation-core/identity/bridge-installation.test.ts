@@ -21,6 +21,7 @@ import {
   BridgeInstallationStore,
   CODEX_SOURCE_PROVIDER,
 } from "./index.js";
+import { acquireStateMutationLock } from "./private-state.js";
 
 function locatorDigest(locator: string): string {
   return createHash("sha256").update(locator).digest("hex");
@@ -31,7 +32,7 @@ describe("BridgeInstallationStore", () => {
   const stores: BridgeInstallationStore[] = [];
 
   afterEach(async () => {
-    for (const store of stores.splice(0)) store.close();
+    await Promise.all(stores.splice(0).map((store) => store.close()));
     await Promise.all(
       roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
     );
@@ -52,8 +53,8 @@ describe("BridgeInstallationStore", () => {
     return store;
   }
 
-  function close(store: BridgeInstallationStore): void {
-    store.close();
+  async function close(store: BridgeInstallationStore): Promise<void> {
+    await store.close();
     const index = stores.indexOf(store);
     if (index >= 0) stores.splice(index, 1);
   }
@@ -99,7 +100,7 @@ describe("BridgeInstallationStore", () => {
     expect(different.codexSourceId).not.toBe(first.codexSourceId);
     expect(different.sourceEpoch).not.toBe(first.sourceEpoch);
     expect(first.sourceEpoch).toMatch(/^source_epoch_[A-Za-z0-9_-]{32}$/);
-    close(store);
+    await close(store);
 
     store = await load(stateDir);
     expect(await store.resolveCodexSource(digestA)).toEqual(first);
@@ -167,7 +168,7 @@ describe("BridgeInstallationStore", () => {
       /writer is already open/,
     );
 
-    close(first);
+    await close(first);
     const reopened = await load(stateDir);
     expect(reopened.bridgeInstanceId).toBe(bridgeInstanceId);
   });
@@ -178,11 +179,51 @@ describe("BridgeInstallationStore", () => {
     const pending = store.resolveCodexSource(locatorDigest("close-race"));
     const pendingRejection = expect(pending).rejects.toThrow(/store is closed/);
 
-    close(store);
+    await close(store);
     await pendingRejection;
 
     const reopened = await load(stateDir);
     expect(reopened.sourceBindings()).toEqual([]);
+  });
+
+  it("shares close completion, drains a started mutation, and rejects queued work", async () => {
+    const stateDir = join(await root(), "state");
+    const store = await load(stateDir);
+    const blockerRelease = await acquireStateMutationLock(
+      store.installationFile,
+      "close fixture blocker",
+    );
+    const startedDigest = locatorDigest("started-before-close");
+    const queuedDigest = locatorDigest("queued-before-close");
+    const started = store.resolveCodexSource(startedDigest);
+    const queued = store.resolveCodexSource(queuedDigest);
+    const queuedRejection = expect(queued).rejects.toThrow(/store is closed/);
+    await new Promise((resolveImmediate) => setImmediate(resolveImmediate));
+
+    const closing = store.close();
+    expect(store.close()).toBe(closing);
+    expect(
+      await Promise.race([
+        closing.then(() => "closed"),
+        new Promise<string>((resolvePending) =>
+          setTimeout(() => resolvePending("pending"), 10),
+        ),
+      ]),
+    ).toBe("pending");
+    await expect(BridgeInstallationStore.load({ stateDir })).rejects.toThrow(
+      /writer is already open/,
+    );
+
+    await blockerRelease();
+    const resolved = await started;
+    await queuedRejection;
+    await closing;
+
+    const reopened = await load(stateDir);
+    expect(await reopened.resolveCodexSource(startedDigest)).toEqual(resolved);
+    expect(reopened.sourceBindings().map((binding) => binding.locatorDigest)).toEqual([
+      startedDigest,
+    ]);
   });
 
   it("allows only one concurrent first writer without creating two identities or leaking files", async () => {
@@ -212,7 +253,7 @@ describe("BridgeInstallationStore", () => {
     const first = await load(stateDir);
     const bridgeInstanceId = first.bridgeInstanceId;
     const installationFile = join(stateDir, BRIDGE_INSTALLATION_FILE);
-    close(first);
+    await close(first);
     await chmod(stateDir, 0o755);
     await chmod(installationFile, 0o644);
 
