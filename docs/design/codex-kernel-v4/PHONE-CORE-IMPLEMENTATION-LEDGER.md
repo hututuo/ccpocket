@@ -490,3 +490,18 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   runtime import allowlist，禁止产品源码调用 generic `jcsDigest/digestJson`。由于父 Registry/Vectors
   的 semantic authority 仍在并发返工，根不会只取基础波而暂时带入被拒绝的 contract parent；正式
   mapped generation 继续 `FORBIDDEN / NOT_RUN`。
+
+## 22. 2026-08-30 正式 generated target 路径勘误
+
+- 第 18 节列出的四个 target 简写路径不等于当前正式
+  `packages/conversation-contract/project-targets.json`，其路径清单由本节 `SUPERSEDE`；第 18 节的
+  “正式生成未运行、目标不存在”状态结论仍成立。
+- 当前 target map 的唯一四个正式位置是：
+  `docs/design/codex-kernel-v4/contracts/generated/schema.json`、
+  `docs/design/codex-kernel-v4/contracts/generated/profile-manifest.json`、
+  `packages/bridge/src/conversation-core/protocol/generated/contract.ts`、
+  `apps/mobile/lib/conversation_core/protocol/generated/contract.dart`。根在
+  `66660803f5bd3a4b9820af239090d19ad0432fc0` 上按 map 逐项以 file/symlink existence 检查，四项均
+  `ABSENT`，对应 contracts/Bridge/Mobile 目录下 transaction residue 为 0。
+- 本勘误只修正证据身份，不运行 generate/check，不创建目录或产物，也不改变任何集成、运行时或发布
+  授权。
