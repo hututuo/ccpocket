@@ -108,3 +108,41 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
 | phone candidate build | `NOT_RUN` |
 | phone install | `NOT_AUTHORIZED / NOT_RUN` |
 | merge/push/deploy/release/OTA/stable | `NOT_AUTHORIZED / NOT_RUN` |
+
+## 6. 2026-08-30 13:50 +08 可恢复检查点
+
+本节追加事实，不改写上文在当时成立的 `NOT_RUN`、PASS 或失败记录。
+
+- 精确检查点：`82da06fcefd7ba877988e484f085818d0d9897be` 后选择性集成 K03 Bridge
+  Store 为 `9c1a87c7e3be53f4fcf850e37a9a24f166039d80`，tree
+  `8d976a287a1dc57d78fc1cfbec3c87f8722a103a`；集成前后根工作树均 clean。
+- 正式 PVMC-1 authority 已由 `82da06fc` 纳入 Git：1 个 active profile、75 个定义、
+  18 条 hard rule、51 条向量（31 positive / 20 deliberate negative）。它仍处于
+  `IN_PROGRESS`：精确 Codex 运行事实要求在生成前增加 provider instance epoch、read evidence、
+  独立 turn/item/timeline ordinal、oversized-turn Gap，并把未实现的 item/timeline paging 标为不可用。
+- 精确 Codex `0.151.0` 隔离只读运行事实已取得：代表性长 thread 的两次完整
+  `thread/read` 均为 82 turns / 6,594 items / 14,589,544 bytes，结构/content hash 一致，
+  provider turn/item ID 无缺失或重复。此完整读取只作为事实 oracle，不作为常规缓存加载路径。
+- `thread/turns/list` 真实运行可用并返回 opaque cursors；notLoaded 20-turn 页为 3,717 bytes，
+  newest full 2-turn 页约 2.54 MiB / 531 items，older full 2-turn 页约 2.81 MiB / 728 items，
+  重复读取 hash 稳定。`thread/items/list` 和 `thread/timeline/list` 虽存在于生成 Schema，
+  但精确 build 运行时都明确返回 not supported；这两项记录为
+  `RUNTIME_UNAVAILABLE`，禁止伪装成 item paging capability。
+- `ac1ddfd2` 仅增加 Codex read-only paged RPC seam、边界验证、测试和脱敏事实脚本；
+  targeted Codex tests 82/82、full Bridge tsc PASS。未启动 Bridge、未使用 8765、未写 Provider。
+- K01 独立审查在原有 21/21 与 full suite PASS 之后重新打开六个 P1，因此 K01 当前为
+  `IN_PROGRESS / REWORK_REQUIRED`，原 PASS 不删除：并发旧 flight 可覆盖新 head health；
+  live promotion 可换位且缺少 payload conflict；畸形 Provider DTO 可泄漏 raw TypeError；
+  hostile JSON `__proto__`/cycle/depth 未 fail closed；canonical/live cache 无输入容量边界；
+  generation 未绑定 providerInstanceEpoch。另需补 read evidence/order proof、typed authoritative-empty、
+  refresh single-flight、core deadline、空 turn 保留、Gap 去重和 stronger-partial 合并。修复工作在
+  独立 K01/K02 原子分支进行，尚未宣告复审通过。
+- K03 Bridge Store 选择性集成提交为 `9c1a87c7`，只新增未接运行路由的显式 SQLite store：
+  WAL、foreign keys、FULL synchronous、STRICT schema、timeline/operation/queue/interaction 事务 seam。
+  依赖锁定 `better-sqlite3@12.10.0`；根环境重新执行 `npm ci --ignore-scripts`（247 packages）
+  和 `npm rebuild better-sqlite3` 成功。仓库 hook 的既有 worktree `.git` 失败仍保留，不冒充已修复。
+- K03 根验证：focused store Vitest 23/23 PASS；完整 Bridge Vitest 43 files / 1,118 tests PASS；
+  `npx tsc --noEmit -p packages/bridge/tsconfig.json` PASS。独立 Store 审查仍在进行，故 K03 仅为
+  `IMPLEMENTED / REVIEW_PENDING`，不是 runtime、DB installation 或手机验收完成。
+- 本检查点未创建产品数据库，未启动 8765/8766，未运行 simulator/candidate，也未进行
+  merge、push、部署、发布、OTA、stable 或真机安装。
