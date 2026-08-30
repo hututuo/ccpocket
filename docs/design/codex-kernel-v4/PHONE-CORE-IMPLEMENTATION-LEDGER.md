@@ -146,3 +146,32 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   `IMPLEMENTED / REVIEW_PENDING`，不是 runtime、DB installation 或手机验收完成。
 - 本检查点未创建产品数据库，未启动 8765/8766，未运行 simulator/candidate，也未进行
   merge、push、部署、发布、OTA、stable 或真机安装。
+
+## 7. 2026-08-30 K03 独立审查失败记录
+
+本节取代的只是 K03 “可能成为合格基线”的判断，不删除第 6 节的实现与测试事实。
+
+- 独立只读审查结论：`FAIL / P0=3 / P1=5`。因此 `9c1a87c7` 保留为可回退的原子实施
+  checkpoint，但 K03 状态降为 `IN_PROGRESS / REWORK_REQUIRED`，不得接生产或 runtime route。
+- P0-1：原状态机允许 `OUTCOME_UNKNOWN -> CANCELLED/REJECTED` 并清除 reconcile block；
+  最小复现无需 verified fact 即可抹掉未知 Provider 副作用，违反绝不自动重发门禁。
+- P0-2：queue ownership、root operation state 和 dispatch barrier 分属不同事务；重启可留下
+  `DISPATCH_OWNED + ADMITTED`，且同一 root operation 可重复进入 16 个 active entry。原容量测试
+  把该缺陷当作正例，不能继续作为验收证据。
+- P0-3：timeline commit 只信调用方 `verified:true`，没有重新验证 read evidence、coverage island、
+  order proof 或 Gap；`[timelineOrdinal 0, 100] + no gap` 可被提交为 healthy canonical。
+- P1：operation fingerprint 由调用方自报、authenticated actor 未进入真实 admission boundary；
+  degraded/timeout 可创建或推进 canonical head，而 exact authoritative empty 无法表达；唯一 writer
+  只有单进程字符串 Set；JSON/容量/terminal 约束未进入 DDL；Interaction response 后 claim 仍
+  ACTIVE，actor/source fence 只是调用参数。
+- 正向事实仍保留：单 ACTIVE claim partial unique index 能在直接 SQL 层拒绝第二条 ACTIVE claim；
+  这不足以关闭其他 claim/actor/response 生命周期缺口。
+- 第 6 节的 focused/full PASS 实际由默认 Node `26.4.0` / ABI `147` 执行。独立审查用既有
+  ABI 147 node_modules 在 Node `22.23.1` 下打开 DB 会 ABI mismatch；隔离 fresh install 的
+  `better-sqlite3@12.10.0` 在 Node 22 macOS arm64 smoke 可用。因此这是依赖安装纪律与尚未完成的
+  Node 22 门禁，不是可以忽略的 source PASS。当前 lock 还含本次新增依赖的 `npmmirror.com`
+  resolved URL，重构必须切回官方 npm registry 并复核 integrity。
+- 已从 `64bc007c` 建立独立 K03 Store rework 分支，目标包括 immutable unknown + append-only
+  reconcile、atomic queue/operation barrier、verified materialization staging、authenticated admission、
+  bounded canonical JSON/DDL、真实 writer lease + dedicated worker thread 和固定 Node 22 验证。
+- 本审查和返工均未创建产品 DB、未启动 Bridge/Provider、未接触 8765/8766，也未授权发布动作。
