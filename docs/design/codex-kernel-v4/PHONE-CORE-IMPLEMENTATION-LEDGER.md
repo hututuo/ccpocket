@@ -587,3 +587,71 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   `resolveCodexSource()` 只能在认证完成后一次性 bind，composition 不得拆成 lookup+bind 竞态。Adapter
   四提交仍未重放。未启动 Provider、Bridge、DB、端口、Mobile、simulator 或 candidate，也未执行
   merge、push、deploy、release、OTA、stable 或真机安装。
+
+## 26. 2026-08-30 typed JCS Tooling 累计根级集成与复验
+
+- 根在既有 hardened multi-target transaction 上累计集成第 23 节的 typed TS/Dart JCS 能力，形成
+  `be56d5ba9134f7232a41e2e4cd8a0c9a620a9db3`（tree
+  `30a83f2acffc8f299107ff33921a8f8996ace3df`，parent/rollback
+  `5ce0018923b206804aeec3e533433a0326c311bd`）。范围精确为
+  `packages/conversation-contract/**` 18 files；保留原事务恢复、安全路径、strict fixture、TS/Dart
+  roundtrip 门禁，并加入 closed typed canonical bytes/SHA-256 helpers、manifest binding、runtime generic
+  digest import boundary 和 11 个跨语言 goldens。
+- 根固定 Node `22.23.1` 复跑 `npm test --workspace=packages/conversation-contract`：Node TAP
+  32/32 PASS、fixture TypeScript strict PASS、Dart `3.13.0` fixture/runtime 及 11/11 canonical-byte/digest
+  goldens PASS。固定 Node 22 下 package fixture `validate` 与 `check` 均 exit 0；`git show --check`
+  PASS。`mise` 的既有 Shorebird registry warning 不影响命令 exit。
+- 四个正式目标仍精确为
+  `docs/design/codex-kernel-v4/contracts/generated/schema.json`、
+  `docs/design/codex-kernel-v4/contracts/generated/profile-manifest.json`、
+  `packages/bridge/src/conversation-core/protocol/generated/contract.ts`、
+  `apps/mobile/lib/conversation_core/protocol/generated/contract.dart`，本轮逐项均 `ABSENT`，相关目录
+  transaction residue 为 0。正式 `formal:generate`/mapped check 继续 `NOT_RUN / FORBIDDEN`；Tooling
+  PASS 不替代尚未冻结的 B1/B2 Registry/Vectors authority。
+- 本节没有启动 Provider、Bridge、DB、8765/8766、Mobile、simulator、candidate 或 device，也没有
+  merge、push、deploy、release、OTA、stable 或真机安装。
+
+## 27. 2026-08-30 PVMC-1 compact authority amendment 四路接受
+
+- 新增 `PVMC-1-COMPACT-AUTHORITY-AMENDMENT-20260830.md`，最终 normative bytes 的 SHA-256 为
+  `317dfd46692e628c70a7a8a989debf9f8fd9384b19a257c7c2655bf7d4c7f6ab`，2010 行、48 个 code
+  fences，`git diff --check` PASS。本文档与本节由同一 docs-only 回退点冻结；其 parent/rollback 是
+  第 26 节的 `be56d5ba`。正式 commit/tree 身份由下一笔 ledger append 记录，避免在同一 commit 中
+  自引用不可构造的 commit hash。
+- 该补充只激活 Timeline-only PVMC-1 authority，明确 stable read plan 与 attempt spec 分离、INDEX/FULL
+  与 typed Gap 的双向闭合、完整 RFC8785 payload commitment、完整 branch 的 40,960/40,961 canonical
+  JSON UTF-8 gate、page/order/coverage/manifest/begin/receipt exact shapes、全局
+  `candidateHeadVersion=baseHeadVersion+1`、stratified predecessor edge、REFERENCE_EQUALITY inventory、
+  `17/123/151/64` machine profile、durable owner/writer/storage binding，以及 authenticated-actor-first
+  `operation.query/snapshot` admission lookup。current candidate manifest 只做
+  `POST_DERIVATION_VALIDATION_ONLY` equality，不进入 proof preimage 或 digest DAG。
+- 旧 `60814930...` review candidate 的跨文档容量计数、predecessor guard DAG 与 admission response
+  binding P1 已由最终 bytes 取代。对 exact `317dfd...` 的四路不可变复审分别为：Sol max cross-doc、
+  payload/Gap specialist、evidence/machine specialist、Luna xhigh full-document；四份最终结论均为
+  `LGTM / P0=0/P1=0/P2=0`，且复核前后 hash、行数、fences 均未变化。
+- 该文档接受只解除 Contract B1/B2 的规范歧义，不等于实现接受。B1 Registry/Vectors 与 B2 exact
+  151 concrete governance rows 仍须各自通过 immutable `P0=0/P1=0`；在两者通过前正式生成继续
+  `FORBIDDEN / NOT_RUN`。本节未修改 Registry/Vectors、未生成正式四目标，也未运行 Provider、DB、
+  Bridge、端口、Mobile、simulator、candidate 或 device。
+
+## 28. 2026-08-30 Mobile Repository 第三轮拒绝与第四轮冻结待审
+
+- 第三轮候选 `30d60f28a511cc289f7ebc33a4490a8669ff2f10`（tree
+  `4ef48de6a0b5d653daa46004790a0ac462047775`）保持 clean，独立只读审计为
+  `REWORK_REQUIRED / P0=0/P1=3/P2=3`。P1 是 open recovery listener 即时 ACK 在 `_database`
+  publish 前失败、superseded projection provenance 查询缺精确复合索引/EXPLAIN、publication outbox
+  缺 `phase x notification_state` 跨字段约束。P2 是 offset-preserving usage tamper、stale-owner close
+  replacement 与真实 same-PID multi-isolate/row-32 crash replay 覆盖不足。第三轮 66/66 focused、
+  scoped analyze/format/diff PASS 作为局部正向证据保留，但其安全接受结论不存在。
+- 第四轮从该点冻结三笔原子提交：`cabb7d01`（publication recovery/state fence）→ `4024b26b`
+  （usage audit/provenance schema）→ `a3cf189164bf85167d460daa12cf65605485f37b`
+  （adversarial regressions，tree `7b02b154a13fb23d1526304d24d93e31b98f7658`）。worktree clean，
+  精确只改 Mobile Repository 5 files。worker 报告 focused Flutter 70/70、`dart analyze`、format 与
+  `git diff --check` PASS；实现覆盖 leased-handle immediate ACK、publication state matrix、provenance
+  composite index、独立 `replica_usage_audit` 和 row-32 crash/restart replay。
+- 第四轮的 Luna 原审计者与新增 Sol max reviewer 正在对同一 immutable HEAD/tree 做只读复审；在两份
+  精确 P0/P1/P2 返回前，上述 worker 结果只记 `IMPLEMENTED_AND_WORKER_TESTED`，独立接受为
+  `NOT_RUN / PENDING`。full Flutter suite、真实 multi-isolate runtime、generated-authority integration、
+  根级 replay、Bridge/Mobile composition、8766、simulator、candidate/device 全部继续 `NOT_RUN`。
+- 该候选不得集成到实施根。没有访问产品 DB、启动 Bridge/端口/模拟器，也没有 merge、push、deploy、
+  release、OTA、stable 或真机安装。
