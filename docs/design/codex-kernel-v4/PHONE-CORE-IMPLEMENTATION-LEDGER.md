@@ -234,3 +234,20 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   process epoch、wire welcome 和 Mobile binding 仍未接入，故 K02 继续 `IN_PROGRESS`。
 - 本次没有打开产品 state/DB，没有启动 Bridge/Provider/端口/simulator，也没有 merge、push、
   部署、发布、OTA、stable 或真机安装。
+
+## 11. 2026-08-30 K00 工具独立复核与 authority 继续收敛
+
+- 独立只读 tooling 复核结论为 `P0=0 / P1=3 / P2=2`。既有 strict duplicate JSON、active
+  dependency/empty authority、TS/Dart namespace、safe integer 和临时 formal generate/check 仍
+  PASS，但 `79294193` 尚不能成为最终 K00 gate。
+- P1：词法 target-map 检查不能阻止 nested symlink 越出 project root；formal check 会跟随
+  same-content target symlink，并忽略 stale symlink/directory；部分安装失败的 rollback 只按文件名
+  删除，TOCTOU 下可能删除外部替换后的非生成文件。P2：crash 后 lock/stage 未被 check 暴露，且
+  原测试没有覆盖部分 backup/install 后故障。原提交保留，tooling worker 正在追加逐级 realpath、
+  exact lstat、stale transaction detection、inode-bound rollback 与故障注入测试。
+- 权威设计在 `5f928d49` 后追加 `9f595ed8`：page 承载唯一 items+gaps，commit 只保留 compact
+  可重算证明；随后 `e615860c` 定义 narrow message-image begin/chunk/commit ingress，使图片在
+  durable admission 前形成 ContentRef，而不把通用文件互传/Gallery 拉进本批。该 ingress 仍待
+  active Registry、Bridge/Mobile 和 runtime test 实现。
+- 正式 derived outputs 继续 `NOT_GENERATED`；本节没有运行 Provider、DB、端口、Mobile、simulator
+  或任何发布动作。
