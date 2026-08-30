@@ -418,3 +418,31 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   `REJECT` 尚未关闭；本 tooling PASS 不能提升整个 K00。
 - 本节没有运行 Provider、Bridge/DB/8765/8766、Mobile/simulator/candidate/device，也没有 merge、
   push、deploy、release、OTA 或 stable。
+
+## 19. 2026-08-30 Mobile Repository 对抗复审重新否决
+
+- Mobile Repository 候选 `2d8fd4714358159dd538af9034b5b436c6b2dba4`（tree
+  `ebc58c2fa1915711be2d950f804bf09c2aaef215`，parent `e79770456804592bccbfa5a4c83e7a385e175bb5`）
+  保持 clean，独立 Sol max 只读复审结论为 `REWORK_REQUIRED / P0=2 / P1=6 / P2=3`；另有尚未闭合的
+  generated contract/JCS authority `BLOCKED P0`。因此该候选及其 ledger 中的“唯一 generated seam”、
+  “authority 缺失 fail-closed”“P1/P2 source PASS”“exact schema attestation”等结论均不得进入实施根。
+- P0-1：`ConversationContractMapper` 不能表达 R64 的 closed page/order/coverage/manifest/begin/receipt
+  preimage DAG，仍暴露 caller-provided `gapId`、open details、`isSnapshot` 和二态 structural coverage；
+  Provider evidence 也只比较任意 hex，而非从 typed evidence bytes 重算。P0-2：public constructor 接受
+  可自行声明 `isGenerated=true` 的 mapper；mapper 缺失时 `open/readWindow` 仍可工作并跳过 row digest
+  验证，production authority 可被伪装且缺失时 fail-open。
+- P1：same-epoch non-dominating partial 会污染可见 last-good，verified empty 不能替换旧 non-empty；
+  canonical source/provider epoch 与 runtime projection 没有同一 fence；same generation/revision 不同
+  projection identity 未报 conflict，完整快照移除的 row 不能在同 revision 合法重新激活；apply/commit
+  在 durable readback/publication 前即标记完成，崩溃重试只返回 duplicate；schema attestation 漏 trigger、
+  `table_xinfo`、index collation/order、composite FK bijection 与 generated profile digest；writer lease 无
+  dead-owner/boot/process-instance reclaim；多表 append-only residue 没有有界 GC，最终会永久触发容量上限。
+- P2：嵌套大字符串可绕过 8 MiB gate；同 page identity 的 retry 未比较完整 chain header；每次 mutation
+  扫描全部历史表导致长期累计工作量近二次。Focused Flutter 18/18、scoped analyze 0 issues、format 与
+  `git diff --check` PASS 作为局部正向事实保留；full Flutter、full app analyze、Bridge/Mobile composition、
+  8766、simulator、candidate/device runtime 继续 `NOT_RUN`。
+- 后续重构必须先消费生成的 closed typed helpers，production path 不再接受可伪装 mapper；另以独立
+  durable outbox、epoch fence、coverage dominance、schema/lease attestation 和 bounded GC 关闭
+  repository 自身安全缺口。合同最终定稿前不在 Mobile 层手写第二套 digest/schema 权威，也不回放该
+  候选。复审未启动 Bridge、DB、端口、simulator，未执行 merge、push、deploy、release、OTA、stable
+  或真机安装。
