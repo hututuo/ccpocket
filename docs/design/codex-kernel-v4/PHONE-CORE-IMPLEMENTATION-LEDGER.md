@@ -386,3 +386,35 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
 - 本节只记录审计与新返工起点。root Node22 package/full Bridge/tsc/build、formal temp/mapped
   generate/check、TS-Dart JCS golden、Provider、任何 DB、8765/8766、Mobile/simulator/candidate/device
   均 `NOT_RUN`；merge、push、deploy、release、OTA、stable 与真机安装仍未授权。
+
+## 18. 2026-08-30 16:17 +08 K00 生成事务加固通过并根级重放
+
+- tooling donor `9172b4162391636bc911e3d5e04997d32b42bd19`（tree
+  `124435b932e063a7689c14bebcc9ee810a22b592`，parent `23d4a13f`）只修改
+  `packages/conversation-contract/README.md`、`src/generate.mjs` 与
+  `test/contract-tool.test.mjs`。`23d4a13f` 与根既有 `45ccc633` 的 stable patch-id 均为
+  `c5cce6c56e251e814efc4047d859a3dde1a38a8a`，且 `packages/conversation-contract` 子树
+  byte-equivalent；因此根没有重复 parent，只把 corrective donor 重放为
+  `ce7b9e1f529b1bb3f619d081cc4d4b4fff502b39`，tree
+  `5fc75ff9e6bf4a6babe0844543170a9891a643fe`，rollback commit 为
+  `93ea2890a938f1b3495ec7446c043e8b98405936`。
+- 修订把 standalone/mapped 输出路径的逐层目录绑定、project/target/stage identity、每次 mutation
+  前后校验、symlink 原物恢复、deep transaction residue、部分 backup/install 故障恢复和保留证据
+  纳入同一生成事务。独立 Luna xhigh security review 对已冻结快照给出
+  `LGTM / P0=0/P1=0/P2=0`；已知平台 residual 是 Node/macOS 无
+  `renameat/linkat/unlinkat`，同账号进程仍可能争夺最后一次 recheck 到 syscall 的极短窗口，README
+  已如实披露，未把 hostile scheduler stress 或 Windows/Linux 写成 PASS。
+- 根环境固定 Node `22.23.1` 执行
+  `npm test --workspace=packages/conversation-contract`：Node TAP 26/26 PASS、fixture TypeScript strict
+  PASS、Dart 3.13 fixture analyze/roundtrip PASS；`npm run conversation:contract:validate` exit 0，输出
+  `validate: pvmc1.phone-core.v1`。`mise` 的既有 Shorebird registry warning 不影响 exit。根
+  `git show --check` PASS，重放后 status clean。
+- 四个正式目标
+  `apps/mobile/lib/generated/conversation_contract.dart`、
+  `packages/bridge/src/generated/conversation-contract.ts`、
+  `packages/conversation-contract/generated/schema.json` 与
+  `packages/conversation-contract/generated/profile-manifest.json` 仍全部 absent，root transaction
+  residues 为 0。正式 mapped generate 仍 `FORBIDDEN / NOT_RUN`，因为第 17 节的 Contract authority
+  `REJECT` 尚未关闭；本 tooling PASS 不能提升整个 K00。
+- 本节没有运行 Provider、Bridge/DB/8765/8766、Mobile/simulator/candidate/device，也没有 merge、
+  push、deploy、release、OTA 或 stable。
