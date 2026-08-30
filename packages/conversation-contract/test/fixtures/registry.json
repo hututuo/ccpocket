@@ -1,0 +1,105 @@
+{
+  "formatVersion": 1,
+  "activeProfileId": "fixture.active",
+  "profiles": [
+    {
+      "id": "fixture.active",
+      "status": "active",
+      "rootTypeRefs": ["FixtureEnvelope"]
+    },
+    {
+      "id": "fixture.future",
+      "status": "planned",
+      "rootTypeRefs": ["FutureOnly"]
+    }
+  ],
+  "definitions": [
+    {
+      "id": "FixturePriority",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "enum",
+        "values": ["normal", "high_priority"]
+      }
+    },
+    {
+      "id": "FixtureSourceRef",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "bridgeInstanceId", "required": true, "type": {"kind": "string"}},
+          {"name": "sourceOrdinal", "required": true, "type": {"kind": "integer"}}
+        ]
+      }
+    },
+    {
+      "id": "FixturePayload",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "union",
+        "discriminator": "kind",
+        "variants": [
+          {
+            "tag": "text",
+            "fields": [
+              {"name": "text", "required": true, "type": {"kind": "string"}}
+            ]
+          },
+          {
+            "tag": "progress",
+            "fields": [
+              {"name": "complete", "required": true, "type": {"kind": "boolean"}},
+              {"name": "labels", "required": false, "type": {"kind": "array", "items": {"kind": "string"}}}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "FixtureEnvelope",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "id", "required": true, "type": {"kind": "string"}},
+          {"name": "source", "required": true, "type": {"kind": "ref", "target": "FixtureSourceRef"}},
+          {"name": "priority", "required": true, "type": {"kind": "ref", "target": "FixturePriority"}},
+          {"name": "payload", "required": true, "type": {"kind": "ref", "target": "FixturePayload"}},
+          {"name": "metadata", "required": false, "type": {"kind": "map", "values": {"kind": "string"}}}
+        ]
+      }
+    },
+    {
+      "id": "FutureOnly",
+      "profiles": ["fixture.future"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "future", "required": true, "type": {"kind": "boolean"}}
+        ]
+      }
+    }
+  ],
+  "owners": [{"id": "fixture.owner"}],
+  "consumers": [{"id": "fixture.consumer"}],
+  "executableTests": [{"id": "fixture.executable-test"}],
+  "hardRules": [
+    {
+      "id": "fixture.rule.type-shape",
+      "profileId": "fixture.active",
+      "ownerRef": "fixture.owner",
+      "consumerRef": "fixture.consumer",
+      "executableTestRef": "fixture.executable-test",
+      "failureReason": "FIXTURE_TYPE_SHAPE_INVALID",
+      "zeroSemantics": {
+        "admissionRows": 0,
+        "providerCalls": 0,
+        "publicationRows": 0
+      }
+    }
+  ],
+  "vectorSets": [
+    {"id": "fixture.vector-set", "profileId": "fixture.active"}
+  ]
+}

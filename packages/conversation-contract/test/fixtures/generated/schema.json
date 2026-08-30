@@ -1,0 +1,107 @@
+{
+  "$defs": {
+    "FixtureEnvelope": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "payload": {
+          "$ref": "#/$defs/FixturePayload"
+        },
+        "priority": {
+          "$ref": "#/$defs/FixturePriority"
+        },
+        "source": {
+          "$ref": "#/$defs/FixtureSourceRef"
+        }
+      },
+      "required": [
+        "id",
+        "payload",
+        "priority",
+        "source"
+      ],
+      "type": "object"
+    },
+    "FixturePayload": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "text"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "complete": {
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "progress"
+            },
+            "labels": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "complete",
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "FixturePriority": {
+      "enum": [
+        "normal",
+        "high_priority"
+      ],
+      "type": "string"
+    },
+    "FixtureSourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "bridgeInstanceId": {
+          "type": "string"
+        },
+        "sourceOrdinal": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bridgeInstanceId",
+        "sourceOrdinal"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "urn:ccpocket:conversation-contract:fixture.active:1eb501a44b01fccb6727ceefb71e98de643554896d9ceb8a7d0d9446cda22851",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/FixtureEnvelope"
+    }
+  ],
+  "title": "CC Pocket conversation contract (fixture.active)"
+}
