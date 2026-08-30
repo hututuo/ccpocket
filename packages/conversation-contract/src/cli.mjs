@@ -1,13 +1,42 @@
 #!/usr/bin/env node
 
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
+import { parseArgs, promisify } from 'node:util';
 
 import { GENERATED_FILES, generateArtifacts, writeArtifacts } from './generate.mjs';
 import { validateInputs } from './validate.mjs';
+
+const execFileAsync = promisify(execFile);
+const EXPECTED_DART_FORMATTER_VERSION = '3.13.0';
+const MISE_FLUTTER_VERSION = '3.47.0';
+
+async function runDart(args) {
+  try {
+    return await execFileAsync('dart', args);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    try {
+      return await execFileAsync('mise', [
+        'exec',
+        `flutter@${MISE_FLUTTER_VERSION}`,
+        '--',
+        'dart',
+        ...args,
+      ]);
+    } catch (fallbackError) {
+      if (fallbackError?.code === 'ENOENT') {
+        throw new Error(
+          'Dart formatter not found; install Dart 3.13.0 or mise with Flutter 3.47.0',
+        );
+      }
+      throw fallbackError;
+    }
+  }
+}
 
 async function readJson(filename, label) {
   let text;
@@ -50,6 +79,31 @@ async function checkDrift(outputDirectory, artifacts) {
   }
 }
 
+async function formatDartArtifact(model) {
+  const {stdout, stderr} = await runDart(['--version']);
+  const versionText = `${stdout}\n${stderr}`;
+  const version = /Dart SDK version:\s*([^\s]+)/.exec(versionText)?.[1];
+  if (version !== EXPECTED_DART_FORMATTER_VERSION) {
+    throw new Error(
+      `dart formatter must be ${EXPECTED_DART_FORMATTER_VERSION}, got ${version ?? 'unknown'}`,
+    );
+  }
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-dart-'));
+  try {
+    const filename = path.join(directory, 'contract.dart');
+    const raw = generateArtifacts(model).get('contract.dart');
+    await writeFile(filename, raw, 'utf8');
+    await runDart(['format', filename]);
+    const formatted = await readFile(filename, 'utf8');
+    return generateArtifacts(model, {
+      dartSource: formatted,
+      dartFormatterVersion: version,
+    });
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+}
+
 export async function run(argv = process.argv.slice(2)) {
   const {values, positionals} = parseArgs({
     args: argv,
@@ -59,6 +113,7 @@ export async function run(argv = process.argv.slice(2)) {
       registry: {type: 'string'},
       vectors: {type: 'string'},
       out: {type: 'string'},
+      'format-dart': {type: 'boolean', default: false},
     },
   });
   if (positionals.length !== 1 || !['validate', 'generate', 'check'].includes(positionals[0])) {
@@ -71,7 +126,9 @@ export async function run(argv = process.argv.slice(2)) {
   }
   if (!values.out) throw new Error(`--out is required for ${command}`);
   const outputDirectory = path.resolve(values.out);
-  const artifacts = generateArtifacts(model);
+  const artifacts = values['format-dart']
+    ? await formatDartArtifact(model)
+    : generateArtifacts(model);
   if (command === 'generate') {
     await writeArtifacts(outputDirectory, artifacts);
     return {command, profileId: model.activeProfileId, outputDirectory};

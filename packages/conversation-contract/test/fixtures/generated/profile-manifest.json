@@ -1,9 +1,10 @@
 {
   "artifactDigests": {
-    "contract.dart": "a3c27b20db679ac54db4e64ad3d2be4193a905a80a44ac81fc20457fc8457f21",
+    "contract.dart": "57e486dc050793e6b40d114a116de22fa9a2c9accfa1f6398e173d8acc0e14b3",
     "contract.ts": "c31aeae8b0d94cdf004e3d8004b0fb4df12d547ddf745691746ae95f3dcd0c0a",
     "schema.json": "66a7593a4069036b6d6f60033cf270e030358931b639487bfed97e89fa2e5ae0"
   },
+  "dartFormatterVersion": "3.13.0",
   "formatVersion": 1,
   "generator": "@ccpocket/conversation-contract@0.0.0-private",
   "hardRuleIds": [

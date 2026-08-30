@@ -7,9 +7,9 @@
     "node": ">=20.18.1"
   },
   "scripts": {
-    "generate": "node src/cli.mjs generate --registry test/fixtures/registry.json --vectors test/fixtures/vectors.json --out test/fixtures/generated",
+    "generate": "node src/cli.mjs generate --format-dart --registry test/fixtures/registry.json --vectors test/fixtures/vectors.json --out test/fixtures/generated",
     "validate": "node src/cli.mjs validate --registry test/fixtures/registry.json --vectors test/fixtures/vectors.json",
-    "check": "node src/cli.mjs check --registry test/fixtures/registry.json --vectors test/fixtures/vectors.json --out test/fixtures/generated",
+    "check": "node src/cli.mjs check --format-dart --registry test/fixtures/registry.json --vectors test/fixtures/vectors.json --out test/fixtures/generated",
     "golden": "node --test test/*.test.mjs",
     "test": "node --test test/*.test.mjs"
   }

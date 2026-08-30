@@ -27,13 +27,16 @@ positive and one negative vector.
 
 ```text
 node src/cli.mjs validate --registry <registry.json> --vectors <vectors.json>
-node src/cli.mjs generate --registry <registry.json> --vectors <vectors.json> --out <dir>
-node src/cli.mjs check --registry <registry.json> --vectors <vectors.json> --out <dir>
+node src/cli.mjs generate --format-dart --registry <registry.json> --vectors <vectors.json> --out <dir>
+node src/cli.mjs check --format-dart --registry <registry.json> --vectors <vectors.json> --out <dir>
 ```
 
 `generate` writes deterministic `schema.json`, `contract.ts`, `contract.dart`,
-and `profile-manifest.json`. `check` regenerates into a temporary directory and
-fails on byte drift. No timestamp, host path, or random value enters an output.
+and `profile-manifest.json`. The production path pins Dart `3.13.0` and formats
+the Dart artifact before its digest is calculated. `check` repeats that process
+in a temporary directory and fails on byte drift. No timestamp, host path, or
+random value enters an output. The CLI uses Dart from `PATH`, or the project's
+`mise` Flutter `3.47.0` tool when Dart is not already available.
 
 The root `conversation:contract:*` scripts currently exercise package-internal
 fixtures only. The implementation owner must explicitly replace their inputs

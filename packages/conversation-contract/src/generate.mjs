@@ -37,12 +37,15 @@ function activeSource(model) {
   };
 }
 
-export function generateArtifacts(model) {
+export function generateArtifacts(
+  model,
+  {dartSource, dartFormatterVersion} = {},
+) {
   const source = activeSource(model);
   const sourceDigest = digestJson(source);
   const schema = generateSchema(model, sourceDigest);
   const typescript = generateTypeScript(model, sourceDigest);
-  const dart = generateDart(model, sourceDigest);
+  const dart = dartSource ?? generateDart(model, sourceDigest);
   const artifactDigests = {
     'contract.dart': digestBytes(dart),
     'contract.ts': digestBytes(typescript),
@@ -51,6 +54,7 @@ export function generateArtifacts(model) {
   const manifest = canonicalJson({
     formatVersion: 1,
     generator: '@ccpocket/conversation-contract@0.0.0-private',
+    ...(dartFormatterVersion ? {dartFormatterVersion} : {}),
     profileId: model.activeProfileId,
     profileDigest: sourceDigest,
     typeIds: [...model.activeDefinitionIds].sort(),
