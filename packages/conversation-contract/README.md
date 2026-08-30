@@ -20,7 +20,8 @@ Definitions for later profiles may coexist as design inventory, but they cannot
 leak into the active Schema, TypeScript, Dart, manifest, or digest. Active hard
 rules must bind an owner, runtime consumer, executable test, stable failure
 reason, and an all-zero side-effect shape. Active negative vectors must carry
-that exact reason and zero shape.
+that exact reason and zero shape. Every active rule must have at least one
+positive and one negative vector.
 
 ## CLI
 

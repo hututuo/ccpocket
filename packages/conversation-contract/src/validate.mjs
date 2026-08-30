@@ -368,6 +368,9 @@ export function validateInputs(registryInput, vectorsInput) {
     activeVectors.push(vector);
   }
   for (const [id] of hardRules) {
+    if (!activeVectors.some((vector) => vector.valid && vector.ruleRef === id)) {
+      fail('vectors.vectors', `active hard rule ${id} has no positive vector`);
+    }
     if (!activeVectors.some((vector) => !vector.valid && vector.ruleRef === id)) {
       fail('vectors.vectors', `active hard rule ${id} has no negative vector`);
     }

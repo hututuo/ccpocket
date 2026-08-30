@@ -48,6 +48,15 @@ test('generation is byte deterministic and manifest digests bind artifacts', asy
   const manifest = JSON.parse(first.get('profile-manifest.json'));
   assert.equal(manifest.profileId, 'fixture.active');
   assert.equal(manifest.typeIds.includes('FutureOnly'), false);
+  const schema = JSON.parse(first.get('schema.json'));
+  assert.equal(
+    schema.$defs.FixtureSourceRef.properties.sourceOrdinal.minimum,
+    Number.MIN_SAFE_INTEGER,
+  );
+  assert.equal(
+    schema.$defs.FixtureSourceRef.properties.sourceOrdinal.maximum,
+    Number.MAX_SAFE_INTEGER,
+  );
   for (const filename of ['schema.json', 'contract.ts', 'contract.dart']) {
     assert.equal(manifest.artifactDigests[filename], digestBytes(first.get(filename)));
     assert.doesNotMatch(first.get(filename), /FutureOnly/);
@@ -76,6 +85,15 @@ test('rejects duplicate IDs, open refs, incomplete hard rules, and unsafe negati
   const unsafe = structuredClone(vectors);
   delete unsafe.vectors[1].expectedZeroSideEffects;
   assert.throws(() => validateInputs(registry, unsafe), /negative vectors require zero-side-effect/);
+
+  const noPositive = structuredClone(vectors);
+  noPositive.vectors = noPositive.vectors.filter(
+    (vector) => vector.id !== 'fixture.vector.valid-envelope',
+  );
+  assert.throws(
+    () => validateInputs(registry, noPositive),
+    /active hard rule fixture\.rule\.type-shape has no positive vector/,
+  );
 });
 
 test('check detects generated drift without modifying the target', async () => {

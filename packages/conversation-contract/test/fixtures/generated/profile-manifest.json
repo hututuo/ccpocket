@@ -2,7 +2,7 @@
   "artifactDigests": {
     "contract.dart": "a3c27b20db679ac54db4e64ad3d2be4193a905a80a44ac81fc20457fc8457f21",
     "contract.ts": "c31aeae8b0d94cdf004e3d8004b0fb4df12d547ddf745691746ae95f3dcd0c0a",
-    "schema.json": "4c2fc73f31d13e6ecd930e13a8a25d3be1f67c0f287ea5743950e88f75436908"
+    "schema.json": "66a7593a4069036b6d6f60033cf270e030358931b639487bfed97e89fa2e5ae0"
   },
   "formatVersion": 1,
   "generator": "@ccpocket/conversation-contract@0.0.0-private",

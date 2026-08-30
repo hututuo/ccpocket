@@ -19,7 +19,12 @@ export function generateSchema(model, sourceDigest) {
   const schemaForNode = (node) => {
     switch (node.kind) {
       case 'string': return {type: 'string'};
-      case 'integer': return {type: 'integer'};
+      case 'integer':
+        return {
+          type: 'integer',
+          minimum: Number.MIN_SAFE_INTEGER,
+          maximum: Number.MAX_SAFE_INTEGER,
+        };
       case 'boolean': return {type: 'boolean'};
       case 'enum': return {type: 'string', enum: [...node.values]};
       case 'ref': return {$ref: `#/$defs/${node.target}`};
