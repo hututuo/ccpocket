@@ -4,28 +4,29 @@ import { join } from "node:path";
 
 import {
   acquireStateMutationLock,
+  acquireStateWriterLease,
   atomicPrivateWrite,
   preparePrivateStateDirectory,
   readBoundedPrivateFile,
+  STATE_WRITER_LEASE_SUFFIX,
+  type StateMutationLockOptions,
 } from "./private-state.js";
 
 export const BRIDGE_INSTALLATION_SCHEMA_VERSION = 1 as const;
-export const BRIDGE_INSTALLATION_FILE = "conversation-core-installation-v1.json" as const;
+export const BRIDGE_INSTALLATION_FILE =
+  "conversation-core-installation-v1.json" as const;
 export const CODEX_SOURCE_PROVIDER = "CODEX" as const;
 
 const MAX_INSTALLATION_FILE_BYTES = 1024 * 1024;
 const MAX_SOURCE_BINDINGS = 4096;
 const LOCATOR_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
-const ACTIVE_WRITERS = new Map<string, BridgeInstallationStore>();
-const PENDING_WRITERS = new Set<string>();
+let sourceEpochSequence = 0;
 
 export interface CodexSourceBinding {
   provider: typeof CODEX_SOURCE_PROVIDER;
   locatorDigest: string;
   codexSourceId: string;
-  sourceEpoch: string;
-  createdAt: string;
 }
 
 export interface ResolvedCodexSource {
@@ -42,43 +43,59 @@ interface BridgeInstallationFileData {
 export interface BridgeInstallationStoreOptions {
   stateDir?: string;
   now?: () => number;
+  lockOptions?: StateMutationLockOptions;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+function hasExactKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
-  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+  return (
+    actual.length === expected.length &&
+    actual.every((key, index) => key === expected[index])
+  );
 }
 
-function isCanonicalTimestamp(value: string): boolean {
-  const parsed = new Date(value);
-  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString() === value;
-}
-
-function createOpaqueId(
-  prefix: "bridge_instance" | "codex_source" | "source_epoch",
-): string {
+function createOpaqueId(prefix: "bridge_instance" | "codex_source"): string {
   return `${prefix}_${randomBytes(24).toString("base64url")}`;
+}
+
+function createSourceEpoch(): string {
+  sourceEpochSequence += 1;
+  return `source_epoch_${sourceEpochSequence.toString(36)}_${randomBytes(
+    24,
+  ).toString("base64url")}`;
 }
 
 function cloneBinding(binding: CodexSourceBinding): CodexSourceBinding {
   return { ...binding };
 }
 
-function parseInstallationFile(contents: string, path: string): BridgeInstallationFileData {
+function parseInstallationFile(
+  contents: string,
+  path: string,
+): BridgeInstallationFileData {
   let parsed: unknown;
   try {
     parsed = JSON.parse(contents);
   } catch (error) {
-    throw new Error(`Bridge installation state is malformed: ${path}`, { cause: error });
+    throw new Error(`Bridge installation state is malformed: ${path}`, {
+      cause: error,
+    });
   }
   if (
     !isPlainObject(parsed) ||
-    !hasExactKeys(parsed, ["schemaVersion", "bridgeInstanceId", "sourceBindings"]) ||
+    !hasExactKeys(parsed, [
+      "schemaVersion",
+      "bridgeInstanceId",
+      "sourceBindings",
+    ]) ||
     parsed.schemaVersion !== BRIDGE_INSTALLATION_SCHEMA_VERSION ||
     typeof parsed.bridgeInstanceId !== "string" ||
     !OPAQUE_ID_PATTERN.test(parsed.bridgeInstanceId) ||
@@ -90,7 +107,6 @@ function parseInstallationFile(contents: string, path: string): BridgeInstallati
 
   const digests = new Set<string>();
   const sourceIds = new Set<string>();
-  const sourceEpochs = new Set<string>();
   const sourceBindings: CodexSourceBinding[] = [];
   for (const candidate of parsed.sourceBindings) {
     if (
@@ -99,33 +115,23 @@ function parseInstallationFile(contents: string, path: string): BridgeInstallati
         "provider",
         "locatorDigest",
         "codexSourceId",
-        "sourceEpoch",
-        "createdAt",
       ]) ||
       candidate.provider !== CODEX_SOURCE_PROVIDER ||
       typeof candidate.locatorDigest !== "string" ||
       !LOCATOR_DIGEST_PATTERN.test(candidate.locatorDigest) ||
       typeof candidate.codexSourceId !== "string" ||
       !OPAQUE_ID_PATTERN.test(candidate.codexSourceId) ||
-      typeof candidate.sourceEpoch !== "string" ||
-      !OPAQUE_ID_PATTERN.test(candidate.sourceEpoch) ||
-      typeof candidate.createdAt !== "string" ||
-      !isCanonicalTimestamp(candidate.createdAt) ||
       digests.has(candidate.locatorDigest) ||
-      sourceIds.has(candidate.codexSourceId) ||
-      sourceEpochs.has(candidate.sourceEpoch)
+      sourceIds.has(candidate.codexSourceId)
     ) {
       throw new Error(`Bridge installation source binding is invalid: ${path}`);
     }
     digests.add(candidate.locatorDigest);
     sourceIds.add(candidate.codexSourceId);
-    sourceEpochs.add(candidate.sourceEpoch);
     sourceBindings.push({
       provider: CODEX_SOURCE_PROVIDER,
       locatorDigest: candidate.locatorDigest,
       codexSourceId: candidate.codexSourceId,
-      sourceEpoch: candidate.sourceEpoch,
-      createdAt: candidate.createdAt,
     });
   }
   return {
@@ -153,16 +159,49 @@ export class CodexSourceRegistry {
   resolveCodexSource(locatorDigest: string): Promise<ResolvedCodexSource> {
     return this.installation.resolveCodexSource(locatorDigest);
   }
+
+  bindAuthenticatedCodexSource(
+    locatorDigest: string,
+  ): Promise<ResolvedCodexSource> {
+    return this.installation.bindAuthenticatedCodexSource(locatorDigest);
+  }
+
+  replaceAuthenticatedCodexSource(
+    locatorDigest: string,
+  ): Promise<ResolvedCodexSource> {
+    return this.installation.replaceAuthenticatedCodexSource(locatorDigest);
+  }
+
+  isSourceEpochCurrent(locatorDigest: string, sourceEpoch: string): boolean {
+    return this.installation.isSourceEpochCurrent(locatorDigest, sourceEpoch);
+  }
+
+  assertSourceEpoch(
+    locatorDigest: string,
+    sourceEpoch: string,
+    codexSourceId?: string,
+  ): void {
+    this.installation.assertSourceEpoch(
+      locatorDigest,
+      sourceEpoch,
+      codexSourceId,
+    );
+  }
 }
 
 export class BridgeInstallationStore {
   readonly stateDir: string;
   readonly installationFile: string;
+  readonly writerLeaseFile: string;
   readonly bridgeInstanceId: string;
   readonly codexSources: CodexSourceRegistry;
-  private readonly writerKey: string;
-  private readonly now: () => number;
+  private readonly writerLeaseRelease: () => Promise<void>;
+  private readonly lockOptions: StateMutationLockOptions;
   private state: BridgeInstallationFileData;
+  private readonly activeSourceEpochs = new Map<
+    string,
+    { codexSourceId: string; sourceEpoch: string }
+  >();
   private closed = false;
   private closePromise: Promise<void> | undefined;
   private operations: Promise<void> = Promise.resolve();
@@ -170,16 +209,18 @@ export class BridgeInstallationStore {
   private constructor(input: {
     stateDir: string;
     installationFile: string;
-    writerKey: string;
+    writerLeaseFile: string;
+    writerLeaseRelease: () => Promise<void>;
     state: BridgeInstallationFileData;
-    now: () => number;
+    lockOptions: StateMutationLockOptions;
   }) {
     this.stateDir = input.stateDir;
     this.installationFile = input.installationFile;
-    this.writerKey = input.writerKey;
+    this.writerLeaseFile = input.writerLeaseFile;
+    this.writerLeaseRelease = input.writerLeaseRelease;
     this.state = input.state;
     this.bridgeInstanceId = input.state.bridgeInstanceId;
-    this.now = input.now;
+    this.lockOptions = input.lockOptions;
     this.codexSources = new CodexSourceRegistry(this);
   }
 
@@ -187,18 +228,28 @@ export class BridgeInstallationStore {
     options: BridgeInstallationStoreOptions = {},
   ): Promise<BridgeInstallationStore> {
     const requestedStateDir =
-      options.stateDir ?? process.env.CCPOCKET_STATE_DIR ?? join(homedir(), ".ccpocket");
+      options.stateDir ??
+      process.env.CCPOCKET_STATE_DIR ??
+      join(homedir(), ".ccpocket");
     const stateDir = await preparePrivateStateDirectory(requestedStateDir);
     const installationFile = join(stateDir, BRIDGE_INSTALLATION_FILE);
-    const writerKey = installationFile;
-    if (PENDING_WRITERS.has(writerKey) || ACTIVE_WRITERS.has(writerKey)) {
-      throw new Error("Bridge installation writer is already open for this state path");
+    const lockOptions = { ...options.lockOptions };
+    if (lockOptions.now === undefined && options.now !== undefined) {
+      lockOptions.now = options.now;
     }
-    PENDING_WRITERS.add(writerKey);
+    const writerLeaseStateFile = `${stateDir}.bridge-installation-writer`;
+    const writerLeaseFile = `${writerLeaseStateFile}${STATE_WRITER_LEASE_SUFFIX}.lock`;
+    let writerLeaseRelease: (() => Promise<void>) | undefined;
     try {
+      writerLeaseRelease = await acquireStateWriterLease(
+        writerLeaseStateFile,
+        "Bridge installation writer lease",
+        lockOptions,
+      );
       const releaseLock = await acquireStateMutationLock(
         installationFile,
         "Bridge installation state",
+        lockOptions,
       );
       let state: BridgeInstallationFileData;
       try {
@@ -214,6 +265,7 @@ export class BridgeInstallationStore {
             `${JSON.stringify(state)}\n`,
             MAX_INSTALLATION_FILE_BYTES,
             "Bridge installation state",
+            { syncDirectory: lockOptions.syncDirectory },
           );
         } else {
           state = parseInstallationFile(contents, installationFile);
@@ -221,18 +273,17 @@ export class BridgeInstallationStore {
       } finally {
         await releaseLock();
       }
-
-      const store = new BridgeInstallationStore({
+      return new BridgeInstallationStore({
         stateDir,
         installationFile,
-        writerKey,
+        writerLeaseFile,
+        writerLeaseRelease,
         state,
-        now: options.now ?? Date.now,
+        lockOptions,
       });
-      ACTIVE_WRITERS.set(writerKey, store);
-      return store;
-    } finally {
-      PENDING_WRITERS.delete(writerKey);
+    } catch (error) {
+      await writerLeaseRelease?.().catch(() => undefined);
+      throw error;
     }
   }
 
@@ -249,77 +300,102 @@ export class BridgeInstallationStore {
     return result;
   }
 
-  async resolveCodexSource(locatorDigest: string): Promise<ResolvedCodexSource> {
+  async resolveCodexSource(
+    locatorDigest: string,
+  ): Promise<ResolvedCodexSource> {
+    return this.runExclusive(() => this.bindCodexSource(locatorDigest, false));
+  }
+
+  async bindAuthenticatedCodexSource(
+    locatorDigest: string,
+  ): Promise<ResolvedCodexSource> {
+    return this.runExclusive(() => this.bindCodexSource(locatorDigest, true));
+  }
+
+  async replaceAuthenticatedCodexSource(
+    locatorDigest: string,
+  ): Promise<ResolvedCodexSource> {
+    return this.bindAuthenticatedCodexSource(locatorDigest);
+  }
+
+  private async bindCodexSource(
+    locatorDigest: string,
+    forceNewEpoch: boolean,
+  ): Promise<ResolvedCodexSource> {
     if (!LOCATOR_DIGEST_PATTERN.test(locatorDigest)) {
-      throw new Error("Codex source locator digest must be 64 lowercase hex characters");
+      throw new Error(
+        "Codex source locator digest must be 64 lowercase hex characters",
+      );
     }
-    return this.runExclusive(async () => {
-      const releaseLock = await acquireStateMutationLock(
+    const releaseLock = await acquireStateMutationLock(
+      this.installationFile,
+      "Bridge installation state",
+      this.lockOptions,
+    );
+    try {
+      const contents = await readBoundedPrivateFile(
         this.installationFile,
+        MAX_INSTALLATION_FILE_BYTES,
         "Bridge installation state",
       );
-      try {
-        const contents = await readBoundedPrivateFile(
-          this.installationFile,
-          MAX_INSTALLATION_FILE_BYTES,
-          "Bridge installation state",
+      if (contents === undefined) {
+        throw new Error("Bridge installation state disappeared after load");
+      }
+      const current = parseInstallationFile(contents, this.installationFile);
+      if (current.bridgeInstanceId !== this.bridgeInstanceId) {
+        throw new Error(
+          "Bridge installation identity changed while the writer was open",
         );
-        if (contents === undefined) {
-          throw new Error("Bridge installation state disappeared after load");
-        }
-        const current = parseInstallationFile(contents, this.installationFile);
-        if (current.bridgeInstanceId !== this.bridgeInstanceId) {
-          throw new Error("Bridge installation identity changed while the writer was open");
-        }
-        const existing = current.sourceBindings.find(
-          (binding) => binding.locatorDigest === locatorDigest,
-        );
-        if (existing) {
-          this.state = current;
-          return {
-            codexSourceId: existing.codexSourceId,
-            sourceEpoch: existing.sourceEpoch,
-          };
-        }
+      }
+      this.state = current;
+      const existing = current.sourceBindings.find(
+        (binding) => binding.locatorDigest === locatorDigest,
+      );
+      let codexSourceId = existing?.codexSourceId;
+      if (codexSourceId === undefined) {
         if (current.sourceBindings.length >= MAX_SOURCE_BINDINGS) {
           throw new Error("Bridge installation source binding limit reached");
         }
-
-        const usedIds = new Set(current.sourceBindings.map((binding) => binding.codexSourceId));
-        let codexSourceId = createOpaqueId("codex_source");
+        const usedIds = new Set(
+          current.sourceBindings.map((binding) => binding.codexSourceId),
+        );
+        codexSourceId = createOpaqueId("codex_source");
         while (usedIds.has(codexSourceId)) {
           codexSourceId = createOpaqueId("codex_source");
-        }
-        const usedEpochs = new Set(
-          current.sourceBindings.map((binding) => binding.sourceEpoch),
-        );
-        let sourceEpoch = createOpaqueId("source_epoch");
-        while (usedEpochs.has(sourceEpoch)) {
-          sourceEpoch = createOpaqueId("source_epoch");
         }
         const binding: CodexSourceBinding = {
           provider: CODEX_SOURCE_PROVIDER,
           locatorDigest,
           codexSourceId,
-          sourceEpoch,
-          createdAt: new Date(this.now()).toISOString(),
         };
         const next: BridgeInstallationFileData = {
           ...current,
-          sourceBindings: [...current.sourceBindings.map(cloneBinding), binding],
+          sourceBindings: [
+            ...current.sourceBindings.map(cloneBinding),
+            binding,
+          ],
         };
         await atomicPrivateWrite(
           this.installationFile,
           `${JSON.stringify(next)}\n`,
           MAX_INSTALLATION_FILE_BYTES,
           "Bridge installation state",
+          { syncDirectory: this.lockOptions.syncDirectory },
         );
         this.state = next;
-        return { codexSourceId, sourceEpoch: binding.sourceEpoch };
-      } finally {
-        await releaseLock();
       }
-    });
+
+      const active = this.activeSourceEpochs.get(locatorDigest);
+      if (!forceNewEpoch && active?.codexSourceId === codexSourceId) {
+        return { ...active };
+      }
+      const sourceEpoch = createSourceEpoch();
+      const resolved = { codexSourceId, sourceEpoch };
+      this.activeSourceEpochs.set(locatorDigest, resolved);
+      return { ...resolved };
+    } finally {
+      await releaseLock();
+    }
   }
 
   sourceBindings(): readonly CodexSourceBinding[] {
@@ -327,14 +403,34 @@ export class BridgeInstallationStore {
     return this.state.sourceBindings.map(cloneBinding);
   }
 
+  isSourceEpochCurrent(locatorDigest: string, sourceEpoch: string): boolean {
+    if (this.closed) return false;
+    return (
+      this.activeSourceEpochs.get(locatorDigest)?.sourceEpoch === sourceEpoch
+    );
+  }
+
+  assertSourceEpoch(
+    locatorDigest: string,
+    sourceEpoch: string,
+    codexSourceId?: string,
+  ): void {
+    const active = this.activeSourceEpochs.get(locatorDigest);
+    if (
+      this.closed ||
+      active === undefined ||
+      active.sourceEpoch !== sourceEpoch ||
+      (codexSourceId !== undefined && active.codexSourceId !== codexSourceId)
+    ) {
+      throw new Error("Codex source epoch is not current");
+    }
+  }
+
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     this.closed = true;
-    this.closePromise = this.operations.finally(() => {
-      if (ACTIVE_WRITERS.get(this.writerKey) === this) {
-        ACTIVE_WRITERS.delete(this.writerKey);
-      }
-    });
+    this.activeSourceEpochs.clear();
+    this.closePromise = this.operations.then(() => this.writerLeaseRelease());
     return this.closePromise;
   }
 }

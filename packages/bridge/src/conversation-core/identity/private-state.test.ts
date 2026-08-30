@@ -1,6 +1,14 @@
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -86,7 +94,10 @@ describe("private conversation identity state", () => {
     const owner = JSON.parse(
       await readFile(join(`${file}.lock`, STATE_LOCK_OWNER_FILE), "utf8"),
     ) as { pid: number; token: string };
-    expect(owner).toMatchObject({ pid: 202, token: lockToken("replacement-202") });
+    expect(owner).toMatchObject({
+      pid: 202,
+      token: lockToken("replacement-202"),
+    });
     expect((await lstat(`${file}.lock`)).mode & 0o777).toBe(0o700);
     const ownerStats = await lstat(join(`${file}.lock`, STATE_LOCK_OWNER_FILE));
     expect(ownerStats.mode & 0o777).toBe(0o600);
@@ -215,7 +226,9 @@ describe("private conversation identity state", () => {
         result.status === "fulfilled",
     );
     expect(acquired).toHaveLength(1);
-    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === "rejected"),
+    ).toHaveLength(1);
 
     await acquired[0]!.value();
     expect(await readdir(join(file, ".."))).toEqual([]);
@@ -272,6 +285,73 @@ describe("private conversation identity state", () => {
 
     await expect(release()).rejects.toThrow(/ownership changed/);
     expect((await lstat(`${file}.lock`)).isDirectory()).toBe(true);
+  });
+
+  it("refuses to delete a same-pid same-token replacement before release", async () => {
+    const file = await stateFile();
+    const pid = 602;
+    const token = lockToken("replacement-same-owner");
+    const release = await acquireStateMutationLock(
+      file,
+      "same owner replacement fixture lock",
+      lockOptions({ pid, token: () => token }),
+    );
+    const originalStats = await lstat(`${file}.lock`);
+    await rm(`${file}.lock`, { recursive: true, force: true });
+    await writeOwnerDirectory(`${file}.lock`, {
+      pid,
+      token,
+      createdAt: "2026-08-30T12:00:00.000Z",
+    });
+    const replacementStats = await lstat(`${file}.lock`);
+    expect(replacementStats.ino).not.toBe(originalStats.ino);
+
+    await expect(release()).rejects.toThrow(/ownership changed before release/);
+    expect((await lstat(`${file}.lock`)).isDirectory()).toBe(true);
+  });
+
+  it("syncs the namespace after lock install and release mutations", async () => {
+    const file = await stateFile();
+    const parent = dirname(file);
+    const calls: string[] = [];
+    const release = await acquireStateMutationLock(
+      file,
+      "namespace sync fixture lock",
+      lockOptions({
+        syncDirectory: async (path) => {
+          calls.push(path);
+        },
+      }),
+    );
+    await release();
+
+    expect(calls.filter((path) => path === parent)).toHaveLength(3);
+  });
+
+  it("syncs the namespace around stale lock tombstone reclamation", async () => {
+    const file = await stateFile();
+    const parent = dirname(file);
+    await writeLockOwner(file, {
+      pid: 650,
+      token: lockToken("stale-sync-owner-650"),
+      createdAt: "2026-08-30T11:59:00.000Z",
+    });
+    const calls: string[] = [];
+    const release = await acquireStateMutationLock(
+      file,
+      "stale namespace sync fixture lock",
+      lockOptions({
+        syncDirectory: async (path) => {
+          calls.push(path);
+        },
+        processStatus: (pid) => (pid === 650 ? "dead" : "alive"),
+      }),
+    );
+    await release();
+
+    expect(
+      calls.filter((path) => path === parent).length,
+    ).toBeGreaterThanOrEqual(5);
   });
 });
 
