@@ -175,3 +175,23 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   reconcile、atomic queue/operation barrier、verified materialization staging、authenticated admission、
   bounded canonical JSON/DDL、真实 writer lease + dedicated worker thread 和固定 Node 22 验证。
 - 本审查和返工均未创建产品 DB、未启动 Bridge/Provider、未接触 8765/8766，也未授权发布动作。
+
+## 8. 2026-08-30 K00 生成工具加固集成
+
+- 权威设计分支已依据精确 Codex 运行事实追加三笔修订：`9e9ec10d`（paged read facts）、
+  `6ab9022b`（bounded canonical staging）和 `5f928d49`（dispatch/storage authority）。这些提交只修订
+  已接受架构中被运行事实证伪或补强的边界，没有重新引入 monolithic contract；正式 active
+  Registry/Vectors 的对应机械修订仍在独立原子分支进行。
+- K00 tooling worker `65a4cbd4` 经根分支选择性集成为 `79294193`。它把正式命令绑定到唯一
+  Registry/Vectors 与四个精确项目目标，增加 strict duplicate-key JSON、active dependency cycle、
+  empty active authority、TS/Dart namespace、safe integer parity、symlink/并发 writer、失败回滚与
+  stale generated file 检查。其跨四目标写入保证的是同一生成进程内的失败回滚；未宣称断电下的
+  跨文件系统事务。
+- 根环境复跑 `npm test --workspace=packages/conversation-contract`：Node 11/11、fixture TypeScript
+  strict compile、Dart 3.13 analyze/roundtrip 全部 PASS；fixture `generate` 后 `check` PASS 且工作树
+  无漂移；`npm run conversation:contract:validate` 对当前正式 profile 返回
+  `validate: pvmc1.phone-core.v1`。
+- 正式四处 derived outputs 尚未生成，因为 runtime-fact Registry/Vectors 原子修订尚未回流；因此
+  K00 继续为 `IN_PROGRESS`，不得把本节工具 PASS 写成 active contract generation PASS。
+- 本次没有运行 Bridge、Provider、SQLite、8765/8766、Mobile、simulator 或 candidate，也没有
+  merge、push、部署、发布、OTA、stable 或真机安装。
