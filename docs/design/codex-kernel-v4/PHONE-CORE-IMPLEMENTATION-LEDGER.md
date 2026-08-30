@@ -195,3 +195,23 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   K00 继续为 `IN_PROGRESS`，不得把本节工具 PASS 写成 active contract generation PASS。
 - 本次没有运行 Bridge、Provider、SQLite、8765/8766、Mobile、simulator 或 candidate，也没有
   merge、push、部署、发布、OTA、stable 或真机安装。
+
+## 9. 2026-08-30 集成前合同、接收与 Mobile Store 复核
+
+- runtime-fact contract worker 首次提交 `eb2b98b9` 通过自身 validate/generate/ref audit，但根复核
+  暂不集成：它把 4 MiB 单 turn 对象上限误写成 256 KiB publication page 上限；同时 staged
+  commit 仍通过 coverage islands、ordered item refs 和 commit gaps 重复整份逐 item 权威，长会话
+  仍会形成 MiB 级单帧。该提交保留为失败事实，worker 正在追加修订：4 MiB turn 与 256 KiB page
+  分离，items/gaps 进入有界 page，commit 只保留可从 staging 重算的 compact coverage/order proof。
+- K01/K02 最新实现虽已通过 focused 44/44 与 Bridge tsc，独立只读复核结论仍为
+  `FAIL / P0=0 / P1=4`：retired provider epoch 可 A→B→A 回退；epoch 切换后旧 live overlay 仍可暴露；
+  live item lifecycle 可从 completed 回退 started 并清内容；畸形 URL fallback 可能保留 userinfo。
+  同轮还要求修复 malformed DTO typed rejection、硬容量不可被配置放宽、core page count 复验、
+  notLoaded/image-generation shape、order proof 重算、timeout 后底层 single-flight、live thread 释放和
+  known-field-only projection。修订与同一 reviewer 复看正在原子分支进行，尚未集成。
+- Mobile staged repository 最新 focused 结果为 30/30、定向 analyze 0 issues，但独立复核仍发现
+  `P1=2 / P2=2`：commit 已落盘而 post-commit/readback fault 后，同一 commit 跨重启重试会因 staging
+  已删除而失败；弱/空/错误的新 epoch 可能删除旧 last-good Gap。另需补全 foreign-schema exact
+  column gate 与 `(providerTurnId,itemOrdinal)` 唯一/跨页校验。worker 正在修订并复看，当前不集成。
+- 上述均是 pre-integration review，不改变根分支已通过的 K00 工具测试，也不把 worker 测试写成
+  Bridge/Mobile runtime PASS。没有运行 Provider、产品 DB、8765/8766、simulator 或发布动作。
