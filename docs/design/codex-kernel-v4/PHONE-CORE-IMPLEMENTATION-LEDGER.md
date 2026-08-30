@@ -27,8 +27,8 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
 | Gate | 状态 | implementation commit | rollback | 验证/报告 |
 |---|---|---|---|---|
 | R82 authority scope | `STATIC_VERIFIED` | design branch `e69a9808`, record `5a3aa732` | `b100a212` | R82 CSV/document parse；dirty main 与 implementation host 身份复核 |
-| K00 active contract/tooling | `IN_PROGRESS` | worker branch pending integration | `f6158753` | active-profile generator/validator implementation underway |
-| K01 memory receive | `IN_PROGRESS` | worker branch pending integration | `f6158753` | pure receive/cache/order/gap/live implementation underway |
+| K00 active contract/tooling | `IN_PROGRESS` | tooling `0e12eeb6`; parity `a94a4b2a`; formatted digest `a57df860`; formal registry pending | `292f7587` | fixture validate/check/golden PASS；Dart 3.13 format PASS；正式 active profile 尚未生成 |
+| K01 memory receive | `IMPLEMENTED` | `69f36b5a` | `a57df860` | 21 focused tests + full Bridge 1093 tests + full tsc PASS；independent review/contract alignment pending |
 | K02 isolated Codex read | `NOT_STARTED` |  |  |  |
 | K03 durable receive/repository | `IN_PROGRESS` | Bridge/Mobile worker branches pending integration | `f6158753` | isolated Bridge store and Mobile replica implementation underway |
 | K04 send/queue/control/reconcile | `NOT_STARTED` |  |  |  |
@@ -80,6 +80,18 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   但其跨重启持久语义未被证明，PVMC-1 不把队列权威移交给 Provider。
 - 以上 Codex 结果是 `STATIC_FACT_PASS / RUNTIME_NOT_RUN`；尚未启动 app-server、执行真实
   thread read/send、触碰 Provider 状态或把临时生成的完整 Schema 纳入 Git。
+- K00 tooling worker commit `02e5dd51` 经根分支重放为 `0e12eeb6`。根复核后另外提交
+  `a94a4b2a`，要求每条 active hard rule 同时拥有 positive/negative vector，并把 JSON Schema
+  integer 限定到 TS `Number.isSafeInteger` 的相同边界；随后提交 `a57df860`，用固定 Dart
+  `3.13.0` formatter 处理生成文件后再计算 artifact digest。fixture 的 validate/check/4 golden
+  均通过，生成 Dart 再运行 format 为 0 changed。当前根脚本仍指 package fixture，不能冒充
+  正式 PVMC-1 profile；formal registry 和产品目标生成仍在进行。
+- K01 worker commit `3b349eb8` 经根分支重放为 `69f36b5a`。它新增纯内存
+  ProviderHistoryReader/receive core，包含 exact SourcePartition、single-flight 首读、完整 cache
+  复用、bounded window、deterministic ordinal/typed Gap、partial/empty/error/timeout last-good、
+  generation fence、unknown item 与 live identity promotion。根环境复跑 focused Vitest 21/21、
+  完整 `npm run test:bridge`（42 files / 1093 tests）以及完整 Bridge `tsc --noEmit` 全部通过；
+  runtime/DB/wire/UI 尚未接入，独立审查尚未回流。
 
 ## 5. 独立交付状态
 
