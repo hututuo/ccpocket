@@ -1,0 +1,448 @@
+{
+  "formatVersion": 1,
+  "vectors": [
+    {
+      "id": "wire.closed.client-hello.positive",
+      "profileId": "pvmc1.phone-core.v1",
+      "vectorSetRef": "vectors.identity-wire",
+      "ruleRef": "rule.wire.closed-normalized-shape",
+      "typeRef": "ClientMessageV1",
+      "valid": true,
+      "expectedReason": "NONE",
+      "value": {"type": "client_hello", "hello": {"protocolVersion": 1, "profileId": "pvmc1.phone-core.v1", "clientInstanceId": "client-1"}}
+    },
+    {
+      "id": "wire.provider-raw-field.negative",
+      "profileId": "pvmc1.phone-core.v1",
+      "vectorSetRef": "vectors.identity-wire",
+      "ruleRef": "rule.wire.closed-normalized-shape",
+      "typeRef": "ClientMessageV1",
+      "valid": false,
+      "expectedReason": "WIRE_SHAPE_INVALID",
+      "expectedZeroSideEffects": {"durableRows": 0, "wireWrites": 0},
+      "value": {"type": "client_hello", "hello": {"protocolVersion": 1, "profileId": "pvmc1.phone-core.v1", "clientInstanceId": "client-1"}, "providerRaw": {"private": "forbidden"}}
+    },
+    {
+      "id": "identity.source-generation-match.positive",
+      "profileId": "pvmc1.phone-core.v1",
+      "vectorSetRef": "vectors.identity-wire",
+      "ruleRef": "rule.identity.authenticated-source-generation",
+      "typeRef": "SourceAuthorityCaseV1",
+      "valid": true,
+      "expectedReason": "NONE",
+      "value": {
+        "authenticatedEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1},
+        "payloadEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1},
+        "effect": "MUTATION"
+      }
+    },
+    {
+      "id": "identity.wrong-source-generation.negative",
+      "profileId": "pvmc1.phone-core.v1",
+      "vectorSetRef": "vectors.identity-wire",
+      "ruleRef": "rule.identity.authenticated-source-generation",
+      "typeRef": "SourceAuthorityCaseV1",
+      "valid": false,
+      "expectedReason": "SOURCE_FENCE_MISMATCH",
+      "expectedZeroSideEffects": {"admissionRows": 0, "interactionRows": 0, "providerCalls": 0, "publicationRows": 0, "queueRows": 0, "visibleResults": 0},
+      "value": {
+        "authenticatedEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 2, "providerGeneration": 2},
+        "payloadEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-2"}, "connectionGeneration": 1, "providerGeneration": 1},
+        "effect": "MUTATION"
+      }
+    },
+    {
+      "id": "timeline.typed-empty-proof.positive",
+      "profileId": "pvmc1.phone-core.v1",
+      "vectorSetRef": "vectors.timeline",
+      "ruleRef": "rule.timeline.typed-empty-single-digest-authority",
+      "typeRef": "TimelineMaterializationSnapshotV1",
+      "valid": true,
+      "expectedReason": "NONE",
+      "value": {
+        "begin": {"preimage": {"materializationId": "mat-empty", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "requestId": "read-empty", "readKind": "FIRST_READ"}, "preimageDigest": "digest-begin-empty"},
+        "materializationRevision": 1,
+        "coverage": {"coverageKind": "empty", "emptyProof": {"proofKind": "PROVIDER_CONFIRMED_EMPTY", "providerRevision": "provider-r1", "observationDigest": "digest-empty"}},
+        "orderProof": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "materializationId": "mat-empty", "islandOrdinals": [], "orderedItemRefs": [], "orderDigest": "digest-order-empty"},
+        "gaps": [], "lastGoodAfterId": "mat-empty", "lastGoodDisposition": "PROMOTE_CURRENT"
+      }
+    },
+    {
+      "id": "timeline.empty-without-proof.negative",
+      "profileId": "pvmc1.phone-core.v1",
+      "vectorSetRef": "vectors.timeline",
+      "ruleRef": "rule.timeline.typed-empty-single-digest-authority",
+      "typeRef": "TimelineMaterializationSnapshotV1",
+      "valid": false,
+      "expectedReason": "TIMELINE_EMPTY_PROOF_INVALID",
+      "expectedZeroSideEffects": {"canonicalCommits": 0, "lastGoodDeletes": 0},
+      "value": {
+        "begin": {"preimage": {"materializationId": "mat-empty-bad", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "requestId": "read-empty-bad", "readKind": "FIRST_READ"}, "preimageDigest": "digest-begin-empty-bad"},
+        "materializationRevision": 1,
+        "coverage": {"coverageKind": "empty"},
+        "orderProof": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "materializationId": "mat-empty-bad", "islandOrdinals": [], "orderedItemRefs": [], "orderDigest": "digest-order-empty-bad"},
+        "gaps": [], "lastGoodAfterId": "mat-empty-bad", "lastGoodDisposition": "PROMOTE_CURRENT"
+      }
+    },
+    {
+      "id": "timeline.duplicate-previous-page-digest.negative",
+      "profileId": "pvmc1.phone-core.v1",
+      "vectorSetRef": "vectors.timeline",
+      "ruleRef": "rule.timeline.typed-empty-single-digest-authority",
+      "typeRef": "TimelineMaterializationSnapshotV1",
+      "valid": false,
+      "expectedReason": "TIMELINE_EMPTY_PROOF_INVALID",
+      "expectedZeroSideEffects": {"canonicalCommits": 0, "lastGoodDeletes": 0},
+      "value": {
+        "begin": {"preimage": {"materializationId": "mat-dup-digest", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "requestId": "read-dup-digest", "readKind": "FIRST_READ"}, "preimageDigest": "digest-begin"},
+        "materializationRevision": 1,
+        "coverage": {"coverageKind": "empty", "emptyProof": {"proofKind": "PROVIDER_CONFIRMED_EMPTY", "providerRevision": "provider-r1", "observationDigest": "digest-empty"}},
+        "orderProof": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "materializationId": "mat-dup-digest", "islandOrdinals": [], "orderedItemRefs": [], "orderDigest": "digest-order"},
+        "gaps": [], "lastGoodAfterId": "mat-dup-digest", "lastGoodDisposition": "PROMOTE_CURRENT", "previousPageDigest": "forbidden-second-owner"
+      }
+    },
+    {
+      "id": "timeline.cache-reuse.positive",
+      "profileId": "pvmc1.phone-core.v1",
+      "vectorSetRef": "vectors.timeline",
+      "ruleRef": "rule.timeline.first-read-cache-reuse",
+      "typeRef": "TimelineCacheCaseV1",
+      "valid": true,
+      "expectedReason": "NONE",
+      "value": {"query": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "readKind": "CACHE_REUSE", "knownMaterializationId": "mat-cache"}, "firstProviderReads": 1, "repeatProviderReads": 0, "firstMaterializationId": "mat-cache", "repeatMaterializationId": "mat-cache"}
+    },
+    {
+      "id": "timeline.cache-repeat-provider-read.negative",
+      "profileId": "pvmc1.phone-core.v1",
+      "vectorSetRef": "vectors.timeline",
+      "ruleRef": "rule.timeline.first-read-cache-reuse",
+      "typeRef": "TimelineCacheCaseV1",
+      "valid": false,
+      "expectedReason": "CACHE_REUSE_VIOLATION",
+      "expectedZeroSideEffects": {"canonicalRewrites": 0, "repeatProviderReads": 0},
+      "value": {"query": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "readKind": "CACHE_REUSE", "knownMaterializationId": "mat-cache"}, "firstProviderReads": 1, "repeatProviderReads": 1, "firstMaterializationId": "mat-cache", "repeatMaterializationId": "mat-cache-duplicate"}
+    },
+    {
+      "id": "timeline.order-gap.positive",
+      "profileId": "pvmc1.phone-core.v1",
+      "vectorSetRef": "vectors.timeline",
+      "ruleRef": "rule.timeline.deterministic-order-typed-gap",
+      "typeRef": "TimelineMaterializationSnapshotV1",
+      "valid": true,
+      "expectedReason": "NONE",
+      "value": {
+        "begin": {"preimage": {"materializationId": "mat-gap", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "requestId": "read-gap", "readKind": "OLDER_PAGE"}, "preimageDigest": "digest-begin-gap"},
+        "materializationRevision": 2,
+        "coverage": {"coverageKind": "non_empty", "islands": [
+          {"islandId": "island-0", "islandOrdinal": 0, "firstItemOrdinal": 0, "lastItemOrdinal": 0, "structuralCoverage": "PARTIAL", "payloadCoverage": "COMPLETE", "items": [{"itemRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "itemId": "item-0"}, "itemOrdinal": 0, "itemKind": "USER_MESSAGE", "payloads": [{"kind": "text", "text": "zero"}]}]},
+          {"islandId": "island-1", "islandOrdinal": 1, "firstItemOrdinal": 2, "lastItemOrdinal": 2, "structuralCoverage": "PARTIAL", "payloadCoverage": "COMPLETE", "items": [{"itemRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-2"}, "itemId": "item-2"}, "itemOrdinal": 2, "itemKind": "ASSISTANT_MESSAGE", "payloads": [{"kind": "text", "text": "two"}]}]}
+        ]},
+        "orderProof": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "materializationId": "mat-gap", "islandOrdinals": [0, 1], "orderedItemRefs": [{"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "itemId": "item-0"}, {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-2"}, "itemId": "item-2"}], "orderDigest": "digest-order-gap"},
+        "gaps": [{"gapKind": "timeline_structural", "gapId": "gap-1", "gapOrdinal": 0, "firstMissingItemOrdinal": 1, "lastMissingItemOrdinal": 1, "repairIntent": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "materializationId": "mat-gap", "gapId": "gap-1", "intent": "READ_TIMELINE_RANGE"}}],
+        "lastGoodAfterId": "mat-gap", "lastGoodDisposition": "PROMOTE_CURRENT"
+      }
+    },
+    {
+      "id": "timeline.nondeterministic-gap-ordinal.negative",
+      "profileId": "pvmc1.phone-core.v1",
+      "vectorSetRef": "vectors.timeline",
+      "ruleRef": "rule.timeline.deterministic-order-typed-gap",
+      "typeRef": "TimelineMaterializationSnapshotV1",
+      "valid": false,
+      "expectedReason": "TIMELINE_ORDER_GAP_INVALID",
+      "expectedZeroSideEffects": {"canonicalCommits": 0, "gapClosures": 0, "itemReorders": 0},
+      "value": {
+        "begin": {"preimage": {"materializationId": "mat-gap-bad", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "requestId": "read-gap-bad", "readKind": "OLDER_PAGE"}, "preimageDigest": "digest-begin-gap-bad"},
+        "materializationRevision": 2,
+        "coverage": {"coverageKind": "non_empty", "islands": [{"islandId": "island-0", "islandOrdinal": 0, "firstItemOrdinal": 0, "lastItemOrdinal": 0, "structuralCoverage": "PARTIAL", "payloadCoverage": "COMPLETE", "items": [{"itemRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "itemId": "item-0"}, "itemOrdinal": 0, "itemKind": "USER_MESSAGE", "payloads": [{"kind": "text", "text": "zero"}]}]}]},
+        "orderProof": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "materializationId": "mat-gap-bad", "islandOrdinals": [0], "orderedItemRefs": [{"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "itemId": "item-0"}], "orderDigest": "digest-order-gap-bad"},
+        "gaps": [{"gapKind": "timeline_structural", "gapId": "gap-1", "gapOrdinal": 7, "firstMissingItemOrdinal": 1, "lastMissingItemOrdinal": 1, "repairIntent": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "materializationId": "mat-gap-bad", "gapId": "gap-1", "intent": "READ_TIMELINE_RANGE"}}],
+        "lastGoodAfterId": "mat-gap-bad", "lastGoodDisposition": "PROMOTE_CURRENT"
+      }
+    },
+    {
+      "id": "timeline.last-good-retained-on-empty.positive",
+      "profileId": "pvmc1.phone-core.v1",
+      "vectorSetRef": "vectors.timeline",
+      "ruleRef": "rule.timeline.last-good-monotonic",
+      "typeRef": "TimelineSequenceCaseV1",
+      "valid": true,
+      "expectedReason": "NONE",
+      "value": {
+        "previous": {"begin": {"preimage": {"materializationId": "mat-good", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "requestId": "read-good", "readKind": "FIRST_READ"}, "preimageDigest": "digest-good"}, "materializationRevision": 1, "coverage": {"coverageKind": "non_empty", "islands": [{"islandId": "island-good", "islandOrdinal": 0, "firstItemOrdinal": 0, "lastItemOrdinal": 0, "structuralCoverage": "COMPLETE", "payloadCoverage": "COMPLETE", "items": [{"itemRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "itemId": "item-1"}, "itemOrdinal": 0, "itemKind": "USER_MESSAGE", "payloads": [{"kind": "text", "text": "kept"}]}]}]}, "orderProof": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "materializationId": "mat-good", "islandOrdinals": [0], "orderedItemRefs": [{"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "itemId": "item-1"}], "orderDigest": "order-good"}, "gaps": [], "lastGoodAfterId": "mat-good", "lastGoodDisposition": "PROMOTE_CURRENT"},
+        "current": {"begin": {"preimage": {"materializationId": "mat-empty-new", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "requestId": "read-empty-new", "readKind": "OLDER_PAGE"}, "preimageDigest": "digest-empty-new"}, "materializationRevision": 2, "coverage": {"coverageKind": "empty", "emptyProof": {"proofKind": "PROVIDER_CONFIRMED_EMPTY", "providerRevision": "provider-r2", "observationDigest": "empty-new"}}, "orderProof": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "materializationId": "mat-empty-new", "islandOrdinals": [], "orderedItemRefs": [], "orderDigest": "order-empty-new"}, "gaps": [], "lastGoodBeforeId": "mat-good", "lastGoodAfterId": "mat-good", "lastGoodDisposition": "RETAIN_PREVIOUS"}
+      }
+    },
+    {
+      "id": "timeline.last-good-replaced-by-weaker-empty.negative",
+      "profileId": "pvmc1.phone-core.v1",
+      "vectorSetRef": "vectors.timeline",
+      "ruleRef": "rule.timeline.last-good-monotonic",
+      "typeRef": "TimelineSequenceCaseV1",
+      "valid": false,
+      "expectedReason": "TIMELINE_LAST_GOOD_REGRESSION",
+      "expectedZeroSideEffects": {"canonicalCommits": 0, "lastGoodDeletes": 0, "lastGoodDowngrades": 0},
+      "value": {
+        "previous": {"begin": {"preimage": {"materializationId": "mat-good", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "requestId": "read-good", "readKind": "FIRST_READ"}, "preimageDigest": "digest-good"}, "materializationRevision": 1, "coverage": {"coverageKind": "non_empty", "islands": []}, "orderProof": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "materializationId": "mat-good", "islandOrdinals": [], "orderedItemRefs": [], "orderDigest": "order-good"}, "gaps": [], "lastGoodAfterId": "mat-good", "lastGoodDisposition": "PROMOTE_CURRENT"},
+        "current": {"begin": {"preimage": {"materializationId": "mat-empty-bad", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "requestId": "read-empty-bad", "readKind": "OLDER_PAGE"}, "preimageDigest": "digest-empty-bad"}, "materializationRevision": 2, "coverage": {"coverageKind": "empty", "emptyProof": {"proofKind": "PROVIDER_CONFIRMED_EMPTY", "providerRevision": "provider-r2", "observationDigest": "empty-bad"}}, "orderProof": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "materializationId": "mat-empty-bad", "islandOrdinals": [], "orderedItemRefs": [], "orderDigest": "order-empty-bad"}, "gaps": [], "lastGoodBeforeId": "mat-good", "lastGoodAfterId": "mat-empty-bad", "lastGoodDisposition": "PROMOTE_CURRENT"}
+      }
+    },
+    {
+      "id": "timeline.live-promotion-identity-position.positive",
+      "profileId": "pvmc1.phone-core.v1",
+      "vectorSetRef": "vectors.timeline",
+      "ruleRef": "rule.timeline.live-canonical-promotion",
+      "typeRef": "LivePromotionCaseV1",
+      "valid": true,
+      "expectedReason": "NONE",
+      "value": {
+        "live": {"observationId": "live-1", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "itemRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "itemId": "item-live"}, "liveRevision": 3, "provisionalItemOrdinal": 4, "payloads": [{"kind": "text", "text": "live"}]},
+        "canonical": {"begin": {"preimage": {"materializationId": "mat-live", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "requestId": "read-live", "readKind": "FIRST_READ"}, "preimageDigest": "digest-live"}, "materializationRevision": 4, "coverage": {"coverageKind": "non_empty", "islands": [{"islandId": "island-live", "islandOrdinal": 0, "firstItemOrdinal": 4, "lastItemOrdinal": 4, "structuralCoverage": "COMPLETE", "payloadCoverage": "COMPLETE", "items": [{"itemRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "itemId": "item-live"}, "itemOrdinal": 4, "itemKind": "ASSISTANT_MESSAGE", "payloads": [{"kind": "text", "text": "canonical"}]}]}]}, "orderProof": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "materializationId": "mat-live", "islandOrdinals": [0], "orderedItemRefs": [{"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "itemId": "item-live"}], "orderDigest": "order-live"}, "gaps": [], "lastGoodAfterId": "mat-live", "lastGoodDisposition": "PROMOTE_CURRENT"},
+        "promotedItemRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "itemId": "item-live"}, "promotedItemOrdinal": 4, "canonicalDuplicateCount": 0
+      }
+    },
+    {
+      "id": "timeline.live-promotion-reordered.negative",
+      "profileId": "pvmc1.phone-core.v1",
+      "vectorSetRef": "vectors.timeline",
+      "ruleRef": "rule.timeline.live-canonical-promotion",
+      "typeRef": "LivePromotionCaseV1",
+      "valid": false,
+      "expectedReason": "TIMELINE_LIVE_PROMOTION_INVALID",
+      "expectedZeroSideEffects": {"canonicalDuplicates": 0, "livePromotions": 0, "liveReorders": 0},
+      "value": {
+        "live": {"observationId": "live-bad", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "itemRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "itemId": "item-live"}, "liveRevision": 3, "provisionalItemOrdinal": 4, "payloads": [{"kind": "text", "text": "live"}]},
+        "canonical": {"begin": {"preimage": {"materializationId": "mat-live-bad", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "requestId": "read-live-bad", "readKind": "FIRST_READ"}, "preimageDigest": "digest-live-bad"}, "materializationRevision": 4, "coverage": {"coverageKind": "non_empty", "islands": []}, "orderProof": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "materializationId": "mat-live-bad", "islandOrdinals": [], "orderedItemRefs": [], "orderDigest": "order-live-bad"}, "gaps": [], "lastGoodAfterId": "mat-live-bad", "lastGoodDisposition": "PROMOTE_CURRENT"},
+        "promotedItemRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "itemId": "item-live"}, "promotedItemOrdinal": 5, "canonicalDuplicateCount": 0
+      }
+    },
+    {
+      "id": "operation.op001-start-content-image-structured.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.operation", "ruleRef": "rule.operation.exact-typed-core-union", "typeRef": "CoreOperationSubmitV1", "valid": true, "expectedReason": "NONE",
+      "value": {"kind": "start_turn", "operationCode": "OP-001", "header": {"operationId": "op-001-a", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-001"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-001"}, "submittedAt": "2026-08-30T00:00:00Z"}, "target": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "input": {"text": "hello", "imageRefs": [{"imageId": "image-1", "contentRef": {"contentRefId": "content-1", "source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "mediaType": "image/png", "sizeBytes": 12, "sha256": "sha-image-1", "objectGeneration": 1}, "pixelWidth": 16, "pixelHeight": 16}], "structuredRefs": [{"kind": "skill_ref", "name": "review", "path": "/skills/review"}, {"kind": "file_mention_ref", "name": "main.dart", "path": "/project/main.dart"}]}, "expectedHeadVersion": 7, "deliveryMode": "START_IF_IDLE_ELSE_QUEUE"}
+    },
+    {
+      "id": "operation.op002-edit-queued.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.operation", "ruleRef": "rule.operation.exact-typed-core-union", "typeRef": "CoreOperationSubmitV1", "valid": true, "expectedReason": "NONE",
+      "value": {"kind": "edit_queued_input", "operationCode": "OP-002", "header": {"operationId": "op-002-a", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-002"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-002"}, "submittedAt": "2026-08-30T00:00:01Z"}, "target": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "queueEntryId": "queue-1", "rootOperationId": "op-root"}, "replacement": {"text": "edited", "imageRefs": [], "structuredRefs": []}, "expectedLaneRevision": 5, "expectedEntryRevision": 2}
+    },
+    {
+      "id": "operation.op003-cancel-queued.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.operation", "ruleRef": "rule.operation.exact-typed-core-union", "typeRef": "CoreOperationSubmitV1", "valid": true, "expectedReason": "NONE",
+      "value": {"kind": "cancel_queued_input", "operationCode": "OP-003", "header": {"operationId": "op-003-a", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-003"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-003"}, "submittedAt": "2026-08-30T00:00:02Z"}, "target": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "queueEntryId": "queue-1", "rootOperationId": "op-root"}, "expectedLaneRevision": 5, "expectedEntryRevision": 2, "reason": "USER_REQUESTED"}
+    },
+    {
+      "id": "operation.op004-steer-active.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.operation", "ruleRef": "rule.operation.exact-typed-core-union", "typeRef": "CoreOperationSubmitV1", "valid": true, "expectedReason": "NONE",
+      "value": {"kind": "steer_active_turn", "operationCode": "OP-004", "header": {"operationId": "op-004-a", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-004"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-004"}, "submittedAt": "2026-08-30T00:00:03Z"}, "target": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-active"}, "input": {"text": "steer", "imageRefs": [], "structuredRefs": []}}
+    },
+    {
+      "id": "operation.op005-steer-queued.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.operation", "ruleRef": "rule.operation.exact-typed-core-union", "typeRef": "CoreOperationSubmitV1", "valid": true, "expectedReason": "NONE",
+      "value": {"kind": "steer_queued_input", "operationCode": "OP-005", "header": {"operationId": "op-005-a", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-005"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-005"}, "submittedAt": "2026-08-30T00:00:04Z"}, "target": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "queueEntryId": "queue-1", "rootOperationId": "op-root"}, "activeTurn": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-active"}, "expectedLaneRevision": 5, "expectedEntryRevision": 2}
+    },
+    {
+      "id": "operation.op006-interrupt-turn.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.operation", "ruleRef": "rule.operation.exact-typed-core-union", "typeRef": "CoreOperationSubmitV1", "valid": true, "expectedReason": "NONE",
+      "value": {"kind": "interrupt_turn", "operationCode": "OP-006", "header": {"operationId": "op-006-a", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-006"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-006"}, "submittedAt": "2026-08-30T00:00:05Z"}, "target": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-active"}, "reason": "USER_REQUESTED"}
+    },
+    {
+      "id": "operation.generic-command.negative",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.operation", "ruleRef": "rule.operation.exact-typed-core-union", "typeRef": "CoreOperationSubmitV1", "valid": false, "expectedReason": "OPERATION_VARIANT_INVALID", "expectedZeroSideEffects": {"admissionRows": 0, "providerCalls": 0},
+      "value": {"kind": "generic_command", "operationCode": "OP-999", "command": "turn/start", "payload": {"anything": true}}
+    },
+    {
+      "id": "operation.same-client-message-same-fingerprint.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.operation", "ruleRef": "rule.operation.client-message-fingerprint-idempotency", "typeRef": "OperationAdmissionOutcomeV1", "valid": true, "expectedReason": "NONE",
+      "value": {
+        "firstRequest": {"kind": "start_turn", "operationCode": "OP-001", "header": {"operationId": "op-idem", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-idem"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-idem"}, "submittedAt": "2026-08-30T00:01:00Z"}, "target": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "input": {"text": "once", "imageRefs": [], "structuredRefs": []}, "expectedHeadVersion": 1, "deliveryMode": "START_IF_IDLE_ELSE_QUEUE"},
+        "replayRequest": {"kind": "start_turn", "operationCode": "OP-001", "header": {"operationId": "op-idem", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-idem"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-idem"}, "submittedAt": "2026-08-30T00:01:01Z"}, "target": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "input": {"text": "once", "imageRefs": [], "structuredRefs": []}, "expectedHeadVersion": 1, "deliveryMode": "START_IF_IDLE_ELSE_QUEUE"},
+        "existingOperationRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "operationId": "op-idem", "operationCode": "OP-001"}, "result": "RETURN_EXISTING", "newAdmissionRows": 0, "providerMutationCalls": 0
+      }
+    },
+    {
+      "id": "operation.same-client-message-different-fingerprint.negative",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.operation", "ruleRef": "rule.operation.client-message-fingerprint-idempotency", "typeRef": "OperationAdmissionOutcomeV1", "valid": false, "expectedReason": "OPERATION_FINGERPRINT_CONFLICT", "expectedZeroSideEffects": {"newAdmissionRows": 0, "providerCalls": 0, "queueRows": 0},
+      "value": {
+        "firstRequest": {"kind": "start_turn", "operationCode": "OP-001", "header": {"operationId": "op-idem", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-idem"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-a"}, "submittedAt": "2026-08-30T00:01:00Z"}, "target": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "input": {"text": "a", "imageRefs": [], "structuredRefs": []}, "expectedHeadVersion": 1, "deliveryMode": "START_IF_IDLE_ELSE_QUEUE"},
+        "replayRequest": {"kind": "start_turn", "operationCode": "OP-001", "header": {"operationId": "op-idem", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-idem"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-b"}, "submittedAt": "2026-08-30T00:01:01Z"}, "target": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "input": {"text": "b", "imageRefs": [], "structuredRefs": []}, "expectedHeadVersion": 1, "deliveryMode": "START_IF_IDLE_ELSE_QUEUE"},
+        "existingOperationRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "operationId": "op-idem", "operationCode": "OP-001"}, "result": "RETURN_EXISTING", "newAdmissionRows": 0, "providerMutationCalls": 0
+      }
+    },
+    {
+      "id": "operation.durable-admission-before-call.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.operation", "ruleRef": "rule.operation.durable-admission-before-dispatch", "typeRef": "OperationDispatchCaseV1", "valid": true, "expectedReason": "NONE",
+      "value": {"operationRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "operationId": "op-dispatch", "operationCode": "OP-001"}, "durableAdmissionCommitted": true, "dispatchBarrier": "CALL_STARTED", "providerMutationCalls": 1}
+    },
+    {
+      "id": "operation.call-before-durable-admission.negative",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.operation", "ruleRef": "rule.operation.durable-admission-before-dispatch", "typeRef": "OperationDispatchCaseV1", "valid": false, "expectedReason": "DURABLE_ADMISSION_REQUIRED", "expectedZeroSideEffects": {"providerCalls": 0},
+      "value": {"operationRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "operationId": "op-dispatch-bad", "operationCode": "OP-001"}, "durableAdmissionCommitted": false, "dispatchBarrier": "CALL_STARTED", "providerMutationCalls": 1}
+    },
+    {
+      "id": "operation.call-started-crash-read-only-reconcile.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.operation", "ruleRef": "rule.operation.call-started-outcome-unknown", "typeRef": "OperationRecoveryCaseV1", "valid": true, "expectedReason": "NONE",
+      "value": {"operationRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "operationId": "op-unknown", "operationCode": "OP-001"}, "beforeCrash": "CALL_STARTED", "afterRecovery": "OUTCOME_UNKNOWN", "redispatchCount": 0, "reconcileMutationCalls": 0, "terminalSuccessWrites": 0}
+    },
+    {
+      "id": "operation.call-started-crash-redispatch.negative",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.operation", "ruleRef": "rule.operation.call-started-outcome-unknown", "typeRef": "OperationRecoveryCaseV1", "valid": false, "expectedReason": "OUTCOME_UNKNOWN", "expectedZeroSideEffects": {"reconcileMutationCalls": 0, "redispatches": 0, "terminalSuccessWrites": 0},
+      "value": {"operationRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "operationId": "op-unknown", "operationCode": "OP-001"}, "beforeCrash": "CALL_STARTED", "afterRecovery": "OUTCOME_UNKNOWN", "redispatchCount": 1, "reconcileMutationCalls": 0, "terminalSuccessWrites": 0}
+    },
+    {
+      "id": "queue.edit-exact-revision.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.queue", "ruleRef": "rule.queue.exact-lane-entry-revision", "typeRef": "QueueRevisionCaseV1", "valid": true, "expectedReason": "NONE",
+      "value": {"currentLaneRevision": 5, "currentEntryRevision": 2, "command": {"kind": "edit_queued_input", "operationCode": "OP-002", "header": {"operationId": "op-edit", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-edit"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-edit"}, "submittedAt": "2026-08-30T00:02:00Z"}, "target": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "queueEntryId": "queue-1", "rootOperationId": "op-root"}, "replacement": {"text": "edited", "imageRefs": [], "structuredRefs": []}, "expectedLaneRevision": 5, "expectedEntryRevision": 2}, "queueRowsUpdated": 1, "providerMutationCalls": 0}
+    },
+    {
+      "id": "queue.cancel-exact-revision.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.queue", "ruleRef": "rule.queue.exact-lane-entry-revision", "typeRef": "QueueRevisionCaseV1", "valid": true, "expectedReason": "NONE",
+      "value": {"currentLaneRevision": 5, "currentEntryRevision": 2, "command": {"kind": "cancel_queued_input", "operationCode": "OP-003", "header": {"operationId": "op-cancel", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-cancel"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-cancel"}, "submittedAt": "2026-08-30T00:02:01Z"}, "target": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "queueEntryId": "queue-1", "rootOperationId": "op-root"}, "expectedLaneRevision": 5, "expectedEntryRevision": 2, "reason": "USER_REQUESTED"}, "queueRowsUpdated": 1, "providerMutationCalls": 0}
+    },
+    {
+      "id": "queue.edit-stale-lane-revision.negative",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.queue", "ruleRef": "rule.queue.exact-lane-entry-revision", "typeRef": "QueueRevisionCaseV1", "valid": false, "expectedReason": "QUEUE_REVISION_CONFLICT", "expectedZeroSideEffects": {"providerCalls": 0, "queueRowsUpdated": 0},
+      "value": {"currentLaneRevision": 5, "currentEntryRevision": 2, "command": {"kind": "edit_queued_input", "operationCode": "OP-002", "header": {"operationId": "op-edit-stale", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-edit-stale"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-edit-stale"}, "submittedAt": "2026-08-30T00:02:02Z"}, "target": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "queueEntryId": "queue-1", "rootOperationId": "op-root"}, "replacement": {"text": "stale", "imageRefs": [], "structuredRefs": []}, "expectedLaneRevision": 4, "expectedEntryRevision": 2}, "queueRowsUpdated": 0, "providerMutationCalls": 0}
+    },
+    {
+      "id": "queue.cancel-stale-entry-revision.negative",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.queue", "ruleRef": "rule.queue.exact-lane-entry-revision", "typeRef": "QueueRevisionCaseV1", "valid": false, "expectedReason": "QUEUE_REVISION_CONFLICT", "expectedZeroSideEffects": {"providerCalls": 0, "queueRowsUpdated": 0},
+      "value": {"currentLaneRevision": 5, "currentEntryRevision": 2, "command": {"kind": "cancel_queued_input", "operationCode": "OP-003", "header": {"operationId": "op-cancel-stale", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-cancel-stale"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-cancel-stale"}, "submittedAt": "2026-08-30T00:02:03Z"}, "target": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "queueEntryId": "queue-1", "rootOperationId": "op-root"}, "expectedLaneRevision": 5, "expectedEntryRevision": 1, "reason": "USER_REQUESTED"}, "queueRowsUpdated": 0, "providerMutationCalls": 0}
+    },
+    {
+      "id": "interaction.op016-claim.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.response-variant-match", "typeRef": "InteractionCommandV1", "valid": true, "expectedReason": "NONE",
+      "value": {"commandKind": "claim", "command": {"operationCode": "OP-016", "header": {"operationId": "op-claim", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-claim"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-claim"}, "submittedAt": "2026-08-30T00:03:00Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "expectedInteractionRevision": 1, "requestedLeaseSeconds": 30}}
+    },
+    {
+      "id": "interaction.op017-renew.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.response-variant-match", "typeRef": "InteractionCommandV1", "valid": true, "expectedReason": "NONE",
+      "value": {"commandKind": "renew", "command": {"operationCode": "OP-017", "header": {"operationId": "op-renew", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-renew"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-renew"}, "submittedAt": "2026-08-30T00:03:01Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "claimProof": {"claimId": "claim-1", "claimToken": "token-1", "leaseRevision": 1}, "expectedInteractionRevision": 1, "requestedExtensionSeconds": 30}}
+    },
+    {
+      "id": "interaction.op018-release.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.response-variant-match", "typeRef": "InteractionCommandV1", "valid": true, "expectedReason": "NONE",
+      "value": {"commandKind": "release", "command": {"operationCode": "OP-018", "header": {"operationId": "op-release", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-release"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-release"}, "submittedAt": "2026-08-30T00:03:02Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "claimProof": {"claimId": "claim-1", "claimToken": "token-1", "leaseRevision": 1}, "expectedInteractionRevision": 1}}
+    },
+    {
+      "id": "interaction.op019-approval-response.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.response-variant-match", "typeRef": "InteractionCommandV1", "valid": true, "expectedReason": "NONE",
+      "value": {"commandKind": "respond", "command": {"responseKind": "approval", "operationCode": "OP-019", "header": {"operationId": "op-approve", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-approve"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-approve"}, "submittedAt": "2026-08-30T00:03:03Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "claimProof": {"claimId": "claim-1", "claimToken": "token-1", "leaseRevision": 1}, "expectedInteractionRevision": 1, "response": {"disposition": "approve"}}}
+    },
+    {
+      "id": "interaction.op020-question-response.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.response-variant-match", "typeRef": "InteractionCommandV1", "valid": true, "expectedReason": "NONE",
+      "value": {"commandKind": "respond", "command": {"responseKind": "question", "operationCode": "OP-020", "header": {"operationId": "op-question", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-question"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-question"}, "submittedAt": "2026-08-30T00:03:04Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-q", "interactionKind": "QUESTION"}, "claimProof": {"claimId": "claim-q", "claimToken": "token-q", "leaseRevision": 1}, "expectedInteractionRevision": 1, "response": {"answers": [{"kind": "free_text", "questionId": "q-1", "text": "answer"}]}}}
+    },
+    {
+      "id": "interaction.op021-mcp-response.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.response-variant-match", "typeRef": "InteractionCommandV1", "valid": true, "expectedReason": "NONE",
+      "value": {"commandKind": "respond", "command": {"responseKind": "mcp_elicitation", "operationCode": "OP-021", "header": {"operationId": "op-mcp", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-mcp"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-mcp"}, "submittedAt": "2026-08-30T00:03:05Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-mcp", "interactionKind": "MCP_ELICITATION"}, "claimProof": {"claimId": "claim-mcp", "claimToken": "token-mcp", "leaseRevision": 1}, "expectedInteractionRevision": 1, "response": {"disposition": "accept_confirmation", "confirmed": true}}}
+    },
+    {
+      "id": "interaction.op022-exit-plan-response.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.response-variant-match", "typeRef": "InteractionCommandV1", "valid": true, "expectedReason": "NONE",
+      "value": {"commandKind": "respond", "command": {"responseKind": "exit_plan", "operationCode": "OP-022", "header": {"operationId": "op-exit", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-exit"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-exit"}, "submittedAt": "2026-08-30T00:03:06Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-exit", "interactionKind": "EXIT_PLAN"}, "claimProof": {"claimId": "claim-exit", "claimToken": "token-exit", "leaseRevision": 1}, "expectedInteractionRevision": 1, "response": {"disposition": "accept"}}}
+    },
+    {
+      "id": "interaction.source-match.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.exact-source", "typeRef": "InteractionAuthorityCaseV1", "valid": true, "expectedReason": "NONE",
+      "value": {
+        "authenticatedEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "authenticatedActor": {"actorId": "actor-a", "displayName": "A"},
+        "snapshot": {"sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "descriptor": {"kind": "approval", "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "revision": 1, "prompt": "Approve?", "allowReject": true, "expiresAt": "2099-01-01T00:00:00Z"}, "state": "CLAIMED", "revision": 1, "claim": {"claimId": "claim-1", "actorRef": {"actorId": "actor-a", "displayName": "A"}, "leaseRevision": 1, "expiresAt": "2099-01-01T00:00:00Z"}},
+        "command": {"commandKind": "respond", "command": {"responseKind": "approval", "operationCode": "OP-019", "header": {"operationId": "op-auth", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-auth"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-auth"}, "submittedAt": "2026-08-30T00:04:00Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "claimProof": {"claimId": "claim-1", "claimToken": "token-1", "leaseRevision": 1}, "expectedInteractionRevision": 1, "response": {"disposition": "approve"}}}
+      }
+    },
+    {
+      "id": "interaction.wrong-source.negative",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.exact-source", "typeRef": "InteractionAuthorityCaseV1", "valid": false, "expectedReason": "INTERACTION_WRONG_SOURCE", "expectedZeroSideEffects": {"interactionRows": 0, "operationRows": 0, "providerCalls": 0, "queueRows": 0, "visibleResults": 0},
+      "value": {
+        "authenticatedEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "authenticatedActor": {"actorId": "actor-a", "displayName": "A"},
+        "snapshot": {"sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "descriptor": {"kind": "approval", "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "revision": 1, "prompt": "Approve?", "allowReject": true, "expiresAt": "2099-01-01T00:00:00Z"}, "state": "CLAIMED", "revision": 1, "claim": {"claimId": "claim-1", "actorRef": {"actorId": "actor-a", "displayName": "A"}, "leaseRevision": 1, "expiresAt": "2099-01-01T00:00:00Z"}},
+        "command": {"commandKind": "respond", "command": {"responseKind": "approval", "operationCode": "OP-019", "header": {"operationId": "op-wrong-source", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-2"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-wrong-source"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-wrong-source"}, "submittedAt": "2026-08-30T00:04:01Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-2"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "claimProof": {"claimId": "claim-1", "claimToken": "token-1", "leaseRevision": 1}, "expectedInteractionRevision": 1, "response": {"disposition": "approve"}}}
+      }
+    },
+    {
+      "id": "interaction.actor-bound-from-auth.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.authenticated-actor", "typeRef": "InteractionAuthorityCaseV1", "valid": true, "expectedReason": "NONE",
+      "value": {
+        "authenticatedEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "authenticatedActor": {"actorId": "actor-a", "displayName": "A"},
+        "snapshot": {"sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "descriptor": {"kind": "approval", "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "revision": 1, "prompt": "Approve?", "allowReject": true, "expiresAt": "2099-01-01T00:00:00Z"}, "state": "CLAIMED", "revision": 1, "claim": {"claimId": "claim-1", "actorRef": {"actorId": "actor-a", "displayName": "A"}, "leaseRevision": 1, "expiresAt": "2099-01-01T00:00:00Z"}},
+        "command": {"commandKind": "release", "command": {"operationCode": "OP-018", "header": {"operationId": "op-release-auth", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-release-auth"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-release-auth"}, "submittedAt": "2026-08-30T00:04:02Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "claimProof": {"claimId": "claim-1", "claimToken": "token-1", "leaseRevision": 1}, "expectedInteractionRevision": 1}}
+      }
+    },
+    {
+      "id": "interaction.wrong-authenticated-actor.negative",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.authenticated-actor", "typeRef": "InteractionAuthorityCaseV1", "valid": false, "expectedReason": "INTERACTION_WRONG_ACTOR", "expectedZeroSideEffects": {"interactionRows": 0, "operationRows": 0, "providerCalls": 0, "queueRows": 0, "visibleResults": 0},
+      "value": {
+        "authenticatedEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "authenticatedActor": {"actorId": "actor-b", "displayName": "B"},
+        "snapshot": {"sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "descriptor": {"kind": "approval", "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "revision": 1, "prompt": "Approve?", "allowReject": true, "expiresAt": "2099-01-01T00:00:00Z"}, "state": "CLAIMED", "revision": 1, "claim": {"claimId": "claim-1", "actorRef": {"actorId": "actor-a", "displayName": "A"}, "leaseRevision": 1, "expiresAt": "2099-01-01T00:00:00Z"}},
+        "command": {"commandKind": "release", "command": {"operationCode": "OP-018", "header": {"operationId": "op-release-wrong-actor", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-release-wrong-actor"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-release-wrong-actor"}, "submittedAt": "2026-08-30T00:04:03Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "claimProof": {"claimId": "claim-1", "claimToken": "token-1", "leaseRevision": 1}, "expectedInteractionRevision": 1}}
+      }
+    },
+    {
+      "id": "interaction.unexpired-lease.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.unexpired-lease", "typeRef": "InteractionExpiryCaseV1", "valid": true, "expectedReason": "NONE",
+      "value": {
+        "snapshot": {"sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "descriptor": {"kind": "approval", "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "revision": 1, "prompt": "Approve?", "allowReject": true, "expiresAt": "2099-01-01T00:00:00Z"}, "state": "CLAIMED", "revision": 1, "claim": {"claimId": "claim-1", "actorRef": {"actorId": "actor-a", "displayName": "A"}, "leaseRevision": 1, "expiresAt": "2099-01-01T00:00:00Z"}},
+        "command": {"commandKind": "respond", "command": {"responseKind": "approval", "operationCode": "OP-019", "header": {"operationId": "op-expiry-ok", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-expiry-ok"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-expiry-ok"}, "submittedAt": "2026-08-30T00:04:04Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "claimProof": {"claimId": "claim-1", "claimToken": "token-1", "leaseRevision": 1}, "expectedInteractionRevision": 1, "response": {"disposition": "approve"}}},
+        "observedAt": "2026-08-30T00:04:05Z", "providerMutationCalls": 1
+      }
+    },
+    {
+      "id": "interaction.expired-lease.negative",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.unexpired-lease", "typeRef": "InteractionExpiryCaseV1", "valid": false, "expectedReason": "INTERACTION_EXPIRED", "expectedZeroSideEffects": {"interactionRows": 0, "operationRows": 0, "providerCalls": 0, "queueRows": 0, "visibleResults": 0},
+      "value": {
+        "snapshot": {"sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "descriptor": {"kind": "approval", "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "revision": 1, "prompt": "Approve?", "allowReject": true, "expiresAt": "2026-08-30T00:00:00Z"}, "state": "EXPIRED", "revision": 2, "claim": {"claimId": "claim-1", "actorRef": {"actorId": "actor-a", "displayName": "A"}, "leaseRevision": 1, "expiresAt": "2026-08-30T00:00:00Z"}},
+        "command": {"commandKind": "respond", "command": {"responseKind": "approval", "operationCode": "OP-019", "header": {"operationId": "op-expired", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-expired"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-expired"}, "submittedAt": "2026-08-30T00:05:00Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "claimProof": {"claimId": "claim-1", "claimToken": "token-1", "leaseRevision": 1}, "expectedInteractionRevision": 2, "response": {"disposition": "approve"}}},
+        "observedAt": "2026-08-30T00:05:00Z", "providerMutationCalls": 0
+      }
+    },
+    {
+      "id": "interaction.duplicate-idempotent.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.duplicate-zero-effect", "typeRef": "InteractionDuplicateCaseV1", "valid": true, "expectedReason": "NONE",
+      "value": {
+        "snapshot": {"sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "descriptor": {"kind": "approval", "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "revision": 1, "prompt": "Approve?", "allowReject": true, "expiresAt": "2099-01-01T00:00:00Z"}, "state": "RESOLVED", "revision": 2, "resolution": {"kind": "approval", "disposition": "APPROVED", "resolvedAt": "2026-08-30T00:05:00Z"}},
+        "firstCommand": {"commandKind": "respond", "command": {"responseKind": "approval", "operationCode": "OP-019", "header": {"operationId": "op-dup", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-dup"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-dup"}, "submittedAt": "2026-08-30T00:05:00Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "claimProof": {"claimId": "claim-1", "claimToken": "token-1", "leaseRevision": 1}, "expectedInteractionRevision": 1, "response": {"disposition": "approve"}}},
+        "duplicateCommand": {"commandKind": "respond", "command": {"responseKind": "approval", "operationCode": "OP-019", "header": {"operationId": "op-dup", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-dup"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-dup"}, "submittedAt": "2026-08-30T00:05:01Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "claimProof": {"claimId": "claim-1", "claimToken": "token-1", "leaseRevision": 1}, "expectedInteractionRevision": 1, "response": {"disposition": "approve"}}},
+        "additionalProviderCalls": 0, "additionalOperationRows": 0, "additionalVisibleResults": 0
+      }
+    },
+    {
+      "id": "interaction.duplicate-causes-second-side-effect.negative",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.duplicate-zero-effect", "typeRef": "InteractionDuplicateCaseV1", "valid": false, "expectedReason": "INTERACTION_DUPLICATE_RESPONSE", "expectedZeroSideEffects": {"additionalOperationRows": 0, "additionalProviderCalls": 0, "additionalVisibleResults": 0},
+      "value": {
+        "snapshot": {"sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "descriptor": {"kind": "approval", "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "revision": 1, "prompt": "Approve?", "allowReject": true, "expiresAt": "2099-01-01T00:00:00Z"}, "state": "RESOLVED", "revision": 2, "resolution": {"kind": "approval", "disposition": "APPROVED", "resolvedAt": "2026-08-30T00:05:00Z"}},
+        "firstCommand": {"commandKind": "respond", "command": {"responseKind": "approval", "operationCode": "OP-019", "header": {"operationId": "op-dup-bad", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-dup-bad"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-dup-bad"}, "submittedAt": "2026-08-30T00:05:00Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "claimProof": {"claimId": "claim-1", "claimToken": "token-1", "leaseRevision": 1}, "expectedInteractionRevision": 1, "response": {"disposition": "approve"}}},
+        "duplicateCommand": {"commandKind": "respond", "command": {"responseKind": "approval", "operationCode": "OP-019", "header": {"operationId": "op-dup-bad", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-dup-bad"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-dup-bad"}, "submittedAt": "2026-08-30T00:05:01Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "claimProof": {"claimId": "claim-1", "claimToken": "token-1", "leaseRevision": 1}, "expectedInteractionRevision": 1, "response": {"disposition": "approve"}}},
+        "additionalProviderCalls": 1, "additionalOperationRows": 1, "additionalVisibleResults": 1
+      }
+    },
+    {
+      "id": "interaction.approval-response-matches-descriptor.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.response-variant-match", "typeRef": "InteractionVariantCaseV1", "valid": true, "expectedReason": "NONE",
+      "value": {
+        "snapshot": {"sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "descriptor": {"kind": "approval", "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "revision": 1, "prompt": "Approve?", "allowReject": true, "expiresAt": "2099-01-01T00:00:00Z"}, "state": "CLAIMED", "revision": 1, "claim": {"claimId": "claim-1", "actorRef": {"actorId": "actor-a", "displayName": "A"}, "leaseRevision": 1, "expiresAt": "2099-01-01T00:00:00Z"}},
+        "command": {"commandKind": "respond", "command": {"responseKind": "approval", "operationCode": "OP-019", "header": {"operationId": "op-match", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-match"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-match"}, "submittedAt": "2026-08-30T00:06:00Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "claimProof": {"claimId": "claim-1", "claimToken": "token-1", "leaseRevision": 1}, "expectedInteractionRevision": 1, "response": {"disposition": "approve"}}}
+      }
+    },
+    {
+      "id": "interaction.question-response-for-approval.negative",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.interaction", "ruleRef": "rule.interaction.response-variant-match", "typeRef": "InteractionVariantCaseV1", "valid": false, "expectedReason": "WRONG_INTERACTION_VARIANT", "expectedZeroSideEffects": {"interactionRows": 0, "operationRows": 0, "providerCalls": 0, "queueRows": 0, "visibleResults": 0},
+      "value": {
+        "snapshot": {"sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "descriptor": {"kind": "approval", "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "revision": 1, "prompt": "Approve?", "allowReject": true, "expiresAt": "2099-01-01T00:00:00Z"}, "state": "CLAIMED", "revision": 1, "claim": {"claimId": "claim-1", "actorRef": {"actorId": "actor-a", "displayName": "A"}, "leaseRevision": 1, "expiresAt": "2099-01-01T00:00:00Z"}},
+        "command": {"commandKind": "respond", "command": {"responseKind": "question", "operationCode": "OP-020", "header": {"operationId": "op-mismatch", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "admissionKey": {"clientInstanceId": "client-1", "clientMessageId": "msg-mismatch"}, "fingerprint": {"algorithm": "SHA256_RFC8785", "preimageVersion": 1, "value": "fp-mismatch"}, "submittedAt": "2026-08-30T00:06:01Z"}, "interactionRef": {"turnRef": {"threadRef": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "threadId": "thread-1"}, "turnId": "turn-1"}, "interactionId": "interaction-1", "interactionKind": "APPROVAL"}, "claimProof": {"claimId": "claim-1", "claimToken": "token-1", "leaseRevision": 1}, "expectedInteractionRevision": 1, "response": {"answers": [{"kind": "free_text", "questionId": "q-1", "text": "wrong type"}]}}}
+      }
+    },
+    {
+      "id": "capability.claude-not-implemented.positive",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.capability", "ruleRef": "rule.capability.claude-typed-not-implemented", "typeRef": "CapabilitySnapshotV1", "valid": true, "expectedReason": "NONE",
+      "value": {"profileId": "pvmc1.phone-core.v1", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "snapshotRevision": 1, "capabilities": [{"key": "claude_provider", "status": "NOT_IMPLEMENTED", "problemCode": "CLAUDE_NOT_IMPLEMENTED"}]}
+    },
+    {
+      "id": "capability.claude-falsely-available.negative",
+      "profileId": "pvmc1.phone-core.v1", "vectorSetRef": "vectors.capability", "ruleRef": "rule.capability.claude-typed-not-implemented", "typeRef": "CapabilitySnapshotV1", "valid": false, "expectedReason": "CLAUDE_NOT_IMPLEMENTED", "expectedZeroSideEffects": {"admissionRows": 0, "providerCalls": 0},
+      "value": {"profileId": "pvmc1.phone-core.v1", "sourceEpoch": {"source": {"bridgeIdentityId": "bi-1", "bridgeInstanceId": "bridge-1", "codexSourceId": "codex-1"}, "connectionGeneration": 1, "providerGeneration": 1}, "snapshotRevision": 1, "capabilities": [{"key": "claude_provider", "status": "AVAILABLE", "problemCode": "CLAUDE_NOT_IMPLEMENTED"}]}
+    }
+  ]
+}

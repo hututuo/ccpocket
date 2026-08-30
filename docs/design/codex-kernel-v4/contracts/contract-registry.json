@@ -1,0 +1,964 @@
+{
+  "formatVersion": 1,
+  "activeProfileId": "pvmc1.phone-core.v1",
+  "profiles": [
+    {
+      "id": "pvmc1.phone-core.v1",
+      "status": "active",
+      "rootTypeRefs": [
+        "ClientMessageV1",
+        "ServerMessageV1",
+        "SourceAuthorityCaseV1",
+        "TimelineCacheCaseV1",
+        "TimelineSequenceCaseV1",
+        "LivePromotionCaseV1",
+        "OperationAdmissionOutcomeV1",
+        "OperationDispatchCaseV1",
+        "OperationRecoveryCaseV1",
+        "QueueRevisionCaseV1",
+        "InteractionAuthorityCaseV1",
+        "InteractionExpiryCaseV1",
+        "InteractionDuplicateCaseV1",
+        "InteractionVariantCaseV1"
+      ]
+    }
+  ],
+  "definitions": [
+    {
+      "id": "SourcePartitionV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "bridgeIdentityId", "required": true, "type": {"kind": "string"}},
+        {"name": "bridgeInstanceId", "required": true, "type": {"kind": "string"}},
+        {"name": "codexSourceId", "required": true, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "SourceEpochV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "source", "required": true, "type": {"kind": "ref", "target": "SourcePartitionV1"}},
+        {"name": "connectionGeneration", "required": true, "type": {"kind": "integer"}},
+        {"name": "providerGeneration", "required": true, "type": {"kind": "integer"}}
+      ]}
+    },
+    {
+      "id": "ThreadRefV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "source", "required": true, "type": {"kind": "ref", "target": "SourcePartitionV1"}},
+        {"name": "threadId", "required": true, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "TurnRefV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "threadRef", "required": true, "type": {"kind": "ref", "target": "ThreadRefV1"}},
+        {"name": "turnId", "required": true, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "ItemRefV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "turnRef", "required": true, "type": {"kind": "ref", "target": "TurnRefV1"}},
+        {"name": "itemId", "required": true, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "ActorRefV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "actorId", "required": true, "type": {"kind": "string"}},
+        {"name": "displayName", "required": true, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "OperationCodeV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "enum", "values": ["OP-001", "OP-002", "OP-003", "OP-004", "OP-005", "OP-006", "OP-016", "OP-017", "OP-018", "OP-019", "OP-020", "OP-021", "OP-022"]}
+    },
+    {
+      "id": "ProblemCodeV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "enum", "values": [
+        "WIRE_SHAPE_INVALID", "SOURCE_FENCE_MISMATCH", "STALE_GENERATION", "TIMELINE_EMPTY_PROOF_INVALID",
+        "TIMELINE_ORDER_GAP_INVALID", "TIMELINE_LAST_GOOD_REGRESSION", "TIMELINE_LIVE_PROMOTION_INVALID",
+        "CACHE_REUSE_VIOLATION", "OPERATION_VARIANT_INVALID", "OPERATION_FINGERPRINT_CONFLICT",
+        "DURABLE_ADMISSION_REQUIRED", "OUTCOME_UNKNOWN", "QUEUE_REVISION_CONFLICT", "INTERACTION_WRONG_SOURCE",
+        "INTERACTION_WRONG_ACTOR", "INTERACTION_EXPIRED", "INTERACTION_DUPLICATE_RESPONSE",
+        "WRONG_INTERACTION_VARIANT", "CLAUDE_NOT_IMPLEMENTED", "CAPABILITY_UNAVAILABLE"
+      ]}
+    },
+    {
+      "id": "ProblemV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "code", "required": true, "type": {"kind": "ref", "target": "ProblemCodeV1"}},
+        {"name": "problemClass", "required": true, "type": {"kind": "enum", "values": ["AUTHORITY", "VALIDATION", "CONFLICT", "UNAVAILABLE", "UNKNOWN_OUTCOME"]}},
+        {"name": "retry", "required": true, "type": {"kind": "enum", "values": ["NEVER", "AFTER_REFRESH", "READ_ONLY_RECONCILE", "NEW_OPERATION"]}},
+        {"name": "detail", "required": false, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "CapabilityEntryV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "key", "variants": [
+        {"tag": "timeline_read", "fields": [{"name": "status", "required": true, "type": {"kind": "enum", "values": ["AVAILABLE", "UNAVAILABLE"]}}]},
+        {"tag": "timeline_live", "fields": [{"name": "status", "required": true, "type": {"kind": "enum", "values": ["AVAILABLE", "UNAVAILABLE"]}}]},
+        {"tag": "operation_core", "fields": [{"name": "status", "required": true, "type": {"kind": "enum", "values": ["AVAILABLE", "UNAVAILABLE"]}}]},
+        {"tag": "queue_control", "fields": [{"name": "status", "required": true, "type": {"kind": "enum", "values": ["AVAILABLE", "UNAVAILABLE"]}}]},
+        {"tag": "manual_interaction", "fields": [{"name": "status", "required": true, "type": {"kind": "enum", "values": ["AVAILABLE", "UNAVAILABLE"]}}]},
+        {"tag": "claude_provider", "fields": [
+          {"name": "status", "required": true, "type": {"kind": "enum", "values": ["NOT_IMPLEMENTED"]}},
+          {"name": "problemCode", "required": true, "type": {"kind": "enum", "values": ["CLAUDE_NOT_IMPLEMENTED"]}}
+        ]}
+      ]}
+    },
+    {
+      "id": "CapabilitySnapshotV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "profileId", "required": true, "type": {"kind": "enum", "values": ["pvmc1.phone-core.v1"]}},
+        {"name": "sourceEpoch", "required": true, "type": {"kind": "ref", "target": "SourceEpochV1"}},
+        {"name": "snapshotRevision", "required": true, "type": {"kind": "integer"}},
+        {"name": "capabilities", "required": true, "type": {"kind": "array", "items": {"kind": "ref", "target": "CapabilityEntryV1"}}}
+      ]}
+    },
+    {
+      "id": "ContentRefV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "contentRefId", "required": true, "type": {"kind": "string"}},
+        {"name": "source", "required": true, "type": {"kind": "ref", "target": "SourcePartitionV1"}},
+        {"name": "mediaType", "required": true, "type": {"kind": "string"}},
+        {"name": "sizeBytes", "required": true, "type": {"kind": "integer"}},
+        {"name": "sha256", "required": true, "type": {"kind": "string"}},
+        {"name": "objectGeneration", "required": true, "type": {"kind": "integer"}}
+      ]}
+    },
+    {
+      "id": "ImageRefV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "imageId", "required": true, "type": {"kind": "string"}},
+        {"name": "contentRef", "required": true, "type": {"kind": "ref", "target": "ContentRefV1"}},
+        {"name": "pixelWidth", "required": false, "type": {"kind": "integer"}},
+        {"name": "pixelHeight", "required": false, "type": {"kind": "integer"}}
+      ]}
+    },
+    {
+      "id": "CurrentStructuredAttachmentRefV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "kind", "variants": [
+        {"tag": "skill_ref", "fields": [
+          {"name": "name", "required": true, "type": {"kind": "string"}},
+          {"name": "path", "required": true, "type": {"kind": "string"}}
+        ]},
+        {"tag": "file_mention_ref", "fields": [
+          {"name": "name", "required": true, "type": {"kind": "string"}},
+          {"name": "path", "required": true, "type": {"kind": "string"}}
+        ]}
+      ]}
+    },
+    {
+      "id": "TurnInputV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "text", "required": true, "type": {"kind": "string"}},
+        {"name": "imageRefs", "required": true, "type": {"kind": "array", "items": {"kind": "ref", "target": "ImageRefV1"}}},
+        {"name": "structuredRefs", "required": true, "type": {"kind": "array", "items": {"kind": "ref", "target": "CurrentStructuredAttachmentRefV1"}}}
+      ]}
+    },
+    {
+      "id": "TimelinePayloadV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "kind", "variants": [
+        {"tag": "text", "fields": [{"name": "text", "required": true, "type": {"kind": "string"}}]},
+        {"tag": "image", "fields": [{"name": "imageRef", "required": true, "type": {"kind": "ref", "target": "ImageRefV1"}}]},
+        {"tag": "structured_ref", "fields": [{"name": "structuredRef", "required": true, "type": {"kind": "ref", "target": "CurrentStructuredAttachmentRefV1"}}]},
+        {"tag": "tool_summary", "fields": [
+          {"name": "toolName", "required": true, "type": {"kind": "string"}},
+          {"name": "summary", "required": true, "type": {"kind": "string"}}
+        ]},
+        {"tag": "unavailable", "fields": [{"name": "payloadDigest", "required": true, "type": {"kind": "string"}}]}
+      ]}
+    },
+    {
+      "id": "TimelineItemV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "itemRef", "required": true, "type": {"kind": "ref", "target": "ItemRefV1"}},
+        {"name": "itemOrdinal", "required": true, "type": {"kind": "integer"}},
+        {"name": "itemKind", "required": true, "type": {"kind": "enum", "values": ["USER_MESSAGE", "ASSISTANT_MESSAGE", "REASONING", "TOOL_CALL", "TOOL_RESULT", "UNKNOWN"]}},
+        {"name": "payloads", "required": true, "type": {"kind": "array", "items": {"kind": "ref", "target": "TimelinePayloadV1"}}},
+        {"name": "providerTypeName", "required": false, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "TimelineRepairIntentV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "threadRef", "required": true, "type": {"kind": "ref", "target": "ThreadRefV1"}},
+        {"name": "materializationId", "required": true, "type": {"kind": "string"}},
+        {"name": "gapId", "required": true, "type": {"kind": "string"}},
+        {"name": "intent", "required": true, "type": {"kind": "enum", "values": ["READ_TIMELINE_RANGE", "READ_ITEM_PAYLOAD"]}}
+      ]}
+    },
+    {
+      "id": "TimelineGapV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "gapKind", "variants": [
+        {"tag": "timeline_structural", "fields": [
+          {"name": "gapId", "required": true, "type": {"kind": "string"}},
+          {"name": "gapOrdinal", "required": true, "type": {"kind": "integer"}},
+          {"name": "firstMissingItemOrdinal", "required": true, "type": {"kind": "integer"}},
+          {"name": "lastMissingItemOrdinal", "required": true, "type": {"kind": "integer"}},
+          {"name": "repairIntent", "required": true, "type": {"kind": "ref", "target": "TimelineRepairIntentV1"}}
+        ]},
+        {"tag": "timeline_payload", "fields": [
+          {"name": "gapId", "required": true, "type": {"kind": "string"}},
+          {"name": "gapOrdinal", "required": true, "type": {"kind": "integer"}},
+          {"name": "itemRef", "required": true, "type": {"kind": "ref", "target": "ItemRefV1"}},
+          {"name": "missingPayload", "required": true, "type": {"kind": "enum", "values": ["CONTENT", "TOOL_DETAIL"]}},
+          {"name": "repairIntent", "required": true, "type": {"kind": "ref", "target": "TimelineRepairIntentV1"}}
+        ]}
+      ]}
+    },
+    {
+      "id": "TimelineCoverageIslandV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "islandId", "required": true, "type": {"kind": "string"}},
+        {"name": "islandOrdinal", "required": true, "type": {"kind": "integer"}},
+        {"name": "firstItemOrdinal", "required": true, "type": {"kind": "integer"}},
+        {"name": "lastItemOrdinal", "required": true, "type": {"kind": "integer"}},
+        {"name": "structuralCoverage", "required": true, "type": {"kind": "enum", "values": ["COMPLETE", "PARTIAL"]}},
+        {"name": "payloadCoverage", "required": true, "type": {"kind": "enum", "values": ["COMPLETE", "PARTIAL"]}},
+        {"name": "items", "required": true, "type": {"kind": "array", "items": {"kind": "ref", "target": "TimelineItemV1"}}}
+      ]}
+    },
+    {
+      "id": "TimelineOrderProofV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "threadRef", "required": true, "type": {"kind": "ref", "target": "ThreadRefV1"}},
+        {"name": "materializationId", "required": true, "type": {"kind": "string"}},
+        {"name": "islandOrdinals", "required": true, "type": {"kind": "array", "items": {"kind": "integer"}}},
+        {"name": "orderedItemRefs", "required": true, "type": {"kind": "array", "items": {"kind": "ref", "target": "ItemRefV1"}}},
+        {"name": "orderDigest", "required": true, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "MaterializationBeginHeaderPreimageV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "materializationId", "required": true, "type": {"kind": "string"}},
+        {"name": "sourceEpoch", "required": true, "type": {"kind": "ref", "target": "SourceEpochV1"}},
+        {"name": "threadRef", "required": true, "type": {"kind": "ref", "target": "ThreadRefV1"}},
+        {"name": "requestId", "required": true, "type": {"kind": "string"}},
+        {"name": "readKind", "required": true, "type": {"kind": "enum", "values": ["FIRST_READ", "OLDER_PAGE", "TIMELINE_REPAIR", "CACHE_REUSE"]}}
+      ]}
+    },
+    {
+      "id": "MaterializationBeginV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "preimage", "required": true, "type": {"kind": "ref", "target": "MaterializationBeginHeaderPreimageV1"}},
+        {"name": "preimageDigest", "required": true, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "TypedEmptyProofV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "proofKind", "required": true, "type": {"kind": "enum", "values": ["PROVIDER_CONFIRMED_EMPTY"]}},
+        {"name": "providerRevision", "required": true, "type": {"kind": "string"}},
+        {"name": "observationDigest", "required": true, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "TimelineCoverageV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "coverageKind", "variants": [
+        {"tag": "empty", "fields": [{"name": "emptyProof", "required": true, "type": {"kind": "ref", "target": "TypedEmptyProofV1"}}]},
+        {"tag": "non_empty", "fields": [{"name": "islands", "required": true, "type": {"kind": "array", "items": {"kind": "ref", "target": "TimelineCoverageIslandV1"}}}]}
+      ]}
+    },
+    {
+      "id": "TimelineMaterializationSnapshotV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "begin", "required": true, "type": {"kind": "ref", "target": "MaterializationBeginV1"}},
+        {"name": "materializationRevision", "required": true, "type": {"kind": "integer"}},
+        {"name": "coverage", "required": true, "type": {"kind": "ref", "target": "TimelineCoverageV1"}},
+        {"name": "orderProof", "required": true, "type": {"kind": "ref", "target": "TimelineOrderProofV1"}},
+        {"name": "gaps", "required": true, "type": {"kind": "array", "items": {"kind": "ref", "target": "TimelineGapV1"}}},
+        {"name": "lastGoodBeforeId", "required": false, "type": {"kind": "string"}},
+        {"name": "lastGoodAfterId", "required": true, "type": {"kind": "string"}},
+        {"name": "lastGoodDisposition", "required": true, "type": {"kind": "enum", "values": ["PROMOTE_CURRENT", "RETAIN_PREVIOUS", "ADD_GAPS_RETAIN_PREVIOUS"]}}
+      ]}
+    },
+    {
+      "id": "LiveObservationV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "observationId", "required": true, "type": {"kind": "string"}},
+        {"name": "sourceEpoch", "required": true, "type": {"kind": "ref", "target": "SourceEpochV1"}},
+        {"name": "itemRef", "required": true, "type": {"kind": "ref", "target": "ItemRefV1"}},
+        {"name": "liveRevision", "required": true, "type": {"kind": "integer"}},
+        {"name": "provisionalItemOrdinal", "required": true, "type": {"kind": "integer"}},
+        {"name": "payloads", "required": true, "type": {"kind": "array", "items": {"kind": "ref", "target": "TimelinePayloadV1"}}}
+      ]}
+    },
+    {
+      "id": "TimelineReadQueryV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "threadRef", "required": true, "type": {"kind": "ref", "target": "ThreadRefV1"}},
+        {"name": "readKind", "required": true, "type": {"kind": "enum", "values": ["FIRST_READ", "OLDER_PAGE", "TIMELINE_REPAIR", "CACHE_REUSE"]}},
+        {"name": "knownMaterializationId", "required": false, "type": {"kind": "string"}},
+        {"name": "cursor", "required": false, "type": {"kind": "string"}},
+        {"name": "repairIntent", "required": false, "type": {"kind": "ref", "target": "TimelineRepairIntentV1"}}
+      ]}
+    },
+    {
+      "id": "TimelineAckV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "sourceEpoch", "required": true, "type": {"kind": "ref", "target": "SourceEpochV1"}},
+        {"name": "threadRef", "required": true, "type": {"kind": "ref", "target": "ThreadRefV1"}},
+        {"name": "materializationId", "required": true, "type": {"kind": "string"}},
+        {"name": "commitSequence", "required": true, "type": {"kind": "integer"}},
+        {"name": "readbackDigest", "required": true, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "OperationAdmissionKeyV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "clientInstanceId", "required": true, "type": {"kind": "string"}},
+        {"name": "clientMessageId", "required": true, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "OperationFingerprintV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "algorithm", "required": true, "type": {"kind": "enum", "values": ["SHA256_RFC8785"]}},
+        {"name": "preimageVersion", "required": true, "type": {"kind": "integer"}},
+        {"name": "value", "required": true, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "OperationHeaderV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "operationId", "required": true, "type": {"kind": "string"}},
+        {"name": "sourceEpoch", "required": true, "type": {"kind": "ref", "target": "SourceEpochV1"}},
+        {"name": "admissionKey", "required": true, "type": {"kind": "ref", "target": "OperationAdmissionKeyV1"}},
+        {"name": "fingerprint", "required": true, "type": {"kind": "ref", "target": "OperationFingerprintV1"}},
+        {"name": "submittedAt", "required": true, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "QueueEntryRefV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "threadRef", "required": true, "type": {"kind": "ref", "target": "ThreadRefV1"}},
+        {"name": "queueEntryId", "required": true, "type": {"kind": "string"}},
+        {"name": "rootOperationId", "required": true, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "CoreOperationSubmitV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "kind", "variants": [
+        {"tag": "start_turn", "fields": [
+          {"name": "operationCode", "required": true, "type": {"kind": "enum", "values": ["OP-001"]}},
+          {"name": "header", "required": true, "type": {"kind": "ref", "target": "OperationHeaderV1"}},
+          {"name": "target", "required": true, "type": {"kind": "ref", "target": "ThreadRefV1"}},
+          {"name": "input", "required": true, "type": {"kind": "ref", "target": "TurnInputV1"}},
+          {"name": "expectedHeadVersion", "required": true, "type": {"kind": "integer"}},
+          {"name": "deliveryMode", "required": true, "type": {"kind": "enum", "values": ["START_IF_IDLE_ELSE_QUEUE"]}}
+        ]},
+        {"tag": "edit_queued_input", "fields": [
+          {"name": "operationCode", "required": true, "type": {"kind": "enum", "values": ["OP-002"]}},
+          {"name": "header", "required": true, "type": {"kind": "ref", "target": "OperationHeaderV1"}},
+          {"name": "target", "required": true, "type": {"kind": "ref", "target": "QueueEntryRefV1"}},
+          {"name": "replacement", "required": true, "type": {"kind": "ref", "target": "TurnInputV1"}},
+          {"name": "expectedLaneRevision", "required": true, "type": {"kind": "integer"}},
+          {"name": "expectedEntryRevision", "required": true, "type": {"kind": "integer"}}
+        ]},
+        {"tag": "cancel_queued_input", "fields": [
+          {"name": "operationCode", "required": true, "type": {"kind": "enum", "values": ["OP-003"]}},
+          {"name": "header", "required": true, "type": {"kind": "ref", "target": "OperationHeaderV1"}},
+          {"name": "target", "required": true, "type": {"kind": "ref", "target": "QueueEntryRefV1"}},
+          {"name": "expectedLaneRevision", "required": true, "type": {"kind": "integer"}},
+          {"name": "expectedEntryRevision", "required": true, "type": {"kind": "integer"}},
+          {"name": "reason", "required": true, "type": {"kind": "enum", "values": ["USER_REQUESTED"]}}
+        ]},
+        {"tag": "steer_active_turn", "fields": [
+          {"name": "operationCode", "required": true, "type": {"kind": "enum", "values": ["OP-004"]}},
+          {"name": "header", "required": true, "type": {"kind": "ref", "target": "OperationHeaderV1"}},
+          {"name": "target", "required": true, "type": {"kind": "ref", "target": "TurnRefV1"}},
+          {"name": "input", "required": true, "type": {"kind": "ref", "target": "TurnInputV1"}}
+        ]},
+        {"tag": "steer_queued_input", "fields": [
+          {"name": "operationCode", "required": true, "type": {"kind": "enum", "values": ["OP-005"]}},
+          {"name": "header", "required": true, "type": {"kind": "ref", "target": "OperationHeaderV1"}},
+          {"name": "target", "required": true, "type": {"kind": "ref", "target": "QueueEntryRefV1"}},
+          {"name": "activeTurn", "required": true, "type": {"kind": "ref", "target": "TurnRefV1"}},
+          {"name": "expectedLaneRevision", "required": true, "type": {"kind": "integer"}},
+          {"name": "expectedEntryRevision", "required": true, "type": {"kind": "integer"}}
+        ]},
+        {"tag": "interrupt_turn", "fields": [
+          {"name": "operationCode", "required": true, "type": {"kind": "enum", "values": ["OP-006"]}},
+          {"name": "header", "required": true, "type": {"kind": "ref", "target": "OperationHeaderV1"}},
+          {"name": "target", "required": true, "type": {"kind": "ref", "target": "TurnRefV1"}},
+          {"name": "reason", "required": true, "type": {"kind": "enum", "values": ["USER_REQUESTED", "SAFETY_STOP"]}}
+        ]}
+      ]}
+    },
+    {
+      "id": "OperationRefV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "source", "required": true, "type": {"kind": "ref", "target": "SourcePartitionV1"}},
+        {"name": "threadRef", "required": true, "type": {"kind": "ref", "target": "ThreadRefV1"}},
+        {"name": "operationId", "required": true, "type": {"kind": "string"}},
+        {"name": "operationCode", "required": true, "type": {"kind": "ref", "target": "OperationCodeV1"}}
+      ]}
+    },
+    {
+      "id": "OperationQueryV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "kind", "variants": [
+        {"tag": "state_only", "fields": [{"name": "operationRef", "required": true, "type": {"kind": "ref", "target": "OperationRefV1"}}]},
+        {"tag": "read_only_reconcile", "fields": [
+          {"name": "operationRef", "required": true, "type": {"kind": "ref", "target": "OperationRefV1"}},
+          {"name": "mode", "required": true, "type": {"kind": "enum", "values": ["READ_ONLY"]}}
+        ]}
+      ]}
+    },
+    {
+      "id": "OperationStateV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "operationRef", "required": true, "type": {"kind": "ref", "target": "OperationRefV1"}},
+        {"name": "revision", "required": true, "type": {"kind": "integer"}},
+        {"name": "state", "required": true, "type": {"kind": "enum", "values": ["RECEIVED", "DURABLY_ADMITTED", "QUEUED", "CALL_STARTED", "PROVIDER_ACCEPTED", "CANONICAL_OBSERVED", "SUCCEEDED", "REJECTED", "CANCELLED", "OUTCOME_UNKNOWN"]}},
+        {"name": "terminal", "required": true, "type": {"kind": "boolean"}},
+        {"name": "fingerprint", "required": true, "type": {"kind": "ref", "target": "OperationFingerprintV1"}},
+        {"name": "changedAt", "required": true, "type": {"kind": "string"}},
+        {"name": "problem", "required": false, "type": {"kind": "ref", "target": "ProblemV1"}}
+      ]}
+    },
+    {
+      "id": "OperationAdmissionOutcomeV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "firstRequest", "required": true, "type": {"kind": "ref", "target": "CoreOperationSubmitV1"}},
+        {"name": "replayRequest", "required": true, "type": {"kind": "ref", "target": "CoreOperationSubmitV1"}},
+        {"name": "existingOperationRef", "required": true, "type": {"kind": "ref", "target": "OperationRefV1"}},
+        {"name": "result", "required": true, "type": {"kind": "enum", "values": ["RETURN_EXISTING", "FINGERPRINT_CONFLICT"]}},
+        {"name": "newAdmissionRows", "required": true, "type": {"kind": "integer"}},
+        {"name": "providerMutationCalls", "required": true, "type": {"kind": "integer"}}
+      ]}
+    },
+    {
+      "id": "OperationDispatchCaseV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "operationRef", "required": true, "type": {"kind": "ref", "target": "OperationRefV1"}},
+        {"name": "durableAdmissionCommitted", "required": true, "type": {"kind": "boolean"}},
+        {"name": "dispatchBarrier", "required": true, "type": {"kind": "enum", "values": ["NOT_STARTED", "CALL_STARTED"]}},
+        {"name": "providerMutationCalls", "required": true, "type": {"kind": "integer"}}
+      ]}
+    },
+    {
+      "id": "OperationRecoveryCaseV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "operationRef", "required": true, "type": {"kind": "ref", "target": "OperationRefV1"}},
+        {"name": "beforeCrash", "required": true, "type": {"kind": "enum", "values": ["CALL_STARTED"]}},
+        {"name": "afterRecovery", "required": true, "type": {"kind": "enum", "values": ["OUTCOME_UNKNOWN"]}},
+        {"name": "redispatchCount", "required": true, "type": {"kind": "integer"}},
+        {"name": "reconcileMutationCalls", "required": true, "type": {"kind": "integer"}},
+        {"name": "terminalSuccessWrites", "required": true, "type": {"kind": "integer"}}
+      ]}
+    },
+    {
+      "id": "QueueEntryV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "entryRef", "required": true, "type": {"kind": "ref", "target": "QueueEntryRefV1"}},
+        {"name": "rootOperationRef", "required": true, "type": {"kind": "ref", "target": "OperationRefV1"}},
+        {"name": "entryRevision", "required": true, "type": {"kind": "integer"}},
+        {"name": "position", "required": true, "type": {"kind": "integer"}},
+        {"name": "state", "required": true, "type": {"kind": "enum", "values": ["QUEUED", "DISPATCH_RESERVED", "CONSUMED", "CANCELLED"]}},
+        {"name": "input", "required": true, "type": {"kind": "ref", "target": "TurnInputV1"}}
+      ]}
+    },
+    {
+      "id": "QueueSnapshotV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "sourceEpoch", "required": true, "type": {"kind": "ref", "target": "SourceEpochV1"}},
+        {"name": "threadRef", "required": true, "type": {"kind": "ref", "target": "ThreadRefV1"}},
+        {"name": "laneRevision", "required": true, "type": {"kind": "integer"}},
+        {"name": "limit", "required": true, "type": {"kind": "integer"}},
+        {"name": "entries", "required": true, "type": {"kind": "array", "items": {"kind": "ref", "target": "QueueEntryV1"}}}
+      ]}
+    },
+    {
+      "id": "QueueRevisionCaseV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "currentLaneRevision", "required": true, "type": {"kind": "integer"}},
+        {"name": "currentEntryRevision", "required": true, "type": {"kind": "integer"}},
+        {"name": "command", "required": true, "type": {"kind": "ref", "target": "CoreOperationSubmitV1"}},
+        {"name": "queueRowsUpdated", "required": true, "type": {"kind": "integer"}},
+        {"name": "providerMutationCalls", "required": true, "type": {"kind": "integer"}}
+      ]}
+    },
+    {
+      "id": "InteractionKindV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "enum", "values": ["APPROVAL", "QUESTION", "MCP_ELICITATION", "EXIT_PLAN"]}
+    },
+    {
+      "id": "InteractionRefV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "turnRef", "required": true, "type": {"kind": "ref", "target": "TurnRefV1"}},
+        {"name": "interactionId", "required": true, "type": {"kind": "string"}},
+        {"name": "interactionKind", "required": true, "type": {"kind": "ref", "target": "InteractionKindV1"}}
+      ]}
+    },
+    {
+      "id": "ClaimProofV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "claimId", "required": true, "type": {"kind": "string"}},
+        {"name": "claimToken", "required": true, "type": {"kind": "string"}},
+        {"name": "leaseRevision", "required": true, "type": {"kind": "integer"}}
+      ]}
+    },
+    {
+      "id": "ClaimLeaseSnapshotV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "claimId", "required": true, "type": {"kind": "string"}},
+        {"name": "actorRef", "required": true, "type": {"kind": "ref", "target": "ActorRefV1"}},
+        {"name": "leaseRevision", "required": true, "type": {"kind": "integer"}},
+        {"name": "expiresAt", "required": true, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "QuestionDescriptorV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "questionId", "required": true, "type": {"kind": "string"}},
+        {"name": "prompt", "required": true, "type": {"kind": "string"}},
+        {"name": "responseKind", "required": true, "type": {"kind": "enum", "values": ["SINGLE_CHOICE", "MULTI_CHOICE", "FREE_TEXT"]}},
+        {"name": "options", "required": true, "type": {"kind": "array", "items": {"kind": "string"}}},
+        {"name": "required", "required": true, "type": {"kind": "boolean"}}
+      ]}
+    },
+    {
+      "id": "InteractionDescriptorV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "kind", "variants": [
+        {"tag": "approval", "fields": [
+          {"name": "interactionRef", "required": true, "type": {"kind": "ref", "target": "InteractionRefV1"}},
+          {"name": "revision", "required": true, "type": {"kind": "integer"}},
+          {"name": "prompt", "required": true, "type": {"kind": "string"}},
+          {"name": "allowReject", "required": true, "type": {"kind": "boolean"}},
+          {"name": "expiresAt", "required": true, "type": {"kind": "string"}}
+        ]},
+        {"tag": "question", "fields": [
+          {"name": "interactionRef", "required": true, "type": {"kind": "ref", "target": "InteractionRefV1"}},
+          {"name": "revision", "required": true, "type": {"kind": "integer"}},
+          {"name": "prompt", "required": true, "type": {"kind": "string"}},
+          {"name": "questions", "required": true, "type": {"kind": "array", "items": {"kind": "ref", "target": "QuestionDescriptorV1"}}},
+          {"name": "expiresAt", "required": true, "type": {"kind": "string"}}
+        ]},
+        {"tag": "mcp_elicitation", "fields": [
+          {"name": "interactionRef", "required": true, "type": {"kind": "ref", "target": "InteractionRefV1"}},
+          {"name": "revision", "required": true, "type": {"kind": "integer"}},
+          {"name": "prompt", "required": true, "type": {"kind": "string"}},
+          {"name": "responseShape", "required": true, "type": {"kind": "enum", "values": ["TEXT", "CONFIRMATION"]}},
+          {"name": "schemaDigest", "required": true, "type": {"kind": "string"}},
+          {"name": "expiresAt", "required": true, "type": {"kind": "string"}}
+        ]},
+        {"tag": "exit_plan", "fields": [
+          {"name": "interactionRef", "required": true, "type": {"kind": "ref", "target": "InteractionRefV1"}},
+          {"name": "revision", "required": true, "type": {"kind": "integer"}},
+          {"name": "summary", "required": true, "type": {"kind": "string"}},
+          {"name": "planDigest", "required": true, "type": {"kind": "string"}},
+          {"name": "expiresAt", "required": true, "type": {"kind": "string"}}
+        ]}
+      ]}
+    },
+    {
+      "id": "InteractionResolutionV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "kind", "variants": [
+        {"tag": "approval", "fields": [{"name": "disposition", "required": true, "type": {"kind": "enum", "values": ["APPROVED", "REJECTED"]}}, {"name": "resolvedAt", "required": true, "type": {"kind": "string"}}]},
+        {"tag": "question", "fields": [{"name": "answerDigest", "required": true, "type": {"kind": "string"}}, {"name": "resolvedAt", "required": true, "type": {"kind": "string"}}]},
+        {"tag": "mcp_elicitation", "fields": [{"name": "responseDigest", "required": true, "type": {"kind": "string"}}, {"name": "resolvedAt", "required": true, "type": {"kind": "string"}}]},
+        {"tag": "exit_plan", "fields": [{"name": "disposition", "required": true, "type": {"kind": "enum", "values": ["ACCEPTED", "REJECTED"]}}, {"name": "resolvedAt", "required": true, "type": {"kind": "string"}}]}
+      ]}
+    },
+    {
+      "id": "InteractionSnapshotV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "sourceEpoch", "required": true, "type": {"kind": "ref", "target": "SourceEpochV1"}},
+        {"name": "descriptor", "required": true, "type": {"kind": "ref", "target": "InteractionDescriptorV1"}},
+        {"name": "state", "required": true, "type": {"kind": "enum", "values": ["OPEN_UNCLAIMED", "CLAIMED", "RESPONDING", "RESOLVED", "EXPIRED"]}},
+        {"name": "revision", "required": true, "type": {"kind": "integer"}},
+        {"name": "claim", "required": false, "type": {"kind": "ref", "target": "ClaimLeaseSnapshotV1"}},
+        {"name": "resolution", "required": false, "type": {"kind": "ref", "target": "InteractionResolutionV1"}}
+      ]}
+    },
+    {
+      "id": "ApprovalResponseBodyV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "disposition", "variants": [
+        {"tag": "approve", "fields": []},
+        {"tag": "reject", "fields": [{"name": "message", "required": false, "type": {"kind": "string"}}]}
+      ]}
+    },
+    {
+      "id": "QuestionAnswerV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "kind", "variants": [
+        {"tag": "single_choice", "fields": [{"name": "questionId", "required": true, "type": {"kind": "string"}}, {"name": "choice", "required": true, "type": {"kind": "string"}}]},
+        {"tag": "multi_choice", "fields": [{"name": "questionId", "required": true, "type": {"kind": "string"}}, {"name": "choices", "required": true, "type": {"kind": "array", "items": {"kind": "string"}}}]},
+        {"tag": "free_text", "fields": [{"name": "questionId", "required": true, "type": {"kind": "string"}}, {"name": "text", "required": true, "type": {"kind": "string"}}]}
+      ]}
+    },
+    {
+      "id": "QuestionResponseBodyV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [{"name": "answers", "required": true, "type": {"kind": "array", "items": {"kind": "ref", "target": "QuestionAnswerV1"}}}]}
+    },
+    {
+      "id": "McpResponseBodyV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "disposition", "variants": [
+        {"tag": "accept_text", "fields": [{"name": "text", "required": true, "type": {"kind": "string"}}]},
+        {"tag": "accept_confirmation", "fields": [{"name": "confirmed", "required": true, "type": {"kind": "boolean"}}]},
+        {"tag": "reject", "fields": [{"name": "message", "required": false, "type": {"kind": "string"}}]}
+      ]}
+    },
+    {
+      "id": "ExitPlanResponseBodyV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "disposition", "variants": [
+        {"tag": "accept", "fields": []},
+        {"tag": "reject", "fields": [{"name": "feedback", "required": false, "type": {"kind": "string"}}]}
+      ]}
+    },
+    {
+      "id": "InteractionClaimV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "operationCode", "required": true, "type": {"kind": "enum", "values": ["OP-016"]}},
+        {"name": "header", "required": true, "type": {"kind": "ref", "target": "OperationHeaderV1"}},
+        {"name": "interactionRef", "required": true, "type": {"kind": "ref", "target": "InteractionRefV1"}},
+        {"name": "expectedInteractionRevision", "required": true, "type": {"kind": "integer"}},
+        {"name": "requestedLeaseSeconds", "required": true, "type": {"kind": "integer"}}
+      ]}
+    },
+    {
+      "id": "InteractionRenewV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "operationCode", "required": true, "type": {"kind": "enum", "values": ["OP-017"]}},
+        {"name": "header", "required": true, "type": {"kind": "ref", "target": "OperationHeaderV1"}},
+        {"name": "interactionRef", "required": true, "type": {"kind": "ref", "target": "InteractionRefV1"}},
+        {"name": "claimProof", "required": true, "type": {"kind": "ref", "target": "ClaimProofV1"}},
+        {"name": "expectedInteractionRevision", "required": true, "type": {"kind": "integer"}},
+        {"name": "requestedExtensionSeconds", "required": true, "type": {"kind": "integer"}}
+      ]}
+    },
+    {
+      "id": "InteractionReleaseV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "operationCode", "required": true, "type": {"kind": "enum", "values": ["OP-018"]}},
+        {"name": "header", "required": true, "type": {"kind": "ref", "target": "OperationHeaderV1"}},
+        {"name": "interactionRef", "required": true, "type": {"kind": "ref", "target": "InteractionRefV1"}},
+        {"name": "claimProof", "required": true, "type": {"kind": "ref", "target": "ClaimProofV1"}},
+        {"name": "expectedInteractionRevision", "required": true, "type": {"kind": "integer"}}
+      ]}
+    },
+    {
+      "id": "InteractionResponseV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "responseKind", "variants": [
+        {"tag": "approval", "fields": [
+          {"name": "operationCode", "required": true, "type": {"kind": "enum", "values": ["OP-019"]}},
+          {"name": "header", "required": true, "type": {"kind": "ref", "target": "OperationHeaderV1"}},
+          {"name": "interactionRef", "required": true, "type": {"kind": "ref", "target": "InteractionRefV1"}},
+          {"name": "claimProof", "required": true, "type": {"kind": "ref", "target": "ClaimProofV1"}},
+          {"name": "expectedInteractionRevision", "required": true, "type": {"kind": "integer"}},
+          {"name": "response", "required": true, "type": {"kind": "ref", "target": "ApprovalResponseBodyV1"}}
+        ]},
+        {"tag": "question", "fields": [
+          {"name": "operationCode", "required": true, "type": {"kind": "enum", "values": ["OP-020"]}},
+          {"name": "header", "required": true, "type": {"kind": "ref", "target": "OperationHeaderV1"}},
+          {"name": "interactionRef", "required": true, "type": {"kind": "ref", "target": "InteractionRefV1"}},
+          {"name": "claimProof", "required": true, "type": {"kind": "ref", "target": "ClaimProofV1"}},
+          {"name": "expectedInteractionRevision", "required": true, "type": {"kind": "integer"}},
+          {"name": "response", "required": true, "type": {"kind": "ref", "target": "QuestionResponseBodyV1"}}
+        ]},
+        {"tag": "mcp_elicitation", "fields": [
+          {"name": "operationCode", "required": true, "type": {"kind": "enum", "values": ["OP-021"]}},
+          {"name": "header", "required": true, "type": {"kind": "ref", "target": "OperationHeaderV1"}},
+          {"name": "interactionRef", "required": true, "type": {"kind": "ref", "target": "InteractionRefV1"}},
+          {"name": "claimProof", "required": true, "type": {"kind": "ref", "target": "ClaimProofV1"}},
+          {"name": "expectedInteractionRevision", "required": true, "type": {"kind": "integer"}},
+          {"name": "response", "required": true, "type": {"kind": "ref", "target": "McpResponseBodyV1"}}
+        ]},
+        {"tag": "exit_plan", "fields": [
+          {"name": "operationCode", "required": true, "type": {"kind": "enum", "values": ["OP-022"]}},
+          {"name": "header", "required": true, "type": {"kind": "ref", "target": "OperationHeaderV1"}},
+          {"name": "interactionRef", "required": true, "type": {"kind": "ref", "target": "InteractionRefV1"}},
+          {"name": "claimProof", "required": true, "type": {"kind": "ref", "target": "ClaimProofV1"}},
+          {"name": "expectedInteractionRevision", "required": true, "type": {"kind": "integer"}},
+          {"name": "response", "required": true, "type": {"kind": "ref", "target": "ExitPlanResponseBodyV1"}}
+        ]}
+      ]}
+    },
+    {
+      "id": "InteractionCommandV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "commandKind", "variants": [
+        {"tag": "claim", "fields": [{"name": "command", "required": true, "type": {"kind": "ref", "target": "InteractionClaimV1"}}]},
+        {"tag": "renew", "fields": [{"name": "command", "required": true, "type": {"kind": "ref", "target": "InteractionRenewV1"}}]},
+        {"tag": "release", "fields": [{"name": "command", "required": true, "type": {"kind": "ref", "target": "InteractionReleaseV1"}}]},
+        {"tag": "respond", "fields": [{"name": "command", "required": true, "type": {"kind": "ref", "target": "InteractionResponseV1"}}]}
+      ]}
+    },
+    {
+      "id": "InteractionQueryV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "threadRef", "required": true, "type": {"kind": "ref", "target": "ThreadRefV1"}},
+        {"name": "includeResolved", "required": true, "type": {"kind": "boolean"}}
+      ]}
+    },
+    {
+      "id": "ClientHelloV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "protocolVersion", "required": true, "type": {"kind": "integer"}},
+        {"name": "profileId", "required": true, "type": {"kind": "enum", "values": ["pvmc1.phone-core.v1"]}},
+        {"name": "clientInstanceId", "required": true, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "AuthenticatedClientHeaderV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "requestId", "required": true, "type": {"kind": "string"}},
+        {"name": "clientInstanceId", "required": true, "type": {"kind": "string"}},
+        {"name": "sourceEpoch", "required": true, "type": {"kind": "ref", "target": "SourceEpochV1"}}
+      ]}
+    },
+    {
+      "id": "ServerWelcomeV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "connectionId", "required": true, "type": {"kind": "string"}},
+        {"name": "clientInstanceId", "required": true, "type": {"kind": "string"}},
+        {"name": "sourceEpoch", "required": true, "type": {"kind": "ref", "target": "SourceEpochV1"}},
+        {"name": "actorRef", "required": true, "type": {"kind": "ref", "target": "ActorRefV1"}},
+        {"name": "capabilitySnapshot", "required": true, "type": {"kind": "ref", "target": "CapabilitySnapshotV1"}}
+      ]}
+    },
+    {
+      "id": "ClientMessageV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "type", "variants": [
+        {"tag": "client_hello", "fields": [{"name": "hello", "required": true, "type": {"kind": "ref", "target": "ClientHelloV1"}}]},
+        {"tag": "timeline_read", "fields": [{"name": "header", "required": true, "type": {"kind": "ref", "target": "AuthenticatedClientHeaderV1"}}, {"name": "query", "required": true, "type": {"kind": "ref", "target": "TimelineReadQueryV1"}}]},
+        {"tag": "timeline_ack", "fields": [{"name": "header", "required": true, "type": {"kind": "ref", "target": "AuthenticatedClientHeaderV1"}}, {"name": "ack", "required": true, "type": {"kind": "ref", "target": "TimelineAckV1"}}]},
+        {"tag": "operation_submit", "fields": [{"name": "operation", "required": true, "type": {"kind": "ref", "target": "CoreOperationSubmitV1"}}]},
+        {"tag": "operation_query", "fields": [{"name": "header", "required": true, "type": {"kind": "ref", "target": "AuthenticatedClientHeaderV1"}}, {"name": "query", "required": true, "type": {"kind": "ref", "target": "OperationQueryV1"}}]},
+        {"tag": "queue_query", "fields": [{"name": "header", "required": true, "type": {"kind": "ref", "target": "AuthenticatedClientHeaderV1"}}, {"name": "threadRef", "required": true, "type": {"kind": "ref", "target": "ThreadRefV1"}}]},
+        {"tag": "interaction_query", "fields": [{"name": "header", "required": true, "type": {"kind": "ref", "target": "AuthenticatedClientHeaderV1"}}, {"name": "query", "required": true, "type": {"kind": "ref", "target": "InteractionQueryV1"}}]},
+        {"tag": "interaction_claim", "fields": [{"name": "command", "required": true, "type": {"kind": "ref", "target": "InteractionClaimV1"}}]},
+        {"tag": "interaction_renew", "fields": [{"name": "command", "required": true, "type": {"kind": "ref", "target": "InteractionRenewV1"}}]},
+        {"tag": "interaction_release", "fields": [{"name": "command", "required": true, "type": {"kind": "ref", "target": "InteractionReleaseV1"}}]},
+        {"tag": "interaction_respond", "fields": [{"name": "command", "required": true, "type": {"kind": "ref", "target": "InteractionResponseV1"}}]}
+      ]}
+    },
+    {
+      "id": "ServerMessageV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "union", "discriminator": "type", "variants": [
+        {"tag": "server_welcome", "fields": [{"name": "welcome", "required": true, "type": {"kind": "ref", "target": "ServerWelcomeV1"}}]},
+        {"tag": "capability_snapshot", "fields": [{"name": "snapshot", "required": true, "type": {"kind": "ref", "target": "CapabilitySnapshotV1"}}]},
+        {"tag": "timeline_materialization", "fields": [{"name": "snapshot", "required": true, "type": {"kind": "ref", "target": "TimelineMaterializationSnapshotV1"}}]},
+        {"tag": "timeline_live", "fields": [{"name": "observation", "required": true, "type": {"kind": "ref", "target": "LiveObservationV1"}}]},
+        {"tag": "operation_state", "fields": [{"name": "state", "required": true, "type": {"kind": "ref", "target": "OperationStateV1"}}]},
+        {"tag": "queue_snapshot", "fields": [{"name": "snapshot", "required": true, "type": {"kind": "ref", "target": "QueueSnapshotV1"}}]},
+        {"tag": "interaction_snapshot", "fields": [{"name": "snapshot", "required": true, "type": {"kind": "ref", "target": "InteractionSnapshotV1"}}, {"name": "claimProof", "required": false, "type": {"kind": "ref", "target": "ClaimProofV1"}}]},
+        {"tag": "problem", "fields": [{"name": "requestId", "required": false, "type": {"kind": "string"}}, {"name": "problem", "required": true, "type": {"kind": "ref", "target": "ProblemV1"}}]}
+      ]}
+    },
+    {
+      "id": "SourceAuthorityCaseV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "authenticatedEpoch", "required": true, "type": {"kind": "ref", "target": "SourceEpochV1"}},
+        {"name": "payloadEpoch", "required": true, "type": {"kind": "ref", "target": "SourceEpochV1"}},
+        {"name": "effect", "required": true, "type": {"kind": "enum", "values": ["READ", "MUTATION"]}}
+      ]}
+    },
+    {
+      "id": "TimelineCacheCaseV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "query", "required": true, "type": {"kind": "ref", "target": "TimelineReadQueryV1"}},
+        {"name": "firstProviderReads", "required": true, "type": {"kind": "integer"}},
+        {"name": "repeatProviderReads", "required": true, "type": {"kind": "integer"}},
+        {"name": "firstMaterializationId", "required": true, "type": {"kind": "string"}},
+        {"name": "repeatMaterializationId", "required": true, "type": {"kind": "string"}}
+      ]}
+    },
+    {
+      "id": "TimelineSequenceCaseV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "previous", "required": true, "type": {"kind": "ref", "target": "TimelineMaterializationSnapshotV1"}},
+        {"name": "current", "required": true, "type": {"kind": "ref", "target": "TimelineMaterializationSnapshotV1"}}
+      ]}
+    },
+    {
+      "id": "LivePromotionCaseV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "live", "required": true, "type": {"kind": "ref", "target": "LiveObservationV1"}},
+        {"name": "canonical", "required": true, "type": {"kind": "ref", "target": "TimelineMaterializationSnapshotV1"}},
+        {"name": "promotedItemRef", "required": true, "type": {"kind": "ref", "target": "ItemRefV1"}},
+        {"name": "promotedItemOrdinal", "required": true, "type": {"kind": "integer"}},
+        {"name": "canonicalDuplicateCount", "required": true, "type": {"kind": "integer"}}
+      ]}
+    },
+    {
+      "id": "InteractionAuthorityCaseV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "authenticatedEpoch", "required": true, "type": {"kind": "ref", "target": "SourceEpochV1"}},
+        {"name": "authenticatedActor", "required": true, "type": {"kind": "ref", "target": "ActorRefV1"}},
+        {"name": "snapshot", "required": true, "type": {"kind": "ref", "target": "InteractionSnapshotV1"}},
+        {"name": "command", "required": true, "type": {"kind": "ref", "target": "InteractionCommandV1"}}
+      ]}
+    },
+    {
+      "id": "InteractionExpiryCaseV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "snapshot", "required": true, "type": {"kind": "ref", "target": "InteractionSnapshotV1"}},
+        {"name": "command", "required": true, "type": {"kind": "ref", "target": "InteractionCommandV1"}},
+        {"name": "observedAt", "required": true, "type": {"kind": "string"}},
+        {"name": "providerMutationCalls", "required": true, "type": {"kind": "integer"}}
+      ]}
+    },
+    {
+      "id": "InteractionDuplicateCaseV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "snapshot", "required": true, "type": {"kind": "ref", "target": "InteractionSnapshotV1"}},
+        {"name": "firstCommand", "required": true, "type": {"kind": "ref", "target": "InteractionCommandV1"}},
+        {"name": "duplicateCommand", "required": true, "type": {"kind": "ref", "target": "InteractionCommandV1"}},
+        {"name": "additionalProviderCalls", "required": true, "type": {"kind": "integer"}},
+        {"name": "additionalOperationRows", "required": true, "type": {"kind": "integer"}},
+        {"name": "additionalVisibleResults", "required": true, "type": {"kind": "integer"}}
+      ]}
+    },
+    {
+      "id": "InteractionVariantCaseV1",
+      "profiles": ["pvmc1.phone-core.v1"],
+      "node": {"kind": "object", "fields": [
+        {"name": "snapshot", "required": true, "type": {"kind": "ref", "target": "InteractionSnapshotV1"}},
+        {"name": "command", "required": true, "type": {"kind": "ref", "target": "InteractionCommandV1"}}
+      ]}
+    }
+  ],
+  "owners": [
+    {"id": "owner.contract-authority"},
+    {"id": "owner.identity-authority"},
+    {"id": "owner.timeline-normalizer"},
+    {"id": "owner.canonical-publication"},
+    {"id": "owner.operation-kernel"},
+    {"id": "owner.queue-ledger"},
+    {"id": "owner.interaction-broker"},
+    {"id": "owner.capability-negotiation"}
+  ],
+  "consumers": [
+    {"id": "consumer.bridge-provider-history-reader"},
+    {"id": "consumer.bridge-canonical-publication"},
+    {"id": "consumer.bridge-operation-kernel"},
+    {"id": "consumer.bridge-queue-runtime"},
+    {"id": "consumer.bridge-interaction-broker"},
+    {"id": "consumer.mobile-conversation-repository"},
+    {"id": "consumer.mobile-operation-controller"},
+    {"id": "consumer.mobile-interaction-controller"}
+  ],
+  "executableTests": [
+    {"id": "test.registry-wire-closure"},
+    {"id": "test.source-authority"},
+    {"id": "test.timeline-empty-digest"},
+    {"id": "test.timeline-cache"},
+    {"id": "test.timeline-order-gap"},
+    {"id": "test.timeline-last-good"},
+    {"id": "test.timeline-live-promotion"},
+    {"id": "test.operation-typed-union"},
+    {"id": "test.operation-idempotency"},
+    {"id": "test.operation-admission-barrier"},
+    {"id": "test.operation-outcome-recovery"},
+    {"id": "test.queue-cas"},
+    {"id": "test.interaction-source"},
+    {"id": "test.interaction-actor"},
+    {"id": "test.interaction-expiry"},
+    {"id": "test.interaction-duplicate"},
+    {"id": "test.interaction-variant"},
+    {"id": "test.claude-seam"}
+  ],
+  "hardRules": [
+    {"id": "rule.wire.closed-normalized-shape", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.contract-authority", "consumerRef": "consumer.bridge-canonical-publication", "executableTestRef": "test.registry-wire-closure", "failureReason": "WIRE_SHAPE_INVALID", "zeroSemantics": {"durableRows": 0, "wireWrites": 0}},
+    {"id": "rule.identity.authenticated-source-generation", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.identity-authority", "consumerRef": "consumer.bridge-operation-kernel", "executableTestRef": "test.source-authority", "failureReason": "SOURCE_FENCE_MISMATCH", "zeroSemantics": {"admissionRows": 0, "interactionRows": 0, "providerCalls": 0, "publicationRows": 0, "queueRows": 0, "visibleResults": 0}},
+    {"id": "rule.timeline.typed-empty-single-digest-authority", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.timeline-normalizer", "consumerRef": "consumer.bridge-canonical-publication", "executableTestRef": "test.timeline-empty-digest", "failureReason": "TIMELINE_EMPTY_PROOF_INVALID", "zeroSemantics": {"canonicalCommits": 0, "lastGoodDeletes": 0}},
+    {"id": "rule.timeline.first-read-cache-reuse", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.timeline-normalizer", "consumerRef": "consumer.bridge-provider-history-reader", "executableTestRef": "test.timeline-cache", "failureReason": "CACHE_REUSE_VIOLATION", "zeroSemantics": {"canonicalRewrites": 0, "repeatProviderReads": 0}},
+    {"id": "rule.timeline.deterministic-order-typed-gap", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.timeline-normalizer", "consumerRef": "consumer.mobile-conversation-repository", "executableTestRef": "test.timeline-order-gap", "failureReason": "TIMELINE_ORDER_GAP_INVALID", "zeroSemantics": {"canonicalCommits": 0, "gapClosures": 0, "itemReorders": 0}},
+    {"id": "rule.timeline.last-good-monotonic", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.canonical-publication", "consumerRef": "consumer.mobile-conversation-repository", "executableTestRef": "test.timeline-last-good", "failureReason": "TIMELINE_LAST_GOOD_REGRESSION", "zeroSemantics": {"canonicalCommits": 0, "lastGoodDeletes": 0, "lastGoodDowngrades": 0}},
+    {"id": "rule.timeline.live-canonical-promotion", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.canonical-publication", "consumerRef": "consumer.mobile-conversation-repository", "executableTestRef": "test.timeline-live-promotion", "failureReason": "TIMELINE_LIVE_PROMOTION_INVALID", "zeroSemantics": {"canonicalDuplicates": 0, "livePromotions": 0, "liveReorders": 0}},
+    {"id": "rule.operation.exact-typed-core-union", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.operation-kernel", "consumerRef": "consumer.mobile-operation-controller", "executableTestRef": "test.operation-typed-union", "failureReason": "OPERATION_VARIANT_INVALID", "zeroSemantics": {"admissionRows": 0, "providerCalls": 0}},
+    {"id": "rule.operation.client-message-fingerprint-idempotency", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.operation-kernel", "consumerRef": "consumer.bridge-operation-kernel", "executableTestRef": "test.operation-idempotency", "failureReason": "OPERATION_FINGERPRINT_CONFLICT", "zeroSemantics": {"newAdmissionRows": 0, "providerCalls": 0, "queueRows": 0}},
+    {"id": "rule.operation.durable-admission-before-dispatch", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.operation-kernel", "consumerRef": "consumer.bridge-operation-kernel", "executableTestRef": "test.operation-admission-barrier", "failureReason": "DURABLE_ADMISSION_REQUIRED", "zeroSemantics": {"providerCalls": 0}},
+    {"id": "rule.operation.call-started-outcome-unknown", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.operation-kernel", "consumerRef": "consumer.bridge-operation-kernel", "executableTestRef": "test.operation-outcome-recovery", "failureReason": "OUTCOME_UNKNOWN", "zeroSemantics": {"reconcileMutationCalls": 0, "redispatches": 0, "terminalSuccessWrites": 0}},
+    {"id": "rule.queue.exact-lane-entry-revision", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.queue-ledger", "consumerRef": "consumer.bridge-queue-runtime", "executableTestRef": "test.queue-cas", "failureReason": "QUEUE_REVISION_CONFLICT", "zeroSemantics": {"providerCalls": 0, "queueRowsUpdated": 0}},
+    {"id": "rule.interaction.exact-source", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.interaction-broker", "consumerRef": "consumer.bridge-interaction-broker", "executableTestRef": "test.interaction-source", "failureReason": "INTERACTION_WRONG_SOURCE", "zeroSemantics": {"interactionRows": 0, "operationRows": 0, "providerCalls": 0, "queueRows": 0, "visibleResults": 0}},
+    {"id": "rule.interaction.authenticated-actor", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.interaction-broker", "consumerRef": "consumer.bridge-interaction-broker", "executableTestRef": "test.interaction-actor", "failureReason": "INTERACTION_WRONG_ACTOR", "zeroSemantics": {"interactionRows": 0, "operationRows": 0, "providerCalls": 0, "queueRows": 0, "visibleResults": 0}},
+    {"id": "rule.interaction.unexpired-lease", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.interaction-broker", "consumerRef": "consumer.bridge-interaction-broker", "executableTestRef": "test.interaction-expiry", "failureReason": "INTERACTION_EXPIRED", "zeroSemantics": {"interactionRows": 0, "operationRows": 0, "providerCalls": 0, "queueRows": 0, "visibleResults": 0}},
+    {"id": "rule.interaction.duplicate-zero-effect", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.interaction-broker", "consumerRef": "consumer.bridge-interaction-broker", "executableTestRef": "test.interaction-duplicate", "failureReason": "INTERACTION_DUPLICATE_RESPONSE", "zeroSemantics": {"additionalOperationRows": 0, "additionalProviderCalls": 0, "additionalVisibleResults": 0}},
+    {"id": "rule.interaction.response-variant-match", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.interaction-broker", "consumerRef": "consumer.mobile-interaction-controller", "executableTestRef": "test.interaction-variant", "failureReason": "WRONG_INTERACTION_VARIANT", "zeroSemantics": {"interactionRows": 0, "operationRows": 0, "providerCalls": 0, "queueRows": 0, "visibleResults": 0}},
+    {"id": "rule.capability.claude-typed-not-implemented", "profileId": "pvmc1.phone-core.v1", "ownerRef": "owner.capability-negotiation", "consumerRef": "consumer.mobile-conversation-repository", "executableTestRef": "test.claude-seam", "failureReason": "CLAUDE_NOT_IMPLEMENTED", "zeroSemantics": {"admissionRows": 0, "providerCalls": 0}}
+  ],
+  "vectorSets": [
+    {"id": "vectors.identity-wire", "profileId": "pvmc1.phone-core.v1"},
+    {"id": "vectors.timeline", "profileId": "pvmc1.phone-core.v1"},
+    {"id": "vectors.operation", "profileId": "pvmc1.phone-core.v1"},
+    {"id": "vectors.queue", "profileId": "pvmc1.phone-core.v1"},
+    {"id": "vectors.interaction", "profileId": "pvmc1.phone-core.v1"},
+    {"id": "vectors.capability", "profileId": "pvmc1.phone-core.v1"}
+  ]
+}
