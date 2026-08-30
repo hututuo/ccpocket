@@ -43,6 +43,19 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   不再对该 worktree调用 CodeGraph，改用直接源码检查。该失败不影响编译/测试门禁。
 - 当前尚未运行 contract generation、Bridge/Mobile tests、SQLite、Provider、8766、
   simulator 或 candidate build。
+- `mise exec node@22.23.1 -- npm ci` 于 `2026-08-30` 失败：上游
+  `scripts/setup-hooks.sh` 把 worktree 的 `.git` 文件误当成目录并尝试写入
+  `.git/hooks/pre-commit`。失败发生在依赖解包后的 `prepare`，未修改 tracked 文件；记录保留，
+  不把它改写成依赖失败。
+- 随后使用 `mise exec node@22.23.1 -- npm ci --ignore-scripts` 成功安装锁文件中的
+  212 个 package；该替代只跳过上述仓库 hook 安装，不跳过后续 Bridge 构建/测试。
+- Node `22.23.1` 的 `node:sqlite` `DatabaseSync(':memory:')` strict table
+  create/insert/readback smoke 通过，但该 Node 版本仍输出 `ExperimentalWarning`；这里只记录
+  工具链事实，尚未裁定或安装 K03 持久化实现。
+- 未修改产品源码的 `c3c5ba32` 基线在 Node `22.23.1` 下通过
+  `npm run test:bridge`（41 files / 1072 tests）和
+  `npx tsc --noEmit -p packages/bridge/tsconfig.json`。测试日志中的预期 git negative-case
+  stderr 不计作失败；这只证明 Bridge source baseline，不证明 V4、Provider、DB 或 runtime。
 
 ## 5. 独立交付状态
 
