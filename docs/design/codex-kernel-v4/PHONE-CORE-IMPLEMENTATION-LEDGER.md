@@ -354,3 +354,35 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
 - 本断点仍未运行正式 generation、Bridge/Provider/产品 DB/8765/8766/Mobile integration、simulator、
   candidate、真机、merge、push、部署、发布、OTA 或 stable。磁盘即时可用约 14 GiB；未经授权未做
   清理。
+
+## 17. 2026-08-30 16:09 +08 接手后的合同与 Store 对抗复核
+
+- 本轮开始时再次核实实施根为 branch
+  `codex/codex-kernel-v4-implementation-20260830`、HEAD
+  `e79770456804592bccbfa5a4c83e7a385e175bb5`、tree
+  `4631c9829e57e1acdd9ec7d4a732179a1675c290`、status clean；该 HEAD 相对
+  `e32ed79c` 仅包含第 16 节接手文档与本账本。审计过程中没有把任何 donor 源码带入实施根。
+- Sol max 对 runtime-fact contract `eb2b98b9 -> 3f59c433` 的独立只读复核结论为
+  `REJECT / P0=4/P1=5/P2=2`。主要 P0 是：Gap/repair 仍依赖随机 `gapId` 与旧
+  materialization 上下文；R64 page/order/coverage/manifest/begin/receipt digest DAG 未闭合；
+  validator 不执行 negative value 或独立 post-state/zero-effect oracle；R63/R70/R76/R77/R82
+  所需的 server-derived operation fingerprint、dispatch/reconcile/fact-delivery 状态权威不可机器表达。
+  只读变异已证明 `null` negative、任意 digest、`pageCount=129` 与 count mismatch 仍会被现有
+  validator 接受。因此第 16 节记录的 inventory/shape/temp-generate PASS 继续保留，但“合同候选可
+  replay”结论被本节 `SUPERSEDED`；正式 mapped generate 继续 `FORBIDDEN / NOT_RUN`。
+- Luna xhigh 对 Store `c67e538` 的独立只读复核结论为
+  `REWORK / P0=1/P1=5`，第 16 节记录的 `P0=0/P1=0` reviewer 结论被本节
+  `SUPERSEDED`。P0 是 `beginIdleDispatch()` 没有阻止同 conflict family 已存在
+  `OUTCOME_UNKNOWN` 时的 idle dispatch。P1 包括：Store 自维护第二套 types/schema/JCS authority；
+  caller 可构造 auth/evidence；materialization 缺 parent/last-good/receipt DAG 且 item identity 与
+  signed ordinal 不符；过期 CLAIMED interaction 不可 reclaim；coverage COMPLETE/PARTIAL 未与 Gap
+  一致验证且 100k 上限下存在嵌套扫描风险。`c67e538` 的 immutable unknown、append-only reconcile、
+  atomic queue、staging/head/readback、persistent lease 等正向实现事实保留，但在修复与 generated
+  contract 对齐前禁止集成。
+- Store 的 contract-independent safety 返工已从 `c67e538` 建立隔离 worktree
+  `ccpocket-v4-k03-store-authority-rework-20260830`，只允许先修 unknown barrier、interaction
+  reclaim/expiry、coverage 一致性与复杂度，并用 focused adversarial tests 证明；generated contract
+  尚未定稿的字段、正式四目标和第二 authority 不得在该 worker 中自行补写。
+- 本节只记录审计与新返工起点。root Node22 package/full Bridge/tsc/build、formal temp/mapped
+  generate/check、TS-Dart JCS golden、Provider、任何 DB、8765/8766、Mobile/simulator/candidate/device
+  均 `NOT_RUN`；merge、push、deploy、release、OTA、stable 与真机安装仍未授权。
