@@ -1,0 +1,300 @@
+{
+  "formatVersion": 1,
+  "activeProfileId": "fixture.active",
+  "profiles": [
+    {
+      "id": "fixture.active",
+      "status": "active",
+      "rootTypeRefs": [
+        "FixtureEnvelope",
+        "CanonicalProfileProbePreimageV1",
+        "ProviderReadEvidencePreimageV1",
+        "OperationFingerprintPreimageV1",
+        "MaterializationPagePreimageV1",
+        "MaterializationOrderPreimageV1",
+        "MaterializationCoveragePreimageV1",
+        "MaterializationManifestPreimageV1",
+        "MaterializationBeginHeaderPreimageV1",
+        "MaterializationReceiptPreimageV1",
+        "GapRepairIntentPreimageV1"
+      ]
+    },
+    {
+      "id": "fixture.future",
+      "status": "planned",
+      "rootTypeRefs": ["FutureOnly"]
+    }
+  ],
+  "definitions": [
+    {
+      "id": "FixturePriority",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "enum",
+        "values": ["normal", "high_priority", "cost$x", "quote\"slash\\cost$x"]
+      }
+    },
+    {
+      "id": "FixtureSourceRef",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "bridgeInstanceId", "required": true, "type": {"kind": "string"}},
+          {"name": "sourceOrdinal", "required": true, "type": {"kind": "integer"}}
+        ]
+      }
+    },
+    {
+      "id": "FixturePayload",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "union",
+        "discriminator": "kind",
+        "variants": [
+          {
+            "tag": "text",
+            "fields": [
+              {"name": "text", "required": true, "type": {"kind": "string"}}
+            ]
+          },
+          {
+            "tag": "progress",
+            "fields": [
+              {"name": "complete", "required": true, "type": {"kind": "boolean"}},
+              {"name": "labels", "required": false, "type": {"kind": "array", "items": {"kind": "string"}}}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "FixtureEnvelope",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "id", "required": true, "type": {"kind": "string"}},
+          {"name": "source", "required": true, "type": {"kind": "ref", "target": "FixtureSourceRef"}},
+          {"name": "priority", "required": true, "type": {"kind": "ref", "target": "FixturePriority"}},
+          {"name": "payload", "required": true, "type": {"kind": "ref", "target": "FixturePayload"}},
+          {"name": "metadata", "required": false, "type": {"kind": "map", "values": {"kind": "string"}}},
+          {"name": "__proto__", "required": false, "type": {"kind": "string"}}
+        ]
+      }
+    },
+    {
+      "id": "FutureOnly",
+      "profiles": ["fixture.future"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "future", "required": true, "type": {"kind": "boolean"}}
+        ]
+      }
+    },
+    {
+      "id": "Sha256Hex64",
+      "profiles": ["fixture.active"],
+      "node": {"kind": "string"}
+    },
+    {
+      "id": "FixturePageBodyV1",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "items", "required": true, "type": {"kind": "array", "items": {"kind": "string"}}},
+          {"name": "gaps", "required": true, "type": {"kind": "array", "items": {"kind": "string"}}}
+        ]
+      }
+    },
+    {
+      "id": "CanonicalProfileProbePreimageV1",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "digestDomain", "required": true, "type": {"kind": "enum", "values": ["ccpocket.canonical-profile-probe.v1"]}},
+          {"name": "\r", "required": true, "type": {"kind": "string"}},
+          {"name": "1", "required": true, "type": {"kind": "string"}},
+          {"name": "\u0080", "required": true, "type": {"kind": "string"}},
+          {"name": "ö", "required": true, "type": {"kind": "string"}},
+          {"name": "€", "required": true, "type": {"kind": "string"}},
+          {"name": "😀", "required": true, "type": {"kind": "string"}},
+          {"name": "דּ", "required": true, "type": {"kind": "string"}},
+          {"name": "escaped", "required": true, "type": {"kind": "string"}},
+          {"name": "lineSeparators", "required": true, "type": {"kind": "string"}},
+          {"name": "nfc", "required": true, "type": {"kind": "string"}},
+          {"name": "nfd", "required": true, "type": {"kind": "string"}},
+          {"name": "minSafe", "required": true, "type": {"kind": "integer"}},
+          {"name": "maxSafe", "required": true, "type": {"kind": "integer"}},
+          {"name": "negativeZero", "required": true, "type": {"kind": "integer"}}
+        ]
+      }
+    },
+    {
+      "id": "ProviderReadEvidencePreimageV1",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "digestDomain", "required": true, "type": {"kind": "enum", "values": ["ccpocket.provider-read-evidence.v1"]}},
+          {"name": "providerMethod", "required": true, "type": {"kind": "enum", "values": ["THREAD_TURNS_LIST"]}},
+          {"name": "codexBuildDigest", "required": true, "type": {"kind": "ref", "target": "Sha256Hex64"}},
+          {"name": "readGeneration", "required": true, "type": {"kind": "integer"}},
+          {"name": "resultDigest", "required": true, "type": {"kind": "ref", "target": "Sha256Hex64"}},
+          {"name": "resultCount", "required": true, "type": {"kind": "integer"}}
+        ]
+      }
+    },
+    {
+      "id": "OperationFingerprintPreimageV1",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "digestDomain", "required": true, "type": {"kind": "enum", "values": ["ccpocket.operation-fingerprint.v1"]}},
+          {"name": "operationCode", "required": true, "type": {"kind": "enum", "values": ["START_TURN", "EDIT_QUEUE"]}},
+          {"name": "source", "required": true, "type": {"kind": "ref", "target": "FixtureSourceRef"}},
+          {"name": "payloadDigest", "required": true, "type": {"kind": "ref", "target": "Sha256Hex64"}},
+          {"name": "preconditionDigest", "required": true, "type": {"kind": "ref", "target": "Sha256Hex64"}},
+          {"name": "sequence", "required": true, "type": {"kind": "integer"}}
+        ]
+      }
+    },
+    {
+      "id": "MaterializationPagePreimageV1",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "digestDomain", "required": true, "type": {"kind": "enum", "values": ["ccpocket.materialization-page.v1"]}},
+          {"name": "source", "required": true, "type": {"kind": "ref", "target": "FixtureSourceRef"}},
+          {"name": "pageIndex", "required": true, "type": {"kind": "integer"}},
+          {"name": "pageCount", "required": true, "type": {"kind": "integer"}},
+          {"name": "previousPageDigest", "required": false, "type": {"kind": "ref", "target": "Sha256Hex64"}},
+          {"name": "body", "required": true, "type": {"kind": "ref", "target": "FixturePageBodyV1"}}
+        ]
+      }
+    },
+    {
+      "id": "MaterializationOrderPreimageV1",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "union",
+        "discriminator": "domain",
+        "variants": [
+          {
+            "tag": "CATALOG",
+            "fields": [
+              {"name": "digestDomain", "required": true, "type": {"kind": "enum", "values": ["ccpocket.materialization-order.v1"]}},
+              {"name": "source", "required": true, "type": {"kind": "ref", "target": "FixtureSourceRef"}},
+              {"name": "orderedSessionIds", "required": true, "type": {"kind": "array", "items": {"kind": "string"}}}
+            ]
+          },
+          {
+            "tag": "TIMELINE",
+            "fields": [
+              {"name": "digestDomain", "required": true, "type": {"kind": "enum", "values": ["ccpocket.materialization-order.v1"]}},
+              {"name": "source", "required": true, "type": {"kind": "ref", "target": "FixtureSourceRef"}},
+              {"name": "orderedTimelineIds", "required": true, "type": {"kind": "array", "items": {"kind": "string"}}}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "MaterializationCoveragePreimageV1",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "digestDomain", "required": true, "type": {"kind": "enum", "values": ["ccpocket.materialization-coverage.v1"]}},
+          {"name": "structuralCoverage", "required": true, "type": {"kind": "enum", "values": ["COMPLETE", "PARTIAL", "EMPTY_PROVEN"]}},
+          {"name": "payloadCoverage", "required": true, "type": {"kind": "enum", "values": ["COMPLETE", "PARTIAL"]}},
+          {"name": "gapOrdinals", "required": true, "type": {"kind": "array", "items": {"kind": "integer"}}}
+        ]
+      }
+    },
+    {
+      "id": "MaterializationManifestPreimageV1",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "digestDomain", "required": true, "type": {"kind": "enum", "values": ["ccpocket.materialization-manifest.v1"]}},
+          {"name": "algorithmVersion", "required": true, "type": {"kind": "integer"}},
+          {"name": "pageCount", "required": true, "type": {"kind": "integer"}},
+          {"name": "orderedPageDigests", "required": true, "type": {"kind": "array", "items": {"kind": "ref", "target": "Sha256Hex64"}}},
+          {"name": "orderDigest", "required": true, "type": {"kind": "ref", "target": "Sha256Hex64"}},
+          {"name": "coverageDigest", "required": true, "type": {"kind": "ref", "target": "Sha256Hex64"}}
+        ]
+      }
+    },
+    {
+      "id": "MaterializationBeginHeaderPreimageV1",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "digestDomain", "required": true, "type": {"kind": "enum", "values": ["ccpocket.materialization-begin.v1"]}},
+          {"name": "source", "required": true, "type": {"kind": "ref", "target": "FixtureSourceRef"}},
+          {"name": "manifestDigest", "required": true, "type": {"kind": "ref", "target": "Sha256Hex64"}},
+          {"name": "coverageDigest", "required": true, "type": {"kind": "ref", "target": "Sha256Hex64"}},
+          {"name": "pageCount", "required": true, "type": {"kind": "integer"}}
+        ]
+      }
+    },
+    {
+      "id": "MaterializationReceiptPreimageV1",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "digestDomain", "required": true, "type": {"kind": "enum", "values": ["ccpocket.materialization-receipt.v1"]}},
+          {"name": "receiptId", "required": true, "type": {"kind": "string"}},
+          {"name": "beginHeaderDigest", "required": true, "type": {"kind": "ref", "target": "Sha256Hex64"}},
+          {"name": "manifestDigest", "required": true, "type": {"kind": "ref", "target": "Sha256Hex64"}},
+          {"name": "status", "required": true, "type": {"kind": "enum", "values": ["VERIFIED"]}},
+          {"name": "stagedBytes", "required": true, "type": {"kind": "integer"}}
+        ]
+      }
+    },
+    {
+      "id": "GapRepairIntentPreimageV1",
+      "profiles": ["fixture.active"],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {"name": "digestDomain", "required": true, "type": {"kind": "enum", "values": ["ccpocket.gap-repair-intent.v1"]}},
+          {"name": "source", "required": true, "type": {"kind": "ref", "target": "FixtureSourceRef"}},
+          {"name": "readSpecDigest", "required": true, "type": {"kind": "ref", "target": "Sha256Hex64"}},
+          {"name": "boundaryKind", "required": true, "type": {"kind": "enum", "values": ["BEFORE", "AFTER", "BETWEEN"]}},
+          {"name": "repairKind", "required": true, "type": {"kind": "enum", "values": ["NEXT_PROVIDER_PAGE", "FULL_BOUNDED_REREAD", "NONE"]}}
+        ]
+      }
+    }
+  ],
+  "owners": [{"id": "fixture.owner"}],
+  "consumers": [{"id": "fixture.consumer"}],
+  "executableTests": [{"id": "fixture.executable-test"}],
+  "hardRules": [
+    {
+      "id": "fixture.rule.type-shape",
+      "profileId": "fixture.active",
+      "ownerRef": "fixture.owner",
+      "consumerRef": "fixture.consumer",
+      "executableTestRef": "fixture.executable-test",
+      "failureReason": "FIXTURE_TYPE_SHAPE_INVALID",
+      "zeroSemantics": {
+        "admissionRows": 0,
+        "providerCalls": 0,
+        "publicationRows": 0
+      }
+    }
+  ],
+  "vectorSets": [
+    {"id": "fixture.vector-set", "profileId": "fixture.active"}
+  ]
+}

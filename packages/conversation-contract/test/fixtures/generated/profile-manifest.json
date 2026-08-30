@@ -1,0 +1,53 @@
+{
+  "artifactDigests": {
+    "contract.dart": "04d98d1491f9c5511649cfa2d20de8de953df681da74ec2d322d5762ad32fd1a",
+    "contract.ts": "b9cac40a1596019b8ce9eb5c3ad70a12c5843281f16a77647e3fbf1f9aae5f5c",
+    "schema.json": "ef501c815b5d19023709f7654fe08834709e4fcd6518b9179c167d47df7e2734"
+  },
+  "canonicalizationProfile": "RFC8785-IJSON-SAFE-INTEGER-V1",
+  "dartFormatterVersion": "3.13.0",
+  "digestPreimageTypeIds": [
+    "CanonicalProfileProbePreimageV1",
+    "GapRepairIntentPreimageV1",
+    "MaterializationBeginHeaderPreimageV1",
+    "MaterializationCoveragePreimageV1",
+    "MaterializationManifestPreimageV1",
+    "MaterializationOrderPreimageV1",
+    "MaterializationPagePreimageV1",
+    "MaterializationReceiptPreimageV1",
+    "OperationFingerprintPreimageV1",
+    "ProviderReadEvidencePreimageV1"
+  ],
+  "formatVersion": 1,
+  "generator": "@ccpocket/conversation-contract@0.0.0-private",
+  "hardRuleIds": [
+    "fixture.rule.type-shape"
+  ],
+  "profileDigest": "07db48c0fa1b872cc1ad12deb7a1454dccf61ff8414727f2e02d985ecf3cf1b2",
+  "profileId": "fixture.active",
+  "typeIds": [
+    "CanonicalProfileProbePreimageV1",
+    "FixtureEnvelope",
+    "FixturePageBodyV1",
+    "FixturePayload",
+    "FixturePriority",
+    "FixtureSourceRef",
+    "GapRepairIntentPreimageV1",
+    "MaterializationBeginHeaderPreimageV1",
+    "MaterializationCoveragePreimageV1",
+    "MaterializationManifestPreimageV1",
+    "MaterializationOrderPreimageV1",
+    "MaterializationPagePreimageV1",
+    "MaterializationReceiptPreimageV1",
+    "OperationFingerprintPreimageV1",
+    "ProviderReadEvidencePreimageV1",
+    "Sha256Hex64"
+  ],
+  "vectorIds": [
+    "fixture.vector.invalid-envelope",
+    "fixture.vector.valid-envelope"
+  ],
+  "vectorSetIds": [
+    "fixture.vector-set"
+  ]
+}
