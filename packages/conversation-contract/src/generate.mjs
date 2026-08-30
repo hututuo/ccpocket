@@ -16,6 +16,10 @@ import {
 import path from 'node:path';
 
 import { canonicalJson, digestBytes, digestJson } from './canonical.mjs';
+import {
+  CANONICALIZATION_PROFILE,
+  discoverDigestPreimages,
+} from './digest-preimages.mjs';
 import { generateDart } from './generate-dart.mjs';
 import { generateSchema } from './generate-schema.mjs';
 import { generateTypeScript } from './generate-typescript.mjs';
@@ -407,6 +411,9 @@ export function generateArtifacts(
 ) {
   const source = activeSource(model);
   const sourceDigest = digestJson(source);
+  const digestPreimageTypeIds = discoverDigestPreimages(model).map(
+    (preimage) => preimage.typeId,
+  );
   const schema = generateSchema(model, sourceDigest);
   const typescript = generateTypeScript(model, sourceDigest);
   const dart = dartSource ?? generateDart(model, sourceDigest);
@@ -421,6 +428,8 @@ export function generateArtifacts(
     ...(dartFormatterVersion ? {dartFormatterVersion} : {}),
     profileId: model.activeProfileId,
     profileDigest: sourceDigest,
+    canonicalizationProfile: CANONICALIZATION_PROFILE,
+    digestPreimageTypeIds,
     typeIds: [...model.activeDefinitionIds].sort(),
     hardRuleIds: [...model.hardRules.keys()].sort(),
     vectorSetIds: [...model.vectorSets.keys()].sort(),

@@ -70,7 +70,13 @@ export function pascalName(value) {
     .split(/[^A-Za-z0-9]+/)
     .filter(Boolean);
   let result = words.map((word) => `${word[0].toUpperCase()}${word.slice(1)}`).join('');
-  if (!result) result = 'Generated';
+  if (!result) {
+    const codeUnits = [];
+    for (let index = 0; index < value.length; index += 1) {
+      codeUnits.push(value.charCodeAt(index).toString(16).padStart(4, '0'));
+    }
+    result = `U${codeUnits.join('') || '0000'}`;
+  }
   if (/^[0-9]/.test(result)) result = `N${result}`;
   return result;
 }

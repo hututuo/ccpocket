@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import { digestBytes } from '../src/canonical.mjs';
 import { run } from '../src/cli.mjs';
+import { discoverDigestPreimages } from '../src/digest-preimages.mjs';
 import {
   GENERATED_FILES,
   TRANSACTION_LOCK_NAME,
@@ -58,7 +59,22 @@ function fixtureArtifacts(label, size = 1) {
 test('validates the active profile and excludes planned inventory', async () => {
   const value = await model();
   assert.deepEqual([...value.activeDefinitionIds].sort(), [
-    'FixtureEnvelope', 'FixturePayload', 'FixturePriority', 'FixtureSourceRef',
+    'CanonicalProfileProbePreimageV1',
+    'FixtureEnvelope',
+    'FixturePageBodyV1',
+    'FixturePayload',
+    'FixturePriority',
+    'FixtureSourceRef',
+    'GapRepairIntentPreimageV1',
+    'MaterializationBeginHeaderPreimageV1',
+    'MaterializationCoveragePreimageV1',
+    'MaterializationManifestPreimageV1',
+    'MaterializationOrderPreimageV1',
+    'MaterializationPagePreimageV1',
+    'MaterializationReceiptPreimageV1',
+    'OperationFingerprintPreimageV1',
+    'ProviderReadEvidencePreimageV1',
+    'Sha256Hex64',
   ]);
   assert.equal(value.activeVectors.length, 2);
   assert.equal(value.activeDefinitionIds.has('FutureOnly'), false);
@@ -76,11 +92,20 @@ test('validates the active profile and excludes planned inventory', async () => 
 
 test('generation is byte deterministic and manifest digests bind artifacts', async () => {
   const value = await model();
+  const digestPreimageTypeIds = discoverDigestPreimages(value).map(
+    (preimage) => preimage.typeId,
+  );
+  const goldenTypeIds = (await load('jcs-goldens.json')).cases.map(
+    (entry) => entry.typeId,
+  );
+  assert.deepEqual([...new Set(goldenTypeIds)].sort(), digestPreimageTypeIds.sort());
   const first = generateArtifacts(value);
   const second = generateArtifacts(value);
   assert.deepEqual([...first], [...second]);
   const manifest = JSON.parse(first.get('profile-manifest.json'));
   assert.equal(manifest.profileId, 'fixture.active');
+  assert.equal(manifest.canonicalizationProfile, 'RFC8785-IJSON-SAFE-INTEGER-V1');
+  assert.deepEqual(manifest.digestPreimageTypeIds, digestPreimageTypeIds);
   assert.equal(manifest.typeIds.includes('FutureOnly'), false);
   const schema = JSON.parse(first.get('schema.json'));
   assert.equal(
@@ -91,19 +116,85 @@ test('generation is byte deterministic and manifest digests bind artifacts', asy
     schema.$defs.FixtureSourceRef.properties.sourceOrdinal.maximum,
     Number.MAX_SAFE_INTEGER,
   );
+  assert.equal(schema.$defs.Sha256Hex64.pattern, '^[0-9a-f]{64}$');
+  const sha256Hex64 = new RegExp(schema.$defs.Sha256Hex64.pattern);
+  assert.match('a'.repeat(64), sha256Hex64);
+  assert.doesNotMatch('A'.repeat(64), sha256Hex64);
+  assert.doesNotMatch('a'.repeat(63), sha256Hex64);
+  assert.doesNotMatch('a'.repeat(65), sha256Hex64);
   for (const filename of ['schema.json', 'contract.ts', 'contract.dart']) {
     assert.equal(manifest.artifactDigests[filename], digestBytes(first.get(filename)));
     assert.doesNotMatch(first.get(filename), /FutureOnly/);
   }
   assert.match(first.get('schema.json'), /draft\/2020-12/);
   assert.match(first.get('contract.ts'), /export function decodeFixtureEnvelope/);
+  assert.match(first.get('contract.ts'), /export function canonicalBytesOperationFingerprintPreimageV1/);
+  assert.doesNotMatch(first.get('contract.ts'), /canonicalBytesFixtureEnvelope/);
   assert.match(first.get('contract.dart'), /sealed class FixturePayload/);
   assert.match(first.get('contract.dart'), /cost\\\$x/);
+  assert.match(first.get('contract.dart'), /String digestMaterializationReceiptPreimageV1/);
 
   const envelopeProperties = schema.$defs.FixtureEnvelope.properties;
   assert.equal(Object.hasOwn(envelopeProperties, '__proto__'), true);
   assert.deepEqual(envelopeProperties.__proto__, {type: 'string'});
   assert.equal(Object.hasOwn(Object.prototype, 'type'), false);
+});
+
+test('applies SHA-256 schema format only to the exact named scalar', async () => {
+  const registry = await load('registry.json');
+  const vectors = await load('vectors.json');
+  registry.profiles.find((profile) => profile.id === registry.activeProfileId)
+    .rootTypeRefs.push('Sha256Hex64Display');
+  registry.definitions.push({
+    id: 'Sha256Hex64Display',
+    profiles: [registry.activeProfileId],
+    node: {kind: 'string'},
+  });
+  const schema = JSON.parse(generateArtifacts(validateInputs(registry, vectors)).get('schema.json'));
+  assert.deepEqual(schema.$defs.Sha256Hex64Display, {type: 'string'});
+});
+
+test('authorizes only closed const-domain PreimageV1 definitions for digest generation', async () => {
+  const registry = await load('registry.json');
+  const vectors = await load('vectors.json');
+
+  const missingDomain = structuredClone(registry);
+  const missingDefinition = missingDomain.definitions.find(
+    (definition) => definition.id === 'OperationFingerprintPreimageV1',
+  );
+  missingDefinition.node.fields = missingDefinition.node.fields.filter(
+    (field) => field.name !== 'digestDomain',
+  );
+  assert.throws(
+    () => generateArtifacts(validateInputs(missingDomain, vectors)),
+    /must declare exactly one digestDomain field/,
+  );
+
+  const nonConstDomain = structuredClone(registry);
+  const nonConstDefinition = nonConstDomain.definitions.find(
+    (definition) => definition.id === 'OperationFingerprintPreimageV1',
+  );
+  nonConstDefinition.node.fields.find((field) => field.name === 'digestDomain').type = {
+    kind: 'string',
+  };
+  assert.throws(
+    () => generateArtifacts(validateInputs(nonConstDomain, vectors)),
+    /digestDomain must be a single-valued enum const/,
+  );
+
+  const openPreimage = structuredClone(registry);
+  const openDefinition = openPreimage.definitions.find(
+    (definition) => definition.id === 'OperationFingerprintPreimageV1',
+  );
+  openDefinition.node.fields.push({
+    name: 'extensions',
+    required: false,
+    type: {kind: 'map', values: {kind: 'string'}},
+  });
+  assert.throws(
+    () => generateArtifacts(validateInputs(openPreimage, vectors)),
+    /reaches an open map/,
+  );
 });
 
 test('rejects duplicate IDs, open refs, incomplete hard rules, and unsafe negatives', async () => {

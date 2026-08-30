@@ -1,4 +1,5 @@
 import { canonicalJson } from './canonical.mjs';
+import { SHA256_HEX_TYPE_ID } from './digest-preimages.mjs';
 
 function objectSchema(fields, schemaForNode, extraProperties = {}) {
   const properties = Object.create(null);
@@ -50,7 +51,15 @@ export function generateSchema(model, sourceDigest) {
   const definitionIds = [...model.activeDefinitionIds].sort();
   const definitions = Object.create(null);
   for (const id of definitionIds) {
-    definitions[id] = schemaForNode(model.definitions.get(id).node);
+    const node = model.definitions.get(id).node;
+    if (id === SHA256_HEX_TYPE_ID) {
+      if (node.kind !== 'string') {
+        throw new Error(`${SHA256_HEX_TYPE_ID} must be a string definition`);
+      }
+      definitions[id] = {type: 'string', pattern: '^[0-9a-f]{64}$'};
+    } else {
+      definitions[id] = schemaForNode(node);
+    }
   }
   const roots = [...model.activeProfile.rootTypeRefs].sort().map((id) => ({$ref: `#/$defs/${id}`}));
   const document = {

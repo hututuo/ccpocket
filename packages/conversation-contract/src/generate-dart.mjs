@@ -1,3 +1,7 @@
+import {
+  SHA256_HEX_TYPE_ID,
+  discoverDigestPreimages,
+} from './digest-preimages.mjs';
 import { dartMemberName, enumMemberName, pascalName } from './names.mjs';
 
 function dartString(value) {
@@ -53,6 +57,9 @@ function decodeExpression(node, expression, name, path, definitions) {
     case 'object':
     case 'union': return `${name}.fromJson(_expectMap(${expression}, ${dartString(path)}))`;
     case 'ref': {
+      if (node.target === SHA256_HEX_TYPE_ID) {
+        return `_expectSha256Hex64(${expression}, ${dartString(path)})`;
+      }
       const target = definitions.get(node.target);
       return decodeExpression(target.node, expression, pascalName(node.target), path, definitions);
     }
@@ -214,8 +221,38 @@ function declaration(name, node, definitions) {
   }
 }
 
+function digestDomainCase(preimage) {
+  const rule = preimage.domainRule;
+  if (rule.kind === 'object') {
+    return `    case ${dartString(preimage.typeId)}:\n` +
+      `      if (json['digestDomain'] != ${dartString(rule.value)}) throw FormatException('${preimage.typeId}.digestDomain: invalid digest domain');\n` +
+      `      return;`;
+  }
+  const variants = rule.variants.map((variant) =>
+    `        case ${dartString(variant.tag)}:\n` +
+    `          if (json['digestDomain'] != ${dartString(variant.value)}) throw FormatException('${preimage.typeId}.digestDomain: invalid digest domain');\n` +
+    `          return;`).join('\n');
+  return `    case ${dartString(preimage.typeId)}:\n` +
+    `      switch (json[${dartString(rule.discriminator)}]) {\n${variants}\n` +
+    `        default:\n` +
+    `          throw FormatException('${preimage.typeId}.${rule.discriminator}: invalid discriminator');\n` +
+    `      }`;
+}
+
+function digestHelpers(preimage) {
+  const name = pascalName(preimage.typeId);
+  return `Uint8List canonicalBytes${name}(${name} value) {\n` +
+    `  final snapshot = decode${name}(encode${name}(value));\n` +
+    `  final json = _expectMap(encode${name}(snapshot), ${dartString(name)});\n` +
+    `  _expectDigestDomain(${dartString(preimage.typeId)}, json);\n` +
+    `  return _canonicalBytes(json);\n` +
+    `}\n\n` +
+    `String digest${name}(${name} value) => sha256.convert(canonicalBytes${name}(value)).toString();`;
+}
+
 export function generateDart(model, sourceDigest) {
   const ids = [...model.activeDefinitionIds].sort();
+  const preimages = discoverDigestPreimages(model);
   const declarations = new Map();
   for (const id of ids) collectDeclarations(model.definitions.get(id).node, pascalName(id), declarations);
   const blocks = [];
@@ -232,14 +269,43 @@ export function generateDart(model, sourceDigest) {
   const codecs = ids.map((id) => {
     const name = pascalName(id);
     const node = model.definitions.get(id).node;
-    return `${name} decode${name}(Object? value) => ${decodeExpression(node, 'value', name, name, model.definitions)};\n` +
+    const decoder = id === SHA256_HEX_TYPE_ID
+      ? `_expectSha256Hex64(value, ${dartString(name)})`
+      : decodeExpression(node, 'value', name, name, model.definitions);
+    return `${name} decode${name}(Object? value) => ${decoder};\n` +
       `Object? encode${name}(${name} value) => ${encodeExpression(node, 'value', name, model.definitions)};`;
   }).join('\n\n');
+  const domainCases = preimages.map(digestDomainCase).join('\n');
+  const digests = preimages.map(digestHelpers).join('\n\n');
   return `// @generated from conversation contract ${sourceDigest}; DO NOT EDIT.\n` +
     `// ignore_for_file: unnecessary_cast\n\n` +
+    `import 'dart:convert';\n` +
+    `import 'dart:typed_data';\n\n` +
+    `import 'package:crypto/crypto.dart';\n\n` +
+    `final RegExp _sha256Hex64 = RegExp(r'^[0-9a-f]{64}$');\n\n` +
+    `void _expectUnicodeScalarString(String value, String path) {\n` +
+    `  final units = value.codeUnits;\n` +
+    `  for (var index = 0; index < units.length; index += 1) {\n` +
+    `    final code = units[index];\n` +
+    `    if (code >= 0xd800 && code <= 0xdbff) {\n` +
+    `      if (index + 1 >= units.length) throw FormatException('$path: lone high surrogate');\n` +
+    `      final low = units[index + 1];\n` +
+    `      if (low < 0xdc00 || low > 0xdfff) throw FormatException('$path: lone high surrogate');\n` +
+    `      index += 1;\n` +
+    `    } else if (code >= 0xdc00 && code <= 0xdfff) {\n` +
+    `      throw FormatException('$path: lone low surrogate');\n` +
+    `    }\n` +
+    `  }\n` +
+    `}\n\n` +
     `String _expectString(Object? value, String path) {\n` +
     `  if (value is! String) throw FormatException('$path: expected string');\n` +
+    `  _expectUnicodeScalarString(value, path);\n` +
     `  return value;\n` +
+    `}\n\n` +
+    `String _expectSha256Hex64(Object? value, String path) {\n` +
+    `  final text = _expectString(value, path);\n` +
+    `  if (!_sha256Hex64.hasMatch(text)) throw FormatException('$path: expected lowercase SHA-256 hex64');\n` +
+    `  return text;\n` +
     `}\n\n` +
     `int _expectInt(Object? value, String path) {\n` +
     `  const minimum = -9007199254740991;\n` +
@@ -270,8 +336,77 @@ export function generateDart(model, sourceDigest) {
     `}\n\n` +
     `void _expectKeys(Map<String, Object?> json, Set<String> required, Set<String> allowed, String path) {\n` +
     `  for (final key in required) { if (!json.containsKey(key)) throw FormatException('$path.$key: required'); }\n` +
-    `  for (final key in json.keys) { if (!allowed.contains(key)) throw FormatException('$path.$key: unknown field'); }\n` +
+    `  for (final key in json.keys) {\n` +
+    `    _expectUnicodeScalarString(key, '$path.<key>');\n` +
+    `    if (!allowed.contains(key)) throw FormatException('$path.$key: unknown field');\n` +
+    `  }\n` +
+    `}\n\n` +
+    `int _compareUtf16(String left, String right) {\n` +
+    `  final leftUnits = left.codeUnits;\n` +
+    `  final rightUnits = right.codeUnits;\n` +
+    `  final length = leftUnits.length < rightUnits.length ? leftUnits.length : rightUnits.length;\n` +
+    `  for (var index = 0; index < length; index += 1) {\n` +
+    `    final comparison = leftUnits[index].compareTo(rightUnits[index]);\n` +
+    `    if (comparison != 0) return comparison;\n` +
+    `  }\n` +
+    `  return leftUnits.length.compareTo(rightUnits.length);\n` +
+    `}\n\n` +
+    `String _canonicalString(String value) {\n` +
+    `  _expectUnicodeScalarString(value, r'\$');\n` +
+    `  final buffer = StringBuffer()..writeCharCode(0x22);\n` +
+    `  final units = value.codeUnits;\n` +
+    `  for (var index = 0; index < units.length; index += 1) {\n` +
+    `    final code = units[index];\n` +
+    `    if (code == 0x22 || code == 0x5c) {\n` +
+    `      buffer.writeCharCode(0x5c);\n` +
+    `      buffer.writeCharCode(code);\n` +
+    `    } else if (code == 0x08 || code == 0x09 || code == 0x0a || code == 0x0c || code == 0x0d) {\n` +
+    `      buffer.writeCharCode(0x5c);\n` +
+    `      buffer.writeCharCode(switch (code) { 0x08 => 0x62, 0x09 => 0x74, 0x0a => 0x6e, 0x0c => 0x66, _ => 0x72 });\n` +
+    `    } else if (code <= 0x1f) {\n` +
+    `      buffer\n` +
+    `        ..writeCharCode(0x5c)\n` +
+    `        ..writeCharCode(0x75)\n` +
+    `        ..write(code.toRadixString(16).padLeft(4, '0'));\n` +
+    `    } else if (code >= 0xd800 && code <= 0xdbff) {\n` +
+    `      buffer.write(String.fromCharCodes([code, units[index + 1]]));\n` +
+    `      index += 1;\n` +
+    `    } else {\n` +
+    `      buffer.writeCharCode(code);\n` +
+    `    }\n` +
+    `  }\n` +
+    `  buffer.writeCharCode(0x22);\n` +
+    `  return buffer.toString();\n` +
+    `}\n\n` +
+    `final class _CanonicalBudget {\n` +
+    `  var nodes = 0;\n\n` +
+    `  void enter(int depth) {\n` +
+    `    if (depth > 512) throw const FormatException('Canonical JSON nesting is too deep');\n` +
+    `    nodes += 1;\n` +
+    `    if (nodes > 100000) throw const FormatException('Canonical JSON node limit exceeded');\n` +
+    `  }\n` +
+    `}\n\n` +
+    `String _canonicalJson(Object? value, int depth, _CanonicalBudget budget) {\n` +
+    `  budget.enter(depth);\n` +
+    `  if (value is String) return _canonicalString(value);\n` +
+    `  if (value is int) return _expectInt(value, r'\$').toString();\n` +
+    `  if (value is bool) return value ? 'true' : 'false';\n` +
+    `  if (value is List) return '[\${value.map((entry) => _canonicalJson(entry, depth + 1, budget)).join(',')}]';\n` +
+    `  if (value is Map) {\n` +
+    `    final json = _expectMap(value, r'\$');\n` +
+    `    final keys = json.keys.toList(growable: false)..sort(_compareUtf16);\n` +
+    `    return '{\${keys.map((key) => '\${_canonicalString(key)}:\${_canonicalJson(json[key], depth + 1, budget)}').join(',')}}';\n` +
+    `  }\n` +
+    `  throw FormatException('Unsupported canonical JSON value: \${value.runtimeType}');\n` +
+    `}\n\n` +
+    `Uint8List _canonicalBytes(Object? value) => Uint8List.fromList(utf8.encode(_canonicalJson(value, 0, _CanonicalBudget())));\n\n` +
+    `void _expectDigestDomain(String typeId, Map<String, Object?> json) {\n` +
+    `  switch (typeId) {\n${domainCases}\n` +
+    `    default:\n` +
+    `      throw StateError('Unknown digest preimage type: $typeId');\n` +
+    `  }\n` +
     `}\n\n` +
     `${blocks.join('\n\n')}\n\n` +
-    `${codecs}\n`;
+    `${codecs}\n` +
+    (digests ? `\n${digests}\n` : '');
 }

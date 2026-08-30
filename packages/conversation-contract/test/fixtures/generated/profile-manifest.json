@@ -1,22 +1,47 @@
 {
   "artifactDigests": {
-    "contract.dart": "a5b72c0312907d089d63af20552ef89c058f90af3fe01e173b271fb324afd7a2",
-    "contract.ts": "8ab7952d1dcdfa5e78f25b664db482e541db81bb8b425c0a321453d2e537ef6e",
-    "schema.json": "7f77a5f7c31d516f99b0df6915b11a65c0233e91957997676054091f18eac469"
+    "contract.dart": "04d98d1491f9c5511649cfa2d20de8de953df681da74ec2d322d5762ad32fd1a",
+    "contract.ts": "b9cac40a1596019b8ce9eb5c3ad70a12c5843281f16a77647e3fbf1f9aae5f5c",
+    "schema.json": "ef501c815b5d19023709f7654fe08834709e4fcd6518b9179c167d47df7e2734"
   },
+  "canonicalizationProfile": "RFC8785-IJSON-SAFE-INTEGER-V1",
   "dartFormatterVersion": "3.13.0",
+  "digestPreimageTypeIds": [
+    "CanonicalProfileProbePreimageV1",
+    "GapRepairIntentPreimageV1",
+    "MaterializationBeginHeaderPreimageV1",
+    "MaterializationCoveragePreimageV1",
+    "MaterializationManifestPreimageV1",
+    "MaterializationOrderPreimageV1",
+    "MaterializationPagePreimageV1",
+    "MaterializationReceiptPreimageV1",
+    "OperationFingerprintPreimageV1",
+    "ProviderReadEvidencePreimageV1"
+  ],
   "formatVersion": 1,
   "generator": "@ccpocket/conversation-contract@0.0.0-private",
   "hardRuleIds": [
     "fixture.rule.type-shape"
   ],
-  "profileDigest": "e4f018a0338b9ce09d8df016d1f2fc325c5a81b460db8251a6b868897378393b",
+  "profileDigest": "07db48c0fa1b872cc1ad12deb7a1454dccf61ff8414727f2e02d985ecf3cf1b2",
   "profileId": "fixture.active",
   "typeIds": [
+    "CanonicalProfileProbePreimageV1",
     "FixtureEnvelope",
+    "FixturePageBodyV1",
     "FixturePayload",
     "FixturePriority",
-    "FixtureSourceRef"
+    "FixtureSourceRef",
+    "GapRepairIntentPreimageV1",
+    "MaterializationBeginHeaderPreimageV1",
+    "MaterializationCoveragePreimageV1",
+    "MaterializationManifestPreimageV1",
+    "MaterializationOrderPreimageV1",
+    "MaterializationPagePreimageV1",
+    "MaterializationReceiptPreimageV1",
+    "OperationFingerprintPreimageV1",
+    "ProviderReadEvidencePreimageV1",
+    "Sha256Hex64"
   ],
   "vectorIds": [
     "fixture.vector.invalid-envelope",
