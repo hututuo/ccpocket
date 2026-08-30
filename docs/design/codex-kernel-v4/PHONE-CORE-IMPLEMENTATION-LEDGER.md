@@ -278,3 +278,47 @@ Codex isolated probe、测试端口 `8766`、simulator E2E、手机测试候选�
   局部锚定，older prepend 使用递减 signed safe `turnOrdinal/timelineOrdinal`，`itemOrdinal` 保持
   turn-local 非负；不得为了把数值改成非负而移动已加载 identity。Mobile repository 同步返工。
 - 本节没有启动 Codex/Bridge/DB/端口/Mobile/simulator，也没有改变发布授权。
+
+## 14. 2026-08-30 K00 生成事务信任边界修复
+
+- tooling 后续修复 `23d4a13f` 经根分支重放为 `45ccc633`，parent 为
+  `4827df6e`。该提交不改 Registry/Vectors 或产品代码，只修复四目标生成事务与
+  `check` 的文件系统信任边界；根工作树在 cherry-pick 前后均 clean。
+- `projectRoot` 先解析为真实目录，目标父目录逐级拒绝 symlink 和越界；expected target
+  必须是 regular non-symlink file，任何额外 file/symlink/directory/socket 以及残留
+  lock/stage 均被判为 drift。transaction rollback 以 `dev + ino + size + SHA-256` 重新确认
+  自己安装或备份的对象；检测到外部替换时不删除、不覆盖，并保留 lock、stage 和 backup
+  作为恢复证据。
+- 根环境固定 Node `22.23.1` 复跑
+  `npm test --workspace=packages/conversation-contract`：Node 15/15、fixture TypeScript strict、
+  Dart 3.13 analyze/roundtrip 全部 PASS；`npm run conversation:contract:validate` 返回
+  `validate: pvmc1.phone-core.v1`。`mise` 对无关 Shorebird registry 的既有 warning 不影响
+  exit 0。针对该后续提交的第二份只读复审仍在进行，因此 K00 继续为
+  `IN_PROGRESS / REVIEW_PENDING`。
+- 正式 mapped generate/check 仍未执行；四个 derived targets 仍不存在。这是有意等待
+  runtime-fact Registry/Vectors 最终原子修订，不把过期中间产物提交进 Git。
+- K01 容量复现新增客观证据：旧 core 即使 `maxPageSize=1`，一个含 1,001 items 的完整 turn
+  仍会全部进入内存（只在返回窗口裁到 1）；同一 live generation 连续 300 个唯一 item 会形成
+  300 项 overlay。该结果归入已打开的 bounded input/live P1，不能把输出分页误写成输入容量 PASS。
+- 本节没有生成正式类型，没有运行 Bridge/Provider/SQLite/8765/8766/Mobile/simulator/candidate，
+  也没有 merge、push、部署、发布、OTA、stable 或真机安装。
+
+## 15. 2026-08-30 K02 Identity 独立复核重新打开
+
+- 对已集成 `663d62e4`、`ee836cd5` 的独立只读复核结论为
+  `P0=0 / P1=1 / P2=4`。先前 27 focused tests、full Bridge tests 与 tsc PASS 保留，
+  但 K02 identity 状态从“实现已加固”明确回到 `IN_PROGRESS / REWORK_REQUIRED`。
+- P1：当前 source registry 把 `sourceEpoch` 与稳定 source binding 一起持久化，close/reopen 后仍
+  返回同一值；这违反已接受的认证连接生命周期 fence，未来若被 wire/read/admission 使用，会使旧
+  frame/token 跨 Bridge 重启保留同一 fence。修订方向固定为：只持久化 stable
+  `codexSourceId + locatorDigest`，每次 authenticated bind 创建新的内存 epoch，close/source
+  replacement 后旧 epoch 无效。
+- P2：Bridge identity proof 的外层 `methods` 尚未与 signed canonical methods exact 比较；
+  identity store 只有进程内 writer guard，第二进程可以持有 stale source snapshot；lock namespace
+  rename/remove 缺 parent-directory fsync；release 在 rename 前没有用 dev/inode 绑定，构造相同
+  pid/token replacement 时旧 closure 可删新 lock。以上均进入同一 identity 原子返工，禁止推迟到
+  websocket 调用点补例外。
+- 复核在 Node `22.23.1` 下复跑 identity 3 files / 27 tests 与 Bridge tsc 均 PASS，证明这些是
+  既有测试覆盖缺口，不是编译失败。返工需新增 sourceEpoch lifecycle、outer methods mismatch、
+  two-process writer lease、namespace fsync 和 same-token replacement 回归，再由根复核后集成。
+- 本复核/返工未启动 Bridge/Provider/DB/端口/simulator，也未改变任何发布授权。
