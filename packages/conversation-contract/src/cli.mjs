@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,8 +9,13 @@ import { parseArgs, promisify } from 'node:util';
 
 import {
   GENERATED_FILES,
+  assertSecureDirectory,
   assertOutputDirectory,
+  findTransactionResidues,
   generateArtifacts,
+  resolveProjectTarget,
+  resolveRealProjectRoot,
+  transactionRootsForTargets,
   writeArtifactTargets,
   writeArtifacts,
 } from './generate.mjs';
@@ -92,20 +97,19 @@ async function loadTargetMap(filename) {
     throw new Error(`target map: artifacts must map exactly ${expectedKeys.join(', ')} in ${resolved}`);
   }
 
-  const projectRoot = path.resolve(path.dirname(resolved), document.projectRoot);
+  const configuredProjectRoot = path.resolve(path.dirname(resolved), document.projectRoot);
+  const projectRoot = await resolveRealProjectRoot(configuredProjectRoot);
   const targets = new Map();
   for (const filename of GENERATED_FILES) {
     const configured = document.artifacts[filename];
     if (typeof configured !== 'string' || configured.length === 0) {
       throw new Error(`target map: ${filename} must map to a non-empty path in ${resolved}`);
     }
-    const target = path.resolve(projectRoot, configured);
-    const relative = path.relative(projectRoot, target);
-    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-      throw new Error(`target map: ${filename} escapes projectRoot in ${resolved}`);
-    }
-    if (path.basename(target) !== filename) {
-      throw new Error(`target map: ${filename} target must keep its artifact filename in ${resolved}`);
+    let target;
+    try {
+      target = resolveProjectTarget(projectRoot, configured, filename);
+    } catch (error) {
+      throw new Error(`target map: ${error.message} in ${resolved}`);
     }
     targets.set(filename, target);
   }
@@ -116,21 +120,36 @@ async function loadTargetMap(filename) {
 }
 
 async function checkDrift(outputDirectory, artifacts) {
-  await assertOutputDirectory(outputDirectory);
+  const canonicalDirectory = await assertOutputDirectory(outputDirectory);
   const drift = [];
   for (const filename of GENERATED_FILES) {
+    const target = path.join(canonicalDirectory, filename);
+    let status;
+    try {
+      status = await lstat(target);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    if (status === undefined) {
+      drift.push(`${filename} (missing)`);
+      continue;
+    }
+    if (!status.isFile() || status.isSymbolicLink()) {
+      drift.push(`${filename} (not a regular file)`);
+      continue;
+    }
     let committed;
     try {
-      committed = await readFile(path.join(outputDirectory, filename), 'utf8');
+      committed = await readFile(target, 'utf8');
     } catch {
       drift.push(`${filename} (missing)`);
       continue;
     }
     if (committed !== artifacts.get(filename)) drift.push(filename);
   }
-  const entries = await readdir(outputDirectory, {withFileTypes: true});
+  const entries = await readdir(canonicalDirectory, {withFileTypes: true});
   for (const entry of entries) {
-    if (entry.isFile() && !GENERATED_FILES.includes(entry.name)) {
+    if (!GENERATED_FILES.includes(entry.name)) {
       drift.push(`${entry.name} (unexpected)`);
     }
   }
@@ -142,12 +161,38 @@ async function checkDrift(outputDirectory, artifacts) {
 async function checkTargetDrift(targetMap, artifacts) {
   const drift = [];
   const filesByDirectory = new Map();
+  const transactionRoots = transactionRootsForTargets(
+    targetMap.projectRoot,
+    targetMap.targets,
+  );
+  for (const residue of await findTransactionResidues(transactionRoots)) {
+    drift.push(`${residue} (unfinished transaction)`);
+  }
   for (const filename of GENERATED_FILES) {
     const target = targetMap.targets.get(filename);
     const directory = path.dirname(target);
-    await assertOutputDirectory(directory);
+    try {
+      await assertSecureDirectory(targetMap.projectRoot, directory);
+    } catch (error) {
+      drift.push(`${directory} (${error.message})`);
+      continue;
+    }
     if (!filesByDirectory.has(directory)) filesByDirectory.set(directory, new Set());
     filesByDirectory.get(directory).add(path.basename(target));
+    let status;
+    try {
+      status = await lstat(target);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    if (status === undefined) {
+      drift.push(`${target} (missing)`);
+      continue;
+    }
+    if (!status.isFile() || status.isSymbolicLink()) {
+      drift.push(`${target} (not a regular file)`);
+      continue;
+    }
     let committed;
     try {
       committed = await readFile(target, 'utf8');
@@ -160,7 +205,7 @@ async function checkTargetDrift(targetMap, artifacts) {
   for (const [directory, expected] of filesByDirectory) {
     const entries = await readdir(directory, {withFileTypes: true});
     for (const entry of entries) {
-      if (entry.isFile() && !expected.has(entry.name)) {
+      if (!expected.has(entry.name)) {
         drift.push(`${path.join(directory, entry.name)} (unexpected)`);
       }
     }
@@ -230,8 +275,13 @@ export async function run(argv = process.argv.slice(2)) {
     ? await formatDartArtifact(model)
     : generateArtifacts(model);
   if (command === 'generate') {
-    if (targetMap) await writeArtifactTargets(targetMap.targets, artifacts);
-    else await writeArtifacts(outputDirectory, artifacts);
+    if (targetMap) {
+      await writeArtifactTargets(targetMap.targets, artifacts, {
+        projectRoot: targetMap.projectRoot,
+      });
+    } else {
+      await writeArtifacts(outputDirectory, artifacts);
+    }
     return {
       command,
       profileId: model.activeProfileId,

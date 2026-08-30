@@ -5,8 +5,11 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
+  rename,
   rm,
   symlink,
+  unlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -18,6 +21,8 @@ import { digestBytes } from '../src/canonical.mjs';
 import { run } from '../src/cli.mjs';
 import {
   GENERATED_FILES,
+  TRANSACTION_LOCK_NAME,
+  TRANSACTION_STAGE_PREFIX,
   generateArtifacts,
   writeArtifactTargets,
   writeArtifacts,
@@ -422,7 +427,7 @@ test('writeArtifacts rejects unsafe outputs, preserves symlink victims, and seri
     ]);
     assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
     const rejected = results.find((result) => result.status === 'rejected');
-    assert.match(rejected.reason.message, /artifact generation is already locked/);
+    assert.match(rejected.reason.message, /(?:already locked|unfinished artifact transaction)/);
     const winner = results[0].status === 'fulfilled' ? left : right;
     for (const filename of GENERATED_FILES) {
       assert.equal(await readFile(path.join(concurrent, filename), 'utf8'), winner.get(filename));
@@ -430,6 +435,47 @@ test('writeArtifacts rejects unsafe outputs, preserves symlink victims, and seri
     assert.deepEqual(
       (await readdir(concurrent)).filter((name) => name.startsWith('.ccpocket-contract')),
       [],
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('target-map generation rejects a nested symlink escape below the real project root', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-escape-'));
+  try {
+    const project = path.join(directory, 'project');
+    const outside = path.join(directory, 'outside');
+    await mkdir(project);
+    await mkdir(outside);
+    await symlink(outside, path.join(project, 'bridge'));
+    const registryFile = path.join(directory, 'registry.json');
+    const vectorsFile = path.join(directory, 'vectors.json');
+    const targetMapFile = path.join(directory, 'target-map.json');
+    await writeFile(registryFile, await readFile(path.join(fixtures, 'registry.json'), 'utf8'));
+    await writeFile(vectorsFile, await readFile(path.join(fixtures, 'vectors.json'), 'utf8'));
+    await writeFile(targetMapFile, JSON.stringify({
+      formatVersion: 1,
+      projectRoot: 'project',
+      artifacts: {
+        'schema.json': 'docs/generated/schema.json',
+        'profile-manifest.json': 'docs/generated/profile-manifest.json',
+        'contract.ts': 'bridge/generated/contract.ts',
+        'contract.dart': 'mobile/generated/contract.dart',
+      },
+    }), 'utf8');
+    await assert.rejects(
+      run([
+        'generate',
+        '--registry', registryFile,
+        '--vectors', vectorsFile,
+        '--target-map', targetMapFile,
+      ]),
+      /output path contains a symbolic link/,
+    );
+    await assert.rejects(
+      readFile(path.join(outside, 'generated/contract.ts'), 'utf8'),
+      /ENOENT/,
     );
   } finally {
     await rm(directory, {recursive: true, force: true});
@@ -470,6 +516,40 @@ test('mapped project targets generate and check one exact artifact set', async (
       assert.equal((await lstat(generated)).isFile(), true);
     }
 
+    const contractTarget = path.join(directory, 'bridge/generated/contract.ts');
+    const contractContent = await readFile(contractTarget, 'utf8');
+    const sameContentVictim = path.join(directory, 'same-content-contract.ts');
+    await writeFile(sameContentVictim, contractContent, 'utf8');
+    await unlink(contractTarget);
+    await symlink(sameContentVictim, contractTarget);
+    await assert.rejects(run(['check', ...args]), /contract\.ts \(not a regular file\)/);
+    assert.equal(await readFile(sameContentVictim, 'utf8'), contractContent);
+    await unlink(contractTarget);
+    await writeFile(contractTarget, contractContent, 'utf8');
+
+    const staleLink = path.join(directory, 'docs/generated/stale-link');
+    await symlink(sameContentVictim, staleLink);
+    await assert.rejects(run(['check', ...args]), /stale-link \(unexpected\)/);
+    await unlink(staleLink);
+
+    const staleDirectory = path.join(directory, 'docs/generated/stale-directory');
+    await mkdir(staleDirectory);
+    await assert.rejects(run(['check', ...args]), /stale-directory \(unexpected\)/);
+    await rm(staleDirectory, {recursive: true});
+
+    const staleLock = path.join(await realpath(directory), TRANSACTION_LOCK_NAME);
+    await mkdir(staleLock);
+    await assert.rejects(run(['check', ...args]), /unfinished transaction/);
+    await rm(staleLock, {recursive: true});
+
+    const staleStage = path.join(
+      await realpath(directory),
+      `${TRANSACTION_STAGE_PREFIX}stale`,
+    );
+    await mkdir(staleStage);
+    await assert.rejects(run(['check', ...args]), /unfinished transaction/);
+    await rm(staleStage, {recursive: true});
+
     const stale = path.join(directory, 'docs/generated/old-schema.json');
     await writeFile(stale, '{}\n', 'utf8');
     await assert.rejects(run(['check', ...args]), /old-schema\.json \(unexpected\)/);
@@ -484,13 +564,13 @@ test('mapped project targets generate and check one exact artifact set', async (
     const left = fixtureArtifacts('M', 2_000_000);
     const right = fixtureArtifacts('N', 2_000_000);
     const results = await Promise.allSettled([
-      writeArtifactTargets(targets, left),
-      writeArtifactTargets(targets, right),
+      writeArtifactTargets(targets, left, {projectRoot: directory}),
+      writeArtifactTargets(targets, right, {projectRoot: directory}),
     ]);
     assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
     assert.match(
       results.find((result) => result.status === 'rejected').reason.message,
-      /artifact generation is already locked/,
+      /(?:already locked|unfinished artifact transaction)/,
     );
     const winner = results[0].status === 'fulfilled' ? left : right;
     for (const filename of GENERATED_FILES) {
@@ -500,6 +580,170 @@ test('mapped project targets generate and check one exact artifact set', async (
       (await readdir(directory)).filter((name) => name.startsWith('.ccpocket-contract')),
       [],
     );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('transaction faults during backup or install restore the complete prior artifact set', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-rollback-'));
+  try {
+    const targets = new Map([
+      ['schema.json', path.join(directory, 'docs/schema.json')],
+      ['profile-manifest.json', path.join(directory, 'docs/profile-manifest.json')],
+      ['contract.ts', path.join(directory, 'bridge/contract.ts')],
+      ['contract.dart', path.join(directory, 'mobile/contract.dart')],
+    ]);
+    const previous = fixtureArtifacts('P');
+    const replacement = fixtureArtifacts('Q');
+    await writeArtifactTargets(targets, previous, {projectRoot: directory});
+
+    let backups = 0;
+    await assert.rejects(
+      writeArtifactTargets(targets, replacement, {
+        projectRoot: directory,
+        hooks: {
+          afterBackup() {
+            backups += 1;
+            if (backups === 2) throw new Error('injected backup fault');
+          },
+        },
+      }),
+      /injected backup fault/,
+    );
+    for (const filename of GENERATED_FILES) {
+      assert.equal(await readFile(targets.get(filename), 'utf8'), previous.get(filename));
+    }
+    assert.deepEqual(
+      (await readdir(await realpath(directory))).filter(
+        (name) => name.startsWith('.ccpocket-contract-targets'),
+      ),
+      [],
+    );
+
+    let installs = 0;
+    await assert.rejects(
+      writeArtifactTargets(targets, replacement, {
+        projectRoot: directory,
+        hooks: {
+          afterInstall() {
+            installs += 1;
+            if (installs === 2) throw new Error('injected install fault');
+          },
+        },
+      }),
+      /injected install fault/,
+    );
+    for (const filename of GENERATED_FILES) {
+      assert.equal(await readFile(targets.get(filename), 'utf8'), previous.get(filename));
+    }
+    assert.deepEqual(
+      (await readdir(await realpath(directory))).filter(
+        (name) => name.startsWith('.ccpocket-contract-targets'),
+      ),
+      [],
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('rollback never deletes an externally replaced target and retains recovery evidence', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-external-'));
+  try {
+    const targets = new Map([
+      ['schema.json', path.join(directory, 'docs/schema.json')],
+      ['profile-manifest.json', path.join(directory, 'docs/profile-manifest.json')],
+      ['contract.ts', path.join(directory, 'bridge/contract.ts')],
+      ['contract.dart', path.join(directory, 'mobile/contract.dart')],
+    ]);
+    const previous = fixtureArtifacts('R');
+    const replacement = fixtureArtifacts('S');
+    await writeArtifactTargets(targets, previous, {projectRoot: directory});
+
+    await assert.rejects(
+      writeArtifactTargets(targets, replacement, {
+        projectRoot: directory,
+        hooks: {
+          async afterInstall(record) {
+            if (record.filename !== 'schema.json') return;
+            await unlink(record.target);
+            await writeFile(record.target, 'external replacement', 'utf8');
+            throw new Error('injected failure after external replacement');
+          },
+        },
+      }),
+      /automatic recovery stopped.*externally replaced/,
+    );
+    assert.equal(await readFile(targets.get('schema.json'), 'utf8'), 'external replacement');
+    const rootEntries = await readdir(await realpath(directory));
+    assert.equal(rootEntries.includes(TRANSACTION_LOCK_NAME), true);
+    const stageName = rootEntries.find((name) => name.startsWith(TRANSACTION_STAGE_PREFIX));
+    assert.ok(stageName);
+    assert.equal(
+      await readFile(path.join(await realpath(directory), stageName, 'backup/schema.json'), 'utf8'),
+      previous.get('schema.json'),
+    );
+
+    await assert.rejects(
+      writeArtifactTargets(targets, replacement, {projectRoot: directory}),
+      /unfinished artifact transaction/,
+    );
+
+    const targetMapFile = path.join(directory, 'target-map.json');
+    await writeFile(targetMapFile, JSON.stringify({
+      formatVersion: 1,
+      projectRoot: '.',
+      artifacts: Object.fromEntries(
+        [...targets].map(([filename, target]) => [
+          filename,
+          path.relative(directory, target),
+        ]),
+      ),
+    }), 'utf8');
+    await assert.rejects(
+      run([
+        'check',
+        '--registry', path.join(fixtures, 'registry.json'),
+        '--vectors', path.join(fixtures, 'vectors.json'),
+        '--target-map', targetMapFile,
+      ]),
+      /unfinished transaction/,
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('rollback cleanup failure keeps the transaction lock and stage visible', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-cleanup-'));
+  try {
+    const targets = new Map(GENERATED_FILES.map((filename) => [
+      filename,
+      path.join(directory, filename),
+    ]));
+    const previous = fixtureArtifacts('T');
+    await writeArtifactTargets(targets, previous, {projectRoot: directory});
+    await assert.rejects(
+      writeArtifactTargets(targets, fixtureArtifacts('U'), {
+        projectRoot: directory,
+        hooks: {
+          afterBackup() {
+            throw new Error('injected transaction failure');
+          },
+          beforeStageCleanup() {
+            throw new Error('injected cleanup failure');
+          },
+        },
+      }),
+      /automatic recovery stopped.*injected cleanup failure/,
+    );
+    for (const filename of GENERATED_FILES) {
+      assert.equal(await readFile(targets.get(filename), 'utf8'), previous.get(filename));
+    }
+    const entries = await readdir(await realpath(directory));
+    assert.equal(entries.includes(TRANSACTION_LOCK_NAME), true);
+    assert.equal(entries.some((name) => name.startsWith(TRANSACTION_STAGE_PREFIX)), true);
   } finally {
     await rm(directory, {recursive: true, force: true});
   }

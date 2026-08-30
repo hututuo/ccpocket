@@ -39,8 +39,14 @@ the Dart artifact before its digest is calculated. `check` repeats that process
 and fails on byte drift or unexpected regular files in an artifact directory.
 Generation rejects symlink/non-directory outputs, uses an exclusive lock and
 unpredictable transaction staging, and never follows a pre-existing artifact
-symlink. No timestamp, host path, or random value enters an output. The CLI uses
-Dart from `PATH`, or the project's `mise` Flutter `3.47.0` tool when Dart is not
+symlink. Target maps canonicalize the real project root first, then reject any
+symlink or realpath escape below that root. Rollback deletes an installed file
+only after its device, inode, size, and digest still match the transaction; if
+external replacement or cleanup failure makes recovery unsafe, the lock, stage,
+and backup remain as explicit recovery evidence. `check` rejects non-regular
+targets, every unexpected directory entry, and unfinished lock/stage residue.
+No timestamp, host path, or random value enters an output. The CLI uses Dart
+from `PATH`, or the project's `mise` Flutter `3.47.0` tool when Dart is not
 already available.
 
 The root `conversation:contract:*` scripts are the formal project gate. They
