@@ -253,6 +253,20 @@ Future<CommitReceipt> _commitRuntimeProjectionSafely(
     );
   }
   if (admission.wasDuplicate && admission.wasAlreadyApplied) {
+    if (!admission.shouldResumePublication) {
+      final window = await _readWindow(
+        repository,
+        projection.key,
+        limit: effectiveLimit,
+        publicationEventId: null,
+      );
+      return CommitReceipt(
+        envelopeId: projection.projectionId,
+        wasDuplicate: true,
+        wasPublished: false,
+        window: window,
+      );
+    }
     final publication = await _publishPublicationOutbox(
       repository,
       projection.key,
@@ -261,6 +275,7 @@ Future<CommitReceipt> _commitRuntimeProjectionSafely(
       domain: 'projection',
       operationId: projection.projectionId,
       readLimit: effectiveLimit,
+      requiredCurrentProjectionId: projection.projectionId,
     );
     final window = await _readWindow(
       repository,
@@ -381,16 +396,28 @@ Future<_ProjectionAdmission> _admitRuntimeProjectionSafely(
             'projection_id',
             'projection_digest',
           ],
-          where: '${_keyWhere()} AND projection_id = ?',
-          whereArgs: <Object?>[
-            ..._keyArgs(projection.key),
-            projection.projectionId,
-          ],
+          where: _keyWhere(),
+          whereArgs: _keyArgs(projection.key),
           limit: 1,
         );
-        if (headRows.isNotEmpty &&
+        final currentHead = headRows.isEmpty ? null : headRows.single;
+        final identityIsCurrent =
+            currentHead?['projection_id'] == projection.projectionId;
+        if (identity.disposition == 'applied' && currentHead == null) {
+          throw const ConversationRepositoryException(
+            RepositoryFailureCode.invalidDatabaseIdentity,
+            'applied projection identity has no current repository head',
+          );
+        }
+        if (identityIsCurrent && identity.disposition != 'applied') {
+          throw const ConversationRepositoryException(
+            RepositoryFailureCode.invalidDatabaseIdentity,
+            'current projection head is not backed by an applied identity',
+          );
+        }
+        if (identityIsCurrent &&
             !_projectionHeadIdentityMatches(
-              headRows.single,
+              currentHead!,
               projection,
               projectionDigest,
             )) {
@@ -402,6 +429,8 @@ Future<_ProjectionAdmission> _admitRuntimeProjectionSafely(
         return _ProjectionAdmission(
           wasDuplicate: true,
           wasAlreadyApplied: identity.disposition != 'pending',
+          shouldResumePublication:
+              identity.disposition == 'applied' && identityIsCurrent,
         );
       }
 
@@ -469,6 +498,7 @@ Future<_ProjectionAdmission> _admitRuntimeProjectionSafely(
       return const _ProjectionAdmission(
         wasDuplicate: false,
         wasAlreadyApplied: false,
+        shouldResumePublication: false,
       );
     });
   });

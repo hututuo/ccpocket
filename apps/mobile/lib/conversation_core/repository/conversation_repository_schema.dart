@@ -484,6 +484,19 @@ const _schemaColumns = <String, List<_SchemaColumn>>{
 };
 
 const _schemaIndexes = <_SchemaIndex>[
+  _SchemaIndex(
+    'projection_identity_pending_idx',
+    'projection_identity',
+    0,
+    <String>[
+      'disposition',
+      'bridge_identity_id',
+      'bridge_instance_id',
+      'codex_source_id',
+      'provider_thread_id',
+      'projection_id',
+    ],
+  ),
   _SchemaIndex('canonical_item_window_idx', 'canonical_item', 0, <String>[
     'bridge_identity_id',
     'bridge_instance_id',

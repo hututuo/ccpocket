@@ -476,6 +476,191 @@ void main() {
       await subscription.cancel();
     });
 
+    test(
+      'historical applied replay does not drive an unacknowledged outbox',
+      () async {
+        final original = _projection(
+          'historical-pending-outbox-x',
+          sourceEpoch: 'source-1',
+          providerEpoch: 'provider-1',
+          connectionEpoch: 'connection-1',
+          sourceRevision: 1,
+          operationId: 'historical-pending-operation-x',
+        );
+        final x = await repository.commitRuntimeProjections(original);
+        expect(x.wasPublished, isTrue);
+        expect(x.publicationEventId, isNotNull);
+
+        await repository.commitRuntimeProjections(
+          _projection(
+            'historical-pending-outbox-y',
+            sourceEpoch: 'source-1',
+            providerEpoch: 'provider-1',
+            connectionEpoch: 'connection-1',
+            sourceRevision: 2,
+            operationId: 'historical-pending-operation-y',
+          ),
+        );
+
+        final databasePath = repository.resolvedDatabasePath!;
+        final before = await databaseFactoryFfi.openDatabase(
+          databasePath,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        final beforeOutbox = await before.query(
+          'publication_outbox',
+          columns: const <String>[
+            'phase',
+            'notification_state',
+            'event_id',
+            'delivery_token',
+            'delivery_claimed_at',
+          ],
+          where: 'domain = ? AND operation_id = ?',
+          whereArgs: const <Object?>[
+            'projection',
+            'historical-pending-outbox-x',
+          ],
+        );
+        expect(beforeOutbox, hasLength(1));
+        expect(beforeOutbox.single['phase'], 'published');
+        expect(beforeOutbox.single['notification_state'], 'pending');
+        await before.close();
+
+        final replay = await repository.commitRuntimeProjections(original);
+        expect(replay.wasDuplicate, isTrue);
+        expect(replay.wasPublished, isFalse);
+        expect(replay.publicationEventId, isNull);
+        expect(
+          replay.window.operations.map((value) => value.operationId),
+          <String>['historical-pending-operation-y'],
+        );
+
+        final after = await databaseFactoryFfi.openDatabase(
+          databasePath,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        final afterOutbox = await after.query(
+          'publication_outbox',
+          columns: const <String>[
+            'phase',
+            'notification_state',
+            'event_id',
+            'delivery_token',
+            'delivery_claimed_at',
+          ],
+          where: 'domain = ? AND operation_id = ?',
+          whereArgs: const <Object?>[
+            'projection',
+            'historical-pending-outbox-x',
+          ],
+        );
+        expect(afterOutbox, hasLength(1));
+        expect(afterOutbox.single, equals(beforeOutbox.single));
+        expect(
+          (await after.query(
+            'projection_head',
+            columns: const <String>['projection_id'],
+          )).single['projection_id'],
+          'historical-pending-outbox-y',
+        );
+        await after.close();
+      },
+    );
+
+    test(
+      'current replay stops publication when the head advances before claim',
+      () async {
+        await repository.close();
+        var advanceDuringReplay = false;
+        repository = await _openRepository(
+          tempDirectory,
+          faultHook: (stage, operationId) async {
+            if (stage == RepositoryFaultStage.afterReadback &&
+                operationId == 'replay-claim-race-x' &&
+                advanceDuringReplay) {
+              advanceDuringReplay = false;
+              await repository.commitRuntimeProjections(
+                _projection(
+                  'replay-claim-race-y',
+                  sourceEpoch: 'source-1',
+                  providerEpoch: 'provider-1',
+                  connectionEpoch: 'connection-1',
+                  sourceRevision: 2,
+                  operationId: 'replay-claim-race-operation-y',
+                ),
+              );
+            }
+          },
+        );
+        final original = _projection(
+          'replay-claim-race-x',
+          sourceEpoch: 'source-1',
+          providerEpoch: 'provider-1',
+          connectionEpoch: 'connection-1',
+          sourceRevision: 1,
+          operationId: 'replay-claim-race-operation-x',
+        );
+        await repository.commitRuntimeProjections(original);
+
+        final databasePath = repository.resolvedDatabasePath!;
+        final before = await databaseFactoryFfi.openDatabase(
+          databasePath,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        final beforeOutbox = await before.query(
+          'publication_outbox',
+          columns: const <String>[
+            'phase',
+            'notification_state',
+            'event_id',
+            'delivery_token',
+            'delivery_claimed_at',
+          ],
+          where: 'domain = ? AND operation_id = ?',
+          whereArgs: const <Object?>['projection', 'replay-claim-race-x'],
+        );
+        await before.close();
+        expect(beforeOutbox, hasLength(1));
+
+        advanceDuringReplay = true;
+        final replay = await repository.commitRuntimeProjections(original);
+        expect(replay.wasDuplicate, isTrue);
+        expect(replay.wasPublished, isFalse);
+        expect(replay.publicationEventId, isNull);
+        expect(
+          replay.window.operations.map((value) => value.operationId),
+          <String>['replay-claim-race-operation-y'],
+        );
+
+        final after = await databaseFactoryFfi.openDatabase(
+          databasePath,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        final afterOutbox = await after.query(
+          'publication_outbox',
+          columns: const <String>[
+            'phase',
+            'notification_state',
+            'event_id',
+            'delivery_token',
+            'delivery_claimed_at',
+          ],
+          where: 'domain = ? AND operation_id = ?',
+          whereArgs: const <Object?>['projection', 'replay-claim-race-x'],
+        );
+        expect(afterOutbox.single, equals(beforeOutbox.single));
+        expect(
+          (await after.query(
+            'projection_head',
+            columns: const <String>['projection_id'],
+          )).single['projection_id'],
+          'replay-claim-race-y',
+        );
+        await after.close();
+      },
+    );
+
     test('historical projection identity survives normal GC and rejects every rebind axis', () async {
       await repository.close();
       repository = await _openRepository(

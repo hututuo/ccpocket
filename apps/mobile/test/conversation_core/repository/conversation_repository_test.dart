@@ -221,7 +221,7 @@ void main() {
   late ConversationRepository repository;
 
   setUp(() async {
-    tempDirectory = await Directory.systemTemp.createTemp('conversation-v7-');
+    tempDirectory = await Directory.systemTemp.createTemp('conversation-v8-');
     repository = await _openRepository(tempDirectory);
   });
 
@@ -2077,7 +2077,7 @@ VALUES (?, ?, ?, ?, ?, ?)
       );
     });
 
-    test('schema v6 to v7 open is an explicit fail-closed boundary', () async {
+    test('schema v7 to v8 open is an explicit fail-closed boundary', () async {
       await repository.close();
       final database = await databaseFactoryFfi.openDatabase(
         path.join(
@@ -2085,7 +2085,7 @@ VALUES (?, ?, ?, ?, ?, ?)
           ConversationRepository.defaultDatabaseName,
         ),
       );
-      await database.execute('PRAGMA user_version = 6');
+      await database.execute('PRAGMA user_version = 7');
       await database.close();
       repository = ConversationRepository.forTesting(
         databaseFactory: databaseFactoryFfi,
@@ -2101,8 +2101,14 @@ VALUES (?, ?, ?, ?, ?, ?)
       );
     });
 
-    test('new v7 default leaves existing v6 and v5 files untouched', () async {
+    test('new v8 default preserves v7/v6/v5 files', () async {
       await repository.close();
+      final legacyV7Path = path.join(
+        tempDirectory.path,
+        'conversation_replica_v7.db',
+      );
+      await _createLegacyV7Database(legacyV7Path, 'v7-preserved');
+      final beforeV7 = await File(legacyV7Path).readAsBytes();
       final legacyV6Path = path.join(
         tempDirectory.path,
         'conversation_replica_v6.db',
@@ -2124,7 +2130,7 @@ VALUES (?, ?, ?, ?, ?, ?)
       );
       expect(
         ConversationRepository.defaultDatabaseName,
-        'conversation_replica_v7.db',
+        'conversation_replica_v8.db',
       );
       final current = await databaseFactoryFfi.openDatabase(
         repository.resolvedDatabasePath!,
@@ -2132,15 +2138,15 @@ VALUES (?, ?, ?, ?, ?, ?)
       );
       expect(
         (await current.query('replica_metadata')).single,
-        containsPair('schema_identity', 'ccpocket.conversation_replica_v7'),
+        containsPair('schema_identity', 'ccpocket.conversation_replica_v8'),
       );
       expect(
         (await current.query('replica_metadata')).single,
-        containsPair('schema_version', 7),
+        containsPair('schema_version', 8),
       );
       expect(
         (await current.rawQuery('PRAGMA user_version')).single['user_version'],
-        7,
+        8,
       );
       expect(
         (await current.rawQuery('PRAGMA table_info(projection_identity)'))
@@ -2162,6 +2168,19 @@ VALUES (?, ?, ?, ?, ?, ?)
         ],
       );
       expect(
+        (await current.rawQuery(
+          'PRAGMA index_info(projection_identity_pending_idx)',
+        )).map((row) => row['name']).toList(),
+        <Object?>[
+          'disposition',
+          'bridge_identity_id',
+          'bridge_instance_id',
+          'codex_source_id',
+          'provider_thread_id',
+          'projection_id',
+        ],
+      );
+      expect(
         (await current.rawQuery('PRAGMA index_info(projection_inbox_gc_idx)'))
             .map((row) => row['name'])
             .toList(),
@@ -2177,8 +2196,23 @@ VALUES (?, ?, ?, ?, ?, ?)
         ],
       );
       await current.close();
+      expect(await File(legacyV7Path).readAsBytes(), beforeV7);
       expect(await File(legacyV6Path).readAsBytes(), beforeV6);
       expect(await File(legacyPath).readAsBytes(), before);
+      final v7Readback = await databaseFactoryFfi.openDatabase(
+        legacyV7Path,
+        options: OpenDatabaseOptions(version: 7),
+      );
+      expect(
+        (await v7Readback.query('legacy_v7_marker')).single['value'],
+        'v7-preserved',
+      );
+      expect(
+        (await v7Readback.rawQuery('PRAGMA user_version'))
+            .single['user_version'],
+        7,
+      );
+      await v7Readback.close();
       final v6Readback = await databaseFactoryFfi.openDatabase(
         legacyV6Path,
         options: OpenDatabaseOptions(version: 6),
@@ -2220,6 +2254,27 @@ VALUES (?, ?, ?, ?, ?, ?)
         5,
       );
       await readback.close();
+    });
+
+    test('explicit v7 database path is rejected without mutation', () async {
+      await repository.close();
+      final legacyPath = path.join(
+        tempDirectory.path,
+        'conversation_replica_v7.db',
+      );
+      await _createLegacyV7Database(legacyPath, 'v7-explicit');
+      final before = await File(legacyPath).readAsBytes();
+      repository = ConversationRepository.forTesting(
+        databaseFactory: databaseFactoryFfi,
+        databasePath: legacyPath,
+        contractMapper: const _FixtureContract(),
+      );
+
+      await expectLater(
+        repository.open(),
+        _failure(RepositoryFailureCode.invalidDatabaseIdentity),
+      );
+      expect(await File(legacyPath).readAsBytes(), before);
     });
 
     test('explicit v6 database path is rejected without mutation', () async {
@@ -2315,6 +2370,32 @@ VALUES (?, ?, ?, ?, ?, ?)
           'EXPLAIN QUERY PLAN SELECT projection_id FROM projection_inbox WHERE state = ? ORDER BY admitted_at ASC, projection_id ASC, bridge_identity_id ASC, bridge_instance_id ASC, codex_source_id ASC, provider_thread_id ASC LIMIT 32',
           const <Object?>['pending'],
         ),
+        'projection_identity_pending_idx': plan(
+          '''
+          EXPLAIN QUERY PLAN
+          SELECT 1
+          FROM projection_identity AS identity_row
+          LEFT JOIN projection_inbox AS inbox
+            ON inbox.bridge_identity_id = identity_row.bridge_identity_id
+            AND inbox.bridge_instance_id = identity_row.bridge_instance_id
+            AND inbox.codex_source_id = identity_row.codex_source_id
+            AND inbox.provider_thread_id = identity_row.provider_thread_id
+            AND inbox.projection_id = identity_row.projection_id
+          WHERE identity_row.disposition = ?
+            AND (
+              inbox.projection_id IS NULL
+              OR inbox.state <> ?
+              OR inbox.connection_epoch <> identity_row.connection_epoch
+              OR inbox.source_epoch <> identity_row.source_epoch
+              OR inbox.provider_instance_epoch <> identity_row.provider_instance_epoch
+              OR inbox.runtime_authority_generation <> identity_row.runtime_authority_generation
+              OR inbox.source_revision <> identity_row.source_revision
+              OR inbox.projection_digest <> identity_row.projection_digest
+            )
+          LIMIT 1
+          ''',
+          const <Object?>['pending', 'pending'],
+        ),
         'operation_projection_gc_idx': plan(
           'EXPLAIN QUERY PLAN SELECT operation_id FROM operation_projection WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 0 ORDER BY operation_id ASC LIMIT 32',
           keyArgs,
@@ -2372,6 +2453,10 @@ VALUES (?, ?, ?, ?, ?, ?)
       expect(
         await checks['projection_inbox_gc_idx'],
         allOf(contains('gc_eligible=?'), contains('state=?')),
+      );
+      expect(
+        await checks['projection_identity_pending_idx'],
+        allOf(contains('disposition=?'), isNot(contains('SCAN identity_row'))),
       );
       for (final indexName in const <String>[
         'operation_projection_snapshot_gc_idx',
@@ -4033,6 +4118,33 @@ Future<void> _samePidLeaseCompetingIsolate(List<Object?> arguments) async {
     result = 'error:$error';
   }
   sendPort.send(result);
+}
+
+Future<void> _createLegacyV7Database(String databasePath, String marker) async {
+  final database = await databaseFactoryFfi.openDatabase(
+    databasePath,
+    options: OpenDatabaseOptions(
+      version: 7,
+      onCreate: (db, _) async {
+        await db.execute('''
+          CREATE TABLE replica_metadata (
+            schema_identity TEXT PRIMARY KEY,
+            schema_version INTEGER NOT NULL
+          ) STRICT
+        ''');
+        await db.insert('replica_metadata', const <String, Object?>{
+          'schema_identity': 'ccpocket.conversation_replica_v7',
+          'schema_version': 7,
+        });
+        await db.execute(
+          'CREATE TABLE legacy_v7_marker (value TEXT NOT NULL) STRICT',
+        );
+        await db.insert('legacy_v7_marker', <String, Object?>{'value': marker});
+      },
+    ),
+  );
+  await database.execute('PRAGMA user_version = 7');
+  await database.close();
 }
 
 Future<void> _createLegacyV6Database(String databasePath, String marker) async {

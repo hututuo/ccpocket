@@ -64,6 +64,7 @@ Future<CommitReceipt> _commitRuntimeProjection(
         return _ProjectionAdmission(
           wasDuplicate: true,
           wasAlreadyApplied: row['state'] != 'pending',
+          shouldResumePublication: true,
         );
       }
       await txn.insert('projection_inbox', <String, Object?>{
@@ -85,6 +86,7 @@ Future<CommitReceipt> _commitRuntimeProjection(
       return const _ProjectionAdmission(
         wasDuplicate: false,
         wasAlreadyApplied: false,
+        shouldResumePublication: false,
       );
     });
   });

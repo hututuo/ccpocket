@@ -482,11 +482,13 @@ class _PublicationClaim {
     required this.wasPublished,
     required this.shouldDeliver,
     required this.eventId,
+    this.isEligible = true,
   });
 
   final bool wasPublished;
   final bool shouldDeliver;
   final String eventId;
+  final bool isEligible;
 }
 
 String _publicationEventId({
@@ -589,6 +591,7 @@ Future<_PublicationResult> _publishPublicationOutbox(
   required String domain,
   required String operationId,
   required int readLimit,
+  String? requiredCurrentProjectionId,
 }) async {
   final database = repository._requireDatabase();
   return _publishPublicationOutboxOnDatabase(
@@ -600,6 +603,7 @@ Future<_PublicationResult> _publishPublicationOutbox(
     domain: domain,
     operationId: operationId,
     readLimit: readLimit,
+    requiredCurrentProjectionId: requiredCurrentProjectionId,
   );
 }
 
@@ -613,6 +617,7 @@ Future<_PublicationResult> _publishPublicationOutboxOnDatabase(
   required String operationId,
   required int readLimit,
   bool reclaimActiveDelivery = false,
+  String? requiredCurrentProjectionId,
 }) async {
   final expectedEventId = _publicationEventId(
     key: key,
@@ -672,6 +677,24 @@ Future<_PublicationResult> _publishPublicationOutboxOnDatabase(
   final claim = await _withPublicationWriter(repository, database, () async {
     return database.transaction((txn) async {
       await _assertWriterLease(txn, repository);
+      if (requiredCurrentProjectionId != null) {
+        final headRows = await txn.query(
+          'projection_head',
+          columns: const <String>['projection_id'],
+          where: _keyWhere(),
+          whereArgs: _keyArgs(key),
+          limit: 1,
+        );
+        if (headRows.length != 1 ||
+            headRows.single['projection_id'] != requiredCurrentProjectionId) {
+          return _PublicationClaim(
+            wasPublished: false,
+            shouldDeliver: false,
+            eventId: expectedEventId,
+            isEligible: false,
+          );
+        }
+      }
       final currentRows = await txn.query(
         'publication_outbox',
         columns: const <String>[
@@ -792,6 +815,9 @@ Future<_PublicationResult> _publishPublicationOutboxOnDatabase(
       );
     });
   });
+  if (!claim.isEligible) {
+    return const _PublicationResult(wasPublished: false);
+  }
   if (!claim.wasPublished) {
     return _PublicationResult(wasPublished: false, eventId: claim.eventId);
   }

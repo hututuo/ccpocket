@@ -77,10 +77,12 @@ class _ProjectionAdmission {
   const _ProjectionAdmission({
     required this.wasDuplicate,
     required this.wasAlreadyApplied,
+    required this.shouldResumePublication,
   });
 
   final bool wasDuplicate;
   final bool wasAlreadyApplied;
+  final bool shouldResumePublication;
 }
 
 /// The sole Mobile writer for the rebuildable conversation replica.
@@ -209,7 +211,7 @@ class ConversationRepository {
   static Object get testFixtureAuthorityProfile =>
       conversationFixtureAuthorityProfileForTesting();
 
-  static const defaultDatabaseName = 'conversation_replica_v7.db';
+  static const defaultDatabaseName = 'conversation_replica_v8.db';
   static const maxWindowSize = 200;
   static const maxPageBodyBytes = 256 * 1024;
   static const maxMaterializationPages = 128;
@@ -224,8 +226,8 @@ class ConversationRepository {
   // garbage-collected; this cap keeps that immutable floor bounded and fails
   // closed before accepting a new distinct value.
   static const maxRetiredEpochValuesPerKind = 256;
-  static const _schemaVersion = 7;
-  static const _schemaIdentity = 'ccpocket.conversation_replica_v7';
+  static const _schemaVersion = 8;
+  static const _schemaIdentity = 'ccpocket.conversation_replica_v8';
   static const _leaseName = 'conversation-repository-writer';
 
   final DatabaseFactory _databaseFactory;
@@ -321,10 +323,11 @@ class ConversationRepository {
         basename == 'conversation_mirror_v1.db' ||
         basename == 'conversation_replica_v4.db' ||
         basename == 'conversation_replica_v5.db' ||
-        basename == 'conversation_replica_v6.db') {
+        basename == 'conversation_replica_v6.db' ||
+        basename == 'conversation_replica_v7.db') {
       _throwFailure(
         RepositoryFailureCode.invalidDatabaseIdentity,
-        'v7 replica cannot open legacy database $basename',
+        'v8 replica cannot open legacy database $basename',
       );
     }
     _resolvedDatabasePath = dbPath;
@@ -343,7 +346,7 @@ class ConversationRepository {
           onCreate: _createSchema,
           onUpgrade: (db, oldVersion, newVersion) async {
             // There is intentionally no guessed migration from the previous
-            // v6 replica schema.  A future generated-authority integration
+            // v7 replica schema.  A future generated-authority integration
             // must define and attest its own migration before opening it.
             throw ConversationRepositoryException(
               RepositoryFailureCode.invalidDatabaseIdentity,
