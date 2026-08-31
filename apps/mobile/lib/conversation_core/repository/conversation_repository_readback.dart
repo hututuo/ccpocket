@@ -84,6 +84,11 @@ Future<RepositoryWindow> _readWindowInTransaction(
   final projectionHeadRows = await db.query(
     'projection_head',
     columns: const <String>[
+      'connection_epoch',
+      'source_epoch',
+      'provider_instance_epoch',
+      'runtime_authority_generation',
+      'source_revision',
       'operation_snapshot_marker',
       'queue_snapshot_marker',
       'interaction_snapshot_marker',
@@ -93,40 +98,81 @@ Future<RepositoryWindow> _readWindowInTransaction(
     limit: 1,
   );
   final projectionHead = projectionHeadRows.isEmpty
-      ? const <String, Object?>{}
+      ? null
       : projectionHeadRows.single;
-  String snapshotMarker(String name) {
-    final value = projectionHead[name] ?? '';
+
+  String projectionHeadString(String name) {
+    final value = projectionHead?[name];
     if (value is! String) {
       throw ConversationRepositoryException(
         RepositoryFailureCode.invalidDatabaseIdentity,
-        'projection head $name is not a valid snapshot marker',
+        'projection head $name is not valid',
       );
     }
     return value;
   }
 
-  final operationMarker = snapshotMarker('operation_snapshot_marker');
-  final queueMarker = snapshotMarker('queue_snapshot_marker');
-  final interactionMarker = snapshotMarker('interaction_snapshot_marker');
-  final operationRows = await db.query(
-    'operation_projection',
-    where: '${_keyWhere()} AND is_active = 1 AND snapshot_marker = ?',
-    whereArgs: <Object?>[..._keyArgs(key), operationMarker],
-    orderBy: 'operation_id ASC',
-  );
-  final queueRows = await db.query(
-    'queue_entry_projection',
-    where: '${_keyWhere()} AND is_active = 1 AND snapshot_marker = ?',
-    whereArgs: <Object?>[..._keyArgs(key), queueMarker],
-    orderBy: 'position ASC, queue_entry_id ASC',
-  );
-  final interactionRows = await db.query(
-    'interaction_projection',
-    where: '${_keyWhere()} AND is_active = 1 AND snapshot_marker = ?',
-    whereArgs: <Object?>[..._keyArgs(key), interactionMarker],
-    orderBy: 'interaction_id ASC',
-  );
+  int projectionHeadUnsigned(String name) {
+    final value = projectionHead?[name];
+    if (value is! int || !_isSafeUnsigned(value)) {
+      throw ConversationRepositoryException(
+        RepositoryFailureCode.invalidDatabaseIdentity,
+        'projection head $name is not valid',
+      );
+    }
+    return value;
+  }
+
+  var projectionHeadIsCurrent = false;
+  var operationMarker = '';
+  var queueMarker = '';
+  var interactionMarker = '';
+  if (projectionHead != null) {
+    final headConnectionEpoch = projectionHeadString('connection_epoch');
+    final headSourceEpoch = projectionHeadString('source_epoch');
+    final headProviderEpoch = projectionHeadString('provider_instance_epoch');
+    final headGeneration = projectionHeadUnsigned(
+      'runtime_authority_generation',
+    );
+    final headRevision = projectionHeadUnsigned('source_revision');
+    operationMarker = projectionHeadString('operation_snapshot_marker');
+    queueMarker = projectionHeadString('queue_snapshot_marker');
+    interactionMarker = projectionHeadString('interaction_snapshot_marker');
+
+    final stateGeneration = state['runtime_authority_generation']! as int;
+    projectionHeadIsCurrent =
+        headSourceEpoch == state['source_epoch'] &&
+        headProviderEpoch == state['provider_instance_epoch'] &&
+        (headGeneration > stateGeneration ||
+            (headGeneration == stateGeneration &&
+                headConnectionEpoch == state['connection_epoch'] &&
+                headRevision >= (state['source_revision']! as int)));
+  }
+
+  final operationRows = projectionHeadIsCurrent
+      ? await db.query(
+          'operation_projection',
+          where: '${_keyWhere()} AND is_active = 1 AND snapshot_marker = ?',
+          whereArgs: <Object?>[..._keyArgs(key), operationMarker],
+          orderBy: 'operation_id ASC',
+        )
+      : <Map<String, Object?>>[];
+  final queueRows = projectionHeadIsCurrent
+      ? await db.query(
+          'queue_entry_projection',
+          where: '${_keyWhere()} AND is_active = 1 AND snapshot_marker = ?',
+          whereArgs: <Object?>[..._keyArgs(key), queueMarker],
+          orderBy: 'position ASC, queue_entry_id ASC',
+        )
+      : <Map<String, Object?>>[];
+  final interactionRows = projectionHeadIsCurrent
+      ? await db.query(
+          'interaction_projection',
+          where: '${_keyWhere()} AND is_active = 1 AND snapshot_marker = ?',
+          whereArgs: <Object?>[..._keyArgs(key), interactionMarker],
+          orderBy: 'interaction_id ASC',
+        )
+      : <Map<String, Object?>>[];
   return RepositoryWindow(
     key: key,
     publicationEventId: publicationEventId,

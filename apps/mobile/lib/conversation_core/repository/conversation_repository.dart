@@ -17,6 +17,7 @@ export 'conversation_repository_models.dart';
 part 'conversation_repository_json.dart';
 part 'conversation_repository_schema.dart';
 part 'conversation_repository_validation.dart';
+part 'conversation_repository_projection_safety.dart';
 part 'conversation_repository_materialization.dart';
 part 'conversation_repository_projection.dart';
 part 'conversation_repository_readback.dart';
@@ -400,7 +401,11 @@ class ConversationRepository {
   Future<CommitReceipt> commitRuntimeProjections(
     RuntimeProjectionEnvelope projection, {
     int? readLimit,
-  }) => _commitRuntimeProjection(this, projection, readLimit: readLimit);
+  }) => _commitRuntimeProjectionSafely(
+    this,
+    projection,
+    readLimit: readLimit,
+  );
 
   Future<RepositoryWindow> readWindow(
     ThreadKey key, {
@@ -511,7 +516,7 @@ class ConversationRepository {
       _releaseWriterLease(this, database);
 
   Future<void> _recoverInbox(Database database) =>
-      _recoverProjectionInbox(this, database);
+      _recoverProjectionInboxSafely(this, database);
 
   Future<void> _recoverPublicationOutbox(Database database) =>
       _recoverPublicationOutboxRows(this, database);
