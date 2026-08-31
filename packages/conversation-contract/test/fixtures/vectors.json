@@ -1,0 +1,52 @@
+{
+  "formatVersion": 1,
+  "vectors": [
+    {
+      "id": "fixture.vector.valid-envelope",
+      "profileId": "fixture.active",
+      "vectorSetRef": "fixture.vector-set",
+      "ruleRef": "fixture.rule.type-shape",
+      "typeRef": "FixtureEnvelope",
+      "valid": true,
+      "expectedReason": "NONE",
+      "value": {
+        "id": "envelope-1",
+        "source": {"bridgeInstanceId": "bridge-1", "sourceOrdinal": 7},
+        "priority": "cost$x",
+        "payload": {"kind": "text", "text": "hello"},
+        "metadata": {"fixture": "yes"},
+        "__proto__": "safe"
+      }
+    },
+    {
+      "id": "fixture.vector.invalid-envelope",
+      "profileId": "fixture.active",
+      "vectorSetRef": "fixture.vector-set",
+      "ruleRef": "fixture.rule.type-shape",
+      "typeRef": "FixtureEnvelope",
+      "valid": false,
+      "expectedReason": "FIXTURE_TYPE_SHAPE_INVALID",
+      "expectedZeroSideEffects": {
+        "admissionRows": 0,
+        "providerCalls": 0,
+        "publicationRows": 0
+      },
+      "value": {
+        "id": "envelope-2",
+        "source": {"bridgeInstanceId": "bridge-1", "sourceOrdinal": "not-an-integer"},
+        "priority": "normal",
+        "payload": {"kind": "progress", "complete": true}
+      }
+    },
+    {
+      "id": "fixture.vector.future-not-generated",
+      "profileId": "fixture.future",
+      "vectorSetRef": "fixture.future-vector-set",
+      "ruleRef": "fixture.future-rule",
+      "typeRef": "FutureOnly",
+      "valid": true,
+      "expectedReason": "NONE",
+      "value": {"future": true}
+    }
+  ]
+}

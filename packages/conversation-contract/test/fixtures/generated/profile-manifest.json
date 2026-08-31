@@ -1,0 +1,60 @@
+{
+  "artifactDigests": {
+    "contract.dart": "94b84b0054f5575304fcff38a72d721a590bf48a793e77cef1ee04a9c5a979bc",
+    "contract.ts": "6ab9f46d0e722d3f94b32c907ba5266a7b1356911e5ddc826ff667fc063f6459",
+    "schema.json": "16ee57014865e6f57d8e3823b3ad8273a64ba9598cc7adcdf27188b7f40c9a54"
+  },
+  "canonicalizationProfile": "RFC8785-IJSON-SAFE-INTEGER-V1",
+  "dartFormatterVersion": "3.13.0",
+  "digestPreimageTypeIds": [
+    "CanonicalProfileProbePreimageV1",
+    "FixtureUntaggedPreimageV1",
+    "GapRepairIntentPreimageV1",
+    "MaterializationBeginHeaderPreimageV1",
+    "MaterializationCoveragePreimageV1",
+    "MaterializationManifestPreimageV1",
+    "MaterializationOrderPreimageV1",
+    "MaterializationPagePreimageV1",
+    "MaterializationReceiptPreimageV1",
+    "OperationFingerprintPreimageV1",
+    "ProviderReadEvidencePreimageV1"
+  ],
+  "formatVersion": 1,
+  "generator": "@ccpocket/conversation-contract@0.0.0-private",
+  "hardRuleIds": [
+    "fixture.rule.type-shape"
+  ],
+  "profileDigest": "cdd9b5622b7af2917865f30af72cb96a976289ab0569f5464b5dba1b9ba15d6d",
+  "profileId": "fixture.active",
+  "typeIds": [
+    "CanonicalProfileProbePreimageV1",
+    "FixtureAmbiguousOneOf",
+    "FixtureCanonicalOrderSet",
+    "FixtureConstrainedRecord",
+    "FixtureConstraintItem",
+    "FixtureEnvelope",
+    "FixtureOneOf",
+    "FixturePageBodyV1",
+    "FixturePayload",
+    "FixturePriority",
+    "FixtureSourceRef",
+    "FixtureUntaggedPreimageV1",
+    "GapRepairIntentPreimageV1",
+    "MaterializationBeginHeaderPreimageV1",
+    "MaterializationCoveragePreimageV1",
+    "MaterializationManifestPreimageV1",
+    "MaterializationOrderPreimageV1",
+    "MaterializationPagePreimageV1",
+    "MaterializationReceiptPreimageV1",
+    "OperationFingerprintPreimageV1",
+    "ProviderReadEvidencePreimageV1",
+    "Sha256Hex64"
+  ],
+  "vectorIds": [
+    "fixture.vector.invalid-envelope",
+    "fixture.vector.valid-envelope"
+  ],
+  "vectorSetIds": [
+    "fixture.vector-set"
+  ]
+}

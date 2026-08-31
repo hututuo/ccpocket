@@ -1,0 +1,846 @@
+{
+  "$defs": {
+    "CanonicalProfileProbePreimageV1": {
+      "additionalProperties": false,
+      "properties": {
+        "\r": {
+          "type": "string"
+        },
+        "1": {
+          "type": "string"
+        },
+        "digestDomain": {
+          "enum": [
+            "ccpocket.canonical-profile-probe.v1"
+          ],
+          "type": "string"
+        },
+        "escaped": {
+          "type": "string"
+        },
+        "lineSeparators": {
+          "type": "string"
+        },
+        "maxSafe": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "minSafe": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "negativeZero": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "nfc": {
+          "type": "string"
+        },
+        "nfd": {
+          "type": "string"
+        },
+        "": {
+          "type": "string"
+        },
+        "ö": {
+          "type": "string"
+        },
+        "€": {
+          "type": "string"
+        },
+        "😀": {
+          "type": "string"
+        },
+        "דּ": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "\r",
+        "1",
+        "digestDomain",
+        "escaped",
+        "lineSeparators",
+        "maxSafe",
+        "minSafe",
+        "negativeZero",
+        "nfc",
+        "nfd",
+        "",
+        "ö",
+        "€",
+        "😀",
+        "דּ"
+      ],
+      "type": "object"
+    },
+    "FixtureAmbiguousOneOf": {
+      "oneOf": [
+        {
+          "pattern": "^a",
+          "type": "string"
+        },
+        {
+          "pattern": "a$",
+          "type": "string"
+        }
+      ]
+    },
+    "FixtureCanonicalOrderSet": {
+      "items": {
+        "$ref": "#/$defs/FixtureOneOf"
+      },
+      "maxItems": 3,
+      "minItems": 1,
+      "type": "array",
+      "x-ccpocket-orderBy": [
+        "$"
+      ]
+    },
+    "FixtureConstrainedRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "bounded": {
+          "maximum": 3,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "disabled": {
+          "const": false,
+          "type": "boolean"
+        },
+        "fixed": {
+          "const": "FIXED",
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/FixtureConstraintItem"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "type": "array",
+          "x-ccpocket-orderBy": [
+            "ordinal"
+          ],
+          "x-ccpocket-uniqueBy": [
+            "identity.id"
+          ]
+        },
+        "nullableValue": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "pattern": "^value-[0-9]+$",
+              "type": "string"
+            }
+          ]
+        },
+        "tags": {
+          "items": {
+            "pattern": "^[a-z]+$",
+            "type": "string"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "version": {
+          "const": 1,
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bounded",
+        "disabled",
+        "fixed",
+        "items",
+        "nullableValue",
+        "tags",
+        "version"
+      ],
+      "type": "object"
+    },
+    "FixtureConstraintItem": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "pattern": "^[a-z]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        },
+        "label": {
+          "pattern": "^item-[a-z]+$",
+          "type": "string"
+        },
+        "ordinal": {
+          "maximum": 3,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "identity",
+        "label",
+        "ordinal"
+      ],
+      "type": "object"
+    },
+    "FixtureEnvelope": {
+      "additionalProperties": false,
+      "properties": {
+        "__proto__": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "payload": {
+          "$ref": "#/$defs/FixturePayload"
+        },
+        "priority": {
+          "$ref": "#/$defs/FixturePriority"
+        },
+        "source": {
+          "$ref": "#/$defs/FixtureSourceRef"
+        }
+      },
+      "required": [
+        "id",
+        "payload",
+        "priority",
+        "source"
+      ],
+      "type": "object"
+    },
+    "FixtureOneOf": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "left": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "left"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "right": {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "right"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "FixturePageBodyV1": {
+      "additionalProperties": false,
+      "properties": {
+        "gaps": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "gaps",
+        "items"
+      ],
+      "type": "object"
+    },
+    "FixturePayload": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "text"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "complete": {
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "progress"
+            },
+            "labels": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "complete",
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "FixturePriority": {
+      "enum": [
+        "normal",
+        "high_priority",
+        "cost$x",
+        "quote\"slash\\cost$x"
+      ],
+      "type": "string"
+    },
+    "FixtureSourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "bridgeInstanceId": {
+          "type": "string"
+        },
+        "sourceOrdinal": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bridgeInstanceId",
+        "sourceOrdinal"
+      ],
+      "type": "object"
+    },
+    "FixtureUntaggedPreimageV1": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "digestDomain": {
+              "const": "ccpocket.fixture-untagged.v1",
+              "type": "string"
+            },
+            "left": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "required": [
+            "digestDomain",
+            "left"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "digestDomain": {
+              "const": "ccpocket.fixture-untagged.v1",
+              "type": "string"
+            },
+            "right": {
+              "maximum": 9,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "digestDomain",
+            "right"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "GapRepairIntentPreimageV1": {
+      "additionalProperties": false,
+      "properties": {
+        "boundaryKind": {
+          "enum": [
+            "BEFORE",
+            "AFTER",
+            "BETWEEN"
+          ],
+          "type": "string"
+        },
+        "digestDomain": {
+          "enum": [
+            "ccpocket.gap-repair-intent.v1"
+          ],
+          "type": "string"
+        },
+        "readSpecDigest": {
+          "$ref": "#/$defs/Sha256Hex64"
+        },
+        "repairKind": {
+          "enum": [
+            "NEXT_PROVIDER_PAGE",
+            "FULL_BOUNDED_REREAD",
+            "NONE"
+          ],
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/FixtureSourceRef"
+        }
+      },
+      "required": [
+        "boundaryKind",
+        "digestDomain",
+        "readSpecDigest",
+        "repairKind",
+        "source"
+      ],
+      "type": "object"
+    },
+    "MaterializationBeginHeaderPreimageV1": {
+      "additionalProperties": false,
+      "properties": {
+        "coverageDigest": {
+          "$ref": "#/$defs/Sha256Hex64"
+        },
+        "digestDomain": {
+          "enum": [
+            "ccpocket.materialization-begin.v1"
+          ],
+          "type": "string"
+        },
+        "manifestDigest": {
+          "$ref": "#/$defs/Sha256Hex64"
+        },
+        "pageCount": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "source": {
+          "$ref": "#/$defs/FixtureSourceRef"
+        }
+      },
+      "required": [
+        "coverageDigest",
+        "digestDomain",
+        "manifestDigest",
+        "pageCount",
+        "source"
+      ],
+      "type": "object"
+    },
+    "MaterializationCoveragePreimageV1": {
+      "additionalProperties": false,
+      "properties": {
+        "digestDomain": {
+          "enum": [
+            "ccpocket.materialization-coverage.v1"
+          ],
+          "type": "string"
+        },
+        "gapOrdinals": {
+          "items": {
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "payloadCoverage": {
+          "enum": [
+            "COMPLETE",
+            "PARTIAL"
+          ],
+          "type": "string"
+        },
+        "structuralCoverage": {
+          "enum": [
+            "COMPLETE",
+            "PARTIAL",
+            "EMPTY_PROVEN"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "digestDomain",
+        "gapOrdinals",
+        "payloadCoverage",
+        "structuralCoverage"
+      ],
+      "type": "object"
+    },
+    "MaterializationManifestPreimageV1": {
+      "additionalProperties": false,
+      "properties": {
+        "algorithmVersion": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "coverageDigest": {
+          "$ref": "#/$defs/Sha256Hex64"
+        },
+        "digestDomain": {
+          "enum": [
+            "ccpocket.materialization-manifest.v1"
+          ],
+          "type": "string"
+        },
+        "orderDigest": {
+          "$ref": "#/$defs/Sha256Hex64"
+        },
+        "orderedPageDigests": {
+          "items": {
+            "$ref": "#/$defs/Sha256Hex64"
+          },
+          "type": "array"
+        },
+        "pageCount": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "algorithmVersion",
+        "coverageDigest",
+        "digestDomain",
+        "orderDigest",
+        "orderedPageDigests",
+        "pageCount"
+      ],
+      "type": "object"
+    },
+    "MaterializationOrderPreimageV1": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "digestDomain": {
+              "enum": [
+                "ccpocket.materialization-order.v1"
+              ],
+              "type": "string"
+            },
+            "domain": {
+              "const": "CATALOG"
+            },
+            "orderedSessionIds": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "source": {
+              "$ref": "#/$defs/FixtureSourceRef"
+            }
+          },
+          "required": [
+            "digestDomain",
+            "domain",
+            "orderedSessionIds",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "digestDomain": {
+              "enum": [
+                "ccpocket.materialization-order.v1"
+              ],
+              "type": "string"
+            },
+            "domain": {
+              "const": "TIMELINE"
+            },
+            "orderedTimelineIds": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "source": {
+              "$ref": "#/$defs/FixtureSourceRef"
+            }
+          },
+          "required": [
+            "digestDomain",
+            "domain",
+            "orderedTimelineIds",
+            "source"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "MaterializationPagePreimageV1": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "$ref": "#/$defs/FixturePageBodyV1"
+        },
+        "digestDomain": {
+          "enum": [
+            "ccpocket.materialization-page.v1"
+          ],
+          "type": "string"
+        },
+        "pageCount": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "pageIndex": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "previousPageDigest": {
+          "$ref": "#/$defs/Sha256Hex64"
+        },
+        "source": {
+          "$ref": "#/$defs/FixtureSourceRef"
+        }
+      },
+      "required": [
+        "body",
+        "digestDomain",
+        "pageCount",
+        "pageIndex",
+        "source"
+      ],
+      "type": "object"
+    },
+    "MaterializationReceiptPreimageV1": {
+      "additionalProperties": false,
+      "properties": {
+        "beginHeaderDigest": {
+          "$ref": "#/$defs/Sha256Hex64"
+        },
+        "digestDomain": {
+          "enum": [
+            "ccpocket.materialization-receipt.v1"
+          ],
+          "type": "string"
+        },
+        "manifestDigest": {
+          "$ref": "#/$defs/Sha256Hex64"
+        },
+        "receiptId": {
+          "type": "string"
+        },
+        "stagedBytes": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "VERIFIED"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "beginHeaderDigest",
+        "digestDomain",
+        "manifestDigest",
+        "receiptId",
+        "stagedBytes",
+        "status"
+      ],
+      "type": "object"
+    },
+    "OperationFingerprintPreimageV1": {
+      "additionalProperties": false,
+      "properties": {
+        "digestDomain": {
+          "enum": [
+            "ccpocket.operation-fingerprint.v1"
+          ],
+          "type": "string"
+        },
+        "operationCode": {
+          "enum": [
+            "START_TURN",
+            "EDIT_QUEUE"
+          ],
+          "type": "string"
+        },
+        "payloadDigest": {
+          "$ref": "#/$defs/Sha256Hex64"
+        },
+        "preconditionDigest": {
+          "$ref": "#/$defs/Sha256Hex64"
+        },
+        "sequence": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "source": {
+          "$ref": "#/$defs/FixtureSourceRef"
+        }
+      },
+      "required": [
+        "digestDomain",
+        "operationCode",
+        "payloadDigest",
+        "preconditionDigest",
+        "sequence",
+        "source"
+      ],
+      "type": "object"
+    },
+    "ProviderReadEvidencePreimageV1": {
+      "additionalProperties": false,
+      "properties": {
+        "codexBuildDigest": {
+          "$ref": "#/$defs/Sha256Hex64"
+        },
+        "digestDomain": {
+          "enum": [
+            "ccpocket.provider-read-evidence.v1"
+          ],
+          "type": "string"
+        },
+        "providerMethod": {
+          "enum": [
+            "THREAD_TURNS_LIST"
+          ],
+          "type": "string"
+        },
+        "readGeneration": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "resultCount": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "resultDigest": {
+          "$ref": "#/$defs/Sha256Hex64"
+        }
+      },
+      "required": [
+        "codexBuildDigest",
+        "digestDomain",
+        "providerMethod",
+        "readGeneration",
+        "resultCount",
+        "resultDigest"
+      ],
+      "type": "object"
+    },
+    "Sha256Hex64": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "$id": "urn:ccpocket:conversation-contract:fixture.active:cdd9b5622b7af2917865f30af72cb96a976289ab0569f5464b5dba1b9ba15d6d",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/CanonicalProfileProbePreimageV1"
+    },
+    {
+      "$ref": "#/$defs/FixtureAmbiguousOneOf"
+    },
+    {
+      "$ref": "#/$defs/FixtureCanonicalOrderSet"
+    },
+    {
+      "$ref": "#/$defs/FixtureConstrainedRecord"
+    },
+    {
+      "$ref": "#/$defs/FixtureEnvelope"
+    },
+    {
+      "$ref": "#/$defs/FixtureOneOf"
+    },
+    {
+      "$ref": "#/$defs/FixtureUntaggedPreimageV1"
+    },
+    {
+      "$ref": "#/$defs/GapRepairIntentPreimageV1"
+    },
+    {
+      "$ref": "#/$defs/MaterializationBeginHeaderPreimageV1"
+    },
+    {
+      "$ref": "#/$defs/MaterializationCoveragePreimageV1"
+    },
+    {
+      "$ref": "#/$defs/MaterializationManifestPreimageV1"
+    },
+    {
+      "$ref": "#/$defs/MaterializationOrderPreimageV1"
+    },
+    {
+      "$ref": "#/$defs/MaterializationPagePreimageV1"
+    },
+    {
+      "$ref": "#/$defs/MaterializationReceiptPreimageV1"
+    },
+    {
+      "$ref": "#/$defs/OperationFingerprintPreimageV1"
+    },
+    {
+      "$ref": "#/$defs/ProviderReadEvidencePreimageV1"
+    }
+  ],
+  "title": "CC Pocket conversation contract (fixture.active)"
+}

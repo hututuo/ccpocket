@@ -1,0 +1,10 @@
+{
+  "formatVersion": 1,
+  "projectRoot": "../..",
+  "artifacts": {
+    "schema.json": "docs/design/codex-kernel-v4/contracts/generated/schema.json",
+    "profile-manifest.json": "docs/design/codex-kernel-v4/contracts/generated/profile-manifest.json",
+    "contract.ts": "packages/bridge/src/conversation-core/protocol/generated/contract.ts",
+    "contract.dart": "apps/mobile/lib/conversation_core/protocol/generated/contract.dart"
+  }
+}

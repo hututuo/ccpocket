@@ -1,0 +1,27 @@
+{
+  "name": "@ccpocket/conversation-contract",
+  "version": "0.0.0-private",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.18.1"
+  },
+  "scripts": {
+    "generate": "node src/cli.mjs generate --format-dart --registry test/fixtures/registry.json --vectors test/fixtures/vectors.json --out test/fixtures/generated",
+    "validate": "node src/cli.mjs validate --registry test/fixtures/registry.json --vectors test/fixtures/vectors.json",
+    "check": "node src/cli.mjs check --format-dart --registry test/fixtures/registry.json --vectors test/fixtures/vectors.json --out test/fixtures/generated",
+    "formal:generate": "node src/cli.mjs generate --format-dart --registry ../../docs/design/codex-kernel-v4/contracts/contract-registry.json --vectors ../../docs/design/codex-kernel-v4/contracts/vectors/phone-core-vectors.json --target-map project-targets.json",
+    "formal:validate": "node src/cli.mjs validate --registry ../../docs/design/codex-kernel-v4/contracts/contract-registry.json --vectors ../../docs/design/codex-kernel-v4/contracts/vectors/phone-core-vectors.json",
+    "formal:check": "node src/cli.mjs check --format-dart --registry ../../docs/design/codex-kernel-v4/contracts/contract-registry.json --vectors ../../docs/design/codex-kernel-v4/contracts/vectors/phone-core-vectors.json --target-map project-targets.json",
+    "golden": "npm run test:typescript-runtime && npm run test:dart-runtime",
+    "test": "npm run test:node && npm run test:typescript && npm run test:dart",
+    "test:node": "mise exec node@22.23.1 -- node --test test/*.test.mjs",
+    "test:dart": "node test/run-dart-fixture.mjs && npm run test:dart-runtime",
+    "test:typescript": "tsc -p test/fixtures/typescript/tsconfig.json",
+    "test:typescript-runtime": "mise exec node@22.23.1 -- node --test test/generated-typescript-runtime.test.mjs",
+    "test:dart-runtime": "mise exec flutter@3.47.0 -- dart --packages=../../apps/mobile/.dart_tool/package_config.json test/generated-dart-runtime-test.dart"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}
