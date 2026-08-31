@@ -2207,8 +2207,8 @@ VALUES (?, ?, ?, ?, ?, ?)
           [...keyArgs, 'projection', 'projection-id', 'pending', 'delivering'],
         ),
         'projection_inbox_gc_idx': plan(
-          'EXPLAIN QUERY PLAN SELECT projection_id FROM projection_inbox WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND state <> ? ORDER BY admitted_at ASC, projection_id ASC LIMIT 32',
-          [...keyArgs, 'pending'],
+          'EXPLAIN QUERY PLAN SELECT projection_id FROM projection_inbox WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND state IN (?, ?) ORDER BY state ASC, admitted_at ASC, projection_id ASC LIMIT 32',
+          [...keyArgs, 'applied', 'stale'],
         ),
         'projection_inbox_recovery_idx': plan(
           'EXPLAIN QUERY PLAN SELECT projection_id FROM projection_inbox WHERE state = ? ORDER BY admitted_at ASC, projection_id ASC, bridge_identity_id ASC, bridge_instance_id ASC, codex_source_id ASC, provider_thread_id ASC LIMIT 32',
@@ -2227,15 +2227,15 @@ VALUES (?, ?, ?, ?, ?, ?)
           keyArgs,
         ),
         'operation_projection_snapshot_gc_idx': plan(
-          'EXPLAIN QUERY PLAN SELECT operation_id FROM operation_projection WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 1 AND snapshot_marker <> ? ORDER BY snapshot_marker ASC, operation_id ASC LIMIT 32',
+          'EXPLAIN QUERY PLAN SELECT operation_id FROM operation_projection WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 1 AND snapshot_marker < ? ORDER BY snapshot_marker ASC, operation_id ASC LIMIT 32',
           [...keyArgs, 'current-snapshot'],
         ),
         'queue_entry_projection_snapshot_gc_idx': plan(
-          'EXPLAIN QUERY PLAN SELECT queue_entry_id FROM queue_entry_projection WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 1 AND snapshot_marker <> ? ORDER BY snapshot_marker ASC, queue_entry_id ASC LIMIT 32',
+          'EXPLAIN QUERY PLAN SELECT queue_entry_id FROM queue_entry_projection WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 1 AND snapshot_marker < ? ORDER BY snapshot_marker ASC, queue_entry_id ASC LIMIT 32',
           [...keyArgs, 'current-snapshot'],
         ),
         'interaction_projection_snapshot_gc_idx': plan(
-          'EXPLAIN QUERY PLAN SELECT interaction_id FROM interaction_projection WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 1 AND snapshot_marker <> ? ORDER BY snapshot_marker ASC, interaction_id ASC LIMIT 32',
+          'EXPLAIN QUERY PLAN SELECT interaction_id FROM interaction_projection WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 1 AND snapshot_marker < ? ORDER BY snapshot_marker ASC, interaction_id ASC LIMIT 32',
           [...keyArgs, 'current-snapshot'],
         ),
         'typed_gap_gc_idx': plan(
@@ -2254,6 +2254,27 @@ VALUES (?, ?, ?, ?, ?, ?)
       for (final entry in checks.entries) {
         final detail = await entry.value;
         expect(detail, contains(entry.key));
+        expect(detail, isNot(contains('USE TEMP B-TREE')));
+      }
+      expect(await checks['projection_inbox_gc_idx'], contains('state=?'));
+      for (final indexName in const <String>[
+        'operation_projection_snapshot_gc_idx',
+        'queue_entry_projection_snapshot_gc_idx',
+        'interaction_projection_snapshot_gc_idx',
+      ]) {
+        expect(await checks[indexName], contains('snapshot_marker<?'));
+      }
+      for (final entry in <(String, String)>[
+        ('operation_projection_snapshot_gc_idx', 'operation_id'),
+        ('queue_entry_projection_snapshot_gc_idx', 'queue_entry_id'),
+        ('interaction_projection_snapshot_gc_idx', 'interaction_id'),
+      ]) {
+        final detail = await plan(
+          'EXPLAIN QUERY PLAN SELECT ${entry.$2} FROM ${entry.$1.replaceFirst('_snapshot_gc_idx', '')} WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 1 AND snapshot_marker > ? ORDER BY snapshot_marker ASC, ${entry.$2} ASC LIMIT 32',
+          [...keyArgs, 'current-snapshot'],
+        );
+        expect(detail, contains(entry.$1));
+        expect(detail, contains('snapshot_marker>?'));
         expect(detail, isNot(contains('USE TEMP B-TREE')));
       }
       final stalePublicationDetail = await plan(

@@ -557,9 +557,9 @@ const _schemaIndexes = <_SchemaIndex>[
     'bridge_instance_id',
     'codex_source_id',
     'provider_thread_id',
+    'state',
     'admitted_at',
     'projection_id',
-    'state',
   ]),
   _SchemaIndex('projection_inbox_recovery_idx', 'projection_inbox', 0, <String>[
     'state',

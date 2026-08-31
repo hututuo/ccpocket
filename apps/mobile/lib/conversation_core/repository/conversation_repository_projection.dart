@@ -835,6 +835,8 @@ Future<void> _deletePublishedOutboxBatch(
 }
 
 Future<void> _deleteStaleInboxBatch(DatabaseExecutor db, ThreadKey key) async {
+  // Keep the candidate set closed so the index performs two equality seeks
+  // instead of scanning an unbounded run of pending rows for `state <>`.
   final rows = await db.query(
     'projection_inbox',
     columns: const <String>[
@@ -842,9 +844,9 @@ Future<void> _deleteStaleInboxBatch(DatabaseExecutor db, ThreadKey key) async {
       'source_epoch',
       'provider_instance_epoch',
     ],
-    where: '${_keyWhere()} AND state <> ?',
-    whereArgs: <Object?>[..._keyArgs(key), 'pending'],
-    orderBy: 'admitted_at ASC, projection_id ASC',
+    where: '${_keyWhere()} AND state IN (?, ?)',
+    whereArgs: <Object?>[..._keyArgs(key), 'applied', 'stale'],
+    orderBy: 'state ASC, admitted_at ASC, projection_id ASC',
     limit: _repositoryGcBatchSize,
   );
   for (final row in rows) {
@@ -925,18 +927,39 @@ Future<void> _deleteSupersededProjectionBatch(
     'interaction_projection' => 'interaction_id',
     _ => throw ArgumentError.value(table, 'table'),
   };
-  final rows = await db.query(
-    table,
-    columns: <String>[idColumn, 'source_projection_id'],
-    where: '${_keyWhere()} AND is_active = 1 AND snapshot_marker <> ?',
-    whereArgs: <Object?>[..._keyArgs(key), snapshotMarker],
-    orderBy: 'snapshot_marker ASC, $idColumn ASC',
-    limit: _repositoryGcBatchSize,
-  );
+  // Two bounded range seeks cover every non-current marker without scanning
+  // through an arbitrarily large run that equals the protected marker.
+  final rows = <Map<String, Object?>>[
+    ...await db.query(
+      table,
+      columns: <String>[idColumn, 'source_projection_id', 'snapshot_marker'],
+      where: '${_keyWhere()} AND is_active = 1 AND snapshot_marker < ?',
+      whereArgs: <Object?>[..._keyArgs(key), snapshotMarker],
+      orderBy: 'snapshot_marker ASC, $idColumn ASC',
+      limit: _repositoryGcBatchSize,
+    ),
+  ];
+  if (rows.length < _repositoryGcBatchSize) {
+    rows.addAll(
+      await db.query(
+        table,
+        columns: <String>[idColumn, 'source_projection_id', 'snapshot_marker'],
+        where: '${_keyWhere()} AND is_active = 1 AND snapshot_marker > ?',
+        whereArgs: <Object?>[..._keyArgs(key), snapshotMarker],
+        orderBy: 'snapshot_marker ASC, $idColumn ASC',
+        limit: _repositoryGcBatchSize - rows.length,
+      ),
+    );
+  }
   for (final row in rows) {
     final id = row[idColumn];
     final sourceProjectionId = row['source_projection_id'];
-    if (id is! String || sourceProjectionId is! String) continue;
+    final rowSnapshotMarker = row['snapshot_marker'];
+    if (id is! String ||
+        sourceProjectionId is! String ||
+        rowSnapshotMarker is! String) {
+      continue;
+    }
     // The pending outbox operation is the projection envelope identity, not
     // the row identity (operation_id/queue_entry_id/interaction_id).  Keep
     // provenance explicit so a coincidental row id can never protect or
@@ -959,8 +982,8 @@ Future<void> _deleteSupersededProjectionBatch(
     await db.delete(
       table,
       where:
-          '${_keyWhere()} AND $idColumn = ? AND is_active = 1 AND snapshot_marker <> ?',
-      whereArgs: <Object?>[..._keyArgs(key), id, snapshotMarker],
+          '${_keyWhere()} AND $idColumn = ? AND is_active = 1 AND snapshot_marker = ?',
+      whereArgs: <Object?>[..._keyArgs(key), id, rowSnapshotMarker],
     );
   }
 }
