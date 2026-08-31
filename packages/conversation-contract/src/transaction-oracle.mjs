@@ -39,16 +39,6 @@ function fail(path, message) {
   throw new TypeError(`${path}: ${message}`);
 }
 
-function caseKey(value) {
-  return [
-    value.routeRef?.registryId ?? '',
-    value.coordinate?.machineId ?? '',
-    value.coordinate?.from ?? '',
-    value.coordinate?.to ?? '',
-    value.routeVariant ?? '',
-  ].join('\u0000');
-}
-
 function binding(machineAuthority, registryId) {
   const value = machineAuthority.storageBindings.find((candidate) =>
     candidate.registryId === registryId);
@@ -80,95 +70,168 @@ function coordinateIdsForOwner(machineAuthority, coordinate) {
 }
 
 function expectedBridgeWrites(machineAuthority, applicability, shape) {
-  const rows = coordinateIdsForOwner(machineAuthority, applicability.coordinate).map((coordinateId) => ({
-    writeRole: 'OWNER_STATE',
-    coordinateId,
-  }));
+  const machine = machineAuthority.machineRecords.find((candidate) =>
+    candidate.machineId === applicability.coordinate.machineId);
+  if (!machine) fail('transactionOracle.bridge', 'unknown owner machine');
+  const ownerStorage = binding(machineAuthority, machine.storageBindingRef.registryId);
+  const ownerCoordinates = new Set(ownerStorage.physicalCoordinates.map((row) => row.coordinateId));
+  const rows = coordinateIdsForOwner(machineAuthority, applicability.coordinate).map((coordinateId) => {
+    if (!ownerCoordinates.has(coordinateId)) {
+      fail('transactionOracle.bridge', `${ownerStorage.registryId} lacks ${coordinateId}`);
+    }
+    return {
+      writeRole: 'OWNER_STATE',
+      bindingKey: bindingKey('AUTHORITATIVE_MACHINE', machine.machineId),
+      physicalStorageCoordinateRef: storageCoordinateRef(ownerStorage.registryId, coordinateId),
+      rowCardinality: exactRows(),
+    };
+  });
+  const deliveryStorage = binding(
+    machineAuthority,
+    'storage.authoritative.sm-durable-delivery',
+  );
+  const deliveryCoordinates = new Set(deliveryStorage.physicalCoordinates.map((row) =>
+    row.coordinateId));
+  const deliveryWrite = (writeRole, coordinateId, rowCardinality) => {
+    if (!deliveryCoordinates.has(coordinateId)) {
+      fail('transactionOracle.bridge', `${deliveryStorage.registryId} lacks ${coordinateId}`);
+    }
+    return {
+      writeRole,
+      bindingKey: bindingKey('AUTHORITATIVE_MACHINE', 'SM-DURABLE-DELIVERY'),
+      physicalStorageCoordinateRef: storageCoordinateRef(
+        deliveryStorage.registryId,
+        coordinateId,
+      ),
+      rowCardinality,
+    };
+  };
   if (shape === 'connected') {
-    rows.push({writeRole: 'OWNER_STATE', coordinateId: 'BRIDGE.durable_delivery_head.state'});
+    rows.push(deliveryWrite(
+      'OWNER_STATE',
+      'BRIDGE.durable_delivery_head.state',
+      exactRows(),
+    ));
   }
   if (shape !== 'quiet') {
-    rows.push({writeRole: 'EVENT_FACT', coordinateId: 'BRIDGE.event_fact.immutable'});
+    rows.push(deliveryWrite('EVENT_FACT', 'BRIDGE.event_fact.immutable', exactRows()));
   }
   if (shape === 'connected') {
-    rows.push({writeRole: 'OUTBOX_ENVELOPE', coordinateId: 'BRIDGE.outbox_envelope.immutable'});
+    rows.push(deliveryWrite(
+      'OUTBOX_ENVELOPE',
+      'BRIDGE.outbox_envelope.immutable',
+      contextRows('ELIGIBLE_ENVELOPE_COUNT'),
+    ));
   }
   return rows;
 }
 
-function validateBridgeManifests(machineAuthority, authority) {
-  const expectedCases = new Set();
+function slug(value) {
+  return value.replaceAll(/[^A-Za-z0-9]+/g, '-').replaceAll(/^-|-$/g, '').toLowerCase();
+}
+
+function independentBridgeRouteCases(machineAuthority) {
+  const routes = new Map(machineAuthority.projectionRoutes.map((route) => [
+    route.registryId,
+    route,
+  ]));
+  const cases = [];
   for (const machine of machineAuthority.machineRecords) {
     if (machine.machineId === 'SM-DURABLE-DELIVERY') continue;
     for (const routeRef of machine.authoritativeRouteRefs) {
-      for (const edge of machine.allowedEdges) {
-        for (const routeVariant of ROUTE_VARIANTS) {
-          expectedCases.add(caseKey({
-            routeRef,
-            coordinate: {machineId: machine.machineId, ...edge},
-            routeVariant,
-          }));
-        }
+      const route = routes.get(routeRef.registryId);
+      if (!route) fail('transactionOracle.bridge', `unknown route ${routeRef.registryId}`);
+      for (const [edgeOrdinal, edge] of machine.allowedEdges.entries()) {
+        cases.push({
+          route,
+          machine,
+          edgeOrdinal,
+          coordinate: {machineId: machine.machineId, ...edge},
+        });
       }
     }
   }
+  return cases.sort((left, right) =>
+    left.route.normativeOrdinal - right.route.normativeOrdinal ||
+    left.machine.machineOrdinal - right.machine.machineOrdinal ||
+    left.edgeOrdinal - right.edgeOrdinal);
+}
 
-  const actualCases = new Set();
+function independentBridgeGuardId(entry, routeVariant) {
+  return `guard.transaction.bridge.${pad(entry.route.normativeOrdinal, 2)}.${pad(
+    entry.machine.machineOrdinal,
+    2,
+  )}.${pad(entry.edgeOrdinal, 3)}.${slug(routeVariant)}`;
+}
+
+function independentBridgeManifestId(entry, shape) {
+  return `tx.bridge.${pad(entry.route.normativeOrdinal, 2)}.${pad(
+    entry.machine.machineOrdinal,
+    2,
+  )}.${pad(entry.edgeOrdinal, 3)}.${shape}`;
+}
+
+function independentBridgeApplicability(machineAuthority, entry, routeVariant) {
+  const edge = machineEdge(machineAuthority, entry.coordinate);
+  if (edge.guardRefs.length !== 1) {
+    fail('transactionOracle.bridge', `${edge.edgeId} needs one exact machine guard`);
+  }
+  return {
+    bindingKey: bindingKey('AUTHORITATIVE_MACHINE', entry.machine.machineId),
+    coordinate: entry.coordinate,
+    routeRef: ref('PROJECTION_ROUTE', entry.route.registryId),
+    routeVariant,
+    guardRefs: [
+      ref('EDGE_GUARD', edge.guardRefs[0].registryId),
+      ref('EDGE_GUARD', independentBridgeGuardId(entry, routeVariant)),
+    ].sort((left, right) => compareUtf16(left.registryId, right.registryId)),
+  };
+}
+
+function independentBridgeManifests(machineAuthority) {
+  const manifests = [];
+  for (const entry of independentBridgeRouteCases(machineAuthority)) {
+    const edge = machineEdge(machineAuthority, entry.coordinate);
+    const coordinator = bindingKey('AUTHORITATIVE_MACHINE', entry.machine.machineId);
+    for (const [shape, variants] of [
+      ['connected', ['PUBLIC_CONNECTED']],
+      ['disconnected', ['PUBLIC_DISCONNECTED']],
+      ['quiet', ['COALESCED', 'REJECTED', 'INTERNAL']],
+    ]) {
+      const manifestId = independentBridgeManifestId(entry, shape);
+      manifests.push({
+        manifestId,
+        initialDurablePostStateProjectionRef: edge.zeroEffectProjectionRef,
+        applicabilityCases: variants.map((routeVariant) =>
+          independentBridgeApplicability(machineAuthority, entry, routeVariant)),
+        segments: [independentSqlSegment({
+          manifestId,
+          segmentOrdinal: 0,
+          transactionRole: 'AUTHORITATIVE_OWNER',
+          coordinatorBindingKey: coordinator,
+          entry: edge.zeroEffectProjectionRef,
+          writes: expectedBridgeWrites(machineAuthority, entry, shape),
+          commit: edge.successPostStateProjectionRef,
+        })],
+      });
+    }
+  }
+  return manifests;
+}
+
+function validateBridgeManifests(machineAuthority, authority) {
   const bridge = authority.transactionManifests.filter((manifest) =>
     manifest.manifestId.startsWith('tx.bridge.'));
-  for (const manifest of bridge) {
-    const shape = manifest.manifestId.split('.').at(-1);
-    const expectedVariants = shape === 'connected'
-      ? ['PUBLIC_CONNECTED']
-      : shape === 'disconnected'
-        ? ['PUBLIC_DISCONNECTED']
-        : shape === 'quiet'
-          ? ['COALESCED', 'REJECTED', 'INTERNAL']
-          : null;
-    if (expectedVariants === null || manifest.applicabilityCases.length !== expectedVariants.length) {
-      fail(manifest.manifestId, 'invalid authoritative manifest shape');
-    }
-    const first = manifest.applicabilityCases[0];
-    if (!jsonEqual(manifest.applicabilityCases.map((row) => row.routeVariant), expectedVariants) ||
-        manifest.applicabilityCases.some((row) =>
-          !jsonEqual(row.coordinate, first.coordinate) ||
-          !jsonEqual(row.routeRef, first.routeRef))) {
-      fail(manifest.manifestId, 'applicability partition is not the exact shape');
-    }
-    for (const row of manifest.applicabilityCases) {
-      const key = caseKey(row);
-      if (!expectedCases.has(key) || actualCases.has(key)) {
-        fail(manifest.manifestId, `unexpected or duplicate case ${key}`);
-      }
-      actualCases.add(key);
-    }
-    if (manifest.segments.length !== 1 ||
-        manifest.segments[0].segmentKind !== 'SQL_TRANSACTION' ||
-        manifest.segments[0].transactionRole !== 'AUTHORITATIVE_OWNER') {
-      fail(manifest.manifestId, 'authoritative manifest needs one owner SQL segment');
-    }
-    const actualWrites = manifest.segments[0].writes.map((write) => ({
-      writeRole: write.writeRole,
-      coordinateId: write.physicalStorageCoordinateRef.coordinateId,
-    }));
-    const expectedWrites = expectedBridgeWrites(machineAuthority, first, shape);
-    if (!jsonEqual(actualWrites, expectedWrites)) {
-      fail(manifest.manifestId, 'physical writes do not match the independent edge plan');
-    }
-    for (const write of manifest.segments[0].writes) {
-      const expectedCardinality = write.writeRole === 'OUTBOX_ENVELOPE'
-        ? {cardinalityKind: 'CONTEXT_COUNT', countKind: 'ELIGIBLE_ENVELOPE_COUNT'}
-        : {cardinalityKind: 'EXACT', rows: 1};
-      if (!jsonEqual(write.rowCardinality, expectedCardinality)) {
-        fail(write.writeId, 'wrong independent row cardinality');
-      }
-    }
+  const expected = independentBridgeManifests(machineAuthority);
+  if (!jsonEqual(bridge, expected)) {
+    fail('transactionOracle.bridge', 'manifests do not exact-equal the independent Bridge law');
   }
-  if (actualCases.size !== expectedCases.size) {
-    fail('transactionOracle.applicabilityCases',
-      `expected ${expectedCases.size}, got ${actualCases.size}`);
-  }
-  return {bridgeManifestCount: bridge.length, authoritativeCaseCount: expectedCases.size};
+  return {
+    bridgeManifestCount: expected.length,
+    authoritativeCaseCount: independentBridgeRouteCases(machineAuthority).length *
+      ROUTE_VARIANTS.length,
+    expectedById: new Map(expected.map((manifest) => [manifest.manifestId, manifest])),
+  };
 }
 
 function ref(refKind, registryId) {
@@ -573,11 +636,14 @@ function expectedFailureOracle(manifest, after, before) {
   };
 }
 
-function validateDerivedFailureUniverse(authority, expectedMobileById) {
+function validateDerivedFailureUniverse(authority, expectedManifestsById) {
   const expectedStepRows = [];
   const expectedKillRows = [];
   for (const candidate of authority.transactionManifests) {
-    const manifest = expectedMobileById.get(candidate.manifestId) ?? candidate;
+    const manifest = expectedManifestsById.get(candidate.manifestId);
+    if (!manifest) {
+      fail('transactionOracle.failureUniverse', `unexpected manifest ${candidate.manifestId}`);
+    }
     const steps = expectedSteps(manifest);
     expectedStepRows.push(...steps);
     for (let index = 0; index + 1 < steps.length; index += 1) {
@@ -682,7 +748,14 @@ function validateCoordinateClosure(machineAuthority, authority) {
 export function validateIndependentTransactionAuthority(machineAuthority, authority) {
   const bridge = validateBridgeManifests(machineAuthority, authority);
   const mobile = validateMobileManifests(machineAuthority, authority);
-  const failure = validateDerivedFailureUniverse(authority, mobile.expectedById);
+  const expectedManifestsById = new Map([
+    ...bridge.expectedById,
+    ...mobile.expectedById,
+  ]);
+  if (expectedManifestsById.size !== authority.transactionManifests.length) {
+    fail('transactionOracle.manifests', 'independent manifest universe is not exact');
+  }
+  const failure = validateDerivedFailureUniverse(authority, expectedManifestsById);
   const aliases = validateBridgeAliases(machineAuthority, authority);
   validateCoordinateClosure(machineAuthority, authority);
   const expectedManifestCount = bridge.authoritativeCaseCount / ROUTE_VARIANTS.length * 3 +

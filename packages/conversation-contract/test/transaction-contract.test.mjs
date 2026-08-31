@@ -126,8 +126,60 @@ test('independent transaction oracle re-derives cover, writes, steps, and aliase
       machineWithAuxiliary(machine, drift),
       drift,
     ),
-    /independent edge plan/,
+    /independent Bridge law/,
   );
+});
+
+test('independent Bridge law rejects candidate-derived manifest and failure drift', () => {
+  const {machine, transaction} = expected();
+  const mutations = [
+    (manifest) => { manifest.segments[0].segmentId = 'segment.drift'; },
+    (manifest) => { manifest.segments[0].writes[0].writeId = 'write.drift'; },
+    (manifest) => {
+      const success = structuredClone(manifest.segments[0].commitPostStateProjectionRef);
+      manifest.initialDurablePostStateProjectionRef = structuredClone(success);
+      manifest.segments[0].entryDurablePostStateProjectionRef = success;
+    },
+    (manifest) => {
+      manifest.segments[0].commitPostStateProjectionRef = structuredClone(
+        manifest.segments[0].entryDurablePostStateProjectionRef,
+      );
+    },
+    (manifest) => {
+      manifest.applicabilityCases[0].bindingKey.machineId = 'SM-DURABLE-DELIVERY';
+    },
+    (manifest) => {
+      manifest.applicabilityCases[0].guardRefs[0].registryId = 'guard.drift';
+    },
+    (manifest) => {
+      manifest.segments[0].coordinatorBindingKey.machineId = 'SM-DURABLE-DELIVERY';
+    },
+    (manifest) => {
+      manifest.segments[0].writes[0].bindingKey.machineId = 'SM-DURABLE-DELIVERY';
+    },
+    (manifest) => {
+      manifest.segments[0].writes[0].physicalStorageCoordinateRef.storageBindingRef.registryId =
+        'storage.authoritative.sm-durable-delivery';
+    },
+  ];
+  for (const mutate of mutations) {
+    const drift = structuredClone(transaction);
+    const bridge = drift.transactionManifests.find((manifest) =>
+      manifest.manifestId.endsWith('.disconnected'));
+    mutate(bridge);
+    drift.transactionSteps = deriveTransactionSteps(drift.transactionManifests);
+    drift.transactionKillPoints = deriveTransactionKillPoints(
+      drift.transactionManifests,
+      drift.transactionSteps,
+    );
+    assert.throws(
+      () => validateIndependentTransactionAuthority(
+        machineWithAuxiliary(machine, drift),
+        drift,
+      ),
+      /independent Bridge law/,
+    );
+  }
 });
 
 test('independent Mobile law rejects a self-consistent candidate and derived failure drift', () => {
