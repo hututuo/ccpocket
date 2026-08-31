@@ -230,7 +230,7 @@ function validateBridgeManifests(machineAuthority, authority) {
     bridgeManifestCount: expected.length,
     authoritativeCaseCount: independentBridgeRouteCases(machineAuthority).length *
       ROUTE_VARIANTS.length,
-    expectedById: new Map(expected.map((manifest) => [manifest.manifestId, manifest])),
+    expected,
   };
 }
 
@@ -555,7 +555,7 @@ function validateMobileManifests(machineAuthority, authority) {
   }
   return {
     mobileManifestCount: expected.length,
-    expectedById: new Map(expected.map((manifest) => [manifest.manifestId, manifest])),
+    expected,
   };
 }
 
@@ -636,14 +636,10 @@ function expectedFailureOracle(manifest, after, before) {
   };
 }
 
-function validateDerivedFailureUniverse(authority, expectedManifestsById) {
+function validateDerivedFailureUniverse(authority, expectedManifests) {
   const expectedStepRows = [];
   const expectedKillRows = [];
-  for (const candidate of authority.transactionManifests) {
-    const manifest = expectedManifestsById.get(candidate.manifestId);
-    if (!manifest) {
-      fail('transactionOracle.failureUniverse', `unexpected manifest ${candidate.manifestId}`);
-    }
+  for (const manifest of expectedManifests) {
     const steps = expectedSteps(manifest);
     expectedStepRows.push(...steps);
     for (let index = 0; index + 1 < steps.length; index += 1) {
@@ -748,14 +744,17 @@ function validateCoordinateClosure(machineAuthority, authority) {
 export function validateIndependentTransactionAuthority(machineAuthority, authority) {
   const bridge = validateBridgeManifests(machineAuthority, authority);
   const mobile = validateMobileManifests(machineAuthority, authority);
-  const expectedManifestsById = new Map([
-    ...bridge.expectedById,
-    ...mobile.expectedById,
-  ]);
-  if (expectedManifestsById.size !== authority.transactionManifests.length) {
-    fail('transactionOracle.manifests', 'independent manifest universe is not exact');
+  const expectedManifests = [
+    ...bridge.expected,
+    ...mobile.expected,
+  ].sort((left, right) => compareUtf16(left.manifestId, right.manifestId));
+  if (!jsonEqual(authority.transactionManifests, expectedManifests)) {
+    fail(
+      'transactionOracle.manifests',
+      'manifest inventory does not exact-equal independent order',
+    );
   }
-  const failure = validateDerivedFailureUniverse(authority, expectedManifestsById);
+  const failure = validateDerivedFailureUniverse(authority, expectedManifests);
   const aliases = validateBridgeAliases(machineAuthority, authority);
   validateCoordinateClosure(machineAuthority, authority);
   const expectedManifestCount = bridge.authoritativeCaseCount / ROUTE_VARIANTS.length * 3 +

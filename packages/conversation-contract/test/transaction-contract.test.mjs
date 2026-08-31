@@ -182,6 +182,28 @@ test('independent Bridge law rejects candidate-derived manifest and failure drif
   }
 });
 
+test('independent manifest universe rejects cross-group order and derived failure drift', () => {
+  const {machine, transaction} = expected();
+  const drift = structuredClone(transaction);
+  const mobileIndex = drift.transactionManifests.findIndex((manifest) =>
+    manifest.manifestId === 'tx.mobile.00.apply');
+  assert.notEqual(mobileIndex, -1);
+  const [mobile] = drift.transactionManifests.splice(mobileIndex, 1);
+  drift.transactionManifests.splice(100, 0, mobile);
+  drift.transactionSteps = deriveTransactionSteps(drift.transactionManifests);
+  drift.transactionKillPoints = deriveTransactionKillPoints(
+    drift.transactionManifests,
+    drift.transactionSteps,
+  );
+  assert.throws(
+    () => validateIndependentTransactionAuthority(
+      machineWithAuxiliary(machine, drift),
+      drift,
+    ),
+    /manifest inventory does not exact-equal independent order/,
+  );
+});
+
 test('independent Mobile law rejects a self-consistent candidate and derived failure drift', () => {
   const {machine, transaction} = expected();
   const mutations = [
