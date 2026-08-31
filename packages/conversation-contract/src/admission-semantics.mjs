@@ -201,12 +201,196 @@ const OTHER_VECTOR_IDS = Object.freeze([
   'operation.admission-lookup.not-found-resend.negative',
 ]);
 
+function admissionVectorBaseline() {
+  const sourcePartition = {
+    bridgeIdentityId: 'bi-1',
+    bridgeInstanceId: 'bridge-1',
+    codexSourceId: 'codex-1',
+  };
+  const actorBinding = {
+    kind: 'PAIRED_DEVICE',
+    principalId: 'actor-1',
+    trustRevision: 1,
+  };
+  const operationFingerprint = 'a'.repeat(64);
+  return {
+    transportOutcome: 'RESULT',
+    inFlightCount: 1,
+    outerRequestId: 'request-1',
+    authenticatedSourcePartition: structuredClone(sourcePartition),
+    lookupKey: {
+      sourcePartition: structuredClone(sourcePartition),
+      operationId: 'operation-1',
+      fingerprintVersion: 1,
+      operationFingerprint,
+    },
+    query: {
+      schemaRevision: 1,
+      kind: 'operation.query',
+      requestId: 'request-1',
+      sourcePartition: structuredClone(sourcePartition),
+      operationId: 'operation-1',
+      fingerprintVersion: 1,
+      operationFingerprint,
+    },
+    result: {
+      outcome: 'MATCHED',
+      schemaRevision: 1,
+      kind: 'operation.snapshot',
+      requestId: 'request-1',
+      sourcePartition: structuredClone(sourcePartition),
+      operationId: 'operation-1',
+      fingerprintVersion: 1,
+      operationFingerprint,
+      snapshot: {operationRevision: 1, lifecycleState: 'RECEIVED'},
+    },
+    persistedOperation: {
+      sourcePartition: structuredClone(sourcePartition),
+      operationId: 'operation-1',
+      originView: {
+        kind: 'AUTHENTICATED_ACTOR',
+        actorBinding: structuredClone(actorBinding),
+      },
+      fingerprintVersion: 1,
+      operationFingerprint,
+      snapshot: {operationRevision: 1, lifecycleState: 'RECEIVED'},
+    },
+    currentActorBinding: structuredClone(actorBinding),
+    expectedProjection: 'ADMISSION_UNKNOWN',
+    effects: structuredClone(ZERO_EFFECTS),
+  };
+}
+
+function admissionConflict(problemCode) {
+  return {
+    errorClass: 'CONFLICT',
+    problemCode,
+    retryDirective: 'NEVER',
+    safeTitle: 'Operation admission conflict',
+    subject: {kind: 'operation', operationId: 'operation-1'},
+  };
+}
+
+function matchedAdmissionVector(lifecycleState, expectedProjection) {
+  const value = admissionVectorBaseline();
+  value.result.snapshot.lifecycleState = lifecycleState;
+  value.persistedOperation.snapshot.lifecycleState = lifecycleState;
+  value.expectedProjection = expectedProjection;
+  return value;
+}
+
+function conflictAdmissionVector(problemCode) {
+  const value = matchedAdmissionVector('ADMITTED', 'LOCAL_ERROR');
+  value.result.outcome = 'CONFLICT';
+  value.result.problem = admissionConflict(problemCode);
+  delete value.result.snapshot;
+  return value;
+}
+
+function expectedAdmissionVectorValues() {
+  const values = new Map();
+  for (const [suffix, lifecycleState, projection] of MATCHED_VECTOR_STATES) {
+    values.set(
+      `operation.admission-lookup.matched.${suffix}`,
+      matchedAdmissionVector(lifecycleState, projection),
+    );
+  }
+
+  const notFound = admissionVectorBaseline();
+  notFound.result.outcome = 'NOT_FOUND';
+  delete notFound.result.snapshot;
+  notFound.persistedOperation = null;
+  values.set('operation.admission-lookup.not-found', notFound);
+
+  const privateOrigin = conflictAdmissionVector('OPERATION_ACTOR_MISMATCH');
+  privateOrigin.persistedOperation.originView = {kind: 'AUTO_APPROVAL_POLICY'};
+  privateOrigin.currentActorBinding = null;
+  values.set('operation.admission-lookup.private-origin-conflict', privateOrigin);
+
+  const actorMismatch = conflictAdmissionVector('OPERATION_ACTOR_MISMATCH');
+  actorMismatch.currentActorBinding.principalId = 'actor-2';
+  values.set('operation.admission-lookup.actor-mismatch-conflict', actorMismatch);
+
+  const fingerprintConflict = conflictAdmissionVector('OPERATION_FINGERPRINT_CONFLICT');
+  fingerprintConflict.persistedOperation.operationFingerprint = 'b'.repeat(64);
+  values.set('operation.admission-lookup.fingerprint-conflict', fingerprintConflict);
+
+  const authFailure = matchedAdmissionVector('ADMITTED', 'ADMISSION_UNKNOWN');
+  authFailure.transportOutcome = 'AUTH_FAILURE';
+  authFailure.authenticatedSourcePartition = null;
+  authFailure.result = null;
+  values.set('operation.admission-lookup.auth-failure', authFailure);
+
+  const timeout = matchedAdmissionVector('ADMITTED', 'ADMISSION_UNKNOWN');
+  timeout.transportOutcome = 'TIMEOUT';
+  timeout.result = null;
+  values.set('operation.admission-lookup.timeout', timeout);
+
+  const negative = () => matchedAdmissionVector('ADMITTED', 'BRIDGE_ACCEPTED');
+  const outerRequest = negative();
+  outerRequest.outerRequestId = 'request-2';
+  values.set('operation.admission-lookup.outer-request.negative', outerRequest);
+
+  const authenticatedSource = negative();
+  for (const source of [
+    authenticatedSource.authenticatedSourcePartition,
+    authenticatedSource.lookupKey.sourcePartition,
+    authenticatedSource.query.sourcePartition,
+    authenticatedSource.persistedOperation.sourcePartition,
+  ]) {
+    source.codexSourceId = 'codex-2';
+  }
+  values.set('operation.admission-lookup.authenticated-source.negative', authenticatedSource);
+
+  const resultRequest = negative();
+  resultRequest.result.requestId = 'request-2';
+  values.set('operation.admission-lookup.result-request.negative', resultRequest);
+
+  const resultOperation = negative();
+  resultOperation.result.operationId = 'operation-2';
+  values.set('operation.admission-lookup.result-operation.negative', resultOperation);
+
+  const resultFingerprint = negative();
+  resultFingerprint.result.operationFingerprint = 'c'.repeat(64);
+  values.set('operation.admission-lookup.result-fingerprint.negative', resultFingerprint);
+
+  const wrongProjection = negative();
+  wrongProjection.expectedProjection = 'LOCAL_ERROR';
+  values.set('operation.admission-lookup.wrong-projection.negative', wrongProjection);
+
+  const doubleInFlight = negative();
+  doubleInFlight.inFlightCount = 2;
+  values.set('operation.admission-lookup.double-in-flight.negative', doubleInFlight);
+
+  const providerCall = negative();
+  providerCall.effects.providerCalls = 1;
+  values.set('operation.admission-lookup.provider-call.negative', providerCall);
+
+  const actorBeforeFingerprint = conflictAdmissionVector('OPERATION_FINGERPRINT_CONFLICT');
+  actorBeforeFingerprint.currentActorBinding.principalId = 'actor-2';
+  actorBeforeFingerprint.persistedOperation.operationFingerprint = 'b'.repeat(64);
+  values.set(
+    'operation.admission-lookup.actor-before-fingerprint.negative',
+    actorBeforeFingerprint,
+  );
+
+  const notFoundResend = structuredClone(notFound);
+  notFoundResend.effects.resends = 1;
+  values.set('operation.admission-lookup.not-found-resend.negative', notFoundResend);
+  return values;
+}
+
 export function validateAdmissionLookupVectors(activeVectors) {
+  const expectedValues = expectedAdmissionVectorValues();
   const expectedIds = new Set([
     ...MATCHED_VECTOR_STATES.map(([suffix]) =>
       `operation.admission-lookup.matched.${suffix}`),
     ...OTHER_VECTOR_IDS,
   ]);
+  if (expectedValues.size !== expectedIds.size ||
+      [...expectedIds].some((id) => !expectedValues.has(id))) {
+    throw new TypeError('vectors.operationAdmissionLookup: incomplete independent subject oracle');
+  }
   const vectors = activeVectors.filter((vector) =>
     vector.vectorSetRef === 'vectors.operation-admission-lookup');
   if (vectors.length !== expectedIds.size || vectors.some((vector) =>
@@ -215,33 +399,12 @@ export function validateAdmissionLookupVectors(activeVectors) {
       `vectors.operationAdmissionLookup: expected ${expectedIds.size} exact vectors`,
     );
   }
-  const byId = new Map(vectors.map((vector) => [vector.id, vector]));
-  for (const [suffix, lifecycleState, projection] of MATCHED_VECTOR_STATES) {
-    const id = `operation.admission-lookup.matched.${suffix}`;
-    const vector = byId.get(id);
+  for (const vector of vectors) {
     if (vector.ruleRef !== 'rule.operation.admission-lookup' ||
         vector.typeRef !== 'OperationAdmissionRecoveryCaseV1' ||
-        vector.value.result?.outcome !== 'MATCHED' ||
-        vector.value.result.snapshot?.lifecycleState !== lifecycleState ||
-        vector.value.persistedOperation?.snapshot?.lifecycleState !== lifecycleState ||
-        !same(vector.value.result.snapshot, vector.value.persistedOperation.snapshot) ||
-        vector.value.expectedProjection !== projection) {
-      throw new TypeError(`${id}: does not bind its exact persisted lifecycle subject`);
+        !same(vector.value, expectedValues.get(vector.id))) {
+      throw new TypeError(`${vector.id}: does not bind its exact admission subject`);
     }
-  }
-  const notFound = byId.get('operation.admission-lookup.not-found').value;
-  if (notFound.result?.outcome !== 'NOT_FOUND' || notFound.persistedOperation !== null ||
-      notFound.expectedProjection !== 'ADMISSION_UNKNOWN') {
-    throw new TypeError(
-      'operation.admission-lookup.not-found: requires a genuinely absent persisted row',
-    );
-  }
-  const notFoundResend = byId.get('operation.admission-lookup.not-found-resend.negative').value;
-  if (notFoundResend.result?.outcome !== 'NOT_FOUND' ||
-      notFoundResend.persistedOperation !== null || notFoundResend.effects?.resends !== 1) {
-    throw new TypeError(
-      'operation.admission-lookup.not-found-resend.negative: wrong exact mutation',
-    );
   }
 }
 

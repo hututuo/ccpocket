@@ -5,6 +5,8 @@ import test from 'node:test';
 import {buildExpectedMachineAuthority} from '../src/machine-semantics.mjs';
 import {
   buildExpectedTransactionAuthority,
+  deriveTransactionKillPoints,
+  deriveTransactionSteps,
   evaluateTransactionAuthorityCase,
   validateTransactionAuthorityRegistry,
 } from '../src/transaction-semantics.mjs';
@@ -128,6 +130,59 @@ test('independent transaction oracle re-derives cover, writes, steps, and aliase
   );
 });
 
+test('independent Mobile law rejects a self-consistent candidate and derived failure drift', () => {
+  const {machine, transaction} = expected();
+  const mutations = [
+    (manifest) => { manifest.manifestId = 'tx.mobile.00.drift'; },
+    (manifest) => { manifest.applicabilityCases[0].guardRefs[0].registryId = 'guard.drift'; },
+    (manifest) => { manifest.segments[0].segmentId = 'segment.drift'; },
+    (manifest) => { manifest.segments[0].segmentOrdinal = 1; },
+    (manifest) => {
+      manifest.segments[0].entryDurablePostStateProjectionRef.registryId = 'oracle.drift';
+    },
+    (manifest) => {
+      manifest.segments[0].commitPostStateProjectionRef.registryId = 'oracle.drift';
+    },
+    (manifest) => { manifest.segments[0].writes[0].writeId = 'write.drift'; },
+    (manifest) => { manifest.segments[0].writes[0].writeRole = 'PROGRESS_METADATA'; },
+    (manifest) => {
+      manifest.segments[0].writes[0].bindingKey.machineId = 'SM-OPERATION';
+    },
+    (manifest) => {
+      manifest.segments[0].writes[0].physicalStorageCoordinateRef.coordinateId =
+        'MOBILE.m_apply_batch.progress';
+    },
+    (manifest) => {
+      manifest.segments[0].writes[0].rowCardinality = {
+        cardinalityKind: 'EXACT',
+        rows: 1,
+      };
+    },
+    (manifest) => {
+      manifest.segments.find((segment) => segment.segmentKind === 'READBACK').replayRule =
+        'IDEMPOTENT_BY_REPOSITORY_PUBLICATION_ID';
+    },
+  ];
+  for (const mutate of mutations) {
+    const drift = structuredClone(transaction);
+    const mobile = drift.transactionManifests.find((manifest) =>
+      manifest.manifestId === 'tx.mobile.00.apply');
+    mutate(mobile);
+    drift.transactionSteps = deriveTransactionSteps(drift.transactionManifests);
+    drift.transactionKillPoints = deriveTransactionKillPoints(
+      drift.transactionManifests,
+      drift.transactionSteps,
+    );
+    assert.throws(
+      () => validateIndependentTransactionAuthority(
+        machineWithAuxiliary(machine, drift),
+        drift,
+      ),
+      /independent route law/,
+    );
+  }
+});
+
 test('durable sync.gap publication is persisted by ReadAttempt, never memory-only GapRepair', () => {
   const {machine} = expected();
   const readAttempt = machine.machineRecords.find((row) => row.machineId === 'SM-READ-ATTEMPT');
@@ -240,6 +295,41 @@ test('the 28 Bridge aliases select real, distinct adjacent transaction kill poin
       assert.deepEqual(killPoint.manifestRef, row.manifestRef);
       assert.equal(killPoint.beforeStepOrdinal, killPoint.afterStepOrdinal + 1);
     }
+  }
+});
+
+test('Bridge aliases reject adjacent redirects, swaps, and cross-route bindings', () => {
+  const {machine, transaction} = expected();
+  const mutations = [
+    (drift) => {
+      drift.bridgeRoutePointBindings[0].transactionKillPointId =
+        'tx.bridge.00.01.000.connected:K1';
+    },
+    (drift) => {
+      const first = drift.bridgeRoutePointBindings[0].transactionKillPointId;
+      drift.bridgeRoutePointBindings[0].transactionKillPointId =
+        drift.bridgeRoutePointBindings[1].transactionKillPointId;
+      drift.bridgeRoutePointBindings[1].transactionKillPointId = first;
+    },
+    (drift) => {
+      const foreign = drift.bridgeRoutePointBindings[4];
+      drift.bridgeRoutePointBindings[0].manifestRef = structuredClone(foreign.manifestRef);
+      drift.bridgeRoutePointBindings[0].transactionKillPointId = foreign.transactionKillPointId;
+    },
+    (drift) => {
+      drift.bridgeRoutePointBindings[0].applicabilityCaseOrdinal = 1;
+    },
+  ];
+  for (const mutate of mutations) {
+    const drift = structuredClone(transaction);
+    mutate(drift);
+    assert.throws(
+      () => validateIndependentTransactionAuthority(
+        machineWithAuxiliary(machine, drift),
+        drift,
+      ),
+      /aliases do not exact-equal canonical boundaries/,
+    );
   }
 });
 

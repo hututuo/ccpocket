@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {readFileSync} from 'node:fs';
+import {mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
+import {pathToFileURL} from 'node:url';
 
 import {generateArtifacts} from '../src/generate.mjs';
 import {validateInputs} from '../src/validate.mjs';
@@ -106,6 +109,51 @@ test('generated TypeScript exports exact immutable machine and transaction autho
   assert.match(source, /function isAllowedPvmc1MachineEdge/);
   assert.match(source, /function pvmc1MachineTransitionSqlBytes/);
   assert.match(source, /as const satisfies readonly Pvmc1MachineRecord\[\]/);
+  assert.match(source, /function pvmc1DeepFreezeAuthority/);
+  assert.match(source, /pvmc1DeepFreezeAuthority\(pvmc1MachineRecords\)/);
+  assert.match(source, /pvmc1DeepFreezeAuthority\(pvmc1MachineEdgeAuthorities\)/);
+});
+
+test('generated TypeScript authority is recursively immutable before helper indexing', async () => {
+  const {artifacts} = generated();
+  const directory = mkdtempSync(path.join(tmpdir(), 'ccpocket-b2-ts-runtime-'));
+  const target = path.join(directory, 'contract.ts');
+  try {
+    writeFileSync(target, artifacts.get('contract.ts'));
+    const authority = await import(`${pathToFileURL(target).href}?runtime=${Date.now()}`);
+    const firstRecord = authority.pvmc1MachineRecords[0];
+    const firstEdge = authority.pvmc1MachineEdgeAuthorities[0];
+    const coordinate = firstEdge.coordinate;
+    assert.equal(
+      authority.isAllowedPvmc1MachineEdge(
+        coordinate.machineId,
+        coordinate.from,
+        coordinate.to,
+      ),
+      true,
+    );
+    assert.throws(() => authority.pvmc1MachineRecords.push(firstRecord), TypeError);
+    assert.throws(() => { firstRecord.states[0] = 'MUTATED'; }, TypeError);
+    assert.throws(() => { firstEdge.coordinate.from = 'MUTATED'; }, TypeError);
+    assert.throws(() => firstEdge.guardRefs.push(firstEdge.guardRefs[0]), TypeError);
+    const replica = authority.pvmc1MachineRecords.find((row) =>
+      row.replicaWriterBindings.length > 0).replicaWriterBindings[0];
+    assert.throws(() => replica.storageBindings.push(replica.storageBindings[0]), TypeError);
+    assert.throws(
+      () => authority.pvmc1TransactionManifestIds.push('tx.mutated'),
+      TypeError,
+    );
+    assert.equal(
+      authority.isAllowedPvmc1MachineEdge(
+        coordinate.machineId,
+        coordinate.from,
+        coordinate.to,
+      ),
+      true,
+    );
+  } finally {
+    rmSync(directory, {recursive: true, force: true});
+  }
 });
 
 test('generated Dart exports the same machine JSON, routes, and transaction IDs', () => {
@@ -142,6 +190,8 @@ test('generated Dart exports the same machine JSON, routes, and transaction IDs'
   assert.match(source, /Uint8List pvmc1MachineTransitionSqlBytes/);
   assert.match(source, /final List<Pvmc1MachineRecord> pvmc1MachineRecords/);
   assert.match(source, /final List<MachineEdgeAuthorityV1> pvmc1MachineEdgeAuthorities/);
+  assert.match(source, /_pvmc1ImmutableReplicaWriterBinding/);
+  assert.match(source, /_pvmc1ImmutableMachineEdgeAuthority/);
 });
 
 test('Schema, manifest, TypeScript, and Dart carry the exact same SQL bytes and digest', () => {

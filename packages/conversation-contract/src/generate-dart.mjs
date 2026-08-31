@@ -492,29 +492,61 @@ function pvmc1AuthorityExports(model) {
     `      machineOrdinal: _expectInt(json['machineOrdinal'], 'Pvmc1MachineRecord.machineOrdinal'),\n` +
     `      machineId: _expectString(json['machineId'], 'Pvmc1MachineRecord.machineId'),\n` +
     `      stateTypeRef: _expectString(json['stateTypeRef'], 'Pvmc1MachineRecord.stateTypeRef'),\n` +
-    `      states: _decodeList<String>(json['states'], 'Pvmc1MachineRecord.states', (value) => _expectString(value, 'Pvmc1MachineRecord.states[]')),\n` +
+    `      states: List<String>.unmodifiable(_decodeList<String>(json['states'], 'Pvmc1MachineRecord.states', (value) => _expectString(value, 'Pvmc1MachineRecord.states[]'))),\n` +
     `      initialState: _expectString(json['initialState'], 'Pvmc1MachineRecord.initialState'),\n` +
-    `      terminalStates: _decodeList<String>(json['terminalStates'], 'Pvmc1MachineRecord.terminalStates', (value) => _expectString(value, 'Pvmc1MachineRecord.terminalStates[]')),\n` +
-    `      allowedEdges: _decodeList<Pvmc1MachineTransition>(json['allowedEdges'], 'Pvmc1MachineRecord.allowedEdges', Pvmc1MachineTransition.fromJson),\n` +
+    `      terminalStates: List<String>.unmodifiable(_decodeList<String>(json['terminalStates'], 'Pvmc1MachineRecord.terminalStates', (value) => _expectString(value, 'Pvmc1MachineRecord.terminalStates[]'))),\n` +
+    `      allowedEdges: List<Pvmc1MachineTransition>.unmodifiable(_decodeList<Pvmc1MachineTransition>(json['allowedEdges'], 'Pvmc1MachineRecord.allowedEdges', Pvmc1MachineTransition.fromJson)),\n` +
     `      semanticOwnerRef: SemanticOwnerSelectorRefV1.fromJson(_expectMap(json['semanticOwnerRef'], 'Pvmc1MachineRecord.semanticOwnerRef')),\n` +
     `      authoritativeWriterRef: AuthoritativeWriterRefV1.fromJson(_expectMap(json['authoritativeWriterRef'], 'Pvmc1MachineRecord.authoritativeWriterRef')),\n` +
     `      eventFactOwnerSelectorRef: json['eventFactOwnerSelectorRef'] == null ? null : EventFactOwnerSelectorRefV1.fromJson(_expectMap(json['eventFactOwnerSelectorRef'], 'Pvmc1MachineRecord.eventFactOwnerSelectorRef')),\n` +
-    `      replicaWriterBindings: _decodeList<ReplicaWriterBindingV1>(json['replicaWriterBindings'], 'Pvmc1MachineRecord.replicaWriterBindings', (value) => ReplicaWriterBindingV1.fromJson(_expectMap(value, 'Pvmc1MachineRecord.replicaWriterBindings[]'))),\n` +
+    `      replicaWriterBindings: List<ReplicaWriterBindingV1>.unmodifiable(_decodeList<ReplicaWriterBindingV1>(json['replicaWriterBindings'], 'Pvmc1MachineRecord.replicaWriterBindings', (value) => _pvmc1ImmutableReplicaWriterBinding(ReplicaWriterBindingV1.fromJson(_expectMap(value, 'Pvmc1MachineRecord.replicaWriterBindings[]'))))),\n` +
     `      storageBindingRef: StorageBindingRefV1.fromJson(_expectMap(json['storageBindingRef'], 'Pvmc1MachineRecord.storageBindingRef')),\n` +
-    `      authoritativeRouteRefs: _decodeList<ProjectionRouteRefV1>(json['authoritativeRouteRefs'], 'Pvmc1MachineRecord.authoritativeRouteRefs', (value) => ProjectionRouteRefV1.fromJson(_expectMap(value, 'Pvmc1MachineRecord.authoritativeRouteRefs[]'))),\n` +
+    `      authoritativeRouteRefs: List<ProjectionRouteRefV1>.unmodifiable(_decodeList<ProjectionRouteRefV1>(json['authoritativeRouteRefs'], 'Pvmc1MachineRecord.authoritativeRouteRefs', (value) => ProjectionRouteRefV1.fromJson(_expectMap(value, 'Pvmc1MachineRecord.authoritativeRouteRefs[]')))),\n` +
     `      wireProjectionRef: WireProjectionRefV1.fromJson(_expectMap(json['wireProjectionRef'], 'Pvmc1MachineRecord.wireProjectionRef')),\n` +
     `      unknownPolicyRef: UnknownPolicyRefV1.fromJson(_expectMap(json['unknownPolicyRef'], 'Pvmc1MachineRecord.unknownPolicyRef')),\n` +
     `      ownerFeature: json['ownerFeature'] == null ? null : _expectString(json['ownerFeature'], 'Pvmc1MachineRecord.ownerFeature'),\n` +
     `    );\n` +
     `  }\n` +
     `}\n\n` +
+    `ReplicaWriterBindingV1 _pvmc1ImmutableReplicaWriterBinding(ReplicaWriterBindingV1 row) =>\n` +
+    `    ReplicaWriterBindingV1(\n` +
+    `      replicaRole: row.replicaRole,\n` +
+    `      replicaWriterRef: row.replicaWriterRef,\n` +
+    `      storageBindings: List<StorageBindingRefV1>.unmodifiable(row.storageBindings),\n` +
+    `      routeBindings: List<ProjectionRouteRefV1>.unmodifiable(row.routeBindings),\n` +
+    `      canWriteSemanticOwnerState: row.canWriteSemanticOwnerState,\n` +
+    `      canWriteEventFacts: row.canWriteEventFacts,\n` +
+    `      canWriteOutboxEnvelopes: row.canWriteOutboxEnvelopes,\n` +
+    `      canAdvanceCanonicalHead: row.canAdvanceCanonicalHead,\n` +
+    `    );\n\n` +
+    `MachineEdgeAuthorityV1 _pvmc1ImmutableMachineEdgeAuthority(MachineEdgeAuthorityV1 row) =>\n` +
+    `    MachineEdgeAuthorityV1(\n` +
+    `      edgeId: row.edgeId,\n` +
+    `      coordinate: row.coordinate,\n` +
+    `      semanticOwnerRef: row.semanticOwnerRef,\n` +
+    `      authoritativeWriterRef: row.authoritativeWriterRef,\n` +
+    `      eventFactOwnerSelectorRef: row.eventFactOwnerSelectorRef,\n` +
+    `      replicaWriterBindings: List<ReplicaWriterBindingV1>.unmodifiable(\n` +
+    `        row.replicaWriterBindings.map(_pvmc1ImmutableReplicaWriterBinding),\n` +
+    `      ),\n` +
+    `      storageBindingRef: row.storageBindingRef,\n` +
+    `      wireProjectionRef: row.wireProjectionRef,\n` +
+    `      unknownPolicyRef: row.unknownPolicyRef,\n` +
+    `      guardRefs: List<GuardRefV1>.unmodifiable(row.guardRefs),\n` +
+    `      failureProblem: row.failureProblem,\n` +
+    `      zeroEffectProjectionRef: row.zeroEffectProjectionRef,\n` +
+    `      successPostStateProjectionRef: row.successPostStateProjectionRef,\n` +
+    `      positiveVectorId: row.positiveVectorId,\n` +
+    `      negativeVectorIds: List<VectorId>.unmodifiable(row.negativeVectorIds),\n` +
+    `      faultVectorIds: List<VectorId>.unmodifiable(row.faultVectorIds),\n` +
+    `    );\n\n` +
     `const String _pvmc1MachineRecordsJson = ${dartString(machineRecordsJson)};\n` +
     `const String _pvmc1MachineEdgeAuthoritiesJson = ${dartString(machineEdgeAuthoritiesJson)};\n\n` +
     `final List<Pvmc1MachineRecord> pvmc1MachineRecords = List<Pvmc1MachineRecord>.unmodifiable(\n` +
     `  _decodeList<Pvmc1MachineRecord>(jsonDecode(_pvmc1MachineRecordsJson), 'pvmc1MachineRecords', Pvmc1MachineRecord.fromJson, minItems: 17, maxItems: 17),\n` +
     `);\n\n` +
     `final List<MachineEdgeAuthorityV1> pvmc1MachineEdgeAuthorities = List<MachineEdgeAuthorityV1>.unmodifiable(\n` +
-    `  _decodeList<MachineEdgeAuthorityV1>(jsonDecode(_pvmc1MachineEdgeAuthoritiesJson), 'pvmc1MachineEdgeAuthorities', (value) => MachineEdgeAuthorityV1.fromJson(_expectMap(value, 'pvmc1MachineEdgeAuthorities[]')), minItems: 151, maxItems: 151),\n` +
+    `  _decodeList<MachineEdgeAuthorityV1>(jsonDecode(_pvmc1MachineEdgeAuthoritiesJson), 'pvmc1MachineEdgeAuthorities', (value) => _pvmc1ImmutableMachineEdgeAuthority(MachineEdgeAuthorityV1.fromJson(_expectMap(value, 'pvmc1MachineEdgeAuthorities[]'))), minItems: 151, maxItems: 151),\n` +
     `);\n\n` +
     `const List<String> pvmc1DurableRouteIds = ${dartStringList(routes)};\n\n` +
     `String _pvmc1MachineEdgeKey(MachineEdgeAuthorityV1 row) {\n` +

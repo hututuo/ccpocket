@@ -19,7 +19,7 @@
     "test:dart": "node test/run-dart-fixture.mjs && npm run test:dart-runtime",
     "test:typescript": "tsc -p test/fixtures/typescript/tsconfig.json",
     "test:typescript-runtime": "mise exec node@22.23.1 -- node --test test/generated-typescript-runtime.test.mjs",
-    "test:dart-runtime": "mise exec flutter@3.47.0 -- dart --packages=../../apps/mobile/.dart_tool/package_config.json test/generated-dart-runtime-test.dart"
+    "test:dart-runtime": "mise exec flutter@3.47.0 -- dart --packages=../../apps/mobile/.dart_tool/package_config.json test/generated-dart-runtime-test.dart && node test/run-generated-b2-dart-runtime.mjs"
   },
   "devDependencies": {
     "typescript": "^5.7.0"

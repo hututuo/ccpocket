@@ -1,12 +1,23 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import test from 'node:test';
 
 import {
   ADMISSION_LOOKUP_FAILURE_REASON,
   BRIDGE_ACCEPTED_STATES,
   evaluateAdmissionLookupCase,
+  validateAdmissionLookupVectors,
   ZERO_ADMISSION_LOOKUP_EFFECTS,
 } from '../src/admission-semantics.mjs';
+
+const vectorsUrl = new URL(
+  '../../../docs/design/codex-kernel-v4/contracts/vectors/phone-core-vectors.json',
+  import.meta.url,
+);
+
+function admissionVectors() {
+  return JSON.parse(readFileSync(vectorsUrl, 'utf8')).vectors;
+}
 
 const sourcePartition = Object.freeze({
   bridgeIdentityId: 'bi-1',
@@ -235,4 +246,42 @@ test('timeout and authentication failure release exactly one keyed query slot', 
   assert.deepEqual(evaluateAdmissionLookupCase(authFailure), accepted());
   authFailure.inFlightCount = 2;
   assert.deepEqual(evaluateAdmissionLookupCase(authFailure), rejected());
+});
+
+test('every admission vector ID binds one exact complete mutation subject', () => {
+  const activeVectors = admissionVectors();
+  assert.doesNotThrow(() => validateAdmissionLookupVectors(activeVectors));
+
+  const mutations = [
+    (vectors) => {
+      const received = vectors.find((row) =>
+        row.id === 'operation.admission-lookup.matched.received');
+      const admitted = vectors.find((row) =>
+        row.id === 'operation.admission-lookup.matched.admitted');
+      received.value = structuredClone(admitted.value);
+    },
+    (vectors) => {
+      const row = vectors.find((candidate) =>
+        candidate.id === 'operation.admission-lookup.outer-request.negative');
+      row.value.query.operationId = 'operation-2';
+    },
+    (vectors) => {
+      const row = vectors.find((candidate) =>
+        candidate.id === 'operation.admission-lookup.actor-before-fingerprint.negative');
+      row.value.result.problem.problemCode = 'OPERATION_ACTOR_MISMATCH';
+    },
+    (vectors) => {
+      const row = vectors.find((candidate) =>
+        candidate.id === 'operation.admission-lookup.actor-before-fingerprint.negative');
+      row.value.outerRequestId = 'request-2';
+    },
+  ];
+  for (const mutate of mutations) {
+    const drift = structuredClone(activeVectors);
+    mutate(drift);
+    assert.throws(
+      () => validateAdmissionLookupVectors(drift),
+      /does not bind its exact admission subject/,
+    );
+  }
 });

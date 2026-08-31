@@ -72,7 +72,16 @@ function pvmc1AuthorityExports(model) {
     row.killPointId).sort() ?? [];
   const bridgeRoutePointIds = model.transactionAuthority?.bridgeRoutePointBindings.map((row) =>
     row.bridgeMarkerId) ?? [];
-  return `export interface Pvmc1MachineRecord {\n` +
+  return `function pvmc1DeepFreezeAuthority<T>(value: T): T {\n` +
+    `  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {\n` +
+    `    for (const child of Object.values(value as Record<string, unknown>)) {\n` +
+    `      pvmc1DeepFreezeAuthority(child);\n` +
+    `    }\n` +
+    `    Object.freeze(value);\n` +
+    `  }\n` +
+    `  return value;\n` +
+    `}\n\n` +
+    `export interface Pvmc1MachineRecord {\n` +
     `  readonly machineOrdinal: number;\n` +
     `  readonly machineId: ActiveMachineIdV1;\n` +
     `  readonly stateTypeRef: string;\n` +
@@ -90,9 +99,12 @@ function pvmc1AuthorityExports(model) {
     `  readonly unknownPolicyRef: UnknownPolicyRefV1;\n` +
     `  readonly ownerFeature: string | null;\n` +
     `}\n\n` +
-    `export const pvmc1MachineRecords = ${JSON.stringify(machineRecords, null, 2)} as const satisfies readonly Pvmc1MachineRecord[];\n\n` +
-    `export const pvmc1MachineEdgeAuthorities = ${JSON.stringify(machineEdges, null, 2)} as const satisfies readonly MachineEdgeAuthorityV1[];\n\n` +
-    `export const pvmc1DurableRouteIds = ${JSON.stringify(routes, null, 2)} as const;\n\n` +
+    `export const pvmc1MachineRecords = ${JSON.stringify(machineRecords, null, 2)} as const satisfies readonly Pvmc1MachineRecord[];\n` +
+    `pvmc1DeepFreezeAuthority(pvmc1MachineRecords);\n\n` +
+    `export const pvmc1MachineEdgeAuthorities = ${JSON.stringify(machineEdges, null, 2)} as const satisfies readonly MachineEdgeAuthorityV1[];\n` +
+    `pvmc1DeepFreezeAuthority(pvmc1MachineEdgeAuthorities);\n\n` +
+    `export const pvmc1DurableRouteIds = ${JSON.stringify(routes, null, 2)} as const;\n` +
+    `pvmc1DeepFreezeAuthority(pvmc1DurableRouteIds);\n\n` +
     `const pvmc1AllowedMachineEdgeKeys = new Set<string>(pvmc1MachineEdgeAuthorities.map((row) =>\n` +
     `  row.coordinate.machineId + "\\u0000" + row.coordinate.from + "\\u0000" + row.coordinate.to));\n\n` +
     `export function isAllowedPvmc1MachineEdge(machineId: string, from: string, to: string): boolean {\n` +
@@ -107,9 +119,12 @@ function pvmc1AuthorityExports(model) {
     `  if (digest !== pvmc1MachineTransitionSqlSha256) throw new TypeError('PVMC1 machine SQL digest mismatch');\n` +
     `  return bytes;\n` +
     `}\n\n` +
-    `export const pvmc1TransactionManifestIds = ${JSON.stringify(transactionManifestIds, null, 2)} as const;\n\n` +
-    `export const pvmc1TransactionKillPointIds = ${JSON.stringify(transactionKillPointIds, null, 2)} as const;\n\n` +
-    `export const pvmc1BridgeRoutePointIds = ${JSON.stringify(bridgeRoutePointIds, null, 2)} as const;`;
+    `export const pvmc1TransactionManifestIds = ${JSON.stringify(transactionManifestIds, null, 2)} as const;\n` +
+    `pvmc1DeepFreezeAuthority(pvmc1TransactionManifestIds);\n\n` +
+    `export const pvmc1TransactionKillPointIds = ${JSON.stringify(transactionKillPointIds, null, 2)} as const;\n` +
+    `pvmc1DeepFreezeAuthority(pvmc1TransactionKillPointIds);\n\n` +
+    `export const pvmc1BridgeRoutePointIds = ${JSON.stringify(bridgeRoutePointIds, null, 2)} as const;\n` +
+    `pvmc1DeepFreezeAuthority(pvmc1BridgeRoutePointIds);`;
 }
 
 export function generateTypeScript(model, sourceDigest) {
