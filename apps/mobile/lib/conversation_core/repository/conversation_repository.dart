@@ -77,12 +77,69 @@ class _ProjectionAdmission {
   const _ProjectionAdmission({
     required this.wasDuplicate,
     required this.wasAlreadyApplied,
-    required this.shouldResumePublication,
+    required this.publicationFence,
   });
 
   final bool wasDuplicate;
   final bool wasAlreadyApplied;
-  final bool shouldResumePublication;
+  final _ProjectionPublicationFence? publicationFence;
+}
+
+class _ProjectionPublicationFence {
+  const _ProjectionPublicationFence({
+    required this.projectionId,
+    required this.projectionDigest,
+    required this.connectionEpoch,
+    required this.sourceEpoch,
+    required this.providerInstanceEpoch,
+    required this.runtimeAuthorityGeneration,
+    required this.sourceRevision,
+    required this.stateKind,
+    required this.currentEnvelopeId,
+    required this.currentEnvelopeDigest,
+  });
+
+  factory _ProjectionPublicationFence.fromProjection(
+    RuntimeProjectionEnvelope projection,
+    String projectionDigest,
+    Map<String, Object?> state,
+  ) => _ProjectionPublicationFence(
+    projectionId: projection.projectionId,
+    projectionDigest: projectionDigest,
+    connectionEpoch: projection.fence.connectionEpoch,
+    sourceEpoch: projection.fence.sourceEpoch,
+    providerInstanceEpoch: projection.fence.providerInstanceEpoch,
+    runtimeAuthorityGeneration: projection.fence.runtimeAuthorityGeneration,
+    sourceRevision: projection.sourceRevision,
+    stateKind: state['state_kind']! as String,
+    currentEnvelopeId: state['current_envelope_id'] as String?,
+    currentEnvelopeDigest: state['current_envelope_digest'] as String?,
+  );
+
+  final String projectionId;
+  final String projectionDigest;
+  final String connectionEpoch;
+  final String sourceEpoch;
+  final String providerInstanceEpoch;
+  final int runtimeAuthorityGeneration;
+  final int sourceRevision;
+  final String stateKind;
+  final String? currentEnvelopeId;
+  final String? currentEnvelopeDigest;
+
+  bool matchesHead(Map<String, Object?> head) =>
+      head['projection_id'] == projectionId &&
+      head['projection_digest'] == projectionDigest &&
+      head['connection_epoch'] == connectionEpoch &&
+      head['source_epoch'] == sourceEpoch &&
+      head['provider_instance_epoch'] == providerInstanceEpoch &&
+      head['runtime_authority_generation'] == runtimeAuthorityGeneration &&
+      head['source_revision'] == sourceRevision;
+
+  bool matchesState(Map<String, Object?> state) =>
+      state['state_kind'] == stateKind &&
+      state['current_envelope_id'] == currentEnvelopeId &&
+      state['current_envelope_digest'] == currentEnvelopeDigest;
 }
 
 /// The sole Mobile writer for the rebuildable conversation replica.

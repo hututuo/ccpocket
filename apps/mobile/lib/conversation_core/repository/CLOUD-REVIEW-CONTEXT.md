@@ -27,6 +27,13 @@ row permanently binds digest, connection/source/provider fences, runtime
 generation, source revision, and pending/applied/stale disposition. An attested
 pending-identity index bounds open-time recovery checks, and three exact
 `ThreadKey + source_projection_id` indexes bound ACK-derived eligibility work.
+Terminal replay publication is now additionally fenced by the complete expected
+projection-head identity and the same canonical-currentness predicate used by
+readback. It also binds the canonical state kind and current envelope identity,
+so an equal-revision canonical replacement cannot validate a window read before
+that replacement. Admission checks those facts before electing publication
+recovery; the claim transaction rechecks them against the latest `thread_state`
+before any outbox phase or delivery-claim mutation.
 
 ## Library shape and ownership
 
@@ -258,7 +265,7 @@ The focused test file is
 | `durable runtime projection` | Inbox admission/replay, monotonic projection head, complete snapshot deletion rules, operation/queue/interaction rows |
 | `schema, lease, and guards` | V8/V7/V6/V5 identity boundary, schema attestation, same-path/same-PID isolate lease, liveness, indexed recovery/ACK eligibility, GC/row-32/protected-prefix progress, JSON guards, usage tamper, capacity, readback proof rows |
 
-The current additive repair has 98 combined repository/safety tests. A fix must
+The current additive repair has 100 combined repository/safety tests. A fix must
 add an exact negative regression in the group owning the violated invariant,
 then rerun both focused files plus affected analysis/format checks.
 

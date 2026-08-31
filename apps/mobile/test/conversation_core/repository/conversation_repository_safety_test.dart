@@ -661,6 +661,216 @@ void main() {
       },
     );
 
+    test(
+      'canonical advance makes an unchanged projection head historical',
+      () async {
+        await _materialize(
+          repository,
+          materializationId: 'replay-canonical-before-c1',
+          sourceEpoch: 'source-1',
+          providerEpoch: 'provider-1',
+          connectionEpoch: 'connection-1',
+          sourceRevision: 1,
+          timelineOrdinal: 1,
+        );
+        final original = _projection(
+          'replay-canonical-before-x',
+          sourceEpoch: 'source-1',
+          providerEpoch: 'provider-1',
+          connectionEpoch: 'connection-1',
+          sourceRevision: 1,
+          operationId: 'replay-canonical-before-operation-x',
+        );
+        await repository.commitRuntimeProjections(original);
+        final databasePath = repository.resolvedDatabasePath!;
+        final before = await databaseFactoryFfi.openDatabase(
+          databasePath,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        final beforeOutbox = await before.query(
+          'publication_outbox',
+          columns: const <String>[
+            'phase',
+            'notification_state',
+            'event_id',
+            'delivery_token',
+            'delivery_claimed_at',
+          ],
+          where: 'domain = ? AND operation_id = ?',
+          whereArgs: const <Object?>['projection', 'replay-canonical-before-x'],
+        );
+        await before.close();
+        expect(beforeOutbox, hasLength(1));
+
+        await _materialize(
+          repository,
+          materializationId: 'replay-canonical-before-c2',
+          sourceEpoch: 'source-1',
+          providerEpoch: 'provider-1',
+          connectionEpoch: 'connection-1',
+          sourceRevision: 2,
+          timelineOrdinal: 2,
+        );
+        final replay = await repository.commitRuntimeProjections(original);
+        expect(replay.wasDuplicate, isTrue);
+        expect(replay.wasPublished, isFalse);
+        expect(replay.publicationEventId, isNull);
+        expect(replay.window.items.map((value) => value.timelineOrdinal), <int>[
+          2,
+        ]);
+        expect(replay.window.operations, isEmpty);
+
+        final after = await databaseFactoryFfi.openDatabase(
+          databasePath,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        expect(
+          (await after.query(
+            'projection_head',
+            columns: const <String>['projection_id'],
+          )).single['projection_id'],
+          'replay-canonical-before-x',
+        );
+        final afterOutbox = await after.query(
+          'publication_outbox',
+          columns: const <String>[
+            'phase',
+            'notification_state',
+            'event_id',
+            'delivery_token',
+            'delivery_claimed_at',
+          ],
+          where: 'domain = ? AND operation_id = ?',
+          whereArgs: const <Object?>['projection', 'replay-canonical-before-x'],
+        );
+        expect(afterOutbox.single, equals(beforeOutbox.single));
+        await after.close();
+      },
+    );
+
+    test(
+      'canonical advance between readback and claim fences stale broadcast',
+      () async {
+        await repository.close();
+        var advanceDuringReplay = false;
+        CommitReceipt? canonicalAdvance;
+        repository = await _openRepository(
+          tempDirectory,
+          faultHook: (stage, operationId) async {
+            if (stage == RepositoryFaultStage.afterReadback &&
+                operationId == 'replay-canonical-race-x' &&
+                advanceDuringReplay) {
+              advanceDuringReplay = false;
+              canonicalAdvance = await _materialize(
+                repository,
+                materializationId: 'replay-canonical-race-c2',
+                sourceEpoch: 'source-1',
+                providerEpoch: 'provider-1',
+                connectionEpoch: 'connection-1',
+                sourceRevision: 1,
+                timelineOrdinal: 2,
+              );
+            }
+          },
+        );
+        final updates = <RepositoryWindow>[];
+        final subscription = repository.updates.listen(updates.add);
+        await _materialize(
+          repository,
+          materializationId: 'replay-canonical-race-c1',
+          sourceEpoch: 'source-1',
+          providerEpoch: 'provider-1',
+          connectionEpoch: 'connection-1',
+          sourceRevision: 1,
+          timelineOrdinal: 1,
+        );
+        final original = _projection(
+          'replay-canonical-race-x',
+          sourceEpoch: 'source-1',
+          providerEpoch: 'provider-1',
+          connectionEpoch: 'connection-1',
+          sourceRevision: 1,
+          operationId: 'replay-canonical-race-operation-x',
+        );
+        await repository.commitRuntimeProjections(original);
+        expect(updates, hasLength(2));
+        updates.clear();
+        final databasePath = repository.resolvedDatabasePath!;
+        final before = await databaseFactoryFfi.openDatabase(
+          databasePath,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        final beforeOutbox = await before.query(
+          'publication_outbox',
+          columns: const <String>[
+            'phase',
+            'notification_state',
+            'event_id',
+            'delivery_token',
+            'delivery_claimed_at',
+          ],
+          where: 'domain = ? AND operation_id = ?',
+          whereArgs: const <Object?>['projection', 'replay-canonical-race-x'],
+        );
+        await before.close();
+        expect(beforeOutbox, hasLength(1));
+
+        advanceDuringReplay = true;
+        final replay = await repository.commitRuntimeProjections(original);
+        expect(replay.wasDuplicate, isTrue);
+        expect(replay.wasPublished, isFalse);
+        expect(replay.publicationEventId, isNull);
+        expect(replay.window.items.map((value) => value.timelineOrdinal), <int>[
+          2,
+        ]);
+        expect(
+          replay.window.operations.map((value) => value.operationId),
+          <String>['replay-canonical-race-operation-x'],
+        );
+        expect(canonicalAdvance, isNotNull);
+        expect(updates, hasLength(1));
+        expect(
+          updates.single.publicationEventId,
+          canonicalAdvance!.publicationEventId,
+        );
+        expect(
+          updates.single.items.map((value) => value.timelineOrdinal),
+          <int>[2],
+        );
+        expect(
+          updates.single.operations.map((value) => value.operationId),
+          <String>['replay-canonical-race-operation-x'],
+        );
+
+        final after = await databaseFactoryFfi.openDatabase(
+          databasePath,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        expect(
+          (await after.query(
+            'projection_head',
+            columns: const <String>['projection_id'],
+          )).single['projection_id'],
+          'replay-canonical-race-x',
+        );
+        final afterOutbox = await after.query(
+          'publication_outbox',
+          columns: const <String>[
+            'phase',
+            'notification_state',
+            'event_id',
+            'delivery_token',
+            'delivery_claimed_at',
+          ],
+          where: 'domain = ? AND operation_id = ?',
+          whereArgs: const <Object?>['projection', 'replay-canonical-race-x'],
+        );
+        expect(afterOutbox.single, equals(beforeOutbox.single));
+        await after.close();
+        await subscription.cancel();
+      },
+    );
+
     test('historical projection identity survives normal GC and rejects every rebind axis', () async {
       await repository.close();
       repository = await _openRepository(

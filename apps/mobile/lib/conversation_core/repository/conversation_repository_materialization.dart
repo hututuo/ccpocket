@@ -591,7 +591,7 @@ Future<_PublicationResult> _publishPublicationOutbox(
   required String domain,
   required String operationId,
   required int readLimit,
-  String? requiredCurrentProjectionId,
+  _ProjectionPublicationFence? requiredProjectionFence,
 }) async {
   final database = repository._requireDatabase();
   return _publishPublicationOutboxOnDatabase(
@@ -603,7 +603,7 @@ Future<_PublicationResult> _publishPublicationOutbox(
     domain: domain,
     operationId: operationId,
     readLimit: readLimit,
-    requiredCurrentProjectionId: requiredCurrentProjectionId,
+    requiredProjectionFence: requiredProjectionFence,
   );
 }
 
@@ -617,7 +617,7 @@ Future<_PublicationResult> _publishPublicationOutboxOnDatabase(
   required String operationId,
   required int readLimit,
   bool reclaimActiveDelivery = false,
-  String? requiredCurrentProjectionId,
+  _ProjectionPublicationFence? requiredProjectionFence,
 }) async {
   final expectedEventId = _publicationEventId(
     key: key,
@@ -677,16 +677,28 @@ Future<_PublicationResult> _publishPublicationOutboxOnDatabase(
   final claim = await _withPublicationWriter(repository, database, () async {
     return database.transaction((txn) async {
       await _assertWriterLease(txn, repository);
-      if (requiredCurrentProjectionId != null) {
+      if (requiredProjectionFence != null) {
         final headRows = await txn.query(
           'projection_head',
-          columns: const <String>['projection_id'],
+          columns: const <String>[
+            'connection_epoch',
+            'source_epoch',
+            'provider_instance_epoch',
+            'runtime_authority_generation',
+            'source_revision',
+            'projection_id',
+            'projection_digest',
+          ],
           where: _keyWhere(),
           whereArgs: _keyArgs(key),
           limit: 1,
         );
+        final state = await _readThreadState(txn, key);
         if (headRows.length != 1 ||
-            headRows.single['projection_id'] != requiredCurrentProjectionId) {
+            state == null ||
+            !requiredProjectionFence.matchesHead(headRows.single) ||
+            !requiredProjectionFence.matchesState(state) ||
+            !_projectionHeadIsCurrentAgainstState(headRows.single, state)) {
           return _PublicationClaim(
             wasPublished: false,
             shouldDeliver: false,

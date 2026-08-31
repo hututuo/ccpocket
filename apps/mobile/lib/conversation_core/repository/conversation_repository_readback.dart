@@ -1,5 +1,61 @@
 part of 'conversation_repository.dart';
 
+String _projectionHeadString(Map<String, Object?> head, String name) {
+  final value = head[name];
+  if (value is! String) {
+    throw ConversationRepositoryException(
+      RepositoryFailureCode.invalidDatabaseIdentity,
+      'projection head $name is not valid',
+    );
+  }
+  return value;
+}
+
+int _projectionHeadUnsigned(Map<String, Object?> head, String name) {
+  final value = head[name];
+  if (value is! int || !_isSafeUnsigned(value)) {
+    throw ConversationRepositoryException(
+      RepositoryFailureCode.invalidDatabaseIdentity,
+      'projection head $name is not valid',
+    );
+  }
+  return value;
+}
+
+bool _projectionHeadIsCurrentAgainstState(
+  Map<String, Object?> head,
+  Map<String, Object?> state,
+) {
+  final headConnectionEpoch = _projectionHeadString(head, 'connection_epoch');
+  final headSourceEpoch = _projectionHeadString(head, 'source_epoch');
+  final headProviderEpoch = _projectionHeadString(
+    head,
+    'provider_instance_epoch',
+  );
+  final headGeneration = _projectionHeadUnsigned(
+    head,
+    'runtime_authority_generation',
+  );
+  final headRevision = _projectionHeadUnsigned(head, 'source_revision');
+  final stateGeneration = state['runtime_authority_generation'];
+  final stateRevision = state['source_revision'];
+  if (stateGeneration is! int ||
+      !_isSafeUnsigned(stateGeneration) ||
+      stateRevision is! int ||
+      !_isSafeUnsigned(stateRevision)) {
+    throw const ConversationRepositoryException(
+      RepositoryFailureCode.invalidDatabaseIdentity,
+      'thread state authority fence is not valid',
+    );
+  }
+  return headSourceEpoch == state['source_epoch'] &&
+      headProviderEpoch == state['provider_instance_epoch'] &&
+      (headGeneration > stateGeneration ||
+          (headGeneration == stateGeneration &&
+              headConnectionEpoch == state['connection_epoch'] &&
+              headRevision >= stateRevision));
+}
+
 Future<RepositoryWindow> _readWindow(
   ConversationRepository repository,
   ThreadKey key, {
@@ -101,52 +157,27 @@ Future<RepositoryWindow> _readWindowInTransaction(
       ? null
       : projectionHeadRows.single;
 
-  String projectionHeadString(String name) {
-    final value = projectionHead?[name];
-    if (value is! String) {
-      throw ConversationRepositoryException(
-        RepositoryFailureCode.invalidDatabaseIdentity,
-        'projection head $name is not valid',
-      );
-    }
-    return value;
-  }
-
-  int projectionHeadUnsigned(String name) {
-    final value = projectionHead?[name];
-    if (value is! int || !_isSafeUnsigned(value)) {
-      throw ConversationRepositoryException(
-        RepositoryFailureCode.invalidDatabaseIdentity,
-        'projection head $name is not valid',
-      );
-    }
-    return value;
-  }
-
   var projectionHeadIsCurrent = false;
   var operationMarker = '';
   var queueMarker = '';
   var interactionMarker = '';
   if (projectionHead != null) {
-    final headConnectionEpoch = projectionHeadString('connection_epoch');
-    final headSourceEpoch = projectionHeadString('source_epoch');
-    final headProviderEpoch = projectionHeadString('provider_instance_epoch');
-    final headGeneration = projectionHeadUnsigned(
-      'runtime_authority_generation',
+    operationMarker = _projectionHeadString(
+      projectionHead,
+      'operation_snapshot_marker',
     );
-    final headRevision = projectionHeadUnsigned('source_revision');
-    operationMarker = projectionHeadString('operation_snapshot_marker');
-    queueMarker = projectionHeadString('queue_snapshot_marker');
-    interactionMarker = projectionHeadString('interaction_snapshot_marker');
-
-    final stateGeneration = state['runtime_authority_generation']! as int;
-    projectionHeadIsCurrent =
-        headSourceEpoch == state['source_epoch'] &&
-        headProviderEpoch == state['provider_instance_epoch'] &&
-        (headGeneration > stateGeneration ||
-            (headGeneration == stateGeneration &&
-                headConnectionEpoch == state['connection_epoch'] &&
-                headRevision >= (state['source_revision']! as int)));
+    queueMarker = _projectionHeadString(
+      projectionHead,
+      'queue_snapshot_marker',
+    );
+    interactionMarker = _projectionHeadString(
+      projectionHead,
+      'interaction_snapshot_marker',
+    );
+    projectionHeadIsCurrent = _projectionHeadIsCurrentAgainstState(
+      projectionHead,
+      state,
+    );
   }
 
   final operationRows = projectionHeadIsCurrent

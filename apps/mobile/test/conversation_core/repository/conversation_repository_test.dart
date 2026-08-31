@@ -2456,7 +2456,14 @@ VALUES (?, ?, ?, ?, ?, ?)
       );
       expect(
         await checks['projection_identity_pending_idx'],
-        allOf(contains('disposition=?'), isNot(contains('SCAN identity_row'))),
+        allOf(
+          contains('disposition=?'),
+          contains(
+            'SEARCH inbox USING INDEX sqlite_autoindex_projection_inbox_1',
+          ),
+          isNot(contains('SCAN identity_row')),
+          isNot(contains('SCAN inbox')),
+        ),
       );
       for (final indexName in const <String>[
         'operation_projection_snapshot_gc_idx',

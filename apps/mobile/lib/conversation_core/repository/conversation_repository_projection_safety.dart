@@ -253,7 +253,8 @@ Future<CommitReceipt> _commitRuntimeProjectionSafely(
     );
   }
   if (admission.wasDuplicate && admission.wasAlreadyApplied) {
-    if (!admission.shouldResumePublication) {
+    final publicationFence = admission.publicationFence;
+    if (publicationFence == null) {
       final window = await _readWindow(
         repository,
         projection.key,
@@ -275,7 +276,7 @@ Future<CommitReceipt> _commitRuntimeProjectionSafely(
       domain: 'projection',
       operationId: projection.projectionId,
       readLimit: effectiveLimit,
-      requiredCurrentProjectionId: projection.projectionId,
+      requiredProjectionFence: publicationFence,
     );
     final window = await _readWindow(
       repository,
@@ -401,7 +402,7 @@ Future<_ProjectionAdmission> _admitRuntimeProjectionSafely(
           limit: 1,
         );
         final currentHead = headRows.isEmpty ? null : headRows.single;
-        final identityIsCurrent =
+        final headHasIdentity =
             currentHead?['projection_id'] == projection.projectionId;
         if (identity.disposition == 'applied' && currentHead == null) {
           throw const ConversationRepositoryException(
@@ -409,13 +410,13 @@ Future<_ProjectionAdmission> _admitRuntimeProjectionSafely(
             'applied projection identity has no current repository head',
           );
         }
-        if (identityIsCurrent && identity.disposition != 'applied') {
+        if (headHasIdentity && identity.disposition != 'applied') {
           throw const ConversationRepositoryException(
             RepositoryFailureCode.invalidDatabaseIdentity,
             'current projection head is not backed by an applied identity',
           );
         }
-        if (identityIsCurrent &&
+        if (headHasIdentity &&
             !_projectionHeadIdentityMatches(
               currentHead!,
               projection,
@@ -426,11 +427,24 @@ Future<_ProjectionAdmission> _admitRuntimeProjectionSafely(
             'current projection head does not match its identity ledger',
           );
         }
+        final state = currentHead == null
+            ? null
+            : await _readThreadState(txn, projection.key);
+        final identityIsCurrent =
+            headHasIdentity &&
+            state != null &&
+            _projectionHeadIsCurrentAgainstState(currentHead!, state);
         return _ProjectionAdmission(
           wasDuplicate: true,
           wasAlreadyApplied: identity.disposition != 'pending',
-          shouldResumePublication:
-              identity.disposition == 'applied' && identityIsCurrent,
+          publicationFence:
+              identity.disposition == 'applied' && identityIsCurrent
+              ? _ProjectionPublicationFence.fromProjection(
+                  projection,
+                  projectionDigest,
+                  state,
+                )
+              : null,
         );
       }
 
@@ -498,7 +512,7 @@ Future<_ProjectionAdmission> _admitRuntimeProjectionSafely(
       return const _ProjectionAdmission(
         wasDuplicate: false,
         wasAlreadyApplied: false,
-        shouldResumePublication: false,
+        publicationFence: null,
       );
     });
   });
