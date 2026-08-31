@@ -767,6 +767,12 @@ function stableScope(subject) {
   };
 }
 
+function sourceProjectionMatches(endpoint) {
+  const subjectSource = endpoint.subject?.threadRef?.sourcePartition;
+  return isObject(endpoint.sourcePartition) && isObject(subjectSource) &&
+    sameValue(endpoint.sourcePartition, subjectSource);
+}
+
 function predecessorNode(endpoint) {
   return JSON.stringify(canonicalValue({
     sourcePartition: endpoint.sourcePartition,
@@ -797,6 +803,9 @@ export function validatePredecessorReferenceInstances(edges) {
     const base = exactKeys(edge.base, [
       'sourcePartition', 'subject', 'headVersion', 'manifestDigest',
     ], ['sourcePartition', 'subject', 'headVersion', 'manifestDigest'], `${path}.base`);
+    if (!sourceProjectionMatches(current) || !sourceProjectionMatches(base)) {
+      fail(path, 'source projection mismatch');
+    }
     if (!sameValue(current.sourcePartition, base.sourcePartition) ||
         !sameValue(stableScope(current.subject), stableScope(base.subject))) {
       fail(path, 'cross-scope predecessor reference');
