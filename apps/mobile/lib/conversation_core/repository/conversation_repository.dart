@@ -401,11 +401,7 @@ class ConversationRepository {
   Future<CommitReceipt> commitRuntimeProjections(
     RuntimeProjectionEnvelope projection, {
     int? readLimit,
-  }) => _commitRuntimeProjectionSafely(
-    this,
-    projection,
-    readLimit: readLimit,
-  );
+  }) => _commitRuntimeProjectionSafely(this, projection, readLimit: readLimit);
 
   Future<RepositoryWindow> readWindow(
     ThreadKey key, {

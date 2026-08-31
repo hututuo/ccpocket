@@ -270,6 +270,103 @@ void main() {
     });
 
     test(
+      'new authority partial projection starts a fresh snapshot marker',
+      () async {
+        await _materialize(
+          repository,
+          materializationId: 'partial-rollover-source-1',
+          sourceEpoch: 'source-1',
+          providerEpoch: 'provider-1',
+          connectionEpoch: 'connection-1',
+          timelineOrdinal: 1,
+        );
+        await repository.commitRuntimeProjections(
+          _projection(
+            'partial-rollover-projection-1',
+            sourceEpoch: 'source-1',
+            providerEpoch: 'provider-1',
+            connectionEpoch: 'connection-1',
+            operationId: 'partial-rollover-operation-1',
+          ),
+        );
+        await _materialize(
+          repository,
+          materializationId: 'partial-rollover-source-2',
+          sourceEpoch: 'source-2',
+          providerEpoch: 'provider-2',
+          connectionEpoch: 'connection-2',
+          runtimeGeneration: 2,
+          timelineOrdinal: 2,
+        );
+
+        final receipt = await repository.commitRuntimeProjections(
+          _projection(
+            'partial-rollover-projection-2',
+            sourceEpoch: 'source-2',
+            providerEpoch: 'provider-2',
+            connectionEpoch: 'connection-2',
+            runtimeGeneration: 2,
+            operationId: 'partial-rollover-operation-2',
+            operationSnapshotComplete: false,
+          ),
+        );
+
+        expect(
+          receipt.window.operations.map((value) => value.operationId),
+          <String>['partial-rollover-operation-2'],
+        );
+        final inspection = await databaseFactoryFfi.openDatabase(
+          repository.resolvedDatabasePath!,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        final head = (await inspection.query(
+          'projection_head',
+          columns: const <String>['operation_snapshot_marker'],
+        )).single;
+        await inspection.close();
+        expect(
+          head['operation_snapshot_marker'],
+          'partial-rollover-projection-2',
+        );
+      },
+    );
+
+    test(
+      'projection-only authority rollover advances its local fence',
+      () async {
+        await repository.commitRuntimeProjections(
+          _projection(
+            'projection-only-authority-1',
+            sourceEpoch: 'source-1',
+            providerEpoch: 'provider-1',
+            connectionEpoch: 'connection-1',
+            operationId: 'projection-only-operation-1',
+          ),
+        );
+
+        final receipt = await repository.commitRuntimeProjections(
+          _projection(
+            'projection-only-authority-2',
+            sourceEpoch: 'source-2',
+            providerEpoch: 'provider-2',
+            connectionEpoch: 'connection-2',
+            runtimeGeneration: 2,
+            operationId: 'projection-only-operation-2',
+          ),
+        );
+
+        expect(receipt.window.fence!.sourceEpoch, 'source-2');
+        expect(receipt.window.fence!.providerInstanceEpoch, 'provider-2');
+        expect(receipt.window.fence!.connectionEpoch, 'connection-2');
+        expect(receipt.window.fence!.runtimeAuthorityGeneration, 2);
+        expect(
+          receipt.window.operations.map((value) => value.operationId),
+          <String>['projection-only-operation-2'],
+        );
+      },
+    );
+
+    test(
       'open quarantines a pending projection retired after admission',
       () async {
         await repository.close();
@@ -332,52 +429,73 @@ void main() {
         expect(inbox, hasLength(1));
         expect(inbox.single['state'], 'stale');
         final window = await repository.readWindow(_key());
-        expect(
-          window.items.map((item) => item.timelineOrdinal),
-          <int>[2],
-        );
+        expect(window.items.map((item) => item.timelineOrdinal), <int>[2]);
         expect(window.operations, isEmpty);
+
+        final retry = await repository.commitRuntimeProjections(
+          _projection(
+            'pending-retired-projection',
+            sourceEpoch: 'source-1',
+            providerEpoch: 'provider-1',
+            connectionEpoch: 'connection-1',
+            operationId: 'pending-retired-operation',
+          ),
+        );
+        expect(retry.wasDuplicate, isTrue);
+        expect(retry.wasPublished, isFalse);
+        expect(retry.window.operations, isEmpty);
+        final retryInspection = await databaseFactoryFfi.openDatabase(
+          databasePath,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        final outbox = await retryInspection.query(
+          'publication_outbox',
+          where: 'domain = ? AND operation_id = ?',
+          whereArgs: const <Object?>[
+            'projection',
+            'pending-retired-projection',
+          ],
+        );
+        await retryInspection.close();
+        expect(outbox, isEmpty);
       },
     );
 
-    test(
-      'canonical revision advance hides an older projection head',
-      () async {
-        await _materialize(
-          repository,
-          materializationId: 'canonical-revision-1',
+    test('canonical revision advance hides an older projection head', () async {
+      await _materialize(
+        repository,
+        materializationId: 'canonical-revision-1',
+        sourceEpoch: 'source-1',
+        providerEpoch: 'provider-1',
+        connectionEpoch: 'connection-1',
+        sourceRevision: 1,
+        timelineOrdinal: 1,
+      );
+      await repository.commitRuntimeProjections(
+        _projection(
+          'projection-revision-1',
           sourceEpoch: 'source-1',
           providerEpoch: 'provider-1',
           connectionEpoch: 'connection-1',
           sourceRevision: 1,
-          timelineOrdinal: 1,
-        );
-        await repository.commitRuntimeProjections(
-          _projection(
-            'projection-revision-1',
-            sourceEpoch: 'source-1',
-            providerEpoch: 'provider-1',
-            connectionEpoch: 'connection-1',
-            sourceRevision: 1,
-            operationId: 'operation-revision-1',
-          ),
-        );
+          operationId: 'operation-revision-1',
+        ),
+      );
 
-        final replacement = await _materialize(
-          repository,
-          materializationId: 'canonical-revision-2',
-          sourceEpoch: 'source-1',
-          providerEpoch: 'provider-1',
-          connectionEpoch: 'connection-1',
-          sourceRevision: 2,
-          timelineOrdinal: 2,
-        );
+      final replacement = await _materialize(
+        repository,
+        materializationId: 'canonical-revision-2',
+        sourceEpoch: 'source-1',
+        providerEpoch: 'provider-1',
+        connectionEpoch: 'connection-1',
+        sourceRevision: 2,
+        timelineOrdinal: 2,
+      );
 
-        expect(replacement.window.sourceRevision, 2);
-        expect(replacement.window.operations, isEmpty);
-        expect((await repository.readWindow(_key())).operations, isEmpty);
-      },
-    );
+      expect(replacement.window.sourceRevision, 2);
+      expect(replacement.window.operations, isEmpty);
+      expect((await repository.readWindow(_key())).operations, isEmpty);
+    });
 
     test(
       'canonical revision rejects an older projection before admission',
@@ -419,78 +537,75 @@ void main() {
         expect(rows, isEmpty);
       },
     );
-    test(
-      'canonical advance between admission and apply terminalizes the projection',
-      () async {
-        await _materialize(
-          repository,
-          materializationId: 'canonical-race-revision-1',
-          sourceEpoch: 'source-1',
-          providerEpoch: 'provider-1',
-          connectionEpoch: 'connection-1',
-          sourceRevision: 1,
-          timelineOrdinal: 1,
-        );
-        await repository.close();
-        var advanceCanonical = true;
-        repository = await _openRepository(
-          tempDirectory,
-          faultHook: (stage, operationId) async {
-            if (stage == RepositoryFaultStage.afterInboxAdmission &&
-                operationId == 'projection-race-revision-1' &&
-                advanceCanonical) {
-              advanceCanonical = false;
-              await _materialize(
-                repository,
-                materializationId: 'canonical-race-revision-2',
-                sourceEpoch: 'source-1',
-                providerEpoch: 'provider-1',
-                connectionEpoch: 'connection-1',
-                sourceRevision: 2,
-                timelineOrdinal: 2,
-              );
-            }
-          },
-        );
-
-        await expectLater(
-          repository.commitRuntimeProjections(
-            _projection(
-              'projection-race-revision-1',
+    test('canonical advance between admission and apply terminalizes the projection', () async {
+      await _materialize(
+        repository,
+        materializationId: 'canonical-race-revision-1',
+        sourceEpoch: 'source-1',
+        providerEpoch: 'provider-1',
+        connectionEpoch: 'connection-1',
+        sourceRevision: 1,
+        timelineOrdinal: 1,
+      );
+      await repository.close();
+      var advanceCanonical = true;
+      repository = await _openRepository(
+        tempDirectory,
+        faultHook: (stage, operationId) async {
+          if (stage == RepositoryFaultStage.afterInboxAdmission &&
+              operationId == 'projection-race-revision-1' &&
+              advanceCanonical) {
+            advanceCanonical = false;
+            await _materialize(
+              repository,
+              materializationId: 'canonical-race-revision-2',
               sourceEpoch: 'source-1',
               providerEpoch: 'provider-1',
               connectionEpoch: 'connection-1',
-              sourceRevision: 1,
-              operationId: 'operation-race-revision-1',
-            ),
-          ),
-          _failure(RepositoryFailureCode.staleRevision),
-        );
+              sourceRevision: 2,
+              timelineOrdinal: 2,
+            );
+          }
+        },
+      );
 
-        final inspection = await databaseFactoryFfi.openDatabase(
-          repository.resolvedDatabasePath!,
-          options: OpenDatabaseOptions(singleInstance: false),
-        );
-        final inbox = await inspection.query(
-          'projection_inbox',
-          columns: const <String>['state'],
-          where: 'projection_id = ?',
-          whereArgs: const <Object?>['projection-race-revision-1'],
-        );
-        final operations = await inspection.query(
-          'operation_projection',
-          where: 'operation_id = ?',
-          whereArgs: const <Object?>['operation-race-revision-1'],
-        );
-        await inspection.close();
-        expect(inbox, hasLength(1));
-        expect(inbox.single['state'], 'stale');
-        expect(operations, isEmpty);
-        final window = await repository.readWindow(_key());
-        expect(window.sourceRevision, 2);
-        expect(window.operations, isEmpty);
-      },
-    );
+      await expectLater(
+        repository.commitRuntimeProjections(
+          _projection(
+            'projection-race-revision-1',
+            sourceEpoch: 'source-1',
+            providerEpoch: 'provider-1',
+            connectionEpoch: 'connection-1',
+            sourceRevision: 1,
+            operationId: 'operation-race-revision-1',
+          ),
+        ),
+        _failure(RepositoryFailureCode.staleRevision),
+      );
+
+      final inspection = await databaseFactoryFfi.openDatabase(
+        repository.resolvedDatabasePath!,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      final inbox = await inspection.query(
+        'projection_inbox',
+        columns: const <String>['state'],
+        where: 'projection_id = ?',
+        whereArgs: const <Object?>['projection-race-revision-1'],
+      );
+      final operations = await inspection.query(
+        'operation_projection',
+        where: 'operation_id = ?',
+        whereArgs: const <Object?>['operation-race-revision-1'],
+      );
+      await inspection.close();
+      expect(inbox, hasLength(1));
+      expect(inbox.single['state'], 'stale');
+      expect(operations, isEmpty);
+      final window = await repository.readWindow(_key());
+      expect(window.sourceRevision, 2);
+      expect(window.operations, isEmpty);
+    });
 
     test(
       'canonical generation rejects an older projection before admission',
@@ -683,12 +798,8 @@ CanonicalItem _item(int timelineOrdinal) => CanonicalItem(
   itemOrdinal: 0,
   timelineOrdinal: timelineOrdinal,
   kind: 'USER_MESSAGE',
-  normalizedPayload: <String, Object?>{
-    'text': 'value-$timelineOrdinal',
-  },
-  presentationProjection: <String, Object?>{
-    'text': 'value-$timelineOrdinal',
-  },
+  normalizedPayload: <String, Object?>{'text': 'value-$timelineOrdinal'},
+  presentationProjection: <String, Object?>{'text': 'value-$timelineOrdinal'},
 );
 
 Future<CommitReceipt> _materialize(
@@ -749,9 +860,9 @@ Future<CommitReceipt> _materialize(
       sourceRevision: begin.sourceRevision,
       pageCount: 1,
       finalPageDigest: pageDigest,
-      pageManifestDigest: repository.materializationPageManifestDigest(
-        <String>[pageDigest],
-      ),
+      pageManifestDigest: repository.materializationPageManifestDigest(<String>[
+        pageDigest,
+      ]),
       providerReadEvidenceDigest: _evidenceDigest,
     ),
   );
@@ -765,6 +876,7 @@ RuntimeProjectionEnvelope _projection(
   required String operationId,
   int runtimeGeneration = 1,
   int sourceRevision = 1,
+  bool operationSnapshotComplete = true,
 }) => RuntimeProjectionEnvelope(
   projectionId: projectionId,
   key: _key(),
@@ -784,7 +896,7 @@ RuntimeProjectionEnvelope _projection(
       value: const <String, Object?>{'text': 'operation'},
     ),
   ],
-  operationSnapshotComplete: true,
+  operationSnapshotComplete: operationSnapshotComplete,
 );
 
 Matcher _failure(RepositoryFailureCode code) => throwsA(

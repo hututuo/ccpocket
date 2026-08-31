@@ -16,6 +16,9 @@ class _TrackedUsage {
   final int retiredBytes;
 }
 
+// Retained only to keep the cloud safety delta additive and reviewable. The
+// facade is fenced to `_commitRuntimeProjectionSafely`.
+// ignore: unused_element
 Future<CommitReceipt> _commitRuntimeProjection(
   ConversationRepository repository,
   RuntimeProjectionEnvelope projection, {
@@ -332,6 +335,9 @@ Future<bool> _applyProjectionInbox(
   });
 }
 
+// Retained only to keep the cloud safety delta additive and reviewable. Open
+// recovery is fenced to `_recoverProjectionInboxSafely`.
+// ignore: unused_element
 Future<void> _recoverProjectionInbox(
   ConversationRepository repository,
   Database db,

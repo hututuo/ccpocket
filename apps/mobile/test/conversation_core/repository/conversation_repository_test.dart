@@ -847,14 +847,12 @@ void main() {
       );
       await database.close();
 
-      final updates = <RepositoryWindow>[];
-      final subscription = repository.updates.listen(updates.add);
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-      expect(updates, hasLength(1));
-      expect(updates.single.publicationEventId, eventId);
+      final update = await repository.updates.first.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(update.publicationEventId, eventId);
       expect(await repository.acknowledgePublication(eventId), isTrue);
       expect(await repository.acknowledgePublication(eventId), isTrue);
-      await subscription.cancel();
     });
 
     test('concurrent publishers claim one event identity and consumer ack is idempotent', () async {

@@ -227,8 +227,7 @@ Future<bool> _applyProjectionInboxSafely(
               projection.fence.providerInstanceEpoch;
       final sameFence =
           sameEpoch &&
-          previousHead['connection_epoch'] ==
-              projection.fence.connectionEpoch;
+          previousHead['connection_epoch'] == projection.fence.connectionEpoch;
       final headRevision = previousHead['source_revision']! as int;
       final headGeneration =
           previousHead['runtime_authority_generation']! as int;
@@ -261,25 +260,41 @@ Future<bool> _applyProjectionInboxSafely(
           'projection_inbox',
           const <String, Object?>{'state': 'stale'},
           where: '${_keyWhere()} AND projection_id = ? AND state = ?',
-          whereArgs: <Object?>[
-            ..._keyArgs(key),
-            projectionId,
-            'pending',
-          ],
+          whereArgs: <Object?>[..._keyArgs(key), projectionId, 'pending'],
         );
         return false;
       }
     }
 
+    await _advanceProjectionOnlyThreadState(txn, projection);
+
+    final canReuseSnapshotMarkers =
+        previousHead != null &&
+        previousHead['source_epoch'] == projection.fence.sourceEpoch &&
+        previousHead['provider_instance_epoch'] ==
+            projection.fence.providerInstanceEpoch &&
+        previousHead['connection_epoch'] == projection.fence.connectionEpoch &&
+        previousHead['runtime_authority_generation'] ==
+            projection.fence.runtimeAuthorityGeneration;
+    final freshSnapshotMarker = previousHead == null
+        ? ''
+        : projection.projectionId;
+
     final operationSnapshotMarker = projection.operationSnapshotComplete
         ? projection.projectionId
-        : previousHead?['operation_snapshot_marker'] as String? ?? '';
+        : canReuseSnapshotMarkers
+        ? previousHead['operation_snapshot_marker']! as String
+        : freshSnapshotMarker;
     final queueSnapshotMarker = projection.queueSnapshotComplete
         ? projection.projectionId
-        : previousHead?['queue_snapshot_marker'] as String? ?? '';
+        : canReuseSnapshotMarkers
+        ? previousHead['queue_snapshot_marker']! as String
+        : freshSnapshotMarker;
     final interactionSnapshotMarker = projection.interactionSnapshotComplete
         ? projection.projectionId
-        : previousHead?['interaction_snapshot_marker'] as String? ?? '';
+        : canReuseSnapshotMarkers
+        ? previousHead['interaction_snapshot_marker']! as String
+        : freshSnapshotMarker;
     await _applyOperationProjections(
       txn,
       repository,
@@ -336,11 +351,7 @@ Future<bool> _applyProjectionInboxSafely(
       'projection_inbox',
       const <String, Object?>{'state': 'applied'},
       where: '${_keyWhere()} AND projection_id = ? AND state = ?',
-      whereArgs: <Object?>[
-        ..._keyArgs(key),
-        projectionId,
-        'pending',
-      ],
+      whereArgs: <Object?>[..._keyArgs(key), projectionId, 'pending'],
     );
     if (applied != 1) {
       throw const ConversationRepositoryException(
@@ -401,14 +412,11 @@ Future<void> _recoverProjectionInboxSafely(
         'projection_id',
         'admitted_at',
       ],
-      where: afterCursor == null
-          ? 'state = ?'
-          : 'state = ? AND (admitted_at, projection_id, bridge_identity_id, bridge_instance_id, codex_source_id, provider_thread_id) > (?, ?, ?, ?, ?, ?)',
+      where: afterCursor == null ? 'state = ?' : 'state = ? AND (admitted_at, projection_id, bridge_identity_id, bridge_instance_id, codex_source_id, provider_thread_id) > (?, ?, ?, ?, ?, ?)',
       whereArgs: afterCursor == null
           ? const <Object?>['pending']
           : <Object?>['pending', ...afterCursor],
-      orderBy:
-          'admitted_at ASC, projection_id ASC, bridge_identity_id ASC, bridge_instance_id ASC, codex_source_id ASC, provider_thread_id ASC',
+      orderBy: 'admitted_at ASC, projection_id ASC, bridge_identity_id ASC, bridge_instance_id ASC, codex_source_id ASC, provider_thread_id ASC',
       limit: batchSize,
     );
     if (rows.isEmpty) return;
@@ -437,12 +445,7 @@ Future<void> _recoverProjectionInboxSafely(
             'pending projection disappeared during recovery',
           );
         }
-        await _applyProjectionInboxSafely(
-          repository,
-          db,
-          key,
-          projectionId,
-        );
+        await _applyProjectionInboxSafely(repository, db, key, projectionId);
       } on ConversationRepositoryException catch (error) {
         if (!_terminalProjectionRejectionCodes.contains(error.code)) rethrow;
         await _terminalizePendingProjection(
@@ -502,6 +505,34 @@ Future<void> _validateProjectionAgainstCanonicalFence(
     throw const ConversationRepositoryException(
       RepositoryFailureCode.staleRevision,
       'runtime projection revision is older than the canonical source revision',
+    );
+  }
+}
+
+Future<void> _advanceProjectionOnlyThreadState(
+  Transaction txn,
+  RuntimeProjectionEnvelope projection,
+) async {
+  final state = await _readThreadState(txn, projection.key);
+  if (state == null || state['state_kind'] != 'projection_only') return;
+  final updated = await txn.update(
+    'thread_state',
+    <String, Object?>{
+      'connection_epoch': projection.fence.connectionEpoch,
+      'source_epoch': projection.fence.sourceEpoch,
+      'provider_instance_epoch': projection.fence.providerInstanceEpoch,
+      'runtime_authority_generation':
+          projection.fence.runtimeAuthorityGeneration,
+      'source_revision': projection.sourceRevision,
+      'updated_at': DateTime.now().millisecondsSinceEpoch,
+    },
+    where: '${_keyWhere()} AND state_kind = ?',
+    whereArgs: <Object?>[..._keyArgs(projection.key), 'projection_only'],
+  );
+  if (updated != 1) {
+    throw const ConversationRepositoryException(
+      RepositoryFailureCode.invalidDatabaseIdentity,
+      'projection-only thread state changed during apply',
     );
   }
 }
@@ -654,11 +685,7 @@ Future<bool> _terminalizePendingProjection(
       'projection_inbox',
       const <String, Object?>{'state': 'stale'},
       where: '${_keyWhere()} AND projection_id = ? AND state = ?',
-      whereArgs: <Object?>[
-        ..._keyArgs(key),
-        projectionId,
-        'pending',
-      ],
+      whereArgs: <Object?>[..._keyArgs(key), projectionId, 'pending'],
     );
     if (updated != 1) {
       throw const ConversationRepositoryException(
