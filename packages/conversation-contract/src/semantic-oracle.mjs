@@ -1,4 +1,10 @@
 import {canonicalize, canonicalUtf8, jcsDigest} from './canonical.mjs';
+import {evaluateAdmissionLookupCase} from './admission-semantics.mjs';
+import {
+  evaluateMachineAuthorityCase,
+  evaluateMachineSqlCase,
+} from './machine-semantics.mjs';
+import {evaluateTransactionAuthorityCase} from './transaction-semantics.mjs';
 import {
   CODEX_BUILD_SHA256,
   MAX_CONTROL_FRAME_BYTES,
@@ -1966,6 +1972,10 @@ function verifyTypedEmpty(value) {
 
 export function evaluateSemanticRule(value, oracleRef) {
   switch (oracleRef) {
+    case 'machine.authority': return evaluateMachineAuthorityCase(value);
+    case 'machine.sql-exact-bytes': return evaluateMachineSqlCase(value);
+    case 'operation.admission-lookup': return evaluateAdmissionLookupCase(value);
+    case 'transaction.authority': return evaluateTransactionAuthorityCase(value);
     case 'wire.closed-normalized-shape': return verifyWire(value);
     case 'identity.source-fence': return verifySourceEpoch(value);
     case 'timeline.typed-empty': return verifyTypedEmpty(value);

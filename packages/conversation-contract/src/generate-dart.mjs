@@ -418,6 +418,163 @@ function digestHelpers(preimage) {
     `String digest${name}(${name} value) => sha256.convert(canonicalBytes${name}(value)).toString();`;
 }
 
+function pvmc1AuthorityExports(model) {
+  if (model.machineAuthority === null) return '';
+  const machineRecordsJson = JSON.stringify(model.machineAuthority.machineRecords);
+  const machineEdgeAuthoritiesJson = JSON.stringify(
+    model.machineAuthority.machineEdgeAuthorities,
+  );
+  const routes = model.machineAuthority.projectionRoutes.map((row) => row.registryId);
+  const sql = model.machineAuthority.machineTransitionSql.manifest;
+  const transactionManifestIds = model.transactionAuthority?.transactionManifests.map((row) =>
+    row.manifestId) ?? [];
+  const transactionKillPointIds = model.transactionAuthority?.transactionKillPoints.map((row) =>
+    row.killPointId).sort() ?? [];
+  const bridgeRoutePointIds = model.transactionAuthority?.bridgeRoutePointBindings.map((row) =>
+    row.bridgeMarkerId) ?? [];
+  return `class Pvmc1MachineTransition {\n` +
+    `  const Pvmc1MachineTransition({required this.from, required this.to});\n\n` +
+    `  final String from;\n` +
+    `  final String to;\n\n` +
+    `  factory Pvmc1MachineTransition.fromJson(Object? value) {\n` +
+    `    final json = _expectMap(value, 'Pvmc1MachineTransition');\n` +
+    `    _expectKeys(json, const {'from', 'to'}, const {'from', 'to'}, 'Pvmc1MachineTransition');\n` +
+    `    return Pvmc1MachineTransition(\n` +
+    `      from: _expectString(json['from'], 'Pvmc1MachineTransition.from'),\n` +
+    `      to: _expectString(json['to'], 'Pvmc1MachineTransition.to'),\n` +
+    `    );\n` +
+    `  }\n` +
+    `}\n\n` +
+    `class Pvmc1MachineRecord {\n` +
+    `  const Pvmc1MachineRecord({\n` +
+    `    required this.machineOrdinal,\n` +
+    `    required this.machineId,\n` +
+    `    required this.stateTypeRef,\n` +
+    `    required this.states,\n` +
+    `    required this.initialState,\n` +
+    `    required this.terminalStates,\n` +
+    `    required this.allowedEdges,\n` +
+    `    required this.semanticOwnerRef,\n` +
+    `    required this.authoritativeWriterRef,\n` +
+    `    required this.eventFactOwnerSelectorRef,\n` +
+    `    required this.replicaWriterBindings,\n` +
+    `    required this.storageBindingRef,\n` +
+    `    required this.authoritativeRouteRefs,\n` +
+    `    required this.wireProjectionRef,\n` +
+    `    required this.unknownPolicyRef,\n` +
+    `    required this.ownerFeature,\n` +
+    `  });\n\n` +
+    `  final int machineOrdinal;\n` +
+    `  final String machineId;\n` +
+    `  final String stateTypeRef;\n` +
+    `  final List<String> states;\n` +
+    `  final String initialState;\n` +
+    `  final List<String> terminalStates;\n` +
+    `  final List<Pvmc1MachineTransition> allowedEdges;\n` +
+    `  final SemanticOwnerSelectorRefV1 semanticOwnerRef;\n` +
+    `  final AuthoritativeWriterRefV1 authoritativeWriterRef;\n` +
+    `  final EventFactOwnerSelectorRefV1? eventFactOwnerSelectorRef;\n` +
+    `  final List<ReplicaWriterBindingV1> replicaWriterBindings;\n` +
+    `  final StorageBindingRefV1 storageBindingRef;\n` +
+    `  final List<ProjectionRouteRefV1> authoritativeRouteRefs;\n` +
+    `  final WireProjectionRefV1 wireProjectionRef;\n` +
+    `  final UnknownPolicyRefV1 unknownPolicyRef;\n` +
+    `  final String? ownerFeature;\n\n` +
+    `  factory Pvmc1MachineRecord.fromJson(Object? value) {\n` +
+    `    final json = _expectMap(value, 'Pvmc1MachineRecord');\n` +
+    `    const keys = {'machineOrdinal', 'machineId', 'stateTypeRef', 'states', ` +
+    `'initialState', 'terminalStates', 'allowedEdges', 'semanticOwnerRef', ` +
+    `'authoritativeWriterRef', 'eventFactOwnerSelectorRef', 'replicaWriterBindings', ` +
+    `'storageBindingRef', 'authoritativeRouteRefs', 'wireProjectionRef', ` +
+    `'unknownPolicyRef', 'ownerFeature'};\n` +
+    `    _expectKeys(json, keys, keys, 'Pvmc1MachineRecord');\n` +
+    `    return Pvmc1MachineRecord(\n` +
+    `      machineOrdinal: _expectInt(json['machineOrdinal'], 'Pvmc1MachineRecord.machineOrdinal'),\n` +
+    `      machineId: _expectString(json['machineId'], 'Pvmc1MachineRecord.machineId'),\n` +
+    `      stateTypeRef: _expectString(json['stateTypeRef'], 'Pvmc1MachineRecord.stateTypeRef'),\n` +
+    `      states: List<String>.unmodifiable(_decodeList<String>(json['states'], 'Pvmc1MachineRecord.states', (value) => _expectString(value, 'Pvmc1MachineRecord.states[]'))),\n` +
+    `      initialState: _expectString(json['initialState'], 'Pvmc1MachineRecord.initialState'),\n` +
+    `      terminalStates: List<String>.unmodifiable(_decodeList<String>(json['terminalStates'], 'Pvmc1MachineRecord.terminalStates', (value) => _expectString(value, 'Pvmc1MachineRecord.terminalStates[]'))),\n` +
+    `      allowedEdges: List<Pvmc1MachineTransition>.unmodifiable(_decodeList<Pvmc1MachineTransition>(json['allowedEdges'], 'Pvmc1MachineRecord.allowedEdges', Pvmc1MachineTransition.fromJson)),\n` +
+    `      semanticOwnerRef: SemanticOwnerSelectorRefV1.fromJson(_expectMap(json['semanticOwnerRef'], 'Pvmc1MachineRecord.semanticOwnerRef')),\n` +
+    `      authoritativeWriterRef: AuthoritativeWriterRefV1.fromJson(_expectMap(json['authoritativeWriterRef'], 'Pvmc1MachineRecord.authoritativeWriterRef')),\n` +
+    `      eventFactOwnerSelectorRef: json['eventFactOwnerSelectorRef'] == null ? null : EventFactOwnerSelectorRefV1.fromJson(_expectMap(json['eventFactOwnerSelectorRef'], 'Pvmc1MachineRecord.eventFactOwnerSelectorRef')),\n` +
+    `      replicaWriterBindings: List<ReplicaWriterBindingV1>.unmodifiable(_decodeList<ReplicaWriterBindingV1>(json['replicaWriterBindings'], 'Pvmc1MachineRecord.replicaWriterBindings', (value) => _pvmc1ImmutableReplicaWriterBinding(ReplicaWriterBindingV1.fromJson(_expectMap(value, 'Pvmc1MachineRecord.replicaWriterBindings[]'))))),\n` +
+    `      storageBindingRef: StorageBindingRefV1.fromJson(_expectMap(json['storageBindingRef'], 'Pvmc1MachineRecord.storageBindingRef')),\n` +
+    `      authoritativeRouteRefs: List<ProjectionRouteRefV1>.unmodifiable(_decodeList<ProjectionRouteRefV1>(json['authoritativeRouteRefs'], 'Pvmc1MachineRecord.authoritativeRouteRefs', (value) => ProjectionRouteRefV1.fromJson(_expectMap(value, 'Pvmc1MachineRecord.authoritativeRouteRefs[]')))),\n` +
+    `      wireProjectionRef: WireProjectionRefV1.fromJson(_expectMap(json['wireProjectionRef'], 'Pvmc1MachineRecord.wireProjectionRef')),\n` +
+    `      unknownPolicyRef: UnknownPolicyRefV1.fromJson(_expectMap(json['unknownPolicyRef'], 'Pvmc1MachineRecord.unknownPolicyRef')),\n` +
+    `      ownerFeature: json['ownerFeature'] == null ? null : _expectString(json['ownerFeature'], 'Pvmc1MachineRecord.ownerFeature'),\n` +
+    `    );\n` +
+    `  }\n` +
+    `}\n\n` +
+    `ReplicaWriterBindingV1 _pvmc1ImmutableReplicaWriterBinding(ReplicaWriterBindingV1 row) =>\n` +
+    `    ReplicaWriterBindingV1(\n` +
+    `      replicaRole: row.replicaRole,\n` +
+    `      replicaWriterRef: row.replicaWriterRef,\n` +
+    `      storageBindings: List<StorageBindingRefV1>.unmodifiable(row.storageBindings),\n` +
+    `      routeBindings: List<ProjectionRouteRefV1>.unmodifiable(row.routeBindings),\n` +
+    `      canWriteSemanticOwnerState: row.canWriteSemanticOwnerState,\n` +
+    `      canWriteEventFacts: row.canWriteEventFacts,\n` +
+    `      canWriteOutboxEnvelopes: row.canWriteOutboxEnvelopes,\n` +
+    `      canAdvanceCanonicalHead: row.canAdvanceCanonicalHead,\n` +
+    `    );\n\n` +
+    `MachineEdgeAuthorityV1 _pvmc1ImmutableMachineEdgeAuthority(MachineEdgeAuthorityV1 row) =>\n` +
+    `    MachineEdgeAuthorityV1(\n` +
+    `      edgeId: row.edgeId,\n` +
+    `      coordinate: row.coordinate,\n` +
+    `      semanticOwnerRef: row.semanticOwnerRef,\n` +
+    `      authoritativeWriterRef: row.authoritativeWriterRef,\n` +
+    `      eventFactOwnerSelectorRef: row.eventFactOwnerSelectorRef,\n` +
+    `      replicaWriterBindings: List<ReplicaWriterBindingV1>.unmodifiable(\n` +
+    `        row.replicaWriterBindings.map(_pvmc1ImmutableReplicaWriterBinding),\n` +
+    `      ),\n` +
+    `      storageBindingRef: row.storageBindingRef,\n` +
+    `      wireProjectionRef: row.wireProjectionRef,\n` +
+    `      unknownPolicyRef: row.unknownPolicyRef,\n` +
+    `      guardRefs: List<GuardRefV1>.unmodifiable(row.guardRefs),\n` +
+    `      failureProblem: row.failureProblem,\n` +
+    `      zeroEffectProjectionRef: row.zeroEffectProjectionRef,\n` +
+    `      successPostStateProjectionRef: row.successPostStateProjectionRef,\n` +
+    `      positiveVectorId: row.positiveVectorId,\n` +
+    `      negativeVectorIds: List<VectorId>.unmodifiable(row.negativeVectorIds),\n` +
+    `      faultVectorIds: List<VectorId>.unmodifiable(row.faultVectorIds),\n` +
+    `    );\n\n` +
+    `const String _pvmc1MachineRecordsJson = ${dartString(machineRecordsJson)};\n` +
+    `const String _pvmc1MachineEdgeAuthoritiesJson = ${dartString(machineEdgeAuthoritiesJson)};\n\n` +
+    `final List<Pvmc1MachineRecord> pvmc1MachineRecords = List<Pvmc1MachineRecord>.unmodifiable(\n` +
+    `  _decodeList<Pvmc1MachineRecord>(jsonDecode(_pvmc1MachineRecordsJson), 'pvmc1MachineRecords', Pvmc1MachineRecord.fromJson, minItems: 17, maxItems: 17),\n` +
+    `);\n\n` +
+    `final List<MachineEdgeAuthorityV1> pvmc1MachineEdgeAuthorities = List<MachineEdgeAuthorityV1>.unmodifiable(\n` +
+    `  _decodeList<MachineEdgeAuthorityV1>(jsonDecode(_pvmc1MachineEdgeAuthoritiesJson), 'pvmc1MachineEdgeAuthorities', (value) => _pvmc1ImmutableMachineEdgeAuthority(MachineEdgeAuthorityV1.fromJson(_expectMap(value, 'pvmc1MachineEdgeAuthorities[]'))), minItems: 151, maxItems: 151),\n` +
+    `);\n\n` +
+    `const List<String> pvmc1DurableRouteIds = ${dartStringList(routes)};\n\n` +
+    `String _pvmc1MachineEdgeKey(MachineEdgeAuthorityV1 row) {\n` +
+    `  final coordinate = row.coordinate.toJson();\n` +
+    `  return _expectString(coordinate['machineId'], 'pvmc1MachineEdge.machineId') + '\\u0000' +\n` +
+    `      _expectString(coordinate['from'], 'pvmc1MachineEdge.from') + '\\u0000' +\n` +
+    `      _expectString(coordinate['to'], 'pvmc1MachineEdge.to');\n` +
+    `}\n\n` +
+    `final Set<String> _pvmc1AllowedMachineEdgeKeys = Set<String>.unmodifiable(\n` +
+    `  pvmc1MachineEdgeAuthorities.map(_pvmc1MachineEdgeKey),\n` +
+    `);\n\n` +
+    `bool isAllowedPvmc1MachineEdge(String machineId, String from, String to) =>\n` +
+    `    _pvmc1AllowedMachineEdgeKeys.contains('$machineId\\u0000$from\\u0000$to');\n\n` +
+    `const int pvmc1MachineTransitionSqlRowCount = ${sql.rowCount};\n` +
+    `const String pvmc1MachineTransitionSqlSha256 = ${dartString(sql.sqlSha256)};\n` +
+    `const String pvmc1MachineTransitionSqlUtf8Base64 = ${dartString(sql.sqlUtf8Base64)};\n\n` +
+    `Uint8List pvmc1MachineTransitionSqlBytes() {\n` +
+    `  final bytes = Uint8List.fromList(base64Decode(pvmc1MachineTransitionSqlUtf8Base64));\n` +
+    `  if (sha256.convert(bytes).toString() != pvmc1MachineTransitionSqlSha256) {\n` +
+    `    throw StateError('PVMC1 machine SQL digest mismatch');\n` +
+    `  }\n` +
+    `  return bytes;\n` +
+    `}\n\n` +
+    `const List<String> pvmc1TransactionManifestIds = ${dartStringList(transactionManifestIds)};\n\n` +
+    `const List<String> pvmc1TransactionKillPointIds = ${dartStringList(transactionKillPointIds)};\n\n` +
+    `const List<String> pvmc1BridgeRoutePointIds = ${dartStringList(bridgeRoutePointIds)};`;
+}
+
 export function generateDart(model, sourceDigest) {
   const ids = [...model.activeDefinitionIds].sort();
   const preimages = discoverDigestPreimages(model);
@@ -445,6 +602,7 @@ export function generateDart(model, sourceDigest) {
   }).join('\n\n');
   const domainCases = preimages.map(digestDomainCase).join('\n');
   const digests = preimages.map(digestHelpers).join('\n\n');
+  const authorityExports = pvmc1AuthorityExports(model);
   return `// @generated from conversation contract ${sourceDigest}; DO NOT EDIT.\n` +
     `// ignore_for_file: unnecessary_cast, unused_element, unused_element_parameter\n\n` +
     `import 'dart:convert';\n` +
@@ -701,5 +859,6 @@ export function generateDart(model, sourceDigest) {
     `}\n\n` +
     `${blocks.join('\n\n')}\n\n` +
     `${codecs}\n` +
-    (digests ? `\n${digests}\n` : '');
+    (digests ? `\n${digests}\n` : '') +
+    (authorityExports ? `\n${authorityExports}\n` : '');
 }

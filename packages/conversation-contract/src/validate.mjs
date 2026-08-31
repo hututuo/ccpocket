@@ -5,7 +5,18 @@ import {fileURLToPath} from 'node:url';
 
 import { canonicalize, compareUtf16, jsonEqual } from './canonical.mjs';
 import { validateDigestAuthority } from './b1-digest-authority.mjs';
+import {validateB2DefinitionAuthority} from './b2-definition-authority.mjs';
+import {validateAdmissionLookupVectors} from './admission-semantics.mjs';
 import { discoverDigestPreimages } from './digest-preimages.mjs';
+import {
+  validateMachineAuthorityRegistry,
+  validateMachineAuthorityVectors,
+} from './machine-semantics.mjs';
+import {validateTransactionAuthorityRegistry} from './transaction-semantics.mjs';
+import {
+  validateIndependentTransactionAuthority,
+  validateTransactionAuthorityVectors,
+} from './transaction-oracle.mjs';
 import { validateGeneratedNames } from './names.mjs';
 import { evaluateSemanticRule } from './semantic-oracle.mjs';
 
@@ -17,6 +28,25 @@ const DIGEST_AUTHORITY_KEYS = [
   'digestEqualityReferences',
   'digestDependencyEdges',
   'digestPostDerivationGuards',
+];
+const MACHINE_AUTHORITY_KEYS = [
+  'machineAuthority',
+  'machineRecords',
+  'semanticOwnerSelectors',
+  'authoritativeWriters',
+  'storageBindings',
+  'projectionRoutes',
+  'wireProjections',
+  'unknownPolicies',
+  'eventFactOwnerSelectors',
+  'edgeGuards',
+  'oracleProjections',
+  'machineEdgeAuthorities',
+];
+const TRANSACTION_AUTHORITY_KEYS = [
+  'transactionGuards',
+  'transactionOracleProjections',
+  'transactionManifests',
 ];
 const NODE_KINDS = new Set([
   'array',
@@ -492,12 +522,16 @@ export function validateInputs(registryInput, vectorsInput) {
       'formatVersion', 'activeProfileId', 'profiles', 'definitions', 'owners',
       'consumers', 'executableTests', 'hardRules', 'vectorSets',
       ...DIGEST_AUTHORITY_KEYS,
+      ...MACHINE_AUTHORITY_KEYS,
+      ...TRANSACTION_AUTHORITY_KEYS,
     ],
     [
       'formatVersion', 'activeProfileId', 'profiles', 'definitions', 'owners',
       'consumers', 'executableTests', 'hardRules', 'vectorSets',
       'digestDerivations',
       ...(pvmcRegistry ? DIGEST_AUTHORITY_KEYS.slice(1) : []),
+      ...(pvmcRegistry ? MACHINE_AUTHORITY_KEYS : []),
+      ...(pvmcRegistry ? TRANSACTION_AUTHORITY_KEYS : []),
     ],
     'registry',
   );
@@ -619,6 +653,7 @@ export function validateInputs(registryInput, vectorsInput) {
     );
   }
   validateGeneratedNames(activeDefinitionIds, definitions);
+  if (pvmcRegistry) validateB2DefinitionAuthority(registry, activeDefinitionIds);
 
   const owners = simpleInventory(registry.owners, 'registry.owners', globalIds, {metadata: ['role', 'path']});
   if (pvmcRegistry) {
@@ -648,6 +683,15 @@ export function validateInputs(registryInput, vectorsInput) {
         digestPostDerivationGuards: [],
         digestDerivationsById: new Map(),
       };
+  const machineAuthority = pvmcRegistry
+    ? validateMachineAuthorityRegistry(registry)
+    : null;
+  const transactionAuthority = pvmcRegistry
+    ? validateTransactionAuthorityRegistry(registry, machineAuthority)
+    : null;
+  if (transactionAuthority !== null) {
+    validateIndependentTransactionAuthority(machineAuthority, transactionAuthority);
+  }
 
   const hardRules = new Map();
   for (const [index, raw] of requireArray(registry.hardRules, 'registry.hardRules').entries()) {
@@ -807,6 +851,15 @@ export function validateInputs(registryInput, vectorsInput) {
       fail('vectors.vectors', `active vector set ${id} is empty`);
     }
   }
+  if (machineAuthority !== null) {
+    validateMachineAuthorityVectors(machineAuthority, activeVectors);
+  }
+  if (transactionAuthority !== null) {
+    validateTransactionAuthorityVectors(transactionAuthority, activeVectors);
+  }
+  if (pvmcRegistry) {
+    validateAdmissionLookupVectors(activeVectors);
+  }
 
   const model = {
     registry,
@@ -821,6 +874,8 @@ export function validateInputs(registryInput, vectorsInput) {
     hardRules,
     vectorSets,
     activeVectors,
+    machineAuthority,
+    transactionAuthority,
     ...digestAuthority,
   };
   discoverDigestPreimages(model);

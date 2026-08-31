@@ -22,8 +22,10 @@ import {
   discoverDigestPreimages,
 } from './digest-preimages.mjs';
 import { generateDart } from './generate-dart.mjs';
+import {machineAuthoritySource} from './machine-semantics.mjs';
 import { generateSchema } from './generate-schema.mjs';
 import { generateTypeScript } from './generate-typescript.mjs';
+import {transactionAuthoritySource} from './transaction-semantics.mjs';
 
 export const GENERATED_FILES = [
   'schema.json',
@@ -31,6 +33,10 @@ export const GENERATED_FILES = [
   'contract.dart',
   'profile-manifest.json',
 ];
+const TRUSTED_GENERATION_CANONICAL_LIMITS = Object.freeze({
+  maxDepth: 512,
+  maxNodes: 1_000_000,
+});
 
 const DIRECTORY_OPEN_FLAGS = fsConstants.O_RDONLY |
   (fsConstants.O_DIRECTORY ?? 0) |
@@ -404,6 +410,12 @@ function activeSource(model) {
     vectorSets: [...model.vectorSets.values()].sort(byId),
     vectors: [...model.activeVectors].sort(byId),
     ...digestAuthoritySource(model),
+    ...(model.machineAuthority === null
+      ? {}
+      : machineAuthoritySource(model.machineAuthority)),
+    ...(model.transactionAuthority === null
+      ? {}
+      : transactionAuthoritySource(model.transactionAuthority)),
   };
 }
 
@@ -412,7 +424,7 @@ export function generateArtifacts(
   {dartSource, dartFormatterVersion} = {},
 ) {
   const source = activeSource(model);
-  const sourceDigest = digestJson(source);
+  const sourceDigest = digestJson(source, TRUSTED_GENERATION_CANONICAL_LIMITS);
   const digestPreimageTypeIds = discoverDigestPreimages(model).map(
     (preimage) => preimage.typeId,
   );
@@ -436,8 +448,43 @@ export function generateArtifacts(
     hardRuleIds: [...model.hardRules.keys()].sort(),
     vectorSetIds: [...model.vectorSets.keys()].sort(),
     vectorIds: model.activeVectors.map((vector) => vector.id).sort(),
+    ...(model.machineAuthority === null ? {} : {
+      machineCounts: {
+        machines: model.machineAuthority.machineAuthority.machineCount,
+        stateOccurrences: model.machineAuthority.machineAuthority.stateOccurrenceCount,
+        edges: model.machineAuthority.machineAuthority.edgeCount,
+        terminals: model.machineAuthority.machineAuthority.terminalCount,
+        forbiddenEdges: model.machineAuthority.machineAuthority.forbiddenEdgeCount,
+      },
+      durableRouteIds: model.machineAuthority.projectionRoutes.map((route) =>
+        route.registryId),
+      machineTransitionSql: model.machineAuthority.machineTransitionSql.manifest,
+    }),
+    ...(model.transactionAuthority === null ? {} : {
+      transactionCounts: {
+        manifests: model.transactionAuthority.transactionManifests.length,
+        applicabilityCases: model.transactionAuthority.transactionManifests.reduce(
+          (count, transactionManifest) =>
+            count + transactionManifest.applicabilityCases.length,
+          0,
+        ),
+        segments: model.transactionAuthority.transactionManifests.reduce(
+          (count, transactionManifest) => count + transactionManifest.segments.length,
+          0,
+        ),
+        steps: model.transactionAuthority.transactionSteps.length,
+        killPoints: model.transactionAuthority.transactionKillPoints.length,
+        bridgeRoutePoints: model.transactionAuthority.bridgeRoutePointBindings.length,
+      },
+      transactionManifestIds: model.transactionAuthority.transactionManifests
+        .map((transactionManifest) => transactionManifest.manifestId)
+        .sort(),
+      transactionKillPointIds: model.transactionAuthority.transactionKillPoints
+        .map((killPoint) => killPoint.killPointId)
+        .sort(),
+    }),
     artifactDigests,
-  });
+  }, 2, TRUSTED_GENERATION_CANONICAL_LIMITS);
   return new Map([
     ['schema.json', schema],
     ['contract.ts', typescript],
