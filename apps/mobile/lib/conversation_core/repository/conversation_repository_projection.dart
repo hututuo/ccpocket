@@ -1772,6 +1772,25 @@ Future<_TrackedUsage> _recomputeTrackedUsage(
     _keyArgs(key),
   );
   await add(
+    'projection_identity',
+    'COUNT(*)',
+    _capacityBytes(<String>[
+      'bridge_identity_id',
+      'bridge_instance_id',
+      'codex_source_id',
+      'provider_thread_id',
+      'projection_id',
+      'connection_epoch',
+      'source_epoch',
+      'provider_instance_epoch',
+      'runtime_authority_generation',
+      'source_revision',
+      'projection_digest',
+      'disposition',
+    ]),
+    _keyArgs(key),
+  );
+  await add(
     'projection_inbox',
     'COUNT(*)',
     _capacityBytes(<String>[

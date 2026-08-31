@@ -125,6 +125,9 @@ const _schemaChecks = <String, List<String>>{
   'operation_projection': <String>["gc_eligible IN (0, 1)"],
   'queue_entry_projection': <String>["gc_eligible IN (0, 1)"],
   'interaction_projection': <String>["gc_eligible IN (0, 1)"],
+  'projection_identity': <String>[
+    "disposition IN ('pending', 'applied', 'stale')",
+  ],
   'projection_inbox': <String>[
     "state IN ('pending', 'applied', 'stale')",
     "gc_eligible IN (0, 1)",
@@ -150,6 +153,7 @@ const _usageTables = <String>[
   'queue_entry_projection',
   'interaction_projection',
   'projection_head',
+  'projection_identity',
   'projection_inbox',
   'publication_outbox',
 ];
@@ -170,6 +174,7 @@ const _schemaTables = <String>[
   'queue_entry_projection',
   'interaction_projection',
   'projection_head',
+  'projection_identity',
   'projection_inbox',
   'publication_outbox',
 ];
@@ -427,6 +432,20 @@ const _schemaColumns = <String, List<_SchemaColumn>>{
     _SchemaColumn('interaction_snapshot_marker', 'TEXT', 1, 0),
     _SchemaColumn('updated_at', 'INTEGER', 1, 0),
   ],
+  'projection_identity': <_SchemaColumn>[
+    _SchemaColumn('bridge_identity_id', 'TEXT', 1, 1),
+    _SchemaColumn('bridge_instance_id', 'TEXT', 1, 2),
+    _SchemaColumn('codex_source_id', 'TEXT', 1, 3),
+    _SchemaColumn('provider_thread_id', 'TEXT', 1, 4),
+    _SchemaColumn('projection_id', 'TEXT', 1, 5),
+    _SchemaColumn('connection_epoch', 'TEXT', 1, 0),
+    _SchemaColumn('source_epoch', 'TEXT', 1, 0),
+    _SchemaColumn('provider_instance_epoch', 'TEXT', 1, 0),
+    _SchemaColumn('runtime_authority_generation', 'INTEGER', 1, 0),
+    _SchemaColumn('source_revision', 'INTEGER', 1, 0),
+    _SchemaColumn('projection_digest', 'TEXT', 1, 0),
+    _SchemaColumn('disposition', 'TEXT', 1, 0),
+  ],
   'projection_inbox': <_SchemaColumn>[
     _SchemaColumn('bridge_identity_id', 'TEXT', 1, 1),
     _SchemaColumn('bridge_instance_id', 'TEXT', 1, 2),
@@ -673,6 +692,42 @@ const _schemaIndexes = <_SchemaIndex>[
       'gc_eligible',
       'snapshot_marker',
       'interaction_id',
+    ],
+  ),
+  _SchemaIndex(
+    'operation_projection_source_projection_idx',
+    'operation_projection',
+    0,
+    <String>[
+      'bridge_identity_id',
+      'bridge_instance_id',
+      'codex_source_id',
+      'provider_thread_id',
+      'source_projection_id',
+    ],
+  ),
+  _SchemaIndex(
+    'queue_entry_projection_source_projection_idx',
+    'queue_entry_projection',
+    0,
+    <String>[
+      'bridge_identity_id',
+      'bridge_instance_id',
+      'codex_source_id',
+      'provider_thread_id',
+      'source_projection_id',
+    ],
+  ),
+  _SchemaIndex(
+    'interaction_projection_source_projection_idx',
+    'interaction_projection',
+    0,
+    <String>[
+      'bridge_identity_id',
+      'bridge_instance_id',
+      'codex_source_id',
+      'provider_thread_id',
+      'source_projection_id',
     ],
   ),
   _SchemaIndex(
@@ -1321,6 +1376,24 @@ Future<void> _createSchema(Database db, int version) async {
       FOREIGN KEY (bridge_identity_id, bridge_instance_id, codex_source_id, provider_thread_id)
         REFERENCES thread_state (bridge_identity_id, bridge_instance_id, codex_source_id, provider_thread_id)
         ON DELETE CASCADE
+    ) STRICT
+  ''');
+  await db.execute('''
+    CREATE TABLE projection_identity (
+      bridge_identity_id TEXT NOT NULL,
+      bridge_instance_id TEXT NOT NULL,
+      codex_source_id TEXT NOT NULL,
+      provider_thread_id TEXT NOT NULL,
+      projection_id TEXT NOT NULL,
+      connection_epoch TEXT NOT NULL,
+      source_epoch TEXT NOT NULL,
+      provider_instance_epoch TEXT NOT NULL,
+      runtime_authority_generation INTEGER NOT NULL,
+      source_revision INTEGER NOT NULL,
+      projection_digest TEXT NOT NULL,
+      disposition TEXT NOT NULL,
+      CHECK (disposition IN ('pending', 'applied', 'stale')),
+      PRIMARY KEY (bridge_identity_id, bridge_instance_id, codex_source_id, provider_thread_id, projection_id)
     ) STRICT
   ''');
   await db.execute('''

@@ -221,7 +221,7 @@ void main() {
   late ConversationRepository repository;
 
   setUp(() async {
-    tempDirectory = await Directory.systemTemp.createTemp('conversation-v6-');
+    tempDirectory = await Directory.systemTemp.createTemp('conversation-v7-');
     repository = await _openRepository(tempDirectory);
   });
 
@@ -1350,6 +1350,15 @@ void main() {
           )),
           hasLength(1),
         );
+        expect(
+          (await inspection.query(
+            'projection_identity',
+            columns: const <String>['disposition'],
+            where: 'projection_id = ?',
+            whereArgs: const <Object?>['projection-retry'],
+          )).single['disposition'],
+          'pending',
+        );
         await inspection.close();
         await repository.close();
         repository = await _openRepository(tempDirectory);
@@ -1357,6 +1366,20 @@ void main() {
           (await repository.readWindow(_key())).operations.single.operationId,
           'op-retry',
         );
+        final recovered = await databaseFactoryFfi.openDatabase(
+          repository.resolvedDatabasePath!,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        expect(
+          (await recovered.query(
+            'projection_identity',
+            columns: const <String>['disposition'],
+            where: 'projection_id = ?',
+            whereArgs: const <Object?>['projection-retry'],
+          )).single['disposition'],
+          'applied',
+        );
+        await recovered.close();
         final retry = await repository.commitRuntimeProjections(projection);
         expect(retry.wasDuplicate, isTrue);
         expect(retry.wasPublished, isTrue);
@@ -2054,7 +2077,7 @@ VALUES (?, ?, ?, ?, ?, ?)
       );
     });
 
-    test('schema v5 to v6 open is an explicit fail-closed boundary', () async {
+    test('schema v6 to v7 open is an explicit fail-closed boundary', () async {
       await repository.close();
       final database = await databaseFactoryFfi.openDatabase(
         path.join(
@@ -2062,7 +2085,7 @@ VALUES (?, ?, ?, ?, ?, ?)
           ConversationRepository.defaultDatabaseName,
         ),
       );
-      await database.execute('PRAGMA user_version = 5');
+      await database.execute('PRAGMA user_version = 6');
       await database.close();
       repository = ConversationRepository.forTesting(
         databaseFactory: databaseFactoryFfi,
@@ -2078,8 +2101,14 @@ VALUES (?, ?, ?, ?, ?, ?)
       );
     });
 
-    test('new v6 default leaves an existing v5 file untouched', () async {
+    test('new v7 default leaves existing v6 and v5 files untouched', () async {
       await repository.close();
+      final legacyV6Path = path.join(
+        tempDirectory.path,
+        'conversation_replica_v6.db',
+      );
+      await _createLegacyV6Database(legacyV6Path, 'v6-preserved');
+      final beforeV6 = await File(legacyV6Path).readAsBytes();
       final legacyPath = path.join(
         tempDirectory.path,
         'conversation_replica_v5.db',
@@ -2095,7 +2124,7 @@ VALUES (?, ?, ?, ?, ?, ?)
       );
       expect(
         ConversationRepository.defaultDatabaseName,
-        'conversation_replica_v6.db',
+        'conversation_replica_v7.db',
       );
       final current = await databaseFactoryFfi.openDatabase(
         repository.resolvedDatabasePath!,
@@ -2103,15 +2132,34 @@ VALUES (?, ?, ?, ?, ?, ?)
       );
       expect(
         (await current.query('replica_metadata')).single,
-        containsPair('schema_identity', 'ccpocket.conversation_replica_v6'),
+        containsPair('schema_identity', 'ccpocket.conversation_replica_v7'),
       );
       expect(
         (await current.query('replica_metadata')).single,
-        containsPair('schema_version', 6),
+        containsPair('schema_version', 7),
       );
       expect(
         (await current.rawQuery('PRAGMA user_version')).single['user_version'],
-        6,
+        7,
+      );
+      expect(
+        (await current.rawQuery('PRAGMA table_info(projection_identity)'))
+            .map((row) => row['name'])
+            .toList(),
+        <Object?>[
+          'bridge_identity_id',
+          'bridge_instance_id',
+          'codex_source_id',
+          'provider_thread_id',
+          'projection_id',
+          'connection_epoch',
+          'source_epoch',
+          'provider_instance_epoch',
+          'runtime_authority_generation',
+          'source_revision',
+          'projection_digest',
+          'disposition',
+        ],
       );
       expect(
         (await current.rawQuery('PRAGMA index_info(projection_inbox_gc_idx)'))
@@ -2129,7 +2177,22 @@ VALUES (?, ?, ?, ?, ?, ?)
         ],
       );
       await current.close();
+      expect(await File(legacyV6Path).readAsBytes(), beforeV6);
       expect(await File(legacyPath).readAsBytes(), before);
+      final v6Readback = await databaseFactoryFfi.openDatabase(
+        legacyV6Path,
+        options: OpenDatabaseOptions(version: 6),
+      );
+      expect(
+        (await v6Readback.query('legacy_v6_marker')).single['value'],
+        'v6-preserved',
+      );
+      expect(
+        (await v6Readback.rawQuery('PRAGMA user_version'))
+            .single['user_version'],
+        6,
+      );
+      await v6Readback.close();
       final readback = await databaseFactoryFfi.openDatabase(
         legacyPath,
         options: OpenDatabaseOptions(version: 5),
@@ -2157,6 +2220,27 @@ VALUES (?, ?, ?, ?, ?, ?)
         5,
       );
       await readback.close();
+    });
+
+    test('explicit v6 database path is rejected without mutation', () async {
+      await repository.close();
+      final legacyPath = path.join(
+        tempDirectory.path,
+        'conversation_replica_v6.db',
+      );
+      await _createLegacyV6Database(legacyPath, 'v6-explicit');
+      final before = await File(legacyPath).readAsBytes();
+      repository = ConversationRepository.forTesting(
+        databaseFactory: databaseFactoryFfi,
+        databasePath: legacyPath,
+        contractMapper: const _FixtureContract(),
+      );
+
+      await expectLater(
+        repository.open(),
+        _failure(RepositoryFailureCode.invalidDatabaseIdentity),
+      );
+      expect(await File(legacyPath).readAsBytes(), before);
     });
 
     test('explicit v5 database path is rejected without mutation', () async {
@@ -2255,6 +2339,18 @@ VALUES (?, ?, ?, ?, ?, ?)
           'EXPLAIN QUERY PLAN SELECT interaction_id FROM interaction_projection WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 1 AND gc_eligible = 1 AND snapshot_marker < ? ORDER BY snapshot_marker ASC, interaction_id ASC LIMIT 32',
           [...keyArgs, 'current-snapshot'],
         ),
+        'operation_projection_source_projection_idx': plan(
+          'EXPLAIN QUERY PLAN UPDATE operation_projection SET gc_eligible = 1 WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND source_projection_id = ?',
+          [...keyArgs, 'projection-id'],
+        ),
+        'queue_entry_projection_source_projection_idx': plan(
+          'EXPLAIN QUERY PLAN UPDATE queue_entry_projection SET gc_eligible = 1 WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND source_projection_id = ?',
+          [...keyArgs, 'projection-id'],
+        ),
+        'interaction_projection_source_projection_idx': plan(
+          'EXPLAIN QUERY PLAN UPDATE interaction_projection SET gc_eligible = 1 WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND source_projection_id = ?',
+          [...keyArgs, 'projection-id'],
+        ),
         'typed_gap_gc_idx': plan(
           'EXPLAIN QUERY PLAN SELECT gap_id FROM typed_gap WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 0 ORDER BY gap_id ASC LIMIT 32',
           keyArgs,
@@ -2308,6 +2404,123 @@ VALUES (?, ?, ?, ?, ?, ?)
       );
       expect(stalePublicationDetail, isNot(contains('USE TEMP B-TREE')));
       await database.close();
+    });
+
+    test('ACK eligibility updates only rows from the indexed projection', () async {
+      final subscription = repository.updates.listen((_) {});
+      const sourceA = 'ack-index-projection-a';
+      const sourceB = 'ack-index-projection-b';
+      final a = await repository.commitRuntimeProjections(
+        _projection(sourceA, revision: 1, operation: 'ack-index-primary-a'),
+      );
+      await repository.commitRuntimeProjections(
+        _projection(sourceB, revision: 2, operation: 'ack-index-primary-b'),
+      );
+      expect(a.publicationEventId, isNotNull);
+
+      final database = await databaseFactoryFfi.openDatabase(
+        repository.resolvedDatabasePath!,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      final keyColumns = <String, Object?>{
+        'bridge_identity_id': _key().partition.bridgeIdentityId,
+        'bridge_instance_id': _key().partition.bridgeInstanceId,
+        'codex_source_id': _key().partition.codexSourceId,
+        'provider_thread_id': _key().providerThreadId,
+      };
+      for (final source in const <String>[sourceA, sourceB]) {
+        for (var index = 0; index < 40; index += 1) {
+          final suffix = index.toString().padLeft(2, '0');
+          await database.insert('operation_projection', <String, Object?>{
+            ...keyColumns,
+            'operation_id': 'ack-index-operation-$source-$suffix',
+            'revision': 1,
+            'state': 'queued',
+            'is_terminal': 0,
+            'value_json': '{}',
+            'value_digest': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'is_active': 1,
+            'gc_eligible': 0,
+            'snapshot_marker': source,
+            'source_projection_id': source,
+          });
+          await database.insert('queue_entry_projection', <String, Object?>{
+            ...keyColumns,
+            'queue_entry_id': 'ack-index-queue-$source-$suffix',
+            'operation_id': null,
+            'revision': 1,
+            'position': index,
+            'state': 'queued',
+            'value_json': '{}',
+            'value_digest': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            'is_active': 1,
+            'gc_eligible': 0,
+            'snapshot_marker': source,
+            'source_projection_id': source,
+          });
+          await database.insert('interaction_projection', <String, Object?>{
+            ...keyColumns,
+            'interaction_id': 'ack-index-interaction-$source-$suffix',
+            'revision': 1,
+            'kind': 'question',
+            'state': 'pending',
+            'claim_actor_id': null,
+            'claim_expires_at': null,
+            'value_json': '{}',
+            'value_digest': 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+            'is_active': 1,
+            'gc_eligible': 0,
+            'snapshot_marker': source,
+            'source_projection_id': source,
+          });
+        }
+      }
+      await database.close();
+
+      expect(
+        await repository.acknowledgePublication(a.publicationEventId!),
+        isTrue,
+      );
+      final after = await databaseFactoryFfi.openDatabase(
+        repository.resolvedDatabasePath!,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      for (final table in const <String>[
+        'operation_projection',
+        'queue_entry_projection',
+        'interaction_projection',
+      ]) {
+        final aRows = await after.rawQuery(
+          'SELECT COUNT(*) AS row_count FROM $table WHERE source_projection_id = ? AND gc_eligible <> 1',
+          const <Object?>[sourceA],
+        );
+        final bRows = await after.rawQuery(
+          'SELECT COUNT(*) AS row_count FROM $table WHERE source_projection_id = ? AND gc_eligible <> 0',
+          const <Object?>[sourceB],
+        );
+        expect(aRows.single['row_count'], 0, reason: table);
+        expect(bRows.single['row_count'], 0, reason: table);
+      }
+      expect(
+        (await after.query(
+          'projection_inbox',
+          columns: const <String>['gc_eligible'],
+          where: 'projection_id = ?',
+          whereArgs: const <Object?>[sourceA],
+        )).single['gc_eligible'],
+        1,
+      );
+      expect(
+        (await after.query(
+          'projection_inbox',
+          columns: const <String>['gc_eligible'],
+          where: 'projection_id = ?',
+          whereArgs: const <Object?>[sourceB],
+        )).single['gc_eligible'],
+        0,
+      );
+      await after.close();
+      await subscription.cancel();
     });
 
     test('pressure GC skips protected prefixes and retains the current inbox', () async {
@@ -2997,7 +3210,7 @@ VALUES (?, ?, ?, ?, ?, ?)
       await repository.close();
       repository = await _openRepository(
         tempDirectory,
-        maxEntriesPerThread: 20,
+        maxEntriesPerThread: 48,
       );
       final publicationSubscription = repository.updates.listen((_) {});
       for (var index = 0; index < 24; index += 1) {
@@ -3820,6 +4033,33 @@ Future<void> _samePidLeaseCompetingIsolate(List<Object?> arguments) async {
     result = 'error:$error';
   }
   sendPort.send(result);
+}
+
+Future<void> _createLegacyV6Database(String databasePath, String marker) async {
+  final database = await databaseFactoryFfi.openDatabase(
+    databasePath,
+    options: OpenDatabaseOptions(
+      version: 6,
+      onCreate: (db, _) async {
+        await db.execute('''
+          CREATE TABLE replica_metadata (
+            schema_identity TEXT PRIMARY KEY,
+            schema_version INTEGER NOT NULL
+          ) STRICT
+        ''');
+        await db.insert('replica_metadata', const <String, Object?>{
+          'schema_identity': 'ccpocket.conversation_replica_v6',
+          'schema_version': 6,
+        });
+        await db.execute(
+          'CREATE TABLE legacy_v6_marker (value TEXT NOT NULL) STRICT',
+        );
+        await db.insert('legacy_v6_marker', <String, Object?>{'value': marker});
+      },
+    ),
+  );
+  await database.execute('PRAGMA user_version = 6');
+  await database.close();
 }
 
 Future<void> _createLegacyV5Database(String databasePath, String marker) async {

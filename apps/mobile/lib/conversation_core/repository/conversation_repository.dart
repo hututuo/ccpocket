@@ -209,7 +209,7 @@ class ConversationRepository {
   static Object get testFixtureAuthorityProfile =>
       conversationFixtureAuthorityProfileForTesting();
 
-  static const defaultDatabaseName = 'conversation_replica_v6.db';
+  static const defaultDatabaseName = 'conversation_replica_v7.db';
   static const maxWindowSize = 200;
   static const maxPageBodyBytes = 256 * 1024;
   static const maxMaterializationPages = 128;
@@ -224,8 +224,8 @@ class ConversationRepository {
   // garbage-collected; this cap keeps that immutable floor bounded and fails
   // closed before accepting a new distinct value.
   static const maxRetiredEpochValuesPerKind = 256;
-  static const _schemaVersion = 6;
-  static const _schemaIdentity = 'ccpocket.conversation_replica_v6';
+  static const _schemaVersion = 7;
+  static const _schemaIdentity = 'ccpocket.conversation_replica_v7';
   static const _leaseName = 'conversation-repository-writer';
 
   final DatabaseFactory _databaseFactory;
@@ -320,10 +320,11 @@ class ConversationRepository {
     if (basename == 'ccpocket.db' ||
         basename == 'conversation_mirror_v1.db' ||
         basename == 'conversation_replica_v4.db' ||
-        basename == 'conversation_replica_v5.db') {
+        basename == 'conversation_replica_v5.db' ||
+        basename == 'conversation_replica_v6.db') {
       _throwFailure(
         RepositoryFailureCode.invalidDatabaseIdentity,
-        'v6 replica cannot open legacy database $basename',
+        'v7 replica cannot open legacy database $basename',
       );
     }
     _resolvedDatabasePath = dbPath;
@@ -342,7 +343,7 @@ class ConversationRepository {
           onCreate: _createSchema,
           onUpgrade: (db, oldVersion, newVersion) async {
             // There is intentionally no guessed migration from the previous
-            // v4 candidate schema.  A future generated-authority integration
+            // v6 replica schema.  A future generated-authority integration
             // must define and attest its own migration before opening it.
             throw ConversationRepositoryException(
               RepositoryFailureCode.invalidDatabaseIdentity,

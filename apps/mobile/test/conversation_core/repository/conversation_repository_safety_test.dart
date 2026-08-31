@@ -215,7 +215,7 @@ void main() {
 
   setUp(() async {
     tempDirectory = await Directory.systemTemp.createTemp(
-      'conversation-v6-safety-',
+      'conversation-v7-safety-',
     );
     repository = await _openRepository(tempDirectory);
   });
@@ -410,8 +410,8 @@ void main() {
         columns: const <String>['projection_digest'],
       )).single;
 
-      // Simulate the pre-fix GC outcome so the head-level guard also closes
-      // databases that already lost their larger inbox/outbox evidence.
+      // Compact identity evidence remains after the larger inbox/outbox rows
+      // are reclaimed.
       await inspection.delete(
         'publication_outbox',
         where: 'domain = ? AND operation_id = ?',
@@ -463,9 +463,371 @@ void main() {
         ),
         isEmpty,
       );
+      expect(
+        (await after.query(
+          'projection_identity',
+          columns: const <String>['disposition'],
+          where: 'projection_id = ?',
+          whereArgs: const <Object?>['current-identity-projection'],
+        )).single['disposition'],
+        'applied',
+      );
       await after.close();
       await subscription.cancel();
     });
+
+    test('historical projection identity survives normal GC and rejects every rebind axis', () async {
+      await repository.close();
+      repository = await _openRepository(
+        tempDirectory,
+        maxEntriesPerThread: 16,
+      );
+      final subscription = repository.updates.listen((_) {});
+      final original = _projection(
+        'historical-identity-x',
+        sourceEpoch: 'source-1',
+        providerEpoch: 'provider-1',
+        connectionEpoch: 'connection-1',
+        sourceRevision: 1,
+        operationId: 'historical-operation-x',
+      );
+      final x = await repository.commitRuntimeProjections(original);
+      expect(
+        await repository.acknowledgePublication(x.publicationEventId!),
+        isTrue,
+      );
+
+      final y = await repository.commitRuntimeProjections(
+        _projection(
+          'historical-identity-y',
+          sourceEpoch: 'source-1',
+          providerEpoch: 'provider-1',
+          connectionEpoch: 'connection-1',
+          sourceRevision: 2,
+          operationId: 'historical-operation-y',
+        ),
+      );
+      expect(
+        await repository.acknowledgePublication(y.publicationEventId!),
+        isTrue,
+      );
+      await repository.commitRuntimeProjections(
+        _projection(
+          'historical-identity-z',
+          sourceEpoch: 'source-1',
+          providerEpoch: 'provider-1',
+          connectionEpoch: 'connection-1',
+          sourceRevision: 3,
+          operationId: 'historical-operation-z',
+        ),
+      );
+
+      await expectLater(
+        repository.commitRuntimeProjections(
+          _projection(
+            'historical-identity-x',
+            sourceEpoch: 'source-1',
+            providerEpoch: 'provider-1',
+            connectionEpoch: 'connection-1',
+            sourceRevision: 4,
+            operationId: 'historical-rebound-operation',
+            operationText: 'rebound',
+          ),
+        ),
+        _failure(RepositoryFailureCode.identityConflict),
+      );
+
+      final databasePath = repository.resolvedDatabasePath!;
+      final afterGc = await databaseFactoryFfi.openDatabase(
+        databasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      expect(
+        await afterGc.query(
+          'projection_inbox',
+          where: 'projection_id = ?',
+          whereArgs: const <Object?>['historical-identity-x'],
+        ),
+        isEmpty,
+      );
+      expect(
+        await afterGc.query(
+          'publication_outbox',
+          where: 'domain = ? AND operation_id = ?',
+          whereArgs: const <Object?>['projection', 'historical-identity-x'],
+        ),
+        isEmpty,
+      );
+      expect(
+        (await afterGc.query(
+          'projection_identity',
+          columns: const <String>['disposition'],
+          where: 'projection_id = ?',
+          whereArgs: const <Object?>['historical-identity-x'],
+        )).single['disposition'],
+        'applied',
+      );
+      expect(
+        await afterGc.query(
+          'operation_projection',
+          where: 'operation_id = ?',
+          whereArgs: const <Object?>['historical-rebound-operation'],
+        ),
+        isEmpty,
+      );
+      await afterGc.close();
+
+      final rebinds = <RuntimeProjectionEnvelope>[
+        _projection(
+          'historical-identity-x',
+          sourceEpoch: 'source-1',
+          providerEpoch: 'provider-1',
+          connectionEpoch: 'connection-2',
+          sourceRevision: 1,
+          operationId: 'historical-operation-x',
+        ),
+        _projection(
+          'historical-identity-x',
+          sourceEpoch: 'source-2',
+          providerEpoch: 'provider-1',
+          connectionEpoch: 'connection-1',
+          sourceRevision: 1,
+          operationId: 'historical-operation-x',
+        ),
+        _projection(
+          'historical-identity-x',
+          sourceEpoch: 'source-1',
+          providerEpoch: 'provider-2',
+          connectionEpoch: 'connection-1',
+          sourceRevision: 1,
+          operationId: 'historical-operation-x',
+        ),
+        _projection(
+          'historical-identity-x',
+          sourceEpoch: 'source-1',
+          providerEpoch: 'provider-1',
+          connectionEpoch: 'connection-1',
+          runtimeGeneration: 2,
+          sourceRevision: 1,
+          operationId: 'historical-operation-x',
+        ),
+        _projection(
+          'historical-identity-x',
+          sourceEpoch: 'source-1',
+          providerEpoch: 'provider-1',
+          connectionEpoch: 'connection-1',
+          sourceRevision: 2,
+          operationId: 'historical-operation-x',
+        ),
+      ];
+      for (final rebind in rebinds) {
+        await expectLater(
+          repository.commitRuntimeProjections(rebind),
+          _failure(RepositoryFailureCode.identityConflict),
+        );
+      }
+
+      final exactReplay = await repository.commitRuntimeProjections(original);
+      expect(exactReplay.wasDuplicate, isTrue);
+      expect(exactReplay.wasPublished, isFalse);
+      expect(exactReplay.publicationEventId, isNull);
+      expect(
+        exactReplay.window.operations.map((value) => value.operationId),
+        <String>['historical-operation-z'],
+      );
+      final finalInspection = await databaseFactoryFfi.openDatabase(
+        databasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      expect(
+        (await finalInspection.query(
+          'projection_head',
+          columns: const <String>['projection_id'],
+        )).single['projection_id'],
+        'historical-identity-z',
+      );
+      expect(
+        await finalInspection.query(
+          'projection_inbox',
+          where: 'projection_id = ?',
+          whereArgs: const <Object?>['historical-identity-x'],
+        ),
+        isEmpty,
+      );
+      await finalInspection.close();
+      await subscription.cancel();
+    });
+
+    test(
+      'historical snapshot marker cannot be rebound while rows remain',
+      () async {
+        await repository.close();
+        repository = await _openRepository(
+          tempDirectory,
+          maxEntriesPerThread: 90,
+        );
+        final subscription = repository.updates.listen((_) {});
+        final original = _projection(
+          'snapshot-identity-x',
+          sourceEpoch: 'source-1',
+          providerEpoch: 'provider-1',
+          connectionEpoch: 'connection-1',
+          sourceRevision: 1,
+          operationId: 'snapshot-operation-x',
+          operationCount: 65,
+        );
+        final x = await repository.commitRuntimeProjections(original);
+        expect(
+          await repository.acknowledgePublication(x.publicationEventId!),
+          isTrue,
+        );
+        await repository.commitRuntimeProjections(
+          _projection(
+            'snapshot-identity-y',
+            sourceEpoch: 'source-1',
+            providerEpoch: 'provider-1',
+            connectionEpoch: 'connection-1',
+            sourceRevision: 2,
+            operationId: 'snapshot-operation-y',
+          ),
+        );
+
+        await expectLater(
+          repository.commitRuntimeProjections(
+            _projection(
+              'snapshot-identity-x',
+              sourceEpoch: 'source-1',
+              providerEpoch: 'provider-1',
+              connectionEpoch: 'connection-1',
+              sourceRevision: 3,
+              operationId: 'snapshot-rebound-operation',
+              operationText: 'rebound',
+            ),
+          ),
+          _failure(RepositoryFailureCode.identityConflict),
+        );
+
+        final inspection = await databaseFactoryFfi.openDatabase(
+          repository.resolvedDatabasePath!,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        final residual = await inspection.rawQuery(
+          'SELECT COUNT(*) AS row_count FROM operation_projection WHERE source_projection_id = ?',
+          const <Object?>['snapshot-identity-x'],
+        );
+        expect(residual.single['row_count'], greaterThan(0));
+        expect(residual.single['row_count'], lessThan(65));
+        expect(
+          await inspection.query(
+            'operation_projection',
+            where: 'operation_id = ?',
+            whereArgs: const <Object?>['snapshot-rebound-operation'],
+          ),
+          isEmpty,
+        );
+        expect(
+          (await inspection.query(
+            'projection_head',
+            columns: const <String>['projection_id'],
+          )).single['projection_id'],
+          'snapshot-identity-y',
+        );
+        await inspection.close();
+        expect(
+          (await repository.readWindow(_key())).operations
+              .map((value) => value.operationId),
+          <String>['snapshot-operation-y'],
+        );
+        await subscription.cancel();
+      },
+    );
+
+    test(
+      'historical stale identity replays exactly after its inbox is GCed',
+      () async {
+        await repository.close();
+        repository = await _openRepository(
+          tempDirectory,
+          maxEntriesPerThread: 14,
+        );
+        final subscription = repository.updates.listen((_) {});
+        final y = await repository.commitRuntimeProjections(
+          _projection(
+            'stale-history-y',
+            sourceEpoch: 'source-1',
+            providerEpoch: 'provider-1',
+            connectionEpoch: 'connection-1',
+            sourceRevision: 2,
+            operationId: 'stale-history-operation-y',
+          ),
+        );
+        expect(
+          await repository.acknowledgePublication(y.publicationEventId!),
+          isTrue,
+        );
+        final stale = _projection(
+          'stale-history-x',
+          sourceEpoch: 'source-1',
+          providerEpoch: 'provider-1',
+          connectionEpoch: 'connection-1',
+          sourceRevision: 1,
+          operationId: 'stale-history-operation-x',
+        );
+        final first = await repository.commitRuntimeProjections(stale);
+        expect(first.wasDuplicate, isTrue);
+        expect(first.wasPublished, isFalse);
+        await repository.commitRuntimeProjections(
+          _projection(
+            'stale-history-z',
+            sourceEpoch: 'source-1',
+            providerEpoch: 'provider-1',
+            connectionEpoch: 'connection-1',
+            sourceRevision: 3,
+            operationId: 'stale-history-operation-z',
+          ),
+        );
+
+        final replay = await repository.commitRuntimeProjections(stale);
+        expect(replay.wasDuplicate, isTrue);
+        expect(replay.wasPublished, isFalse);
+        expect(replay.publicationEventId, isNull);
+        expect(
+          replay.window.operations.map((value) => value.operationId),
+          <String>['stale-history-operation-z'],
+        );
+        final inspection = await databaseFactoryFfi.openDatabase(
+          repository.resolvedDatabasePath!,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        expect(
+          await inspection.query(
+            'projection_inbox',
+            where: 'projection_id = ?',
+            whereArgs: const <Object?>['stale-history-x'],
+          ),
+          isEmpty,
+        );
+        expect(
+          (await inspection.query(
+            'projection_identity',
+            columns: const <String>['disposition'],
+            where: 'projection_id = ?',
+            whereArgs: const <Object?>['stale-history-x'],
+          )).single['disposition'],
+          'stale',
+        );
+        expect(
+          await inspection.query(
+            'operation_projection',
+            where: 'operation_id = ?',
+            whereArgs: const <Object?>['stale-history-operation-x'],
+          ),
+          isEmpty,
+        );
+        await inspection.close();
+        await subscription.cancel();
+      },
+    );
 
     test(
       'open quarantines a pending projection retired after admission',
@@ -854,12 +1216,92 @@ void main() {
       expect(inbox, hasLength(1));
       expect(inbox.single['state'], 'pending');
     });
+
+    test(
+      'recovery fails closed for an identity and inbox digest mismatch',
+      () async {
+        await repository.close();
+        var failAfterAdmission = true;
+        repository = await _openRepository(
+          tempDirectory,
+          faultHook: (stage, _) async {
+            if (stage == RepositoryFaultStage.afterInboxAdmission &&
+                failAfterAdmission) {
+              failAfterAdmission = false;
+              throw StateError('simulated crash after projection admission');
+            }
+          },
+        );
+        await expectLater(
+          repository.commitRuntimeProjections(
+            _projection(
+              'tampered-identity-projection',
+              sourceEpoch: 'source-1',
+              providerEpoch: 'provider-1',
+              connectionEpoch: 'connection-1',
+              operationId: 'tampered-identity-operation',
+            ),
+          ),
+          throwsStateError,
+        );
+        final databasePath = repository.resolvedDatabasePath!;
+        final inspection = await databaseFactoryFfi.openDatabase(
+          databasePath,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        await inspection.update(
+          'projection_identity',
+          const <String, Object?>{
+            'projection_digest': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          },
+          where: 'projection_id = ?',
+          whereArgs: const <Object?>['tampered-identity-projection'],
+        );
+        await inspection.close();
+        await repository.close();
+
+        repository = ConversationRepository.forTesting(
+          databaseFactory: databaseFactoryFfi,
+          databasePath: databasePath,
+          contractMapper: const _FixtureContract(),
+        );
+        await expectLater(
+          repository.open(),
+          _failure(RepositoryFailureCode.invalidDatabaseIdentity),
+        );
+
+        final after = await databaseFactoryFfi.openDatabase(
+          databasePath,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        expect(
+          (await after.query(
+            'projection_identity',
+            columns: const <String>['disposition'],
+            where: 'projection_id = ?',
+            whereArgs: const <Object?>['tampered-identity-projection'],
+          )).single['disposition'],
+          'pending',
+        );
+        expect(
+          (await after.query(
+            'projection_inbox',
+            columns: const <String>['state'],
+            where: 'projection_id = ?',
+            whereArgs: const <Object?>['tampered-identity-projection'],
+          )).single['state'],
+          'pending',
+        );
+        await after.close();
+      },
+    );
   });
 }
 
 Future<ConversationRepository> _openRepository(
   Directory directory, {
   RepositoryFaultHook? faultHook,
+  int maxEntriesPerThread = 100000,
 }) async {
   final repository = ConversationRepository.forTesting(
     databaseFactory: databaseFactoryFfi,
@@ -869,6 +1311,7 @@ Future<ConversationRepository> _openRepository(
     ),
     contractMapper: const _FixtureContract(),
     faultHook: faultHook,
+    maxEntriesPerThread: maxEntriesPerThread,
   );
   await repository.open();
   return repository;
@@ -978,6 +1421,8 @@ RuntimeProjectionEnvelope _projection(
   int runtimeGeneration = 1,
   int sourceRevision = 1,
   bool operationSnapshotComplete = true,
+  String operationText = 'operation',
+  int operationCount = 1,
 }) => RuntimeProjectionEnvelope(
   projectionId: projectionId,
   key: _key(),
@@ -988,15 +1433,17 @@ RuntimeProjectionEnvelope _projection(
     runtimeAuthorityGeneration: runtimeGeneration,
   ),
   sourceRevision: sourceRevision,
-  operations: <OperationProjection>[
-    OperationProjection(
-      operationId: operationId,
+  operations: List<OperationProjection>.generate(
+    operationCount,
+    (index) => OperationProjection(
+      operationId: operationCount == 1 ? operationId : '$operationId-$index',
       revision: 1,
       state: 'queued',
       isTerminal: false,
-      value: const <String, Object?>{'text': 'operation'},
+      value: <String, Object?>{'text': operationText},
     ),
-  ],
+    growable: false,
+  ),
   operationSnapshotComplete: operationSnapshotComplete,
 );
 

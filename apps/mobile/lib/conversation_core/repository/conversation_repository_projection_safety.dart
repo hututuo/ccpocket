@@ -22,6 +22,28 @@ class _VerifiedProjectionInbox {
   final String state;
 }
 
+class _VerifiedProjectionIdentity {
+  const _VerifiedProjectionIdentity({
+    required this.projectionId,
+    required this.connectionEpoch,
+    required this.sourceEpoch,
+    required this.providerInstanceEpoch,
+    required this.runtimeAuthorityGeneration,
+    required this.sourceRevision,
+    required this.projectionDigest,
+    required this.disposition,
+  });
+
+  final String projectionId;
+  final String connectionEpoch;
+  final String sourceEpoch;
+  final String providerInstanceEpoch;
+  final int runtimeAuthorityGeneration;
+  final int sourceRevision;
+  final String projectionDigest;
+  final String disposition;
+}
+
 bool _projectionHeadIdentityMatches(
   Map<String, Object?> head,
   RuntimeProjectionEnvelope projection,
@@ -35,6 +57,166 @@ bool _projectionHeadIdentityMatches(
     head['runtime_authority_generation'] ==
         projection.fence.runtimeAuthorityGeneration &&
     head['source_revision'] == projection.sourceRevision;
+
+bool _projectionIdentityMatches(
+  _VerifiedProjectionIdentity identity,
+  RuntimeProjectionEnvelope projection,
+  String projectionDigest,
+) =>
+    identity.projectionId == projection.projectionId &&
+    identity.projectionDigest == projectionDigest &&
+    identity.connectionEpoch == projection.fence.connectionEpoch &&
+    identity.sourceEpoch == projection.fence.sourceEpoch &&
+    identity.providerInstanceEpoch == projection.fence.providerInstanceEpoch &&
+    identity.runtimeAuthorityGeneration ==
+        projection.fence.runtimeAuthorityGeneration &&
+    identity.sourceRevision == projection.sourceRevision;
+
+Future<_VerifiedProjectionIdentity?> _readVerifiedProjectionIdentity(
+  DatabaseExecutor db,
+  ThreadKey key,
+  String projectionId, {
+  bool allowAbsent = false,
+}) async {
+  final rows = await db.query(
+    'projection_identity',
+    columns: const <String>[
+      'projection_id',
+      'connection_epoch',
+      'source_epoch',
+      'provider_instance_epoch',
+      'runtime_authority_generation',
+      'source_revision',
+      'projection_digest',
+      'disposition',
+    ],
+    where: '${_keyWhere()} AND projection_id = ?',
+    whereArgs: <Object?>[..._keyArgs(key), projectionId],
+    limit: 1,
+  );
+  if (rows.isEmpty) {
+    if (allowAbsent) return null;
+    throw const ConversationRepositoryException(
+      RepositoryFailureCode.invalidDatabaseIdentity,
+      'projection identity row is missing',
+    );
+  }
+  final row = rows.single;
+  final storedProjectionId = row['projection_id'];
+  final connectionEpoch = row['connection_epoch'];
+  final sourceEpoch = row['source_epoch'];
+  final providerInstanceEpoch = row['provider_instance_epoch'];
+  final runtimeAuthorityGeneration = row['runtime_authority_generation'];
+  final sourceRevision = row['source_revision'];
+  final projectionDigest = row['projection_digest'];
+  final disposition = row['disposition'];
+  if (storedProjectionId is! String ||
+      storedProjectionId != projectionId ||
+      connectionEpoch is! String ||
+      sourceEpoch is! String ||
+      providerInstanceEpoch is! String ||
+      runtimeAuthorityGeneration is! int ||
+      sourceRevision is! int ||
+      projectionDigest is! String ||
+      disposition is! String ||
+      !const <String>{'pending', 'applied', 'stale'}.contains(disposition)) {
+    throw const ConversationRepositoryException(
+      RepositoryFailureCode.invalidDatabaseIdentity,
+      'projection identity row has invalid stored values',
+    );
+  }
+  return _VerifiedProjectionIdentity(
+    projectionId: storedProjectionId,
+    connectionEpoch: connectionEpoch,
+    sourceEpoch: sourceEpoch,
+    providerInstanceEpoch: providerInstanceEpoch,
+    runtimeAuthorityGeneration: runtimeAuthorityGeneration,
+    sourceRevision: sourceRevision,
+    projectionDigest: projectionDigest,
+    disposition: disposition,
+  );
+}
+
+void _assertProjectionIdentityMatchesInbox(
+  _VerifiedProjectionIdentity identity,
+  _VerifiedProjectionInbox inbox,
+) {
+  if (!_projectionIdentityMatches(
+        identity,
+        inbox.projection,
+        inbox.projectionDigest,
+      ) ||
+      identity.disposition != inbox.state) {
+    throw const ConversationRepositoryException(
+      RepositoryFailureCode.invalidDatabaseIdentity,
+      'projection identity does not match its durable inbox',
+    );
+  }
+}
+
+Future<void> _transitionProjectionIdentity(
+  Transaction txn,
+  ThreadKey key,
+  _VerifiedProjectionIdentity identity,
+  String nextDisposition,
+) async {
+  final updated = await txn.update(
+    'projection_identity',
+    <String, Object?>{'disposition': nextDisposition},
+    where:
+        '${_keyWhere()} AND projection_id = ? AND disposition = ? AND connection_epoch = ? AND source_epoch = ? AND provider_instance_epoch = ? AND runtime_authority_generation = ? AND source_revision = ? AND projection_digest = ?',
+    whereArgs: <Object?>[
+      ..._keyArgs(key),
+      identity.projectionId,
+      'pending',
+      identity.connectionEpoch,
+      identity.sourceEpoch,
+      identity.providerInstanceEpoch,
+      identity.runtimeAuthorityGeneration,
+      identity.sourceRevision,
+      identity.projectionDigest,
+    ],
+  );
+  if (updated != 1) {
+    throw const ConversationRepositoryException(
+      RepositoryFailureCode.invalidDatabaseIdentity,
+      'projection identity changed during disposition transition',
+    );
+  }
+}
+
+Future<void> _assertPendingProjectionIdentityCompleteness(
+  DatabaseExecutor db,
+) async {
+  final rows = await db.rawQuery('''
+    SELECT 1
+    FROM projection_identity AS identity_row
+    LEFT JOIN projection_inbox AS inbox
+      ON inbox.bridge_identity_id = identity_row.bridge_identity_id
+      AND inbox.bridge_instance_id = identity_row.bridge_instance_id
+      AND inbox.codex_source_id = identity_row.codex_source_id
+      AND inbox.provider_thread_id = identity_row.provider_thread_id
+      AND inbox.projection_id = identity_row.projection_id
+    WHERE identity_row.disposition = 'pending'
+      AND (
+        inbox.projection_id IS NULL
+        OR inbox.state <> 'pending'
+        OR inbox.connection_epoch <> identity_row.connection_epoch
+        OR inbox.source_epoch <> identity_row.source_epoch
+        OR inbox.provider_instance_epoch <> identity_row.provider_instance_epoch
+        OR inbox.runtime_authority_generation <> identity_row.runtime_authority_generation
+        OR inbox.source_revision <> identity_row.source_revision
+        OR inbox.projection_digest <> identity_row.projection_digest
+      )
+    LIMIT 1
+  ''');
+  if (rows.isNotEmpty) {
+    throw const ConversationRepositoryException(
+      RepositoryFailureCode.invalidDatabaseIdentity,
+      'pending projection identity lacks one exact pending inbox',
+    );
+  }
+}
 
 Future<CommitReceipt> _commitRuntimeProjectionSafely(
   ConversationRepository repository,
@@ -155,38 +337,90 @@ Future<_ProjectionAdmission> _admitRuntimeProjectionSafely(
     await _prepareCapacity(db, repository, projection.key);
     return db.transaction((txn) async {
       await _assertWriterLease(txn, repository);
-      final existing = await _readVerifiedProjectionInbox(
+      final identity = await _readVerifiedProjectionIdentity(
+        txn,
+        projection.key,
+        projection.projectionId,
+        allowAbsent: true,
+      );
+      if (identity != null) {
+        if (!_projectionIdentityMatches(
+          identity,
+          projection,
+          projectionDigest,
+        )) {
+          throw const ConversationRepositoryException(
+            RepositoryFailureCode.identityConflict,
+            'projection identity was reused with another digest or fence',
+          );
+        }
+        final existing = await _readVerifiedProjectionInbox(
+          repository,
+          txn,
+          projection.key,
+          projection.projectionId,
+          allowAbsent: identity.disposition != 'pending',
+        );
+        if (existing != null) {
+          _assertProjectionIdentityMatchesInbox(identity, existing);
+          if (existing.payloadJson != payloadJson) {
+            throw const ConversationRepositoryException(
+              RepositoryFailureCode.identityConflict,
+              'projection identity was reused with another payload',
+            );
+          }
+        }
+        final headRows = await txn.query(
+          'projection_head',
+          columns: const <String>[
+            'connection_epoch',
+            'source_epoch',
+            'provider_instance_epoch',
+            'runtime_authority_generation',
+            'source_revision',
+            'projection_id',
+            'projection_digest',
+          ],
+          where: '${_keyWhere()} AND projection_id = ?',
+          whereArgs: <Object?>[
+            ..._keyArgs(projection.key),
+            projection.projectionId,
+          ],
+          limit: 1,
+        );
+        if (headRows.isNotEmpty &&
+            !_projectionHeadIdentityMatches(
+              headRows.single,
+              projection,
+              projectionDigest,
+            )) {
+          throw const ConversationRepositoryException(
+            RepositoryFailureCode.invalidDatabaseIdentity,
+            'current projection head does not match its identity ledger',
+          );
+        }
+        return _ProjectionAdmission(
+          wasDuplicate: true,
+          wasAlreadyApplied: identity.disposition != 'pending',
+        );
+      }
+
+      final orphanInbox = await _readVerifiedProjectionInbox(
         repository,
         txn,
         projection.key,
         projection.projectionId,
         allowAbsent: true,
       );
-      if (existing != null) {
-        if (existing.projectionDigest != projectionDigest ||
-            existing.payloadJson != payloadJson) {
-          throw const ConversationRepositoryException(
-            RepositoryFailureCode.identityConflict,
-            'projection identity was reused with another payload',
-          );
-        }
-        return _ProjectionAdmission(
-          wasDuplicate: true,
-          wasAlreadyApplied: existing.state != 'pending',
+      if (orphanInbox != null) {
+        throw const ConversationRepositoryException(
+          RepositoryFailureCode.invalidDatabaseIdentity,
+          'projection inbox exists without permanent identity evidence',
         );
       }
-
-      final headRows = await txn.query(
+      final orphanHead = await txn.query(
         'projection_head',
-        columns: const <String>[
-          'connection_epoch',
-          'source_epoch',
-          'provider_instance_epoch',
-          'runtime_authority_generation',
-          'source_revision',
-          'projection_id',
-          'projection_digest',
-        ],
+        columns: const <String>['projection_id'],
         where: '${_keyWhere()} AND projection_id = ?',
         whereArgs: <Object?>[
           ..._keyArgs(projection.key),
@@ -194,29 +428,28 @@ Future<_ProjectionAdmission> _admitRuntimeProjectionSafely(
         ],
         limit: 1,
       );
-      if (headRows.isNotEmpty) {
-        if (!_projectionHeadIdentityMatches(
-          headRows.single,
-          projection,
-          projectionDigest,
-        )) {
-          throw const ConversationRepositoryException(
-            RepositoryFailureCode.identityConflict,
-            'current projection identity was reused with another digest or fence',
-          );
-        }
-        // An exact current head remains authoritative even if an older GC or
-        // manually damaged database lost its larger inbox payload.  Do not
-        // recreate the publication identity or reinterpret the same ID.
-        return const _ProjectionAdmission(
-          wasDuplicate: true,
-          wasAlreadyApplied: true,
+      if (orphanHead.isNotEmpty) {
+        throw const ConversationRepositoryException(
+          RepositoryFailureCode.invalidDatabaseIdentity,
+          'projection head exists without permanent identity evidence',
         );
       }
 
       // This check is in the same writer transaction as admission.  A
       // canonical fence cannot advance between validation and inbox insert.
       await _validateProjectionAgainstCanonicalFence(txn, projection);
+      await txn.insert('projection_identity', <String, Object?>{
+        ..._keyColumns(projection.key),
+        'projection_id': projection.projectionId,
+        'connection_epoch': projection.fence.connectionEpoch,
+        'source_epoch': projection.fence.sourceEpoch,
+        'provider_instance_epoch': projection.fence.providerInstanceEpoch,
+        'runtime_authority_generation':
+            projection.fence.runtimeAuthorityGeneration,
+        'source_revision': projection.sourceRevision,
+        'projection_digest': projectionDigest,
+        'disposition': 'pending',
+      });
       await txn.insert('projection_inbox', <String, Object?>{
         ..._keyColumns(projection.key),
         'projection_id': projection.projectionId,
@@ -258,6 +491,18 @@ Future<bool> _applyProjectionInboxSafely(
     );
     if (verified == null || verified.state != 'pending') return false;
     final projection = verified.projection;
+    final identity = await _readVerifiedProjectionIdentity(
+      txn,
+      key,
+      projectionId,
+    );
+    if (identity == null) {
+      throw const ConversationRepositoryException(
+        RepositoryFailureCode.invalidDatabaseIdentity,
+        'pending projection identity is missing',
+      );
+    }
+    _assertProjectionIdentityMatchesInbox(identity, verified);
 
     await _rejectRetiredEpochs(txn, projection.key.partition, projection.fence);
     // Recheck the complete canonical fence inside the apply transaction.  This
@@ -320,12 +565,19 @@ Future<bool> _applyProjectionInboxSafely(
                       projection.projectionId !=
                           previousHead['projection_id'])));
       if (older) {
-        await txn.update(
+        final stale = await txn.update(
           'projection_inbox',
           const <String, Object?>{'state': 'stale', 'gc_eligible': 1},
           where: '${_keyWhere()} AND projection_id = ? AND state = ?',
           whereArgs: <Object?>[..._keyArgs(key), projectionId, 'pending'],
         );
+        if (stale != 1) {
+          throw const ConversationRepositoryException(
+            RepositoryFailureCode.invalidDatabaseIdentity,
+            'projection inbox changed during stale transition',
+          );
+        }
+        await _transitionProjectionIdentity(txn, key, identity, 'stale');
         return false;
       }
     }
@@ -423,6 +675,7 @@ Future<bool> _applyProjectionInboxSafely(
         'projection inbox state changed during apply',
       );
     }
+    await _transitionProjectionIdentity(txn, key, identity, 'applied');
     await _insertPublicationOutbox(
       txn,
       key: projection.key,
@@ -441,6 +694,7 @@ Future<void> _recoverProjectionInboxSafely(
   ConversationRepository repository,
   Database db,
 ) async {
+  await _assertPendingProjectionIdentityCompleteness(db);
   if (!repository._usesGeneratedContract &&
       !(repository._allowFixtureContract && repository._usesFixtureContract)) {
     // Preserve the original fail-closed contract gate.  Pending rows remain
@@ -729,6 +983,18 @@ Future<bool> _terminalizePendingProjection(
       }
       return false;
     }
+    final identity = await _readVerifiedProjectionIdentity(
+      txn,
+      key,
+      projectionId,
+    );
+    if (identity == null) {
+      throw const ConversationRepositoryException(
+        RepositoryFailureCode.invalidDatabaseIdentity,
+        'pending projection identity is missing during terminalization',
+      );
+    }
+    _assertProjectionIdentityMatchesInbox(identity, verified);
 
     if (expected != null) {
       final expectedPayload = _storageJson(
@@ -763,6 +1029,7 @@ Future<bool> _terminalizePendingProjection(
         'pending projection changed during terminalization',
       );
     }
+    await _transitionProjectionIdentity(txn, key, identity, 'stale');
     await _validateCapacity(txn, repository, key);
     return true;
   });
