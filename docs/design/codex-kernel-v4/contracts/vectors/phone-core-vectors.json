@@ -67217,7 +67217,7 @@
       "expectedPostState": "APPLIED",
       "value": {
         "caseKind": "SQL_EXACT",
-        "sqlSha256": "25e08c4aac2efe989f0acee56bd5050ad5eda47d6ec559734274195822b6dbcf"
+        "sqlSha256": "4caa5d71547050f8f7fc32448b32cc088ed59f165ced3bdce776bf63817c237c"
       }
     },
     {
@@ -67297,21 +67297,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -67339,7 +67329,29 @@
             "lifecycleState": "RECEIVED"
           }
         },
-        "expectedProjection": "ADMISSION_UNKNOWN"
+        "expectedProjection": "ADMISSION_UNKNOWN",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "RECEIVED"
+          }
+        }
       }
     },
     {
@@ -67383,21 +67395,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -67425,7 +67427,29 @@
             "lifecycleState": "REJECTED_BEFORE_ADMISSION"
           }
         },
-        "expectedProjection": "LOCAL_ERROR"
+        "expectedProjection": "LOCAL_ERROR",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "REJECTED_BEFORE_ADMISSION"
+          }
+        }
       }
     },
     {
@@ -67469,21 +67493,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -67511,7 +67525,29 @@
             "lifecycleState": "ADMITTED"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "ADMITTED"
+          }
+        }
       }
     },
     {
@@ -67555,21 +67591,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -67597,7 +67623,29 @@
             "lifecycleState": "QUEUED"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "QUEUED"
+          }
+        }
       }
     },
     {
@@ -67641,21 +67689,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -67683,7 +67721,29 @@
             "lifecycleState": "BLOCKED_PRECONDITION"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "BLOCKED_PRECONDITION"
+          }
+        }
       }
     },
     {
@@ -67727,21 +67787,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -67769,7 +67819,29 @@
             "lifecycleState": "READY"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "READY"
+          }
+        }
       }
     },
     {
@@ -67813,21 +67885,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -67855,7 +67917,29 @@
             "lifecycleState": "DISPATCHING"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "DISPATCHING"
+          }
+        }
       }
     },
     {
@@ -67899,21 +67983,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -67941,7 +68015,29 @@
             "lifecycleState": "PROVIDER_ACCEPTED"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "PROVIDER_ACCEPTED"
+          }
+        }
       }
     },
     {
@@ -67985,21 +68081,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -68027,7 +68113,29 @@
             "lifecycleState": "AWAITING_EFFECT_OBSERVATION"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "AWAITING_EFFECT_OBSERVATION"
+          }
+        }
       }
     },
     {
@@ -68071,21 +68179,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -68113,7 +68211,29 @@
             "lifecycleState": "SUCCEEDED"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "SUCCEEDED"
+          }
+        }
       }
     },
     {
@@ -68157,21 +68277,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -68199,7 +68309,29 @@
             "lifecycleState": "FAILED_DEFINITIVE"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "FAILED_DEFINITIVE"
+          }
+        }
       }
     },
     {
@@ -68243,21 +68375,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -68285,7 +68407,29 @@
             "lifecycleState": "OUTCOME_UNKNOWN"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "OUTCOME_UNKNOWN"
+          }
+        }
       }
     },
     {
@@ -68329,21 +68473,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -68371,7 +68505,29 @@
             "lifecycleState": "CANCELLED_PRE_DISPATCH"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "CANCELLED_PRE_DISPATCH"
+          }
+        }
       }
     },
     {
@@ -68415,21 +68571,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -68453,7 +68599,8 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "expectedProjection": "ADMISSION_UNKNOWN"
+        "expectedProjection": "ADMISSION_UNKNOWN",
+        "persistedOperation": null
       }
     },
     {
@@ -68497,12 +68644,7 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTO_APPROVAL_POLICY"
-        },
         "currentActorBinding": null,
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -68536,7 +68678,24 @@
             }
           }
         },
-        "expectedProjection": "LOCAL_ERROR"
+        "expectedProjection": "LOCAL_ERROR",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTO_APPROVAL_POLICY"
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "ADMITTED"
+          }
+        }
       }
     },
     {
@@ -68580,21 +68739,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-2",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -68628,7 +68777,29 @@
             }
           }
         },
-        "expectedProjection": "LOCAL_ERROR"
+        "expectedProjection": "LOCAL_ERROR",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "ADMITTED"
+          }
+        }
       }
     },
     {
@@ -68672,21 +68843,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -68720,7 +68881,29 @@
             }
           }
         },
-        "expectedProjection": "LOCAL_ERROR"
+        "expectedProjection": "LOCAL_ERROR",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "ADMITTED"
+          }
+        }
       }
     },
     {
@@ -68760,21 +68943,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -68785,7 +68958,29 @@
           "resends": 0
         },
         "result": null,
-        "expectedProjection": "ADMISSION_UNKNOWN"
+        "expectedProjection": "ADMISSION_UNKNOWN",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "ADMITTED"
+          }
+        }
       }
     },
     {
@@ -68829,21 +69024,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -68854,7 +69039,29 @@
           "resends": 0
         },
         "result": null,
-        "expectedProjection": "ADMISSION_UNKNOWN"
+        "expectedProjection": "ADMISSION_UNKNOWN",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "ADMITTED"
+          }
+        }
       }
     },
     {
@@ -68907,21 +69114,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -68949,7 +69146,29 @@
             "lifecycleState": "ADMITTED"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "ADMITTED"
+          }
+        }
       }
     },
     {
@@ -69002,21 +69221,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -69044,7 +69253,29 @@
             "lifecycleState": "ADMITTED"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-2"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "ADMITTED"
+          }
+        }
       }
     },
     {
@@ -69097,21 +69328,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -69139,7 +69360,29 @@
             "lifecycleState": "ADMITTED"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "ADMITTED"
+          }
+        }
       }
     },
     {
@@ -69192,21 +69435,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -69234,7 +69467,29 @@
             "lifecycleState": "ADMITTED"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "ADMITTED"
+          }
+        }
       }
     },
     {
@@ -69287,21 +69542,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -69329,7 +69574,29 @@
             "lifecycleState": "ADMITTED"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "ADMITTED"
+          }
+        }
       }
     },
     {
@@ -69382,21 +69649,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -69424,7 +69681,29 @@
             "lifecycleState": "ADMITTED"
           }
         },
-        "expectedProjection": "LOCAL_ERROR"
+        "expectedProjection": "LOCAL_ERROR",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "ADMITTED"
+          }
+        }
       }
     },
     {
@@ -69477,21 +69756,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -69519,7 +69788,29 @@
             "lifecycleState": "ADMITTED"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "ADMITTED"
+          }
+        }
       }
     },
     {
@@ -69572,21 +69863,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -69614,7 +69895,29 @@
             "lifecycleState": "ADMITTED"
           }
         },
-        "expectedProjection": "BRIDGE_ACCEPTED"
+        "expectedProjection": "BRIDGE_ACCEPTED",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "ADMITTED"
+          }
+        }
       }
     },
     {
@@ -69667,21 +69970,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-2",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -69715,7 +70008,29 @@
             }
           }
         },
-        "expectedProjection": "LOCAL_ERROR"
+        "expectedProjection": "LOCAL_ERROR",
+        "persistedOperation": {
+          "sourcePartition": {
+            "bridgeIdentityId": "bi-1",
+            "bridgeInstanceId": "bridge-1",
+            "codexSourceId": "codex-1"
+          },
+          "operationId": "operation-1",
+          "originView": {
+            "kind": "AUTHENTICATED_ACTOR",
+            "actorBinding": {
+              "kind": "PAIRED_DEVICE",
+              "principalId": "actor-1",
+              "trustRevision": 1
+            }
+          },
+          "fingerprintVersion": 1,
+          "operationFingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "snapshot": {
+            "operationRevision": 1,
+            "lifecycleState": "ADMITTED"
+          }
+        }
       }
     },
     {
@@ -69768,21 +70083,11 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "storedOriginView": {
-          "kind": "AUTHENTICATED_ACTOR",
-          "actorBinding": {
-            "kind": "PAIRED_DEVICE",
-            "principalId": "actor-1",
-            "trustRevision": 1
-          }
-        },
         "currentActorBinding": {
           "kind": "PAIRED_DEVICE",
           "principalId": "actor-1",
           "trustRevision": 1
         },
-        "storedFingerprintVersion": 1,
-        "storedOperationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "effects": {
           "attemptsCreated": 0,
           "eventRows": 0,
@@ -69806,7 +70111,8 @@
           "fingerprintVersion": 1,
           "operationFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
-        "expectedProjection": "ADMISSION_UNKNOWN"
+        "expectedProjection": "ADMISSION_UNKNOWN",
+        "persistedOperation": null
       }
     },
     {
@@ -69819,7 +70125,245 @@
       "expectedReason": "NONE",
       "expectedPostState": "APPLIED",
       "value": {
-        "caseKind": "MANIFEST_SET_EXACT"
+        "caseKind": "MANIFEST_SET_EXACT",
+        "subjectCount": 235,
+        "subjectIds": [
+          "tx.bridge.00.01.000.connected",
+          "tx.bridge.00.01.000.disconnected",
+          "tx.bridge.00.01.000.quiet",
+          "tx.bridge.00.01.001.connected",
+          "tx.bridge.00.01.001.disconnected",
+          "tx.bridge.00.01.001.quiet",
+          "tx.bridge.00.01.002.connected",
+          "tx.bridge.00.01.002.disconnected",
+          "tx.bridge.00.01.002.quiet",
+          "tx.bridge.00.01.003.connected",
+          "tx.bridge.00.01.003.disconnected",
+          "tx.bridge.00.01.003.quiet",
+          "tx.bridge.00.01.004.connected",
+          "tx.bridge.00.01.004.disconnected",
+          "tx.bridge.00.01.004.quiet",
+          "tx.bridge.00.01.005.connected",
+          "tx.bridge.00.01.005.disconnected",
+          "tx.bridge.00.01.005.quiet",
+          "tx.bridge.00.01.006.connected",
+          "tx.bridge.00.01.006.disconnected",
+          "tx.bridge.00.01.006.quiet",
+          "tx.bridge.00.01.007.connected",
+          "tx.bridge.00.01.007.disconnected",
+          "tx.bridge.00.01.007.quiet",
+          "tx.bridge.00.01.008.connected",
+          "tx.bridge.00.01.008.disconnected",
+          "tx.bridge.00.01.008.quiet",
+          "tx.bridge.00.01.009.connected",
+          "tx.bridge.00.01.009.disconnected",
+          "tx.bridge.00.01.009.quiet",
+          "tx.bridge.01.02.000.connected",
+          "tx.bridge.01.02.000.disconnected",
+          "tx.bridge.01.02.000.quiet",
+          "tx.bridge.01.02.001.connected",
+          "tx.bridge.01.02.001.disconnected",
+          "tx.bridge.01.02.001.quiet",
+          "tx.bridge.01.02.002.connected",
+          "tx.bridge.01.02.002.disconnected",
+          "tx.bridge.01.02.002.quiet",
+          "tx.bridge.02.02.000.connected",
+          "tx.bridge.02.02.000.disconnected",
+          "tx.bridge.02.02.000.quiet",
+          "tx.bridge.02.02.001.connected",
+          "tx.bridge.02.02.001.disconnected",
+          "tx.bridge.02.02.001.quiet",
+          "tx.bridge.02.02.002.connected",
+          "tx.bridge.02.02.002.disconnected",
+          "tx.bridge.02.02.002.quiet",
+          "tx.bridge.03.03.000.connected",
+          "tx.bridge.03.03.000.disconnected",
+          "tx.bridge.03.03.000.quiet",
+          "tx.bridge.03.03.001.connected",
+          "tx.bridge.03.03.001.disconnected",
+          "tx.bridge.03.03.001.quiet",
+          "tx.bridge.03.03.002.connected",
+          "tx.bridge.03.03.002.disconnected",
+          "tx.bridge.03.03.002.quiet",
+          "tx.bridge.04.06.000.connected",
+          "tx.bridge.04.06.000.disconnected",
+          "tx.bridge.04.06.000.quiet",
+          "tx.bridge.04.06.001.connected",
+          "tx.bridge.04.06.001.disconnected",
+          "tx.bridge.04.06.001.quiet",
+          "tx.bridge.04.06.002.connected",
+          "tx.bridge.04.06.002.disconnected",
+          "tx.bridge.04.06.002.quiet",
+          "tx.bridge.04.06.003.connected",
+          "tx.bridge.04.06.003.disconnected",
+          "tx.bridge.04.06.003.quiet",
+          "tx.bridge.04.06.004.connected",
+          "tx.bridge.04.06.004.disconnected",
+          "tx.bridge.04.06.004.quiet",
+          "tx.bridge.04.06.005.connected",
+          "tx.bridge.04.06.005.disconnected",
+          "tx.bridge.04.06.005.quiet",
+          "tx.bridge.04.06.006.connected",
+          "tx.bridge.04.06.006.disconnected",
+          "tx.bridge.04.06.006.quiet",
+          "tx.bridge.04.06.007.connected",
+          "tx.bridge.04.06.007.disconnected",
+          "tx.bridge.04.06.007.quiet",
+          "tx.bridge.04.06.008.connected",
+          "tx.bridge.04.06.008.disconnected",
+          "tx.bridge.04.06.008.quiet",
+          "tx.bridge.04.06.009.connected",
+          "tx.bridge.04.06.009.disconnected",
+          "tx.bridge.04.06.009.quiet",
+          "tx.bridge.04.06.010.connected",
+          "tx.bridge.04.06.010.disconnected",
+          "tx.bridge.04.06.010.quiet",
+          "tx.bridge.04.06.011.connected",
+          "tx.bridge.04.06.011.disconnected",
+          "tx.bridge.04.06.011.quiet",
+          "tx.bridge.04.06.012.connected",
+          "tx.bridge.04.06.012.disconnected",
+          "tx.bridge.04.06.012.quiet",
+          "tx.bridge.04.06.013.connected",
+          "tx.bridge.04.06.013.disconnected",
+          "tx.bridge.04.06.013.quiet",
+          "tx.bridge.04.06.014.connected",
+          "tx.bridge.04.06.014.disconnected",
+          "tx.bridge.04.06.014.quiet",
+          "tx.bridge.04.06.015.connected",
+          "tx.bridge.04.06.015.disconnected",
+          "tx.bridge.04.06.015.quiet",
+          "tx.bridge.04.06.016.connected",
+          "tx.bridge.04.06.016.disconnected",
+          "tx.bridge.04.06.016.quiet",
+          "tx.bridge.04.06.017.connected",
+          "tx.bridge.04.06.017.disconnected",
+          "tx.bridge.04.06.017.quiet",
+          "tx.bridge.04.07.000.connected",
+          "tx.bridge.04.07.000.disconnected",
+          "tx.bridge.04.07.000.quiet",
+          "tx.bridge.04.07.001.connected",
+          "tx.bridge.04.07.001.disconnected",
+          "tx.bridge.04.07.001.quiet",
+          "tx.bridge.04.07.002.connected",
+          "tx.bridge.04.07.002.disconnected",
+          "tx.bridge.04.07.002.quiet",
+          "tx.bridge.04.07.003.connected",
+          "tx.bridge.04.07.003.disconnected",
+          "tx.bridge.04.07.003.quiet",
+          "tx.bridge.04.07.004.connected",
+          "tx.bridge.04.07.004.disconnected",
+          "tx.bridge.04.07.004.quiet",
+          "tx.bridge.04.08.000.connected",
+          "tx.bridge.04.08.000.disconnected",
+          "tx.bridge.04.08.000.quiet",
+          "tx.bridge.04.08.001.connected",
+          "tx.bridge.04.08.001.disconnected",
+          "tx.bridge.04.08.001.quiet",
+          "tx.bridge.04.08.002.connected",
+          "tx.bridge.04.08.002.disconnected",
+          "tx.bridge.04.08.002.quiet",
+          "tx.bridge.04.08.003.connected",
+          "tx.bridge.04.08.003.disconnected",
+          "tx.bridge.04.08.003.quiet",
+          "tx.bridge.04.09.000.connected",
+          "tx.bridge.04.09.000.disconnected",
+          "tx.bridge.04.09.000.quiet",
+          "tx.bridge.04.09.001.connected",
+          "tx.bridge.04.09.001.disconnected",
+          "tx.bridge.04.09.001.quiet",
+          "tx.bridge.04.09.002.connected",
+          "tx.bridge.04.09.002.disconnected",
+          "tx.bridge.04.09.002.quiet",
+          "tx.bridge.04.09.003.connected",
+          "tx.bridge.04.09.003.disconnected",
+          "tx.bridge.04.09.003.quiet",
+          "tx.bridge.04.09.004.connected",
+          "tx.bridge.04.09.004.disconnected",
+          "tx.bridge.04.09.004.quiet",
+          "tx.bridge.04.09.005.connected",
+          "tx.bridge.04.09.005.disconnected",
+          "tx.bridge.04.09.005.quiet",
+          "tx.bridge.05.11.000.connected",
+          "tx.bridge.05.11.000.disconnected",
+          "tx.bridge.05.11.000.quiet",
+          "tx.bridge.05.11.001.connected",
+          "tx.bridge.05.11.001.disconnected",
+          "tx.bridge.05.11.001.quiet",
+          "tx.bridge.05.11.002.connected",
+          "tx.bridge.05.11.002.disconnected",
+          "tx.bridge.05.11.002.quiet",
+          "tx.bridge.05.11.003.connected",
+          "tx.bridge.05.11.003.disconnected",
+          "tx.bridge.05.11.003.quiet",
+          "tx.bridge.06.12.000.connected",
+          "tx.bridge.06.12.000.disconnected",
+          "tx.bridge.06.12.000.quiet",
+          "tx.bridge.06.12.001.connected",
+          "tx.bridge.06.12.001.disconnected",
+          "tx.bridge.06.12.001.quiet",
+          "tx.bridge.06.12.002.connected",
+          "tx.bridge.06.12.002.disconnected",
+          "tx.bridge.06.12.002.quiet",
+          "tx.bridge.06.12.003.connected",
+          "tx.bridge.06.12.003.disconnected",
+          "tx.bridge.06.12.003.quiet",
+          "tx.bridge.06.12.004.connected",
+          "tx.bridge.06.12.004.disconnected",
+          "tx.bridge.06.12.004.quiet",
+          "tx.bridge.06.12.005.connected",
+          "tx.bridge.06.12.005.disconnected",
+          "tx.bridge.06.12.005.quiet",
+          "tx.bridge.06.12.006.connected",
+          "tx.bridge.06.12.006.disconnected",
+          "tx.bridge.06.12.006.quiet",
+          "tx.bridge.06.12.007.connected",
+          "tx.bridge.06.12.007.disconnected",
+          "tx.bridge.06.12.007.quiet",
+          "tx.bridge.06.12.008.connected",
+          "tx.bridge.06.12.008.disconnected",
+          "tx.bridge.06.12.008.quiet",
+          "tx.bridge.06.12.009.connected",
+          "tx.bridge.06.12.009.disconnected",
+          "tx.bridge.06.12.009.quiet",
+          "tx.bridge.06.12.010.connected",
+          "tx.bridge.06.12.010.disconnected",
+          "tx.bridge.06.12.010.quiet",
+          "tx.bridge.06.12.011.connected",
+          "tx.bridge.06.12.011.disconnected",
+          "tx.bridge.06.12.011.quiet",
+          "tx.bridge.06.12.012.connected",
+          "tx.bridge.06.12.012.disconnected",
+          "tx.bridge.06.12.012.quiet",
+          "tx.bridge.06.12.013.connected",
+          "tx.bridge.06.12.013.disconnected",
+          "tx.bridge.06.12.013.quiet",
+          "tx.bridge.06.12.014.connected",
+          "tx.bridge.06.12.014.disconnected",
+          "tx.bridge.06.12.014.quiet",
+          "tx.bridge.06.13.000.connected",
+          "tx.bridge.06.13.000.disconnected",
+          "tx.bridge.06.13.000.quiet",
+          "tx.bridge.06.13.001.connected",
+          "tx.bridge.06.13.001.disconnected",
+          "tx.bridge.06.13.001.quiet",
+          "tx.bridge.06.13.002.connected",
+          "tx.bridge.06.13.002.disconnected",
+          "tx.bridge.06.13.002.quiet",
+          "tx.bridge.06.13.003.connected",
+          "tx.bridge.06.13.003.disconnected",
+          "tx.bridge.06.13.003.quiet",
+          "tx.bridge.06.13.004.connected",
+          "tx.bridge.06.13.004.disconnected",
+          "tx.bridge.06.13.004.quiet",
+          "tx.mobile.00.apply",
+          "tx.mobile.01.apply",
+          "tx.mobile.02.apply",
+          "tx.mobile.03.apply",
+          "tx.mobile.04.apply",
+          "tx.mobile.05.apply",
+          "tx.mobile.06.apply"
+        ]
       }
     },
     {
@@ -69832,7 +70376,956 @@
       "expectedReason": "NONE",
       "expectedPostState": "APPLIED",
       "value": {
-        "caseKind": "KILL_POINT_SET_EXACT"
+        "caseKind": "KILL_POINT_SET_EXACT",
+        "subjectCount": 946,
+        "subjectIds": [
+          "tx.bridge.00.01.000.connected:K0",
+          "tx.bridge.00.01.000.connected:K1",
+          "tx.bridge.00.01.000.connected:K2",
+          "tx.bridge.00.01.000.connected:K3",
+          "tx.bridge.00.01.000.connected:K4",
+          "tx.bridge.00.01.000.disconnected:K0",
+          "tx.bridge.00.01.000.disconnected:K1",
+          "tx.bridge.00.01.000.disconnected:K2",
+          "tx.bridge.00.01.000.quiet:K0",
+          "tx.bridge.00.01.000.quiet:K1",
+          "tx.bridge.00.01.001.connected:K0",
+          "tx.bridge.00.01.001.connected:K1",
+          "tx.bridge.00.01.001.connected:K2",
+          "tx.bridge.00.01.001.connected:K3",
+          "tx.bridge.00.01.001.connected:K4",
+          "tx.bridge.00.01.001.disconnected:K0",
+          "tx.bridge.00.01.001.disconnected:K1",
+          "tx.bridge.00.01.001.disconnected:K2",
+          "tx.bridge.00.01.001.quiet:K0",
+          "tx.bridge.00.01.001.quiet:K1",
+          "tx.bridge.00.01.002.connected:K0",
+          "tx.bridge.00.01.002.connected:K1",
+          "tx.bridge.00.01.002.connected:K2",
+          "tx.bridge.00.01.002.connected:K3",
+          "tx.bridge.00.01.002.connected:K4",
+          "tx.bridge.00.01.002.disconnected:K0",
+          "tx.bridge.00.01.002.disconnected:K1",
+          "tx.bridge.00.01.002.disconnected:K2",
+          "tx.bridge.00.01.002.quiet:K0",
+          "tx.bridge.00.01.002.quiet:K1",
+          "tx.bridge.00.01.003.connected:K0",
+          "tx.bridge.00.01.003.connected:K1",
+          "tx.bridge.00.01.003.connected:K2",
+          "tx.bridge.00.01.003.connected:K3",
+          "tx.bridge.00.01.003.connected:K4",
+          "tx.bridge.00.01.003.disconnected:K0",
+          "tx.bridge.00.01.003.disconnected:K1",
+          "tx.bridge.00.01.003.disconnected:K2",
+          "tx.bridge.00.01.003.quiet:K0",
+          "tx.bridge.00.01.003.quiet:K1",
+          "tx.bridge.00.01.004.connected:K0",
+          "tx.bridge.00.01.004.connected:K1",
+          "tx.bridge.00.01.004.connected:K2",
+          "tx.bridge.00.01.004.connected:K3",
+          "tx.bridge.00.01.004.connected:K4",
+          "tx.bridge.00.01.004.connected:K5",
+          "tx.bridge.00.01.004.disconnected:K0",
+          "tx.bridge.00.01.004.disconnected:K1",
+          "tx.bridge.00.01.004.disconnected:K2",
+          "tx.bridge.00.01.004.disconnected:K3",
+          "tx.bridge.00.01.004.quiet:K0",
+          "tx.bridge.00.01.004.quiet:K1",
+          "tx.bridge.00.01.004.quiet:K2",
+          "tx.bridge.00.01.005.connected:K0",
+          "tx.bridge.00.01.005.connected:K1",
+          "tx.bridge.00.01.005.connected:K2",
+          "tx.bridge.00.01.005.connected:K3",
+          "tx.bridge.00.01.005.connected:K4",
+          "tx.bridge.00.01.005.disconnected:K0",
+          "tx.bridge.00.01.005.disconnected:K1",
+          "tx.bridge.00.01.005.disconnected:K2",
+          "tx.bridge.00.01.005.quiet:K0",
+          "tx.bridge.00.01.005.quiet:K1",
+          "tx.bridge.00.01.006.connected:K0",
+          "tx.bridge.00.01.006.connected:K1",
+          "tx.bridge.00.01.006.connected:K2",
+          "tx.bridge.00.01.006.connected:K3",
+          "tx.bridge.00.01.006.connected:K4",
+          "tx.bridge.00.01.006.disconnected:K0",
+          "tx.bridge.00.01.006.disconnected:K1",
+          "tx.bridge.00.01.006.disconnected:K2",
+          "tx.bridge.00.01.006.quiet:K0",
+          "tx.bridge.00.01.006.quiet:K1",
+          "tx.bridge.00.01.007.connected:K0",
+          "tx.bridge.00.01.007.connected:K1",
+          "tx.bridge.00.01.007.connected:K2",
+          "tx.bridge.00.01.007.connected:K3",
+          "tx.bridge.00.01.007.connected:K4",
+          "tx.bridge.00.01.007.disconnected:K0",
+          "tx.bridge.00.01.007.disconnected:K1",
+          "tx.bridge.00.01.007.disconnected:K2",
+          "tx.bridge.00.01.007.quiet:K0",
+          "tx.bridge.00.01.007.quiet:K1",
+          "tx.bridge.00.01.008.connected:K0",
+          "tx.bridge.00.01.008.connected:K1",
+          "tx.bridge.00.01.008.connected:K2",
+          "tx.bridge.00.01.008.connected:K3",
+          "tx.bridge.00.01.008.connected:K4",
+          "tx.bridge.00.01.008.disconnected:K0",
+          "tx.bridge.00.01.008.disconnected:K1",
+          "tx.bridge.00.01.008.disconnected:K2",
+          "tx.bridge.00.01.008.quiet:K0",
+          "tx.bridge.00.01.008.quiet:K1",
+          "tx.bridge.00.01.009.connected:K0",
+          "tx.bridge.00.01.009.connected:K1",
+          "tx.bridge.00.01.009.connected:K2",
+          "tx.bridge.00.01.009.connected:K3",
+          "tx.bridge.00.01.009.connected:K4",
+          "tx.bridge.00.01.009.disconnected:K0",
+          "tx.bridge.00.01.009.disconnected:K1",
+          "tx.bridge.00.01.009.disconnected:K2",
+          "tx.bridge.00.01.009.quiet:K0",
+          "tx.bridge.00.01.009.quiet:K1",
+          "tx.bridge.01.02.000.connected:K0",
+          "tx.bridge.01.02.000.connected:K1",
+          "tx.bridge.01.02.000.connected:K2",
+          "tx.bridge.01.02.000.connected:K3",
+          "tx.bridge.01.02.000.connected:K4",
+          "tx.bridge.01.02.000.disconnected:K0",
+          "tx.bridge.01.02.000.disconnected:K1",
+          "tx.bridge.01.02.000.disconnected:K2",
+          "tx.bridge.01.02.000.quiet:K0",
+          "tx.bridge.01.02.000.quiet:K1",
+          "tx.bridge.01.02.001.connected:K0",
+          "tx.bridge.01.02.001.connected:K1",
+          "tx.bridge.01.02.001.connected:K2",
+          "tx.bridge.01.02.001.connected:K3",
+          "tx.bridge.01.02.001.connected:K4",
+          "tx.bridge.01.02.001.disconnected:K0",
+          "tx.bridge.01.02.001.disconnected:K1",
+          "tx.bridge.01.02.001.disconnected:K2",
+          "tx.bridge.01.02.001.quiet:K0",
+          "tx.bridge.01.02.001.quiet:K1",
+          "tx.bridge.01.02.002.connected:K0",
+          "tx.bridge.01.02.002.connected:K1",
+          "tx.bridge.01.02.002.connected:K2",
+          "tx.bridge.01.02.002.connected:K3",
+          "tx.bridge.01.02.002.connected:K4",
+          "tx.bridge.01.02.002.disconnected:K0",
+          "tx.bridge.01.02.002.disconnected:K1",
+          "tx.bridge.01.02.002.disconnected:K2",
+          "tx.bridge.01.02.002.quiet:K0",
+          "tx.bridge.01.02.002.quiet:K1",
+          "tx.bridge.02.02.000.connected:K0",
+          "tx.bridge.02.02.000.connected:K1",
+          "tx.bridge.02.02.000.connected:K2",
+          "tx.bridge.02.02.000.connected:K3",
+          "tx.bridge.02.02.000.connected:K4",
+          "tx.bridge.02.02.000.disconnected:K0",
+          "tx.bridge.02.02.000.disconnected:K1",
+          "tx.bridge.02.02.000.disconnected:K2",
+          "tx.bridge.02.02.000.quiet:K0",
+          "tx.bridge.02.02.000.quiet:K1",
+          "tx.bridge.02.02.001.connected:K0",
+          "tx.bridge.02.02.001.connected:K1",
+          "tx.bridge.02.02.001.connected:K2",
+          "tx.bridge.02.02.001.connected:K3",
+          "tx.bridge.02.02.001.connected:K4",
+          "tx.bridge.02.02.001.disconnected:K0",
+          "tx.bridge.02.02.001.disconnected:K1",
+          "tx.bridge.02.02.001.disconnected:K2",
+          "tx.bridge.02.02.001.quiet:K0",
+          "tx.bridge.02.02.001.quiet:K1",
+          "tx.bridge.02.02.002.connected:K0",
+          "tx.bridge.02.02.002.connected:K1",
+          "tx.bridge.02.02.002.connected:K2",
+          "tx.bridge.02.02.002.connected:K3",
+          "tx.bridge.02.02.002.connected:K4",
+          "tx.bridge.02.02.002.disconnected:K0",
+          "tx.bridge.02.02.002.disconnected:K1",
+          "tx.bridge.02.02.002.disconnected:K2",
+          "tx.bridge.02.02.002.quiet:K0",
+          "tx.bridge.02.02.002.quiet:K1",
+          "tx.bridge.03.03.000.connected:K0",
+          "tx.bridge.03.03.000.connected:K1",
+          "tx.bridge.03.03.000.connected:K2",
+          "tx.bridge.03.03.000.connected:K3",
+          "tx.bridge.03.03.000.connected:K4",
+          "tx.bridge.03.03.000.disconnected:K0",
+          "tx.bridge.03.03.000.disconnected:K1",
+          "tx.bridge.03.03.000.disconnected:K2",
+          "tx.bridge.03.03.000.quiet:K0",
+          "tx.bridge.03.03.000.quiet:K1",
+          "tx.bridge.03.03.001.connected:K0",
+          "tx.bridge.03.03.001.connected:K1",
+          "tx.bridge.03.03.001.connected:K2",
+          "tx.bridge.03.03.001.connected:K3",
+          "tx.bridge.03.03.001.connected:K4",
+          "tx.bridge.03.03.001.disconnected:K0",
+          "tx.bridge.03.03.001.disconnected:K1",
+          "tx.bridge.03.03.001.disconnected:K2",
+          "tx.bridge.03.03.001.quiet:K0",
+          "tx.bridge.03.03.001.quiet:K1",
+          "tx.bridge.03.03.002.connected:K0",
+          "tx.bridge.03.03.002.connected:K1",
+          "tx.bridge.03.03.002.connected:K2",
+          "tx.bridge.03.03.002.connected:K3",
+          "tx.bridge.03.03.002.connected:K4",
+          "tx.bridge.03.03.002.disconnected:K0",
+          "tx.bridge.03.03.002.disconnected:K1",
+          "tx.bridge.03.03.002.disconnected:K2",
+          "tx.bridge.03.03.002.quiet:K0",
+          "tx.bridge.03.03.002.quiet:K1",
+          "tx.bridge.04.06.000.connected:K0",
+          "tx.bridge.04.06.000.connected:K1",
+          "tx.bridge.04.06.000.connected:K2",
+          "tx.bridge.04.06.000.connected:K3",
+          "tx.bridge.04.06.000.connected:K4",
+          "tx.bridge.04.06.000.disconnected:K0",
+          "tx.bridge.04.06.000.disconnected:K1",
+          "tx.bridge.04.06.000.disconnected:K2",
+          "tx.bridge.04.06.000.quiet:K0",
+          "tx.bridge.04.06.000.quiet:K1",
+          "tx.bridge.04.06.001.connected:K0",
+          "tx.bridge.04.06.001.connected:K1",
+          "tx.bridge.04.06.001.connected:K2",
+          "tx.bridge.04.06.001.connected:K3",
+          "tx.bridge.04.06.001.connected:K4",
+          "tx.bridge.04.06.001.disconnected:K0",
+          "tx.bridge.04.06.001.disconnected:K1",
+          "tx.bridge.04.06.001.disconnected:K2",
+          "tx.bridge.04.06.001.quiet:K0",
+          "tx.bridge.04.06.001.quiet:K1",
+          "tx.bridge.04.06.002.connected:K0",
+          "tx.bridge.04.06.002.connected:K1",
+          "tx.bridge.04.06.002.connected:K2",
+          "tx.bridge.04.06.002.connected:K3",
+          "tx.bridge.04.06.002.connected:K4",
+          "tx.bridge.04.06.002.disconnected:K0",
+          "tx.bridge.04.06.002.disconnected:K1",
+          "tx.bridge.04.06.002.disconnected:K2",
+          "tx.bridge.04.06.002.quiet:K0",
+          "tx.bridge.04.06.002.quiet:K1",
+          "tx.bridge.04.06.003.connected:K0",
+          "tx.bridge.04.06.003.connected:K1",
+          "tx.bridge.04.06.003.connected:K2",
+          "tx.bridge.04.06.003.connected:K3",
+          "tx.bridge.04.06.003.connected:K4",
+          "tx.bridge.04.06.003.disconnected:K0",
+          "tx.bridge.04.06.003.disconnected:K1",
+          "tx.bridge.04.06.003.disconnected:K2",
+          "tx.bridge.04.06.003.quiet:K0",
+          "tx.bridge.04.06.003.quiet:K1",
+          "tx.bridge.04.06.004.connected:K0",
+          "tx.bridge.04.06.004.connected:K1",
+          "tx.bridge.04.06.004.connected:K2",
+          "tx.bridge.04.06.004.connected:K3",
+          "tx.bridge.04.06.004.connected:K4",
+          "tx.bridge.04.06.004.disconnected:K0",
+          "tx.bridge.04.06.004.disconnected:K1",
+          "tx.bridge.04.06.004.disconnected:K2",
+          "tx.bridge.04.06.004.quiet:K0",
+          "tx.bridge.04.06.004.quiet:K1",
+          "tx.bridge.04.06.005.connected:K0",
+          "tx.bridge.04.06.005.connected:K1",
+          "tx.bridge.04.06.005.connected:K2",
+          "tx.bridge.04.06.005.connected:K3",
+          "tx.bridge.04.06.005.connected:K4",
+          "tx.bridge.04.06.005.disconnected:K0",
+          "tx.bridge.04.06.005.disconnected:K1",
+          "tx.bridge.04.06.005.disconnected:K2",
+          "tx.bridge.04.06.005.quiet:K0",
+          "tx.bridge.04.06.005.quiet:K1",
+          "tx.bridge.04.06.006.connected:K0",
+          "tx.bridge.04.06.006.connected:K1",
+          "tx.bridge.04.06.006.connected:K2",
+          "tx.bridge.04.06.006.connected:K3",
+          "tx.bridge.04.06.006.connected:K4",
+          "tx.bridge.04.06.006.disconnected:K0",
+          "tx.bridge.04.06.006.disconnected:K1",
+          "tx.bridge.04.06.006.disconnected:K2",
+          "tx.bridge.04.06.006.quiet:K0",
+          "tx.bridge.04.06.006.quiet:K1",
+          "tx.bridge.04.06.007.connected:K0",
+          "tx.bridge.04.06.007.connected:K1",
+          "tx.bridge.04.06.007.connected:K2",
+          "tx.bridge.04.06.007.connected:K3",
+          "tx.bridge.04.06.007.connected:K4",
+          "tx.bridge.04.06.007.disconnected:K0",
+          "tx.bridge.04.06.007.disconnected:K1",
+          "tx.bridge.04.06.007.disconnected:K2",
+          "tx.bridge.04.06.007.quiet:K0",
+          "tx.bridge.04.06.007.quiet:K1",
+          "tx.bridge.04.06.008.connected:K0",
+          "tx.bridge.04.06.008.connected:K1",
+          "tx.bridge.04.06.008.connected:K2",
+          "tx.bridge.04.06.008.connected:K3",
+          "tx.bridge.04.06.008.connected:K4",
+          "tx.bridge.04.06.008.disconnected:K0",
+          "tx.bridge.04.06.008.disconnected:K1",
+          "tx.bridge.04.06.008.disconnected:K2",
+          "tx.bridge.04.06.008.quiet:K0",
+          "tx.bridge.04.06.008.quiet:K1",
+          "tx.bridge.04.06.009.connected:K0",
+          "tx.bridge.04.06.009.connected:K1",
+          "tx.bridge.04.06.009.connected:K2",
+          "tx.bridge.04.06.009.connected:K3",
+          "tx.bridge.04.06.009.connected:K4",
+          "tx.bridge.04.06.009.disconnected:K0",
+          "tx.bridge.04.06.009.disconnected:K1",
+          "tx.bridge.04.06.009.disconnected:K2",
+          "tx.bridge.04.06.009.quiet:K0",
+          "tx.bridge.04.06.009.quiet:K1",
+          "tx.bridge.04.06.010.connected:K0",
+          "tx.bridge.04.06.010.connected:K1",
+          "tx.bridge.04.06.010.connected:K2",
+          "tx.bridge.04.06.010.connected:K3",
+          "tx.bridge.04.06.010.connected:K4",
+          "tx.bridge.04.06.010.disconnected:K0",
+          "tx.bridge.04.06.010.disconnected:K1",
+          "tx.bridge.04.06.010.disconnected:K2",
+          "tx.bridge.04.06.010.quiet:K0",
+          "tx.bridge.04.06.010.quiet:K1",
+          "tx.bridge.04.06.011.connected:K0",
+          "tx.bridge.04.06.011.connected:K1",
+          "tx.bridge.04.06.011.connected:K2",
+          "tx.bridge.04.06.011.connected:K3",
+          "tx.bridge.04.06.011.connected:K4",
+          "tx.bridge.04.06.011.disconnected:K0",
+          "tx.bridge.04.06.011.disconnected:K1",
+          "tx.bridge.04.06.011.disconnected:K2",
+          "tx.bridge.04.06.011.quiet:K0",
+          "tx.bridge.04.06.011.quiet:K1",
+          "tx.bridge.04.06.012.connected:K0",
+          "tx.bridge.04.06.012.connected:K1",
+          "tx.bridge.04.06.012.connected:K2",
+          "tx.bridge.04.06.012.connected:K3",
+          "tx.bridge.04.06.012.connected:K4",
+          "tx.bridge.04.06.012.disconnected:K0",
+          "tx.bridge.04.06.012.disconnected:K1",
+          "tx.bridge.04.06.012.disconnected:K2",
+          "tx.bridge.04.06.012.quiet:K0",
+          "tx.bridge.04.06.012.quiet:K1",
+          "tx.bridge.04.06.013.connected:K0",
+          "tx.bridge.04.06.013.connected:K1",
+          "tx.bridge.04.06.013.connected:K2",
+          "tx.bridge.04.06.013.connected:K3",
+          "tx.bridge.04.06.013.connected:K4",
+          "tx.bridge.04.06.013.disconnected:K0",
+          "tx.bridge.04.06.013.disconnected:K1",
+          "tx.bridge.04.06.013.disconnected:K2",
+          "tx.bridge.04.06.013.quiet:K0",
+          "tx.bridge.04.06.013.quiet:K1",
+          "tx.bridge.04.06.014.connected:K0",
+          "tx.bridge.04.06.014.connected:K1",
+          "tx.bridge.04.06.014.connected:K2",
+          "tx.bridge.04.06.014.connected:K3",
+          "tx.bridge.04.06.014.connected:K4",
+          "tx.bridge.04.06.014.disconnected:K0",
+          "tx.bridge.04.06.014.disconnected:K1",
+          "tx.bridge.04.06.014.disconnected:K2",
+          "tx.bridge.04.06.014.quiet:K0",
+          "tx.bridge.04.06.014.quiet:K1",
+          "tx.bridge.04.06.015.connected:K0",
+          "tx.bridge.04.06.015.connected:K1",
+          "tx.bridge.04.06.015.connected:K2",
+          "tx.bridge.04.06.015.connected:K3",
+          "tx.bridge.04.06.015.connected:K4",
+          "tx.bridge.04.06.015.disconnected:K0",
+          "tx.bridge.04.06.015.disconnected:K1",
+          "tx.bridge.04.06.015.disconnected:K2",
+          "tx.bridge.04.06.015.quiet:K0",
+          "tx.bridge.04.06.015.quiet:K1",
+          "tx.bridge.04.06.016.connected:K0",
+          "tx.bridge.04.06.016.connected:K1",
+          "tx.bridge.04.06.016.connected:K2",
+          "tx.bridge.04.06.016.connected:K3",
+          "tx.bridge.04.06.016.connected:K4",
+          "tx.bridge.04.06.016.disconnected:K0",
+          "tx.bridge.04.06.016.disconnected:K1",
+          "tx.bridge.04.06.016.disconnected:K2",
+          "tx.bridge.04.06.016.quiet:K0",
+          "tx.bridge.04.06.016.quiet:K1",
+          "tx.bridge.04.06.017.connected:K0",
+          "tx.bridge.04.06.017.connected:K1",
+          "tx.bridge.04.06.017.connected:K2",
+          "tx.bridge.04.06.017.connected:K3",
+          "tx.bridge.04.06.017.connected:K4",
+          "tx.bridge.04.06.017.disconnected:K0",
+          "tx.bridge.04.06.017.disconnected:K1",
+          "tx.bridge.04.06.017.disconnected:K2",
+          "tx.bridge.04.06.017.quiet:K0",
+          "tx.bridge.04.06.017.quiet:K1",
+          "tx.bridge.04.07.000.connected:K0",
+          "tx.bridge.04.07.000.connected:K1",
+          "tx.bridge.04.07.000.connected:K2",
+          "tx.bridge.04.07.000.connected:K3",
+          "tx.bridge.04.07.000.connected:K4",
+          "tx.bridge.04.07.000.disconnected:K0",
+          "tx.bridge.04.07.000.disconnected:K1",
+          "tx.bridge.04.07.000.disconnected:K2",
+          "tx.bridge.04.07.000.quiet:K0",
+          "tx.bridge.04.07.000.quiet:K1",
+          "tx.bridge.04.07.001.connected:K0",
+          "tx.bridge.04.07.001.connected:K1",
+          "tx.bridge.04.07.001.connected:K2",
+          "tx.bridge.04.07.001.connected:K3",
+          "tx.bridge.04.07.001.connected:K4",
+          "tx.bridge.04.07.001.disconnected:K0",
+          "tx.bridge.04.07.001.disconnected:K1",
+          "tx.bridge.04.07.001.disconnected:K2",
+          "tx.bridge.04.07.001.quiet:K0",
+          "tx.bridge.04.07.001.quiet:K1",
+          "tx.bridge.04.07.002.connected:K0",
+          "tx.bridge.04.07.002.connected:K1",
+          "tx.bridge.04.07.002.connected:K2",
+          "tx.bridge.04.07.002.connected:K3",
+          "tx.bridge.04.07.002.connected:K4",
+          "tx.bridge.04.07.002.disconnected:K0",
+          "tx.bridge.04.07.002.disconnected:K1",
+          "tx.bridge.04.07.002.disconnected:K2",
+          "tx.bridge.04.07.002.quiet:K0",
+          "tx.bridge.04.07.002.quiet:K1",
+          "tx.bridge.04.07.003.connected:K0",
+          "tx.bridge.04.07.003.connected:K1",
+          "tx.bridge.04.07.003.connected:K2",
+          "tx.bridge.04.07.003.connected:K3",
+          "tx.bridge.04.07.003.connected:K4",
+          "tx.bridge.04.07.003.disconnected:K0",
+          "tx.bridge.04.07.003.disconnected:K1",
+          "tx.bridge.04.07.003.disconnected:K2",
+          "tx.bridge.04.07.003.quiet:K0",
+          "tx.bridge.04.07.003.quiet:K1",
+          "tx.bridge.04.07.004.connected:K0",
+          "tx.bridge.04.07.004.connected:K1",
+          "tx.bridge.04.07.004.connected:K2",
+          "tx.bridge.04.07.004.connected:K3",
+          "tx.bridge.04.07.004.connected:K4",
+          "tx.bridge.04.07.004.disconnected:K0",
+          "tx.bridge.04.07.004.disconnected:K1",
+          "tx.bridge.04.07.004.disconnected:K2",
+          "tx.bridge.04.07.004.quiet:K0",
+          "tx.bridge.04.07.004.quiet:K1",
+          "tx.bridge.04.08.000.connected:K0",
+          "tx.bridge.04.08.000.connected:K1",
+          "tx.bridge.04.08.000.connected:K2",
+          "tx.bridge.04.08.000.connected:K3",
+          "tx.bridge.04.08.000.connected:K4",
+          "tx.bridge.04.08.000.disconnected:K0",
+          "tx.bridge.04.08.000.disconnected:K1",
+          "tx.bridge.04.08.000.disconnected:K2",
+          "tx.bridge.04.08.000.quiet:K0",
+          "tx.bridge.04.08.000.quiet:K1",
+          "tx.bridge.04.08.001.connected:K0",
+          "tx.bridge.04.08.001.connected:K1",
+          "tx.bridge.04.08.001.connected:K2",
+          "tx.bridge.04.08.001.connected:K3",
+          "tx.bridge.04.08.001.connected:K4",
+          "tx.bridge.04.08.001.disconnected:K0",
+          "tx.bridge.04.08.001.disconnected:K1",
+          "tx.bridge.04.08.001.disconnected:K2",
+          "tx.bridge.04.08.001.quiet:K0",
+          "tx.bridge.04.08.001.quiet:K1",
+          "tx.bridge.04.08.002.connected:K0",
+          "tx.bridge.04.08.002.connected:K1",
+          "tx.bridge.04.08.002.connected:K2",
+          "tx.bridge.04.08.002.connected:K3",
+          "tx.bridge.04.08.002.connected:K4",
+          "tx.bridge.04.08.002.disconnected:K0",
+          "tx.bridge.04.08.002.disconnected:K1",
+          "tx.bridge.04.08.002.disconnected:K2",
+          "tx.bridge.04.08.002.quiet:K0",
+          "tx.bridge.04.08.002.quiet:K1",
+          "tx.bridge.04.08.003.connected:K0",
+          "tx.bridge.04.08.003.connected:K1",
+          "tx.bridge.04.08.003.connected:K2",
+          "tx.bridge.04.08.003.connected:K3",
+          "tx.bridge.04.08.003.connected:K4",
+          "tx.bridge.04.08.003.disconnected:K0",
+          "tx.bridge.04.08.003.disconnected:K1",
+          "tx.bridge.04.08.003.disconnected:K2",
+          "tx.bridge.04.08.003.quiet:K0",
+          "tx.bridge.04.08.003.quiet:K1",
+          "tx.bridge.04.09.000.connected:K0",
+          "tx.bridge.04.09.000.connected:K1",
+          "tx.bridge.04.09.000.connected:K2",
+          "tx.bridge.04.09.000.connected:K3",
+          "tx.bridge.04.09.000.connected:K4",
+          "tx.bridge.04.09.000.disconnected:K0",
+          "tx.bridge.04.09.000.disconnected:K1",
+          "tx.bridge.04.09.000.disconnected:K2",
+          "tx.bridge.04.09.000.quiet:K0",
+          "tx.bridge.04.09.000.quiet:K1",
+          "tx.bridge.04.09.001.connected:K0",
+          "tx.bridge.04.09.001.connected:K1",
+          "tx.bridge.04.09.001.connected:K2",
+          "tx.bridge.04.09.001.connected:K3",
+          "tx.bridge.04.09.001.connected:K4",
+          "tx.bridge.04.09.001.disconnected:K0",
+          "tx.bridge.04.09.001.disconnected:K1",
+          "tx.bridge.04.09.001.disconnected:K2",
+          "tx.bridge.04.09.001.quiet:K0",
+          "tx.bridge.04.09.001.quiet:K1",
+          "tx.bridge.04.09.002.connected:K0",
+          "tx.bridge.04.09.002.connected:K1",
+          "tx.bridge.04.09.002.connected:K2",
+          "tx.bridge.04.09.002.connected:K3",
+          "tx.bridge.04.09.002.connected:K4",
+          "tx.bridge.04.09.002.disconnected:K0",
+          "tx.bridge.04.09.002.disconnected:K1",
+          "tx.bridge.04.09.002.disconnected:K2",
+          "tx.bridge.04.09.002.quiet:K0",
+          "tx.bridge.04.09.002.quiet:K1",
+          "tx.bridge.04.09.003.connected:K0",
+          "tx.bridge.04.09.003.connected:K1",
+          "tx.bridge.04.09.003.connected:K2",
+          "tx.bridge.04.09.003.connected:K3",
+          "tx.bridge.04.09.003.connected:K4",
+          "tx.bridge.04.09.003.disconnected:K0",
+          "tx.bridge.04.09.003.disconnected:K1",
+          "tx.bridge.04.09.003.disconnected:K2",
+          "tx.bridge.04.09.003.quiet:K0",
+          "tx.bridge.04.09.003.quiet:K1",
+          "tx.bridge.04.09.004.connected:K0",
+          "tx.bridge.04.09.004.connected:K1",
+          "tx.bridge.04.09.004.connected:K2",
+          "tx.bridge.04.09.004.connected:K3",
+          "tx.bridge.04.09.004.connected:K4",
+          "tx.bridge.04.09.004.disconnected:K0",
+          "tx.bridge.04.09.004.disconnected:K1",
+          "tx.bridge.04.09.004.disconnected:K2",
+          "tx.bridge.04.09.004.quiet:K0",
+          "tx.bridge.04.09.004.quiet:K1",
+          "tx.bridge.04.09.005.connected:K0",
+          "tx.bridge.04.09.005.connected:K1",
+          "tx.bridge.04.09.005.connected:K2",
+          "tx.bridge.04.09.005.connected:K3",
+          "tx.bridge.04.09.005.connected:K4",
+          "tx.bridge.04.09.005.disconnected:K0",
+          "tx.bridge.04.09.005.disconnected:K1",
+          "tx.bridge.04.09.005.disconnected:K2",
+          "tx.bridge.04.09.005.quiet:K0",
+          "tx.bridge.04.09.005.quiet:K1",
+          "tx.bridge.05.11.000.connected:K0",
+          "tx.bridge.05.11.000.connected:K1",
+          "tx.bridge.05.11.000.connected:K2",
+          "tx.bridge.05.11.000.connected:K3",
+          "tx.bridge.05.11.000.connected:K4",
+          "tx.bridge.05.11.000.disconnected:K0",
+          "tx.bridge.05.11.000.disconnected:K1",
+          "tx.bridge.05.11.000.disconnected:K2",
+          "tx.bridge.05.11.000.quiet:K0",
+          "tx.bridge.05.11.000.quiet:K1",
+          "tx.bridge.05.11.001.connected:K0",
+          "tx.bridge.05.11.001.connected:K1",
+          "tx.bridge.05.11.001.connected:K2",
+          "tx.bridge.05.11.001.connected:K3",
+          "tx.bridge.05.11.001.connected:K4",
+          "tx.bridge.05.11.001.disconnected:K0",
+          "tx.bridge.05.11.001.disconnected:K1",
+          "tx.bridge.05.11.001.disconnected:K2",
+          "tx.bridge.05.11.001.quiet:K0",
+          "tx.bridge.05.11.001.quiet:K1",
+          "tx.bridge.05.11.002.connected:K0",
+          "tx.bridge.05.11.002.connected:K1",
+          "tx.bridge.05.11.002.connected:K2",
+          "tx.bridge.05.11.002.connected:K3",
+          "tx.bridge.05.11.002.connected:K4",
+          "tx.bridge.05.11.002.disconnected:K0",
+          "tx.bridge.05.11.002.disconnected:K1",
+          "tx.bridge.05.11.002.disconnected:K2",
+          "tx.bridge.05.11.002.quiet:K0",
+          "tx.bridge.05.11.002.quiet:K1",
+          "tx.bridge.05.11.003.connected:K0",
+          "tx.bridge.05.11.003.connected:K1",
+          "tx.bridge.05.11.003.connected:K2",
+          "tx.bridge.05.11.003.connected:K3",
+          "tx.bridge.05.11.003.connected:K4",
+          "tx.bridge.05.11.003.disconnected:K0",
+          "tx.bridge.05.11.003.disconnected:K1",
+          "tx.bridge.05.11.003.disconnected:K2",
+          "tx.bridge.05.11.003.quiet:K0",
+          "tx.bridge.05.11.003.quiet:K1",
+          "tx.bridge.06.12.000.connected:K0",
+          "tx.bridge.06.12.000.connected:K1",
+          "tx.bridge.06.12.000.connected:K2",
+          "tx.bridge.06.12.000.connected:K3",
+          "tx.bridge.06.12.000.connected:K4",
+          "tx.bridge.06.12.000.disconnected:K0",
+          "tx.bridge.06.12.000.disconnected:K1",
+          "tx.bridge.06.12.000.disconnected:K2",
+          "tx.bridge.06.12.000.quiet:K0",
+          "tx.bridge.06.12.000.quiet:K1",
+          "tx.bridge.06.12.001.connected:K0",
+          "tx.bridge.06.12.001.connected:K1",
+          "tx.bridge.06.12.001.connected:K2",
+          "tx.bridge.06.12.001.connected:K3",
+          "tx.bridge.06.12.001.connected:K4",
+          "tx.bridge.06.12.001.disconnected:K0",
+          "tx.bridge.06.12.001.disconnected:K1",
+          "tx.bridge.06.12.001.disconnected:K2",
+          "tx.bridge.06.12.001.quiet:K0",
+          "tx.bridge.06.12.001.quiet:K1",
+          "tx.bridge.06.12.002.connected:K0",
+          "tx.bridge.06.12.002.connected:K1",
+          "tx.bridge.06.12.002.connected:K2",
+          "tx.bridge.06.12.002.connected:K3",
+          "tx.bridge.06.12.002.connected:K4",
+          "tx.bridge.06.12.002.disconnected:K0",
+          "tx.bridge.06.12.002.disconnected:K1",
+          "tx.bridge.06.12.002.disconnected:K2",
+          "tx.bridge.06.12.002.quiet:K0",
+          "tx.bridge.06.12.002.quiet:K1",
+          "tx.bridge.06.12.003.connected:K0",
+          "tx.bridge.06.12.003.connected:K1",
+          "tx.bridge.06.12.003.connected:K2",
+          "tx.bridge.06.12.003.connected:K3",
+          "tx.bridge.06.12.003.connected:K4",
+          "tx.bridge.06.12.003.disconnected:K0",
+          "tx.bridge.06.12.003.disconnected:K1",
+          "tx.bridge.06.12.003.disconnected:K2",
+          "tx.bridge.06.12.003.quiet:K0",
+          "tx.bridge.06.12.003.quiet:K1",
+          "tx.bridge.06.12.004.connected:K0",
+          "tx.bridge.06.12.004.connected:K1",
+          "tx.bridge.06.12.004.connected:K2",
+          "tx.bridge.06.12.004.connected:K3",
+          "tx.bridge.06.12.004.connected:K4",
+          "tx.bridge.06.12.004.disconnected:K0",
+          "tx.bridge.06.12.004.disconnected:K1",
+          "tx.bridge.06.12.004.disconnected:K2",
+          "tx.bridge.06.12.004.quiet:K0",
+          "tx.bridge.06.12.004.quiet:K1",
+          "tx.bridge.06.12.005.connected:K0",
+          "tx.bridge.06.12.005.connected:K1",
+          "tx.bridge.06.12.005.connected:K2",
+          "tx.bridge.06.12.005.connected:K3",
+          "tx.bridge.06.12.005.connected:K4",
+          "tx.bridge.06.12.005.disconnected:K0",
+          "tx.bridge.06.12.005.disconnected:K1",
+          "tx.bridge.06.12.005.disconnected:K2",
+          "tx.bridge.06.12.005.quiet:K0",
+          "tx.bridge.06.12.005.quiet:K1",
+          "tx.bridge.06.12.006.connected:K0",
+          "tx.bridge.06.12.006.connected:K1",
+          "tx.bridge.06.12.006.connected:K2",
+          "tx.bridge.06.12.006.connected:K3",
+          "tx.bridge.06.12.006.connected:K4",
+          "tx.bridge.06.12.006.disconnected:K0",
+          "tx.bridge.06.12.006.disconnected:K1",
+          "tx.bridge.06.12.006.disconnected:K2",
+          "tx.bridge.06.12.006.quiet:K0",
+          "tx.bridge.06.12.006.quiet:K1",
+          "tx.bridge.06.12.007.connected:K0",
+          "tx.bridge.06.12.007.connected:K1",
+          "tx.bridge.06.12.007.connected:K2",
+          "tx.bridge.06.12.007.connected:K3",
+          "tx.bridge.06.12.007.connected:K4",
+          "tx.bridge.06.12.007.disconnected:K0",
+          "tx.bridge.06.12.007.disconnected:K1",
+          "tx.bridge.06.12.007.disconnected:K2",
+          "tx.bridge.06.12.007.quiet:K0",
+          "tx.bridge.06.12.007.quiet:K1",
+          "tx.bridge.06.12.008.connected:K0",
+          "tx.bridge.06.12.008.connected:K1",
+          "tx.bridge.06.12.008.connected:K2",
+          "tx.bridge.06.12.008.connected:K3",
+          "tx.bridge.06.12.008.connected:K4",
+          "tx.bridge.06.12.008.disconnected:K0",
+          "tx.bridge.06.12.008.disconnected:K1",
+          "tx.bridge.06.12.008.disconnected:K2",
+          "tx.bridge.06.12.008.quiet:K0",
+          "tx.bridge.06.12.008.quiet:K1",
+          "tx.bridge.06.12.009.connected:K0",
+          "tx.bridge.06.12.009.connected:K1",
+          "tx.bridge.06.12.009.connected:K2",
+          "tx.bridge.06.12.009.connected:K3",
+          "tx.bridge.06.12.009.connected:K4",
+          "tx.bridge.06.12.009.disconnected:K0",
+          "tx.bridge.06.12.009.disconnected:K1",
+          "tx.bridge.06.12.009.disconnected:K2",
+          "tx.bridge.06.12.009.quiet:K0",
+          "tx.bridge.06.12.009.quiet:K1",
+          "tx.bridge.06.12.010.connected:K0",
+          "tx.bridge.06.12.010.connected:K1",
+          "tx.bridge.06.12.010.connected:K2",
+          "tx.bridge.06.12.010.connected:K3",
+          "tx.bridge.06.12.010.connected:K4",
+          "tx.bridge.06.12.010.disconnected:K0",
+          "tx.bridge.06.12.010.disconnected:K1",
+          "tx.bridge.06.12.010.disconnected:K2",
+          "tx.bridge.06.12.010.quiet:K0",
+          "tx.bridge.06.12.010.quiet:K1",
+          "tx.bridge.06.12.011.connected:K0",
+          "tx.bridge.06.12.011.connected:K1",
+          "tx.bridge.06.12.011.connected:K2",
+          "tx.bridge.06.12.011.connected:K3",
+          "tx.bridge.06.12.011.connected:K4",
+          "tx.bridge.06.12.011.disconnected:K0",
+          "tx.bridge.06.12.011.disconnected:K1",
+          "tx.bridge.06.12.011.disconnected:K2",
+          "tx.bridge.06.12.011.quiet:K0",
+          "tx.bridge.06.12.011.quiet:K1",
+          "tx.bridge.06.12.012.connected:K0",
+          "tx.bridge.06.12.012.connected:K1",
+          "tx.bridge.06.12.012.connected:K2",
+          "tx.bridge.06.12.012.connected:K3",
+          "tx.bridge.06.12.012.connected:K4",
+          "tx.bridge.06.12.012.disconnected:K0",
+          "tx.bridge.06.12.012.disconnected:K1",
+          "tx.bridge.06.12.012.disconnected:K2",
+          "tx.bridge.06.12.012.quiet:K0",
+          "tx.bridge.06.12.012.quiet:K1",
+          "tx.bridge.06.12.013.connected:K0",
+          "tx.bridge.06.12.013.connected:K1",
+          "tx.bridge.06.12.013.connected:K2",
+          "tx.bridge.06.12.013.connected:K3",
+          "tx.bridge.06.12.013.connected:K4",
+          "tx.bridge.06.12.013.disconnected:K0",
+          "tx.bridge.06.12.013.disconnected:K1",
+          "tx.bridge.06.12.013.disconnected:K2",
+          "tx.bridge.06.12.013.quiet:K0",
+          "tx.bridge.06.12.013.quiet:K1",
+          "tx.bridge.06.12.014.connected:K0",
+          "tx.bridge.06.12.014.connected:K1",
+          "tx.bridge.06.12.014.connected:K2",
+          "tx.bridge.06.12.014.connected:K3",
+          "tx.bridge.06.12.014.connected:K4",
+          "tx.bridge.06.12.014.disconnected:K0",
+          "tx.bridge.06.12.014.disconnected:K1",
+          "tx.bridge.06.12.014.disconnected:K2",
+          "tx.bridge.06.12.014.quiet:K0",
+          "tx.bridge.06.12.014.quiet:K1",
+          "tx.bridge.06.13.000.connected:K0",
+          "tx.bridge.06.13.000.connected:K1",
+          "tx.bridge.06.13.000.connected:K2",
+          "tx.bridge.06.13.000.connected:K3",
+          "tx.bridge.06.13.000.connected:K4",
+          "tx.bridge.06.13.000.disconnected:K0",
+          "tx.bridge.06.13.000.disconnected:K1",
+          "tx.bridge.06.13.000.disconnected:K2",
+          "tx.bridge.06.13.000.quiet:K0",
+          "tx.bridge.06.13.000.quiet:K1",
+          "tx.bridge.06.13.001.connected:K0",
+          "tx.bridge.06.13.001.connected:K1",
+          "tx.bridge.06.13.001.connected:K2",
+          "tx.bridge.06.13.001.connected:K3",
+          "tx.bridge.06.13.001.connected:K4",
+          "tx.bridge.06.13.001.disconnected:K0",
+          "tx.bridge.06.13.001.disconnected:K1",
+          "tx.bridge.06.13.001.disconnected:K2",
+          "tx.bridge.06.13.001.quiet:K0",
+          "tx.bridge.06.13.001.quiet:K1",
+          "tx.bridge.06.13.002.connected:K0",
+          "tx.bridge.06.13.002.connected:K1",
+          "tx.bridge.06.13.002.connected:K2",
+          "tx.bridge.06.13.002.connected:K3",
+          "tx.bridge.06.13.002.connected:K4",
+          "tx.bridge.06.13.002.disconnected:K0",
+          "tx.bridge.06.13.002.disconnected:K1",
+          "tx.bridge.06.13.002.disconnected:K2",
+          "tx.bridge.06.13.002.quiet:K0",
+          "tx.bridge.06.13.002.quiet:K1",
+          "tx.bridge.06.13.003.connected:K0",
+          "tx.bridge.06.13.003.connected:K1",
+          "tx.bridge.06.13.003.connected:K2",
+          "tx.bridge.06.13.003.connected:K3",
+          "tx.bridge.06.13.003.connected:K4",
+          "tx.bridge.06.13.003.disconnected:K0",
+          "tx.bridge.06.13.003.disconnected:K1",
+          "tx.bridge.06.13.003.disconnected:K2",
+          "tx.bridge.06.13.003.quiet:K0",
+          "tx.bridge.06.13.003.quiet:K1",
+          "tx.bridge.06.13.004.connected:K0",
+          "tx.bridge.06.13.004.connected:K1",
+          "tx.bridge.06.13.004.connected:K2",
+          "tx.bridge.06.13.004.connected:K3",
+          "tx.bridge.06.13.004.connected:K4",
+          "tx.bridge.06.13.004.disconnected:K0",
+          "tx.bridge.06.13.004.disconnected:K1",
+          "tx.bridge.06.13.004.disconnected:K2",
+          "tx.bridge.06.13.004.quiet:K0",
+          "tx.bridge.06.13.004.quiet:K1",
+          "tx.mobile.00.apply:K0",
+          "tx.mobile.00.apply:K1",
+          "tx.mobile.00.apply:K10",
+          "tx.mobile.00.apply:K11",
+          "tx.mobile.00.apply:K12",
+          "tx.mobile.00.apply:K13",
+          "tx.mobile.00.apply:K14",
+          "tx.mobile.00.apply:K15",
+          "tx.mobile.00.apply:K16",
+          "tx.mobile.00.apply:K17",
+          "tx.mobile.00.apply:K18",
+          "tx.mobile.00.apply:K19",
+          "tx.mobile.00.apply:K2",
+          "tx.mobile.00.apply:K20",
+          "tx.mobile.00.apply:K21",
+          "tx.mobile.00.apply:K3",
+          "tx.mobile.00.apply:K4",
+          "tx.mobile.00.apply:K5",
+          "tx.mobile.00.apply:K6",
+          "tx.mobile.00.apply:K7",
+          "tx.mobile.00.apply:K8",
+          "tx.mobile.00.apply:K9",
+          "tx.mobile.01.apply:K0",
+          "tx.mobile.01.apply:K1",
+          "tx.mobile.01.apply:K10",
+          "tx.mobile.01.apply:K11",
+          "tx.mobile.01.apply:K12",
+          "tx.mobile.01.apply:K13",
+          "tx.mobile.01.apply:K14",
+          "tx.mobile.01.apply:K15",
+          "tx.mobile.01.apply:K16",
+          "tx.mobile.01.apply:K17",
+          "tx.mobile.01.apply:K18",
+          "tx.mobile.01.apply:K19",
+          "tx.mobile.01.apply:K2",
+          "tx.mobile.01.apply:K20",
+          "tx.mobile.01.apply:K21",
+          "tx.mobile.01.apply:K22",
+          "tx.mobile.01.apply:K23",
+          "tx.mobile.01.apply:K24",
+          "tx.mobile.01.apply:K25",
+          "tx.mobile.01.apply:K3",
+          "tx.mobile.01.apply:K4",
+          "tx.mobile.01.apply:K5",
+          "tx.mobile.01.apply:K6",
+          "tx.mobile.01.apply:K7",
+          "tx.mobile.01.apply:K8",
+          "tx.mobile.01.apply:K9",
+          "tx.mobile.02.apply:K0",
+          "tx.mobile.02.apply:K1",
+          "tx.mobile.02.apply:K10",
+          "tx.mobile.02.apply:K11",
+          "tx.mobile.02.apply:K12",
+          "tx.mobile.02.apply:K13",
+          "tx.mobile.02.apply:K14",
+          "tx.mobile.02.apply:K15",
+          "tx.mobile.02.apply:K16",
+          "tx.mobile.02.apply:K17",
+          "tx.mobile.02.apply:K18",
+          "tx.mobile.02.apply:K19",
+          "tx.mobile.02.apply:K2",
+          "tx.mobile.02.apply:K20",
+          "tx.mobile.02.apply:K21",
+          "tx.mobile.02.apply:K22",
+          "tx.mobile.02.apply:K23",
+          "tx.mobile.02.apply:K24",
+          "tx.mobile.02.apply:K25",
+          "tx.mobile.02.apply:K3",
+          "tx.mobile.02.apply:K4",
+          "tx.mobile.02.apply:K5",
+          "tx.mobile.02.apply:K6",
+          "tx.mobile.02.apply:K7",
+          "tx.mobile.02.apply:K8",
+          "tx.mobile.02.apply:K9",
+          "tx.mobile.03.apply:K0",
+          "tx.mobile.03.apply:K1",
+          "tx.mobile.03.apply:K10",
+          "tx.mobile.03.apply:K11",
+          "tx.mobile.03.apply:K12",
+          "tx.mobile.03.apply:K13",
+          "tx.mobile.03.apply:K14",
+          "tx.mobile.03.apply:K15",
+          "tx.mobile.03.apply:K16",
+          "tx.mobile.03.apply:K17",
+          "tx.mobile.03.apply:K18",
+          "tx.mobile.03.apply:K19",
+          "tx.mobile.03.apply:K2",
+          "tx.mobile.03.apply:K20",
+          "tx.mobile.03.apply:K21",
+          "tx.mobile.03.apply:K22",
+          "tx.mobile.03.apply:K23",
+          "tx.mobile.03.apply:K24",
+          "tx.mobile.03.apply:K25",
+          "tx.mobile.03.apply:K26",
+          "tx.mobile.03.apply:K3",
+          "tx.mobile.03.apply:K4",
+          "tx.mobile.03.apply:K5",
+          "tx.mobile.03.apply:K6",
+          "tx.mobile.03.apply:K7",
+          "tx.mobile.03.apply:K8",
+          "tx.mobile.03.apply:K9",
+          "tx.mobile.04.apply:K0",
+          "tx.mobile.04.apply:K1",
+          "tx.mobile.04.apply:K10",
+          "tx.mobile.04.apply:K11",
+          "tx.mobile.04.apply:K12",
+          "tx.mobile.04.apply:K13",
+          "tx.mobile.04.apply:K14",
+          "tx.mobile.04.apply:K15",
+          "tx.mobile.04.apply:K16",
+          "tx.mobile.04.apply:K17",
+          "tx.mobile.04.apply:K18",
+          "tx.mobile.04.apply:K19",
+          "tx.mobile.04.apply:K2",
+          "tx.mobile.04.apply:K20",
+          "tx.mobile.04.apply:K21",
+          "tx.mobile.04.apply:K22",
+          "tx.mobile.04.apply:K23",
+          "tx.mobile.04.apply:K24",
+          "tx.mobile.04.apply:K25",
+          "tx.mobile.04.apply:K26",
+          "tx.mobile.04.apply:K27",
+          "tx.mobile.04.apply:K28",
+          "tx.mobile.04.apply:K3",
+          "tx.mobile.04.apply:K4",
+          "tx.mobile.04.apply:K5",
+          "tx.mobile.04.apply:K6",
+          "tx.mobile.04.apply:K7",
+          "tx.mobile.04.apply:K8",
+          "tx.mobile.04.apply:K9",
+          "tx.mobile.05.apply:K0",
+          "tx.mobile.05.apply:K1",
+          "tx.mobile.05.apply:K10",
+          "tx.mobile.05.apply:K11",
+          "tx.mobile.05.apply:K12",
+          "tx.mobile.05.apply:K13",
+          "tx.mobile.05.apply:K14",
+          "tx.mobile.05.apply:K15",
+          "tx.mobile.05.apply:K16",
+          "tx.mobile.05.apply:K17",
+          "tx.mobile.05.apply:K18",
+          "tx.mobile.05.apply:K19",
+          "tx.mobile.05.apply:K2",
+          "tx.mobile.05.apply:K20",
+          "tx.mobile.05.apply:K21",
+          "tx.mobile.05.apply:K22",
+          "tx.mobile.05.apply:K23",
+          "tx.mobile.05.apply:K24",
+          "tx.mobile.05.apply:K25",
+          "tx.mobile.05.apply:K3",
+          "tx.mobile.05.apply:K4",
+          "tx.mobile.05.apply:K5",
+          "tx.mobile.05.apply:K6",
+          "tx.mobile.05.apply:K7",
+          "tx.mobile.05.apply:K8",
+          "tx.mobile.05.apply:K9",
+          "tx.mobile.06.apply:K0",
+          "tx.mobile.06.apply:K1",
+          "tx.mobile.06.apply:K10",
+          "tx.mobile.06.apply:K11",
+          "tx.mobile.06.apply:K12",
+          "tx.mobile.06.apply:K13",
+          "tx.mobile.06.apply:K14",
+          "tx.mobile.06.apply:K15",
+          "tx.mobile.06.apply:K16",
+          "tx.mobile.06.apply:K17",
+          "tx.mobile.06.apply:K18",
+          "tx.mobile.06.apply:K19",
+          "tx.mobile.06.apply:K2",
+          "tx.mobile.06.apply:K20",
+          "tx.mobile.06.apply:K21",
+          "tx.mobile.06.apply:K22",
+          "tx.mobile.06.apply:K23",
+          "tx.mobile.06.apply:K24",
+          "tx.mobile.06.apply:K25",
+          "tx.mobile.06.apply:K26",
+          "tx.mobile.06.apply:K3",
+          "tx.mobile.06.apply:K4",
+          "tx.mobile.06.apply:K5",
+          "tx.mobile.06.apply:K6",
+          "tx.mobile.06.apply:K7",
+          "tx.mobile.06.apply:K8",
+          "tx.mobile.06.apply:K9"
+        ]
       }
     },
     {
@@ -69845,7 +71338,38 @@
       "expectedReason": "NONE",
       "expectedPostState": "APPLIED",
       "value": {
-        "caseKind": "BRIDGE_MAPPING_EXACT"
+        "caseKind": "BRIDGE_MAPPING_EXACT",
+        "subjectCount": 28,
+        "subjectIds": [
+          "interaction.snapshot.v1:AFTER_EVENT_FACT_BEFORE_OUTBOX",
+          "interaction.snapshot.v1:AFTER_OUTBOX_BEFORE_COMMIT",
+          "interaction.snapshot.v1:AFTER_OWNER_STATE_BEFORE_EVENT_FACT",
+          "interaction.snapshot.v1:BEFORE_OWNER_STATE_WRITE",
+          "materialization.begin.v1:TIMELINE:AFTER_EVENT_FACT_BEFORE_OUTBOX",
+          "materialization.begin.v1:TIMELINE:AFTER_OUTBOX_BEFORE_COMMIT",
+          "materialization.begin.v1:TIMELINE:AFTER_OWNER_STATE_BEFORE_EVENT_FACT",
+          "materialization.begin.v1:TIMELINE:BEFORE_OWNER_STATE_WRITE",
+          "materialization.commit.v1:TIMELINE:AFTER_EVENT_FACT_BEFORE_OUTBOX",
+          "materialization.commit.v1:TIMELINE:AFTER_OUTBOX_BEFORE_COMMIT",
+          "materialization.commit.v1:TIMELINE:AFTER_OWNER_STATE_BEFORE_EVENT_FACT",
+          "materialization.commit.v1:TIMELINE:BEFORE_OWNER_STATE_WRITE",
+          "materialization.page.v1:TIMELINE:AFTER_EVENT_FACT_BEFORE_OUTBOX",
+          "materialization.page.v1:TIMELINE:AFTER_OUTBOX_BEFORE_COMMIT",
+          "materialization.page.v1:TIMELINE:AFTER_OWNER_STATE_BEFORE_EVENT_FACT",
+          "materialization.page.v1:TIMELINE:BEFORE_OWNER_STATE_WRITE",
+          "operation.state.v1:AFTER_EVENT_FACT_BEFORE_OUTBOX",
+          "operation.state.v1:AFTER_OUTBOX_BEFORE_COMMIT",
+          "operation.state.v1:AFTER_OWNER_STATE_BEFORE_EVENT_FACT",
+          "operation.state.v1:BEFORE_OWNER_STATE_WRITE",
+          "queue.snapshot.v1:AFTER_EVENT_FACT_BEFORE_OUTBOX",
+          "queue.snapshot.v1:AFTER_OUTBOX_BEFORE_COMMIT",
+          "queue.snapshot.v1:AFTER_OWNER_STATE_BEFORE_EVENT_FACT",
+          "queue.snapshot.v1:BEFORE_OWNER_STATE_WRITE",
+          "sync.gap.v1:AFTER_EVENT_FACT_BEFORE_OUTBOX",
+          "sync.gap.v1:AFTER_OUTBOX_BEFORE_COMMIT",
+          "sync.gap.v1:AFTER_OWNER_STATE_BEFORE_EVENT_FACT",
+          "sync.gap.v1:BEFORE_OWNER_STATE_WRITE"
+        ]
       }
     },
     {
@@ -69858,7 +71382,17 @@
       "expectedReason": "NONE",
       "expectedPostState": "APPLIED",
       "value": {
-        "caseKind": "MOBILE_SHAPE_EXACT"
+        "caseKind": "MOBILE_SHAPE_EXACT",
+        "subjectCount": 7,
+        "subjectIds": [
+          "tx.mobile.00.apply",
+          "tx.mobile.01.apply",
+          "tx.mobile.02.apply",
+          "tx.mobile.03.apply",
+          "tx.mobile.04.apply",
+          "tx.mobile.05.apply",
+          "tx.mobile.06.apply"
+        ]
       }
     },
     {
@@ -69875,7 +71409,9 @@
       },
       "expectedPostState": "UNCHANGED",
       "value": {
-        "caseKind": "MANIFEST_SET_DRIFT"
+        "caseKind": "MANIFEST_SET_DRIFT",
+        "subjectCount": 235,
+        "subjectIds": []
       }
     },
     {
@@ -69892,7 +71428,9 @@
       },
       "expectedPostState": "UNCHANGED",
       "value": {
-        "caseKind": "KILL_POINT_SET_DRIFT"
+        "caseKind": "KILL_POINT_SET_DRIFT",
+        "subjectCount": 946,
+        "subjectIds": []
       }
     },
     {
@@ -69909,7 +71447,9 @@
       },
       "expectedPostState": "UNCHANGED",
       "value": {
-        "caseKind": "BRIDGE_MAPPING_DRIFT"
+        "caseKind": "BRIDGE_MAPPING_DRIFT",
+        "subjectCount": 28,
+        "subjectIds": []
       }
     },
     {
@@ -69926,7 +71466,9 @@
       },
       "expectedPostState": "UNCHANGED",
       "value": {
-        "caseKind": "MOBILE_SHAPE_DRIFT"
+        "caseKind": "MOBILE_SHAPE_DRIFT",
+        "subjectCount": 7,
+        "subjectIds": []
       }
     }
   ]

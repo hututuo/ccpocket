@@ -102,6 +102,34 @@ function primaryCoordinate(binding) {
   return binding.physicalCoordinates[0];
 }
 
+function coordinateById(binding, coordinateId) {
+  const coordinate = binding.physicalCoordinates.find((candidate) =>
+    candidate.coordinateId === coordinateId);
+  if (!coordinate) {
+    fail('transaction.storageBinding', `${binding.registryId} lacks ${coordinateId}`);
+  }
+  return coordinate;
+}
+
+function authoritativeOwnerCoordinates(binding, coordinate) {
+  if (coordinate.machineId === 'SM-READ-ATTEMPT' &&
+      coordinate.from === 'VERIFYING' && coordinate.to === 'VERIFIED') {
+    return [
+      coordinateById(binding, 'BRIDGE.timeline_read_attempt.state'),
+      coordinateById(binding, 'BRIDGE.timeline_read_evidence.immutable'),
+    ];
+  }
+  if (coordinate.machineId === 'SM-RECONCILE') {
+    return [coordinateById(
+      binding,
+      coordinate.to === 'REQUESTED'
+        ? 'BRIDGE.reconcile_attempt.immutable'
+        : 'BRIDGE.reconcile_resolution.immutable',
+    )];
+  }
+  return [primaryCoordinate(binding)];
+}
+
 function auxiliaryStorageBindings(machineAuthority) {
   const apply = machineAuthority.machineRecords.find((machine) =>
     machine.machineId === 'SM-REPLICA-APPLY');
@@ -353,7 +381,6 @@ function makeEffectSegment({
 function bridgeWriteSpecs(machineAuthority, allStorageBindings, entry, shape) {
   const edge = edgeAuthority(machineAuthority, entry.coordinate);
   const originBinding = storageBinding(allStorageBindings, edge.storageBindingRef.registryId);
-  const ownerCoordinate = primaryCoordinate(originBinding);
   const deliveryBinding = storageBinding(
     allStorageBindings,
     'storage.authoritative.sm-durable-delivery',
@@ -362,15 +389,30 @@ function bridgeWriteSpecs(machineAuthority, allStorageBindings, entry, shape) {
     coordinate.coordinateId,
     coordinate,
   ]));
-  const writes = [{
+  const writes = authoritativeOwnerCoordinates(originBinding, entry.coordinate).map((coordinate) => ({
     writeRole: 'OWNER_STATE',
     bindingKey: bindingKey('AUTHORITATIVE_MACHINE', entry.machine.machineId),
     physicalStorageCoordinateRef: storageCoordinateRef(
       originBinding.registryId,
-      ownerCoordinate.coordinateId,
+      coordinate.coordinateId,
     ),
     rowCardinality: exactRows(),
-  }];
+  }));
+  if (shape === 'connected') {
+    const deliveryHead = coordinateById(
+      deliveryBinding,
+      'BRIDGE.durable_delivery_head.state',
+    );
+    writes.push({
+      writeRole: 'OWNER_STATE',
+      bindingKey: bindingKey('AUTHORITATIVE_MACHINE', 'SM-DURABLE-DELIVERY'),
+      physicalStorageCoordinateRef: storageCoordinateRef(
+        deliveryBinding.registryId,
+        deliveryHead.coordinateId,
+      ),
+      rowCardinality: exactRows(),
+    });
+  }
   if (shape !== 'quiet') {
     const fact = byCoordinate.get('BRIDGE.event_fact.immutable');
     if (!fact) fail('transaction.delivery', 'missing event fact coordinate');
@@ -950,6 +992,90 @@ function verifyTransactionStructure(machineAuthority, authority) {
   }
 }
 
+function verifyPhysicalWriteClosure(machineAuthority, authority) {
+  const bindings = new Map(machineAuthority.storageBindings.map((binding) => [
+    binding.registryId,
+    binding,
+  ]));
+  const consumedCoordinates = new Map();
+  for (const manifest of authority.transactionManifests) {
+    for (const segment of manifest.segments) {
+      if (segment.segmentKind !== 'SQL_TRANSACTION') continue;
+      for (const write of segment.writes) {
+        const ref = write.physicalStorageCoordinateRef;
+        const binding = bindings.get(ref.storageBindingRef.registryId);
+        if (!binding) fail(write.writeId, `unknown storage binding ${ref.storageBindingRef.registryId}`);
+        const coordinate = binding.physicalCoordinates.find((candidate) =>
+          candidate.coordinateId === ref.coordinateId);
+        if (!coordinate) fail(write.writeId, `unknown physical coordinate ${ref.coordinateId}`);
+        if (binding.bindingRole === 'AUTHORITATIVE' &&
+            (write.bindingKey.bindingKind !== 'AUTHORITATIVE_MACHINE' ||
+              write.bindingKey.machineId !== binding.machineId)) {
+          fail(write.writeId, 'authoritative coordinate uses the wrong binding key');
+        }
+        if (binding.bindingRole === 'REBUILDABLE_REPLICA' &&
+            (write.bindingKey.bindingKind !== 'MOBILE_REPLICA' ||
+              write.bindingKey.machineId !== binding.machineId)) {
+          fail(write.writeId, 'replica coordinate uses the wrong binding key');
+        }
+        if (binding.bindingRole === 'TRANSACTION_AUXILIARY' &&
+            (write.bindingKey.bindingKind !== 'AUTHORITATIVE_MACHINE' ||
+              write.bindingKey.machineId !== 'SM-REPLICA-APPLY')) {
+          fail(write.writeId, 'transaction auxiliary coordinate uses the wrong binding key');
+        }
+        const consumers = consumedCoordinates.get(coordinate.coordinateId) ?? [];
+        consumers.push({manifestId: manifest.manifestId, writeId: write.writeId});
+        consumedCoordinates.set(coordinate.coordinateId, consumers);
+      }
+    }
+  }
+
+  const exemptions = new Set([
+    'MOBILE.protected_local_intent.state',
+    'BRIDGE.content_offer.state',
+  ]);
+  for (const binding of machineAuthority.storageBindings) {
+    for (const coordinate of binding.physicalCoordinates) {
+      if (!exemptions.has(coordinate.coordinateId) &&
+          !consumedCoordinates.has(coordinate.coordinateId)) {
+        fail('transaction.physicalWriteClosure', `unconsumed ${coordinate.coordinateId}`);
+      }
+    }
+  }
+
+  for (const manifest of authority.transactionManifests.filter((candidate) =>
+    candidate.manifestId.startsWith('tx.bridge.'))) {
+    const applicability = manifest.applicabilityCases[0];
+    const writes = manifest.segments[0].writes;
+    const coordinateIds = writes.map((write) =>
+      write.physicalStorageCoordinateRef.coordinateId);
+    const shape = manifest.manifestId.split('.').at(-1);
+    if (shape === 'connected') {
+      for (const required of [
+        'BRIDGE.durable_delivery_head.state',
+        'BRIDGE.event_fact.immutable',
+        'BRIDGE.outbox_envelope.immutable',
+      ]) {
+        if (!coordinateIds.includes(required)) fail(manifest.manifestId, `missing ${required}`);
+      }
+    }
+    if (applicability.coordinate.machineId === 'SM-READ-ATTEMPT' &&
+        applicability.coordinate.from === 'VERIFYING' &&
+        applicability.coordinate.to === 'VERIFIED' &&
+        !coordinateIds.includes('BRIDGE.timeline_read_evidence.immutable')) {
+      fail(manifest.manifestId, 'missing verified read evidence write');
+    }
+    if (applicability.coordinate.machineId === 'SM-RECONCILE') {
+      const expected = applicability.coordinate.to === 'REQUESTED'
+        ? 'BRIDGE.reconcile_attempt.immutable'
+        : 'BRIDGE.reconcile_resolution.immutable';
+      if (!coordinateIds.includes(expected)) {
+        fail(manifest.manifestId, `missing edge-specific ${expected}`);
+      }
+    }
+  }
+}
+
 function definitionField(registry, definitionId, fieldName) {
   const definition = registry.definitions.find((candidate) =>
     candidate.id === definitionId && candidate.profiles.includes(PROFILE_ID));
@@ -1046,6 +1172,10 @@ export function validateTransactionAuthorityRegistry(registry, machineAuthority)
     bridgeRoutePointBindings,
   };
   verifyTransactionStructure(machineAuthority, normalized);
+  verifyPhysicalWriteClosure({
+    ...machineAuthority,
+    storageBindings: registry.storageBindings,
+  }, normalized);
   verifyGeneratedTransactionDefinitions(registry, machineAuthority, normalized);
   return normalized;
 }

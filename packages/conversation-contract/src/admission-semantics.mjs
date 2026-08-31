@@ -96,6 +96,13 @@ function expectedProjectionForSnapshot(snapshot) {
   return null;
 }
 
+function persistedOperationMatchesLookup(value) {
+  const persisted = value.persistedOperation;
+  return persisted !== null && typeof persisted === 'object' &&
+    same(persisted.sourcePartition, value.lookupKey.sourcePartition) &&
+    persisted.operationId === value.lookupKey.operationId;
+}
+
 export function evaluateAdmissionLookupCase(value) {
   if (!effectsAreZero(value?.effects) || value.inFlightCount !== 1) return reject();
   if (value.transportOutcome === 'TIMEOUT') {
@@ -116,10 +123,19 @@ export function evaluateAdmissionLookupCase(value) {
     return reject();
   }
 
-  const privateOrigin = value.storedOriginView.kind === 'AUTO_APPROVAL_POLICY';
-  const actorMismatch = value.storedOriginView.kind === 'AUTHENTICATED_ACTOR' &&
+  if (value.result.outcome === 'NOT_FOUND') {
+    return value.persistedOperation === null &&
+      value.expectedProjection === 'ADMISSION_UNKNOWN'
+      ? accept()
+      : reject();
+  }
+  if (!persistedOperationMatchesLookup(value)) return reject();
+
+  const persisted = value.persistedOperation;
+  const privateOrigin = persisted.originView.kind === 'AUTO_APPROVAL_POLICY';
+  const actorMismatch = persisted.originView.kind === 'AUTHENTICATED_ACTOR' &&
     (value.currentActorBinding === null ||
-      !same(value.storedOriginView.actorBinding, value.currentActorBinding));
+      !same(persisted.originView.actorBinding, value.currentActorBinding));
   if (privateOrigin || actorMismatch) {
     return conflictProblemMatches(
       value.result,
@@ -131,9 +147,9 @@ export function evaluateAdmissionLookupCase(value) {
       : reject();
   }
 
-  const fingerprintMismatch = value.storedFingerprintVersion !==
+  const fingerprintMismatch = persisted.fingerprintVersion !==
       value.lookupKey.fingerprintVersion ||
-    value.storedOperationFingerprint !== value.lookupKey.operationFingerprint;
+    persisted.operationFingerprint !== value.lookupKey.operationFingerprint;
   if (fingerprintMismatch) {
     return conflictProblemMatches(
       value.result,
@@ -145,12 +161,88 @@ export function evaluateAdmissionLookupCase(value) {
       : reject();
   }
 
-  if (value.result.outcome === 'NOT_FOUND') {
-    return value.expectedProjection === 'ADMISSION_UNKNOWN' ? accept() : reject();
-  }
   if (value.result.outcome !== 'MATCHED') return reject();
+  if (!same(value.result.snapshot, persisted.snapshot)) return reject();
   const expected = expectedProjectionForSnapshot(value.result.snapshot);
   return expected !== null && value.expectedProjection === expected ? accept() : reject();
+}
+
+const MATCHED_VECTOR_STATES = Object.freeze([
+  ['received', 'RECEIVED', 'ADMISSION_UNKNOWN'],
+  ['rejected_before_admission', 'REJECTED_BEFORE_ADMISSION', 'LOCAL_ERROR'],
+  ['admitted', 'ADMITTED', 'BRIDGE_ACCEPTED'],
+  ['queued', 'QUEUED', 'BRIDGE_ACCEPTED'],
+  ['blocked_precondition', 'BLOCKED_PRECONDITION', 'BRIDGE_ACCEPTED'],
+  ['ready', 'READY', 'BRIDGE_ACCEPTED'],
+  ['dispatching', 'DISPATCHING', 'BRIDGE_ACCEPTED'],
+  ['provider_accepted', 'PROVIDER_ACCEPTED', 'BRIDGE_ACCEPTED'],
+  ['awaiting_effect_observation', 'AWAITING_EFFECT_OBSERVATION', 'BRIDGE_ACCEPTED'],
+  ['succeeded', 'SUCCEEDED', 'BRIDGE_ACCEPTED'],
+  ['failed_definitive', 'FAILED_DEFINITIVE', 'BRIDGE_ACCEPTED'],
+  ['outcome_unknown', 'OUTCOME_UNKNOWN', 'BRIDGE_ACCEPTED'],
+  ['cancelled_pre_dispatch', 'CANCELLED_PRE_DISPATCH', 'BRIDGE_ACCEPTED'],
+]);
+const OTHER_VECTOR_IDS = Object.freeze([
+  'operation.admission-lookup.not-found',
+  'operation.admission-lookup.private-origin-conflict',
+  'operation.admission-lookup.actor-mismatch-conflict',
+  'operation.admission-lookup.fingerprint-conflict',
+  'operation.admission-lookup.auth-failure',
+  'operation.admission-lookup.timeout',
+  'operation.admission-lookup.outer-request.negative',
+  'operation.admission-lookup.authenticated-source.negative',
+  'operation.admission-lookup.result-request.negative',
+  'operation.admission-lookup.result-operation.negative',
+  'operation.admission-lookup.result-fingerprint.negative',
+  'operation.admission-lookup.wrong-projection.negative',
+  'operation.admission-lookup.double-in-flight.negative',
+  'operation.admission-lookup.provider-call.negative',
+  'operation.admission-lookup.actor-before-fingerprint.negative',
+  'operation.admission-lookup.not-found-resend.negative',
+]);
+
+export function validateAdmissionLookupVectors(activeVectors) {
+  const expectedIds = new Set([
+    ...MATCHED_VECTOR_STATES.map(([suffix]) =>
+      `operation.admission-lookup.matched.${suffix}`),
+    ...OTHER_VECTOR_IDS,
+  ]);
+  const vectors = activeVectors.filter((vector) =>
+    vector.vectorSetRef === 'vectors.operation-admission-lookup');
+  if (vectors.length !== expectedIds.size || vectors.some((vector) =>
+    !expectedIds.has(vector.id))) {
+    throw new TypeError(
+      `vectors.operationAdmissionLookup: expected ${expectedIds.size} exact vectors`,
+    );
+  }
+  const byId = new Map(vectors.map((vector) => [vector.id, vector]));
+  for (const [suffix, lifecycleState, projection] of MATCHED_VECTOR_STATES) {
+    const id = `operation.admission-lookup.matched.${suffix}`;
+    const vector = byId.get(id);
+    if (vector.ruleRef !== 'rule.operation.admission-lookup' ||
+        vector.typeRef !== 'OperationAdmissionRecoveryCaseV1' ||
+        vector.value.result?.outcome !== 'MATCHED' ||
+        vector.value.result.snapshot?.lifecycleState !== lifecycleState ||
+        vector.value.persistedOperation?.snapshot?.lifecycleState !== lifecycleState ||
+        !same(vector.value.result.snapshot, vector.value.persistedOperation.snapshot) ||
+        vector.value.expectedProjection !== projection) {
+      throw new TypeError(`${id}: does not bind its exact persisted lifecycle subject`);
+    }
+  }
+  const notFound = byId.get('operation.admission-lookup.not-found').value;
+  if (notFound.result?.outcome !== 'NOT_FOUND' || notFound.persistedOperation !== null ||
+      notFound.expectedProjection !== 'ADMISSION_UNKNOWN') {
+    throw new TypeError(
+      'operation.admission-lookup.not-found: requires a genuinely absent persisted row',
+    );
+  }
+  const notFoundResend = byId.get('operation.admission-lookup.not-found-resend.negative').value;
+  if (notFoundResend.result?.outcome !== 'NOT_FOUND' ||
+      notFoundResend.persistedOperation !== null || notFoundResend.effects?.resends !== 1) {
+    throw new TypeError(
+      'operation.admission-lookup.not-found-resend.negative: wrong exact mutation',
+    );
+  }
 }
 
 export {

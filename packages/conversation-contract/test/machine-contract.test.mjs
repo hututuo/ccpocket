@@ -15,15 +15,24 @@ import {
   evaluateMachineAuthorityCase,
   loadPvmc1B2NormativeOracle,
   validateMachineAuthorityRegistry,
+  validateMachineAuthorityVectors,
 } from '../src/machine-semantics.mjs';
 
 const registryUrl = new URL(
   '../../../docs/design/codex-kernel-v4/contracts/contract-registry.json',
   import.meta.url,
 );
+const vectorsUrl = new URL(
+  '../../../docs/design/codex-kernel-v4/contracts/vectors/phone-core-vectors.json',
+  import.meta.url,
+);
 
 function registry() {
   return JSON.parse(readFileSync(registryUrl, 'utf8'));
+}
+
+function vectors() {
+  return JSON.parse(readFileSync(vectorsUrl, 'utf8')).vectors;
 }
 
 test('B2 independent oracle fixes the exact machine arithmetic', () => {
@@ -47,6 +56,23 @@ test('normalized machine authority derives every edge and forbidden coordinate',
   assert.equal(authority.oracleProjections.length, 123);
   assert.equal(authority.storageBindings.length, 26);
   assert.equal(deriveForbiddenEdgeMarkers(authority.machineRecords).length, 872);
+});
+
+test('replica route bindings are canonical JCS UTF-16 sets', () => {
+  const authority = buildExpectedMachineAuthority();
+  const materialization = authority.machineRecords.find((machine) =>
+    machine.machineId === 'SM-MATERIALIZATION');
+  assert.deepEqual(materialization.replicaWriterBindings[0].routeBindings.map((route) =>
+    route.registryId), [
+    'materialization.begin.v1:TIMELINE',
+    'materialization.commit.v1:TIMELINE',
+    'materialization.page.v1:TIMELINE',
+  ]);
+  const drift = registry();
+  const row = drift.machineRecords.find((machine) => machine.machineId === 'SM-MATERIALIZATION');
+  [row.replicaWriterBindings[0].routeBindings[1], row.replicaWriterBindings[0].routeBindings[2]] =
+    [row.replicaWriterBindings[0].routeBindings[2], row.replicaWriterBindings[0].routeBindings[1]];
+  assert.throws(() => validateMachineAuthorityRegistry(drift), /independent B2 oracle/);
 });
 
 test('only the two frozen state self-loops are allowed', () => {
@@ -161,4 +187,29 @@ test('generated state enums, coordinate union, and SQL count cannot drift from R
     field.name === 'rowCount').type;
   rowCount.const -= 1;
   assert.throws(() => validateMachineAuthorityRegistry(sqlCountDrift), /exact edge count/);
+});
+
+test('machine vector IDs bind their exact case kind and coordinate', () => {
+  const authority = validateMachineAuthorityRegistry(registry());
+  const pristine = vectors();
+  validateMachineAuthorityVectors(authority, pristine);
+
+  for (const id of [
+    'machine.edge.00.000.positive',
+    'machine.edge.00.000.guard-negative',
+    'machine.edge.00.000.write-fault',
+    'forbidden.edge.00.000.000.negative',
+  ]) {
+    const drift = structuredClone(pristine);
+    const vector = drift.find((candidate) => candidate.id === id);
+    const donor = drift.find((candidate) =>
+      candidate.vectorSetRef === vector.vectorSetRef && candidate.id !== id &&
+      candidate.value.caseKind === vector.value.caseKind);
+    vector.value.coordinate = structuredClone(donor.value.coordinate);
+    assert.throws(
+      () => validateMachineAuthorityVectors(authority, drift),
+      /does not bind its exact case and coordinate/,
+      id,
+    );
+  }
 });

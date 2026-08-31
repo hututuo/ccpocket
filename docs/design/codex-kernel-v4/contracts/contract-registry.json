@@ -261,7 +261,7 @@
     },
     {
       "profileId": "pvmc1.phone-core.v1",
-      "fieldPath": "OperationAdmissionRecoveryCaseV1.storedOperationFingerprint",
+      "fieldPath": "OperationAdmissionPersistedRowV1.operationFingerprint",
       "derivationMode": "REFERENCE_EQUALITY",
       "equalityTargetDigestId": "DR-OPERATION-FINGERPRINT"
     },
@@ -15617,35 +15617,16 @@
             "name": "storageBindings",
             "required": true,
             "type": {
-              "kind": "array",
-              "items": {
-                "kind": "ref",
-                "target": "StorageBindingRefV1"
-              },
-              "minItems": 1,
-              "maxItems": 26,
-              "uniqueBy": [
-                "registryId"
-              ],
-              "orderBy": [
-                "registryId"
-              ]
+              "kind": "ref",
+              "target": "NonEmptyStorageBindingRefSetV1"
             }
           },
           {
             "name": "routeBindings",
             "required": true,
             "type": {
-              "kind": "array",
-              "items": {
-                "kind": "ref",
-                "target": "ProjectionRouteRefV1"
-              },
-              "minItems": 1,
-              "maxItems": 7,
-              "uniqueBy": [
-                "registryId"
-              ]
+              "kind": "ref",
+              "target": "NonEmptyProjectionRouteRefSetV1"
             }
           },
           {
@@ -15902,7 +15883,7 @@
                 "target": "PhysicalStorageCoordinateV1"
               },
               "minItems": 0,
-              "maxItems": 3,
+              "maxItems": 32,
               "uniqueBy": [
                 "coordinateId"
               ]
@@ -15965,16 +15946,8 @@
             "name": "replicaWriterBindings",
             "required": true,
             "type": {
-              "kind": "array",
-              "items": {
-                "kind": "ref",
-                "target": "ReplicaWriterBindingV1"
-              },
-              "minItems": 0,
-              "maxItems": 1,
-              "uniqueBy": [
-                "replicaRole"
-              ]
+              "kind": "ref",
+              "target": "UniqueReplicaWriterBindingSetV1"
             }
           },
           {
@@ -16005,19 +15978,8 @@
             "name": "guardRefs",
             "required": true,
             "type": {
-              "kind": "array",
-              "items": {
-                "kind": "ref",
-                "target": "GuardRefV1"
-              },
-              "minItems": 1,
-              "maxItems": 151,
-              "uniqueBy": [
-                "registryId"
-              ],
-              "orderBy": [
-                "registryId"
-              ]
+              "kind": "ref",
+              "target": "NonEmptyUniqueGuardRefSetV1"
             }
           },
           {
@@ -16048,33 +16010,24 @@
             "name": "positiveVectorId",
             "required": true,
             "type": {
-              "kind": "string"
+              "kind": "ref",
+              "target": "VectorId"
             }
           },
           {
             "name": "negativeVectorIds",
             "required": true,
             "type": {
-              "kind": "array",
-              "items": {
-                "kind": "string"
-              },
-              "minItems": 1,
-              "maxItems": 1,
-              "uniqueItems": true
+              "kind": "ref",
+              "target": "NonEmptyUniqueVectorIdSetV1"
             }
           },
           {
             "name": "faultVectorIds",
             "required": true,
             "type": {
-              "kind": "array",
-              "items": {
-                "kind": "string"
-              },
-              "minItems": 1,
-              "maxItems": 1,
-              "uniqueItems": true
+              "kind": "ref",
+              "target": "NonEmptyUniqueVectorIdSetV1"
             }
           }
         ]
@@ -16920,11 +16873,14 @@
             }
           },
           {
-            "name": "storedOriginView",
+            "name": "persistedOperation",
             "required": true,
             "type": {
-              "kind": "ref",
-              "target": "OperationOriginAdmissionViewV1"
+              "kind": "nullable",
+              "inner": {
+                "kind": "ref",
+                "target": "OperationAdmissionPersistedRowV1"
+              }
             }
           },
           {
@@ -16936,23 +16892,6 @@
                 "kind": "ref",
                 "target": "AuthenticatedActorBindingKeyV1"
               }
-            }
-          },
-          {
-            "name": "storedFingerprintVersion",
-            "required": true,
-            "type": {
-              "kind": "integer",
-              "minimum": 1,
-              "maximum": 2
-            }
-          },
-          {
-            "name": "storedOperationFingerprint",
-            "required": true,
-            "type": {
-              "kind": "ref",
-              "target": "Sha256Hex64"
             }
           },
           {
@@ -17380,7 +17319,7 @@
                 "target": "TransactionPhysicalWriteV1"
               },
               "minItems": 1,
-              "maxItems": 543
+              "maxItems": 622
             }
           },
           {
@@ -18325,8 +18264,198 @@
                 "MOBILE_SHAPE_DRIFT"
               ]
             }
+          },
+          {
+            "name": "subjectCount",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "PositiveJsonSafeIntegerV1"
+            }
+          },
+          {
+            "name": "subjectIds",
+            "required": true,
+            "type": {
+              "kind": "array",
+              "items": {
+                "kind": "string"
+              },
+              "minItems": 0,
+              "maxItems": 946,
+              "uniqueItems": true
+            }
           }
         ]
+      }
+    },
+    {
+      "id": "NonEmptyStorageBindingRefSetV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "array",
+        "items": {
+          "kind": "ref",
+          "target": "StorageBindingRefV1"
+        },
+        "minItems": 1,
+        "maxItems": 29,
+        "uniqueBy": [
+          "registryId"
+        ],
+        "orderBy": [
+          "registryId"
+        ]
+      }
+    },
+    {
+      "id": "NonEmptyProjectionRouteRefSetV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "array",
+        "items": {
+          "kind": "ref",
+          "target": "ProjectionRouteRefV1"
+        },
+        "minItems": 1,
+        "maxItems": 7,
+        "uniqueBy": [
+          "registryId"
+        ],
+        "orderBy": [
+          "registryId"
+        ]
+      }
+    },
+    {
+      "id": "NonEmptyUniqueGuardRefSetV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "array",
+        "items": {
+          "kind": "ref",
+          "target": "GuardRefV1"
+        },
+        "minItems": 1,
+        "maxItems": 538,
+        "uniqueBy": [
+          "registryId"
+        ],
+        "orderBy": [
+          "registryId"
+        ]
+      }
+    },
+    {
+      "id": "NonEmptyUniqueVectorIdSetV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "array",
+        "items": {
+          "kind": "ref",
+          "target": "VectorId"
+        },
+        "minItems": 1,
+        "maxItems": 1677,
+        "uniqueItems": true
+      }
+    },
+    {
+      "id": "UniqueReplicaWriterBindingSetV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "array",
+        "items": {
+          "kind": "ref",
+          "target": "ReplicaWriterBindingV1"
+        },
+        "minItems": 0,
+        "maxItems": 1,
+        "uniqueBy": [
+          "replicaRole",
+          "storageBindings"
+        ]
+      }
+    },
+    {
+      "id": "OperationAdmissionPersistedRowV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "sourcePartition",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "SourcePartitionV1"
+            }
+          },
+          {
+            "name": "operationId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          },
+          {
+            "name": "originView",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "OperationOriginAdmissionViewV1"
+            }
+          },
+          {
+            "name": "fingerprintVersion",
+            "required": true,
+            "type": {
+              "kind": "integer",
+              "const": 1,
+              "minimum": 1,
+              "maximum": 1
+            }
+          },
+          {
+            "name": "operationFingerprint",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Sha256Hex64"
+            }
+          },
+          {
+            "name": "snapshot",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "OperationAdmissionSnapshotV1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "VectorId",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "ref",
+        "target": "Id"
       }
     }
   ],
@@ -19128,7 +19257,7 @@
     "formatVersion": 1,
     "profileId": "pvmc1.phone-core.v1",
     "authorityAmendmentSha256": "317dfd46692e628c70a7a8a989debf9f8fd9384b19a257c7c2655bf7d4c7f6ab",
-    "implementationRulingSha256": "cc04279cd24e1e27346aaa93389a737ba236b27b804634f201ad496429227991",
+    "implementationRulingSha256": "9910bbe21a2cf71d41a3b92a84414d134455ac4877aeddba645bc324b77cb75a",
     "machineCount": 17,
     "stateOccurrenceCount": 123,
     "edgeCount": 151,
@@ -19403,11 +19532,11 @@
             },
             {
               "refKind": "PROJECTION_ROUTE",
-              "registryId": "materialization.page.v1:TIMELINE"
+              "registryId": "materialization.commit.v1:TIMELINE"
             },
             {
               "refKind": "PROJECTION_ROUTE",
-              "registryId": "materialization.commit.v1:TIMELINE"
+              "registryId": "materialization.page.v1:TIMELINE"
             }
           ],
           "canWriteSemanticOwnerState": false,
@@ -25076,11 +25205,11 @@
             },
             {
               "refKind": "PROJECTION_ROUTE",
-              "registryId": "materialization.page.v1:TIMELINE"
+              "registryId": "materialization.commit.v1:TIMELINE"
             },
             {
               "refKind": "PROJECTION_ROUTE",
-              "registryId": "materialization.commit.v1:TIMELINE"
+              "registryId": "materialization.page.v1:TIMELINE"
             }
           ],
           "canWriteSemanticOwnerState": false,
@@ -25160,11 +25289,11 @@
             },
             {
               "refKind": "PROJECTION_ROUTE",
-              "registryId": "materialization.page.v1:TIMELINE"
+              "registryId": "materialization.commit.v1:TIMELINE"
             },
             {
               "refKind": "PROJECTION_ROUTE",
-              "registryId": "materialization.commit.v1:TIMELINE"
+              "registryId": "materialization.page.v1:TIMELINE"
             }
           ],
           "canWriteSemanticOwnerState": false,
@@ -25244,11 +25373,11 @@
             },
             {
               "refKind": "PROJECTION_ROUTE",
-              "registryId": "materialization.page.v1:TIMELINE"
+              "registryId": "materialization.commit.v1:TIMELINE"
             },
             {
               "refKind": "PROJECTION_ROUTE",
-              "registryId": "materialization.commit.v1:TIMELINE"
+              "registryId": "materialization.page.v1:TIMELINE"
             }
           ],
           "canWriteSemanticOwnerState": false,
@@ -40875,6 +41004,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.00.01.000.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.00.01.000.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -40893,8 +41042,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.00.01.000.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.00.01.000.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -41218,6 +41367,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.00.01.001.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.00.01.001.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -41236,8 +41405,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.00.01.001.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.00.01.001.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -41561,6 +41730,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.00.01.002.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.00.01.002.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -41579,8 +41768,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.00.01.002.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.00.01.002.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -41904,6 +42093,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.00.01.003.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.00.01.003.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -41922,8 +42131,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.00.01.003.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.00.01.003.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -42247,6 +42456,46 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.00.01.004.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-READ-ATTEMPT"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-read-attempt"
+                },
+                "coordinateId": "BRIDGE.timeline_read_evidence.immutable"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.00.01.004.connected:S0:W2",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.00.01.004.connected:S0:W3",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -42265,8 +42514,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.00.01.004.connected:S0:W2",
+              "writeOrdinal": 4,
+              "writeId": "tx.bridge.00.01.004.connected:S0:W4",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -42364,6 +42613,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.00.01.004.disconnected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-READ-ATTEMPT"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-read-attempt"
+                },
+                "coordinateId": "BRIDGE.timeline_read_evidence.immutable"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.00.01.004.disconnected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -42509,6 +42778,26 @@
                 "cardinalityKind": "EXACT",
                 "rows": 1
               }
+            },
+            {
+              "writeOrdinal": 1,
+              "writeId": "tx.bridge.00.01.004.quiet:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-READ-ATTEMPT"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-read-attempt"
+                },
+                "coordinateId": "BRIDGE.timeline_read_evidence.immutable"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
             }
           ],
           "commitPostStateProjectionRef": {
@@ -42590,6 +42879,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.00.01.005.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.00.01.005.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -42608,8 +42917,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.00.01.005.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.00.01.005.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -42933,6 +43242,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.00.01.006.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.00.01.006.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -42951,8 +43280,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.00.01.006.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.00.01.006.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -43276,6 +43605,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.00.01.007.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.00.01.007.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -43294,8 +43643,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.00.01.007.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.00.01.007.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -43619,6 +43968,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.00.01.008.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.00.01.008.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -43637,8 +44006,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.00.01.008.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.00.01.008.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -43962,6 +44331,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.00.01.009.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.00.01.009.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -43980,8 +44369,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.00.01.009.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.00.01.009.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -44305,6 +44694,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.01.02.000.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.01.02.000.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -44323,8 +44732,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.01.02.000.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.01.02.000.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -44648,6 +45057,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.01.02.001.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.01.02.001.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -44666,8 +45095,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.01.02.001.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.01.02.001.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -44991,6 +45420,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.01.02.002.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.01.02.002.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -45009,8 +45458,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.01.02.002.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.01.02.002.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -45334,6 +45783,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.02.02.000.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.02.02.000.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -45352,8 +45821,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.02.02.000.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.02.02.000.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -45677,6 +46146,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.02.02.001.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.02.02.001.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -45695,8 +46184,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.02.02.001.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.02.02.001.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -46020,6 +46509,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.02.02.002.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.02.02.002.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -46038,8 +46547,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.02.02.002.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.02.02.002.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -46363,6 +46872,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.03.03.000.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.03.03.000.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -46381,8 +46910,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.03.03.000.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.03.03.000.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -46706,6 +47235,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.03.03.001.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.03.03.001.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -46724,8 +47273,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.03.03.001.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.03.03.001.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -47049,6 +47598,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.03.03.002.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.03.03.002.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -47067,8 +47636,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.03.03.002.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.03.03.002.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -47392,6 +47961,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.000.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.000.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -47410,8 +47999,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.000.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.000.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -47735,6 +48324,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.001.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.001.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -47753,8 +48362,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.001.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.001.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -48078,6 +48687,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.002.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.002.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -48096,8 +48725,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.002.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.002.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -48421,6 +49050,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.003.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.003.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -48439,8 +49088,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.003.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.003.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -48764,6 +49413,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.004.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.004.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -48782,8 +49451,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.004.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.004.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -49107,6 +49776,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.005.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.005.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -49125,8 +49814,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.005.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.005.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -49450,6 +50139,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.006.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.006.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -49468,8 +50177,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.006.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.006.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -49793,6 +50502,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.007.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.007.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -49811,8 +50540,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.007.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.007.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -50136,6 +50865,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.008.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.008.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -50154,8 +50903,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.008.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.008.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -50479,6 +51228,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.009.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.009.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -50497,8 +51266,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.009.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.009.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -50822,6 +51591,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.010.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.010.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -50840,8 +51629,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.010.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.010.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -51165,6 +51954,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.011.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.011.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -51183,8 +51992,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.011.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.011.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -51508,6 +52317,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.012.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.012.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -51526,8 +52355,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.012.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.012.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -51851,6 +52680,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.013.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.013.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -51869,8 +52718,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.013.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.013.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -52194,6 +53043,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.014.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.014.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -52212,8 +53081,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.014.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.014.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -52537,6 +53406,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.015.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.015.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -52555,8 +53444,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.015.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.015.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -52880,6 +53769,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.016.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.016.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -52898,8 +53807,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.016.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.016.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -53223,6 +54132,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.06.017.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.06.017.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -53241,8 +54170,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.06.017.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.06.017.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -53566,6 +54495,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.07.000.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.07.000.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -53584,8 +54533,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.07.000.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.07.000.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -53909,6 +54858,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.07.001.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.07.001.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -53927,8 +54896,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.07.001.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.07.001.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -54252,6 +55221,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.07.002.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.07.002.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -54270,8 +55259,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.07.002.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.07.002.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -54595,6 +55584,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.07.003.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.07.003.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -54613,8 +55622,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.07.003.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.07.003.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -54938,6 +55947,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.07.004.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.07.004.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -54956,8 +55985,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.07.004.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.07.004.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -55281,6 +56310,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.08.000.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.08.000.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -55299,8 +56348,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.08.000.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.08.000.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -55624,6 +56673,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.08.001.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.08.001.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -55642,8 +56711,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.08.001.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.08.001.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -55967,6 +57036,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.08.002.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.08.002.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -55985,8 +57074,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.08.002.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.08.002.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -56310,6 +57399,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.08.003.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.08.003.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -56328,8 +57437,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.08.003.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.08.003.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -56653,6 +57762,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.09.000.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.09.000.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -56671,8 +57800,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.09.000.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.09.000.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -56986,7 +58115,7 @@
                   "refKind": "STORAGE_BINDING",
                   "registryId": "storage.authoritative.sm-reconcile"
                 },
-                "coordinateId": "BRIDGE.reconcile_attempt.immutable"
+                "coordinateId": "BRIDGE.reconcile_resolution.immutable"
               },
               "rowCardinality": {
                 "cardinalityKind": "EXACT",
@@ -56996,6 +58125,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.09.001.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.09.001.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -57014,8 +58163,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.09.001.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.09.001.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -57103,7 +58252,7 @@
                   "refKind": "STORAGE_BINDING",
                   "registryId": "storage.authoritative.sm-reconcile"
                 },
-                "coordinateId": "BRIDGE.reconcile_attempt.immutable"
+                "coordinateId": "BRIDGE.reconcile_resolution.immutable"
               },
               "rowCardinality": {
                 "cardinalityKind": "EXACT",
@@ -57252,7 +58401,7 @@
                   "refKind": "STORAGE_BINDING",
                   "registryId": "storage.authoritative.sm-reconcile"
                 },
-                "coordinateId": "BRIDGE.reconcile_attempt.immutable"
+                "coordinateId": "BRIDGE.reconcile_resolution.immutable"
               },
               "rowCardinality": {
                 "cardinalityKind": "EXACT",
@@ -57329,7 +58478,7 @@
                   "refKind": "STORAGE_BINDING",
                   "registryId": "storage.authoritative.sm-reconcile"
                 },
-                "coordinateId": "BRIDGE.reconcile_attempt.immutable"
+                "coordinateId": "BRIDGE.reconcile_resolution.immutable"
               },
               "rowCardinality": {
                 "cardinalityKind": "EXACT",
@@ -57339,6 +58488,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.09.002.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.09.002.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -57357,8 +58526,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.09.002.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.09.002.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -57446,7 +58615,7 @@
                   "refKind": "STORAGE_BINDING",
                   "registryId": "storage.authoritative.sm-reconcile"
                 },
-                "coordinateId": "BRIDGE.reconcile_attempt.immutable"
+                "coordinateId": "BRIDGE.reconcile_resolution.immutable"
               },
               "rowCardinality": {
                 "cardinalityKind": "EXACT",
@@ -57595,7 +58764,7 @@
                   "refKind": "STORAGE_BINDING",
                   "registryId": "storage.authoritative.sm-reconcile"
                 },
-                "coordinateId": "BRIDGE.reconcile_attempt.immutable"
+                "coordinateId": "BRIDGE.reconcile_resolution.immutable"
               },
               "rowCardinality": {
                 "cardinalityKind": "EXACT",
@@ -57672,7 +58841,7 @@
                   "refKind": "STORAGE_BINDING",
                   "registryId": "storage.authoritative.sm-reconcile"
                 },
-                "coordinateId": "BRIDGE.reconcile_attempt.immutable"
+                "coordinateId": "BRIDGE.reconcile_resolution.immutable"
               },
               "rowCardinality": {
                 "cardinalityKind": "EXACT",
@@ -57682,6 +58851,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.09.003.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.09.003.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -57700,8 +58889,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.09.003.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.09.003.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -57789,7 +58978,7 @@
                   "refKind": "STORAGE_BINDING",
                   "registryId": "storage.authoritative.sm-reconcile"
                 },
-                "coordinateId": "BRIDGE.reconcile_attempt.immutable"
+                "coordinateId": "BRIDGE.reconcile_resolution.immutable"
               },
               "rowCardinality": {
                 "cardinalityKind": "EXACT",
@@ -57938,7 +59127,7 @@
                   "refKind": "STORAGE_BINDING",
                   "registryId": "storage.authoritative.sm-reconcile"
                 },
-                "coordinateId": "BRIDGE.reconcile_attempt.immutable"
+                "coordinateId": "BRIDGE.reconcile_resolution.immutable"
               },
               "rowCardinality": {
                 "cardinalityKind": "EXACT",
@@ -58015,7 +59204,7 @@
                   "refKind": "STORAGE_BINDING",
                   "registryId": "storage.authoritative.sm-reconcile"
                 },
-                "coordinateId": "BRIDGE.reconcile_attempt.immutable"
+                "coordinateId": "BRIDGE.reconcile_resolution.immutable"
               },
               "rowCardinality": {
                 "cardinalityKind": "EXACT",
@@ -58025,6 +59214,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.09.004.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.09.004.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -58043,8 +59252,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.09.004.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.09.004.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -58132,7 +59341,7 @@
                   "refKind": "STORAGE_BINDING",
                   "registryId": "storage.authoritative.sm-reconcile"
                 },
-                "coordinateId": "BRIDGE.reconcile_attempt.immutable"
+                "coordinateId": "BRIDGE.reconcile_resolution.immutable"
               },
               "rowCardinality": {
                 "cardinalityKind": "EXACT",
@@ -58281,7 +59490,7 @@
                   "refKind": "STORAGE_BINDING",
                   "registryId": "storage.authoritative.sm-reconcile"
                 },
-                "coordinateId": "BRIDGE.reconcile_attempt.immutable"
+                "coordinateId": "BRIDGE.reconcile_resolution.immutable"
               },
               "rowCardinality": {
                 "cardinalityKind": "EXACT",
@@ -58368,6 +59577,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.04.09.005.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.04.09.005.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -58386,8 +59615,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.04.09.005.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.04.09.005.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -58711,6 +59940,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.05.11.000.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.05.11.000.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -58729,8 +59978,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.05.11.000.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.05.11.000.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -59054,6 +60303,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.05.11.001.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.05.11.001.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -59072,8 +60341,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.05.11.001.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.05.11.001.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -59397,6 +60666,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.05.11.002.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.05.11.002.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -59415,8 +60704,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.05.11.002.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.05.11.002.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -59740,6 +61029,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.05.11.003.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.05.11.003.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -59758,8 +61067,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.05.11.003.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.05.11.003.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -60083,6 +61392,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.12.000.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.12.000.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -60101,8 +61430,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.12.000.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.12.000.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -60426,6 +61755,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.12.001.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.12.001.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -60444,8 +61793,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.12.001.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.12.001.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -60769,6 +62118,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.12.002.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.12.002.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -60787,8 +62156,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.12.002.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.12.002.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -61112,6 +62481,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.12.003.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.12.003.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -61130,8 +62519,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.12.003.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.12.003.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -61455,6 +62844,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.12.004.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.12.004.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -61473,8 +62882,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.12.004.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.12.004.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -61798,6 +63207,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.12.005.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.12.005.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -61816,8 +63245,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.12.005.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.12.005.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -62141,6 +63570,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.12.006.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.12.006.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -62159,8 +63608,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.12.006.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.12.006.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -62484,6 +63933,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.12.007.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.12.007.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -62502,8 +63971,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.12.007.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.12.007.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -62827,6 +64296,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.12.008.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.12.008.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -62845,8 +64334,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.12.008.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.12.008.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -63170,6 +64659,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.12.009.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.12.009.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -63188,8 +64697,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.12.009.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.12.009.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -63513,6 +65022,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.12.010.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.12.010.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -63531,8 +65060,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.12.010.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.12.010.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -63856,6 +65385,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.12.011.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.12.011.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -63874,8 +65423,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.12.011.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.12.011.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -64199,6 +65748,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.12.012.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.12.012.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -64217,8 +65786,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.12.012.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.12.012.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -64542,6 +66111,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.12.013.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.12.013.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -64560,8 +66149,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.12.013.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.12.013.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -64885,6 +66474,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.12.014.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.12.014.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -64903,8 +66512,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.12.014.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.12.014.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -65228,6 +66837,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.13.000.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.13.000.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -65246,8 +66875,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.13.000.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.13.000.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -65571,6 +67200,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.13.001.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.13.001.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -65589,8 +67238,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.13.001.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.13.001.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -65914,6 +67563,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.13.002.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.13.002.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -65932,8 +67601,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.13.002.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.13.002.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -66257,6 +67926,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.13.003.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.13.003.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -66275,8 +67964,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.13.003.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.13.003.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -66600,6 +68289,26 @@
             {
               "writeOrdinal": 1,
               "writeId": "tx.bridge.06.13.004.connected:S0:W1",
+              "writeRole": "OWNER_STATE",
+              "bindingKey": {
+                "bindingKind": "AUTHORITATIVE_MACHINE",
+                "machineId": "SM-DURABLE-DELIVERY"
+              },
+              "physicalStorageCoordinateRef": {
+                "storageBindingRef": {
+                  "refKind": "STORAGE_BINDING",
+                  "registryId": "storage.authoritative.sm-durable-delivery"
+                },
+                "coordinateId": "BRIDGE.durable_delivery_head.state"
+              },
+              "rowCardinality": {
+                "cardinalityKind": "EXACT",
+                "rows": 1
+              }
+            },
+            {
+              "writeOrdinal": 2,
+              "writeId": "tx.bridge.06.13.004.connected:S0:W2",
               "writeRole": "EVENT_FACT",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",
@@ -66618,8 +68327,8 @@
               }
             },
             {
-              "writeOrdinal": 2,
-              "writeId": "tx.bridge.06.13.004.connected:S0:W2",
+              "writeOrdinal": 3,
+              "writeId": "tx.bridge.06.13.004.connected:S0:W3",
               "writeRole": "OUTBOX_ENVELOPE",
               "bindingKey": {
                 "bindingKind": "AUTHORITATIVE_MACHINE",

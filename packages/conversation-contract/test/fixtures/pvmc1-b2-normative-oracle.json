@@ -3,7 +3,7 @@
   "profileId": "pvmc1.phone-core.v1",
   "status": "INDEPENDENT_TEST_ORACLE_NOT_GENERATION_SOURCE",
   "authorityAmendmentSha256": "317dfd46692e628c70a7a8a989debf9f8fd9384b19a257c7c2655bf7d4c7f6ab",
-  "implementationRulingSha256": "cc04279cd24e1e27346aaa93389a737ba236b27b804634f201ad496429227991",
+  "implementationRulingSha256": "9910bbe21a2cf71d41a3b92a84414d134455ac4877aeddba645bc324b77cb75a",
   "counts": {
     "machines": 17,
     "stateOccurrences": 123,
@@ -283,8 +283,8 @@
         "stateColumnName": "state",
         "routes": [
           "materialization.begin.v1:TIMELINE",
-          "materialization.page.v1:TIMELINE",
-          "materialization.commit.v1:TIMELINE"
+          "materialization.commit.v1:TIMELINE",
+          "materialization.page.v1:TIMELINE"
         ]
       },
       "authoritativeRoutes": [

@@ -1,0 +1,4085 @@
+{
+  "formatVersion": 1,
+  "profileId": "pvmc1.phone-core.v1",
+  "status": "INDEPENDENT_B2_DEFINITION_ORACLE_NOT_GENERATION_SOURCE",
+  "authorityAmendmentSha256": "317dfd46692e628c70a7a8a989debf9f8fd9384b19a257c7c2655bf7d4c7f6ab",
+  "implementationRulingSha256": "9910bbe21a2cf71d41a3b92a84414d134455ac4877aeddba645bc324b77cb75a",
+  "activeDefinitionIds": [
+    "ActiveMachineIdV1",
+    "ActorRefV1",
+    "AdmissionLookupEffectsV1",
+    "AdmissionLookupKeyV1",
+    "AdmissionSerializationKeyV1",
+    "AggregateRevision1",
+    "AggregateRevisionV1",
+    "ApprovalResponseBodyV1",
+    "AuthenticatedActorBindingKeyV1",
+    "AuthenticatedClientHeaderV1",
+    "AuthoritativeWriterRefV1",
+    "BaseSequenceV1",
+    "BoundEpochV1",
+    "BridgeRoutePointBindingV1",
+    "BridgeRoutePointKindV1",
+    "CanonicalTransactionGuardRefSetV1",
+    "CapabilityAvailabilityV1",
+    "CapabilityEntryV1",
+    "CapabilitySnapshotV1",
+    "CapabilitySupportV1",
+    "CheckpointSequenceV1",
+    "ClaimLeaseSnapshotV1",
+    "ClaimProofV1",
+    "ClientHelloV1",
+    "ClientMessageV1",
+    "CodexAdapterCertificationPreimageV1",
+    "CodexAdapterCertificationV1",
+    "CodexAdapterProbeEvidenceV1",
+    "ContentRefV1",
+    "CoreOperationSubmitV1",
+    "CurrentStructuredAttachmentRefV1",
+    "EventFactOwnerSelectorRefV1",
+    "ExitPlanResponseBodyV1",
+    "ExternalEffectSegmentV1",
+    "GuardRefV1",
+    "HeadVersionV1",
+    "Id",
+    "ImageRefV1",
+    "InteractionAuthorityObservationV1",
+    "InteractionClaimV1",
+    "InteractionCommandV1",
+    "InteractionDescriptorV1",
+    "InteractionDuplicateObservationV1",
+    "InteractionExpiryObservationV1",
+    "InteractionKindV1",
+    "InteractionRefV1",
+    "InteractionReleaseV1",
+    "InteractionRenewV1",
+    "InteractionResolutionV1",
+    "InteractionResponseV1",
+    "InteractionSnapshotV1",
+    "InteractionVariantObservationV1",
+    "ItemRefV1",
+    "LiveObservationV1",
+    "LivePromotionObservationV1",
+    "MachineAuthorityCaseV1",
+    "MachineEdgeAuthorityV1",
+    "MachineEdgeCoordinateV1",
+    "MachineTransitionSqlCaseV1",
+    "MachineTransitionSqlV1",
+    "MaterializationBeginHeaderPreimageV1",
+    "MaterializationBeginV1",
+    "MaterializationManifestPreimageV1",
+    "MaterializationMessageIdentityV1",
+    "McpResponseBodyV1",
+    "MessageImageCommitV1",
+    "MessageImageIngressV1",
+    "MessageImagePrepareV1",
+    "MessageImageStateV1",
+    "NonEmptyProjectionRouteRefSetV1",
+    "NonEmptySchemaDerivedPayloadFieldSetV1",
+    "NonEmptyStorageBindingRefSetV1",
+    "NonEmptyUniqueGuardRefSetV1",
+    "NonEmptyUniqueVectorIdSetV1",
+    "ObjectGenerationV1",
+    "OperationAdmissionKeyV1",
+    "OperationAdmissionObservationV1",
+    "OperationAdmissionPersistedRowV1",
+    "OperationAdmissionRecoveryCaseV1",
+    "OperationAdmissionSnapshotV1",
+    "OperationCodeV1",
+    "OperationDispatchObservationV1",
+    "OperationFingerprintPreimageV1",
+    "OperationFingerprintV1",
+    "OperationHeaderV1",
+    "OperationOriginAdmissionViewV1",
+    "OperationPreconditionPreimageV1",
+    "OperationQueryV1",
+    "OperationRecoveryObservationV1",
+    "OperationRefV1",
+    "OperationSnapshotResultV1",
+    "OracleProjectionRefV1",
+    "Ordinal0V1",
+    "OrdinalV1",
+    "PageCount0To128V1",
+    "PageCount1To128V1",
+    "PageDigestRefV1",
+    "PageIndex0To127V1",
+    "PageIndex1To127V1",
+    "PhysicalStorageCoordinateRefV1",
+    "PositiveJsonSafeIntegerV1",
+    "PredecessorReferenceEdgeV1",
+    "ProblemCodeV1",
+    "ProblemSubjectV1",
+    "ProblemV1",
+    "ProjectionRouteRefV1",
+    "QuestionAnswerV1",
+    "QuestionDescriptorV1",
+    "QuestionResponseBodyV1",
+    "QueueEntryRefV1",
+    "QueueRevisionObservationV1",
+    "ReplicaWriterBindingV1",
+    "ReplicaWriterRefV1",
+    "SemanticOwnerSelectorRefV1",
+    "ServerMessageV1",
+    "ServerWelcomeV1",
+    "Sha256Hex64",
+    "SignedJsonSafeIntegerV1",
+    "SmClaimStateV1",
+    "SmContentOfferStateV1",
+    "SmDispatchAttemptStateV1",
+    "SmDurableDeliveryStateV1",
+    "SmEffectObservationStateV1",
+    "SmGapRepairStateV1",
+    "SmInteractionStateV1",
+    "SmLiveStateV1",
+    "SmLocalIntentStateV1",
+    "SmMaterializationStateV1",
+    "SmOperationStateV1",
+    "SmQueueEntryStateV1",
+    "SmReadAttemptStateV1",
+    "SmReconcileStateV1",
+    "SmReplicaApplyStateV1",
+    "SmSourceStateV1",
+    "SmTimelineHeadStateV1",
+    "SourceAdmissionObservationV1",
+    "SourceEpochV1",
+    "SourcePartitionV1",
+    "SqlTransactionRoleV1",
+    "SqlTransactionSegmentV1",
+    "StorageBindingRefV1",
+    "StreamSequenceV1",
+    "ThreadRefV1",
+    "TimelineAckV1",
+    "TimelineBoundOrderProofV1",
+    "TimelineCacheObservationV1",
+    "TimelineCoverageIslandReferenceV1",
+    "TimelineCoverageIslandV1",
+    "TimelineGapRepairIntentPreimageV1",
+    "TimelineGapRepairIntentV1",
+    "TimelineGapStableTargetV1",
+    "TimelineGapV1",
+    "TimelineHeadTransitionV1",
+    "TimelineItemPayloadGapTargetV1",
+    "TimelineItemV1",
+    "TimelineLastGoodDispositionV1",
+    "TimelineMaterializationAuthorityV1",
+    "TimelineMaterializationBeginBlockPreimageV1",
+    "TimelineMaterializationBeginFrameV1",
+    "TimelineMaterializationBeginPayloadPreimageV1",
+    "TimelineMaterializationBeginPayloadV1",
+    "TimelineMaterializationBlockRefV1",
+    "TimelineMaterializationCommitV1",
+    "TimelineMaterializationCoveragePreimageV1",
+    "TimelineMaterializationEventAggregateRefV1",
+    "TimelineMaterializationEventKeyV1",
+    "TimelineMaterializationOrderPreimageV1",
+    "TimelineMaterializationPagePreimageV1",
+    "TimelineMaterializationPageV1",
+    "TimelineMaterializationReceiptPreimageV1",
+    "TimelineMaterializationSnapshotV1",
+    "TimelineMaterializationSubjectV1",
+    "TimelineNotLoadedTurnGapTargetV1",
+    "TimelineOrderEndpointV1",
+    "TimelineOrderProofPreimageV1",
+    "TimelineOrderedIslandV1",
+    "TimelineOrderedItemV1",
+    "TimelineOrderedTurnV1",
+    "TimelineOversizedTurnGapSemanticTargetV1",
+    "TimelineOversizedTurnObservationV1",
+    "TimelinePageBodyV1",
+    "TimelinePageStagedRowV1",
+    "TimelinePayloadCommitmentPreimageV1",
+    "TimelinePayloadFieldPathV1",
+    "TimelinePayloadV1",
+    "TimelinePriorIndexEvidenceV1",
+    "TimelineProviderFullTurnV1",
+    "TimelineProviderReadBodyV1",
+    "TimelineProviderReadEvidencePreimageV1",
+    "TimelineProviderReadEvidenceV1",
+    "TimelineProviderReadResultPreimageV1",
+    "TimelineProviderReadResultV1",
+    "TimelineProviderReadSpecPreimageV1",
+    "TimelineProviderReadSpecV1",
+    "TimelineProviderResultPositionV1",
+    "TimelineReadAttemptRevision1",
+    "TimelineReadPlanPreimageV1",
+    "TimelineReadPlanV1",
+    "TimelineReadQueryV1",
+    "TimelineResolvedPayloadV1",
+    "TimelineSealedOrderProofV1",
+    "TimelineStagedCapacityRowV1",
+    "TimelineStagedCapacitySetV1",
+    "TimelineStrongBoundaryV1",
+    "TimelineStructuralGapTargetV1",
+    "TimelineSubjectScopeV1",
+    "TimelineTurnBoundaryV1",
+    "TimelineTurnIndexV1",
+    "TimelineTurnNodeV1",
+    "TimelineTurnSpineV1",
+    "TimelineTypedEmptyProofV1",
+    "TransactionApplicabilityCaseV1",
+    "TransactionAuthorityCaseV1",
+    "TransactionBindingKeyV1",
+    "TransactionFailureOracleV1",
+    "TransactionGuardAuthorityV1",
+    "TransactionKillPointV1",
+    "TransactionManifestRefV1",
+    "TransactionManifestV1",
+    "TransactionOracleProjectionAuthorityV1",
+    "TransactionPhysicalWriteV1",
+    "TransactionRouteVariantV1",
+    "TransactionRowCardinalityV1",
+    "TransactionSegmentV1",
+    "TransactionStepV1",
+    "TransactionWriteRoleV1",
+    "TurnInputV1",
+    "TurnRefV1",
+    "UInt64DecimalV1",
+    "UniqueReplicaWriterBindingSetV1",
+    "UnknownPolicyRefV1",
+    "VectorId",
+    "WireProjectionRefV1"
+  ],
+  "b2Definitions": [
+    {
+      "id": "ActiveMachineIdV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "SM-SOURCE",
+          "SM-READ-ATTEMPT",
+          "SM-MATERIALIZATION",
+          "SM-TIMELINE-HEAD",
+          "SM-GAP-REPAIR",
+          "SM-LIVE",
+          "SM-OPERATION",
+          "SM-DISPATCH-ATTEMPT",
+          "SM-EFFECT-OBSERVATION",
+          "SM-RECONCILE",
+          "SM-LOCAL-INTENT",
+          "SM-QUEUE-ENTRY",
+          "SM-INTERACTION",
+          "SM-CLAIM",
+          "SM-DURABLE-DELIVERY",
+          "SM-REPLICA-APPLY",
+          "SM-CONTENT-OFFER"
+        ]
+      }
+    },
+    {
+      "id": "AdmissionLookupEffectsV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "attemptsCreated",
+            "required": true,
+            "type": {
+              "kind": "integer",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          {
+            "name": "eventRows",
+            "required": true,
+            "type": {
+              "kind": "integer",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          {
+            "name": "newOperationIds",
+            "required": true,
+            "type": {
+              "kind": "integer",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          {
+            "name": "operationsCreated",
+            "required": true,
+            "type": {
+              "kind": "integer",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          {
+            "name": "outboxRows",
+            "required": true,
+            "type": {
+              "kind": "integer",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          {
+            "name": "providerCalls",
+            "required": true,
+            "type": {
+              "kind": "integer",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          {
+            "name": "resends",
+            "required": true,
+            "type": {
+              "kind": "integer",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "AdmissionLookupKeyV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "sourcePartition",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "SourcePartitionV1"
+            }
+          },
+          {
+            "name": "operationId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          },
+          {
+            "name": "fingerprintVersion",
+            "required": true,
+            "type": {
+              "kind": "integer",
+              "const": 1,
+              "minimum": 1,
+              "maximum": 1
+            }
+          },
+          {
+            "name": "operationFingerprint",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Sha256Hex64"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "AdmissionSerializationKeyV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "sourcePartition",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "SourcePartitionV1"
+            }
+          },
+          {
+            "name": "operationId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "AggregateRevision1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      }
+    },
+    {
+      "id": "AuthenticatedActorBindingKeyV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "union",
+        "discriminator": "kind",
+        "variants": [
+          {
+            "tag": "PAIRED_DEVICE",
+            "fields": [
+              {
+                "name": "principalId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "trustRevision",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "AggregateRevision1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "API_KEY",
+            "fields": [
+              {
+                "name": "principalId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "credentialRevision",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "AggregateRevision1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "OPEN_CONNECTION",
+            "fields": [
+              {
+                "name": "principalId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "connectionEpoch",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "BoundEpochV1"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "AuthoritativeWriterRefV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "refKind",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "AUTHORITATIVE_WRITER"
+            }
+          },
+          {
+            "name": "registryId",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "BridgeRoutePointBindingV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "bridgeMarkerId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          },
+          {
+            "name": "routeRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "ProjectionRouteRefV1"
+            }
+          },
+          {
+            "name": "pointKind",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "BridgeRoutePointKindV1"
+            }
+          },
+          {
+            "name": "manifestRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "TransactionManifestRefV1"
+            }
+          },
+          {
+            "name": "applicabilityCaseOrdinal",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Ordinal0V1"
+            }
+          },
+          {
+            "name": "transactionKillPointId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "BridgeRoutePointKindV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "BEFORE_OWNER_STATE_WRITE",
+          "AFTER_OWNER_STATE_BEFORE_EVENT_FACT",
+          "AFTER_EVENT_FACT_BEFORE_OUTBOX",
+          "AFTER_OUTBOX_BEFORE_COMMIT"
+        ]
+      }
+    },
+    {
+      "id": "CanonicalTransactionGuardRefSetV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "array",
+        "items": {
+          "kind": "ref",
+          "target": "GuardRefV1"
+        },
+        "minItems": 1,
+        "maxItems": 538,
+        "uniqueBy": [
+          "registryId"
+        ],
+        "orderBy": [
+          "registryId"
+        ]
+      }
+    },
+    {
+      "id": "EventFactOwnerSelectorRefV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "refKind",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "EVENT_FACT_OWNER_SELECTOR"
+            }
+          },
+          {
+            "name": "registryId",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "ExternalEffectSegmentV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "union",
+        "discriminator": "segmentKind",
+        "variants": [
+          {
+            "tag": "READBACK",
+            "fields": [
+              {
+                "name": "segmentOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              },
+              {
+                "name": "segmentId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "durablePostStateProjectionRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "OracleProjectionRefV1"
+                }
+              },
+              {
+                "name": "effectPostStateProjectionRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "OracleProjectionRefV1"
+                }
+              },
+              {
+                "name": "replayRule",
+                "required": true,
+                "type": {
+                  "kind": "string",
+                  "const": "READ_ONLY_REPEATABLE"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "PUBLICATION",
+            "fields": [
+              {
+                "name": "segmentOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              },
+              {
+                "name": "segmentId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "durablePostStateProjectionRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "OracleProjectionRefV1"
+                }
+              },
+              {
+                "name": "effectPostStateProjectionRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "OracleProjectionRefV1"
+                }
+              },
+              {
+                "name": "replayRule",
+                "required": true,
+                "type": {
+                  "kind": "string",
+                  "const": "IDEMPOTENT_BY_REPOSITORY_PUBLICATION_ID"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "ACK",
+            "fields": [
+              {
+                "name": "segmentOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              },
+              {
+                "name": "segmentId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "durablePostStateProjectionRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "OracleProjectionRefV1"
+                }
+              },
+              {
+                "name": "effectPostStateProjectionRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "OracleProjectionRefV1"
+                }
+              },
+              {
+                "name": "replayRule",
+                "required": true,
+                "type": {
+                  "kind": "string",
+                  "const": "IDEMPOTENT_BY_MESSAGE_KEY_AND_COMMITTED_CHECKPOINT"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "GuardRefV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "refKind",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "EDGE_GUARD"
+            }
+          },
+          {
+            "name": "registryId",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "Id",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "string"
+      }
+    },
+    {
+      "id": "MachineAuthorityCaseV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "union",
+        "discriminator": "caseKind",
+        "variants": [
+          {
+            "tag": "EDGE",
+            "fields": [
+              {
+                "name": "coordinate",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "MachineEdgeCoordinateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "FORBIDDEN_EDGE",
+            "fields": [
+              {
+                "name": "coordinate",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "MachineEdgeCoordinateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "EDGE_GUARD_FAILURE",
+            "fields": [
+              {
+                "name": "coordinate",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "MachineEdgeCoordinateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "EDGE_WRITE_FAILURE",
+            "fields": [
+              {
+                "name": "coordinate",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "MachineEdgeCoordinateV1"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "MachineEdgeAuthorityV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "edgeId",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "coordinate",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "MachineEdgeCoordinateV1"
+            }
+          },
+          {
+            "name": "semanticOwnerRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "SemanticOwnerSelectorRefV1"
+            }
+          },
+          {
+            "name": "authoritativeWriterRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "AuthoritativeWriterRefV1"
+            }
+          },
+          {
+            "name": "eventFactOwnerSelectorRef",
+            "required": true,
+            "type": {
+              "kind": "nullable",
+              "inner": {
+                "kind": "ref",
+                "target": "EventFactOwnerSelectorRefV1"
+              }
+            }
+          },
+          {
+            "name": "replicaWriterBindings",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "UniqueReplicaWriterBindingSetV1"
+            }
+          },
+          {
+            "name": "storageBindingRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "StorageBindingRefV1"
+            }
+          },
+          {
+            "name": "wireProjectionRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "WireProjectionRefV1"
+            }
+          },
+          {
+            "name": "unknownPolicyRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "UnknownPolicyRefV1"
+            }
+          },
+          {
+            "name": "guardRefs",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "NonEmptyUniqueGuardRefSetV1"
+            }
+          },
+          {
+            "name": "failureProblem",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "ProblemCodeV1"
+            }
+          },
+          {
+            "name": "zeroEffectProjectionRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "OracleProjectionRefV1"
+            }
+          },
+          {
+            "name": "successPostStateProjectionRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "OracleProjectionRefV1"
+            }
+          },
+          {
+            "name": "positiveVectorId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "VectorId"
+            }
+          },
+          {
+            "name": "negativeVectorIds",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "NonEmptyUniqueVectorIdSetV1"
+            }
+          },
+          {
+            "name": "faultVectorIds",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "NonEmptyUniqueVectorIdSetV1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "MachineEdgeCoordinateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "union",
+        "discriminator": "machineId",
+        "variants": [
+          {
+            "tag": "SM-SOURCE",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmSourceStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmSourceStateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SM-READ-ATTEMPT",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmReadAttemptStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmReadAttemptStateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SM-MATERIALIZATION",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmMaterializationStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmMaterializationStateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SM-TIMELINE-HEAD",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmTimelineHeadStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmTimelineHeadStateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SM-GAP-REPAIR",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmGapRepairStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmGapRepairStateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SM-LIVE",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmLiveStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmLiveStateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SM-OPERATION",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmOperationStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmOperationStateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SM-DISPATCH-ATTEMPT",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmDispatchAttemptStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmDispatchAttemptStateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SM-EFFECT-OBSERVATION",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmEffectObservationStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmEffectObservationStateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SM-RECONCILE",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmReconcileStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmReconcileStateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SM-LOCAL-INTENT",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmLocalIntentStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmLocalIntentStateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SM-QUEUE-ENTRY",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmQueueEntryStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmQueueEntryStateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SM-INTERACTION",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmInteractionStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmInteractionStateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SM-CLAIM",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmClaimStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmClaimStateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SM-DURABLE-DELIVERY",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmDurableDeliveryStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmDurableDeliveryStateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SM-REPLICA-APPLY",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmReplicaApplyStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmReplicaApplyStateV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SM-CONTENT-OFFER",
+            "fields": [
+              {
+                "name": "from",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmContentOfferStateV1"
+                }
+              },
+              {
+                "name": "to",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SmContentOfferStateV1"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "MachineTransitionSqlCaseV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "union",
+        "discriminator": "caseKind",
+        "variants": [
+          {
+            "tag": "SQL_EXACT",
+            "fields": [
+              {
+                "name": "sqlSha256",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Sha256Hex64"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SQL_BYTE_DRIFT",
+            "fields": [
+              {
+                "name": "sqlSha256",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Sha256Hex64"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "SQL_DIGEST_DRIFT",
+            "fields": [
+              {
+                "name": "sqlSha256",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Sha256Hex64"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "MachineTransitionSqlV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "derivationId",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "PVMC1_MACHINE_TRANSITION_SQL_V1"
+            }
+          },
+          {
+            "name": "encoding",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "UTF-8"
+            }
+          },
+          {
+            "name": "lineEnding",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "LF"
+            }
+          },
+          {
+            "name": "hasBom",
+            "required": true,
+            "type": {
+              "kind": "boolean",
+              "const": false
+            }
+          },
+          {
+            "name": "trailingLfCount",
+            "required": true,
+            "type": {
+              "kind": "integer",
+              "const": 1,
+              "minimum": 1,
+              "maximum": 1
+            }
+          },
+          {
+            "name": "rowCount",
+            "required": true,
+            "type": {
+              "kind": "integer",
+              "const": 151,
+              "minimum": 151,
+              "maximum": 151
+            }
+          },
+          {
+            "name": "sqlUtf8Base64",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "sqlSha256",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Sha256Hex64"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "NonEmptyProjectionRouteRefSetV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "array",
+        "items": {
+          "kind": "ref",
+          "target": "ProjectionRouteRefV1"
+        },
+        "minItems": 1,
+        "maxItems": 7,
+        "uniqueBy": [
+          "registryId"
+        ],
+        "orderBy": [
+          "registryId"
+        ]
+      }
+    },
+    {
+      "id": "NonEmptyStorageBindingRefSetV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "array",
+        "items": {
+          "kind": "ref",
+          "target": "StorageBindingRefV1"
+        },
+        "minItems": 1,
+        "maxItems": 29,
+        "uniqueBy": [
+          "registryId"
+        ],
+        "orderBy": [
+          "registryId"
+        ]
+      }
+    },
+    {
+      "id": "NonEmptyUniqueGuardRefSetV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "array",
+        "items": {
+          "kind": "ref",
+          "target": "GuardRefV1"
+        },
+        "minItems": 1,
+        "maxItems": 538,
+        "uniqueBy": [
+          "registryId"
+        ],
+        "orderBy": [
+          "registryId"
+        ]
+      }
+    },
+    {
+      "id": "NonEmptyUniqueVectorIdSetV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "array",
+        "items": {
+          "kind": "ref",
+          "target": "VectorId"
+        },
+        "minItems": 1,
+        "maxItems": 1677,
+        "uniqueItems": true
+      }
+    },
+    {
+      "id": "OperationAdmissionPersistedRowV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "sourcePartition",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "SourcePartitionV1"
+            }
+          },
+          {
+            "name": "operationId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          },
+          {
+            "name": "originView",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "OperationOriginAdmissionViewV1"
+            }
+          },
+          {
+            "name": "fingerprintVersion",
+            "required": true,
+            "type": {
+              "kind": "integer",
+              "const": 1,
+              "minimum": 1,
+              "maximum": 1
+            }
+          },
+          {
+            "name": "operationFingerprint",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Sha256Hex64"
+            }
+          },
+          {
+            "name": "snapshot",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "OperationAdmissionSnapshotV1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "OperationAdmissionRecoveryCaseV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "transportOutcome",
+            "required": true,
+            "type": {
+              "kind": "enum",
+              "values": [
+                "RESULT",
+                "TIMEOUT",
+                "AUTH_FAILURE"
+              ]
+            }
+          },
+          {
+            "name": "inFlightCount",
+            "required": true,
+            "type": {
+              "kind": "integer",
+              "minimum": 0,
+              "maximum": 2
+            }
+          },
+          {
+            "name": "outerRequestId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          },
+          {
+            "name": "authenticatedSourcePartition",
+            "required": true,
+            "type": {
+              "kind": "nullable",
+              "inner": {
+                "kind": "ref",
+                "target": "SourcePartitionV1"
+              }
+            }
+          },
+          {
+            "name": "lookupKey",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "AdmissionLookupKeyV1"
+            }
+          },
+          {
+            "name": "query",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "OperationQueryV1"
+            }
+          },
+          {
+            "name": "result",
+            "required": true,
+            "type": {
+              "kind": "nullable",
+              "inner": {
+                "kind": "ref",
+                "target": "OperationSnapshotResultV1"
+              }
+            }
+          },
+          {
+            "name": "persistedOperation",
+            "required": true,
+            "type": {
+              "kind": "nullable",
+              "inner": {
+                "kind": "ref",
+                "target": "OperationAdmissionPersistedRowV1"
+              }
+            }
+          },
+          {
+            "name": "currentActorBinding",
+            "required": true,
+            "type": {
+              "kind": "nullable",
+              "inner": {
+                "kind": "ref",
+                "target": "AuthenticatedActorBindingKeyV1"
+              }
+            }
+          },
+          {
+            "name": "expectedProjection",
+            "required": true,
+            "type": {
+              "kind": "enum",
+              "values": [
+                "ADMISSION_UNKNOWN",
+                "LOCAL_ERROR",
+                "BRIDGE_ACCEPTED"
+              ]
+            }
+          },
+          {
+            "name": "effects",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "AdmissionLookupEffectsV1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "OperationAdmissionSnapshotV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "operationRevision",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "AggregateRevision1"
+            }
+          },
+          {
+            "name": "lifecycleState",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "SmOperationStateV1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "OperationOriginAdmissionViewV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "union",
+        "discriminator": "kind",
+        "variants": [
+          {
+            "tag": "AUTHENTICATED_ACTOR",
+            "fields": [
+              {
+                "name": "actorBinding",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "AuthenticatedActorBindingKeyV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "AUTO_APPROVAL_POLICY",
+            "fields": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "OperationQueryV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "schemaRevision",
+            "required": true,
+            "type": {
+              "kind": "integer",
+              "const": 1,
+              "minimum": 1,
+              "maximum": 1
+            }
+          },
+          {
+            "name": "kind",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "operation.query"
+            }
+          },
+          {
+            "name": "requestId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          },
+          {
+            "name": "sourcePartition",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "SourcePartitionV1"
+            }
+          },
+          {
+            "name": "operationId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          },
+          {
+            "name": "fingerprintVersion",
+            "required": true,
+            "type": {
+              "kind": "integer",
+              "const": 1,
+              "minimum": 1,
+              "maximum": 1
+            }
+          },
+          {
+            "name": "operationFingerprint",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Sha256Hex64"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "OperationSnapshotResultV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "union",
+        "discriminator": "outcome",
+        "variants": [
+          {
+            "tag": "MATCHED",
+            "fields": [
+              {
+                "name": "schemaRevision",
+                "required": true,
+                "type": {
+                  "kind": "integer",
+                  "const": 1,
+                  "minimum": 1,
+                  "maximum": 1
+                }
+              },
+              {
+                "name": "kind",
+                "required": true,
+                "type": {
+                  "kind": "string",
+                  "const": "operation.snapshot"
+                }
+              },
+              {
+                "name": "requestId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "sourcePartition",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SourcePartitionV1"
+                }
+              },
+              {
+                "name": "operationId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "fingerprintVersion",
+                "required": true,
+                "type": {
+                  "kind": "integer",
+                  "const": 1,
+                  "minimum": 1,
+                  "maximum": 1
+                }
+              },
+              {
+                "name": "operationFingerprint",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Sha256Hex64"
+                }
+              },
+              {
+                "name": "snapshot",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "OperationAdmissionSnapshotV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "NOT_FOUND",
+            "fields": [
+              {
+                "name": "schemaRevision",
+                "required": true,
+                "type": {
+                  "kind": "integer",
+                  "const": 1,
+                  "minimum": 1,
+                  "maximum": 1
+                }
+              },
+              {
+                "name": "kind",
+                "required": true,
+                "type": {
+                  "kind": "string",
+                  "const": "operation.snapshot"
+                }
+              },
+              {
+                "name": "requestId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "sourcePartition",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SourcePartitionV1"
+                }
+              },
+              {
+                "name": "operationId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "fingerprintVersion",
+                "required": true,
+                "type": {
+                  "kind": "integer",
+                  "const": 1,
+                  "minimum": 1,
+                  "maximum": 1
+                }
+              },
+              {
+                "name": "operationFingerprint",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Sha256Hex64"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "CONFLICT",
+            "fields": [
+              {
+                "name": "schemaRevision",
+                "required": true,
+                "type": {
+                  "kind": "integer",
+                  "const": 1,
+                  "minimum": 1,
+                  "maximum": 1
+                }
+              },
+              {
+                "name": "kind",
+                "required": true,
+                "type": {
+                  "kind": "string",
+                  "const": "operation.snapshot"
+                }
+              },
+              {
+                "name": "requestId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "sourcePartition",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "SourcePartitionV1"
+                }
+              },
+              {
+                "name": "operationId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "fingerprintVersion",
+                "required": true,
+                "type": {
+                  "kind": "integer",
+                  "const": 1,
+                  "minimum": 1,
+                  "maximum": 1
+                }
+              },
+              {
+                "name": "operationFingerprint",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Sha256Hex64"
+                }
+              },
+              {
+                "name": "problem",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "ProblemV1"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "OracleProjectionRefV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "refKind",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "ORACLE_PROJECTION"
+            }
+          },
+          {
+            "name": "registryId",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "PhysicalStorageCoordinateRefV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "storageBindingRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "StorageBindingRefV1"
+            }
+          },
+          {
+            "name": "coordinateId",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "PhysicalStorageCoordinateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "coordinateId",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "host",
+            "required": true,
+            "type": {
+              "kind": "enum",
+              "values": [
+                "BRIDGE",
+                "MOBILE"
+              ]
+            }
+          },
+          {
+            "name": "databaseId",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "tableName",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "SqlIdentifierV1"
+            }
+          },
+          {
+            "name": "stateColumnName",
+            "required": true,
+            "type": {
+              "kind": "nullable",
+              "inner": {
+                "kind": "ref",
+                "target": "SqlIdentifierV1"
+              }
+            }
+          },
+          {
+            "name": "storageRole",
+            "required": true,
+            "type": {
+              "kind": "enum",
+              "values": [
+                "MUTABLE_STATE",
+                "AUXILIARY_MUTABLE_STATE",
+                "IMMUTABLE_FACT",
+                "IMMUTABLE_ENVELOPE",
+                "STAGING",
+                "CHECKPOINT",
+                "PUBLICATION_OUTBOX"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "ProjectionRouteRefV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "refKind",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "PROJECTION_ROUTE"
+            }
+          },
+          {
+            "name": "registryId",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "ReplicaWriterBindingV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "replicaRole",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "MOBILE_REBUILDABLE_REPLICA"
+            }
+          },
+          {
+            "name": "replicaWriterRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "ReplicaWriterRefV1"
+            }
+          },
+          {
+            "name": "storageBindings",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "NonEmptyStorageBindingRefSetV1"
+            }
+          },
+          {
+            "name": "routeBindings",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "NonEmptyProjectionRouteRefSetV1"
+            }
+          },
+          {
+            "name": "canWriteSemanticOwnerState",
+            "required": true,
+            "type": {
+              "kind": "boolean",
+              "const": false
+            }
+          },
+          {
+            "name": "canWriteEventFacts",
+            "required": true,
+            "type": {
+              "kind": "boolean",
+              "const": false
+            }
+          },
+          {
+            "name": "canWriteOutboxEnvelopes",
+            "required": true,
+            "type": {
+              "kind": "boolean",
+              "const": false
+            }
+          },
+          {
+            "name": "canAdvanceCanonicalHead",
+            "required": true,
+            "type": {
+              "kind": "boolean",
+              "const": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "ReplicaWriterRefV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "host",
+            "required": true,
+            "type": {
+              "kind": "enum",
+              "values": [
+                "MOBILE"
+              ]
+            }
+          },
+          {
+            "name": "writerId",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "ReplicaApplyCoordinator"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "SemanticOwnerSelectorRefV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "refKind",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "SEMANTIC_OWNER_SELECTOR"
+            }
+          },
+          {
+            "name": "registryId",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "SmClaimStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "NONE",
+          "ACTIVE",
+          "RELEASED",
+          "EXPIRED",
+          "CONSUMED",
+          "REVOKED"
+        ]
+      }
+    },
+    {
+      "id": "SmContentOfferStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "OFFERED",
+          "TRANSFERRING",
+          "VERIFYING",
+          "FINALIZING",
+          "FINALIZED",
+          "FAILED",
+          "CANCELLED",
+          "EXPIRED"
+        ]
+      }
+    },
+    {
+      "id": "SmDispatchAttemptStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "PREPARED",
+          "DEFINITIVE_NOT_DISPATCHED",
+          "CALL_STARTED",
+          "PROVIDER_ACCEPTED",
+          "PROVIDER_REJECTED_NO_SIDE_EFFECT",
+          "OUTCOME_UNKNOWN"
+        ]
+      }
+    },
+    {
+      "id": "SmDurableDeliveryStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "COMMITTED",
+          "QUEUED",
+          "SENT",
+          "PAUSED_BACKPRESSURE",
+          "ACKED",
+          "SNAPSHOT_REQUIRED",
+          "EXPIRED_AFTER_POLICY"
+        ]
+      }
+    },
+    {
+      "id": "SmEffectObservationStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "NONE",
+          "PENDING",
+          "OBSERVED_MATCH",
+          "OBSERVED_CONFLICT",
+          "OBSERVATION_UNAVAILABLE"
+        ]
+      }
+    },
+    {
+      "id": "SmGapRepairStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "ACTIVE",
+          "HEAD_ADVANCED",
+          "EVIDENCE_REUSED",
+          "FAILED",
+          "STALE"
+        ]
+      }
+    },
+    {
+      "id": "SmInteractionStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "OPEN_UNCLAIMED",
+          "OPEN_CLAIMED",
+          "RESPONSE_PENDING",
+          "RESOLVED",
+          "WITHDRAWN",
+          "STALE",
+          "EXPIRED"
+        ]
+      }
+    },
+    {
+      "id": "SmLiveStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "OBSERVED",
+          "ANCHORED",
+          "DISPLAYED",
+          "PROMOTED",
+          "RETIRED",
+          "UNANCHORED_ACTIVITY",
+          "CONFLICT_REPAIR_REQUIRED",
+          "DROPPED_STALE_FENCE",
+          "DROPPED_CAPACITY",
+          "EXPIRED",
+          "LOST_ON_RESTART"
+        ]
+      }
+    },
+    {
+      "id": "SmLocalIntentStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "DRAFT",
+          "HELD_OFFLINE",
+          "READY_TO_SUBMIT",
+          "SUBMITTING",
+          "BRIDGE_ACCEPTED",
+          "ADMISSION_UNKNOWN",
+          "LOCAL_CANCELLED",
+          "LOCAL_ERROR"
+        ]
+      }
+    },
+    {
+      "id": "SmMaterializationStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "STAGING",
+          "SEALED",
+          "REJECTED",
+          "QUARANTINED"
+        ]
+      }
+    },
+    {
+      "id": "SmOperationStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "RECEIVED",
+          "REJECTED_BEFORE_ADMISSION",
+          "ADMITTED",
+          "QUEUED",
+          "BLOCKED_PRECONDITION",
+          "READY",
+          "DISPATCHING",
+          "PROVIDER_ACCEPTED",
+          "AWAITING_EFFECT_OBSERVATION",
+          "SUCCEEDED",
+          "FAILED_DEFINITIVE",
+          "OUTCOME_UNKNOWN",
+          "CANCELLED_PRE_DISPATCH"
+        ]
+      }
+    },
+    {
+      "id": "SmQueueEntryStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "QUEUED",
+          "DISPATCH_OWNED",
+          "CONSUMED",
+          "CANCELLED"
+        ]
+      }
+    },
+    {
+      "id": "SmReadAttemptStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "CREATED",
+          "READING",
+          "VERIFYING",
+          "VERIFIED",
+          "COMMITTED",
+          "EVIDENCE_REUSED",
+          "FAILED",
+          "REJECTED",
+          "QUARANTINED",
+          "CAS_CONFLICT"
+        ]
+      }
+    },
+    {
+      "id": "SmReconcileStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "ABSENT",
+          "REQUESTED",
+          "STILL_UNKNOWN",
+          "EXECUTED_MATCHED",
+          "EXECUTED_CONFLICT",
+          "NOT_EXECUTED_PROVEN"
+        ]
+      }
+    },
+    {
+      "id": "SmReplicaApplyStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "RECEIVED",
+          "STAGED",
+          "APPLIED",
+          "READBACK_VERIFIED",
+          "PUBLISHED",
+          "ACKED",
+          "REJECTED",
+          "SNAPSHOT_REQUIRED"
+        ]
+      }
+    },
+    {
+      "id": "SmSourceStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "UNBOUND",
+          "TRANSPORT_CONNECTED",
+          "AUTHENTICATED",
+          "SOURCE_ASSERTED",
+          "SOURCE_VERIFIED",
+          "REPLICA_BOUND",
+          "APPLICATION_READY",
+          "AUTH_FAILED",
+          "IDENTITY_MISMATCH",
+          "SOURCE_MISMATCH",
+          "REVOKED",
+          "OFFLINE_LAST_GOOD"
+        ]
+      }
+    },
+    {
+      "id": "SmTimelineHeadStateV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "ABSENT",
+          "PRESENT",
+          "TOMBSTONED_PROVEN"
+        ]
+      }
+    },
+    {
+      "id": "SqlIdentifierV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      }
+    },
+    {
+      "id": "SqlTransactionRoleV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "AUTHORITATIVE_OWNER",
+          "MACHINE_ATOMIC",
+          "DURABLE_INBOX_STAGING",
+          "DURABLE_DOMAIN_STAGING",
+          "FINAL_REPLICA_APPLY",
+          "READBACK_STATE_CAS",
+          "PUBLICATION_STATE_CAS",
+          "ACK_STATE_CAS"
+        ]
+      }
+    },
+    {
+      "id": "SqlTransactionSegmentV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "segmentOrdinal",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Ordinal0V1"
+            }
+          },
+          {
+            "name": "segmentId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          },
+          {
+            "name": "segmentKind",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "SQL_TRANSACTION"
+            }
+          },
+          {
+            "name": "transactionRole",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "SqlTransactionRoleV1"
+            }
+          },
+          {
+            "name": "coordinatorBindingKey",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "TransactionBindingKeyV1"
+            }
+          },
+          {
+            "name": "entryDurablePostStateProjectionRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "OracleProjectionRefV1"
+            }
+          },
+          {
+            "name": "writes",
+            "required": true,
+            "type": {
+              "kind": "array",
+              "items": {
+                "kind": "ref",
+                "target": "TransactionPhysicalWriteV1"
+              },
+              "minItems": 1,
+              "maxItems": 622
+            }
+          },
+          {
+            "name": "commitPostStateProjectionRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "OracleProjectionRefV1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "StorageBindingRefV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "refKind",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "STORAGE_BINDING"
+            }
+          },
+          {
+            "name": "registryId",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "StorageBindingV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "registryId",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "machineId",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "bindingRole",
+            "required": true,
+            "type": {
+              "kind": "enum",
+              "values": [
+                "AUTHORITATIVE",
+                "REBUILDABLE_REPLICA",
+                "TRANSACTION_AUXILIARY"
+              ]
+            }
+          },
+          {
+            "name": "semanticOwnerRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "SemanticOwnerSelectorRefV1"
+            }
+          },
+          {
+            "name": "writerBinding",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "StorageWriterBindingV1"
+            }
+          },
+          {
+            "name": "storageMode",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "StorageModeV1"
+            }
+          },
+          {
+            "name": "physicalCoordinates",
+            "required": true,
+            "type": {
+              "kind": "array",
+              "items": {
+                "kind": "ref",
+                "target": "PhysicalStorageCoordinateV1"
+              },
+              "minItems": 0,
+              "maxItems": 32,
+              "uniqueBy": [
+                "coordinateId"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "StorageModeV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "SQL_STATE_COLUMN",
+          "SQL_AUXILIARY",
+          "MEMORY_ONLY",
+          "EVIDENCE_DERIVED",
+          "APPEND_ONLY_NO_MUTABLE_STATE"
+        ]
+      }
+    },
+    {
+      "id": "StorageWriterBindingV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "union",
+        "discriminator": "writerKind",
+        "variants": [
+          {
+            "tag": "AUTHORITATIVE",
+            "fields": [
+              {
+                "name": "authoritativeWriterRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "AuthoritativeWriterRefV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "REPLICA",
+            "fields": [
+              {
+                "name": "replicaWriterRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "ReplicaWriterRefV1"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "TransactionApplicabilityCaseV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "bindingKey",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "TransactionBindingKeyV1"
+            }
+          },
+          {
+            "name": "coordinate",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "MachineEdgeCoordinateV1"
+            }
+          },
+          {
+            "name": "routeRef",
+            "required": true,
+            "type": {
+              "kind": "nullable",
+              "inner": {
+                "kind": "ref",
+                "target": "ProjectionRouteRefV1"
+              }
+            }
+          },
+          {
+            "name": "routeVariant",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "TransactionRouteVariantV1"
+            }
+          },
+          {
+            "name": "guardRefs",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "CanonicalTransactionGuardRefSetV1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "TransactionAuthorityCaseV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "caseKind",
+            "required": true,
+            "type": {
+              "kind": "enum",
+              "values": [
+                "MANIFEST_SET_EXACT",
+                "KILL_POINT_SET_EXACT",
+                "BRIDGE_MAPPING_EXACT",
+                "MOBILE_SHAPE_EXACT",
+                "MANIFEST_SET_DRIFT",
+                "KILL_POINT_SET_DRIFT",
+                "BRIDGE_MAPPING_DRIFT",
+                "MOBILE_SHAPE_DRIFT"
+              ]
+            }
+          },
+          {
+            "name": "subjectCount",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "PositiveJsonSafeIntegerV1"
+            }
+          },
+          {
+            "name": "subjectIds",
+            "required": true,
+            "type": {
+              "kind": "array",
+              "items": {
+                "kind": "string"
+              },
+              "minItems": 0,
+              "maxItems": 946,
+              "uniqueItems": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "TransactionBindingKeyV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "union",
+        "discriminator": "bindingKind",
+        "variants": [
+          {
+            "tag": "AUTHORITATIVE_MACHINE",
+            "fields": [
+              {
+                "name": "machineId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "ActiveMachineIdV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "MOBILE_REPLICA",
+            "fields": [
+              {
+                "name": "machineId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "ActiveMachineIdV1"
+                }
+              },
+              {
+                "name": "replicaRole",
+                "required": true,
+                "type": {
+                  "kind": "string",
+                  "const": "MOBILE_REBUILDABLE_REPLICA"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "TransactionFailureOracleV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "union",
+        "discriminator": "oracleKind",
+        "variants": [
+          {
+            "tag": "ROLLBACK_OPEN_TRANSACTION",
+            "fields": [
+              {
+                "name": "durablePostStateProjectionRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "OracleProjectionRefV1"
+                }
+              },
+              {
+                "name": "resumeSegmentOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "DURABLE_COMMIT_IDEMPOTENT_REPLAY",
+            "fields": [
+              {
+                "name": "durablePostStateProjectionRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "OracleProjectionRefV1"
+                }
+              },
+              {
+                "name": "resumeSegmentOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "EXTERNAL_EFFECT_MAY_HAVE_OCCURRED",
+            "fields": [
+              {
+                "name": "effectKind",
+                "required": true,
+                "type": {
+                  "kind": "enum",
+                  "values": [
+                    "READBACK",
+                    "PUBLICATION",
+                    "ACK"
+                  ]
+                }
+              },
+              {
+                "name": "replayRule",
+                "required": true,
+                "type": {
+                  "kind": "enum",
+                  "values": [
+                    "READ_ONLY_REPEATABLE",
+                    "IDEMPOTENT_BY_REPOSITORY_PUBLICATION_ID",
+                    "IDEMPOTENT_BY_MESSAGE_KEY_AND_COMMITTED_CHECKPOINT"
+                  ]
+                }
+              },
+              {
+                "name": "durablePostStateProjectionRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "OracleProjectionRefV1"
+                }
+              },
+              {
+                "name": "resumeSegmentOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "TransactionGuardAuthorityV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "registryId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          },
+          {
+            "name": "guardKind",
+            "required": true,
+            "type": {
+              "kind": "enum",
+              "values": [
+                "AUTHORITATIVE_ROUTE_VARIANT",
+                "MOBILE_ROUTE_APPLY"
+              ]
+            }
+          },
+          {
+            "name": "routeRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "ProjectionRouteRefV1"
+            }
+          },
+          {
+            "name": "bindingKey",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "TransactionBindingKeyV1"
+            }
+          },
+          {
+            "name": "coordinate",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "MachineEdgeCoordinateV1"
+            }
+          },
+          {
+            "name": "routeVariant",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "TransactionRouteVariantV1"
+            }
+          },
+          {
+            "name": "hasTypedDomainRows",
+            "required": true,
+            "type": {
+              "kind": "nullable",
+              "inner": {
+                "kind": "boolean"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "TransactionKillPointV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "killPointId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          },
+          {
+            "name": "manifestRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "TransactionManifestRefV1"
+            }
+          },
+          {
+            "name": "afterStepOrdinal",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Ordinal0V1"
+            }
+          },
+          {
+            "name": "afterStepId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          },
+          {
+            "name": "beforeStepOrdinal",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "PositiveJsonSafeIntegerV1"
+            }
+          },
+          {
+            "name": "beforeStepId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          },
+          {
+            "name": "failureOracle",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "TransactionFailureOracleV1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "TransactionManifestRefV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "refKind",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "TRANSACTION_MANIFEST"
+            }
+          },
+          {
+            "name": "registryId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "TransactionManifestV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "manifestId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          },
+          {
+            "name": "initialDurablePostStateProjectionRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "OracleProjectionRefV1"
+            }
+          },
+          {
+            "name": "applicabilityCases",
+            "required": true,
+            "type": {
+              "kind": "array",
+              "items": {
+                "kind": "ref",
+                "target": "TransactionApplicabilityCaseV1"
+              },
+              "minItems": 1,
+              "maxItems": 387,
+              "uniqueItems": true
+            }
+          },
+          {
+            "name": "segments",
+            "required": true,
+            "type": {
+              "kind": "array",
+              "items": {
+                "kind": "ref",
+                "target": "TransactionSegmentV1"
+              },
+              "minItems": 1,
+              "maxItems": 290
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "TransactionOracleProjectionAuthorityV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "registryId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          },
+          {
+            "name": "projectionKind",
+            "required": true,
+            "type": {
+              "kind": "enum",
+              "values": [
+                "DURABLE_DOMAIN_STAGED",
+                "EXTERNAL_EFFECT_OBSERVED"
+              ]
+            }
+          },
+          {
+            "name": "routeRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "ProjectionRouteRefV1"
+            }
+          },
+          {
+            "name": "effectKind",
+            "required": true,
+            "type": {
+              "kind": "nullable",
+              "inner": {
+                "kind": "enum",
+                "values": [
+                  "READBACK",
+                  "PUBLICATION",
+                  "ACK"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "TransactionPhysicalWriteV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "writeOrdinal",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Ordinal0V1"
+            }
+          },
+          {
+            "name": "writeId",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "Id"
+            }
+          },
+          {
+            "name": "writeRole",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "TransactionWriteRoleV1"
+            }
+          },
+          {
+            "name": "bindingKey",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "TransactionBindingKeyV1"
+            }
+          },
+          {
+            "name": "physicalStorageCoordinateRef",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "PhysicalStorageCoordinateRefV1"
+            }
+          },
+          {
+            "name": "rowCardinality",
+            "required": true,
+            "type": {
+              "kind": "ref",
+              "target": "TransactionRowCardinalityV1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "TransactionRouteVariantV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "NONE",
+          "PUBLIC_CONNECTED",
+          "PUBLIC_DISCONNECTED",
+          "COALESCED",
+          "REJECTED",
+          "INTERNAL"
+        ]
+      }
+    },
+    {
+      "id": "TransactionRowCardinalityV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "union",
+        "discriminator": "cardinalityKind",
+        "variants": [
+          {
+            "tag": "EXACT",
+            "fields": [
+              {
+                "name": "rows",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "PositiveJsonSafeIntegerV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "CONTEXT_COUNT",
+            "fields": [
+              {
+                "name": "countKind",
+                "required": true,
+                "type": {
+                  "kind": "enum",
+                  "values": [
+                    "EVENT_FACT_COUNT",
+                    "ELIGIBLE_ENVELOPE_COUNT",
+                    "MATERIALIZATION_PAGE_COUNT",
+                    "STAGED_ENVELOPE_COUNT",
+                    "STAGED_TYPED_ROW_COUNT",
+                    "APPLICABLE_DOMAIN_ROW_COUNT"
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "TransactionSegmentV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "oneOf",
+        "variants": [
+          {
+            "kind": "ref",
+            "target": "SqlTransactionSegmentV1"
+          },
+          {
+            "kind": "ref",
+            "target": "ExternalEffectSegmentV1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "TransactionStepV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "union",
+        "discriminator": "stepKind",
+        "variants": [
+          {
+            "tag": "TX_BEGIN",
+            "fields": [
+              {
+                "name": "stepOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              },
+              {
+                "name": "stepId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "manifestRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "TransactionManifestRefV1"
+                }
+              },
+              {
+                "name": "segmentOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              },
+              {
+                "name": "segmentId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "WRITE",
+            "fields": [
+              {
+                "name": "stepOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              },
+              {
+                "name": "stepId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "manifestRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "TransactionManifestRefV1"
+                }
+              },
+              {
+                "name": "segmentOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              },
+              {
+                "name": "segmentId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "writeId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "writeRole",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "TransactionWriteRoleV1"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "TX_COMMIT",
+            "fields": [
+              {
+                "name": "stepOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              },
+              {
+                "name": "stepId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "manifestRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "TransactionManifestRefV1"
+                }
+              },
+              {
+                "name": "segmentOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              },
+              {
+                "name": "segmentId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "READBACK",
+            "fields": [
+              {
+                "name": "stepOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              },
+              {
+                "name": "stepId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "manifestRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "TransactionManifestRefV1"
+                }
+              },
+              {
+                "name": "segmentOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              },
+              {
+                "name": "segmentId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "replayRule",
+                "required": true,
+                "type": {
+                  "kind": "string",
+                  "const": "READ_ONLY_REPEATABLE"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "PUBLICATION",
+            "fields": [
+              {
+                "name": "stepOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              },
+              {
+                "name": "stepId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "manifestRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "TransactionManifestRefV1"
+                }
+              },
+              {
+                "name": "segmentOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              },
+              {
+                "name": "segmentId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "replayRule",
+                "required": true,
+                "type": {
+                  "kind": "string",
+                  "const": "IDEMPOTENT_BY_REPOSITORY_PUBLICATION_ID"
+                }
+              }
+            ]
+          },
+          {
+            "tag": "ACK",
+            "fields": [
+              {
+                "name": "stepOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              },
+              {
+                "name": "stepId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "manifestRef",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "TransactionManifestRefV1"
+                }
+              },
+              {
+                "name": "segmentOrdinal",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Ordinal0V1"
+                }
+              },
+              {
+                "name": "segmentId",
+                "required": true,
+                "type": {
+                  "kind": "ref",
+                  "target": "Id"
+                }
+              },
+              {
+                "name": "replayRule",
+                "required": true,
+                "type": {
+                  "kind": "string",
+                  "const": "IDEMPOTENT_BY_MESSAGE_KEY_AND_COMMITTED_CHECKPOINT"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "TransactionWriteRoleV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "enum",
+        "values": [
+          "OWNER_STATE",
+          "EVENT_FACT",
+          "OUTBOX_ENVELOPE",
+          "DURABLE_STAGING",
+          "DOMAIN_REPLICA",
+          "APPLY_STATE",
+          "CHECKPOINT",
+          "PROGRESS_METADATA",
+          "PUBLICATION_OUTBOX"
+        ]
+      }
+    },
+    {
+      "id": "UniqueReplicaWriterBindingSetV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "array",
+        "items": {
+          "kind": "ref",
+          "target": "ReplicaWriterBindingV1"
+        },
+        "minItems": 0,
+        "maxItems": 1,
+        "uniqueBy": [
+          "replicaRole",
+          "storageBindings"
+        ]
+      }
+    },
+    {
+      "id": "UnknownPolicyRefV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "refKind",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "UNKNOWN_POLICY"
+            }
+          },
+          {
+            "name": "registryId",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "VectorId",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "ref",
+        "target": "Id"
+      }
+    },
+    {
+      "id": "WireProjectionRefV1",
+      "profiles": [
+        "pvmc1.phone-core.v1"
+      ],
+      "node": {
+        "kind": "object",
+        "fields": [
+          {
+            "name": "refKind",
+            "required": true,
+            "type": {
+              "kind": "string",
+              "const": "WIRE_PROJECTION"
+            }
+          },
+          {
+            "name": "registryId",
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

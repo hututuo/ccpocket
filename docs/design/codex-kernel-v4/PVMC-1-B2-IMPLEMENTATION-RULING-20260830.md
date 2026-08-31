@@ -158,7 +158,7 @@ The previously abbreviated Mobile projection bindings are frozen as follows:
 
 | Machine | Authoritative storage | Mobile replica storage | Mobile replica route bindings |
 |---|---|---|---|
-| `SM-MATERIALIZATION` | Bridge `timeline_materialization.state` | `m_timeline_materialization.state` | `materialization.begin.v1:TIMELINE`, `materialization.page.v1:TIMELINE`, `materialization.commit.v1:TIMELINE` |
+| `SM-MATERIALIZATION` | Bridge `timeline_materialization.state` | `m_timeline_materialization.state` | `materialization.begin.v1:TIMELINE`, `materialization.commit.v1:TIMELINE`, `materialization.page.v1:TIMELINE` |
 | `SM-TIMELINE-HEAD` | Bridge `timeline_head.state` | `m_timeline_head.state` | `materialization.commit.v1:TIMELINE` |
 | `SM-OPERATION` | Bridge `operation.lifecycle_state` | `m_operation.lifecycle_state` | `operation.state.v1` |
 | `SM-DISPATCH-ATTEMPT` | Bridge `dispatch_attempt.state` | `m_operation.dispatch_attempt_state` | `operation.state.v1` |
@@ -174,6 +174,9 @@ Each row above that names Mobile replica storage has exactly one
 `replicaRole="MOBILE_REBUILDABLE_REPLICA"`, writer host/id
 `MOBILE/ReplicaApplyCoordinator`, and all four authority flags false. Its
 `storageBindings` and `routeBindings` exact-set equal that table row.
+The table displays each set-valued `routeBindings` cell in mandatory JCS UTF-16
+order. That set order is intentionally different from the seven-route normative
+execution order; the latter remains fixed by `normativeOrdinal`.
 
 The following machines have `replicaWriterBindings=[]`:
 
@@ -269,6 +272,11 @@ The generator emits:
   exact SQL bytes, and `sqlSha256` is lowercase SHA-256 of those decoded bytes;
 - byte-identical SQL and immutable typed machine/edge constants in generated
   TypeScript and Dart.
+
+The TypeScript and Dart exports are typed values of the generated machine/edge
+authority definitions, not JSON strings or private string-key sets. Runtime tests
+decode and compare all 151 typed edge rows and all 17 immutable machine records with
+Schema/profile-manifest authority before any helper predicate may consume them.
 
 B2 extends the accepted B1 digest authority inventory with exactly one active
 digest-contract row, using the accepted B1 row schema unchanged:
@@ -552,6 +560,28 @@ continues to own only the repair request/result workflow; it has no durable-rout
 ref and no invented SQL state. This disambiguates the amendment's “typed Gap or
 failed attempt” rule without changing either state graph.
 
+The originating-owner physical-write plan is also closed. The ordinary plan writes
+the binding's sole mutable state coordinate. These exact exceptions replace any
+“take the first coordinate” heuristic:
+
+| edge/case | exact owner-side physical coordinates, in order |
+|---|---|
+| `SM-READ-ATTEMPT VERIFYING->VERIFIED` | `timeline_read_attempt.state`, then immutable `timeline_read_evidence` |
+| `SM-RECONCILE ABSENT->REQUESTED` or `STILL_UNKNOWN->REQUESTED` | immutable `reconcile_attempt` |
+| `SM-RECONCILE REQUESTED->STILL_UNKNOWN|EXECUTED_MATCHED|EXECUTED_CONFLICT|NOT_EXECUTED_PROVEN` | immutable same-revision `reconcile_resolution` |
+| every `PUBLIC_CONNECTED` route case | the edge-specific owner coordinates above, then `durable_delivery_head.state`, event fact, eligible outbox envelope(s) |
+| every `PUBLIC_DISCONNECTED` route case | the edge-specific owner coordinates above, then event fact; no delivery-head or outbox write |
+| every quiet route case | only the edge-specific owner coordinates above |
+
+The connected delivery-head write is the `SM-DURABLE-DELIVERY
+COMMITTED->QUEUED` transition for that newly committed event key and is performed by
+`SyncProjectionDeliveryWriter` inside the originating owner's SQL transaction. It is
+the sole cross-writer state write. The delivery machine's later send/ACK transitions
+are outside this originating transaction family. Every non-exempt active physical
+coordinate must appear in the validator-derived reverse index; the only B2
+transaction-manifest exemptions are the non-durable-route authoritative coordinates
+`protected_local_intent.state` and `content_offer.state`.
+
 For one authoritative edge/route pair, `PUBLIC_CONNECTED` has owner-state,
 event-fact, and eligible-envelope writes; `PUBLIC_DISCONNECTED` has owner-state
 and event-fact writes; the other three variants share one owner-state-only
@@ -743,6 +773,30 @@ The existing outer wire tags are frozen as:
   `header: AuthenticatedClientHeaderV1` and `query: OperationQueryV1`;
 - server `operation_snapshot` with field
   `result: OperationSnapshotResultV1`.
+
+The executable admission oracle uses one internal, read-only persisted-row bundle;
+it is not a wire field or a second storage authority:
+
+```text
+OperationAdmissionPersistedRowV1 = {
+  sourcePartition: SourcePartitionV1,
+  operationId: Id,
+  originView: OperationOriginAdmissionViewV1,
+  fingerprintVersion: 1,
+  operationFingerprint: Sha256Hex64,
+  snapshot: OperationAdmissionSnapshotV1
+}
+
+persistedOperation: OperationAdmissionPersistedRowV1 | null
+```
+
+`NOT_FOUND` is valid only when the single linearized read yields
+`persistedOperation=null`; actor, fingerprint, and snapshot fields are then
+unavailable and must not be read. Every `MATCHED` or `CONFLICT` branch requires one
+non-null persisted bundle whose source partition and operation ID exact-equal the
+lookup key. `MATCHED.snapshot` must additionally exact-equal the persisted
+`operationRevision/lifecycleState`; the result cannot nominate a different durable
+state. Actor-origin fencing remains before the persisted fingerprint comparison.
 
 `ServerMessageV1.operation_snapshot` is required; an operation-state event or a
 generic problem envelope cannot substitute for the read-only snapshot result.

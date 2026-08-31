@@ -67,8 +67,8 @@ test('Schema and profile manifest expose one exact B2 authority set', () => {
     manifests: 235,
     applicabilityCases: 387,
     segments: 290,
-    steps: 1102,
-    killPoints: 867,
+    steps: 1181,
+    killPoints: 946,
     bridgeRoutePoints: 28,
   });
   assert.equal(schema.$defs.TransactionManifestV1.type, 'object');
@@ -81,10 +81,16 @@ test('generated TypeScript exports exact immutable machine and transaction autho
   const source = artifacts.get('contract.ts');
   const records = JSON.parse(capture(
     source,
-    /export const pvmc1MachineRecords = (\[[\s\S]*?\]) as const;/,
+    /export const pvmc1MachineRecords = (\[[\s\S]*?\]) as const satisfies readonly Pvmc1MachineRecord\[\];/,
     'pvmc1MachineRecords',
   ));
   assert.deepEqual(records, model.machineAuthority.machineRecords);
+  const edges = JSON.parse(capture(
+    source,
+    /export const pvmc1MachineEdgeAuthorities = (\[[\s\S]*?\]) as const satisfies readonly MachineEdgeAuthorityV1\[\];/,
+    'pvmc1MachineEdgeAuthorities',
+  ));
+  assert.deepEqual(edges, model.machineAuthority.machineEdgeAuthorities);
   assert.deepEqual(
     tsJson(source, 'pvmc1DurableRouteIds'),
     model.machineAuthority.projectionRoutes.map((row) => row.registryId),
@@ -99,6 +105,7 @@ test('generated TypeScript exports exact immutable machine and transaction autho
   );
   assert.match(source, /function isAllowedPvmc1MachineEdge/);
   assert.match(source, /function pvmc1MachineTransitionSqlBytes/);
+  assert.match(source, /as const satisfies readonly Pvmc1MachineRecord\[\]/);
 });
 
 test('generated Dart exports the same machine JSON, routes, and transaction IDs', () => {
@@ -106,10 +113,19 @@ test('generated Dart exports the same machine JSON, routes, and transaction IDs'
   const source = artifacts.get('contract.dart');
   const encodedMachineJson = JSON.parse(capture(
     source,
-    /const String pvmc1MachineRecordsJson = ("(?:[^"\\]|\\.)*");/,
-    'pvmc1MachineRecordsJson',
+    /const String _pvmc1MachineRecordsJson = ("(?:[^"\\]|\\.)*");/,
+    '_pvmc1MachineRecordsJson',
   ));
   assert.deepEqual(JSON.parse(encodedMachineJson), model.machineAuthority.machineRecords);
+  const encodedEdgesJson = JSON.parse(capture(
+    source,
+    /const String _pvmc1MachineEdgeAuthoritiesJson = ("(?:[^"\\]|\\.)*");/,
+    '_pvmc1MachineEdgeAuthoritiesJson',
+  ));
+  assert.deepEqual(
+    JSON.parse(encodedEdgesJson),
+    model.machineAuthority.machineEdgeAuthorities,
+  );
   assert.deepEqual(
     dartJson(source, 'pvmc1DurableRouteIds'),
     model.machineAuthority.projectionRoutes.map((row) => row.registryId),
@@ -124,6 +140,8 @@ test('generated Dart exports the same machine JSON, routes, and transaction IDs'
   );
   assert.match(source, /bool isAllowedPvmc1MachineEdge/);
   assert.match(source, /Uint8List pvmc1MachineTransitionSqlBytes/);
+  assert.match(source, /final List<Pvmc1MachineRecord> pvmc1MachineRecords/);
+  assert.match(source, /final List<MachineEdgeAuthorityV1> pvmc1MachineEdgeAuthorities/);
 });
 
 test('Schema, manifest, TypeScript, and Dart carry the exact same SQL bytes and digest', () => {

@@ -5,12 +5,18 @@ import {fileURLToPath} from 'node:url';
 
 import { canonicalize, compareUtf16, jsonEqual } from './canonical.mjs';
 import { validateDigestAuthority } from './b1-digest-authority.mjs';
+import {validateB2DefinitionAuthority} from './b2-definition-authority.mjs';
+import {validateAdmissionLookupVectors} from './admission-semantics.mjs';
 import { discoverDigestPreimages } from './digest-preimages.mjs';
 import {
   validateMachineAuthorityRegistry,
   validateMachineAuthorityVectors,
 } from './machine-semantics.mjs';
 import {validateTransactionAuthorityRegistry} from './transaction-semantics.mjs';
+import {
+  validateIndependentTransactionAuthority,
+  validateTransactionAuthorityVectors,
+} from './transaction-oracle.mjs';
 import { validateGeneratedNames } from './names.mjs';
 import { evaluateSemanticRule } from './semantic-oracle.mjs';
 
@@ -647,6 +653,7 @@ export function validateInputs(registryInput, vectorsInput) {
     );
   }
   validateGeneratedNames(activeDefinitionIds, definitions);
+  if (pvmcRegistry) validateB2DefinitionAuthority(registry, activeDefinitionIds);
 
   const owners = simpleInventory(registry.owners, 'registry.owners', globalIds, {metadata: ['role', 'path']});
   if (pvmcRegistry) {
@@ -682,6 +689,9 @@ export function validateInputs(registryInput, vectorsInput) {
   const transactionAuthority = pvmcRegistry
     ? validateTransactionAuthorityRegistry(registry, machineAuthority)
     : null;
+  if (transactionAuthority !== null) {
+    validateIndependentTransactionAuthority(machineAuthority, transactionAuthority);
+  }
 
   const hardRules = new Map();
   for (const [index, raw] of requireArray(registry.hardRules, 'registry.hardRules').entries()) {
@@ -843,6 +853,12 @@ export function validateInputs(registryInput, vectorsInput) {
   }
   if (machineAuthority !== null) {
     validateMachineAuthorityVectors(machineAuthority, activeVectors);
+  }
+  if (transactionAuthority !== null) {
+    validateTransactionAuthorityVectors(transactionAuthority, activeVectors);
+  }
+  if (pvmcRegistry) {
+    validateAdmissionLookupVectors(activeVectors);
   }
 
   const model = {

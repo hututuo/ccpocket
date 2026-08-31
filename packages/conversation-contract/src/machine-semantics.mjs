@@ -16,6 +16,10 @@ const RULING_PATH = fileURLToPath(new URL(
   '../../../docs/design/codex-kernel-v4/PVMC-1-B2-IMPLEMENTATION-RULING-20260830.md',
   import.meta.url,
 ));
+const AMENDMENT_PATH = fileURLToPath(new URL(
+  '../../../docs/design/codex-kernel-v4/PVMC-1-COMPACT-AUTHORITY-AMENDMENT-20260830.md',
+  import.meta.url,
+));
 
 function fail(path, message) {
   throw new TypeError(`${path}: ${message}`);
@@ -157,6 +161,13 @@ function sourceOracle() {
       `expected current ruling digest ${rulingDigest}`,
     );
   }
+  const amendmentDigest = digestBytes(readFileSync(AMENDMENT_PATH));
+  if (parsed.authorityAmendmentSha256 !== amendmentDigest) {
+    fail(
+      'pvmc1B2Oracle.authorityAmendmentSha256',
+      `expected current amendment digest ${amendmentDigest}`,
+    );
+  }
   return parsed;
 }
 
@@ -253,8 +264,9 @@ function buildMachineRecords(oracle) {
         writerId: 'ReplicaApplyCoordinator',
       },
       storageBindings: [ref('STORAGE_BINDING', replicaStorageRegistryId(machine.machineId))],
-      routeBindings: machine.replica.routes.map((registryId) =>
-        ref('PROJECTION_ROUTE', registryId)),
+      routeBindings: machine.replica.routes
+        .map((registryId) => ref('PROJECTION_ROUTE', registryId))
+        .sort((left, right) => compareUtf16(left.registryId, right.registryId)),
       canWriteSemanticOwnerState: false,
       canWriteEventFacts: false,
       canWriteOutboxEnvelopes: false,
@@ -610,37 +622,82 @@ export function validateMachineAuthorityRegistry(registry) {
 
 export function validateMachineAuthorityVectors(machineAuthority, activeVectors) {
   const vectors = new Map(activeVectors.map((vector) => [vector.id, vector]));
-  const expectedIds = new Set();
+  const expected = new Map();
   for (const [machineOrdinal, machine] of machineAuthority.machineRecords.entries()) {
-    for (const edgeOrdinal of machine.allowedEdges.keys()) {
-      for (const id of [
-        positiveEdgeVectorId(machineOrdinal, edgeOrdinal),
-        negativeEdgeVectorId(machineOrdinal, edgeOrdinal),
-        faultEdgeVectorId(machineOrdinal, edgeOrdinal),
-      ]) expectedIds.add(id);
+    for (const [edgeOrdinal, edge] of machine.allowedEdges.entries()) {
+      const coordinate = {machineId: machine.machineId, ...edge};
+      expected.set(positiveEdgeVectorId(machineOrdinal, edgeOrdinal), {
+        caseKind: 'EDGE',
+        coordinate,
+      });
+      expected.set(negativeEdgeVectorId(machineOrdinal, edgeOrdinal), {
+        caseKind: 'EDGE_GUARD_FAILURE',
+        coordinate,
+      });
+      expected.set(faultEdgeVectorId(machineOrdinal, edgeOrdinal), {
+        caseKind: 'EDGE_WRITE_FAILURE',
+        coordinate,
+      });
     }
   }
   for (const marker of machineAuthority.forbiddenEdgeMarkers) {
     const {machineId, from, to} = marker.coordinate;
     const machine = machineAuthority.machineRecords.find((row) => row.machineId === machineId);
-    expectedIds.add(forbiddenEdgeVectorId(
+    expected.set(forbiddenEdgeVectorId(
       machine.machineOrdinal,
       machine.states.indexOf(from),
       machine.states.indexOf(to),
-    ));
+    ), {caseKind: 'FORBIDDEN_EDGE', coordinate: marker.coordinate});
   }
-  for (const id of expectedIds) {
-    if (!vectors.has(id)) fail('vectors.vectors', `missing B2 machine vector ${id}`);
+  for (const [id, value] of expected) {
+    const vector = vectors.get(id);
+    if (!vector) fail('vectors.vectors', `missing B2 machine vector ${id}`);
+    if (vector.vectorSetRef !== 'vectors.machine-authority' ||
+        vector.ruleRef !== 'rule.machine.authority-closure' ||
+        vector.typeRef !== 'MachineAuthorityCaseV1' ||
+        !jsonEqual(vector.value, value)) {
+      fail(`vectors.vectors.${id}`, 'machine vector ID does not bind its exact case and coordinate');
+    }
   }
   const machineVectors = activeVectors.filter((vector) =>
     vector.vectorSetRef === 'vectors.machine-authority');
-  if (machineVectors.length !== expectedIds.size) {
+  if (machineVectors.length !== expected.size ||
+      machineVectors.some((vector) => !expected.has(vector.id))) {
     fail(
       'vectors.vectors',
-      `expected ${expectedIds.size} B2 machine vectors, got ${machineVectors.length}`,
+      `expected ${expected.size} exact B2 machine vectors, got ${machineVectors.length}`,
     );
   }
-  return {expectedVectorIds: [...expectedIds].sort(compareUtf16)};
+  const sqlDigest = machineAuthority.machineTransitionSql.manifest.sqlSha256;
+  const expectedSql = new Map([
+    ['V-PVMC1-MACHINE-TRANSITION-SQL-EXACT', {
+      caseKind: 'SQL_EXACT',
+      sqlSha256: sqlDigest,
+    }],
+    ['V-PVMC1-MACHINE-TRANSITION-SQL-BYTE-DRIFT', {
+      caseKind: 'SQL_BYTE_DRIFT',
+      sqlSha256: '0'.repeat(64),
+    }],
+    ['V-PVMC1-MACHINE-TRANSITION-SQL-DIGEST-DRIFT', {
+      caseKind: 'SQL_DIGEST_DRIFT',
+      sqlSha256: 'f'.repeat(64),
+    }],
+  ]);
+  const sqlVectors = activeVectors.filter((vector) =>
+    vector.vectorSetRef === 'vectors.machine-sql');
+  if (sqlVectors.length !== expectedSql.size ||
+      sqlVectors.some((vector) => !expectedSql.has(vector.id))) {
+    fail('vectors.vectors', `expected ${expectedSql.size} exact B2 machine SQL vectors`);
+  }
+  for (const [id, value] of expectedSql) {
+    const vector = vectors.get(id);
+    if (!vector || vector.ruleRef !== 'rule.machine.sql-exact-bytes' ||
+        vector.typeRef !== 'MachineTransitionSqlCaseV1' ||
+        !jsonEqual(vector.value, value)) {
+      fail(`vectors.vectors.${id}`, 'machine SQL vector ID does not bind its exact byte subject');
+    }
+  }
+  return {expectedVectorIds: [...expected.keys()].sort(compareUtf16)};
 }
 
 function coordinateStatus(coordinate) {

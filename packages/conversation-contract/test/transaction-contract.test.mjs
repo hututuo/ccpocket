@@ -8,6 +8,10 @@ import {
   evaluateTransactionAuthorityCase,
   validateTransactionAuthorityRegistry,
 } from '../src/transaction-semantics.mjs';
+import {
+  validateIndependentTransactionAuthority,
+  validateTransactionAuthorityVectors,
+} from '../src/transaction-oracle.mjs';
 
 // Deliberately duplicated from the accepted ruling instead of imported from
 // transaction-semantics, so implementation drift cannot self-certify.
@@ -46,6 +50,10 @@ const registryUrl = new URL(
   '../../../docs/design/codex-kernel-v4/contracts/contract-registry.json',
   import.meta.url,
 );
+const vectorsUrl = new URL(
+  '../../../docs/design/codex-kernel-v4/contracts/vectors/phone-core-vectors.json',
+  import.meta.url,
+);
 
 function expected() {
   const machine = buildExpectedMachineAuthority();
@@ -57,14 +65,28 @@ function registry() {
   return JSON.parse(readFileSync(registryUrl, 'utf8'));
 }
 
+function vectors() {
+  return JSON.parse(readFileSync(vectorsUrl, 'utf8')).vectors;
+}
+
+function machineWithAuxiliary(machine, transaction) {
+  return {
+    ...machine,
+    storageBindings: [
+      ...machine.storageBindings,
+      ...transaction.transactionAuxiliaryStorageBindings,
+    ],
+  };
+}
+
 test('normalizes the exact B2 transaction universe and all derived rows', () => {
   const {transaction} = expected();
   assert.equal(transaction.transactionAuxiliaryStorageBindings.length, 3);
   assert.equal(transaction.transactionGuards.length, 387);
   assert.equal(transaction.transactionOracleProjections.length, 27);
   assert.equal(transaction.transactionManifests.length, 235);
-  assert.equal(transaction.transactionSteps.length, 1102);
-  assert.equal(transaction.transactionKillPoints.length, 867);
+  assert.equal(transaction.transactionSteps.length, 1181);
+  assert.equal(transaction.transactionKillPoints.length, 946);
   assert.equal(transaction.bridgeRoutePointBindings.length, 28);
   assert.equal(
     transaction.transactionManifests.reduce(
@@ -72,6 +94,37 @@ test('normalizes the exact B2 transaction universe and all derived rows', () => 
       0,
     ),
     387,
+  );
+});
+
+test('independent transaction oracle re-derives cover, writes, steps, and aliases', () => {
+  const {machine, transaction} = expected();
+  assert.deepEqual(
+    validateIndependentTransactionAuthority(
+      machineWithAuxiliary(machine, transaction),
+      transaction,
+    ),
+    {
+      manifestCount: 235,
+      applicabilityCaseCount: 387,
+      stepCount: 1181,
+      killPointCount: 946,
+      bridgeAliasCount: 28,
+    },
+  );
+
+  const drift = structuredClone(transaction);
+  const reconcile = drift.transactionManifests.find((manifest) =>
+    manifest.applicabilityCases[0].coordinate.machineId === 'SM-RECONCILE' &&
+    manifest.applicabilityCases[0].coordinate.to === 'EXECUTED_MATCHED');
+  reconcile.segments[0].writes[0].physicalStorageCoordinateRef.coordinateId =
+    'BRIDGE.reconcile_attempt.immutable';
+  assert.throws(
+    () => validateIndependentTransactionAuthority(
+      machineWithAuxiliary(machine, drift),
+      drift,
+    ),
+    /independent edge plan/,
   );
 });
 
@@ -125,15 +178,46 @@ test('R77 physical writes are exact for connected, disconnected, and quiet branc
   const roles = (manifest) => manifest.segments[0].writes.map((write) => write.writeRole);
   assert.deepEqual(roles(byShape('connected')), [
     'OWNER_STATE',
+    'OWNER_STATE',
     'EVENT_FACT',
     'OUTBOX_ENVELOPE',
   ]);
   assert.deepEqual(roles(byShape('disconnected')), ['OWNER_STATE', 'EVENT_FACT']);
   assert.deepEqual(roles(byShape('quiet')), ['OWNER_STATE']);
-  assert.deepEqual(byShape('connected').segments[0].writes[2].rowCardinality, {
+  assert.deepEqual(byShape('connected').segments[0].writes[3].rowCardinality, {
     cardinalityKind: 'CONTEXT_COUNT',
     countKind: 'ELIGIBLE_ENVELOPE_COUNT',
   });
+});
+
+test('edge-specific owner plans consume delivery head, read evidence, and reconcile facts', () => {
+  const {transaction} = expected();
+  const coordinateRefs = transaction.transactionManifests.flatMap((manifest) =>
+    manifest.segments.flatMap((segment) => segment.segmentKind === 'SQL_TRANSACTION'
+      ? segment.writes.map((write) => ({
+          manifestId: manifest.manifestId,
+          applicability: manifest.applicabilityCases[0],
+          coordinateId: write.physicalStorageCoordinateRef.coordinateId,
+        }))
+      : []));
+  const count = (coordinateId) => coordinateRefs.filter((row) =>
+    row.coordinateId === coordinateId).length;
+  assert.equal(count('BRIDGE.durable_delivery_head.state'), 76);
+  assert.equal(count('BRIDGE.timeline_read_evidence.immutable'), 3);
+  assert.equal(count('BRIDGE.reconcile_attempt.immutable'), 6);
+  assert.equal(count('BRIDGE.reconcile_resolution.immutable'), 12);
+
+  for (const row of coordinateRefs.filter((candidate) =>
+    candidate.applicability.coordinate.machineId === 'SM-RECONCILE' &&
+    candidate.coordinateId.startsWith('BRIDGE.reconcile_'))) {
+    assert.equal(
+      row.coordinateId,
+      row.applicability.coordinate.to === 'REQUESTED'
+        ? 'BRIDGE.reconcile_attempt.immutable'
+        : 'BRIDGE.reconcile_resolution.immutable',
+      row.manifestId,
+    );
+  }
 });
 
 test('the 28 Bridge aliases select real, distinct adjacent transaction kill points', () => {
@@ -260,4 +344,19 @@ test('semantic transaction vectors distinguish exact authority from drift marker
     postState: 'UNCHANGED',
     sideEffects: {artifacts: 0, durableRows: 0},
   });
+});
+
+test('transaction vector IDs bind exact derived subject ID sets', () => {
+  const {transaction} = expected();
+  const pristine = vectors();
+  validateTransactionAuthorityVectors(transaction, pristine);
+  const drift = structuredClone(pristine);
+  const target = drift.find((vector) =>
+    vector.id === 'transaction.authority.kill-point-set-exact.positive');
+  target.value = structuredClone(drift.find((vector) =>
+    vector.id === 'transaction.authority.manifest-set-exact.positive').value);
+  assert.throws(
+    () => validateTransactionAuthorityVectors(transaction, drift),
+    /does not bind its exact subject/,
+  );
 });

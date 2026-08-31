@@ -215,7 +215,7 @@ function expectedTargetDigestId(fieldPath) {
   }
   if (fieldName === 'beginHeaderDigest') return 'DR-BEGIN-HEADER';
   if (fieldName === 'receiptDigest') return 'DR-RECEIPT';
-  if (fieldName === 'operationFingerprint' || fieldName === 'storedOperationFingerprint') {
+  if (fieldName === 'operationFingerprint') {
     return 'DR-OPERATION-FINGERPRINT';
   }
   if (fieldName === 'sqlSha256') {

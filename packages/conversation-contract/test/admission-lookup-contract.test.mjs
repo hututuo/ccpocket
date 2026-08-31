@@ -66,10 +66,15 @@ function baseCase() {
       operationFingerprint: fingerprint,
       snapshot: {operationRevision: 1, lifecycleState: 'ADMITTED'},
     },
-    storedOriginView: {kind: 'AUTHENTICATED_ACTOR', actorBinding: actor},
+    persistedOperation: {
+      sourcePartition,
+      operationId,
+      originView: {kind: 'AUTHENTICATED_ACTOR', actorBinding: actor},
+      fingerprintVersion: 1,
+      operationFingerprint: fingerprint,
+      snapshot: {operationRevision: 1, lifecycleState: 'ADMITTED'},
+    },
     currentActorBinding: actor,
-    storedFingerprintVersion: 1,
-    storedOperationFingerprint: fingerprint,
     expectedProjection: 'BRIDGE_ACCEPTED',
     effects: structuredClone(ZERO_ADMISSION_LOOKUP_EFFECTS),
   };
@@ -98,6 +103,7 @@ test('projects every matched lifecycle without creating durable or provider effe
   for (const [state, projection] of states) {
     const value = baseCase();
     value.result.snapshot.lifecycleState = state;
+    value.persistedOperation.snapshot.lifecycleState = state;
     value.expectedProjection = projection;
     assert.deepEqual(evaluateAdmissionLookupCase(value), accepted(), state);
   }
@@ -107,6 +113,7 @@ test('NOT_FOUND preserves ADMISSION_UNKNOWN and forbids resend', () => {
   const value = baseCase();
   value.result = {...value.result, outcome: 'NOT_FOUND'};
   delete value.result.snapshot;
+  value.persistedOperation = null;
   value.expectedProjection = 'ADMISSION_UNKNOWN';
   assert.deepEqual(evaluateAdmissionLookupCase(value), accepted());
   value.effects.resends = 1;
@@ -116,7 +123,7 @@ test('NOT_FOUND preserves ADMISSION_UNKNOWN and forbids resend', () => {
 test('actor-origin mismatch is resolved before stored fingerprint mismatch', () => {
   const value = baseCase();
   value.currentActorBinding = {...actor, principalId: 'actor-2'};
-  value.storedOperationFingerprint = 'b'.repeat(64);
+  value.persistedOperation.operationFingerprint = 'b'.repeat(64);
   value.result = {
     ...value.result,
     outcome: 'CONFLICT',
@@ -131,7 +138,7 @@ test('actor-origin mismatch is resolved before stored fingerprint mismatch', () 
 
 test('private auto-approval origin always selects actor mismatch conflict', () => {
   const value = baseCase();
-  value.storedOriginView = {kind: 'AUTO_APPROVAL_POLICY'};
+  value.persistedOperation.originView = {kind: 'AUTO_APPROVAL_POLICY'};
   value.currentActorBinding = null;
   value.result = {
     ...value.result,
@@ -145,7 +152,7 @@ test('private auto-approval origin always selects actor mismatch conflict', () =
 
 test('matching actor permits exact stored fingerprint conflict', () => {
   const value = baseCase();
-  value.storedFingerprintVersion = 2;
+  value.persistedOperation.fingerprintVersion = 2;
   value.result = {
     ...value.result,
     outcome: 'CONFLICT',
@@ -172,6 +179,28 @@ test('outer, authenticated-source, result, and lookup-key correlation precede ou
     mutate(value);
     assert.deepEqual(evaluateAdmissionLookupCase(value), rejected());
   }
+});
+
+test('MATCHED snapshot must exact-equal the persisted revision and lifecycle state', () => {
+  const revisionDrift = baseCase();
+  revisionDrift.result.snapshot.operationRevision = 2;
+  assert.deepEqual(evaluateAdmissionLookupCase(revisionDrift), rejected());
+
+  const stateDrift = baseCase();
+  stateDrift.result.snapshot.lifecycleState = 'QUEUED';
+  assert.deepEqual(evaluateAdmissionLookupCase(stateDrift), rejected());
+});
+
+test('NOT_FOUND is accepted only for a genuinely absent persisted operation row', () => {
+  const present = baseCase();
+  present.result = {...present.result, outcome: 'NOT_FOUND'};
+  delete present.result.snapshot;
+  present.expectedProjection = 'ADMISSION_UNKNOWN';
+  assert.deepEqual(evaluateAdmissionLookupCase(present), rejected());
+
+  const absent = structuredClone(present);
+  absent.persistedOperation = null;
+  assert.deepEqual(evaluateAdmissionLookupCase(absent), accepted());
 });
 
 test('conflict problem is fenced to the correlated operation and closed retry class', () => {
