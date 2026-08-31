@@ -78,6 +78,7 @@ Future<CommitReceipt> _commitRuntimeProjection(
         'projection_digest': artifact.digest,
         'payload_json': payload,
         'state': 'pending',
+        'gc_eligible': 0,
         'admitted_at': DateTime.now().millisecondsSinceEpoch,
       });
       await _validateCapacity(txn, repository, projection.key);
@@ -241,7 +242,7 @@ Future<bool> _applyProjectionInbox(
       if (older) {
         await txn.update(
           'projection_inbox',
-          const <String, Object?>{'state': 'stale'},
+          const <String, Object?>{'state': 'stale', 'gc_eligible': 1},
           where: '${_keyWhere()} AND projection_id = ?',
           whereArgs: <Object?>[..._keyArgs(key), projectionId],
         );
@@ -317,7 +318,7 @@ Future<bool> _applyProjectionInbox(
     }
     await txn.update(
       'projection_inbox',
-      const <String, Object?>{'state': 'applied'},
+      const <String, Object?>{'state': 'applied', 'gc_eligible': 0},
       where: '${_keyWhere()} AND projection_id = ?',
       whereArgs: <Object?>[..._keyArgs(key), projectionId],
     );
@@ -491,12 +492,14 @@ Future<void> _applyOperationProjections(
           );
         }
         if (prior['is_active'] != 1 ||
+            prior['gc_eligible'] != 0 ||
             prior['snapshot_marker'] != snapshotMarker ||
             prior['source_projection_id'] != projection.projectionId) {
           await txn.update(
             'operation_projection',
             <String, Object?>{
               'is_active': 1,
+              'gc_eligible': 0,
               'snapshot_marker': snapshotMarker,
               'source_projection_id': projection.projectionId,
             },
@@ -524,6 +527,7 @@ Future<void> _applyOperationProjections(
           'value_json': encoded,
           'value_digest': digest,
           'is_active': 1,
+          'gc_eligible': 0,
           'snapshot_marker': snapshotMarker,
           'source_projection_id': projection.projectionId,
         },
@@ -540,6 +544,7 @@ Future<void> _applyOperationProjections(
         'value_json': encoded,
         'value_digest': digest,
         'is_active': 1,
+        'gc_eligible': 0,
         'snapshot_marker': snapshotMarker,
         'source_projection_id': projection.projectionId,
       });
@@ -579,12 +584,14 @@ Future<void> _applyQueueProjections(
           );
         }
         if (prior['is_active'] != 1 ||
+            prior['gc_eligible'] != 0 ||
             prior['snapshot_marker'] != snapshotMarker ||
             prior['source_projection_id'] != projection.projectionId) {
           await txn.update(
             'queue_entry_projection',
             <String, Object?>{
               'is_active': 1,
+              'gc_eligible': 0,
               'snapshot_marker': snapshotMarker,
               'source_projection_id': projection.projectionId,
             },
@@ -607,6 +614,7 @@ Future<void> _applyQueueProjections(
           'value_json': encoded,
           'value_digest': digest,
           'is_active': 1,
+          'gc_eligible': 0,
           'snapshot_marker': snapshotMarker,
           'source_projection_id': projection.projectionId,
         },
@@ -624,6 +632,7 @@ Future<void> _applyQueueProjections(
         'value_json': encoded,
         'value_digest': digest,
         'is_active': 1,
+        'gc_eligible': 0,
         'snapshot_marker': snapshotMarker,
         'source_projection_id': projection.projectionId,
       });
@@ -663,12 +672,14 @@ Future<void> _applyInteractionProjections(
           );
         }
         if (prior['is_active'] != 1 ||
+            prior['gc_eligible'] != 0 ||
             prior['snapshot_marker'] != snapshotMarker ||
             prior['source_projection_id'] != projection.projectionId) {
           await txn.update(
             'interaction_projection',
             <String, Object?>{
               'is_active': 1,
+              'gc_eligible': 0,
               'snapshot_marker': snapshotMarker,
               'source_projection_id': projection.projectionId,
             },
@@ -692,6 +703,7 @@ Future<void> _applyInteractionProjections(
           'value_json': encoded,
           'value_digest': digest,
           'is_active': 1,
+          'gc_eligible': 0,
           'snapshot_marker': snapshotMarker,
           'source_projection_id': projection.projectionId,
         },
@@ -710,11 +722,60 @@ Future<void> _applyInteractionProjections(
         'value_json': encoded,
         'value_digest': digest,
         'is_active': 1,
+        'gc_eligible': 0,
         'snapshot_marker': snapshotMarker,
         'source_projection_id': projection.projectionId,
       });
     }
   }
+}
+
+Future<void> _markProjectionGcEligibleAfterAck(
+  Transaction txn,
+  Map<String, Object?> outbox,
+) async {
+  if (outbox['domain'] != 'projection') return;
+  final bridgeIdentityId = outbox['bridge_identity_id'];
+  final bridgeInstanceId = outbox['bridge_instance_id'];
+  final codexSourceId = outbox['codex_source_id'];
+  final providerThreadId = outbox['provider_thread_id'];
+  final projectionId = outbox['operation_id'];
+  if (bridgeIdentityId is! String ||
+      bridgeInstanceId is! String ||
+      codexSourceId is! String ||
+      providerThreadId is! String ||
+      projectionId is! String) {
+    throw const ConversationRepositoryException(
+      RepositoryFailureCode.invalidDatabaseIdentity,
+      'projection publication identity is malformed',
+    );
+  }
+  final key = ThreadKey(
+    partition: SourcePartition(
+      bridgeIdentityId: bridgeIdentityId,
+      bridgeInstanceId: bridgeInstanceId,
+      codexSourceId: codexSourceId,
+    ),
+    providerThreadId: providerThreadId,
+  );
+  for (final table in const <String>[
+    'operation_projection',
+    'queue_entry_projection',
+    'interaction_projection',
+  ]) {
+    await txn.update(
+      table,
+      const <String, Object?>{'gc_eligible': 1},
+      where: '${_keyWhere()} AND source_projection_id = ?',
+      whereArgs: <Object?>[..._keyArgs(key), projectionId],
+    );
+  }
+  await txn.update(
+    'projection_inbox',
+    const <String, Object?>{'gc_eligible': 1},
+    where: '${_keyWhere()} AND projection_id = ? AND state = ?',
+    whereArgs: <Object?>[..._keyArgs(key), projectionId, 'applied'],
+  );
 }
 
 Future<void> _collectRepositoryGarbage(
@@ -835,51 +896,48 @@ Future<void> _deletePublishedOutboxBatch(
 }
 
 Future<void> _deleteStaleInboxBatch(DatabaseExecutor db, ThreadKey key) async {
-  // Keep the candidate set closed so the index performs two equality seeks
-  // instead of scanning an unbounded run of pending rows for `state <>`.
+  final headRows = await db.query(
+    'projection_head',
+    columns: const <String>['projection_id'],
+    where: _keyWhere(),
+    whereArgs: _keyArgs(key),
+    limit: 1,
+  );
+  final currentProjectionId = headRows.isEmpty
+      ? null
+      : headRows.single['projection_id'] as String?;
+  // ACK advances gc_eligible in the same transaction as notification_state.
+  // The candidate index therefore sees only rows whose publication no longer
+  // needs readback, while the exact current head remains durable identity
+  // evidence even after its publication has been acknowledged.
   final rows = await db.query(
     'projection_inbox',
-    columns: const <String>[
-      'projection_id',
-      'source_epoch',
-      'provider_instance_epoch',
+    columns: const <String>['projection_id'],
+    where:
+        '${_keyWhere()} AND gc_eligible = ? AND state IN (?, ?)${currentProjectionId == null ? '' : ' AND projection_id <> ?'}',
+    whereArgs: <Object?>[
+      ..._keyArgs(key),
+      1,
+      'applied',
+      'stale',
+      ?currentProjectionId,
     ],
-    where: '${_keyWhere()} AND state IN (?, ?)',
-    whereArgs: <Object?>[..._keyArgs(key), 'applied', 'stale'],
     orderBy: 'state ASC, admitted_at ASC, projection_id ASC',
     limit: _repositoryGcBatchSize,
   );
   for (final row in rows) {
     final projectionId = row['projection_id'];
-    final sourceEpoch = row['source_epoch'];
-    final providerEpoch = row['provider_instance_epoch'];
-    if (projectionId is! String ||
-        sourceEpoch is! String ||
-        providerEpoch is! String) {
-      continue;
-    }
-    final pendingOutbox = await db.query(
-      'publication_outbox',
-      columns: const <String>['phase'],
-      where: '${_outboxWhere()} AND notification_state IN (?, ?)',
-      whereArgs: <Object?>[
-        ..._outboxArgs(
-          key,
-          sourceEpoch,
-          providerEpoch,
-          'projection',
-          projectionId,
-        ),
-        'pending',
-        'delivering',
-      ],
-      limit: 1,
-    );
-    if (pendingOutbox.isNotEmpty) continue;
+    if (projectionId is! String) continue;
     await db.delete(
       'projection_inbox',
-      where: '${_keyWhere()} AND projection_id = ?',
-      whereArgs: <Object?>[..._keyArgs(key), projectionId],
+      where:
+          '${_keyWhere()} AND projection_id = ? AND gc_eligible = ?${currentProjectionId == null ? '' : ' AND projection_id <> ?'}',
+      whereArgs: <Object?>[
+        ..._keyArgs(key),
+        projectionId,
+        1,
+        ?currentProjectionId,
+      ],
     );
   }
 }
@@ -927,13 +985,15 @@ Future<void> _deleteSupersededProjectionBatch(
     'interaction_projection' => 'interaction_id',
     _ => throw ArgumentError.value(table, 'table'),
   };
-  // Two bounded range seeks cover every non-current marker without scanning
-  // through an arbitrarily large run that equals the protected marker.
+  // ACK publishes GC eligibility into the projection rows before the outbox
+  // can be reclaimed.  Retention is therefore part of the indexed candidate
+  // predicate rather than a post-LIMIT filter that can starve later rows.
   final rows = <Map<String, Object?>>[
     ...await db.query(
       table,
-      columns: <String>[idColumn, 'source_projection_id', 'snapshot_marker'],
-      where: '${_keyWhere()} AND is_active = 1 AND snapshot_marker < ?',
+      columns: <String>[idColumn, 'snapshot_marker'],
+      where:
+          '${_keyWhere()} AND is_active = 1 AND gc_eligible = 1 AND snapshot_marker < ?',
       whereArgs: <Object?>[..._keyArgs(key), snapshotMarker],
       orderBy: 'snapshot_marker ASC, $idColumn ASC',
       limit: _repositoryGcBatchSize,
@@ -943,8 +1003,9 @@ Future<void> _deleteSupersededProjectionBatch(
     rows.addAll(
       await db.query(
         table,
-        columns: <String>[idColumn, 'source_projection_id', 'snapshot_marker'],
-        where: '${_keyWhere()} AND is_active = 1 AND snapshot_marker > ?',
+        columns: <String>[idColumn, 'snapshot_marker'],
+        where:
+            '${_keyWhere()} AND is_active = 1 AND gc_eligible = 1 AND snapshot_marker > ?',
         whereArgs: <Object?>[..._keyArgs(key), snapshotMarker],
         orderBy: 'snapshot_marker ASC, $idColumn ASC',
         limit: _repositoryGcBatchSize - rows.length,
@@ -953,36 +1014,14 @@ Future<void> _deleteSupersededProjectionBatch(
   }
   for (final row in rows) {
     final id = row[idColumn];
-    final sourceProjectionId = row['source_projection_id'];
     final rowSnapshotMarker = row['snapshot_marker'];
-    if (id is! String ||
-        sourceProjectionId is! String ||
-        rowSnapshotMarker is! String) {
+    if (id is! String || rowSnapshotMarker is! String) {
       continue;
     }
-    // The pending outbox operation is the projection envelope identity, not
-    // the row identity (operation_id/queue_entry_id/interaction_id).  Keep
-    // provenance explicit so a coincidental row id can never protect or
-    // delete the wrong durable publication.
-    final pending = await db.query(
-      'publication_outbox',
-      columns: const <String>['operation_id'],
-      where:
-          '${_keyWhere()} AND domain = ? AND operation_id = ? AND notification_state IN (?, ?)',
-      whereArgs: <Object?>[
-        ..._keyArgs(key),
-        'projection',
-        sourceProjectionId,
-        'pending',
-        'delivering',
-      ],
-      limit: 1,
-    );
-    if (pending.isNotEmpty) continue;
     await db.delete(
       table,
       where:
-          '${_keyWhere()} AND $idColumn = ? AND is_active = 1 AND snapshot_marker = ?',
+          '${_keyWhere()} AND $idColumn = ? AND is_active = 1 AND gc_eligible = 1 AND snapshot_marker = ?',
       whereArgs: <Object?>[..._keyArgs(key), id, rowSnapshotMarker],
     );
   }
@@ -1681,6 +1720,7 @@ Future<_TrackedUsage> _recomputeTrackedUsage(
       'value_json',
       'value_digest',
       'is_active',
+      'gc_eligible',
       'snapshot_marker',
       'source_projection_id',
     ]),
@@ -1702,6 +1742,7 @@ Future<_TrackedUsage> _recomputeTrackedUsage(
       'value_json',
       'value_digest',
       'is_active',
+      'gc_eligible',
       'snapshot_marker',
       'source_projection_id',
     ]),
@@ -1724,6 +1765,7 @@ Future<_TrackedUsage> _recomputeTrackedUsage(
       'value_json',
       'value_digest',
       'is_active',
+      'gc_eligible',
       'snapshot_marker',
       'source_projection_id',
     ]),
@@ -1746,6 +1788,7 @@ Future<_TrackedUsage> _recomputeTrackedUsage(
       'projection_digest',
       'payload_json',
       'state',
+      'gc_eligible',
       'admitted_at',
     ]),
     _keyArgs(key),

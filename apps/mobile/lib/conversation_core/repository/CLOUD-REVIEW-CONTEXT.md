@@ -19,6 +19,12 @@ The commit that adds this document changes review metadata only. The code blobs
 at the frozen code baseline remain the implementation review target. Any later
 fixes must be additive commits after the context commit.
 
+The current additive cloud-finding repair changes the physical replica contract
+to V6. It leaves every V5 file untouched, rejects an explicitly supplied V5
+path, binds a current projection ID to its head digest/fence/revision even if
+the inbox row is absent, and moves ACK-derived GC eligibility into persisted
+indexed columns so protected prefixes cannot occupy the candidate `LIMIT`.
+
 ## Library shape and ownership
 
 `conversation_repository.dart` is the sole public lifecycle/write facade. The
@@ -48,8 +54,8 @@ database migration is part of this PR.
 
 ```text
 ConversationRepository.open
-  -> choose V5 path; reject known V4/legacy identities
-  -> sqflite open with schema version 5
+  -> choose V6 path; reject known V5/V4/legacy identities
+  -> sqflite open with schema version 6
   -> _createSchema or _verifySchema
   -> _acquireWriterLease
   -> initialize data_version/usage attestation
@@ -116,6 +122,7 @@ commitRuntimeProjections
   -> _validateRuntimeProjection
   -> contract preimage verification
   -> durable projection_inbox admission
+       -> exact current-head identity fallback if the inbox is absent
   -> _applyProjectionInbox
        -> reject retired/stale epochs and non-monotonic heads
        -> apply operation/queue/interaction projections
@@ -142,6 +149,7 @@ applied/pending
   -> listener delivery with publicationEventId
   -> consumer acknowledgePublication(eventId)
   -> notification_state=notified with delivery claim fields cleared
+  -> atomically mark the projection inbox and its derived rows GC-eligible
 ```
 
 The phase and notification-state matrix, delivery token, event identity, and
@@ -176,7 +184,7 @@ Readback re-verifies stored digests before returning public model objects.
 | `conversation_repository_models.dart` | Public identity, fence, evidence, materialization, projection, window, receipt, error, and hook types | Constructors guard/freeze public JSON before repository storage paths consume it |
 | `conversation_repository_json.dart` | Bounded storage encoding/decoding and stored Contract preimage verification | Used by materialization, projection, and readback; malformed stored JSON fails closed |
 | `conversation_repository_validation.dart` | Source/thread/fence/evidence/page/commit/projection validation and exact bounds | Runs before staging or durable mutation; complements generated preimage verification |
-| `conversation_repository_schema.dart` | V5 DDL, semantic schema attestation, triggers/indexes/FKs/checks, writer lease, key predicates | Called during open and before every serialized mutation through lease assertions |
+| `conversation_repository_schema.dart` | V6 DDL, semantic schema attestation, triggers/indexes/FKs/checks, writer lease, key predicates | Called during open and before every serialized mutation through lease assertions |
 | `conversation_repository_materialization.dart` | Begin/page staging, sealing, canonical commit, current/last-good, typed gaps/items, publication outbox | Uses validation, contract preimages, schema helpers, capacity checks, and readback |
 | `conversation_repository_projection.dart` | Projection inbox/head, operation/queue/interaction projections, bounded GC, capacity and independent usage attestation | Uses publication outbox and thread-state fences; invalidates cached usage on external `data_version` changes |
 | `conversation_repository_readback.dart` | Transactional window reads, proof-row binding, digest revalidation, projection snapshot selection | Returns the only public `RepositoryWindow` view |
@@ -190,8 +198,8 @@ Readback re-verifies stored digests before returning public model objects.
 | `committed_envelope` | Immutable proof row for each committed materialization identity |
 | `thread_state` | Current and last-good pointers plus exact source/provider/generation/revision/coverage facts |
 | `canonical_item`, `typed_gap` | Active timeline facts derived only from a validated envelope |
-| `projection_inbox`, `projection_head` | Durable admission/replay and monotonic snapshot authority for runtime projections |
-| `operation_projection`, `queue_entry_projection`, `interaction_projection` | Active rows selected only through exact projection-head snapshot markers |
+| `projection_inbox`, `projection_head` | Durable admission/replay and monotonic snapshot authority for runtime projections; the current head is never an inbox-GC candidate |
+| `operation_projection`, `queue_entry_projection`, `interaction_projection` | Active rows selected only through exact projection-head snapshot markers; ACK-derived `gc_eligible` is part of bounded GC candidate indexes |
 | `publication_outbox` | Durable at-least-once publication identity and ACK state after commit |
 | `retired_epoch` | Bounded immutable anti-rollback evidence |
 | `replica_usage`, `replica_usage_audit` | Trigger-maintained counters plus independent mirror/recomputation attestation |
@@ -203,9 +211,10 @@ metadata, are source-scoped by the composite partition
 
 ## Schema, lease, capacity, and GC coupling
 
-- V5 uses `conversation_replica_v5.db` and schema identity
-  `ccpocket.conversation_replica_v5`. Known V4/legacy filenames and schema
-  upgrades are rejected without mutation.
+- V6 uses `conversation_replica_v6.db` and schema identity
+  `ccpocket.conversation_replica_v6`. Existing V5 files remain byte-for-byte
+  untouched; explicitly supplied V5/V4/legacy paths and schema upgrades are
+  rejected without mutation.
 - Schema attestation checks columns plus PK/UNIQUE/index order/collation,
   foreign-key grouping/deferred state, trigger SQL, CHECK expressions, defaults,
   and unexpected table options.
@@ -220,6 +229,10 @@ metadata, are source-scoped by the composite partition
   last-good, pending publication, provenance, active snapshot, and rollback
   evidence. Performance indexes are correctness-adjacent because unbounded GC
   can block the single writer.
+- Projection ACK updates `gc_eligible` in the same writer transaction as the
+  outbox state. Inbox and snapshot queries filter on that bit before `LIMIT`,
+  then recheck it in their delete predicates; current head identity is excluded
+  before candidate selection.
 
 ## Test-to-code map
 
@@ -231,7 +244,7 @@ The focused test file is
 | `contract authority seam` | Normal/fixture construction, generated profile fencing, preimage recomputation, typed empty evidence |
 | `materialization monotonicity` | Begin/page/commit, exact retry, current/last-good, epoch changes, publication recovery/claim/ACK matrix |
 | `durable runtime projection` | Inbox admission/replay, monotonic projection head, complete snapshot deletion rules, operation/queue/interaction rows |
-| `schema, lease, and guards` | V5/V4 identity, schema attestation, same-path/same-PID isolate lease, liveness, GC/row-32, JSON guards, usage tamper, capacity, readback proof rows |
+| `schema, lease, and guards` | V6/V5 identity boundary, schema attestation, same-path/same-PID isolate lease, liveness, GC/row-32/protected-prefix progress, JSON guards, usage tamper, capacity, readback proof rows |
 
 The frozen baseline has 77 focused tests. A fix must add an exact negative
 regression in the group owning the violated invariant, then rerun the full
@@ -271,11 +284,11 @@ focused file plus affected analysis/format checks.
 ## Recommended review order
 
 1. Review normal versus fixture Contract construction and public JSON guards.
-2. Review V5 identity, semantic schema attestation, and writer lease.
+2. Review the V6/V5 identity boundary, semantic schema attestation, and writer lease.
 3. Review begin/page/seal/commit and current/last-good monotonicity.
 4. Review publication outbox recovery, claim, listener, and ACK races.
 5. Review projection inbox/head and complete-snapshot deletion rules.
 6. Review readback proof bindings and stored digest revalidation.
 7. Review capacity/usage attestation and bounded GC retention/query plans.
 8. Use the test-to-code map to add exact negative regressions for each repaired
-   invariant, then rerun all 77 focused tests.
+   invariant, then rerun the focused repository and safety tests.

@@ -209,7 +209,7 @@ class ConversationRepository {
   static Object get testFixtureAuthorityProfile =>
       conversationFixtureAuthorityProfileForTesting();
 
-  static const defaultDatabaseName = 'conversation_replica_v5.db';
+  static const defaultDatabaseName = 'conversation_replica_v6.db';
   static const maxWindowSize = 200;
   static const maxPageBodyBytes = 256 * 1024;
   static const maxMaterializationPages = 128;
@@ -224,8 +224,8 @@ class ConversationRepository {
   // garbage-collected; this cap keeps that immutable floor bounded and fails
   // closed before accepting a new distinct value.
   static const maxRetiredEpochValuesPerKind = 256;
-  static const _schemaVersion = 5;
-  static const _schemaIdentity = 'ccpocket.conversation_replica_v5';
+  static const _schemaVersion = 6;
+  static const _schemaIdentity = 'ccpocket.conversation_replica_v6';
   static const _leaseName = 'conversation-repository-writer';
 
   final DatabaseFactory _databaseFactory;
@@ -319,10 +319,11 @@ class ConversationRepository {
     final basename = path.basename(dbPath);
     if (basename == 'ccpocket.db' ||
         basename == 'conversation_mirror_v1.db' ||
-        basename == 'conversation_replica_v4.db') {
+        basename == 'conversation_replica_v4.db' ||
+        basename == 'conversation_replica_v5.db') {
       _throwFailure(
         RepositoryFailureCode.invalidDatabaseIdentity,
-        'v5 replica cannot open legacy database $basename',
+        'v6 replica cannot open legacy database $basename',
       );
     }
     _resolvedDatabasePath = dbPath;
@@ -594,21 +595,32 @@ class ConversationRepository {
         await _assertWriterLease(txn, this);
         final rows = await txn.query(
           'publication_outbox',
-          columns: const <String>['notification_state', 'delivery_token'],
+          columns: const <String>[
+            'bridge_identity_id',
+            'bridge_instance_id',
+            'codex_source_id',
+            'provider_thread_id',
+            'domain',
+            'operation_id',
+            'notification_state',
+            'delivery_token',
+          ],
           where: 'event_id = ?',
           whereArgs: <Object?>[publicationEventId],
           limit: 1,
         );
         if (rows.isEmpty) return;
-        final state = rows.single['notification_state'];
+        final outbox = rows.single;
+        final state = outbox['notification_state'];
         if (state == 'notified') {
           // Consumer acknowledgements are idempotent, including a duplicate
           // callback for an at-least-once replay.
+          await _markProjectionGcEligibleAfterAck(txn, outbox);
           acknowledged = true;
           return;
         }
         if (state != 'delivering' ||
-            rows.single['delivery_token'] != _ownerToken ||
+            outbox['delivery_token'] != _ownerToken ||
             !_deliveredPublicationEvents.contains(publicationEventId)) {
           return;
         }
@@ -623,7 +635,10 @@ class ConversationRepository {
               'event_id = ? AND notification_state = ? AND delivery_token = ?',
           whereArgs: <Object?>[publicationEventId, 'delivering', _ownerToken],
         );
-        acknowledged = updated == 1;
+        if (updated == 1) {
+          await _markProjectionGcEligibleAfterAck(txn, outbox);
+          acknowledged = true;
+        }
       });
       if (acknowledged) _deliveredPublicationEvents.remove(publicationEventId);
       return acknowledged;

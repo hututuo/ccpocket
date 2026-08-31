@@ -122,6 +122,14 @@ const _threadStateBindingChecks = <String>[
 
 const _schemaChecks = <String, List<String>>{
   'thread_state': _threadStateBindingChecks,
+  'operation_projection': <String>["gc_eligible IN (0, 1)"],
+  'queue_entry_projection': <String>["gc_eligible IN (0, 1)"],
+  'interaction_projection': <String>["gc_eligible IN (0, 1)"],
+  'projection_inbox': <String>[
+    "state IN ('pending', 'applied', 'stale')",
+    "gc_eligible IN (0, 1)",
+    "(state = 'pending' AND gc_eligible = 0) OR state = 'applied' OR (state = 'stale' AND gc_eligible = 1)",
+  ],
   'publication_outbox': <String>[
     "phase IN ('applied', 'published')",
     "notification_state IN ('pending', 'delivering', 'notified')",
@@ -360,6 +368,7 @@ const _schemaColumns = <String, List<_SchemaColumn>>{
     _SchemaColumn('value_json', 'TEXT', 1, 0),
     _SchemaColumn('value_digest', 'TEXT', 1, 0),
     _SchemaColumn('is_active', 'INTEGER', 1, 0),
+    _SchemaColumn('gc_eligible', 'INTEGER', 1, 0),
     _SchemaColumn('snapshot_marker', 'TEXT', 1, 0),
     _SchemaColumn('source_projection_id', 'TEXT', 1, 0),
   ],
@@ -376,6 +385,7 @@ const _schemaColumns = <String, List<_SchemaColumn>>{
     _SchemaColumn('value_json', 'TEXT', 1, 0),
     _SchemaColumn('value_digest', 'TEXT', 1, 0),
     _SchemaColumn('is_active', 'INTEGER', 1, 0),
+    _SchemaColumn('gc_eligible', 'INTEGER', 1, 0),
     _SchemaColumn('snapshot_marker', 'TEXT', 1, 0),
     _SchemaColumn('source_projection_id', 'TEXT', 1, 0),
   ],
@@ -393,6 +403,7 @@ const _schemaColumns = <String, List<_SchemaColumn>>{
     _SchemaColumn('value_json', 'TEXT', 1, 0),
     _SchemaColumn('value_digest', 'TEXT', 1, 0),
     _SchemaColumn('is_active', 'INTEGER', 1, 0),
+    _SchemaColumn('gc_eligible', 'INTEGER', 1, 0),
     _SchemaColumn('snapshot_marker', 'TEXT', 1, 0),
     _SchemaColumn('source_projection_id', 'TEXT', 1, 0),
   ],
@@ -430,6 +441,7 @@ const _schemaColumns = <String, List<_SchemaColumn>>{
     _SchemaColumn('projection_digest', 'TEXT', 1, 0),
     _SchemaColumn('payload_json', 'TEXT', 1, 0),
     _SchemaColumn('state', 'TEXT', 1, 0),
+    _SchemaColumn('gc_eligible', 'INTEGER', 1, 0),
     _SchemaColumn('admitted_at', 'INTEGER', 1, 0),
   ],
   'publication_outbox': <_SchemaColumn>[
@@ -557,6 +569,7 @@ const _schemaIndexes = <_SchemaIndex>[
     'bridge_instance_id',
     'codex_source_id',
     'provider_thread_id',
+    'gc_eligible',
     'state',
     'admitted_at',
     'projection_id',
@@ -627,6 +640,7 @@ const _schemaIndexes = <_SchemaIndex>[
       'codex_source_id',
       'provider_thread_id',
       'is_active',
+      'gc_eligible',
       'snapshot_marker',
       'operation_id',
     ],
@@ -641,6 +655,7 @@ const _schemaIndexes = <_SchemaIndex>[
       'codex_source_id',
       'provider_thread_id',
       'is_active',
+      'gc_eligible',
       'snapshot_marker',
       'queue_entry_id',
     ],
@@ -655,6 +670,7 @@ const _schemaIndexes = <_SchemaIndex>[
       'codex_source_id',
       'provider_thread_id',
       'is_active',
+      'gc_eligible',
       'snapshot_marker',
       'interaction_id',
     ],
@@ -1222,8 +1238,10 @@ Future<void> _createSchema(Database db, int version) async {
       value_json TEXT NOT NULL,
       value_digest TEXT NOT NULL,
       is_active INTEGER NOT NULL,
+      gc_eligible INTEGER NOT NULL,
       snapshot_marker TEXT NOT NULL,
       source_projection_id TEXT NOT NULL,
+      CHECK (gc_eligible IN (0, 1)),
       PRIMARY KEY (bridge_identity_id, bridge_instance_id, codex_source_id, provider_thread_id, operation_id),
       FOREIGN KEY (bridge_identity_id, bridge_instance_id, codex_source_id, provider_thread_id)
         REFERENCES thread_state (bridge_identity_id, bridge_instance_id, codex_source_id, provider_thread_id)
@@ -1244,8 +1262,10 @@ Future<void> _createSchema(Database db, int version) async {
       value_json TEXT NOT NULL,
       value_digest TEXT NOT NULL,
       is_active INTEGER NOT NULL,
+      gc_eligible INTEGER NOT NULL,
       snapshot_marker TEXT NOT NULL,
       source_projection_id TEXT NOT NULL,
+      CHECK (gc_eligible IN (0, 1)),
       PRIMARY KEY (bridge_identity_id, bridge_instance_id, codex_source_id, provider_thread_id, queue_entry_id),
       FOREIGN KEY (bridge_identity_id, bridge_instance_id, codex_source_id, provider_thread_id)
         REFERENCES thread_state (bridge_identity_id, bridge_instance_id, codex_source_id, provider_thread_id)
@@ -1267,8 +1287,10 @@ Future<void> _createSchema(Database db, int version) async {
       value_json TEXT NOT NULL,
       value_digest TEXT NOT NULL,
       is_active INTEGER NOT NULL,
+      gc_eligible INTEGER NOT NULL,
       snapshot_marker TEXT NOT NULL,
       source_projection_id TEXT NOT NULL,
+      CHECK (gc_eligible IN (0, 1)),
       PRIMARY KEY (bridge_identity_id, bridge_instance_id, codex_source_id, provider_thread_id, interaction_id),
       FOREIGN KEY (bridge_identity_id, bridge_instance_id, codex_source_id, provider_thread_id)
         REFERENCES thread_state (bridge_identity_id, bridge_instance_id, codex_source_id, provider_thread_id)
@@ -1316,7 +1338,15 @@ Future<void> _createSchema(Database db, int version) async {
       projection_digest TEXT NOT NULL,
       payload_json TEXT NOT NULL,
       state TEXT NOT NULL,
+      gc_eligible INTEGER NOT NULL,
       admitted_at INTEGER NOT NULL,
+      CHECK (state IN ('pending', 'applied', 'stale')),
+      CHECK (gc_eligible IN (0, 1)),
+      CHECK (
+        (state = 'pending' AND gc_eligible = 0)
+        OR state = 'applied'
+        OR (state = 'stale' AND gc_eligible = 1)
+      ),
       PRIMARY KEY (bridge_identity_id, bridge_instance_id, codex_source_id, provider_thread_id, projection_id)
     ) STRICT
   ''');

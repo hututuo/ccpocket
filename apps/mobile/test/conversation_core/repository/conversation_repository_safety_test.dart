@@ -215,7 +215,7 @@ void main() {
 
   setUp(() async {
     tempDirectory = await Directory.systemTemp.createTemp(
-      'conversation-v5-safety-',
+      'conversation-v6-safety-',
     );
     repository = await _openRepository(tempDirectory);
   });
@@ -365,6 +365,107 @@ void main() {
         );
       },
     );
+
+    test('current projection identity cannot rebind after acknowledged evidence loss', () async {
+      final subscription = repository.updates.listen((_) {});
+      final original = _projection(
+        'current-identity-projection',
+        sourceEpoch: 'source-1',
+        providerEpoch: 'provider-1',
+        connectionEpoch: 'connection-1',
+        operationId: 'current-identity-operation',
+      );
+      final receipt = await repository.commitRuntimeProjections(original);
+      expect(receipt.publicationEventId, isNotNull);
+      expect(
+        await repository.acknowledgePublication(receipt.publicationEventId!),
+        isTrue,
+      );
+
+      final databasePath = repository.resolvedDatabasePath!;
+      final inspection = await databaseFactoryFfi.openDatabase(
+        databasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      expect(
+        (await inspection.query(
+          'projection_inbox',
+          columns: const <String>['gc_eligible'],
+          where: 'projection_id = ?',
+          whereArgs: const <Object?>['current-identity-projection'],
+        )).single['gc_eligible'],
+        1,
+      );
+      expect(
+        (await inspection.query(
+          'operation_projection',
+          columns: const <String>['gc_eligible'],
+          where: 'operation_id = ?',
+          whereArgs: const <Object?>['current-identity-operation'],
+        )).single['gc_eligible'],
+        1,
+      );
+      final originalHead = (await inspection.query(
+        'projection_head',
+        columns: const <String>['projection_digest'],
+      )).single;
+
+      // Simulate the pre-fix GC outcome so the head-level guard also closes
+      // databases that already lost their larger inbox/outbox evidence.
+      await inspection.delete(
+        'publication_outbox',
+        where: 'domain = ? AND operation_id = ?',
+        whereArgs: const <Object?>['projection', 'current-identity-projection'],
+      );
+      await inspection.delete(
+        'projection_inbox',
+        where: 'projection_id = ?',
+        whereArgs: const <Object?>['current-identity-projection'],
+      );
+      await inspection.close();
+
+      await expectLater(
+        repository.commitRuntimeProjections(
+          _projection(
+            'current-identity-projection',
+            sourceEpoch: 'source-1',
+            providerEpoch: 'provider-1',
+            connectionEpoch: 'connection-1',
+            operationId: 'rebound-operation',
+          ),
+        ),
+        _failure(RepositoryFailureCode.identityConflict),
+      );
+
+      final exactReplay = await repository.commitRuntimeProjections(original);
+      expect(exactReplay.wasDuplicate, isTrue);
+      expect(exactReplay.wasPublished, isFalse);
+      expect(
+        exactReplay.window.operations.single.operationId,
+        'current-identity-operation',
+      );
+      final after = await databaseFactoryFfi.openDatabase(
+        databasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      expect(
+        (await after.query(
+          'projection_head',
+          columns: const <String>['projection_digest'],
+        )).single['projection_digest'],
+        originalHead['projection_digest'],
+      );
+      expect(
+        await after.query(
+          'operation_projection',
+          where: 'operation_id = ?',
+          whereArgs: const <Object?>['rebound-operation'],
+        ),
+        isEmpty,
+      );
+      await after.close();
+      await subscription.cancel();
+    });
 
     test(
       'open quarantines a pending projection retired after admission',

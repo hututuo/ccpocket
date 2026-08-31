@@ -221,7 +221,7 @@ void main() {
   late ConversationRepository repository;
 
   setUp(() async {
-    tempDirectory = await Directory.systemTemp.createTemp('conversation-v5-');
+    tempDirectory = await Directory.systemTemp.createTemp('conversation-v6-');
     repository = await _openRepository(tempDirectory);
   });
 
@@ -1684,6 +1684,7 @@ VALUES (?, ?, ?, ?, ?, ?)
           'value_json': '{}',
           'value_digest': 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
           'is_active': 0,
+          'gc_eligible': 0,
           'snapshot_marker': '',
           'source_projection_id': '',
         });
@@ -2053,7 +2054,7 @@ VALUES (?, ?, ?, ?, ?, ?)
       );
     });
 
-    test('schema v4 to v5 open is an explicit fail-closed boundary', () async {
+    test('schema v5 to v6 open is an explicit fail-closed boundary', () async {
       await repository.close();
       final database = await databaseFactoryFfi.openDatabase(
         path.join(
@@ -2061,7 +2062,7 @@ VALUES (?, ?, ?, ?, ?, ?)
           ConversationRepository.defaultDatabaseName,
         ),
       );
-      await database.execute('PRAGMA user_version = 4');
+      await database.execute('PRAGMA user_version = 5');
       await database.close();
       repository = ConversationRepository.forTesting(
         databaseFactory: databaseFactoryFfi,
@@ -2077,28 +2078,13 @@ VALUES (?, ?, ?, ?, ?, ?)
       );
     });
 
-    test('new v5 default leaves an existing v4 file untouched', () async {
+    test('new v6 default leaves an existing v5 file untouched', () async {
       await repository.close();
       final legacyPath = path.join(
         tempDirectory.path,
-        'conversation_replica_v4.db',
+        'conversation_replica_v5.db',
       );
-      final legacy = await databaseFactoryFfi.openDatabase(
-        legacyPath,
-        options: OpenDatabaseOptions(
-          version: 4,
-          onCreate: (db, _) async {
-            await db.execute(
-              'CREATE TABLE legacy_v4_marker (value TEXT NOT NULL)',
-            );
-            await db.insert('legacy_v4_marker', <String, Object?>{
-              'value': 'v4-preserved',
-            });
-          },
-        ),
-      );
-      await legacy.execute('PRAGMA user_version = 4');
-      await legacy.close();
+      await _createLegacyV5Database(legacyPath, 'v5-preserved');
       final before = await File(legacyPath).readAsBytes();
 
       repository = await _openRepository(tempDirectory);
@@ -2109,46 +2095,77 @@ VALUES (?, ?, ?, ?, ?, ?)
       );
       expect(
         ConversationRepository.defaultDatabaseName,
-        'conversation_replica_v5.db',
+        'conversation_replica_v6.db',
       );
+      final current = await databaseFactoryFfi.openDatabase(
+        repository.resolvedDatabasePath!,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      expect(
+        (await current.query('replica_metadata')).single,
+        containsPair('schema_identity', 'ccpocket.conversation_replica_v6'),
+      );
+      expect(
+        (await current.query('replica_metadata')).single,
+        containsPair('schema_version', 6),
+      );
+      expect(
+        (await current.rawQuery('PRAGMA user_version')).single['user_version'],
+        6,
+      );
+      expect(
+        (await current.rawQuery('PRAGMA index_info(projection_inbox_gc_idx)'))
+            .map((row) => row['name'])
+            .toList(),
+        <Object?>[
+          'bridge_identity_id',
+          'bridge_instance_id',
+          'codex_source_id',
+          'provider_thread_id',
+          'gc_eligible',
+          'state',
+          'admitted_at',
+          'projection_id',
+        ],
+      );
+      await current.close();
       expect(await File(legacyPath).readAsBytes(), before);
       final readback = await databaseFactoryFfi.openDatabase(
         legacyPath,
-        options: OpenDatabaseOptions(version: 4),
+        options: OpenDatabaseOptions(version: 5),
       );
       expect(
-        (await readback.query('legacy_v4_marker')).single['value'],
-        'v4-preserved',
+        (await readback.query('legacy_v5_marker')).single['value'],
+        'v5-preserved',
+      );
+      expect(
+        (await readback.rawQuery('PRAGMA index_info(projection_inbox_gc_idx)'))
+            .map((row) => row['name'])
+            .toList(),
+        <Object?>[
+          'bridge_identity_id',
+          'bridge_instance_id',
+          'codex_source_id',
+          'provider_thread_id',
+          'admitted_at',
+          'projection_id',
+          'state',
+        ],
       );
       expect(
         (await readback.rawQuery('PRAGMA user_version')).single['user_version'],
-        4,
+        5,
       );
       await readback.close();
     });
 
-    test('explicit v4 database path is rejected without mutation', () async {
+    test('explicit v5 database path is rejected without mutation', () async {
       await repository.close();
       final legacyPath = path.join(
         tempDirectory.path,
-        'conversation_replica_v4.db',
+        'conversation_replica_v5.db',
       );
-      final legacy = await databaseFactoryFfi.openDatabase(
-        legacyPath,
-        options: OpenDatabaseOptions(
-          version: 4,
-          onCreate: (db, _) async {
-            await db.execute(
-              'CREATE TABLE legacy_v4_marker (value TEXT NOT NULL)',
-            );
-            await db.insert('legacy_v4_marker', <String, Object?>{
-              'value': 'v4-explicit',
-            });
-          },
-        ),
-      );
-      await legacy.execute('PRAGMA user_version = 4');
-      await legacy.close();
+      await _createLegacyV5Database(legacyPath, 'v5-explicit');
       final before = await File(legacyPath).readAsBytes();
       repository = ConversationRepository.forTesting(
         databaseFactory: databaseFactoryFfi,
@@ -2207,8 +2224,8 @@ VALUES (?, ?, ?, ?, ?, ?)
           [...keyArgs, 'projection', 'projection-id', 'pending', 'delivering'],
         ),
         'projection_inbox_gc_idx': plan(
-          'EXPLAIN QUERY PLAN SELECT projection_id FROM projection_inbox WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND state IN (?, ?) ORDER BY state ASC, admitted_at ASC, projection_id ASC LIMIT 32',
-          [...keyArgs, 'applied', 'stale'],
+          'EXPLAIN QUERY PLAN SELECT projection_id FROM projection_inbox WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND gc_eligible = ? AND state IN (?, ?) ORDER BY state ASC, admitted_at ASC, projection_id ASC LIMIT 32',
+          [...keyArgs, 1, 'applied', 'stale'],
         ),
         'projection_inbox_recovery_idx': plan(
           'EXPLAIN QUERY PLAN SELECT projection_id FROM projection_inbox WHERE state = ? ORDER BY admitted_at ASC, projection_id ASC, bridge_identity_id ASC, bridge_instance_id ASC, codex_source_id ASC, provider_thread_id ASC LIMIT 32',
@@ -2227,15 +2244,15 @@ VALUES (?, ?, ?, ?, ?, ?)
           keyArgs,
         ),
         'operation_projection_snapshot_gc_idx': plan(
-          'EXPLAIN QUERY PLAN SELECT operation_id FROM operation_projection WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 1 AND snapshot_marker < ? ORDER BY snapshot_marker ASC, operation_id ASC LIMIT 32',
+          'EXPLAIN QUERY PLAN SELECT operation_id FROM operation_projection WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 1 AND gc_eligible = 1 AND snapshot_marker < ? ORDER BY snapshot_marker ASC, operation_id ASC LIMIT 32',
           [...keyArgs, 'current-snapshot'],
         ),
         'queue_entry_projection_snapshot_gc_idx': plan(
-          'EXPLAIN QUERY PLAN SELECT queue_entry_id FROM queue_entry_projection WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 1 AND snapshot_marker < ? ORDER BY snapshot_marker ASC, queue_entry_id ASC LIMIT 32',
+          'EXPLAIN QUERY PLAN SELECT queue_entry_id FROM queue_entry_projection WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 1 AND gc_eligible = 1 AND snapshot_marker < ? ORDER BY snapshot_marker ASC, queue_entry_id ASC LIMIT 32',
           [...keyArgs, 'current-snapshot'],
         ),
         'interaction_projection_snapshot_gc_idx': plan(
-          'EXPLAIN QUERY PLAN SELECT interaction_id FROM interaction_projection WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 1 AND snapshot_marker < ? ORDER BY snapshot_marker ASC, interaction_id ASC LIMIT 32',
+          'EXPLAIN QUERY PLAN SELECT interaction_id FROM interaction_projection WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 1 AND gc_eligible = 1 AND snapshot_marker < ? ORDER BY snapshot_marker ASC, interaction_id ASC LIMIT 32',
           [...keyArgs, 'current-snapshot'],
         ),
         'typed_gap_gc_idx': plan(
@@ -2256,7 +2273,10 @@ VALUES (?, ?, ?, ?, ?, ?)
         expect(detail, contains(entry.key));
         expect(detail, isNot(contains('USE TEMP B-TREE')));
       }
-      expect(await checks['projection_inbox_gc_idx'], contains('state=?'));
+      expect(
+        await checks['projection_inbox_gc_idx'],
+        allOf(contains('gc_eligible=?'), contains('state=?')),
+      );
       for (final indexName in const <String>[
         'operation_projection_snapshot_gc_idx',
         'queue_entry_projection_snapshot_gc_idx',
@@ -2270,10 +2290,11 @@ VALUES (?, ?, ?, ?, ?, ?)
         ('interaction_projection_snapshot_gc_idx', 'interaction_id'),
       ]) {
         final detail = await plan(
-          'EXPLAIN QUERY PLAN SELECT ${entry.$2} FROM ${entry.$1.replaceFirst('_snapshot_gc_idx', '')} WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 1 AND snapshot_marker > ? ORDER BY snapshot_marker ASC, ${entry.$2} ASC LIMIT 32',
+          'EXPLAIN QUERY PLAN SELECT ${entry.$2} FROM ${entry.$1.replaceFirst('_snapshot_gc_idx', '')} WHERE bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND is_active = 1 AND gc_eligible = 1 AND snapshot_marker > ? ORDER BY snapshot_marker ASC, ${entry.$2} ASC LIMIT 32',
           [...keyArgs, 'current-snapshot'],
         );
         expect(detail, contains(entry.$1));
+        expect(detail, contains('gc_eligible=?'));
         expect(detail, contains('snapshot_marker>?'));
         expect(detail, isNot(contains('USE TEMP B-TREE')));
       }
@@ -2287,6 +2308,163 @@ VALUES (?, ?, ?, ?, ?, ?)
       );
       expect(stalePublicationDetail, isNot(contains('USE TEMP B-TREE')));
       await database.close();
+    });
+
+    test('pressure GC skips protected prefixes and retains the current inbox', () async {
+      const currentProjectionId = 'gc-progress-current';
+      final current = _projection(
+        currentProjectionId,
+        revision: 1,
+        operation: 'gc-progress-current-operation',
+      );
+      await repository.commitRuntimeProjections(current);
+      final databasePath = repository.resolvedDatabasePath!;
+      await repository.close();
+
+      final database = await databaseFactoryFfi.openDatabase(
+        databasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      final key = _key();
+      final keyColumns = <String, Object?>{
+        'bridge_identity_id': key.partition.bridgeIdentityId,
+        'bridge_instance_id': key.partition.bridgeInstanceId,
+        'codex_source_id': key.partition.codexSourceId,
+        'provider_thread_id': key.providerThreadId,
+      };
+      for (var index = 0; index < 40; index += 1) {
+        final suffix = index.toString().padLeft(2, '0');
+        await database.insert('projection_inbox', <String, Object?>{
+          ...keyColumns,
+          'projection_id': 'gc-protected-inbox-$suffix',
+          'connection_epoch': 'connection-1',
+          'source_epoch': 'source-1',
+          'provider_instance_epoch': 'provider-1',
+          'runtime_authority_generation': 1,
+          'source_revision': 1,
+          'projection_digest': _evidenceDigest,
+          'payload_json': '{}',
+          'state': 'applied',
+          'gc_eligible': 0,
+          'admitted_at': index,
+        });
+        await database.insert('operation_projection', <String, Object?>{
+          ...keyColumns,
+          'operation_id': 'gc-protected-operation-$suffix',
+          'revision': 1,
+          'state': 'queued',
+          'is_terminal': 0,
+          'value_json': '{}',
+          'value_digest': _resultDigest,
+          'is_active': 1,
+          'gc_eligible': 0,
+          'snapshot_marker': 'a-protected-$suffix',
+          'source_projection_id': currentProjectionId,
+        });
+      }
+      await database.insert('projection_inbox', <String, Object?>{
+        ...keyColumns,
+        'projection_id': 'gc-eligible-inbox',
+        'connection_epoch': 'connection-1',
+        'source_epoch': 'source-1',
+        'provider_instance_epoch': 'provider-1',
+        'runtime_authority_generation': 1,
+        'source_revision': 1,
+        'projection_digest': _evidenceDigest,
+        'payload_json': '{}',
+        'state': 'stale',
+        'gc_eligible': 1,
+        'admitted_at': 100,
+      });
+      await database.insert('operation_projection', <String, Object?>{
+        ...keyColumns,
+        'operation_id': 'gc-eligible-operation',
+        'revision': 1,
+        'state': 'queued',
+        'is_terminal': 0,
+        'value_json': '{}',
+        'value_digest': _resultDigest,
+        'is_active': 1,
+        'gc_eligible': 1,
+        'snapshot_marker': 'z-eligible',
+        'source_projection_id': 'gc-eligible-inbox',
+      });
+      final entryCount =
+          (await database.query(
+                'replica_usage',
+                columns: const <String>['entry_count'],
+                where: 'bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ?',
+                whereArgs: <Object?>[
+                  key.partition.bridgeIdentityId,
+                  key.partition.bridgeInstanceId,
+                  key.partition.codexSourceId,
+                  key.providerThreadId,
+                ],
+              )).single['entry_count']!
+              as int;
+      await database.close();
+
+      repository = await _openRepository(
+        tempDirectory,
+        maxEntriesPerThread: entryCount - 2,
+      );
+      final duplicate = await repository.commitRuntimeProjections(current);
+      expect(duplicate.wasDuplicate, isTrue);
+
+      final after = await databaseFactoryFfi.openDatabase(
+        databasePath,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      Future<List<Map<String, Object?>>> rows(
+        String table,
+        String predicate,
+        List<Object?> predicateArgs,
+      ) => after.query(
+        table,
+        where:
+            'bridge_identity_id = ? AND bridge_instance_id = ? AND codex_source_id = ? AND provider_thread_id = ? AND $predicate',
+        whereArgs: <Object?>[
+          key.partition.bridgeIdentityId,
+          key.partition.bridgeInstanceId,
+          key.partition.codexSourceId,
+          key.providerThreadId,
+          ...predicateArgs,
+        ],
+      );
+
+      expect(
+        await rows('projection_inbox', 'projection_id = ?', <Object?>[
+          'gc-eligible-inbox',
+        ]),
+        isEmpty,
+      );
+      expect(
+        await rows('operation_projection', 'operation_id = ?', <Object?>[
+          'gc-eligible-operation',
+        ]),
+        isEmpty,
+      );
+      expect(
+        await rows('projection_inbox', 'projection_id LIKE ?', const <Object?>[
+          'gc-protected-inbox-%',
+        ]),
+        hasLength(40),
+      );
+      expect(
+        await rows(
+          'operation_projection',
+          'operation_id LIKE ?',
+          const <Object?>['gc-protected-operation-%'],
+        ),
+        hasLength(40),
+      );
+      expect(
+        await rows('projection_inbox', 'projection_id = ?', const <Object?>[
+          currentProjectionId,
+        ]),
+        hasLength(1),
+      );
+      await after.close();
     });
 
     test('pressure GC retains the exact current envelope among duplicate revisions', () async {
@@ -2873,6 +3051,7 @@ VALUES (?, ?, ?, ?, ?, ?)
             'value_json': '{}',
             'value_digest': 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
             'is_active': 0,
+            'gc_eligible': 0,
             'snapshot_marker': '',
             'source_projection_id': '',
           });
@@ -3070,6 +3249,7 @@ VALUES (?, ?, ?, ?, ?, ?)
             'value_json': '{}',
             'value_digest': 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
             'is_active': 1,
+            'gc_eligible': 0,
             'snapshot_marker': '',
             'source_projection_id': '',
           });
@@ -3640,6 +3820,55 @@ Future<void> _samePidLeaseCompetingIsolate(List<Object?> arguments) async {
     result = 'error:$error';
   }
   sendPort.send(result);
+}
+
+Future<void> _createLegacyV5Database(String databasePath, String marker) async {
+  final database = await databaseFactoryFfi.openDatabase(
+    databasePath,
+    options: OpenDatabaseOptions(
+      version: 5,
+      onCreate: (db, _) async {
+        await db.execute('''
+          CREATE TABLE replica_metadata (
+            schema_identity TEXT PRIMARY KEY,
+            schema_version INTEGER NOT NULL
+          ) STRICT
+        ''');
+        await db.insert('replica_metadata', const <String, Object?>{
+          'schema_identity': 'ccpocket.conversation_replica_v5',
+          'schema_version': 5,
+        });
+        await db.execute(
+          'CREATE TABLE legacy_v5_marker (value TEXT NOT NULL) STRICT',
+        );
+        await db.insert('legacy_v5_marker', <String, Object?>{'value': marker});
+        await db.execute('''
+          CREATE TABLE projection_inbox (
+            bridge_identity_id TEXT NOT NULL,
+            bridge_instance_id TEXT NOT NULL,
+            codex_source_id TEXT NOT NULL,
+            provider_thread_id TEXT NOT NULL,
+            admitted_at INTEGER NOT NULL,
+            projection_id TEXT NOT NULL,
+            state TEXT NOT NULL
+          ) STRICT
+        ''');
+        await db.execute('''
+          CREATE INDEX projection_inbox_gc_idx ON projection_inbox (
+            bridge_identity_id,
+            bridge_instance_id,
+            codex_source_id,
+            provider_thread_id,
+            admitted_at,
+            projection_id,
+            state
+          )
+        ''');
+      },
+    ),
+  );
+  await database.execute('PRAGMA user_version = 5');
+  await database.close();
 }
 
 Future<ConversationRepository> _openRepository(

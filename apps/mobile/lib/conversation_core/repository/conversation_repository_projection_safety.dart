@@ -22,6 +22,20 @@ class _VerifiedProjectionInbox {
   final String state;
 }
 
+bool _projectionHeadIdentityMatches(
+  Map<String, Object?> head,
+  RuntimeProjectionEnvelope projection,
+  String projectionDigest,
+) =>
+    head['projection_id'] == projection.projectionId &&
+    head['projection_digest'] == projectionDigest &&
+    head['connection_epoch'] == projection.fence.connectionEpoch &&
+    head['source_epoch'] == projection.fence.sourceEpoch &&
+    head['provider_instance_epoch'] == projection.fence.providerInstanceEpoch &&
+    head['runtime_authority_generation'] ==
+        projection.fence.runtimeAuthorityGeneration &&
+    head['source_revision'] == projection.sourceRevision;
+
 Future<CommitReceipt> _commitRuntimeProjectionSafely(
   ConversationRepository repository,
   RuntimeProjectionEnvelope projection, {
@@ -162,6 +176,44 @@ Future<_ProjectionAdmission> _admitRuntimeProjectionSafely(
         );
       }
 
+      final headRows = await txn.query(
+        'projection_head',
+        columns: const <String>[
+          'connection_epoch',
+          'source_epoch',
+          'provider_instance_epoch',
+          'runtime_authority_generation',
+          'source_revision',
+          'projection_id',
+          'projection_digest',
+        ],
+        where: '${_keyWhere()} AND projection_id = ?',
+        whereArgs: <Object?>[
+          ..._keyArgs(projection.key),
+          projection.projectionId,
+        ],
+        limit: 1,
+      );
+      if (headRows.isNotEmpty) {
+        if (!_projectionHeadIdentityMatches(
+          headRows.single,
+          projection,
+          projectionDigest,
+        )) {
+          throw const ConversationRepositoryException(
+            RepositoryFailureCode.identityConflict,
+            'current projection identity was reused with another digest or fence',
+          );
+        }
+        // An exact current head remains authoritative even if an older GC or
+        // manually damaged database lost its larger inbox payload.  Do not
+        // recreate the publication identity or reinterpret the same ID.
+        return const _ProjectionAdmission(
+          wasDuplicate: true,
+          wasAlreadyApplied: true,
+        );
+      }
+
       // This check is in the same writer transaction as admission.  A
       // canonical fence cannot advance between validation and inbox insert.
       await _validateProjectionAgainstCanonicalFence(txn, projection);
@@ -177,6 +229,7 @@ Future<_ProjectionAdmission> _admitRuntimeProjectionSafely(
         'projection_digest': projectionDigest,
         'payload_json': payloadJson,
         'state': 'pending',
+        'gc_eligible': 0,
         'admitted_at': DateTime.now().millisecondsSinceEpoch,
       });
       await _validateCapacity(txn, repository, projection.key);
@@ -221,6 +274,17 @@ Future<bool> _applyProjectionInboxSafely(
     );
     final previousHead = headRows.isEmpty ? null : headRows.single;
     if (previousHead != null) {
+      if (previousHead['projection_id'] == projection.projectionId &&
+          !_projectionHeadIdentityMatches(
+            previousHead,
+            projection,
+            verified.projectionDigest,
+          )) {
+        throw const ConversationRepositoryException(
+          RepositoryFailureCode.identityConflict,
+          'current projection identity changed before apply',
+        );
+      }
       final sameEpoch =
           previousHead['source_epoch'] == projection.fence.sourceEpoch &&
           previousHead['provider_instance_epoch'] ==
@@ -258,7 +322,7 @@ Future<bool> _applyProjectionInboxSafely(
       if (older) {
         await txn.update(
           'projection_inbox',
-          const <String, Object?>{'state': 'stale'},
+          const <String, Object?>{'state': 'stale', 'gc_eligible': 1},
           where: '${_keyWhere()} AND projection_id = ? AND state = ?',
           whereArgs: <Object?>[..._keyArgs(key), projectionId, 'pending'],
         );
@@ -349,7 +413,7 @@ Future<bool> _applyProjectionInboxSafely(
     }
     final applied = await txn.update(
       'projection_inbox',
-      const <String, Object?>{'state': 'applied'},
+      const <String, Object?>{'state': 'applied', 'gc_eligible': 0},
       where: '${_keyWhere()} AND projection_id = ? AND state = ?',
       whereArgs: <Object?>[..._keyArgs(key), projectionId, 'pending'],
     );
@@ -555,6 +619,7 @@ Future<_VerifiedProjectionInbox?> _readVerifiedProjectionInbox(
       'projection_digest',
       'payload_json',
       'state',
+      'gc_eligible',
     ],
     where: '${_keyWhere()} AND projection_id = ?',
     whereArgs: <Object?>[..._keyArgs(key), projectionId],
@@ -572,10 +637,15 @@ Future<_VerifiedProjectionInbox?> _readVerifiedProjectionInbox(
   final state = row['state'];
   final payloadJson = row['payload_json'];
   final projectionDigest = row['projection_digest'];
+  final gcEligible = row['gc_eligible'];
   if (state is! String ||
       !const <String>{'pending', 'applied', 'stale'}.contains(state) ||
       payloadJson is! String ||
-      projectionDigest is! String) {
+      projectionDigest is! String ||
+      gcEligible is! int ||
+      (gcEligible != 0 && gcEligible != 1) ||
+      (state == 'pending' && gcEligible != 0) ||
+      (state == 'stale' && gcEligible != 1)) {
     throw const ConversationRepositoryException(
       RepositoryFailureCode.invalidDatabaseIdentity,
       'projection inbox row has invalid stored state or types',
@@ -683,7 +753,7 @@ Future<bool> _terminalizePendingProjection(
 
     final updated = await txn.update(
       'projection_inbox',
-      const <String, Object?>{'state': 'stale'},
+      const <String, Object?>{'state': 'stale', 'gc_eligible': 1},
       where: '${_keyWhere()} AND projection_id = ? AND state = ?',
       whereArgs: <Object?>[..._keyArgs(key), projectionId, 'pending'],
     );
