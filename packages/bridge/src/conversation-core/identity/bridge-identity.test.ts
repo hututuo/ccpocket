@@ -89,12 +89,12 @@ describe("BridgeIdentityStore", () => {
       authMode: "paired_or_key",
       methods: ["key", "device_signature", "key"],
     } as const;
-    const proof = store.createNonceProof(challenge);
+    const proof = await store.createNonceProof(challenge);
 
     expect(proof.version).toBe(BRIDGE_IDENTITY_VERSION);
     expect(proof.methods).toEqual(["device_signature", "key"]);
     expect(proof.signedPayload).toBe(canonicalBridgeIdentityPayload(proof));
-    expect(store.verify(proof.signedPayload, proof.signature)).toBe(true);
+    expect(await store.verify(proof.signedPayload, proof.signature)).toBe(true);
     expect(verifyBridgeIdentityProof(proof, challenge)).toBe(true);
 
     for (const tampered of [
@@ -117,15 +117,15 @@ describe("BridgeIdentityStore", () => {
       }),
     ).toBe(false);
     expect(
-      verifyBridgeIdentityProof({ ...proof, unsignedClaim: "admin" }, challenge),
-    ).toBe(false);
-    expect(
       verifyBridgeIdentityProof(
-        { ...proof, methods: [null] },
+        { ...proof, unsignedClaim: "admin" },
         challenge,
       ),
     ).toBe(false);
-    expect(store.verify(`${proof.signedPayload}x`, proof.signature)).toBe(
+    expect(
+      verifyBridgeIdentityProof({ ...proof, methods: [null] }, challenge),
+    ).toBe(false);
+    expect(await store.verify(`${proof.signedPayload}x`, proof.signature)).toBe(
       false,
     );
   });
@@ -138,7 +138,7 @@ describe("BridgeIdentityStore", () => {
       authMode: "paired_or_key",
       methods: ["key"],
     } as const;
-    const proof = store.createNonceProof(challenge);
+    const proof = await store.createNonceProof(challenge);
     const sparseMethods = new Array<string>(1);
     const signedPayload = JSON.stringify({
       version: proof.version,
@@ -156,7 +156,7 @@ describe("BridgeIdentityStore", () => {
           ...proof,
           methods: sparseMethods,
           signedPayload,
-          signature: store.sign(signedPayload),
+          signature: await store.sign(signedPayload),
         },
         challenge,
       ),
@@ -268,6 +268,32 @@ describe("BridgeIdentityStore", () => {
     expect(reopened.bridgeIdentityId).toBe(originalIdentity);
   });
 
+  it("invalidates an open signer and blocks a parallel replacement generation", async () => {
+    const parent = await root();
+    const stateDir = join(parent, "state");
+    const displaced = join(parent, "state.displaced");
+    const store = await load(stateDir, {
+      lockOptions: { attempts: 2, retryMs: 0 },
+    });
+    await rename(stateDir, displaced);
+    await mkdir(stateDir, { mode: 0o700 });
+
+    await expect(store.sign("authority payload")).rejects.toThrow(
+      /directory changed after binding/,
+    );
+    await expect(
+      BridgeIdentityStore.load({
+        stateDir,
+        lockOptions: { attempts: 2, retryMs: 0 },
+      }),
+    ).rejects.toThrow(/generation is already bound/);
+    expect(existsSync(join(stateDir, BRIDGE_IDENTITY_FILE))).toBe(false);
+
+    await rm(stateDir, { recursive: true, force: true });
+    await rename(displaced, stateDir);
+    await close(store);
+  });
+
   it("reconciles an installed identity after an ambiguous final data fsync", async () => {
     const stateDir = join(await root(), "state");
     const identityFile = join(stateDir, BRIDGE_IDENTITY_FILE);
@@ -319,7 +345,9 @@ describe("BridgeIdentityStore", () => {
     const index = stores.indexOf(store);
     if (index >= 0) stores.splice(index, 1);
     expect(
-      (await readdir(stateDir)).filter((entry) => entry.includes("writer-lease")),
+      (await readdir(stateDir)).filter((entry) =>
+        entry.includes("writer-lease"),
+      ),
     ).toEqual([]);
   });
 
@@ -332,7 +360,7 @@ describe("BridgeIdentityStore", () => {
       authMode: "paired_or_key",
       methods: ["key", "device_signature"],
     } as const;
-    const proof = store.createNonceProof(challenge);
+    const proof = await store.createNonceProof(challenge);
 
     expect(
       verifyBridgeIdentityProof(
@@ -341,16 +369,22 @@ describe("BridgeIdentityStore", () => {
       ),
     ).toBe(true);
     expect(
-      verifyBridgeIdentityProof({
-        ...proof,
-        methods: ["key", "device_signature", "key"],
-      }, challenge),
+      verifyBridgeIdentityProof(
+        {
+          ...proof,
+          methods: ["key", "device_signature", "key"],
+        },
+        challenge,
+      ),
     ).toBe(false);
     expect(
-      verifyBridgeIdentityProof({
-        ...proof,
-        methods: ["key", "device_signature"],
-      }, challenge),
+      verifyBridgeIdentityProof(
+        {
+          ...proof,
+          methods: ["key", "device_signature"],
+        },
+        challenge,
+      ),
     ).toBe(false);
   });
 
@@ -364,7 +398,7 @@ describe("BridgeIdentityStore", () => {
         stateDir,
         lockOptions: { attempts: 2, retryMs: 0 },
       }),
-    ).rejects.toThrow(/writer lease is busy/);
+    ).rejects.toThrow(/generation is already open/);
     await close(first);
 
     const reopened = await load(stateDir, {

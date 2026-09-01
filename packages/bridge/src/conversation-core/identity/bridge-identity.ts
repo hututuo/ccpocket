@@ -11,14 +11,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import {
+  acquirePrivateStateGenerationLease,
   acquireStateMutationLock,
   atomicPrivateWrite,
+  assertPrivateStateDirectory,
   confirmPrivateStateDirectoryDurability,
   parseJsonWithoutDuplicateKeys,
   preparePrivateStateDirectory,
   readBoundedPrivateFile,
-  acquireStateWriterLease,
-  STATE_WRITER_LEASE_SUFFIX,
+  type PrivateStateDirectoryBinding,
   type StateMutationLockOptions,
 } from "./private-state.js";
 
@@ -239,11 +240,7 @@ export function deriveBridgeIdentityId(publicKey: string): string {
 }
 
 export function isValidIdentityNonce(value: unknown): value is string {
-  if (
-    typeof value !== "string" ||
-    value.length < 16 ||
-    value.length > 96
-  ) {
+  if (typeof value !== "string" || value.length < 16 || value.length > 96) {
     return false;
   }
   try {
@@ -379,6 +376,7 @@ export class BridgeIdentityStore {
   readonly bridgeIdentityId: string;
   readonly publicKey: string;
   private readonly privateKey: KeyObject;
+  private readonly directory: PrivateStateDirectoryBinding;
   private readonly writerLeaseRelease: () => Promise<void>;
   private closed = false;
   private closePromise: Promise<void> | undefined;
@@ -388,6 +386,7 @@ export class BridgeIdentityStore {
     identityFile: string;
     writerLeaseFile: string;
     writerLeaseRelease: () => Promise<void>;
+    directory: PrivateStateDirectoryBinding;
     privateKey: KeyObject;
     publicKey: string;
   }) {
@@ -395,6 +394,7 @@ export class BridgeIdentityStore {
     this.identityFile = input.identityFile;
     this.writerLeaseFile = input.writerLeaseFile;
     this.writerLeaseRelease = input.writerLeaseRelease;
+    this.directory = input.directory;
     this.privateKey = input.privateKey;
     this.publicKey = input.publicKey;
     this.bridgeIdentityId = deriveBridgeIdentityId(input.publicKey);
@@ -411,14 +411,13 @@ export class BridgeIdentityStore {
     const stateDir = directory.path;
     const identityFile = join(stateDir, BRIDGE_IDENTITY_FILE);
     const lockOptions = { ...options.lockOptions };
-    const writerLeaseStateFile = join(stateDir, ".bridge-identity-writer");
-    const writerLeaseFile = `${writerLeaseStateFile}${STATE_WRITER_LEASE_SUFFIX}.lock`;
-    const writerLeaseRelease = await acquireStateWriterLease(
+    const generationLease = await acquirePrivateStateGenerationLease(
       directory,
-      writerLeaseStateFile,
-      "Bridge identity writer lease",
+      "bridge-identity",
       lockOptions,
     );
+    const writerLeaseFile = generationLease.writerLeaseFile;
+    const writerLeaseRelease = generationLease.release;
     try {
       const releaseLock = await acquireStateMutationLock(
         directory,
@@ -473,6 +472,7 @@ export class BridgeIdentityStore {
           identityFile,
           writerLeaseFile,
           writerLeaseRelease,
+          directory,
           ...material,
         });
       } finally {
@@ -488,8 +488,13 @@ export class BridgeIdentityStore {
     if (this.closed) throw new Error("Bridge identity store is closed");
   }
 
-  sign(payload: string | Buffer): string {
+  private async assertAuthorityCurrent(): Promise<void> {
     this.assertOpen();
+    await assertPrivateStateDirectory(this.directory);
+  }
+
+  async sign(payload: string | Buffer): Promise<string> {
+    await this.assertAuthorityCurrent();
     return encodeBase64Url(
       ed25519Sign(
         null,
@@ -499,17 +504,19 @@ export class BridgeIdentityStore {
     );
   }
 
-  verify(
+  async verify(
     payload: string | Buffer,
     signature: string,
     publicKey = this.publicKey,
-  ): boolean {
-    this.assertOpen();
+  ): Promise<boolean> {
+    await this.assertAuthorityCurrent();
     return verifyEd25519Signature(publicKey, payload, signature);
   }
 
-  createNonceProof(input: BridgeNonceProofInput): BridgeIdentityProof {
-    this.assertOpen();
+  async createNonceProof(
+    input: BridgeNonceProofInput,
+  ): Promise<BridgeIdentityProof> {
+    await this.assertAuthorityCurrent();
     const methods = normalizeMethods(input.methods);
     const unsigned = {
       version: BRIDGE_IDENTITY_VERSION,
@@ -524,11 +531,11 @@ export class BridgeIdentityStore {
     return {
       ...unsigned,
       signedPayload,
-      signature: this.sign(signedPayload),
+      signature: await this.sign(signedPayload),
     };
   }
 
-  response(input: BridgeNonceProofInput): BridgeIdentityProof {
+  response(input: BridgeNonceProofInput): Promise<BridgeIdentityProof> {
     return this.createNonceProof(input);
   }
 

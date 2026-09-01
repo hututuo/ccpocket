@@ -14,13 +14,14 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
   BRIDGE_INSTALLATION_FILE,
   BRIDGE_INSTALLATION_SCHEMA_VERSION,
+  BridgeIdentityStore,
   BridgeInstallationStore,
   CODEX_SOURCE_PROVIDER,
 } from "./index.js";
@@ -153,6 +154,24 @@ describe("BridgeInstallationStore", () => {
     );
   });
 
+  it("binds identity and installation authority to one shared directory generation", async () => {
+    const stateDir = join(await root(), "state");
+    const identity = await BridgeIdentityStore.load({
+      stateDir,
+      lockOptions: { attempts: 2, retryMs: 0 },
+    });
+    try {
+      const installation = await load(stateDir, {
+        lockOptions: { attempts: 2, retryMs: 0 },
+      });
+      expect(installation.writerLeaseFile).toBe(identity.writerLeaseFile);
+      expect((await lstat(identity.writerLeaseFile)).isDirectory()).toBe(true);
+      await close(installation);
+    } finally {
+      await identity.close();
+    }
+  });
+
   it("persists stable source IDs while keeping each authenticated epoch in memory", async () => {
     const stateDir = join(await root(), "state");
     const rawLocatorA = "/Users/private/.codex?account=secret&route=10.0.0.8";
@@ -171,21 +190,24 @@ describe("BridgeInstallationStore", () => {
     expect(different.sourceEpoch).not.toBe(first.sourceEpoch);
     expect(first.sourceEpoch).toMatch(/^source_epoch_[A-Za-z0-9_-]+$/);
     expect(
-      store.codexSources.isSourceEpochCurrent(digestA, first.sourceEpoch),
+      await store.codexSources.isSourceEpochCurrent(digestA, first.sourceEpoch),
     ).toBe(true);
 
     const replaced = await store.replaceAuthenticatedCodexSource(digestA);
     expect(replaced.codexSourceId).toBe(first.codexSourceId);
     expect(replaced.sourceEpoch).not.toBe(first.sourceEpoch);
     expect(
-      store.codexSources.isSourceEpochCurrent(digestA, first.sourceEpoch),
+      await store.codexSources.isSourceEpochCurrent(digestA, first.sourceEpoch),
     ).toBe(false);
     expect(
-      store.codexSources.isSourceEpochCurrent(digestA, replaced.sourceEpoch),
+      await store.codexSources.isSourceEpochCurrent(
+        digestA,
+        replaced.sourceEpoch,
+      ),
     ).toBe(true);
-    expect(() =>
+    await expect(
       store.codexSources.assertSourceEpoch(digestA, first.sourceEpoch),
-    ).toThrow(/not current/);
+    ).rejects.toThrow(/not current/);
     await close(store);
 
     store = await load(stateDir);
@@ -197,11 +219,11 @@ describe("BridgeInstallationStore", () => {
     expect(reopenedA.sourceEpoch).not.toBe(replaced.sourceEpoch);
     expect(reopenedB.sourceEpoch).not.toBe(different.sourceEpoch);
     expect(
-      store.codexSources.isSourceEpochCurrent(digestA, first.sourceEpoch),
+      await store.codexSources.isSourceEpochCurrent(digestA, first.sourceEpoch),
     ).toBe(false);
-    expect(() =>
+    await expect(
       store.codexSources.assertSourceEpoch(digestA, first.sourceEpoch),
-    ).toThrow(/not current/);
+    ).rejects.toThrow(/not current/);
     const serialized = await readFile(
       join(stateDir, BRIDGE_INSTALLATION_FILE),
       "utf8",
@@ -225,6 +247,42 @@ describe("BridgeInstallationStore", () => {
     ]);
   });
 
+  it("does not publish a replacement source epoch when lock release rejects", async () => {
+    const stateDir = join(await root(), "state");
+    let injectReleaseFailure = false;
+    let failed = false;
+    let mutationParentSyncs = 0;
+    let boundStateDir = "";
+    const store = await load(stateDir, {
+      lockOptions: {
+        syncDirectory: async (path) => {
+          if (path !== boundStateDir || !injectReleaseFailure || failed) return;
+          mutationParentSyncs += 1;
+          if (mutationParentSyncs === 2) {
+            failed = true;
+            throw Object.assign(new Error("EIO"), { code: "EIO" });
+          }
+        },
+      },
+    });
+    boundStateDir = dirname(store.installationFile);
+    const digest = locatorDigest("release-failure-atomicity");
+    const original = await store.bindAuthenticatedCodexSource(digest);
+
+    injectReleaseFailure = true;
+    mutationParentSyncs = 0;
+    await expect(
+      store.replaceAuthenticatedCodexSource(digest),
+    ).rejects.toMatchObject({ code: "EIO" });
+    expect(failed).toBe(true);
+    expect(
+      await store.codexSources.isSourceEpochCurrent(
+        digest,
+        original.sourceEpoch,
+      ),
+    ).toBe(true);
+  });
+
   it("serializes concurrent same-digest resolution into one durable binding", async () => {
     const stateDir = join(await root(), "state");
     const store = await load(stateDir);
@@ -242,11 +300,9 @@ describe("BridgeInstallationStore", () => {
     expect(new Set(results.map((result) => result.sourceEpoch))).toHaveLength(
       1,
     );
-    expect(store.sourceBindings()).toHaveLength(1);
-    expect((await readdir(stateDir)).sort()).toEqual([
-      basename(store.writerLeaseFile),
-      BRIDGE_INSTALLATION_FILE,
-    ].sort());
+    expect(await store.sourceBindings()).toHaveLength(1);
+    expect(await readdir(stateDir)).toEqual([BRIDGE_INSTALLATION_FILE]);
+    expect((await lstat(store.writerLeaseFile)).isDirectory()).toBe(true);
   });
 
   it("partitions concurrent different digests into different IDs and epochs", async () => {
@@ -266,7 +322,7 @@ describe("BridgeInstallationStore", () => {
     expect(new Set(results.map((result) => result.sourceEpoch))).toHaveLength(
       16,
     );
-    expect(store.sourceBindings()).toHaveLength(16);
+    expect(await store.sourceBindings()).toHaveLength(16);
   });
 
   it("rejects a second in-process writer and permits a stable reopen after close", async () => {
@@ -280,7 +336,7 @@ describe("BridgeInstallationStore", () => {
         stateDir,
         lockOptions: { attempts: 2, retryMs: 0 },
       }),
-    ).rejects.toThrow(/writer lease is busy/);
+    ).rejects.toThrow(/generation is already open/);
 
     await close(first);
     const reopened = await load(stateDir, {
@@ -301,7 +357,7 @@ describe("BridgeInstallationStore", () => {
     await pendingRejection;
 
     const reopened = await load(stateDir);
-    expect(reopened.sourceBindings()).toEqual([]);
+    expect(await reopened.sourceBindings()).toEqual([]);
   });
 
   it("shares close completion, drains a started mutation, and rejects queued work", async () => {
@@ -335,7 +391,7 @@ describe("BridgeInstallationStore", () => {
         stateDir,
         lockOptions: { attempts: 2, retryMs: 0 },
       }),
-    ).rejects.toThrow(/writer lease is busy/);
+    ).rejects.toThrow(/generation is already open/);
 
     await blockerRelease();
     const resolved = await started;
@@ -348,7 +404,7 @@ describe("BridgeInstallationStore", () => {
     expect(reopenedResolved.codexSourceId).toBe(resolved.codexSourceId);
     expect(reopenedResolved.sourceEpoch).not.toBe(resolved.sourceEpoch);
     expect(
-      reopened.sourceBindings().map((binding) => binding.locatorDigest),
+      (await reopened.sourceBindings()).map((binding) => binding.locatorDigest),
     ).toEqual([startedDigest]);
   });
 
@@ -379,10 +435,10 @@ describe("BridgeInstallationStore", () => {
     expect(document.bridgeInstanceId).toBe(
       fulfilled[0]!.value.bridgeInstanceId,
     );
-    expect((await readdir(stateDir)).sort()).toEqual([
-      basename(fulfilled[0]!.value.writerLeaseFile),
-      BRIDGE_INSTALLATION_FILE,
-    ].sort());
+    expect(await readdir(stateDir)).toEqual([BRIDGE_INSTALLATION_FILE]);
+    expect(
+      (await lstat(fulfilled[0]!.value.writerLeaseFile)).isDirectory(),
+    ).toBe(true);
   });
 
   it("enforces the writer lease across processes and rereads after handoff", async () => {
@@ -465,7 +521,7 @@ describe("BridgeInstallationStore", () => {
       expect(secondResolved.codexSourceId).toBe(firstResolved.codexSourceId);
       expect(secondResolved.sourceEpoch).not.toBe(firstResolved.sourceEpoch);
       expect(
-        reopened.codexSources.isSourceEpochCurrent(
+        await reopened.codexSources.isSourceEpochCurrent(
           digest,
           firstResolved.sourceEpoch,
         ),
@@ -536,7 +592,7 @@ describe("BridgeInstallationStore", () => {
         /^codex_source_[A-Za-z0-9_-]{32}$/,
       );
       expect(
-        recovered.codexSources.isSourceEpochCurrent(
+        await recovered.codexSources.isSourceEpochCurrent(
           digest,
           resolved.sourceEpoch,
         ),
@@ -641,9 +697,9 @@ describe("BridgeInstallationStore", () => {
       { mode: 0o600 },
     );
 
-    await expect(
-      BridgeInstallationStore.load({ stateDir }),
-    ).rejects.toThrow(/malformed/);
+    await expect(BridgeInstallationStore.load({ stateDir })).rejects.toThrow(
+      /malformed/,
+    );
   });
 
   it("fails closed if the bound directory is replaced before installation authority access", async () => {
@@ -687,6 +743,21 @@ describe("BridgeInstallationStore", () => {
     await rename(stateDir, displaced);
     await mkdir(stateDir, { mode: 0o700 });
 
+    await expect(store.sourceBindings()).rejects.toThrow(
+      /directory changed after binding/,
+    );
+    await expect(
+      store.codexSources.isSourceEpochCurrent(
+        locatorDigest("replacement-read"),
+        "source_epoch_replacement_read_fixture",
+      ),
+    ).rejects.toThrow(/directory changed after binding/);
+    await expect(
+      store.codexSources.assertSourceEpoch(
+        locatorDigest("replacement-read"),
+        "source_epoch_replacement_read_fixture",
+      ),
+    ).rejects.toThrow(/directory changed after binding/);
     await expect(
       store.bindAuthenticatedCodexSource(locatorDigest("replacement-write")),
     ).rejects.toThrow(/directory changed after binding/);
@@ -697,7 +768,7 @@ describe("BridgeInstallationStore", () => {
     await close(store);
     const reopened = await load(stateDir);
     expect(reopened.bridgeInstanceId).toBe(bridgeInstanceId);
-    expect(reopened.sourceBindings()).toEqual([]);
+    expect(await reopened.sourceBindings()).toEqual([]);
   });
 
   it("allows installation close to retry after final lease namespace sync failure", async () => {
@@ -724,7 +795,9 @@ describe("BridgeInstallationStore", () => {
     const index = stores.indexOf(store);
     if (index >= 0) stores.splice(index, 1);
     expect(
-      (await readdir(stateDir)).filter((entry) => entry.includes("writer-lease")),
+      (await readdir(stateDir)).filter((entry) =>
+        entry.includes("writer-lease"),
+      ),
     ).toEqual([]);
   });
 
@@ -741,9 +814,7 @@ describe("BridgeInstallationStore", () => {
     ).rejects.toThrow(/64 lowercase hex/);
     await expect(
       store.bindAuthenticatedCodexSource("A".repeat(64)),
-    ).rejects.toThrow(
-      /64 lowercase hex/,
-    );
+    ).rejects.toThrow(/64 lowercase hex/);
     expect(
       await readFile(join(stateDir, BRIDGE_INSTALLATION_FILE), "utf8"),
     ).toBe(before);

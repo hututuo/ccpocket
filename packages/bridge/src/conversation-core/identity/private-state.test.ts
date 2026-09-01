@@ -14,7 +14,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   acquireStateMutationLock,
+  assertPrivateStatePlatformSupported,
   atomicPrivateWrite,
+  LEGACY_STATE_LOCK_OWNER_FILE,
   preparePrivateStateDirectory,
   readBoundedPrivateFile,
   STATE_LOCK_OWNER_FILE,
@@ -178,6 +180,37 @@ describe("private conversation identity state", () => {
 
     await release();
     expect(await readdir(join(file, ".."))).toEqual([]);
+  });
+
+  it("conservatively recovers a dead legacy version-one lock owner", async () => {
+    const { directory, file } = await stateFile();
+    const legacyLock = `${file}.lock`;
+    await mkdir(legacyLock, { mode: 0o700 });
+    await writeFile(
+      join(legacyLock, LEGACY_STATE_LOCK_OWNER_FILE),
+      `${JSON.stringify({
+        version: 1,
+        pid: 2_000_000_001,
+        token: lockToken("legacy-dead-owner"),
+        createdAt: "2026-08-30T11:59:00.000Z",
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const release = await acquireStateMutationLock(
+      directory,
+      file,
+      "legacy owner fixture lock",
+      lockOptions({
+        pid: 2_000_000_002,
+        token: () => lockToken("legacy-successor"),
+      }),
+    );
+    const owner = JSON.parse(
+      await readFile(join(legacyLock, STATE_LOCK_OWNER_FILE), "utf8"),
+    ) as { version: number; pid: number };
+    expect(owner).toMatchObject({ version: 2, pid: 2_000_000_002 });
+    await release();
   });
 
   it("does not steal a live or unknown-owner lock", async () => {
@@ -442,7 +475,7 @@ describe("private conversation identity state", () => {
     ).toHaveLength(1);
   });
 
-  it("quarantines a reclaim rollback changed after restore rename", async () => {
+  it("quarantines a reclaim rollback unreadable after restore rename", async () => {
     const { directory, file } = await stateFile();
     const parent = dirname(file);
     await writeLockOwner(file, {
@@ -469,16 +502,7 @@ describe("private conversation identity state", () => {
             if (parentSyncs === 2) {
               await writeFile(
                 join(`${file}.lock`, STATE_LOCK_OWNER_FILE),
-                `${JSON.stringify({
-                  version: 2,
-                  pid: 609,
-                  processIdentity: fixtureProcessIdentity(
-                    609,
-                    "changed-after-restore",
-                  ),
-                  token: lockToken("changed-after-restore-609"),
-                  createdAt: "2026-08-30T12:00:00.000Z",
-                })}\n`,
+                "{malformed\n",
                 { mode: 0o600 },
               );
             }
@@ -487,25 +511,29 @@ describe("private conversation identity state", () => {
       ),
     ).rejects.toMatchObject({ code: "EIO" });
 
-    await expect(lstat(`${file}.lock`)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(`${file}.lock`)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     const quarantine = (await readdir(parent)).filter((entry) =>
       entry.startsWith("state.json.lock.changed-restore-"),
     );
     expect(quarantine).toHaveLength(1);
-    const changedOwner = JSON.parse(
-      await readFile(join(parent, quarantine[0]!, STATE_LOCK_OWNER_FILE), "utf8"),
-    ) as { pid: number; processIdentity: string };
-    expect(changedOwner).toMatchObject({
-      pid: 609,
-      processIdentity: fixtureProcessIdentity(609, "changed-after-restore"),
-    });
+    expect(
+      await readFile(
+        join(parent, quarantine[0]!, STATE_LOCK_OWNER_FILE),
+        "utf8",
+      ),
+    ).toBe("{malformed\n");
   });
 
   it("reclaims a stale lock for a reused PID only when its process identity differs", async () => {
     const staleState = await stateFile();
     const pid = 70101;
     const currentIdentity = fixtureProcessIdentity(pid);
-    const previousIdentity = fixtureProcessIdentity(pid, "previous-incarnation");
+    const previousIdentity = fixtureProcessIdentity(
+      pid,
+      "previous-incarnation",
+    );
     await writeLockOwner(staleState.file, {
       pid,
       processIdentity: previousIdentity,
@@ -609,6 +637,98 @@ describe("private conversation identity state", () => {
     await expect(lstat(`${file}.lock`)).rejects.toMatchObject({
       code: "ENOENT",
     });
+  });
+
+  it("quarantines a canonical lock when its first installed snapshot cannot be read", async () => {
+    const { directory, file } = await stateFile();
+    const parent = dirname(file);
+    let failed = false;
+    await expect(
+      acquireStateMutationLock(
+        directory,
+        file,
+        "installed snapshot failure fixture lock",
+        lockOptions({
+          pid: 70203,
+          token: () => lockToken("snapshot-read-failure"),
+          beforeInstalledSnapshotRead: async (lockPath) => {
+            if (lockPath !== `${file}.lock` || failed) return;
+            failed = true;
+            throw errorWithCode("EIO");
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "EIO" });
+    await expect(lstat(`${file}.lock`)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(
+      (await readdir(parent)).filter((entry) =>
+        entry.startsWith("state.json.lock.failed-install-"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("releases a restored nested reclaim claim after outer namespace sync failure", async () => {
+    const { directory, file } = await stateFile();
+    const parent = dirname(file);
+    await writeLockOwner(file, {
+      pid: 70204,
+      token: lockToken("outer-stale-owner"),
+      createdAt: "2026-08-30T11:59:00.000Z",
+    });
+    let failed = false;
+    await expect(
+      acquireStateMutationLock(
+        directory,
+        file,
+        "outer reclaim sync failure fixture lock",
+        lockOptions({
+          pid: 70205,
+          token: () => lockToken("outer-reclaim-contender"),
+          processStatus: async (pid) => (pid === 70204 ? "dead" : "alive"),
+          syncDirectory: async (path) => {
+            if (path !== parent || failed) return;
+            const entries = await readdir(parent);
+            if (
+              entries.some((entry) =>
+                entry.startsWith("state.json.lock.stale-"),
+              )
+            ) {
+              failed = true;
+              throw errorWithCode("EIO");
+            }
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "EIO" });
+    expect(failed).toBe(true);
+    expect((await lstat(`${file}.lock`)).isDirectory()).toBe(true);
+    await expect(
+      lstat(join(`${file}.lock`, STATE_LOCK_RECLAIM_DIRECTORY)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reclaims an old-boot owner even when wall clock moved backwards", async () => {
+    const { directory, file } = await stateFile();
+    await writeLockOwner(file, {
+      pid: 70206,
+      token: lockToken("future-old-boot-owner"),
+      createdAt: "2026-09-01T12:00:00.000Z",
+    });
+    const release = await acquireStateMutationLock(
+      directory,
+      file,
+      "old boot rollback fixture lock",
+      lockOptions({
+        now: () => Date.UTC(2026, 7, 30, 12),
+        pid: 70207,
+        token: () => lockToken("old-boot-successor"),
+        processStatus: async (pid) =>
+          pid === 70206 ? "dead-old-boot" : "alive",
+      }),
+    );
+    await release();
   });
 
   it("retries release after its first namespace fsync failure and clears the tombstone", async () => {
@@ -808,6 +928,12 @@ describe("private conversation identity state", () => {
 });
 
 describe("syncDirectoryForDurability", () => {
+  it("rejects Windows private state until a secure durable backend exists", () => {
+    expect(() => assertPrivateStatePlatformSupported("win32")).toThrow(
+      /unavailable on Windows/,
+    );
+    expect(() => assertPrivateStatePlatformSupported("darwin")).not.toThrow();
+  });
   it("requires directory fsync on POSIX", async () => {
     let closed = false;
     await expect(
@@ -826,7 +952,7 @@ describe("syncDirectoryForDurability", () => {
     expect(closed).toBe(true);
   });
 
-  it("tolerates only known unsupported directory-sync errors on Windows", async () => {
+  it("fails closed when Windows has no native directory durability backend", async () => {
     await expect(
       syncDirectoryForDurability("fixture", {
         platform: "win32",
@@ -834,7 +960,7 @@ describe("syncDirectoryForDurability", () => {
           throw errorWithCode("EPERM");
         },
       }),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow(/requires a supported native backend/);
 
     let closed = false;
     await expect(
@@ -849,11 +975,11 @@ describe("syncDirectoryForDurability", () => {
           },
         }),
       }),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow(/requires a supported native backend/);
     expect(closed).toBe(true);
   });
 
-  it("does not swallow unknown Windows directory-sync failures", async () => {
+  it("reports unknown Windows directory-sync failures as unsupported durability", async () => {
     await expect(
       syncDirectoryForDurability("fixture", {
         platform: "win32",
@@ -864,6 +990,6 @@ describe("syncDirectoryForDurability", () => {
           close: async () => undefined,
         }),
       }),
-    ).rejects.toMatchObject({ code: "EIO" });
+    ).rejects.toThrow(/requires a supported native backend/);
   });
 });

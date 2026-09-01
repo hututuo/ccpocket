@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import {
@@ -15,6 +15,7 @@ import {
   unlink,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { createConnection, createServer, type Server } from "node:net";
 import { promisify } from "node:util";
 
 const PRIVATE_DIRECTORY_MODE = 0o700;
@@ -27,14 +28,8 @@ const LOCK_OWNER_VERSION = 2 as const;
 const LOCK_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const PROCESS_IDENTITY_PATTERN = /^[A-Za-z0-9:._+\-/=]{8,1024}$/;
 const execFileAsync = promisify(execFile);
-const WINDOWS_UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set([
-  "EISDIR",
-  "EINVAL",
-  "ENOTSUP",
-  "EPERM",
-]);
-
-export const STATE_LOCK_OWNER_FILE = "owner-v1.json" as const;
+export const STATE_LOCK_OWNER_FILE = "owner-v2.json" as const;
+export const LEGACY_STATE_LOCK_OWNER_FILE = "owner-v1.json" as const;
 export const STATE_LOCK_RECLAIM_DIRECTORY = "reclaim-v1" as const;
 
 interface StateLockOwner {
@@ -51,7 +46,33 @@ interface LockSnapshot {
   inode: number;
 }
 
-export type ProcessStatus = "alive" | "dead" | "unknown";
+interface LockDirectoryIdentity {
+  readonly device: number;
+  readonly inode: number;
+}
+
+interface LegacyStateLockOwner {
+  readonly version: 1;
+  readonly pid: number;
+  readonly token: string;
+  readonly createdAt: string;
+}
+
+class LegacyStateLockOwnerError extends Error {
+  readonly owner: LegacyStateLockOwner;
+  readonly directoryIdentity: LockDirectoryIdentity;
+
+  constructor(
+    owner: LegacyStateLockOwner,
+    directoryIdentity: LockDirectoryIdentity,
+  ) {
+    super("Conversation identity lock uses legacy owner metadata");
+    this.owner = owner;
+    this.directoryIdentity = directoryIdentity;
+  }
+}
+
+export type ProcessStatus = "alive" | "dead" | "dead-old-boot" | "unknown";
 
 export interface PrivateStateDirectoryBinding {
   readonly path: string;
@@ -78,6 +99,15 @@ export interface StateMutationLockOptions {
   attempts?: number;
   retryMs?: number;
   syncDirectory?: DirectorySync;
+  beforeInstalledSnapshotRead?: (lockPath: string) => Promise<void>;
+}
+
+export type PrivateStateGenerationHolder =
+  "bridge-identity" | "bridge-installation";
+
+export interface PrivateStateGenerationLease {
+  readonly writerLeaseFile: string;
+  readonly release: () => Promise<void>;
 }
 
 export interface DirectorySyncHandle {
@@ -162,7 +192,8 @@ function scanJsonString(
     }
     if (character === "\\") {
       offset += 1;
-      if (offset >= contents.length) throw new SyntaxError("truncated JSON escape");
+      if (offset >= contents.length)
+        throw new SyntaxError("truncated JSON escape");
       if (contents[offset] === "u") {
         const codePoint = contents.slice(offset + 1, offset + 5);
         if (!/^[0-9a-fA-F]{4}$/u.test(codePoint)) {
@@ -193,14 +224,17 @@ function scanJsonValue(
     if (contents[offset] === "}") return offset + 1;
     while (offset < contents.length) {
       const key = scanJsonString(contents, offset);
-      if (keys.has(key.value)) throw new SyntaxError("duplicate JSON object key");
+      if (keys.has(key.value))
+        throw new SyntaxError("duplicate JSON object key");
       keys.add(key.value);
       offset = skipJsonWhitespace(contents, key.next);
-      if (contents[offset] !== ":") throw new SyntaxError("expected JSON colon");
+      if (contents[offset] !== ":")
+        throw new SyntaxError("expected JSON colon");
       offset = scanJsonValue(contents, offset + 1, depth + 1);
       offset = skipJsonWhitespace(contents, offset);
       if (contents[offset] === "}") return offset + 1;
-      if (contents[offset] !== ",") throw new SyntaxError("expected JSON comma");
+      if (contents[offset] !== ",")
+        throw new SyntaxError("expected JSON comma");
       offset = skipJsonWhitespace(contents, offset + 1);
     }
     throw new SyntaxError("unterminated JSON object");
@@ -212,7 +246,8 @@ function scanJsonValue(
       offset = scanJsonValue(contents, offset, depth + 1);
       offset = skipJsonWhitespace(contents, offset);
       if (contents[offset] === "]") return offset + 1;
-      if (contents[offset] !== ",") throw new SyntaxError("expected JSON comma");
+      if (contents[offset] !== ",")
+        throw new SyntaxError("expected JSON comma");
       offset = skipJsonWhitespace(contents, offset + 1);
     }
     throw new SyntaxError("unterminated JSON array");
@@ -241,19 +276,176 @@ function isCanonicalTimestamp(value: string): boolean {
 }
 
 interface ProcessIdentityParts {
+  readonly version: "proc-v1" | "proc-v2";
+  readonly platform: string;
   readonly machineScope: string;
   readonly bootScope: string;
   readonly processScope: string;
+  readonly witness?: {
+    readonly pid: number;
+    readonly port: number;
+    readonly token: string;
+  };
 }
 
 function parseProcessIdentity(value: string): ProcessIdentityParts | undefined {
   const parts = value.split(":");
+  if (parts[0] === "proc-v2") {
+    if (
+      parts.length !== 7 ||
+      parts[2]?.length !== 43 ||
+      parts[3]?.length !== 43 ||
+      !/^\d+$/u.test(parts[4] ?? "") ||
+      !/^\d+$/u.test(parts[5] ?? "") ||
+      !/^[A-Za-z0-9_-]{43}$/u.test(parts[6] ?? "")
+    ) {
+      return undefined;
+    }
+    const pid = Number(parts[4]);
+    const port = Number(parts[5]);
+    if (
+      !Number.isSafeInteger(pid) ||
+      pid <= 0 ||
+      !Number.isSafeInteger(port) ||
+      port <= 0 ||
+      port > 65_535
+    ) {
+      return undefined;
+    }
+    return {
+      version: "proc-v2",
+      platform: parts[1]!,
+      machineScope: parts.slice(0, 3).join(":"),
+      bootScope: parts.slice(0, 4).join(":"),
+      processScope: parts.slice(0, 6).join(":"),
+      witness: { pid, port, token: parts[6]! },
+    };
+  }
   if (parts.length < 5 || parts[0] !== "proc-v1") return undefined;
   return {
+    version: "proc-v1",
+    platform: parts[1]!,
     machineScope: parts.slice(0, 3).join(":"),
     bootScope: parts.slice(0, 4).join(":"),
     processScope: parts.slice(0, -1).join(":"),
   };
+}
+
+interface DarwinProcessWitness {
+  readonly port: number;
+  readonly token: string;
+  readonly server: Server;
+  active: boolean;
+}
+
+let darwinProcessWitnessPromise: Promise<DarwinProcessWitness> | undefined;
+
+function darwinProcessWitness(): Promise<DarwinProcessWitness> {
+  if (darwinProcessWitnessPromise !== undefined) {
+    return darwinProcessWitnessPromise;
+  }
+  const pending = new Promise<DarwinProcessWitness>(
+    (resolveWitness, reject) => {
+      const token = randomBytes(32).toString("base64url");
+      const witness: DarwinProcessWitness = {
+        port: 0,
+        token,
+        server: createServer(),
+        active: true,
+      };
+      witness.server.on("connection", (socket) => {
+        let input = "";
+        socket.setEncoding("utf8");
+        socket.setTimeout(1_000, () => socket.destroy());
+        socket.on("data", (chunk: string) => {
+          input += chunk;
+          if (input.length > 256) {
+            socket.destroy();
+            return;
+          }
+          const newline = input.indexOf("\n");
+          if (newline < 0) return;
+          const challenge = input.slice(0, newline);
+          if (!/^[A-Za-z0-9_-]{43}$/u.test(challenge)) {
+            socket.destroy();
+            return;
+          }
+          const response = createHmac("sha256", token)
+            .update(challenge, "utf8")
+            .digest("base64url");
+          socket.end(`${response}\n`);
+        });
+      });
+      witness.server.once("error", (error) => {
+        witness.active = false;
+        reject(error);
+      });
+      witness.server.once("listening", () => {
+        const address = witness.server.address();
+        if (address === null || typeof address === "string") {
+          witness.active = false;
+          witness.server.close();
+          reject(new Error("Darwin process witness did not bind TCP"));
+          return;
+        }
+        Object.defineProperty(witness, "port", { value: address.port });
+        witness.server.on("close", () => {
+          witness.active = false;
+        });
+        witness.server.unref();
+        resolveWitness(witness);
+      });
+      witness.server.listen({ host: "127.0.0.1", port: 0, exclusive: true });
+    },
+  );
+  const tracked = pending.catch((error: unknown) => {
+    if (darwinProcessWitnessPromise === tracked) {
+      darwinProcessWitnessPromise = undefined;
+    }
+    throw error;
+  });
+  darwinProcessWitnessPromise = tracked;
+  return darwinProcessWitnessPromise;
+}
+
+async function probeDarwinProcessWitness(
+  witness: NonNullable<ProcessIdentityParts["witness"]>,
+): Promise<ProcessStatus> {
+  const challenge = randomBytes(32).toString("base64url");
+  const expected = createHmac("sha256", witness.token)
+    .update(challenge, "utf8")
+    .digest("base64url");
+  return new Promise<ProcessStatus>((resolveStatus) => {
+    let settled = false;
+    let output = "";
+    const finish = (status: ProcessStatus): void => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolveStatus(status);
+    };
+    const socket = createConnection({
+      host: "127.0.0.1",
+      port: witness.port,
+    });
+    socket.setEncoding("utf8");
+    socket.setTimeout(1_000, () => finish("unknown"));
+    socket.on("connect", () => socket.write(`${challenge}\n`));
+    socket.on("data", (chunk: string) => {
+      output += chunk;
+      if (output.length > 256) return finish("dead");
+      const newline = output.indexOf("\n");
+      if (newline >= 0) {
+        finish(output.slice(0, newline) === expected ? "alive" : "dead");
+      }
+    });
+    socket.on("error", (error: NodeJS.ErrnoException) => {
+      finish(error.code === "ECONNREFUSED" ? "dead" : "unknown");
+    });
+    socket.on("end", () => {
+      if (!settled) finish("dead");
+    });
+  });
 }
 
 function encodeProcessIdentity(
@@ -304,8 +496,9 @@ async function linuxProcessIdentity(pid: number): Promise<string | undefined> {
 }
 
 async function darwinProcessIdentity(pid: number): Promise<string | undefined> {
+  if (pid !== process.pid) return undefined;
   try {
-    const [machine, boot, started] = await Promise.all([
+    const [machine, boot, witness] = await Promise.all([
       execFileAsync(
         "/usr/sbin/ioreg",
         ["-rd1", "-c", "IOPlatformExpertDevice"],
@@ -316,31 +509,33 @@ async function darwinProcessIdentity(pid: number): Promise<string | undefined> {
         timeout: 2_000,
         maxBuffer: 4 * 1024,
       }),
-      execFileAsync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
-        encoding: "utf8",
-        timeout: 2_000,
-        maxBuffer: 4 * 1024,
-      }),
+      darwinProcessWitness(),
     ]);
     const machineMatch = machine.stdout.match(
       /"IOPlatformUUID"\s*=\s*"([^"]+)"/u,
     );
     const machineValue = machineMatch?.[1]?.trim();
     const bootValue = boot.stdout.trim().replace(/\s+/gu, "_");
-    const startedValue = started.stdout.trim().replace(/\s+/gu, "_");
-    if (!machineValue || !bootValue || !startedValue) return undefined;
-    return encodeProcessIdentity(
+    if (!machineValue || !bootValue || !witness.active) return undefined;
+    const digest = (value: string) =>
+      createHash("sha256").update(value, "utf8").digest("base64url");
+    return [
+      "proc-v2",
       "darwin",
-      machineValue,
-      bootValue,
-      startedValue,
-    );
+      digest(machineValue),
+      digest(bootValue),
+      String(pid),
+      String(witness.port),
+      witness.token,
+    ].join(":");
   } catch {
     return undefined;
   }
 }
 
-async function windowsProcessIdentity(pid: number): Promise<string | undefined> {
+async function windowsProcessIdentity(
+  pid: number,
+): Promise<string | undefined> {
   const powershell = join(
     process.env.SystemRoot ?? "C:\\Windows",
     "System32",
@@ -379,7 +574,9 @@ async function windowsProcessIdentity(pid: number): Promise<string | undefined> 
   }
 }
 
-async function defaultProcessIdentity(pid: number): Promise<string | undefined> {
+async function defaultProcessIdentity(
+  pid: number,
+): Promise<string | undefined> {
   if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
   if (process.platform === "linux") return linuxProcessIdentity(pid);
   if (process.platform === "darwin") return darwinProcessIdentity(pid);
@@ -393,7 +590,27 @@ function currentProcessIdentity(
   resolver: ProcessIdentityResolver,
 ): Promise<string | undefined> {
   if (resolver !== defaultProcessIdentity) return resolver(process.pid);
-  currentProcessIdentityPromise ??= resolver(process.pid);
+  if (currentProcessIdentityPromise === undefined) {
+    const attempt = resolver(process.pid);
+    const tracked = attempt.then(
+      (identity) => {
+        if (
+          identity === undefined &&
+          currentProcessIdentityPromise === tracked
+        ) {
+          currentProcessIdentityPromise = undefined;
+        }
+        return identity;
+      },
+      (error: unknown) => {
+        if (currentProcessIdentityPromise === tracked) {
+          currentProcessIdentityPromise = undefined;
+        }
+        throw error;
+      },
+    );
+    currentProcessIdentityPromise = tracked;
+  }
   return currentProcessIdentityPromise;
 }
 
@@ -409,10 +626,44 @@ async function defaultProcessStatus(
       : parseProcessIdentity(currentIdentity);
   if (!expected || !current) return "unknown";
   if (expected.machineScope !== current.machineScope) return "unknown";
-  if (expected.bootScope !== current.bootScope) return "dead";
-  if (expected.processScope !== current.processScope) return "unknown";
+  if (expected.bootScope !== current.bootScope) return "dead-old-boot";
+  if (expected.version === "proc-v1" && expected.platform === "darwin") {
+    try {
+      process.kill(pid, 0);
+      return "unknown";
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH"
+        ? "dead"
+        : "unknown";
+    }
+  }
+  if (
+    expected.version === "proc-v1" &&
+    expected.processScope !== current.processScope
+  ) {
+    return "unknown";
+  }
   if (pid === process.pid) {
+    const currentWitness =
+      process.platform === "darwin"
+        ? await darwinProcessWitness().catch(() => undefined)
+        : undefined;
+    if (currentWitness !== undefined && !currentWitness.active) return "dead";
     return currentIdentity === expectedProcessIdentity ? "alive" : "dead";
+  }
+  if (
+    expected.version === "proc-v2" &&
+    expected.platform === "darwin" &&
+    expected.witness !== undefined
+  ) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH"
+        ? "dead"
+        : "unknown";
+    }
+    return probeDarwinProcessWitness(expected.witness);
   }
   const observed = await defaultProcessIdentity(pid);
   if (observed === undefined) {
@@ -439,6 +690,7 @@ async function pause(milliseconds: number): Promise<void> {
 export async function preparePrivateStateDirectory(
   path: string,
 ): Promise<PrivateStateDirectoryBinding> {
+  assertPrivateStatePlatformSupported(process.platform);
   const absolutePath = resolve(path);
   await mkdir(absolutePath, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
   const before = await lstat(absolutePath);
@@ -483,9 +735,26 @@ export async function preparePrivateStateDirectory(
   });
 }
 
+export function assertPrivateStatePlatformSupported(
+  platform: NodeJS.Platform,
+): void {
+  if (platform === "win32") {
+    throw new Error(
+      "Conversation identity private state is unavailable on Windows until " +
+        "an owner-only ACL and durable namespace backend is installed",
+    );
+  }
+}
+
 export async function assertPrivateStateDirectory(
   binding: PrivateStateDirectoryBinding,
 ): Promise<void> {
+  if (process.platform === "darwin") {
+    const witness = await darwinProcessWitness();
+    if (!witness.active) {
+      throw new Error("Darwin private-state process witness is unavailable");
+    }
+  }
   const current = await lstat(binding.path);
   if (
     current.isSymbolicLink() ||
@@ -599,12 +868,6 @@ export async function readBoundedPrivateFile(
   }
 }
 
-function isUnsupportedWindowsDirectorySyncError(error: unknown): boolean {
-  return WINDOWS_UNSUPPORTED_DIRECTORY_SYNC_ERRORS.has(
-    (error as NodeJS.ErrnoException).code ?? "",
-  );
-}
-
 export async function syncDirectoryForDurability(
   path: string,
   options: DirectorySyncOptions = {},
@@ -617,19 +880,25 @@ export async function syncDirectoryForDurability(
   try {
     handle = await openDirectory(path);
   } catch (error) {
-    if (platform === "win32" && isUnsupportedWindowsDirectorySyncError(error))
-      return;
+    if (platform === "win32") {
+      throw new Error(
+        "Windows directory durability requires a supported native backend",
+        { cause: error },
+      );
+    }
     throw error;
   }
   try {
     try {
       await handle.sync();
     } catch (error) {
-      if (!(
-        platform === "win32" && isUnsupportedWindowsDirectorySyncError(error)
-      )) {
-        throw error;
+      if (platform === "win32") {
+        throw new Error(
+          "Windows directory durability requires a supported native backend",
+          { cause: error },
+        );
       }
+      throw error;
     }
   } finally {
     await handle.close();
@@ -748,6 +1017,37 @@ function parseLockOwner(contents: string): StateLockOwner | undefined {
   };
 }
 
+function parseLegacyLockOwner(
+  contents: string,
+): LegacyStateLockOwner | undefined {
+  let parsed: unknown;
+  try {
+    parsed = parseJsonWithoutDuplicateKeys(contents);
+  } catch {
+    return undefined;
+  }
+  if (
+    !isPlainObject(parsed) ||
+    !hasExactKeys(parsed, ["version", "pid", "token", "createdAt"]) ||
+    parsed.version !== 1 ||
+    typeof parsed.pid !== "number" ||
+    !Number.isSafeInteger(parsed.pid) ||
+    parsed.pid <= 0 ||
+    typeof parsed.token !== "string" ||
+    !LOCK_TOKEN_PATTERN.test(parsed.token) ||
+    typeof parsed.createdAt !== "string" ||
+    !isCanonicalTimestamp(parsed.createdAt)
+  ) {
+    return undefined;
+  }
+  return {
+    version: 1,
+    pid: parsed.pid,
+    token: parsed.token,
+    createdAt: parsed.createdAt,
+  };
+}
+
 async function readLockSnapshot(
   directory: PrivateStateDirectoryBinding,
   lockPath: string,
@@ -771,18 +1071,123 @@ async function readLockSnapshot(
       "Conversation identity lock is not a private real directory",
     );
   }
-  const ownerContents = await readBoundedPrivateFile(
+  let ownerContents = await readBoundedPrivateFile(
     directory,
     join(lockPath, STATE_LOCK_OWNER_FILE),
     MAX_LOCK_OWNER_BYTES,
     "Conversation identity lock owner",
   );
   if (ownerContents === undefined) {
-    throw new Error("Conversation identity lock owner is missing");
+    ownerContents = await readBoundedPrivateFile(
+      directory,
+      join(lockPath, LEGACY_STATE_LOCK_OWNER_FILE),
+      MAX_LOCK_OWNER_BYTES,
+      "Conversation identity legacy lock owner",
+    );
+    if (ownerContents === undefined) {
+      throw new Error("Conversation identity lock owner is missing");
+    }
+    const compatibleOwner = parseLockOwner(ownerContents);
+    if (compatibleOwner) {
+      return { owner: compatibleOwner, device: stats.dev, inode: stats.ino };
+    }
+    const legacyOwner = parseLegacyLockOwner(ownerContents);
+    if (legacyOwner) {
+      throw new LegacyStateLockOwnerError(legacyOwner, {
+        device: stats.dev,
+        inode: stats.ino,
+      });
+    }
   }
   const owner = parseLockOwner(ownerContents);
   if (!owner) throw new Error("Conversation identity lock owner is invalid");
   return { owner, device: stats.dev, inode: stats.ino };
+}
+
+async function tryReclaimLegacyDeadLock(
+  directory: PrivateStateDirectoryBinding,
+  lockPath: string,
+  legacy: LegacyStateLockOwnerError,
+  claimantToken: string,
+  syncDirectory: DirectorySync,
+  now: () => number,
+  staleGraceMs: number,
+): Promise<boolean> {
+  if (now() - Date.parse(legacy.owner.createdAt) < staleGraceMs) return false;
+  try {
+    process.kill(legacy.owner.pid, 0);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false;
+  }
+  try {
+    await readLockSnapshot(directory, lockPath);
+    return false;
+  } catch (error) {
+    if (
+      !(error instanceof LegacyStateLockOwnerError) ||
+      error.owner.pid !== legacy.owner.pid ||
+      error.owner.token !== legacy.owner.token ||
+      error.owner.createdAt !== legacy.owner.createdAt ||
+      !sameLockDirectoryIdentity(
+        legacy.directoryIdentity,
+        error.directoryIdentity,
+      )
+    ) {
+      return false;
+    }
+  }
+  const tombstone = `${lockPath}.legacy-stale-${claimantToken}-${randomUUID()}`;
+  try {
+    await rename(lockPath, tombstone);
+    await syncParentDirectory(lockPath, syncDirectory);
+    const moved = await readLockDirectoryIdentity(directory, tombstone);
+    if (!moved || !sameLockDirectoryIdentity(legacy.directoryIdentity, moved)) {
+      return false;
+    }
+    await rm(tombstone, { recursive: true, force: true });
+    await syncParentDirectory(tombstone, syncDirectory);
+    return true;
+  } catch {
+    if (!(await pathExists(lockPath).catch(() => true))) {
+      await rename(tombstone, lockPath).catch(() => undefined);
+      await syncParentDirectory(lockPath, syncDirectory).catch(() => undefined);
+    }
+    return false;
+  }
+}
+
+async function readLockDirectoryIdentity(
+  directory: PrivateStateDirectoryBinding,
+  lockPath: string,
+): Promise<LockDirectoryIdentity | undefined> {
+  assertPathWithinBinding(directory, lockPath);
+  await assertPrivateStateDirectory(directory);
+  let stats: Awaited<ReturnType<typeof lstat>>;
+  try {
+    stats = await lstat(lockPath);
+  } catch (error) {
+    if (isMissing(error)) return undefined;
+    throw error;
+  }
+  if (
+    stats.isSymbolicLink() ||
+    !stats.isDirectory() ||
+    (process.platform !== "win32" &&
+      modeOf(stats.mode) !== PRIVATE_DIRECTORY_MODE)
+  ) {
+    throw new Error(
+      "Conversation identity lock is not a private real directory",
+    );
+  }
+  return { device: stats.dev, inode: stats.ino };
+}
+
+function sameLockDirectoryIdentity(
+  expected: LockDirectoryIdentity,
+  actual: LockDirectoryIdentity,
+): boolean {
+  return expected.device === actual.device && expected.inode === actual.inode;
 }
 
 function snapshotsMatch(left: LockSnapshot, right: LockSnapshot): boolean {
@@ -807,21 +1212,59 @@ async function quarantineExactLock(
     () => undefined,
   );
   if (!current || !snapshotsMatch(expectedSnapshot, current)) return false;
+  return quarantineLockDirectory(
+    directory,
+    lockPath,
+    expectedSnapshot,
+    reason,
+    syncDirectory,
+  );
+}
+
+async function quarantineLockDirectory(
+  directory: PrivateStateDirectoryBinding,
+  lockPath: string,
+  expectedIdentity: LockDirectoryIdentity,
+  reason: "failed-install" | "changed-restore",
+  syncDirectory: DirectorySync,
+): Promise<boolean> {
+  const currentIdentity = await readLockDirectoryIdentity(
+    directory,
+    lockPath,
+  ).catch(() => undefined);
+  if (
+    !currentIdentity ||
+    !sameLockDirectoryIdentity(expectedIdentity, currentIdentity)
+  ) {
+    return false;
+  }
   const quarantine = `${lockPath}.${reason}-${randomUUID()}`;
   try {
     await rename(lockPath, quarantine);
   } catch {
     return false;
   }
-  await syncParentDirectory(lockPath, syncDirectory).catch(() => undefined);
-  const moved = await readLockSnapshot(directory, quarantine).catch(
-    () => undefined,
-  );
-  return (
-    moved !== undefined &&
-    snapshotsMatch(expectedSnapshot, moved) &&
+  await syncParentDirectory(lockPath, syncDirectory);
+  const movedIdentity = await readLockDirectoryIdentity(
+    directory,
+    quarantine,
+  ).catch(() => undefined);
+  if (
+    movedIdentity &&
+    sameLockDirectoryIdentity(expectedIdentity, movedIdentity) &&
     !(await pathExists(lockPath).catch(() => true))
-  );
+  ) {
+    return true;
+  }
+  if (
+    movedIdentity &&
+    !sameLockDirectoryIdentity(expectedIdentity, movedIdentity) &&
+    !(await pathExists(lockPath).catch(() => true))
+  ) {
+    await rename(quarantine, lockPath).catch(() => undefined);
+    await syncParentDirectory(lockPath, syncDirectory);
+  }
+  return false;
 }
 
 async function tryInstallPreparedLock(
@@ -829,6 +1272,7 @@ async function tryInstallPreparedLock(
   lockPath: string,
   owner: StateLockOwner,
   syncDirectory: DirectorySync,
+  beforeInstalledSnapshotRead?: (lockPath: string) => Promise<void>,
 ): Promise<boolean> {
   await assertPrivateStateDirectory(directory);
   const candidate = `${lockPath}.candidate-${owner.pid}-${owner.token}-${randomUUID()}`;
@@ -844,6 +1288,10 @@ async function tryInstallPreparedLock(
       "Conversation identity lock owner",
       { syncDirectory, createOnly: true },
     );
+    const prepared = await readLockSnapshot(directory, candidate);
+    if (!prepared || !snapshotsMatchOwner(prepared, owner)) {
+      throw new Error("Conversation identity lock candidate is invalid");
+    }
     try {
       await assertPrivateStateDirectory(directory);
       await rename(candidate, lockPath);
@@ -857,18 +1305,19 @@ async function tryInstallPreparedLock(
         throw error;
       }
     }
-    const installed = await readLockSnapshot(directory, lockPath);
-    if (!installed || !snapshotsMatchOwner(installed, owner)) {
-      throw new Error("Conversation identity lock changed during install");
-    }
     try {
+      await beforeInstalledSnapshotRead?.(lockPath);
+      const observed = await readLockSnapshot(directory, lockPath);
+      if (!observed || !snapshotsMatch(prepared, observed)) {
+        throw new Error("Conversation identity lock changed during install");
+      }
       await syncParentDirectory(lockPath, syncDirectory);
       await assertPrivateStateDirectory(directory);
     } catch (error) {
-      const quarantined = await quarantineExactLock(
+      const quarantined = await quarantineLockDirectory(
         directory,
         lockPath,
-        installed,
+        prepared,
         "failed-install",
         syncDirectory,
       );
@@ -897,6 +1346,7 @@ async function restoreTombstone(
   expectedSnapshot: LockSnapshot,
   syncDirectory: DirectorySync,
 ): Promise<boolean> {
+  let restoredToCanonical = false;
   try {
     await assertPrivateStateDirectory(directory);
     const tombstoneSnapshot = await readLockSnapshot(directory, tombstone);
@@ -910,27 +1360,32 @@ async function restoreTombstone(
     // have been re-created while the tombstone was inspected.
     if (await pathExists(lockPath)) return false;
     await rename(tombstone, lockPath);
+    restoredToCanonical = true;
     await syncParentDirectory(lockPath, syncDirectory);
     const restored = await readLockSnapshot(directory, lockPath);
     if (restored !== undefined && snapshotsMatch(expectedSnapshot, restored)) {
       return true;
     }
-    if (
-      restored !== undefined &&
-      restored.device === expectedSnapshot.device &&
-      restored.inode === expectedSnapshot.inode
-    ) {
-      await quarantineExactLock(
+    if (restoredToCanonical) {
+      await quarantineLockDirectory(
         directory,
         lockPath,
-        restored,
+        expectedSnapshot,
         "changed-restore",
         syncDirectory,
       );
     }
     return false;
   } catch {
-    // Never delete an object whose ownership changed while it was being inspected.
+    if (restoredToCanonical) {
+      await quarantineLockDirectory(
+        directory,
+        lockPath,
+        expectedSnapshot,
+        "changed-restore",
+        syncDirectory,
+      ).catch(() => false);
+    }
     return false;
   }
 }
@@ -939,15 +1394,17 @@ async function isStaleDeadSnapshot(
   snapshot: LockSnapshot,
   options: Required<
     Pick<StateMutationLockOptions, "now" | "processStatus" | "staleGraceMs">
-  >,
+  > &
+    Pick<StateMutationLockOptions, "beforeInstalledSnapshotRead">,
 ): Promise<boolean> {
   const age = options.now() - Date.parse(snapshot.owner.createdAt);
+  const status = await options.processStatus(
+    snapshot.owner.pid,
+    snapshot.owner.processIdentity,
+  );
   return (
-    age >= options.staleGraceMs &&
-    (await options.processStatus(
-      snapshot.owner.pid,
-      snapshot.owner.processIdentity,
-    )) === "dead"
+    status === "dead-old-boot" ||
+    (age >= options.staleGraceMs && status === "dead")
   );
 }
 
@@ -958,12 +1415,24 @@ async function tryReclaimUnclaimedDeadDirectory(
   syncDirectory: DirectorySync,
   options: Required<
     Pick<StateMutationLockOptions, "now" | "processStatus" | "staleGraceMs">
-  >,
+  > &
+    Pick<StateMutationLockOptions, "beforeInstalledSnapshotRead">,
 ): Promise<boolean> {
   let snapshot: LockSnapshot | undefined;
   try {
     snapshot = await readLockSnapshot(directory, lockPath);
-  } catch {
+  } catch (error) {
+    if (error instanceof LegacyStateLockOwnerError) {
+      return tryReclaimLegacyDeadLock(
+        directory,
+        lockPath,
+        error,
+        claimantToken,
+        syncDirectory,
+        options.now,
+        options.staleGraceMs,
+      );
+    }
     return false;
   }
   if (!snapshot) return true;
@@ -1024,7 +1493,8 @@ async function tryAcquireReclaimClaim(
   syncDirectory: DirectorySync,
   options: Required<
     Pick<StateMutationLockOptions, "now" | "processStatus" | "staleGraceMs">
-  >,
+  > &
+    Pick<StateMutationLockOptions, "beforeInstalledSnapshotRead">,
 ): Promise<boolean> {
   const claimPath = join(lockPath, STATE_LOCK_RECLAIM_DIRECTORY);
   try {
@@ -1034,6 +1504,7 @@ async function tryAcquireReclaimClaim(
         claimPath,
         claimant,
         syncDirectory,
+        options.beforeInstalledSnapshotRead,
       );
     }
     const reclaimed = await tryReclaimUnclaimedDeadDirectory(
@@ -1052,6 +1523,7 @@ async function tryAcquireReclaimClaim(
         claimPath,
         claimant,
         syncDirectory,
+        options.beforeInstalledSnapshotRead,
       ))
     );
   } catch (error) {
@@ -1067,12 +1539,24 @@ async function tryReclaimDeadLock(
   syncDirectory: DirectorySync,
   options: Required<
     Pick<StateMutationLockOptions, "now" | "processStatus" | "staleGraceMs">
-  >,
+  > &
+    Pick<StateMutationLockOptions, "beforeInstalledSnapshotRead">,
 ): Promise<boolean> {
   let snapshot: LockSnapshot | undefined;
   try {
     snapshot = await readLockSnapshot(directory, lockPath);
-  } catch {
+  } catch (error) {
+    if (error instanceof LegacyStateLockOwnerError) {
+      return tryReclaimLegacyDeadLock(
+        directory,
+        lockPath,
+        error,
+        claimant.token,
+        syncDirectory,
+        options.now,
+        options.staleGraceMs,
+      );
+    }
     return false;
   }
   if (!snapshot) return true;
@@ -1125,13 +1609,17 @@ async function tryReclaimDeadLock(
     try {
       await syncParentDirectory(lockPath, syncDirectory);
     } catch (error) {
-      await restoreTombstone(
-        directory,
-        tombstone,
-        lockPath,
-        snapshot,
-        syncDirectory,
-      ).catch(() => false);
+      if (
+        await restoreTombstone(
+          directory,
+          tombstone,
+          lockPath,
+          snapshot,
+          syncDirectory,
+        ).catch(() => false)
+      ) {
+        claimMovedWithLock = false;
+      }
       throw error;
     }
 
@@ -1348,11 +1836,16 @@ export async function acquireStateMutationLock(
   const retryMs = options.retryMs ?? DEFAULT_LOCK_RETRY_MS;
   const processStatusResolver = options.processStatus ?? defaultProcessStatus;
   const processStatuses = new Map<string, Promise<ProcessStatus>>();
-  const cachedProcessStatus: ProcessStatusResolver = (pid, expectedIdentity) => {
+  const cachedProcessStatus: ProcessStatusResolver = (
+    pid,
+    expectedIdentity,
+  ) => {
     const key = `${pid}:${expectedIdentity}`;
     const cached = processStatuses.get(key);
     if (cached) return cached;
-    const pending = Promise.resolve(processStatusResolver(pid, expectedIdentity));
+    const pending = Promise.resolve(
+      processStatusResolver(pid, expectedIdentity),
+    );
     processStatuses.set(key, pending);
     return pending;
   };
@@ -1360,13 +1853,20 @@ export async function acquireStateMutationLock(
     now: options.now ?? Date.now,
     processStatus: cachedProcessStatus,
     staleGraceMs: options.staleGraceMs ?? DEFAULT_STALE_LOCK_GRACE_MS,
+    beforeInstalledSnapshotRead: options.beforeInstalledSnapshotRead,
   };
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     await assertPrivateStateDirectory(directory);
     if (
       !(await pathExists(lockPath)) &&
-      (await tryInstallPreparedLock(directory, lockPath, owner, syncDirectory))
+      (await tryInstallPreparedLock(
+        directory,
+        lockPath,
+        owner,
+        syncDirectory,
+        options.beforeInstalledSnapshotRead,
+      ))
     ) {
       const snapshot = await readLockSnapshot(directory, lockPath);
       if (!snapshot || !snapshotsMatchOwner(snapshot, owner)) {
@@ -1392,7 +1892,13 @@ export async function acquireStateMutationLock(
     if (
       reclaimed &&
       !(await pathExists(lockPath)) &&
-      (await tryInstallPreparedLock(directory, lockPath, owner, syncDirectory))
+      (await tryInstallPreparedLock(
+        directory,
+        lockPath,
+        owner,
+        syncDirectory,
+        options.beforeInstalledSnapshotRead,
+      ))
     ) {
       const snapshot = await readLockSnapshot(directory, lockPath);
       if (!snapshot || !snapshotsMatchOwner(snapshot, owner)) {
@@ -1427,4 +1933,100 @@ export function acquireStateWriterLease(
     description,
     options,
   );
+}
+
+interface SharedGenerationLease {
+  readonly directoryDevice: number;
+  readonly directoryInode: number;
+  readonly writerLeaseFile: string;
+  readonly releaseWriterLease: () => Promise<void>;
+  readonly holders: Set<PrivateStateGenerationHolder>;
+}
+
+const sharedGenerationLeases = new Map<
+  string,
+  Promise<SharedGenerationLease>
+>();
+
+/**
+ * Holds one parent-stable lease for the complete private-state generation.
+ * Identity and installation may share it in one process, but duplicate owners
+ * of either authority are rejected. A replacement directory cannot start a
+ * parallel generation while the old generation remains open.
+ */
+export async function acquirePrivateStateGenerationLease(
+  directory: PrivateStateDirectoryBinding,
+  holder: PrivateStateGenerationHolder,
+  options: StateMutationLockOptions = {},
+): Promise<PrivateStateGenerationLease> {
+  await assertPrivateStateDirectory(directory);
+  const lifecyclePath = `${directory.path}.lifecycle-v1`;
+  let pending = sharedGenerationLeases.get(lifecyclePath);
+  if (pending === undefined) {
+    const created = (async (): Promise<SharedGenerationLease> => {
+      const lifecycle = await preparePrivateStateDirectory(lifecyclePath);
+      const leaseStateFile = join(lifecycle.path, ".private-state-generation");
+      const writerLeaseFile = `${leaseStateFile}${STATE_WRITER_LEASE_SUFFIX}.lock`;
+      const releaseWriterLease = await acquireStateWriterLease(
+        lifecycle,
+        leaseStateFile,
+        "Bridge private-state generation writer lease",
+        options,
+      );
+      return {
+        directoryDevice: directory.device,
+        directoryInode: directory.inode,
+        writerLeaseFile,
+        releaseWriterLease,
+        holders: new Set<PrivateStateGenerationHolder>(),
+      };
+    })();
+    sharedGenerationLeases.set(lifecyclePath, created);
+    pending = created;
+    created.catch(() => {
+      if (sharedGenerationLeases.get(lifecyclePath) === created) {
+        sharedGenerationLeases.delete(lifecyclePath);
+      }
+    });
+  }
+
+  const shared = await pending;
+  if (
+    shared.directoryDevice !== directory.device ||
+    shared.directoryInode !== directory.inode
+  ) {
+    throw new Error(
+      "Conversation identity state directory generation is already bound",
+    );
+  }
+  if (shared.holders.has(holder)) {
+    throw new Error(`${holder} private-state generation is already open`);
+  }
+  shared.holders.add(holder);
+
+  let released = false;
+  let releaseAttempt: Promise<void> | undefined;
+  const release = (): Promise<void> => {
+    if (released) return Promise.resolve();
+    if (releaseAttempt) return releaseAttempt;
+    shared.holders.delete(holder);
+    const attempt = (async () => {
+      if (shared.holders.size === 0) {
+        await shared.releaseWriterLease();
+        if (sharedGenerationLeases.get(lifecyclePath) === pending) {
+          sharedGenerationLeases.delete(lifecyclePath);
+        }
+      }
+      released = true;
+    })();
+    const tracked = attempt.catch((error: unknown) => {
+      shared.holders.add(holder);
+      if (releaseAttempt === tracked) releaseAttempt = undefined;
+      throw error;
+    });
+    releaseAttempt = tracked;
+    return tracked;
+  };
+
+  return { writerLeaseFile: shared.writerLeaseFile, release };
 }

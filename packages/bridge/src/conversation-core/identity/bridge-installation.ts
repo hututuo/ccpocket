@@ -3,14 +3,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import {
+  acquirePrivateStateGenerationLease,
   acquireStateMutationLock,
-  acquireStateWriterLease,
   atomicPrivateWrite,
+  assertPrivateStateDirectory,
   confirmPrivateStateDirectoryDurability,
   parseJsonWithoutDuplicateKeys,
   preparePrivateStateDirectory,
   readBoundedPrivateFile,
-  STATE_WRITER_LEASE_SUFFIX,
   type PrivateStateDirectoryBinding,
   type StateMutationLockOptions,
 } from "./private-state.js";
@@ -171,16 +171,19 @@ export class CodexSourceRegistry {
     return this.installation.replaceAuthenticatedCodexSource(locatorDigest);
   }
 
-  isSourceEpochCurrent(locatorDigest: string, sourceEpoch: string): boolean {
+  isSourceEpochCurrent(
+    locatorDigest: string,
+    sourceEpoch: string,
+  ): Promise<boolean> {
     return this.installation.isSourceEpochCurrent(locatorDigest, sourceEpoch);
   }
 
-  assertSourceEpoch(
+  async assertSourceEpoch(
     locatorDigest: string,
     sourceEpoch: string,
     codexSourceId?: string,
-  ): void {
-    this.installation.assertSourceEpoch(
+  ): Promise<void> {
+    return this.installation.assertSourceEpoch(
       locatorDigest,
       sourceEpoch,
       codexSourceId,
@@ -240,16 +243,16 @@ export class BridgeInstallationStore {
     if (lockOptions.now === undefined && options.now !== undefined) {
       lockOptions.now = options.now;
     }
-    const writerLeaseStateFile = join(stateDir, ".bridge-installation-writer");
-    const writerLeaseFile = `${writerLeaseStateFile}${STATE_WRITER_LEASE_SUFFIX}.lock`;
     let writerLeaseRelease: (() => Promise<void>) | undefined;
+    let writerLeaseFile: string;
     try {
-      writerLeaseRelease = await acquireStateWriterLease(
+      const generationLease = await acquirePrivateStateGenerationLease(
         directory,
-        writerLeaseStateFile,
-        "Bridge installation writer lease",
+        "bridge-installation",
         lockOptions,
       );
+      writerLeaseRelease = generationLease.release;
+      writerLeaseFile = generationLease.writerLeaseFile;
       const releaseLock = await acquireStateMutationLock(
         directory,
         installationFile,
@@ -398,35 +401,42 @@ export class BridgeInstallationStore {
       }
 
       const active = this.activeSourceEpochs.get(locatorDigest);
-      if (!forceNewEpoch && active?.codexSourceId === codexSourceId) {
-        return { ...active };
-      }
-      const sourceEpoch = createSourceEpoch();
-      const resolved = { codexSourceId, sourceEpoch };
+      const resolved =
+        !forceNewEpoch && active?.codexSourceId === codexSourceId
+          ? { ...active }
+          : { codexSourceId, sourceEpoch: createSourceEpoch() };
+      await releaseLock();
       this.activeSourceEpochs.set(locatorDigest, resolved);
       return { ...resolved };
-    } finally {
-      await releaseLock();
+    } catch (error) {
+      await releaseLock().catch(() => undefined);
+      throw error;
     }
   }
 
-  sourceBindings(): readonly CodexSourceBinding[] {
+  async sourceBindings(): Promise<readonly CodexSourceBinding[]> {
     if (this.closed) throw new Error("Bridge installation store is closed");
+    await assertPrivateStateDirectory(this.directory);
     return this.state.sourceBindings.map(cloneBinding);
   }
 
-  isSourceEpochCurrent(locatorDigest: string, sourceEpoch: string): boolean {
+  async isSourceEpochCurrent(
+    locatorDigest: string,
+    sourceEpoch: string,
+  ): Promise<boolean> {
     if (this.closed) return false;
+    await assertPrivateStateDirectory(this.directory);
     return (
       this.activeSourceEpochs.get(locatorDigest)?.sourceEpoch === sourceEpoch
     );
   }
 
-  assertSourceEpoch(
+  async assertSourceEpoch(
     locatorDigest: string,
     sourceEpoch: string,
     codexSourceId?: string,
-  ): void {
+  ): Promise<void> {
+    if (!this.closed) await assertPrivateStateDirectory(this.directory);
     const active = this.activeSourceEpochs.get(locatorDigest);
     if (
       this.closed ||
