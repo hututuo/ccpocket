@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import {
+  closeSync,
   constants as fsConstants,
+  fstatSync,
+  lstatSync,
+  openSync,
   readFileSync,
   readdirSync,
 } from 'node:fs';
@@ -20,7 +24,7 @@ import {
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-import { canonicalJson, digestBytes, digestJson } from './canonical.mjs';
+import {canonicalJson, compareUtf16, digestBytes, digestJson} from './canonical.mjs';
 import { digestAuthoritySource } from './b1-digest-authority.mjs';
 import {
   CANONICALIZATION_PROFILE,
@@ -68,24 +72,66 @@ function normalizeArtifactTargets(artifactTargets) {
 }
 
 function generatorSourceCatalog() {
-  return readdirSync(GENERATOR_SOURCE_DIRECTORY, {withFileTypes: true})
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.mjs'))
-    .map((entry) => entry.name)
-    .sort()
-    .map((filename) => {
-      const bytes = readFileSync(path.join(GENERATOR_SOURCE_DIRECTORY, filename));
+  const entries = readdirSync(GENERATOR_SOURCE_DIRECTORY, {withFileTypes: true})
+    .filter((entry) => entry.name.endsWith('.mjs'))
+    .sort((left, right) => compareUtf16(left.name, right.name));
+  if (entries.length === 0) {
+    throw new Error(`generator source closure is empty: ${GENERATOR_SOURCE_DIRECTORY}`);
+  }
+  return entries.map((entry) => {
+    const filename = path.join(GENERATOR_SOURCE_DIRECTORY, entry.name);
+    if (entry.isSymbolicLink() || !entry.isFile()) {
+      throw new Error(`generator source must be a regular file: ${filename}`);
+    }
+    const lexicalBefore = lstatSync(filename, {bigint: true});
+    if (lexicalBefore.isSymbolicLink() || !lexicalBefore.isFile()) {
+      throw new Error(`generator source must be a regular file: ${filename}`);
+    }
+    let descriptor;
+    try {
+      descriptor = openSync(
+        filename,
+        fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+      );
+      const handleBefore = fstatSync(descriptor, {bigint: true});
+      const bytes = readFileSync(descriptor);
+      const handleAfter = fstatSync(descriptor, {bigint: true});
+      const lexicalAfter = lstatSync(filename, {bigint: true});
+      const statuses = [handleBefore, handleAfter, lexicalAfter];
+      if (statuses.some((status) => !status.isFile()) ||
+          lexicalAfter.isSymbolicLink() ||
+          statuses.some((status) => status.dev !== lexicalBefore.dev ||
+            status.ino !== lexicalBefore.ino ||
+            status.mode !== lexicalBefore.mode ||
+            status.size !== lexicalBefore.size ||
+            status.mtimeNs !== lexicalBefore.mtimeNs ||
+            status.ctimeNs !== lexicalBefore.ctimeNs) ||
+          BigInt(bytes.byteLength) !== lexicalBefore.size) {
+        throw new Error(`generator source changed while it was read: ${filename}`);
+      }
       return {
-        path: `${GENERATOR_SOURCE_PATH_PREFIX}/${filename}`,
+        path: `${GENERATOR_SOURCE_PATH_PREFIX}/${entry.name}`,
         byteLength: bytes.byteLength,
         sha256: digestBytes(bytes),
       };
-    });
+    } finally {
+      if (descriptor !== undefined) closeSync(descriptor);
+    }
+  });
 }
 
-function renderProfileManifest(base, artifacts, artifactTargets) {
+function renderProfileManifest(
+  base,
+  artifacts,
+  artifactTargets,
+  generatorSourceFiles,
+  generatorExecutionBinding,
+) {
   const normalizedTargets = normalizeArtifactTargets(artifactTargets);
-  const sourceFiles = generatorSourceCatalog();
+  const sourceFiles = generatorSourceFiles ?? generatorSourceCatalog();
   const generationProvenance = {
+    generatorExecutionBinding: generatorExecutionBinding ??
+      'LIVE_FILESYSTEM_CATALOG_UNBOUND_V1',
     generatorSourceDigestAlgorithm: 'SHA-256-JCS-FILE-CATALOG-V1',
     generatorSourceDigest: digestJson(
       sourceFiles,
@@ -513,7 +559,13 @@ function activeSource(model) {
 
 export function generateArtifacts(
   model,
-  {artifactTargets, dartSource, dartFormatterVersion} = {},
+  {
+    artifactTargets,
+    dartSource,
+    dartFormatterVersion,
+    generatorExecutionBinding,
+    generatorSourceFiles,
+  } = {},
 ) {
   const source = activeSource(model);
   const sourceDigest = digestJson(source, TRUSTED_GENERATION_CANONICAL_LIMITS);
@@ -585,6 +637,8 @@ export function generateArtifacts(
       ['contract.dart', dart],
     ]),
     artifactTargets,
+    generatorSourceFiles,
+    generatorExecutionBinding,
   );
   return new Map([
     ['schema.json', schema],

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
 import {
   chmod,
+  copyFile,
   lstat,
   mkdir,
   mkdtemp,
@@ -30,6 +32,11 @@ import {
   writeArtifactTargets,
   writeArtifacts,
 } from '../src/generate.mjs';
+import {
+  captureGeneratorSourceFiles,
+  createGeneratorSourceSnapshot,
+  verifyGeneratorSourceFiles,
+} from '../src/source-snapshot.mjs';
 import { validateInputs, validateValue } from '../src/validate.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -178,6 +185,10 @@ test('generation is byte deterministic and manifest digests bind artifacts', asy
     manifest.generationProvenance.generatorSourceDigest,
     digestJson(manifest.generationProvenance.generatorSourceFiles),
   );
+  assert.equal(
+    manifest.generationProvenance.generatorExecutionBinding,
+    'LIVE_FILESYSTEM_CATALOG_UNBOUND_V1',
+  );
   assert.deepEqual(
     manifest.generationProvenance.generatorSourceFiles.map((entry) => entry.path),
     [...manifest.generationProvenance.generatorSourceFiles]
@@ -214,6 +225,87 @@ test('generation is byte deterministic and manifest digests bind artifacts', asy
   assert.equal(Object.hasOwn(envelopeProperties, '__proto__'), true);
   assert.deepEqual(envelopeProperties.__proto__, {type: 'string'});
   assert.equal(Object.hasOwn(Object.prototype, 'type'), false);
+});
+
+test('generator source snapshots reject symlinks and isolate later source changes', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-source-input-'));
+  const symlinkDirectory = await mkdtemp(path.join(tmpdir(), 'ccpocket-source-symlink-'));
+  try {
+    const first = path.join(directory, 'first.mjs');
+    const second = path.join(directory, 'second.mjs');
+    await writeFile(first, 'export const value = "first";\n');
+    await writeFile(second, 'export const value = "second";\n');
+    const snapshot = await createGeneratorSourceSnapshot(
+      directory,
+      'packages/conversation-contract/src',
+    );
+    try {
+      const capturedFirst = await readFile(path.join(snapshot.directory, 'first.mjs'));
+      await writeFile(first, 'export const value = "changed";\n');
+      await unlink(second);
+      await verifyGeneratorSourceFiles(
+        snapshot.directory,
+        'packages/conversation-contract/src',
+        snapshot.catalog,
+      );
+      assert.deepEqual(
+        await readFile(path.join(snapshot.directory, 'first.mjs')),
+        capturedFirst,
+      );
+    } finally {
+      await snapshot.dispose();
+    }
+
+    const victim = path.join(symlinkDirectory, 'victim.mjs');
+    await writeFile(victim, 'export const value = "victim";\n');
+    await copyFile(victim, path.join(symlinkDirectory, 'regular.mjs'));
+    await symlink(victim, path.join(symlinkDirectory, 'linked.mjs'));
+    await assert.rejects(
+      captureGeneratorSourceFiles(
+        symlinkDirectory,
+        'packages/conversation-contract/src',
+      ),
+      /generator source must be a regular file/,
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+    await rm(symlinkDirectory, {recursive: true, force: true});
+  }
+});
+
+test('CLI generation executes from and attests one immutable source snapshot', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-snapshot-cli-'));
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(here, '../src/cli.mjs'),
+        'generate',
+        '--registry',
+        path.join(fixtures, 'registry.json'),
+        '--vectors',
+        path.join(fixtures, 'vectors.json'),
+        '--out',
+        directory,
+      ],
+      {encoding: 'utf8'},
+    );
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /generate: fixture\.active/);
+    const manifest = JSON.parse(await readFile(
+      path.join(directory, 'profile-manifest.json'),
+      'utf8',
+    ));
+    assert.equal(
+      manifest.generationProvenance.generatorExecutionBinding,
+      'IMMUTABLE_SOURCE_SNAPSHOT_V1',
+    );
+    assert.ok(manifest.generationProvenance.generatorSourceFiles.some(
+      (entry) => entry.path.endsWith('/source-snapshot.mjs'),
+    ));
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
 });
 
 test('applies SHA-256 schema format only to the exact named scalar', async () => {
@@ -1123,6 +1215,28 @@ test('mapped project targets generate and check one exact artifact set', async (
       );
       await chmod(executableTarget, 0o644);
       await assert.doesNotReject(run(['check', ...args]));
+
+      const expectedContract = await readFile(executableTarget, 'utf8');
+      const replacement = path.join(directory, 'executable-contract.ts');
+      await writeFile(replacement, expectedContract, {mode: 0o755});
+      let replaced = false;
+      await assert.rejects(
+        run(['check', ...args], {
+          hooks: {
+            afterArtifactHandleBound: async ({filename, mode, target}) => {
+              if (!replaced && filename === 'contract.ts' && mode === 'mapped') {
+                replaced = true;
+                await rename(replacement, target);
+              }
+            },
+          },
+        }),
+        /contract\.ts \(changed while checked\)/,
+      );
+      assert.equal(replaced, true);
+      await writeFile(executableTarget, expectedContract);
+      await chmod(executableTarget, 0o644);
+      await assert.doesNotReject(run(['check', ...args]));
     }
 
     const contractTarget = path.join(directory, 'bridge/generated/contract.ts');
@@ -1478,6 +1592,30 @@ test('check detects generated drift without modifying the target', async () => {
         /generated artifact drift: contract\.ts \(must not be executable\)/,
       );
       await chmod(target, 0o644);
+      await assert.doesNotReject(run(args));
+
+      const victim = path.join(path.dirname(directory), `${path.basename(directory)}-victim.ts`);
+      const replacement = path.join(directory, 'contract-replacement-link.ts');
+      await writeFile(victim, original);
+      await symlink(victim, replacement);
+      let replaced = false;
+      await assert.rejects(
+        run(args, {
+          hooks: {
+            afterArtifactHandleBound: async ({filename, mode, target: boundTarget}) => {
+              if (!replaced && filename === 'contract.ts' && mode === 'standalone') {
+                replaced = true;
+                await rename(replacement, boundTarget);
+              }
+            },
+          },
+        }),
+        /contract\.ts \(changed while checked\)/,
+      );
+      assert.equal(replaced, true);
+      await unlink(target);
+      await writeFile(target, original, {mode: 0o644});
+      await unlink(victim);
       await assert.doesNotReject(run(args));
     }
 
