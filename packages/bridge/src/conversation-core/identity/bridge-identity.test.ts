@@ -6,6 +6,8 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -128,6 +130,39 @@ describe("BridgeIdentityStore", () => {
     );
   });
 
+  it("rejects a signed proof whose methods array contains a sparse hole", async () => {
+    const store = await load(join(await root(), "state"));
+    const challenge = {
+      bridgeInstanceId: "bridge_instance_fixture",
+      nonce: "bm9uY2VfMDEyMzQ1Njc4OWFiY2RlZg",
+      authMode: "paired_or_key",
+      methods: ["key"],
+    } as const;
+    const proof = store.createNonceProof(challenge);
+    const sparseMethods = new Array<string>(1);
+    const signedPayload = JSON.stringify({
+      version: proof.version,
+      bridgeIdentityId: proof.bridgeIdentityId,
+      publicKey: proof.publicKey,
+      bridgeInstanceId: proof.bridgeInstanceId,
+      nonce: proof.nonce,
+      authMode: proof.authMode,
+      methods: sparseMethods,
+    });
+
+    expect(
+      verifyBridgeIdentityProof(
+        {
+          ...proof,
+          methods: sparseMethods,
+          signedPayload,
+          signature: store.sign(signedPayload),
+        },
+        challenge,
+      ),
+    ).toBe(false);
+  });
+
   it("repairs private modes without changing a valid persisted identity", async () => {
     const stateDir = join(await root(), "state");
     const first = await load(stateDir);
@@ -169,6 +204,123 @@ describe("BridgeIdentityStore", () => {
     await expect(
       BridgeIdentityStore.load({ stateDir: mismatchDir }),
     ).rejects.toThrow(/key material is invalid/);
+  });
+
+  it("rejects duplicate JSON keys and non-canonical PKCS#8 bytes", async () => {
+    const duplicateDir = join(await root(), "duplicate");
+    await mkdir(duplicateDir, { mode: 0o700 });
+    await writeFile(
+      join(duplicateDir, BRIDGE_IDENTITY_FILE),
+      '{"version":1,"version":1,"publicKey":"x","privateKey":"x"}\n',
+      { mode: 0o600 },
+    );
+    await expect(
+      BridgeIdentityStore.load({ stateDir: duplicateDir }),
+    ).rejects.toThrow(/malformed/);
+
+    const trailingDir = join(await root(), "trailing-pkcs8");
+    const original = await load(trailingDir);
+    await close(original);
+    const identityFile = join(trailingDir, BRIDGE_IDENTITY_FILE);
+    const document = JSON.parse(await readFile(identityFile, "utf8")) as {
+      version: number;
+      publicKey: string;
+      privateKey: string;
+    };
+    document.privateKey = Buffer.concat([
+      Buffer.from(document.privateKey, "base64url"),
+      Buffer.from("deadbeef", "hex"),
+    ]).toString("base64url");
+    await writeFile(identityFile, `${JSON.stringify(document)}\n`, {
+      mode: 0o600,
+    });
+
+    await expect(
+      BridgeIdentityStore.load({ stateDir: trailingDir }),
+    ).rejects.toThrow(/key material is invalid/);
+  });
+
+  it("fails closed if the bound state directory is replaced before authority access", async () => {
+    const parent = await root();
+    const stateDir = join(parent, "state");
+    const displaced = join(parent, "state.displaced");
+    const first = await load(stateDir);
+    const originalIdentity = first.bridgeIdentityId;
+    await close(first);
+    let replaced = false;
+
+    await expect(
+      BridgeIdentityStore.load({
+        stateDir,
+        lockOptions: {
+          syncDirectory: async () => {
+            if (replaced) return;
+            replaced = true;
+            await rename(stateDir, displaced);
+            await mkdir(stateDir, { mode: 0o700 });
+          },
+        },
+      }),
+    ).rejects.toThrow(/directory changed after binding/);
+
+    expect(existsSync(join(stateDir, BRIDGE_IDENTITY_FILE))).toBe(false);
+    const reopened = await load(displaced);
+    expect(reopened.bridgeIdentityId).toBe(originalIdentity);
+  });
+
+  it("reconciles an installed identity after an ambiguous final data fsync", async () => {
+    const stateDir = join(await root(), "state");
+    const identityFile = join(stateDir, BRIDGE_IDENTITY_FILE);
+    let failed = false;
+    await expect(
+      BridgeIdentityStore.load({
+        stateDir,
+        lockOptions: {
+          syncDirectory: async () => {
+            if (!failed && existsSync(identityFile)) {
+              failed = true;
+              throw Object.assign(new Error("EIO"), { code: "EIO" });
+            }
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "EIO" });
+
+    const document = JSON.parse(await readFile(identityFile, "utf8")) as {
+      publicKey: string;
+    };
+    const reopened = await load(stateDir);
+    expect(reopened.bridgeIdentityId).toBe(
+      deriveBridgeIdentityId(document.publicKey),
+    );
+  });
+
+  it("allows close to retry after final lease namespace sync failure", async () => {
+    const stateDir = join(await root(), "state");
+    let closing = false;
+    let closeSyncs = 0;
+    let failed = false;
+    const store = await load(stateDir, {
+      lockOptions: {
+        syncDirectory: async () => {
+          if (!closing) return;
+          closeSyncs += 1;
+          if (!failed && closeSyncs === 2) {
+            failed = true;
+            throw Object.assign(new Error("EIO"), { code: "EIO" });
+          }
+        },
+      },
+    });
+    closing = true;
+
+    await expect(store.close()).rejects.toMatchObject({ code: "EIO" });
+    await expect(store.close()).resolves.toBeUndefined();
+    const index = stores.indexOf(store);
+    if (index >= 0) stores.splice(index, 1);
+    expect(
+      (await readdir(stateDir)).filter((entry) => entry.includes("writer-lease")),
+    ).toEqual([]);
   });
 
   it("rejects an outer methods order or duplicate mismatch", async () => {

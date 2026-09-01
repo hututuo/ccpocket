@@ -6,9 +6,12 @@ import {
   acquireStateMutationLock,
   acquireStateWriterLease,
   atomicPrivateWrite,
+  confirmPrivateStateDirectoryDurability,
+  parseJsonWithoutDuplicateKeys,
   preparePrivateStateDirectory,
   readBoundedPrivateFile,
   STATE_WRITER_LEASE_SUFFIX,
+  type PrivateStateDirectoryBinding,
   type StateMutationLockOptions,
 } from "./private-state.js";
 
@@ -83,7 +86,7 @@ function parseInstallationFile(
 ): BridgeInstallationFileData {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(contents);
+    parsed = parseJsonWithoutDuplicateKeys(contents);
   } catch (error) {
     throw new Error(`Bridge installation state is malformed: ${path}`, {
       cause: error,
@@ -192,6 +195,7 @@ export class BridgeInstallationStore {
   readonly bridgeInstanceId: string;
   readonly codexSources: CodexSourceRegistry;
   private readonly writerLeaseRelease: () => Promise<void>;
+  private readonly directory: PrivateStateDirectoryBinding;
   private readonly lockOptions: StateMutationLockOptions;
   private state: BridgeInstallationFileData;
   private readonly activeSourceEpochs = new Map<
@@ -207,6 +211,7 @@ export class BridgeInstallationStore {
     installationFile: string;
     writerLeaseFile: string;
     writerLeaseRelease: () => Promise<void>;
+    directory: PrivateStateDirectoryBinding;
     state: BridgeInstallationFileData;
     lockOptions: StateMutationLockOptions;
   }) {
@@ -214,6 +219,7 @@ export class BridgeInstallationStore {
     this.installationFile = input.installationFile;
     this.writerLeaseFile = input.writerLeaseFile;
     this.writerLeaseRelease = input.writerLeaseRelease;
+    this.directory = input.directory;
     this.state = input.state;
     this.bridgeInstanceId = input.state.bridgeInstanceId;
     this.lockOptions = input.lockOptions;
@@ -227,22 +233,25 @@ export class BridgeInstallationStore {
       options.stateDir ??
       process.env.CCPOCKET_STATE_DIR ??
       join(homedir(), ".ccpocket");
-    const stateDir = await preparePrivateStateDirectory(requestedStateDir);
+    const directory = await preparePrivateStateDirectory(requestedStateDir);
+    const stateDir = directory.path;
     const installationFile = join(stateDir, BRIDGE_INSTALLATION_FILE);
     const lockOptions = { ...options.lockOptions };
     if (lockOptions.now === undefined && options.now !== undefined) {
       lockOptions.now = options.now;
     }
-    const writerLeaseStateFile = `${stateDir}.bridge-installation-writer`;
+    const writerLeaseStateFile = join(stateDir, ".bridge-installation-writer");
     const writerLeaseFile = `${writerLeaseStateFile}${STATE_WRITER_LEASE_SUFFIX}.lock`;
     let writerLeaseRelease: (() => Promise<void>) | undefined;
     try {
       writerLeaseRelease = await acquireStateWriterLease(
+        directory,
         writerLeaseStateFile,
         "Bridge installation writer lease",
         lockOptions,
       );
       const releaseLock = await acquireStateMutationLock(
+        directory,
         installationFile,
         "Bridge installation state",
         lockOptions,
@@ -250,6 +259,7 @@ export class BridgeInstallationStore {
       let state: BridgeInstallationFileData;
       try {
         const contents = await readBoundedPrivateFile(
+          directory,
           installationFile,
           MAX_INSTALLATION_FILE_BYTES,
           "Bridge installation state",
@@ -257,6 +267,7 @@ export class BridgeInstallationStore {
         if (contents === undefined) {
           state = newInstallation();
           await atomicPrivateWrite(
+            directory,
             installationFile,
             `${JSON.stringify(state)}\n`,
             MAX_INSTALLATION_FILE_BYTES,
@@ -269,6 +280,10 @@ export class BridgeInstallationStore {
         } else {
           state = parseInstallationFile(contents, installationFile);
         }
+        await confirmPrivateStateDirectoryDurability(
+          directory,
+          lockOptions.syncDirectory,
+        );
       } finally {
         await releaseLock();
       }
@@ -277,6 +292,7 @@ export class BridgeInstallationStore {
         installationFile,
         writerLeaseFile,
         writerLeaseRelease,
+        directory,
         state,
         lockOptions,
       });
@@ -321,12 +337,14 @@ export class BridgeInstallationStore {
       );
     }
     const releaseLock = await acquireStateMutationLock(
+      this.directory,
       this.installationFile,
       "Bridge installation state",
       this.lockOptions,
     );
     try {
       const contents = await readBoundedPrivateFile(
+        this.directory,
         this.installationFile,
         MAX_INSTALLATION_FILE_BYTES,
         "Bridge installation state",
@@ -369,6 +387,7 @@ export class BridgeInstallationStore {
           ],
         };
         await atomicPrivateWrite(
+          this.directory,
           this.installationFile,
           `${JSON.stringify(next)}\n`,
           MAX_INSTALLATION_FILE_BYTES,
@@ -423,7 +442,14 @@ export class BridgeInstallationStore {
     if (this.closePromise) return this.closePromise;
     this.closed = true;
     this.activeSourceEpochs.clear();
-    this.closePromise = this.operations.then(() => this.writerLeaseRelease());
-    return this.closePromise;
+    const releaseAttempt = this.operations.then(() =>
+      this.writerLeaseRelease(),
+    );
+    const trackedAttempt = releaseAttempt.catch((error: unknown) => {
+      if (this.closePromise === trackedAttempt) this.closePromise = undefined;
+      throw error;
+    });
+    this.closePromise = trackedAttempt;
+    return trackedAttempt;
   }
 }

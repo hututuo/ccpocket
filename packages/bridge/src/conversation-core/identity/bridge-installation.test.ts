@@ -8,12 +8,13 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rename,
   rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -25,6 +26,7 @@ import {
 } from "./index.js";
 import {
   acquireStateMutationLock,
+  preparePrivateStateDirectory,
   type StateMutationLockOptions,
 } from "./private-state.js";
 
@@ -242,8 +244,9 @@ describe("BridgeInstallationStore", () => {
     );
     expect(store.sourceBindings()).toHaveLength(1);
     expect((await readdir(stateDir)).sort()).toEqual([
+      basename(store.writerLeaseFile),
       BRIDGE_INSTALLATION_FILE,
-    ]);
+    ].sort());
   });
 
   it("partitions concurrent different digests into different IDs and epochs", async () => {
@@ -304,7 +307,9 @@ describe("BridgeInstallationStore", () => {
   it("shares close completion, drains a started mutation, and rejects queued work", async () => {
     const stateDir = join(await root(), "state");
     const store = await load(stateDir);
+    const directory = await preparePrivateStateDirectory(stateDir);
     const blockerRelease = await acquireStateMutationLock(
+      directory,
       store.installationFile,
       "close fixture blocker",
     );
@@ -375,8 +380,9 @@ describe("BridgeInstallationStore", () => {
       fulfilled[0]!.value.bridgeInstanceId,
     );
     expect((await readdir(stateDir)).sort()).toEqual([
+      basename(fulfilled[0]!.value.writerLeaseFile),
       BRIDGE_INSTALLATION_FILE,
-    ]);
+    ].sort());
   });
 
   it("enforces the writer lease across processes and rereads after handoff", async () => {
@@ -623,6 +629,103 @@ describe("BridgeInstallationStore", () => {
     await expect(
       BridgeInstallationStore.load({ stateDir: persistedEpochState }),
     ).rejects.toThrow(/source binding is invalid/);
+  });
+
+  it("rejects duplicate JSON keys at every persisted object depth", async () => {
+    const stateDir = join(await root(), "duplicate-state");
+    await mkdir(stateDir, { mode: 0o700 });
+    const digest = locatorDigest("duplicate-binding");
+    await writeFile(
+      join(stateDir, BRIDGE_INSTALLATION_FILE),
+      `{"schemaVersion":1,"bridgeInstanceId":"bridge_instance_12345678901234567890123456789012","sourceBindings":[{"provider":"CODEX","locatorDigest":"${digest}","codexSourceId":"codex_source_12345678901234567890123456789012","codexSourceId":"codex_source_12345678901234567890123456789012"}]}\n`,
+      { mode: 0o600 },
+    );
+
+    await expect(
+      BridgeInstallationStore.load({ stateDir }),
+    ).rejects.toThrow(/malformed/);
+  });
+
+  it("fails closed if the bound directory is replaced before installation authority access", async () => {
+    const parent = await root();
+    const stateDir = join(parent, "state");
+    const displaced = join(parent, "state.displaced");
+    const digest = locatorDigest("preserved-binding");
+    const first = await load(stateDir);
+    const originalInstance = first.bridgeInstanceId;
+    const originalBinding = await first.bindAuthenticatedCodexSource(digest);
+    await close(first);
+    let replaced = false;
+
+    await expect(
+      BridgeInstallationStore.load({
+        stateDir,
+        lockOptions: {
+          syncDirectory: async () => {
+            if (replaced) return;
+            replaced = true;
+            await rename(stateDir, displaced);
+            await mkdir(stateDir, { mode: 0o700 });
+          },
+        },
+      }),
+    ).rejects.toThrow(/directory changed after binding/);
+
+    expect(existsSync(join(stateDir, BRIDGE_INSTALLATION_FILE))).toBe(false);
+    const reopened = await load(displaced);
+    const reopenedBinding = await reopened.bindAuthenticatedCodexSource(digest);
+    expect(reopened.bridgeInstanceId).toBe(originalInstance);
+    expect(reopenedBinding.codexSourceId).toBe(originalBinding.codexSourceId);
+  });
+
+  it("refuses source mutation after the open store directory is replaced", async () => {
+    const parent = await root();
+    const stateDir = join(parent, "state");
+    const displaced = join(parent, "state.displaced");
+    const store = await load(stateDir);
+    const bridgeInstanceId = store.bridgeInstanceId;
+    await rename(stateDir, displaced);
+    await mkdir(stateDir, { mode: 0o700 });
+
+    await expect(
+      store.bindAuthenticatedCodexSource(locatorDigest("replacement-write")),
+    ).rejects.toThrow(/directory changed after binding/);
+    expect(existsSync(join(stateDir, BRIDGE_INSTALLATION_FILE))).toBe(false);
+
+    await rm(stateDir, { recursive: true, force: true });
+    await rename(displaced, stateDir);
+    await close(store);
+    const reopened = await load(stateDir);
+    expect(reopened.bridgeInstanceId).toBe(bridgeInstanceId);
+    expect(reopened.sourceBindings()).toEqual([]);
+  });
+
+  it("allows installation close to retry after final lease namespace sync failure", async () => {
+    const stateDir = join(await root(), "state");
+    let closing = false;
+    let closeSyncs = 0;
+    let failed = false;
+    const store = await load(stateDir, {
+      lockOptions: {
+        syncDirectory: async () => {
+          if (!closing) return;
+          closeSyncs += 1;
+          if (!failed && closeSyncs === 2) {
+            failed = true;
+            throw Object.assign(new Error("EIO"), { code: "EIO" });
+          }
+        },
+      },
+    });
+    closing = true;
+
+    await expect(store.close()).rejects.toMatchObject({ code: "EIO" });
+    await expect(store.close()).resolves.toBeUndefined();
+    const index = stores.indexOf(store);
+    if (index >= 0) stores.splice(index, 1);
+    expect(
+      (await readdir(stateDir)).filter((entry) => entry.includes("writer-lease")),
+    ).toEqual([]);
   });
 
   it("rejects raw or non-canonical locators without mutating the registry", async () => {

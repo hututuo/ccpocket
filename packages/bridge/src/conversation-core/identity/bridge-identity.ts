@@ -13,6 +13,8 @@ import { join } from "node:path";
 import {
   acquireStateMutationLock,
   atomicPrivateWrite,
+  confirmPrivateStateDirectoryDurability,
+  parseJsonWithoutDuplicateKeys,
   preparePrivateStateDirectory,
   readBoundedPrivateFile,
   acquireStateWriterLease,
@@ -120,16 +122,29 @@ function publicKeyFromRaw(value: string): KeyObject {
 }
 
 function normalizeMethods(methods: readonly string[]): string[] {
-  if (
-    methods.length > 32 ||
-    methods.some(
-      (method) =>
-        typeof method !== "string" || !METHOD_PATTERN.test(method),
-    )
-  ) {
+  if (methods.length > 32) {
     throw new Error("Bridge identity methods are invalid");
   }
+  for (let index = 0; index < methods.length; index += 1) {
+    if (
+      !Object.hasOwn(methods, index) ||
+      typeof methods[index] !== "string" ||
+      !METHOD_PATTERN.test(methods[index])
+    ) {
+      throw new Error("Bridge identity methods are invalid");
+    }
+  }
   return [...new Set(methods)].sort();
+}
+
+function isDenseStringArray(value: unknown): value is string[] {
+  if (!Array.isArray(value)) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index) || typeof value[index] !== "string") {
+      return false;
+    }
+  }
+  return true;
 }
 
 function arraysEqual(
@@ -157,7 +172,7 @@ function parseIdentityFile(
 } {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(contents);
+    parsed = parseJsonWithoutDuplicateKeys(contents);
   } catch (error) {
     throw new Error(`Bridge identity state is malformed: ${path}`, {
       cause: error,
@@ -188,6 +203,13 @@ function parseIdentityFile(
     });
     if (privateKey.asymmetricKeyType !== "ed25519") {
       throw new Error("Bridge identity private key is not Ed25519");
+    }
+    const canonicalPrivateDer = privateKey.export({
+      format: "der",
+      type: "pkcs8",
+    });
+    if (!canonicalPrivateDer.equals(privateDer)) {
+      throw new Error("Bridge identity private key is not canonical PKCS#8");
     }
     const derivedPublic = rawEd25519PublicKey(createPublicKey(privateKey));
     const persistedPublic = decodeCanonicalBase64Url(
@@ -307,8 +329,7 @@ function isBridgeIdentityProof(value: unknown): value is BridgeIdentityProof {
     typeof value.bridgeInstanceId === "string" &&
     typeof value.nonce === "string" &&
     typeof value.authMode === "string" &&
-    Array.isArray(value.methods) &&
-    value.methods.every((method) => typeof method === "string") &&
+    isDenseStringArray(value.methods) &&
     typeof value.signedPayload === "string" &&
     typeof value.signature === "string"
   );
@@ -386,24 +407,28 @@ export class BridgeIdentityStore {
       options.stateDir ??
       process.env.CCPOCKET_STATE_DIR ??
       join(homedir(), ".ccpocket");
-    const stateDir = await preparePrivateStateDirectory(requestedStateDir);
+    const directory = await preparePrivateStateDirectory(requestedStateDir);
+    const stateDir = directory.path;
     const identityFile = join(stateDir, BRIDGE_IDENTITY_FILE);
     const lockOptions = { ...options.lockOptions };
-    const writerLeaseStateFile = `${stateDir}.bridge-identity-writer`;
+    const writerLeaseStateFile = join(stateDir, ".bridge-identity-writer");
     const writerLeaseFile = `${writerLeaseStateFile}${STATE_WRITER_LEASE_SUFFIX}.lock`;
     const writerLeaseRelease = await acquireStateWriterLease(
+      directory,
       writerLeaseStateFile,
       "Bridge identity writer lease",
       lockOptions,
     );
     try {
       const releaseLock = await acquireStateMutationLock(
+        directory,
         identityFile,
         "Bridge identity state",
         lockOptions,
       );
       try {
         const contents = await readBoundedPrivateFile(
+          directory,
           identityFile,
           MAX_IDENTITY_FILE_BYTES,
           "Bridge identity state",
@@ -425,6 +450,7 @@ export class BridgeIdentityStore {
             privateKey: encodeBase64Url(privateKeyDer),
           };
           await atomicPrivateWrite(
+            directory,
             identityFile,
             `${JSON.stringify(data)}\n`,
             MAX_IDENTITY_FILE_BYTES,
@@ -438,6 +464,10 @@ export class BridgeIdentityStore {
         } else {
           material = parseIdentityFile(contents, identityFile);
         }
+        await confirmPrivateStateDirectoryDurability(
+          directory,
+          lockOptions.syncDirectory,
+        );
         return new BridgeIdentityStore({
           stateDir,
           identityFile,
@@ -505,7 +535,12 @@ export class BridgeIdentityStore {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     this.closed = true;
-    this.closePromise = this.writerLeaseRelease();
-    return this.closePromise;
+    const releaseAttempt = this.writerLeaseRelease();
+    const trackedAttempt = releaseAttempt.catch((error: unknown) => {
+      if (this.closePromise === trackedAttempt) this.closePromise = undefined;
+      throw error;
+    });
+    this.closePromise = trackedAttempt;
+    return trackedAttempt;
   }
 }
