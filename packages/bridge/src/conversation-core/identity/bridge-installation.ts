@@ -201,6 +201,7 @@ export class BridgeInstallationStore {
   private readonly directory: PrivateStateDirectoryBinding;
   private readonly lockOptions: StateMutationLockOptions;
   private state: BridgeInstallationFileData;
+  private needsReconciliation = false;
   private readonly activeSourceEpochs = new Map<
     string,
     { codexSourceId: string; sourceEpoch: string }
@@ -243,10 +244,13 @@ export class BridgeInstallationStore {
     if (lockOptions.now === undefined && options.now !== undefined) {
       lockOptions.now = options.now;
     }
+    let generationLease:
+      | Awaited<ReturnType<typeof acquirePrivateStateGenerationLease>>
+      | undefined;
     let writerLeaseRelease: (() => Promise<void>) | undefined;
     let writerLeaseFile: string;
     try {
-      const generationLease = await acquirePrivateStateGenerationLease(
+      generationLease = await acquirePrivateStateGenerationLease(
         directory,
         "bridge-installation",
         lockOptions,
@@ -300,7 +304,17 @@ export class BridgeInstallationStore {
         lockOptions,
       });
     } catch (error) {
-      await writerLeaseRelease?.().catch(() => undefined);
+      if (writerLeaseRelease !== undefined) {
+        try {
+          await writerLeaseRelease();
+        } catch (cleanupError) {
+          await generationLease?.abandon();
+          throw new AggregateError(
+            [error, cleanupError],
+            "Bridge installation load and generation cleanup both failed",
+          );
+        }
+      }
       throw error;
     }
   }
@@ -345,6 +359,7 @@ export class BridgeInstallationStore {
       "Bridge installation state",
       this.lockOptions,
     );
+    let writeAttempted = false;
     try {
       const contents = await readBoundedPrivateFile(
         this.directory,
@@ -362,6 +377,7 @@ export class BridgeInstallationStore {
         );
       }
       this.state = current;
+      this.needsReconciliation = false;
       const existing = current.sourceBindings.find(
         (binding) => binding.locatorDigest === locatorDigest,
       );
@@ -389,6 +405,7 @@ export class BridgeInstallationStore {
             binding,
           ],
         };
+        writeAttempted = true;
         await atomicPrivateWrite(
           this.directory,
           this.installationFile,
@@ -409,15 +426,49 @@ export class BridgeInstallationStore {
       this.activeSourceEpochs.set(locatorDigest, resolved);
       return { ...resolved };
     } catch (error) {
+      if (writeAttempted) this.needsReconciliation = true;
       await releaseLock().catch(() => undefined);
       throw error;
     }
   }
 
   async sourceBindings(): Promise<readonly CodexSourceBinding[]> {
-    if (this.closed) throw new Error("Bridge installation store is closed");
-    await assertPrivateStateDirectory(this.directory);
-    return this.state.sourceBindings.map(cloneBinding);
+    return this.runExclusive(async () => {
+      await assertPrivateStateDirectory(this.directory);
+      if (this.needsReconciliation) {
+        const releaseLock = await acquireStateMutationLock(
+          this.directory,
+          this.installationFile,
+          "Bridge installation state",
+          this.lockOptions,
+        );
+        try {
+          const contents = await readBoundedPrivateFile(
+            this.directory,
+            this.installationFile,
+            MAX_INSTALLATION_FILE_BYTES,
+            "Bridge installation state",
+          );
+          if (contents === undefined) {
+            throw new Error("Bridge installation state disappeared after load");
+          }
+          const persisted = parseInstallationFile(
+            contents,
+            this.installationFile,
+          );
+          if (persisted.bridgeInstanceId !== this.bridgeInstanceId) {
+            throw new Error(
+              "Bridge installation identity changed while the writer was open",
+            );
+          }
+          this.state = persisted;
+          this.needsReconciliation = false;
+        } finally {
+          await releaseLock();
+        }
+      }
+      return this.state.sourceBindings.map(cloneBinding);
+    });
   }
 
   async isSourceEpochCurrent(

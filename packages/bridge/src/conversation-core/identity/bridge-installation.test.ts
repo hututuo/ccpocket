@@ -283,6 +283,99 @@ describe("BridgeInstallationStore", () => {
     ).toBe(true);
   });
 
+  it("reconciles installed state after the data rename final fsync rejects", async () => {
+    const stateDir = join(await root(), "state");
+    let boundStateDir = "";
+    let injectMutationFailure = false;
+    let relevantSyncs = 0;
+    let failed = false;
+    const store = await load(stateDir, {
+      lockOptions: {
+        syncDirectory: async (path) => {
+          if (path !== boundStateDir || !injectMutationFailure || failed) {
+            return;
+          }
+          relevantSyncs += 1;
+          if (relevantSyncs === 2) {
+            failed = true;
+            throw Object.assign(new Error("EIO"), { code: "EIO" });
+          }
+        },
+      },
+    });
+    boundStateDir = dirname(store.installationFile);
+    const digest = locatorDigest("installed-before-final-fsync-failure");
+    injectMutationFailure = true;
+
+    await expect(
+      store.bindAuthenticatedCodexSource(digest),
+    ).rejects.toMatchObject({ code: "EIO" });
+    expect(failed).toBe(true);
+
+    const bindings = await store.sourceBindings();
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]).toMatchObject({
+      provider: CODEX_SOURCE_PROVIDER,
+      locatorDigest: digest,
+    });
+    const resolved = await store.bindAuthenticatedCodexSource(digest);
+    expect(resolved.codexSourceId).toBe(bindings[0]!.codexSourceId);
+    expect(
+      await store.codexSources.isSourceEpochCurrent(
+        digest,
+        resolved.sourceEpoch,
+      ),
+    ).toBe(true);
+  });
+
+  it("reports failed load cleanup and lets the next load finish orphan recovery", async () => {
+    const stateDir = join(await root(), "state");
+    let loadFailureInjected = false;
+    let cleanupFailureInjected = false;
+    const lockOptions: StateMutationLockOptions = {
+      attempts: 4,
+      retryMs: 0,
+      beforeInstalledSnapshotRead: async (lockPath) => {
+        if (
+          !loadFailureInjected &&
+          lockPath.endsWith(`${BRIDGE_INSTALLATION_FILE}.lock`)
+        ) {
+          loadFailureInjected = true;
+          throw Object.assign(new Error("LOAD-EIO"), { code: "LOAD-EIO" });
+        }
+      },
+      syncDirectory: async (path) => {
+        if (
+          loadFailureInjected &&
+          !cleanupFailureInjected &&
+          path.endsWith(".lifecycle-v1")
+        ) {
+          cleanupFailureInjected = true;
+          throw Object.assign(new Error("CLEANUP-EIO"), {
+            code: "CLEANUP-EIO",
+          });
+        }
+      },
+    };
+
+    let failure: unknown;
+    try {
+      await BridgeInstallationStore.load({ stateDir, lockOptions });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([
+      expect.objectContaining({ code: "LOAD-EIO" }),
+      expect.objectContaining({ code: "CLEANUP-EIO" }),
+    ]);
+
+    const recovered = await load(stateDir, { lockOptions });
+    expect(recovered.bridgeInstanceId).toMatch(
+      /^bridge_instance_[A-Za-z0-9_-]{32}$/,
+    );
+  });
+
   it("serializes concurrent same-digest resolution into one durable binding", async () => {
     const stateDir = join(await root(), "state");
     const store = await load(stateDir);

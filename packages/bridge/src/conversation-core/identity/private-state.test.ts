@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  acquirePrivateStateGenerationLease,
   acquireStateMutationLock,
   assertPrivateStatePlatformSupported,
   atomicPrivateWrite,
@@ -132,6 +133,57 @@ describe("private conversation identity state", () => {
     expect(await readFile(file, "utf8")).toBe("existing");
   });
 
+  it("rejects a lock snapshot assembled across two directory inodes", async () => {
+    const { directory, file } = await stateFile();
+    const lockPath = `${file}.lock`;
+    const displaced = `${lockPath}.displaced`;
+    await writeOwnerDirectory(lockPath, {
+      pid: 81_001,
+      token: lockToken("snapshot-owner-a"),
+      createdAt: "2026-08-30T11:59:00.000Z",
+    });
+    let swapped = false;
+
+    await expect(
+      acquireStateMutationLock(
+        directory,
+        file,
+        "mixed snapshot fixture lock",
+        lockOptions({
+          pid: 81_003,
+          token: () => lockToken("snapshot-contender"),
+          attempts: 1,
+          beforeLockOwnerRead: async (observedLockPath) => {
+            if (swapped || observedLockPath !== lockPath) return;
+            swapped = true;
+            await rename(lockPath, displaced);
+            await writeOwnerDirectory(lockPath, {
+              pid: 81_002,
+              token: lockToken("snapshot-owner-b"),
+              createdAt: "2026-08-30T11:59:30.000Z",
+            });
+          },
+        }),
+      ),
+    ).rejects.toThrow(/busy/);
+
+    expect(swapped).toBe(true);
+    const replacement = JSON.parse(
+      await readFile(join(lockPath, STATE_LOCK_OWNER_FILE), "utf8"),
+    ) as { pid: number; token: string };
+    const original = JSON.parse(
+      await readFile(join(displaced, STATE_LOCK_OWNER_FILE), "utf8"),
+    ) as { pid: number; token: string };
+    expect(replacement).toMatchObject({
+      pid: 81_002,
+      token: lockToken("snapshot-owner-b"),
+    });
+    expect(original).toMatchObject({
+      pid: 81_001,
+      token: lockToken("snapshot-owner-a"),
+    });
+  });
+
   function lockOptions(
     overrides: Partial<StateMutationLockOptions> = {},
   ): StateMutationLockOptions {
@@ -211,6 +263,75 @@ describe("private conversation identity state", () => {
     ) as { version: number; pid: number };
     expect(owner).toMatchObject({ version: 2, pid: 2_000_000_002 });
     await release();
+  });
+
+  it("allows only one contender to reclaim a dead legacy lock", async () => {
+    const { directory, file } = await stateFile();
+    const legacyLock = `${file}.lock`;
+    await mkdir(legacyLock, { mode: 0o700 });
+    await writeFile(
+      join(legacyLock, LEGACY_STATE_LOCK_OWNER_FILE),
+      `${JSON.stringify({
+        version: 1,
+        pid: 2_000_000_201,
+        token: lockToken("legacy-race-dead-owner"),
+        createdAt: "2026-08-30T11:59:00.000Z",
+      })}\n`,
+      { mode: 0o600 },
+    );
+    let initialReaders = 0;
+    let releaseReaders!: () => void;
+    const readersReady = new Promise<void>((resolveReady) => {
+      releaseReaders = resolveReady;
+    });
+    const beforeLockOwnerRead = async (lockPath: string): Promise<void> => {
+      if (lockPath !== legacyLock || initialReaders >= 2) return;
+      initialReaders += 1;
+      if (initialReaders === 2) releaseReaders();
+      await readersReady;
+    };
+
+    const attempts = await Promise.allSettled([
+      acquireStateMutationLock(
+        directory,
+        file,
+        "legacy race fixture lock",
+        lockOptions({
+          pid: 2_000_000_202,
+          token: () => lockToken("legacy-race-a"),
+          attempts: 1,
+          beforeLockOwnerRead,
+        }),
+      ),
+      acquireStateMutationLock(
+        directory,
+        file,
+        "legacy race fixture lock",
+        lockOptions({
+          pid: 2_000_000_203,
+          token: () => lockToken("legacy-race-b"),
+          attempts: 1,
+          beforeLockOwnerRead,
+        }),
+      ),
+    ]);
+    const fulfilled = attempts.filter(
+      (result): result is PromiseFulfilledResult<() => Promise<void>> =>
+        result.status === "fulfilled",
+    );
+    expect(fulfilled).toHaveLength(1);
+    expect(
+      attempts.filter((result) => result.status === "rejected"),
+    ).toHaveLength(1);
+    const owner = JSON.parse(
+      await readFile(join(legacyLock, STATE_LOCK_OWNER_FILE), "utf8"),
+    ) as { token: string };
+    expect([lockToken("legacy-race-a"), lockToken("legacy-race-b")]).toContain(
+      owner.token,
+    );
+    await fulfilled[0]!.value();
+    await expect(lstat(legacyLock)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(dirname(file))).toEqual([]);
   });
 
   it("does not steal a live or unknown-owner lock", async () => {
@@ -731,6 +852,94 @@ describe("private conversation identity state", () => {
     await release();
   });
 
+  it("classifies exact Old HEAD Darwin proc-v1 owners across the proc-v2 upgrade", async () => {
+    if (process.platform !== "darwin") return;
+    const probeState = await stateFile();
+    const probeRelease = await acquireStateMutationLock(
+      probeState.directory,
+      probeState.file,
+      "Darwin process identity probe",
+      {
+        attempts: 2,
+        retryMs: 0,
+        token: () => lockToken("darwin-proc-v2-probe"),
+      },
+    );
+    const currentOwner = JSON.parse(
+      await readFile(
+        join(`${probeState.file}.lock`, STATE_LOCK_OWNER_FILE),
+        "utf8",
+      ),
+    ) as { processIdentity: string };
+    await probeRelease();
+    const parts = currentOwner.processIdentity.split(":");
+    expect(parts.slice(0, 2)).toEqual(["proc-v2", "darwin"]);
+    const machine = parts[2]!;
+    const boot = parts[3]!;
+    const oldHeadIdentity = `proc-v1:darwin:${machine}:${boot}:legacy-start`;
+
+    const deadState = await stateFile();
+    await writeLockOwner(deadState.file, {
+      pid: 2_000_000_101,
+      processIdentity: oldHeadIdentity,
+      token: lockToken("old-head-dead"),
+      createdAt: "2026-08-30T11:59:00.000Z",
+    });
+    const deadRelease = await acquireStateMutationLock(
+      deadState.directory,
+      deadState.file,
+      "Old HEAD dead Darwin owner",
+      {
+        attempts: 2,
+        retryMs: 0,
+        staleGraceMs: 0,
+        token: () => lockToken("old-head-dead-successor"),
+      },
+    );
+    await deadRelease();
+
+    const oldBootState = await stateFile();
+    const otherBoot = boot === "A".repeat(43) ? "B".repeat(43) : "A".repeat(43);
+    await writeLockOwner(oldBootState.file, {
+      pid: process.pid,
+      processIdentity: `proc-v1:darwin:${machine}:${otherBoot}:legacy-start`,
+      token: lockToken("old-head-old-boot"),
+      createdAt: "2027-08-30T11:59:00.000Z",
+    });
+    const oldBootRelease = await acquireStateMutationLock(
+      oldBootState.directory,
+      oldBootState.file,
+      "Old HEAD old-boot Darwin owner",
+      {
+        attempts: 2,
+        retryMs: 0,
+        token: () => lockToken("old-head-old-boot-successor"),
+      },
+    );
+    await oldBootRelease();
+
+    const liveState = await stateFile();
+    await writeLockOwner(liveState.file, {
+      pid: process.pid,
+      processIdentity: oldHeadIdentity,
+      token: lockToken("old-head-live"),
+      createdAt: "2026-08-30T11:59:00.000Z",
+    });
+    await expect(
+      acquireStateMutationLock(
+        liveState.directory,
+        liveState.file,
+        "Old HEAD live Darwin owner",
+        {
+          attempts: 1,
+          retryMs: 0,
+          staleGraceMs: 0,
+          token: () => lockToken("old-head-live-contender"),
+        },
+      ),
+    ).rejects.toThrow(/busy/);
+  });
+
   it("retries release after its first namespace fsync failure and clears the tombstone", async () => {
     const { directory, file } = await stateFile();
     const parent = dirname(file);
@@ -879,6 +1088,49 @@ describe("private conversation identity state", () => {
     });
   });
 
+  it("collects only exact non-authoritative residue at generation start", async () => {
+    const { directory, file } = await stateFile();
+    const lifecyclePath = `${directory.path}.lifecycle-v1`;
+    roots.push(lifecyclePath);
+    await mkdir(lifecyclePath, { mode: 0o700 });
+    await writeFile(file, "authority", { mode: 0o600 });
+    const uuid = "11111111-1111-4111-8111-111111111111";
+    const token = lockToken("residue-owner-token");
+    const residue = [
+      `${file}.tmp-123-${uuid}`,
+      `${file}.lock.candidate-123-${token}-${uuid}`,
+      `${file}.lock.stale-${token}-${uuid}`,
+      `${file}.lock.legacy-stale-${token}-${uuid}`,
+      `${file}.lock.release-${token}-${uuid}`,
+      `${file}.lock.failed-install-${uuid}`,
+      `${file}.lock.changed-restore-${uuid}`,
+      `${file}.lock.release-${token}-${uuid}.gc-${uuid}`,
+    ];
+    await writeFile(residue[0]!, "temporary", { mode: 0o600 });
+    for (const path of residue.slice(1)) {
+      await mkdir(path, { mode: 0o700 });
+    }
+    const lifecycleResidue = join(
+      lifecyclePath,
+      `.private-state-generation.writer-lease.lock.release-${token}-${uuid}`,
+    );
+    await mkdir(lifecycleResidue, { mode: 0o700 });
+    const preserved = `${file}.lock.candidate-crashed-residue`;
+    await mkdir(preserved, { mode: 0o700 });
+
+    const lease = await acquirePrivateStateGenerationLease(
+      directory,
+      "bridge-identity",
+    );
+
+    expect(await readFile(file, "utf8")).toBe("authority");
+    expect((await lstat(preserved)).isDirectory()).toBe(true);
+    for (const path of [...residue, lifecycleResidue]) {
+      await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    await lease.release();
+  });
+
   it("syncs the namespace after lock install and release mutations", async () => {
     const { directory, file } = await stateFile();
     const parent = dirname(file);
@@ -924,6 +1176,91 @@ describe("private conversation identity state", () => {
     expect(
       calls.filter((path) => path === parent).length,
     ).toBeGreaterThanOrEqual(5);
+  });
+
+  it("serializes the last generation holder release with a new acquire", async () => {
+    const { directory } = await stateFile();
+    roots.push(`${directory.path}.lifecycle-v1`);
+    let shouldBlock = false;
+    let unblockRelease!: () => void;
+    const releaseGate = new Promise<void>((resolveGate) => {
+      unblockRelease = resolveGate;
+    });
+    let releaseBlocked!: () => void;
+    const blocked = new Promise<void>((resolveBlocked) => {
+      releaseBlocked = resolveBlocked;
+    });
+    let didBlock = false;
+    const syncDirectory = async (path: string): Promise<void> => {
+      if (shouldBlock && !didBlock && path.endsWith(".lifecycle-v1")) {
+        didBlock = true;
+        releaseBlocked();
+        await releaseGate;
+      }
+    };
+    const first = await acquirePrivateStateGenerationLease(
+      directory,
+      "bridge-identity",
+      lockOptions({ syncDirectory }),
+    );
+    shouldBlock = true;
+    const closing = first.release();
+    await blocked;
+
+    let reopened = false;
+    const pending = acquirePrivateStateGenerationLease(
+      directory,
+      "bridge-identity",
+      lockOptions({ syncDirectory }),
+    ).then((lease) => {
+      reopened = true;
+      return lease;
+    });
+    await new Promise((resolveImmediate) => setImmediate(resolveImmediate));
+    expect(reopened).toBe(false);
+
+    unblockRelease();
+    await closing;
+    const second = await pending;
+    expect((await lstat(second.writerLeaseFile)).isDirectory()).toBe(true);
+    await expect(
+      acquirePrivateStateGenerationLease(
+        directory,
+        "bridge-identity",
+        lockOptions({ syncDirectory }),
+      ),
+    ).rejects.toThrow(/generation is already open/);
+    await second.release();
+  });
+
+  it("lets a later acquire finish an orphaned failed-load generation cleanup", async () => {
+    const { directory } = await stateFile();
+    roots.push(`${directory.path}.lifecycle-v1`);
+    let failRelease = false;
+    let failed = false;
+    const syncDirectory = async (path: string): Promise<void> => {
+      if (failRelease && !failed && path.endsWith(".lifecycle-v1")) {
+        failed = true;
+        throw errorWithCode("EIO");
+      }
+    };
+    const first = await acquirePrivateStateGenerationLease(
+      directory,
+      "bridge-installation",
+      lockOptions({ syncDirectory }),
+    );
+    failRelease = true;
+    await expect(first.release()).rejects.toMatchObject({ code: "EIO" });
+    await first.abandon();
+
+    failRelease = false;
+    const second = await acquirePrivateStateGenerationLease(
+      directory,
+      "bridge-installation",
+      lockOptions({ syncDirectory }),
+    );
+    expect((await lstat(second.writerLeaseFile)).isDirectory()).toBe(true);
+    await second.release();
   });
 });
 

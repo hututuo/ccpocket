@@ -321,6 +321,54 @@ describe("BridgeIdentityStore", () => {
     );
   });
 
+  it("reports failed load cleanup and lets the next load finish orphan recovery", async () => {
+    const stateDir = join(await root(), "state");
+    let loadFailureInjected = false;
+    let cleanupFailureInjected = false;
+    const lockOptions: StateMutationLockOptions = {
+      attempts: 4,
+      retryMs: 0,
+      beforeInstalledSnapshotRead: async (lockPath) => {
+        if (
+          !loadFailureInjected &&
+          lockPath.endsWith(`${BRIDGE_IDENTITY_FILE}.lock`)
+        ) {
+          loadFailureInjected = true;
+          throw Object.assign(new Error("LOAD-EIO"), { code: "LOAD-EIO" });
+        }
+      },
+      syncDirectory: async (path) => {
+        if (
+          loadFailureInjected &&
+          !cleanupFailureInjected &&
+          path.endsWith(".lifecycle-v1")
+        ) {
+          cleanupFailureInjected = true;
+          throw Object.assign(new Error("CLEANUP-EIO"), {
+            code: "CLEANUP-EIO",
+          });
+        }
+      },
+    };
+
+    let failure: unknown;
+    try {
+      await BridgeIdentityStore.load({ stateDir, lockOptions });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([
+      expect.objectContaining({ code: "LOAD-EIO" }),
+      expect.objectContaining({ code: "CLEANUP-EIO" }),
+    ]);
+
+    const recovered = await load(stateDir, { lockOptions });
+    expect(recovered.bridgeIdentityId).toBe(
+      deriveBridgeIdentityId(recovered.publicKey),
+    );
+  });
+
   it("allows close to retry after final lease namespace sync failure", async () => {
     const stateDir = join(await root(), "state");
     let closing = false;

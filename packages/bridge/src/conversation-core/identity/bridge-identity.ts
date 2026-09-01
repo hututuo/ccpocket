@@ -479,7 +479,15 @@ export class BridgeIdentityStore {
         await releaseLock();
       }
     } catch (error) {
-      await writerLeaseRelease().catch(() => undefined);
+      try {
+        await writerLeaseRelease();
+      } catch (cleanupError) {
+        await generationLease.abandon();
+        throw new AggregateError(
+          [error, cleanupError],
+          "Bridge identity load and generation cleanup both failed",
+        );
+      }
       throw error;
     }
   }

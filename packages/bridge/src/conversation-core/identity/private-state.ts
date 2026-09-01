@@ -8,6 +8,7 @@ import {
   mkdir,
   open,
   readFile,
+  readdir,
   readlink,
   realpath,
   rename,
@@ -25,8 +26,19 @@ const DEFAULT_LOCK_RETRY_MS = 5;
 const DEFAULT_STALE_LOCK_GRACE_MS = 1_000;
 const MAX_LOCK_OWNER_BYTES = 4 * 1024;
 const LOCK_OWNER_VERSION = 2 as const;
+const LOCK_DIRECTORY_OPEN_FLAGS =
+  constants.O_RDONLY |
+  (constants.O_DIRECTORY ?? 0) |
+  (constants.O_NOFOLLOW ?? 0);
 const LOCK_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const PROCESS_IDENTITY_PATTERN = /^[A-Za-z0-9:._+\-/=]{8,1024}$/;
+const PRIVATE_STATE_RESIDUE_PATTERNS = [
+  /^.+\.tmp-[1-9][0-9]*-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  /^.+\.lock\.candidate-[1-9][0-9]*-[A-Za-z0-9_-]{16,128}-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  /^.+\.lock\.(?:stale|legacy-stale|release)-[A-Za-z0-9_-]{16,128}-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  /^.+\.lock\.(?:failed-install|changed-restore)-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  /^.+\.gc-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+] as const;
 const execFileAsync = promisify(execFile);
 export const STATE_LOCK_OWNER_FILE = "owner-v2.json" as const;
 export const LEGACY_STATE_LOCK_OWNER_FILE = "owner-v1.json" as const;
@@ -100,6 +112,7 @@ export interface StateMutationLockOptions {
   retryMs?: number;
   syncDirectory?: DirectorySync;
   beforeInstalledSnapshotRead?: (lockPath: string) => Promise<void>;
+  beforeLockOwnerRead?: (lockPath: string) => Promise<void>;
 }
 
 export type PrivateStateGenerationHolder =
@@ -108,6 +121,7 @@ export type PrivateStateGenerationHolder =
 export interface PrivateStateGenerationLease {
   readonly writerLeaseFile: string;
   readonly release: () => Promise<void>;
+  readonly abandon: () => Promise<void>;
 }
 
 export interface DirectorySyncHandle {
@@ -137,6 +151,56 @@ async function pathExists(path: string): Promise<boolean> {
   } catch (error) {
     if (isMissing(error)) return false;
     throw error;
+  }
+}
+
+function isPrivateStateResidueName(name: string): boolean {
+  return PRIVATE_STATE_RESIDUE_PATTERNS.some((pattern) => pattern.test(name));
+}
+
+async function cleanPrivateStateResidueEntry(
+  directory: PrivateStateDirectoryBinding,
+  name: string,
+  syncDirectory: DirectorySync,
+): Promise<void> {
+  if (!isPrivateStateResidueName(name)) return;
+  const residue = join(directory.path, name);
+  assertPathWithinBinding(directory, residue);
+  await assertPrivateStateDirectory(directory);
+  let before: Awaited<ReturnType<typeof lstat>>;
+  try {
+    before = await lstat(residue);
+  } catch (error) {
+    if (isMissing(error)) return;
+    throw error;
+  }
+  const quarantine = `${residue}.gc-${randomUUID()}`;
+  await rename(residue, quarantine);
+  await syncDirectory(directory.path);
+  const moved = await lstat(quarantine);
+  if (!sameFileIdentity(before, moved)) {
+    throw new Error("Conversation identity residue changed during cleanup");
+  }
+  await rm(quarantine, { recursive: true, force: false });
+  await syncDirectory(directory.path);
+  await assertPrivateStateDirectory(directory);
+}
+
+async function cleanPrivateStateResidue(
+  directory: PrivateStateDirectoryBinding,
+  syncDirectory: DirectorySync,
+): Promise<void> {
+  let names: string[];
+  try {
+    await assertPrivateStateDirectory(directory);
+    names = await readdir(directory.path);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    await cleanPrivateStateResidueEntry(directory, name, syncDirectory).catch(
+      () => undefined,
+    );
   }
 }
 
@@ -315,9 +379,9 @@ function parseProcessIdentity(value: string): ProcessIdentityParts | undefined {
     return {
       version: "proc-v2",
       platform: parts[1]!,
-      machineScope: parts.slice(0, 3).join(":"),
-      bootScope: parts.slice(0, 4).join(":"),
-      processScope: parts.slice(0, 6).join(":"),
+      machineScope: parts.slice(1, 3).join(":"),
+      bootScope: parts.slice(1, 4).join(":"),
+      processScope: parts.slice(1, 6).join(":"),
       witness: { pid, port, token: parts[6]! },
     };
   }
@@ -325,9 +389,9 @@ function parseProcessIdentity(value: string): ProcessIdentityParts | undefined {
   return {
     version: "proc-v1",
     platform: parts[1]!,
-    machineScope: parts.slice(0, 3).join(":"),
-    bootScope: parts.slice(0, 4).join(":"),
-    processScope: parts.slice(0, -1).join(":"),
+    machineScope: parts.slice(1, 3).join(":"),
+    bootScope: parts.slice(1, 4).join(":"),
+    processScope: parts.slice(1, -1).join(":"),
   };
 }
 
@@ -1048,9 +1112,19 @@ function parseLegacyLockOwner(
   };
 }
 
+function isLegacyProcessDefinitelyDead(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
 async function readLockSnapshot(
   directory: PrivateStateDirectoryBinding,
   lockPath: string,
+  beforeOwnerRead?: (lockPath: string) => Promise<void>,
 ): Promise<LockSnapshot | undefined> {
   assertPathWithinBinding(directory, lockPath);
   await assertPrivateStateDirectory(directory);
@@ -1071,57 +1145,121 @@ async function readLockSnapshot(
       "Conversation identity lock is not a private real directory",
     );
   }
-  let ownerContents = await readBoundedPrivateFile(
-    directory,
-    join(lockPath, STATE_LOCK_OWNER_FILE),
-    MAX_LOCK_OWNER_BYTES,
-    "Conversation identity lock owner",
-  );
-  if (ownerContents === undefined) {
-    ownerContents = await readBoundedPrivateFile(
+  const handle = await open(lockPath, LOCK_DIRECTORY_OPEN_FLAGS);
+  const expectedIdentity = { device: stats.dev, inode: stats.ino };
+  let result: LockSnapshot | undefined;
+  let operationFailure: unknown;
+  try {
+    const handleBefore = await handle.stat();
+    const lexicalBefore = await lstat(lockPath);
+    if (
+      !handleBefore.isDirectory() ||
+      lexicalBefore.isSymbolicLink() ||
+      !lexicalBefore.isDirectory() ||
+      !sameLockDirectoryIdentity(expectedIdentity, {
+        device: handleBefore.dev,
+        inode: handleBefore.ino,
+      }) ||
+      !sameLockDirectoryIdentity(expectedIdentity, {
+        device: lexicalBefore.dev,
+        inode: lexicalBefore.ino,
+      })
+    ) {
+      throw new Error(
+        "Conversation identity lock directory changed before owner read",
+      );
+    }
+    await beforeOwnerRead?.(lockPath);
+    let ownerContents = await readBoundedPrivateFile(
       directory,
-      join(lockPath, LEGACY_STATE_LOCK_OWNER_FILE),
+      join(lockPath, STATE_LOCK_OWNER_FILE),
       MAX_LOCK_OWNER_BYTES,
-      "Conversation identity legacy lock owner",
+      "Conversation identity lock owner",
     );
     if (ownerContents === undefined) {
-      throw new Error("Conversation identity lock owner is missing");
+      ownerContents = await readBoundedPrivateFile(
+        directory,
+        join(lockPath, LEGACY_STATE_LOCK_OWNER_FILE),
+        MAX_LOCK_OWNER_BYTES,
+        "Conversation identity legacy lock owner",
+      );
+      if (ownerContents === undefined) {
+        throw new Error("Conversation identity lock owner is missing");
+      }
+      const compatibleOwner = parseLockOwner(ownerContents);
+      if (compatibleOwner) {
+        result = { owner: compatibleOwner, ...expectedIdentity };
+      } else {
+        const legacyOwner = parseLegacyLockOwner(ownerContents);
+        if (legacyOwner) {
+          throw new LegacyStateLockOwnerError(legacyOwner, expectedIdentity);
+        }
+      }
     }
-    const compatibleOwner = parseLockOwner(ownerContents);
-    if (compatibleOwner) {
-      return { owner: compatibleOwner, device: stats.dev, inode: stats.ino };
+    if (result === undefined) {
+      const owner = parseLockOwner(ownerContents);
+      if (!owner)
+        throw new Error("Conversation identity lock owner is invalid");
+      result = { owner, ...expectedIdentity };
     }
-    const legacyOwner = parseLegacyLockOwner(ownerContents);
-    if (legacyOwner) {
-      throw new LegacyStateLockOwnerError(legacyOwner, {
-        device: stats.dev,
-        inode: stats.ino,
-      });
-    }
+  } catch (error) {
+    operationFailure = error;
   }
-  const owner = parseLockOwner(ownerContents);
-  if (!owner) throw new Error("Conversation identity lock owner is invalid");
-  return { owner, device: stats.dev, inode: stats.ino };
+  try {
+    const handleAfter = await handle.stat();
+    const lexicalAfter = await lstat(lockPath);
+    if (
+      !handleAfter.isDirectory() ||
+      lexicalAfter.isSymbolicLink() ||
+      !lexicalAfter.isDirectory() ||
+      !sameLockDirectoryIdentity(expectedIdentity, {
+        device: handleAfter.dev,
+        inode: handleAfter.ino,
+      }) ||
+      !sameLockDirectoryIdentity(expectedIdentity, {
+        device: lexicalAfter.dev,
+        inode: lexicalAfter.ino,
+      })
+    ) {
+      throw new Error(
+        "Conversation identity lock directory changed during owner read",
+      );
+    }
+  } catch (bindingFailure) {
+    throw new Error(
+      "Conversation identity lock directory changed during owner read",
+      { cause: operationFailure ?? bindingFailure },
+    );
+  } finally {
+    await handle.close();
+  }
+  if (operationFailure !== undefined) throw operationFailure;
+  return result;
 }
 
 async function tryReclaimLegacyDeadLock(
   directory: PrivateStateDirectoryBinding,
   lockPath: string,
   legacy: LegacyStateLockOwnerError,
-  claimantToken: string,
+  claimant: StateLockOwner,
   syncDirectory: DirectorySync,
-  now: () => number,
-  staleGraceMs: number,
+  options: Required<
+    Pick<StateMutationLockOptions, "now" | "processStatus" | "staleGraceMs">
+  > &
+    Pick<
+      StateMutationLockOptions,
+      "beforeInstalledSnapshotRead" | "beforeLockOwnerRead"
+    >,
 ): Promise<boolean> {
-  if (now() - Date.parse(legacy.owner.createdAt) < staleGraceMs) return false;
-  try {
-    process.kill(legacy.owner.pid, 0);
+  if (
+    options.now() - Date.parse(legacy.owner.createdAt) <
+    options.staleGraceMs
+  ) {
     return false;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false;
   }
+  if (!isLegacyProcessDefinitelyDead(legacy.owner.pid)) return false;
   try {
-    await readLockSnapshot(directory, lockPath);
+    await readLockSnapshot(directory, lockPath, options.beforeLockOwnerRead);
     return false;
   } catch (error) {
     if (
@@ -1137,21 +1275,191 @@ async function tryReclaimLegacyDeadLock(
       return false;
     }
   }
-  const tombstone = `${lockPath}.legacy-stale-${claimantToken}-${randomUUID()}`;
+  if (
+    !(await tryAcquireReclaimClaim(
+      directory,
+      lockPath,
+      claimant,
+      syncDirectory,
+      options,
+    ))
+  ) {
+    return false;
+  }
+
+  const claimPath = join(lockPath, STATE_LOCK_RECLAIM_DIRECTORY);
+  let claimMovedWithLock = false;
+  let claimSnapshot: LockSnapshot | undefined;
   try {
-    await rename(lockPath, tombstone);
-    await syncParentDirectory(lockPath, syncDirectory);
-    const moved = await readLockDirectoryIdentity(directory, tombstone);
-    if (!moved || !sameLockDirectoryIdentity(legacy.directoryIdentity, moved)) {
+    let currentLegacy: LegacyStateLockOwnerError | undefined;
+    try {
+      await readLockSnapshot(directory, lockPath);
+    } catch (error) {
+      if (error instanceof LegacyStateLockOwnerError) currentLegacy = error;
+    }
+    claimSnapshot = await readLockSnapshot(directory, claimPath);
+    if (
+      currentLegacy === undefined ||
+      currentLegacy.owner.pid !== legacy.owner.pid ||
+      currentLegacy.owner.token !== legacy.owner.token ||
+      currentLegacy.owner.createdAt !== legacy.owner.createdAt ||
+      !sameLockDirectoryIdentity(
+        legacy.directoryIdentity,
+        currentLegacy.directoryIdentity,
+      ) ||
+      !isLegacyProcessDefinitelyDead(currentLegacy.owner.pid) ||
+      claimSnapshot === undefined ||
+      !snapshotsMatchOwner(claimSnapshot, claimant)
+    ) {
+      return false;
+    }
+
+    const tombstone = `${lockPath}.legacy-stale-${claimant.token}-${randomUUID()}`;
+    try {
+      await rename(lockPath, tombstone);
+      claimMovedWithLock = true;
+    } catch (error) {
+      if (isMissing(error)) return false;
+      throw error;
+    }
+    try {
+      await syncParentDirectory(lockPath, syncDirectory);
+    } catch (error) {
+      if (
+        await restoreLegacyTombstone(
+          directory,
+          tombstone,
+          lockPath,
+          legacy,
+          syncDirectory,
+        ).catch(() => false)
+      ) {
+        claimMovedWithLock = false;
+      }
+      throw error;
+    }
+
+    let movedLegacy: LegacyStateLockOwnerError | undefined;
+    try {
+      await readLockSnapshot(directory, tombstone);
+    } catch (error) {
+      if (error instanceof LegacyStateLockOwnerError) movedLegacy = error;
+    }
+    const movedClaim = await readLockSnapshot(
+      directory,
+      join(tombstone, STATE_LOCK_RECLAIM_DIRECTORY),
+    ).catch(() => undefined);
+    if (
+      movedLegacy === undefined ||
+      movedLegacy.owner.pid !== legacy.owner.pid ||
+      movedLegacy.owner.token !== legacy.owner.token ||
+      movedLegacy.owner.createdAt !== legacy.owner.createdAt ||
+      !sameLockDirectoryIdentity(
+        legacy.directoryIdentity,
+        movedLegacy.directoryIdentity,
+      ) ||
+      movedClaim === undefined ||
+      claimSnapshot === undefined ||
+      !snapshotsMatch(claimSnapshot, movedClaim)
+    ) {
+      if (
+        await restoreLegacyTombstone(
+          directory,
+          tombstone,
+          lockPath,
+          legacy,
+          syncDirectory,
+        )
+      ) {
+        claimMovedWithLock = false;
+      }
       return false;
     }
     await rm(tombstone, { recursive: true, force: true });
     await syncParentDirectory(tombstone, syncDirectory);
     return true;
+  } finally {
+    if (
+      !claimMovedWithLock &&
+      (await pathExists(claimPath).catch(() => false))
+    ) {
+      await releaseOwnedLock(
+        directory,
+        claimPath,
+        claimant,
+        claimSnapshot,
+        syncDirectory,
+      ).catch(() => undefined);
+    }
+  }
+}
+
+async function restoreLegacyTombstone(
+  directory: PrivateStateDirectoryBinding,
+  tombstone: string,
+  lockPath: string,
+  expected: LegacyStateLockOwnerError,
+  syncDirectory: DirectorySync,
+): Promise<boolean> {
+  let restoredToCanonical = false;
+  let observed: LegacyStateLockOwnerError | undefined;
+  try {
+    await readLockSnapshot(directory, tombstone);
+  } catch (error) {
+    if (error instanceof LegacyStateLockOwnerError) observed = error;
+  }
+  if (
+    observed === undefined ||
+    observed.owner.pid !== expected.owner.pid ||
+    observed.owner.token !== expected.owner.token ||
+    observed.owner.createdAt !== expected.owner.createdAt ||
+    !sameLockDirectoryIdentity(
+      expected.directoryIdentity,
+      observed.directoryIdentity,
+    ) ||
+    (await pathExists(lockPath))
+  ) {
+    return false;
+  }
+  try {
+    await rename(tombstone, lockPath);
+    restoredToCanonical = true;
+    await syncParentDirectory(lockPath, syncDirectory);
+    try {
+      await readLockSnapshot(directory, lockPath);
+    } catch (error) {
+      if (
+        error instanceof LegacyStateLockOwnerError &&
+        error.owner.pid === expected.owner.pid &&
+        error.owner.token === expected.owner.token &&
+        error.owner.createdAt === expected.owner.createdAt &&
+        sameLockDirectoryIdentity(
+          expected.directoryIdentity,
+          error.directoryIdentity,
+        )
+      ) {
+        return true;
+      }
+    }
+    if (restoredToCanonical) {
+      await quarantineLockDirectory(
+        directory,
+        lockPath,
+        expected.directoryIdentity,
+        "changed-restore",
+        syncDirectory,
+      );
+    }
+    return false;
   } catch {
-    if (!(await pathExists(lockPath).catch(() => true))) {
-      await rename(tombstone, lockPath).catch(() => undefined);
-      await syncParentDirectory(lockPath, syncDirectory).catch(() => undefined);
+    if (restoredToCanonical) {
+      await quarantineLockDirectory(
+        directory,
+        lockPath,
+        expected.directoryIdentity,
+        "changed-restore",
+        syncDirectory,
+      ).catch(() => false);
     }
     return false;
   }
@@ -1273,7 +1581,7 @@ async function tryInstallPreparedLock(
   owner: StateLockOwner,
   syncDirectory: DirectorySync,
   beforeInstalledSnapshotRead?: (lockPath: string) => Promise<void>,
-): Promise<boolean> {
+): Promise<LockSnapshot | undefined> {
   await assertPrivateStateDirectory(directory);
   const candidate = `${lockPath}.candidate-${owner.pid}-${owner.token}-${randomUUID()}`;
   let candidateExists = false;
@@ -1299,7 +1607,7 @@ async function tryInstallPreparedLock(
     } catch (error) {
       try {
         await lstat(lockPath);
-        return false;
+        return undefined;
       } catch (destinationError) {
         if (!isMissing(destinationError)) throw destinationError;
         throw error;
@@ -1313,6 +1621,7 @@ async function tryInstallPreparedLock(
       }
       await syncParentDirectory(lockPath, syncDirectory);
       await assertPrivateStateDirectory(directory);
+      return observed;
     } catch (error) {
       const quarantined = await quarantineLockDirectory(
         directory,
@@ -1329,7 +1638,6 @@ async function tryInstallPreparedLock(
       }
       throw error;
     }
-    return true;
   } finally {
     if (candidateExists) {
       await rm(candidate, { recursive: true, force: true })
@@ -1395,7 +1703,10 @@ async function isStaleDeadSnapshot(
   options: Required<
     Pick<StateMutationLockOptions, "now" | "processStatus" | "staleGraceMs">
   > &
-    Pick<StateMutationLockOptions, "beforeInstalledSnapshotRead">,
+    Pick<
+      StateMutationLockOptions,
+      "beforeInstalledSnapshotRead" | "beforeLockOwnerRead"
+    >,
 ): Promise<boolean> {
   const age = options.now() - Date.parse(snapshot.owner.createdAt);
   const status = await options.processStatus(
@@ -1411,26 +1722,32 @@ async function isStaleDeadSnapshot(
 async function tryReclaimUnclaimedDeadDirectory(
   directory: PrivateStateDirectoryBinding,
   lockPath: string,
-  claimantToken: string,
+  claimant: StateLockOwner,
   syncDirectory: DirectorySync,
   options: Required<
     Pick<StateMutationLockOptions, "now" | "processStatus" | "staleGraceMs">
   > &
-    Pick<StateMutationLockOptions, "beforeInstalledSnapshotRead">,
+    Pick<
+      StateMutationLockOptions,
+      "beforeInstalledSnapshotRead" | "beforeLockOwnerRead"
+    >,
 ): Promise<boolean> {
   let snapshot: LockSnapshot | undefined;
   try {
-    snapshot = await readLockSnapshot(directory, lockPath);
+    snapshot = await readLockSnapshot(
+      directory,
+      lockPath,
+      options.beforeLockOwnerRead,
+    );
   } catch (error) {
     if (error instanceof LegacyStateLockOwnerError) {
       return tryReclaimLegacyDeadLock(
         directory,
         lockPath,
         error,
-        claimantToken,
+        claimant,
         syncDirectory,
-        options.now,
-        options.staleGraceMs,
+        options,
       );
     }
     return false;
@@ -1438,7 +1755,7 @@ async function tryReclaimUnclaimedDeadDirectory(
   if (!snapshot) return true;
   if (!(await isStaleDeadSnapshot(snapshot, options))) return false;
 
-  const tombstone = `${lockPath}.stale-${claimantToken}-${randomUUID()}`;
+  const tombstone = `${lockPath}.stale-${claimant.token}-${randomUUID()}`;
   try {
     await rename(lockPath, tombstone);
   } catch (error) {
@@ -1494,23 +1811,28 @@ async function tryAcquireReclaimClaim(
   options: Required<
     Pick<StateMutationLockOptions, "now" | "processStatus" | "staleGraceMs">
   > &
-    Pick<StateMutationLockOptions, "beforeInstalledSnapshotRead">,
+    Pick<
+      StateMutationLockOptions,
+      "beforeInstalledSnapshotRead" | "beforeLockOwnerRead"
+    >,
 ): Promise<boolean> {
   const claimPath = join(lockPath, STATE_LOCK_RECLAIM_DIRECTORY);
   try {
     if (!(await pathExists(claimPath))) {
-      return tryInstallPreparedLock(
-        directory,
-        claimPath,
-        claimant,
-        syncDirectory,
-        options.beforeInstalledSnapshotRead,
+      return (
+        (await tryInstallPreparedLock(
+          directory,
+          claimPath,
+          claimant,
+          syncDirectory,
+          options.beforeInstalledSnapshotRead,
+        )) !== undefined
       );
     }
     const reclaimed = await tryReclaimUnclaimedDeadDirectory(
       directory,
       claimPath,
-      claimant.token,
+      claimant,
       syncDirectory,
       options,
     );
@@ -1524,7 +1846,7 @@ async function tryAcquireReclaimClaim(
         claimant,
         syncDirectory,
         options.beforeInstalledSnapshotRead,
-      ))
+      )) !== undefined
     );
   } catch (error) {
     if (isMissing(error)) return false;
@@ -1540,21 +1862,27 @@ async function tryReclaimDeadLock(
   options: Required<
     Pick<StateMutationLockOptions, "now" | "processStatus" | "staleGraceMs">
   > &
-    Pick<StateMutationLockOptions, "beforeInstalledSnapshotRead">,
+    Pick<
+      StateMutationLockOptions,
+      "beforeInstalledSnapshotRead" | "beforeLockOwnerRead"
+    >,
 ): Promise<boolean> {
   let snapshot: LockSnapshot | undefined;
   try {
-    snapshot = await readLockSnapshot(directory, lockPath);
+    snapshot = await readLockSnapshot(
+      directory,
+      lockPath,
+      options.beforeLockOwnerRead,
+    );
   } catch (error) {
     if (error instanceof LegacyStateLockOwnerError) {
       return tryReclaimLegacyDeadLock(
         directory,
         lockPath,
         error,
-        claimant.token,
+        claimant,
         syncDirectory,
-        options.now,
-        options.staleGraceMs,
+        options,
       );
     }
     return false;
@@ -1577,7 +1905,11 @@ async function tryReclaimDeadLock(
   let claimMovedWithLock = false;
   let claimSnapshot: LockSnapshot | undefined;
   try {
-    const current = await readLockSnapshot(directory, lockPath);
+    const current = await readLockSnapshot(
+      directory,
+      lockPath,
+      options.beforeLockOwnerRead,
+    );
     const claim = await readLockSnapshot(directory, claimPath);
     claimSnapshot = claim;
     if (
@@ -1854,33 +2186,28 @@ export async function acquireStateMutationLock(
     processStatus: cachedProcessStatus,
     staleGraceMs: options.staleGraceMs ?? DEFAULT_STALE_LOCK_GRACE_MS,
     beforeInstalledSnapshotRead: options.beforeInstalledSnapshotRead,
+    beforeLockOwnerRead: options.beforeLockOwnerRead,
   };
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     await assertPrivateStateDirectory(directory);
-    if (
-      !(await pathExists(lockPath)) &&
-      (await tryInstallPreparedLock(
+    if (!(await pathExists(lockPath))) {
+      const installed = await tryInstallPreparedLock(
         directory,
         lockPath,
         owner,
         syncDirectory,
         options.beforeInstalledSnapshotRead,
-      ))
-    ) {
-      const snapshot = await readLockSnapshot(directory, lockPath);
-      if (!snapshot || !snapshotsMatchOwner(snapshot, owner)) {
-        throw new Error(
-          "Conversation identity lock could not be bound after acquire",
+      );
+      if (installed !== undefined) {
+        return createLockRelease(
+          directory,
+          lockPath,
+          owner,
+          installed,
+          syncDirectory,
         );
       }
-      return createLockRelease(
-        directory,
-        lockPath,
-        owner,
-        snapshot,
-        syncDirectory,
-      );
     }
     const reclaimed = await tryReclaimDeadLock(
       directory,
@@ -1889,30 +2216,23 @@ export async function acquireStateMutationLock(
       syncDirectory,
       reclaimOptions,
     );
-    if (
-      reclaimed &&
-      !(await pathExists(lockPath)) &&
-      (await tryInstallPreparedLock(
+    if (reclaimed && !(await pathExists(lockPath))) {
+      const installed = await tryInstallPreparedLock(
         directory,
         lockPath,
         owner,
         syncDirectory,
         options.beforeInstalledSnapshotRead,
-      ))
-    ) {
-      const snapshot = await readLockSnapshot(directory, lockPath);
-      if (!snapshot || !snapshotsMatchOwner(snapshot, owner)) {
-        throw new Error(
-          "Conversation identity lock could not be bound after reclaim",
+      );
+      if (installed !== undefined) {
+        return createLockRelease(
+          directory,
+          lockPath,
+          owner,
+          installed,
+          syncDirectory,
         );
       }
-      return createLockRelease(
-        directory,
-        lockPath,
-        owner,
-        snapshot,
-        syncDirectory,
-      );
     }
     if (attempt + 1 < attempts) await pause(retryMs);
   }
@@ -1940,13 +2260,35 @@ interface SharedGenerationLease {
   readonly directoryInode: number;
   readonly writerLeaseFile: string;
   readonly releaseWriterLease: () => Promise<void>;
-  readonly holders: Set<PrivateStateGenerationHolder>;
+  readonly holders: Map<
+    string,
+    { kind: PrivateStateGenerationHolder; state: "active" | "orphaned" }
+  >;
 }
 
-const sharedGenerationLeases = new Map<
-  string,
-  Promise<SharedGenerationLease>
->();
+const sharedGenerationLeases = new Map<string, SharedGenerationLease>();
+const sharedGenerationOperationGates = new Map<string, Promise<void>>();
+
+async function withSharedGenerationOperation<T>(
+  lifecyclePath: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = sharedGenerationOperationGates.get(lifecyclePath);
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolveGate) => {
+    releaseGate = resolveGate;
+  });
+  sharedGenerationOperationGates.set(lifecyclePath, gate);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    releaseGate();
+    if (sharedGenerationOperationGates.get(lifecyclePath) === gate) {
+      sharedGenerationOperationGates.delete(lifecyclePath);
+    }
+  }
+}
 
 /**
  * Holds one parent-stable lease for the complete private-state generation.
@@ -1961,9 +2303,22 @@ export async function acquirePrivateStateGenerationLease(
 ): Promise<PrivateStateGenerationLease> {
   await assertPrivateStateDirectory(directory);
   const lifecyclePath = `${directory.path}.lifecycle-v1`;
-  let pending = sharedGenerationLeases.get(lifecyclePath);
-  if (pending === undefined) {
-    const created = (async (): Promise<SharedGenerationLease> => {
+  return withSharedGenerationOperation(lifecyclePath, async () => {
+    let shared = sharedGenerationLeases.get(lifecyclePath);
+    if (
+      shared !== undefined &&
+      shared.holders.size > 0 &&
+      [...shared.holders.values()].every(
+        (record) => record.state === "orphaned",
+      )
+    ) {
+      await shared.releaseWriterLease();
+      if (sharedGenerationLeases.get(lifecyclePath) === shared) {
+        sharedGenerationLeases.delete(lifecyclePath);
+      }
+      shared = undefined;
+    }
+    if (shared === undefined) {
       const lifecycle = await preparePrivateStateDirectory(lifecyclePath);
       const leaseStateFile = join(lifecycle.path, ".private-state-generation");
       const writerLeaseFile = `${leaseStateFile}${STATE_WRITER_LEASE_SUFFIX}.lock`;
@@ -1973,60 +2328,77 @@ export async function acquirePrivateStateGenerationLease(
         "Bridge private-state generation writer lease",
         options,
       );
-      return {
+      const syncDirectory = options.syncDirectory ?? syncDirectoryForDurability;
+      // The parent-stable writer lease proves that no conforming generation is
+      // active. Only now is it safe to remove exact, non-authoritative crash
+      // residue left by previous generations.
+      await cleanPrivateStateResidue(lifecycle, syncDirectory);
+      await cleanPrivateStateResidue(directory, syncDirectory);
+      shared = {
         directoryDevice: directory.device,
         directoryInode: directory.inode,
         writerLeaseFile,
         releaseWriterLease,
-        holders: new Set<PrivateStateGenerationHolder>(),
+        holders: new Map(),
       };
-    })();
-    sharedGenerationLeases.set(lifecyclePath, created);
-    pending = created;
-    created.catch(() => {
-      if (sharedGenerationLeases.get(lifecyclePath) === created) {
-        sharedGenerationLeases.delete(lifecyclePath);
-      }
-    });
-  }
+      sharedGenerationLeases.set(lifecyclePath, shared);
+    }
 
-  const shared = await pending;
-  if (
-    shared.directoryDevice !== directory.device ||
-    shared.directoryInode !== directory.inode
-  ) {
-    throw new Error(
-      "Conversation identity state directory generation is already bound",
-    );
-  }
-  if (shared.holders.has(holder)) {
-    throw new Error(`${holder} private-state generation is already open`);
-  }
-  shared.holders.add(holder);
+    if (
+      shared.directoryDevice !== directory.device ||
+      shared.directoryInode !== directory.inode
+    ) {
+      throw new Error(
+        "Conversation identity state directory generation is already bound",
+      );
+    }
+    if ([...shared.holders.values()].some((record) => record.kind === holder)) {
+      throw new Error(`${holder} private-state generation is already open`);
+    }
 
-  let released = false;
-  let releaseAttempt: Promise<void> | undefined;
-  const release = (): Promise<void> => {
-    if (released) return Promise.resolve();
-    if (releaseAttempt) return releaseAttempt;
-    shared.holders.delete(holder);
-    const attempt = (async () => {
-      if (shared.holders.size === 0) {
-        await shared.releaseWriterLease();
-        if (sharedGenerationLeases.get(lifecyclePath) === pending) {
-          sharedGenerationLeases.delete(lifecyclePath);
+    const holderToken = randomUUID();
+    shared.holders.set(holderToken, { kind: holder, state: "active" });
+    let released = false;
+    let releaseAttempt: Promise<void> | undefined;
+    const release = (): Promise<void> => {
+      if (released) return Promise.resolve();
+      if (releaseAttempt) return releaseAttempt;
+      const attempt = withSharedGenerationOperation(lifecyclePath, async () => {
+        const current = sharedGenerationLeases.get(lifecyclePath);
+        const record = shared.holders.get(holderToken);
+        if (current !== shared || record === undefined) {
+          throw new Error(
+            `${holder} private-state generation ownership changed`,
+          );
         }
-      }
-      released = true;
-    })();
-    const tracked = attempt.catch((error: unknown) => {
-      shared.holders.add(holder);
-      if (releaseAttempt === tracked) releaseAttempt = undefined;
-      throw error;
-    });
-    releaseAttempt = tracked;
-    return tracked;
-  };
+        if (shared.holders.size === 1) {
+          await shared.releaseWriterLease();
+          shared.holders.delete(holderToken);
+          if (sharedGenerationLeases.get(lifecyclePath) === shared) {
+            sharedGenerationLeases.delete(lifecyclePath);
+          }
+        } else {
+          shared.holders.delete(holderToken);
+        }
+        released = true;
+      });
+      const tracked = attempt.catch((error: unknown) => {
+        if (releaseAttempt === tracked) releaseAttempt = undefined;
+        throw error;
+      });
+      releaseAttempt = tracked;
+      return tracked;
+    };
+    const abandon = (): Promise<void> =>
+      withSharedGenerationOperation(lifecyclePath, async () => {
+        if (released) return;
+        const current = sharedGenerationLeases.get(lifecyclePath);
+        const record = shared.holders.get(holderToken);
+        if (current === shared && record !== undefined) {
+          record.state = "orphaned";
+        }
+      });
 
-  return { writerLeaseFile: shared.writerLeaseFile, release };
+    return { writerLeaseFile: shared.writerLeaseFile, release, abandon };
+  });
 }
