@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -18,7 +19,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { digestBytes } from '../src/canonical.mjs';
+import { digestBytes, digestJson } from '../src/canonical.mjs';
 import { run } from '../src/cli.mjs';
 import { discoverDigestPreimages } from '../src/digest-preimages.mjs';
 import {
@@ -148,6 +149,55 @@ test('generation is byte deterministic and manifest digests bind artifacts', asy
     assert.equal(manifest.artifactDigests[filename], digestBytes(first.get(filename)));
     assert.doesNotMatch(first.get(filename), /FutureOnly/);
   }
+  assert.deepEqual(
+    manifest.artifactCatalog.map((entry) => entry.logicalName),
+    GENERATED_FILES,
+  );
+  for (const filename of ['schema.json', 'contract.ts', 'contract.dart']) {
+    const catalogEntry = manifest.artifactCatalog.find(
+      (entry) => entry.logicalName === filename,
+    );
+    assert.deepEqual(catalogEntry, {
+      logicalName: filename,
+      path: filename,
+      byteLength: Buffer.byteLength(first.get(filename), 'utf8'),
+      sha256: digestBytes(first.get(filename)),
+      integrityScope: 'SHA256',
+    });
+  }
+  const manifestEntry = manifest.artifactCatalog.find(
+    (entry) => entry.logicalName === 'profile-manifest.json',
+  );
+  assert.deepEqual(manifestEntry, {
+    logicalName: 'profile-manifest.json',
+    path: 'profile-manifest.json',
+    byteLength: Buffer.byteLength(first.get('profile-manifest.json'), 'utf8'),
+    integrityScope: 'SELF_PATH_AND_SIZE_ONLY',
+  });
+  assert.equal(
+    manifest.generationProvenance.generatorSourceDigest,
+    digestJson(manifest.generationProvenance.generatorSourceFiles),
+  );
+  assert.deepEqual(
+    manifest.generationProvenance.generatorSourceFiles.map((entry) => entry.path),
+    [...manifest.generationProvenance.generatorSourceFiles]
+      .map((entry) => entry.path)
+      .sort(),
+  );
+  assert.ok(
+    manifest.generationProvenance.generatorSourceFiles.some(
+      (entry) => entry.path.endsWith('/generate.mjs'),
+    ),
+  );
+  assert.equal(
+    manifest.generationProvenance.targetMapDigest,
+    digestJson({
+      formatVersion: 1,
+      artifacts: Object.fromEntries(
+        GENERATED_FILES.map((filename) => [filename, filename]),
+      ),
+    }),
+  );
   assert.match(first.get('schema.json'), /draft\/2020-12/);
   assert.match(first.get('contract.ts'), /export function decodeFixtureEnvelope/);
   assert.match(first.get('contract.ts'), /readonly "nullableValue": string \| null/);
@@ -1029,6 +1079,52 @@ test('mapped project targets generate and check one exact artifact set', async (
       assert.equal((await lstat(generated)).isFile(), true);
     }
 
+    const mappedManifestSource = await readFile(
+      path.join(directory, 'docs/generated/profile-manifest.json'),
+      'utf8',
+    );
+    const mappedManifest = JSON.parse(mappedManifestSource);
+    assert.deepEqual(
+      Object.fromEntries(
+        mappedManifest.artifactCatalog.map((entry) => [entry.logicalName, entry.path]),
+      ),
+      {
+        'schema.json': 'docs/generated/schema.json',
+        'profile-manifest.json': 'docs/generated/profile-manifest.json',
+        'contract.ts': 'bridge/generated/contract.ts',
+        'contract.dart': 'mobile/generated/contract.dart',
+      },
+    );
+    assert.equal(
+      mappedManifest.artifactCatalog.find(
+        (entry) => entry.logicalName === 'profile-manifest.json',
+      ).byteLength,
+      Buffer.byteLength(mappedManifestSource, 'utf8'),
+    );
+    assert.equal(
+      mappedManifest.generationProvenance.targetMapDigest,
+      digestJson({
+        formatVersion: 1,
+        artifacts: {
+          'schema.json': 'docs/generated/schema.json',
+          'profile-manifest.json': 'docs/generated/profile-manifest.json',
+          'contract.ts': 'bridge/generated/contract.ts',
+          'contract.dart': 'mobile/generated/contract.dart',
+        },
+      }),
+    );
+
+    if (process.platform !== 'win32') {
+      const executableTarget = path.join(directory, 'bridge/generated/contract.ts');
+      await chmod(executableTarget, 0o755);
+      await assert.rejects(
+        run(['check', ...args]),
+        /contract\.ts \(must not be executable\)/,
+      );
+      await chmod(executableTarget, 0o644);
+      await assert.doesNotReject(run(['check', ...args]));
+    }
+
     const contractTarget = path.join(directory, 'bridge/generated/contract.ts');
     const contractContent = await readFile(contractTarget, 'utf8');
     const sameContentVictim = path.join(directory, 'same-content-contract.ts');
@@ -1374,6 +1470,16 @@ test('check detects generated drift without modifying the target', async () => {
     await assert.rejects(run(args), /generated artifact drift: contract.ts/);
     assert.equal(await readFile(target, 'utf8'), changed);
     await writeFile(target, original, 'utf8');
+
+    if (process.platform !== 'win32') {
+      await chmod(target, 0o755);
+      await assert.rejects(
+        run(args),
+        /generated artifact drift: contract\.ts \(must not be executable\)/,
+      );
+      await chmod(target, 0o644);
+      await assert.doesNotReject(run(args));
+    }
 
     const stale = path.join(directory, 'old-contract.ts');
     await writeFile(stale, '// obsolete generated artifact\n', 'utf8');

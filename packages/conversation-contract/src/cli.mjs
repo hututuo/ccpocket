@@ -28,6 +28,10 @@ const execFileAsync = promisify(execFile);
 const EXPECTED_DART_FORMATTER_VERSION = '3.13.0';
 const MISE_FLUTTER_VERSION = '3.47.0';
 
+function hasExecutableMode(status) {
+  return process.platform !== 'win32' && (status.mode & 0o111) !== 0;
+}
+
 export async function runDart(args) {
   try {
     return await execFileAsync('dart', args);
@@ -140,6 +144,10 @@ async function checkDrift(outputDirectory, artifacts) {
       drift.push(`${filename} (not a regular file)`);
       continue;
     }
+    if (hasExecutableMode(status)) {
+      drift.push(`${filename} (must not be executable)`);
+      continue;
+    }
     let committed;
     try {
       committed = await readFile(target, 'utf8');
@@ -195,6 +203,10 @@ async function checkTargetDrift(targetMap, artifacts) {
       drift.push(`${target} (not a regular file)`);
       continue;
     }
+    if (hasExecutableMode(status)) {
+      drift.push(`${target} (must not be executable)`);
+      continue;
+    }
     let committed;
     try {
       committed = await readFile(target, 'utf8');
@@ -217,7 +229,19 @@ async function checkTargetDrift(targetMap, artifacts) {
   }
 }
 
-async function formatDartArtifact(model) {
+function artifactTargetsForGeneration(targetMap) {
+  if (!targetMap) {
+    return Object.fromEntries(GENERATED_FILES.map((filename) => [filename, filename]));
+  }
+  return Object.fromEntries(GENERATED_FILES.map((filename) => [
+    filename,
+    path.relative(targetMap.projectRoot, targetMap.targets.get(filename))
+      .split(path.sep)
+      .join('/'),
+  ]));
+}
+
+async function formatDartArtifact(model, generationOptions) {
   const {stdout, stderr} = await runDart(['--version']);
   const versionText = `${stdout}\n${stderr}`;
   const version = /Dart SDK version:\s*([^\s]+)/.exec(versionText)?.[1];
@@ -229,11 +253,12 @@ async function formatDartArtifact(model) {
   const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-dart-'));
   try {
     const filename = path.join(directory, 'contract.dart');
-    const raw = generateArtifacts(model).get('contract.dart');
+    const raw = generateArtifacts(model, generationOptions).get('contract.dart');
     await writeFile(filename, raw, 'utf8');
     await runDart(['format', filename]);
     const formatted = await readFile(filename, 'utf8');
     return generateArtifacts(model, {
+      ...generationOptions,
       dartSource: formatted,
       dartFormatterVersion: version,
     });
@@ -273,9 +298,12 @@ export async function run(argv = process.argv.slice(2)) {
   const targetMap = values['target-map']
     ? await loadTargetMap(values['target-map'])
     : undefined;
+  const generationOptions = {
+    artifactTargets: artifactTargetsForGeneration(targetMap),
+  };
   const artifacts = values['format-dart']
-    ? await formatDartArtifact(model)
-    : generateArtifacts(model);
+    ? await formatDartArtifact(model, generationOptions)
+    : generateArtifacts(model, generationOptions);
   if (command === 'generate') {
     if (targetMap) {
       await writeArtifactTargets(targetMap.targets, artifacts, {

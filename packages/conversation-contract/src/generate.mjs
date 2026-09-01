@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { constants as fsConstants } from 'node:fs';
+import {
+  constants as fsConstants,
+  readFileSync,
+  readdirSync,
+} from 'node:fs';
 import {
   lstat,
   link,
@@ -14,6 +18,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 
 import { canonicalJson, digestBytes, digestJson } from './canonical.mjs';
 import { digestAuthoritySource } from './b1-digest-authority.mjs';
@@ -37,6 +42,93 @@ const TRUSTED_GENERATION_CANONICAL_LIMITS = Object.freeze({
   maxDepth: 512,
   maxNodes: 1_000_000,
 });
+const GENERATOR_SOURCE_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
+const GENERATOR_SOURCE_PATH_PREFIX = 'packages/conversation-contract/src';
+
+function normalizeArtifactTargets(artifactTargets) {
+  const targets = artifactTargets ?? Object.fromEntries(
+    GENERATED_FILES.map((filename) => [filename, filename]),
+  );
+  const actual = Object.keys(targets).sort();
+  const expected = [...GENERATED_FILES].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new TypeError(`artifact targets must map exactly ${expected.join(', ')}`);
+  }
+  return Object.fromEntries(GENERATED_FILES.map((filename) => {
+    const target = targets[filename];
+    if (typeof target !== 'string' || target.length === 0 || path.isAbsolute(target)) {
+      throw new TypeError(`${filename} artifact target must be a non-empty relative path`);
+    }
+    const normalized = target.split(path.sep).join('/');
+    if (normalized === '..' || normalized.startsWith('../')) {
+      throw new TypeError(`${filename} artifact target escapes its provenance root`);
+    }
+    return [filename, normalized];
+  }));
+}
+
+function generatorSourceCatalog() {
+  return readdirSync(GENERATOR_SOURCE_DIRECTORY, {withFileTypes: true})
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.mjs'))
+    .map((entry) => entry.name)
+    .sort()
+    .map((filename) => {
+      const bytes = readFileSync(path.join(GENERATOR_SOURCE_DIRECTORY, filename));
+      return {
+        path: `${GENERATOR_SOURCE_PATH_PREFIX}/${filename}`,
+        byteLength: bytes.byteLength,
+        sha256: digestBytes(bytes),
+      };
+    });
+}
+
+function renderProfileManifest(base, artifacts, artifactTargets) {
+  const normalizedTargets = normalizeArtifactTargets(artifactTargets);
+  const sourceFiles = generatorSourceCatalog();
+  const generationProvenance = {
+    generatorSourceDigestAlgorithm: 'SHA-256-JCS-FILE-CATALOG-V1',
+    generatorSourceDigest: digestJson(
+      sourceFiles,
+      TRUSTED_GENERATION_CANONICAL_LIMITS,
+    ),
+    generatorSourceFiles: sourceFiles,
+    targetMapDigestAlgorithm: 'SHA-256-JCS-NORMALIZED-TARGET-MAP-V1',
+    targetMapDigest: digestJson(
+      {formatVersion: 1, artifacts: normalizedTargets},
+      TRUSTED_GENERATION_CANONICAL_LIMITS,
+    ),
+  };
+  let manifestByteLength = 0;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const artifactCatalog = GENERATED_FILES.map((logicalName) => {
+      if (logicalName === 'profile-manifest.json') {
+        return {
+          logicalName,
+          path: normalizedTargets[logicalName],
+          byteLength: manifestByteLength,
+          integrityScope: 'SELF_PATH_AND_SIZE_ONLY',
+        };
+      }
+      const bytes = artifacts.get(logicalName);
+      return {
+        logicalName,
+        path: normalizedTargets[logicalName],
+        byteLength: Buffer.byteLength(bytes, 'utf8'),
+        sha256: digestBytes(bytes),
+        integrityScope: 'SHA256',
+      };
+    });
+    const rendered = canonicalJson({
+      ...base,
+      artifactCatalog,
+      generationProvenance,
+    }, 2, TRUSTED_GENERATION_CANONICAL_LIMITS);
+    const actualByteLength = Buffer.byteLength(rendered, 'utf8');
+    if (actualByteLength === manifestByteLength) return rendered;
+    manifestByteLength = actualByteLength;
+  }
+  throw new Error('profile manifest byte length did not converge');
+}
 
 const DIRECTORY_OPEN_FLAGS = fsConstants.O_RDONLY |
   (fsConstants.O_DIRECTORY ?? 0) |
@@ -421,7 +513,7 @@ function activeSource(model) {
 
 export function generateArtifacts(
   model,
-  {dartSource, dartFormatterVersion} = {},
+  {artifactTargets, dartSource, dartFormatterVersion} = {},
 ) {
   const source = activeSource(model);
   const sourceDigest = digestJson(source, TRUSTED_GENERATION_CANONICAL_LIMITS);
@@ -436,7 +528,7 @@ export function generateArtifacts(
     'contract.ts': digestBytes(typescript),
     'schema.json': digestBytes(schema),
   };
-  const manifest = canonicalJson({
+  const manifestBase = {
     formatVersion: 1,
     generator: '@ccpocket/conversation-contract@0.0.0-private',
     ...(dartFormatterVersion ? {dartFormatterVersion} : {}),
@@ -484,7 +576,16 @@ export function generateArtifacts(
         .sort(),
     }),
     artifactDigests,
-  }, 2, TRUSTED_GENERATION_CANONICAL_LIMITS);
+  };
+  const manifest = renderProfileManifest(
+    manifestBase,
+    new Map([
+      ['schema.json', schema],
+      ['contract.ts', typescript],
+      ['contract.dart', dart],
+    ]),
+    artifactTargets,
+  );
   return new Map([
     ['schema.json', schema],
     ['contract.ts', typescript],
