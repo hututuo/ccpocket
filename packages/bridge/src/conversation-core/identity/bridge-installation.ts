@@ -156,10 +156,6 @@ export class CodexSourceRegistry {
     this.installation = installation;
   }
 
-  resolveCodexSource(locatorDigest: string): Promise<ResolvedCodexSource> {
-    return this.installation.resolveCodexSource(locatorDigest);
-  }
-
   bindAuthenticatedCodexSource(
     locatorDigest: string,
   ): Promise<ResolvedCodexSource> {
@@ -265,7 +261,10 @@ export class BridgeInstallationStore {
             `${JSON.stringify(state)}\n`,
             MAX_INSTALLATION_FILE_BYTES,
             "Bridge installation state",
-            { syncDirectory: lockOptions.syncDirectory },
+            {
+              syncDirectory: lockOptions.syncDirectory,
+              createOnly: true,
+            },
           );
         } else {
           state = parseInstallationFile(contents, installationFile);
@@ -300,22 +299,16 @@ export class BridgeInstallationStore {
     return result;
   }
 
-  async resolveCodexSource(
+  async bindAuthenticatedCodexSource(
     locatorDigest: string,
   ): Promise<ResolvedCodexSource> {
     return this.runExclusive(() => this.bindCodexSource(locatorDigest, false));
   }
 
-  async bindAuthenticatedCodexSource(
-    locatorDigest: string,
-  ): Promise<ResolvedCodexSource> {
-    return this.runExclusive(() => this.bindCodexSource(locatorDigest, true));
-  }
-
   async replaceAuthenticatedCodexSource(
     locatorDigest: string,
   ): Promise<ResolvedCodexSource> {
-    return this.bindAuthenticatedCodexSource(locatorDigest);
+    return this.runExclusive(() => this.bindCodexSource(locatorDigest, true));
   }
 
   private async bindCodexSource(

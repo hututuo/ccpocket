@@ -4,6 +4,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -13,6 +14,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   acquireStateMutationLock,
+  atomicPrivateWrite,
+  readBoundedPrivateFile,
   STATE_LOCK_OWNER_FILE,
   STATE_LOCK_RECLAIM_DIRECTORY,
   syncDirectoryForDurability,
@@ -60,6 +63,37 @@ describe("private conversation identity state", () => {
       { mode: 0o600 },
     );
   }
+
+  it("binds a bounded read to the file identity observed before open", async () => {
+    const file = await stateFile();
+    const displaced = `${file}.displaced`;
+    await writeFile(file, "original", { mode: 0o600 });
+
+    await expect(
+      readBoundedPrivateFile(file, 64, "identity-race fixture", {
+        beforeOpen: async () => {
+          await rename(file, displaced);
+          await writeFile(file, "replacement", { mode: 0o600 });
+        },
+      }),
+    ).rejects.toThrow(/changed while being opened/);
+
+    expect(await readFile(file, "utf8")).toBe("replacement");
+    expect(await readFile(displaced, "utf8")).toBe("original");
+  });
+
+  it("never replaces an existing destination during create-only install", async () => {
+    const file = await stateFile();
+    await writeFile(file, "existing", { mode: 0o600 });
+
+    await expect(
+      atomicPrivateWrite(file, "replacement", 64, "create-only fixture", {
+        createOnly: true,
+      }),
+    ).rejects.toMatchObject({ code: "EEXIST" });
+
+    expect(await readFile(file, "utf8")).toBe("existing");
+  });
 
   function lockOptions(
     overrides: Partial<StateMutationLockOptions> = {},
@@ -308,6 +342,49 @@ describe("private conversation identity state", () => {
 
     await expect(release()).rejects.toThrow(/ownership changed before release/);
     expect((await lstat(`${file}.lock`)).isDirectory()).toBe(true);
+  });
+
+  it("never restores a tombstone whose bound owner changed", async () => {
+    const file = await stateFile();
+    const parent = dirname(file);
+    let sabotageRelease = false;
+    const release = await acquireStateMutationLock(
+      file,
+      "tombstone replacement fixture lock",
+      lockOptions({
+        pid: 603,
+        token: () => lockToken("tombstone-owner-603"),
+        syncDirectory: async () => {
+          if (!sabotageRelease) return;
+          const releaseEntry = (await readdir(parent)).find((entry) =>
+            entry.startsWith("state.json.lock.release-"),
+          );
+          if (!releaseEntry) return;
+          await writeFile(
+            join(parent, releaseEntry, STATE_LOCK_OWNER_FILE),
+            `${JSON.stringify({
+              version: 1,
+              pid: 604,
+              token: lockToken("replacement-owner-604"),
+              createdAt: "2026-08-30T12:00:00.000Z",
+            })}\n`,
+            { mode: 0o600 },
+          );
+          throw errorWithCode("EIO");
+        },
+      }),
+    );
+
+    sabotageRelease = true;
+    await expect(release()).rejects.toMatchObject({ code: "EIO" });
+    await expect(lstat(`${file}.lock`)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(
+      (await readdir(parent)).filter((entry) =>
+        entry.startsWith("state.json.lock.release-"),
+      ),
+    ).toHaveLength(1);
   });
 
   it("syncs the namespace after lock install and release mutations", async () => {

@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
   chmod,
+  link,
   lstat,
   mkdir,
   open,
   realpath,
   rename,
   rm,
+  unlink,
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
@@ -67,6 +69,10 @@ export interface DirectorySyncOptions {
   openDirectory?: (path: string) => Promise<DirectorySyncHandle>;
 }
 
+export interface BoundedPrivateFileReadOptions {
+  beforeOpen?: () => Promise<void>;
+}
+
 function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === "ENOENT";
 }
@@ -83,6 +89,13 @@ async function pathExists(path: string): Promise<boolean> {
 
 function modeOf(mode: number): number {
   return mode & 0o777;
+}
+
+function sameFileIdentity(
+  left: { dev: number; ino: number },
+  right: { dev: number; ino: number },
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -132,29 +145,50 @@ export async function preparePrivateStateDirectory(
       "Conversation identity state directory must be a real directory",
     );
   }
-  await chmod(absolutePath, PRIVATE_DIRECTORY_MODE);
-  const after = await lstat(absolutePath);
+  const canonicalPath = await realpath(absolutePath);
+  const rebound = await lstat(absolutePath);
+  const canonicalBefore = await lstat(canonicalPath);
+  if (
+    rebound.isSymbolicLink() ||
+    !rebound.isDirectory() ||
+    !canonicalBefore.isDirectory() ||
+    !sameFileIdentity(before, rebound) ||
+    !sameFileIdentity(before, canonicalBefore)
+  ) {
+    throw new Error(
+      "Conversation identity state directory changed while binding",
+    );
+  }
+  await chmod(canonicalPath, PRIVATE_DIRECTORY_MODE);
+  const after = await lstat(canonicalPath);
+  const finalPath = await lstat(absolutePath);
   if (
     after.isSymbolicLink() ||
     !after.isDirectory() ||
+    finalPath.isSymbolicLink() ||
+    !finalPath.isDirectory() ||
+    !sameFileIdentity(before, after) ||
+    !sameFileIdentity(before, finalPath) ||
     (process.platform !== "win32" &&
       modeOf(after.mode) !== PRIVATE_DIRECTORY_MODE)
   ) {
     throw new Error("Conversation identity state directory is not private");
   }
-  return realpath(absolutePath);
+  return canonicalPath;
 }
 
 export async function readBoundedPrivateFile(
   path: string,
   maximumBytes: number,
   description: string,
+  options: BoundedPrivateFileReadOptions = {},
 ): Promise<string | undefined> {
   let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let pathStats: Awaited<ReturnType<typeof lstat>>;
   try {
     try {
-      const stats = await lstat(path);
-      if (stats.isSymbolicLink() || !stats.isFile()) {
+      pathStats = await lstat(path);
+      if (pathStats.isSymbolicLink() || !pathStats.isFile()) {
         throw new Error(`${description} must be a private regular file`);
       }
     } catch (error) {
@@ -162,21 +196,22 @@ export async function readBoundedPrivateFile(
       throw error;
     }
 
+    await options.beforeOpen?.();
+
     try {
       handle = await open(
         path,
         constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
       );
     } catch (error) {
-      if (isMissing(error)) return undefined;
       throw new Error(`${description} cannot be opened safely`, {
         cause: error,
       });
     }
 
     const before = await handle.stat();
-    if (!before.isFile()) {
-      throw new Error(`${description} must be a private regular file`);
+    if (!before.isFile() || !sameFileIdentity(pathStats, before)) {
+      throw new Error(`${description} changed while being opened`);
     }
     if (before.size > maximumBytes) {
       throw new Error(`${description} exceeds its size limit`);
@@ -186,6 +221,7 @@ export async function readBoundedPrivateFile(
     const secured = await handle.stat();
     if (
       !secured.isFile() ||
+      !sameFileIdentity(before, secured) ||
       (process.platform !== "win32" &&
         modeOf(secured.mode) !== PRIVATE_FILE_MODE)
     ) {
@@ -255,7 +291,7 @@ export async function atomicPrivateWrite(
   contents: string,
   maximumBytes: number,
   description: string,
-  options: { syncDirectory?: DirectorySync } = {},
+  options: { syncDirectory?: DirectorySync; createOnly?: boolean } = {},
 ): Promise<void> {
   if (Buffer.byteLength(contents, "utf8") > maximumBytes) {
     throw new Error(`${description} exceeds its size limit`);
@@ -264,18 +300,38 @@ export async function atomicPrivateWrite(
   const directory = dirname(path);
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let temporaryExists = false;
   try {
     handle = await open(temporary, "wx", PRIVATE_FILE_MODE);
+    temporaryExists = true;
     await handle.writeFile(contents, "utf8");
     await handle.chmod(PRIVATE_FILE_MODE);
     await handle.sync();
+    const prepared = await handle.stat();
     await handle.close();
     handle = undefined;
-    await rename(temporary, path);
+    if (options.createOnly) {
+      await link(temporary, path);
+      const installed = await lstat(path);
+      if (
+        installed.isSymbolicLink() ||
+        !installed.isFile() ||
+        !sameFileIdentity(prepared, installed)
+      ) {
+        throw new Error(`${description} changed during create-only install`);
+      }
+      await unlink(temporary);
+      temporaryExists = false;
+    } else {
+      await rename(temporary, path);
+      temporaryExists = false;
+    }
     await (options.syncDirectory ?? syncDirectoryForDurability)(directory);
   } finally {
     await handle?.close().catch(() => undefined);
-    await rm(temporary, { force: true }).catch(() => undefined);
+    if (temporaryExists) {
+      await rm(temporary, { force: true }).catch(() => undefined);
+    }
   }
 }
 
@@ -377,7 +433,7 @@ async function tryInstallPreparedLock(
       serializeLockOwner(owner),
       MAX_LOCK_OWNER_BYTES,
       "Conversation identity lock owner",
-      { syncDirectory },
+      { syncDirectory, createOnly: true },
     );
     try {
       await rename(candidate, lockPath);
@@ -405,15 +461,24 @@ async function tryInstallPreparedLock(
 async function restoreTombstone(
   tombstone: string,
   lockPath: string,
+  expectedSnapshot: LockSnapshot,
   syncDirectory: DirectorySync,
 ): Promise<boolean> {
   try {
+    const tombstoneSnapshot = await readLockSnapshot(tombstone);
+    if (
+      !tombstoneSnapshot ||
+      !snapshotsMatch(expectedSnapshot, tombstoneSnapshot)
+    ) {
+      return false;
+    }
     // Never use rename's POSIX replacement semantics against a lock that may
     // have been re-created while the tombstone was inspected.
     if (await pathExists(lockPath)) return false;
     await rename(tombstone, lockPath);
     await syncParentDirectory(lockPath, syncDirectory);
-    return true;
+    const restored = await readLockSnapshot(lockPath);
+    return restored !== undefined && snapshotsMatch(expectedSnapshot, restored);
   } catch {
     // Never delete an object whose ownership changed while it was being inspected.
     return false;
@@ -457,17 +522,27 @@ async function tryReclaimUnclaimedDeadDirectory(
     if (isMissing(error)) return true;
     return false;
   }
-  await syncParentDirectory(lockPath, syncDirectory);
+  try {
+    await syncParentDirectory(lockPath, syncDirectory);
+  } catch (error) {
+    await restoreTombstone(
+      tombstone,
+      lockPath,
+      snapshot,
+      syncDirectory,
+    ).catch(() => false);
+    throw error;
+  }
 
   let moved: LockSnapshot | undefined;
   try {
     moved = await readLockSnapshot(tombstone);
   } catch {
-    await restoreTombstone(tombstone, lockPath, syncDirectory);
+    await restoreTombstone(tombstone, lockPath, snapshot, syncDirectory);
     return false;
   }
   if (!moved || !snapshotsMatch(snapshot, moved)) {
-    await restoreTombstone(tombstone, lockPath, syncDirectory);
+    await restoreTombstone(tombstone, lockPath, snapshot, syncDirectory);
     return false;
   }
   await rm(tombstone, { recursive: true, force: true });
@@ -557,7 +632,17 @@ async function tryReclaimDeadLock(
       if (isMissing(error)) return true;
       return false;
     }
-    await syncParentDirectory(lockPath, syncDirectory);
+    try {
+      await syncParentDirectory(lockPath, syncDirectory);
+    } catch (error) {
+      await restoreTombstone(
+        tombstone,
+        lockPath,
+        snapshot,
+        syncDirectory,
+      ).catch(() => false);
+      throw error;
+    }
 
     let moved: LockSnapshot | undefined;
     let movedClaim: LockSnapshot | undefined;
@@ -567,7 +652,14 @@ async function tryReclaimDeadLock(
         join(tombstone, STATE_LOCK_RECLAIM_DIRECTORY),
       );
     } catch {
-      if (await restoreTombstone(tombstone, lockPath, syncDirectory)) {
+      if (
+        await restoreTombstone(
+          tombstone,
+          lockPath,
+          snapshot,
+          syncDirectory,
+        )
+      ) {
         claimMovedWithLock = false;
       }
       return false;
@@ -578,7 +670,14 @@ async function tryReclaimDeadLock(
       !snapshotsMatch(snapshot, moved) ||
       !snapshotsMatch(claim, movedClaim)
     ) {
-      if (await restoreTombstone(tombstone, lockPath, syncDirectory)) {
+      if (
+        await restoreTombstone(
+          tombstone,
+          lockPath,
+          snapshot,
+          syncDirectory,
+        )
+      ) {
         claimMovedWithLock = false;
       }
       return false;
@@ -623,22 +722,25 @@ async function releaseOwnedLock(
   try {
     await syncParentDirectory(lockPath, syncDirectory);
   } catch (error) {
-    await restoreTombstone(tombstone, lockPath, syncDirectory).catch(
-      () => false,
-    );
+    await restoreTombstone(
+      tombstone,
+      lockPath,
+      snapshot,
+      syncDirectory,
+    ).catch(() => false);
     throw error;
   }
   let moved: LockSnapshot | undefined;
   try {
     moved = await readLockSnapshot(tombstone);
   } catch {
-    await restoreTombstone(tombstone, lockPath, syncDirectory);
+    await restoreTombstone(tombstone, lockPath, snapshot, syncDirectory);
     throw new Error(
       "Conversation identity lock ownership changed during release",
     );
   }
   if (!moved || !snapshotsMatch(snapshot, moved)) {
-    await restoreTombstone(tombstone, lockPath, syncDirectory);
+    await restoreTombstone(tombstone, lockPath, snapshot, syncDirectory);
     throw new Error(
       "Conversation identity lock ownership changed during release",
     );

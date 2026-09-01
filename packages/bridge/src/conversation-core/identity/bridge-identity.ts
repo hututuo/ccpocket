@@ -122,7 +122,10 @@ function publicKeyFromRaw(value: string): KeyObject {
 function normalizeMethods(methods: readonly string[]): string[] {
   if (
     methods.length > 32 ||
-    methods.some((method) => !METHOD_PATTERN.test(method))
+    methods.some(
+      (method) =>
+        typeof method !== "string" || !METHOD_PATTERN.test(method),
+    )
   ) {
     throw new Error("Bridge identity methods are invalid");
   }
@@ -214,12 +217,19 @@ export function deriveBridgeIdentityId(publicKey: string): string {
 }
 
 export function isValidIdentityNonce(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    value.length >= 16 &&
-    value.length <= 96 &&
-    BASE64URL_PATTERN.test(value)
-  );
+  if (
+    typeof value !== "string" ||
+    value.length < 16 ||
+    value.length > 96
+  ) {
+    return false;
+  }
+  try {
+    decodeCanonicalBase64Url(value, "Bridge identity nonce");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function canonicalBridgeIdentityPayload(input: {
@@ -277,8 +287,56 @@ export function verifyEd25519Signature(
   }
 }
 
-export function verifyBridgeIdentityProof(proof: BridgeIdentityProof): boolean {
+function isBridgeIdentityProof(value: unknown): value is BridgeIdentityProof {
+  return (
+    isPlainObject(value) &&
+    hasExactKeys(value, [
+      "version",
+      "bridgeIdentityId",
+      "publicKey",
+      "bridgeInstanceId",
+      "nonce",
+      "authMode",
+      "methods",
+      "signedPayload",
+      "signature",
+    ]) &&
+    value.version === BRIDGE_IDENTITY_VERSION &&
+    typeof value.bridgeIdentityId === "string" &&
+    typeof value.publicKey === "string" &&
+    typeof value.bridgeInstanceId === "string" &&
+    typeof value.nonce === "string" &&
+    typeof value.authMode === "string" &&
+    Array.isArray(value.methods) &&
+    value.methods.every((method) => typeof method === "string") &&
+    typeof value.signedPayload === "string" &&
+    typeof value.signature === "string"
+  );
+}
+
+/**
+ * Verifies one proof against the caller-owned, still-outstanding challenge.
+ * The caller remains responsible for consuming that challenge before accepting
+ * a successful result so the same nonce cannot authorize a second handshake.
+ */
+export function verifyBridgeIdentityProof(
+  proof: unknown,
+  expected: BridgeNonceProofInput,
+): boolean {
   try {
+    if (!isBridgeIdentityProof(proof)) return false;
+    assertProofValue(expected.bridgeInstanceId, "Bridge instance ID");
+    assertProofValue(expected.authMode, "Bridge auth mode");
+    if (!isValidIdentityNonce(expected.nonce)) return false;
+    const expectedMethods = normalizeMethods(expected.methods);
+    if (
+      proof.bridgeInstanceId !== expected.bridgeInstanceId ||
+      proof.nonce !== expected.nonce ||
+      proof.authMode !== expected.authMode ||
+      !arraysEqual(proof.methods, expectedMethods)
+    ) {
+      return false;
+    }
     if (proof.bridgeIdentityId !== deriveBridgeIdentityId(proof.publicKey))
       return false;
     const canonicalMethods = normalizeMethods(proof.methods);
@@ -371,7 +429,10 @@ export class BridgeIdentityStore {
             `${JSON.stringify(data)}\n`,
             MAX_IDENTITY_FILE_BYTES,
             "Bridge identity state",
-            { syncDirectory: lockOptions.syncDirectory },
+            {
+              syncDirectory: lockOptions.syncDirectory,
+              createOnly: true,
+            },
           );
           material = { privateKey, publicKey };
         } else {

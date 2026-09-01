@@ -160,7 +160,8 @@ describe("BridgeInstallationStore", () => {
     let store = await load(stateDir, { now: () => Date.UTC(2026, 7, 30) });
 
     const first = await store.bindAuthenticatedCodexSource(digestA);
-    const duplicate = await store.codexSources.resolveCodexSource(digestA);
+    const duplicate =
+      await store.codexSources.bindAuthenticatedCodexSource(digestA);
     const different = await store.bindAuthenticatedCodexSource(digestB);
 
     expect(duplicate).toEqual(first);
@@ -186,8 +187,8 @@ describe("BridgeInstallationStore", () => {
     await close(store);
 
     store = await load(stateDir);
-    const reopenedA = await store.resolveCodexSource(digestA);
-    const reopenedB = await store.resolveCodexSource(digestB);
+    const reopenedA = await store.bindAuthenticatedCodexSource(digestA);
+    const reopenedB = await store.bindAuthenticatedCodexSource(digestB);
     expect(reopenedA.codexSourceId).toBe(first.codexSourceId);
     expect(reopenedB.codexSourceId).toBe(different.codexSourceId);
     expect(reopenedA.sourceEpoch).not.toBe(first.sourceEpoch);
@@ -228,7 +229,9 @@ describe("BridgeInstallationStore", () => {
     const digest = locatorDigest("same-logical-codex-source");
 
     const results = await Promise.all(
-      Array.from({ length: 32 }, () => store.resolveCodexSource(digest)),
+      Array.from({ length: 32 }, () =>
+        store.bindAuthenticatedCodexSource(digest),
+      ),
     );
 
     expect(new Set(results.map((result) => result.codexSourceId))).toHaveLength(
@@ -251,7 +254,7 @@ describe("BridgeInstallationStore", () => {
     );
 
     const results = await Promise.all(
-      digests.map((digest) => store.resolveCodexSource(digest)),
+      digests.map((digest) => store.bindAuthenticatedCodexSource(digest)),
     );
 
     expect(new Set(results.map((result) => result.codexSourceId))).toHaveLength(
@@ -286,7 +289,9 @@ describe("BridgeInstallationStore", () => {
   it("aborts queued work before allowing a clean reopen after close", async () => {
     const stateDir = join(await root(), "state");
     const store = await load(stateDir);
-    const pending = store.resolveCodexSource(locatorDigest("close-race"));
+    const pending = store.bindAuthenticatedCodexSource(
+      locatorDigest("close-race"),
+    );
     const pendingRejection = expect(pending).rejects.toThrow(/store is closed/);
 
     await close(store);
@@ -305,8 +310,8 @@ describe("BridgeInstallationStore", () => {
     );
     const startedDigest = locatorDigest("started-before-close");
     const queuedDigest = locatorDigest("queued-before-close");
-    const started = store.resolveCodexSource(startedDigest);
-    const queued = store.resolveCodexSource(queuedDigest);
+    const started = store.bindAuthenticatedCodexSource(startedDigest);
+    const queued = store.bindAuthenticatedCodexSource(queuedDigest);
     const queuedRejection = expect(queued).rejects.toThrow(/store is closed/);
     await new Promise((resolveImmediate) => setImmediate(resolveImmediate));
 
@@ -333,7 +338,8 @@ describe("BridgeInstallationStore", () => {
     await closing;
 
     const reopened = await load(stateDir);
-    const reopenedResolved = await reopened.resolveCodexSource(startedDigest);
+    const reopenedResolved =
+      await reopened.bindAuthenticatedCodexSource(startedDigest);
     expect(reopenedResolved.codexSourceId).toBe(resolved.codexSourceId);
     expect(reopenedResolved.sourceEpoch).not.toBe(resolved.sourceEpoch);
     expect(
@@ -448,7 +454,8 @@ describe("BridgeInstallationStore", () => {
       const reopened = await load(stateDir, {
         lockOptions: { attempts: 2, retryMs: 0 },
       });
-      const secondResolved = await reopened.resolveCodexSource(digest);
+      const secondResolved =
+        await reopened.bindAuthenticatedCodexSource(digest);
       expect(secondResolved.codexSourceId).toBe(firstResolved.codexSourceId);
       expect(secondResolved.sourceEpoch).not.toBe(firstResolved.sourceEpoch);
       expect(
@@ -518,7 +525,7 @@ describe("BridgeInstallationStore", () => {
       const recovered = await load(stateDir, {
         lockOptions: { staleGraceMs: 0, attempts: 20, retryMs: 0 },
       });
-      const resolved = await recovered.resolveCodexSource(digest);
+      const resolved = await recovered.bindAuthenticatedCodexSource(digest);
       expect(resolved.codexSourceId).toMatch(
         /^codex_source_[A-Za-z0-9_-]{32}$/,
       );
@@ -627,9 +634,11 @@ describe("BridgeInstallationStore", () => {
     );
 
     await expect(
-      store.resolveCodexSource("/Users/private/.codex"),
+      store.bindAuthenticatedCodexSource("/Users/private/.codex"),
     ).rejects.toThrow(/64 lowercase hex/);
-    await expect(store.resolveCodexSource("A".repeat(64))).rejects.toThrow(
+    await expect(
+      store.bindAuthenticatedCodexSource("A".repeat(64)),
+    ).rejects.toThrow(
       /64 lowercase hex/,
     );
     expect(

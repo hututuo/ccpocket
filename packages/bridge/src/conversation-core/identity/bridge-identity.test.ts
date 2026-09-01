@@ -81,23 +81,24 @@ describe("BridgeIdentityStore", () => {
   it("signs and verifies the canonical nonce proof with every authority field bound", async () => {
     const stateDir = join(await root(), "state");
     const store = await load(stateDir);
-    const proof = store.createNonceProof({
+    const challenge = {
       bridgeInstanceId: "bridge_instance_fixture",
-      nonce: "nonce_0123456789abcdef",
+      nonce: "bm9uY2VfMDEyMzQ1Njc4OWFiY2RlZg",
       authMode: "paired_or_key",
       methods: ["key", "device_signature", "key"],
-    });
+    } as const;
+    const proof = store.createNonceProof(challenge);
 
     expect(proof.version).toBe(BRIDGE_IDENTITY_VERSION);
     expect(proof.methods).toEqual(["device_signature", "key"]);
     expect(proof.signedPayload).toBe(canonicalBridgeIdentityPayload(proof));
     expect(store.verify(proof.signedPayload, proof.signature)).toBe(true);
-    expect(verifyBridgeIdentityProof(proof)).toBe(true);
+    expect(verifyBridgeIdentityProof(proof, challenge)).toBe(true);
 
     for (const tampered of [
       { ...proof, bridgeIdentityId: `${proof.bridgeIdentityId}x` },
       { ...proof, bridgeInstanceId: "bridge_instance_other" },
-      { ...proof, nonce: "nonce_fedcba9876543210" },
+      { ...proof, nonce: "bm9uY2VfZmVkY2JhOTg3NjU0MzIxMA" },
       { ...proof, authMode: "open" },
       { ...proof, methods: ["key"] },
       {
@@ -105,8 +106,23 @@ describe("BridgeIdentityStore", () => {
         signature: `${proof.signature[0] === "A" ? "B" : "A"}${proof.signature.slice(1)}`,
       },
     ]) {
-      expect(verifyBridgeIdentityProof(tampered)).toBe(false);
+      expect(verifyBridgeIdentityProof(tampered, challenge)).toBe(false);
     }
+    expect(
+      verifyBridgeIdentityProof(proof, {
+        ...challenge,
+        nonce: "bm9uY2VfZmVkY2JhOTg3NjU0MzIxMA",
+      }),
+    ).toBe(false);
+    expect(
+      verifyBridgeIdentityProof({ ...proof, unsignedClaim: "admin" }, challenge),
+    ).toBe(false);
+    expect(
+      verifyBridgeIdentityProof(
+        { ...proof, methods: [null] },
+        challenge,
+      ),
+    ).toBe(false);
     expect(store.verify(`${proof.signedPayload}x`, proof.signature)).toBe(
       false,
     );
@@ -158,27 +174,31 @@ describe("BridgeIdentityStore", () => {
   it("rejects an outer methods order or duplicate mismatch", async () => {
     const stateDir = join(await root(), "state");
     const store = await load(stateDir);
-    const proof = store.createNonceProof({
+    const challenge = {
       bridgeInstanceId: "bridge_instance_fixture",
-      nonce: "nonce_0123456789abcdef",
+      nonce: "bm9uY2VfMDEyMzQ1Njc4OWFiY2RlZg",
       authMode: "paired_or_key",
       methods: ["key", "device_signature"],
-    });
+    } as const;
+    const proof = store.createNonceProof(challenge);
 
     expect(
-      verifyBridgeIdentityProof({ ...proof, methods: proof.methods }),
+      verifyBridgeIdentityProof(
+        { ...proof, methods: proof.methods },
+        challenge,
+      ),
     ).toBe(true);
     expect(
       verifyBridgeIdentityProof({
         ...proof,
         methods: ["key", "device_signature", "key"],
-      }),
+      }, challenge),
     ).toBe(false);
     expect(
       verifyBridgeIdentityProof({
         ...proof,
         methods: ["key", "device_signature"],
-      }),
+      }, challenge),
     ).toBe(false);
   });
 
