@@ -270,7 +270,8 @@ export class BridgeInstallationStore {
         "Bridge installation state",
         lockOptions,
       );
-      let state: BridgeInstallationFileData;
+      let state: BridgeInstallationFileData | undefined;
+      let operationError: unknown;
       try {
         const contents = await readBoundedPrivateFile(
           directory,
@@ -298,9 +299,23 @@ export class BridgeInstallationStore {
           directory,
           lockOptions.syncDirectory,
         );
-      } finally {
-        await releaseOrAbandonStateMutationLock(releaseLock);
+      } catch (error) {
+        operationError = error;
       }
+      let cleanupError: unknown;
+      try {
+        await releaseOrAbandonStateMutationLock(releaseLock);
+      } catch (error) {
+        cleanupError = error;
+      }
+      if (operationError !== undefined && cleanupError !== undefined) {
+        throw new AggregateError(
+          [operationError, cleanupError],
+          "Bridge installation load and mutation cleanup both failed",
+        );
+      }
+      if (operationError !== undefined) throw operationError;
+      if (cleanupError !== undefined) throw cleanupError;
       return new BridgeInstallationStore({
         stateDir,
         installationFile,
@@ -308,7 +323,7 @@ export class BridgeInstallationStore {
         generationLeaseCurrent: generationLease.assertCurrent,
         writerLeaseRelease,
         directory,
-        state,
+        state: state!,
         lockOptions,
       });
     } catch (error) {

@@ -232,6 +232,44 @@ describe("BridgeIdentityStore", () => {
     ).rejects.toThrow(/key material is invalid/);
   });
 
+  it("preserves both identity load and mutation cleanup failures", async () => {
+    const stateDir = join(await root(), "aggregate-load-errors");
+    await mkdir(stateDir, { mode: 0o700 });
+    await writeFile(join(stateDir, BRIDGE_IDENTITY_FILE), "{broken", {
+      mode: 0o600,
+    });
+    let cleanupFailed = false;
+    let failure: unknown;
+    try {
+      await BridgeIdentityStore.load({
+        stateDir,
+        lockOptions: {
+          beforeReleaseSnapshotRead: async (lockPath) => {
+            if (
+              !cleanupFailed &&
+              lockPath.endsWith(`${BRIDGE_IDENTITY_FILE}.lock`)
+            ) {
+              cleanupFailed = true;
+              throw Object.assign(new Error("CLEANUP-EIO"), {
+                code: "CLEANUP-EIO",
+              });
+            }
+          },
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([
+      expect.objectContaining({ message: expect.stringMatching(/malformed/) }),
+      expect.objectContaining({ code: "CLEANUP-EIO" }),
+    ]);
+    await rm(join(stateDir, BRIDGE_IDENTITY_FILE));
+    const recovered = await load(stateDir);
+    await close(recovered);
+  });
+
   it("rejects duplicate JSON keys and non-canonical PKCS#8 bytes", async () => {
     const duplicateDir = join(await root(), "duplicate");
     await mkdir(duplicateDir, { mode: 0o700 });
@@ -287,7 +325,9 @@ describe("BridgeIdentityStore", () => {
           },
         },
       }),
-    ).rejects.toThrow(/directory changed after binding/);
+    ).rejects.toThrow(
+      /directory changed (?:after binding|while being created)/,
+    );
 
     expect(existsSync(join(stateDir, BRIDGE_IDENTITY_FILE))).toBe(false);
     const reopened = await load(displaced);

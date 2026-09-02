@@ -432,6 +432,8 @@ export class BridgeIdentityStore {
         "Bridge identity state",
         lockOptions,
       );
+      let material: { privateKey: KeyObject; publicKey: string } | undefined;
+      let operationError: unknown;
       try {
         const contents = await readBoundedPrivateFile(
           directory,
@@ -439,7 +441,6 @@ export class BridgeIdentityStore {
           MAX_IDENTITY_FILE_BYTES,
           "Bridge identity state",
         );
-        let material: { privateKey: KeyObject; publicKey: string };
         if (contents === undefined) {
           const generated = generateKeyPairSync("ed25519");
           const publicKey = encodeBase64Url(
@@ -474,18 +475,32 @@ export class BridgeIdentityStore {
           directory,
           lockOptions.syncDirectory,
         );
-        return new BridgeIdentityStore({
-          stateDir,
-          identityFile,
-          writerLeaseFile,
-          generationLeaseCurrent: generationLease.assertCurrent,
-          writerLeaseRelease,
-          directory,
-          ...material,
-        });
-      } finally {
-        await releaseOrAbandonStateMutationLock(releaseLock);
+      } catch (error) {
+        operationError = error;
       }
+      let cleanupError: unknown;
+      try {
+        await releaseOrAbandonStateMutationLock(releaseLock);
+      } catch (error) {
+        cleanupError = error;
+      }
+      if (operationError !== undefined && cleanupError !== undefined) {
+        throw new AggregateError(
+          [operationError, cleanupError],
+          "Bridge identity load and mutation cleanup both failed",
+        );
+      }
+      if (operationError !== undefined) throw operationError;
+      if (cleanupError !== undefined) throw cleanupError;
+      return new BridgeIdentityStore({
+        stateDir,
+        identityFile,
+        writerLeaseFile,
+        generationLeaseCurrent: generationLease.assertCurrent,
+        writerLeaseRelease,
+        directory,
+        ...material!,
+      });
     } catch (error) {
       try {
         await writerLeaseRelease();

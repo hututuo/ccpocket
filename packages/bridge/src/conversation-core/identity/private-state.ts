@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import {
   chmod,
   link,
@@ -40,6 +40,11 @@ const PRIVATE_STATE_RESIDUE_PATTERNS = [
   /^.+\.gc-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
 ] as const;
 const execFileAsync = promisify(execFile);
+const DARWIN_COMMAND_ENV = Object.freeze({
+  LANG: "C",
+  LC_ALL: "C",
+  PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+});
 export const STATE_LOCK_OWNER_FILE = "owner-v3.json" as const;
 const PREVIOUS_STATE_LOCK_OWNER_FILE = "owner-v2.json" as const;
 export const LEGACY_STATE_LOCK_OWNER_FILE = "owner-v1.json" as const;
@@ -238,6 +243,138 @@ function modeOf(mode: number): number {
   return mode & 0o777;
 }
 
+function securityCacheKey(status: {
+  dev: number;
+  ino: number;
+  ctimeMs: number;
+}): string {
+  return `${status.dev}:${status.ino}:${status.ctimeMs}`;
+}
+
+const securedPrivatePaths = new Set<string>();
+const inspectedDarwinAncestors = new Set<string>();
+const MAX_SECURITY_CACHE_ENTRIES = 4_096;
+
+function rememberSecurityCacheEntry(cache: Set<string>, key: string): void {
+  if (cache.has(key)) return;
+  while (cache.size >= MAX_SECURITY_CACHE_ENTRIES) {
+    const oldest = cache.values().next().value as string | undefined;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+  cache.add(key);
+}
+
+async function darwinAclEntries(path: string): Promise<readonly string[]> {
+  const result = await execFileAsync("/bin/ls", ["-lde", path], {
+    encoding: "utf8",
+    timeout: 2_000,
+    maxBuffer: 64 * 1024,
+    env: DARWIN_COMMAND_ENV,
+  });
+  return result.stdout
+    .split("\n")
+    .slice(1)
+    .filter((line) => /^\s*\d+:\s/u.test(line));
+}
+
+async function assertNoDarwinAllowAcl(
+  path: string,
+  description: string,
+): Promise<void> {
+  if (process.platform !== "darwin") return;
+  const entries = await darwinAclEntries(path);
+  if (entries.some((entry) => /\ballow\b/u.test(entry))) {
+    throw new Error(`${description} grants access through a macOS ACL`);
+  }
+}
+
+async function hardenPrivatePath(
+  path: string,
+  expectedMode: number,
+  description: string,
+  expectedKind: "directory" | "file",
+): Promise<Stats> {
+  const before = await lstat(path);
+  const isExpectedKind =
+    expectedKind === "directory" ? before.isDirectory() : before.isFile();
+  if (before.isSymbolicLink() || !isExpectedKind) {
+    throw new Error(`${description} must be a private real ${expectedKind}`);
+  }
+  const effectiveUser = process.geteuid?.();
+  if (effectiveUser !== undefined && before.uid !== effectiveUser) {
+    throw new Error(`${description} is not owned by the current user`);
+  }
+  const cached = securedPrivatePaths.has(securityCacheKey(before));
+  if (!cached) {
+    await chmod(path, expectedMode);
+    if (process.platform === "darwin") {
+      await execFileAsync("/bin/chmod", ["-N", path], {
+        encoding: "utf8",
+        timeout: 2_000,
+        maxBuffer: 4 * 1024,
+        env: DARWIN_COMMAND_ENV,
+      });
+      await assertNoDarwinAllowAcl(path, description);
+    }
+  }
+  const after = await lstat(path);
+  const remainsExpectedKind =
+    expectedKind === "directory" ? after.isDirectory() : after.isFile();
+  if (
+    after.isSymbolicLink() ||
+    !remainsExpectedKind ||
+    !sameFileIdentity(before, after) ||
+    (effectiveUser !== undefined && after.uid !== effectiveUser) ||
+    modeOf(after.mode) !== expectedMode
+  ) {
+    throw new Error(`${description} is not private`);
+  }
+  rememberSecurityCacheEntry(securedPrivatePaths, securityCacheKey(after));
+  return after;
+}
+
+async function assertDarwinAncestorSecurity(path: string): Promise<void> {
+  if (process.platform !== "darwin") return;
+  let cursor = dirname(path);
+  while (true) {
+    const status = await lstat(cursor);
+    if (status.isSymbolicLink() || !status.isDirectory()) {
+      throw new Error(
+        "Conversation identity state ancestor is not a real directory",
+      );
+    }
+    const cacheKey = securityCacheKey(status);
+    if (!inspectedDarwinAncestors.has(cacheKey)) {
+      const aclEntries = await darwinAclEntries(cursor);
+      const grantsNamespaceMutation = aclEntries.some(
+        (entry) =>
+          /\ballow\b/u.test(entry) &&
+          /\b(?:add_file|add_subdirectory|delete|delete_child|writeattr|writeextattr|writesecurity|chown)\b/u.test(
+            entry,
+          ),
+      );
+      if (grantsNamespaceMutation) {
+        throw new Error(
+          "Conversation identity state ancestor ACL grants namespace mutation",
+        );
+      }
+      const writableByAnotherPrincipal = (status.mode & 0o022) !== 0;
+      const protectedStickyRoot =
+        (status.mode & 0o1000) !== 0 && status.uid === 0;
+      if (writableByAnotherPrincipal && !protectedStickyRoot) {
+        throw new Error(
+          "Conversation identity state ancestor is writable by another principal",
+        );
+      }
+      rememberSecurityCacheEntry(inspectedDarwinAncestors, cacheKey);
+    }
+    const parent = dirname(cursor);
+    if (parent === cursor) return;
+    cursor = parent;
+  }
+}
+
 function sameFileIdentity(
   left: { dev: number; ino: number },
   right: { dev: number; ino: number },
@@ -370,7 +507,7 @@ function isCanonicalTimestamp(value: string): boolean {
 }
 
 interface ProcessIdentityParts {
-  readonly version: "proc-v1" | "proc-v2";
+  readonly version: "proc-v1" | "proc-v2" | "proc-v3";
   readonly platform: string;
   readonly machineScope: string;
   readonly bootScope: string;
@@ -384,7 +521,7 @@ interface ProcessIdentityParts {
 
 function parseProcessIdentity(value: string): ProcessIdentityParts | undefined {
   const parts = value.split(":");
-  if (parts[0] === "proc-v2") {
+  if (parts[0] === "proc-v2" || parts[0] === "proc-v3") {
     if (
       parts.length !== 7 ||
       parts[2]?.length !== 43 ||
@@ -407,7 +544,7 @@ function parseProcessIdentity(value: string): ProcessIdentityParts | undefined {
       return undefined;
     }
     return {
-      version: "proc-v2",
+      version: parts[0],
       platform: parts[1]!,
       machineScope: parts.slice(1, 3).join(":"),
       bootScope: parts.slice(1, 4).join(":"),
@@ -589,6 +726,19 @@ async function linuxProcessIdentity(pid: number): Promise<string | undefined> {
   }
 }
 
+export function parseDarwinBootTime(value: string): string | undefined {
+  const match = value.match(
+    /^\{\s*sec\s*=\s*([1-9][0-9]*),\s*usec\s*=\s*([0-9]+)\s*\}/u,
+  );
+  if (!match) return undefined;
+  const seconds = match[1]!;
+  const microseconds = match[2]!;
+  if (microseconds.length > 6 || Number(microseconds) > 999_999) {
+    return undefined;
+  }
+  return `${seconds}:${microseconds.padStart(6, "0")}`;
+}
+
 async function darwinProcessIdentity(pid: number): Promise<string | undefined> {
   if (pid !== process.pid) return undefined;
   try {
@@ -596,12 +746,18 @@ async function darwinProcessIdentity(pid: number): Promise<string | undefined> {
       execFileAsync(
         "/usr/sbin/ioreg",
         ["-rd1", "-c", "IOPlatformExpertDevice"],
-        { encoding: "utf8", timeout: 2_000, maxBuffer: 64 * 1024 },
+        {
+          encoding: "utf8",
+          timeout: 2_000,
+          maxBuffer: 64 * 1024,
+          env: DARWIN_COMMAND_ENV,
+        },
       ),
       execFileAsync("/usr/sbin/sysctl", ["-n", "kern.boottime"], {
         encoding: "utf8",
         timeout: 2_000,
         maxBuffer: 4 * 1024,
+        env: DARWIN_COMMAND_ENV,
       }),
       darwinProcessWitness(),
     ]);
@@ -609,12 +765,12 @@ async function darwinProcessIdentity(pid: number): Promise<string | undefined> {
       /"IOPlatformUUID"\s*=\s*"([^"]+)"/u,
     );
     const machineValue = machineMatch?.[1]?.trim();
-    const bootValue = boot.stdout.trim().replace(/\s+/gu, "_");
+    const bootValue = parseDarwinBootTime(boot.stdout);
     if (!machineValue || !bootValue || !witness.active) return undefined;
     const digest = (value: string) =>
       createHash("sha256").update(value, "utf8").digest("base64url");
     return [
-      "proc-v2",
+      "proc-v3",
       "darwin",
       digest(machineValue),
       digest(bootValue),
@@ -708,7 +864,7 @@ function currentProcessIdentity(
   return currentProcessIdentityPromise;
 }
 
-async function defaultProcessStatus(
+export async function defaultProcessStatus(
   pid: number,
   expectedProcessIdentity: string,
 ): Promise<ProcessStatus> {
@@ -720,31 +876,11 @@ async function defaultProcessStatus(
       : parseProcessIdentity(currentIdentity);
   if (!expected || !current) return "unknown";
   if (expected.machineScope !== current.machineScope) return "unknown";
-  if (expected.bootScope !== current.bootScope) return "dead-old-boot";
-  if (expected.version === "proc-v1" && expected.platform === "darwin") {
-    try {
-      process.kill(pid, 0);
-      return "unknown";
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code === "ESRCH"
-        ? "dead"
-        : "unknown";
-    }
-  }
-  if (
-    expected.version === "proc-v1" &&
-    expected.processScope !== current.processScope
-  ) {
-    return "unknown";
-  }
-  if (pid === process.pid) {
-    const currentWitness =
-      process.platform === "darwin"
-        ? await darwinProcessWitness().catch(() => undefined)
-        : undefined;
-    if (currentWitness !== undefined && !currentWitness.active) return "dead";
-    return currentIdentity === expectedProcessIdentity ? "alive" : "dead";
-  }
+  // Darwin proc-v1 hashed locale-sensitive boot text and proc-v2 hashed the
+  // full TZ-sensitive kern.boottime rendering. Neither version can prove an
+  // old boot against proc-v3 numeric timeval evidence. Preserve live v2
+  // owners through their persisted witness and keep v1 fail closed unless its
+  // PID is definitely absent.
   if (
     expected.version === "proc-v2" &&
     expected.platform === "darwin" &&
@@ -758,6 +894,40 @@ async function defaultProcessStatus(
         : "unknown";
     }
     return probeDarwinProcessWitness(expected.witness);
+  }
+  if (expected.version === "proc-v1" && expected.platform === "darwin") {
+    try {
+      process.kill(pid, 0);
+      return "unknown";
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH"
+        ? "dead"
+        : "unknown";
+    }
+  }
+  if (expected.bootScope !== current.bootScope) return "dead-old-boot";
+  if (
+    expected.version === "proc-v1" &&
+    expected.processScope !== current.processScope
+  ) {
+    return "unknown";
+  }
+  if (
+    expected.version === "proc-v3" &&
+    expected.platform === "darwin" &&
+    expected.witness !== undefined
+  ) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH"
+        ? "dead"
+        : "unknown";
+    }
+    return probeDarwinProcessWitness(expected.witness);
+  }
+  if (pid === process.pid) {
+    return currentIdentity === expectedProcessIdentity ? "alive" : "dead";
   }
   const observed = await defaultProcessIdentity(pid);
   if (observed === undefined) {
@@ -785,7 +955,6 @@ async function ensureDirectoryNamespaceDurable(
   absolutePath: string,
   syncDirectory: DirectorySync,
 ): Promise<void> {
-  const missing: string[] = [];
   let cursor = absolutePath;
   while (true) {
     try {
@@ -798,7 +967,6 @@ async function ensureDirectoryNamespaceDurable(
       break;
     } catch (error) {
       if (!isMissing(error)) throw error;
-      missing.push(cursor);
       const parent = dirname(cursor);
       if (parent === cursor) throw error;
       cursor = parent;
@@ -806,14 +974,37 @@ async function ensureDirectoryNamespaceDurable(
   }
 
   await mkdir(absolutePath, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
-  for (const created of missing.reverse()) {
-    const status = await lstat(created);
+  const leafIdentity = await lstat(absolutePath);
+  if (leafIdentity.isSymbolicLink() || !leafIdentity.isDirectory()) {
+    throw new Error(
+      "Conversation identity state directory changed while being created",
+    );
+  }
+  // Durability follows the actual namespace. macOS exposes stable system
+  // aliases such as /var -> /private/var, so reconcile the canonical chain
+  // while the leaf itself is still rejected if it is a symbolic link.
+  cursor = await realpath(absolutePath);
+  while (true) {
+    const status = await lstat(cursor);
     if (status.isSymbolicLink() || !status.isDirectory()) {
       throw new Error(
         "Conversation identity state directory changed while being created",
       );
     }
-    await syncDirectory(dirname(created));
+    const parent = dirname(cursor);
+    if (parent === cursor) return;
+    await syncDirectory(parent);
+    const currentLeaf = await lstat(absolutePath);
+    if (
+      currentLeaf.isSymbolicLink() ||
+      !currentLeaf.isDirectory() ||
+      !sameFileIdentity(leafIdentity, currentLeaf)
+    ) {
+      throw new Error(
+        "Conversation identity state directory changed while being created",
+      );
+    }
+    cursor = parent;
   }
 }
 
@@ -823,6 +1014,9 @@ export async function preparePrivateStateDirectory(
 ): Promise<PrivateStateDirectoryBinding> {
   assertPrivateStatePlatformSupported(process.platform);
   const absolutePath = resolve(path);
+  if (/[\u0000-\u001f\u007f]/u.test(absolutePath)) {
+    throw new Error("Conversation identity state path contains control data");
+  }
   await ensureDirectoryNamespaceDurable(absolutePath, syncDirectory);
   const before = await lstat(absolutePath);
   if (before.isSymbolicLink() || !before.isDirectory()) {
@@ -844,8 +1038,13 @@ export async function preparePrivateStateDirectory(
       "Conversation identity state directory changed while binding",
     );
   }
-  await chmod(canonicalPath, PRIVATE_DIRECTORY_MODE);
-  const after = await lstat(canonicalPath);
+  const after = await hardenPrivatePath(
+    canonicalPath,
+    PRIVATE_DIRECTORY_MODE,
+    "Conversation identity state directory",
+    "directory",
+  );
+  await assertDarwinAncestorSecurity(canonicalPath);
   const finalPath = await lstat(absolutePath);
   if (
     after.isSymbolicLink() ||
@@ -859,10 +1058,24 @@ export async function preparePrivateStateDirectory(
   ) {
     throw new Error("Conversation identity state directory is not private");
   }
+  await syncDirectory(canonicalPath);
+  const durable = await lstat(canonicalPath);
+  if (
+    durable.isSymbolicLink() ||
+    !durable.isDirectory() ||
+    !sameFileIdentity(after, durable) ||
+    (process.geteuid?.() !== undefined &&
+      durable.uid !== process.geteuid?.()) ||
+    modeOf(durable.mode) !== PRIVATE_DIRECTORY_MODE
+  ) {
+    throw new Error(
+      "Conversation identity state directory changed while securing metadata",
+    );
+  }
   return Object.freeze({
     path: canonicalPath,
-    device: after.dev,
-    inode: after.ino,
+    device: durable.dev,
+    inode: durable.ino,
   });
 }
 
@@ -887,11 +1100,13 @@ export async function assertPrivateStateDirectory(
     }
   }
   const current = await lstat(binding.path);
+  const effectiveUser = process.geteuid?.();
   if (
     current.isSymbolicLink() ||
     !current.isDirectory() ||
     current.dev !== binding.device ||
     current.ino !== binding.inode ||
+    (effectiveUser !== undefined && current.uid !== effectiveUser) ||
     (process.platform !== "win32" &&
       modeOf(current.mode) !== PRIVATE_DIRECTORY_MODE)
   ) {
@@ -943,6 +1158,13 @@ export async function readBoundedPrivateFile(
       throw error;
     }
 
+    pathStats = await hardenPrivatePath(
+      path,
+      PRIVATE_FILE_MODE,
+      description,
+      "file",
+    );
+
     await options.beforeOpen?.();
     await assertPrivateStateDirectory(directory);
 
@@ -966,6 +1188,7 @@ export async function readBoundedPrivateFile(
     }
 
     await handle.chmod(PRIVATE_FILE_MODE);
+    await handle.sync();
     const secured = await handle.stat();
     if (
       !secured.isFile() ||
@@ -1069,7 +1292,13 @@ export async function atomicPrivateWrite(
     await handle.writeFile(contents, "utf8");
     await handle.chmod(PRIVATE_FILE_MODE);
     await handle.sync();
+    const preparedBeforeAcl = await handle.stat();
+    await hardenPrivatePath(temporary, PRIVATE_FILE_MODE, description, "file");
+    await handle.sync();
     const prepared = await handle.stat();
+    if (!sameFileIdentity(preparedBeforeAcl, prepared)) {
+      throw new Error(`${description} changed while being secured`);
+    }
     await handle.close();
     handle = undefined;
     await assertPrivateStateDirectory(directoryBinding);
@@ -1208,7 +1437,12 @@ async function readLockSnapshot(
   await assertPrivateStateDirectory(directory);
   let stats: Awaited<ReturnType<typeof lstat>>;
   try {
-    stats = await lstat(lockPath);
+    stats = await hardenPrivatePath(
+      lockPath,
+      PRIVATE_DIRECTORY_MODE,
+      "Conversation identity lock",
+      "directory",
+    );
   } catch (error) {
     if (isMissing(error)) return undefined;
     throw error;
@@ -1369,7 +1603,12 @@ async function readLockDirectoryIdentity(
   await assertPrivateStateDirectory(directory);
   let stats: Awaited<ReturnType<typeof lstat>>;
   try {
-    stats = await lstat(lockPath);
+    stats = await hardenPrivatePath(
+      lockPath,
+      PRIVATE_DIRECTORY_MODE,
+      "Conversation identity lock",
+      "directory",
+    );
   } catch (error) {
     if (isMissing(error)) return undefined;
     throw error;
@@ -1728,18 +1967,16 @@ async function tryAcquireReclaimClaim(
       | "beforeLockOwnerRead"
       | "afterLockOwnerRead"
     >,
-): Promise<boolean> {
+): Promise<LockSnapshot | undefined> {
   const claimPath = join(lockPath, STATE_LOCK_RECLAIM_DIRECTORY);
   try {
     if (!(await pathExists(claimPath))) {
-      return (
-        (await tryInstallPreparedLock(
-          directory,
-          claimPath,
-          claimant,
-          syncDirectory,
-          options.beforeInstalledSnapshotRead,
-        )) !== undefined
+      return tryInstallPreparedLock(
+        directory,
+        claimPath,
+        claimant,
+        syncDirectory,
+        options.beforeInstalledSnapshotRead,
       );
     }
     const reclaimed = await tryReclaimUnclaimedDeadDirectory(
@@ -1749,20 +1986,22 @@ async function tryAcquireReclaimClaim(
       syncDirectory,
       options,
     );
-    return (
-      reclaimed &&
-      (await pathExists(lockPath)) &&
-      !(await pathExists(claimPath)) &&
-      (await tryInstallPreparedLock(
-        directory,
-        claimPath,
-        claimant,
-        syncDirectory,
-        options.beforeInstalledSnapshotRead,
-      )) !== undefined
+    if (
+      !reclaimed ||
+      !(await pathExists(lockPath)) ||
+      (await pathExists(claimPath))
+    ) {
+      return undefined;
+    }
+    return tryInstallPreparedLock(
+      directory,
+      claimPath,
+      claimant,
+      syncDirectory,
+      options.beforeInstalledSnapshotRead,
     );
   } catch (error) {
-    if (isMissing(error)) return false;
+    if (isMissing(error)) return undefined;
     throw error;
   }
 }
@@ -1805,21 +2044,25 @@ async function tryReclaimDeadLock(
   }
   if (!snapshot) return true;
   if (!(await isStaleDeadSnapshot(snapshot, options))) return false;
-  if (
-    !(await tryAcquireReclaimClaim(
-      directory,
-      lockPath,
-      claimant,
-      syncDirectory,
-      options,
-    ))
-  ) {
-    return false;
-  }
+  const acquiredClaim = await tryAcquireReclaimClaim(
+    directory,
+    lockPath,
+    claimant,
+    syncDirectory,
+    options,
+  );
+  if (acquiredClaim === undefined) return false;
 
   const claimPath = join(lockPath, STATE_LOCK_RECLAIM_DIRECTORY);
+  const releaseClaim = createLockRelease(
+    directory,
+    claimPath,
+    claimant,
+    acquiredClaim,
+    syncDirectory,
+  );
   let claimMovedWithLock = false;
-  let claimSnapshot: LockSnapshot | undefined;
+  let operationError: unknown;
   try {
     const current = await readLockSnapshot(
       directory,
@@ -1828,7 +2071,6 @@ async function tryReclaimDeadLock(
       options.afterLockOwnerRead,
     );
     const claim = await readLockSnapshot(directory, claimPath);
-    claimSnapshot = claim;
     if (
       !current ||
       !claim ||
@@ -1837,13 +2079,7 @@ async function tryReclaimDeadLock(
       claim.owner.token !== claimant.token ||
       !(await isStaleDeadSnapshot(current, options))
     ) {
-      await releaseOwnedLock(
-        directory,
-        claimPath,
-        claimant,
-        claim,
-        syncDirectory,
-      ).catch(() => undefined);
+      await releaseOrAbandonStateMutationLock(releaseClaim);
       return false;
     }
 
@@ -1916,18 +2152,25 @@ async function tryReclaimDeadLock(
     await rm(tombstone, { recursive: true, force: true });
     await syncParentDirectory(tombstone, syncDirectory);
     return true;
+  } catch (error) {
+    operationError = error;
+    throw error;
   } finally {
     if (
       !claimMovedWithLock &&
       (await pathExists(claimPath).catch(() => false))
     ) {
-      await releaseOwnedLock(
-        directory,
-        claimPath,
-        claimant,
-        claimSnapshot,
-        syncDirectory,
-      ).catch(() => undefined);
+      try {
+        await releaseOrAbandonStateMutationLock(releaseClaim);
+      } catch (cleanupError) {
+        if (operationError !== undefined && cleanupError !== operationError) {
+          throw new AggregateError(
+            [operationError, cleanupError],
+            "Conversation identity reclaim and claim cleanup both failed",
+          );
+        }
+        throw cleanupError;
+      }
     }
   }
 }
@@ -2028,6 +2271,21 @@ function mutationRecoveryKey(
   return `${directory.device}:${directory.inode}:${lockPath}`;
 }
 
+async function recoverOrphanedMutationLockReleases(
+  directory: PrivateStateDirectoryBinding,
+): Promise<void> {
+  const prefix = `${directory.device}:${directory.inode}:`;
+  const pending = [...orphanedMutationLockReleases.entries()].filter(([key]) =>
+    key.startsWith(prefix),
+  );
+  for (const [key, release] of pending) {
+    await release();
+    if (orphanedMutationLockReleases.get(key) === release) {
+      orphanedMutationLockReleases.delete(key);
+    }
+  }
+}
+
 function createLockRelease(
   directory: PrivateStateDirectoryBinding,
   lockPath: string,
@@ -2107,15 +2365,8 @@ export async function acquireStateMutationLock(
 ): Promise<StateMutationLockLease> {
   assertPathWithinBinding(directory, stateFile);
   await assertPrivateStateDirectory(directory);
+  await recoverOrphanedMutationLockReleases(directory);
   const lockPath = `${stateFile}.lock`;
-  const recoveryKey = mutationRecoveryKey(directory, lockPath);
-  const orphanedRelease = orphanedMutationLockReleases.get(recoveryKey);
-  if (orphanedRelease !== undefined) {
-    await orphanedRelease();
-    if (orphanedMutationLockReleases.get(recoveryKey) === orphanedRelease) {
-      orphanedMutationLockReleases.delete(recoveryKey);
-    }
-  }
   const syncDirectory = options.syncDirectory ?? syncDirectoryForDurability;
   const processIdentityResolver =
     options.processIdentity ?? defaultProcessIdentity;
@@ -2142,19 +2393,22 @@ export async function acquireStateMutationLock(
   const attempts = options.attempts ?? DEFAULT_LOCK_ATTEMPTS;
   const retryMs = options.retryMs ?? DEFAULT_LOCK_RETRY_MS;
   const processStatusResolver = options.processStatus ?? defaultProcessStatus;
-  const processStatuses = new Map<string, Promise<ProcessStatus>>();
+  const terminalProcessStatuses = new Map<string, Promise<ProcessStatus>>();
   const cachedProcessStatus: ProcessStatusResolver = (
     pid,
     expectedIdentity,
   ) => {
     const key = `${pid}:${expectedIdentity}`;
-    const cached = processStatuses.get(key);
+    const cached = terminalProcessStatuses.get(key);
     if (cached) return cached;
-    const pending = Promise.resolve(
-      processStatusResolver(pid, expectedIdentity),
+    return Promise.resolve(processStatusResolver(pid, expectedIdentity)).then(
+      (status) => {
+        if (status === "dead" || status === "dead-old-boot") {
+          terminalProcessStatuses.set(key, Promise.resolve(status));
+        }
+        return status;
+      },
     );
-    processStatuses.set(key, pending);
-    return pending;
   };
   const reclaimOptions = {
     now: options.now ?? Date.now,
@@ -2333,6 +2587,8 @@ export async function acquirePrivateStateGenerationLease(
       // active. Only now is it safe to remove exact, non-authoritative crash
       // residue left by previous generations.
       try {
+        await recoverOrphanedMutationLockReleases(lifecycle);
+        await recoverOrphanedMutationLockReleases(directory);
         await cleanPrivateStateResidue(lifecycle, syncDirectory);
         await cleanPrivateStateResidue(directory, syncDirectory);
       } catch (error) {

@@ -11,6 +11,8 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { createServer } from "node:net";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -18,15 +20,20 @@ import {
   acquireStateMutationLock,
   assertPrivateStatePlatformSupported,
   atomicPrivateWrite,
+  defaultProcessStatus,
   LEGACY_STATE_LOCK_OWNER_FILE,
+  parseDarwinBootTime,
   preparePrivateStateDirectory,
   readBoundedPrivateFile,
+  releaseOrAbandonStateMutationLock,
   STATE_LOCK_OWNER_FILE,
   STATE_LOCK_RECLAIM_DIRECTORY,
   syncDirectoryForDurability,
   type PrivateStateDirectoryBinding,
   type StateMutationLockOptions,
 } from "./private-state.js";
+
+const execFileAsync = promisify(execFile);
 
 function errorWithCode(code: string): NodeJS.ErrnoException {
   return Object.assign(new Error(code), { code });
@@ -111,8 +118,84 @@ describe("private conversation identity state", () => {
       synced.push(path);
     });
 
+    const canonicalRoot = await realpath(root);
     expect(binding.path).toBe(await realpath(target));
-    expect(synced).toEqual([root, join(root, "nested")]);
+    expect(synced.slice(0, 2)).toEqual([
+      join(canonicalRoot, "nested"),
+      canonicalRoot,
+    ]);
+    expect(synced).toContain("/");
+    expect(synced.at(-1)).toBe(binding.path);
+  });
+
+  it("reconciles the complete namespace chain after an earlier parent fsync failure", async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), "ccpocket-v4-state-parent-retry-"),
+    );
+    roots.push(root);
+    const target = join(root, "nested", "state");
+    const canonicalRoot = await realpath(root);
+    const failedParent = dirname(canonicalRoot);
+    let shouldFail = true;
+    const calls: string[] = [];
+    const syncDirectory = async (path: string): Promise<void> => {
+      calls.push(path);
+      if (shouldFail && path === failedParent) {
+        shouldFail = false;
+        throw errorWithCode("EIO");
+      }
+    };
+
+    await expect(
+      preparePrivateStateDirectory(target, syncDirectory),
+    ).rejects.toMatchObject({ code: "EIO" });
+    expect(calls.filter((path) => path === failedParent)).toHaveLength(1);
+
+    await preparePrivateStateDirectory(target, syncDirectory);
+    expect(calls.filter((path) => path === failedParent)).toHaveLength(2);
+  });
+
+  it("removes a target ACL and rejects an inherited allow ACL in its ancestor", async () => {
+    if (process.platform !== "darwin") return;
+    const root = await mkdtemp(join(tmpdir(), "ccpocket-v4-state-acl-"));
+    roots.push(root);
+    const existingTarget = join(root, "existing");
+    await mkdir(existingTarget, { mode: 0o700 });
+    await execFileAsync("/bin/chmod", [
+      "+a",
+      "everyone allow read",
+      existingTarget,
+    ]);
+
+    const binding = await preparePrivateStateDirectory(existingTarget);
+    const secured = await execFileAsync("/bin/ls", ["-lde", existingTarget], {
+      encoding: "utf8",
+    });
+    expect(secured.stdout).not.toMatch(/^\s*\d+:.*\ballow\b/mu);
+
+    const privateFile = join(binding.path, "private.json");
+    await writeFile(privateFile, "private", { mode: 0o600 });
+    await execFileAsync("/bin/chmod", [
+      "+a",
+      "everyone allow read",
+      privateFile,
+    ]);
+    await expect(
+      readBoundedPrivateFile(binding, privateFile, 64, "ACL fixture"),
+    ).resolves.toBe("private");
+    const securedFile = await execFileAsync("/bin/ls", ["-lde", privateFile], {
+      encoding: "utf8",
+    });
+    expect(securedFile.stdout).not.toMatch(/^\s*\d+:.*\ballow\b/mu);
+
+    await execFileAsync("/bin/chmod", [
+      "+a",
+      "everyone allow list,search,add_file,add_subdirectory,delete_child,file_inherit,directory_inherit",
+      root,
+    ]);
+    await expect(
+      preparePrivateStateDirectory(join(root, "inherited")),
+    ).rejects.toThrow(/ancestor.*ACL/iu);
   });
 
   it("binds a bounded read to the file identity observed before open", async () => {
@@ -475,6 +558,32 @@ describe("private conversation identity state", () => {
       ),
     ).rejects.toThrow(/busy/);
     expect((await lstat(`${unknownFile}.lock`)).isDirectory()).toBe(true);
+  });
+
+  it("reprobes a live owner on a later retry and recovers after death", async () => {
+    const { directory, file } = await stateFile();
+    await writeLockOwner(file, {
+      pid: 425,
+      token: lockToken("dies-during-acquire"),
+      createdAt: "2026-08-30T11:59:00.000Z",
+    });
+    let probes = 0;
+    const release = await acquireStateMutationLock(
+      directory,
+      file,
+      "owner death during acquire fixture lock",
+      lockOptions({
+        pid: 426,
+        token: () => lockToken("post-death-contender"),
+        attempts: 2,
+        processStatus: async () => {
+          probes += 1;
+          return probes === 1 ? "alive" : "dead";
+        },
+      }),
+    );
+    expect(probes).toBeGreaterThanOrEqual(2);
+    await release();
   });
 
   it("does not reclaim a newly-created lock even when its PID is dead", async () => {
@@ -927,6 +1036,81 @@ describe("private conversation identity state", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("recovers an orphaned internal reclaim claim before the next admission", async () => {
+    const { directory, file } = await stateFile();
+    const lockPath = `${file}.lock`;
+    await writeLockOwner(file, {
+      pid: 70208,
+      token: lockToken("internal-claim-stale-owner"),
+      createdAt: "2026-08-30T11:59:00.000Z",
+    });
+    let outerOwnerReads = 0;
+    let ownerChanged = false;
+    let injectCleanupFailure = true;
+    let cleanupFailed = false;
+    const syncDirectory = async (path: string): Promise<void> => {
+      if (
+        injectCleanupFailure &&
+        !cleanupFailed &&
+        ownerChanged &&
+        path === lockPath
+      ) {
+        cleanupFailed = true;
+        throw errorWithCode("CLAIM-CLEANUP-EIO");
+      }
+    };
+    await expect(
+      acquireStateMutationLock(
+        directory,
+        file,
+        "internal reclaim claim cleanup fixture lock",
+        lockOptions({
+          pid: 70209,
+          token: () => lockToken("internal-claim-contender"),
+          attempts: 1,
+          syncDirectory,
+          processStatus: async () => "dead",
+          beforeLockOwnerRead: async (observedLockPath) => {
+            if (observedLockPath !== lockPath) return;
+            outerOwnerReads += 1;
+            if (outerOwnerReads !== 2) return;
+            const status = await lstat(lockPath);
+            await writeFile(
+              join(lockPath, STATE_LOCK_OWNER_FILE),
+              `${JSON.stringify({
+                version: 3,
+                pid: 70208,
+                processIdentity: fixtureProcessIdentity(70208),
+                token: lockToken("internal-claim-changed-owner"),
+                createdAt: "2026-08-30T11:59:00.000Z",
+                directoryDevice: String(status.dev),
+                directoryInode: String(status.ino),
+              })}\n`,
+              { mode: 0o600 },
+            );
+            ownerChanged = true;
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "CLAIM-CLEANUP-EIO" });
+    expect(cleanupFailed).toBe(true);
+
+    injectCleanupFailure = false;
+    const release = await acquireStateMutationLock(
+      directory,
+      file,
+      "internal reclaim claim cleanup fixture lock",
+      lockOptions({
+        pid: 70210,
+        token: () => lockToken("internal-claim-successor"),
+        syncDirectory,
+        processStatus: async () => "dead",
+      }),
+    );
+    expect((await lstat(lockPath)).isDirectory()).toBe(true);
+    await release();
+  });
+
   it("reclaims an old-boot owner even when wall clock moved backwards", async () => {
     const { directory, file } = await stateFile();
     await writeLockOwner(file, {
@@ -949,7 +1133,7 @@ describe("private conversation identity state", () => {
     await release();
   });
 
-  it("classifies exact Old HEAD Darwin proc-v1 owners across the proc-v2 upgrade", async () => {
+  it("keeps legacy Darwin process identities safe across the proc-v3 upgrade", async () => {
     if (process.platform !== "darwin") return;
     const probeState = await stateFile();
     const probeRelease = await acquireStateMutationLock(
@@ -959,7 +1143,7 @@ describe("private conversation identity state", () => {
       {
         attempts: 2,
         retryMs: 0,
-        token: () => lockToken("darwin-proc-v2-probe"),
+        token: () => lockToken("darwin-proc-v3-probe"),
       },
     );
     const currentOwner = JSON.parse(
@@ -970,7 +1154,7 @@ describe("private conversation identity state", () => {
     ) as { processIdentity: string };
     await probeRelease();
     const parts = currentOwner.processIdentity.split(":");
-    expect(parts.slice(0, 2)).toEqual(["proc-v2", "darwin"]);
+    expect(parts.slice(0, 2)).toEqual(["proc-v3", "darwin"]);
     const machine = parts[2]!;
     const boot = parts[3]!;
     const oldHeadIdentity = `proc-v1:darwin:${machine}:${boot}:legacy-start`;
@@ -1003,17 +1187,18 @@ describe("private conversation identity state", () => {
       token: lockToken("old-head-old-boot"),
       createdAt: "2027-08-30T11:59:00.000Z",
     });
-    const oldBootRelease = await acquireStateMutationLock(
-      oldBootState.directory,
-      oldBootState.file,
-      "Old HEAD old-boot Darwin owner",
-      {
-        attempts: 2,
-        retryMs: 0,
-        token: () => lockToken("old-head-old-boot-successor"),
-      },
-    );
-    await oldBootRelease();
+    await expect(
+      acquireStateMutationLock(
+        oldBootState.directory,
+        oldBootState.file,
+        "Old HEAD ambiguous-boot Darwin owner",
+        {
+          attempts: 1,
+          retryMs: 0,
+          token: () => lockToken("old-head-old-boot-successor"),
+        },
+      ),
+    ).rejects.toThrow(/busy/);
 
     const liveState = await stateFile();
     await writeLockOwner(liveState.file, {
@@ -1035,6 +1220,110 @@ describe("private conversation identity state", () => {
         },
       ),
     ).rejects.toThrow(/busy/);
+
+    const procV2State = await stateFile();
+    await writeLockOwner(procV2State.file, {
+      pid: process.pid,
+      processIdentity: [
+        "proc-v2",
+        "darwin",
+        machine,
+        otherBoot,
+        parts[4],
+        parts[5],
+        parts[6],
+      ].join(":"),
+      token: lockToken("proc-v2-live-witness"),
+      createdAt: "2026-08-30T11:59:00.000Z",
+    });
+    await expect(
+      acquireStateMutationLock(
+        procV2State.directory,
+        procV2State.file,
+        "proc-v2 live Darwin witness",
+        {
+          attempts: 1,
+          retryMs: 0,
+          staleGraceMs: 0,
+          token: () => lockToken("proc-v2-live-contender"),
+        },
+      ),
+    ).rejects.toThrow(/busy/);
+  });
+
+  it("derives the Darwin boot scope only from numeric timeval fields", () => {
+    expect(
+      parseDarwinBootTime(
+        "{ sec = 1788312825, usec = 494293 } Wed Sep  2 09:33:45 2026",
+      ),
+    ).toBe("1788312825:494293");
+    expect(
+      parseDarwinBootTime(
+        "{ sec = 1788312825, usec = 494293 } Wed Sep  2 01:33:45 2026",
+      ),
+    ).toBe("1788312825:494293");
+    expect(
+      parseDarwinBootTime("{ sec = 1788312825, usec = 1 } localized suffix"),
+    ).toBe("1788312825:000001");
+    expect(parseDarwinBootTime("unstructured boot time")).toBeUndefined();
+  });
+
+  it("probes a foreign Darwin witness even when it shares the current PID", async () => {
+    if (process.platform !== "darwin") return;
+    const probeState = await stateFile();
+    const probeRelease = await acquireStateMutationLock(
+      probeState.directory,
+      probeState.file,
+      "Darwin worker witness identity probe",
+      { attempts: 1, retryMs: 0 },
+    );
+    const currentOwner = JSON.parse(
+      await readFile(
+        join(`${probeState.file}.lock`, STATE_LOCK_OWNER_FILE),
+        "utf8",
+      ),
+    ) as { processIdentity: string };
+    await probeRelease();
+    const parts = currentOwner.processIdentity.split(":");
+    const token = randomBytes(32).toString("base64url");
+    const server = createServer((socket) => {
+      let input = "";
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk: string) => {
+        input += chunk;
+        const newline = input.indexOf("\n");
+        if (newline < 0) return;
+        const challenge = input.slice(0, newline);
+        const response = createHmac("sha256", token)
+          .update(challenge, "utf8")
+          .digest("base64url");
+        socket.end(`${response}\n`);
+      });
+    });
+    await new Promise<void>((resolveListening, rejectListening) => {
+      server.once("error", rejectListening);
+      server.listen({ host: "127.0.0.1", port: 0 }, resolveListening);
+    });
+    try {
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        throw new Error("fixture witness did not bind TCP");
+      }
+      const foreignWorkerIdentity = [
+        "proc-v3",
+        "darwin",
+        parts[2],
+        parts[3],
+        String(process.pid),
+        String(address.port),
+        token,
+      ].join(":");
+      await expect(
+        defaultProcessStatus(process.pid, foreignWorkerIdentity),
+      ).resolves.toBe("alive");
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(resolveClose));
+    }
   });
 
   it("retries release after its first namespace fsync failure and clears the tombstone", async () => {
@@ -1154,6 +1443,55 @@ describe("private conversation identity state", () => {
     );
     expect((await lstat(`${file}.lock`)).isDirectory()).toBe(true);
     await second();
+  });
+
+  it("recovers a tombstoned mutation orphan before generation residue collection", async () => {
+    const { directory, file } = await stateFile();
+    roots.push(`${directory.path}.lifecycle-v1`);
+    const parent = dirname(file);
+    let releaseStarted = false;
+    let failed = false;
+    const syncDirectory = async (path: string): Promise<void> => {
+      if (releaseStarted && !failed && path === parent) {
+        failed = true;
+        throw errorWithCode("EIO");
+      }
+    };
+    const options = lockOptions({ syncDirectory });
+    const release = await acquireStateMutationLock(
+      directory,
+      file,
+      "generation orphan ordering fixture lock",
+      options,
+    );
+
+    releaseStarted = true;
+    await expect(
+      releaseOrAbandonStateMutationLock(release),
+    ).rejects.toMatchObject({ code: "EIO" });
+    const tombstones = (await readdir(parent)).filter((entry) =>
+      entry.startsWith("state.json.lock.release-"),
+    );
+    expect(tombstones).toHaveLength(1);
+
+    const generation = await acquirePrivateStateGenerationLease(
+      directory,
+      "bridge-identity",
+      options,
+    );
+    expect(
+      (await readdir(parent)).filter((entry) =>
+        entry.startsWith("state.json.lock.release-"),
+      ),
+    ).toHaveLength(0);
+    const next = await acquireStateMutationLock(
+      directory,
+      file,
+      "generation orphan ordering fixture lock",
+      options,
+    );
+    await next();
+    await generation.release();
   });
 
   it("fails closed for duplicate-key lock owner metadata", async () => {
@@ -1525,3 +1863,5 @@ describe("syncDirectoryForDurability", () => {
     ).rejects.toThrow(/requires a supported native backend/);
   });
 });
+import { execFile } from "node:child_process";
+import { createHmac, randomBytes } from "node:crypto";

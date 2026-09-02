@@ -788,6 +788,44 @@ describe("BridgeInstallationStore", () => {
     expect((await lstat(installationFile)).mode & 0o777).toBe(0o600);
   });
 
+  it("preserves both installation load and mutation cleanup failures", async () => {
+    const stateDir = join(await root(), "aggregate-load-errors");
+    await mkdir(stateDir, { mode: 0o700 });
+    await writeFile(join(stateDir, BRIDGE_INSTALLATION_FILE), "{broken", {
+      mode: 0o600,
+    });
+    let cleanupFailed = false;
+    let failure: unknown;
+    try {
+      await BridgeInstallationStore.load({
+        stateDir,
+        lockOptions: {
+          beforeReleaseSnapshotRead: async (lockPath) => {
+            if (
+              !cleanupFailed &&
+              lockPath.endsWith(`${BRIDGE_INSTALLATION_FILE}.lock`)
+            ) {
+              cleanupFailed = true;
+              throw Object.assign(new Error("CLEANUP-EIO"), {
+                code: "CLEANUP-EIO",
+              });
+            }
+          },
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([
+      expect.objectContaining({ message: expect.stringMatching(/malformed/) }),
+      expect.objectContaining({ code: "CLEANUP-EIO" }),
+    ]);
+    await rm(join(stateDir, BRIDGE_INSTALLATION_FILE));
+    const recovered = await load(stateDir);
+    await close(recovered);
+  });
+
   it("fails closed for corrupt, symlinked, non-file, and oversized state", async () => {
     const malformedState = join(await root(), "malformed");
     await mkdir(malformedState, { mode: 0o700 });
@@ -896,7 +934,9 @@ describe("BridgeInstallationStore", () => {
           },
         },
       }),
-    ).rejects.toThrow(/directory changed after binding/);
+    ).rejects.toThrow(
+      /directory changed (?:after binding|while being created)/,
+    );
 
     expect(existsSync(join(stateDir, BRIDGE_INSTALLATION_FILE))).toBe(false);
     const reopened = await load(displaced);
