@@ -775,6 +775,11 @@ function statusKind(status) {
   return 'other';
 }
 
+function hasExecutableMode(status) {
+  if (process.platform === 'win32') return false;
+  return (status.mode & 0o111n) !== 0n;
+}
+
 async function pathIdentity(filename) {
   const before = await pathStatus(filename);
   if (before === undefined) return undefined;
@@ -789,12 +794,14 @@ async function pathIdentity(filename) {
     if (before.dev !== after.dev ||
         before.ino !== after.ino ||
         before.size !== after.size ||
+        hasExecutableMode(before) !== hasExecutableMode(after) ||
         BigInt(content.length) !== after.size ||
         !after.isFile()) {
       throw new Error(`artifact changed while its identity was recorded: ${filename}`);
     }
     identity.size = after.size;
     identity.digest = digestBytes(content);
+    identity.executable = hasExecutableMode(after);
   }
   return identity;
 }
@@ -805,7 +812,9 @@ function sameIdentity(left, right) {
     left.dev === right.dev &&
     left.ino === right.ino &&
     (left.kind !== 'file' || (
-      left.size === right.size && left.digest === right.digest
+      left.size === right.size &&
+      left.digest === right.digest &&
+      left.executable === right.executable
     ));
 }
 
@@ -820,6 +829,24 @@ async function stablePathIdentity(filename, binding, projectRoot) {
     {projectRoot},
     () => pathIdentity(filename),
   );
+}
+
+async function assertInstalledArtifacts(installed, projectRoot) {
+  const targetParentBindings = [
+    ...new Set(installed.map((record) => record.targetParentBinding)),
+  ];
+  await assertBoundDirectories(targetParentBindings, {projectRoot});
+  for (const record of installed) {
+    const current = await stablePathIdentity(
+      record.target,
+      record.targetParentBinding,
+      projectRoot,
+    );
+    if (!sameIdentity(current, record.identity) || current?.executable === true) {
+      throw new Error(`installed artifact changed before commit: ${record.target}`);
+    }
+  }
+  await assertBoundDirectories(targetParentBindings, {projectRoot});
 }
 
 async function rollbackTransaction({installed, backedUp, hooks, projectRoot}) {
@@ -1378,6 +1405,11 @@ export async function writeArtifactTargets(
       // a failure follows the ordinary rollback path before cleanup commits
       // the artifact set by deleting those backups.
       if (beforeCommit !== undefined) await beforeCommit();
+      // beforeCommit may perform asynchronous source verification while the
+      // installed targets are already visible. Rebind the successful result
+      // to the exact target objects and their retained parent directories
+      // before cleanup deletes the recoverable old artifact set.
+      await assertInstalledArtifacts(installed, realProjectRoot);
     } catch (error) {
       transactionFailure = error;
     }

@@ -22,7 +22,11 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { digestBytes, digestJson } from '../src/canonical.mjs';
-import { run } from '../src/cli.mjs';
+import {
+  executeVerifiedSnapshotCommand,
+  formatCliError,
+  run,
+} from '../src/cli.mjs';
 import { discoverDigestPreimages } from '../src/digest-preimages.mjs';
 import {
   GENERATED_FILES,
@@ -342,6 +346,47 @@ test('CLI final source verification runs inside the artifact commit boundary', a
   } finally {
     await rm(directory, {recursive: true, force: true});
   }
+});
+
+test('snapshot execution preserves recovery diagnostics when final verification also fails', async () => {
+  const transactionFailure = new Error(
+    'artifact transaction failed and automatic recovery stopped; ' +
+    'inspect last-known transaction locations under /transaction-root ' +
+    '(stage /transaction-root/stage; lock /transaction-root/lock): ' +
+    'recovery/cleanup failure: injected rollback failure',
+  );
+  const verificationFailure = new Error('generator source snapshot changed');
+  let verificationCalls = 0;
+
+  await assert.rejects(
+    executeVerifiedSnapshotCommand([], {
+      catalog: [],
+      runCommand: async (_argv, runtimeOptions) => {
+        try {
+          await runtimeOptions.beforeArtifactCommit();
+        } catch {
+          throw transactionFailure;
+        }
+      },
+      verifySnapshot: async () => {
+        verificationCalls += 1;
+        throw verificationFailure;
+      },
+    }),
+    (error) => {
+      assert.equal(error instanceof AggregateError, true);
+      assert.deepEqual(error.errors, [transactionFailure, verificationFailure]);
+      const rendered = formatCliError(error);
+      assert.match(rendered, /automatic recovery stopped/);
+      assert.match(rendered, /\/transaction-root/);
+      assert.match(rendered, /stage \/transaction-root\/stage/);
+      assert.match(rendered, /lock \/transaction-root\/lock/);
+      assert.match(rendered, /injected rollback failure/);
+      assert.match(rendered, /generator source snapshot changed/);
+      return true;
+    },
+  );
+  assert.equal(verificationCalls, 2);
 });
 
 test('applies SHA-256 schema format only to the exact named scalar', async () => {
@@ -1487,6 +1532,119 @@ test('final provenance failure rolls back before artifact transaction commit', a
         (name) => name === TRANSACTION_LOCK_NAME || name.startsWith(TRANSACTION_STAGE_PREFIX),
       ),
       [],
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('successful final provenance callback cannot commit a modified installed artifact', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-final-drift-'));
+  try {
+    const targets = new Map(GENERATED_FILES.map((filename) => [
+      filename,
+      path.join(directory, filename),
+    ]));
+    const previous = fixtureArtifacts('final-drift-before');
+    await writeArtifactTargets(targets, previous, {projectRoot: directory});
+
+    await assert.rejects(
+      writeArtifactTargets(targets, fixtureArtifacts('final-drift-after'), {
+        projectRoot: directory,
+        beforeCommit: async () => {
+          await writeFile(targets.get('schema.json'), 'external final drift', 'utf8');
+        },
+      }),
+      /automatic recovery stopped.*installed artifact changed before commit.*externally replaced/,
+    );
+
+    assert.equal(await readFile(targets.get('schema.json'), 'utf8'), 'external final drift');
+    const entries = await readdir(await realpath(directory));
+    assert.equal(entries.includes(TRANSACTION_LOCK_NAME), true);
+    const stage = entries.find((name) => name.startsWith(TRANSACTION_STAGE_PREFIX));
+    assert.ok(stage);
+    assert.equal(
+      await readFile(path.join(directory, stage, 'backup/schema.json'), 'utf8'),
+      previous.get('schema.json'),
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('successful final provenance callback cannot commit executable artifact drift', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-final-mode-'));
+  try {
+    const targets = new Map(GENERATED_FILES.map((filename) => [
+      filename,
+      path.join(directory, filename),
+    ]));
+    const previous = fixtureArtifacts('final-mode-before');
+    await writeArtifactTargets(targets, previous, {projectRoot: directory});
+
+    await assert.rejects(
+      writeArtifactTargets(targets, fixtureArtifacts('final-mode-after'), {
+        projectRoot: directory,
+        beforeCommit: async () => {
+          await chmod(targets.get('contract.ts'), 0o755);
+        },
+      }),
+      /automatic recovery stopped.*installed artifact changed before commit.*externally replaced/,
+    );
+
+    const entries = await readdir(await realpath(directory));
+    assert.equal(entries.includes(TRANSACTION_LOCK_NAME), true);
+    const stage = entries.find((name) => name.startsWith(TRANSACTION_STAGE_PREFIX));
+    assert.ok(stage);
+    assert.equal(
+      await readFile(path.join(directory, stage, 'backup/contract.ts'), 'utf8'),
+      previous.get('contract.ts'),
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('successful final provenance callback cannot commit through a replaced target parent', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-final-parent-'));
+  try {
+    const project = path.join(directory, 'project');
+    const outside = path.join(directory, 'outside');
+    const targets = new Map([
+      ['schema.json', path.join(project, 'docs/generated/schema.json')],
+      ['profile-manifest.json', path.join(project, 'docs/generated/profile-manifest.json')],
+      ['contract.ts', path.join(project, 'bridge/generated/contract.ts')],
+      ['contract.dart', path.join(project, 'mobile/generated/contract.dart')],
+    ]);
+    const previous = fixtureArtifacts('final-parent-before');
+    await mkdir(project);
+    await mkdir(outside);
+    await writeFile(path.join(outside, 'contract.ts'), 'outside final parent', 'utf8');
+    await writeArtifactTargets(targets, previous, {projectRoot: project});
+
+    const targetParent = path.dirname(targets.get('contract.ts'));
+    const heldParent = path.join(project, 'bridge/generated-held');
+    await assert.rejects(
+      writeArtifactTargets(targets, fixtureArtifacts('final-parent-after'), {
+        projectRoot: project,
+        beforeCommit: async () => {
+          await rename(targetParent, heldParent);
+          await symlink(outside, targetParent);
+        },
+      }),
+      /automatic recovery stopped.*bound directory was externally replaced/,
+    );
+
+    assert.equal(await readFile(path.join(outside, 'contract.ts'), 'utf8'), 'outside final parent');
+    const entries = await readdir(project);
+    assert.equal(entries.includes(TRANSACTION_LOCK_NAME), true);
+    const stage = entries.find((name) => name.startsWith(TRANSACTION_STAGE_PREFIX));
+    assert.ok(stage);
+    assert.equal(
+      await readFile(path.join(project, stage, 'backup/contract.ts'), 'utf8'),
+      previous.get('contract.ts'),
     );
   } finally {
     await rm(directory, {recursive: true, force: true});

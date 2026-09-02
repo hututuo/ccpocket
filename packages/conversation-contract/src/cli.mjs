@@ -554,6 +554,60 @@ function spawnSnapshotCli(snapshot, argv) {
   });
 }
 
+export function formatCliError(error) {
+  const messages = [];
+  const seen = new Set();
+  function visit(current) {
+    if (current === null || typeof current !== 'object' || seen.has(current)) return;
+    seen.add(current);
+    if (typeof current.message === 'string' && current.message.length > 0) {
+      messages.push(current.message);
+    }
+    if (current instanceof AggregateError) {
+      for (const nested of current.errors) visit(nested);
+    }
+    visit(current.cause);
+  }
+  visit(error);
+  return [...new Set(messages)].join('\ncaused by: ');
+}
+
+export async function executeVerifiedSnapshotCommand(
+  argv,
+  {catalog, runCommand = run, verifySnapshot},
+) {
+  let verifiedBeforeCommit = false;
+  let result;
+  let runFailure;
+  try {
+    result = await runCommand(argv, {
+      generatorExecutionBinding: 'IMMUTABLE_SOURCE_SNAPSHOT_V1',
+      generatorSourceFiles: catalog,
+      beforeArtifactCommit: async () => {
+        await verifySnapshot();
+        verifiedBeforeCommit = true;
+      },
+    });
+  } catch (error) {
+    runFailure = error;
+  }
+  if (result?.command !== 'generate' || !verifiedBeforeCommit) {
+    try {
+      await verifySnapshot();
+    } catch (verificationFailure) {
+      if (runFailure !== undefined) {
+        throw new AggregateError(
+          [runFailure, verificationFailure],
+          'generator execution and final source snapshot verification both failed',
+        );
+      }
+      throw verificationFailure;
+    }
+  }
+  if (runFailure !== undefined) throw runFailure;
+  return result;
+}
+
 async function runSnapshotChild(argv, encoded) {
   let payload;
   try {
@@ -581,31 +635,10 @@ async function runSnapshotChild(argv, encoded) {
     payload.catalog,
     {requireReadOnly: true},
   );
-  let verifiedBeforeCommit = false;
-  let result;
-  let runFailure;
-  try {
-    result = await run(argv, {
-      generatorExecutionBinding: 'IMMUTABLE_SOURCE_SNAPSHOT_V1',
-      generatorSourceFiles: payload.catalog,
-      beforeArtifactCommit: async () => {
-        await verifySnapshot();
-        verifiedBeforeCommit = true;
-      },
-    });
-  } catch (error) {
-    runFailure = error;
-  }
-  if (result?.command !== 'generate' || !verifiedBeforeCommit) {
-    try {
-      await verifySnapshot();
-    } catch (verificationFailure) {
-      throw new Error(verificationFailure.message, {
-        cause: runFailure ?? verificationFailure,
-      });
-    }
-  }
-  if (runFailure !== undefined) throw runFailure;
+  const result = await executeVerifiedSnapshotCommand(argv, {
+    catalog: payload.catalog,
+    verifySnapshot,
+  });
   process.stdout.write(`${result.command}: ${result.profileId}\n`);
 }
 
@@ -629,7 +662,7 @@ async function main(argv) {
 if (process.env[SOURCE_SNAPSHOT_ENV] !== undefined ||
     fileURLToPath(import.meta.url) === path.resolve(process.argv[1] ?? '')) {
   main(process.argv.slice(2)).catch((error) => {
-    process.stderr.write(`conversation-contract: ${error.message}\n`);
+    process.stderr.write(`conversation-contract: ${formatCliError(error)}\n`);
     process.exitCode = 1;
   });
 }
