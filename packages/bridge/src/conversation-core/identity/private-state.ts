@@ -25,7 +25,7 @@ const DEFAULT_LOCK_ATTEMPTS = 400;
 const DEFAULT_LOCK_RETRY_MS = 5;
 const DEFAULT_STALE_LOCK_GRACE_MS = 1_000;
 const MAX_LOCK_OWNER_BYTES = 4 * 1024;
-const LOCK_OWNER_VERSION = 2 as const;
+const LOCK_OWNER_VERSION = 3 as const;
 const LOCK_DIRECTORY_OPEN_FLAGS =
   constants.O_RDONLY |
   (constants.O_DIRECTORY ?? 0) |
@@ -40,7 +40,8 @@ const PRIVATE_STATE_RESIDUE_PATTERNS = [
   /^.+\.gc-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
 ] as const;
 const execFileAsync = promisify(execFile);
-export const STATE_LOCK_OWNER_FILE = "owner-v2.json" as const;
+export const STATE_LOCK_OWNER_FILE = "owner-v3.json" as const;
+const PREVIOUS_STATE_LOCK_OWNER_FILE = "owner-v2.json" as const;
 export const LEGACY_STATE_LOCK_OWNER_FILE = "owner-v1.json" as const;
 export const STATE_LOCK_RECLAIM_DIRECTORY = "reclaim-v1" as const;
 
@@ -50,6 +51,8 @@ interface StateLockOwner {
   processIdentity: string;
   token: string;
   createdAt: string;
+  directoryDevice?: string;
+  directoryInode?: string;
 }
 
 interface LockSnapshot {
@@ -113,6 +116,8 @@ export interface StateMutationLockOptions {
   syncDirectory?: DirectorySync;
   beforeInstalledSnapshotRead?: (lockPath: string) => Promise<void>;
   beforeLockOwnerRead?: (lockPath: string) => Promise<void>;
+  afterLockOwnerRead?: (lockPath: string) => Promise<void>;
+  beforeReleaseSnapshotRead?: (lockPath: string) => Promise<void>;
 }
 
 export type PrivateStateGenerationHolder =
@@ -120,8 +125,33 @@ export type PrivateStateGenerationHolder =
 
 export interface PrivateStateGenerationLease {
   readonly writerLeaseFile: string;
+  readonly assertCurrent: () => Promise<void>;
   readonly release: () => Promise<void>;
   readonly abandon: () => Promise<void>;
+}
+
+export interface StateMutationLockLease {
+  (): Promise<void>;
+  readonly assertCurrent: () => Promise<void>;
+  readonly abandon: () => Promise<void>;
+}
+
+export async function releaseOrAbandonStateMutationLock(
+  lease: StateMutationLockLease,
+): Promise<void> {
+  try {
+    await lease();
+  } catch (releaseError) {
+    try {
+      await lease.abandon();
+    } catch (recoveryError) {
+      throw new AggregateError(
+        [releaseError, recoveryError],
+        "Conversation identity lock release and recovery registration both failed",
+      );
+    }
+    throw releaseError;
+  }
 }
 
 export interface DirectorySyncHandle {
@@ -751,12 +781,49 @@ async function pause(milliseconds: number): Promise<void> {
   await new Promise((resolvePause) => setTimeout(resolvePause, milliseconds));
 }
 
+async function ensureDirectoryNamespaceDurable(
+  absolutePath: string,
+  syncDirectory: DirectorySync,
+): Promise<void> {
+  const missing: string[] = [];
+  let cursor = absolutePath;
+  while (true) {
+    try {
+      const status = await lstat(cursor);
+      if (status.isSymbolicLink() || !status.isDirectory()) {
+        throw new Error(
+          "Conversation identity state path component is not a real directory",
+        );
+      }
+      break;
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+      missing.push(cursor);
+      const parent = dirname(cursor);
+      if (parent === cursor) throw error;
+      cursor = parent;
+    }
+  }
+
+  await mkdir(absolutePath, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  for (const created of missing.reverse()) {
+    const status = await lstat(created);
+    if (status.isSymbolicLink() || !status.isDirectory()) {
+      throw new Error(
+        "Conversation identity state directory changed while being created",
+      );
+    }
+    await syncDirectory(dirname(created));
+  }
+}
+
 export async function preparePrivateStateDirectory(
   path: string,
+  syncDirectory: DirectorySync = syncDirectoryForDurability,
 ): Promise<PrivateStateDirectoryBinding> {
   assertPrivateStatePlatformSupported(process.platform);
   const absolutePath = resolve(path);
-  await mkdir(absolutePath, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  await ensureDirectoryNamespaceDurable(absolutePath, syncDirectory);
   const before = await lstat(absolutePath);
   if (before.isSymbolicLink() || !before.isDirectory()) {
     throw new Error(
@@ -1039,8 +1106,19 @@ async function syncParentDirectory(
   await syncDirectory(dirname(path));
 }
 
-function serializeLockOwner(owner: StateLockOwner): string {
-  return `${JSON.stringify(owner)}\n`;
+function serializeLockOwner(
+  owner: StateLockOwner,
+  directoryIdentity: LockDirectoryIdentity,
+): string {
+  return `${JSON.stringify({
+    version: LOCK_OWNER_VERSION,
+    pid: owner.pid,
+    processIdentity: owner.processIdentity,
+    token: owner.token,
+    createdAt: owner.createdAt,
+    directoryDevice: String(directoryIdentity.device),
+    directoryInode: String(directoryIdentity.inode),
+  })}\n`;
 }
 
 function parseLockOwner(contents: string): StateLockOwner | undefined {
@@ -1058,6 +1136,8 @@ function parseLockOwner(contents: string): StateLockOwner | undefined {
       "processIdentity",
       "token",
       "createdAt",
+      "directoryDevice",
+      "directoryInode",
     ]) ||
     parsed.version !== LOCK_OWNER_VERSION ||
     typeof parsed.pid !== "number" ||
@@ -1068,7 +1148,11 @@ function parseLockOwner(contents: string): StateLockOwner | undefined {
     typeof parsed.token !== "string" ||
     !LOCK_TOKEN_PATTERN.test(parsed.token) ||
     typeof parsed.createdAt !== "string" ||
-    !isCanonicalTimestamp(parsed.createdAt)
+    !isCanonicalTimestamp(parsed.createdAt) ||
+    typeof parsed.directoryDevice !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/.test(parsed.directoryDevice) ||
+    typeof parsed.directoryInode !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/.test(parsed.directoryInode)
   ) {
     return undefined;
   }
@@ -1078,6 +1162,8 @@ function parseLockOwner(contents: string): StateLockOwner | undefined {
     processIdentity: parsed.processIdentity,
     token: parsed.token,
     createdAt: parsed.createdAt,
+    directoryDevice: parsed.directoryDevice,
+    directoryInode: parsed.directoryInode,
   };
 }
 
@@ -1112,19 +1198,11 @@ function parseLegacyLockOwner(
   };
 }
 
-function isLegacyProcessDefinitelyDead(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ESRCH";
-  }
-}
-
 async function readLockSnapshot(
   directory: PrivateStateDirectoryBinding,
   lockPath: string,
   beforeOwnerRead?: (lockPath: string) => Promise<void>,
+  afterOwnerRead?: (lockPath: string) => Promise<void>,
 ): Promise<LockSnapshot | undefined> {
   assertPathWithinBinding(directory, lockPath);
   await assertPrivateStateDirectory(directory);
@@ -1177,6 +1255,17 @@ async function readLockSnapshot(
       "Conversation identity lock owner",
     );
     if (ownerContents === undefined) {
+      const previousOwnerContents = await readBoundedPrivateFile(
+        directory,
+        join(lockPath, PREVIOUS_STATE_LOCK_OWNER_FILE),
+        MAX_LOCK_OWNER_BYTES,
+        "Conversation identity previous lock owner",
+      );
+      if (previousOwnerContents !== undefined) {
+        throw new Error(
+          "Conversation identity previous lock owner requires explicit recovery",
+        );
+      }
       ownerContents = await readBoundedPrivateFile(
         directory,
         join(lockPath, LEGACY_STATE_LOCK_OWNER_FILE),
@@ -1201,6 +1290,19 @@ async function readLockSnapshot(
       if (!owner)
         throw new Error("Conversation identity lock owner is invalid");
       result = { owner, ...expectedIdentity };
+    }
+    await afterOwnerRead?.(lockPath);
+    // Node has no portable openat-style child open. Bind the persisted owner
+    // to the directory generation instead: the held directory handle keeps
+    // the original inode alive, so an independently created B in an A-B-A
+    // pathname swap cannot acquire the same dev+ino while this read runs.
+    if (
+      result.owner.directoryDevice !== String(expectedIdentity.device) ||
+      result.owner.directoryInode !== String(expectedIdentity.inode)
+    ) {
+      throw new Error(
+        "Conversation identity lock owner belongs to another directory generation",
+      );
     }
   } catch (error) {
     operationFailure = error;
@@ -1238,231 +1340,25 @@ async function readLockSnapshot(
 }
 
 async function tryReclaimLegacyDeadLock(
-  directory: PrivateStateDirectoryBinding,
-  lockPath: string,
-  legacy: LegacyStateLockOwnerError,
-  claimant: StateLockOwner,
-  syncDirectory: DirectorySync,
-  options: Required<
+  _directory: PrivateStateDirectoryBinding,
+  _lockPath: string,
+  _legacy: LegacyStateLockOwnerError,
+  _claimant: StateLockOwner,
+  _syncDirectory: DirectorySync,
+  _options: Required<
     Pick<StateMutationLockOptions, "now" | "processStatus" | "staleGraceMs">
   > &
     Pick<
       StateMutationLockOptions,
-      "beforeInstalledSnapshotRead" | "beforeLockOwnerRead"
+      | "beforeInstalledSnapshotRead"
+      | "beforeLockOwnerRead"
+      | "afterLockOwnerRead"
     >,
 ): Promise<boolean> {
-  if (
-    options.now() - Date.parse(legacy.owner.createdAt) <
-    options.staleGraceMs
-  ) {
-    return false;
-  }
-  if (!isLegacyProcessDefinitelyDead(legacy.owner.pid)) return false;
-  try {
-    await readLockSnapshot(directory, lockPath, options.beforeLockOwnerRead);
-    return false;
-  } catch (error) {
-    if (
-      !(error instanceof LegacyStateLockOwnerError) ||
-      error.owner.pid !== legacy.owner.pid ||
-      error.owner.token !== legacy.owner.token ||
-      error.owner.createdAt !== legacy.owner.createdAt ||
-      !sameLockDirectoryIdentity(
-        legacy.directoryIdentity,
-        error.directoryIdentity,
-      )
-    ) {
-      return false;
-    }
-  }
-  if (
-    !(await tryAcquireReclaimClaim(
-      directory,
-      lockPath,
-      claimant,
-      syncDirectory,
-      options,
-    ))
-  ) {
-    return false;
-  }
-
-  const claimPath = join(lockPath, STATE_LOCK_RECLAIM_DIRECTORY);
-  let claimMovedWithLock = false;
-  let claimSnapshot: LockSnapshot | undefined;
-  try {
-    let currentLegacy: LegacyStateLockOwnerError | undefined;
-    try {
-      await readLockSnapshot(directory, lockPath);
-    } catch (error) {
-      if (error instanceof LegacyStateLockOwnerError) currentLegacy = error;
-    }
-    claimSnapshot = await readLockSnapshot(directory, claimPath);
-    if (
-      currentLegacy === undefined ||
-      currentLegacy.owner.pid !== legacy.owner.pid ||
-      currentLegacy.owner.token !== legacy.owner.token ||
-      currentLegacy.owner.createdAt !== legacy.owner.createdAt ||
-      !sameLockDirectoryIdentity(
-        legacy.directoryIdentity,
-        currentLegacy.directoryIdentity,
-      ) ||
-      !isLegacyProcessDefinitelyDead(currentLegacy.owner.pid) ||
-      claimSnapshot === undefined ||
-      !snapshotsMatchOwner(claimSnapshot, claimant)
-    ) {
-      return false;
-    }
-
-    const tombstone = `${lockPath}.legacy-stale-${claimant.token}-${randomUUID()}`;
-    try {
-      await rename(lockPath, tombstone);
-      claimMovedWithLock = true;
-    } catch (error) {
-      if (isMissing(error)) return false;
-      throw error;
-    }
-    try {
-      await syncParentDirectory(lockPath, syncDirectory);
-    } catch (error) {
-      if (
-        await restoreLegacyTombstone(
-          directory,
-          tombstone,
-          lockPath,
-          legacy,
-          syncDirectory,
-        ).catch(() => false)
-      ) {
-        claimMovedWithLock = false;
-      }
-      throw error;
-    }
-
-    let movedLegacy: LegacyStateLockOwnerError | undefined;
-    try {
-      await readLockSnapshot(directory, tombstone);
-    } catch (error) {
-      if (error instanceof LegacyStateLockOwnerError) movedLegacy = error;
-    }
-    const movedClaim = await readLockSnapshot(
-      directory,
-      join(tombstone, STATE_LOCK_RECLAIM_DIRECTORY),
-    ).catch(() => undefined);
-    if (
-      movedLegacy === undefined ||
-      movedLegacy.owner.pid !== legacy.owner.pid ||
-      movedLegacy.owner.token !== legacy.owner.token ||
-      movedLegacy.owner.createdAt !== legacy.owner.createdAt ||
-      !sameLockDirectoryIdentity(
-        legacy.directoryIdentity,
-        movedLegacy.directoryIdentity,
-      ) ||
-      movedClaim === undefined ||
-      claimSnapshot === undefined ||
-      !snapshotsMatch(claimSnapshot, movedClaim)
-    ) {
-      if (
-        await restoreLegacyTombstone(
-          directory,
-          tombstone,
-          lockPath,
-          legacy,
-          syncDirectory,
-        )
-      ) {
-        claimMovedWithLock = false;
-      }
-      return false;
-    }
-    await rm(tombstone, { recursive: true, force: true });
-    await syncParentDirectory(tombstone, syncDirectory);
-    return true;
-  } finally {
-    if (
-      !claimMovedWithLock &&
-      (await pathExists(claimPath).catch(() => false))
-    ) {
-      await releaseOwnedLock(
-        directory,
-        claimPath,
-        claimant,
-        claimSnapshot,
-        syncDirectory,
-      ).catch(() => undefined);
-    }
-  }
-}
-
-async function restoreLegacyTombstone(
-  directory: PrivateStateDirectoryBinding,
-  tombstone: string,
-  lockPath: string,
-  expected: LegacyStateLockOwnerError,
-  syncDirectory: DirectorySync,
-): Promise<boolean> {
-  let restoredToCanonical = false;
-  let observed: LegacyStateLockOwnerError | undefined;
-  try {
-    await readLockSnapshot(directory, tombstone);
-  } catch (error) {
-    if (error instanceof LegacyStateLockOwnerError) observed = error;
-  }
-  if (
-    observed === undefined ||
-    observed.owner.pid !== expected.owner.pid ||
-    observed.owner.token !== expected.owner.token ||
-    observed.owner.createdAt !== expected.owner.createdAt ||
-    !sameLockDirectoryIdentity(
-      expected.directoryIdentity,
-      observed.directoryIdentity,
-    ) ||
-    (await pathExists(lockPath))
-  ) {
-    return false;
-  }
-  try {
-    await rename(tombstone, lockPath);
-    restoredToCanonical = true;
-    await syncParentDirectory(lockPath, syncDirectory);
-    try {
-      await readLockSnapshot(directory, lockPath);
-    } catch (error) {
-      if (
-        error instanceof LegacyStateLockOwnerError &&
-        error.owner.pid === expected.owner.pid &&
-        error.owner.token === expected.owner.token &&
-        error.owner.createdAt === expected.owner.createdAt &&
-        sameLockDirectoryIdentity(
-          expected.directoryIdentity,
-          error.directoryIdentity,
-        )
-      ) {
-        return true;
-      }
-    }
-    if (restoredToCanonical) {
-      await quarantineLockDirectory(
-        directory,
-        lockPath,
-        expected.directoryIdentity,
-        "changed-restore",
-        syncDirectory,
-      );
-    }
-    return false;
-  } catch {
-    if (restoredToCanonical) {
-      await quarantineLockDirectory(
-        directory,
-        lockPath,
-        expected.directoryIdentity,
-        "changed-restore",
-        syncDirectory,
-      ).catch(() => false);
-    }
-    return false;
-  }
+  // Version-one owners have no machine, boot, namespace, or incarnation
+  // evidence. Local ESRCH is therefore insufficient proof of death when the
+  // state directory may be reused across hosts or PID namespaces.
+  return false;
 }
 
 async function readLockDirectoryIdentity(
@@ -1505,7 +1401,9 @@ function snapshotsMatch(left: LockSnapshot, right: LockSnapshot): boolean {
     left.owner.pid === right.owner.pid &&
     left.owner.processIdentity === right.owner.processIdentity &&
     left.owner.token === right.owner.token &&
-    left.owner.createdAt === right.owner.createdAt
+    left.owner.createdAt === right.owner.createdAt &&
+    left.owner.directoryDevice === right.owner.directoryDevice &&
+    left.owner.directoryInode === right.owner.directoryInode
   );
 }
 
@@ -1588,10 +1486,18 @@ async function tryInstallPreparedLock(
   try {
     await mkdir(candidate, { mode: PRIVATE_DIRECTORY_MODE });
     candidateExists = true;
+    const candidateStatus = await lstat(candidate);
+    if (candidateStatus.isSymbolicLink() || !candidateStatus.isDirectory()) {
+      throw new Error("Conversation identity lock candidate is invalid");
+    }
+    const candidateIdentity = {
+      device: candidateStatus.dev,
+      inode: candidateStatus.ino,
+    };
     await atomicPrivateWrite(
       directory,
       join(candidate, STATE_LOCK_OWNER_FILE),
-      serializeLockOwner(owner),
+      serializeLockOwner(owner, candidateIdentity),
       MAX_LOCK_OWNER_BYTES,
       "Conversation identity lock owner",
       { syncDirectory, createOnly: true },
@@ -1705,7 +1611,9 @@ async function isStaleDeadSnapshot(
   > &
     Pick<
       StateMutationLockOptions,
-      "beforeInstalledSnapshotRead" | "beforeLockOwnerRead"
+      | "beforeInstalledSnapshotRead"
+      | "beforeLockOwnerRead"
+      | "afterLockOwnerRead"
     >,
 ): Promise<boolean> {
   const age = options.now() - Date.parse(snapshot.owner.createdAt);
@@ -1729,7 +1637,9 @@ async function tryReclaimUnclaimedDeadDirectory(
   > &
     Pick<
       StateMutationLockOptions,
-      "beforeInstalledSnapshotRead" | "beforeLockOwnerRead"
+      | "beforeInstalledSnapshotRead"
+      | "beforeLockOwnerRead"
+      | "afterLockOwnerRead"
     >,
 ): Promise<boolean> {
   let snapshot: LockSnapshot | undefined;
@@ -1738,6 +1648,7 @@ async function tryReclaimUnclaimedDeadDirectory(
       directory,
       lockPath,
       options.beforeLockOwnerRead,
+      options.afterLockOwnerRead,
     );
   } catch (error) {
     if (error instanceof LegacyStateLockOwnerError) {
@@ -1813,7 +1724,9 @@ async function tryAcquireReclaimClaim(
   > &
     Pick<
       StateMutationLockOptions,
-      "beforeInstalledSnapshotRead" | "beforeLockOwnerRead"
+      | "beforeInstalledSnapshotRead"
+      | "beforeLockOwnerRead"
+      | "afterLockOwnerRead"
     >,
 ): Promise<boolean> {
   const claimPath = join(lockPath, STATE_LOCK_RECLAIM_DIRECTORY);
@@ -1864,7 +1777,9 @@ async function tryReclaimDeadLock(
   > &
     Pick<
       StateMutationLockOptions,
-      "beforeInstalledSnapshotRead" | "beforeLockOwnerRead"
+      | "beforeInstalledSnapshotRead"
+      | "beforeLockOwnerRead"
+      | "afterLockOwnerRead"
     >,
 ): Promise<boolean> {
   let snapshot: LockSnapshot | undefined;
@@ -1873,6 +1788,7 @@ async function tryReclaimDeadLock(
       directory,
       lockPath,
       options.beforeLockOwnerRead,
+      options.afterLockOwnerRead,
     );
   } catch (error) {
     if (error instanceof LegacyStateLockOwnerError) {
@@ -1909,6 +1825,7 @@ async function tryReclaimDeadLock(
       directory,
       lockPath,
       options.beforeLockOwnerRead,
+      options.afterLockOwnerRead,
     );
     const claim = await readLockSnapshot(directory, claimPath);
     claimSnapshot = claim;
@@ -2028,6 +1945,7 @@ async function releaseOwnedLock(
   expectedSnapshot: LockSnapshot | undefined,
   syncDirectory: DirectorySync,
   progress: LockReleaseProgress = { phase: "owned" },
+  beforeReleaseSnapshotRead?: (lockPath: string) => Promise<void>,
 ): Promise<void> {
   await assertPrivateStateDirectory(directory);
   if (progress.phase === "removed-awaiting-sync") {
@@ -2058,6 +1976,7 @@ async function releaseOwnedLock(
     return;
   }
 
+  await beforeReleaseSnapshotRead?.(lockPath);
   const snapshot = await readLockSnapshot(directory, lockPath);
   if (
     !snapshot ||
@@ -2100,17 +2019,28 @@ function snapshotsMatchOwner(
   );
 }
 
+const orphanedMutationLockReleases = new Map<string, StateMutationLockLease>();
+
+function mutationRecoveryKey(
+  directory: PrivateStateDirectoryBinding,
+  lockPath: string,
+): string {
+  return `${directory.device}:${directory.inode}:${lockPath}`;
+}
+
 function createLockRelease(
   directory: PrivateStateDirectoryBinding,
   lockPath: string,
   owner: StateLockOwner,
   expectedSnapshot: LockSnapshot,
   syncDirectory: DirectorySync,
-): () => Promise<void> {
+  beforeReleaseSnapshotRead?: (lockPath: string) => Promise<void>,
+): StateMutationLockLease {
+  const recoveryKey = mutationRecoveryKey(directory, lockPath);
   let released = false;
   let releaseAttempt: Promise<void> | undefined;
   const progress: LockReleaseProgress = { phase: "owned" };
-  return () => {
+  const release = (() => {
     if (released) return Promise.resolve();
     if (releaseAttempt) return releaseAttempt;
     const currentAttempt = releaseOwnedLock(
@@ -2120,8 +2050,12 @@ function createLockRelease(
       expectedSnapshot,
       syncDirectory,
       progress,
+      beforeReleaseSnapshotRead,
     ).then(() => {
       released = true;
+      if (orphanedMutationLockReleases.get(recoveryKey) === release) {
+        orphanedMutationLockReleases.delete(recoveryKey);
+      }
     });
     const trackedAttempt = currentAttempt.catch((error: unknown) => {
       if (releaseAttempt === trackedAttempt) releaseAttempt = undefined;
@@ -2129,7 +2063,40 @@ function createLockRelease(
     });
     releaseAttempt = trackedAttempt;
     return trackedAttempt;
-  };
+  }) as StateMutationLockLease;
+  Object.defineProperties(release, {
+    assertCurrent: {
+      value: async (): Promise<void> => {
+        if (released || progress.phase !== "owned") {
+          throw new Error("Conversation identity lock is no longer current");
+        }
+        await assertPrivateStateDirectory(directory);
+        const snapshot = await readLockSnapshot(directory, lockPath);
+        if (
+          !snapshot ||
+          !snapshotsMatchOwner(snapshot, owner) ||
+          !snapshotsMatch(expectedSnapshot, snapshot)
+        ) {
+          throw new Error(
+            "Conversation identity lock ownership changed after acquisition",
+          );
+        }
+      },
+    },
+    abandon: {
+      value: async (): Promise<void> => {
+        if (released) return;
+        const existing = orphanedMutationLockReleases.get(recoveryKey);
+        if (existing !== undefined && existing !== release) {
+          throw new Error(
+            "Conversation identity orphan lock recovery ownership changed",
+          );
+        }
+        orphanedMutationLockReleases.set(recoveryKey, release);
+      },
+    },
+  });
+  return release;
 }
 
 export async function acquireStateMutationLock(
@@ -2137,10 +2104,18 @@ export async function acquireStateMutationLock(
   stateFile: string,
   description: string,
   options: StateMutationLockOptions = {},
-): Promise<() => Promise<void>> {
+): Promise<StateMutationLockLease> {
   assertPathWithinBinding(directory, stateFile);
   await assertPrivateStateDirectory(directory);
   const lockPath = `${stateFile}.lock`;
+  const recoveryKey = mutationRecoveryKey(directory, lockPath);
+  const orphanedRelease = orphanedMutationLockReleases.get(recoveryKey);
+  if (orphanedRelease !== undefined) {
+    await orphanedRelease();
+    if (orphanedMutationLockReleases.get(recoveryKey) === orphanedRelease) {
+      orphanedMutationLockReleases.delete(recoveryKey);
+    }
+  }
   const syncDirectory = options.syncDirectory ?? syncDirectoryForDurability;
   const processIdentityResolver =
     options.processIdentity ?? defaultProcessIdentity;
@@ -2187,6 +2162,7 @@ export async function acquireStateMutationLock(
     staleGraceMs: options.staleGraceMs ?? DEFAULT_STALE_LOCK_GRACE_MS,
     beforeInstalledSnapshotRead: options.beforeInstalledSnapshotRead,
     beforeLockOwnerRead: options.beforeLockOwnerRead,
+    afterLockOwnerRead: options.afterLockOwnerRead,
   };
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -2206,6 +2182,7 @@ export async function acquireStateMutationLock(
           owner,
           installed,
           syncDirectory,
+          options.beforeReleaseSnapshotRead,
         );
       }
     }
@@ -2231,6 +2208,7 @@ export async function acquireStateMutationLock(
           owner,
           installed,
           syncDirectory,
+          options.beforeReleaseSnapshotRead,
         );
       }
     }
@@ -2246,7 +2224,7 @@ export function acquireStateWriterLease(
   stateFile: string,
   description: string,
   options: StateMutationLockOptions = {},
-): Promise<() => Promise<void>> {
+): Promise<StateMutationLockLease> {
   return acquireStateMutationLock(
     directory,
     `${stateFile}${STATE_WRITER_LEASE_SUFFIX}`,
@@ -2256,10 +2234,12 @@ export function acquireStateWriterLease(
 }
 
 interface SharedGenerationLease {
+  state: "active" | "release-pending-retry" | "closed";
   readonly directoryDevice: number;
   readonly directoryInode: number;
+  readonly lifecycle: PrivateStateDirectoryBinding;
   readonly writerLeaseFile: string;
-  readonly releaseWriterLease: () => Promise<void>;
+  readonly releaseWriterLease: StateMutationLockLease;
   readonly holders: Map<
     string,
     { kind: PrivateStateGenerationHolder; state: "active" | "orphaned" }
@@ -2268,6 +2248,19 @@ interface SharedGenerationLease {
 
 const sharedGenerationLeases = new Map<string, SharedGenerationLease>();
 const sharedGenerationOperationGates = new Map<string, Promise<void>>();
+
+async function finishSharedGenerationRelease(
+  lifecyclePath: string,
+  shared: SharedGenerationLease,
+): Promise<void> {
+  if (shared.state === "closed") return;
+  shared.state = "release-pending-retry";
+  await shared.releaseWriterLease();
+  shared.state = "closed";
+  if (sharedGenerationLeases.get(lifecyclePath) === shared) {
+    sharedGenerationLeases.delete(lifecyclePath);
+  }
+}
 
 async function withSharedGenerationOperation<T>(
   lifecyclePath: string,
@@ -2307,19 +2300,27 @@ export async function acquirePrivateStateGenerationLease(
     let shared = sharedGenerationLeases.get(lifecyclePath);
     if (
       shared !== undefined &&
-      shared.holders.size > 0 &&
-      [...shared.holders.values()].every(
-        (record) => record.state === "orphaned",
-      )
+      (shared.state === "release-pending-retry" ||
+        (shared.holders.size > 0 &&
+          [...shared.holders.values()].every(
+            (record) => record.state === "orphaned",
+          )))
     ) {
-      await shared.releaseWriterLease();
+      await finishSharedGenerationRelease(lifecyclePath, shared);
+      shared = undefined;
+    }
+    if (shared?.state === "closed") {
       if (sharedGenerationLeases.get(lifecyclePath) === shared) {
         sharedGenerationLeases.delete(lifecyclePath);
       }
       shared = undefined;
     }
     if (shared === undefined) {
-      const lifecycle = await preparePrivateStateDirectory(lifecyclePath);
+      const syncDirectory = options.syncDirectory ?? syncDirectoryForDurability;
+      const lifecycle = await preparePrivateStateDirectory(
+        lifecyclePath,
+        syncDirectory,
+      );
       const leaseStateFile = join(lifecycle.path, ".private-state-generation");
       const writerLeaseFile = `${leaseStateFile}${STATE_WRITER_LEASE_SUFFIX}.lock`;
       const releaseWriterLease = await acquireStateWriterLease(
@@ -2328,15 +2329,32 @@ export async function acquirePrivateStateGenerationLease(
         "Bridge private-state generation writer lease",
         options,
       );
-      const syncDirectory = options.syncDirectory ?? syncDirectoryForDurability;
       // The parent-stable writer lease proves that no conforming generation is
       // active. Only now is it safe to remove exact, non-authoritative crash
       // residue left by previous generations.
-      await cleanPrivateStateResidue(lifecycle, syncDirectory);
-      await cleanPrivateStateResidue(directory, syncDirectory);
+      try {
+        await cleanPrivateStateResidue(lifecycle, syncDirectory);
+        await cleanPrivateStateResidue(directory, syncDirectory);
+      } catch (error) {
+        let cleanupError: unknown;
+        try {
+          await releaseOrAbandonStateMutationLock(releaseWriterLease);
+        } catch (releaseError) {
+          cleanupError = releaseError;
+        }
+        if (cleanupError !== undefined) {
+          throw new AggregateError(
+            [error, cleanupError],
+            "Bridge private-state residue cleanup and generation release both failed",
+          );
+        }
+        throw error;
+      }
       shared = {
+        state: "active",
         directoryDevice: directory.device,
         directoryInode: directory.inode,
+        lifecycle,
         writerLeaseFile,
         releaseWriterLease,
         holders: new Map(),
@@ -2345,6 +2363,7 @@ export async function acquirePrivateStateGenerationLease(
     }
 
     if (
+      shared.state !== "active" ||
       shared.directoryDevice !== directory.device ||
       shared.directoryInode !== directory.inode
     ) {
@@ -2352,6 +2371,8 @@ export async function acquirePrivateStateGenerationLease(
         "Conversation identity state directory generation is already bound",
       );
     }
+    await assertPrivateStateDirectory(shared.lifecycle);
+    await shared.releaseWriterLease.assertCurrent();
     if ([...shared.holders.values()].some((record) => record.kind === holder)) {
       throw new Error(`${holder} private-state generation is already open`);
     }
@@ -2360,10 +2381,30 @@ export async function acquirePrivateStateGenerationLease(
     shared.holders.set(holderToken, { kind: holder, state: "active" });
     let released = false;
     let releaseAttempt: Promise<void> | undefined;
+    const assertCurrent = (): Promise<void> =>
+      withSharedGenerationOperation(lifecyclePath, async () => {
+        const current = sharedGenerationLeases.get(lifecyclePath);
+        const record = shared.holders.get(holderToken);
+        if (
+          released ||
+          current !== shared ||
+          shared.state !== "active" ||
+          record?.state !== "active"
+        ) {
+          throw new Error(`${holder} private-state generation is not current`);
+        }
+        await assertPrivateStateDirectory(directory);
+        await assertPrivateStateDirectory(shared.lifecycle);
+        await shared.releaseWriterLease.assertCurrent();
+      });
     const release = (): Promise<void> => {
       if (released) return Promise.resolve();
       if (releaseAttempt) return releaseAttempt;
       const attempt = withSharedGenerationOperation(lifecyclePath, async () => {
+        if (shared.state === "closed") {
+          released = true;
+          return;
+        }
         const current = sharedGenerationLeases.get(lifecyclePath);
         const record = shared.holders.get(holderToken);
         if (current !== shared || record === undefined) {
@@ -2372,12 +2413,14 @@ export async function acquirePrivateStateGenerationLease(
           );
         }
         if (shared.holders.size === 1) {
-          await shared.releaseWriterLease();
+          await finishSharedGenerationRelease(lifecyclePath, shared);
           shared.holders.delete(holderToken);
-          if (sharedGenerationLeases.get(lifecyclePath) === shared) {
-            sharedGenerationLeases.delete(lifecyclePath);
-          }
         } else {
+          if (shared.state !== "active") {
+            throw new Error(
+              `${holder} private-state generation release is pending`,
+            );
+          }
           shared.holders.delete(holderToken);
         }
         released = true;
@@ -2399,6 +2442,11 @@ export async function acquirePrivateStateGenerationLease(
         }
       });
 
-    return { writerLeaseFile: shared.writerLeaseFile, release, abandon };
+    return {
+      writerLeaseFile: shared.writerLeaseFile,
+      assertCurrent,
+      release,
+      abandon,
+    };
   });
 }

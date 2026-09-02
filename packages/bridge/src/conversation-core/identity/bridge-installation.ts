@@ -11,6 +11,7 @@ import {
   parseJsonWithoutDuplicateKeys,
   preparePrivateStateDirectory,
   readBoundedPrivateFile,
+  releaseOrAbandonStateMutationLock,
   type PrivateStateDirectoryBinding,
   type StateMutationLockOptions,
 } from "./private-state.js";
@@ -197,6 +198,7 @@ export class BridgeInstallationStore {
   readonly writerLeaseFile: string;
   readonly bridgeInstanceId: string;
   readonly codexSources: CodexSourceRegistry;
+  private readonly generationLeaseCurrent: () => Promise<void>;
   private readonly writerLeaseRelease: () => Promise<void>;
   private readonly directory: PrivateStateDirectoryBinding;
   private readonly lockOptions: StateMutationLockOptions;
@@ -214,6 +216,7 @@ export class BridgeInstallationStore {
     stateDir: string;
     installationFile: string;
     writerLeaseFile: string;
+    generationLeaseCurrent: () => Promise<void>;
     writerLeaseRelease: () => Promise<void>;
     directory: PrivateStateDirectoryBinding;
     state: BridgeInstallationFileData;
@@ -222,6 +225,7 @@ export class BridgeInstallationStore {
     this.stateDir = input.stateDir;
     this.installationFile = input.installationFile;
     this.writerLeaseFile = input.writerLeaseFile;
+    this.generationLeaseCurrent = input.generationLeaseCurrent;
     this.writerLeaseRelease = input.writerLeaseRelease;
     this.directory = input.directory;
     this.state = input.state;
@@ -237,13 +241,16 @@ export class BridgeInstallationStore {
       options.stateDir ??
       process.env.CCPOCKET_STATE_DIR ??
       join(homedir(), ".ccpocket");
-    const directory = await preparePrivateStateDirectory(requestedStateDir);
-    const stateDir = directory.path;
-    const installationFile = join(stateDir, BRIDGE_INSTALLATION_FILE);
     const lockOptions = { ...options.lockOptions };
     if (lockOptions.now === undefined && options.now !== undefined) {
       lockOptions.now = options.now;
     }
+    const directory = await preparePrivateStateDirectory(
+      requestedStateDir,
+      lockOptions.syncDirectory,
+    );
+    const stateDir = directory.path;
+    const installationFile = join(stateDir, BRIDGE_INSTALLATION_FILE);
     let generationLease:
       | Awaited<ReturnType<typeof acquirePrivateStateGenerationLease>>
       | undefined;
@@ -292,12 +299,13 @@ export class BridgeInstallationStore {
           lockOptions.syncDirectory,
         );
       } finally {
-        await releaseLock();
+        await releaseOrAbandonStateMutationLock(releaseLock);
       }
       return new BridgeInstallationStore({
         stateDir,
         installationFile,
         writerLeaseFile,
+        generationLeaseCurrent: generationLease.assertCurrent,
         writerLeaseRelease,
         directory,
         state,
@@ -332,6 +340,12 @@ export class BridgeInstallationStore {
     return result;
   }
 
+  private async assertAuthorityCurrent(): Promise<void> {
+    if (this.closed) throw new Error("Bridge installation store is closed");
+    await assertPrivateStateDirectory(this.directory);
+    await this.generationLeaseCurrent();
+  }
+
   async bindAuthenticatedCodexSource(
     locatorDigest: string,
   ): Promise<ResolvedCodexSource> {
@@ -348,6 +362,7 @@ export class BridgeInstallationStore {
     locatorDigest: string,
     forceNewEpoch: boolean,
   ): Promise<ResolvedCodexSource> {
+    await this.assertAuthorityCurrent();
     if (!LOCATOR_DIGEST_PATTERN.test(locatorDigest)) {
       throw new Error(
         "Codex source locator digest must be 64 lowercase hex characters",
@@ -427,14 +442,25 @@ export class BridgeInstallationStore {
       return { ...resolved };
     } catch (error) {
       if (writeAttempted) this.needsReconciliation = true;
-      await releaseLock().catch(() => undefined);
+      let cleanupError: unknown;
+      try {
+        await releaseOrAbandonStateMutationLock(releaseLock);
+      } catch (releaseError) {
+        cleanupError = releaseError;
+      }
+      if (cleanupError !== undefined && cleanupError !== error) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "Bridge installation mutation and lock cleanup both failed",
+        );
+      }
       throw error;
     }
   }
 
   async sourceBindings(): Promise<readonly CodexSourceBinding[]> {
     return this.runExclusive(async () => {
-      await assertPrivateStateDirectory(this.directory);
+      await this.assertAuthorityCurrent();
       if (this.needsReconciliation) {
         const releaseLock = await acquireStateMutationLock(
           this.directory,
@@ -442,6 +468,8 @@ export class BridgeInstallationStore {
           "Bridge installation state",
           this.lockOptions,
         );
+        let persisted: BridgeInstallationFileData | undefined;
+        let operationError: unknown;
         try {
           const contents = await readBoundedPrivateFile(
             this.directory,
@@ -452,20 +480,31 @@ export class BridgeInstallationStore {
           if (contents === undefined) {
             throw new Error("Bridge installation state disappeared after load");
           }
-          const persisted = parseInstallationFile(
-            contents,
-            this.installationFile,
-          );
+          persisted = parseInstallationFile(contents, this.installationFile);
           if (persisted.bridgeInstanceId !== this.bridgeInstanceId) {
             throw new Error(
               "Bridge installation identity changed while the writer was open",
             );
           }
-          this.state = persisted;
-          this.needsReconciliation = false;
-        } finally {
-          await releaseLock();
+        } catch (error) {
+          operationError = error;
         }
+        let cleanupError: unknown;
+        try {
+          await releaseOrAbandonStateMutationLock(releaseLock);
+        } catch (error) {
+          cleanupError = error;
+        }
+        if (operationError !== undefined && cleanupError !== undefined) {
+          throw new AggregateError(
+            [operationError, cleanupError],
+            "Bridge installation reconciliation and lock cleanup both failed",
+          );
+        }
+        if (operationError !== undefined) throw operationError;
+        if (cleanupError !== undefined) throw cleanupError;
+        this.state = persisted!;
+        this.needsReconciliation = false;
       }
       return this.state.sourceBindings.map(cloneBinding);
     });
@@ -476,7 +515,7 @@ export class BridgeInstallationStore {
     sourceEpoch: string,
   ): Promise<boolean> {
     if (this.closed) return false;
-    await assertPrivateStateDirectory(this.directory);
+    await this.assertAuthorityCurrent();
     return (
       this.activeSourceEpochs.get(locatorDigest)?.sourceEpoch === sourceEpoch
     );
@@ -487,7 +526,7 @@ export class BridgeInstallationStore {
     sourceEpoch: string,
     codexSourceId?: string,
   ): Promise<void> {
-    if (!this.closed) await assertPrivateStateDirectory(this.directory);
+    if (!this.closed) await this.assertAuthorityCurrent();
     const active = this.activeSourceEpochs.get(locatorDigest);
     if (
       this.closed ||

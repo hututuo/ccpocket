@@ -4,6 +4,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   writeFile,
@@ -80,20 +81,39 @@ describe("private conversation identity state", () => {
     owner: FixtureOwner,
   ): Promise<void> {
     await mkdir(directory, { mode: 0o700 });
+    const directoryStatus = await lstat(directory);
     const processIdentity =
       owner.processIdentity ?? fixtureProcessIdentity(owner.pid);
     await writeFile(
       join(directory, STATE_LOCK_OWNER_FILE),
       `${JSON.stringify({
-        version: 2,
+        version: 3,
         pid: owner.pid,
         processIdentity,
         token: owner.token,
         createdAt: owner.createdAt,
+        directoryDevice: String(directoryStatus.dev),
+        directoryInode: String(directoryStatus.ino),
       })}\n`,
       { mode: 0o600 },
     );
   }
+
+  it("syncs every newly created state-directory namespace before returning", async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), "ccpocket-v4-state-parent-sync-"),
+    );
+    roots.push(root);
+    const target = join(root, "nested", "state");
+    const synced: string[] = [];
+
+    const binding = await preparePrivateStateDirectory(target, async (path) => {
+      synced.push(path);
+    });
+
+    expect(binding.path).toBe(await realpath(target));
+    expect(synced).toEqual([root, join(root, "nested")]);
+  });
 
   it("binds a bounded read to the file identity observed before open", async () => {
     const { directory, file } = await stateFile();
@@ -184,6 +204,58 @@ describe("private conversation identity state", () => {
     });
   });
 
+  it("rejects an owner read from a transient A-to-B-to-A directory swap", async () => {
+    const { directory, file } = await stateFile();
+    const lockPath = `${file}.lock`;
+    const displaced = `${lockPath}.displaced`;
+    await writeOwnerDirectory(lockPath, {
+      pid: 82_001,
+      token: lockToken("aba-owner-a"),
+      createdAt: "2026-08-30T11:59:00.000Z",
+    });
+    let swapped = false;
+    let restored = false;
+
+    await expect(
+      acquireStateMutationLock(
+        directory,
+        file,
+        "ABA snapshot fixture lock",
+        lockOptions({
+          pid: 82_003,
+          token: () => lockToken("aba-contender"),
+          attempts: 1,
+          beforeLockOwnerRead: async (observedLockPath) => {
+            if (swapped || observedLockPath !== lockPath) return;
+            swapped = true;
+            await rename(lockPath, displaced);
+            await writeOwnerDirectory(lockPath, {
+              pid: 82_002,
+              token: lockToken("aba-owner-b"),
+              createdAt: "2026-08-30T11:59:30.000Z",
+            });
+          },
+          afterLockOwnerRead: async (observedLockPath) => {
+            if (restored || observedLockPath !== lockPath) return;
+            restored = true;
+            await rm(lockPath, { recursive: true, force: true });
+            await rename(displaced, lockPath);
+          },
+        }),
+      ),
+    ).rejects.toThrow(/busy/);
+
+    expect(swapped).toBe(true);
+    expect(restored).toBe(true);
+    const owner = JSON.parse(
+      await readFile(join(lockPath, STATE_LOCK_OWNER_FILE), "utf8"),
+    ) as { pid: number; token: string };
+    expect(owner).toMatchObject({
+      pid: 82_001,
+      token: lockToken("aba-owner-a"),
+    });
+  });
+
   function lockOptions(
     overrides: Partial<StateMutationLockOptions> = {},
   ): StateMutationLockOptions {
@@ -234,7 +306,7 @@ describe("private conversation identity state", () => {
     expect(await readdir(join(file, ".."))).toEqual([]);
   });
 
-  it("conservatively recovers a dead legacy version-one lock owner", async () => {
+  it("fails closed for a legacy owner without incarnation evidence", async () => {
     const { directory, file } = await stateFile();
     const legacyLock = `${file}.lock`;
     await mkdir(legacyLock, { mode: 0o700 });
@@ -249,23 +321,54 @@ describe("private conversation identity state", () => {
       { mode: 0o600 },
     );
 
-    const release = await acquireStateMutationLock(
-      directory,
-      file,
-      "legacy owner fixture lock",
-      lockOptions({
-        pid: 2_000_000_002,
-        token: () => lockToken("legacy-successor"),
-      }),
-    );
-    const owner = JSON.parse(
-      await readFile(join(legacyLock, STATE_LOCK_OWNER_FILE), "utf8"),
-    ) as { version: number; pid: number };
-    expect(owner).toMatchObject({ version: 2, pid: 2_000_000_002 });
-    await release();
+    await expect(
+      acquireStateMutationLock(
+        directory,
+        file,
+        "legacy owner fixture lock",
+        lockOptions({
+          pid: 2_000_000_002,
+          token: () => lockToken("legacy-successor"),
+          attempts: 1,
+        }),
+      ),
+    ).rejects.toThrow(/busy/);
+    expect((await lstat(legacyLock)).isDirectory()).toBe(true);
+    expect(
+      await readFile(join(legacyLock, LEGACY_STATE_LOCK_OWNER_FILE), "utf8"),
+    ).toContain('"version":1');
   });
 
-  it("allows only one contender to reclaim a dead legacy lock", async () => {
+  it("does not reinterpret a previous owner schema as the bound current schema", async () => {
+    const { directory, file } = await stateFile();
+    const lockPath = `${file}.lock`;
+    await mkdir(lockPath, { mode: 0o700 });
+    await writeFile(
+      join(lockPath, "owner-v2.json"),
+      `${JSON.stringify({
+        version: 2,
+        pid: 2_000_000_101,
+        processIdentity: fixtureProcessIdentity(2_000_000_101),
+        token: lockToken("previous-owner"),
+        createdAt: "2026-08-30T11:59:00.000Z",
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    await expect(
+      acquireStateMutationLock(
+        directory,
+        file,
+        "previous owner fixture lock",
+        lockOptions({ attempts: 1 }),
+      ),
+    ).rejects.toThrow(/busy/);
+    expect(await readFile(join(lockPath, "owner-v2.json"), "utf8")).toContain(
+      lockToken("previous-owner"),
+    );
+  });
+
+  it("does not let concurrent contenders reclaim a legacy lock", async () => {
     const { directory, file } = await stateFile();
     const legacyLock = `${file}.lock`;
     await mkdir(legacyLock, { mode: 0o700 });
@@ -315,23 +418,11 @@ describe("private conversation identity state", () => {
         }),
       ),
     ]);
-    const fulfilled = attempts.filter(
-      (result): result is PromiseFulfilledResult<() => Promise<void>> =>
-        result.status === "fulfilled",
-    );
-    expect(fulfilled).toHaveLength(1);
+    expect(attempts.every((result) => result.status === "rejected")).toBe(true);
+    expect((await lstat(legacyLock)).isDirectory()).toBe(true);
     expect(
-      attempts.filter((result) => result.status === "rejected"),
-    ).toHaveLength(1);
-    const owner = JSON.parse(
-      await readFile(join(legacyLock, STATE_LOCK_OWNER_FILE), "utf8"),
-    ) as { token: string };
-    expect([lockToken("legacy-race-a"), lockToken("legacy-race-b")]).toContain(
-      owner.token,
-    );
-    await fulfilled[0]!.value();
-    await expect(lstat(legacyLock)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await readdir(dirname(file))).toEqual([]);
+      await readFile(join(legacyLock, LEGACY_STATE_LOCK_OWNER_FILE), "utf8"),
+    ).toContain(lockToken("legacy-race-dead-owner"));
   });
 
   it("does not steal a live or unknown-owner lock", async () => {
@@ -511,14 +602,17 @@ describe("private conversation identity state", () => {
       "ownership fixture lock",
       lockOptions({ pid: 601, token: () => lockToken("original-owner-601") }),
     );
+    const replacementDirectory = await lstat(`${file}.lock`);
     await writeFile(
       join(`${file}.lock`, STATE_LOCK_OWNER_FILE),
       `${JSON.stringify({
-        version: 2,
+        version: 3,
         pid: 602,
         processIdentity: fixtureProcessIdentity(602, "replacement"),
         token: lockToken("replacement-owner-602"),
         createdAt: "2026-08-30T12:00:00.000Z",
+        directoryDevice: String(replacementDirectory.dev),
+        directoryInode: String(replacementDirectory.ino),
       })}\n`,
       { mode: 0o600 },
     );
@@ -568,14 +662,17 @@ describe("private conversation identity state", () => {
             entry.startsWith("state.json.lock.release-"),
           );
           if (!releaseEntry) return;
+          const releaseDirectory = await lstat(join(parent, releaseEntry));
           await writeFile(
             join(parent, releaseEntry, STATE_LOCK_OWNER_FILE),
             `${JSON.stringify({
-              version: 2,
+              version: 3,
               pid: 604,
               processIdentity: fixtureProcessIdentity(604, "replacement"),
               token: lockToken("replacement-owner-604"),
               createdAt: "2026-08-30T12:00:00.000Z",
+              directoryDevice: String(releaseDirectory.dev),
+              directoryInode: String(releaseDirectory.ino),
             })}\n`,
             { mode: 0o600 },
           );
@@ -1027,6 +1124,38 @@ describe("private conversation identity state", () => {
     ).toHaveLength(0);
   });
 
+  it("recovers an explicitly orphaned mutation release before reacquiring", async () => {
+    const { directory, file } = await stateFile();
+    let failReleaseRead = true;
+    const options = lockOptions({
+      beforeReleaseSnapshotRead: async (lockPath) => {
+        if (failReleaseRead && lockPath === `${file}.lock`) {
+          failReleaseRead = false;
+          throw errorWithCode("EIO");
+        }
+      },
+    });
+    const first = await acquireStateMutationLock(
+      directory,
+      file,
+      "orphan mutation fixture lock",
+      options,
+    );
+
+    await expect(first()).rejects.toMatchObject({ code: "EIO" });
+    expect((await lstat(`${file}.lock`)).isDirectory()).toBe(true);
+    await first.abandon();
+
+    const second = await acquireStateMutationLock(
+      directory,
+      file,
+      "orphan mutation fixture lock",
+      options,
+    );
+    expect((await lstat(`${file}.lock`)).isDirectory()).toBe(true);
+    await second();
+  });
+
   it("fails closed for duplicate-key lock owner metadata", async () => {
     const { directory, file } = await stateFile();
     await mkdir(`${file}.lock`, { mode: 0o700 });
@@ -1231,6 +1360,72 @@ describe("private conversation identity state", () => {
       ),
     ).rejects.toThrow(/generation is already open/);
     await second.release();
+  });
+
+  it("finishes a failed physical release before admitting another holder kind", async () => {
+    const { directory } = await stateFile();
+    const lifecyclePath = `${directory.path}.lifecycle-v1`;
+    roots.push(lifecyclePath);
+    let failRelease = false;
+    let releaseFailures = 0;
+    const syncDirectory = async (path: string): Promise<void> => {
+      if (failRelease && releaseFailures < 2 && path === lifecyclePath) {
+        releaseFailures += 1;
+        throw errorWithCode("EIO");
+      }
+    };
+    const first = await acquirePrivateStateGenerationLease(
+      directory,
+      "bridge-identity",
+      lockOptions({ syncDirectory }),
+    );
+
+    failRelease = true;
+    await expect(first.release()).rejects.toMatchObject({ code: "EIO" });
+    await expect(
+      acquirePrivateStateGenerationLease(
+        directory,
+        "bridge-installation",
+        lockOptions({ syncDirectory }),
+      ),
+    ).rejects.toMatchObject({ code: "EIO" });
+    expect(releaseFailures).toBe(2);
+    failRelease = false;
+    const second = await acquirePrivateStateGenerationLease(
+      directory,
+      "bridge-installation",
+      lockOptions({ syncDirectory }),
+    );
+
+    expect((await lstat(second.writerLeaseFile)).isDirectory()).toBe(true);
+    await first.release();
+    await second.release();
+  });
+
+  it("invalidates a generation when its lifecycle directory is replaced", async () => {
+    const { directory } = await stateFile();
+    const lifecyclePath = `${directory.path}.lifecycle-v1`;
+    const displaced = `${lifecyclePath}.displaced`;
+    roots.push(lifecyclePath, displaced);
+    const lease = await acquirePrivateStateGenerationLease(
+      directory,
+      "bridge-identity",
+      lockOptions(),
+    );
+
+    await rename(lifecyclePath, displaced);
+    await mkdir(lifecyclePath, { mode: 0o700 });
+
+    await expect(lease.assertCurrent()).rejects.toThrow(
+      /state directory changed after binding/,
+    );
+    await expect(
+      acquirePrivateStateGenerationLease(
+        directory,
+        "bridge-installation",
+        lockOptions(),
+      ),
+    ).rejects.toThrow(/state directory changed after binding/);
   });
 
   it("lets a later acquire finish an orphaned failed-load generation cleanup", async () => {

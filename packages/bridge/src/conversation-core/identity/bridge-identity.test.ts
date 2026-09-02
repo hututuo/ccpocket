@@ -7,6 +7,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   symlink,
@@ -78,6 +79,31 @@ describe("BridgeIdentityStore", () => {
     expect(
       (await lstat(join(stateDir, BRIDGE_IDENTITY_FILE))).mode & 0o777,
     ).toBe(0o600);
+  });
+
+  it("syncs new state and lifecycle parent namespaces before load returns", async () => {
+    const parent = await root();
+    const nested = join(parent, "nested");
+    const stateDir = join(nested, "state");
+    const synced: string[] = [];
+
+    await load(stateDir, {
+      lockOptions: {
+        syncDirectory: async (path) => {
+          synced.push(path);
+        },
+      },
+    });
+
+    const canonicalParent = await realpath(parent);
+    const canonicalNested = await realpath(nested);
+    expect(
+      synced.some((path) => path === parent || path === canonicalParent),
+    ).toBe(true);
+    expect(
+      synced.filter((path) => path === nested || path === canonicalNested)
+        .length,
+    ).toBeGreaterThanOrEqual(2);
   });
 
   it("signs and verifies the canonical nonce proof with every authority field bound", async () => {
@@ -294,6 +320,24 @@ describe("BridgeIdentityStore", () => {
     await close(store);
   });
 
+  it("invalidates an open signer when only the lifecycle directory is replaced", async () => {
+    const parent = await root();
+    const stateDir = join(parent, "state");
+    const lifecycle = `${stateDir}.lifecycle-v1`;
+    const displaced = `${lifecycle}.displaced`;
+    const store = await load(stateDir);
+
+    await rename(lifecycle, displaced);
+    await mkdir(lifecycle, { mode: 0o700 });
+    await expect(store.sign("authority payload")).rejects.toThrow(
+      /directory changed after binding/,
+    );
+
+    await rm(lifecycle, { recursive: true, force: true });
+    await rename(displaced, lifecycle);
+    await close(store);
+  });
+
   it("reconciles an installed identity after an ambiguous final data fsync", async () => {
     const stateDir = join(await root(), "state");
     const identityFile = join(stateDir, BRIDGE_IDENTITY_FILE);
@@ -362,6 +406,33 @@ describe("BridgeIdentityStore", () => {
       expect.objectContaining({ code: "LOAD-EIO" }),
       expect.objectContaining({ code: "CLEANUP-EIO" }),
     ]);
+
+    const recovered = await load(stateDir, { lockOptions });
+    expect(recovered.bridgeIdentityId).toBe(
+      deriveBridgeIdentityId(recovered.publicKey),
+    );
+  });
+
+  it("recovers a failed load mutation-lock release in the same process", async () => {
+    const stateDir = join(await root(), "state");
+    let failed = false;
+    const lockOptions: StateMutationLockOptions = {
+      attempts: 4,
+      retryMs: 0,
+      beforeReleaseSnapshotRead: async (lockPath) => {
+        if (!failed && lockPath.endsWith(`${BRIDGE_IDENTITY_FILE}.lock`)) {
+          failed = true;
+          throw Object.assign(new Error("MUTATION-RELEASE-EIO"), {
+            code: "MUTATION-RELEASE-EIO",
+          });
+        }
+      },
+    };
+
+    await expect(
+      BridgeIdentityStore.load({ stateDir, lockOptions }),
+    ).rejects.toMatchObject({ code: "MUTATION-RELEASE-EIO" });
+    expect(failed).toBe(true);
 
     const recovered = await load(stateDir, { lockOptions });
     expect(recovered.bridgeIdentityId).toBe(

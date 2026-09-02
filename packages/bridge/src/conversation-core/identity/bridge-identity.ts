@@ -19,6 +19,7 @@ import {
   parseJsonWithoutDuplicateKeys,
   preparePrivateStateDirectory,
   readBoundedPrivateFile,
+  releaseOrAbandonStateMutationLock,
   type PrivateStateDirectoryBinding,
   type StateMutationLockOptions,
 } from "./private-state.js";
@@ -377,6 +378,7 @@ export class BridgeIdentityStore {
   readonly publicKey: string;
   private readonly privateKey: KeyObject;
   private readonly directory: PrivateStateDirectoryBinding;
+  private readonly generationLeaseCurrent: () => Promise<void>;
   private readonly writerLeaseRelease: () => Promise<void>;
   private closed = false;
   private closePromise: Promise<void> | undefined;
@@ -385,6 +387,7 @@ export class BridgeIdentityStore {
     stateDir: string;
     identityFile: string;
     writerLeaseFile: string;
+    generationLeaseCurrent: () => Promise<void>;
     writerLeaseRelease: () => Promise<void>;
     directory: PrivateStateDirectoryBinding;
     privateKey: KeyObject;
@@ -393,6 +396,7 @@ export class BridgeIdentityStore {
     this.stateDir = input.stateDir;
     this.identityFile = input.identityFile;
     this.writerLeaseFile = input.writerLeaseFile;
+    this.generationLeaseCurrent = input.generationLeaseCurrent;
     this.writerLeaseRelease = input.writerLeaseRelease;
     this.directory = input.directory;
     this.privateKey = input.privateKey;
@@ -407,10 +411,13 @@ export class BridgeIdentityStore {
       options.stateDir ??
       process.env.CCPOCKET_STATE_DIR ??
       join(homedir(), ".ccpocket");
-    const directory = await preparePrivateStateDirectory(requestedStateDir);
+    const lockOptions = { ...options.lockOptions };
+    const directory = await preparePrivateStateDirectory(
+      requestedStateDir,
+      lockOptions.syncDirectory,
+    );
     const stateDir = directory.path;
     const identityFile = join(stateDir, BRIDGE_IDENTITY_FILE);
-    const lockOptions = { ...options.lockOptions };
     const generationLease = await acquirePrivateStateGenerationLease(
       directory,
       "bridge-identity",
@@ -471,12 +478,13 @@ export class BridgeIdentityStore {
           stateDir,
           identityFile,
           writerLeaseFile,
+          generationLeaseCurrent: generationLease.assertCurrent,
           writerLeaseRelease,
           directory,
           ...material,
         });
       } finally {
-        await releaseLock();
+        await releaseOrAbandonStateMutationLock(releaseLock);
       }
     } catch (error) {
       try {
@@ -499,6 +507,7 @@ export class BridgeIdentityStore {
   private async assertAuthorityCurrent(): Promise<void> {
     this.assertOpen();
     await assertPrivateStateDirectory(this.directory);
+    await this.generationLeaseCurrent();
   }
 
   async sign(payload: string | Buffer): Promise<string> {

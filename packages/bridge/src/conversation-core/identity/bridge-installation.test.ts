@@ -328,6 +328,57 @@ describe("BridgeInstallationStore", () => {
     ).toBe(true);
   });
 
+  it("keeps reconciliation pending when its mutation-lock release fails", async () => {
+    const stateDir = join(await root(), "state");
+    let boundStateDir = "";
+    let injectDataFailure = false;
+    let dataSyncs = 0;
+    let dataFailed = false;
+    let injectReleaseFailure = false;
+    let releaseFailed = false;
+    const store = await load(stateDir, {
+      lockOptions: {
+        syncDirectory: async (path) => {
+          if (path !== boundStateDir || !injectDataFailure || dataFailed)
+            return;
+          dataSyncs += 1;
+          if (dataSyncs === 2) {
+            dataFailed = true;
+            throw Object.assign(new Error("DATA-EIO"), { code: "DATA-EIO" });
+          }
+        },
+        beforeReleaseSnapshotRead: async (lockPath) => {
+          if (
+            injectReleaseFailure &&
+            !releaseFailed &&
+            lockPath.endsWith(`${BRIDGE_INSTALLATION_FILE}.lock`)
+          ) {
+            releaseFailed = true;
+            throw Object.assign(new Error("RELEASE-EIO"), {
+              code: "RELEASE-EIO",
+            });
+          }
+        },
+      },
+    });
+    boundStateDir = dirname(store.installationFile);
+    const digest = locatorDigest("reconciliation-release-retry");
+    injectDataFailure = true;
+
+    await expect(
+      store.bindAuthenticatedCodexSource(digest),
+    ).rejects.toMatchObject({ code: "DATA-EIO" });
+    injectDataFailure = false;
+    injectReleaseFailure = true;
+    await expect(store.sourceBindings()).rejects.toMatchObject({
+      code: "RELEASE-EIO",
+    });
+
+    const bindings = await store.sourceBindings();
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]).toMatchObject({ locatorDigest: digest });
+  });
+
   it("reports failed load cleanup and lets the next load finish orphan recovery", async () => {
     const stateDir = join(await root(), "state");
     let loadFailureInjected = false;
@@ -369,6 +420,33 @@ describe("BridgeInstallationStore", () => {
       expect.objectContaining({ code: "LOAD-EIO" }),
       expect.objectContaining({ code: "CLEANUP-EIO" }),
     ]);
+
+    const recovered = await load(stateDir, { lockOptions });
+    expect(recovered.bridgeInstanceId).toMatch(
+      /^bridge_instance_[A-Za-z0-9_-]{32}$/,
+    );
+  });
+
+  it("recovers a failed load mutation-lock release in the same process", async () => {
+    const stateDir = join(await root(), "state");
+    let failed = false;
+    const lockOptions: StateMutationLockOptions = {
+      attempts: 4,
+      retryMs: 0,
+      beforeReleaseSnapshotRead: async (lockPath) => {
+        if (!failed && lockPath.endsWith(`${BRIDGE_INSTALLATION_FILE}.lock`)) {
+          failed = true;
+          throw Object.assign(new Error("MUTATION-RELEASE-EIO"), {
+            code: "MUTATION-RELEASE-EIO",
+          });
+        }
+      },
+    };
+
+    await expect(
+      BridgeInstallationStore.load({ stateDir, lockOptions }),
+    ).rejects.toMatchObject({ code: "MUTATION-RELEASE-EIO" });
+    expect(failed).toBe(true);
 
     const recovered = await load(stateDir, { lockOptions });
     expect(recovered.bridgeInstanceId).toMatch(
@@ -862,6 +940,32 @@ describe("BridgeInstallationStore", () => {
     const reopened = await load(stateDir);
     expect(reopened.bridgeInstanceId).toBe(bridgeInstanceId);
     expect(await reopened.sourceBindings()).toEqual([]);
+  });
+
+  it("invalidates source authority when only the lifecycle directory is replaced", async () => {
+    const parent = await root();
+    const stateDir = join(parent, "state");
+    const lifecycle = `${stateDir}.lifecycle-v1`;
+    const displaced = `${lifecycle}.displaced`;
+    const store = await load(stateDir);
+    const digest = locatorDigest("lifecycle-replacement");
+    const active = await store.bindAuthenticatedCodexSource(digest);
+
+    await rename(lifecycle, displaced);
+    await mkdir(lifecycle, { mode: 0o700 });
+    await expect(store.sourceBindings()).rejects.toThrow(
+      /directory changed after binding/,
+    );
+    await expect(
+      store.codexSources.isSourceEpochCurrent(digest, active.sourceEpoch),
+    ).rejects.toThrow(/directory changed after binding/);
+    await expect(
+      store.bindAuthenticatedCodexSource(locatorDigest("replacement-write")),
+    ).rejects.toThrow(/directory changed after binding/);
+
+    await rm(lifecycle, { recursive: true, force: true });
+    await rename(displaced, lifecycle);
+    await close(store);
   });
 
   it("allows installation close to retry after final lease namespace sync failure", async () => {
