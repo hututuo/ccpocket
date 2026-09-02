@@ -447,10 +447,10 @@ export function resolveProjectTarget(projectRoot, configured, filename) {
   return target;
 }
 
-export async function assertSecureDirectory(
+async function traverseSecureDirectory(
   projectRoot,
   directory,
-  {create = false} = {},
+  {create = false, retainBindings = false} = {},
 ) {
   const root = path.resolve(projectRoot);
   const target = path.resolve(directory);
@@ -459,6 +459,7 @@ export async function assertSecureDirectory(
   }
   const relative = path.relative(root, target);
   const bindings = [];
+  let retained = false;
   let current = root;
   let currentBinding = await bindDirectory(root, {projectRoot: root});
   bindings.push(currentBinding);
@@ -502,10 +503,38 @@ export async function assertSecureDirectory(
       currentBinding = childBinding;
     }
     await assertBoundDirectory(currentBinding, {projectRoot: root});
+    if (retainBindings) {
+      retained = true;
+      let closed = false;
+      return {
+        path: target,
+        canonical: currentBinding.canonical,
+        assertCurrent: () => assertBoundDirectories(bindings, {projectRoot: root}),
+        close: async () => {
+          if (closed) return;
+          await closeBindings(bindings);
+          closed = true;
+        },
+      };
+    }
     return target;
   } finally {
-    await closeBindings(bindings);
+    if (!retained) await closeBindings(bindings);
   }
+}
+
+export async function assertSecureDirectory(
+  projectRoot,
+  directory,
+  {create = false} = {},
+) {
+  return traverseSecureDirectory(projectRoot, directory, {create});
+}
+
+export async function bindSecureDirectory(projectRoot, directory) {
+  return traverseSecureDirectory(projectRoot, directory, {
+    retainBindings: true,
+  });
 }
 
 async function prepareStandaloneOutputDirectory(outputDirectory) {
@@ -648,7 +677,11 @@ export function generateArtifacts(
   ]);
 }
 
-export async function writeArtifacts(outputDirectory, artifacts) {
+export async function writeArtifacts(
+  outputDirectory,
+  artifacts,
+  {beforeCommit, hooks} = {},
+) {
   const prepared = await prepareStandaloneOutputDirectory(outputDirectory);
   try {
     const targets = new Map(GENERATED_FILES.map((filename) => [
@@ -658,6 +691,8 @@ export async function writeArtifacts(outputDirectory, artifacts) {
     await writeArtifactTargets(targets, artifacts, {
       projectRoot: prepared.outputDirectory,
       projectRootBinding: prepared.projectRootBinding,
+      beforeCommit,
+      hooks,
     });
   } finally {
     await prepared.projectRootBinding.handle.close();
@@ -1055,7 +1090,7 @@ function recoveryError(
 export async function writeArtifactTargets(
   targets,
   artifacts,
-  {projectRoot, projectRootBinding, hooks} = {},
+  {projectRoot, projectRootBinding, hooks, beforeCommit} = {},
 ) {
   if (projectRoot === undefined) {
     throw new Error('projectRoot is required for mapped artifact generation');
@@ -1338,6 +1373,11 @@ export async function writeArtifactTargets(
         }
         await runHook(hooks, 'afterInstall', record);
       }
+      // The new targets are visible, but their exact prior objects remain in
+      // the transaction backup. Final provenance verification belongs here so
+      // a failure follows the ordinary rollback path before cleanup commits
+      // the artifact set by deleting those backups.
+      if (beforeCommit !== undefined) await beforeCommit();
     } catch (error) {
       transactionFailure = error;
     }

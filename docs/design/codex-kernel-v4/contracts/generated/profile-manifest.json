@@ -65,7 +65,7 @@
   "formatVersion": 1,
   "generationProvenance": {
     "generatorExecutionBinding": "IMMUTABLE_SOURCE_SNAPSHOT_V1",
-    "generatorSourceDigest": "4004a57bff9b520de60745b19e8c309162c512f36a4bd54583472f59856afd96",
+    "generatorSourceDigest": "be0ac600c02f50104132c9b17458cf57002fd41646d28810c5d05e7a59b17a64",
     "generatorSourceDigestAlgorithm": "SHA-256-JCS-FILE-CATALOG-V1",
     "generatorSourceFiles": [
       {
@@ -89,9 +89,9 @@
         "sha256": "6c71ccc67c654786d17e939478d07e3a95265cef84fa25424791a5b6866a945e"
       },
       {
-        "byteLength": 18450,
+        "byteLength": 21438,
         "path": "packages/conversation-contract/src/cli.mjs",
-        "sha256": "dc69d104d4aa0d3cd479a77e470e0d0bcc3ae5a26f92ac1e679cc3612818b4cd"
+        "sha256": "90254ad369f88b6ba40bf5919138599f901a58513a3ddfcec488af35028a3d42"
       },
       {
         "byteLength": 10064,
@@ -119,9 +119,9 @@
         "sha256": "ace6837990a4c9790590f3a4a4eea570e07e7f6e1695fd62cb248592dfed9c14"
       },
       {
-        "byteLength": 49443,
+        "byteLength": 50659,
         "path": "packages/conversation-contract/src/generate.mjs",
-        "sha256": "305939bcf35572e263c00ff5e3b5525ae9ee6d9c1a1f7f2d4a15b99745a69fd9"
+        "sha256": "cd1fee663b66ef03acb97352ae62a76fb30e183dcd52bdb561fb5d8ac5a9c9be"
       },
       {
         "byteLength": 29475,

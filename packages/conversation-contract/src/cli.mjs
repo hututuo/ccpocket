@@ -19,8 +19,8 @@ import { parseArgs, promisify } from 'node:util';
 
 import {
   GENERATED_FILES,
-  assertSecureDirectory,
   assertOutputDirectory,
+  bindSecureDirectory,
   findTransactionResidues,
   generateArtifacts,
   resolveProjectTarget,
@@ -124,7 +124,7 @@ async function withArtifactDirectoryBinding(directory, action) {
     let value;
     let actionFailure;
     try {
-      value = await action();
+      value = await action(binding);
     } catch (error) {
       actionFailure = error;
     }
@@ -137,6 +137,55 @@ async function withArtifactDirectoryBinding(directory, action) {
     return value;
   } finally {
     await binding.handle.close();
+  }
+}
+
+async function assertSecureArtifactDirectoryBindings(bindings) {
+  for (const binding of [...new Set(bindings)]) {
+    await binding.assertCurrent();
+  }
+}
+
+async function withSecureArtifactDirectoryBindings(bindings, action) {
+  const unique = [...new Set(bindings)];
+  let actionFailure;
+  try {
+    await assertSecureArtifactDirectoryBindings(unique);
+    let value;
+    try {
+      value = await action();
+    } catch (error) {
+      actionFailure = error;
+    }
+    try {
+      await assertSecureArtifactDirectoryBindings(unique);
+    } catch (bindingFailure) {
+      throw new Error(bindingFailure.message, {cause: actionFailure ?? bindingFailure});
+    }
+    if (actionFailure !== undefined) throw actionFailure;
+    return value;
+  } finally {
+    const failures = [];
+    for (const binding of unique.reverse()) {
+      try {
+        await binding.close();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length > 0) {
+      const closeFailure = new AggregateError(
+        failures,
+        'failed to close generated artifact directory bindings',
+      );
+      if (actionFailure !== undefined) {
+        throw new AggregateError(
+          [actionFailure, closeFailure],
+          'artifact check and directory binding cleanup both failed',
+        );
+      }
+      throw closeFailure;
+    }
   }
 }
 
@@ -279,25 +328,33 @@ async function loadTargetMap(filename) {
 async function checkDrift(outputDirectory, artifacts, hooks) {
   const canonicalDirectory = await assertOutputDirectory(outputDirectory);
   const drift = [];
-  for (const filename of GENERATED_FILES) {
-    const target = path.join(canonicalDirectory, filename);
-    const issue = await withArtifactDirectoryBinding(
-      canonicalDirectory,
-      () => inspectArtifact(
+  await withArtifactDirectoryBinding(canonicalDirectory, async (binding) => {
+    for (const filename of GENERATED_FILES) {
+      const target = path.join(canonicalDirectory, filename);
+      await assertArtifactDirectoryBinding(binding);
+      const issue = await inspectArtifact(
         target,
         artifacts.get(filename),
         hooks,
         {filename, mode: 'standalone'},
-      ),
-    );
-    if (issue !== undefined) drift.push(`${filename} (${issue})`);
-  }
-  const entries = await readdir(canonicalDirectory, {withFileTypes: true});
-  for (const entry of entries) {
-    if (!GENERATED_FILES.includes(entry.name)) {
-      drift.push(`${entry.name} (unexpected)`);
+      );
+      if (issue !== undefined) drift.push(`${filename} (${issue})`);
+      await runHook(hooks, 'afterArtifactInspected', {
+        filename,
+        mode: 'standalone',
+        target,
+      });
+      await assertArtifactDirectoryBinding(binding);
     }
-  }
+    await assertArtifactDirectoryBinding(binding);
+    const entries = await readdir(canonicalDirectory, {withFileTypes: true});
+    await assertArtifactDirectoryBinding(binding);
+    for (const entry of entries) {
+      if (!GENERATED_FILES.includes(entry.name)) {
+        drift.push(`${entry.name} (unexpected)`);
+      }
+    }
+  });
   if (drift.length > 0) {
     throw new Error(`generated artifact drift: ${drift.join(', ')}; run generate`);
   }
@@ -306,43 +363,63 @@ async function checkDrift(outputDirectory, artifacts, hooks) {
 async function checkTargetDrift(targetMap, artifacts, hooks) {
   const drift = [];
   const filesByDirectory = new Map();
+  for (const filename of GENERATED_FILES) {
+    const target = targetMap.targets.get(filename);
+    const directory = path.dirname(target);
+    if (!filesByDirectory.has(directory)) filesByDirectory.set(directory, new Set());
+    filesByDirectory.get(directory).add(path.basename(target));
+  }
+  const bindingsByDirectory = new Map();
+  for (const directory of filesByDirectory.keys()) {
+    try {
+      bindingsByDirectory.set(
+        directory,
+        await bindSecureDirectory(targetMap.projectRoot, directory),
+      );
+    } catch (error) {
+      drift.push(`${directory} (${error.message})`);
+    }
+  }
+  const bindings = [...bindingsByDirectory.values()];
   const transactionRoots = transactionRootsForTargets(
     targetMap.projectRoot,
     targetMap.targets,
   );
-  for (const residue of await findTransactionResidues(transactionRoots)) {
-    drift.push(`${residue} (unfinished transaction)`);
-  }
-  for (const filename of GENERATED_FILES) {
-    const target = targetMap.targets.get(filename);
-    const directory = path.dirname(target);
-    try {
-      await assertSecureDirectory(targetMap.projectRoot, directory);
-    } catch (error) {
-      drift.push(`${directory} (${error.message})`);
-      continue;
+  await withSecureArtifactDirectoryBindings(bindings, async () => {
+    for (const residue of await findTransactionResidues(transactionRoots)) {
+      drift.push(`${residue} (unfinished transaction)`);
     }
-    if (!filesByDirectory.has(directory)) filesByDirectory.set(directory, new Set());
-    filesByDirectory.get(directory).add(path.basename(target));
-    const issue = await withArtifactDirectoryBinding(
-      directory,
-      () => inspectArtifact(
+    for (const filename of GENERATED_FILES) {
+      const target = targetMap.targets.get(filename);
+      const directory = path.dirname(target);
+      if (!bindingsByDirectory.has(directory)) continue;
+      await assertSecureArtifactDirectoryBindings(bindings);
+      const issue = await inspectArtifact(
         target,
         artifacts.get(filename),
         hooks,
         {filename, mode: 'mapped'},
-      ),
-    );
-    if (issue !== undefined) drift.push(`${target} (${issue})`);
-  }
-  for (const [directory, expected] of filesByDirectory) {
-    const entries = await readdir(directory, {withFileTypes: true});
-    for (const entry of entries) {
-      if (!expected.has(entry.name)) {
-        drift.push(`${path.join(directory, entry.name)} (unexpected)`);
+      );
+      if (issue !== undefined) drift.push(`${target} (${issue})`);
+      await runHook(hooks, 'afterArtifactInspected', {
+        filename,
+        mode: 'mapped',
+        target,
+      });
+      await assertSecureArtifactDirectoryBindings(bindings);
+    }
+    for (const [directory, expected] of filesByDirectory) {
+      if (!bindingsByDirectory.has(directory)) continue;
+      await assertSecureArtifactDirectoryBindings(bindings);
+      const entries = await readdir(directory, {withFileTypes: true});
+      await assertSecureArtifactDirectoryBindings(bindings);
+      for (const entry of entries) {
+        if (!expected.has(entry.name)) {
+          drift.push(`${path.join(directory, entry.name)} (unexpected)`);
+        }
       }
     }
-  }
+  });
   if (drift.length > 0) {
     throw new Error(`generated artifact drift: ${drift.join(', ')}; run generate`);
   }
@@ -429,9 +506,12 @@ export async function run(argv = process.argv.slice(2), runtimeOptions = {}) {
     if (targetMap) {
       await writeArtifactTargets(targetMap.targets, artifacts, {
         projectRoot: targetMap.projectRoot,
+        beforeCommit: runtimeOptions.beforeArtifactCommit,
       });
     } else {
-      await writeArtifacts(outputDirectory, artifacts);
+      await writeArtifacts(outputDirectory, artifacts, {
+        beforeCommit: runtimeOptions.beforeArtifactCommit,
+      });
     }
     return {
       command,
@@ -495,27 +575,35 @@ async function runSnapshotChild(argv, encoded) {
     payload.catalog,
     {requireReadOnly: true},
   );
+  const verifySnapshot = () => verifyGeneratorSourceFiles(
+    GENERATOR_SOURCE_DIRECTORY,
+    GENERATOR_SOURCE_PATH_PREFIX,
+    payload.catalog,
+    {requireReadOnly: true},
+  );
+  let verifiedBeforeCommit = false;
   let result;
   let runFailure;
   try {
     result = await run(argv, {
       generatorExecutionBinding: 'IMMUTABLE_SOURCE_SNAPSHOT_V1',
       generatorSourceFiles: payload.catalog,
+      beforeArtifactCommit: async () => {
+        await verifySnapshot();
+        verifiedBeforeCommit = true;
+      },
     });
   } catch (error) {
     runFailure = error;
   }
-  try {
-    await verifyGeneratorSourceFiles(
-      GENERATOR_SOURCE_DIRECTORY,
-      GENERATOR_SOURCE_PATH_PREFIX,
-      payload.catalog,
-      {requireReadOnly: true},
-    );
-  } catch (verificationFailure) {
-    throw new Error(verificationFailure.message, {
-      cause: runFailure ?? verificationFailure,
-    });
+  if (result?.command !== 'generate' || !verifiedBeforeCommit) {
+    try {
+      await verifySnapshot();
+    } catch (verificationFailure) {
+      throw new Error(verificationFailure.message, {
+        cause: runFailure ?? verificationFailure,
+      });
+    }
   }
   if (runFailure !== undefined) throw runFailure;
   process.stdout.write(`${result.command}: ${result.profileId}\n`);

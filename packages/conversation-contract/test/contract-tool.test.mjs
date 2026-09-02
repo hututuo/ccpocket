@@ -308,6 +308,42 @@ test('CLI generation executes from and attests one immutable source snapshot', a
   }
 });
 
+test('CLI final source verification runs inside the artifact commit boundary', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-snapshot-commit-'));
+  const args = [
+    'generate',
+    '--registry', path.join(fixtures, 'registry.json'),
+    '--vectors', path.join(fixtures, 'vectors.json'),
+    '--out', directory,
+  ];
+  try {
+    await run(args);
+    const before = new Map();
+    for (const filename of GENERATED_FILES) {
+      before.set(filename, await readFile(path.join(directory, filename)));
+    }
+    let verified = false;
+    await assert.rejects(
+      run(args, {
+        beforeArtifactCommit: async () => {
+          verified = true;
+          throw new Error('injected snapshot verification failure');
+        },
+      }),
+      /injected snapshot verification failure/,
+    );
+    assert.equal(verified, true);
+    for (const filename of GENERATED_FILES) {
+      assert.deepEqual(
+        await readFile(path.join(directory, filename)),
+        before.get(filename),
+      );
+    }
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
 test('applies SHA-256 schema format only to the exact named scalar', async () => {
   const registry = await load('registry.json');
   const vectors = await load('vectors.json');
@@ -1206,6 +1242,43 @@ test('mapped project targets generate and check one exact artifact set', async (
       }),
     );
 
+    const docsDirectory = path.join(directory, 'docs/generated');
+    const displacedDocsDirectory = path.join(directory, 'docs/generated-original');
+    const replacementDocsDirectory = path.join(directory, 'docs/generated-replacement');
+    await mkdir(replacementDocsDirectory);
+    await copyFile(
+      path.join(docsDirectory, 'schema.json'),
+      path.join(replacementDocsDirectory, 'schema.json'),
+    );
+    await copyFile(
+      path.join(docsDirectory, 'profile-manifest.json'),
+      path.join(replacementDocsDirectory, 'profile-manifest.json'),
+    );
+    await writeFile(
+      path.join(replacementDocsDirectory, 'schema.json'),
+      '{"wrong":true}\n',
+      'utf8',
+    );
+    let docsDirectorySwapped = false;
+    await assert.rejects(
+      run(['check', ...args], {
+        hooks: {
+          afterArtifactInspected: async ({filename, mode}) => {
+            if (!docsDirectorySwapped && filename === 'schema.json' && mode === 'mapped') {
+              docsDirectorySwapped = true;
+              await rename(docsDirectory, displacedDocsDirectory);
+              await rename(replacementDocsDirectory, docsDirectory);
+            }
+          },
+        },
+      }),
+      /bound directory was externally replaced/,
+    );
+    assert.equal(docsDirectorySwapped, true);
+    await rm(docsDirectory, {recursive: true, force: true});
+    await rename(displacedDocsDirectory, docsDirectory);
+    await assert.doesNotReject(run(['check', ...args]));
+
     if (process.platform !== 'win32') {
       const executableTarget = path.join(directory, 'bridge/generated/contract.ts');
       await chmod(executableTarget, 0o755);
@@ -1372,6 +1445,46 @@ test('transaction faults during backup or install restore the complete prior art
     assert.deepEqual(
       (await readdir(await realpath(directory))).filter(
         (name) => name.startsWith('.ccpocket-contract-targets'),
+      ),
+      [],
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('final provenance failure rolls back before artifact transaction commit', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-precommit-'));
+  try {
+    const targets = new Map([
+      ['schema.json', path.join(directory, 'docs/schema.json')],
+      ['profile-manifest.json', path.join(directory, 'docs/profile-manifest.json')],
+      ['contract.ts', path.join(directory, 'bridge/contract.ts')],
+      ['contract.dart', path.join(directory, 'mobile/contract.dart')],
+    ]);
+    const previous = fixtureArtifacts('P');
+    const replacement = fixtureArtifacts('Q');
+    await writeArtifactTargets(targets, previous, {projectRoot: directory});
+    let verified = false;
+
+    await assert.rejects(
+      writeArtifactTargets(targets, replacement, {
+        projectRoot: directory,
+        beforeCommit: async () => {
+          verified = true;
+          throw new Error('injected final provenance failure');
+        },
+      }),
+      /injected final provenance failure/,
+    );
+
+    assert.equal(verified, true);
+    for (const filename of GENERATED_FILES) {
+      assert.equal(await readFile(targets.get(filename), 'utf8'), previous.get(filename));
+    }
+    assert.deepEqual(
+      (await readdir(directory)).filter(
+        (name) => name === TRANSACTION_LOCK_NAME || name.startsWith(TRANSACTION_STAGE_PREFIX),
       ),
       [],
     );
@@ -1584,6 +1697,40 @@ test('check detects generated drift without modifying the target', async () => {
     await assert.rejects(run(args), /generated artifact drift: contract.ts/);
     assert.equal(await readFile(target, 'utf8'), changed);
     await writeFile(target, original, 'utf8');
+
+    const displacedDirectory = `${directory}-bound-original`;
+    const replacementDirectory = `${directory}-bound-replacement`;
+    await mkdir(replacementDirectory);
+    for (const filename of GENERATED_FILES) {
+      await copyFile(
+        path.join(directory, filename),
+        path.join(replacementDirectory, filename),
+      );
+    }
+    await writeFile(
+      path.join(replacementDirectory, 'schema.json'),
+      '{"wrong":true}\n',
+      'utf8',
+    );
+    let directorySwapped = false;
+    await assert.rejects(
+      run(args, {
+        hooks: {
+          afterArtifactInspected: async ({filename, mode}) => {
+            if (!directorySwapped && filename === 'schema.json' && mode === 'standalone') {
+              directorySwapped = true;
+              await rename(directory, displacedDirectory);
+              await rename(replacementDirectory, directory);
+            }
+          },
+        },
+      }),
+      /generated artifact directory changed while checked/,
+    );
+    assert.equal(directorySwapped, true);
+    await rm(directory, {recursive: true, force: true});
+    await rename(displacedDirectory, directory);
+    await assert.doesNotReject(run(args));
 
     if (process.platform !== 'win32') {
       await chmod(target, 0o755);
