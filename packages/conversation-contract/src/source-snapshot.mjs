@@ -14,6 +14,10 @@ import {compareUtf16, digestBytes} from './canonical.mjs';
 
 const SOURCE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 
+async function runHook(hooks, name, details) {
+  if (hooks?.[name] !== undefined) await hooks[name](details);
+}
+
 function sameFileIdentity(left, right) {
   return left.dev === right.dev &&
     left.ino === right.ino &&
@@ -111,12 +115,17 @@ export async function verifyGeneratorSourceFiles(
   }
 }
 
-async function disposeSnapshot(directory) {
+async function disposeSnapshot(directory, hooks) {
   await chmod(directory, 0o700).catch(() => {});
   await rm(directory, {recursive: true, force: true});
+  await runHook(hooks, 'afterSnapshotDispose', {directory});
 }
 
-export async function createGeneratorSourceSnapshot(sourceDirectory, pathPrefix) {
+export async function createGeneratorSourceSnapshot(
+  sourceDirectory,
+  pathPrefix,
+  {hooks} = {},
+) {
   const captured = await captureGeneratorSourceFiles(sourceDirectory, pathPrefix);
   const directory = await mkdtemp(path.join(
     path.dirname(sourceDirectory),
@@ -130,6 +139,7 @@ export async function createGeneratorSourceSnapshot(sourceDirectory, pathPrefix)
       });
     }
     await chmod(directory, 0o500);
+    await runHook(hooks, 'beforeSnapshotVerification', {directory});
     await verifyGeneratorSourceFiles(
       directory,
       pathPrefix,
@@ -139,10 +149,17 @@ export async function createGeneratorSourceSnapshot(sourceDirectory, pathPrefix)
     return {
       catalog: captured.catalog,
       directory,
-      dispose: () => disposeSnapshot(directory),
+      dispose: () => disposeSnapshot(directory, hooks),
     };
   } catch (error) {
-    await disposeSnapshot(directory);
+    try {
+      await disposeSnapshot(directory, hooks);
+    } catch (disposeFailure) {
+      throw new AggregateError(
+        [error, disposeFailure],
+        'generator source snapshot creation and cleanup both failed',
+      );
+    }
     throw error;
   }
 }

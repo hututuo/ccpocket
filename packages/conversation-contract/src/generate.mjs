@@ -342,7 +342,7 @@ async function guardedMutation({
   return value;
 }
 
-async function closeBindings(bindings) {
+async function closeBindings(bindings, {hooks, operation} = {}) {
   const failures = [];
   for (const binding of [...new Set(bindings)].reverse()) {
     try {
@@ -350,8 +350,30 @@ async function closeBindings(bindings) {
     } catch (error) {
       failures.push(error);
     }
+    try {
+      await runHook(hooks, 'afterBindingClose', {
+        operation,
+        directory: binding.path,
+      });
+    } catch (error) {
+      failures.push(error);
+    }
   }
   if (failures.length > 0) throw new AggregateError(failures, 'failed to close directory bindings');
+}
+
+async function finishWithCleanup(operationFailure, cleanup, message) {
+  let cleanupFailure;
+  try {
+    await cleanup();
+  } catch (error) {
+    cleanupFailure = error;
+  }
+  if (operationFailure !== undefined && cleanupFailure !== undefined) {
+    throw new AggregateError([operationFailure, cleanupFailure], message);
+  }
+  if (operationFailure !== undefined) throw operationFailure;
+  if (cleanupFailure !== undefined) throw cleanupFailure;
 }
 
 async function canonicalizeTrustedSystemAlias(requested) {
@@ -683,6 +705,7 @@ export async function writeArtifacts(
   {beforeCommit, hooks} = {},
 ) {
   const prepared = await prepareStandaloneOutputDirectory(outputDirectory);
+  let operationFailure;
   try {
     const targets = new Map(GENERATED_FILES.map((filename) => [
       filename,
@@ -694,9 +717,17 @@ export async function writeArtifacts(
       beforeCommit,
       hooks,
     });
-  } finally {
-    await prepared.projectRootBinding.handle.close();
+  } catch (error) {
+    operationFailure = error;
   }
+  await finishWithCleanup(
+    operationFailure,
+    () => closeBindings([prepared.projectRootBinding], {
+      hooks,
+      operation: 'close-standalone-project-root-binding',
+    }),
+    'artifact transaction and standalone directory binding cleanup both failed',
+  );
 }
 
 function commonAncestor(paths) {
@@ -1179,6 +1210,7 @@ export async function writeArtifactTargets(
     return binding;
   }
 
+  let operationFailure;
   try {
     const targetParentBindings = new Map();
     for (const target of normalizedTargets.values()) {
@@ -1458,7 +1490,15 @@ export async function writeArtifactTargets(
     } catch (cleanupFailure) {
       throw recoveryError(recoveryLocations, cleanupFailure, cleanupFailure);
     }
-  } finally {
-    await closeBindings(ownedBindings);
+  } catch (error) {
+    operationFailure = error;
   }
+  await finishWithCleanup(
+    operationFailure,
+    () => closeBindings(ownedBindings, {
+      hooks,
+      operation: 'close-owned-bindings',
+    }),
+    'artifact transaction and directory binding cleanup both failed',
+  );
 }

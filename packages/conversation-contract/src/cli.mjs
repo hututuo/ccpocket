@@ -608,6 +608,28 @@ export async function executeVerifiedSnapshotCommand(
   return result;
 }
 
+async function executeWithCleanup(action, cleanup, message) {
+  let result;
+  let operationFailure;
+  try {
+    result = await action();
+  } catch (error) {
+    operationFailure = error;
+  }
+  let cleanupFailure;
+  try {
+    await cleanup();
+  } catch (error) {
+    cleanupFailure = error;
+  }
+  if (operationFailure !== undefined && cleanupFailure !== undefined) {
+    throw new AggregateError([operationFailure, cleanupFailure], message);
+  }
+  if (operationFailure !== undefined) throw operationFailure;
+  if (cleanupFailure !== undefined) throw cleanupFailure;
+  return result;
+}
+
 async function runSnapshotChild(argv, encoded) {
   let payload;
   try {
@@ -652,11 +674,11 @@ async function main(argv) {
     GENERATOR_SOURCE_DIRECTORY,
     GENERATOR_SOURCE_PATH_PREFIX,
   );
-  try {
-    process.exitCode = await spawnSnapshotCli(snapshot, argv);
-  } finally {
-    await snapshot.dispose();
-  }
+  process.exitCode = await executeWithCleanup(
+    () => spawnSnapshotCli(snapshot, argv),
+    () => snapshot.dispose(),
+    'generator snapshot execution and cleanup both failed',
+  );
 }
 
 if (process.env[SOURCE_SNAPSHOT_ENV] !== undefined ||

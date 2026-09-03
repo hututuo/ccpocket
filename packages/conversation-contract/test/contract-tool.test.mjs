@@ -389,6 +389,33 @@ test('snapshot execution preserves recovery diagnostics when final verification 
   assert.equal(verificationCalls, 2);
 });
 
+test('source snapshot creation preserves verification and disposal failures', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-source-cleanup-'));
+  try {
+    await writeFile(path.join(directory, 'source.mjs'), 'export const value = 1;\n');
+    await assert.rejects(
+      createGeneratorSourceSnapshot(directory, 'source', {
+        hooks: {
+          beforeSnapshotVerification() {
+            throw new Error('injected snapshot verification failure');
+          },
+          afterSnapshotDispose() {
+            throw new Error('injected snapshot disposal failure');
+          },
+        },
+      }),
+      (error) => {
+        assert.equal(error instanceof AggregateError, true);
+        assert.match(formatCliError(error), /injected snapshot verification failure/);
+        assert.match(formatCliError(error), /injected snapshot disposal failure/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
 test('applies SHA-256 schema format only to the exact named scalar', async () => {
   const registry = await load('registry.json');
   const vectors = await load('vectors.json');
@@ -1538,6 +1565,36 @@ test('final provenance failure rolls back before artifact transaction commit', a
   }
 });
 
+test('standalone binding close failure preserves the artifact transaction failure', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-standalone-close-'));
+  try {
+    await writeArtifacts(directory, fixtureArtifacts('standalone-close-before'));
+    await assert.rejects(
+      writeArtifacts(directory, fixtureArtifacts('standalone-close-after'), {
+        beforeCommit: async () => {
+          throw new Error('injected standalone transaction failure');
+        },
+        hooks: {
+          afterBindingClose({operation}) {
+            if (operation === 'close-standalone-project-root-binding') {
+              throw new Error('injected standalone binding close failure');
+            }
+          },
+        },
+      }),
+      (error) => {
+        assert.equal(error instanceof AggregateError, true);
+        const rendered = formatCliError(error);
+        assert.match(rendered, /injected standalone transaction failure/);
+        assert.match(rendered, /injected standalone binding close failure/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
 test('successful final provenance callback cannot commit a modified installed artifact', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-final-drift-'));
   try {
@@ -1761,6 +1818,72 @@ test('rollback never deletes an externally replaced target and retains recovery 
       ]),
       /unfinished transaction/,
     );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('binding close failure preserves transaction recovery diagnostics through final verification', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-close-chain-'));
+  try {
+    const targets = new Map(GENERATED_FILES.map((filename) => [
+      filename,
+      path.join(directory, filename),
+    ]));
+    await writeArtifactTargets(targets, fixtureArtifacts('close-chain-before'), {
+      projectRoot: directory,
+    });
+    let verificationCalls = 0;
+    let targetReplaced = false;
+    let closeFailureInjected = false;
+
+    await assert.rejects(
+      executeVerifiedSnapshotCommand([], {
+        catalog: [],
+        runCommand: async (_argv, runtimeOptions) => {
+          await writeArtifactTargets(targets, fixtureArtifacts('close-chain-after'), {
+            projectRoot: directory,
+            beforeCommit: runtimeOptions.beforeArtifactCommit,
+            hooks: {
+              async beforeRollbackRemove(record) {
+                if (targetReplaced || record.filename !== 'schema.json') return;
+                targetReplaced = true;
+                await unlink(record.target);
+                await writeFile(record.target, 'external close-chain replacement', 'utf8');
+              },
+              afterBindingClose({operation}) {
+                if (closeFailureInjected || operation !== 'close-owned-bindings') return;
+                closeFailureInjected = true;
+                throw new Error('injected binding close failure');
+              },
+            },
+          });
+        },
+        verifySnapshot: async () => {
+          verificationCalls += 1;
+          throw new Error(
+            verificationCalls === 1
+              ? 'injected commit snapshot failure'
+              : 'injected final snapshot failure',
+          );
+        },
+      }),
+      (error) => {
+        assert.equal(error instanceof AggregateError, true);
+        const rendered = formatCliError(error);
+        assert.match(rendered, /automatic recovery stopped/);
+        assert.match(rendered, /stage /);
+        assert.match(rendered, /lock /);
+        assert.match(rendered, /injected commit snapshot failure/);
+        assert.match(rendered, /installed artifact was externally replaced/);
+        assert.match(rendered, /injected binding close failure/);
+        assert.match(rendered, /injected final snapshot failure/);
+        return true;
+      },
+    );
+    assert.equal(verificationCalls, 2);
+    assert.equal(targetReplaced, true);
+    assert.equal(closeFailureInjected, true);
   } finally {
     await rm(directory, {recursive: true, force: true});
   }
