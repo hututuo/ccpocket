@@ -1,7 +1,17 @@
 #!/usr/bin/env node
 
-import { execFile } from 'node:child_process';
-import { lstat, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {execFile, spawn} from 'node:child_process';
+import {constants as fsConstants} from 'node:fs';
+import {
+  lstat,
+  mkdtemp,
+  open,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,8 +19,8 @@ import { parseArgs, promisify } from 'node:util';
 
 import {
   GENERATED_FILES,
-  assertSecureDirectory,
   assertOutputDirectory,
+  bindSecureDirectory,
   findTransactionResidues,
   generateArtifacts,
   resolveProjectTarget,
@@ -20,6 +30,15 @@ import {
   writeArtifacts,
 } from './generate.mjs';
 import { parseStrictJson } from './strict-json.mjs';
+import {
+  combineFailures,
+  finishWithCleanup,
+  runWithCleanup,
+} from './cleanup.mjs';
+import {
+  createGeneratorSourceSnapshot,
+  verifyGeneratorSourceFiles,
+} from './source-snapshot.mjs';
 import { validateInputs } from './validate.mjs';
 
 export { parseStrictJson } from './strict-json.mjs';
@@ -27,6 +46,204 @@ export { parseStrictJson } from './strict-json.mjs';
 const execFileAsync = promisify(execFile);
 const EXPECTED_DART_FORMATTER_VERSION = '3.13.0';
 const MISE_FLUTTER_VERSION = '3.47.0';
+const GENERATOR_SOURCE_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
+const GENERATOR_SOURCE_PATH_PREFIX = 'packages/conversation-contract/src';
+const SOURCE_SNAPSHOT_ENV = 'CCPOCKET_CONTRACT_SOURCE_SNAPSHOT_V1';
+const ARTIFACT_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+const DIRECTORY_OPEN_FLAGS = fsConstants.O_RDONLY |
+  (fsConstants.O_DIRECTORY ?? 0) |
+  (fsConstants.O_NOFOLLOW ?? 0);
+
+function hasExecutableMode(status) {
+  if (process.platform === 'win32') return false;
+  return typeof status.mode === 'bigint'
+    ? (status.mode & 0o111n) !== 0n
+    : (status.mode & 0o111) !== 0;
+}
+
+function sameArtifactIdentity(left, right) {
+  return left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs;
+}
+
+async function runHook(hooks, name, details) {
+  if (hooks?.[name] !== undefined) await hooks[name](details);
+}
+
+async function bindArtifactDirectory(directory) {
+  const lexicalBefore = await lstat(directory, {bigint: true});
+  if (lexicalBefore.isSymbolicLink() || !lexicalBefore.isDirectory()) {
+    throw new Error(`generated artifact directory is not regular: ${directory}`);
+  }
+  const handle = await open(directory, DIRECTORY_OPEN_FLAGS);
+  try {
+    const handleStatus = await handle.stat({bigint: true});
+    const canonical = await realpath(directory);
+    const lexicalAfter = await lstat(directory, {bigint: true});
+    for (const status of [handleStatus, lexicalAfter]) {
+      if (!status.isDirectory() ||
+          status.dev !== lexicalBefore.dev ||
+          status.ino !== lexicalBefore.ino) {
+        throw new Error(`generated artifact directory changed while bound: ${directory}`);
+      }
+    }
+    return {
+      canonical,
+      directory,
+      handle,
+      identity: {dev: handleStatus.dev, ino: handleStatus.ino},
+    };
+  } catch (error) {
+    await finishWithCleanup(
+      error,
+      () => handle.close(),
+      'artifact directory binding and handle cleanup both failed',
+    );
+  }
+}
+
+async function assertArtifactDirectoryBinding(binding) {
+  const handleBefore = await binding.handle.stat({bigint: true});
+  const lexical = await lstat(binding.directory, {bigint: true});
+  const canonical = await realpath(binding.directory);
+  const handleAfter = await binding.handle.stat({bigint: true});
+  for (const status of [handleBefore, lexical, handleAfter]) {
+    if (!status.isDirectory() ||
+        status.dev !== binding.identity.dev ||
+        status.ino !== binding.identity.ino) {
+      throw new Error(
+        `generated artifact directory changed while checked: ${binding.directory}`,
+      );
+    }
+  }
+  if (lexical.isSymbolicLink() || canonical !== binding.canonical) {
+    throw new Error(`generated artifact directory changed while checked: ${binding.directory}`);
+  }
+}
+
+async function withArtifactDirectoryBinding(directory, action) {
+  const binding = await bindArtifactDirectory(directory);
+  return runWithCleanup(async () => {
+    await assertArtifactDirectoryBinding(binding);
+    let value;
+    let actionFailure;
+    try {
+      value = await action(binding);
+    } catch (error) {
+      actionFailure = error;
+    }
+    try {
+      await assertArtifactDirectoryBinding(binding);
+    } catch (bindingFailure) {
+      throw combineFailures(
+        actionFailure,
+        bindingFailure,
+        'artifact action and final directory verification both failed',
+      );
+    }
+    if (actionFailure !== undefined) throw actionFailure;
+    return value;
+  }, () => binding.handle.close(),
+  'artifact check and directory handle cleanup both failed');
+}
+
+async function assertSecureArtifactDirectoryBindings(bindings) {
+  for (const binding of [...new Set(bindings)]) {
+    await binding.assertCurrent();
+  }
+}
+
+export async function withSecureArtifactDirectoryBindings(bindings, action) {
+  const unique = [...new Set(bindings)];
+  return runWithCleanup(async () => {
+    await assertSecureArtifactDirectoryBindings(unique);
+    let value;
+    let actionFailure;
+    try {
+      value = await action();
+    } catch (error) {
+      actionFailure = error;
+    }
+    try {
+      await assertSecureArtifactDirectoryBindings(unique);
+    } catch (bindingFailure) {
+      throw combineFailures(
+        actionFailure,
+        bindingFailure,
+        'artifact check and final directory verification both failed',
+      );
+    }
+    if (actionFailure !== undefined) throw actionFailure;
+    return value;
+  }, async () => {
+    const failures = [];
+    for (const binding of unique.reverse()) {
+      try {
+        await binding.close();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length > 0) {
+      const closeFailure = new AggregateError(
+        failures,
+        'failed to close generated artifact directory bindings',
+      );
+      throw closeFailure;
+    }
+  }, 'artifact check and directory binding cleanup both failed');
+}
+
+async function inspectArtifact(target, expected, hooks, details) {
+  let handle;
+  try {
+    handle = await open(target, ARTIFACT_OPEN_FLAGS);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return 'missing';
+    if (error?.code === 'ELOOP') return 'not a regular file';
+    throw error;
+  }
+  return runWithCleanup(async () => {
+    const handleBefore = await handle.stat({bigint: true});
+    if (!handleBefore.isFile()) return 'not a regular file';
+    if (hasExecutableMode(handleBefore)) return 'must not be executable';
+    await runHook(hooks, 'afterArtifactHandleBound', {
+      ...details,
+      target,
+    });
+    const bytes = await handle.readFile();
+    const handleAfter = await handle.stat({bigint: true});
+    let lexicalAfter;
+    try {
+      lexicalAfter = await lstat(target, {bigint: true});
+    } catch (error) {
+      if (error?.code === 'ENOENT') return 'changed while checked';
+      throw error;
+    }
+    if (!handleAfter.isFile() ||
+        lexicalAfter.isSymbolicLink() ||
+        !lexicalAfter.isFile() ||
+        !sameArtifactIdentity(handleBefore, handleAfter) ||
+        !sameArtifactIdentity(handleAfter, lexicalAfter) ||
+        BigInt(bytes.byteLength) !== handleAfter.size) {
+      return 'changed while checked';
+    }
+    if (hasExecutableMode(handleAfter) || hasExecutableMode(lexicalAfter)) {
+      return 'must not be executable';
+    }
+    return bytes.equals(Buffer.from(expected, 'utf8')) ? undefined : 'content differs';
+  }, async () => {
+    await handle.close();
+    await runHook(hooks, 'afterArtifactHandleClose', {
+      ...details,
+      target,
+    });
+  }, 'artifact inspection and handle cleanup both failed');
+}
 
 export async function runDart(args) {
   try {
@@ -121,103 +338,119 @@ async function loadTargetMap(filename) {
   return {filename: resolved, projectRoot, targets};
 }
 
-async function checkDrift(outputDirectory, artifacts) {
+async function checkDrift(outputDirectory, artifacts, hooks) {
   const canonicalDirectory = await assertOutputDirectory(outputDirectory);
   const drift = [];
-  for (const filename of GENERATED_FILES) {
-    const target = path.join(canonicalDirectory, filename);
-    let status;
-    try {
-      status = await lstat(target);
-    } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
+  await withArtifactDirectoryBinding(canonicalDirectory, async (binding) => {
+    for (const filename of GENERATED_FILES) {
+      const target = path.join(canonicalDirectory, filename);
+      await assertArtifactDirectoryBinding(binding);
+      const issue = await inspectArtifact(
+        target,
+        artifacts.get(filename),
+        hooks,
+        {filename, mode: 'standalone'},
+      );
+      if (issue !== undefined) drift.push(`${filename} (${issue})`);
+      await runHook(hooks, 'afterArtifactInspected', {
+        filename,
+        mode: 'standalone',
+        target,
+      });
+      await assertArtifactDirectoryBinding(binding);
     }
-    if (status === undefined) {
-      drift.push(`${filename} (missing)`);
-      continue;
+    await assertArtifactDirectoryBinding(binding);
+    const entries = await readdir(canonicalDirectory, {withFileTypes: true});
+    await assertArtifactDirectoryBinding(binding);
+    for (const entry of entries) {
+      if (!GENERATED_FILES.includes(entry.name)) {
+        drift.push(`${entry.name} (unexpected)`);
+      }
     }
-    if (!status.isFile() || status.isSymbolicLink()) {
-      drift.push(`${filename} (not a regular file)`);
-      continue;
-    }
-    let committed;
-    try {
-      committed = await readFile(target, 'utf8');
-    } catch {
-      drift.push(`${filename} (missing)`);
-      continue;
-    }
-    if (committed !== artifacts.get(filename)) drift.push(filename);
-  }
-  const entries = await readdir(canonicalDirectory, {withFileTypes: true});
-  for (const entry of entries) {
-    if (!GENERATED_FILES.includes(entry.name)) {
-      drift.push(`${entry.name} (unexpected)`);
-    }
-  }
+  });
   if (drift.length > 0) {
     throw new Error(`generated artifact drift: ${drift.join(', ')}; run generate`);
   }
 }
 
-async function checkTargetDrift(targetMap, artifacts) {
+async function checkTargetDrift(targetMap, artifacts, hooks) {
   const drift = [];
   const filesByDirectory = new Map();
+  for (const filename of GENERATED_FILES) {
+    const target = targetMap.targets.get(filename);
+    const directory = path.dirname(target);
+    if (!filesByDirectory.has(directory)) filesByDirectory.set(directory, new Set());
+    filesByDirectory.get(directory).add(path.basename(target));
+  }
+  const bindingsByDirectory = new Map();
+  for (const directory of filesByDirectory.keys()) {
+    try {
+      bindingsByDirectory.set(
+        directory,
+        await bindSecureDirectory(targetMap.projectRoot, directory),
+      );
+    } catch (error) {
+      drift.push(`${directory} (${error.message})`);
+    }
+  }
+  const bindings = [...bindingsByDirectory.values()];
   const transactionRoots = transactionRootsForTargets(
     targetMap.projectRoot,
     targetMap.targets,
   );
-  for (const residue of await findTransactionResidues(transactionRoots)) {
-    drift.push(`${residue} (unfinished transaction)`);
-  }
-  for (const filename of GENERATED_FILES) {
-    const target = targetMap.targets.get(filename);
-    const directory = path.dirname(target);
-    try {
-      await assertSecureDirectory(targetMap.projectRoot, directory);
-    } catch (error) {
-      drift.push(`${directory} (${error.message})`);
-      continue;
+  await withSecureArtifactDirectoryBindings(bindings, async () => {
+    for (const residue of await findTransactionResidues(transactionRoots)) {
+      drift.push(`${residue} (unfinished transaction)`);
     }
-    if (!filesByDirectory.has(directory)) filesByDirectory.set(directory, new Set());
-    filesByDirectory.get(directory).add(path.basename(target));
-    let status;
-    try {
-      status = await lstat(target);
-    } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
+    for (const filename of GENERATED_FILES) {
+      const target = targetMap.targets.get(filename);
+      const directory = path.dirname(target);
+      if (!bindingsByDirectory.has(directory)) continue;
+      await assertSecureArtifactDirectoryBindings(bindings);
+      const issue = await inspectArtifact(
+        target,
+        artifacts.get(filename),
+        hooks,
+        {filename, mode: 'mapped'},
+      );
+      if (issue !== undefined) drift.push(`${target} (${issue})`);
+      await runHook(hooks, 'afterArtifactInspected', {
+        filename,
+        mode: 'mapped',
+        target,
+      });
+      await assertSecureArtifactDirectoryBindings(bindings);
     }
-    if (status === undefined) {
-      drift.push(`${target} (missing)`);
-      continue;
-    }
-    if (!status.isFile() || status.isSymbolicLink()) {
-      drift.push(`${target} (not a regular file)`);
-      continue;
-    }
-    let committed;
-    try {
-      committed = await readFile(target, 'utf8');
-    } catch {
-      drift.push(`${target} (missing)`);
-      continue;
-    }
-    if (committed !== artifacts.get(filename)) drift.push(target);
-  }
-  for (const [directory, expected] of filesByDirectory) {
-    const entries = await readdir(directory, {withFileTypes: true});
-    for (const entry of entries) {
-      if (!expected.has(entry.name)) {
-        drift.push(`${path.join(directory, entry.name)} (unexpected)`);
+    for (const [directory, expected] of filesByDirectory) {
+      if (!bindingsByDirectory.has(directory)) continue;
+      await assertSecureArtifactDirectoryBindings(bindings);
+      const entries = await readdir(directory, {withFileTypes: true});
+      await assertSecureArtifactDirectoryBindings(bindings);
+      for (const entry of entries) {
+        if (!expected.has(entry.name)) {
+          drift.push(`${path.join(directory, entry.name)} (unexpected)`);
+        }
       }
     }
-  }
+  });
   if (drift.length > 0) {
     throw new Error(`generated artifact drift: ${drift.join(', ')}; run generate`);
   }
 }
 
-async function formatDartArtifact(model) {
+function artifactTargetsForGeneration(targetMap) {
+  if (!targetMap) {
+    return Object.fromEntries(GENERATED_FILES.map((filename) => [filename, filename]));
+  }
+  return Object.fromEntries(GENERATED_FILES.map((filename) => [
+    filename,
+    path.relative(targetMap.projectRoot, targetMap.targets.get(filename))
+      .split(path.sep)
+      .join('/'),
+  ]));
+}
+
+async function formatDartArtifact(model, generationOptions, hooks) {
   const {stdout, stderr} = await runDart(['--version']);
   const versionText = `${stdout}\n${stderr}`;
   const version = /Dart SDK version:\s*([^\s]+)/.exec(versionText)?.[1];
@@ -227,22 +460,25 @@ async function formatDartArtifact(model) {
     );
   }
   const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-dart-'));
-  try {
+  return runWithCleanup(async () => {
     const filename = path.join(directory, 'contract.dart');
-    const raw = generateArtifacts(model).get('contract.dart');
+    await runHook(hooks, 'beforeDartArtifactFormat', {directory, filename});
+    const raw = generateArtifacts(model, generationOptions).get('contract.dart');
     await writeFile(filename, raw, 'utf8');
     await runDart(['format', filename]);
     const formatted = await readFile(filename, 'utf8');
     return generateArtifacts(model, {
+      ...generationOptions,
       dartSource: formatted,
       dartFormatterVersion: version,
     });
-  } finally {
+  }, async () => {
     await rm(directory, {recursive: true, force: true});
-  }
+    await runHook(hooks, 'afterDartTempCleanup', {directory});
+  }, 'Dart artifact formatting and temporary-directory cleanup both failed');
 }
 
-export async function run(argv = process.argv.slice(2)) {
+export async function run(argv = process.argv.slice(2), runtimeOptions = {}) {
   const {values, positionals} = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -273,16 +509,24 @@ export async function run(argv = process.argv.slice(2)) {
   const targetMap = values['target-map']
     ? await loadTargetMap(values['target-map'])
     : undefined;
+  const generationOptions = {
+    artifactTargets: artifactTargetsForGeneration(targetMap),
+    generatorExecutionBinding: runtimeOptions.generatorExecutionBinding,
+    generatorSourceFiles: runtimeOptions.generatorSourceFiles,
+  };
   const artifacts = values['format-dart']
-    ? await formatDartArtifact(model)
-    : generateArtifacts(model);
+    ? await formatDartArtifact(model, generationOptions, runtimeOptions.hooks)
+    : generateArtifacts(model, generationOptions);
   if (command === 'generate') {
     if (targetMap) {
       await writeArtifactTargets(targetMap.targets, artifacts, {
         projectRoot: targetMap.projectRoot,
+        beforeCommit: runtimeOptions.beforeArtifactCommit,
       });
     } else {
-      await writeArtifacts(outputDirectory, artifacts);
+      await writeArtifacts(outputDirectory, artifacts, {
+        beforeCommit: runtimeOptions.beforeArtifactCommit,
+      });
     }
     return {
       command,
@@ -290,8 +534,8 @@ export async function run(argv = process.argv.slice(2)) {
       ...(targetMap ? {targetMap: targetMap.filename} : {outputDirectory}),
     };
   }
-  if (targetMap) await checkTargetDrift(targetMap, artifacts);
-  else await checkDrift(outputDirectory, artifacts);
+  if (targetMap) await checkTargetDrift(targetMap, artifacts, runtimeOptions.hooks);
+  else await checkDrift(outputDirectory, artifacts, runtimeOptions.hooks);
   return {
     command,
     profileId: model.activeProfileId,
@@ -299,13 +543,173 @@ export async function run(argv = process.argv.slice(2)) {
   };
 }
 
-if (fileURLToPath(import.meta.url) === path.resolve(process.argv[1] ?? '')) {
-  run()
-    .then((result) => {
-      process.stdout.write(`${result.command}: ${result.profileId}\n`);
-    })
-    .catch((error) => {
-      process.stderr.write(`conversation-contract: ${error.message}\n`);
-      process.exitCode = 1;
+function spawnSnapshotCli(snapshot, argv) {
+  const payload = Buffer.from(JSON.stringify({
+    catalog: snapshot.catalog,
+    directory: snapshot.directory,
+  }), 'utf8').toString('base64');
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [path.join(snapshot.directory, 'cli.mjs'), ...argv],
+      {
+        cwd: process.cwd(),
+        env: {...process.env, [SOURCE_SNAPSHOT_ENV]: payload},
+        stdio: 'inherit',
+      },
+    );
+    child.once('error', reject);
+    child.once('close', (code, signal) => {
+      if (signal !== null) {
+        reject(new Error(`generator snapshot child terminated by ${signal}`));
+      } else {
+        resolve(code ?? 1);
+      }
     });
+  });
+}
+
+export async function executeSnapshotChildWithCleanup(action, cleanup) {
+  let exitCode;
+  let launchFailure;
+  try {
+    exitCode = await action();
+  } catch (error) {
+    launchFailure = error;
+  }
+  let cleanupFailure;
+  try {
+    await cleanup();
+  } catch (error) {
+    cleanupFailure = error;
+  }
+  const childFailure = launchFailure ?? (
+    exitCode === 0
+      ? undefined
+      : Object.assign(
+          new Error(`generator snapshot child exited with code ${exitCode}`),
+          {exitCode},
+        )
+  );
+  if (childFailure !== undefined && cleanupFailure !== undefined) {
+    throw new AggregateError(
+      [childFailure, cleanupFailure],
+      'generator snapshot execution and cleanup both failed',
+    );
+  }
+  if (launchFailure !== undefined) throw launchFailure;
+  if (cleanupFailure !== undefined) throw cleanupFailure;
+  return exitCode;
+}
+
+export function formatCliError(error) {
+  const messages = [];
+  const seen = new Set();
+  function visit(current) {
+    if (current === null || typeof current !== 'object' || seen.has(current)) return;
+    seen.add(current);
+    if (typeof current.message === 'string' && current.message.length > 0) {
+      messages.push(current.message);
+    }
+    if (current instanceof AggregateError) {
+      for (const nested of current.errors) visit(nested);
+    }
+    visit(current.cause);
+  }
+  visit(error);
+  return [...new Set(messages)].join('\ncaused by: ');
+}
+
+export async function executeVerifiedSnapshotCommand(
+  argv,
+  {catalog, runCommand = run, verifySnapshot},
+) {
+  let verifiedBeforeCommit = false;
+  let result;
+  let runFailure;
+  try {
+    result = await runCommand(argv, {
+      generatorExecutionBinding: 'IMMUTABLE_SOURCE_SNAPSHOT_V1',
+      generatorSourceFiles: catalog,
+      beforeArtifactCommit: async () => {
+        await verifySnapshot();
+        verifiedBeforeCommit = true;
+      },
+    });
+  } catch (error) {
+    runFailure = error;
+  }
+  if (result?.command !== 'generate' || !verifiedBeforeCommit) {
+    try {
+      await verifySnapshot();
+    } catch (verificationFailure) {
+      if (runFailure !== undefined) {
+        throw new AggregateError(
+          [runFailure, verificationFailure],
+          'generator execution and final source snapshot verification both failed',
+        );
+      }
+      throw verificationFailure;
+    }
+  }
+  if (runFailure !== undefined) throw runFailure;
+  return result;
+}
+
+async function runSnapshotChild(argv, encoded) {
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+  } catch {
+    throw new Error('invalid generator source snapshot handoff');
+  }
+  const [payloadDirectory, processSourceDirectory] = await Promise.all([
+    realpath(path.resolve(payload.directory ?? '')),
+    realpath(GENERATOR_SOURCE_DIRECTORY),
+  ]);
+  if (payloadDirectory !== processSourceDirectory ||
+      !Array.isArray(payload.catalog)) {
+    throw new Error('generator source snapshot handoff does not match this process');
+  }
+  await verifyGeneratorSourceFiles(
+    GENERATOR_SOURCE_DIRECTORY,
+    GENERATOR_SOURCE_PATH_PREFIX,
+    payload.catalog,
+    {requireReadOnly: true},
+  );
+  const verifySnapshot = () => verifyGeneratorSourceFiles(
+    GENERATOR_SOURCE_DIRECTORY,
+    GENERATOR_SOURCE_PATH_PREFIX,
+    payload.catalog,
+    {requireReadOnly: true},
+  );
+  const result = await executeVerifiedSnapshotCommand(argv, {
+    catalog: payload.catalog,
+    verifySnapshot,
+  });
+  process.stdout.write(`${result.command}: ${result.profileId}\n`);
+}
+
+async function main(argv) {
+  const encodedSnapshot = process.env[SOURCE_SNAPSHOT_ENV];
+  if (encodedSnapshot !== undefined) {
+    await runSnapshotChild(argv, encodedSnapshot);
+    return;
+  }
+  const snapshot = await createGeneratorSourceSnapshot(
+    GENERATOR_SOURCE_DIRECTORY,
+    GENERATOR_SOURCE_PATH_PREFIX,
+  );
+  process.exitCode = await executeSnapshotChildWithCleanup(
+    () => spawnSnapshotCli(snapshot, argv),
+    () => snapshot.dispose(),
+  );
+}
+
+if (process.env[SOURCE_SNAPSHOT_ENV] !== undefined ||
+    fileURLToPath(import.meta.url) === path.resolve(process.argv[1] ?? '')) {
+  main(process.argv.slice(2)).catch((error) => {
+    process.stderr.write(`conversation-contract: ${formatCliError(error)}\n`);
+    process.exitCode = 1;
+  });
 }

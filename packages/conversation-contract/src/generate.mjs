@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { constants as fsConstants } from 'node:fs';
+import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+} from 'node:fs';
 import {
   lstat,
   link,
@@ -14,9 +22,16 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 
-import { canonicalJson, digestBytes, digestJson } from './canonical.mjs';
+import {canonicalJson, compareUtf16, digestBytes, digestJson} from './canonical.mjs';
 import { digestAuthoritySource } from './b1-digest-authority.mjs';
+import {
+  combineFailures,
+  finishWithCleanup,
+  runWithCleanup,
+  runWithCleanupSync,
+} from './cleanup.mjs';
 import {
   CANONICALIZATION_PROFILE,
   discoverDigestPreimages,
@@ -37,6 +52,135 @@ const TRUSTED_GENERATION_CANONICAL_LIMITS = Object.freeze({
   maxDepth: 512,
   maxNodes: 1_000_000,
 });
+const GENERATOR_SOURCE_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
+const GENERATOR_SOURCE_PATH_PREFIX = 'packages/conversation-contract/src';
+
+function normalizeArtifactTargets(artifactTargets) {
+  const targets = artifactTargets ?? Object.fromEntries(
+    GENERATED_FILES.map((filename) => [filename, filename]),
+  );
+  const actual = Object.keys(targets).sort();
+  const expected = [...GENERATED_FILES].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new TypeError(`artifact targets must map exactly ${expected.join(', ')}`);
+  }
+  return Object.fromEntries(GENERATED_FILES.map((filename) => {
+    const target = targets[filename];
+    if (typeof target !== 'string' || target.length === 0 || path.isAbsolute(target)) {
+      throw new TypeError(`${filename} artifact target must be a non-empty relative path`);
+    }
+    const normalized = target.split(path.sep).join('/');
+    if (normalized === '..' || normalized.startsWith('../')) {
+      throw new TypeError(`${filename} artifact target escapes its provenance root`);
+    }
+    return [filename, normalized];
+  }));
+}
+
+function generatorSourceCatalog() {
+  const entries = readdirSync(GENERATOR_SOURCE_DIRECTORY, {withFileTypes: true})
+    .filter((entry) => entry.name.endsWith('.mjs'))
+    .sort((left, right) => compareUtf16(left.name, right.name));
+  if (entries.length === 0) {
+    throw new Error(`generator source closure is empty: ${GENERATOR_SOURCE_DIRECTORY}`);
+  }
+  return entries.map((entry) => {
+    const filename = path.join(GENERATOR_SOURCE_DIRECTORY, entry.name);
+    if (entry.isSymbolicLink() || !entry.isFile()) {
+      throw new Error(`generator source must be a regular file: ${filename}`);
+    }
+    const lexicalBefore = lstatSync(filename, {bigint: true});
+    if (lexicalBefore.isSymbolicLink() || !lexicalBefore.isFile()) {
+      throw new Error(`generator source must be a regular file: ${filename}`);
+    }
+    let descriptor;
+    return runWithCleanupSync(() => {
+      descriptor = openSync(
+        filename,
+        fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+      );
+      const handleBefore = fstatSync(descriptor, {bigint: true});
+      const bytes = readFileSync(descriptor);
+      const handleAfter = fstatSync(descriptor, {bigint: true});
+      const lexicalAfter = lstatSync(filename, {bigint: true});
+      const statuses = [handleBefore, handleAfter, lexicalAfter];
+      if (statuses.some((status) => !status.isFile()) ||
+          lexicalAfter.isSymbolicLink() ||
+          statuses.some((status) => status.dev !== lexicalBefore.dev ||
+            status.ino !== lexicalBefore.ino ||
+            status.mode !== lexicalBefore.mode ||
+            status.size !== lexicalBefore.size ||
+            status.mtimeNs !== lexicalBefore.mtimeNs ||
+            status.ctimeNs !== lexicalBefore.ctimeNs) ||
+          BigInt(bytes.byteLength) !== lexicalBefore.size) {
+        throw new Error(`generator source changed while it was read: ${filename}`);
+      }
+      return {
+        path: `${GENERATOR_SOURCE_PATH_PREFIX}/${entry.name}`,
+        byteLength: bytes.byteLength,
+        sha256: digestBytes(bytes),
+      };
+    }, () => {
+      if (descriptor !== undefined) closeSync(descriptor);
+    }, 'generator source read and descriptor cleanup both failed');
+  });
+}
+
+function renderProfileManifest(
+  base,
+  artifacts,
+  artifactTargets,
+  generatorSourceFiles,
+  generatorExecutionBinding,
+) {
+  const normalizedTargets = normalizeArtifactTargets(artifactTargets);
+  const sourceFiles = generatorSourceFiles ?? generatorSourceCatalog();
+  const generationProvenance = {
+    generatorExecutionBinding: generatorExecutionBinding ??
+      'LIVE_FILESYSTEM_CATALOG_UNBOUND_V1',
+    generatorSourceDigestAlgorithm: 'SHA-256-JCS-FILE-CATALOG-V1',
+    generatorSourceDigest: digestJson(
+      sourceFiles,
+      TRUSTED_GENERATION_CANONICAL_LIMITS,
+    ),
+    generatorSourceFiles: sourceFiles,
+    targetMapDigestAlgorithm: 'SHA-256-JCS-NORMALIZED-TARGET-MAP-V1',
+    targetMapDigest: digestJson(
+      {formatVersion: 1, artifacts: normalizedTargets},
+      TRUSTED_GENERATION_CANONICAL_LIMITS,
+    ),
+  };
+  let manifestByteLength = 0;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const artifactCatalog = GENERATED_FILES.map((logicalName) => {
+      if (logicalName === 'profile-manifest.json') {
+        return {
+          logicalName,
+          path: normalizedTargets[logicalName],
+          byteLength: manifestByteLength,
+          integrityScope: 'SELF_PATH_AND_SIZE_ONLY',
+        };
+      }
+      const bytes = artifacts.get(logicalName);
+      return {
+        logicalName,
+        path: normalizedTargets[logicalName],
+        byteLength: Buffer.byteLength(bytes, 'utf8'),
+        sha256: digestBytes(bytes),
+        integrityScope: 'SHA256',
+      };
+    });
+    const rendered = canonicalJson({
+      ...base,
+      artifactCatalog,
+      generationProvenance,
+    }, 2, TRUSTED_GENERATION_CANONICAL_LIMITS);
+    const actualByteLength = Buffer.byteLength(rendered, 'utf8');
+    if (actualByteLength === manifestByteLength) return rendered;
+    manifestByteLength = actualByteLength;
+  }
+  throw new Error('profile manifest byte length did not converge');
+}
 
 const DIRECTORY_OPEN_FLAGS = fsConstants.O_RDONLY |
   (fsConstants.O_DIRECTORY ?? 0) |
@@ -117,8 +261,11 @@ async function bindDirectory(directory, {projectRoot, expectedIdentity} = {}) {
     }
     return {path: resolved, canonical, handle, identity};
   } catch (error) {
-    await handle.close();
-    throw error;
+    await finishWithCleanup(
+      error,
+      () => handle.close(),
+      'directory binding and handle cleanup both failed',
+    );
   }
 }
 
@@ -163,7 +310,11 @@ async function withBoundDirectories(bindings, options, action) {
   try {
     await assertBoundDirectories(bindings, options);
   } catch (bindingFailure) {
-    throw new Error(bindingFailure.message, {cause: actionFailure ?? bindingFailure});
+    throw combineFailures(
+      actionFailure,
+      bindingFailure,
+      'directory-bound action and final verification both failed',
+    );
   }
   if (actionFailure !== undefined) throw actionFailure;
   return value;
@@ -198,17 +349,29 @@ async function guardedMutation({
       {projectRoot},
     );
   } catch (bindingFailure) {
-    throw new Error(bindingFailure.message, {cause: mutationFailure ?? bindingFailure});
+    throw combineFailures(
+      mutationFailure,
+      bindingFailure,
+      'directory-bound mutation and final verification both failed',
+    );
   }
   if (mutationFailure !== undefined) throw mutationFailure;
   return value;
 }
 
-async function closeBindings(bindings) {
+async function closeBindings(bindings, {hooks, operation} = {}) {
   const failures = [];
   for (const binding of [...new Set(bindings)].reverse()) {
     try {
       await binding.handle.close();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await runHook(hooks, 'afterBindingClose', {
+        operation,
+        directory: binding.path,
+      });
     } catch (error) {
       failures.push(error);
     }
@@ -245,7 +408,7 @@ async function walkStandaloneOutputDirectory(outputDirectory, {create, keepBindi
   let currentBinding = await bindDirectory(current);
   let retainedBinding;
   bindings.push(currentBinding);
-  try {
+  return runWithCleanup(async () => {
     for (const segment of segments) {
       const child = path.join(current, segment);
       let status = await withBoundDirectories([currentBinding], {}, () => pathStatus(child));
@@ -277,9 +440,9 @@ async function walkStandaloneOutputDirectory(outputDirectory, {create, keepBindi
       return {outputDirectory: currentBinding.canonical, binding: currentBinding};
     }
     return {outputDirectory: currentBinding.canonical};
-  } finally {
+  }, async () => {
     if (!keepBinding || retainedBinding === undefined) await closeBindings(bindings);
-  }
+  }, 'standalone directory traversal and binding cleanup both failed');
 }
 
 export async function resolveRealProjectRoot(configuredRoot) {
@@ -309,10 +472,10 @@ export function resolveProjectTarget(projectRoot, configured, filename) {
   return target;
 }
 
-export async function assertSecureDirectory(
+async function traverseSecureDirectory(
   projectRoot,
   directory,
-  {create = false} = {},
+  {create = false, retainBindings = false} = {},
 ) {
   const root = path.resolve(projectRoot);
   const target = path.resolve(directory);
@@ -321,10 +484,11 @@ export async function assertSecureDirectory(
   }
   const relative = path.relative(root, target);
   const bindings = [];
+  let retained = false;
   let current = root;
   let currentBinding = await bindDirectory(root, {projectRoot: root});
   bindings.push(currentBinding);
-  try {
+  return runWithCleanup(async () => {
     for (const segment of relative === '' ? [] : relative.split(path.sep)) {
       const child = path.join(current, segment);
       let status = await withBoundDirectories(
@@ -364,10 +528,38 @@ export async function assertSecureDirectory(
       currentBinding = childBinding;
     }
     await assertBoundDirectory(currentBinding, {projectRoot: root});
+    if (retainBindings) {
+      retained = true;
+      let closed = false;
+      return {
+        path: target,
+        canonical: currentBinding.canonical,
+        assertCurrent: () => assertBoundDirectories(bindings, {projectRoot: root}),
+        close: async () => {
+          if (closed) return;
+          await closeBindings(bindings);
+          closed = true;
+        },
+      };
+    }
     return target;
-  } finally {
-    await closeBindings(bindings);
-  }
+  }, async () => {
+    if (!retained) await closeBindings(bindings);
+  }, 'secure directory traversal and binding cleanup both failed');
+}
+
+export async function assertSecureDirectory(
+  projectRoot,
+  directory,
+  {create = false} = {},
+) {
+  return traverseSecureDirectory(projectRoot, directory, {create});
+}
+
+export async function bindSecureDirectory(projectRoot, directory) {
+  return traverseSecureDirectory(projectRoot, directory, {
+    retainBindings: true,
+  });
 }
 
 async function prepareStandaloneOutputDirectory(outputDirectory) {
@@ -421,7 +613,13 @@ function activeSource(model) {
 
 export function generateArtifacts(
   model,
-  {dartSource, dartFormatterVersion} = {},
+  {
+    artifactTargets,
+    dartSource,
+    dartFormatterVersion,
+    generatorExecutionBinding,
+    generatorSourceFiles,
+  } = {},
 ) {
   const source = activeSource(model);
   const sourceDigest = digestJson(source, TRUSTED_GENERATION_CANONICAL_LIMITS);
@@ -436,7 +634,7 @@ export function generateArtifacts(
     'contract.ts': digestBytes(typescript),
     'schema.json': digestBytes(schema),
   };
-  const manifest = canonicalJson({
+  const manifestBase = {
     formatVersion: 1,
     generator: '@ccpocket/conversation-contract@0.0.0-private',
     ...(dartFormatterVersion ? {dartFormatterVersion} : {}),
@@ -484,7 +682,18 @@ export function generateArtifacts(
         .sort(),
     }),
     artifactDigests,
-  }, 2, TRUSTED_GENERATION_CANONICAL_LIMITS);
+  };
+  const manifest = renderProfileManifest(
+    manifestBase,
+    new Map([
+      ['schema.json', schema],
+      ['contract.ts', typescript],
+      ['contract.dart', dart],
+    ]),
+    artifactTargets,
+    generatorSourceFiles,
+    generatorExecutionBinding,
+  );
   return new Map([
     ['schema.json', schema],
     ['contract.ts', typescript],
@@ -493,8 +702,13 @@ export function generateArtifacts(
   ]);
 }
 
-export async function writeArtifacts(outputDirectory, artifacts) {
+export async function writeArtifacts(
+  outputDirectory,
+  artifacts,
+  {beforeCommit, hooks} = {},
+) {
   const prepared = await prepareStandaloneOutputDirectory(outputDirectory);
+  let operationFailure;
   try {
     const targets = new Map(GENERATED_FILES.map((filename) => [
       filename,
@@ -503,10 +717,20 @@ export async function writeArtifacts(outputDirectory, artifacts) {
     await writeArtifactTargets(targets, artifacts, {
       projectRoot: prepared.outputDirectory,
       projectRootBinding: prepared.projectRootBinding,
+      beforeCommit,
+      hooks,
     });
-  } finally {
-    await prepared.projectRootBinding.handle.close();
+  } catch (error) {
+    operationFailure = error;
   }
+  await finishWithCleanup(
+    operationFailure,
+    () => closeBindings([prepared.projectRootBinding], {
+      hooks,
+      operation: 'close-standalone-project-root-binding',
+    }),
+    'artifact transaction and standalone directory binding cleanup both failed',
+  );
 }
 
 function commonAncestor(paths) {
@@ -585,6 +809,11 @@ function statusKind(status) {
   return 'other';
 }
 
+function hasExecutableMode(status) {
+  if (process.platform === 'win32') return false;
+  return (status.mode & 0o111n) !== 0n;
+}
+
 async function pathIdentity(filename) {
   const before = await pathStatus(filename);
   if (before === undefined) return undefined;
@@ -599,12 +828,14 @@ async function pathIdentity(filename) {
     if (before.dev !== after.dev ||
         before.ino !== after.ino ||
         before.size !== after.size ||
+        hasExecutableMode(before) !== hasExecutableMode(after) ||
         BigInt(content.length) !== after.size ||
         !after.isFile()) {
       throw new Error(`artifact changed while its identity was recorded: ${filename}`);
     }
     identity.size = after.size;
     identity.digest = digestBytes(content);
+    identity.executable = hasExecutableMode(after);
   }
   return identity;
 }
@@ -615,7 +846,9 @@ function sameIdentity(left, right) {
     left.dev === right.dev &&
     left.ino === right.ino &&
     (left.kind !== 'file' || (
-      left.size === right.size && left.digest === right.digest
+      left.size === right.size &&
+      left.digest === right.digest &&
+      left.executable === right.executable
     ));
 }
 
@@ -630,6 +863,24 @@ async function stablePathIdentity(filename, binding, projectRoot) {
     {projectRoot},
     () => pathIdentity(filename),
   );
+}
+
+async function assertInstalledArtifacts(installed, projectRoot) {
+  const targetParentBindings = [
+    ...new Set(installed.map((record) => record.targetParentBinding)),
+  ];
+  await assertBoundDirectories(targetParentBindings, {projectRoot});
+  for (const record of installed) {
+    const current = await stablePathIdentity(
+      record.target,
+      record.targetParentBinding,
+      projectRoot,
+    );
+    if (!sameIdentity(current, record.identity) || current?.executable === true) {
+      throw new Error(`installed artifact changed before commit: ${record.target}`);
+    }
+  }
+  await assertBoundDirectories(targetParentBindings, {projectRoot});
 }
 
 async function rollbackTransaction({installed, backedUp, hooks, projectRoot}) {
@@ -887,20 +1138,23 @@ function recoveryError(
   original,
   recoveryFailure,
 ) {
-  return new Error(
+  const errors = original === recoveryFailure
+    ? [original]
+    : [original, recoveryFailure];
+  return new AggregateError(
+    errors,
     `artifact transaction failed and automatic recovery stopped; ` +
     `inspect last-known transaction locations under ${transactionRoot} ` +
     `(stage ${stageDirectory}; lock ${lockDirectory}; either may already be absent): ` +
     `original failure: ${original.message}; ` +
     `recovery/cleanup failure: ${recoveryFailure.message}`,
-    {cause: original},
   );
 }
 
 export async function writeArtifactTargets(
   targets,
   artifacts,
-  {projectRoot, projectRootBinding, hooks} = {},
+  {projectRoot, projectRootBinding, hooks, beforeCommit} = {},
 ) {
   if (projectRoot === undefined) {
     throw new Error('projectRoot is required for mapped artifact generation');
@@ -962,6 +1216,7 @@ export async function writeArtifactTargets(
     return binding;
   }
 
+  let operationFailure;
   try {
     const targetParentBindings = new Map();
     for (const target of normalizedTargets.values()) {
@@ -1183,6 +1438,16 @@ export async function writeArtifactTargets(
         }
         await runHook(hooks, 'afterInstall', record);
       }
+      // The new targets are visible, but their exact prior objects remain in
+      // the transaction backup. Final provenance verification belongs here so
+      // a failure follows the ordinary rollback path before cleanup commits
+      // the artifact set by deleting those backups.
+      if (beforeCommit !== undefined) await beforeCommit();
+      // beforeCommit may perform asynchronous source verification while the
+      // installed targets are already visible. Rebind the successful result
+      // to the exact target objects and their retained parent directories
+      // before cleanup deletes the recoverable old artifact set.
+      await assertInstalledArtifacts(installed, realProjectRoot);
     } catch (error) {
       transactionFailure = error;
     }
@@ -1231,7 +1496,15 @@ export async function writeArtifactTargets(
     } catch (cleanupFailure) {
       throw recoveryError(recoveryLocations, cleanupFailure, cleanupFailure);
     }
-  } finally {
-    await closeBindings(ownedBindings);
+  } catch (error) {
+    operationFailure = error;
   }
+  await finishWithCleanup(
+    operationFailure,
+    () => closeBindings(ownedBindings, {
+      hooks,
+      operation: 'close-owned-bindings',
+    }),
+    'artifact transaction and directory binding cleanup both failed',
+  );
 }

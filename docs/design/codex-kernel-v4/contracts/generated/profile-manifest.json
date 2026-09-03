@@ -1,4 +1,33 @@
 {
+  "artifactCatalog": [
+    {
+      "byteLength": 660543,
+      "integrityScope": "SHA256",
+      "logicalName": "schema.json",
+      "path": "docs/design/codex-kernel-v4/contracts/generated/schema.json",
+      "sha256": "67c8425660c48c646607c7d930256fe93fa2b039564ce66be8d3e1ccdcf0de80"
+    },
+    {
+      "byteLength": 1171042,
+      "integrityScope": "SHA256",
+      "logicalName": "contract.ts",
+      "path": "packages/bridge/src/conversation-core/protocol/generated/contract.ts",
+      "sha256": "766050843050f4dba1cd557feee29a7b6e0d35cf01f980ad8af3e7074ed3a299"
+    },
+    {
+      "byteLength": 1468784,
+      "integrityScope": "SHA256",
+      "logicalName": "contract.dart",
+      "path": "apps/mobile/lib/conversation_core/protocol/generated/contract.dart",
+      "sha256": "4865ad1a9f5269fb136b9e811de1f79b25430a3cbfac4af3743dad0daa4e455a"
+    },
+    {
+      "byteLength": 444644,
+      "integrityScope": "SELF_PATH_AND_SIZE_ONLY",
+      "logicalName": "profile-manifest.json",
+      "path": "docs/design/codex-kernel-v4/contracts/generated/profile-manifest.json"
+    }
+  ],
   "artifactDigests": {
     "contract.dart": "4865ad1a9f5269fb136b9e811de1f79b25430a3cbfac4af3743dad0daa4e455a",
     "contract.ts": "766050843050f4dba1cd557feee29a7b6e0d35cf01f980ad8af3e7074ed3a299",
@@ -34,6 +63,120 @@
     "interaction.snapshot.v1"
   ],
   "formatVersion": 1,
+  "generationProvenance": {
+    "generatorExecutionBinding": "IMMUTABLE_SOURCE_SNAPSHOT_V1",
+    "generatorSourceDigest": "3f7c01ed4523760dda12cffae5b31962361f50dac9a27f8d9519c78ff2721e35",
+    "generatorSourceDigestAlgorithm": "SHA-256-JCS-FILE-CATALOG-V1",
+    "generatorSourceFiles": [
+      {
+        "byteLength": 15628,
+        "path": "packages/conversation-contract/src/admission-semantics.mjs",
+        "sha256": "263906e412779953ef816c12134c1787b195d524161ea2b374a765bbd0a7f2f9"
+      },
+      {
+        "byteLength": 33900,
+        "path": "packages/conversation-contract/src/b1-digest-authority.mjs",
+        "sha256": "ae5e295fd687dc648f20886f4ca631d3d0b7848e5fefcce4b52a7cb48b1917ec"
+      },
+      {
+        "byteLength": 2673,
+        "path": "packages/conversation-contract/src/b2-definition-authority.mjs",
+        "sha256": "bb65ccc702a11cac7b167d2f414fecbf57da19d6dca33f0758bfc3380f1e5aa4"
+      },
+      {
+        "byteLength": 9067,
+        "path": "packages/conversation-contract/src/canonical.mjs",
+        "sha256": "6c71ccc67c654786d17e939478d07e3a95265cef84fa25424791a5b6866a945e"
+      },
+      {
+        "byteLength": 1366,
+        "path": "packages/conversation-contract/src/cleanup.mjs",
+        "sha256": "ff7b34dc624964990400022068afd31c762b9da977c3dbf3cc6fc9c394f61a76"
+      },
+      {
+        "byteLength": 24048,
+        "path": "packages/conversation-contract/src/cli.mjs",
+        "sha256": "ff5e00e2b9adbb546de4b41e72f87ee5cfa59a65dc83bc34abdf16c063ae4278"
+      },
+      {
+        "byteLength": 10064,
+        "path": "packages/conversation-contract/src/digest-preimages.mjs",
+        "sha256": "b97b46f3c96c883f0a396bcad66413937bbd2424f5b165506a5df5892d2bcd93"
+      },
+      {
+        "byteLength": 44835,
+        "path": "packages/conversation-contract/src/generate-dart.mjs",
+        "sha256": "bb9b0389269bee67e730ce983dd4da1740ebd0fb2f2ea8dbdee7b0079e411b80"
+      },
+      {
+        "byteLength": 7710,
+        "path": "packages/conversation-contract/src/generate-machine-ddl.mjs",
+        "sha256": "bbbe7d864acf2683b8fc24d56895b0adb6efbbeb39dc447a035ac460dfb2e7ec"
+      },
+      {
+        "byteLength": 5214,
+        "path": "packages/conversation-contract/src/generate-schema.mjs",
+        "sha256": "2b853859ad3f05aaeb56a914d61426bc45537f1f637fbf184a9ac61477b1efbe"
+      },
+      {
+        "byteLength": 31305,
+        "path": "packages/conversation-contract/src/generate-typescript.mjs",
+        "sha256": "ace6837990a4c9790590f3a4a4eea570e07e7f6e1695fd62cb248592dfed9c14"
+      },
+      {
+        "byteLength": 53412,
+        "path": "packages/conversation-contract/src/generate.mjs",
+        "sha256": "4fdebdb4726a8e7d6ce977788bb86144971c5a4968b3bf1ac2cb7484e6fb1c94"
+      },
+      {
+        "byteLength": 29475,
+        "path": "packages/conversation-contract/src/machine-semantics.mjs",
+        "sha256": "6dbb57a06a7c13014ffdfb421dd1773022ec9a3fd67ddc3a2fd934a8b5516782"
+      },
+      {
+        "byteLength": 8112,
+        "path": "packages/conversation-contract/src/names.mjs",
+        "sha256": "22383ea0ad84c9dc517acdf14956456a6988082aa81c43ea30c5b8cd6a654fad"
+      },
+      {
+        "byteLength": 151856,
+        "path": "packages/conversation-contract/src/semantic-oracle.mjs",
+        "sha256": "5e02486f62ddc5712fb628a5a489d02767598530be0e221eb305f0d105c673ef"
+      },
+      {
+        "byteLength": 65629,
+        "path": "packages/conversation-contract/src/semantic-primitives.mjs",
+        "sha256": "84a90fb12a764d33dee3092ca6f1feec05dc68bb06beb7a712e8ffc52f946c16"
+      },
+      {
+        "byteLength": 5606,
+        "path": "packages/conversation-contract/src/source-snapshot.mjs",
+        "sha256": "c9e147677cd8058241960d8cdb510207893c0b934f40569ef49181ba69a54d22"
+      },
+      {
+        "byteLength": 3672,
+        "path": "packages/conversation-contract/src/strict-json.mjs",
+        "sha256": "21ccd659c53a75effc369ca596e83bbd84a94b61aec30b15f4bca698886095ab"
+      },
+      {
+        "byteLength": 29563,
+        "path": "packages/conversation-contract/src/transaction-oracle.mjs",
+        "sha256": "3e8088bb242ab5d22720bfaea083a3b6c2fcfd26bf846b4f906b1179ca66cf4b"
+      },
+      {
+        "byteLength": 43836,
+        "path": "packages/conversation-contract/src/transaction-semantics.mjs",
+        "sha256": "a2e6692f1cf046971a51ed61528e777186dbe73f91ce501fde2f2e6e09552503"
+      },
+      {
+        "byteLength": 47594,
+        "path": "packages/conversation-contract/src/validate.mjs",
+        "sha256": "fcf20cfce48d81c1c661ecbf0269ed2c77c3e9f92a08ee1b0b190dae7b82e87a"
+      }
+    ],
+    "targetMapDigest": "f3b7db63cd91db672fe15acd34f2bc194b749f8aad6c562fe4a92aa3d9e5603d",
+    "targetMapDigestAlgorithm": "SHA-256-JCS-NORMALIZED-TARGET-MAP-V1"
+  },
   "generator": "@ccpocket/conversation-contract@0.0.0-private",
   "hardRuleIds": [
     "rule.capability.claude-typed-not-implemented",

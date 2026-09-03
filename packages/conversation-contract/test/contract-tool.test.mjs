@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
 import {
+  chmod,
+  copyFile,
   lstat,
   mkdir,
   mkdtemp,
@@ -18,8 +21,14 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { digestBytes } from '../src/canonical.mjs';
-import { run } from '../src/cli.mjs';
+import { digestBytes, digestJson } from '../src/canonical.mjs';
+import {
+  executeSnapshotChildWithCleanup,
+  executeVerifiedSnapshotCommand,
+  formatCliError,
+  run,
+  withSecureArtifactDirectoryBindings,
+} from '../src/cli.mjs';
 import { discoverDigestPreimages } from '../src/digest-preimages.mjs';
 import {
   GENERATED_FILES,
@@ -29,6 +38,11 @@ import {
   writeArtifactTargets,
   writeArtifacts,
 } from '../src/generate.mjs';
+import {
+  captureGeneratorSourceFiles,
+  createGeneratorSourceSnapshot,
+  verifyGeneratorSourceFiles,
+} from '../src/source-snapshot.mjs';
 import { validateInputs, validateValue } from '../src/validate.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -148,6 +162,59 @@ test('generation is byte deterministic and manifest digests bind artifacts', asy
     assert.equal(manifest.artifactDigests[filename], digestBytes(first.get(filename)));
     assert.doesNotMatch(first.get(filename), /FutureOnly/);
   }
+  assert.deepEqual(
+    manifest.artifactCatalog.map((entry) => entry.logicalName),
+    GENERATED_FILES,
+  );
+  for (const filename of ['schema.json', 'contract.ts', 'contract.dart']) {
+    const catalogEntry = manifest.artifactCatalog.find(
+      (entry) => entry.logicalName === filename,
+    );
+    assert.deepEqual(catalogEntry, {
+      logicalName: filename,
+      path: filename,
+      byteLength: Buffer.byteLength(first.get(filename), 'utf8'),
+      sha256: digestBytes(first.get(filename)),
+      integrityScope: 'SHA256',
+    });
+  }
+  const manifestEntry = manifest.artifactCatalog.find(
+    (entry) => entry.logicalName === 'profile-manifest.json',
+  );
+  assert.deepEqual(manifestEntry, {
+    logicalName: 'profile-manifest.json',
+    path: 'profile-manifest.json',
+    byteLength: Buffer.byteLength(first.get('profile-manifest.json'), 'utf8'),
+    integrityScope: 'SELF_PATH_AND_SIZE_ONLY',
+  });
+  assert.equal(
+    manifest.generationProvenance.generatorSourceDigest,
+    digestJson(manifest.generationProvenance.generatorSourceFiles),
+  );
+  assert.equal(
+    manifest.generationProvenance.generatorExecutionBinding,
+    'LIVE_FILESYSTEM_CATALOG_UNBOUND_V1',
+  );
+  assert.deepEqual(
+    manifest.generationProvenance.generatorSourceFiles.map((entry) => entry.path),
+    [...manifest.generationProvenance.generatorSourceFiles]
+      .map((entry) => entry.path)
+      .sort(),
+  );
+  assert.ok(
+    manifest.generationProvenance.generatorSourceFiles.some(
+      (entry) => entry.path.endsWith('/generate.mjs'),
+    ),
+  );
+  assert.equal(
+    manifest.generationProvenance.targetMapDigest,
+    digestJson({
+      formatVersion: 1,
+      artifacts: Object.fromEntries(
+        GENERATED_FILES.map((filename) => [filename, filename]),
+      ),
+    }),
+  );
   assert.match(first.get('schema.json'), /draft\/2020-12/);
   assert.match(first.get('contract.ts'), /export function decodeFixtureEnvelope/);
   assert.match(first.get('contract.ts'), /readonly "nullableValue": string \| null/);
@@ -164,6 +231,324 @@ test('generation is byte deterministic and manifest digests bind artifacts', asy
   assert.equal(Object.hasOwn(envelopeProperties, '__proto__'), true);
   assert.deepEqual(envelopeProperties.__proto__, {type: 'string'});
   assert.equal(Object.hasOwn(Object.prototype, 'type'), false);
+});
+
+test('generator source snapshots reject symlinks and isolate later source changes', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-source-input-'));
+  const symlinkDirectory = await mkdtemp(path.join(tmpdir(), 'ccpocket-source-symlink-'));
+  try {
+    const first = path.join(directory, 'first.mjs');
+    const second = path.join(directory, 'second.mjs');
+    await writeFile(first, 'export const value = "first";\n');
+    await writeFile(second, 'export const value = "second";\n');
+    const snapshot = await createGeneratorSourceSnapshot(
+      directory,
+      'packages/conversation-contract/src',
+    );
+    try {
+      const capturedFirst = await readFile(path.join(snapshot.directory, 'first.mjs'));
+      await writeFile(first, 'export const value = "changed";\n');
+      await unlink(second);
+      await verifyGeneratorSourceFiles(
+        snapshot.directory,
+        'packages/conversation-contract/src',
+        snapshot.catalog,
+      );
+      assert.deepEqual(
+        await readFile(path.join(snapshot.directory, 'first.mjs')),
+        capturedFirst,
+      );
+    } finally {
+      await snapshot.dispose();
+    }
+
+    const victim = path.join(symlinkDirectory, 'victim.mjs');
+    await writeFile(victim, 'export const value = "victim";\n');
+    await copyFile(victim, path.join(symlinkDirectory, 'regular.mjs'));
+    await symlink(victim, path.join(symlinkDirectory, 'linked.mjs'));
+    await assert.rejects(
+      captureGeneratorSourceFiles(
+        symlinkDirectory,
+        'packages/conversation-contract/src',
+      ),
+      /generator source must be a regular file/,
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+    await rm(symlinkDirectory, {recursive: true, force: true});
+  }
+});
+
+test('CLI generation executes from and attests one immutable source snapshot', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-snapshot-cli-'));
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(here, '../src/cli.mjs'),
+        'generate',
+        '--registry',
+        path.join(fixtures, 'registry.json'),
+        '--vectors',
+        path.join(fixtures, 'vectors.json'),
+        '--out',
+        directory,
+      ],
+      {encoding: 'utf8'},
+    );
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /generate: fixture\.active/);
+    const manifest = JSON.parse(await readFile(
+      path.join(directory, 'profile-manifest.json'),
+      'utf8',
+    ));
+    assert.equal(
+      manifest.generationProvenance.generatorExecutionBinding,
+      'IMMUTABLE_SOURCE_SNAPSHOT_V1',
+    );
+    assert.ok(manifest.generationProvenance.generatorSourceFiles.some(
+      (entry) => entry.path.endsWith('/source-snapshot.mjs'),
+    ));
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('CLI final source verification runs inside the artifact commit boundary', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-snapshot-commit-'));
+  const args = [
+    'generate',
+    '--registry', path.join(fixtures, 'registry.json'),
+    '--vectors', path.join(fixtures, 'vectors.json'),
+    '--out', directory,
+  ];
+  try {
+    await run(args);
+    const before = new Map();
+    for (const filename of GENERATED_FILES) {
+      before.set(filename, await readFile(path.join(directory, filename)));
+    }
+    let verified = false;
+    await assert.rejects(
+      run(args, {
+        beforeArtifactCommit: async () => {
+          verified = true;
+          throw new Error('injected snapshot verification failure');
+        },
+      }),
+      /injected snapshot verification failure/,
+    );
+    assert.equal(verified, true);
+    for (const filename of GENERATED_FILES) {
+      assert.deepEqual(
+        await readFile(path.join(directory, filename)),
+        before.get(filename),
+      );
+    }
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('snapshot execution preserves recovery diagnostics when final verification also fails', async () => {
+  const transactionFailure = new Error(
+    'artifact transaction failed and automatic recovery stopped; ' +
+    'inspect last-known transaction locations under /transaction-root ' +
+    '(stage /transaction-root/stage; lock /transaction-root/lock): ' +
+    'recovery/cleanup failure: injected rollback failure',
+  );
+  const verificationFailure = new Error('generator source snapshot changed');
+  let verificationCalls = 0;
+
+  await assert.rejects(
+    executeVerifiedSnapshotCommand([], {
+      catalog: [],
+      runCommand: async (_argv, runtimeOptions) => {
+        try {
+          await runtimeOptions.beforeArtifactCommit();
+        } catch {
+          throw transactionFailure;
+        }
+      },
+      verifySnapshot: async () => {
+        verificationCalls += 1;
+        throw verificationFailure;
+      },
+    }),
+    (error) => {
+      assert.equal(error instanceof AggregateError, true);
+      assert.deepEqual(error.errors, [transactionFailure, verificationFailure]);
+      const rendered = formatCliError(error);
+      assert.match(rendered, /automatic recovery stopped/);
+      assert.match(rendered, /\/transaction-root/);
+      assert.match(rendered, /stage \/transaction-root\/stage/);
+      assert.match(rendered, /lock \/transaction-root\/lock/);
+      assert.match(rendered, /injected rollback failure/);
+      assert.match(rendered, /generator source snapshot changed/);
+      return true;
+    },
+  );
+  assert.equal(verificationCalls, 2);
+});
+
+test('source snapshot creation preserves verification and disposal failures', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-source-cleanup-'));
+  try {
+    await writeFile(path.join(directory, 'source.mjs'), 'export const value = 1;\n');
+    await assert.rejects(
+      createGeneratorSourceSnapshot(directory, 'source', {
+        hooks: {
+          beforeSnapshotVerification() {
+            throw new Error('injected snapshot verification failure');
+          },
+          afterSnapshotDispose() {
+            throw new Error('injected snapshot disposal failure');
+          },
+        },
+      }),
+      (error) => {
+        assert.equal(error instanceof AggregateError, true);
+        assert.match(formatCliError(error), /injected snapshot verification failure/);
+        assert.match(formatCliError(error), /injected snapshot disposal failure/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('source reads preserve both verification and handle-cleanup failures', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-source-read-cleanup-'));
+  const readFailure = new Error('injected source read failure');
+  const closeFailure = new Error('injected source handle close failure');
+  try {
+    await writeFile(path.join(directory, 'source.mjs'), 'export const value = 1;\n');
+    await assert.rejects(
+      captureGeneratorSourceFiles(directory, 'source', {
+        hooks: {
+          afterSourceHandleBound() {
+            throw readFailure;
+          },
+          afterSourceHandleClose() {
+            throw closeFailure;
+          },
+        },
+      }),
+      (error) => {
+        assert.equal(error instanceof AggregateError, true);
+        assert.deepEqual(error.errors, [readFailure, closeFailure]);
+        return true;
+      },
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('parent preserves a nonzero snapshot child exit when disposal also fails', async () => {
+  const disposeFailure = new Error('injected parent snapshot disposal failure');
+  await assert.rejects(
+    executeSnapshotChildWithCleanup(
+      async () => 7,
+      async () => {
+        throw disposeFailure;
+      },
+    ),
+    (error) => {
+      assert.equal(error instanceof AggregateError, true);
+      assert.equal(error.errors[0].exitCode, 7);
+      assert.equal(error.errors[1], disposeFailure);
+      assert.match(formatCliError(error), /snapshot child exited with code 7/);
+      assert.match(formatCliError(error), /snapshot disposal failure/);
+      return true;
+    },
+  );
+  assert.equal(
+    await executeSnapshotChildWithCleanup(async () => 7, async () => {}),
+    7,
+  );
+});
+
+test('final binding verification and binding cleanup failures remain structured', async () => {
+  const verificationFailure = new Error('injected final binding verification failure');
+  const closeFailure = new Error('injected secure binding close failure');
+  let checks = 0;
+  const binding = {
+    async assertCurrent() {
+      checks += 1;
+      if (checks === 2) throw verificationFailure;
+    },
+    async close() {
+      throw closeFailure;
+    },
+  };
+  await assert.rejects(
+    withSecureArtifactDirectoryBindings([binding], async () => {}),
+    (error) => {
+      assert.equal(error instanceof AggregateError, true);
+      assert.equal(error.errors[0], verificationFailure);
+      assert.equal(error.errors[1] instanceof AggregateError, true);
+      assert.equal(error.errors[1].errors[0], closeFailure);
+      return true;
+    },
+  );
+});
+
+test('artifact action and final binding verification failures remain structured', async () => {
+  const actionFailure = new Error('injected artifact action failure');
+  const verificationFailure = new Error('injected artifact verification failure');
+  let checks = 0;
+  const binding = {
+    async assertCurrent() {
+      checks += 1;
+      if (checks === 2) throw verificationFailure;
+    },
+    async close() {},
+  };
+  await assert.rejects(
+    withSecureArtifactDirectoryBindings([binding], async () => {
+      throw actionFailure;
+    }),
+    (error) => {
+      assert.equal(error instanceof AggregateError, true);
+      assert.deepEqual(error.errors, [actionFailure, verificationFailure]);
+      return true;
+    },
+  );
+});
+
+test('artifact checks preserve inspection and handle-cleanup failures', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-artifact-read-cleanup-'));
+  const args = [
+    '--registry', path.join(fixtures, 'registry.json'),
+    '--vectors', path.join(fixtures, 'vectors.json'),
+    '--out', directory,
+  ];
+  const inspectionFailure = new Error('injected artifact inspection failure');
+  const closeFailure = new Error('injected artifact handle close failure');
+  try {
+    await run(['generate', ...args]);
+    await assert.rejects(
+      run(['check', ...args], {
+        hooks: {
+          afterArtifactHandleBound({filename}) {
+            if (filename === 'schema.json') throw inspectionFailure;
+          },
+          afterArtifactHandleClose({filename}) {
+            if (filename === 'schema.json') throw closeFailure;
+          },
+        },
+      }),
+      (error) => {
+        assert.equal(error instanceof AggregateError, true);
+        assert.deepEqual(error.errors, [inspectionFailure, closeFailure]);
+        return true;
+      },
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
 });
 
 test('applies SHA-256 schema format only to the exact named scalar', async () => {
@@ -822,7 +1207,10 @@ test('mapped target parent replacement is rejected before mutation', async () =>
           },
         },
       }),
-      /bound directory was externally replaced/,
+      (error) => {
+        assert.match(formatCliError(error), /bound directory was externally replaced/);
+        return true;
+      },
     );
     assert.equal(await readFile(path.join(outside, 'contract.ts'), 'utf8'), 'outside victim');
     assert.equal(
@@ -1029,6 +1417,114 @@ test('mapped project targets generate and check one exact artifact set', async (
       assert.equal((await lstat(generated)).isFile(), true);
     }
 
+    const mappedManifestSource = await readFile(
+      path.join(directory, 'docs/generated/profile-manifest.json'),
+      'utf8',
+    );
+    const mappedManifest = JSON.parse(mappedManifestSource);
+    assert.deepEqual(
+      Object.fromEntries(
+        mappedManifest.artifactCatalog.map((entry) => [entry.logicalName, entry.path]),
+      ),
+      {
+        'schema.json': 'docs/generated/schema.json',
+        'profile-manifest.json': 'docs/generated/profile-manifest.json',
+        'contract.ts': 'bridge/generated/contract.ts',
+        'contract.dart': 'mobile/generated/contract.dart',
+      },
+    );
+    assert.equal(
+      mappedManifest.artifactCatalog.find(
+        (entry) => entry.logicalName === 'profile-manifest.json',
+      ).byteLength,
+      Buffer.byteLength(mappedManifestSource, 'utf8'),
+    );
+    assert.equal(
+      mappedManifest.generationProvenance.targetMapDigest,
+      digestJson({
+        formatVersion: 1,
+        artifacts: {
+          'schema.json': 'docs/generated/schema.json',
+          'profile-manifest.json': 'docs/generated/profile-manifest.json',
+          'contract.ts': 'bridge/generated/contract.ts',
+          'contract.dart': 'mobile/generated/contract.dart',
+        },
+      }),
+    );
+
+    const docsDirectory = path.join(directory, 'docs/generated');
+    const displacedDocsDirectory = path.join(directory, 'docs/generated-original');
+    const replacementDocsDirectory = path.join(directory, 'docs/generated-replacement');
+    await mkdir(replacementDocsDirectory);
+    await copyFile(
+      path.join(docsDirectory, 'schema.json'),
+      path.join(replacementDocsDirectory, 'schema.json'),
+    );
+    await copyFile(
+      path.join(docsDirectory, 'profile-manifest.json'),
+      path.join(replacementDocsDirectory, 'profile-manifest.json'),
+    );
+    await writeFile(
+      path.join(replacementDocsDirectory, 'schema.json'),
+      '{"wrong":true}\n',
+      'utf8',
+    );
+    let docsDirectorySwapped = false;
+    await assert.rejects(
+      run(['check', ...args], {
+        hooks: {
+          afterArtifactInspected: async ({filename, mode}) => {
+            if (!docsDirectorySwapped && filename === 'schema.json' && mode === 'mapped') {
+              docsDirectorySwapped = true;
+              await rename(docsDirectory, displacedDocsDirectory);
+              await rename(replacementDocsDirectory, docsDirectory);
+            }
+          },
+        },
+      }),
+      (error) => {
+        assert.match(formatCliError(error), /bound directory was externally replaced/);
+        return true;
+      },
+    );
+    assert.equal(docsDirectorySwapped, true);
+    await rm(docsDirectory, {recursive: true, force: true});
+    await rename(displacedDocsDirectory, docsDirectory);
+    await assert.doesNotReject(run(['check', ...args]));
+
+    if (process.platform !== 'win32') {
+      const executableTarget = path.join(directory, 'bridge/generated/contract.ts');
+      await chmod(executableTarget, 0o755);
+      await assert.rejects(
+        run(['check', ...args]),
+        /contract\.ts \(must not be executable\)/,
+      );
+      await chmod(executableTarget, 0o644);
+      await assert.doesNotReject(run(['check', ...args]));
+
+      const expectedContract = await readFile(executableTarget, 'utf8');
+      const replacement = path.join(directory, 'executable-contract.ts');
+      await writeFile(replacement, expectedContract, {mode: 0o755});
+      let replaced = false;
+      await assert.rejects(
+        run(['check', ...args], {
+          hooks: {
+            afterArtifactHandleBound: async ({filename, mode, target}) => {
+              if (!replaced && filename === 'contract.ts' && mode === 'mapped') {
+                replaced = true;
+                await rename(replacement, target);
+              }
+            },
+          },
+        }),
+        /contract\.ts \(changed while checked\)/,
+      );
+      assert.equal(replaced, true);
+      await writeFile(executableTarget, expectedContract);
+      await chmod(executableTarget, 0o644);
+      await assert.doesNotReject(run(['check', ...args]));
+    }
+
     const contractTarget = path.join(directory, 'bridge/generated/contract.ts');
     const contractContent = await readFile(contractTarget, 'utf8');
     const sameContentVictim = path.join(directory, 'same-content-contract.ts');
@@ -1170,6 +1666,230 @@ test('transaction faults during backup or install restore the complete prior art
   }
 });
 
+test('final provenance failure rolls back before artifact transaction commit', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-precommit-'));
+  try {
+    const targets = new Map([
+      ['schema.json', path.join(directory, 'docs/schema.json')],
+      ['profile-manifest.json', path.join(directory, 'docs/profile-manifest.json')],
+      ['contract.ts', path.join(directory, 'bridge/contract.ts')],
+      ['contract.dart', path.join(directory, 'mobile/contract.dart')],
+    ]);
+    const previous = fixtureArtifacts('P');
+    const replacement = fixtureArtifacts('Q');
+    await writeArtifactTargets(targets, previous, {projectRoot: directory});
+    let verified = false;
+
+    await assert.rejects(
+      writeArtifactTargets(targets, replacement, {
+        projectRoot: directory,
+        beforeCommit: async () => {
+          verified = true;
+          throw new Error('injected final provenance failure');
+        },
+      }),
+      /injected final provenance failure/,
+    );
+
+    assert.equal(verified, true);
+    for (const filename of GENERATED_FILES) {
+      assert.equal(await readFile(targets.get(filename), 'utf8'), previous.get(filename));
+    }
+    assert.deepEqual(
+      (await readdir(directory)).filter(
+        (name) => name === TRANSACTION_LOCK_NAME || name.startsWith(TRANSACTION_STAGE_PREFIX),
+      ),
+      [],
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('automatic recovery preserves the rollback failure object and its cause', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-recovery-chain-'));
+  const transactionFailure = new Error('injected transaction failure object');
+  const rollbackCause = new Error('injected rollback failure cause');
+  const rollbackFailure = new Error('injected rollback failure object', {
+    cause: rollbackCause,
+  });
+  try {
+    const targets = new Map(GENERATED_FILES.map((filename) => [
+      filename,
+      path.join(directory, filename),
+    ]));
+    await writeArtifactTargets(targets, fixtureArtifacts('recovery-chain-before'), {
+      projectRoot: directory,
+    });
+    await assert.rejects(
+      writeArtifactTargets(targets, fixtureArtifacts('recovery-chain-after'), {
+        projectRoot: directory,
+        beforeCommit() {
+          throw transactionFailure;
+        },
+        hooks: {
+          beforeRollbackRemove() {
+            throw rollbackFailure;
+          },
+        },
+      }),
+      (error) => {
+        assert.equal(error instanceof AggregateError, true);
+        assert.equal(error.errors[0], transactionFailure);
+        assert.equal(error.errors[1], rollbackFailure);
+        assert.equal(error.errors[1].cause, rollbackCause);
+        assert.match(formatCliError(error), /rollback failure cause/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('standalone binding close failure preserves the artifact transaction failure', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-standalone-close-'));
+  try {
+    await writeArtifacts(directory, fixtureArtifacts('standalone-close-before'));
+    await assert.rejects(
+      writeArtifacts(directory, fixtureArtifacts('standalone-close-after'), {
+        beforeCommit: async () => {
+          throw new Error('injected standalone transaction failure');
+        },
+        hooks: {
+          afterBindingClose({operation}) {
+            if (operation === 'close-standalone-project-root-binding') {
+              throw new Error('injected standalone binding close failure');
+            }
+          },
+        },
+      }),
+      (error) => {
+        assert.equal(error instanceof AggregateError, true);
+        const rendered = formatCliError(error);
+        assert.match(rendered, /injected standalone transaction failure/);
+        assert.match(rendered, /injected standalone binding close failure/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('successful final provenance callback cannot commit a modified installed artifact', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-final-drift-'));
+  try {
+    const targets = new Map(GENERATED_FILES.map((filename) => [
+      filename,
+      path.join(directory, filename),
+    ]));
+    const previous = fixtureArtifacts('final-drift-before');
+    await writeArtifactTargets(targets, previous, {projectRoot: directory});
+
+    await assert.rejects(
+      writeArtifactTargets(targets, fixtureArtifacts('final-drift-after'), {
+        projectRoot: directory,
+        beforeCommit: async () => {
+          await writeFile(targets.get('schema.json'), 'external final drift', 'utf8');
+        },
+      }),
+      /automatic recovery stopped.*installed artifact changed before commit.*externally replaced/,
+    );
+
+    assert.equal(await readFile(targets.get('schema.json'), 'utf8'), 'external final drift');
+    const entries = await readdir(await realpath(directory));
+    assert.equal(entries.includes(TRANSACTION_LOCK_NAME), true);
+    const stage = entries.find((name) => name.startsWith(TRANSACTION_STAGE_PREFIX));
+    assert.ok(stage);
+    assert.equal(
+      await readFile(path.join(directory, stage, 'backup/schema.json'), 'utf8'),
+      previous.get('schema.json'),
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('successful final provenance callback cannot commit executable artifact drift', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-final-mode-'));
+  try {
+    const targets = new Map(GENERATED_FILES.map((filename) => [
+      filename,
+      path.join(directory, filename),
+    ]));
+    const previous = fixtureArtifacts('final-mode-before');
+    await writeArtifactTargets(targets, previous, {projectRoot: directory});
+
+    await assert.rejects(
+      writeArtifactTargets(targets, fixtureArtifacts('final-mode-after'), {
+        projectRoot: directory,
+        beforeCommit: async () => {
+          await chmod(targets.get('contract.ts'), 0o755);
+        },
+      }),
+      /automatic recovery stopped.*installed artifact changed before commit.*externally replaced/,
+    );
+
+    const entries = await readdir(await realpath(directory));
+    assert.equal(entries.includes(TRANSACTION_LOCK_NAME), true);
+    const stage = entries.find((name) => name.startsWith(TRANSACTION_STAGE_PREFIX));
+    assert.ok(stage);
+    assert.equal(
+      await readFile(path.join(directory, stage, 'backup/contract.ts'), 'utf8'),
+      previous.get('contract.ts'),
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('successful final provenance callback cannot commit through a replaced target parent', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-final-parent-'));
+  try {
+    const project = path.join(directory, 'project');
+    const outside = path.join(directory, 'outside');
+    const targets = new Map([
+      ['schema.json', path.join(project, 'docs/generated/schema.json')],
+      ['profile-manifest.json', path.join(project, 'docs/generated/profile-manifest.json')],
+      ['contract.ts', path.join(project, 'bridge/generated/contract.ts')],
+      ['contract.dart', path.join(project, 'mobile/generated/contract.dart')],
+    ]);
+    const previous = fixtureArtifacts('final-parent-before');
+    await mkdir(project);
+    await mkdir(outside);
+    await writeFile(path.join(outside, 'contract.ts'), 'outside final parent', 'utf8');
+    await writeArtifactTargets(targets, previous, {projectRoot: project});
+
+    const targetParent = path.dirname(targets.get('contract.ts'));
+    const heldParent = path.join(project, 'bridge/generated-held');
+    await assert.rejects(
+      writeArtifactTargets(targets, fixtureArtifacts('final-parent-after'), {
+        projectRoot: project,
+        beforeCommit: async () => {
+          await rename(targetParent, heldParent);
+          await symlink(outside, targetParent);
+        },
+      }),
+      /automatic recovery stopped.*bound directory was externally replaced/,
+    );
+
+    assert.equal(await readFile(path.join(outside, 'contract.ts'), 'utf8'), 'outside final parent');
+    const entries = await readdir(project);
+    assert.equal(entries.includes(TRANSACTION_LOCK_NAME), true);
+    const stage = entries.find((name) => name.startsWith(TRANSACTION_STAGE_PREFIX));
+    assert.ok(stage);
+    assert.equal(
+      await readFile(path.join(project, stage, 'backup/contract.ts'), 'utf8'),
+      previous.get('contract.ts'),
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
 test('rollback restores a prior symlink as the same symlink object', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-symlink-rollback-'));
   try {
@@ -1285,6 +2005,72 @@ test('rollback never deletes an externally replaced target and retains recovery 
   }
 });
 
+test('binding close failure preserves transaction recovery diagnostics through final verification', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-close-chain-'));
+  try {
+    const targets = new Map(GENERATED_FILES.map((filename) => [
+      filename,
+      path.join(directory, filename),
+    ]));
+    await writeArtifactTargets(targets, fixtureArtifacts('close-chain-before'), {
+      projectRoot: directory,
+    });
+    let verificationCalls = 0;
+    let targetReplaced = false;
+    let closeFailureInjected = false;
+
+    await assert.rejects(
+      executeVerifiedSnapshotCommand([], {
+        catalog: [],
+        runCommand: async (_argv, runtimeOptions) => {
+          await writeArtifactTargets(targets, fixtureArtifacts('close-chain-after'), {
+            projectRoot: directory,
+            beforeCommit: runtimeOptions.beforeArtifactCommit,
+            hooks: {
+              async beforeRollbackRemove(record) {
+                if (targetReplaced || record.filename !== 'schema.json') return;
+                targetReplaced = true;
+                await unlink(record.target);
+                await writeFile(record.target, 'external close-chain replacement', 'utf8');
+              },
+              afterBindingClose({operation}) {
+                if (closeFailureInjected || operation !== 'close-owned-bindings') return;
+                closeFailureInjected = true;
+                throw new Error('injected binding close failure');
+              },
+            },
+          });
+        },
+        verifySnapshot: async () => {
+          verificationCalls += 1;
+          throw new Error(
+            verificationCalls === 1
+              ? 'injected commit snapshot failure'
+              : 'injected final snapshot failure',
+          );
+        },
+      }),
+      (error) => {
+        assert.equal(error instanceof AggregateError, true);
+        const rendered = formatCliError(error);
+        assert.match(rendered, /automatic recovery stopped/);
+        assert.match(rendered, /stage /);
+        assert.match(rendered, /lock /);
+        assert.match(rendered, /injected commit snapshot failure/);
+        assert.match(rendered, /installed artifact was externally replaced/);
+        assert.match(rendered, /injected binding close failure/);
+        assert.match(rendered, /injected final snapshot failure/);
+        return true;
+      },
+    );
+    assert.equal(verificationCalls, 2);
+    assert.equal(targetReplaced, true);
+    assert.equal(closeFailureInjected, true);
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
 test('rollback lock-cleanup failure keeps the transaction lock and stage visible', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-cleanup-'));
   try {
@@ -1374,6 +2160,80 @@ test('check detects generated drift without modifying the target', async () => {
     await assert.rejects(run(args), /generated artifact drift: contract.ts/);
     assert.equal(await readFile(target, 'utf8'), changed);
     await writeFile(target, original, 'utf8');
+
+    const displacedDirectory = `${directory}-bound-original`;
+    const replacementDirectory = `${directory}-bound-replacement`;
+    await mkdir(replacementDirectory);
+    for (const filename of GENERATED_FILES) {
+      await copyFile(
+        path.join(directory, filename),
+        path.join(replacementDirectory, filename),
+      );
+    }
+    await writeFile(
+      path.join(replacementDirectory, 'schema.json'),
+      '{"wrong":true}\n',
+      'utf8',
+    );
+    let directorySwapped = false;
+    await assert.rejects(
+      run(args, {
+        hooks: {
+          afterArtifactInspected: async ({filename, mode}) => {
+            if (!directorySwapped && filename === 'schema.json' && mode === 'standalone') {
+              directorySwapped = true;
+              await rename(directory, displacedDirectory);
+              await rename(replacementDirectory, directory);
+            }
+          },
+        },
+      }),
+      (error) => {
+        assert.match(
+          formatCliError(error),
+          /generated artifact directory changed while checked/,
+        );
+        return true;
+      },
+    );
+    assert.equal(directorySwapped, true);
+    await rm(directory, {recursive: true, force: true});
+    await rename(displacedDirectory, directory);
+    await assert.doesNotReject(run(args));
+
+    if (process.platform !== 'win32') {
+      await chmod(target, 0o755);
+      await assert.rejects(
+        run(args),
+        /generated artifact drift: contract\.ts \(must not be executable\)/,
+      );
+      await chmod(target, 0o644);
+      await assert.doesNotReject(run(args));
+
+      const victim = path.join(path.dirname(directory), `${path.basename(directory)}-victim.ts`);
+      const replacement = path.join(directory, 'contract-replacement-link.ts');
+      await writeFile(victim, original);
+      await symlink(victim, replacement);
+      let replaced = false;
+      await assert.rejects(
+        run(args, {
+          hooks: {
+            afterArtifactHandleBound: async ({filename, mode, target: boundTarget}) => {
+              if (!replaced && filename === 'contract.ts' && mode === 'standalone') {
+                replaced = true;
+                await rename(replacement, boundTarget);
+              }
+            },
+          },
+        }),
+        /contract\.ts \(changed while checked\)/,
+      );
+      assert.equal(replaced, true);
+      await unlink(target);
+      await writeFile(target, original, {mode: 0o644});
+      await unlink(victim);
+      await assert.doesNotReject(run(args));
+    }
 
     const stale = path.join(directory, 'old-contract.ts');
     await writeFile(stale, '// obsolete generated artifact\n', 'utf8');
