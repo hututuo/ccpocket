@@ -31,6 +31,11 @@ import {
 } from './generate.mjs';
 import { parseStrictJson } from './strict-json.mjs';
 import {
+  combineFailures,
+  finishWithCleanup,
+  runWithCleanup,
+} from './cleanup.mjs';
+import {
   createGeneratorSourceSnapshot,
   verifyGeneratorSourceFiles,
 } from './source-snapshot.mjs';
@@ -93,8 +98,11 @@ async function bindArtifactDirectory(directory) {
       identity: {dev: handleStatus.dev, ino: handleStatus.ino},
     };
   } catch (error) {
-    await handle.close();
-    throw error;
+    await finishWithCleanup(
+      error,
+      () => handle.close(),
+      'artifact directory binding and handle cleanup both failed',
+    );
   }
 }
 
@@ -119,7 +127,7 @@ async function assertArtifactDirectoryBinding(binding) {
 
 async function withArtifactDirectoryBinding(directory, action) {
   const binding = await bindArtifactDirectory(directory);
-  try {
+  return runWithCleanup(async () => {
     await assertArtifactDirectoryBinding(binding);
     let value;
     let actionFailure;
@@ -131,13 +139,16 @@ async function withArtifactDirectoryBinding(directory, action) {
     try {
       await assertArtifactDirectoryBinding(binding);
     } catch (bindingFailure) {
-      throw new Error(bindingFailure.message, {cause: actionFailure ?? bindingFailure});
+      throw combineFailures(
+        actionFailure,
+        bindingFailure,
+        'artifact action and final directory verification both failed',
+      );
     }
     if (actionFailure !== undefined) throw actionFailure;
     return value;
-  } finally {
-    await binding.handle.close();
-  }
+  }, () => binding.handle.close(),
+  'artifact check and directory handle cleanup both failed');
 }
 
 async function assertSecureArtifactDirectoryBindings(bindings) {
@@ -146,12 +157,12 @@ async function assertSecureArtifactDirectoryBindings(bindings) {
   }
 }
 
-async function withSecureArtifactDirectoryBindings(bindings, action) {
+export async function withSecureArtifactDirectoryBindings(bindings, action) {
   const unique = [...new Set(bindings)];
-  let actionFailure;
-  try {
+  return runWithCleanup(async () => {
     await assertSecureArtifactDirectoryBindings(unique);
     let value;
+    let actionFailure;
     try {
       value = await action();
     } catch (error) {
@@ -160,11 +171,15 @@ async function withSecureArtifactDirectoryBindings(bindings, action) {
     try {
       await assertSecureArtifactDirectoryBindings(unique);
     } catch (bindingFailure) {
-      throw new Error(bindingFailure.message, {cause: actionFailure ?? bindingFailure});
+      throw combineFailures(
+        actionFailure,
+        bindingFailure,
+        'artifact check and final directory verification both failed',
+      );
     }
     if (actionFailure !== undefined) throw actionFailure;
     return value;
-  } finally {
+  }, async () => {
     const failures = [];
     for (const binding of unique.reverse()) {
       try {
@@ -178,15 +193,9 @@ async function withSecureArtifactDirectoryBindings(bindings, action) {
         failures,
         'failed to close generated artifact directory bindings',
       );
-      if (actionFailure !== undefined) {
-        throw new AggregateError(
-          [actionFailure, closeFailure],
-          'artifact check and directory binding cleanup both failed',
-        );
-      }
       throw closeFailure;
     }
-  }
+  }, 'artifact check and directory binding cleanup both failed');
 }
 
 async function inspectArtifact(target, expected, hooks, details) {
@@ -198,7 +207,7 @@ async function inspectArtifact(target, expected, hooks, details) {
     if (error?.code === 'ELOOP') return 'not a regular file';
     throw error;
   }
-  try {
+  return runWithCleanup(async () => {
     const handleBefore = await handle.stat({bigint: true});
     if (!handleBefore.isFile()) return 'not a regular file';
     if (hasExecutableMode(handleBefore)) return 'must not be executable';
@@ -227,9 +236,13 @@ async function inspectArtifact(target, expected, hooks, details) {
       return 'must not be executable';
     }
     return bytes.equals(Buffer.from(expected, 'utf8')) ? undefined : 'content differs';
-  } finally {
+  }, async () => {
     await handle.close();
-  }
+    await runHook(hooks, 'afterArtifactHandleClose', {
+      ...details,
+      target,
+    });
+  }, 'artifact inspection and handle cleanup both failed');
 }
 
 export async function runDart(args) {
@@ -437,7 +450,7 @@ function artifactTargetsForGeneration(targetMap) {
   ]));
 }
 
-async function formatDartArtifact(model, generationOptions) {
+async function formatDartArtifact(model, generationOptions, hooks) {
   const {stdout, stderr} = await runDart(['--version']);
   const versionText = `${stdout}\n${stderr}`;
   const version = /Dart SDK version:\s*([^\s]+)/.exec(versionText)?.[1];
@@ -447,8 +460,9 @@ async function formatDartArtifact(model, generationOptions) {
     );
   }
   const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-dart-'));
-  try {
+  return runWithCleanup(async () => {
     const filename = path.join(directory, 'contract.dart');
+    await runHook(hooks, 'beforeDartArtifactFormat', {directory, filename});
     const raw = generateArtifacts(model, generationOptions).get('contract.dart');
     await writeFile(filename, raw, 'utf8');
     await runDart(['format', filename]);
@@ -458,9 +472,10 @@ async function formatDartArtifact(model, generationOptions) {
       dartSource: formatted,
       dartFormatterVersion: version,
     });
-  } finally {
+  }, async () => {
     await rm(directory, {recursive: true, force: true});
-  }
+    await runHook(hooks, 'afterDartTempCleanup', {directory});
+  }, 'Dart artifact formatting and temporary-directory cleanup both failed');
 }
 
 export async function run(argv = process.argv.slice(2), runtimeOptions = {}) {
@@ -500,7 +515,7 @@ export async function run(argv = process.argv.slice(2), runtimeOptions = {}) {
     generatorSourceFiles: runtimeOptions.generatorSourceFiles,
   };
   const artifacts = values['format-dart']
-    ? await formatDartArtifact(model, generationOptions)
+    ? await formatDartArtifact(model, generationOptions, runtimeOptions.hooks)
     : generateArtifacts(model, generationOptions);
   if (command === 'generate') {
     if (targetMap) {
@@ -552,6 +567,39 @@ function spawnSnapshotCli(snapshot, argv) {
       }
     });
   });
+}
+
+export async function executeSnapshotChildWithCleanup(action, cleanup) {
+  let exitCode;
+  let launchFailure;
+  try {
+    exitCode = await action();
+  } catch (error) {
+    launchFailure = error;
+  }
+  let cleanupFailure;
+  try {
+    await cleanup();
+  } catch (error) {
+    cleanupFailure = error;
+  }
+  const childFailure = launchFailure ?? (
+    exitCode === 0
+      ? undefined
+      : Object.assign(
+          new Error(`generator snapshot child exited with code ${exitCode}`),
+          {exitCode},
+        )
+  );
+  if (childFailure !== undefined && cleanupFailure !== undefined) {
+    throw new AggregateError(
+      [childFailure, cleanupFailure],
+      'generator snapshot execution and cleanup both failed',
+    );
+  }
+  if (launchFailure !== undefined) throw launchFailure;
+  if (cleanupFailure !== undefined) throw cleanupFailure;
+  return exitCode;
 }
 
 export function formatCliError(error) {
@@ -608,28 +656,6 @@ export async function executeVerifiedSnapshotCommand(
   return result;
 }
 
-async function executeWithCleanup(action, cleanup, message) {
-  let result;
-  let operationFailure;
-  try {
-    result = await action();
-  } catch (error) {
-    operationFailure = error;
-  }
-  let cleanupFailure;
-  try {
-    await cleanup();
-  } catch (error) {
-    cleanupFailure = error;
-  }
-  if (operationFailure !== undefined && cleanupFailure !== undefined) {
-    throw new AggregateError([operationFailure, cleanupFailure], message);
-  }
-  if (operationFailure !== undefined) throw operationFailure;
-  if (cleanupFailure !== undefined) throw cleanupFailure;
-  return result;
-}
-
 async function runSnapshotChild(argv, encoded) {
   let payload;
   try {
@@ -674,10 +700,9 @@ async function main(argv) {
     GENERATOR_SOURCE_DIRECTORY,
     GENERATOR_SOURCE_PATH_PREFIX,
   );
-  process.exitCode = await executeWithCleanup(
+  process.exitCode = await executeSnapshotChildWithCleanup(
     () => spawnSnapshotCli(snapshot, argv),
     () => snapshot.dispose(),
-    'generator snapshot execution and cleanup both failed',
   );
 }
 

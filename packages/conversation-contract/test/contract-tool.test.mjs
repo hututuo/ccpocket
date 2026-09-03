@@ -23,9 +23,11 @@ import { fileURLToPath } from 'node:url';
 
 import { digestBytes, digestJson } from '../src/canonical.mjs';
 import {
+  executeSnapshotChildWithCleanup,
   executeVerifiedSnapshotCommand,
   formatCliError,
   run,
+  withSecureArtifactDirectoryBindings,
 } from '../src/cli.mjs';
 import { discoverDigestPreimages } from '../src/digest-preimages.mjs';
 import {
@@ -408,6 +410,139 @@ test('source snapshot creation preserves verification and disposal failures', as
         assert.equal(error instanceof AggregateError, true);
         assert.match(formatCliError(error), /injected snapshot verification failure/);
         assert.match(formatCliError(error), /injected snapshot disposal failure/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('source reads preserve both verification and handle-cleanup failures', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-source-read-cleanup-'));
+  const readFailure = new Error('injected source read failure');
+  const closeFailure = new Error('injected source handle close failure');
+  try {
+    await writeFile(path.join(directory, 'source.mjs'), 'export const value = 1;\n');
+    await assert.rejects(
+      captureGeneratorSourceFiles(directory, 'source', {
+        hooks: {
+          afterSourceHandleBound() {
+            throw readFailure;
+          },
+          afterSourceHandleClose() {
+            throw closeFailure;
+          },
+        },
+      }),
+      (error) => {
+        assert.equal(error instanceof AggregateError, true);
+        assert.deepEqual(error.errors, [readFailure, closeFailure]);
+        return true;
+      },
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('parent preserves a nonzero snapshot child exit when disposal also fails', async () => {
+  const disposeFailure = new Error('injected parent snapshot disposal failure');
+  await assert.rejects(
+    executeSnapshotChildWithCleanup(
+      async () => 7,
+      async () => {
+        throw disposeFailure;
+      },
+    ),
+    (error) => {
+      assert.equal(error instanceof AggregateError, true);
+      assert.equal(error.errors[0].exitCode, 7);
+      assert.equal(error.errors[1], disposeFailure);
+      assert.match(formatCliError(error), /snapshot child exited with code 7/);
+      assert.match(formatCliError(error), /snapshot disposal failure/);
+      return true;
+    },
+  );
+  assert.equal(
+    await executeSnapshotChildWithCleanup(async () => 7, async () => {}),
+    7,
+  );
+});
+
+test('final binding verification and binding cleanup failures remain structured', async () => {
+  const verificationFailure = new Error('injected final binding verification failure');
+  const closeFailure = new Error('injected secure binding close failure');
+  let checks = 0;
+  const binding = {
+    async assertCurrent() {
+      checks += 1;
+      if (checks === 2) throw verificationFailure;
+    },
+    async close() {
+      throw closeFailure;
+    },
+  };
+  await assert.rejects(
+    withSecureArtifactDirectoryBindings([binding], async () => {}),
+    (error) => {
+      assert.equal(error instanceof AggregateError, true);
+      assert.equal(error.errors[0], verificationFailure);
+      assert.equal(error.errors[1] instanceof AggregateError, true);
+      assert.equal(error.errors[1].errors[0], closeFailure);
+      return true;
+    },
+  );
+});
+
+test('artifact action and final binding verification failures remain structured', async () => {
+  const actionFailure = new Error('injected artifact action failure');
+  const verificationFailure = new Error('injected artifact verification failure');
+  let checks = 0;
+  const binding = {
+    async assertCurrent() {
+      checks += 1;
+      if (checks === 2) throw verificationFailure;
+    },
+    async close() {},
+  };
+  await assert.rejects(
+    withSecureArtifactDirectoryBindings([binding], async () => {
+      throw actionFailure;
+    }),
+    (error) => {
+      assert.equal(error instanceof AggregateError, true);
+      assert.deepEqual(error.errors, [actionFailure, verificationFailure]);
+      return true;
+    },
+  );
+});
+
+test('artifact checks preserve inspection and handle-cleanup failures', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-artifact-read-cleanup-'));
+  const args = [
+    '--registry', path.join(fixtures, 'registry.json'),
+    '--vectors', path.join(fixtures, 'vectors.json'),
+    '--out', directory,
+  ];
+  const inspectionFailure = new Error('injected artifact inspection failure');
+  const closeFailure = new Error('injected artifact handle close failure');
+  try {
+    await run(['generate', ...args]);
+    await assert.rejects(
+      run(['check', ...args], {
+        hooks: {
+          afterArtifactHandleBound({filename}) {
+            if (filename === 'schema.json') throw inspectionFailure;
+          },
+          afterArtifactHandleClose({filename}) {
+            if (filename === 'schema.json') throw closeFailure;
+          },
+        },
+      }),
+      (error) => {
+        assert.equal(error instanceof AggregateError, true);
+        assert.deepEqual(error.errors, [inspectionFailure, closeFailure]);
         return true;
       },
     );
@@ -1072,7 +1207,10 @@ test('mapped target parent replacement is rejected before mutation', async () =>
           },
         },
       }),
-      /bound directory was externally replaced/,
+      (error) => {
+        assert.match(formatCliError(error), /bound directory was externally replaced/);
+        return true;
+      },
     );
     assert.equal(await readFile(path.join(outside, 'contract.ts'), 'utf8'), 'outside victim');
     assert.equal(
@@ -1344,7 +1482,10 @@ test('mapped project targets generate and check one exact artifact set', async (
           },
         },
       }),
-      /bound directory was externally replaced/,
+      (error) => {
+        assert.match(formatCliError(error), /bound directory was externally replaced/);
+        return true;
+      },
     );
     assert.equal(docsDirectorySwapped, true);
     await rm(docsDirectory, {recursive: true, force: true});
@@ -1559,6 +1700,47 @@ test('final provenance failure rolls back before artifact transaction commit', a
         (name) => name === TRANSACTION_LOCK_NAME || name.startsWith(TRANSACTION_STAGE_PREFIX),
       ),
       [],
+    );
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+});
+
+test('automatic recovery preserves the rollback failure object and its cause', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'ccpocket-contract-recovery-chain-'));
+  const transactionFailure = new Error('injected transaction failure object');
+  const rollbackCause = new Error('injected rollback failure cause');
+  const rollbackFailure = new Error('injected rollback failure object', {
+    cause: rollbackCause,
+  });
+  try {
+    const targets = new Map(GENERATED_FILES.map((filename) => [
+      filename,
+      path.join(directory, filename),
+    ]));
+    await writeArtifactTargets(targets, fixtureArtifacts('recovery-chain-before'), {
+      projectRoot: directory,
+    });
+    await assert.rejects(
+      writeArtifactTargets(targets, fixtureArtifacts('recovery-chain-after'), {
+        projectRoot: directory,
+        beforeCommit() {
+          throw transactionFailure;
+        },
+        hooks: {
+          beforeRollbackRemove() {
+            throw rollbackFailure;
+          },
+        },
+      }),
+      (error) => {
+        assert.equal(error instanceof AggregateError, true);
+        assert.equal(error.errors[0], transactionFailure);
+        assert.equal(error.errors[1], rollbackFailure);
+        assert.equal(error.errors[1].cause, rollbackCause);
+        assert.match(formatCliError(error), /rollback failure cause/);
+        return true;
+      },
     );
   } finally {
     await rm(directory, {recursive: true, force: true});
@@ -2006,7 +2188,13 @@ test('check detects generated drift without modifying the target', async () => {
           },
         },
       }),
-      /generated artifact directory changed while checked/,
+      (error) => {
+        assert.match(
+          formatCliError(error),
+          /generated artifact directory changed while checked/,
+        );
+        return true;
+      },
     );
     assert.equal(directorySwapped, true);
     await rm(directory, {recursive: true, force: true});

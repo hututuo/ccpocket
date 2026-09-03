@@ -27,6 +27,12 @@ import {fileURLToPath} from 'node:url';
 import {canonicalJson, compareUtf16, digestBytes, digestJson} from './canonical.mjs';
 import { digestAuthoritySource } from './b1-digest-authority.mjs';
 import {
+  combineFailures,
+  finishWithCleanup,
+  runWithCleanup,
+  runWithCleanupSync,
+} from './cleanup.mjs';
+import {
   CANONICALIZATION_PROFILE,
   discoverDigestPreimages,
 } from './digest-preimages.mjs';
@@ -88,7 +94,7 @@ function generatorSourceCatalog() {
       throw new Error(`generator source must be a regular file: ${filename}`);
     }
     let descriptor;
-    try {
+    return runWithCleanupSync(() => {
       descriptor = openSync(
         filename,
         fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
@@ -114,9 +120,9 @@ function generatorSourceCatalog() {
         byteLength: bytes.byteLength,
         sha256: digestBytes(bytes),
       };
-    } finally {
+    }, () => {
       if (descriptor !== undefined) closeSync(descriptor);
-    }
+    }, 'generator source read and descriptor cleanup both failed');
   });
 }
 
@@ -255,8 +261,11 @@ async function bindDirectory(directory, {projectRoot, expectedIdentity} = {}) {
     }
     return {path: resolved, canonical, handle, identity};
   } catch (error) {
-    await handle.close();
-    throw error;
+    await finishWithCleanup(
+      error,
+      () => handle.close(),
+      'directory binding and handle cleanup both failed',
+    );
   }
 }
 
@@ -301,7 +310,11 @@ async function withBoundDirectories(bindings, options, action) {
   try {
     await assertBoundDirectories(bindings, options);
   } catch (bindingFailure) {
-    throw new Error(bindingFailure.message, {cause: actionFailure ?? bindingFailure});
+    throw combineFailures(
+      actionFailure,
+      bindingFailure,
+      'directory-bound action and final verification both failed',
+    );
   }
   if (actionFailure !== undefined) throw actionFailure;
   return value;
@@ -336,7 +349,11 @@ async function guardedMutation({
       {projectRoot},
     );
   } catch (bindingFailure) {
-    throw new Error(bindingFailure.message, {cause: mutationFailure ?? bindingFailure});
+    throw combineFailures(
+      mutationFailure,
+      bindingFailure,
+      'directory-bound mutation and final verification both failed',
+    );
   }
   if (mutationFailure !== undefined) throw mutationFailure;
   return value;
@@ -360,20 +377,6 @@ async function closeBindings(bindings, {hooks, operation} = {}) {
     }
   }
   if (failures.length > 0) throw new AggregateError(failures, 'failed to close directory bindings');
-}
-
-async function finishWithCleanup(operationFailure, cleanup, message) {
-  let cleanupFailure;
-  try {
-    await cleanup();
-  } catch (error) {
-    cleanupFailure = error;
-  }
-  if (operationFailure !== undefined && cleanupFailure !== undefined) {
-    throw new AggregateError([operationFailure, cleanupFailure], message);
-  }
-  if (operationFailure !== undefined) throw operationFailure;
-  if (cleanupFailure !== undefined) throw cleanupFailure;
 }
 
 async function canonicalizeTrustedSystemAlias(requested) {
@@ -405,7 +408,7 @@ async function walkStandaloneOutputDirectory(outputDirectory, {create, keepBindi
   let currentBinding = await bindDirectory(current);
   let retainedBinding;
   bindings.push(currentBinding);
-  try {
+  return runWithCleanup(async () => {
     for (const segment of segments) {
       const child = path.join(current, segment);
       let status = await withBoundDirectories([currentBinding], {}, () => pathStatus(child));
@@ -437,9 +440,9 @@ async function walkStandaloneOutputDirectory(outputDirectory, {create, keepBindi
       return {outputDirectory: currentBinding.canonical, binding: currentBinding};
     }
     return {outputDirectory: currentBinding.canonical};
-  } finally {
+  }, async () => {
     if (!keepBinding || retainedBinding === undefined) await closeBindings(bindings);
-  }
+  }, 'standalone directory traversal and binding cleanup both failed');
 }
 
 export async function resolveRealProjectRoot(configuredRoot) {
@@ -485,7 +488,7 @@ async function traverseSecureDirectory(
   let current = root;
   let currentBinding = await bindDirectory(root, {projectRoot: root});
   bindings.push(currentBinding);
-  try {
+  return runWithCleanup(async () => {
     for (const segment of relative === '' ? [] : relative.split(path.sep)) {
       const child = path.join(current, segment);
       let status = await withBoundDirectories(
@@ -540,9 +543,9 @@ async function traverseSecureDirectory(
       };
     }
     return target;
-  } finally {
+  }, async () => {
     if (!retained) await closeBindings(bindings);
-  }
+  }, 'secure directory traversal and binding cleanup both failed');
 }
 
 export async function assertSecureDirectory(
@@ -1135,13 +1138,16 @@ function recoveryError(
   original,
   recoveryFailure,
 ) {
-  return new Error(
+  const errors = original === recoveryFailure
+    ? [original]
+    : [original, recoveryFailure];
+  return new AggregateError(
+    errors,
     `artifact transaction failed and automatic recovery stopped; ` +
     `inspect last-known transaction locations under ${transactionRoot} ` +
     `(stage ${stageDirectory}; lock ${lockDirectory}; either may already be absent): ` +
     `original failure: ${original.message}; ` +
     `recovery/cleanup failure: ${recoveryFailure.message}`,
-    {cause: original},
   );
 }
 

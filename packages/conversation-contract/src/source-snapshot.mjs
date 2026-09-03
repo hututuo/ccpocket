@@ -11,6 +11,7 @@ import {
 import path from 'node:path';
 
 import {compareUtf16, digestBytes} from './canonical.mjs';
+import {finishWithCleanup, runWithCleanup} from './cleanup.mjs';
 
 const SOURCE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 
@@ -27,7 +28,7 @@ function sameFileIdentity(left, right) {
     left.ctimeNs === right.ctimeNs;
 }
 
-async function readStableRegularFile(filename) {
+async function readStableRegularFile(filename, hooks) {
   const lexicalBefore = await lstat(filename, {bigint: true});
   if (lexicalBefore.isSymbolicLink() || !lexicalBefore.isFile()) {
     throw new Error(`generator source must be a regular file: ${filename}`);
@@ -38,7 +39,8 @@ async function readStableRegularFile(filename) {
   } catch (error) {
     throw new Error(`cannot bind generator source: ${filename}: ${error.message}`);
   }
-  try {
+  return runWithCleanup(async () => {
+    await runHook(hooks, 'afterSourceHandleBound', {filename});
     const handleBefore = await handle.stat({bigint: true});
     if (!handleBefore.isFile() || !sameFileIdentity(lexicalBefore, handleBefore)) {
       throw new Error(`generator source changed while it was bound: ${filename}`);
@@ -55,9 +57,10 @@ async function readStableRegularFile(filename) {
       throw new Error(`generator source changed while it was read: ${filename}`);
     }
     return bytes;
-  } finally {
+  }, async () => {
     await handle.close();
-  }
+    await runHook(hooks, 'afterSourceHandleClose', {filename});
+  }, 'generator source read and handle cleanup both failed');
 }
 
 function sourceEntry(pathPrefix, filename, bytes) {
@@ -68,7 +71,11 @@ function sourceEntry(pathPrefix, filename, bytes) {
   };
 }
 
-export async function captureGeneratorSourceFiles(sourceDirectory, pathPrefix) {
+export async function captureGeneratorSourceFiles(
+  sourceDirectory,
+  pathPrefix,
+  {hooks} = {},
+) {
   const entries = await readdir(sourceDirectory, {withFileTypes: true});
   const sourceEntries = entries
     .filter((entry) => entry.name.endsWith('.mjs'))
@@ -84,7 +91,10 @@ export async function captureGeneratorSourceFiles(sourceDirectory, pathPrefix) {
         `generator source must be a regular file: ${path.join(sourceDirectory, entry.name)}`,
       );
     }
-    const bytes = await readStableRegularFile(path.join(sourceDirectory, entry.name));
+    const bytes = await readStableRegularFile(
+      path.join(sourceDirectory, entry.name),
+      hooks,
+    );
     files.set(entry.name, bytes);
     catalog.push(sourceEntry(pathPrefix, entry.name, bytes));
   }
@@ -95,9 +105,11 @@ export async function verifyGeneratorSourceFiles(
   sourceDirectory,
   pathPrefix,
   expectedCatalog,
-  {requireReadOnly = false} = {},
+  {requireReadOnly = false, hooks} = {},
 ) {
-  const actual = await captureGeneratorSourceFiles(sourceDirectory, pathPrefix);
+  const actual = await captureGeneratorSourceFiles(sourceDirectory, pathPrefix, {
+    hooks,
+  });
   if (JSON.stringify(actual.catalog) !== JSON.stringify(expectedCatalog)) {
     throw new Error('generator source snapshot changed during execution');
   }
@@ -126,7 +138,9 @@ export async function createGeneratorSourceSnapshot(
   pathPrefix,
   {hooks} = {},
 ) {
-  const captured = await captureGeneratorSourceFiles(sourceDirectory, pathPrefix);
+  const captured = await captureGeneratorSourceFiles(sourceDirectory, pathPrefix, {
+    hooks,
+  });
   const directory = await mkdtemp(path.join(
     path.dirname(sourceDirectory),
     '.ccpocket-contract-source-',
@@ -152,14 +166,10 @@ export async function createGeneratorSourceSnapshot(
       dispose: () => disposeSnapshot(directory, hooks),
     };
   } catch (error) {
-    try {
-      await disposeSnapshot(directory, hooks);
-    } catch (disposeFailure) {
-      throw new AggregateError(
-        [error, disposeFailure],
-        'generator source snapshot creation and cleanup both failed',
-      );
-    }
-    throw error;
+    await finishWithCleanup(
+      error,
+      () => disposeSnapshot(directory, hooks),
+      'generator source snapshot creation and cleanup both failed',
+    );
   }
 }
