@@ -15,7 +15,15 @@ import {
   rm,
   unlink,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  dirname,
+  isAbsolute,
+  join,
+  parse,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { createConnection, createServer, type Server } from "node:net";
 import { promisify } from "node:util";
 
@@ -32,10 +40,13 @@ const LOCK_DIRECTORY_OPEN_FLAGS =
   (constants.O_NOFOLLOW ?? 0);
 const LOCK_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const PROCESS_IDENTITY_PATTERN = /^[A-Za-z0-9:._+\-/=]{8,1024}$/;
+const PRIVATE_STATE_RELEASE_RESIDUE_PATTERN =
+  /^.+\.lock\.release-[A-Za-z0-9_-]{16,128}-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const PRIVATE_STATE_RESIDUE_PATTERNS = [
   /^.+\.tmp-[1-9][0-9]*-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   /^.+\.lock\.candidate-[1-9][0-9]*-[A-Za-z0-9_-]{16,128}-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  /^.+\.lock\.(?:stale|legacy-stale|release)-[A-Za-z0-9_-]{16,128}-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  /^.+\.lock\.(?:stale|legacy-stale)-[A-Za-z0-9_-]{16,128}-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  PRIVATE_STATE_RELEASE_RESIDUE_PATTERN,
   /^.+\.lock\.(?:failed-install|changed-restore)-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   /^.+\.gc-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
 ] as const;
@@ -197,17 +208,40 @@ async function cleanPrivateStateResidueEntry(
   directory: PrivateStateDirectoryBinding,
   name: string,
   syncDirectory: DirectorySync,
+  processStatus: ProcessStatusResolver,
 ): Promise<void> {
   if (!isPrivateStateResidueName(name)) return;
   const residue = join(directory.path, name);
   assertPathWithinBinding(directory, residue);
   await assertPrivateStateDirectory(directory);
+  let releaseSnapshot: LockSnapshot | undefined;
+  if (PRIVATE_STATE_RELEASE_RESIDUE_PATTERN.test(name)) {
+    releaseSnapshot = await readLockSnapshot(directory, residue).catch(
+      () => undefined,
+    );
+    if (releaseSnapshot !== undefined) {
+      const status = await processStatus(
+        releaseSnapshot.owner.pid,
+        releaseSnapshot.owner.processIdentity,
+      );
+      if (status === "alive" || status === "unknown") return;
+    }
+  }
   let before: Awaited<ReturnType<typeof lstat>>;
   try {
     before = await lstat(residue);
   } catch (error) {
     if (isMissing(error)) return;
     throw error;
+  }
+  if (
+    releaseSnapshot !== undefined &&
+    !sameLockDirectoryIdentity(releaseSnapshot, {
+      device: before.dev,
+      inode: before.ino,
+    })
+  ) {
+    return;
   }
   const quarantine = `${residue}.gc-${randomUUID()}`;
   await rename(residue, quarantine);
@@ -224,6 +258,7 @@ async function cleanPrivateStateResidueEntry(
 async function cleanPrivateStateResidue(
   directory: PrivateStateDirectoryBinding,
   syncDirectory: DirectorySync,
+  processStatus: ProcessStatusResolver,
 ): Promise<void> {
   let names: string[];
   try {
@@ -233,9 +268,12 @@ async function cleanPrivateStateResidue(
     return;
   }
   for (const name of names) {
-    await cleanPrivateStateResidueEntry(directory, name, syncDirectory).catch(
-      () => undefined,
-    );
+    await cleanPrivateStateResidueEntry(
+      directory,
+      name,
+      syncDirectory,
+      processStatus,
+    ).catch(() => undefined);
   }
 }
 
@@ -252,7 +290,7 @@ function securityCacheKey(status: {
 }
 
 const securedPrivatePaths = new Set<string>();
-const inspectedDarwinAncestors = new Set<string>();
+const inspectedPrivateStateAncestors = new Set<string>();
 const MAX_SECURITY_CACHE_ENTRIES = 4_096;
 
 function rememberSecurityCacheEntry(cache: Set<string>, key: string): void {
@@ -334,8 +372,8 @@ async function hardenPrivatePath(
   return after;
 }
 
-async function assertDarwinAncestorSecurity(path: string): Promise<void> {
-  if (process.platform !== "darwin") return;
+async function assertPrivateStateAncestorSecurity(path: string): Promise<void> {
+  const effectiveUser = process.geteuid?.();
   let cursor = dirname(path);
   while (true) {
     const status = await lstat(cursor);
@@ -345,29 +383,39 @@ async function assertDarwinAncestorSecurity(path: string): Promise<void> {
       );
     }
     const cacheKey = securityCacheKey(status);
-    if (!inspectedDarwinAncestors.has(cacheKey)) {
-      const aclEntries = await darwinAclEntries(cursor);
-      const grantsNamespaceMutation = aclEntries.some(
-        (entry) =>
-          /\ballow\b/u.test(entry) &&
-          /\b(?:add_file|add_subdirectory|delete|delete_child|writeattr|writeextattr|writesecurity|chown)\b/u.test(
-            entry,
-          ),
-      );
-      if (grantsNamespaceMutation) {
-        throw new Error(
-          "Conversation identity state ancestor ACL grants namespace mutation",
+    if (!inspectedPrivateStateAncestors.has(cacheKey)) {
+      if (process.platform === "darwin") {
+        const aclEntries = await darwinAclEntries(cursor);
+        const grantsNamespaceMutation = aclEntries.some(
+          (entry) =>
+            /\ballow\b/u.test(entry) &&
+            /\b(?:add_file|add_subdirectory|delete|delete_child|writeattr|writeextattr|writesecurity|chown)\b/u.test(
+              entry,
+            ),
         );
+        if (grantsNamespaceMutation) {
+          throw new Error(
+            "Conversation identity state ancestor ACL grants namespace mutation",
+          );
+        }
       }
       const writableByAnotherPrincipal = (status.mode & 0o022) !== 0;
       const protectedStickyRoot =
         (status.mode & 0o1000) !== 0 && status.uid === 0;
-      if (writableByAnotherPrincipal && !protectedStickyRoot) {
+      const foreignOwnerCanMutateNamespace =
+        effectiveUser !== undefined &&
+        status.uid !== effectiveUser &&
+        status.uid !== 0 &&
+        (status.mode & 0o300) === 0o300;
+      if (
+        (writableByAnotherPrincipal || foreignOwnerCanMutateNamespace) &&
+        !protectedStickyRoot
+      ) {
         throw new Error(
           "Conversation identity state ancestor is writable by another principal",
         );
       }
-      rememberSecurityCacheEntry(inspectedDarwinAncestors, cacheKey);
+      rememberSecurityCacheEntry(inspectedPrivateStateAncestors, cacheKey);
     }
     const parent = dirname(cursor);
     if (parent === cursor) return;
@@ -954,8 +1002,11 @@ async function pause(milliseconds: number): Promise<void> {
 async function ensureDirectoryNamespaceDurable(
   absolutePath: string,
   syncDirectory: DirectorySync,
-): Promise<void> {
-  let cursor = absolutePath;
+): Promise<string> {
+  const namespacePath =
+    await canonicalizeTrustedPrivateStateAlias(absolutePath);
+  await assertLexicalDirectoryComponents(namespacePath);
+  let cursor = namespacePath;
   while (true) {
     try {
       const status = await lstat(cursor);
@@ -973,8 +1024,9 @@ async function ensureDirectoryNamespaceDurable(
     }
   }
 
-  await mkdir(absolutePath, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
-  const leafIdentity = await lstat(absolutePath);
+  await mkdir(namespacePath, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  await assertLexicalDirectoryComponents(namespacePath);
+  const leafIdentity = await lstat(namespacePath);
   if (leafIdentity.isSymbolicLink() || !leafIdentity.isDirectory()) {
     throw new Error(
       "Conversation identity state directory changed while being created",
@@ -983,7 +1035,7 @@ async function ensureDirectoryNamespaceDurable(
   // Durability follows the actual namespace. macOS exposes stable system
   // aliases such as /var -> /private/var, so reconcile the canonical chain
   // while the leaf itself is still rejected if it is a symbolic link.
-  cursor = await realpath(absolutePath);
+  cursor = await realpath(namespacePath);
   while (true) {
     const status = await lstat(cursor);
     if (status.isSymbolicLink() || !status.isDirectory()) {
@@ -992,9 +1044,9 @@ async function ensureDirectoryNamespaceDurable(
       );
     }
     const parent = dirname(cursor);
-    if (parent === cursor) return;
+    if (parent === cursor) return namespacePath;
     await syncDirectory(parent);
-    const currentLeaf = await lstat(absolutePath);
+    const currentLeaf = await lstat(namespacePath);
     if (
       currentLeaf.isSymbolicLink() ||
       !currentLeaf.isDirectory() ||
@@ -1008,6 +1060,67 @@ async function ensureDirectoryNamespaceDurable(
   }
 }
 
+async function canonicalizeTrustedPrivateStateAlias(
+  absolutePath: string,
+): Promise<string> {
+  const parsed = parse(absolutePath);
+  const segments = relative(parsed.root, absolutePath)
+    .split(sep)
+    .filter(Boolean);
+  if (segments.length === 0) return absolutePath;
+  const alias = join(parsed.root, segments[0]!);
+  let status: Awaited<ReturnType<typeof lstat>>;
+  try {
+    status = await lstat(alias);
+  } catch (error) {
+    if (isMissing(error)) return absolutePath;
+    throw error;
+  }
+  if (!status.isSymbolicLink()) return absolutePath;
+  const canonical = await realpath(alias);
+  const trustedDarwinAliases = new Map([
+    [join(parsed.root, "etc"), join(parsed.root, "private", "etc")],
+    [join(parsed.root, "tmp"), join(parsed.root, "private", "tmp")],
+    [join(parsed.root, "var"), join(parsed.root, "private", "var")],
+  ]);
+  if (
+    process.platform !== "darwin" ||
+    status.uid !== 0 ||
+    trustedDarwinAliases.get(alias) !== canonical
+  ) {
+    throw new Error(
+      "Conversation identity state path component is a symbolic link",
+    );
+  }
+  return join(canonical, ...segments.slice(1));
+}
+
+async function assertLexicalDirectoryComponents(path: string): Promise<void> {
+  const parsed = parse(path);
+  const segments = relative(parsed.root, path).split(sep).filter(Boolean);
+  let cursor = parsed.root;
+  for (const segment of segments) {
+    cursor = join(cursor, segment);
+    let status: Awaited<ReturnType<typeof lstat>>;
+    try {
+      status = await lstat(cursor);
+    } catch (error) {
+      if (isMissing(error)) return;
+      throw error;
+    }
+    if (status.isSymbolicLink()) {
+      throw new Error(
+        "Conversation identity state path component is a symbolic link",
+      );
+    }
+    if (!status.isDirectory()) {
+      throw new Error(
+        "Conversation identity state path component is not a real directory",
+      );
+    }
+  }
+}
+
 export async function preparePrivateStateDirectory(
   path: string,
   syncDirectory: DirectorySync = syncDirectoryForDurability,
@@ -1017,15 +1130,18 @@ export async function preparePrivateStateDirectory(
   if (/[\u0000-\u001f\u007f]/u.test(absolutePath)) {
     throw new Error("Conversation identity state path contains control data");
   }
-  await ensureDirectoryNamespaceDurable(absolutePath, syncDirectory);
-  const before = await lstat(absolutePath);
+  const namespacePath = await ensureDirectoryNamespaceDurable(
+    absolutePath,
+    syncDirectory,
+  );
+  const before = await lstat(namespacePath);
   if (before.isSymbolicLink() || !before.isDirectory()) {
     throw new Error(
       "Conversation identity state directory must be a real directory",
     );
   }
-  const canonicalPath = await realpath(absolutePath);
-  const rebound = await lstat(absolutePath);
+  const canonicalPath = await realpath(namespacePath);
+  const rebound = await lstat(namespacePath);
   const canonicalBefore = await lstat(canonicalPath);
   if (
     rebound.isSymbolicLink() ||
@@ -1044,8 +1160,8 @@ export async function preparePrivateStateDirectory(
     "Conversation identity state directory",
     "directory",
   );
-  await assertDarwinAncestorSecurity(canonicalPath);
-  const finalPath = await lstat(absolutePath);
+  await assertPrivateStateAncestorSecurity(canonicalPath);
+  const finalPath = await lstat(namespacePath);
   if (
     after.isSymbolicLink() ||
     !after.isDirectory() ||
@@ -2204,7 +2320,21 @@ async function releaseOwnedLock(
       throw new Error("Conversation identity lock release state is invalid");
     }
     const moved = await readLockSnapshot(directory, tombstone);
-    if (!moved || !snapshotsMatch(snapshot, moved)) {
+    if (!moved) {
+      const canonical = await readLockSnapshot(directory, lockPath);
+      if (canonical !== undefined) {
+        throw new Error(
+          "Conversation identity lock ownership changed during release",
+        );
+      }
+      progress.phase = "removed-awaiting-sync";
+      progress.tombstone = undefined;
+      progress.snapshot = undefined;
+      await syncParentDirectory(lockPath, syncDirectory);
+      await assertPrivateStateDirectory(directory);
+      return;
+    }
+    if (!snapshotsMatch(snapshot, moved)) {
       throw new Error(
         "Conversation identity lock ownership changed during release",
       );
@@ -2589,8 +2719,18 @@ export async function acquirePrivateStateGenerationLease(
       try {
         await recoverOrphanedMutationLockReleases(lifecycle);
         await recoverOrphanedMutationLockReleases(directory);
-        await cleanPrivateStateResidue(lifecycle, syncDirectory);
-        await cleanPrivateStateResidue(directory, syncDirectory);
+        const residueProcessStatus =
+          options.processStatus ?? defaultProcessStatus;
+        await cleanPrivateStateResidue(
+          lifecycle,
+          syncDirectory,
+          residueProcessStatus,
+        );
+        await cleanPrivateStateResidue(
+          directory,
+          syncDirectory,
+          residueProcessStatus,
+        );
       } catch (error) {
         let cleanupError: unknown;
         try {

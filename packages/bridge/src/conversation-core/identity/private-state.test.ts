@@ -7,6 +7,7 @@ import {
   realpath,
   rename,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -153,6 +154,29 @@ describe("private conversation identity state", () => {
 
     await preparePrivateStateDirectory(target, syncDirectory);
     expect(calls.filter((path) => path === failedParent)).toHaveLength(2);
+  });
+
+  it("rejects an intermediate symlink in the configured state namespace", async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), "ccpocket-v4-state-intermediate-link-"),
+    );
+    roots.push(root);
+    const first = join(root, "first");
+    const second = join(root, "second");
+    await mkdir(join(first, "state"), { recursive: true, mode: 0o700 });
+    await mkdir(join(second, "state"), { recursive: true, mode: 0o700 });
+    const alias = join(root, "alias");
+    await symlink(first, alias);
+
+    await expect(
+      preparePrivateStateDirectory(join(alias, "state")),
+    ).rejects.toThrow(/path component.*symbolic link/iu);
+
+    await rm(alias);
+    await symlink(second, alias);
+    await expect(
+      preparePrivateStateDirectory(join(alias, "state")),
+    ).rejects.toThrow(/path component.*symbolic link/iu);
   });
 
   it("removes a target ACL and rejects an inherited allow ACL in its ancestor", async () => {
@@ -1492,6 +1516,103 @@ describe("private conversation identity state", () => {
     );
     await next();
     await generation.release();
+  });
+
+  it("preserves a live release tombstone across another generation cleanup", async () => {
+    const { directory, file } = await stateFile();
+    roots.push(`${directory.path}.lifecycle-v1`);
+    const uuid = "22222222-2222-4222-8222-222222222222";
+    const ownerPid = 70_450;
+    const tombstone = `${file}.lock.release-${lockToken("foreign-live-release")}-${uuid}`;
+    await writeOwnerDirectory(tombstone, {
+      pid: ownerPid,
+      token: lockToken("foreign-live-release"),
+      createdAt: "2026-08-30T11:59:00.000Z",
+    });
+
+    const generation = await acquirePrivateStateGenerationLease(
+      directory,
+      "bridge-identity",
+      lockOptions({
+        processStatus: async (pid) => (pid === ownerPid ? "alive" : "dead"),
+      }),
+    );
+    expect((await lstat(tombstone)).isDirectory()).toBe(true);
+    await generation.release();
+  });
+
+  it("does not collect a replacement release tombstone after its owner probe", async () => {
+    const { directory, file } = await stateFile();
+    roots.push(`${directory.path}.lifecycle-v1`);
+    const originalPid = 70_451;
+    const replacementPid = 70_452;
+    const tombstone = `${file}.lock.release-${lockToken("replaced-release")}-22222222-2222-4222-8222-222222222223`;
+    await writeOwnerDirectory(tombstone, {
+      pid: originalPid,
+      token: lockToken("replaced-release"),
+      createdAt: "2026-08-30T11:59:00.000Z",
+    });
+    let replaced = false;
+
+    const generation = await acquirePrivateStateGenerationLease(
+      directory,
+      "bridge-identity",
+      lockOptions({
+        processStatus: async (pid) => {
+          if (pid === originalPid && !replaced) {
+            replaced = true;
+            await rm(tombstone, { recursive: true, force: true });
+            await writeOwnerDirectory(tombstone, {
+              pid: replacementPid,
+              token: lockToken("replacement-release"),
+              createdAt: "2026-08-30T12:00:00.000Z",
+            });
+            return "dead";
+          }
+          return pid === replacementPid ? "alive" : "dead";
+        },
+      }),
+    );
+    expect(replaced).toBe(true);
+    expect((await lstat(tombstone)).isDirectory()).toBe(true);
+    const owner = JSON.parse(
+      await readFile(join(tombstone, STATE_LOCK_OWNER_FILE), "utf8"),
+    ) as { pid: number };
+    expect(owner.pid).toBe(replacementPid);
+    await generation.release();
+  });
+
+  it("reconciles a release retry after another generation removed its tombstone", async () => {
+    const { directory, file } = await stateFile();
+    const parent = dirname(file);
+    let releaseStarted = false;
+    let failed = false;
+    const release = await acquireStateMutationLock(
+      directory,
+      file,
+      "cross-generation release retry fixture lock",
+      lockOptions({
+        syncDirectory: async (path) => {
+          if (releaseStarted && !failed && path === parent) {
+            failed = true;
+            throw errorWithCode("EIO");
+          }
+        },
+      }),
+    );
+
+    releaseStarted = true;
+    await expect(release()).rejects.toMatchObject({ code: "EIO" });
+    const tombstone = (await readdir(parent))
+      .map((entry) => join(parent, entry))
+      .find((entry) => entry.startsWith(`${file}.lock.release-`));
+    expect(tombstone).toBeDefined();
+    await rm(tombstone!, { recursive: true, force: true });
+
+    await expect(release()).resolves.toBeUndefined();
+    await expect(lstat(`${file}.lock`)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 
   it("fails closed for duplicate-key lock owner metadata", async () => {

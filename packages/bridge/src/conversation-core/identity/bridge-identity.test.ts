@@ -574,7 +574,7 @@ describe("BridgeIdentityStore", () => {
     await symlink(realDirectory, linkedDirectory);
     await expect(
       BridgeIdentityStore.load({ stateDir: linkedDirectory }),
-    ).rejects.toThrow(/real directory/);
+    ).rejects.toThrow(/symbolic link/);
 
     const stateDir = join(await root(), "state");
     await mkdir(stateDir, { mode: 0o700 });
