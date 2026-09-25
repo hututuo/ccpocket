@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "project_key": "hututuo--ccpocket",
+  "source_repository": "https://github.com/hututuo/ccpocket",
+  "canonical_source_branch": "main",
+  "public_entrypoints": [
+    "AGENTS.md",
+    "CONTEXT.md",
+    "PROJECT_INDEX.md",
+    "docs/PROJECT_HANDOFF.md",
+    "decisions.md"
+  ],
+  "private_context": {
+    "repository": "https://github.com/hututuo/project-dev-context",
+    "project_key": "projects/hututuo--ccpocket"
+  }
+}

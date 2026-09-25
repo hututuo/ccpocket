@@ -1,0 +1,205 @@
+name: Cloud checks and unsigned candidates
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'chore/cloud-handoff-*'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  checks-bridge:
+    name: Checks / Bridge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run test:bridge
+      - run: npx tsc --noEmit -p packages/bridge/tsconfig.json
+      - run: npm run bridge:build
+
+  checks-mobile:
+    name: Checks / Mobile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read Flutter version
+        id: mise
+        run: echo "flutter_version=$(grep 'flutter' .mise.toml | sed 's/.*= *"//' | sed 's/"//')" >> "$GITHUB_OUTPUT"
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ steps.mise.outputs.flutter_version }}
+          cache: true
+      - run: flutter pub get
+        working-directory: apps/mobile
+      - run: dart analyze .
+        working-directory: apps/mobile
+      - run: flutter test
+        working-directory: apps/mobile
+
+  checks-functions:
+    name: Checks / Functions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+      - run: npm ci --prefix functions
+      - run: npm --prefix functions test
+      - run: npm --prefix functions run typecheck
+      - run: npm --prefix functions run build
+
+  candidate-bridge:
+    name: Candidate / Bridge runtime
+    needs: checks-bridge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run bridge:build
+      - name: Create candidate manifest
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ccpocket-bridge-candidate"
+          cp -R packages/bridge/dist "$RUNNER_TEMP/ccpocket-bridge-candidate/dist"
+          node - <<'NODE'
+          const fs = require('fs');
+          const crypto = require('crypto');
+          const path = require('path');
+          const root = process.env.RUNNER_TEMP + '/ccpocket-bridge-candidate';
+          const dist = path.join(root, 'dist');
+          const files = [];
+          function walk(dir) {
+            for (const name of fs.readdirSync(dir)) {
+              const file = path.join(dir, name);
+              const stat = fs.statSync(file);
+              if (stat.isDirectory()) walk(file);
+              else files.push({path: path.relative(root, file), bytes: stat.size, sha256: crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')});
+            }
+          }
+          walk(dist);
+          const pkg = require(process.cwd() + '/packages/bridge/package.json');
+          fs.writeFileSync(path.join(root, 'candidate-manifest.json'), JSON.stringify({
+            sourceSha: process.env.SOURCE_SHA,
+            runId: process.env.RUN_ID,
+            package: '@ccpocket/bridge',
+            version: pkg.version,
+            platform: process.platform,
+            architecture: process.arch,
+            signatureStatus: 'unsigned-source-artifact',
+            files,
+          }, null, 2) + '\n');
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ccpocket-bridge-candidate-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/ccpocket-bridge-candidate
+          if-no-files-found: error
+          retention-days: 14
+
+  candidate-ios:
+    name: Candidate / unsigned iOS IPA
+    needs: checks-mobile
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read Flutter version and app version
+        id: versions
+        run: |
+          echo "flutter_version=$(grep 'flutter' .mise.toml | sed 's/.*= *"//' | sed 's/"//')" >> "$GITHUB_OUTPUT"
+          version_line=$(awk '/^version:/{print $2; exit}' apps/mobile/pubspec.yaml)
+          echo "build_name=${version_line%%+*}" >> "$GITHUB_OUTPUT"
+          echo "build_number=${version_line##*+}" >> "$GITHUB_OUTPUT"
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ steps.versions.outputs.flutter_version }}
+          cache: true
+      - run: flutter pub get
+        working-directory: apps/mobile
+      - name: Build unsigned iOS app
+        working-directory: apps/mobile
+        run: |
+          flutter build ios --release --no-codesign --no-tree-shake-icons \
+            --build-name "${{ steps.versions.outputs.build_name }}" \
+            --build-number "${{ steps.versions.outputs.build_number }}"
+      - name: Package and audit IPA
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          BUILD_NAME: ${{ steps.versions.outputs.build_name }}
+          BUILD_NUMBER: ${{ steps.versions.outputs.build_number }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/ccpocket-ios-candidate"
+          staged="$root/Payload/Runner.app"
+          rm -rf "$root"
+          mkdir -p "$root/Payload"
+          ditto apps/mobile/build/ios/iphoneos/Runner.app "$staged"
+          while IFS= read -r -d '' file; do
+            codesign --remove-signature "$file" >/dev/null 2>&1 || true
+          done < <(find "$staged" -type f -print0)
+          find "$staged" -type d -name _CodeSignature -prune -exec rm -rf {} +
+          find "$staged" -name embedded.mobileprovision -delete
+          bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$staged/Info.plist")
+          short_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$staged/Info.plist")
+          build_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$staged/Info.plist")
+          test "$bundle_id" = 'com.k9i.ccpocket'
+          test "$short_version" = "$BUILD_NAME"
+          test "$build_version" = "$BUILD_NUMBER"
+          find "$staged" -type f -print0 | xargs -0 file > "$root/macho.txt"
+          grep -q 'Mach-O' "$root/macho.txt"
+          ! grep -Eq 'x86_64|i386' "$root/macho.txt"
+          ipa="$root/CC-Pocket-${BUILD_NAME}-build${BUILD_NUMBER}-${SOURCE_SHA:0:8}-unsigned.ipa"
+          (cd "$root" && zip -qry "$ipa" Payload)
+          sha256=$(shasum -a 256 "$ipa" | awk '{print $1}')
+          bytes=$(stat -f '%z' "$ipa")
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const root = process.env.RUNNER_TEMP + '/ccpocket-ios-candidate';
+          const ipa = fs.readdirSync(root).find((name) => name.endsWith('.ipa'));
+          const sha = require('child_process').execFileSync('shasum', ['-a', '256', path.join(root, ipa)], {encoding: 'utf8'}).trim().split(/\s+/)[0];
+          const bytes = fs.statSync(path.join(root, ipa)).size;
+          fs.writeFileSync(path.join(root, 'candidate-manifest.json'), JSON.stringify({
+            sourceSha: process.env.SOURCE_SHA,
+            runId: process.env.RUN_ID,
+            fileName: ipa,
+            bytes,
+            sha256: sha,
+            platform: 'ios',
+            architecture: 'arm64-only',
+            bundleId: 'com.k9i.ccpocket',
+            version: process.env.BUILD_NAME,
+            build: process.env.BUILD_NUMBER,
+            signatureStatus: 'unsigned-altstore-input',
+            installStatus: 'not_run',
+          }, null, 2) + '\n');
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ccpocket-ios-candidate-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/ccpocket-ios-candidate
+          if-no-files-found: error
+          retention-days: 14
