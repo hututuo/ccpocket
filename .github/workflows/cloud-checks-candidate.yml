@@ -109,7 +109,7 @@ jobs:
   candidate-bridge:
     name: Candidate / Bridge runtime
     needs: checks-bridge
-    if: ${{ needs.checks-bridge.result == 'success' || inputs.run_candidate_after_failed_checks == true }}
+    if: ${{ always() && (needs.checks-bridge.result == 'success' || inputs.run_candidate_after_failed_checks == true) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -165,7 +165,7 @@ jobs:
   candidate-ios:
     name: Candidate / unsigned iOS IPA
     needs: checks-mobile
-    if: ${{ needs.checks-mobile.result == 'success' || inputs.run_candidate_after_failed_checks == true }}
+    if: ${{ always() && (needs.checks-mobile.result == 'success' || inputs.run_candidate_after_failed_checks == true) }}
     runs-on: macos-26
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
