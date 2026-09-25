@@ -86,6 +86,10 @@ import {
   type ServerMessage,
 } from "./parser.js";
 import {
+  normalizeSessionError,
+  type SessionErrorMessage,
+} from "./session-error.js";
+import {
   getAllRecentSessions,
   getCodexDesktopToolTimeline,
   getCodexSessionHistory,
@@ -14725,12 +14729,11 @@ export class BridgeWebSocketServer {
     // timestamps. Unscoped errors sent directly to a request owner remain
     // global/request-scoped and are intentionally not rewritten here.
     if (msg.type === "error") {
-      msg = {
-        ...msg,
-        ...(msg.sessionId ? {} : { sessionId }),
-        ...(msg.errorEventId ? {} : { errorEventId: randomUUID() }),
-        ...(msg.errorSource ? {} : { errorSource: "bridge" as const }),
-      };
+      msg = normalizeSessionError(msg, {
+        sessionId,
+        errorSource: msg.errorSource ?? "bridge",
+        errorPhase: msg.errorPhase ?? "session_broadcast",
+      });
     }
     if (this.shouldBatchDelta(msg, exclude)) {
       this.trackSessionMessage(sessionId, msg);
@@ -17485,7 +17488,16 @@ export class BridgeWebSocketServer {
     msg: ServerMessage | Record<string, unknown>,
   ): void {
     if (this.connectionAuth.get(ws)?.kind === "pending") return;
-    const compatibleMsg = this.prepareServerMessageForClient(ws, msg);
+    const candidate = msg as Partial<SessionErrorMessage>;
+    const normalizedMsg =
+      candidate.type === "error" && typeof candidate.sessionId === "string"
+        ? normalizeSessionError(candidate as SessionErrorMessage, {
+            sessionId: candidate.sessionId,
+            errorSource: candidate.errorSource,
+            errorPhase: candidate.errorPhase ?? "request",
+          })
+        : msg;
+    const compatibleMsg = this.prepareServerMessageForClient(ws, normalizedMsg);
     if (!compatibleMsg) return;
     const sessionId = this.extractSessionIdFromServerMessage(compatibleMsg);
     if (sessionId && this.sessionManager.get(sessionId)) {
