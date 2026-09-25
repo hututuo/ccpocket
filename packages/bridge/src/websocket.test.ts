@@ -3477,12 +3477,17 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         ws.send.mock.calls
           .map((call: unknown[]) => JSON.parse(call[0] as string))
           .find((message: any) => message.type === "error"),
-      ).toEqual({
-        type: "error",
-        message: "Session missing-session not found",
-        errorCode: "session_not_found",
-        sessionId: "missing-session",
-      });
+      ).toEqual(
+        expect.objectContaining({
+          type: "error",
+          message: "Session missing-session not found",
+          errorCode: "session_not_found",
+          sessionId: "missing-session",
+          errorEventId: expect.any(String),
+          errorSource: "bridge",
+          errorPhase: "request",
+        }),
+      );
     }
 
     bridge.close();
