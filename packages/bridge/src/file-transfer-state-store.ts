@@ -63,6 +63,12 @@ export interface PersistedDiagnosticReceipt {
   committedAt: number;
 }
 
+export interface PersistedDiagnosticFailure {
+  code: string;
+  message: string;
+  failedAt: number;
+}
+
 export interface PersistedUploadTransfer {
   transferId: string;
   uploadTokenHash: string;
@@ -70,7 +76,7 @@ export interface PersistedUploadTransfer {
   filename: string;
   sizeBytes: number;
   offset: number;
-  status: "pending" | "committing" | "complete";
+  status: "pending" | "committing" | "complete" | "failed";
   /** A PATCH was durably announced before any unconfirmed bytes were written. */
   rollbackPending?: true;
   /** The rollback phase was durably announced before truncating a written tail. */
@@ -86,6 +92,7 @@ export interface PersistedUploadTransfer {
   purpose?: FileTransferPurpose;
   diagnosticReport?: DiagnosticReportMetadata;
   diagnosticReceipt?: PersistedDiagnosticReceipt;
+  diagnosticFailure?: PersistedDiagnosticFailure;
 }
 
 interface FileTransferState {
@@ -851,6 +858,9 @@ function cloneUpload(entry: PersistedUploadTransfer): PersistedUploadTransfer {
     ...(entry.diagnosticReceipt
       ? { diagnosticReceipt: { ...entry.diagnosticReceipt } }
       : {}),
+    ...(entry.diagnosticFailure
+      ? { diagnosticFailure: { ...entry.diagnosticFailure } }
+      : {}),
   };
 }
 
@@ -965,8 +975,19 @@ function isUpload(value: unknown): value is PersistedUploadTransfer {
     entry.offset === entry.sizeBytes &&
     entry.partialPath === undefined &&
     entry.partialIdentity === undefined &&
-    (entry.finalIdentity === undefined ||
+      (entry.finalIdentity === undefined ||
       (isIdentity(entry.finalIdentity) && entry.finalIdentity.size === entry.sizeBytes));
+  const failedValid =
+    entry.status === "failed" &&
+    entry.rollbackPending === undefined &&
+    entry.rollbackTruncating === undefined &&
+    entry.offset === entry.sizeBytes &&
+    entry.finalFilename === undefined &&
+    entry.finalIdentity === undefined &&
+    entry.partialPath === undefined &&
+    entry.partialIdentity === undefined &&
+    entry.purpose === "diagnostic_report" &&
+    isDiagnosticFailure(entry.diagnosticFailure);
   const diagnosticReceiptValid = entry.diagnosticReceipt === undefined ||
     (entry.purpose === "diagnostic_report" &&
       isDiagnosticReceipt(entry.diagnosticReceipt) &&
@@ -987,11 +1008,21 @@ function isUpload(value: unknown): value is PersistedUploadTransfer {
     (entry.purpose !== "diagnostic_report" ||
       entry.sizeBytes <= DIAGNOSTIC_REPORT_PAYLOAD_MAX_BYTES) &&
     isSafeByteCount(entry.offset) && entry.offset <= entry.sizeBytes &&
-    (pendingValid || committingValid || completeValid) &&
+    (pendingValid || committingValid || completeValid || failedValid) &&
     isFiniteNumber(entry.createdAt) &&
     isFiniteNumber(entry.updatedAt) &&
     isFiniteNumber(entry.expiresAt) &&
     isFiniteNumber(entry.retainUntil)
+  );
+}
+
+function isDiagnosticFailure(value: unknown): value is PersistedDiagnosticFailure {
+  if (!value || typeof value !== "object") return false;
+  const failure = value as Partial<PersistedDiagnosticFailure>;
+  return (
+    validText(failure.code, 128) &&
+    validText(failure.message, 4_096) &&
+    isFiniteNumber(failure.failedAt)
   );
 }
 

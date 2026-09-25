@@ -21,6 +21,7 @@ import {
 import { hashTransferSecret, identityMatches, identityOf, secretHashMatches } from "./file-transfer-download-store.js";
 import { FileTransferError, fileTransferErrorCode } from "./file-transfer-errors.js";
 import type {
+  PersistedDiagnosticFailure,
   PersistedDiagnosticReceipt,
   PersistedUploadDirectoryIdentity,
   PersistedUploadTransfer,
@@ -72,7 +73,8 @@ export type PreparedUpload =
       uploadToken: string;
       resumeToken: string;
     }
-  | { status: "complete"; entry: PersistedUploadTransfer };
+  | { status: "complete"; entry: PersistedUploadTransfer }
+  | { status: "failed"; entry: PersistedUploadTransfer };
 
 export interface UploadAppendResult {
   entry: PersistedUploadTransfer;
@@ -282,7 +284,7 @@ export class FileTransferUploadStore {
         await this.removeExpiredUploadLocked(entry);
         return undefined;
       }
-      return entry.diagnosticReceipt
+      return entry.status === "complete" && entry.diagnosticReceipt
         ? {
             entry,
             receipt: { ...entry.diagnosticReceipt },
@@ -511,6 +513,72 @@ export class FileTransferUploadStore {
   }
 
   /**
+   * Persists a terminal diagnostic failure after removing only the exact
+   * completed payload. A reconnecting phone can then receive the real error
+   * instead of seeing a vanished upload or a generic timeout.
+   */
+  async recordDiagnosticFailure(
+    entry: PersistedUploadTransfer,
+    failure: PersistedDiagnosticFailure,
+  ): Promise<void> {
+    await this.init();
+    await this.withTransferLock(entry.transferId, async () => {
+      const current = await this.stateStore.getUpload(entry.transferId);
+      if (
+        !current ||
+        current.status !== "complete" ||
+        current.purpose !== "diagnostic_report" ||
+        !current.finalFilename
+      ) {
+        return;
+      }
+      const directory = await this.assertDirectoryIdentity();
+      const safeFilename = sanitizeFileTransferFilename(current.finalFilename);
+      if (safeFilename !== current.finalFilename) {
+        throw new FileTransferError(409, "upload_final_path_invalid", "Upload final path is invalid");
+      }
+      const destination = join(directory.canonicalPath, safeFilename);
+      const lexical = await lstat(destination).catch((error) => {
+        if (fileTransferErrorCode(error) === "ENOENT") return undefined;
+        throw error;
+      });
+      if (lexical) {
+        if (
+          !lexical.isFile() ||
+          lexical.isSymbolicLink() ||
+          lexical.size !== current.sizeBytes ||
+          (current.finalIdentity !== undefined &&
+            !sameFileObject(current.finalIdentity, identityOf(lexical)))
+        ) {
+          throw new FileTransferError(409, "upload_final_changed", "Upload final file changed");
+        }
+        await unlink(destination);
+        await fsyncDirectory(directory.canonicalPath);
+      }
+      await this.stateStore.upsertUpload({
+        ...current,
+        status: "failed",
+        offset: current.sizeBytes,
+        finalFilename: undefined,
+        finalIdentity: undefined,
+        diagnosticReceipt: undefined,
+        diagnosticFailure: { ...failure },
+        updatedAt: this.now(),
+      });
+    });
+  }
+
+  async removeFailedDiagnosticUpload(entry: PersistedUploadTransfer): Promise<void> {
+    await this.init();
+    await this.withTransferLock(entry.transferId, async () => {
+      const current = await this.stateStore.getUpload(entry.transferId);
+      if (current?.status === "failed") {
+        await this.stateStore.removeUpload(current.transferId);
+      }
+    });
+  }
+
+  /**
    * Drops one unreadable diagnostic completion without deleting a replacement
    * file owned by another inode. A modified original inode is still the exact
    * staged object and is scrubbed before its state is removed.
@@ -664,6 +732,7 @@ export class FileTransferUploadStore {
         throw new FileTransferError(410, "upload_expired", "Upload retention expired");
       }
       if (entry.status === "committing") entry = await this.recoverCommit(entry);
+      if (entry.status === "failed") return { status: "failed", entry };
       if (entry.status === "complete") return { status: "complete", entry };
       entry = await this.reconcilePendingEntry(entry);
       await this.ensureDiskReservation(entry.sizeBytes - entry.offset, entry.transferId);

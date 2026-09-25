@@ -13,6 +13,7 @@ import {
   inspectFileTransferLock,
   unlockFileTransferLock,
   type PersistedDownloadTransfer,
+  type PersistedUploadTransfer,
 } from "./file-transfer-state-store.js";
 
 const roots: string[] = [];
@@ -64,6 +65,49 @@ describe("FileTransferStateStore", () => {
     const second = new FileTransferStateStore({ filePath: f.filePath, now: () => 1_000 });
     await expect(second.getDownload("download_1234567")).resolves.toMatchObject({
       filename: "source.bin",
+    });
+    await second.close();
+  });
+
+  it("persists a diagnostic failure tombstone without staged bytes", async () => {
+    const f = await fixture();
+    const entry: PersistedUploadTransfer = {
+      transferId: "upload_failed1",
+      uploadTokenHash: hashTransferSecret(token),
+      resumeTokenHash: hashTransferSecret("r".repeat(43)),
+      filename: "diagnostic.json",
+      sizeBytes: 1,
+      offset: 1,
+      status: "failed",
+      createdAt: 1_000,
+      updatedAt: 1_001,
+      expiresAt: 2_000,
+      retainUntil: 3_000,
+      purpose: "diagnostic_report",
+      diagnosticReport: {
+        schemaVersion: 1,
+        reportId: "report-failed1",
+        provider: "codex",
+        providerSessionId: "thread-123",
+        bridgeInstanceId: "bridge-test",
+        codexSourceId: "source-bridge",
+        capturedAtStart: "2026-08-12T00:00:00.000Z",
+        capturedAtEnd: "2026-08-12T00:01:00.000Z",
+        sha256: "a".repeat(64),
+      },
+      diagnosticFailure: {
+        code: "diagnostic_sensitive_field",
+        message: "Diagnostic report contains a prohibited field",
+        failedAt: 1_001,
+      },
+    };
+    const first = new FileTransferStateStore({ filePath: f.filePath, now: () => 1_000 });
+    await first.upsertUpload(entry);
+    await first.close();
+    const second = new FileTransferStateStore({ filePath: f.filePath, now: () => 1_000 });
+    await expect(second.getUpload(entry.transferId)).resolves.toMatchObject({
+      status: "failed",
+      diagnosticFailure: { code: "diagnostic_sensitive_field" },
     });
     await second.close();
   });

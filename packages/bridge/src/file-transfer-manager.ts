@@ -563,6 +563,24 @@ export class FileTransferManager {
         await this.handleCompletedUpload(prepared.entry, message.requestId);
         return;
       }
+      if (prepared.status === "failed") {
+        const failure = new FileTransferError(
+          422,
+          prepared.entry.diagnosticFailure?.code ?? "diagnostic_archive_failed",
+          prepared.entry.diagnosticFailure?.message ?? "Diagnostic report archiving failed",
+        );
+        const sent = this.sendCompletedUploadFailure(
+          prepared.entry,
+          message.requestId,
+          failure,
+        );
+        if (sent) {
+          await this.uploadStore.removeFailedDiagnosticUpload(prepared.entry);
+          this.uploadClients.delete(message.transferId);
+          this.authorizedUploads.delete(message.transferId);
+        }
+        return;
+      }
       const baseUrl = this.resolveBaseUrl(undefined, binding.httpBaseUrl);
       const ready: FileTransferServerMessage = {
         type: UPLOAD_READY_MESSAGE,
@@ -751,7 +769,7 @@ export class FileTransferManager {
         "Diagnostic reports require file_transfer_upload_result_v3",
       );
       try {
-        await this.uploadStore.removeCompletedUpload(entry);
+        await this.uploadStore.recordDiagnosticFailure(entry, diagnosticFailureMetadata(failure));
       } catch {
         failure = new FileTransferError(
           500,
@@ -759,13 +777,16 @@ export class FileTransferManager {
           "Diagnostic report was rejected but its staged payload could not be safely removed",
         );
       }
-      this.sendCompletedUploadFailure(
+      const sent = this.sendCompletedUploadFailure(
         entry,
         requestId,
         failure,
       );
-      this.uploadClients.delete(entry.transferId);
-      this.authorizedUploads.delete(entry.transferId);
+      if (sent) {
+        await this.uploadStore.removeFailedDiagnosticUpload(entry);
+        this.uploadClients.delete(entry.transferId);
+        this.authorizedUploads.delete(entry.transferId);
+      }
       return;
     }
     const run = async (): Promise<void> => {
@@ -823,11 +844,10 @@ export class FileTransferManager {
         let terminalPayloadRemoved = false;
         if (isTerminalDiagnosticArchiveFailure(error)) {
           try {
-            if (isUnreadableDiagnosticPayload(error)) {
-              await this.uploadStore.discardUnreadableDiagnosticUpload(entry);
-            } else {
-              await this.uploadStore.removeCompletedUpload(entry);
-            }
+            await this.uploadStore.recordDiagnosticFailure(
+              entry,
+              diagnosticFailureMetadata(error),
+            );
             terminalPayloadRemoved = true;
           } catch {
             failure = new FileTransferError(
@@ -837,8 +857,9 @@ export class FileTransferManager {
             );
           }
         }
-        this.sendCompletedUploadFailure(entry, requestId, failure);
-        if (terminalPayloadRemoved) {
+        const sent = this.sendCompletedUploadFailure(entry, requestId, failure);
+        if (terminalPayloadRemoved && sent) {
+          await this.uploadStore.removeFailedDiagnosticUpload(entry);
           this.uploadClients.delete(entry.transferId);
           this.authorizedUploads.delete(entry.transferId);
         }
@@ -881,14 +902,14 @@ export class FileTransferManager {
     entry: PersistedUploadTransfer,
     requestId: string | undefined,
     error: unknown,
-  ): void {
+  ): boolean {
     const owner = this.uploadClients.get(entry.transferId);
     const binding = owner ? this.clients.get(owner.client) : undefined;
-    if (!owner || !binding?.isOpen() || !binding.supports(UPLOAD_RESULT_WITH_PATH_MESSAGE)) return;
+    if (!owner || !binding?.isOpen() || !binding.supports(UPLOAD_RESULT_WITH_PATH_MESSAGE)) return false;
     const transferError = error instanceof FileTransferError
       ? error
       : new FileTransferError(500, "diagnostic_archive_failed", "Unable to archive diagnostic report");
-    binding.send({
+    return binding.send({
       type: UPLOAD_RESULT_WITH_PATH_MESSAGE,
       requestId: requestId ?? owner.requestId,
       transferId: entry.transferId,
@@ -1020,6 +1041,25 @@ export class FileTransferManager {
   }
 }
 
+function diagnosticFailureMetadata(error: unknown): {
+  code: string;
+  message: string;
+  failedAt: number;
+} {
+  const transferError = error instanceof FileTransferError
+    ? error
+    : new FileTransferError(
+        500,
+        "diagnostic_archive_failed",
+        "Unable to archive diagnostic report",
+      );
+  return {
+    code: transferError.code,
+    message: transferError.message,
+    failedAt: Date.now(),
+  };
+}
+
 function isTerminalDiagnosticArchiveFailure(error: unknown): boolean {
   if (!(error instanceof FileTransferError)) return false;
   return new Set([
@@ -1037,12 +1077,6 @@ function isTerminalDiagnosticArchiveFailure(error: unknown): boolean {
     "upload_final_changed",
     "upload_final_unavailable",
   ]).has(error.code);
-}
-
-function isUnreadableDiagnosticPayload(error: unknown): boolean {
-  return error instanceof FileTransferError &&
-    (error.code === "upload_final_changed" ||
-      error.code === "upload_final_unavailable");
 }
 
 function throwIfOfferCancelled(signal?: AbortSignal): void {
