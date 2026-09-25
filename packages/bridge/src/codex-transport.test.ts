@@ -1,6 +1,6 @@
 import { EventEmitter, once } from "node:events";
 import { lstatSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, rename } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
@@ -260,10 +260,15 @@ describe.runIf(process.platform !== "win32")("UnixSocketCodexTransport", () => {
     });
     fixture.server = replacementServer;
     fixture.webSocketServer = replacementWebSocketServer;
+    const replacementSocketPath = `${fixture.socketPath}.replacement`;
     await new Promise<void>((resolve, reject) => {
       replacementServer.once("error", reject);
-      replacementServer.listen(fixture.socketPath, resolve);
+      replacementServer.listen(replacementSocketPath, resolve);
     });
+    // Rename a separately-created socket into the original path so the
+    // replacement is guaranteed to have a different inode even when the OS
+    // reuses the just-removed socket inode.
+    await rename(replacementSocketPath, fixture.socketPath);
 
     const transport = new UnixSocketCodexTransport(daemon);
     const errors: Error[] = [];

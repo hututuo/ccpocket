@@ -138,7 +138,9 @@ describe("FileTransferDownloadStore", () => {
 
   it("bounds exported filenames by UTF-8 bytes", async () => {
     const f = await fixture();
-    const source = join(f.root, `${"文".repeat(100)}.txt`);
+    // Keep the fixture below NAME_MAX on Linux while still exceeding the
+    // 240-byte exported filename budget (Chinese characters are 3 bytes).
+    const source = join(f.root, `${"文".repeat(80)}.txt`);
     await writeFile(source, "x");
     const state = new FileTransferStateStore({ filePath: f.statePath });
     const store = new FileTransferDownloadStore({
