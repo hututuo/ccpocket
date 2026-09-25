@@ -17,6 +17,26 @@ Widget _wrapErrorBubble({required Widget child, required Locale locale}) {
 }
 
 void main() {
+  testWidgets('keeps an unknown stable error code visible', (tester) async {
+    await tester.pumpWidget(
+      _wrapErrorBubble(
+        locale: const Locale('zh'),
+        child: const ErrorBubble(
+          message: ErrorMessage(
+            message: 'The provider returned an unclassified failure.',
+            errorCode: 'provider_rpc_failed',
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('错误码 · provider_rpc_failed'), findsOneWidget);
+    expect(
+      find.text('The provider returned an unclassified failure.'),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('renders Codex warnings with a warning title', (tester) async {
     await tester.pumpWidget(
       _wrapErrorBubble(

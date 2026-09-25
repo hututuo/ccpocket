@@ -847,6 +847,75 @@ void main() {
     }
   });
 
+  test('unscoped Bridge errors stay global-only', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final sockets = <WebSocket>[];
+    server.transform(WebSocketTransformer()).listen((socket) {
+      sockets.add(socket);
+      socket.listen((data) {
+        final message = jsonDecode(data as String) as Map<String, dynamic>;
+        if (message['type'] != 'list_sessions') return;
+        socket
+          ..add(jsonEncode({'type': 'session_list', 'sessions': const []}))
+          ..add(
+            jsonEncode({
+              'type': 'error',
+              'message': 'Bridge is unavailable',
+              'errorCode': 'bridge_unavailable',
+            }),
+          );
+      });
+    });
+
+    final bridge = BridgeService(
+      authoritativeSessionListTimeout: _testAuthorityTimeout,
+    );
+    final globalErrors = <ErrorMessage>[];
+    final sessionAErrors = <ErrorMessage>[];
+    final sessionBErrors = <ErrorMessage>[];
+    final subscriptions = <StreamSubscription<dynamic>>[
+      bridge.messages
+          .where((message) => message is ErrorMessage)
+          .cast<ErrorMessage>()
+          .listen(globalErrors.add),
+      bridge
+          .messagesForSession('session-a')
+          .where((message) => message is ErrorMessage)
+          .cast<ErrorMessage>()
+          .listen(sessionAErrors.add),
+      bridge
+          .messagesForSession('session-b')
+          .where((message) => message is ErrorMessage)
+          .cast<ErrorMessage>()
+          .listen(sessionBErrors.add),
+    ];
+    try {
+      bridge.connect('ws://127.0.0.1:${server.port}');
+      await _waitUntil(
+        () => bridge.hasAuthoritativeSessionListForCurrentConnection,
+      );
+      await _waitUntil(
+        () => globalErrors.any(
+          (error) => error.errorCode == 'bridge_unavailable',
+        ),
+      );
+
+      expect(
+        globalErrors.where(
+          (error) => error.errorCode == 'bridge_unavailable',
+        ),
+        hasLength(1),
+      );
+      expect(sessionAErrors, isEmpty);
+      expect(sessionBErrors, isEmpty);
+    } finally {
+      for (final subscription in subscriptions) {
+        await subscription.cancel();
+      }
+      await _closeFixture(bridge, server, sockets);
+    }
+  });
+
   test('dispose cancels an armed authority watchdog', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final sockets = <WebSocket>[];

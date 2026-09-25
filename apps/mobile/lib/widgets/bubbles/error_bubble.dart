@@ -115,31 +115,52 @@ class ErrorBubble extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppSpacing.cardRadius),
         border: Border.all(color: borderColor),
       ),
-      child: hasStructured
-          ? _isClaudeAuthError(resolvedErrorCode)
-                ? _ClaudeAuthErrorCard(
-                    textColor: textColor,
-                    title: l.authErrorTitle,
-                    body: l.authErrorBody,
-                    primaryCommandLabel: l.authErrorPrimaryCommandLabel,
-                    primaryCommand: 'claude',
-                    secondaryCommandLabel: l.authErrorSecondaryCommandLabel,
-                    secondaryCommand: '/login',
-                    alternativeLabel: l.authErrorAlternativeLabel,
-                    alternativeCommand: 'claude auth login',
-                    helpLabel: l.authHelpButton,
-                  )
-                : _isApiKeyRequired(resolvedErrorCode)
-                ? _ApiKeyRequiredCard(textColor: textColor)
-                : _buildStructured(
-                    context,
-                    title,
-                    hint,
-                    textColor,
-                    isWarn,
-                    canDismiss ? onDismiss : null,
-                  )
-          : _buildSimple(textColor),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          hasStructured
+              ? _isClaudeAuthError(resolvedErrorCode)
+                    ? _ClaudeAuthErrorCard(
+                        textColor: textColor,
+                        title: l.authErrorTitle,
+                        body: l.authErrorBody,
+                        primaryCommandLabel: l.authErrorPrimaryCommandLabel,
+                        primaryCommand: 'claude',
+                        secondaryCommandLabel:
+                            l.authErrorSecondaryCommandLabel,
+                        secondaryCommand: '/login',
+                        alternativeLabel: l.authErrorAlternativeLabel,
+                        alternativeCommand: 'claude auth login',
+                        helpLabel: l.authHelpButton,
+                      )
+                    : _isApiKeyRequired(resolvedErrorCode)
+                    ? _ApiKeyRequiredCard(textColor: textColor)
+                    : _buildStructured(
+                        context,
+                        title,
+                        hint,
+                        textColor,
+                        isWarn,
+                        canDismiss ? onDismiss : null,
+                      )
+              : _buildSimple(textColor),
+          if (resolvedErrorCode != null) ...[
+            const SizedBox(height: 6),
+            _buildErrorCode(textColor, resolvedErrorCode),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildErrorCode(Color textColor, String code) {
+    return Text(
+      '错误码 · $code',
+      style: TextStyle(
+        color: textColor.withValues(alpha: 0.62),
+        fontSize: 10,
+        fontFamily: 'monospace',
+      ),
     );
   }
 

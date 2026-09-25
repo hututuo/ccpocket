@@ -2936,7 +2936,9 @@ class FileTransferException implements Exception {
   const FileTransferException(this.code, [this.message]);
 
   @override
-  String toString() => message ?? code;
+  String toString() => message == null || message!.trim().isEmpty
+      ? code
+      : '$code: ${message!.trim()}';
 }
 
 sealed class _TransferWork {

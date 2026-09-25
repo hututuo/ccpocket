@@ -2787,13 +2787,23 @@ class BridgeService implements BridgeServiceBase {
                   _completePendingSessionLinkResolutionsAsUnsupported();
                 } else {
                   logger.error('Bridge error: $message');
-                  if (sessionId == null && _isUnscopedGoalProtocolError(msg)) {
+                  if (sessionId != null) {
+                    _taggedMessageController.add((msg, sessionId));
+                  } else if (_isUnscopedGoalProtocolError(msg)) {
                     logger.warning(
                       'Ignoring an unscoped Goal error with no live request '
                       'owner.',
                     );
                   } else {
-                    _taggedMessageController.add((msg, sessionId));
+                    // An error without a session owner is a transport/global
+                    // diagnostic.  Do not put it on the tagged stream: null
+                    // is intentionally not a broadcast session.  The global
+                    // message stream below still receives it for diagnostics
+                    // and connection-level UI.
+                    logger.warning(
+                      'Keeping an unscoped Bridge error global-only: '
+                      'code=${msg.errorCode ?? 'unknown'}',
+                    );
                   }
                   _messageController.add(msg);
                 }
@@ -7760,6 +7770,10 @@ class BridgeService implements BridgeServiceBase {
   @override
   Stream<ServerMessage> messagesForSession(String sessionId) {
     return _taggedMessageController.stream
+        // Other server message types intentionally use a null owner for
+        // connection-wide broadcasts. ErrorMessage handling above keeps
+        // unscoped errors off this stream, so this legacy broadcast behavior
+        // remains available for non-error messages.
         .where((pair) => pair.$2 == null || pair.$2 == sessionId)
         .map((pair) => pair.$1);
   }
