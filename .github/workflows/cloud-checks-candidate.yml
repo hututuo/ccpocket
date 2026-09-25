@@ -48,6 +48,13 @@ jobs:
         with:
           flutter-version: ${{ steps.mise.outputs.flutter_version }}
           cache: true
+      - name: Prepare real Bridge for headless Mobile chain tests
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run bridge:build
       - run: flutter pub get
         working-directory: apps/mobile
       - name: Generate SSH private key smoke credentials
