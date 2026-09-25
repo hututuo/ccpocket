@@ -19,6 +19,8 @@ import 'package:path/path.dart' as path;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'harness_ready.dart';
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(sqfliteFfiInit);
@@ -54,17 +56,8 @@ void main() {
       final harness = await Process.start(node, [
         harnessPath,
       ], workingDirectory: repositoryRoot);
-      final stdoutLines = harness.stdout
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .asBroadcastStream();
-      final stderrBuffer = StringBuffer();
-      final stderrSub = harness.stderr
-          .transform(utf8.decoder)
-          .listen(stderrBuffer.write);
-      final readyLine = await stdoutLines
-          .firstWhere((line) => line.startsWith('READY '))
-          .timeout(const Duration(seconds: 15));
+      final harnessReady = await waitForHarnessReady(harness);
+      final readyLine = harnessReady.readyLine;
       final ready = jsonDecode(readyLine.substring(6)) as Map<String, dynamic>;
       final url = ready['url']! as String;
       final threadId = ready['threadId']! as String;
@@ -517,7 +510,7 @@ void main() {
             return harness.exitCode;
           },
         );
-        await stderrSub.cancel();
+        await harnessReady.dispose();
         await Directory(traceRoot).create(recursive: true);
         await File(
           path.join(traceRoot, 'receiver-timeline.jsonl'),
@@ -529,7 +522,13 @@ void main() {
         if (await temporaryDirectory.exists()) {
           await temporaryDirectory.delete(recursive: true);
         }
-        expect(exitCode, 0, reason: 'Bridge harness stderr: $stderrBuffer');
+        expect(
+          exitCode,
+          0,
+          reason:
+              'Bridge harness stdout: ${harnessReady.stdout}\n'
+              'Bridge harness stderr: ${harnessReady.stderr}',
+        );
       }
     },
     timeout: const Timeout(Duration(seconds: 90)),
