@@ -72,7 +72,7 @@ describe("FileTransferStateStore", () => {
   it("persists a diagnostic failure tombstone without staged bytes", async () => {
     const f = await fixture();
     const entry: PersistedUploadTransfer = {
-      transferId: "upload_failed01",
+      transferId: "upload_failed001",
       uploadTokenHash: hashTransferSecret(token),
       resumeTokenHash: hashTransferSecret("r".repeat(43)),
       filename: "diagnostic.json",
