@@ -30,7 +30,7 @@ if (
 const runId = `${new Date().toISOString().replaceAll(":", "-")}-${randomUUID().slice(0, 8)}`;
 const traceRoot = resolve(
   process.env.CCPOCKET_CHAIN_TRACE_ROOT ??
-    join("/private/tmp/ccpocket-chain", runId),
+    join(tmpdir(), "ccpocket-chain", runId),
 );
 const isolatedHome = await mkdtemp(join(tmpdir(), "ccpocket-chain-provider-"));
 await mkdir(traceRoot, { recursive: true });

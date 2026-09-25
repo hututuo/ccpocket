@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 const runId = `${new Date().toISOString().replaceAll(":", "-")}-${randomUUID().slice(0, 8)}`;
 const traceRoot = resolve(
   process.env.CCPOCKET_CHAIN_TRACE_ROOT ??
-    join("/private/tmp/ccpocket-chain", `${runId}-live-segments`),
+    join(tmpdir(), "ccpocket-chain", `${runId}-live-segments`),
 );
 const isolatedHome = await mkdtemp(join(tmpdir(), "ccpocket-segment-provider-"));
 // Exercise the real project-scoped Bridge paths against an actual Git worktree.
