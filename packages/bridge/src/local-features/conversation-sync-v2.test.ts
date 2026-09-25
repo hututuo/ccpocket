@@ -7027,6 +7027,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
   });
 
   it("shares a bounded provider-history cooldown across clients", async () => {
+    vi.useFakeTimers();
     const historyReader = vi.fn(async () => {
       throw new Error("provider temporarily unavailable");
     });
@@ -7036,36 +7037,39 @@ describe("ConversationSyncV2FeatureHandler", () => {
     const firstClient = {};
     const secondClient = {};
 
-    await fixture.handler.handle(
-      subscribeMessage(),
-      context(firstClient, fixture.runtime),
-    );
-    await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(1));
-    await vi.waitFor(() =>
-      expect(events(fixture.sent, firstClient, "sync_complete")).toHaveLength(
-        1,
-      ),
-    );
-    expect(events(fixture.sent, firstClient, "error")).toEqual([
-      expect.objectContaining({ errorCode: "timeline_failed" }),
-    ]);
+    try {
+      await fixture.handler.handle(
+        subscribeMessage(),
+        context(firstClient, fixture.runtime),
+      );
+      await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() =>
+        expect(
+          events(fixture.sent, firstClient, "sync_complete"),
+        ).toHaveLength(1),
+      );
+      expect(events(fixture.sent, firstClient, "error")).toEqual([
+        expect.objectContaining({ errorCode: "timeline_failed" }),
+      ]);
 
-    await fixture.handler.handle(
-      subscribeMessage(),
-      context(secondClient, fixture.runtime),
-    );
-    await vi.waitFor(() =>
-      expect(events(fixture.sent, secondClient, "sync_complete")).toHaveLength(
-        1,
-      ),
-    );
-    expect(historyReader).toHaveBeenCalledTimes(1);
-    expect(events(fixture.sent, secondClient, "timeline_page")).toEqual([]);
+      await fixture.handler.handle(
+        subscribeMessage(),
+        context(secondClient, fixture.runtime),
+      );
+      await vi.waitFor(() =>
+        expect(
+          events(fixture.sent, secondClient, "sync_complete"),
+        ).toHaveLength(1),
+      );
+      expect(historyReader).toHaveBeenCalledTimes(1);
+      expect(events(fixture.sent, secondClient, "timeline_page")).toEqual([]);
 
-    await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(2), {
-      timeout: 2_000,
-    });
-    await fixture.handler.close();
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(2));
+    } finally {
+      await fixture.handler.close();
+      vi.useRealTimers();
+    }
   });
 
   it("preserves escalating provider-history backoff across consecutive failures", async () => {
@@ -7228,6 +7232,7 @@ describe("ConversationSyncV2FeatureHandler", () => {
   });
 
   it("automatically retries a failed focused refresh even with committed cache", async () => {
+    vi.useFakeTimers();
     let attempts = 0;
     const historyReader = vi.fn(async () => {
       attempts += 1;
@@ -7242,53 +7247,59 @@ describe("ConversationSyncV2FeatureHandler", () => {
     });
     const client = {};
     const subscription = subscribeMessage();
-    await fixture.handler.handle(
-      subscription,
-      context(client, fixture.runtime),
-    );
-    await vi.waitFor(() =>
-      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
-    );
-    const initialComplete = events(
-      fixture.sent,
-      client,
-      "sync_complete",
-    ).at(-1)!;
-    await fixture.handler.handle(
-      {
-        type: "conversation_sync_ack",
-        protocolVersion: 2,
-        subscriptionId: subscription.requestId,
-        sequence: initialComplete.sequence,
-      },
-      context(client, fixture.runtime),
-    );
+    try {
+      await fixture.handler.handle(
+        subscription,
+        context(client, fixture.runtime),
+      );
+      await vi.waitFor(() =>
+        expect(
+          events(fixture.sent, client, "sync_complete"),
+        ).toHaveLength(1),
+      );
+      const initialComplete = events(
+        fixture.sent,
+        client,
+        "sync_complete",
+      ).at(-1)!;
+      await fixture.handler.handle(
+        {
+          type: "conversation_sync_ack",
+          protocolVersion: 2,
+          subscriptionId: subscription.requestId,
+          sequence: initialComplete.sequence,
+        },
+        context(client, fixture.runtime),
+      );
 
-    await fixture.handler.handle(
-      {
-        type: "conversation_sync_focus",
-        protocolVersion: 2,
-        requestId: "focused-auto-retry",
-        subscriptionId: subscription.requestId,
-        refresh: true,
-        focused: { provider: "claude", providerSessionId: "session-0" },
-      },
-      context(client, fixture.runtime),
-    );
-    await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(3), {
-      timeout: 2_000,
-    });
-    await vi.waitFor(() =>
+      await fixture.handler.handle(
+        {
+          type: "conversation_sync_focus",
+          protocolVersion: 2,
+          requestId: "focused-auto-retry",
+          subscriptionId: subscription.requestId,
+          refresh: true,
+          focused: { provider: "claude", providerSessionId: "session-0" },
+        },
+        context(client, fixture.runtime),
+      );
+      await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(2));
+      await vi.advanceTimersByTimeAsync(25);
+      await vi.waitFor(() => expect(historyReader).toHaveBeenCalledTimes(3));
+      await vi.waitFor(() =>
+        expect(
+          events(fixture.sent, client, "sync_complete").some(
+            (event) => event.requestId === "focused-auto-retry",
+          ),
+        ).toBe(true),
+      );
       expect(
-        events(fixture.sent, client, "sync_complete").some(
-          (event) => event.requestId === "focused-auto-retry",
-        ),
-      ).toBe(true),
-    );
-    expect(
-      JSON.stringify(events(fixture.sent, client, "timeline_page")),
-    ).toContain("focused-auto-recovered");
-    fixture.handler.close();
+        JSON.stringify(events(fixture.sent, client, "timeline_page")),
+      ).toContain("focused-auto-recovered");
+    } finally {
+      await fixture.handler.close();
+      vi.useRealTimers();
+    }
   });
 
   it("returns bounded detached tool details without a runtime session", async () => {
