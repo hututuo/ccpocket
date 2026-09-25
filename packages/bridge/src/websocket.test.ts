@@ -4813,12 +4813,17 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         status: "accepted",
       }),
     );
-    expect(sent).toContainEqual({
-      type: "error",
-      message: "Failed to read Codex thread history",
-      errorCode: "history_read_failed",
-      sessionId,
-    });
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        message: "Failed to read Codex thread history",
+        errorCode: "history_read_failed",
+        sessionId,
+        errorEventId: expect.any(String),
+        errorSource: "bridge",
+        errorPhase: "request",
+      }),
+    );
     expect(sent).not.toContainEqual(
       expect.objectContaining({
         type: "codex_action_result",
@@ -10677,12 +10682,15 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
         JSON.parse(c[0] as string),
       );
       expect(sends).toEqual([
-        {
+        expect.objectContaining({
           type: "error",
           message: "Failed to read Codex thread history",
           errorCode: "history_read_failed",
           sessionId,
-        },
+          errorEventId: expect.any(String),
+          errorSource: "bridge",
+          errorPhase: "request",
+        }),
       ]);
     }
     expect(getCodexSessionHistoryMock).not.toHaveBeenCalled();
@@ -12652,14 +12660,19 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ws.send.mock.calls.map((call: unknown[]) =>
         JSON.parse(call[0] as string),
       ),
-    ).toContainEqual({
-      type: "error",
-      message:
-        "Native Codex Plan mode is unavailable on this app-server. Update Codex before enabling Plan mode.",
-      errorCode: "codex_native_plan_mode_unsupported",
-      sessionId,
-      permissionChangeId: "plan-unsupported-1",
-    });
+    ).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        message:
+          "Native Codex Plan mode is unavailable on this app-server. Update Codex before enabling Plan mode.",
+        errorCode: "codex_native_plan_mode_unsupported",
+        sessionId,
+        permissionChangeId: "plan-unsupported-1",
+        errorEventId: expect.any(String),
+        errorSource: "bridge",
+        errorPhase: "request",
+      }),
+    );
 
     bridge.close();
   });
@@ -12715,14 +12728,19 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
       ws.send.mock.calls.map((call: unknown[]) =>
         JSON.parse(call[0] as string),
       ),
-    ).toContainEqual({
-      type: "error",
-      message:
-        "Failed to set permission mode: native Codex Plan mode support could not be confirmed. Retry after Codex becomes responsive.",
-      errorCode: "codex_native_plan_mode_probe_retry",
-      sessionId,
-      permissionChangeId: "plan-probe-retry-1",
-    });
+    ).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        message:
+          "Failed to set permission mode: native Codex Plan mode support could not be confirmed. Retry after Codex becomes responsive.",
+        errorCode: "codex_native_plan_mode_probe_retry",
+        sessionId,
+        permissionChangeId: "plan-probe-retry-1",
+        errorEventId: expect.any(String),
+        errorSource: "bridge",
+        errorPhase: "request",
+      }),
+    );
 
     bridge.close();
   });
@@ -15944,12 +15962,17 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     );
 
     const last = JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string);
-    expect(last).toEqual({
-      type: "error",
-      message: "No active session.",
-      errorCode: "set_permission_mode_rejected",
-      sessionId: "missing",
-    });
+    expect(last).toEqual(
+      expect.objectContaining({
+        type: "error",
+        message: "No active session.",
+        errorCode: "set_permission_mode_rejected",
+        sessionId: "missing",
+        errorEventId: expect.any(String),
+        errorSource: "bridge",
+        errorPhase: "request",
+      }),
+    );
 
     bridge.close();
   });
@@ -15972,12 +15995,17 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     );
 
     const last = JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string);
-    expect(last).toEqual({
-      type: "error",
-      message: "Failed to set permission mode: forced test failure",
-      errorCode: "set_permission_mode_rejected",
-      sessionId: "s-1",
-    });
+    expect(last).toEqual(
+      expect.objectContaining({
+        type: "error",
+        message: "Failed to set permission mode: forced test failure",
+        errorCode: "set_permission_mode_rejected",
+        sessionId: "s-1",
+        errorEventId: expect.any(String),
+        errorSource: "bridge",
+        errorPhase: "request",
+      }),
+    );
 
     bridge.close();
   });
