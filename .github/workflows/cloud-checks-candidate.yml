@@ -2,6 +2,12 @@ name: Cloud checks and unsigned candidates
 
 on:
   workflow_dispatch:
+    inputs:
+      run_candidate_after_failed_checks:
+        description: 'Build unsigned candidates after checks finish with failures (never publish)'
+        required: false
+        default: false
+        type: boolean
   push:
     branches:
       - 'chore/cloud-handoff-*'
@@ -44,6 +50,42 @@ jobs:
           cache: true
       - run: flutter pub get
         working-directory: apps/mobile
+      - name: Generate SSH private key smoke credentials
+        run: |
+          mkdir -p tools/ssh-jump-smoke/generated
+          ssh-keygen -t ed25519 -N "" -f tools/ssh-jump-smoke/generated/id_ed25519 -C ccpocket-smoke-test
+      - name: Start SSH jump smoke containers
+        run: docker compose -f tools/ssh-jump-smoke/docker-compose.yml up -d --build
+      - name: Wait for SSH jump host
+        run: |
+          for i in {1..30}; do
+            nc -z 127.0.0.1 22220 && exit 0
+            sleep 1
+          done
+          docker compose -f tools/ssh-jump-smoke/docker-compose.yml logs
+          exit 1
+      - name: Run SSH jump smoke tests
+        run: |
+          flutter test test/ssh_jump_smoke_test.dart test/ssh_bridge_tunnel_smoke_test.dart test/ssh_private_key_smoke_test.dart
+        working-directory: apps/mobile
+        env:
+          CCPOCKET_SSH_JUMP_SMOKE: '1'
+          CCPOCKET_BRIDGE_TUNNEL_SMOKE: '1'
+          CCPOCKET_SSH_PRIVATE_KEY_SMOKE: '1'
+          CCPOCKET_SSH_PRIVATE_KEY_FILE: ../../tools/ssh-jump-smoke/generated/id_ed25519
+          CCPOCKET_SSH_TARGET_HOST: target-sshd
+          CCPOCKET_SSH_TARGET_PORT: '22'
+          CCPOCKET_SSH_JUMP_HOST: 127.0.0.1
+          CCPOCKET_SSH_JUMP_PORT: '22220'
+          CCPOCKET_BRIDGE_TARGET_HOST: target-sshd
+          CCPOCKET_BRIDGE_TARGET_PORT: '8765'
+          CCPOCKET_SSH_KEY_HOST: 127.0.0.1
+          CCPOCKET_SSH_KEY_PORT: '22220'
+          CCPOCKET_SSH_USERNAME: ccpocket
+          CCPOCKET_SSH_PASSWORD: ccpocket
+      - name: Stop SSH jump smoke containers
+        if: always()
+        run: docker compose -f tools/ssh-jump-smoke/docker-compose.yml down -v
       - run: dart analyze .
         working-directory: apps/mobile
       - run: flutter test
@@ -67,6 +109,7 @@ jobs:
   candidate-bridge:
     name: Candidate / Bridge runtime
     needs: checks-bridge
+    if: ${{ needs.checks-bridge.result == 'success' || inputs.run_candidate_after_failed_checks == true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -122,6 +165,7 @@ jobs:
   candidate-ios:
     name: Candidate / unsigned iOS IPA
     needs: checks-mobile
+    if: ${{ needs.checks-mobile.result == 'success' || inputs.run_candidate_after_failed_checks == true }}
     runs-on: macos-26
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
