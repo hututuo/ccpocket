@@ -14719,6 +14719,19 @@ export class BridgeWebSocketServer {
     msg: ServerMessage,
     exclude?: WebSocket,
   ): void {
+    // Every session-owned error gets one identity before it fans out. This
+    // keeps live delivery, reconnect replay and any provider-backed history
+    // replay deduplicable without making Mobile infer identity from text or
+    // timestamps. Unscoped errors sent directly to a request owner remain
+    // global/request-scoped and are intentionally not rewritten here.
+    if (msg.type === "error") {
+      msg = {
+        ...msg,
+        ...(msg.sessionId ? {} : { sessionId }),
+        ...(msg.errorEventId ? {} : { errorEventId: randomUUID() }),
+        ...(msg.errorSource ? {} : { errorSource: "bridge" as const }),
+      };
+    }
     if (this.shouldBatchDelta(msg, exclude)) {
       this.trackSessionMessage(sessionId, msg);
       const chunks = this.splitDeltaText(msg.text);

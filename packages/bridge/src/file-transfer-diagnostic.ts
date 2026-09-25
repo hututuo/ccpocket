@@ -155,7 +155,25 @@ export function validateDiagnosticReportMetadata(
 }
 
 export function containsDiagnosticCredential(value: unknown): boolean {
-  return containsProhibitedCredential(value);
+  return findDiagnosticCredential(value) !== undefined;
+}
+
+/**
+ * Returns a safe explanation for a rejected diagnostic payload without ever
+ * including the matched value.  The path is intentionally bounded and only
+ * contains field names/array indexes, so it is useful for debugging while
+ * remaining safe to send back to the phone.
+ */
+export interface DiagnosticCredentialFinding {
+  category: "key" | "pattern" | "url" | "budget";
+  path: string;
+}
+
+export function findDiagnosticCredential(
+  value: unknown,
+  rootPath = "report",
+): DiagnosticCredentialFinding | undefined {
+  return findProhibitedCredential(value, rootPath);
 }
 
 export function validateDiagnosticReportIdentity(value: string): boolean {
@@ -210,11 +228,14 @@ export class DiagnosticReportArchiver {
     declaredSizeBytes: number,
   ): Promise<DiagnosticReportArchive> {
     const startedAt = this.now();
-    if (
-      this.contentPolicy === "strict" &&
-      containsProhibitedCredential(metadata)
-    ) {
-      throw diagnosticError("diagnostic_sensitive_field", "Diagnostic report contains a prohibited authentication field");
+    if (this.contentPolicy === "strict") {
+      const finding = findProhibitedCredential(metadata, "metadata");
+      if (finding) {
+        throw diagnosticError(
+          "diagnostic_sensitive_field",
+          diagnosticCredentialMessage(finding),
+        );
+      }
     }
     if (!validateDiagnosticReportMetadata(metadata)) {
       throw diagnosticError("diagnostic_metadata_invalid", "Diagnostic metadata is invalid");
@@ -232,11 +253,14 @@ export class DiagnosticReportArchiver {
     } catch {
       throw diagnosticError("diagnostic_invalid_json", "Diagnostic report is not valid JSON");
     }
-    if (
-      this.contentPolicy === "strict" &&
-      containsProhibitedCredential(payload)
-    ) {
-      throw diagnosticError("diagnostic_sensitive_field", "Diagnostic report contains a prohibited authentication field");
+    if (this.contentPolicy === "strict") {
+      const finding = findProhibitedCredential(payload, "mobileReport");
+      if (finding) {
+        throw diagnosticError(
+          "diagnostic_sensitive_field",
+          diagnosticCredentialMessage(finding),
+        );
+      }
     }
     if (metadata.bridgeInstanceId !== this.identity.bridgeInstanceId) {
       throw diagnosticError("diagnostic_source_mismatch", "Diagnostic Bridge identity does not match this runtime");
@@ -309,11 +333,14 @@ export class DiagnosticReportArchiver {
       mobileReport: payload,
       bridge,
     };
-    if (
-      this.contentPolicy === "strict" &&
-      containsProhibitedCredential(envelope)
-    ) {
-      throw diagnosticError("diagnostic_sensitive_field", "Diagnostic report contains a prohibited authentication field");
+    if (this.contentPolicy === "strict") {
+      const finding = findProhibitedCredential(envelope, "archive");
+      if (finding) {
+        throw diagnosticError(
+          "diagnostic_sensitive_field",
+          diagnosticCredentialMessage(finding),
+        );
+      }
     }
     const serialized = Buffer.from(`${JSON.stringify(envelope, null, 2)}\n`, "utf8");
     if (serialized.length > DIAGNOSTIC_REPORT_MAX_BYTES) {
@@ -743,29 +770,68 @@ function diagnosticReportFilename(metadata: DiagnosticReportMetadata): string {
 }
 
 function containsProhibitedCredential(value: unknown): boolean {
-  const pending: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
+  return findProhibitedCredential(value) !== undefined;
+}
+
+function findProhibitedCredential(
+  value: unknown,
+  rootPath = "report",
+): DiagnosticCredentialFinding | undefined {
+  const pending: Array<{ value: unknown; depth: number; path: string }> = [
+    { value, depth: 0, path: rootPath },
+  ];
   let visited = 0;
   while (pending.length > 0) {
     const current = pending.pop()!;
     visited += 1;
-    if (visited > 100_000 || current.depth > 64) return true;
+    if (visited > 100_000 || current.depth > 64) {
+      return { category: "budget", path: current.path };
+    }
     if (typeof current.value === "string") {
       const text = current.value;
-      if (CREDENTIAL_STRING_PATTERNS.some((pattern) => pattern.test(text))) return true;
-      if (containsUnsafeNetworkUrl(text)) return true;
+      if (CREDENTIAL_STRING_PATTERNS.some((pattern) => pattern.test(text))) {
+        return { category: "pattern", path: current.path };
+      }
+      if (containsUnsafeNetworkUrl(text)) {
+        return { category: "url", path: current.path };
+      }
       continue;
     }
     if (Array.isArray(current.value)) {
-      for (const item of current.value) pending.push({ value: item, depth: current.depth + 1 });
+      for (let index = current.value.length - 1; index >= 0; index -= 1) {
+        pending.push({
+          value: current.value[index],
+          depth: current.depth + 1,
+          path: `${current.path}[${index}]`,
+        });
+      }
       continue;
     }
     if (!current.value || typeof current.value !== "object") continue;
     for (const [key, nested] of Object.entries(current.value as Record<string, unknown>)) {
-      if (isProhibitedCredentialKey(key)) return true;
-      pending.push({ value: nested, depth: current.depth + 1 });
+      const childPath = diagnosticPathChild(current.path, key);
+      if (isProhibitedCredentialKey(key)) {
+        return { category: "key", path: childPath };
+      }
+      pending.push({
+        value: nested,
+        depth: current.depth + 1,
+        path: childPath,
+      });
     }
   }
-  return false;
+  return undefined;
+}
+
+function diagnosticPathChild(parent: string, key: string): string {
+  const normalized = key.replace(/[^A-Za-z0-9_.-]/gu, "_").slice(0, 64);
+  return `${parent}.${normalized || "field"}`.slice(0, 192);
+}
+
+function diagnosticCredentialMessage(
+  finding: DiagnosticCredentialFinding,
+): string {
+  return `Diagnostic report contains a prohibited authentication field (category=${finding.category}, path=${finding.path})`;
 }
 
 function containsUnsafeNetworkUrl(value: string): boolean {

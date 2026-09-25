@@ -2228,8 +2228,17 @@ class FileTransferService extends ChangeNotifier {
 
   Future<void> _requireCapacity(String targetPath, int remainingBytes) async {
     final available = await _capacity.availableCapacityBytes(targetPath);
-    if (available == null ||
-        available < remainingBytes + fileTransferStorageSafetyReserveBytes) {
+    if (available == null) {
+      // A failed statfs/capacity probe is not evidence that the device is out
+      // of space.  Keeping these cases distinct is important for diagnosis:
+      // the user can retry after the platform/filesystem probe recovers,
+      // instead of being told that a healthy disk is full.
+      throw const FileTransferException(
+        'storage_capacity_unknown',
+        'Free-space information is temporarily unavailable; please retry.',
+      );
+    }
+    if (available < remainingBytes + fileTransferStorageSafetyReserveBytes) {
       throw const FileTransferException(
         'insufficient_storage',
         'Not enough free space to continue safely.',
@@ -3100,6 +3109,7 @@ bool _isRecoverable(Object error) {
     'total_timeout',
     'idle_timeout',
     'insufficient_storage',
+    'storage_capacity_unknown',
     'notification_pending',
     'upload_offset_mismatch',
     'step_up_required',

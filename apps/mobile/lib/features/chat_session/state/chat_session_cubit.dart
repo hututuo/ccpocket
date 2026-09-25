@@ -706,6 +706,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   static const _maxSubmittedClientMessageIds = 512;
   final Set<String> _submittedClientMessageIds = {};
   static const _maxDetachedRuntimeOverlayEventIds = 128;
+  static const _maxSeenErrorEventIds = 256;
+  final Set<String> _seenErrorEventIds = {};
   static const _maxDetachedRuntimeOverlayEntries = 32;
   static const _maxDetachedRuntimeOverlayBytes = 64 * 1024;
   final Set<String> _detachedRuntimeOverlayEventIds = {};
@@ -1118,9 +1120,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       _restoreInitialHistoryMessages();
       updateDetachedLiveRuntime(initialLiveRuntimeSessionId);
       if (isCodex) {
+        // A detached thread has no live runtime subscription yet, but it must
+        // still receive every error owned by this durable thread.  The old
+        // implementation filtered this stream through a growing allow-list of
+        // known settings/goal error codes.  That made any new or generic
+        // scoped error disappear until a runtime was attached, which looked
+        // like a hung action.  Keep non-error control responses scoped, but
+        // route every explicitly owned ErrorMessage through the same error
+        // reducer used by attached sessions.
         _detachedSettingsSubscription = _bridge
             .messagesForSession(sessionId)
-            .where(_isDetachedControlResponse)
+            .where(_isDetachedControlOrScopedError)
             .listen(_onMessage);
         _detachedRuntimeOverlaySubscription = _detachedRuntimeOverlayStream
             ?.where(
@@ -1259,6 +1269,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         code == 'codex_shared_runtime_settings_stale_authority' ||
         code == 'codex_shared_runtime_settings_operation_conflict' ||
         code == 'codex_shared_runtime_settings_busy';
+  }
+
+  bool _isDetachedControlOrScopedError(ServerMessage message) {
+    if (message is ErrorMessage) {
+      return message.sessionId?.trim() == sessionId;
+    }
+    return _isDetachedControlResponse(message);
   }
 
   void _onDetachedRuntimeOverlay(ConversationSyncV2EventMessage event) {
@@ -2900,6 +2917,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           'message': message.message,
           if (message.errorCode != null) 'errorCode': message.errorCode,
           if (message.sessionId != null) 'sessionId': message.sessionId,
+          if (message.errorEventId != null)
+            'errorEventId': message.errorEventId,
+          if (message.operationId != null) 'operationId': message.operationId,
+          if (message.errorSource != null)
+            'errorSource': message.errorSource,
+          if (message.errorPhase != null) 'errorPhase': message.errorPhase,
           if (message.permissionChangeId != null)
             'permissionChangeId': message.permissionChangeId,
           if (message.goalChangeId != null)
@@ -4774,6 +4797,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   void _onMessage(ServerMessage msg) {
     var isLocalMirrorSnapshot = false;
     var discardLocalMirrorEntries = false;
+    if (msg case ErrorMessage(:final errorEventId)) {
+      final eventId = errorEventId?.trim();
+      if (eventId != null && eventId.isNotEmpty) {
+        if (!_seenErrorEventIds.add(eventId)) return;
+        while (_seenErrorEventIds.length > _maxSeenErrorEventIds) {
+          _seenErrorEventIds.remove(_seenErrorEventIds.first);
+        }
+      }
+    }
     if (state.externalDesktopTurnActive &&
         msg is StatusMessage &&
         (msg.status == ProcessStatus.idle ||

@@ -10,16 +10,21 @@ rollout_path="${CCPOCKET_REAL_ROLLOUT:-$(/usr/bin/jq -r '.sourcePathHint' "$mani
 cd "$repo_root"
 npm run bridge:build
 
-if [[ "${CCPOCKET_REAL_CHAIN:-auto}" == "1" || \
-      ( "${CCPOCKET_REAL_CHAIN:-auto}" == "auto" && -r "$rollout_path" ) ]]; then
+real_chain_mode="${CCPOCKET_REAL_CHAIN:-auto}"
+if [[ "$real_chain_mode" == "1" || \
+      ( "$real_chain_mode" == "auto" && -r "$rollout_path" ) ]]; then
   (
     cd packages/bridge
     CCPOCKET_REAL_CHAIN=1 \
       CCPOCKET_REAL_ROLLOUT="$rollout_path" \
       npx vitest run src/blackbox/conversation-real-rollout.test.ts
   )
+elif [[ "$real_chain_mode" == "0" ]]; then
+  echo "Skipping the machine-local rollout chain by explicit request (CCPOCKET_REAL_CHAIN=0)."
 else
-  echo "Skipping the machine-local rollout chain: frozen source is unavailable."
+  echo "BLOCKED: the machine-local rollout chain is required, but the frozen source is unavailable: $rollout_path" >&2
+  echo "Set CCPOCKET_REAL_CHAIN=0 only when intentionally running the non-rollout receiver subset." >&2
+  exit 2
 fi
 
 (
@@ -27,7 +32,8 @@ fi
   "$flutter_bin" test --no-pub \
     test/blackbox/conversation_protocol_chain_test.dart \
     test/blackbox/conversation_real_bridge_chain_test.dart \
-    test/blackbox/conversation_live_segment_receiver_test.dart
+    test/blackbox/conversation_live_segment_receiver_test.dart \
+    test/blackbox/conversation_latest_turn_gap_receiver_test.dart
 )
 
 echo "Receiver traces:"

@@ -189,11 +189,12 @@ void main() {
 
       Future<ConversationHotWindowSnapshot> waitForTimelineCommit(
         int count, {
+        required bool expectedWindowComplete,
         bool inspectImmediately = false,
       }) async {
         final completer = Completer<ConversationHotWindowSnapshot>();
         late final StreamSubscription<ConversationSyncCacheUpdate> sub;
-        Future<void> inspect() async {
+        Future<void> inspect({String? requiredRevision}) async {
           if (completer.isCompleted ||
               bridge.bridgeInstanceId?.isNotEmpty != true ||
               bridge.codexSourceId?.isNotEmpty != true) {
@@ -210,7 +211,13 @@ void main() {
             provider: Provider.codex.value,
             providerSessionId: threadId,
           );
-          if (window == null || window.entries.length != count) return;
+          if (window == null ||
+              window.entries.length != count ||
+              window.windowComplete != expectedWindowComplete ||
+              (requiredRevision != null &&
+                  window.revision != requiredRevision)) {
+            return;
+          }
           completer.complete(window);
         }
 
@@ -218,8 +225,9 @@ void main() {
           if (update.kind == ConversationSyncCacheUpdateKind.timeline &&
               update.provider == Provider.codex.value &&
               update.providerSessionId == threadId &&
-              update.pageIndex == (update.pageCount ?? 1) - 1) {
-            unawaited(inspect());
+              update.pageIndex == (update.pageCount ?? 1) - 1 &&
+              update.revision != null) {
+            unawaited(inspect(requiredRevision: update.revision));
           }
         });
         if (inspectImmediately) unawaited(inspect());
@@ -298,6 +306,7 @@ void main() {
       try {
         final initialFuture = waitForTimelineCommit(
           expectedCounts[0],
+          expectedWindowComplete: expectedComplete[0],
           inspectImmediately: true,
         );
         bridge.connect(url, logicalConnectionIdentity: 'chain-harness');
@@ -314,7 +323,10 @@ void main() {
 
         late ConversationHotWindowSnapshot finalWindow;
         for (var step = 1; step < expectedCounts.length; step += 1) {
-          final committed = waitForTimelineCommit(expectedCounts[step]);
+          final committed = waitForTimelineCommit(
+            expectedCounts[step],
+            expectedWindowComplete: expectedComplete[step],
+          );
           harness.stdin.writeln(
             jsonEncode({'command': 'advance', 'step': step}),
           );

@@ -40,6 +40,24 @@ Future<void> uploadCurrentSessionDiagnosticReport({
 }) async {
   final service = context.read<FileTransferService>();
   final messenger = ScaffoldMessenger.of(context);
+  void reportOutcome(
+    String message, {
+    Duration duration = const Duration(seconds: 10),
+  }) {
+    if (!context.mounted) {
+      // A route change must not turn a completed/failed upload into a silent
+      // result. There is no safe ScaffoldMessenger to use after disposal, so
+      // retain the same stage/error text in the debug log for the diagnostic
+      // trace instead of dropping it.
+      debugPrint('[diagnostic] $message');
+      return;
+    }
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text(message), duration: duration),
+      );
+  }
   if (!service.diagnosticReportsSupportedByBridge) {
     messenger.showSnackBar(
       const SnackBar(
@@ -75,6 +93,7 @@ Future<void> uploadCurrentSessionDiagnosticReport({
         duration: Duration(minutes: 2),
       ),
     );
+  var failureStage = 'capture';
   try {
     final builder = SessionDiagnosticReportBuilder(
       bridge: context.read<BridgeService>(),
@@ -93,10 +112,11 @@ Future<void> uploadCurrentSessionDiagnosticReport({
       presentation: presentation,
     );
     final bytes = Uint8List.fromList(utf8.encode(report.json));
+    failureStage = 'size_validation';
     if (bytes.length > _maximumDiagnosticReportBytes) {
       throw StateError('诊断快照为 ${bytes.length} bytes，超过 16 MiB 安全上限。');
     }
-    if (!context.mounted) return;
+    failureStage = 'staging';
     final ticket = await service.enqueueDiagnosticReport(
       filename: report.filename,
       bytes: Stream<List<int>>.value(bytes),
@@ -114,13 +134,20 @@ Future<void> uploadCurrentSessionDiagnosticReport({
       },
       authorizeMutation: service.diagnosticReportMutationAuthRequired
           ? (operation) {
-              if (!context.mounted) return Future.value(null);
+              if (!context.mounted) {
+                return Future<FileMutationAuthorization?>.error(
+                  const FileTransferException(
+                    'diagnostic_authorization_unavailable',
+                    'The page closed before file-transfer authorization could be requested.',
+                  ),
+                );
+              }
               return requestFileMutationAuthorization(context, operation);
             }
           : null,
     );
+    failureStage = 'bridge_result';
     final result = await ticket.completion;
-    if (!context.mounted) return;
     if (result.status != FileTransferStatus.succeeded) {
       final detail = result.error ?? result.errorCode ?? result.status.name;
       throw FileTransferException(
@@ -128,27 +155,16 @@ Future<void> uploadCurrentSessionDiagnosticReport({
         detail,
       );
     }
-    messenger
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: Text(
-            '诊断已上传：${report.reportId}\n'
-            'Mac 路径：${result.savedPath ?? result.savedFilename ?? '已保存'}',
-          ),
-          duration: const Duration(seconds: 12),
-        ),
-      );
+    reportOutcome(
+      '诊断已上传：${report.reportId}\n'
+      'Mac 路径：${result.savedPath ?? result.savedFilename ?? '已保存'}',
+      duration: const Duration(seconds: 12),
+    );
   } catch (error) {
-    if (!context.mounted) return;
-    messenger
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: Text('诊断上报失败：$error'),
-          duration: const Duration(seconds: 10),
-        ),
-      );
+    final detail = error is FileTransferException
+        ? error.toString()
+        : 'diagnostic_${failureStage}_failed: ${error.toString()}';
+    reportOutcome('诊断上报失败（$failureStage）：$detail');
   } finally {
     _activeDiagnosticReports.remove(flightKey);
   }

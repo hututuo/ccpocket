@@ -485,6 +485,58 @@ void main() {
     );
 
     test(
+      'detached preview does not drop a newly introduced scoped error code',
+      () async {
+        final cubit = createCubit(
+          'durable-error-thread',
+          provider: Provider.codex,
+          detachedPreview: true,
+        );
+        addTearDown(cubit.close);
+
+        const error = ErrorMessage(
+          message: 'The durable thread could not be resumed.',
+          errorCode: 'codex_resume_preflight_failed',
+          sessionId: 'durable-error-thread',
+        );
+        mockBridge.emitMessage(error, sessionId: 'durable-error-thread');
+        await pumpEventQueue();
+
+        expect(
+          cubit.state.entries.whereType<ServerChatEntry>().map(
+            (entry) => entry.message,
+          ),
+          contains(error),
+        );
+      },
+    );
+
+    test(
+      'scoped error event identity prevents live and replay duplicates',
+      () async {
+      final cubit = createCubit('error-event-thread', provider: Provider.codex);
+      addTearDown(cubit.close);
+
+      const error = ErrorMessage(
+        message: 'The provider event could not be processed.',
+        errorCode: 'bridge_session_message_processing_failed',
+        sessionId: 'error-event-thread',
+        errorEventId: 'error-event-1',
+      );
+      mockBridge.emitMessage(error, sessionId: 'error-event-thread');
+      mockBridge.emitMessage(error, sessionId: 'error-event-thread');
+      await pumpEventQueue();
+
+        expect(
+          cubit.state.entries.whereType<ServerChatEntry>().where(
+            (entry) => entry.message is ErrorMessage,
+          ),
+          hasLength(1),
+        );
+      },
+    );
+
+    test(
       'validated v2 assistant overlay closes one stream segment before the next',
       () async {
         mockBridge.advertisedBridgeCapabilities = const {

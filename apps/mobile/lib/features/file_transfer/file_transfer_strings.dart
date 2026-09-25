@@ -285,6 +285,12 @@ class FileTransferStrings {
       ko: '사용 가능한 저장 공간이 부족합니다',
       en: 'Not enough storage space',
     ),
+    'storage_capacity_unknown' => _pick(
+      zh: '暂时无法读取可用存储空间，请稍后重试',
+      ja: '空き容量を確認できません。一度おいて再試行してください',
+      ko: '사용 가능한 저장 공간을 확인할 수 없습니다. 잠시 후 다시 시도하세요',
+      en: 'Free-space information is temporarily unavailable; please retry',
+    ),
     'bridge_disconnected' => _pick(
       zh: 'Bridge 连接已断开',
       ja: 'Bridge との接続が切れました',

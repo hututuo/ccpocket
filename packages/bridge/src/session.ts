@@ -1343,10 +1343,36 @@ export class SessionManager {
               ? await enrichedMessage
               : enrichedMessage;
 
-          // Don't add streaming deltas to history
+          // Provider errors may be delivered live and then replayed from the
+          // in-memory/canonical history. Give both paths the same identity at
+          // the single SessionManager write boundary instead of asking Mobile
+          // to infer identity from text or timestamps.
+          if (msg.type === "error") {
+            msg = {
+              ...msg,
+              ...(msg.errorEventId ? {} : { errorEventId: randomUUID() }),
+              ...(msg.errorSource ? {} : { errorSource: "provider" as const }),
+              ...(msg.errorPhase ? {} : { errorPhase: "provider_stream" }),
+            };
+          }
+
+          // Don't add streaming deltas to history.  Transport/control errors
+          // are also live events unless the provider attached them to a
+          // canonical turn.  Persisting every runtime error made a later
+          // history refresh replay the same error as a second chat bubble.
+          // Provider errors that carry a real historyTurnId remain durable.
           let mergedUserInput = false;
           let historyMsg: ServerMessage = msg;
-          if (msg.type !== "stream_delta" && msg.type !== "thinking_delta") {
+          const isCanonicalProviderError =
+            msg.type === "error" &&
+            "historyTurnId" in msg &&
+            typeof msg.historyTurnId === "string" &&
+            msg.historyTurnId.trim().length > 0;
+          const shouldPersistInCanonicalHistory =
+            msg.type !== "stream_delta" &&
+            msg.type !== "thinking_delta" &&
+            (msg.type !== "error" || isCanonicalProviderError);
+          if (shouldPersistInCanonicalHistory) {
             if (this.shouldSuppressCodexCanonicalUserEcho(session, msg)) {
               return;
             }
@@ -1378,6 +1404,18 @@ export class SessionManager {
             `[session] Error processing message for session ${id}:`,
             err,
           );
+          // Never turn an enrichment/history failure into a silent hole in
+          // the live stream.  The original provider item may be unavailable,
+          // but the client must receive a scoped, stable diagnostic that can
+          // be rendered and captured by the three-chain diagnostics.
+          this.onMessage(id, {
+            type: "error",
+            message: "Bridge could not finish processing this provider event.",
+            errorCode: "bridge_session_message_processing_failed",
+            sessionId: id,
+            errorSource: "bridge",
+            errorPhase: "provider_message_processing",
+          });
         }
       };
 

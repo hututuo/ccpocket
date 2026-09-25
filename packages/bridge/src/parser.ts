@@ -904,6 +904,14 @@ export type ServerMessage = (
       message: string;
       errorCode?: string;
       sessionId?: string;
+      /** Stable identity shared by live delivery and any canonical replay. */
+      errorEventId?: string;
+      /** Optional operation that owns the error (settings, goal, upload...). */
+      operationId?: string;
+      /** Origin of the error; this is diagnostic metadata, not UI text. */
+      errorSource?: "provider" | "bridge" | "control" | "transport";
+      /** Bounded processing phase, for diagnostics and retry decisions. */
+      errorPhase?: string;
       permissionChangeId?: string;
       goalChangeId?: string;
       /**

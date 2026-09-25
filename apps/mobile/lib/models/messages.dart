@@ -1418,6 +1418,10 @@ sealed class ServerMessage {
               message: json['message'] as String,
               errorCode: json['errorCode'] as String?,
               sessionId: json['sessionId'] as String?,
+              errorEventId: json['errorEventId'] as String?,
+              operationId: json['operationId'] as String?,
+              errorSource: json['errorSource'] as String?,
+              errorPhase: json['errorPhase'] as String?,
               permissionChangeId: json['permissionChangeId'] as String?,
               goalChangeId: json['goalChangeId'] as String?,
               historyTurnId: json['historyTurnId'] as String?,
@@ -2438,6 +2442,10 @@ class ErrorMessage implements ServerMessage {
   final String message;
   final String? errorCode;
   final String? sessionId;
+  final String? errorEventId;
+  final String? operationId;
+  final String? errorSource;
+  final String? errorPhase;
   final String? permissionChangeId;
   final String? goalChangeId;
   final String? historyTurnId;
@@ -2446,6 +2454,10 @@ class ErrorMessage implements ServerMessage {
     required this.message,
     this.errorCode,
     this.sessionId,
+    this.errorEventId,
+    this.operationId,
+    this.errorSource,
+    this.errorPhase,
     this.permissionChangeId,
     this.goalChangeId,
     this.historyTurnId,

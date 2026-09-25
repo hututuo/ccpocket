@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   DIAGNOSTIC_REPORT_PAYLOAD_MAX_BYTES,
   DiagnosticReportArchiver,
+  findDiagnosticCredential,
   validateDiagnosticReportMetadata,
   type DiagnosticReportMetadata,
 } from "./file-transfer-diagnostic.js";
@@ -52,6 +53,16 @@ afterEach(async () => {
 });
 
 describe("diagnostic report archiver", () => {
+  it("explains credential rejection with a safe path and no value", () => {
+    const finding = findDiagnosticCredential({
+      mobile: { infrastructure: { authorizationHeader: "never-return-this" } },
+    });
+    expect(finding).toEqual({
+      category: "key",
+      path: "report.mobile.infrastructure.authorizationHeader",
+    });
+  });
+
   it("rejects unsafe report ids before any path is constructed", () => {
     expect(validateDiagnosticReportMetadata({
       schemaVersion: 1,
