@@ -955,6 +955,84 @@ describe("FileTransferManager v2", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("retains a diagnostic failure tombstone until a reconnecting phone receives it", async () => {
+    const f = await fixture();
+    const client = {};
+    const phone = binding([
+      "file_transfer_upload_ready_v2",
+      "file_transfer_upload_result_v3",
+    ]);
+    f.manager.connect(client, phone.binding);
+    const body = Buffer.from(JSON.stringify({
+      schemaVersion: 1,
+      reportId: "offline_failure",
+      target: { provider: "codex", providerSessionId: "thread-diagnostic" },
+      mobile: {
+        infrastructure: {
+          bridgeInstanceId: "bridge-test",
+          codexSourceId: "source-bridge",
+        },
+      },
+    }));
+    const transferId = "upload_offline01";
+    const prepare = {
+      type: "file_transfer_upload_prepare_v2" as const,
+      requestId: "offline-prepare",
+      transferId,
+      resumeToken: "o".repeat(43),
+      filename: "offline-failure.json",
+      sizeBytes: body.length,
+      purpose: "diagnostic_report" as const,
+      diagnosticReport: {
+        schemaVersion: 1 as const,
+        reportId: "offline_failure",
+        provider: "codex",
+        providerSessionId: "thread-diagnostic",
+        bridgeInstanceId: "bridge-test",
+        codexSourceId: "source-bridge",
+        capturedAtStart: "2026-08-12T00:00:00.000Z",
+        capturedAtEnd: "2026-08-12T00:01:00.000Z",
+        sha256: "0".repeat(64),
+      },
+    };
+    await f.manager.handleClientMessage(client, prepare);
+    const ready = phone.messages.at(-1);
+    if (!ready || ready.type !== "file_transfer_upload_ready_v2") {
+      throw new Error("expected ready");
+    }
+    phone.close();
+    f.manager.disconnect(client);
+
+    await f.manager.appendUpload(
+      ready.transferId,
+      ready.uploadToken,
+      0,
+      body.length,
+      chunks(body.toString()),
+      new AbortController().signal,
+    );
+    expect(await f.state.getUpload(transferId)).toMatchObject({
+      status: "failed",
+      diagnosticFailure: { code: "diagnostic_sha256_mismatch" },
+    });
+
+    const nextClient = {};
+    const nextPhone = binding(["file_transfer_upload_result_v3"]);
+    f.manager.connect(nextClient, nextPhone.binding);
+    await f.manager.handleClientMessage(nextClient, {
+      ...prepare,
+      requestId: "offline-reconnect",
+    });
+    expect(nextPhone.messages).toMatchObject([
+      expect.objectContaining({
+        type: "file_transfer_upload_result_v3",
+        success: false,
+        errorCode: "diagnostic_sha256_mismatch",
+      }),
+    ]);
+    expect(await f.state.getUpload(transferId)).toBeUndefined();
+  });
+
   it("scrubs an exact completed diagnostic when its final payload becomes unreadable", async () => {
     const f = await fixture();
     const client = {};
