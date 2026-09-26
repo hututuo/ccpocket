@@ -1017,7 +1017,10 @@ describe("FileTransferManager v2", () => {
     });
 
     const nextClient = {};
-    const nextPhone = binding(["file_transfer_upload_result_v3"]);
+    const nextPhone = binding([
+      "file_transfer_upload_ready_v2",
+      "file_transfer_upload_result_v3",
+    ]);
     f.manager.connect(nextClient, nextPhone.binding);
     await f.manager.handleClientMessage(nextClient, {
       ...prepare,
