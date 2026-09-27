@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ConversationWireFaults } from "./conversation-wire-faults.mjs";
+import { startConversationAppServerFixture } from "./conversation-app-server-fixture.mjs";
 
 const runId = `${new Date().toISOString().replaceAll(":", "-")}-${randomUUID().slice(0, 8)}`;
 const traceRoot = resolve(
@@ -80,6 +81,8 @@ const providerState = {
       ]
     : [],
 };
+const rawRpcMode = process.env.CCPOCKET_CHAIN_PROVIDER_MODE === "stdio-json-rpc";
+const rpcTrace = [];
 const providerReads = [];
 const providerMessages = [];
 const bridgeFrames = [];
@@ -226,27 +229,54 @@ class FakeCodexAppServer extends CodexProcess {
     throw new Error("thread/items/list is not supported yet");
   }
 
-  injectAssistantItem(id, text, { completeTurn = false } = {}) {
+}
+
+const rpcFixture = rawRpcMode ? await startConversationAppServerFixture({
+  home: isolatedHome, projectPath, threadId, turnId, state: providerState,
+  thread: providerThread, turn: providerTurn, trace: rpcTrace, reads: providerReads,
+}) : null;
+const historyRpc = rawRpcMode ? new CodexProcess() : null;
+if (historyRpc) await historyRpc.initializeOnly(projectPath, 8000);
+
+function notifyProvider(method, params) {
+  if (rawRpcMode) rpcFixture.notify(method, params);
+  else activeRuntime.handleNotification(method, params);
+}
+
+function createProviderRuntime() {
+  if (!rawRpcMode) return new FakeCodexAppServer();
+  const runtime = new CodexProcess();
+  runtime.on("message", (message) => {
+    providerMessages.push(structuredClone(message));
+    if (message.type === "system" && message.subtype === "init" && message.sessionId === threadId) {
+      activeRuntime = runtime;
+    }
+  });
+  return runtime;
+}
+
+async function injectAssistantItem(id, text, { completeTurn = false } = {}) {
+    if (rawRpcMode) await rpcFixture.beginTurn(activeRuntime);
     if (!providerState.active) {
       providerState.active = true;
-      this.handleNotification("turn/started", {
+      notifyProvider("turn/started", {
         threadId,
         turn: { id: turnId, status: "inProgress" },
       });
     }
     const startedAt = 1_786_464_000 + providerState.revision * 2;
-    this.handleNotification("item/started", {
+    notifyProvider("item/started", {
       threadId,
       turnId,
       item: { id, type: "agentMessage", createdAt: startedAt },
     });
-    this.handleNotification("item/agentMessage/delta", {
+    notifyProvider("item/agentMessage/delta", {
       threadId,
       turnId,
       itemId: id,
       delta: text,
     });
-    this.handleNotification("item/completed", {
+    notifyProvider("item/completed", {
       threadId,
       turnId,
       item: {
@@ -268,19 +298,20 @@ class FakeCodexAppServer extends CodexProcess {
     if (completeTurn) {
       providerState.active = false;
       providerState.completed = true;
-      this.handleNotification("turn/completed", {
+      notifyProvider("turn/completed", {
         threadId,
         turn: { id: turnId, status: "completed" },
       });
       // The real CodexProcess run loop publishes input_ready after consuming
       // turn/completed. This fake provider bypasses that loop, so mirror the
       // same public lifecycle boundary explicitly.
-      this.setStatus("idle");
-      this.emit("input_ready");
+      if (!rawRpcMode) {
+        activeRuntime.setStatus("idle");
+        activeRuntime.emit("input_ready");
+      }
     }
     notifyCatalogChanged();
   }
-}
 
 const httpServer = createServer();
 const promptHistoryStore = new PromptHistoryStore(
@@ -293,7 +324,7 @@ const bridge = new BridgeWebSocketServer({
   allowedDirs: [projectPath],
   promptHistoryStore,
   deltaBatchMs: 0,
-  codexProcessFactory: () => new FakeCodexAppServer(),
+  codexProcessFactory: createProviderRuntime,
   sessionCatalogMonitorFactory: (onChanged) => {
     notifyCatalogChanged = (scoped = false) => {
       catalogRevision += 1;
@@ -329,7 +360,10 @@ const bridge = new BridgeWebSocketServer({
           latestTurnComplete: true,
         };
       }
-      const messages = codexThreadToServerMessages({ turns: [providerTurn()] });
+      const turns = historyRpc
+        ? (await historyRpc.listThreadTurns({ threadId, itemsView: "full" })).data
+        : [providerTurn()];
+      const messages = codexThreadToServerMessages({ turns });
       providerReads.push({
         method: "conversation-history",
         revision: providerState.revision,
@@ -374,6 +408,7 @@ process.stdout.write(
     turnId,
     projectPath,
     traceRoot,
+    providerMode: rawRpcMode ? "stdio-json-rpc" : "notification",
     scenario: latestTurnGapScenario ? "latest-turn-gap" : "live-segments",
   })}\n`,
 );
@@ -395,7 +430,7 @@ for await (const line of input) {
         const id = String(command.id ?? "").trim();
         const text = String(command.text ?? "");
         if (!id || !text) throw new Error("invalid_segment");
-        activeRuntime.injectAssistantItem(id, text, {
+        await injectAssistantItem(id, text, {
           completeTurn: command.completeTurn === true,
         });
         result = { id, revision: providerState.revision, completeTurn: command.completeTurn === true };
@@ -428,6 +463,13 @@ for await (const line of input) {
       case "wire_arm":
         result = wireFaults.arm(command.kind);
         break;
+      case "provider_status":
+        result = {
+          mode: rawRpcMode ? "stdio-json-rpc" : "notification",
+          requests: rpcTrace.filter((row) => row.direction === "bridge_to_provider").map((row) => JSON.parse(row.raw).method),
+          notifications: rpcTrace.filter((row) => row.direction === "provider_to_bridge").map((row) => JSON.parse(row.raw).method).filter(Boolean),
+        };
+        break;
       case "wire_status":
         result = { pending: wireFaults.pendingFault?.kind ?? null, trace: wireFaults.trace };
         break;
@@ -440,6 +482,10 @@ for await (const line of input) {
   }
 }
 
+await writeFile(
+  join(traceRoot, "app-server-wire.jsonl"),
+  rpcTrace.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+);
 await writeFile(
   join(traceRoot, "wire-fault.jsonl"),
   wireFaults.trace.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
@@ -468,6 +514,8 @@ await Promise.race([
   bridge.close(),
   new Promise((resolveClose) => setTimeout(resolveClose, 3_000)),
 ]);
+historyRpc?.stop();
+await rpcFixture?.close();
 httpServer.closeAllConnections?.();
 await Promise.race([
   new Promise((resolveClose) => httpServer.close(() => resolveClose())),
