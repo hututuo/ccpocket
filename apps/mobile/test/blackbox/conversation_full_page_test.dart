@@ -79,8 +79,17 @@ Future<void> _installPagePlatformServices() async {
     if (call.method == 'newContext') return null;
     throw MissingPluginException('Unexpected drag method: ${call.method}');
   });
-  final font = File(path.join(Directory.current.path, 'assets/fonts/code/JetBrainsMono-Regular.ttf'));
-  expect(font.existsSync(), isTrue, reason: 'Use the repository-bundled test font.');
+  final font = File(
+    path.join(
+      Directory.current.path,
+      'assets/fonts/code/JetBrainsMono-Regular.ttf',
+    ),
+  );
+  expect(
+    font.existsSync(),
+    isTrue,
+    reason: 'Use the repository-bundled test font.',
+  );
   final bytes = (await font.readAsBytes()).buffer.asByteData();
   font_loader.assetManifest = _PageFontManifest();
   GoogleFonts.config.allowRuntimeFetching = false;
