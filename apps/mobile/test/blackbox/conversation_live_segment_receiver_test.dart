@@ -65,7 +65,27 @@ void main() {
           final harness = await Process.start(node, [
             harnessPath,
           ], workingDirectory: repositoryRoot);
-          final harnessReady = await waitForHarnessReady(harness);
+          final controls = StreamController<Map<String, dynamic>>.broadcast();
+          final harnessReady = await waitForHarnessReady(
+            harness,
+            onControl: controls.add,
+          );
+          var controlSequence = 0;
+          Future<Map<String, dynamic>> control(
+            String command, [Map<String, Object?> arguments = const {}]
+          ) async {
+            final requestId = 'receiver-control-${++controlSequence}';
+            final response = controls.stream.firstWhere(
+              (value) => value['requestId'] == requestId,
+            ).timeout(const Duration(seconds: 12));
+            harness.stdin.writeln(jsonEncode({
+              'command': command, 'requestId': requestId, ...arguments,
+            }));
+            await harness.stdin.flush();
+            final result = await response;
+            expect(result['ok'], isTrue, reason: '$command: $result');
+            return result;
+          }
           final readyLine = harnessReady.readyLine;
           final ready =
               jsonDecode(readyLine.substring(6)) as Map<String, dynamic>;
@@ -206,6 +226,42 @@ void main() {
             } finally {
               await sub.cancel();
             }
+          }
+
+          Map<String, Object?> syncDiagnostics() => sync.diagnosticSnapshot(
+            provider: Provider.codex.value, providerSessionId: threadId,
+          );
+
+          Future<Map<String, dynamic>> wireBarrier() {
+            final state = syncDiagnostics();
+            return control('wire_barrier', {
+              'subscriptionId': state['activeSubscriptionId'],
+              'sequence': state['highestV2CommittedSequence'],
+            });
+          }
+
+          Future<void> waitForNewSubscription(Object? oldSubscription) async {
+            await sync.syncUpdates.firstWhere((update) {
+              final current = syncDiagnostics()['activeSubscriptionId'];
+              return update.kind == ConversationSyncCacheUpdateKind.completed &&
+                  current != null && current != oldSubscription &&
+                  update.targetFingerprint == cacheTarget().fingerprint;
+            }).timeout(const Duration(seconds: 15));
+          }
+
+          Future<void> expectStoredWindow(ConversationHotWindowSnapshot expected) async {
+            final stored = await repository.loadConversationWindow(
+              target: cacheTarget(), provider: Provider.codex.value,
+              providerSessionId: threadId,
+            );
+            expect(stored, isNotNull);
+            expect(stored!.revision, expected.revision);
+            expect(stored.windowComplete, isTrue);
+            expect(stored.latestTurnComplete, isTrue);
+            expect(stored.entries.map((entry) => entry.entryId).toList(),
+                expected.entries.map((entry) => entry.entryId).toList());
+            expect(stored.entries.map((entry) => entry.rawMessage).toList(),
+                expected.entries.map((entry) => entry.rawMessage).toList());
           }
 
           Future<void> mountPreview(
@@ -572,6 +628,12 @@ void main() {
               );
             }
             recordReceiver('final-sqlite', latestTurnIsActive: false);
+            final checkpointBarrier = await wireBarrier();
+            final staleCheckpoint = await control('wire_checkpoint', {
+              'name': 'before-revision',
+              'subscriptionId': checkpointBarrier['subscriptionId'],
+              'sequence': checkpointBarrier['sequence'],
+            });
 
             // Change content without changing IDs or count: an old SQLite window
             // must not satisfy the next commit waiter or remain on the mounted page.
@@ -618,6 +680,123 @@ void main() {
               'Final answer revised',
             );
             recordReceiver('same-count-sqlite', latestTurnIsActive: false);
+
+            // Every replay preserves bytes emitted before the same-count edit.
+            // ACKs drain the receiver commit queue; socket delivery alone would
+            // not prove SQLite rejected a duplicate or late update.
+            final settled = await wireBarrier();
+            final duplicateResult = await control('wire_replay', {
+              'name': 'before-revision', 'reverse': true, 'repeats': 2,
+              'ackSequence': settled['sequence'],
+            });
+            expect(duplicateResult['acknowledged'], duplicateResult['count']);
+            expect(duplicateResult['count'], (staleCheckpoint['count'] as int) * 2);
+            await expectStoredWindow(window);
+            await mountPreview(window, liveRuntimeSessionId: runtime.id);
+            recordReceiver('duplicate-and-late', latestTurnIsActive: false);
+            expect(durableReceiverRows(receiverTrace.last['rows']! as List<Map<String, Object?>>),
+                durableReceiverRows(receiverTrace.firstWhere(
+                  (row) => row['stage'] == 'same-count-sqlite',
+                )['rows']! as List<Map<String, Object?>>));
+
+            // Terminate the real connection, keep an explicit offline window,
+            // then reconnect to the same source. This does not test backoff timing.
+            final beforeDisconnect = syncDiagnostics();
+            final savedFingerprint = cacheTarget().fingerprint;
+            bridge.reconnectDelayForTest = (_) => const Duration(days: 1);
+            final disconnected = bridge.connectionStatus.firstWhere(
+              (state) => state != BridgeConnectionState.connected,
+            ).timeout(const Duration(seconds: 10));
+            await control('wire_disconnect');
+            await disconnected;
+            expect(bridge.currentBridgeConnectionState, isNot(BridgeConnectionState.connected));
+            await expectStoredWindow(window);
+            final reconnected = waitForNewSubscription(beforeDisconnect['activeSubscriptionId']);
+            final reconnectTimelineUpdates = <ConversationSyncCacheUpdate>[];
+            final reconnectUpdates = sync.syncUpdates.listen((update) {
+              if (update.kind == ConversationSyncCacheUpdateKind.timeline &&
+                  update.providerSessionId == threadId) reconnectTimelineUpdates.add(update);
+            });
+            bridge.connect(url, logicalConnectionIdentity: 'live-segment-harness');
+            try {
+              await reconnected;
+              await wireBarrier();
+            } finally {
+              await reconnectUpdates.cancel();
+            }
+            expect(cacheTarget().fingerprint, savedFingerprint);
+            expect(syncDiagnostics()['generation'] as int, greaterThan(beforeDisconnect['generation'] as int));
+            expect(reconnectTimelineUpdates, isEmpty, reason: 'An unchanged source must reuse its committed cache.');
+            await expectStoredWindow(window);
+            await mountPreview(window, liveRuntimeSessionId: runtime.id);
+            await waitForRuntimeProjection(activeTurnId: null, controlState: 'writable');
+            recordReceiver('reconnected-same-source', latestTurnIsActive: false);
+
+            // Old subscription frames are rejected synchronously without ACK.
+            // Observe every decoded frame before checking diagnostics and disk.
+            final oldFrames = bridge.localFeatureMessages
+                .where((message) => message is ConversationSyncV2EventMessage &&
+                    message.subscriptionId == checkpointBarrier['subscriptionId'])
+                .take(staleCheckpoint['count'] as int).toList()
+                .timeout(const Duration(seconds: 10));
+            final oldReplay = await control('wire_replay', {
+              'name': 'before-revision', 'reverse': true,
+            });
+            expect((await oldFrames).length, oldReplay['count']);
+            final ignored = (syncDiagnostics()['recentEvents']! as List)
+                .whereType<Map<String, Object?>>()
+                .where((event) => event['kind'] == 'eventIgnored' && event['result'] == 'subscription');
+            expect(ignored, isNotEmpty);
+            await expectStoredWindow(window);
+            await mountPreview(window, liveRuntimeSessionId: runtime.id);
+            recordReceiver('old-subscription-rejected', latestTurnIsActive: false);
+
+            for (final fault in ['reorder', 'drop']) {
+              await wireBarrier();
+              final beforeFault = syncDiagnostics();
+              final recovered = waitForNewSubscription(beforeFault['activeSubscriptionId']);
+              final expectedText = 'Final answer after $fault recovery';
+              committed = waitForTimelineCommit(
+                4, previousRevision: window.revision,
+                expectedAssistants: {
+                  'assistant-live-segment-a': 'First live commentary',
+                  'assistant-live-segment-b': 'Second live commentary',
+                  'assistant-live-final': expectedText,
+                }, latestTurnComplete: true,
+              );
+              await control('wire_arm', {'kind': fault});
+              await control('revise_segment', {
+                'id': 'assistant-live-final', 'text': expectedText,
+              });
+              window = await committed;
+              await recovered;
+              await wireBarrier();
+              final afterFault = syncDiagnostics();
+              expect(afterFault['activeSubscriptionId'], isNot(beforeFault['activeSubscriptionId']));
+              final failures = (afterFault['recentEvents']! as List)
+                  .whereType<Map<String, Object?>>()
+                  .where((event) => event['kind'] == 'commitFailure' &&
+                      event['generation'] == beforeFault['generation'] &&
+                      event['result'] == '_ConversationSyncSequenceGap:stream_retry');
+              expect(failures, isNotEmpty, reason: 'A real sequence gap must trigger subscription recovery.');
+              await expectStoredWindow(window);
+              await mountPreview(window, liveRuntimeSessionId: runtime.id);
+              expect(assistantIds(chat), [
+                'assistant-live-segment-a', 'assistant-live-segment-b', 'assistant-live-final',
+              ]);
+              expect(buildChatProcessLayout(chat.visibleEntries, latestTurnIsActive: false)
+                  .latestTurn?.intermediateOutputCount, 2);
+              recordReceiver('$fault-recovered', latestTurnIsActive: false);
+              receiverTrace.add({'stage': '$fault-sync-diagnostics', ...afterFault});
+            }
+            final wireStatus = await control('wire_status');
+            expect(wireStatus['pending'], isNull);
+            final wireActions = (wireStatus['trace']! as List)
+                .map((entry) => (entry as Map)['action']).toList();
+            for (final action in ['disconnect', 'replay', 'hold', 'overtake', 'release-late', 'drop']) {
+              expect(wireActions, contains(action));
+            }
+            recordReceiver('faults-verified', latestTurnIsActive: false);
 
             const acceptedClientMessageId = 'client-accepted-before-reopen';
             await waitForWritableRuntime();
@@ -740,7 +919,7 @@ void main() {
             );
             final committedRows =
                 receiverTrace.firstWhere(
-                      (row) => row['stage'] == 'same-count-sqlite',
+                      (row) => row['stage'] == 'faults-verified',
                     )['rows']!
                     as List<Map<String, Object?>>;
             final restoredRows =
@@ -780,6 +959,7 @@ void main() {
               },
             );
             await harnessReady.dispose();
+            await controls.close();
             await Directory(traceRoot).create(recursive: true);
             await File(
               path.join(traceRoot, 'receiver-timeline.jsonl'),

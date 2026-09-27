@@ -32,6 +32,7 @@ class HarnessReadyResult {
 Future<HarnessReadyResult> waitForHarnessReady(
   Process process, {
   Duration timeout = const Duration(seconds: 15),
+  void Function(Map<String, dynamic> response)? onControl,
 }) async {
   final stdoutBuffer = StringBuffer();
   final stderrBuffer = StringBuffer();
@@ -42,6 +43,9 @@ Future<HarnessReadyResult> waitForHarnessReady(
       .transform(const LineSplitter())
       .listen((line) {
         stdoutBuffer.writeln(line);
+        if (onControl != null && line.startsWith('CONTROL ')) {
+          onControl(jsonDecode(line.substring(8)) as Map<String, dynamic>);
+        }
         if (!ready.isCompleted && line.startsWith('READY ')) {
           ready.complete(line);
         }

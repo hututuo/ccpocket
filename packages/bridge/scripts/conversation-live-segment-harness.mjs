@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { ConversationWireFaults } from "./conversation-wire-faults.mjs";
 
 const runId = `${new Date().toISOString().replaceAll(":", "-")}-${randomUUID().slice(0, 8)}`;
 const traceRoot = resolve(
@@ -83,6 +84,7 @@ const providerReads = [];
 const providerMessages = [];
 const bridgeFrames = [];
 const clientFrames = [];
+const wireFaults = new ConversationWireFaults((raw) => bridgeFrames.push(raw));
 let activeRuntime = null;
 let notifyCatalogChanged = () => {};
 let catalogRevision = 0;
@@ -353,11 +355,7 @@ const bridge = new BridgeWebSocketServer({
 });
 
 bridge.wss.on("connection", (socket) => {
-  const originalSocketSend = socket.send.bind(socket);
-  socket.send = (data, ...args) => {
-    bridgeFrames.push(data.toString());
-    return originalSocketSend(data, ...args);
-  };
+  wireFaults.attach(socket);
   socket.on("message", (data) => clientFrames.push(data.toString()));
 });
 
@@ -388,61 +386,64 @@ for await (const line of input) {
   } catch {
     continue;
   }
-  if (command.command === "emit_segment") {
-    if (!activeRuntime) {
-      process.stdout.write(
-        `CONTROL ${JSON.stringify({ ok: false, error: "runtime_not_started" })}\n`,
-      );
-      continue;
-    }
-    const id = String(command.id ?? "").trim();
-    const text = String(command.text ?? "");
-    if (!id || !text) {
-      process.stdout.write(
-        `CONTROL ${JSON.stringify({ ok: false, error: "invalid_segment" })}\n`,
-      );
-      continue;
-    }
-    activeRuntime.injectAssistantItem(id, text, {
-      completeTurn: command.completeTurn === true,
-    });
-    process.stdout.write(
-      `CONTROL ${JSON.stringify({
-        ok: true,
-        id,
-        revision: providerState.revision,
-        completeTurn: command.completeTurn === true,
-      })}\n`,
-    );
-    continue;
-  }
-  if (command.command === "revise_segment") {
-    const item = providerState.assistantItems.find(
-      (entry) => entry.id === command.id,
-    );
-    if (!item || typeof command.text !== "string" || !command.text) {
-      process.stdout.write(
-        "CONTROL " +
-          JSON.stringify({ ok: false, error: "invalid_revision" }) +
-          "\n",
-      );
-      continue;
-    }
-    item.text = command.text;
-    providerState.revision += 1;
-    // Mirror a session-file notification with its exact provider identity. A
-    // bare catalog refresh does not invalidate a newer live-content revision.
-    notifyCatalogChanged(true);
-    process.stdout.write(
-      "CONTROL " +
-        JSON.stringify({ ok: true, revision: providerState.revision }) +
-        "\n",
-    );
-    continue;
-  }
   if (command.command === "shutdown") break;
+  try {
+    let result;
+    switch (command.command) {
+      case "emit_segment": {
+        if (!activeRuntime) throw new Error("runtime_not_started");
+        const id = String(command.id ?? "").trim();
+        const text = String(command.text ?? "");
+        if (!id || !text) throw new Error("invalid_segment");
+        activeRuntime.injectAssistantItem(id, text, {
+          completeTurn: command.completeTurn === true,
+        });
+        result = { id, revision: providerState.revision, completeTurn: command.completeTurn === true };
+        break;
+      }
+      case "revise_segment": {
+        const item = providerState.assistantItems.find((entry) => entry.id === command.id);
+        if (!item || typeof command.text !== "string" || !command.text) {
+          throw new Error("invalid_revision");
+        }
+        item.text = command.text;
+        providerState.revision += 1;
+        // Match an exact provider-scoped session-file change notification.
+        notifyCatalogChanged(true);
+        result = { revision: providerState.revision };
+        break;
+      }
+      case "wire_checkpoint":
+        result = wireFaults.checkpoint(command.name, command);
+        break;
+      case "wire_barrier":
+        result = await wireFaults.barrier(command);
+        break;
+      case "wire_replay":
+        result = await wireFaults.replay(command.name, command);
+        break;
+      case "wire_disconnect":
+        result = wireFaults.disconnect();
+        break;
+      case "wire_arm":
+        result = wireFaults.arm(command.kind);
+        break;
+      case "wire_status":
+        result = { pending: wireFaults.pendingFault?.kind ?? null, trace: wireFaults.trace };
+        break;
+      default:
+        throw new Error("unknown_control");
+    }
+    process.stdout.write("CONTROL " + JSON.stringify({ ok: true, requestId: command.requestId, ...result }) + "\n");
+  } catch (error) {
+    process.stdout.write("CONTROL " + JSON.stringify({ ok: false, requestId: command.requestId, error: String(error) }) + "\n");
+  }
 }
 
+await writeFile(
+  join(traceRoot, "wire-fault.jsonl"),
+  wireFaults.trace.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+);
 await writeFile(
   join(traceRoot, "bridge-frame.jsonl"),
   bridgeFrames.length === 0 ? "" : `${bridgeFrames.join("\n")}\n`,
