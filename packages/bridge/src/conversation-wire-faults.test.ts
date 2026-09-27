@@ -63,6 +63,18 @@ describe("real Bridge wire fault fixture", () => {
     expect(await barrier).toMatchObject({ sequence: 3 });
   });
 
+  it("refuses to credit unrelated traffic toward the replay ACK barrier", async () => {
+    const { wire, socket } = fixture();
+    socket.send(frame(1));
+    socket.ack("first", 1);
+    wire.checkpoint("old", { subscriptionId: "first", sequence: 1 });
+    const replay = wire.replay("old", { ackSequence: 1 });
+    const rejected = expect(replay).rejects.toThrow("Ordinary emissions overlapped");
+    socket.send(frame(2));
+    socket.ack("first", 2);
+    await rejected;
+  });
+
   it("reorders two original frames exactly once while preserving callbacks", async () => {
     const { wire, socket, observed } = fixture();
     const callback = vi.fn();

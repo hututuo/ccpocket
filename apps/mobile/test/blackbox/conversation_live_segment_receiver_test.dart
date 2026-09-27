@@ -102,7 +102,8 @@ void main() {
           final traceRoot = ready['traceRoot']! as String;
           expect(
             ready['providerMode'],
-            Platform.environment['CCPOCKET_CHAIN_PROVIDER_MODE'] ?? 'notification',
+            Platform.environment['CCPOCKET_CHAIN_PROVIDER_MODE'] ??
+                'notification',
           );
 
           final temporaryDirectory = await Directory.systemTemp.createTemp(
@@ -790,6 +791,7 @@ void main() {
 
             // Old subscription frames are rejected synchronously without ACK.
             // Observe every decoded frame before checking diagnostics and disk.
+            final authorityBeforeOldReplay = chat.diagnosticRuntimeProjection;
             final oldFrames = bridge.localFeatureMessages
                 .where(
                   (message) =>
@@ -813,6 +815,7 @@ void main() {
                       event['result'] == 'subscription',
                 );
             expect(ignored, isNotEmpty);
+            expect(chat.diagnosticRuntimeProjection, authorityBeforeOldReplay);
             await expectStoredWindow(window);
             await mountPreview(window, liveRuntimeSessionId: runtime.id);
             recordReceiver(
@@ -905,18 +908,31 @@ void main() {
               final providerStatus = await control('provider_status');
               expect(providerStatus['mode'], 'stdio-json-rpc');
               for (final method in [
-                'initialize', 'initialized', 'thread/list',
-                'thread/turns/list', 'thread/resume', 'turn/start',
+                'initialize',
+                'initialized',
+                'thread/list',
+                'thread/turns/list',
+                'thread/resume',
+                'turn/start',
               ]) {
                 expect(providerStatus['requests'] as List, contains(method));
               }
               for (final method in [
-                'turn/started', 'item/started', 'item/agentMessage/delta',
-                'item/completed', 'turn/completed',
+                'turn/started',
+                'item/started',
+                'item/agentMessage/delta',
+                'item/completed',
+                'turn/completed',
               ]) {
-                expect(providerStatus['notifications'] as List, contains(method));
+                expect(
+                  providerStatus['notifications'] as List,
+                  contains(method),
+                );
               }
-              receiverTrace.add({'stage': 'provider-rpc-verified', ...providerStatus});
+              receiverTrace.add({
+                'stage': 'provider-rpc-verified',
+                ...providerStatus,
+              });
             }
 
             const acceptedClientMessageId = 'client-accepted-before-reopen';

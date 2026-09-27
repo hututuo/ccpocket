@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { createInterface } from "node:readline";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -256,62 +256,62 @@ function createProviderRuntime() {
 }
 
 async function injectAssistantItem(id, text, { completeTurn = false } = {}) {
-    if (rawRpcMode) await rpcFixture.beginTurn(activeRuntime);
-    if (!providerState.active) {
-      providerState.active = true;
-      notifyProvider("turn/started", {
-        threadId,
-        turn: { id: turnId, status: "inProgress" },
-      });
-    }
-    const startedAt = 1_786_464_000 + providerState.revision * 2;
-    notifyProvider("item/started", {
+  if (rawRpcMode) await rpcFixture.beginTurn(activeRuntime);
+  if (!providerState.active) {
+    providerState.active = true;
+    notifyProvider("turn/started", {
       threadId,
-      turnId,
-      item: { id, type: "agentMessage", createdAt: startedAt },
+      turn: { id: turnId, status: "inProgress" },
     });
-    notifyProvider("item/agentMessage/delta", {
-      threadId,
-      turnId,
-      itemId: id,
-      delta: text,
-    });
-    notifyProvider("item/completed", {
-      threadId,
-      turnId,
-      item: {
-        id,
-        type: "agentMessage",
-        text,
-        createdAt: startedAt,
-        completedAt: startedAt + 1,
-      },
-    });
-    providerState.assistantItems.push({
-      type: "agentMessage",
-      id,
-      text,
-      __ccPocketEventStartedAt: new Date(startedAt * 1_000).toISOString(),
-      __ccPocketEventCompletedAt: new Date((startedAt + 1) * 1_000).toISOString(),
-    });
-    providerState.revision += 1;
-    if (completeTurn) {
-      providerState.active = false;
-      providerState.completed = true;
-      notifyProvider("turn/completed", {
-        threadId,
-        turn: { id: turnId, status: "completed" },
-      });
-      // The real CodexProcess run loop publishes input_ready after consuming
-      // turn/completed. This fake provider bypasses that loop, so mirror the
-      // same public lifecycle boundary explicitly.
-      if (!rawRpcMode) {
-        activeRuntime.setStatus("idle");
-        activeRuntime.emit("input_ready");
-      }
-    }
-    notifyCatalogChanged();
   }
+  const startedAt = 1_786_464_000 + providerState.revision * 2;
+  notifyProvider("item/started", {
+    threadId,
+    turnId,
+    item: { id, type: "agentMessage", createdAt: startedAt },
+  });
+  notifyProvider("item/agentMessage/delta", {
+    threadId,
+    turnId,
+    itemId: id,
+    delta: text,
+  });
+  notifyProvider("item/completed", {
+    threadId,
+    turnId,
+    item: {
+      id,
+      type: "agentMessage",
+      text,
+      createdAt: startedAt,
+      completedAt: startedAt + 1,
+    },
+  });
+  providerState.assistantItems.push({
+    type: "agentMessage",
+    id,
+    text,
+    __ccPocketEventStartedAt: new Date(startedAt * 1_000).toISOString(),
+    __ccPocketEventCompletedAt: new Date((startedAt + 1) * 1_000).toISOString(),
+  });
+  providerState.revision += 1;
+  if (completeTurn) {
+    providerState.active = false;
+    providerState.completed = true;
+    notifyProvider("turn/completed", {
+      threadId,
+      turn: { id: turnId, status: "completed" },
+    });
+    // The real CodexProcess run loop publishes input_ready after consuming
+    // turn/completed. The notification-only mode bypasses that loop; mirror the
+    // same public lifecycle boundary explicitly.
+    if (!rawRpcMode) {
+      activeRuntime.setStatus("idle");
+      activeRuntime.emit("input_ready");
+    }
+  }
+  notifyCatalogChanged();
+}
 
 const httpServer = createServer();
 const promptHistoryStore = new PromptHistoryStore(
@@ -516,6 +516,7 @@ await Promise.race([
 ]);
 historyRpc?.stop();
 await rpcFixture?.close();
+await rm(isolatedHome, { recursive: true, force: true });
 httpServer.closeAllConnections?.();
 await Promise.race([
   new Promise((resolveClose) => httpServer.close(() => resolveClose())),
