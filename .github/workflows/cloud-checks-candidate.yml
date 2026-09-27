@@ -122,8 +122,19 @@ jobs:
             ${{ runner.temp }}/ccpocket-receiver-rpc-validation/*.jsonl
           if-no-files-found: warn
           retention-days: 14
-      - run: flutter test
+      - name: Run full Mobile suite
+        run: flutter test
         working-directory: apps/mobile
+        env:
+          CCPOCKET_CHAIN_TRACE_PARENT: ${{ runner.temp }}/ccpocket-fullsuite-receivers
+      - name: Save full-suite receiver evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fullsuite-receiver-validation-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/ccpocket-fullsuite-receivers/**/*.jsonl
+          if-no-files-found: warn
+          retention-days: 14
 
   checks-functions:
     name: Checks / Functions

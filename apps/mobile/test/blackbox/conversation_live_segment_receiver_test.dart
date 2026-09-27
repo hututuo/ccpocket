@@ -935,6 +935,19 @@ void main() {
               });
             }
 
+            // Freeze the independently verified canonical cache before testing
+            // warm acceptance. An accepted-but-unpersisted provider input can
+            // legitimately produce an additive windowComplete=false patch; its
+            // race with database closure must not define our cold-cache fixture.
+            await wireBarrier();
+            await sync.dispose();
+            await expectStoredWindow(window);
+            receiverTrace.add({
+              'stage': 'canonical-cache-frozen',
+              'revision': window.revision,
+              'count': window.entries.length,
+            });
+
             const acceptedClientMessageId = 'client-accepted-before-reopen';
             await waitForWritableRuntime();
             expect(
@@ -1067,6 +1080,14 @@ void main() {
               reason:
                   'Offline reopening must read committed IDs, text and layout from disk.',
             );
+          } catch (error, stack) {
+            receiverTrace.add({
+              'stage': 'receiver-failure',
+              'error': error.toString(),
+              'stack': stack.toString(),
+              'sync': syncDiagnostics(),
+            });
+            rethrow;
           } finally {
             receiverTrace.add({
               'stage': 'wire-observation',
@@ -1077,8 +1098,8 @@ void main() {
             await tester.pumpWidget(const SizedBox.shrink());
             await runtimeWireSub?.cancel();
             await streamingTraceSub?.cancel();
-            await chat?.close();
-            await streaming?.close();
+            if (chat?.isClosed == false) await chat!.close();
+            if (streaming?.isClosed == false) await streaming!.close();
             if (!sessionListClosed) await sessionList.close();
             await sync.dispose();
             bridge.disconnect();

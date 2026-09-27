@@ -22,6 +22,10 @@ separate validation gates. Passing this test does not authorize deployment.
 The synthetic catalog monitor signals provider-scoped changes explicitly. The
 accepted outgoing message deliberately remains absent from canonical provider
 history, distinguishing warm acceptance overlays from committed SQLite content.
+After validating canonical content, the test disposes its sync writer before the
+warm accepted-input scenario. Otherwise a legitimate partial live-input patch
+could race database closure and invalidate the independently complete cold-cache
+fixture. The live socket/receipt path remains active for warm acceptance.
 
 ## Faults and completion barriers
 
@@ -55,6 +59,8 @@ host when using this cloud workflow.
 `CCPOCKET_CHAIN_TRACE_ROOT` selects an artifact directory. Evidence includes
 provider reads/messages, original Bridge/client frames, wire-fault actions,
 receiver checkpoints and (in RPC mode) raw `app-server-wire.jsonl` traffic.
+The full suite uses `CCPOCKET_CHAIN_TRACE_PARENT` with unique per-process folders
+and saves failure traces even when a receiver assertion fails.
 Fixtures use isolated HOME/CODEX_HOME and ephemeral loopback ports, and remove
 their temporary provider home after shutdown. Trace artifacts remain available.
 Record the exact source SHA and workflow run when reporting results; candidate
