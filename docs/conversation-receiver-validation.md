@@ -75,7 +75,7 @@ and an on-disk SQLite repository. Its existing widget host now accepts a real
 BridgeService as well as the mock used by isolated unit tests. The test always
 selects the synthetic **stdio JSON-RPC** provider; the Bridge is never mocked.
 The widget host stubs only OS engine/drop-format registration and maps font
-assets to the Flutter SDK's bundled Roboto font, with font HTTP fetching disabled.
+assets to the repository's bundled JetBrains Mono font, with font HTTP fetching disabled.
 These platform stubs do not claim native drag-and-drop or typeface acceptance.
 Provider initialization is awaited explicitly; a session-list row alone can
 precede the actual runtime-ready signal.

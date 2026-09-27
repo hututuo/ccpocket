@@ -35,46 +35,60 @@ import 'harness_ready.dart';
 
 class _PageHttpOverrides extends HttpOverrides {}
 
-// Rendering uses the SDK's deterministic test font for these asset aliases.
+// Rendering uses a repository-bundled font for these asset aliases.
 // Typeface metrics are not a visual/physical-device acceptance claim.
 class _PageFontManifest extends Fake implements AssetManifest {
   @override
   List<String> listAssets() => [
     for (final family in ['IBMPlexSans', 'SpaceGrotesk'])
-      for (final weight in ['Thin', 'ExtraLight', 'Light', 'Regular', '', 'Medium', 'SemiBold', 'Bold', 'ExtraBold', 'Black'])
+      for (final weight in [
+        'Thin',
+        'ExtraLight',
+        'Light',
+        'Regular',
+        '',
+        'Medium',
+        'SemiBold',
+        'Bold',
+        'ExtraBold',
+        'Black',
+      ])
         for (final suffix in ['', 'Italic'])
           'page-test-fonts/$family-$weight$suffix.ttf',
   ];
 }
 
 Future<void> _installPagePlatformServices() async {
-  final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-  messenger.setMockMethodCallHandler(const MethodChannel('dev.irondash.engine_context'), (call) async {
-    if (call.method == 'getEngineHandle') return 1;
-    throw MissingPluginException('Unexpected engine method: ${call.method}');
-  });
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  messenger.setMockMethodCallHandler(
+    const MethodChannel('dev.irondash.engine_context'),
+    (call) async {
+      if (call.method == 'getEngineHandle') return 1;
+      throw MissingPluginException('Unexpected engine method: ${call.method}');
+    },
+  );
   final native = superNativeExtensionsContext as MockMessageChannelContext;
   native.registerMockMethodCallHandler('DropManager', (call) async {
-    if (call.method == 'newContext' || call.method == 'registerDropFormats') return null;
+    if (call.method == 'newContext' || call.method == 'registerDropFormats') {
+      return null;
+    }
     throw MissingPluginException('Unexpected drop method: ${call.method}');
   });
-  var directory = Directory(path.dirname(Platform.resolvedExecutable));
-  File? font;
-  for (var depth = 0; depth < 8; depth++) {
-    final candidate = File(path.join(directory.path, 'bin/cache/artifacts/material_fonts/Roboto-Regular.ttf'));
-    if (candidate.existsSync()) {
-      font = candidate;
-      break;
-    }
-    directory = directory.parent;
-  }
-  expect(font, isNotNull, reason: 'Flutter SDK must provide the bundled Roboto test font.');
-  final bytes = (await font!.readAsBytes()).buffer.asByteData();
+  native.registerMockMethodCallHandler('DragManager', (call) async {
+    if (call.method == 'newContext') return null;
+    throw MissingPluginException('Unexpected drag method: ${call.method}');
+  });
+  final font = File(path.join(Directory.current.path, 'assets/fonts/code/JetBrainsMono-Regular.ttf'));
+  expect(font.existsSync(), isTrue, reason: 'Use the repository-bundled test font.');
+  final bytes = (await font.readAsBytes()).buffer.asByteData();
   font_loader.assetManifest = _PageFontManifest();
   GoogleFonts.config.allowRuntimeFetching = false;
   messenger.setMockMessageHandler('flutter/assets', (message) async {
     if (message == null) return null;
-    final name = utf8.decode(message.buffer.asUint8List(message.offsetInBytes, message.lengthInBytes));
+    final name = utf8.decode(
+      message.buffer.asUint8List(message.offsetInBytes, message.lengthInBytes),
+    );
     if (name.startsWith('page-test-fonts/')) return bytes;
     return null;
   });
@@ -421,7 +435,8 @@ void main() {
             );
             await runtimeFuture;
             await eventually(
-              () async => (await control('provider_status'))['runtimeReady'] == true,
+              () async =>
+                  (await control('provider_status'))['runtimeReady'] == true,
               'provider runtime initialization',
             );
             for (final item in const {
@@ -447,6 +462,7 @@ void main() {
             final checkpoint = await control('wire_checkpoint', {
               'name': 'page-before-edit',
               'subscriptionId': beforeEdit['subscriptionId'],
+              'sequence': beforeEdit['sequence'],
             });
             expect(checkpoint['count'] as int, greaterThan(0));
 
