@@ -755,8 +755,9 @@ void main() {
             final reconnectTimelineUpdates = <ConversationSyncCacheUpdate>[];
             final reconnectUpdates = sync.syncUpdates.listen((update) {
               if (update.kind == ConversationSyncCacheUpdateKind.timeline &&
-                  update.providerSessionId == threadId)
+                  update.providerSessionId == threadId) {
                 reconnectTimelineUpdates.add(update);
+              }
             });
             bridge.connect(
               url,
