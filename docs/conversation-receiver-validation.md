@@ -2,9 +2,10 @@
 
 The headless receiver test mounts the production `DurableSessionPreviewUpdater`
 and uses a real Bridge, WebSocket, Mobile decoder, sync service, SQLite repository
-and ChatSessionCubit. All provider content is synthetic. The parent screen/cache
-observer, shared-runtime ownership, OS process restart and physical device UI are
-separate validation gates. Passing this test does not authorize deployment.
+and ChatSessionCubit. All provider content is synthetic. A separate full-page
+test below covers the parent screen/cache observer. Shared-runtime ownership,
+OS process restart and physical device UI remain separate validation gates.
+Passing these tests does not authorize deployment.
 
 ## Provider modes
 
@@ -65,3 +66,52 @@ Fixtures use isolated HOME/CODEX_HOME and ephemeral loopback ports, and remove
 their temporary provider home after shutdown. Trace artifacts remain available.
 Record the exact source SHA and workflow run when reporting results; candidate
 builds, signing, installation and device acceptance must remain separately stated.
+
+## Complete chat page acceptance
+
+The conversation_full_page_test.dart test mounts the real CodexSessionScreen,
+with production BridgeService, ConversationContentSyncService, SessionListCubit
+and an on-disk SQLite repository. Its existing widget host now accepts a real
+BridgeService as well as the mock used by isolated unit tests. The test always
+selects the synthetic **stdio JSON-RPC** provider; the Bridge is never mocked.
+The widget host stubs only OS engine/drop-format registration and maps font
+assets to the Flutter SDK's bundled Roboto font, with font HTTP fetching disabled.
+These platform stubs do not claim native drag-and-drop or typeface acceptance.
+Provider initialization is awaited explicitly; a session-list row alone can
+precede the actual runtime-ready signal.
+
+Only the provider receives the expected messages. The test does not construct a
+ChatSessionCubit, call its update methods, feed cached messages into an updater,
+or trigger a screen cache reload. The production page subscribes to sync updates
+and reads SQLite itself. Test frame pumping lets those asynchronous reads render.
+For each update, SQLite IDs/text/order must match the page's production Cubit;
+visible text and actual intermediate-group descendants are checked separately.
+The page, updater and Cubit identities must stay unchanged during updates.
+
+The case checkpoints cover:
+
+1. Initial cached user message, two live intermediate outputs, and final answer.
+2. Two collapsed intermediate segments with final text outside the container.
+3. Same ID/count with revised text, updated without leaving the page.
+4. Actual disclosure taps, intermediate text order/ancestry and collapse behavior.
+5. Page disposal/recreation preserving rows and restoring collapsed history.
+6. Duplicate/late real Bridge frames, drained by replay-specific ACK barriers.
+7. Socket termination, cached display and page recreation while still offline.
+8. Same-source reconnect, then rejected old-subscription frames.
+9. Reordered and dropped frames followed by a new subscription and new final text.
+
+After the Bridge build, run from apps/mobile:
+
+    flutter test test/blackbox/conversation_full_page_test.dart --reporter expanded
+
+The cloud workflow runs this separately before both receiver modes and again
+within the full Mobile suite. The full-page-timeline.jsonl evidence records PASS
+checkpoints and the first failing stage alongside RPC/wire traces. Every claim
+still needs the exact source SHA and completed workflow result.
+
+Page recreation is a widget lifecycle test, not navigation-router, OS process
+restart, simulator, keyboard, scrolling-feel, iPhone or backgrounding acceptance.
+The receiver test separately covers a cold SQLite/repository reopen. Synthetic
+provider coverage does not replace private real-rollout replay or shared-runtime
+control ownership validation. No production service, signing or installation is
+part of these tests.

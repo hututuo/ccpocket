@@ -469,6 +469,7 @@ for await (const line of input) {
       case "provider_status":
         result = {
           mode: rawRpcMode ? "stdio-json-rpc" : "notification",
+          runtimeReady: activeRuntime != null,
           requests: rpcTrace.filter((row) => row.direction === "bridge_to_provider").map((row) => JSON.parse(row.raw).method),
           notifications: rpcTrace.filter((row) => row.direction === "provider_to_bridge").map((row) => JSON.parse(row.raw).method).filter(Boolean),
         };
