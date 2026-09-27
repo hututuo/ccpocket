@@ -406,6 +406,28 @@ for await (const line of input) {
     );
     continue;
   }
+  if (command.command === "revise_segment") {
+    const item = providerState.assistantItems.find(
+      (entry) => entry.id === command.id,
+    );
+    if (!item || typeof command.text !== "string" || !command.text) {
+      process.stdout.write(
+        "CONTROL " +
+          JSON.stringify({ ok: false, error: "invalid_revision" }) +
+          "\n",
+      );
+      continue;
+    }
+    item.text = command.text;
+    providerState.revision += 1;
+    notifyCatalogChanged();
+    process.stdout.write(
+      "CONTROL " +
+        JSON.stringify({ ok: true, revision: providerState.revision }) +
+        "\n",
+    );
+    continue;
+  }
   if (command.command === "shutdown") break;
 }
 
