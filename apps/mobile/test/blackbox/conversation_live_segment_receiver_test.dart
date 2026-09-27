@@ -312,6 +312,38 @@ void main() {
                 .timeout(const Duration(seconds: 10));
           }
 
+          Future<void> waitForRuntimeProjection({
+            required String? activeTurnId,
+            required String controlState,
+          }) async {
+            final current = chat!;
+            final completer = Completer<void>();
+            void inspect() {
+              final projection = current.diagnosticRuntimeProjection;
+              if (!completer.isCompleted &&
+                  projection['authorityObserved'] == true &&
+                  projection['activeTurnId'] == activeTurnId &&
+                  projection['controlState'] == controlState) {
+                completer.complete();
+              }
+            }
+
+            current.detachedLiveRuntimeRevision.addListener(inspect);
+            try {
+              inspect();
+              await completer.future.timeout(
+                const Duration(seconds: 10),
+                onTimeout: () => throw TestFailure(
+                  'Runtime projection did not reach turn=$activeTurnId, '
+                  'control=$controlState: '
+                  '${current.diagnosticRuntimeProjection}',
+                ),
+              );
+            } finally {
+              current.detachedLiveRuntimeRevision.removeListener(inspect);
+            }
+          }
+
           void recordReceiver(
             String stage, {
             required bool latestTurnIsActive,
@@ -357,6 +389,7 @@ void main() {
               'stage': stage,
               'streaming': streaming.state.isStreaming,
               'streamingText': streaming.state.text,
+              'runtimeProjection': chat.diagnosticRuntimeProjection,
               'latestTurnKey': layout.latestTurnKey,
               'intermediateSegmentKeys':
                   layout.latestTurn?.intermediateSegments
@@ -454,7 +487,11 @@ void main() {
             var window = await committed;
             await mountPreview(window, liveRuntimeSessionId: runtime.id);
             expect(assistantIds(chat), ['assistant-live-segment-a']);
-            expect(chat.diagnosticRuntimeProjection['activeTurnId'], turnId);
+            // Status/catalog commits are independent of timeline commits.
+            await waitForRuntimeProjection(
+              activeTurnId: turnId,
+              controlState: 'steerable',
+            );
             recordReceiver('segment-a-sqlite', latestTurnIsActive: true);
 
             committed = waitForTimelineCommit(
@@ -509,6 +546,10 @@ void main() {
             final finalLayout = buildChatProcessLayout(
               chat.visibleEntries,
               latestTurnIsActive: false,
+            );
+            await waitForRuntimeProjection(
+              activeTurnId: null,
+              controlState: 'writable',
             );
             expect(finalLayout.latestTurn?.intermediateOutputCount, 2);
             expect(assistantIds(chat), [
