@@ -442,7 +442,8 @@ void main() {
               expectedAssistants: const {
                 'assistant-live-segment-a': 'First live commentary',
               },
-              latestTurnComplete: false,
+              // Coverage is complete even while this provider turn is active.
+              latestTurnComplete: true,
             );
             await emitSegment(
               id: 'assistant-live-segment-a',
@@ -453,6 +454,7 @@ void main() {
             var window = await committed;
             await mountPreview(window, liveRuntimeSessionId: runtime.id);
             expect(assistantIds(chat), ['assistant-live-segment-a']);
+            expect(chat.diagnosticRuntimeProjection['activeTurnId'], turnId);
             recordReceiver('segment-a-sqlite', latestTurnIsActive: true);
 
             committed = waitForTimelineCommit(
@@ -462,7 +464,7 @@ void main() {
                 'assistant-live-segment-a': 'First live commentary',
                 'assistant-live-segment-b': 'Second live commentary',
               },
-              latestTurnComplete: false,
+              latestTurnComplete: true,
             );
             await emitSegment(
               id: 'assistant-live-segment-b',

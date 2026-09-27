@@ -336,7 +336,9 @@ const bridge = new BridgeWebSocketServer({
         messages,
         nextTurnCursor: null,
         windowComplete: true,
-        latestTurnComplete: !providerState.active,
+        // All currently available items are returned, including during a turn.
+        // Coverage completeness is independent of provider execution status.
+        latestTurnComplete: true,
       };
     },
   },
