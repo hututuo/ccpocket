@@ -213,6 +213,9 @@ class FakeCodexAppServer extends CodexProcess {
       method: "thread/turns/list",
       revision: providerState.revision,
       itemIds: providerTurn().items.map((item) => item.id),
+      assistantTexts: providerState.assistantItems
+        .filter((item) => item.type === "agentMessage")
+        .map((item) => ({ id: item.id, text: item.text })),
     });
     return { data: [structuredClone(providerTurn())], nextCursor: null };
   }
@@ -290,9 +293,14 @@ const bridge = new BridgeWebSocketServer({
   deltaBatchMs: 0,
   codexProcessFactory: () => new FakeCodexAppServer(),
   sessionCatalogMonitorFactory: (onChanged) => {
-    notifyCatalogChanged = () => {
+    notifyCatalogChanged = (scoped = false) => {
       catalogRevision += 1;
-      onChanged(catalogRevision);
+      onChanged(
+        catalogRevision,
+        scoped
+          ? { revision: catalogRevision, provider: "codex", providerSessionId: threadId }
+          : undefined,
+      );
     };
     return {
       isActive: true,
@@ -422,7 +430,9 @@ for await (const line of input) {
     }
     item.text = command.text;
     providerState.revision += 1;
-    notifyCatalogChanged();
+    // Mirror a session-file notification with its exact provider identity. A
+    // bare catalog refresh does not invalidate a newer live-content revision.
+    notifyCatalogChanged(true);
     process.stdout.write(
       "CONTROL " +
         JSON.stringify({ ok: true, revision: providerState.revision }) +

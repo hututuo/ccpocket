@@ -1,4 +1,4 @@
-import { appendFile, chmod, mkdtemp, mkdir, open, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdtemp, mkdir, open, readFile, readdir, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -544,8 +544,13 @@ describe("FileTransferUploadStore v2", () => {
     const f = await fixture({ now: () => now });
     const first = await f.store.prepare("upload_tampered01", resumeToken, "old.bin", 5);
     if (first.status !== "ready" || !first.entry.partialPath) throw new Error("expected ready");
-    await rm(first.entry.partialPath);
+    const original = await stat(first.entry.partialPath);
+    // Keep the original inode allocated: unlink + create can immediately reuse
+    // it on Linux and fail to construct the replacement this test requires.
+    await rename(first.entry.partialPath, join(f.root, "retained-original.part"));
     await writeFile(first.entry.partialPath, "replacement");
+    const replacement = await stat(first.entry.partialPath);
+    expect([replacement.dev, replacement.ino]).not.toEqual([original.dev, original.ino]);
     now = first.entry.retainUntil + 1;
     await expect(f.store.prepare(
       "upload_aftertamper",
@@ -553,6 +558,7 @@ describe("FileTransferUploadStore v2", () => {
       "new.bin",
       1,
     )).rejects.toMatchObject({ code: "upload_partial_changed" });
+    expect(await readFile(first.entry.partialPath, "utf8")).toBe("replacement");
     await expect(f.state.getUpload(first.entry.transferId)).resolves.toBeDefined();
     await f.state.close();
   });
