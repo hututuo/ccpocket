@@ -6119,19 +6119,27 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       retryAt,
     };
     if (delay > 0 && !this.closed) {
-      failure.timer = setTimeout(() => {
+      const retry = (): void => {
         const current = this.providerHistoryFailures.get(key);
         if (
           this.closed ||
           current !== failure ||
-          current.revision !== revision ||
-          Date.now() < current.retryAt
+          current.revision !== revision
         ) {
+          return;
+        }
+        const remainingDelay = current.retryAt - Date.now();
+        if (remainingDelay > 0) {
+          // Timer delivery can precede the wall-clock deadline. Keep the retry
+          // armed instead of silently losing the only scheduled attempt.
+          current.timer = setTimeout(retry, remainingDelay);
+          current.timer.unref?.();
           return;
         }
         current.timer = undefined;
         this.scheduleInteractiveClients({ dirtyKeys: [key] });
-      }, delay);
+      };
+      failure.timer = setTimeout(retry, delay);
       failure.timer.unref?.();
     }
     this.providerHistoryFailures.set(key, failure);

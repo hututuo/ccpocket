@@ -7072,6 +7072,39 @@ describe("ConversationSyncV2FeatureHandler", () => {
     }
   });
 
+  it("rearms a provider-history retry that fires before its wall-clock deadline", async () => {
+    vi.useFakeTimers();
+    const historyReader = vi.fn(async () => {
+      throw new Error("provider temporarily unavailable");
+    });
+    const fixture = createFixture([seed(0)], historyReader, {
+      providerHistoryRetryDelaysMs: [25],
+    });
+    try {
+      await fixture.handler.handle(
+        subscribeMessage(),
+        context({}, fixture.runtime),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(historyReader).toHaveBeenCalledTimes(1);
+
+      // Timers and Date.now need not reach the deadline on the same tick.
+      // Reproduce the early callback deterministically instead of sleeping.
+      vi.setSystemTime(Date.now() - 1);
+      await vi.advanceTimersByTimeAsync(25);
+      expect(historyReader).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(historyReader).toHaveBeenCalledTimes(2);
+
+      await fixture.handler.close();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(historyReader).toHaveBeenCalledTimes(2);
+    } finally {
+      await fixture.handler.close();
+      vi.useRealTimers();
+    }
+  });
+
   it("preserves escalating provider-history backoff across consecutive failures", async () => {
     vi.useFakeTimers();
     const historyReader = vi.fn(async () => {
