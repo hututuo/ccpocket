@@ -96,10 +96,15 @@ jobs:
       - name: Format receiver regression source
         working-directory: apps/mobile
         run: |
-          dart format test/blackbox/conversation_live_segment_receiver_test.dart
-          git diff -- test/blackbox/conversation_live_segment_receiver_test.dart > "$RUNNER_TEMP/receiver-format.patch"
+          dart format test/blackbox/conversation_live_segment_receiver_test.dart test/blackbox/conversation_full_page_test.dart test/chat_screen/helpers/chat_test_helpers.dart
+          git diff -- test/blackbox/conversation_live_segment_receiver_test.dart test/blackbox/conversation_full_page_test.dart test/chat_screen/helpers/chat_test_helpers.dart > "$RUNNER_TEMP/receiver-format.patch"
       - run: dart analyze .
         working-directory: apps/mobile
+      - name: Verify full Codex page through real RPC and SQLite
+        working-directory: apps/mobile
+        env:
+          CCPOCKET_CHAIN_TRACE_ROOT: ${{ runner.temp }}/ccpocket-full-page-validation
+        run: flutter test test/blackbox/conversation_full_page_test.dart --reporter expanded
       - name: Verify production receiver and offline cache reopening
         working-directory: apps/mobile
         env:
@@ -118,6 +123,7 @@ jobs:
           name: receiver-validation-${{ github.sha }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/receiver-format.patch
+            ${{ runner.temp }}/ccpocket-full-page-validation/*.jsonl
             ${{ runner.temp }}/ccpocket-receiver-validation/*.jsonl
             ${{ runner.temp }}/ccpocket-receiver-rpc-validation/*.jsonl
           if-no-files-found: warn

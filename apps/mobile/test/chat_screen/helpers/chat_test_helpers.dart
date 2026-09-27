@@ -244,7 +244,7 @@ Future<Widget> buildTestClaudeSessionScreen({
 );
 
 Future<Widget> _buildTestSessionScreen({
-  required MockBridgeService bridge,
+  required BridgeService bridge,
   required Widget child,
   ConversationContentSyncService? conversationContentSync,
   SessionListCubit? sessionListCubit,
@@ -277,7 +277,9 @@ Future<Widget> _buildTestSessionScreen({
         providers: [
           BlocProvider<ConnectionCubit>(
             create: (_) => ConnectionCubit(
-              BridgeConnectionState.connected,
+              bridge.isConnected
+                  ? BridgeConnectionState.connected
+                  : bridge.currentBridgeConnectionState,
               bridge.connectionStatus,
             ),
           ),
@@ -306,7 +308,7 @@ Future<Widget> buildTestChatScreen({
 );
 
 Future<Widget> buildTestCodexSessionScreen({
-  required MockBridgeService bridge,
+  required BridgeService bridge,
   String sessionId = testSessionId,
   String? projectPath,
   bool isPending = false,
