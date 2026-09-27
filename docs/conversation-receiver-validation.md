@@ -3,7 +3,8 @@
 The headless receiver test mounts the production `DurableSessionPreviewUpdater`
 and uses a real Bridge, WebSocket, Mobile decoder, sync service, SQLite repository
 and ChatSessionCubit. All provider content is synthetic. A separate full-page
-test below covers the parent screen/cache observer. Shared-runtime ownership,
+test below covers the parent screen/cache observer. Shared-runtime ownership
+has a separate synthetic real-socket gate in `shared-runtime-wire-validation.md`.
 OS process restart and physical device UI remain separate validation gates.
 Passing these tests does not authorize deployment.
 

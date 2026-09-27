@@ -111,6 +111,9 @@ export function assertSharedRuntimePilotRpcAllowed(
     method === "thread/unarchive" ||
     method === "thread/delete"
   ) {
+    if (attachMode === "observer") {
+      throw new Error(`${method} is disabled for read-only shared-runtime observers`);
+    }
     if (gates.allowThreadStart) return;
     throw new Error(
       `${method} is disabled; set BRIDGE_CODEX_SHARED_PILOT_ALLOW_THREAD_START=1 for the isolated canary`,

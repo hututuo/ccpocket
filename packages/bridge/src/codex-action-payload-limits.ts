@@ -10,7 +10,7 @@ const MAX_ACTION_PAYLOAD_SERIALIZED_BYTES = 48 * 1024;
  * let a user approve information they could not inspect.
  */
 export function isCodexActionPayloadWithinLimits(value: unknown): boolean {
-  const seen = new WeakSet<object>();
+  const ancestors = new WeakSet<object>();
   let nodes = 0;
 
   const visit = (candidate: unknown, depth: number): boolean => {
@@ -26,28 +26,35 @@ export function isCodexActionPayloadWithinLimits(value: unknown): boolean {
       );
     }
     if (typeof candidate !== "object") return false;
-    if (seen.has(candidate)) return false;
-    seen.add(candidate);
-
-    if (Array.isArray(candidate)) {
-      for (const entry of candidate) {
-        if (!visit(entry, depth + 1)) return false;
+    if (ancestors.has(candidate)) return false;
+    ancestors.add(candidate);
+    try {
+      if (Array.isArray(candidate)) {
+        for (const entry of candidate) {
+          if (!visit(entry, depth + 1)) return false;
+        }
+        return true;
+      }
+      const prototype = Object.getPrototypeOf(candidate);
+      if (prototype !== Object.prototype && prototype !== null) return false;
+      for (const [key, entry] of Object.entries(candidate)) {
+        nodes += 1;
+        if (
+          nodes > MAX_ACTION_PAYLOAD_NODES ||
+          Buffer.byteLength(key, "utf8") > MAX_ACTION_PAYLOAD_STRING_BYTES ||
+          !visit(entry, depth + 1)
+        ) {
+          return false;
+        }
       }
       return true;
+    } finally {
+      // The projection reuses approval decisions and permission objects in
+      // both display context and response shape. JSON encodes these twice;
+      // only an ancestor reference is a cycle. Count each occurrence above
+      // so aliasing cannot bypass the depth, node or serialized-size limits.
+      ancestors.delete(candidate);
     }
-    const prototype = Object.getPrototypeOf(candidate);
-    if (prototype !== Object.prototype && prototype !== null) return false;
-    for (const [key, entry] of Object.entries(candidate)) {
-      nodes += 1;
-      if (
-        nodes > MAX_ACTION_PAYLOAD_NODES ||
-        Buffer.byteLength(key, "utf8") > MAX_ACTION_PAYLOAD_STRING_BYTES ||
-        !visit(entry, depth + 1)
-      ) {
-        return false;
-      }
-    }
-    return true;
   };
 
   if (!visit(value, 0)) return false;

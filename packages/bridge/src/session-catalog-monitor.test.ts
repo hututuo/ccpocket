@@ -135,23 +135,43 @@ describe("SessionCatalogMonitor", () => {
       provider?: string;
       providerSessionId?: string;
     }> = [];
+    type WatchCallback = (
+      eventType: "rename" | "change",
+      filename: string | Buffer | null,
+    ) => void;
+    const watchCallbacks = new Map<string, WatchCallback>();
+    const watchFactory = ((directory: string, _options: unknown, callback: WatchCallback) => {
+      const watcher = new EventEmitter() as FSWatcher;
+      watcher.close = vi.fn(() => watcher.emit("close"));
+      watcher.ref = () => watcher;
+      watcher.unref = () => watcher;
+      watchCallbacks.set(directory, callback);
+      return watcher;
+    }) as unknown as typeof nodeWatch;
     const monitor = new SessionCatalogMonitor({
       roots: [{ path: root, kind: "claudeProjects", maxDepth: 1 }],
       initialRevision: 0,
       debounceMs: 20,
       minIntervalMs: 40,
+      watchFactory,
       onChanged: (revision, change) => changes.push(change ?? { revision }),
     });
     await monitor.start();
 
-    await Promise.all([
-      appendFile(first, '{"type":"assistant"}\n'),
-      appendFile(second, '{"type":"assistant"}\n'),
-    ]);
-    await vi.waitFor(() => expect(changes).toEqual([{ revision: 1 }]), {
-      timeout: WATCH_EVENT_TIMEOUT_MS,
-    });
-    monitor.close();
+    try {
+      // This is a batching contract: real fs.watch may deliver these writes
+      // in separate debounce windows under load. Other tests keep real OS
+      // watchers; feed two events into this installed watcher in one window.
+      const changed = watchCallbacks.get(project);
+      expect(changed).toBeDefined();
+      changed!("change", "session-a.jsonl");
+      changed!("change", "session-b.jsonl");
+      await vi.waitFor(() => expect(changes).toEqual([{ revision: 1 }]), {
+        timeout: WATCH_EVENT_TIMEOUT_MS,
+      });
+    } finally {
+      monitor.close();
+    }
   });
 
   it("adds a watcher when a new provider directory appears", async () => {

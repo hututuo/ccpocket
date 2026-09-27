@@ -30,6 +30,28 @@ afterEach(() => {
 });
 
 describe("shared runtime Stage 1 pilot gates", () => {
+  it.each([
+    "thread/start",
+    "thread/name/set",
+    "thread/archive",
+    "thread/unarchive",
+    "thread/delete",
+  ])("rejects observer %s even with every writer gate enabled", (method) => {
+    const enabled = gates({
+      ...baseEnv,
+      BRIDGE_CODEX_SHARED_PILOT_ALLOW_THREAD_START: "1",
+      BRIDGE_CODEX_SHARED_PILOT_ALLOW_TURN_START: "1",
+    });
+    expect(() =>
+      assertSharedRuntimePilotRpcAllowed(method, "observer", enabled),
+    ).toThrow("read-only shared-runtime observers");
+    for (const mode of [null, "adoption"] as const) {
+      expect(() =>
+        assertSharedRuntimePilotRpcAllowed(method, mode, enabled),
+      ).not.toThrow();
+    }
+  });
+
   it("requires an explicit pilot and stable Codex source identity", () => {
     expect(() =>
       readSharedRuntimePilotGates({

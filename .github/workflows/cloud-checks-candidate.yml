@@ -33,8 +33,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:bridge
+        env:
+          CCPOCKET_SHARED_WIRE_TRACE_DIR: ${{ runner.temp }}/ccpocket-shared-wire-validation
       - run: npx tsc --noEmit -p packages/bridge/tsconfig.json
       - run: npm run bridge:build
+      - name: Save shared runtime wire evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shared-runtime-wire-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/ccpocket-shared-wire-validation/*.json
+          if-no-files-found: error
+          retention-days: 14
 
   checks-mobile:
     name: Checks / Mobile
