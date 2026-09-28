@@ -1290,6 +1290,7 @@ ConversationSyncV2NextState? _conversationSyncNextState(Object? raw) {
   final rawStates = _conversationSyncList(
     json['threadContentStates'],
     maximumLength: _conversationSyncMaxThreadStates,
+    field: 'threadContentStates',
   );
   return ConversationSyncV2NextState(
     catalogState: _conversationSyncString(
