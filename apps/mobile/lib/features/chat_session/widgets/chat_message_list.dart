@@ -1093,6 +1093,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
   String? _derivedForHttpBaseUrl;
   bool? _derivedForTranscriptTailComplete;
   _ChatListDerivedData? _derivedData;
+  List<ChatEntry>? _previousTimelineEntries;
 
   @override
   void initState() {
@@ -1839,6 +1840,20 @@ class _ChatMessageListState extends State<ChatMessageList> {
     final hiddenToolUseIds = chatState.hiddenToolUseIds;
     final historyBrowsing = chatCubit.historyNavigationActive;
     final allEntries = chatCubit.visibleEntries;
+    final previousEntries = _previousTimelineEntries;
+    final addedEntries = allEntries.length - (previousEntries?.length ?? 0);
+    final controller = widget.scrollController;
+    if (!historyBrowsing &&
+        previousEntries != null &&
+        previousEntries.isNotEmpty &&
+        addedEntries > 0 &&
+        controller is ReadingPositionAutoScrollController &&
+        controller.hasClients &&
+        controller.offset > MaintainReadingPositionPhysics.scrolledUpThreshold &&
+        listEquals(previousEntries, allEntries.sublist(addedEntries))) {
+      controller.retainOffsetForNextLayout();
+    }
+    _previousTimelineEntries = historyBrowsing ? null : allEntries;
 
     // Watch only the isStreaming flag (not the full streaming text) so the
     // list rebuilds when streaming starts/stops (to adjust itemCount) but NOT

@@ -44,10 +44,26 @@ class ReadingPositionAutoScrollController extends SimpleAutoScrollController {
   int _generation = 0;
   int _programmaticScrollGeneration = 0;
   bool _programmaticScrollPending = false;
+  int _retainedOffsetGeneration = 0;
+  bool _retainingOffsetForLayout = false;
 
   bool get hasAnchorMutation => _anchorMutation != null;
   bool get suppressPassiveExtentCorrection =>
-      hasAnchorMutation || _programmaticScrollPending;
+      hasAnchorMutation ||
+      _programmaticScrollPending ||
+      _retainingOffsetForLayout;
+
+  /// Older rows increase a reverse list's extent without moving existing rows.
+  /// Preserve its offset for that layout instead of treating the added extent
+  /// as output appended below the reader.
+  void retainOffsetForNextLayout() {
+    final generation = ++_retainedOffsetGeneration;
+    _retainingOffsetForLayout = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_retainedOffsetGeneration != generation) return;
+      _retainingOffsetForLayout = false;
+    });
+  }
 
   void _markProgrammaticScroll() {
     final generation = ++_programmaticScrollGeneration;

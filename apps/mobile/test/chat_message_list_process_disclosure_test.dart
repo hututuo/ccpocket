@@ -468,7 +468,7 @@ void main() {
   testWidgets('new tail messages retain expanded historical tool state', (
     tester,
   ) async {
-    await tester.binding.setSurfaceSize(const Size(430, 900));
+    await tester.binding.setSurfaceSize(const Size(430, 360));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final bridge = _Bridge();
     final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
@@ -527,6 +527,21 @@ void main() {
       tester.state<ToolResultBubbleState>(firstBubble),
       same(preservedState),
     );
+
+    expect(scrollController.position.maxScrollExtent, greaterThan(150));
+    scrollController.jumpTo(150);
+    await tester.pump();
+    await tester.pump();
+    final beforeOlderPage = tester.getTopLeft(firstBubble).dy;
+    cubit.prependEntryForTest(
+      UserChatEntry('older prompt', clientMessageId: 'older-user-turn'),
+    );
+    await tester.pump();
+    expect(
+      tester.getTopLeft(firstBubble).dy,
+      closeTo(beforeOlderPage, 1),
+    );
+    expect(find.text('first result'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
