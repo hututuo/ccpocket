@@ -195,6 +195,7 @@ class ChatProcessLayout {
     required this.latestTurnKey,
     this.latestTurn,
     this.turnKeyAliases = const {},
+    this.intermediateGroupsByEntryIndex = const {},
   });
 
   final Map<int, ChatProcessSegmentLayout> _segmentsByEntryIndex;
@@ -202,11 +203,17 @@ class ChatProcessLayout {
   final String? latestTurnKey;
   final ChatProcessTurnLayout? latestTurn;
   final Map<String, String> turnKeyAliases;
+  final Map<int, ChatProcessTurnLayout> intermediateGroupsByEntryIndex;
 
   ChatProcessSegmentLayout? segmentForEntry(int index) =>
       _segmentsByEntryIndex[index];
 
   ChatProcessTurnLayout? turnForEntry(int index) => _turnsByEntryIndex[index];
+
+  /// Presentation groups split at steering messages without inventing a new
+  /// provider turn or changing the ownership of delayed tool results.
+  ChatProcessTurnLayout? displayTurnForEntry(int index) =>
+      intermediateGroupsByEntryIndex[index] ?? turnForEntry(index);
 }
 
 /// Builds a display-only process layout from the existing chat entries.
@@ -224,6 +231,7 @@ ChatProcessLayout buildChatProcessLayout(
   final segmentsByIndex = <int, ChatProcessSegmentLayout>{};
   final turnsByIndex = <int, ChatProcessTurnLayout>{};
   final turnKeyAliases = <String, String>{};
+  final intermediateGroupsByIndex = <int, ChatProcessTurnLayout>{};
   String? latestTurnKey;
   ChatProcessTurnLayout? latestTurn;
 
@@ -560,7 +568,8 @@ ChatProcessLayout buildChatProcessLayout(
     if (intermediateSegments.isNotEmpty) {
       final intervalEnd = protectedSegment?.firstEntryIndex ?? turnEnd;
       for (var index = turnContentStart; index < intervalEnd; index++) {
-        if (!planUpdateEntryIndices.contains(index)) {
+        if (entries[index] is! UserChatEntry &&
+            !planUpdateEntryIndices.contains(index)) {
           intermediateEntries.add(index);
         }
       }
@@ -608,6 +617,13 @@ ChatProcessLayout buildChatProcessLayout(
           : Map.unmodifiable(latestPlanUpdateInput),
       activeTool: activeTool,
     );
+    for (final group in _intermediateDisplayGroups(
+      turn, entries, turnContentStart, turnEnd,
+    )) {
+      for (final index in group.intermediateEntryIndices) {
+        intermediateGroupsByIndex[index] = group;
+      }
+    }
 
     for (final segment in segments) {
       if (segment.assistantEntryIndex case final assistantIndex?) {
@@ -633,7 +649,69 @@ ChatProcessLayout buildChatProcessLayout(
     latestTurnKey: latestTurnKey,
     latestTurn: latestTurn,
     turnKeyAliases: Map.unmodifiable(turnKeyAliases),
+    intermediateGroupsByEntryIndex: Map.unmodifiable(intermediateGroupsByIndex),
   );
+}
+
+List<ChatProcessTurnLayout> _intermediateDisplayGroups(
+  ChatProcessTurnLayout turn,
+  List<ChatEntry> entries,
+  int start,
+  int end,
+) {
+  final groupKeyByIndex = <int, String>{};
+  var groupKey = turn.key;
+  var hasSteer = false;
+  for (var index = start; index < end; index++) {
+    final entry = entries[index];
+    if (entry is UserChatEntry) {
+      hasSteer = true;
+      groupKey = '${turn.key}:after:${_turnKey(entry)}';
+    } else {
+      groupKeyByIndex[index] = groupKey;
+    }
+  }
+  if (!hasSteer) return [turn];
+
+  // A delayed tool result belongs with the assistant that started it even
+  // when its arrival crosses a steer. The steer itself is always top-level.
+  final segmentsByGroup = <String, List<ChatProcessSegmentLayout>>{};
+  for (final segment in turn.intermediateSegments) {
+    final owner = segment.assistantEntryIndex ?? segment.firstEntryIndex;
+    final key = groupKeyByIndex[owner]!;
+    (segmentsByGroup[key] ??= []).add(segment);
+    for (final index in segment.processEntryIndices) {
+      groupKeyByIndex[index] = key;
+    }
+  }
+  final indicesByGroup = <String, Set<int>>{};
+  for (final index in turn.intermediateEntryIndices) {
+    (indicesByGroup[groupKeyByIndex[index]!] ??= {}).add(index);
+  }
+  return [
+    for (final group in indicesByGroup.entries)
+      ChatProcessTurnLayout(
+        key: group.key,
+        segments: turn.segments,
+        intermediateSegments: List.unmodifiable(segmentsByGroup[group.key] ?? []),
+        intermediateDetailCount: (segmentsByGroup[group.key] ?? [])
+            .fold<int>(0, (count, segment) => count + segment.detailCount),
+        intermediateEntryIndices: Set.unmodifiable(group.value),
+        intermediateAssistantEntryIndices: Set.unmodifiable(
+          turn.intermediateAssistantEntryIndices.intersection(group.value),
+        ),
+        intermediateSummaryEntryIndex: group.value.reduce((a, b) => a < b ? a : b),
+        finalAssistantEntryIndex: turn.finalAssistantEntryIndex,
+        currentAssistantEntryIndex: turn.currentAssistantEntryIndex,
+        currentSegment: turn.currentSegment,
+        isActive: turn.isActive,
+        hasTransientCurrentOutput: turn.hasTransientCurrentOutput,
+        planUpdateEntryIndices: turn.planUpdateEntryIndices,
+        planUpdateDisplayEntryIndex: turn.planUpdateDisplayEntryIndex,
+        latestPlanUpdateInput: turn.latestPlanUpdateInput,
+        activeTool: turn.activeTool,
+      ),
+  ];
 }
 
 bool _isManualContextCompactionEntry(ChatEntry entry) =>

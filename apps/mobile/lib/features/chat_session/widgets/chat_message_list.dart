@@ -413,7 +413,7 @@ class _ChatMessageListDiagnosticSource {
       final stableKey = chatMessageEntryStableKey(entry);
       chronologicalKeys.add(stableKey);
       final segment = layout.segmentForEntry(index);
-      final turn = layout.turnForEntry(index);
+      final turn = layout.displayTurnForEntry(index);
       final role = _diagnosticRenderRole(
         index: index,
         segment: segment,
@@ -560,7 +560,7 @@ class _ChatMessageListDiagnosticSource {
       final role = _diagnosticRenderRole(
         index: index,
         segment: layout.segmentForEntry(index),
-        turn: layout.turnForEntry(index),
+        turn: layout.displayTurnForEntry(index),
         hasStreaming: hasStreaming,
         imageItemsByAnchor: imageItemsByAnchor,
         imageGroupMemberIndices: imageGroupMemberIndices,
@@ -2124,7 +2124,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
 
           final entry = allEntries[entryIndex];
           final processSegment = processLayout.segmentForEntry(entryIndex);
-          final intermediateTurn = processLayout.turnForEntry(entryIndex);
+          final intermediateTurn = processLayout.displayTurnForEntry(entryIndex);
           if (intermediateTurn?.isPlanUpdateEntry(entryIndex) == true) {
             if (!intermediateTurn!.showsPlanUpdateAt(entryIndex)) {
               return const SizedBox.shrink();
@@ -2362,7 +2362,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
     ChatProcessLayout layout, {
     required bool hasStreaming,
   }) {
-    final turn = layout.turnForEntry(index);
+    final turn = layout.displayTurnForEntry(index);
     if (turn?.isPlanUpdateEntry(index) == true) {
       return turn!.showsPlanUpdateAt(index) &&
               turn.latestPlanUpdateInput != null

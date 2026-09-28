@@ -992,6 +992,48 @@ void main() {
     expect(layout.latestTurnKey, turn.key);
     expect(layout.turnForEntry(3), same(turn));
     expect(turn.finalAssistantEntryIndex, 3);
+    expect(turn.isIntermediateEntry(2), isFalse);
+    expect(layout.displayTurnForEntry(2), isNull);
+  });
+
+  test('steers split display folds but keep one provider turn and delayed tool ownership', () {
+    UserChatEntry user(String id) => UserChatEntry(
+      id, providerItemId: id, historyTurnId: 'steered-turn',
+    );
+    ServerChatEntry assistant(String id, {bool tool = false}) => ServerChatEntry(
+      AssistantServerMessage(
+        historyTurnId: 'steered-turn',
+        message: AssistantMessage(
+          id: id, role: 'assistant', model: 'codex',
+          content: [
+            TextContent(text: id),
+            if (tool) const ToolUseContent(id: 'late-tool', name: 'Read', input: {}),
+          ],
+        ),
+      ),
+    );
+    final entries = <ChatEntry>[
+      user('root'), assistant('before-steer', tool: true), user('steer-a'),
+      assistant('after-steer'),
+      ServerChatEntry(const ToolResultMessage(
+        historyTurnId: 'steered-turn', toolUseId: 'late-tool', content: 'late result',
+      )),
+      user('steer-b'), assistant('final'),
+    ];
+    final layout = buildChatProcessLayout(entries);
+    final before = layout.displayTurnForEntry(1)!;
+    final after = layout.displayTurnForEntry(3)!;
+    expect(layout.turnForEntry(1), same(layout.turnForEntry(3)));
+    expect(layout.displayTurnForEntry(2), isNull);
+    expect(layout.displayTurnForEntry(5), isNull);
+    expect(before.key, 'turn:steered-turn');
+    expect(after.key, isNot(before.key));
+    expect(before.intermediateEntryIndices, {1, 4});
+    expect(after.intermediateEntryIndices, {3});
+    expect(before.intermediateOutputCount, 1);
+    expect(after.intermediateOutputCount, 1);
+    expect(layout.displayTurnForEntry(4), same(before));
+    expect(layout.turnForEntry(6)!.finalAssistantEntryIndex, 6);
   });
 
   test('provider turn key survives user-root paging out and back in', () {

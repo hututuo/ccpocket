@@ -7235,6 +7235,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   /// timestamp is used only to place a late replay inside its already-known
   /// turn.
   List<ChatEntry> _repairKnownTurnPlacement(List<ChatEntry> entries) {
+    // V2 has already committed provider order in SQLite. Reinterpreting its
+    // steering messages as turn boundaries can move or duplicate canonical
+    // entries on every refresh. Runtime overlays are fenced before projection.
+    if (detachedPreview && _bridge.supportsConversationSyncV2) return entries;
     if (entries.length < 3) return entries;
 
     final ranges = <String, ({int start, int end})>{};
@@ -7243,10 +7247,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     for (var index = 0; index < entries.length; index++) {
       final entry = entries[index];
       if (entry is! UserChatEntry) continue;
+      final turnId = entry.historyTurnId?.trim();
+      // A steer continues the same provider turn; it does not close the
+      // interval belonging to all of that turn's assistant/tool entries.
+      if (openTurnId != null && turnId == openTurnId) continue;
       if (openTurnId != null) {
         ranges[openTurnId] = (start: openTurnStart, end: index);
       }
-      final turnId = entry.historyTurnId?.trim();
       openTurnId = turnId?.isNotEmpty == true ? turnId : null;
       openTurnStart = index;
     }
@@ -7283,7 +7290,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       cursor += 1;
       if (entry is! UserChatEntry) continue;
       final turnId = entry.historyTurnId?.trim();
-      final moved = turnId?.isNotEmpty == true ? movedByTurn[turnId] : null;
+      final moved = turnId?.isNotEmpty == true ? movedByTurn.remove(turnId) : null;
       if (moved == null || moved.isEmpty) continue;
 
       final interval = <ChatEntry>[];

@@ -856,6 +856,50 @@ void main() {
       },
     );
 
+    for (final v2 in [false, true]) {
+      test('same-turn steering refresh is idempotent (v2=$v2)', () {
+        if (v2) {
+          mockBridge.advertisedBridgeCapabilities = const {conversationSyncV2Capability};
+        }
+        final history = <ServerMessage>[
+          for (var index = 0; index < 4; index++) ...[
+            UserInputMessage(
+              text: 'guidance $index', clientMessageId: 'client-$index',
+              providerItemId: 'user-$index', historyTurnId: 'one-provider-turn',
+            ),
+            AssistantServerMessage(
+              historyTurnId: 'one-provider-turn', messageUuid: 'assistant-$index',
+              message: AssistantMessage(
+                id: 'assistant-$index', role: 'assistant', model: 'gpt-test',
+                content: [TextContent(text: 'progress $index')],
+              ),
+            ),
+          ],
+        ];
+        final cubit = ChatSessionCubit(
+          sessionId: 'same-turn-refresh', provider: Provider.codex,
+          bridge: mockBridge, streamingCubit: streamingCubit, detachedPreview: true,
+          initialHistoryMessages: history,
+        );
+        addTearDown(cubit.close);
+        for (var refresh = 0; refresh < 20; refresh++) {
+          expect(cubit.state.entries, hasLength(history.length), reason: 'refresh $refresh');
+          expect(cubit.state.entries.map((entry) => switch (entry) {
+            UserChatEntry(:final providerItemId) => providerItemId,
+            ServerChatEntry(message: AssistantServerMessage(:final message)) => message.id,
+            _ => 'unexpected',
+          }), [for (var index = 0; index < 4; index++) ...['user-$index', 'assistant-$index']]);
+          if (v2 && refresh.isOdd) {
+            // Even a rejected cache refresh must not multiply the preserved page.
+            cubit.updateDetachedPreviewHistory([...history, history[1]]);
+          } else {
+            cubit.updateDetachedPreviewHistory(history);
+          }
+        }
+        expect(cubit.state.entries, hasLength(history.length));
+      });
+    }
+
     for (final pageLocalUuid in ['codex:user-turn:2', 'legacy-turn:2']) {
       test(
         'detached v2 ignores reused page-local user alias $pageLocalUuid',
