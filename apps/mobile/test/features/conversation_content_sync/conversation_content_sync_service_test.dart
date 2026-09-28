@@ -368,11 +368,11 @@ void main() {
         gateway.sentTypes,
         isNot(contains('conversation_sync_unsubscribe')),
       );
-      await timeline(
-        6,
-        ['latest', 'final', 'after'],
-        revision: 'last-partial-wire',
-      );
+      await timeline(6, [
+        'latest',
+        'final',
+        'after',
+      ], revision: 'last-partial-wire');
       Map<String, Object?> diagnostic() => service.diagnosticSnapshot(
         provider: 'codex',
         providerSessionId: 'omitted-window',
