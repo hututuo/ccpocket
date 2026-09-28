@@ -1337,49 +1337,56 @@ describe("ConversationContentSyncFeatureHandler", () => {
   });
 
   it("bounds provider reads during a paced live runtime stream", async () => {
+    // Real 25 ms sleeps can cross the 500 ms flush boundary on a busy host.
+    // Exercise the intended stream timing deterministically, not wall latency.
+    vi.useFakeTimers();
     const fixture = createFixture(0);
-    const client = {};
-    fixture.runtime.getProviderSessionId = () => "thread-focused";
-    const session = {
-      id: "runtime-focused",
-      provider: "codex" as const,
-      process: {},
-      projectPath: "/project",
-    };
+    try {
+      const client = {};
+      fixture.runtime.getProviderSessionId = () => "thread-focused";
+      const session = {
+        id: "runtime-focused",
+        provider: "codex" as const,
+        process: {},
+        projectPath: "/project",
+      };
 
-    await fixture.handler.handle(
-      {
-        ...subscribe("subscription-1"),
-        focused: {
-          provider: "codex",
-          providerSessionId: "thread-focused",
+      await fixture.handler.handle(
+        {
+          ...subscribe("subscription-1"),
+          focused: {
+            provider: "codex",
+            providerSessionId: "thread-focused",
+          },
         },
-      },
-      {
-        client,
-        signal: new AbortController().signal,
-        runtime: fixture.runtime,
-      },
-    );
-    await vi.waitFor(() =>
-      expect(fixture.historyReader).toHaveBeenCalledTimes(1),
-    );
+        {
+          client,
+          signal: new AbortController().signal,
+          runtime: fixture.runtime,
+        },
+      );
+      await vi.waitFor(() =>
+        expect(fixture.historyReader).toHaveBeenCalledTimes(1),
+      );
 
-    for (let index = 0; index < 20; index += 1) {
-      fixture.handler.sessionMessage(session, {
-        type: "stream_delta",
-        text: `paced-delta-${index}`,
-      });
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      for (let index = 0; index < 20; index += 1) {
+        fixture.handler.sessionMessage(session, {
+          type: "stream_delta",
+          text: `paced-delta-${index}`,
+        });
+        await vi.advanceTimersByTimeAsync(25);
+      }
+
+      await vi.waitFor(
+        () => expect(fixture.historyReader).toHaveBeenCalledTimes(3),
+        { timeout: 1_500 },
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      expect(fixture.historyReader).toHaveBeenCalledTimes(3);
+    } finally {
+      fixture.handler.close();
+      vi.useRealTimers();
     }
-
-    await vi.waitFor(
-      () => expect(fixture.historyReader).toHaveBeenCalledTimes(3),
-      { timeout: 1_500 },
-    );
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(fixture.historyReader).toHaveBeenCalledTimes(3);
-    fixture.handler.close();
   });
 
   it("turns all changes during one provider read into one dirty follow-up", async () => {

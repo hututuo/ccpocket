@@ -2795,6 +2795,17 @@ function applyCodexItemTimestamp(
   }
 }
 
+// The provider's UUIDv7 user item carries its millisecond creation time.
+// This is a fallback only: exact rollout timing below still wins, and this
+// estimate deliberately never receives timestampIsAuthoritative=true.
+function codexUserItemCreationTime(itemId: string | undefined): string | undefined {
+  if (!itemId || !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(itemId)) {
+    return undefined;
+  }
+  const milliseconds = Number.parseInt(itemId.slice(0, 13).replace("-", ""), 16);
+  return new Date(milliseconds).toISOString();
+}
+
 export function codexThreadToSessionHistory(
   thread: unknown,
   options: { desktopToolTimeline?: CodexDesktopToolTimeline } = {},
@@ -2860,7 +2871,9 @@ export function codexThreadToSessionHistory(
             ...(imageCount > 0 ? { imageCount } : {}),
             ...(imagePaths.length > 0 ? { imagePaths } : {}),
             ...(imageBase64.length > 0 ? { imageBase64 } : {}),
-            ...(turnStartedAt ? { timestamp: turnStartedAt } : {}),
+            ...((codexUserItemCreationTime(rawItemId) ?? turnStartedAt)
+              ? { timestamp: codexUserItemCreationTime(rawItemId) ?? turnStartedAt }
+              : {}),
           });
           break;
         }
@@ -4419,22 +4432,31 @@ const codexDesktopToolTimelineRefreshes = new Map<
  */
 export async function getCodexDesktopToolTimeline(
   threadId: string,
+  canonicalRolloutPath?: string,
 ): Promise<CodexDesktopToolTimeline> {
-  const inFlight = codexDesktopToolTimelineRefreshes.get(threadId);
+  const flightKey = JSON.stringify([resolveCodexHome(), threadId, canonicalRolloutPath]);
+  const inFlight = codexDesktopToolTimelineRefreshes.get(flightKey);
   if (inFlight) return inFlight;
 
-  const refresh = refreshCodexDesktopToolTimeline(threadId).finally(() => {
-    codexDesktopToolTimelineRefreshes.delete(threadId);
+  const refresh = refreshCodexDesktopToolTimeline(threadId, canonicalRolloutPath).finally(() => {
+    codexDesktopToolTimelineRefreshes.delete(flightKey);
   });
-  codexDesktopToolTimelineRefreshes.set(threadId, refresh);
+  codexDesktopToolTimelineRefreshes.set(flightKey, refresh);
   return refresh;
 }
 
 async function refreshCodexDesktopToolTimeline(
   threadId: string,
+  canonicalRolloutPath?: string,
 ): Promise<CodexDesktopToolTimeline> {
   const cachedPath = codexDesktopToolTimelineCache.get(threadId)?.jsonlPath;
-  const jsonlPath = cachedPath ?? (await findCodexSessionJsonlPath(threadId));
+  const jsonlPath = canonicalRolloutPath ?? cachedPath ?? (await findCodexSessionJsonlPath(threadId));
+  // A provider path is authority only for its declared thread, never another
+  // thread's file. On a move reset the incremental reader below.
+  if (canonicalRolloutPath && canonicalRolloutPath !== cachedPath &&
+      await codexJsonlThreadId(canonicalRolloutPath).catch(() => null) !== threadId) {
+    return emptyCodexDesktopToolTimeline();
+  }
   if (!jsonlPath) return emptyCodexDesktopToolTimeline();
 
   let fileStat;

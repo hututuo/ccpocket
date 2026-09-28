@@ -859,8 +859,29 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       (options.observeCodexThread
         ? async () => null
         : inspectDurableCodexThread);
-    this.desktopToolTimelineReader =
-      options.desktopToolTimelineReader ?? getCodexDesktopToolTimeline;
+    const rolloutPaths = new Map<string, { path: string | undefined; readAt: number }>();
+    this.desktopToolTimelineReader = options.desktopToolTimelineReader ??
+      (async (threadId) => {
+        let cached = rolloutPaths.get(threadId);
+        if (!cached || Date.now() - cached.readAt >= 5_000) {
+          // Resuming a Desktop thread can move its live rollout into a new
+          // suffixed file while the original still exists. Ask the provider
+          // for its current path; a filename scan cannot choose the authority.
+          const thread = await this.withSharedCodexReadProcess((process) =>
+            process.readThread(threadId, false));
+          cached = {
+            path: typeof thread.path === "string" ? thread.path : undefined,
+            readAt: Date.now(),
+          };
+          rolloutPaths.delete(threadId);
+          rolloutPaths.set(threadId, cached);
+          if (rolloutPaths.size > 32) {
+            const oldest = rolloutPaths.keys().next().value;
+            if (oldest !== undefined) rolloutPaths.delete(oldest);
+          }
+        }
+        return getCodexDesktopToolTimeline(threadId, cached.path);
+      });
     this.initialExternalCodexMonitors = nonNegativeInteger(
       options.initialExternalCodexMonitors,
       INITIAL_EXTERNAL_CODEX_MONITORS,
@@ -4936,7 +4957,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       throw boundedLegacyPageUnavailable(target.provider);
     }
     return this.withSharedCodexReadProcess((process) =>
-      readLatestCodexTurnHistory(process, target),
+      readLatestCodexTurnHistory(process, target, this.desktopToolTimelineReader),
     );
   }
 
@@ -8202,6 +8223,14 @@ async function readOptionalDesktopToolTimeline(
   }
 }
 
+function timestampOnlyDesktopTimeline(
+  timeline: CodexDesktopToolTimeline | undefined,
+): CodexDesktopToolTimeline | undefined {
+  return timeline?.itemTimestamps?.size
+    ? { events: [], callIds: new Set<string>(), itemTimestamps: timeline.itemTimestamps }
+    : undefined;
+}
+
 async function readRecentCodexConversationHistory(
   process: CodexProcess,
   target: ConversationSyncTarget,
@@ -8290,8 +8319,15 @@ async function readRecentCodexConversationHistory(
 async function readLatestCodexTurnHistory(
   process: CodexProcess,
   target: ConversationSyncTarget,
+  desktopToolTimelineReader: DesktopToolTimelineReader,
 ): Promise<ConversationHistoryWindow> {
   const startedAt = Date.now();
+  // Reuse the bounded incremental rollout index. Latest-turn polling must not
+  // replace per-item times with the provider turn's hours-old start time.
+  const timeline = readOptionalDesktopToolTimeline(
+    desktopToolTimelineReader,
+    target.providerSessionId,
+  );
   const page = await process.listThreadTurns(
     {
       threadId: target.providerSessionId,
@@ -8320,7 +8356,7 @@ async function readLatestCodexTurnHistory(
     [...page.data].reverse(),
     "full",
     target.providerSessionId,
-    undefined,
+    timestampOnlyDesktopTimeline(await timeline),
     "hot-window",
   );
   const latestTurn = normalized.turns.at(-1);
@@ -8585,16 +8621,15 @@ async function readItemsPage(
   if (message.provider === "codex") {
     try {
       return await runCodexRead(async (process) => {
-        // The Desktop timeline is only needed when the client explicitly asks
-        // for tool details. Starting that rollout read for an ordinary item
-        // repair would turn every missing-page recovery into a second history
-        // scan, including for very large threads.
-        const timeline = message.toolUseIds
-          ? readOptionalDesktopToolTimeline(
-              desktopToolTimelineReader,
-              message.providerSessionId,
-            )
-          : Promise.resolve(undefined);
+        // The reader is bounded and incremental. Ordinary item repair needs
+        // item times too, but must not inject Desktop tools by page-local
+        // visible-message ordinals (which can repeat across pages).
+        const timeline = readOptionalDesktopToolTimeline(
+          desktopToolTimelineReader,
+          message.providerSessionId,
+        ).then((value) => message.toolUseIds
+          ? value
+          : timestampOnlyDesktopTimeline(value));
         const turnId = message.turnId ?? "paged-items";
         let lastPage: ConversationItemsPage | undefined;
         for (const limit of decreasingPageLimits(message.limit ?? 200)) {
@@ -8633,7 +8668,7 @@ async function readItemsPage(
             messages = codexTurnMessages(
               { id: turnId, items },
               message.providerSessionId,
-              message.toolUseIds ? await timeline : undefined,
+              await timeline,
             );
             nextCursor = page.nextCursor;
           } catch (error) {
@@ -9411,20 +9446,27 @@ function boundCodexRawTurnForConversion(
   let payloadOmitted = false;
   let projectedPayloadOmissions = 0;
 
-  // An active app-server turn can contain megabytes of completed command
-  // output before its newest reasoning/tool item. A forward-only byte budget
-  // therefore preserves the prompt but silently freezes the visible process
-  // near the beginning of the turn. Keep the official root item plus a
-  // bounded newest-first tail, then restore provider order for conversion.
-  // The omitted middle remains explicitly repairable through items_page.
+  // Keep the root and user guidance before spending the bounded budget on
+  // the newest process tail. A steer in the omitted middle would otherwise
+  // disappear from older-turn summaries, which cannot use latest-turn repair.
+  // Provider order is restored below; tool omissions remain explicitly paged.
   const candidateIndexes: number[] = [];
   if (items.length > 0) candidateIndexes.push(0);
+  for (let index = 1; index < items.length; index += 1) {
+    const item = items[index];
+    if (item && typeof item === "object" &&
+        (item as Record<string, unknown>).type === "userMessage") {
+      candidateIndexes.push(index);
+      if (candidateIndexes.length >= MAX_CODEX_RAW_TURN_ITEMS) break;
+    }
+  }
+  const selectedIndexes = new Set(candidateIndexes);
   for (
     let index = items.length - 1;
     index > 0 && candidateIndexes.length < MAX_CODEX_RAW_TURN_ITEMS;
     index -= 1
   ) {
-    candidateIndexes.push(index);
+    if (!selectedIndexes.has(index)) candidateIndexes.push(index);
   }
   if (candidateIndexes.length < items.length) payloadOmitted = true;
 

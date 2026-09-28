@@ -19,6 +19,7 @@ import {
   loadCodexSessionNames,
   getCodexSessionHistory,
   resolveCodexSessionJsonlPath,
+  getCodexDesktopToolTimeline,
   readClaudeJsonlHistoryWindow,
   readClaudeSessionHistoryWindow,
   extractMessageImages,
@@ -27,6 +28,23 @@ import {
   type SessionHistoryMessage,
 } from "./sessions-index.js";
 import { buildAutoRenamePrompt } from "./auto-rename.js";
+
+describe("Codex user creation time fallback", () => {
+  it("uses UUIDv7 creation time without claiming source authority", () => {
+    const id = "01a0e7e1-3964-7c80-aef9-c833435e3c48";
+    const thread = { turns: [{ id: "turn", startedAt: 1_790_574_000, items: [
+      { type: "userMessage", id, content: [{ type: "text", text: "steer" }] },
+    ] }] };
+    const history = codexThreadToSessionHistory(thread);
+    expect(history[0]?.timestamp).toBe("2026-09-28T11:58:12.324Z");
+    expect(history[0]?.timestampIsAuthoritative).not.toBe(true);
+    const exact = codexThreadToSessionHistory(thread, { desktopToolTimeline: {
+      events: [], callIds: new Set(), itemTimestamps: new Map([[id, { startedAt: "2026-09-28T11:58:12.325Z" }]]),
+    } });
+    expect(exact[0]?.timestamp).toBe("2026-09-28T11:58:12.325Z");
+    expect(exact[0]?.timestampIsAuthoritative).toBe(true);
+  });
+});
 
 describe("pathToSlug", () => {
   it("converts a path to Claude directory slug", () => {
@@ -1375,6 +1393,32 @@ describe("codex sessions integration", () => {
     expect(sessions.map((session) => session.sessionId)).not.toContain(
       defaultThreadId,
     );
+  });
+
+  it("follows the provider rollout path across resumes without reading another thread", async () => {
+    const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68055";
+    const directory = join(tempHome, "canonical-rollouts");
+    mkdirSync(directory, { recursive: true });
+    const write = (file: string, owner: string, id: string, timestamp: string) => {
+      const path = join(directory, file);
+      writeFileSync(path, [
+        { type: "session_meta", payload: { id: owner } },
+        { type: "response_item", timestamp, payload: {
+          type: "message", role: "assistant", id,
+          content: [{ type: "output_text", text: "visible" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-live" },
+        } },
+      ].map(row => JSON.stringify(row)).join("\n") + "\n");
+      return path;
+    };
+    const oldPath = write("original.jsonl", threadId, "old", "2026-09-27T01:00:00Z");
+    const livePath = write("resumed_suffix.jsonl", threadId, "live", "2026-09-28T12:00:00Z");
+    const otherPath = write("other.jsonl", "another-thread", "foreign", "2026-09-28T13:00:00Z");
+    expect((await getCodexDesktopToolTimeline(threadId, oldPath)).itemTimestamps?.has("old")).toBe(true);
+    const live = await getCodexDesktopToolTimeline(threadId, livePath);
+    expect(live.itemTimestamps?.get("live")?.startedAt).toBe("2026-09-28T12:00:00Z");
+    expect(live.itemTimestamps?.has("old")).toBe(false);
+    expect((await getCodexDesktopToolTimeline(threadId, otherPath)).itemTimestamps?.has("foreign")).not.toBe(true);
   });
 
   it("shares the rollout path index and isolates it by CODEX_HOME", async () => {

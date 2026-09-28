@@ -3808,6 +3808,50 @@ describe("ConversationSyncV2FeatureHandler", () => {
     await fixture.handler.close();
   });
 
+  it("retains middle steering in a raw turn larger than the conversion budget", async () => {
+    const turnId = "large-guided-turn";
+    const items = [
+      { type: "userMessage", id: "root", content: [{ type: "text", text: "start" }] },
+      { type: "userMessage", id: "middle-steer", content: [{ type: "text", text: "guide" }] },
+      ...Array.from({ length: 300 }, (_, index) => ({
+        type: "commandExecution", id: "tool-" + index, command: "inspect", status: "completed", aggregatedOutput: "x".repeat(4096),
+      })),
+      { type: "agentMessage", id: "latest-answer", text: "latest" },
+    ];
+    const fixture = createCodexPageFixture({ listThreadTurns: async () => ({ data: [{ id: turnId, items }], nextCursor: null }) });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(subscription, context(fixture.client, fixture.runtime));
+    await vi.waitFor(() => expect(events(fixture.sent, fixture.client, "sync_complete")).toHaveLength(1));
+    await fixture.handler.handle({ type: "conversation_turns_page", protocolVersion: 2,
+      requestId: "large-guided", subscriptionId: subscription.requestId,
+      provider: "codex", providerSessionId: "thread-large-guided", limit: 1, itemsView: "summary",
+    }, context(fixture.client, fixture.runtime));
+    const response = events(fixture.sent, fixture.client, "turns_page_response").find(event => event.requestId === "large-guided")!;
+    const turn = response.data[0] as { messages: ServerMessage[]; latestTurnComplete: boolean };
+    expect(turn.messages.filter(message => message.type === "user_input").map(message => message.providerItemId)).toEqual(["root", "middle-steer"]);
+    expect(turn.messages.some(message => message.type === "assistant" && message.message.id === "latest-answer")).toBe(true);
+    expect(turn.latestTurnComplete).toBe(false);
+    expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(64 * 1024);
+    fixture.handler.close();
+  });
+
+  it("enriches item-page timestamps without injecting page-local Desktop tools", async () => {
+    const at = "2026-09-28T12:00:00.123Z";
+    const fixture = createCodexPageFixture({ listThreadItems: async () => ({ data: [{ turnId: "turn", item: { type: "agentMessage", id: "answer", text: "new answer" } }], nextCursor: null }) }, undefined, {
+      desktopToolTimelineReader: async () => ({ events: [{ turnId: "turn", callId: "unrelated-tool", afterVisibleMessage: 0, sequence: 1, type: "tool_use", name: "Read", input: {} }], callIds: new Set(["unrelated-tool"]), itemTimestamps: new Map([["answer", { startedAt: at, completedAt: at }]]) }),
+    });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(subscription, context(fixture.client, fixture.runtime));
+    await vi.waitFor(() => expect(events(fixture.sent, fixture.client, "sync_complete")).toHaveLength(1));
+    await fixture.handler.handle({ type: "conversation_items_page", protocolVersion: 2,
+      requestId: "timed-page", subscriptionId: subscription.requestId, provider: "codex", providerSessionId: "thread-timed", turnId: "turn", limit: 200,
+    }, context(fixture.client, fixture.runtime));
+    const response = events(fixture.sent, fixture.client, "items_page_response").find(event => event.requestId === "timed-page")!;
+    expect(response.data).toHaveLength(1);
+    expect(response.data[0]).toMatchObject({ type: "assistant", sourceTimestamp: at, sourceTimestampIsAuthoritative: true });
+    fixture.handler.close();
+  });
+
   it("keeps all same-turn steers in a compact turn summary", async () => {
     const turnId = "summary-steering";
     const listThreadTurns = vi.fn(async () => ({
