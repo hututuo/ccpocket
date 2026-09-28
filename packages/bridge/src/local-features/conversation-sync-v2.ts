@@ -8904,7 +8904,10 @@ function projectConversationItemsPage(
   const projected = selectTurnAwareHistoryWindow(
     messages.map((message, sourceIndex) => ({ message, sourceIndex })),
     {
-      rootTurns: 1,
+      // The provider cursor covers this whole page. Every user/steer and
+      // assistant text must survive projection before advancing that cursor;
+      // rootTurns=1 kept only the final steer and silently lost its prefix.
+      rootTurns: Math.max(messages.length, 1),
       toolCalls: 0,
       envelopeEntries: messages.length,
       maxRetainedEntries: Math.max(messages.length, 1),
@@ -9697,7 +9700,9 @@ function compactTurnMessages(
   return selectTurnAwareHistoryWindow(
     annotated.map((message, sourceIndex) => ({ message, sourceIndex })),
     {
-      rootTurns: 1,
+      // All user inputs here belong to the same provider turn, including
+      // steers. Compact tool details without dropping earlier user inputs.
+      rootTurns: Math.max(annotated.length, 1),
       toolCalls: 0,
       envelopeEntries: TURN_AWARE_HISTORY_ENVELOPE_ENTRIES,
     },

@@ -3808,6 +3808,36 @@ describe("ConversationSyncV2FeatureHandler", () => {
     await fixture.handler.close();
   });
 
+  it("keeps all same-turn steers in a compact turn summary", async () => {
+    const turnId = "summary-steering";
+    const listThreadTurns = vi.fn(async () => ({
+      data: [{ id: turnId, items: [
+        { type: "userMessage", id: "summary-root", content: [{ type: "text", text: "start" }] },
+        { type: "agentMessage", id: "summary-progress", text: "progress" },
+        { type: "userMessage", id: "summary-steer", content: [{ type: "text", text: "guide" }] },
+        { type: "agentMessage", id: "summary-final", text: "final" },
+      ] }], nextCursor: null,
+    }));
+    const fixture = createCodexPageFixture({ listThreadTurns });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(subscription, context(fixture.client, fixture.runtime));
+    await vi.waitFor(() => expect(events(fixture.sent, fixture.client, "sync_complete")).toHaveLength(1));
+    await fixture.handler.handle({
+      type: "conversation_turns_page", protocolVersion: 2,
+      requestId: "summary-steering", subscriptionId: subscription.requestId,
+      provider: "codex", providerSessionId: "thread-summary-steering",
+      limit: 1, sortDirection: "desc", itemsView: "summary",
+    }, context(fixture.client, fixture.runtime));
+    const response = events(fixture.sent, fixture.client, "turns_page_response")
+      .find(event => event.requestId === "summary-steering")!;
+    const messages = (response.data[0] as { messages: ServerMessage[] }).messages;
+    expect(messages.filter(message => message.type === "user_input")
+      .map(message => message.providerItemId)).toEqual(["summary-root", "summary-steer"]);
+    expect(messages.filter(message => message.type === "assistant")
+      .map(message => message.type === "assistant" ? message.message.id : null)).toEqual(["summary-progress", "summary-final"]);
+    fixture.handler.close();
+  });
+
   it("projects one oversized Codex turn with stable identity and an explicit gap", async () => {
     const listThreadTurns = vi.fn(async () => ({
       data: [
@@ -3933,6 +3963,44 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(
       Buffer.byteLength(JSON.stringify(response), "utf8"),
     ).toBeLessThanOrEqual(64 * 1024);
+    fixture.handler.close();
+  });
+
+  it("preserves every steer and assistant when projecting oversized item pages", async () => {
+    const turnId = "turn-oversized-steering";
+    const items = [
+      { type: "userMessage", id: "root", content: [{ type: "text", text: "start" }] },
+      { type: "agentMessage", id: "before", text: "before steering" },
+      { type: "commandExecution", id: "large-tool", command: "inspect", status: "completed", aggregatedOutput: "x".repeat(100 * 1024) },
+      { type: "userMessage", id: "steer-a", content: [{ type: "text", text: "continue" }] },
+      { type: "agentMessage", id: "between", text: "between steering" },
+      { type: "userMessage", id: "steer-b", content: [{ type: "text", text: "continue" }] },
+      { type: "agentMessage", id: "after", text: "after steering" },
+    ];
+    const listThreadItems = vi.fn(async () => ({
+      data: items.map(item => ({ turnId, item })), nextCursor: "after-complete-page",
+    }));
+    const fixture = createCodexPageFixture({ listThreadItems });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(subscription, context(fixture.client, fixture.runtime));
+    await vi.waitFor(() => expect(events(fixture.sent, fixture.client, "sync_complete")).toHaveLength(1));
+    await fixture.handler.handle({
+      type: "conversation_items_page", protocolVersion: 2,
+      requestId: "steering-page", subscriptionId: subscription.requestId,
+      provider: "codex", providerSessionId: "thread-steering", turnId,
+      limit: 200, sortDirection: "asc",
+    }, context(fixture.client, fixture.runtime));
+    const response = events(fixture.sent, fixture.client, "items_page_response")
+      .find(event => event.requestId === "steering-page")!;
+    expect(response).toBeDefined();
+    const data = response.data as ServerMessage[];
+    expect(data.filter(message => message.type === "user_input")
+      .map(message => message.providerItemId)).toEqual(["root", "steer-a", "steer-b"]);
+    expect(data.filter(message => message.type === "assistant" && message.message.content.some(content => content.type === "text"))
+      .map(message => message.type === "assistant" ? message.message.id : null)).toEqual(["before", "between", "after"]);
+    expect(data.some(message => message.type === "assistant" && message.historyToolDetailGaps?.length)).toBe(true);
+    expect(response.nextCursor).toBe("after-complete-page");
+    expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(64 * 1024);
     fixture.handler.close();
   });
 
