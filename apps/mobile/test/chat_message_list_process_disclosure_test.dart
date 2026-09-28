@@ -77,6 +77,10 @@ class _MutableChatSessionCubit extends ChatSessionCubit {
     emit(state.copyWith(entries: [entry, ...state.entries]));
   }
 
+  void appendEntryForTest(ChatEntry entry) {
+    emit(state.copyWith(entries: [...state.entries, entry]));
+  }
+
   void replaceEntryForTest(int index, ChatEntry entry) {
     final entries = List<ChatEntry>.from(state.entries);
     entries[index] = entry;
@@ -459,6 +463,71 @@ void main() {
       'available': false,
       'reason': 'chatMessageListNotAttached',
     });
+  });
+
+  testWidgets('new tail messages retain expanded historical tool state', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final bridge = _Bridge();
+    final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
+    final cubit = _MutableChatSessionCubit(
+      sessionId: 'session-retained-tools',
+      bridge: bridge,
+      streamingCubit: streaming,
+      provider: Provider.codex,
+    );
+    final scrollController = ReadingPositionAutoScrollController();
+    addTearDown(bridge.dispose);
+    addTearDown(streaming.close);
+    addTearDown(scrollController.dispose);
+    addTearDown(cubit.close);
+
+    await tester.pumpWidget(
+      _chatHarness(
+        bridge: bridge,
+        cubit: cubit,
+        streaming: streaming,
+        scrollController: scrollController,
+        sessionId: 'session-retained-tools',
+      ),
+    );
+    bridge.emit(HistoryMessage(messages: _history()), 'session-retained-tools');
+    await tester.pump();
+    final outer = find.byKey(
+      const ValueKey('chat_intermediate_disclosure_client:turn-phases'),
+    );
+    await tester.ensureVisible(outer);
+    await tester.pumpAndSettle();
+    await tester.tap(outer);
+    await tester.pump();
+    final interval = find.byKey(
+      const ValueKey(
+        'chat_process_disclosure_client:turn-phases:segment:id:update-1',
+      ),
+    );
+    await tester.ensureVisible(interval);
+    await tester.pumpAndSettle();
+    await tester.tap(interval);
+    await tester.pump();
+    await _expandToolResult(tester, 0);
+    expect(find.text('first result'), findsOneWidget);
+    final firstBubble = find.byType(ToolResultBubble).first;
+    final preservedState = tester.state<ToolResultBubbleState>(firstBubble);
+
+    cubit.appendEntryForTest(
+      UserChatEntry('next prompt', clientMessageId: 'next-user-turn'),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('first result'), findsOneWidget);
+    expect(
+      tester.state<ToolResultBubbleState>(firstBubble),
+      same(preservedState),
+    );
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('expanding an intermediate fold keeps its visible row anchored', (

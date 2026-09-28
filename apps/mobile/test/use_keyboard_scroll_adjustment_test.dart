@@ -54,7 +54,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(controller.offset, closeTo(600, 1));
 
-    tester.view.viewInsets = FakeViewPadding.zero;
+    tester.view.viewInsets = const FakeViewPadding();
     await tester.pumpAndSettle();
     expect(controller.offset, closeTo(400, 1));
   });

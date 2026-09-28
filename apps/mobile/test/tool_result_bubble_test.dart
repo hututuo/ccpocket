@@ -34,6 +34,37 @@ ToolResultMessage _msg({
 }
 
 void main() {
+  testWidgets('same tool output updates preserve the reader expansion', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _wrap(ToolResultBubble(message: _msg(content: 'initial output'))),
+    );
+    await tester.tap(find.byKey(const ValueKey('tool_result_disclosure')));
+    await tester.pump();
+    expect(find.text('initial output'), findsOneWidget);
+
+    await tester.pumpWidget(
+      _wrap(ToolResultBubble(message: _msg(content: 'updated output'))),
+    );
+    expect(find.text('updated output'), findsOneWidget);
+    expect(find.text('initial output'), findsNothing);
+
+    await tester.pumpWidget(
+      _wrap(
+        const ToolResultBubble(
+          message: ToolResultMessage(
+            toolUseId: 'different-tool',
+            toolName: 'Read',
+            content: 'different output',
+          ),
+        ),
+      ),
+    );
+    expect(find.text('different output'), findsNothing);
+    expect(find.byIcon(Icons.chevron_right), findsOneWidget);
+  });
+
   group('ToolResultBubble - collapsed state', () {
     testWidgets('collapsed shows no background container', (tester) async {
       await tester.pumpWidget(_wrap(ToolResultBubble(message: _msg())));

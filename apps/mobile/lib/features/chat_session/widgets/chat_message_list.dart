@@ -1538,6 +1538,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
     required int entryIndex,
     required Widget child,
   }) => ReadingPositionItem(
+    key: _TimelineItemKey(key),
     child: AutoScrollTag(
       key: ValueKey(key),
       controller: widget.scrollController,
@@ -1877,6 +1878,24 @@ class _ChatMessageListState extends State<ChatMessageList> {
     };
 
     final paging = chatCubit.localHistoryPaging.value;
+    // Sliver children must keep their identity when a new tail shifts every
+    // reverse-list index. A key inside AutoScrollTag alone cannot preserve
+    // nested disclosure and tool-result state across that reindexing.
+    final timelineIndices = <String, int>{};
+    for (var index = 0; index < allEntries.length; index++) {
+      final key = _timelineItemKey(
+        allEntries[index],
+        index,
+        processLayout,
+        hasStreaming: hasStreaming,
+      );
+      if (key != null) {
+        timelineIndices[key] =
+            messageCount - 1 - index + (historyBrowsing ? 1 : 0);
+      }
+    }
+    final streamingItemKey = 'streaming:${widget.sessionId}';
+    if (hasStreaming) timelineIndices[streamingItemKey] = 0;
     widget.diagnosticController?._attach(
       _ChatMessageListDiagnosticSource(
         owner: this,
@@ -1924,6 +1943,8 @@ class _ChatMessageListState extends State<ChatMessageList> {
       child: ListView.builder(
         controller: widget.scrollController,
         reverse: true,
+        findChildIndexCallback: (key) =>
+            key is _TimelineItemKey ? timelineIndices[key.value] : null,
         physics: MaintainReadingPositionPhysics(
           shouldMaintain: () {
             final controller = widget.scrollController;
@@ -1985,6 +2006,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
                 'session:${widget.sessionId}';
             final progressKey = _currentProgressKey(turnKey);
             return ReadingPositionItem(
+              key: _TimelineItemKey(streamingItemKey),
               child: _anchoredDisclosure(
                 'current:$progressKey',
                 BlocSelector<StreamingStateCubit, StreamingState, bool>(
@@ -2314,9 +2336,47 @@ class _ChatMessageListState extends State<ChatMessageList> {
     });
   }
 
+  String? _timelineItemKey(
+    ChatEntry entry,
+    int index,
+    ChatProcessLayout layout, {
+    required bool hasStreaming,
+  }) {
+    final turn = layout.turnForEntry(index);
+    if (turn?.isPlanUpdateEntry(index) == true) {
+      return turn!.showsPlanUpdateAt(index) &&
+              turn.latestPlanUpdateInput != null
+          ? 'plan_update:${turn.key}'
+          : null;
+    }
+    if (turn?.isIntermediateEntry(index) == true) {
+      return turn!.showsIntermediateSummaryAt(index)
+          ? 'intermediate:${turn.key}'
+          : null;
+    }
+    final current = turn?.currentSegment;
+    if (!hasStreaming && current?.containsEntry(index) == true) {
+      return current!.showsSummaryAt(index)
+          ? 'current:${_currentProgressKey(turn!.key)}'
+          : null;
+    }
+    final segment = layout.segmentForEntry(index);
+    if (segment != null) {
+      if (!segment.showsSummaryAt(index)) return null;
+      return segment.assistantEntryIndex != null
+          ? _entryKey(entry)
+          : 'process:${segment.key}';
+    }
+    return _entryKey(entry);
+  }
+
   String _entryKey(ChatEntry entry) {
     return chatMessageEntryStableKey(entry);
   }
+}
+
+class _TimelineItemKey extends ValueKey<String> {
+  const _TimelineItemKey(super.value);
 }
 
 class _ChatListDerivedData {

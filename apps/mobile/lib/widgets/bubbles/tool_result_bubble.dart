@@ -79,10 +79,14 @@ class ToolResultBubbleState extends State<ToolResultBubble> {
       oldWidget.collapseNotifier?.removeListener(_onCollapseSignal);
       widget.collapseNotifier?.addListener(_onCollapseSignal);
     }
-    if (oldWidget.message.toolUseId != widget.message.toolUseId ||
-        oldWidget.message.content != widget.message.content ||
-        oldWidget.message.toolName != widget.message.toolName) {
+    final identityChanged =
+        oldWidget.message.toolUseId != widget.message.toolUseId ||
+        oldWidget.message.toolName != widget.message.toolName;
+    if (identityChanged) {
       _expansion = ToolResultExpansion.collapsed;
+    }
+    if (identityChanged ||
+        oldWidget.message.content != widget.message.content) {
       _summaryContent = null;
       _summaryCache = null;
       _generatedImageItemCache.clear();
