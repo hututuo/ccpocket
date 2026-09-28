@@ -2924,8 +2924,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
           if (message.errorEventId != null)
             'errorEventId': message.errorEventId,
           if (message.operationId != null) 'operationId': message.operationId,
-          if (message.errorSource != null)
-            'errorSource': message.errorSource,
+          if (message.errorSource != null) 'errorSource': message.errorSource,
           if (message.errorPhase != null) 'errorPhase': message.errorPhase,
           if (message.permissionChangeId != null)
             'permissionChangeId': message.permissionChangeId,
@@ -7290,7 +7289,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       cursor += 1;
       if (entry is! UserChatEntry) continue;
       final turnId = entry.historyTurnId?.trim();
-      final moved = turnId?.isNotEmpty == true ? movedByTurn.remove(turnId) : null;
+      final moved = turnId?.isNotEmpty == true
+          ? movedByTurn.remove(turnId)
+          : null;
       if (moved == null || moved.isEmpty) continue;
 
       final interval = <ChatEntry>[];

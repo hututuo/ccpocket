@@ -96,83 +96,122 @@ void main() {
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
-  testWidgets('same-turn guidance remains visible between independently folded updates', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(430, 1600));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
-    final bridge = _Bridge();
-    final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
-    final cubit = ChatSessionCubit(
-      sessionId: 'steering-display', bridge: bridge, streamingCubit: streaming,
-      provider: Provider.codex,
-    );
-    final scrollController = ReadingPositionAutoScrollController();
-    addTearDown(bridge.dispose);
-    addTearDown(streaming.close);
-    addTearDown(scrollController.dispose);
-    addTearDown(() async { if (!cubit.isClosed) await cubit.close(); });
-    await tester.pumpWidget(
-      RepositoryProvider<BridgeService>.value(
-        value: bridge,
-        child: MultiBlocProvider(
-          providers: [
-            BlocProvider<ChatSessionCubit>.value(value: cubit),
-            BlocProvider<StreamingStateCubit>.value(value: streaming),
+  testWidgets(
+    'same-turn guidance remains visible between independently folded updates',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 1600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final bridge = _Bridge();
+      final streaming = StreamingStateCubit(coalesceInterval: Duration.zero);
+      final cubit = ChatSessionCubit(
+        sessionId: 'steering-display',
+        bridge: bridge,
+        streamingCubit: streaming,
+        provider: Provider.codex,
+      );
+      final scrollController = ReadingPositionAutoScrollController();
+      addTearDown(bridge.dispose);
+      addTearDown(streaming.close);
+      addTearDown(scrollController.dispose);
+      addTearDown(() async {
+        if (!cubit.isClosed) await cubit.close();
+      });
+      await tester.pumpWidget(
+        RepositoryProvider<BridgeService>.value(
+          value: bridge,
+          child: MultiBlocProvider(
+            providers: [
+              BlocProvider<ChatSessionCubit>.value(value: cubit),
+              BlocProvider<StreamingStateCubit>.value(value: streaming),
+            ],
+            child: MaterialApp(
+              localizationsDelegates: AppLocalizations.localizationsDelegates,
+              supportedLocales: AppLocalizations.supportedLocales,
+              locale: const Locale('en'),
+              theme: AppTheme.darkTheme,
+              home: Scaffold(
+                body: ChatMessageList(
+                  sessionId: 'steering-display',
+                  scrollController: scrollController,
+                  httpBaseUrl: null,
+                  onRetryMessage: null,
+                  collapseToolResults: null,
+                  isCodex: true,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      bridge.emit(
+        HistoryMessage(
+          messages: [
+            for (var index = 0; index < 3; index++) ...[
+              UserInputMessage(
+                text: 'Visible guidance $index',
+                providerItemId: 'guidance-$index',
+                historyTurnId: 'one-turn',
+              ),
+              AssistantServerMessage(
+                historyTurnId: 'one-turn',
+                message: AssistantMessage(
+                  id: 'progress-$index',
+                  role: 'assistant',
+                  model: 'codex',
+                  content: [TextContent(text: 'Progress $index')],
+                ),
+              ),
+            ],
           ],
-          child: MaterialApp(
-            localizationsDelegates: AppLocalizations.localizationsDelegates,
-            supportedLocales: AppLocalizations.supportedLocales,
-            locale: const Locale('en'), theme: AppTheme.darkTheme,
-            home: Scaffold(body: ChatMessageList(
-              sessionId: 'steering-display', scrollController: scrollController,
-              httpBaseUrl: null, onRetryMessage: null, collapseToolResults: null, isCodex: true,
-            )),
-          ),
         ),
-      ),
-    );
-    bridge.emit(HistoryMessage(messages: [
-      for (var index = 0; index < 3; index++) ...[
-        UserInputMessage(
-          text: 'Visible guidance $index', providerItemId: 'guidance-$index',
-          historyTurnId: 'one-turn',
-        ),
-        AssistantServerMessage(
-          historyTurnId: 'one-turn',
-          message: AssistantMessage(
-            id: 'progress-$index', role: 'assistant', model: 'codex',
-            content: [TextContent(text: 'Progress $index')],
-          ),
-        ),
-      ],
-    ]), 'steering-display');
-    await tester.pump();
-    await tester.pump();
-    for (var index = 0; index < 3; index++) {
-      expect(find.text('Visible guidance $index'), findsOneWidget);
-    }
-    expect(find.text('Progress 0'), findsNothing);
-    expect(find.text('Progress 1'), findsNothing);
-    expect(find.text('Progress 2'), findsOneWidget);
-    final disclosures = tester.widgetList<ChatIntermediateOutputsDisclosure>(
-      find.byType(ChatIntermediateOutputsDisclosure),
-    ).toList()..sort((a, b) => a.turn.intermediateSummaryEntryIndex!.compareTo(b.turn.intermediateSummaryEntryIndex!));
-    expect(disclosures, hasLength(2));
-    expect(disclosures.map((widget) => widget.turn.intermediateOutputCount), [1, 1]);
-    final secondFold = find.byKey(ValueKey('chat_intermediate_disclosure_${disclosures.last.turn.key}'));
-    expect(tester.getBottomLeft(find.text('Visible guidance 1')).dy,
-      lessThan(tester.getTopLeft(secondFold).dy));
-    expect(tester.getBottomLeft(secondFold).dy,
-      lessThan(tester.getTopLeft(find.text('Visible guidance 2')).dy));
-    await tester.tap(secondFold);
-    await tester.pump();
-    expect(find.text('Progress 1'), findsOneWidget);
-    expect(find.text('Progress 0'), findsNothing);
-    expect(find.text('Visible guidance 1'), findsOneWidget);
-    expect(find.text('Visible guidance 2'), findsOneWidget);
-    await tester.pumpWidget(const SizedBox.shrink());
-    await cubit.close();
-    await tester.pump();
-  });
+        'steering-display',
+      );
+      await tester.pump();
+      await tester.pump();
+      for (var index = 0; index < 3; index++) {
+        expect(find.text('Visible guidance $index'), findsOneWidget);
+      }
+      expect(find.text('Progress 0'), findsNothing);
+      expect(find.text('Progress 1'), findsNothing);
+      expect(find.text('Progress 2'), findsOneWidget);
+      final disclosures =
+          tester
+              .widgetList<ChatIntermediateOutputsDisclosure>(
+                find.byType(ChatIntermediateOutputsDisclosure),
+              )
+              .toList()
+            ..sort(
+              (a, b) => a.turn.intermediateSummaryEntryIndex!.compareTo(
+                b.turn.intermediateSummaryEntryIndex!,
+              ),
+            );
+      expect(disclosures, hasLength(2));
+      expect(disclosures.map((widget) => widget.turn.intermediateOutputCount), [
+        1,
+        1,
+      ]);
+      final secondFold = find.byKey(
+        ValueKey('chat_intermediate_disclosure_${disclosures.last.turn.key}'),
+      );
+      expect(
+        tester.getBottomLeft(find.text('Visible guidance 1')).dy,
+        lessThan(tester.getTopLeft(secondFold).dy),
+      );
+      expect(
+        tester.getBottomLeft(secondFold).dy,
+        lessThan(tester.getTopLeft(find.text('Visible guidance 2')).dy),
+      );
+      await tester.tap(secondFold);
+      await tester.pump();
+      expect(find.text('Progress 1'), findsOneWidget);
+      expect(find.text('Progress 0'), findsNothing);
+      expect(find.text('Visible guidance 1'), findsOneWidget);
+      expect(find.text('Visible guidance 2'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await cubit.close();
+      await tester.pump();
+    },
+  );
 
   testWidgets(
     'intermediate disclosure reveals updates while each thought and tool interval stays folded',

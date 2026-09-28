@@ -2124,7 +2124,9 @@ class _ChatMessageListState extends State<ChatMessageList> {
 
           final entry = allEntries[entryIndex];
           final processSegment = processLayout.segmentForEntry(entryIndex);
-          final intermediateTurn = processLayout.displayTurnForEntry(entryIndex);
+          final intermediateTurn = processLayout.displayTurnForEntry(
+            entryIndex,
+          );
           if (intermediateTurn?.isPlanUpdateEntry(entryIndex) == true) {
             if (!intermediateTurn!.showsPlanUpdateAt(entryIndex)) {
               return const SizedBox.shrink();

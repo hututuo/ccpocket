@@ -514,18 +514,21 @@ void main() {
     test(
       'scoped error event identity prevents live and replay duplicates',
       () async {
-      final cubit = createCubit('error-event-thread', provider: Provider.codex);
-      addTearDown(cubit.close);
+        final cubit = createCubit(
+          'error-event-thread',
+          provider: Provider.codex,
+        );
+        addTearDown(cubit.close);
 
-      const error = ErrorMessage(
-        message: 'The provider event could not be processed.',
-        errorCode: 'bridge_session_message_processing_failed',
-        sessionId: 'error-event-thread',
-        errorEventId: 'error-event-1',
-      );
-      mockBridge.emitMessage(error, sessionId: 'error-event-thread');
-      mockBridge.emitMessage(error, sessionId: 'error-event-thread');
-      await pumpEventQueue();
+        const error = ErrorMessage(
+          message: 'The provider event could not be processed.',
+          errorCode: 'bridge_session_message_processing_failed',
+          sessionId: 'error-event-thread',
+          errorEventId: 'error-event-1',
+        );
+        mockBridge.emitMessage(error, sessionId: 'error-event-thread');
+        mockBridge.emitMessage(error, sessionId: 'error-event-thread');
+        await pumpEventQueue();
 
         expect(
           cubit.state.entries.whereType<ServerChatEntry>().where(
@@ -859,36 +862,63 @@ void main() {
     for (final v2 in [false, true]) {
       test('same-turn steering refresh is idempotent (v2=$v2)', () {
         if (v2) {
-          mockBridge.advertisedBridgeCapabilities = const {conversationSyncV2Capability};
+          mockBridge.advertisedBridgeCapabilities = const {
+            conversationSyncV2Capability,
+          };
         }
         final history = <ServerMessage>[
           for (var index = 0; index < 4; index++) ...[
             UserInputMessage(
-              text: 'guidance $index', clientMessageId: 'client-$index',
-              providerItemId: 'user-$index', historyTurnId: 'one-provider-turn',
+              text: 'guidance $index',
+              clientMessageId: 'client-$index',
+              providerItemId: 'user-$index',
+              historyTurnId: 'one-provider-turn',
             ),
             AssistantServerMessage(
-              historyTurnId: 'one-provider-turn', messageUuid: 'assistant-$index',
+              historyTurnId: 'one-provider-turn',
+              messageUuid: 'assistant-$index',
               message: AssistantMessage(
-                id: 'assistant-$index', role: 'assistant', model: 'gpt-test',
+                id: 'assistant-$index',
+                role: 'assistant',
+                model: 'gpt-test',
                 content: [TextContent(text: 'progress $index')],
               ),
             ),
           ],
         ];
         final cubit = ChatSessionCubit(
-          sessionId: 'same-turn-refresh', provider: Provider.codex,
-          bridge: mockBridge, streamingCubit: streamingCubit, detachedPreview: true,
+          sessionId: 'same-turn-refresh',
+          provider: Provider.codex,
+          bridge: mockBridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
           initialHistoryMessages: history,
         );
         addTearDown(cubit.close);
         for (var refresh = 0; refresh < 20; refresh++) {
-          expect(cubit.state.entries, hasLength(history.length), reason: 'refresh $refresh');
-          expect(cubit.state.entries.map((entry) => switch (entry) {
-            UserChatEntry(:final providerItemId) => providerItemId,
-            ServerChatEntry(message: AssistantServerMessage(:final message)) => message.id,
-            _ => 'unexpected',
-          }), [for (var index = 0; index < 4; index++) ...['user-$index', 'assistant-$index']]);
+          expect(
+            cubit.state.entries,
+            hasLength(history.length),
+            reason: 'refresh $refresh',
+          );
+          expect(
+            cubit.state.entries.map(
+              (entry) => switch (entry) {
+                UserChatEntry(:final providerItemId) => providerItemId,
+                ServerChatEntry(
+                  message: AssistantServerMessage(:final message),
+                ) =>
+                  message.id,
+                _ => 'unexpected',
+              },
+            ),
+            [
+              for (var index = 0; index < 4; index++) ...[
+                'user-$index',
+                'assistant-$index',
+              ],
+            ],
+          );
           if (v2 && refresh.isOdd) {
             // Even a rejected cache refresh must not multiply the preserved page.
             cubit.updateDetachedPreviewHistory([...history, history[1]]);

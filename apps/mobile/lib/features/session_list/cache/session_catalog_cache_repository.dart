@@ -1977,7 +1977,11 @@ class SessionCatalogCacheRepository {
               whereArgs: keyArgs,
             );
             await _deleteHotHistoryUserAliases(
-              transaction, partitionId, provider, providerSessionId, stagedRows,
+              transaction,
+              partitionId,
+              provider,
+              providerSessionId,
+              stagedRows,
             );
             await transaction.rawDelete(
               '''
@@ -2051,10 +2055,10 @@ class SessionCatalogCacheRepository {
           final existingIds = <String>[];
           final seenExistingIds = <String>{};
           final existingPrefixIds = <String>{};
-          final historyAliases = _historyUserEntryAliases(
-            existingEntries,
-            [...existingEntries, ...stagedEntries],
-          );
+          final historyAliases = _historyUserEntryAliases(existingEntries, [
+            ...existingEntries,
+            ...stagedEntries,
+          ]);
           final storedIds = existingEntries
               .map((row) => row['entry_id']! as String)
               .toSet();
@@ -2848,7 +2852,9 @@ class SessionCatalogCacheRepository {
             whereArgs: [partitionId, provider, providerSessionId],
           );
           existingIds.addAll(rows.map((row) => row['entry_id']! as String));
-          existingIds.addAll(_historyUserEntryAliases(candidateRows, rows).keys);
+          existingIds.addAll(
+            _historyUserEntryAliases(candidateRows, rows).keys,
+          );
         }
         final additions = candidates
             .where((entry) => !existingIds.contains(entry.entryId))
@@ -3440,16 +3446,13 @@ class SessionCatalogCacheRepository {
           for (final row in existingRows)
             row['entry_id']! as String: row['entry_index']! as int,
         };
-        final historyAliases = _historyUserEntryAliases(
-          [
-            for (final entry in entries)
-              {
-                'entry_id': entry.entryId,
-                'message_json': jsonEncode(entry.rawMessage),
-              },
-          ],
-          existingRows,
-        );
+        final historyAliases = _historyUserEntryAliases([
+          for (final entry in entries)
+            {
+              'entry_id': entry.entryId,
+              'message_json': jsonEncode(entry.rawMessage),
+            },
+        ], existingRows);
         for (final alias in historyAliases.entries) {
           indexById[alias.key] = indexById[alias.value]!;
         }
@@ -3575,7 +3578,10 @@ class SessionCatalogCacheRepository {
           return false;
         }
         await _deleteHotHistoryUserAliases(
-          transaction, partitionId, provider, providerSessionId,
+          transaction,
+          partitionId,
+          provider,
+          providerSessionId,
           [
             for (final entry in upserts)
               {
@@ -5442,7 +5448,8 @@ class _ConversationCacheBatchSuperseded implements Exception {
   const _ConversationCacheBatchSuperseded();
 }
 
-const _userIdentityMessageColumn = "CASE WHEN entry_id LIKE 'user:%' "
+const _userIdentityMessageColumn =
+    "CASE WHEN entry_id LIKE 'user:%' "
     "OR entry_id LIKE 'turn:%:user-client:%' "
     "OR entry_id LIKE 'turn:%:user-provider:%' "
     'THEN message_json ELSE NULL END AS message_json';
@@ -5481,7 +5488,12 @@ Map<String, String> _historyUserEntryAliases(
 }
 
 class _HotUserIdentity {
-  const _HotUserIdentity(this.entryId, this.turnId, this.providerId, this.clientId);
+  const _HotUserIdentity(
+    this.entryId,
+    this.turnId,
+    this.providerId,
+    this.clientId,
+  );
 
   final String entryId;
   final String turnId;
@@ -5494,20 +5506,21 @@ class _HotUserIdentity {
       if (entryId is! String ||
           !(entryId.startsWith('user:') ||
               entryId.contains(':user-client:') ||
-              entryId.contains(':user-provider:'))) return null;
+              entryId.contains(':user-provider:')))
+        return null;
       final raw = jsonDecode(row['message_json']! as String);
       if (raw is! Map || raw['type'] != 'user_input') return null;
       String? id(String key) {
         final value = raw[key];
         return value is String && value.trim().isNotEmpty ? value.trim() : null;
       }
+
       final turnId = id('historyTurnId');
       final providerId = id('providerItemId');
       final clientId = id('clientMessageId');
-      if (turnId == null || (providerId == null && clientId == null)) return null;
-      return _HotUserIdentity(
-        entryId, turnId, providerId, clientId,
-      );
+      if (turnId == null || (providerId == null && clientId == null))
+        return null;
+      return _HotUserIdentity(entryId, turnId, providerId, clientId);
     } catch (_) {
       return null;
     }
@@ -5517,7 +5530,8 @@ class _HotUserIdentity {
 
   bool get isHistoryAlias =>
       (clientId != null && entryId == 'turn:$turnId:user-client:$clientId') ||
-      (providerId != null && entryId == 'turn:$turnId:user-provider:$providerId');
+      (providerId != null &&
+          entryId == 'turn:$turnId:user-provider:$providerId');
 
   Iterable<String> get keys sync* {
     if (providerId != null) yield jsonEncode([turnId, 'provider', providerId]);
@@ -5526,8 +5540,12 @@ class _HotUserIdentity {
 
   bool agreesWith(_HotUserIdentity other) =>
       turnId == other.turnId &&
-      (providerId == null || other.providerId == null || providerId == other.providerId) &&
-      (clientId == null || other.clientId == null || clientId == other.clientId);
+      (providerId == null ||
+          other.providerId == null ||
+          providerId == other.providerId) &&
+      (clientId == null ||
+          other.clientId == null ||
+          clientId == other.clientId);
 }
 
 Future<void> _deleteHotHistoryUserAliases(
@@ -5543,9 +5561,10 @@ Future<void> _deleteHotHistoryUserAliases(
     where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
     whereArgs: [partitionId, provider, providerSessionId],
   );
-  final aliases = _historyUserEntryAliases(
-    existingRows, [...existingRows, ...incomingRows],
-  );
+  final aliases = _historyUserEntryAliases(existingRows, [
+    ...existingRows,
+    ...incomingRows,
+  ]);
   for (final entryId in aliases.keys) {
     await transaction.delete(
       SessionCatalogCacheDatabase.hotEntriesTable,

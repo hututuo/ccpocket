@@ -618,7 +618,10 @@ ChatProcessLayout buildChatProcessLayout(
       activeTool: activeTool,
     );
     for (final group in _intermediateDisplayGroups(
-      turn, entries, turnContentStart, turnEnd,
+      turn,
+      entries,
+      turnContentStart,
+      turnEnd,
     )) {
       for (final index in group.intermediateEntryIndices) {
         intermediateGroupsByIndex[index] = group;
@@ -693,14 +696,20 @@ List<ChatProcessTurnLayout> _intermediateDisplayGroups(
       ChatProcessTurnLayout(
         key: group.key,
         segments: turn.segments,
-        intermediateSegments: List.unmodifiable(segmentsByGroup[group.key] ?? []),
-        intermediateDetailCount: (segmentsByGroup[group.key] ?? [])
-            .fold<int>(0, (count, segment) => count + segment.detailCount),
+        intermediateSegments: List.unmodifiable(
+          segmentsByGroup[group.key] ?? [],
+        ),
+        intermediateDetailCount: (segmentsByGroup[group.key] ?? []).fold<int>(
+          0,
+          (count, segment) => count + segment.detailCount,
+        ),
         intermediateEntryIndices: Set.unmodifiable(group.value),
         intermediateAssistantEntryIndices: Set.unmodifiable(
           turn.intermediateAssistantEntryIndices.intersection(group.value),
         ),
-        intermediateSummaryEntryIndex: group.value.reduce((a, b) => a < b ? a : b),
+        intermediateSummaryEntryIndex: group.value.reduce(
+          (a, b) => a < b ? a : b,
+        ),
         finalAssistantEntryIndex: turn.finalAssistantEntryIndex,
         currentAssistantEntryIndex: turn.currentAssistantEntryIndex,
         currentSegment: turn.currentSegment,

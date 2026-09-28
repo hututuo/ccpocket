@@ -51,11 +51,14 @@ void main() {
         );
         const thread = 'thread-user-alias';
         final history = _identityUserEntry(
-          'turn:turn-a:user-client:client-a', 0,
+          'turn:turn-a:user-client:client-a',
+          0,
         );
         final wire = _identityUserEntry('user:provider-a', 2);
         await repository.replaceConversationWindow(
-          target: target, provider: 'codex', providerSessionId: thread,
+          target: target,
+          provider: 'codex',
+          providerSessionId: thread,
           revision: 'canonical-1',
           entries: [
             history,
@@ -63,180 +66,306 @@ void main() {
             if (alreadyDuplicated) wire,
             _entry('tail', 3, 'idle'),
           ],
-          hasEarlier: true, sourceEntryCount: 4,
+          hasEarlier: true,
+          sourceEntryCount: 4,
         );
         final commit = await repository.stageConversationTimelinePage(
-          target: target, subscriptionId: 'alias-subscription',
-          provider: 'codex', providerSessionId: thread,
-          revision: 'partial-2', baseRevision: 'canonical-1', mode: 'patch',
-          pageIndex: 0, pageCount: 1,
+          target: target,
+          subscriptionId: 'alias-subscription',
+          provider: 'codex',
+          providerSessionId: thread,
+          revision: 'partial-2',
+          baseRevision: 'canonical-1',
+          mode: 'patch',
+          pageIndex: 0,
+          pageCount: 1,
           entries: [
             if (!alreadyDuplicated) wire,
             _entry('tail', 3, 'idle'),
             _entry('live', 4, 'working'),
           ],
-          deletes: const [], hasEarlier: true, windowComplete: false,
+          deletes: const [],
+          hasEarlier: true,
+          windowComplete: false,
           sourceEntryCount: 5,
         );
         expect(commit.windowCommitted, isTrue);
         final cached = await repository.loadConversationWindow(
-          target: target, provider: 'codex', providerSessionId: thread,
+          target: target,
+          provider: 'codex',
+          providerSessionId: thread,
         );
         expect(cached?.revision, 'canonical-1');
         expect(cached?.entries.map((entry) => entry.entryId), [
           if (!alreadyDuplicated) 'user:provider-a',
           'before-user',
           if (alreadyDuplicated) 'user:provider-a',
-          'tail', 'live',
+          'tail',
+          'live',
         ]);
-        expect(cached?.entries.where((entry) =>
-          entry.rawMessage['type'] == 'user_input'), hasLength(1));
+        expect(
+          cached?.entries.where(
+            (entry) => entry.rawMessage['type'] == 'user_input',
+          ),
+          hasLength(1),
+        );
         final db = await database.database;
-        expect(await db.query(SessionCatalogCacheDatabase.hotEntriesTable),
-          hasLength(4));
+        expect(
+          await db.query(SessionCatalogCacheDatabase.hotEntriesTable),
+          hasLength(4),
+        );
       },
     );
   }
 
-  test('history overlap keeps wire identity and distinct steering messages', () async {
-    final target = SessionCatalogCacheTarget.fromBridge(
-      bridgeInstanceId: 'bridge-history-overlap',
-    );
-    final wire = _identityUserEntry('user:provider-a', 0);
-    await repository.replaceConversationWindow(
-      target: target, provider: 'codex', providerSessionId: 'thread',
-      revision: 'revision', entries: [wire], hasEarlier: true,
-      turnsNextCursor: 'older', sourceEntryCount: 1,
-    );
-    final cached = await repository.prependConversationTurnsPage(
-      target: target, provider: 'codex', providerSessionId: 'thread',
-      expectedRevision: 'revision', expectedCursor: 'older', nextCursor: null,
-      rawMessages: [
-        wire.rawMessage,
-        _identityUserEntry('unused', 0, providerId: 'provider-b',
-          clientId: 'client-b').rawMessage,
-        _identityUserEntry('unused', 0, turnId: 'turn-b').rawMessage,
-      ],
-    );
-    // Same text and page-local UUID are deliberately shared by all three.
-    expect(cached?.entries.map((entry) => entry.entryId), [
-      'turn:turn-a:user-client:client-b',
-      'turn:turn-b:user-client:client-a',
-      'user:provider-a',
-    ]);
-  });
+  test(
+    'history overlap keeps wire identity and distinct steering messages',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-history-overlap',
+      );
+      final wire = _identityUserEntry('user:provider-a', 0);
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread',
+        revision: 'revision',
+        entries: [wire],
+        hasEarlier: true,
+        turnsNextCursor: 'older',
+        sourceEntryCount: 1,
+      );
+      final cached = await repository.prependConversationTurnsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread',
+        expectedRevision: 'revision',
+        expectedCursor: 'older',
+        nextCursor: null,
+        rawMessages: [
+          wire.rawMessage,
+          _identityUserEntry(
+            'unused',
+            0,
+            providerId: 'provider-b',
+            clientId: 'client-b',
+          ).rawMessage,
+          _identityUserEntry('unused', 0, turnId: 'turn-b').rawMessage,
+        ],
+      );
+      // Same text and page-local UUID are deliberately shared by all three.
+      expect(cached?.entries.map((entry) => entry.entryId), [
+        'turn:turn-a:user-client:client-b',
+        'turn:turn-b:user-client:client-a',
+        'user:provider-a',
+      ]);
+    },
+  );
 
-  test('latest-turn summary does not append aliases of existing wire users', () async {
-    final target = SessionCatalogCacheTarget.fromBridge(
-      bridgeInstanceId: 'bridge-summary-alias',
-    );
-    final wire = _identityUserEntry('user:provider-a', 0);
-    await repository.replaceConversationWindow(
-      target: target, provider: 'codex', providerSessionId: 'thread',
-      revision: 'revision', entries: [wire, _entry('tail', 1, 'working')],
-      hasEarlier: true, sourceEntryCount: 3, latestTurnComplete: false,
-      latestTurnGap: const ConversationSyncV2LatestTurnGap(
-        repair: 'turns_page', missingEntryCount: 1, payloadOmitted: false,
-      ),
-    );
-    final cached = await repository.replaceConversationLatestTurnsRepairPage(
-      target: target, provider: 'codex', providerSessionId: 'thread',
-      expectedRevision: 'revision', rawMessages: [wire.rawMessage],
-      turnsNextCursor: null,
-    );
-    expect(cached?.entries.map((entry) => entry.entryId), ['user:provider-a', 'tail']);
-    expect(cached?.latestTurnComplete, isFalse);
-  });
+  test(
+    'latest-turn summary does not append aliases of existing wire users',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-summary-alias',
+      );
+      final wire = _identityUserEntry('user:provider-a', 0);
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread',
+        revision: 'revision',
+        entries: [wire, _entry('tail', 1, 'working')],
+        hasEarlier: true,
+        sourceEntryCount: 3,
+        latestTurnComplete: false,
+        latestTurnGap: const ConversationSyncV2LatestTurnGap(
+          repair: 'turns_page',
+          missingEntryCount: 1,
+          payloadOmitted: false,
+        ),
+      );
+      final cached = await repository.replaceConversationLatestTurnsRepairPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread',
+        expectedRevision: 'revision',
+        rawMessages: [wire.rawMessage],
+        turnsNextCursor: null,
+      );
+      expect(cached?.entries.map((entry) => entry.entryId), [
+        'user:provider-a',
+        'tail',
+      ]);
+      expect(cached?.latestTurnComplete, isFalse);
+    },
+  );
 
-  test('completed item repair retains provider identity for subsequent wire updates', () async {
-    final target = SessionCatalogCacheTarget.fromBridge(
-      bridgeInstanceId: 'bridge-item-alias',
-    );
-    final wire = _identityUserEntry('user:provider-a', 0);
-    await repository.replaceConversationWindow(
-      target: target, provider: 'codex', providerSessionId: 'thread',
-      revision: 'revision', entries: [wire], hasEarlier: false,
-      sourceEntryCount: 1, windowComplete: false, latestTurnComplete: false,
-      latestTurnGap: const ConversationSyncV2LatestTurnGap(
-        turnId: 'turn-a', repair: 'items_page',
-        missingEntryCount: 1, payloadOmitted: true,
-      ),
-    );
-    expect(await repository.prepareConversationLatestTurnItemsRepair(
-      target: target, provider: 'codex', providerSessionId: 'thread',
-      expectedRevision: 'revision', expectedTurnId: 'turn-a', expectedCursor: null,
-    ), isTrue);
-    final repaired = await repository.mergeConversationLatestTurnItemsPage(
-      target: target, provider: 'codex', providerSessionId: 'thread',
-      expectedRevision: 'revision', expectedTurnId: 'turn-a',
-      expectedCursor: null, nextCursor: null, rawMessages: [wire.rawMessage],
-    );
-    expect(repaired?.entries.single.entryId, 'user:provider-a');
-    expect(repaired?.latestTurnComplete, isTrue);
-    final commit = await repository.stageConversationTimelinePage(
-      target: target, subscriptionId: 'subscription', provider: 'codex',
-      providerSessionId: 'thread', revision: 'next', baseRevision: 'revision',
-      mode: 'patch', pageIndex: 0, pageCount: 1, entries: [wire],
-      deletes: const [], hasEarlier: false, windowComplete: false, sourceEntryCount: 1,
-    );
-    expect(commit.windowCommitted, isTrue);
-    final cached = await repository.loadConversationWindow(
-      target: target, provider: 'codex', providerSessionId: 'thread',
-    );
-    expect(cached?.entries.single.entryId, 'user:provider-a');
-  });
+  test(
+    'completed item repair retains provider identity for subsequent wire updates',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-item-alias',
+      );
+      final wire = _identityUserEntry('user:provider-a', 0);
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread',
+        revision: 'revision',
+        entries: [wire],
+        hasEarlier: false,
+        sourceEntryCount: 1,
+        windowComplete: false,
+        latestTurnComplete: false,
+        latestTurnGap: const ConversationSyncV2LatestTurnGap(
+          turnId: 'turn-a',
+          repair: 'items_page',
+          missingEntryCount: 1,
+          payloadOmitted: true,
+        ),
+      );
+      expect(
+        await repository.prepareConversationLatestTurnItemsRepair(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread',
+          expectedRevision: 'revision',
+          expectedTurnId: 'turn-a',
+          expectedCursor: null,
+        ),
+        isTrue,
+      );
+      final repaired = await repository.mergeConversationLatestTurnItemsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread',
+        expectedRevision: 'revision',
+        expectedTurnId: 'turn-a',
+        expectedCursor: null,
+        nextCursor: null,
+        rawMessages: [wire.rawMessage],
+      );
+      expect(repaired?.entries.single.entryId, 'user:provider-a');
+      expect(repaired?.latestTurnComplete, isTrue);
+      final commit = await repository.stageConversationTimelinePage(
+        target: target,
+        subscriptionId: 'subscription',
+        provider: 'codex',
+        providerSessionId: 'thread',
+        revision: 'next',
+        baseRevision: 'revision',
+        mode: 'patch',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [wire],
+        deletes: const [],
+        hasEarlier: false,
+        windowComplete: false,
+        sourceEntryCount: 1,
+      );
+      expect(commit.windowCommitted, isTrue);
+      final cached = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread',
+      );
+      expect(cached?.entries.single.entryId, 'user:provider-a');
+    },
+  );
 
   for (final legacy in [false, true]) {
-    test('authoritative deletion also removes the old history alias (legacy=$legacy)', () async {
-      final target = SessionCatalogCacheTarget.fromBridge(
-        bridgeInstanceId: 'bridge-delete-alias',
-      );
-      await repository.replaceConversationWindow(
-        target: target, provider: 'codex', providerSessionId: 'thread',
-        revision: 'revision', entries: [
-          _identityUserEntry('turn:turn-a:user-client:client-a', 0),
-          _identityUserEntry('user:provider-a', 1),
-          _entry('tail', 2, 'idle'),
-        ], hasEarlier: false, sourceEntryCount: 3,
-      );
-      if (legacy) {
-        expect(await repository.applyConversationPatch(
-          target: target, provider: 'codex', providerSessionId: 'thread',
-          baseRevision: 'revision', revision: 'next', upserts: const [],
-          deletes: const ['user:provider-a'], hasEarlier: false, sourceEntryCount: 1,
-        ), isTrue);
-      } else {
-        final commit = await repository.stageConversationTimelinePage(
-          target: target, subscriptionId: 'subscription', provider: 'codex',
-          providerSessionId: 'thread', baseRevision: 'revision', revision: 'next',
-          mode: 'patch', pageIndex: 0, pageCount: 1, entries: const [],
-          deletes: const ['user:provider-a'], hasEarlier: false, sourceEntryCount: 1,
+    test(
+      'authoritative deletion also removes the old history alias (legacy=$legacy)',
+      () async {
+        final target = SessionCatalogCacheTarget.fromBridge(
+          bridgeInstanceId: 'bridge-delete-alias',
         );
-        expect(commit.windowCommitted, isTrue);
-      }
-      final cached = await repository.loadConversationWindow(
-        target: target, provider: 'codex', providerSessionId: 'thread',
-      );
-      expect(cached?.entries.single.entryId, 'tail');
-    });
+        await repository.replaceConversationWindow(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread',
+          revision: 'revision',
+          entries: [
+            _identityUserEntry('turn:turn-a:user-client:client-a', 0),
+            _identityUserEntry('user:provider-a', 1),
+            _entry('tail', 2, 'idle'),
+          ],
+          hasEarlier: false,
+          sourceEntryCount: 3,
+        );
+        if (legacy) {
+          expect(
+            await repository.applyConversationPatch(
+              target: target,
+              provider: 'codex',
+              providerSessionId: 'thread',
+              baseRevision: 'revision',
+              revision: 'next',
+              upserts: const [],
+              deletes: const ['user:provider-a'],
+              hasEarlier: false,
+              sourceEntryCount: 1,
+            ),
+            isTrue,
+          );
+        } else {
+          final commit = await repository.stageConversationTimelinePage(
+            target: target,
+            subscriptionId: 'subscription',
+            provider: 'codex',
+            providerSessionId: 'thread',
+            baseRevision: 'revision',
+            revision: 'next',
+            mode: 'patch',
+            pageIndex: 0,
+            pageCount: 1,
+            entries: const [],
+            deletes: const ['user:provider-a'],
+            hasEarlier: false,
+            sourceEntryCount: 1,
+          );
+          expect(commit.windowCommitted, isTrue);
+        }
+        final cached = await repository.loadConversationWindow(
+          target: target,
+          provider: 'codex',
+          providerSessionId: 'thread',
+        );
+        expect(cached?.entries.single.entryId, 'tail');
+      },
+    );
   }
 
-  test('conflicting provider identities cannot collapse through a shared client ID', () async {
-    final target = SessionCatalogCacheTarget.fromBridge(
-      bridgeInstanceId: 'bridge-conflicting-user',
-    );
-    await repository.replaceConversationWindow(
-      target: target, provider: 'codex', providerSessionId: 'thread',
-      revision: 'revision', entries: [_identityUserEntry('user:provider-a', 0)],
-      hasEarlier: true, turnsNextCursor: 'older', sourceEntryCount: 1,
-    );
-    final cached = await repository.prependConversationTurnsPage(
-      target: target, provider: 'codex', providerSessionId: 'thread',
-      expectedRevision: 'revision', expectedCursor: 'older', nextCursor: null,
-      rawMessages: [_identityUserEntry('unused', 0, providerId: 'provider-b').rawMessage],
-    );
-    expect(cached?.entries, hasLength(2));
-  });
+  test(
+    'conflicting provider identities cannot collapse through a shared client ID',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-conflicting-user',
+      );
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread',
+        revision: 'revision',
+        entries: [_identityUserEntry('user:provider-a', 0)],
+        hasEarlier: true,
+        turnsNextCursor: 'older',
+        sourceEntryCount: 1,
+      );
+      final cached = await repository.prependConversationTurnsPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'thread',
+        expectedRevision: 'revision',
+        expectedCursor: 'older',
+        nextCursor: null,
+        rawMessages: [
+          _identityUserEntry('unused', 0, providerId: 'provider-b').rawMessage,
+        ],
+      );
+      expect(cached?.entries, hasLength(2));
+    },
+  );
 
   test('partitions one Bridge cache by its selected Codex Home', () {
     final first = SessionCatalogCacheTarget.fromBridge(
@@ -5125,15 +5254,21 @@ ConversationContentWireEntry _assistantUnknownEntry(
 );
 
 ConversationContentWireEntry _identityUserEntry(
-  String entryId, int index, {
+  String entryId,
+  int index, {
   String providerId = 'provider-a',
   String clientId = 'client-a',
   String turnId = 'turn-a',
 }) => ConversationContentWireEntry(
-  entryId: entryId, index: index, contentHash: 'hash-$entryId',
+  entryId: entryId,
+  index: index,
+  contentHash: 'hash-$entryId',
   rawMessage: {
-    'type': 'user_input', 'text': 'Continue', 'historyTurnId': turnId,
-    'providerItemId': providerId, 'clientMessageId': clientId,
+    'type': 'user_input',
+    'text': 'Continue',
+    'historyTurnId': turnId,
+    'providerItemId': providerId,
+    'clientMessageId': clientId,
     'userMessageUuid': 'codex:user-turn:2',
   },
 );
