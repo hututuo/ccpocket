@@ -3876,7 +3876,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get codexSettingsUnavailable =>
-      'Bridge 尚未确认此会话的设置写入权，因此 CC Pocket 不会发送或预览修改。';
+      '可以查看已同步的设置。Bridge 尚未确认修改权限，当前没有修改任何设置。';
 
   @override
   String get codexPermissionsOnRequest => '按需请求';

@@ -85,14 +85,6 @@ class SessionModeBar extends StatelessWidget {
                                 settingsKnown:
                                     chatCubit.codexModelSettingsKnown,
                                 onTap: () {
-                                  if (!codexSettingsEditable ||
-                                      !chatCubit.codexModelSettingsKnown) {
-                                    showCodexSettingsUnavailable(
-                                      context,
-                                      chatCubit,
-                                    );
-                                    return;
-                                  }
                                   showCodexModelMenu(
                                     context,
                                     chatCubit,
@@ -122,8 +114,11 @@ class SessionModeBar extends StatelessWidget {
                           known: chatCubit.codexPlanModeKnown,
                           activeGlow: false,
                           onTap: () {
-                            if (!codexSettingsEditable ||
-                                !chatCubit.codexPlanModeKnown) {
+                            if (!codexSettingsEditable) {
+                              showCodexSettingsReadOnly(context, chatCubit);
+                              return;
+                            }
+                            if (!chatCubit.codexPlanModeKnown) {
                               showCodexSettingsUnavailable(context, chatCubit);
                               return;
                             }
@@ -161,8 +156,11 @@ class SessionModeBar extends StatelessWidget {
                               chatCubit.state.codexPermissionStateKnown,
                           provider: chatCubit.provider,
                           onTap: () {
-                            if (!codexSettingsEditable ||
-                                !chatCubit.state.codexPermissionStateKnown) {
+                            if (!codexSettingsEditable) {
+                              showCodexSettingsReadOnly(context, chatCubit);
+                              return;
+                            }
+                            if (!chatCubit.state.codexPermissionStateKnown) {
                               showCodexSettingsUnavailable(context, chatCubit);
                               return;
                             }
@@ -470,6 +468,11 @@ void showCodexModelMenu(
   ChatSessionCubit chatCubit, {
   bool showExtendedEfforts = false,
 }) {
+  if (chatCubit.codexSettingsActionability !=
+      CodexSettingsActionability.editable) {
+    showCodexSettingsReadOnly(context, chatCubit);
+    return;
+  }
   final models = chatCubit.codexModels.isNotEmpty
       ? chatCubit.codexModels
       : defaultCodexModels;
@@ -510,6 +513,54 @@ void showCodexModelMenu(
   );
 }
 
+/// Reading synchronized facts does not require a writable runtime lease.
+/// Keep this surface free of mutation callbacks, even if authority changes
+/// while it is open. Rebuild from the Cubit when newer facts arrive.
+void showCodexSettingsReadOnly(
+  BuildContext context,
+  ChatSessionCubit chatCubit,
+) {
+  showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    builder: (_) => ValueListenableBuilder<String?>(
+      valueListenable: chatCubit.codexServiceTierRaw,
+      builder: (context, serviceTier, _) => BlocBuilder<ChatSessionCubit, ChatSessionState>(
+      bloc: chatCubit,
+      builder: (context, state) {
+        final l = AppLocalizations.of(context);
+        final model = state.codexModel?.trim();
+        final rawTier = serviceTier?.trim();
+        final hasFacts =
+            model?.isNotEmpty == true ||
+            state.codexModelReasoningEffort != null ||
+            state.codexPermissionStateKnown ||
+            chatCubit.codexPlanModeKnown ||
+            state.codexSpeed != CodexSpeed.unknown ||
+            rawTier?.isNotEmpty == true;
+        final unknown = l.codexSettingsUnknown;
+        return CodexSettingsReadOnlySheet(
+          explanation: !hasFacts
+              ? l.codexSettingsWaitingForRuntime
+              : chatCubit.codexSettingsActionability ==
+                    CodexSettingsActionability.readOnlyDesktopOwner
+              ? l.codexSettingsReadOnlyDesktop
+              : l.codexSettingsUnavailable,
+          settings: [
+            (label: l.model, value: model?.isNotEmpty == true ? model! : unknown),
+            (label: l.effort, value: state.codexModelReasoningEffort?.label ?? unknown),
+            (label: l.speed, value: rawTier?.isNotEmpty == true ? rawTier! : state.codexSpeed == CodexSpeed.unknown ? unknown : codexSpeedDisplayLabel(context, state.codexSpeed)),
+            (label: l.permission, value: state.codexPermissionStateKnown ? _codexPermissionsLabel(state.codexPermissionsMode, l) : unknown),
+            (label: l.sandbox, value: state.codexPermissionStateKnown ? (state.sandboxMode == SandboxMode.on ? l.sandboxOnLabel : l.sandboxOffLabel) : unknown),
+            (label: l.permissionPlanMode, value: chatCubit.codexPlanModeKnown ? (state.planMode ? l.planOnShort : l.planOffShort) : unknown),
+          ],
+        );
+      },
+    ),
+    ),
+  );
+}
+
 void showCodexSettingsUnavailable(
   BuildContext context,
   ChatSessionCubit chatCubit,
@@ -517,11 +568,11 @@ void showCodexSettingsUnavailable(
   final l = AppLocalizations.of(context);
   final message = switch (chatCubit.codexSettingsActionability) {
     CodexSettingsActionability.waitingForRuntime =>
-      l.codexSettingsWaitingForRuntime,
+      l.codexSettingsUnavailable,
     CodexSettingsActionability.readOnlyDesktopOwner =>
       l.codexSettingsReadOnlyDesktop,
     CodexSettingsActionability.unavailable => l.codexSettingsUnavailable,
-    CodexSettingsActionability.editable => l.codexSettingsUnknown,
+    CodexSettingsActionability.editable => l.codexSettingsWaitingForRuntime,
   };
   ScaffoldMessenger.of(context)
     ..hideCurrentSnackBar()
@@ -539,6 +590,11 @@ void showCodexPermissionsMenu(
       chatCubit,
       onBeforeRestart: onBeforeRestart,
     );
+    return;
+  }
+  if (chatCubit.codexSettingsActionability !=
+      CodexSettingsActionability.editable) {
+    showCodexSettingsReadOnly(context, chatCubit);
     return;
   }
   final currentMode = chatCubit.state.codexPermissionStateKnown

@@ -1466,7 +1466,7 @@
   "codexSettingsUnknown": "Unknown · waiting for sync",
   "codexSettingsWaitingForRuntime": "Waiting for Bridge to synchronize this conversation's runtime settings. Nothing has been changed.",
   "codexSettingsReadOnlyDesktop": "This turn is owned by Codex Desktop. Its settings are read-only here; change them in Desktop or wait for the turn to finish.",
-  "codexSettingsUnavailable": "Bridge has not confirmed settings write access for this conversation, so CC Pocket will not send or preview a change.",
+  "codexSettingsUnavailable": "You can view synchronized settings. Bridge has not confirmed permission to change them. No settings have been changed.",
   "codexPermissionsOnRequest": "On Request",
   "codexPermissionsFullAccess": "Full access",
   "codexPermissionsCustom": "Custom (config.toml)",

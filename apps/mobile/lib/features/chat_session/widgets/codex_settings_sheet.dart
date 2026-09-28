@@ -5,6 +5,45 @@ import '../../../l10n/app_localizations.dart';
 import '../../../models/messages.dart';
 import '../../../widgets/codex_effort_slider.dart';
 
+class CodexSettingsReadOnlySheet extends StatelessWidget {
+  final String explanation;
+  final List<({String label, String value})> settings;
+
+  const CodexSettingsReadOnlySheet({
+    super.key,
+    required this.explanation,
+    required this.settings,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    return SafeArea(
+      key: const ValueKey('codex_settings_read_only_sheet'),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(l.settings, style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 12),
+            Text(explanation),
+            const SizedBox(height: 8),
+            for (final setting in settings)
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                title: Text(setting.label),
+                subtitle: Text(setting.value),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class CodexSettingsSheet extends StatefulWidget {
   final List<String> models;
   final Map<String, List<ReasoningEffort>> modelEfforts;

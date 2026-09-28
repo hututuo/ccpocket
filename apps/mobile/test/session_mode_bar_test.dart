@@ -170,11 +170,12 @@ Widget _wrap(
   ChatSessionCubit cubit, {
   bool showExtendedCodexEfforts = false,
   List<Widget> trailingWidgets = const [],
+  Locale locale = const Locale('en'),
 }) {
   return MaterialApp(
     localizationsDelegates: AppLocalizations.localizationsDelegates,
     supportedLocales: AppLocalizations.supportedLocales,
-    locale: const Locale('en'),
+    locale: locale,
     theme: AppTheme.darkTheme,
     home: Scaffold(
       body: BlocProvider<ChatSessionCubit>.value(
@@ -288,7 +289,7 @@ void main() {
   });
 
   testWidgets(
-    'detached Codex settings stay unknown and explain runtime readiness',
+    'missing detached settings remain unknown in the read-only sheet',
     (tester) async {
       final detachedCubit = ChatSessionCubit(
         sessionId: 'durable-thread',
@@ -310,6 +311,10 @@ void main() {
 
       await tester.tap(find.text('Unknown · waiting for sync').first);
       await tester.pump();
+      expect(
+        find.byKey(const ValueKey('codex_settings_read_only_sheet')),
+        findsOneWidget,
+      );
 
       expect(
         find.text(
@@ -321,6 +326,125 @@ void main() {
       expect(bridge.sentMessages, isEmpty);
     },
   );
+
+  for (final locale in const [Locale('en'), Locale('zh')]) {
+    testWidgets(
+      'known private-mode settings are inspectable without write authority ($locale)',
+      (tester) async {
+        final detachedCubit = ChatSessionCubit(
+          sessionId: 'readonly-thread',
+          provider: Provider.codex,
+          bridge: bridge,
+          streamingCubit: streamingCubit,
+          detachedPreview: true,
+        );
+        addTearDown(detachedCubit.close);
+        detachedCubit.updateDetachedProviderSettings(
+          const RecentSession(
+            sessionId: 'readonly-thread',
+            provider: 'codex',
+            firstPrompt: '',
+            created: '2026-09-28T00:00:00Z',
+            modified: '2026-09-28T00:01:00Z',
+            gitBranch: 'main',
+            projectPath: '/project',
+            isSidechain: false,
+            codexModel: 'gpt-6-astra',
+            codexModelReasoningEffort: 'high',
+            codexApprovalPolicy: 'never',
+            codexSandboxMode: 'danger-full-access',
+            codexCollaborationMode: 'default',
+            codexSettingsSnapshotComplete: true,
+          ),
+          sourceFingerprint: 'bridge-a/source-a',
+        );
+        await tester.pumpWidget(_wrap(detachedCubit, locale: locale));
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(detachedCubit.codexModelSettingsKnown, isTrue);
+        expect(detachedCubit.canMutateAttachedRuntime, isFalse);
+        final l = AppLocalizations.of(
+          tester.element(find.byType(SessionModeBar)),
+        );
+        for (final chip in [
+          find.byType(CodexModelChip),
+          find.byType(PlanModeChip),
+          find.byType(ExecutionModeChip),
+        ]) {
+          await tester.ensureVisible(chip);
+          await tester.tap(chip);
+          await _pumpWhileEffortIonsRun(tester);
+          final sheet = find.byKey(
+            const ValueKey('codex_settings_read_only_sheet'),
+          );
+          expect(sheet, findsOneWidget);
+          expect(find.text(l.codexSettingsUnavailable), findsOneWidget);
+          expect(find.text(l.codexSettingsWaitingForRuntime), findsNothing);
+          expect(find.text('gpt-6-astra'), findsWidgets);
+          expect(find.byType(SnackBar), findsNothing);
+          expect(find.byType(CodexEffortSlider), findsNothing);
+          for (final tile in tester.widgetList<ListTile>(
+            find.descendant(of: sheet, matching: find.byType(ListTile)),
+          )) {
+            expect(tile.onTap, isNull);
+          }
+          Navigator.of(tester.element(sheet)).pop();
+          await _pumpWhileEffortIonsRun(tester);
+        }
+        expect(bridge.sentMessages, isEmpty);
+        expect(detachedCubit.state.codexModel, 'gpt-6-astra');
+        expect(detachedCubit.state.planMode, isFalse);
+      },
+    );
+  }
+
+  testWidgets('read-only settings update in place without inventing missing facts', (tester) async {
+    final detachedCubit = ChatSessionCubit(
+      sessionId: 'partial-thread',
+      provider: Provider.codex,
+      bridge: bridge,
+      streamingCubit: streamingCubit,
+      detachedPreview: true,
+    );
+    addTearDown(detachedCubit.close);
+    await tester.pumpWidget(_wrap(detachedCubit));
+    await tester.tap(find.byType(CodexModelChip));
+    await _pumpWhileEffortIonsRun(tester);
+    final sheet = find.byKey(const ValueKey('codex_settings_read_only_sheet'));
+    final l = AppLocalizations.of(tester.element(sheet));
+    expect(find.text(l.codexSettingsWaitingForRuntime), findsOneWidget);
+    detachedCubit.updateDetachedProviderSettings(
+      const RecentSession(
+        sessionId: 'partial-thread',
+        provider: 'codex',
+        firstPrompt: '',
+        created: '2026-09-28T00:00:00Z',
+        modified: '2026-09-28T00:01:00Z',
+        gitBranch: 'main',
+        projectPath: '/project',
+        isSidechain: false,
+        codexModel: 'future-model-not-in-catalog',
+      ),
+      sourceFingerprint: 'bridge-a/source-a',
+    );
+    await tester.pump();
+    expect(sheet, findsOneWidget);
+    expect(find.text('future-model-not-in-catalog'), findsOneWidget);
+    expect(find.text(l.codexSettingsWaitingForRuntime), findsNothing);
+    expect(find.text(l.codexSettingsUnavailable), findsOneWidget);
+    expect(detachedCubit.state.codexModelReasoningEffort, isNull);
+    expect(detachedCubit.state.codexPermissionStateKnown, isFalse);
+    expect(find.descendant(of: sheet, matching: find.text(l.codexSettingsUnknown)), findsWidgets);
+    expect(find.descendant(of: sheet, matching: find.text(l.speedCustom)), findsNothing);
+    detachedCubit.codexServiceTierRaw.value = 'future-service-tier';
+    await tester.pump();
+    expect(find.descendant(of: sheet, matching: find.text('future-service-tier')), findsOneWidget);
+    detachedCubit.codexServiceTierRaw.value = '  ';
+    await tester.pump();
+    expect(find.text('future-service-tier'), findsNothing);
+    final speedTile = tester.widget<ListTile>(find.ancestor(of: find.text(l.speed), matching: find.byType(ListTile)));
+    expect((speedTile.subtitle! as Text).data, l.codexSettingsUnknown);
+    expect(bridge.sentMessages, isEmpty);
+  });
 
   testWidgets('mode bar glow tracks history sync instead of active Plan mode', (
     tester,

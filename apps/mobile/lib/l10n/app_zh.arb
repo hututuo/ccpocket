@@ -1453,7 +1453,7 @@
   "codexSettingsUnknown": "未知 · 等待同步",
   "codexSettingsWaitingForRuntime": "正在等待 Bridge 同步此会话的运行时设置；当前没有修改任何设置。",
   "codexSettingsReadOnlyDesktop": "当前轮次由 Codex Desktop 托管，这里的设置为只读。请在 Desktop 中修改，或等待当前轮次结束。",
-  "codexSettingsUnavailable": "Bridge 尚未确认此会话的设置写入权，因此 CC Pocket 不会发送或预览修改。",
+  "codexSettingsUnavailable": "可以查看已同步的设置。Bridge 尚未确认修改权限，当前没有修改任何设置。",
   "codexPermissionsOnRequest": "按需请求",
   "codexPermissionsFullAccess": "完全访问",
   "codexPermissionsCustom": "自定义（config.toml）",

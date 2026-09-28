@@ -4057,7 +4057,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get codexSettingsUnavailable =>
-      'Bridge has not confirmed settings write access for this conversation, so CC Pocket will not send or preview a change.';
+      'You can view synchronized settings. Bridge has not confirmed permission to change them. No settings have been changed.';
 
   @override
   String get codexPermissionsOnRequest => 'On Request';

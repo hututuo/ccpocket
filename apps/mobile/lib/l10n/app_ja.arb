@@ -1621,7 +1621,7 @@
   "codexSettingsUnknown": "不明 · 同期を待機中",
   "codexSettingsWaitingForRuntime": "Bridge がこの会話のランタイム設定を同期するのを待っています。設定は変更されていません。",
   "codexSettingsReadOnlyDesktop": "このターンは Codex Desktop が所有しています。ここでは設定は読み取り専用です。Desktop で変更するか、ターンの終了を待ってください。",
-  "codexSettingsUnavailable": "Bridge がこの会話の設定書き込み権限を確認していないため、CC Pocket は変更を送信またはプレビューしません。",
+  "codexSettingsUnavailable": "同期済みの設定は確認できます。Bridge が変更権限を確認していないため、設定は変更されていません。",
   "codexPermissionsOnRequest": "必要時に確認",
   "codexPermissionsFullAccess": "フルアクセス",
   "codexPermissionsCustom": "カスタム（config.toml）",

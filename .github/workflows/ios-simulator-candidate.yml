@@ -25,6 +25,21 @@ jobs:
           cache: true
       - run: flutter pub get
         working-directory: apps/mobile
+      - name: Verify settings inspection regression
+        working-directory: apps/mobile
+        run: |
+          dart format lib/features/chat_session/widgets/session_mode_bar.dart lib/features/chat_session/widgets/codex_settings_sheet.dart test/session_mode_bar_test.dart
+          git diff -- lib test > "$RUNNER_TEMP/settings-format.patch"
+          dart analyze .
+          flutter test test/session_mode_bar_test.dart test/chat_session_cubit_test.dart --reporter expanded
+      - name: Save formatting evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: settings-format-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/settings-format.patch
+          if-no-files-found: warn
+          retention-days: 14
       - name: Build simulator app
         working-directory: apps/mobile
         run: flutter build ios --simulator --debug
@@ -47,14 +62,24 @@ jobs:
           codesign --verify --deep --strict "$app"
           tar -czf "$root/CC-Pocket-Simulator.tar.gz" -C apps/mobile/build/ios/iphonesimulator Runner.app
           python3 - <<'PY'
-          import hashlib,json,os,plistlib,subprocess
+          import hashlib,json,os,plistlib,subprocess,tempfile
           from pathlib import Path
           root=Path(os.environ['RUNNER_TEMP'])/'ccpocket-simulator-candidate'
           app=Path('apps/mobile/build/ios/iphonesimulator/Runner.app')
           info=plistlib.loads((app/'Info.plist').read_bytes())
           archive=root/'CC-Pocket-Simulator.tar.gz'
+          patch=root/'build-source.patch'
+          patch.write_bytes(subprocess.check_output(['git','diff','HEAD','--','apps/mobile']))
+          with tempfile.TemporaryDirectory() as directory:
+            env=dict(os.environ,GIT_INDEX_FILE=str(Path(directory)/'index'))
+            subprocess.run(['git','read-tree','HEAD'],env=env,check=True)
+            subprocess.run(['git','add','-u','--','apps/mobile'],env=env,check=True)
+            tree=subprocess.check_output(['git','write-tree'],env=env,text=True).strip()
+            build_mobile_tree=subprocess.check_output(['git','rev-parse',tree+':apps/mobile'],text=True).strip()
           manifest={'sourceSha':os.environ['SOURCE_SHA'],'runId':os.environ['RUN_ID'],
             'mobileTree':subprocess.check_output(['git','rev-parse','HEAD:apps/mobile'],text=True).strip(),
+            'buildMobileTree':build_mobile_tree,'sourcePatchFile':patch.name,
+            'sourcePatchSha256':hashlib.sha256(patch.read_bytes()).hexdigest(),
             'platform':'ios-simulator','buildMode':'debug','bundleId':info['CFBundleIdentifier'],
             'version':info['CFBundleShortVersionString'],'build':info['CFBundleVersion'],
             'fileName':archive.name,'bytes':archive.stat().st_size,'sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),

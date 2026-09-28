@@ -3925,7 +3925,7 @@ class AppLocalizationsJa extends AppLocalizations {
 
   @override
   String get codexSettingsUnavailable =>
-      'Bridge がこの会話の設定書き込み権限を確認していないため、CC Pocket は変更を送信またはプレビューしません。';
+      '同期済みの設定は確認できます。Bridge が変更権限を確認していないため、設定は変更されていません。';
 
   @override
   String get codexPermissionsOnRequest => '必要時に確認';

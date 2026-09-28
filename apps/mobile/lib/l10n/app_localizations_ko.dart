@@ -3953,7 +3953,7 @@ class AppLocalizationsKo extends AppLocalizations {
 
   @override
   String get codexSettingsUnavailable =>
-      'Bridge가 이 대화의 설정 쓰기 권한을 확인하지 않았으므로 CC Pocket은 변경을 보내거나 미리 표시하지 않습니다.';
+      '동기화된 설정을 볼 수 있습니다. Bridge가 변경 권한을 확인하지 않았으므로 설정은 변경되지 않았습니다.';
 
   @override
   String get codexPermissionsOnRequest => '요청 시';
