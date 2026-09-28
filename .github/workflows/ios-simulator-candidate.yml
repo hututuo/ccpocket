@@ -27,7 +27,7 @@ jobs:
         working-directory: apps/mobile
       - name: Build simulator app
         working-directory: apps/mobile
-        run: flutter build ios --simulator --debug --no-codesign
+        run: flutter build ios --simulator --debug
       - name: Audit and package simulator app
         env:
           SOURCE_SHA: ${{ github.sha }}
@@ -41,6 +41,10 @@ jobs:
           xcrun lipo -archs "$app/Runner" | grep -w arm64
           xcrun vtool -show-build "$app/Runner" > "$root/platform.txt"
           grep -q IOSSIMULATOR "$root/platform.txt"
+          # Simulator keychain requires Xcode-generated embedded entitlements.
+          xcrun otool -l "$app/Runner" > "$root/macho-load-commands.txt"
+          grep -q __entitlements "$root/macho-load-commands.txt"
+          codesign --verify --deep --strict "$app"
           tar -czf "$root/CC-Pocket-Simulator.tar.gz" -C apps/mobile/build/ios/iphonesimulator Runner.app
           python3 - <<'PY'
           import hashlib,json,os,plistlib,subprocess
