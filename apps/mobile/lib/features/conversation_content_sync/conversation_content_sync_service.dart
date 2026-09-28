@@ -2524,6 +2524,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         error is _ConversationSyncSequenceGap ||
         error is _ConversationSyncBeginMismatch ||
         error is _ConversationSyncPageBatchMismatch;
+    final sequenceGap = error is _ConversationSyncSequenceGap
+        ? ' expected=${error.expected} actual=${error.actual}'
+        : '';
     var recovery = threadRevisionMismatch
         ? 'thread_snapshot_retry'
         : streamContinuityFailure
@@ -2537,7 +2540,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       providerSessionId: event.providerSessionId,
       revision: event.revision,
       phase: event.phase,
-      result: '${error.runtimeType}:$recovery',
+      result: '${error.runtimeType}:$recovery$sequenceGap',
     );
 
     if (threadRevisionMismatch &&
@@ -2588,7 +2591,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     logger.warning(
       '[conversation_sync_v2] event=${event.event.name} '
       'sequence=${event.sequence} generation=$generation '
-      'target=$targetToken error=${error.runtimeType} recovery=$recovery',
+      'target=$targetToken error=${error.runtimeType}$sequenceGap '
+      'recovery=$recovery',
     );
     if (_isV2Current(event, generation, target)) {
       _restartSubscription(reason: recovery);

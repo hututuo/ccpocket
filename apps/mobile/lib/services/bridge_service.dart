@@ -486,6 +486,13 @@ class BridgeService implements BridgeServiceBase {
       StreamController<(ServerMessage, String?)>.broadcast();
   final _localFeatureMessageController =
       StreamController<(LocalFeatureServerMessage, String?)>.broadcast();
+  final LinkedHashMap<String, int> _lastConversationSyncWireSequence =
+      LinkedHashMap<String, int>();
+  final LinkedHashMap<String, int> _lastConversationSyncDecodedSequence =
+      LinkedHashMap<String, int>();
+  final LinkedHashMap<String, int> _lastConversationSyncDispatchSequence =
+      LinkedHashMap<String, int>();
+  static const int _maxConversationSyncSequenceTrackingSubscriptions = 32;
   final _connectionController =
       StreamController<BridgeConnectionState>.broadcast();
   final _connectionFailureController =
@@ -2069,6 +2076,9 @@ class BridgeService implements BridgeServiceBase {
     _connectionDiagnosticStopwatch = Stopwatch()..start();
     _sessionListRequestStartedAtMs = null;
     _remainingFrameDiagnostics = _maxFrameDiagnosticsPerConnection;
+    _lastConversationSyncWireSequence.clear();
+    _lastConversationSyncDecodedSequence.clear();
+    _lastConversationSyncDispatchSequence.clear();
     _intentionalDisconnect = false;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
@@ -2125,6 +2135,9 @@ class BridgeService implements BridgeServiceBase {
           int? frameBytes;
           String? diagnosticType;
           String? diagnosticSessionId;
+          String? conversationSyncSubscriptionId;
+          String? conversationSyncEvent;
+          int? conversationSyncSequence;
           var frameModelValidated = false;
           var sessionListModelValidated = false;
           final isSessionListFrame =
@@ -2138,6 +2151,25 @@ class BridgeService implements BridgeServiceBase {
           try {
             final json = jsonDecode(data as String) as Map<String, dynamic>;
             diagnosticType = _diagnosticToken(json['type']);
+            if (diagnosticType == 'conversation_sync_v2') {
+              final rawSubscriptionId = json['subscriptionId'];
+              final rawSequence = json['sequence'];
+              if (rawSubscriptionId is String &&
+                  rawSubscriptionId.isNotEmpty &&
+                  rawSequence is int &&
+                  rawSequence > 0) {
+                conversationSyncSubscriptionId = rawSubscriptionId;
+                conversationSyncSequence = rawSequence;
+                conversationSyncEvent = _diagnosticToken(json['event']);
+                _observeConversationSyncSequence(
+                  stage: 'wire',
+                  epoch: epoch,
+                  subscriptionId: rawSubscriptionId,
+                  sequence: rawSequence,
+                  event: conversationSyncEvent,
+                );
+              }
+            }
             if (_consumeDeviceAuthenticationFrame(json, channel, epoch)) {
               return;
             }
@@ -2171,10 +2203,43 @@ class BridgeService implements BridgeServiceBase {
                 bytes: frameBytes,
               );
             }
-            if (_shouldSuppressBackgroundWireMessage(json)) return;
+            if (_shouldSuppressBackgroundWireMessage(json)) {
+              if (conversationSyncSequence != null) {
+                _logConnectionDiagnostic(
+                  'conversation_sync_frame_suppressed',
+                  epoch: epoch,
+                  type: conversationSyncEvent,
+                  reason: 'background_delivery_mode',
+                  sequence: conversationSyncSequence,
+                  warning: true,
+                );
+              }
+              return;
+            }
             var sessionId = diagnosticSessionId;
             var msg = ServerMessage.fromJson(json);
             frameModelValidated = true;
+            if (conversationSyncSequence != null &&
+                conversationSyncSubscriptionId != null) {
+              if (msg is LocalFeatureServerMessage) {
+                _observeConversationSyncSequence(
+                  stage: 'decoded',
+                  epoch: epoch,
+                  subscriptionId: conversationSyncSubscriptionId,
+                  sequence: conversationSyncSequence,
+                  event: conversationSyncEvent,
+                );
+              } else {
+                _logConnectionDiagnostic(
+                  'conversation_sync_frame_model_mismatch',
+                  epoch: epoch,
+                  type: conversationSyncEvent,
+                  sequence: conversationSyncSequence,
+                  errorKind: _diagnosticToken(msg.runtimeType.toString()),
+                  warning: true,
+                );
+              }
+            }
             if (msg is SessionListMessage) {
               sessionListModelValidated = true;
               _setConnectionBootstrapPhase(
@@ -2238,10 +2303,24 @@ class BridgeService implements BridgeServiceBase {
               );
             }
             if (_consumeArtifactInfrastructureMessage(msg)) return;
-            if (_consumeLocalFeatureInfrastructureMessage(
-              msg,
-              sessionId: sessionId,
-            )) {
+            final consumedLocalFeature =
+                _consumeLocalFeatureInfrastructureMessage(
+                  msg,
+                  sessionId: sessionId,
+                );
+            if (consumedLocalFeature &&
+                conversationSyncSequence != null &&
+                conversationSyncSubscriptionId != null &&
+                msg is LocalFeatureServerMessage) {
+              _observeConversationSyncSequence(
+                stage: 'dispatched',
+                epoch: epoch,
+                subscriptionId: conversationSyncSubscriptionId,
+                sequence: conversationSyncSequence,
+                event: conversationSyncEvent,
+              );
+            }
+            if (consumedLocalFeature) {
               return;
             }
             if (sessionId != null && msg is HistoryDeltaMessage) {
@@ -2850,6 +2929,17 @@ class BridgeService implements BridgeServiceBase {
             }
           } catch (e) {
             final applyFailure = frameModelValidated;
+            if (conversationSyncSequence != null) {
+              _logConnectionDiagnostic(
+                'conversation_sync_frame_rejected',
+                epoch: epoch,
+                type: conversationSyncEvent,
+                reason: applyFailure ? 'apply' : 'decode',
+                sequence: conversationSyncSequence,
+                errorKind: _diagnosticToken(e.runtimeType.toString()),
+                warning: true,
+              );
+            }
             if (_claimFrameDiagnosticSlot()) {
               frameBytes ??= _diagnosticFrameBytes(data);
               _logConnectionDiagnostic(
@@ -3987,6 +4077,40 @@ class BridgeService implements BridgeServiceBase {
     _finishActiveSessionHistorySyncs();
   }
 
+  void _observeConversationSyncSequence({
+    required String stage,
+    required int epoch,
+    required String subscriptionId,
+    required int sequence,
+    required String? event,
+  }) {
+    final sequences = switch (stage) {
+      'wire' => _lastConversationSyncWireSequence,
+      'decoded' => _lastConversationSyncDecodedSequence,
+      'dispatched' => _lastConversationSyncDispatchSequence,
+      _ => null,
+    };
+    if (sequences == null) return;
+    final previous = sequences[subscriptionId];
+    if (previous != null && sequence != previous + 1) {
+      _logConnectionDiagnostic(
+        'conversation_sync_sequence_discontinuity',
+        epoch: epoch,
+        type: event,
+        reason: stage + (sequence > previous ? '_gap' : '_reordered'),
+        sequence: sequence,
+        expectedSequence: previous + 1,
+        warning: true,
+      );
+    }
+    sequences.remove(subscriptionId);
+    sequences[subscriptionId] = sequence;
+    while (
+        sequences.length > _maxConversationSyncSequenceTrackingSubscriptions) {
+      sequences.remove(sequences.keys.first);
+    }
+  }
+
   void _logConnectionDiagnostic(
     String event, {
     int? epoch,
@@ -4000,6 +4124,8 @@ class BridgeService implements BridgeServiceBase {
     int? attempt,
     int? delayMs,
     int? progress,
+    int? sequence,
+    int? expectedSequence,
     bool warning = false,
   }) {
     final fields = <String>[
@@ -4017,6 +4143,9 @@ class BridgeService implements BridgeServiceBase {
       if (delayMs != null && delayMs >= 0) 'delayMs=$delayMs',
       if (progress != null && progress >= 0 && progress <= 100)
         'progress=$progress',
+      if (sequence != null && sequence > 0) 'sequence=$sequence',
+      if (expectedSequence != null && expectedSequence > 0)
+        'expectedSequence=$expectedSequence',
     ];
     final line = fields.join(' ');
     if (warning) {

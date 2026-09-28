@@ -1504,6 +1504,17 @@ void main() {
 
       await gateway.nextOutgoing('conversation_sync_unsubscribe');
       expect(trackingRepository.clearTargetCalls, 0);
+      final recentEvents =
+          service.diagnosticSnapshot(
+                provider: 'codex',
+                providerSessionId: 'thread-sequence-gap',
+              )['recentEvents']!
+              as List<Map<String, Object?>>;
+      expect(
+        recentEvents
+            .singleWhere((event) => event['kind'] == 'commitFailure')['result'],
+        contains('expected=2 actual=3'),
+      );
     },
   );
 
