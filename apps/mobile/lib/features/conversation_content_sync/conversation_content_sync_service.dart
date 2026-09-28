@@ -1533,8 +1533,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   static bool _isAutoRepairableLatestTurnGap(
     ConversationSyncV2LatestTurnGap gap,
   ) =>
-      gap.repair == 'items_page' &&
-      gap.turnId?.isNotEmpty == true &&
+      ((gap.repair == 'items_page' && gap.turnId?.isNotEmpty == true) ||
+          gap.repair == 'turns_page') &&
       (gap.payloadOmitted || gap.missingEntryCount > 0);
 
   static String _automaticLatestTurnRepairKey({
