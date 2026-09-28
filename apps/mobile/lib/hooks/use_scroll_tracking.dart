@@ -38,6 +38,9 @@ ScrollTrackingResult useScrollTracking(
 
   // Ref to track isScrolledUp without rebuilds (for scrollToBottom closure).
   final isScrolledUpRef = useRef(false);
+  final activeSessionRef = useRef(sessionId);
+  activeSessionRef.value = sessionId;
+  final scrollRequestGeneration = useRef(0);
 
   // Track previous maxScrollExtent to detect layout-driven changes
   // (e.g. Android notification shade toggling safe-area padding).
@@ -82,6 +85,7 @@ ScrollTrackingResult useScrollTracking(
     });
 
     return () {
+      scrollRequestGeneration.value += 1;
       // Persist offset before disposal.
       if (persistRawOffset && controller.hasClients) {
         _scrollOffsets[sessionId] = controller.offset;
@@ -93,8 +97,14 @@ ScrollTrackingResult useScrollTracking(
 
   void scrollToBottom() {
     if (isScrolledUpRef.value) return;
+    final request = ++scrollRequestGeneration.value;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (controller.hasClients) {
+      if (request != scrollRequestGeneration.value ||
+          activeSessionRef.value != sessionId ||
+          isScrolledUpRef.value) {
+        return;
+      }
+      if (controller.hasClients && controller.position.pixels <= 100) {
         controller.animateTo(
           0.0,
           duration: const Duration(milliseconds: 200),

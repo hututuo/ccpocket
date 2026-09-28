@@ -114,6 +114,39 @@ void main() {
       expect(find.byKey(const ValueKey('send_button')), findsNothing);
     });
 
+    testWidgets('unknown runtime status never implies an active stop control', (
+      tester,
+    ) async {
+      var sent = 0;
+      var interrupted = 0;
+      var stopped = 0;
+      await tester.pumpWidget(
+        buildSubject(
+          status: ProcessStatus.unknown,
+          onSend: () => sent++,
+          onInterrupt: () => interrupted++,
+          onStop: () => stopped++,
+        ),
+      );
+
+      expect(find.byKey(const ValueKey('stop_button')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('send_button')));
+      expect(sent, 0);
+      expect(interrupted, 0);
+      expect(stopped, 0);
+
+      await tester.pumpWidget(
+        buildSubject(
+          status: ProcessStatus.unknown,
+          hasInputText: true,
+          onSend: () => sent++,
+        ),
+      );
+      await tester.tap(find.byKey(const ValueKey('send_button')));
+      expect(sent, 1);
+      expect(find.byKey(const ValueKey('stop_button')), findsNothing);
+    });
+
     testWidgets('labels a Desktop-owned stop control as detach', (
       tester,
     ) async {

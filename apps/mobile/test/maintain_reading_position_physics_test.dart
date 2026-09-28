@@ -64,6 +64,25 @@ void main() {
       expect(adjusted, 240);
     });
 
+    test('does not treat keyboard viewport resizing as new output', () {
+      final physics = MaintainReadingPositionPhysics(
+        shouldMaintain: () => true,
+      );
+
+      final adjusted = physics.adjustPositionForNewDimensions(
+        oldPosition: _metrics(pixels: 240, maxScrollExtent: 1000),
+        newPosition: _metrics(
+          pixels: 240,
+          maxScrollExtent: 1200,
+          viewportDimension: 400,
+        ),
+        isScrolling: false,
+        velocity: 0,
+      );
+
+      expect(adjusted, 240);
+    });
+
     test('does not fight an active user drag', () {
       final physics = MaintainReadingPositionPhysics(
         shouldMaintain: () => true,
@@ -84,12 +103,13 @@ void main() {
 FixedScrollMetrics _metrics({
   required double pixels,
   required double maxScrollExtent,
+  double viewportDimension = 600,
 }) {
   return FixedScrollMetrics(
     minScrollExtent: 0,
     maxScrollExtent: maxScrollExtent,
     pixels: pixels,
-    viewportDimension: 600,
+    viewportDimension: viewportDimension,
     axisDirection: AxisDirection.up,
     devicePixelRatio: 1,
   );

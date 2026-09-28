@@ -1143,7 +1143,15 @@ class _ActionButton extends StatelessWidget {
     if (status == ProcessStatus.starting) {
       return _SendButton(onSend: onSend, enabled: false);
     }
-    if (status != ProcessStatus.idle && !hasInputText) {
+    final canStop = switch (status) {
+      ProcessStatus.running ||
+      ProcessStatus.waitingApproval ||
+      ProcessStatus.compacting => true,
+      ProcessStatus.starting ||
+      ProcessStatus.idle ||
+      ProcessStatus.unknown => false,
+    };
+    if (canStop && !hasInputText) {
       return _StopButton(
         onInterrupt: onInterrupt,
         onStop: onStop,

@@ -42,6 +42,12 @@ class MaintainReadingPositionPhysics extends ScrollPhysics {
 
     if (isScrolling || !shouldMaintain()) return adjusted;
     if (oldPosition.pixels <= scrolledUpThreshold) return adjusted;
+    // Keyboard resizing has its own scroll observer. Extent changes caused by
+    // a different viewport are not new output; compensating here as well would
+    // move the reader twice for the same keyboard transition.
+    if (oldPosition.viewportDimension != newPosition.viewportDimension) {
+      return adjusted;
+    }
 
     final delta = newPosition.maxScrollExtent - oldPosition.maxScrollExtent;
     if (delta.abs() <= extentChangeTolerance) return adjusted;
