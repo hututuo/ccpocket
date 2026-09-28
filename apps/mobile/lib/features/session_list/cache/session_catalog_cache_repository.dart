@@ -1970,6 +1970,15 @@ class SessionCatalogCacheRepository {
             );
           }
           if (commitsCompleteWindow) {
+            final stagedRows = await transaction.query(
+              SessionCatalogCacheDatabase.timelineStageEntriesTable,
+              columns: ['entry_id', _userIdentityMessageColumn],
+              where: keyWhere,
+              whereArgs: keyArgs,
+            );
+            await _deleteHotHistoryUserAliases(
+              transaction, partitionId, provider, providerSessionId, stagedRows,
+            );
             await transaction.rawDelete(
               '''
               DELETE FROM ${SessionCatalogCacheDatabase.hotEntriesTable}
@@ -2020,7 +2029,7 @@ class SessionCatalogCacheRepository {
         if (additiveCommit) {
           final existingEntries = await transaction.query(
             SessionCatalogCacheDatabase.hotEntriesTable,
-            columns: ['entry_id', 'entry_index'],
+            columns: ['entry_id', 'entry_index', _userIdentityMessageColumn],
             where:
                 'partition_id = ? AND provider = ? '
                 'AND provider_session_id = ?',
@@ -2040,11 +2049,23 @@ class SessionCatalogCacheRepository {
             orderBy: 'entry_index ASC',
           );
           final existingIds = <String>[];
+          final seenExistingIds = <String>{};
           final existingPrefixIds = <String>{};
+          final historyAliases = _historyUserEntryAliases(
+            existingEntries,
+            [...existingEntries, ...stagedEntries],
+          );
+          final storedIds = existingEntries
+              .map((row) => row['entry_id']! as String)
+              .toSet();
           for (final row in existingEntries) {
-            final entryId = row['entry_id']! as String;
+            final storedId = row['entry_id']! as String;
+            final entryId = historyAliases[storedId] ?? storedId;
+            // If the wire row already exists, keep its canonical position.
+            // Otherwise the history row becomes the incoming wire row's anchor.
+            if (entryId != storedId && storedIds.contains(entryId)) continue;
             final entryIndex = row['entry_index']! as int;
-            existingIds.add(entryId);
+            if (seenExistingIds.add(entryId)) existingIds.add(entryId);
             if (entryIndex < 0) existingPrefixIds.add(entryId);
           }
           final stagedIds = stagedEntries
@@ -2077,6 +2098,15 @@ class SessionCatalogCacheRepository {
               mergedIds[index]: index - prefixExtent,
           };
           final reorder = transaction.batch();
+          for (final entryId in historyAliases.keys) {
+            reorder.delete(
+              SessionCatalogCacheDatabase.hotEntriesTable,
+              where:
+                  'partition_id = ? AND provider = ? '
+                  'AND provider_session_id = ? AND entry_id = ?',
+              whereArgs: [partitionId, provider, providerSessionId, entryId],
+            );
+          }
           for (var index = 0; index < mergedIds.length; index++) {
             reorder.update(
               SessionCatalogCacheDatabase.hotEntriesTable,
@@ -2742,8 +2772,7 @@ class SessionCatalogCacheRepository {
     });
   }
 
-  /// Prepends one bounded provider turn page without materializing the
-  /// existing timeline in Dart memory.
+  /// Prepends one bounded provider turn page, retaining overlapping wire rows.
   Future<ConversationHotWindowSnapshot?> prependConversationTurnsPage({
     required SessionCatalogCacheTarget target,
     required String provider,
@@ -2802,23 +2831,24 @@ class SessionCatalogCacheRepository {
         }
 
         final existingIds = <String>{};
+        final candidateRows = [
+          for (final entry in candidates)
+            {
+              'entry_id': entry.entryId,
+              'message_json': jsonEncode(entry.rawMessage),
+            },
+        ];
         if (candidates.isNotEmpty) {
-          final placeholders = List.filled(candidates.length, '?').join(',');
           final rows = await transaction.query(
             SessionCatalogCacheDatabase.hotEntriesTable,
-            columns: ['entry_id'],
+            columns: ['entry_id', _userIdentityMessageColumn],
             where:
                 'partition_id = ? AND provider = ? '
-                'AND provider_session_id = ? '
-                'AND entry_id IN ($placeholders)',
-            whereArgs: [
-              partitionId,
-              provider,
-              providerSessionId,
-              ...candidates.map((entry) => entry.entryId),
-            ],
+                'AND provider_session_id = ?',
+            whereArgs: [partitionId, provider, providerSessionId],
           );
           existingIds.addAll(rows.map((row) => row['entry_id']! as String));
+          existingIds.addAll(_historyUserEntryAliases(candidateRows, rows).keys);
         }
         final additions = candidates
             .where((entry) => !existingIds.contains(entry.entryId))
@@ -3230,7 +3260,7 @@ class SessionCatalogCacheRepository {
           for (final row in baseRows)
             row['entry_id']! as String: row['content_hash']! as String,
         };
-        final stagedRows = await transaction.query(
+        final stagedHistoryRows = await transaction.query(
           SessionCatalogCacheDatabase.latestTurnRepairEntriesTable,
           columns: ['entry_id', 'content_hash', 'message_json'],
           where:
@@ -3245,6 +3275,17 @@ class SessionCatalogCacheRepository {
           ],
           orderBy: 'page_depth ASC, item_order ASC',
         );
+        final historyAliases = _historyUserEntryAliases(
+          stagedHistoryRows,
+          existingCurrentTurnRows,
+        );
+        final stagedRows = [
+          for (final row in stagedHistoryRows)
+            {
+              ...row,
+              'entry_id': historyAliases[row['entry_id']] ?? row['entry_id'],
+            },
+        ];
         final stagedById = <String, Map<String, Object?>>{
           for (final row in stagedRows) row['entry_id']! as String: row,
         };
@@ -3389,7 +3430,7 @@ class SessionCatalogCacheRepository {
         }
         final existingRows = await transaction.query(
           SessionCatalogCacheDatabase.hotEntriesTable,
-          columns: ['entry_id', 'entry_index'],
+          columns: ['entry_id', 'entry_index', _userIdentityMessageColumn],
           where:
               'partition_id = ? AND provider = ? '
               'AND provider_session_id = ?',
@@ -3399,6 +3440,19 @@ class SessionCatalogCacheRepository {
           for (final row in existingRows)
             row['entry_id']! as String: row['entry_index']! as int,
         };
+        final historyAliases = _historyUserEntryAliases(
+          [
+            for (final entry in entries)
+              {
+                'entry_id': entry.entryId,
+                'message_json': jsonEncode(entry.rawMessage),
+              },
+          ],
+          existingRows,
+        );
+        for (final alias in historyAliases.entries) {
+          indexById[alias.key] = indexById[alias.value]!;
+        }
         final hasPagedPrefix = existingRows.any(
           (row) => (row['entry_index']! as int) < 0,
         );
@@ -3520,6 +3574,16 @@ class SessionCatalogCacheRepository {
         if (rows.isEmpty || rows.single['revision'] != baseRevision) {
           return false;
         }
+        await _deleteHotHistoryUserAliases(
+          transaction, partitionId, provider, providerSessionId,
+          [
+            for (final entry in upserts)
+              {
+                'entry_id': entry.entryId,
+                'message_json': jsonEncode(entry.rawMessage),
+              },
+          ],
+        );
         if (deletes.isNotEmpty) {
           final placeholders = List.filled(deletes.length, '?').join(',');
           await transaction.delete(
@@ -5376,6 +5440,121 @@ class SessionCatalogCacheRepository {
 
 class _ConversationCacheBatchSuperseded implements Exception {
   const _ConversationCacheBatchSuperseded();
+}
+
+const _userIdentityMessageColumn = "CASE WHEN entry_id LIKE 'user:%' "
+    "OR entry_id LIKE 'turn:%:user-client:%' "
+    "OR entry_id LIKE 'turn:%:user-provider:%' "
+    'THEN message_json ELSE NULL END AS message_json';
+
+/// Local history pages and the timeline wire use different user entry IDs.
+/// Resolve only those known history aliases to a unique provider-owned wire
+/// row in the same turn. Text and page-local UUIDs never establish identity.
+/// Conflicting provider/client IDs remain separate for projection validation.
+Map<String, String> _historyUserEntryAliases(
+  List<Map<String, Object?>> historyRows,
+  List<Map<String, Object?>> wireRows,
+) {
+  final wireByKey = <String, Map<String, _HotUserIdentity>>{};
+  for (final row in wireRows) {
+    final identity = _HotUserIdentity.fromRow(row);
+    if (identity == null || !identity.isWire) continue;
+    for (final key in identity.keys) {
+      (wireByKey[key] ??= {})[identity.entryId] = identity;
+    }
+  }
+  final aliases = <String, String>{};
+  for (final row in historyRows) {
+    final identity = _HotUserIdentity.fromRow(row);
+    if (identity == null || !identity.isHistoryAlias) continue;
+    final matches = <String, _HotUserIdentity>{};
+    for (final key in identity.keys) {
+      for (final candidate in wireByKey[key]?.values ?? <_HotUserIdentity>[]) {
+        if (identity.agreesWith(candidate)) {
+          matches[candidate.entryId] = candidate;
+        }
+      }
+    }
+    if (matches.length == 1) aliases[identity.entryId] = matches.keys.single;
+  }
+  return aliases;
+}
+
+class _HotUserIdentity {
+  const _HotUserIdentity(this.entryId, this.turnId, this.providerId, this.clientId);
+
+  final String entryId;
+  final String turnId;
+  final String? providerId;
+  final String? clientId;
+
+  static _HotUserIdentity? fromRow(Map<String, Object?> row) {
+    try {
+      final entryId = row['entry_id'];
+      if (entryId is! String ||
+          !(entryId.startsWith('user:') ||
+              entryId.contains(':user-client:') ||
+              entryId.contains(':user-provider:'))) return null;
+      final raw = jsonDecode(row['message_json']! as String);
+      if (raw is! Map || raw['type'] != 'user_input') return null;
+      String? id(String key) {
+        final value = raw[key];
+        return value is String && value.trim().isNotEmpty ? value.trim() : null;
+      }
+      final turnId = id('historyTurnId');
+      final providerId = id('providerItemId');
+      final clientId = id('clientMessageId');
+      if (turnId == null || (providerId == null && clientId == null)) return null;
+      return _HotUserIdentity(
+        entryId, turnId, providerId, clientId,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool get isWire => providerId != null && entryId == 'user:$providerId';
+
+  bool get isHistoryAlias =>
+      (clientId != null && entryId == 'turn:$turnId:user-client:$clientId') ||
+      (providerId != null && entryId == 'turn:$turnId:user-provider:$providerId');
+
+  Iterable<String> get keys sync* {
+    if (providerId != null) yield jsonEncode([turnId, 'provider', providerId]);
+    if (clientId != null) yield jsonEncode([turnId, 'client', clientId]);
+  }
+
+  bool agreesWith(_HotUserIdentity other) =>
+      turnId == other.turnId &&
+      (providerId == null || other.providerId == null || providerId == other.providerId) &&
+      (clientId == null || other.clientId == null || clientId == other.clientId);
+}
+
+Future<void> _deleteHotHistoryUserAliases(
+  DatabaseExecutor transaction,
+  String partitionId,
+  String provider,
+  String providerSessionId,
+  List<Map<String, Object?>> incomingRows,
+) async {
+  final existingRows = await transaction.query(
+    SessionCatalogCacheDatabase.hotEntriesTable,
+    columns: ['entry_id', _userIdentityMessageColumn],
+    where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+    whereArgs: [partitionId, provider, providerSessionId],
+  );
+  final aliases = _historyUserEntryAliases(
+    existingRows, [...existingRows, ...incomingRows],
+  );
+  for (final entryId in aliases.keys) {
+    await transaction.delete(
+      SessionCatalogCacheDatabase.hotEntriesTable,
+      where:
+          'partition_id = ? AND provider = ? '
+          'AND provider_session_id = ? AND entry_id = ?',
+      whereArgs: [partitionId, provider, providerSessionId, entryId],
+    );
+  }
 }
 
 /// Merges an incomplete ordered observation into an existing hot window.
