@@ -267,6 +267,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   String? _forcedSnapshotTargetFingerprint;
   final Set<String> _forcedSnapshotThreadKeys = {};
   final Set<String> _rejectedTimelineThreadKeys = {};
+  // A bounded resume request may omit a readable cached window. A partial
+  // snapshot then establishes only a transport base, not replacement authority.
+  final Map<String, String> _partialTimelineWireRevisions = {};
   Future<void> _v2MutationTail = Future<void>.value();
   Future<void>? _userIndexWarmup;
   final Set<Future<void>> _backgroundFlights = {};
@@ -344,6 +347,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       'v2RecoveryTargetFingerprint': _v2RecoveryTargetFingerprint,
       'forcedSnapshotTargetFingerprint': _forcedSnapshotTargetFingerprint,
       'forcedSnapshotThreadCount': _forcedSnapshotThreadKeys.length,
+      'partialWireRevisionCount': _partialTimelineWireRevisions.length,
       'currentGenerationTimelineKeys': _currentGenerationTimelineKeys.toList()
         ..sort(),
       'stageCounts': <String, Object?>{
@@ -2817,6 +2821,14 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           event.providerSessionId!,
         );
         final rejectedThread = _rejectedTimelineThreadKeys.contains(threadKey);
+        final knownPartialWireBase =
+            event.mode == 'patch' &&
+            event.windowComplete == false &&
+            event.baseRevision != null &&
+            _partialTimelineWireRevisions[threadKey] == event.baseRevision;
+        final additiveWireReplay =
+            !effectiveWindowComplete &&
+            (rejectedThread || knownPartialWireBase);
         if (event.mode == 'patch' &&
             effectiveWindowComplete &&
             rejectedThread) {
@@ -2850,14 +2862,12 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           providerSessionId: event.providerSessionId!,
           revision: event.revision!,
           // A partial frame cannot delete, reorder or advance our revision.
-          // After a rejected batch, stage it as an additive snapshot so safe
-          // enrichment continues without trusting the producer's lost base.
-          baseRevision: rejectedThread && !effectiveWindowComplete
-              ? null
-              : event.baseRevision,
-          mode: rejectedThread && !effectiveWindowComplete
-              ? 'snapshot'
-              : event.mode!,
+          // A partial wire base may differ from a retained canonical revision
+          // when its window was omitted from the bounded resume request. Use
+          // additive snapshot semantics for that proven subscription-local base
+          // or a quarantined lineage; neither can replace the readable window.
+          baseRevision: additiveWireReplay ? null : event.baseRevision,
+          mode: additiveWireReplay ? 'snapshot' : event.mode!,
           pageIndex: event.pageIndex!,
           pageCount: event.pageCount!,
           entries: event.entries,
@@ -2928,6 +2938,19 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           throw StateError('Conversation timeline staging safety bound hit.');
         }
         if (committed.windowCommitted) {
+          if (_isV2Current(event, generation, target)) {
+            if (event.windowComplete == false) {
+              _partialTimelineWireRevisions.remove(threadKey);
+              _partialTimelineWireRevisions[threadKey] = event.revision!;
+              while (_partialTimelineWireRevisions.length > 512) {
+                _partialTimelineWireRevisions.remove(
+                  _partialTimelineWireRevisions.keys.first,
+                );
+              }
+            } else if (effectiveWindowComplete) {
+              _partialTimelineWireRevisions.remove(threadKey);
+            }
+          }
           final committedRevision =
               committed.committedRevision ?? event.revision!;
           conversationSyncTrace(
@@ -3027,6 +3050,14 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           thread: event.target,
         );
         if (event.scope == 'thread' && event.target != null) {
+          if (_isV2Current(event, generation, target)) {
+            _partialTimelineWireRevisions.remove(
+              _conversationThreadKey(
+                event.target!.provider,
+                event.target!.providerSessionId,
+              ),
+            );
+          }
           _clearAutomaticLatestTurnRepair(
             target: target,
             provider: event.target!.provider,
@@ -3972,6 +4003,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _subscriptionBridgeInstanceId = null;
     _highestV2CommittedSequence = 0;
     _v2PriorityBootstrapComplete = false;
+    _partialTimelineWireRevisions.clear();
     _clearAllAutomaticLatestTurnRepairs();
     _failPendingTurnsPages(const _ConversationPagingInterrupted());
     _failPendingUserIndexPages(const _ConversationPagingInterrupted());
@@ -4031,6 +4063,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _forcedSnapshotTargetFingerprint = targetFingerprint;
     _forcedSnapshotThreadKeys.clear();
     _rejectedTimelineThreadKeys.clear();
+    _partialTimelineWireRevisions.clear();
   }
 
   void _markThreadForForcedSnapshot(

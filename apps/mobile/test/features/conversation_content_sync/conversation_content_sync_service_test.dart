@@ -208,6 +208,169 @@ void main() {
     },
   );
 
+  test(
+    'keeps partial wire lineage when bounded resume omits a cached window',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      gateway.supportsConversationWindowCoverage = true;
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        logicalConnectionIdentity: 'machine:1',
+        websocketUrl: 'wss://bridge.example/socket',
+      );
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'omitted-window',
+        revision: 'canonical-old',
+        entries: [_wireEntry('cached', 0)],
+        hasEarlier: true,
+        sourceEntryCount: 1,
+      );
+      // Semantic resume validation has a 1,000-entry budget. A newer full
+      // window consumes it, but the older readable window remains on disk.
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'newer-large-window',
+        revision: 'large-revision',
+        entries: [
+          for (var index = 0; index < 1000; index++)
+            _wireEntry('large-$index', index),
+        ],
+        hasEarlier: true,
+        sourceEntryCount: 1000,
+      );
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
+      expect(
+        (subscribe['threadContentStates'] as List)
+            .cast<Map<String, dynamic>>()
+            .map((state) => state['providerSessionId']),
+        isNot(contains('omitted-window')),
+      );
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'omitted-begin',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'catalog-omitted',
+          statusState: 'status-omitted',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+
+      Future<void> timeline(
+        int sequence,
+        List<String> ids, {
+        required String revision,
+        String mode = 'snapshot',
+        String? base,
+        bool complete = false,
+      }) async {
+        gateway.addEvent(
+          ConversationSyncV2EventMessage(
+            event: ConversationSyncV2EventKind.timelinePage,
+            subscriptionId: subscriptionId,
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'codex-home-a',
+            batchId: 'omitted-$sequence',
+            sequence: sequence,
+            provider: 'codex',
+            providerSessionId: 'omitted-window',
+            revision: revision,
+            baseRevision: base,
+            mode: mode,
+            pageIndex: 0,
+            pageCount: 1,
+            entries: [
+              for (var index = 0; index < ids.length; index++)
+                _wireEntry(ids[index], index),
+            ],
+            deletes: const [],
+            hasEarlier: true,
+            windowComplete: complete,
+            latestTurnComplete: complete,
+            latestTurnGap: complete
+                ? null
+                : const ConversationSyncV2LatestTurnGap(
+                    missingEntryCount: 0,
+                    payloadOmitted: true,
+                    repair: 'turns_page',
+                  ),
+            sourceEntryCount: ids.length,
+          ),
+        );
+        expect(
+          (await gateway.nextOutgoing('conversation_sync_ack'))['sequence'],
+          sequence,
+        );
+      }
+
+      await timeline(2, ['cached', 'progress'], revision: 'partial-wire');
+      await timeline(
+        3,
+        ['cached', 'progress', 'latest'],
+        revision: 'partial-wire',
+        mode: 'patch',
+        base: 'partial-wire',
+      );
+      final enriched = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'omitted-window',
+      );
+      expect(enriched?.revision, 'canonical-old');
+      expect(enriched?.entries.map((entry) => entry.entryId), [
+        'cached',
+        'progress',
+        'latest',
+      ]);
+      expect(enriched?.windowComplete, isFalse);
+      expect(
+        gateway.sentTypes,
+        isNot(contains('conversation_sync_unsubscribe')),
+      );
+
+      await timeline(4, ['latest'], revision: 'complete', complete: true);
+      await timeline(
+        5,
+        ['latest', 'final'],
+        revision: 'complete-next',
+        mode: 'patch',
+        base: 'complete',
+        complete: true,
+      );
+      final recovered = await repository.loadConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: 'omitted-window',
+      );
+      expect(recovered?.revision, 'complete-next');
+      expect(recovered?.entries.map((entry) => entry.entryId), [
+        'latest',
+        'final',
+      ]);
+      expect(recovered?.windowComplete, isTrue);
+      expect(
+        gateway.sentTypes,
+        isNot(contains('conversation_sync_unsubscribe')),
+      );
+    },
+  );
+
   test('prefers v2 and ACKs timeline pages only after SQLite commit', () async {
     await service.dispose();
     gateway.supportsConversationSyncV2 = true;
