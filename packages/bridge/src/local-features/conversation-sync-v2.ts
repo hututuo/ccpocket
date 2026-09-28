@@ -55,6 +55,7 @@ import {
   CONVERSATION_RUNTIME_OVERLAY_CAPABILITY,
   CONVERSATION_SYNC_V2_CAPABILITY,
   CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
+  CONVERSATION_BOUNDED_HOT_WINDOW_CAPABILITY,
   CONVERSATION_USER_INDEX_CAPABILITY,
   type ConversationSyncCatalogEntry,
   type ConversationSyncClientMessage,
@@ -3712,10 +3713,19 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
       !subscription.partialThreadKeys.has(key) &&
       snapshot.entries.length > 0 &&
       snapshot.entries.length <= MAX_PARTIAL_UNION_ENTRIES;
+    // New clients atomically retain a bounded hot window and expose older
+    // history through paging. A cumulative sender proof would otherwise stop
+    // every long-running partial stream at 2000 distinct IDs (or LRU eviction).
+    // Legacy clients still require the original conservative union guard.
+    const boundedHotWindow = this.runtime.supports(
+      client,
+      CONVERSATION_BOUNDED_HOT_WINDOW_CAPABILITY,
+    );
     const preserveKnownWindow =
       known !== undefined && !snapshot.windowComplete && !bootstrapPartialLineage;
     if (
       preserveKnownWindow &&
+      !boundedHotWindow &&
       !this.admitPartialUnion(subscription, key, known, snapshot, base)
     ) {
       traceConversationSync(
@@ -3783,7 +3793,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     );
     const committedRevision = preserveKnownWindow ? known : snapshot.revision;
     if (!snapshot.windowComplete) {
-      if (!preserveKnownWindow) {
+      if (!preserveKnownWindow && !boundedHotWindow) {
         this.rememberPartialUnion(
           subscription,
           key,

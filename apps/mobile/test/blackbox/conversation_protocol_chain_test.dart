@@ -269,6 +269,7 @@ void main() {
         expect(server.failure, isNull);
         expect(server.boundSubscriptionId, isNotNull);
         expect(server.windowCoverageAdvertised, isTrue);
+        expect(server.boundedHotWindowAdvertised, isTrue);
         expect(server.receivedSubscribeCount, 1);
         expect(sqliteTrace, hasLength(steps.length));
         expect(cubitTrace, hasLength(steps.length));
@@ -497,6 +498,7 @@ class _TransportReplayServer {
   bool _sessionListSent = false;
   int receivedSubscribeCount = 0;
   bool windowCoverageAdvertised = false;
+  bool boundedHotWindowAdvertised = false;
   String? boundSubscriptionId;
   Object? failure;
 
@@ -533,6 +535,9 @@ class _TransportReplayServer {
         windowCoverageAdvertised =
             supported is List &&
             supported.contains('conversation_sync_window_coverage_v1');
+        boundedHotWindowAdvertised =
+            supported is List &&
+            supported.contains('conversation_sync_bounded_hot_window_v1');
         return;
       }
       if (type == 'list_sessions' && !_sessionListSent) {

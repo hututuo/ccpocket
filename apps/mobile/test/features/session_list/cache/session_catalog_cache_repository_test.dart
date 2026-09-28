@@ -2517,6 +2517,77 @@ void main() {
     },
   );
 
+  test('bounded partial streams retain newest guidance beyond 2000 entries', () async {
+    final target = SessionCatalogCacheTarget.fromBridge(bridgeInstanceId: 'rollover');
+    const thread = 'rollover-thread';
+    ConversationContentWireEntry entry(int ordinal) => ConversationContentWireEntry(
+      entryId: ordinal % 50 == 0 ? 'user:guide-$ordinal' : 'assistant:reply-$ordinal',
+      index: ordinal,
+      contentHash: 'hash-$ordinal',
+      rawMessage: ordinal % 50 == 0
+          ? {'type': 'user_input', 'text': 'guide $ordinal', 'providerItemId': 'guide-$ordinal', 'historyTurnId': 'running-turn'}
+          : {'type': 'assistant', 'historyTurnId': 'running-turn', 'message': {'id': 'reply-$ordinal', 'role': 'assistant', 'content': [{'type': 'text', 'text': 'reply $ordinal'}]}},
+    );
+    await repository.replaceConversationWindow(
+      target: target, provider: 'codex', providerSessionId: thread,
+      revision: 'base', entries: List.generate(2000, entry), hasEarlier: true,
+      turnsNextCursor: 'old-cursor', sourceEntryCount: 2000,
+    );
+    for (var batch = 0; batch < 8; batch++) {
+      final incoming = [entry(0), ...List.generate(400, (i) => entry(2000 + batch * 400 + i))];
+      for (var replay = 0; replay < 2; replay++) {
+        final committed = await repository.stageConversationTimelinePage(
+          target: target, subscriptionId: 'rollover-sub', provider: 'codex',
+          providerSessionId: thread, revision: 'base', baseRevision: 'base',
+          mode: 'patch', pageIndex: 0, pageCount: 1, entries: incoming,
+          deletes: const [], hasEarlier: true, turnsNextCursor: 'old-cursor',
+          windowComplete: false, allowHotWindowRollover: true,
+          sourceEntryCount: 2400 + batch * 400,
+        );
+        expect(committed.windowCommitted, isTrue);
+        final cached = (await repository.loadConversationWindow(target: target, provider: 'codex', providerSessionId: thread))!;
+        final ids = cached.entries.map((e) => e.entryId).toList();
+        expect(ids, hasLength(2000));
+        expect(ids.toSet(), hasLength(2000));
+        expect(ids, containsAllInOrder(incoming.map((e) => e.entryId)));
+        expect(ids.last, incoming.last.entryId);
+        expect(cached.revision, 'base');
+        expect(cached.hasEarlier, isTrue);
+        expect(cached.turnsNextCursor, isNull);
+        expect(cached.windowComplete, isFalse);
+      }
+    }
+  });
+
+  test('hot rollover waits for every page and rejects reversed anchors atomically', () async {
+    final target = SessionCatalogCacheTarget.fromBridge(bridgeInstanceId: 'atomic-rollover');
+    const thread = 'atomic-rollover-thread';
+    final initial = List.generate(2000, (i) => _entry('old-$i', i, 'idle'));
+    await repository.replaceConversationWindow(target: target, provider: 'codex', providerSessionId: thread, revision: 'base', entries: initial, hasEarlier: false, sourceEntryCount: 2000);
+    Future<ConversationTimelinePageCommit> page(int pageIndex, List<ConversationContentWireEntry> entries, {String subscription = 'sub'}) => repository.stageConversationTimelinePage(
+      target: target, subscriptionId: subscription, provider: 'codex', providerSessionId: thread,
+      revision: 'base', baseRevision: 'base', mode: 'patch', pageIndex: pageIndex, pageCount: 2,
+      entries: entries, deletes: const [], hasEarlier: false, windowComplete: false,
+      allowHotWindowRollover: true, sourceEntryCount: 2002,
+    );
+    final first = await page(0, [_entry('old-1999', 0, 'idle'), _entry('new-a', 1, 'working')]);
+    expect(first.windowCommitted, isFalse);
+    var cached = (await repository.loadConversationWindow(target: target, provider: 'codex', providerSessionId: thread))!;
+    expect(cached.entries.map((e) => e.entryId), initial.map((e) => e.entryId));
+    expect((await page(1, [_entry('new-b', 2, 'working')])).windowCommitted, isTrue);
+    cached = (await repository.loadConversationWindow(target: target, provider: 'codex', providerSessionId: thread))!;
+    final committedIds = cached.entries.map((e) => e.entryId).toList();
+    expect(committedIds, hasLength(2000));
+    expect(committedIds.take(1), ['old-2']);
+    expect(committedIds.sublist(1998), ['new-a', 'new-b']);
+    expect(cached.hasEarlier, isTrue);
+    await page(0, [_entry('new-b', 0, 'working')], subscription: 'reversed');
+    final reversed = await page(1, [_entry('new-a', 1, 'working'), _entry('new-c', 2, 'working')], subscription: 'reversed');
+    expect(reversed.orderConflict, isTrue);
+    cached = (await repository.loadConversationWindow(target: target, provider: 'codex', providerSessionId: thread))!;
+    expect(cached.entries.map((e) => e.entryId), committedIds);
+  });
+
   test('rejects cumulative timeline staging before all pages arrive', () async {
     final target = SessionCatalogCacheTarget.fromBridge(
       bridgeInstanceId: 'bridge-stage-bound',

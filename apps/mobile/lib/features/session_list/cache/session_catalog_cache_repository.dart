@@ -1734,6 +1734,7 @@ class SessionCatalogCacheRepository {
     String? turnsNextCursor,
     bool? windowComplete,
     bool advanceIncompleteWireRevision = false,
+    bool allowHotWindowRollover = false,
     bool latestTurnComplete = true,
     ConversationSyncV2LatestTurnGap? latestTurnGap,
     required int sourceEntryCount,
@@ -1951,6 +1952,7 @@ class SessionCatalogCacheRepository {
             ? null
             : existingWindows.single;
         final additiveCommit = !commitsCompleteWindow && existingWindow != null;
+        var rolledOverHotWindow = false;
         // An incomplete window is an additive observation, never replacement
         // authority. Old Bridges can still attach deletes or a newer wire
         // revision to latestTurnComplete=false frames; both are intentionally
@@ -2075,7 +2077,7 @@ class SessionCatalogCacheRepository {
           final stagedIds = stagedEntries
               .map((row) => row['entry_id']! as String)
               .toList(growable: false);
-          final mergedIds = _mergeAdditiveTimelineOrder(existingIds, stagedIds);
+          var mergedIds = _mergeAdditiveTimelineOrder(existingIds, stagedIds);
           if (mergedIds == null) {
             await transaction.delete(
               SessionCatalogCacheDatabase.timelineStagesTable,
@@ -2090,6 +2092,20 @@ class SessionCatalogCacheRepository {
               orderConflict: true,
             );
           }
+          final evictedIds = <String>[];
+          if (allowHotWindowRollover && mergedIds.length > maxHotWindowEntries) {
+            // Keep every entry in this authoritative ordered observation, then
+            // use remaining capacity for the newest already-readable history.
+            // This evicts only a rebuildable hot projection, never provider data.
+            final retained = stagedIds.toSet();
+            for (final entryId in mergedIds.reversed) {
+              if (retained.length >= maxHotWindowEntries) break;
+              retained.add(entryId);
+            }
+            evictedIds.addAll(mergedIds.where((id) => !retained.contains(id)));
+            mergedIds = mergedIds.where(retained.contains).toList(growable: false);
+            rolledOverHotWindow = evictedIds.isNotEmpty;
+          }
           var lastExistingPrefixPosition = -1;
           for (var index = 0; index < mergedIds.length; index++) {
             if (existingPrefixIds.contains(mergedIds[index])) {
@@ -2102,7 +2118,7 @@ class SessionCatalogCacheRepository {
               mergedIds[index]: index - prefixExtent,
           };
           final reorder = transaction.batch();
-          for (final entryId in historyAliases.keys) {
+          for (final entryId in {...historyAliases.keys, ...evictedIds}) {
             reorder.delete(
               SessionCatalogCacheDatabase.hotEntriesTable,
               where:
@@ -2192,12 +2208,17 @@ class SessionCatalogCacheRepository {
                   ? revision
                   : existingWindow['revision']! as String
             : revision;
-        final committedHasEarlier = additiveCommit
-            ? (existingWindow['has_earlier']! as int) != 0 || hasEarlier
-            : hasEarlier;
-        final committedTurnsNextCursor = additiveCommit
-            ? (existingWindow['turns_next_cursor'] as String?) ??
-                  turnsNextCursor
+        final committedHasEarlier = rolledOverHotWindow ||
+            (additiveCommit
+                ? (existingWindow['has_earlier']! as int) != 0 || hasEarlier
+                : hasEarlier);
+        // A live partial window cannot advance the older-history frontier.
+        // In particular, null after hot rollover means restart from the head;
+        // replaying the same event must not resurrect a cursor past evicted rows.
+        final committedTurnsNextCursor = rolledOverHotWindow
+            ? null
+            : additiveCommit
+            ? existingWindow['turns_next_cursor'] as String?
             : turnsNextCursor;
         final existingSourceEntryCount = additiveCommit
             ? existingWindow['source_entry_count']! as int
@@ -2283,6 +2304,7 @@ class SessionCatalogCacheRepository {
           }
         }
         final preserveRepairStage =
+            !rolledOverHotWindow &&
             repairStage != null &&
             repairStageRowsStillCurrent &&
             repairStage['revision'] == revision &&

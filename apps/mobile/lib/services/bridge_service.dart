@@ -1062,6 +1062,8 @@ class BridgeService implements BridgeServiceBase {
       _bridgeCapabilities.contains(conversationSyncV2Capability);
   bool get supportsConversationWindowCoverage =>
       _bridgeCapabilities.contains(conversationWindowCoverageCapability);
+  bool get supportsConversationBoundedHotWindow =>
+      _bridgeCapabilities.contains(conversationBoundedHotWindowCapability);
   bool get supportsConversationSyncFocusRefresh =>
       _bridgeCapabilities.contains(conversationSyncFocusRefreshCapability);
   bool get supportsConversationItemsById =>

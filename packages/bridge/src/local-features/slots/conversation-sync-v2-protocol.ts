@@ -9,6 +9,8 @@ import {
 export const CONVERSATION_SYNC_V2_CAPABILITY = "conversation_sync_v2" as const;
 export const CONVERSATION_WINDOW_COVERAGE_CAPABILITY =
   "conversation_sync_window_coverage_v1" as const;
+export const CONVERSATION_BOUNDED_HOT_WINDOW_CAPABILITY =
+  "conversation_sync_bounded_hot_window_v1" as const;
 export const CONVERSATION_SYNC_FOCUS_REFRESH_CAPABILITY =
   "conversation_sync_focus_refresh_v1" as const;
 export const CONVERSATION_ITEMS_BY_ID_CAPABILITY =
@@ -200,7 +202,9 @@ interface ConversationSyncEventBase {
 export type ConversationSyncServerMessage =
   | {
       /** Capability-advertisement marker; never emitted as a runtime event. */
-      type: typeof CONVERSATION_WINDOW_COVERAGE_CAPABILITY;
+      type:
+        | typeof CONVERSATION_WINDOW_COVERAGE_CAPABILITY
+        | typeof CONVERSATION_BOUNDED_HOT_WINDOW_CAPABILITY;
       supported: true;
     }
   | (ConversationSyncEventBase & {
@@ -472,6 +476,7 @@ export const conversationSyncV2ProtocolContribution: LocalFeatureProtocolContrib
   serverTypes: [
     CONVERSATION_SYNC_V2_CAPABILITY,
     CONVERSATION_WINDOW_COVERAGE_CAPABILITY,
+    CONVERSATION_BOUNDED_HOT_WINDOW_CAPABILITY,
   ],
   parseClient(message) {
     if (

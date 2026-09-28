@@ -6932,6 +6932,114 @@ describe("ConversationSyncV2FeatureHandler", () => {
     await fixture.handler.close();
   });
 
+  it("keeps delivering a bounded-cache client after 2000 distinct partial entries", async () => {
+    const threadId = "thread-partial-union-bound";
+    const codex = codexSeed(0, threadId);
+    let partialBatch = 0;
+    const historyReader = vi.fn(async () => {
+      if (partialBatch === 0) {
+        return historyForTurn("partial-bound-base", "turn-partial-bound");
+      }
+      return {
+        messages: [
+          {
+            type: "user_input" as const,
+            text: "partial bound root",
+            userMessageUuid: "partial-bound-root",
+            historyTurnId: "turn-partial-bound",
+          },
+          ...Array.from({ length: 400 }, (_, index) => ({
+            type: "assistant" as const,
+            messageUuid: `partial-${partialBatch}-${index}`,
+            historyTurnId: "turn-partial-bound",
+            message: {
+              id: `partial-${partialBatch}-${index}`,
+              role: "assistant" as const,
+              model: "test",
+              content: [
+                {
+                  type: "text" as const,
+                  text: `partial-${partialBatch}-${index}`,
+                },
+              ],
+            },
+          })),
+        ],
+        nextTurnCursor: "older-partial-bound",
+        latestTurnComplete: false,
+        latestTurnGap: {
+          turnId: "turn-partial-bound",
+          missingEntryCount: 1,
+          payloadOmitted: false,
+          repair: "turns_page" as const,
+        },
+      };
+    });
+    const fixture = createFixture([codex], historyReader, {}, {
+      supports: (_client, capability) => [CONVERSATION_SYNC_V2_CAPABILITY, CONVERSATION_WINDOW_COVERAGE_CAPABILITY, "conversation_sync_bounded_hot_window_v1"].includes(capability),
+    });
+    const client = {};
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(
+      subscription,
+      context(client, fixture.runtime),
+    );
+    await vi.waitFor(() =>
+      expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1),
+    );
+    await fixture.handler.handle(
+      {
+        type: "conversation_sync_ack",
+        protocolVersion: 2,
+        subscriptionId: subscription.requestId,
+        sequence: events(fixture.sent, client, "sync_complete").at(-1)!
+          .sequence,
+      },
+      context(client, fixture.runtime),
+    );
+
+    var previousTimelineCount = events(
+      fixture.sent,
+      client,
+      "timeline_page",
+    ).length;
+    var suppressed = false;
+    for (partialBatch = 1; partialBatch <= 8; partialBatch += 1) {
+      codex.entry.revision = `partial-bound-source-${partialBatch}`;
+      fixture.handler.sessionCatalogChanged();
+      await vi.waitFor(() =>
+        expect(events(fixture.sent, client, "sync_complete")).toHaveLength(
+          partialBatch + 1,
+        ),
+      );
+      const currentTimelineCount = events(
+        fixture.sent,
+        client,
+        "timeline_page",
+      ).length;
+      if (currentTimelineCount == previousTimelineCount) suppressed = true;
+      expect(currentTimelineCount).toBeGreaterThan(previousTimelineCount);
+      expect(JSON.stringify(events(fixture.sent, client, "timeline_page").at(-1)?.entries)).toContain("partial-" + partialBatch + "-399");
+      if (!suppressed) {
+        expect(currentTimelineCount).toBeGreaterThan(previousTimelineCount);
+      }
+      previousTimelineCount = currentTimelineCount;
+      await fixture.handler.handle(
+        {
+          type: "conversation_sync_ack",
+          protocolVersion: 2,
+          subscriptionId: subscription.requestId,
+          sequence: events(fixture.sent, client, "sync_complete").at(-1)!
+            .sequence,
+        },
+        context(client, fixture.runtime),
+      );
+      if (suppressed) break;
+    }
+    expect(suppressed).toBe(false);
+    await fixture.handler.close();
+  });
+
   it("bounds per-subscription partial unions and fails closed after LRU eviction", async () => {
     const fixture = createFixture([], async () => []);
     const client = {};

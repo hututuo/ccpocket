@@ -3,6 +3,8 @@ part of '../../messages.dart';
 const conversationSyncV2Capability = 'conversation_sync_v2';
 const conversationWindowCoverageCapability =
     'conversation_sync_window_coverage_v1';
+const conversationBoundedHotWindowCapability =
+    'conversation_sync_bounded_hot_window_v1';
 const conversationSyncFocusRefreshCapability =
     'conversation_sync_focus_refresh_v1';
 const conversationItemsByIdCapability = 'conversation_items_by_id_v1';
@@ -32,6 +34,7 @@ class _ConversationSyncV2ProtocolSlot implements LocalFeatureProtocolSlot {
   List<String> get supportedServerMessageTypes => const [
     conversationSyncV2Capability,
     conversationWindowCoverageCapability,
+    conversationBoundedHotWindowCapability,
     conversationRuntimeOverlayCapability,
     conversationUserIndexCapability,
     appServerStatusV1Capability,

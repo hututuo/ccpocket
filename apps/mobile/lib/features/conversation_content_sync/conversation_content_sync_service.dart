@@ -2876,6 +2876,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           hasEarlier: event.hasEarlier!,
           turnsNextCursor: event.turnsNextCursor,
           windowComplete: effectiveWindowComplete,
+          allowHotWindowRollover:
+              bridge.supportsConversationBoundedHotWindow &&
+              event.windowComplete == false,
           // Pre-coverage v2 Bridges advanced their own patch lineage even
           // though they could not prove whole-window replacement authority.
           // Track that wire revision while keeping the local body additive;
