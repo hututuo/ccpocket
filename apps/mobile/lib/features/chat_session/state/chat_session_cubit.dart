@@ -6934,11 +6934,14 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         yield 'user:client:$clientMessageId';
       }
       final messageUuid = entry.messageUuid?.trim();
-      if (messageUuid?.isNotEmpty == true) {
+      // Page-local ordinals can repeat even within one provider turn when
+      // multiple user messages steer that turn. They are never exact aliases.
+      if (messageUuid?.isNotEmpty == true &&
+          !_isPageLocalUserMessageUuid(messageUuid!)) {
         if (historyTurnId?.isNotEmpty == true) {
           yield 'user:turn:$historyTurnId:uuid:$messageUuid';
         }
-        if (!detachedPreview && !_isPageLocalUserMessageUuid(messageUuid!)) {
+        if (!detachedPreview) {
           yield 'user:uuid:$messageUuid';
         }
       }

@@ -856,6 +856,70 @@ void main() {
       },
     );
 
+    for (final pageLocalUuid in ['codex:user-turn:2', 'legacy-turn:2']) {
+      test(
+        'detached v2 ignores reused page-local user alias $pageLocalUuid',
+        () {
+          mockBridge.advertisedBridgeCapabilities = const {
+            conversationSyncV2Capability,
+          };
+          final history = <ServerMessage>[
+            UserInputMessage(
+              text: 'first steering message',
+              clientMessageId: 'steer-client-first',
+              providerItemId: 'steer-provider-first',
+              historyTurnId: 'same-running-turn',
+              userMessageUuid: pageLocalUuid,
+            ),
+            UserInputMessage(
+              text: 'second steering message',
+              clientMessageId: 'steer-client-second',
+              providerItemId: 'steer-provider-second',
+              historyTurnId: 'same-running-turn',
+              userMessageUuid: pageLocalUuid,
+            ),
+            const AssistantServerMessage(
+              historyTurnId: 'same-running-turn',
+              message: AssistantMessage(
+                id: 'latest-steering-answer',
+                role: 'assistant',
+                content: [TextContent(text: 'latest visible answer')],
+                model: 'gpt-test',
+              ),
+            ),
+          ];
+          final cubit = ChatSessionCubit(
+            sessionId: 'durable-page-local-steering',
+            provider: Provider.codex,
+            bridge: mockBridge,
+            streamingCubit: streamingCubit,
+            detachedPreview: true,
+            initialHistoryMessages: history,
+          );
+          addTearDown(cubit.close);
+
+          void expectReadableHistory() {
+            expect(cubit.state.entries, hasLength(3));
+            expect(
+              cubit.state.entries.whereType<UserChatEntry>().map(
+                (entry) => entry.clientMessageId,
+              ),
+              ['steer-client-first', 'steer-client-second'],
+            );
+            final projection =
+                cubit.diagnosticRuntimeProjection['timelineProjection']!
+                    as Map<String, Object?>;
+            expect(projection['duplicateCanonicalCount'], 0);
+            expect(projection['lastAction'], 'canonical_commit');
+          }
+
+          expectReadableHistory();
+          cubit.updateDetachedPreviewHistory(history);
+          expectReadableHistory();
+        },
+      );
+    }
+
     test(
       'detached v2 scopes reused assistant and tool ids to their provider turns',
       () {
