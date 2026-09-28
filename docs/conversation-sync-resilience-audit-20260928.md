@@ -1,4 +1,4 @@
-# 消息链路复查：2026-09-28
+# 消息链路复查：2026-09-28 至 2026-09-29
 
 基线：03c8ccbed96c05951fdcda9a897249221533fb61。
 
@@ -26,8 +26,9 @@ Bridge 对新能力客户端不再用累计 ID 集合作为停止发送条件；
 - [x] 重复/反序/多页事务：重放不增长，反序拒绝不改缓存，未齐页不提前淘汰。
 - [x] 重连/代次/恢复：保留旧修订、新传输基线、过期帧和单会话隔离。
 - [x] 同轮引导/超大工具/历史分页：用户和助手身份顺序保留，缺口明确。
-- [ ] 真实会话：源日志、Bridge、缓存、可见页面对齐，刷新与折叠验证。
-- [ ] 编译、相关测试、全量验证、审查、原模拟器安装与私有 Bridge 验收分层记录。
+- [x] 真实会话：源记录、Bridge 事件、SQLite 缓存和可见页面对齐；刷新后会话列表仍可权威更新。
+- [x] 相关测试、全量 Cloud Checks、iOS 模拟器构建与原模拟器安装分层记录。
+- [ ] 独立外部 reviewer、真机、OTA/stable/公开发布仍单独验收。
 
 ## 第二个实测现场：目录不变时自动更新停滞
 
@@ -57,7 +58,7 @@ Bridge 对新能力客户端不再用累计 ID 集合作为停止发送条件；
 
 仍有维护债务：conversation-sync-v2、ConversationContentSyncService、SessionCatalogCacheRepository 和 ChatSessionCubit 体积大、兼容路径多。后续拆分顺序应是：先抽离无 UI 的协议代次与恢复状态机，再抽离热缓存保留策略/历史存储，最后缩小页面投影入口。每一步保持现有真实 RPC→SQLite→页面测试，不把一次大规模重写当成本次验收条件。
 
-本轮没有完成整个项目的重构；没有独立外部 reviewer 执行记录；不以源码或云端绿色替代模拟器和真机验收。具体云端、安装、运行身份和现场验收记录以本机 deployments/.../resilience-followup 的带 SHA 记录为准。
+本轮没有完成整个项目的重构，也没有独立外部 reviewer 执行记录；不以源码或云端绿色替代模拟器和真机验收。最新删除列表修复的云端、安装和运行证据保存在本机 `deployments/messages-20260928-f6255834/timeline-delete-list-fix-d590e103-followup`，其中带有源码 SHA、构建树、产物校验和运行报告摘要。
 
 ## 第三个实测现场：历史页再次反转
 
@@ -72,7 +73,7 @@ Bridge 对新能力客户端不再用累计 ID 集合作为停止发送条件；
 - **PASS / 私有运行服务**：8767 已替换为 db23c1cd，health/readyz 正常；只更换启动入口和工作目录，原鉴权/环境保留，其他服务未动。Bridge 相同源码的云端完整检查 36435455686 全通过。
 - **PASS / 自动新鲜度现场**：22:30 和 22:38 的第二会话诊断分别对齐 22:26:25、22:37:37 源回复；22:35 新引导和新回复无需点击刷新即出现，源/缓存/页面正文一致，重复键为零。该会话热窗口仅是当前投影，不能把其中用户数当成全部历史用户数。
 - **PASS / 原问题会话**：22:42 诊断仍为 197 条缓存、27/27 条引导，源/缓存/页面最新正文一致、无折叠用户、无持续缺口。展开/折叠后过程计数保持 3 条更新、23 项。进入时出现过短暂完整性提示，随后诊断 latestComplete=true、gap=null；先前 order_conflict_preserved 拒绝和首次隔离启动的 catalog/state_unavailable 均保留证据，不能宣称整个运行过程零恢复事件。
-- **PENDING / 历史排序最终安装验收**：3b141527 的模拟器专项分析/测试通过，构建中。完整云端首轮真实 stdio 接收检查在首段流边界等待 10 秒超时，完整 Mobile 套件未执行；同一源码按原阈值重跑失败任务，保留首次日志，最终结果待记录。未仅凭安装包存在就进行安装。
+- **PASS / d590e103 当前修复候选**：完整 Cloud Checks 的 Bridge、Mobile、Functions、Bridge runtime 和 unsigned iOS IPA jobs 均成功；iOS 模拟器候选 workflow 36485602619 成功，Cloud Checks workflow 36485602790 成功。Mobile 全套测试和消息同步/展示专项通过；产物 Mobile tree 与源码树均为 `1b91e1c0e6e44dc3be5faa6238adb8ef5b388e01`。已安装到原 iPhone 17 Pro Max 模拟器，偏好设置和三个 Documents 文件保持一致。
 - **NOT_RUN**：真机安装/验收、OTA/stable/公开发布、独立外部 reviewer、全项目模块拆分。根 Agent 完成代码路径、兼容能力、事务顺序、原始源保留和测试边界复核。
 
 ## 第四个实测现场：Desktop 补全移动 Provider 已有工具
@@ -82,3 +83,15 @@ Bridge 对新能力客户端不再用累计 ID 集合作为停止发送条件；
 根因在 supplementCodexTurnItems：完整读取先移除 Provider 同 ID 工具，再按 Desktop 完整 rollout 的可见消息序号重新插入；有界修复读取仅补时间，保留 Provider 顺序。相同源在两条路径产生不同顺序。新回归先复现工具 A 从进度消息前移动到工具 B 后，再修复为精确同 ID 的工具原位补全。仅 Provider 缺失的 Desktop 工具继续走已有插入分支，保留宿主工具恢复功能，Mobile 乱序保护保持。
 
 验证：完整同步与 item repair 的身份序列相等回归、已有遗漏 Desktop 工具区间补全回归在内，共 291 项相关测试通过；TypeScript 编译通过。全量测试和真实已有缓存共同锚点复验仍需最终记录。
+
+## 第五个实测现场：合法删除补丁被 Mobile 的 64 条上限拒绝
+
+上一候选 043e86f7 安装后仍停在连接进度 88%。原模拟器日志反复记录 `timeline_page` 的 `FormatException_list_invalid` 解码拒绝。协议实现比对发现：Bridge 按 64 KiB 帧字节上限切分 patch，删除 ID 数量没有 64 条限制；Mobile 解码器却把 `deletes` 和 `entries` 共用 64 条上限。合法的多删除 patch 因此被丢弃，启动同步无法继续。
+
+修复在 d590e103 中将 `entries` 保持 64 条上限，给 `deletes` 单独设为 2000 条（等于 Mobile 热窗口最大行数），并把拒绝原因标成经过 allowlist 的具体字段名。协议回归验证 2000 条通过、2001 条有界拒绝；Mobile 同步、会话展示、缓存和 Bridge 链路专项及全量测试均通过。
+
+2026-09-29 05:34 +08:00 将精确 d590e103 模拟器候选安装到原模拟器。Connect 不再停在 88%，会话列表加载，目标“验证并优化文献导出流程”可打开；页面显示源端最后一条回复。连接后的进程日志没有 timeline frame 拒绝、frame parse failure 或 apply failure；手动刷新后权威会话列表计数从 4 增至 5。
+
+05:38 +08:00 从模拟器上传到本机 Bridge 的诊断报告与本机只读源记录对照：源最新回复时间为 2026-09-28 13:19:02.760Z，展示正文 SHA-256 与 SQLite 和页面完全相同；197 条页面条目和 197 条缓存条目，重复 canonical/stable key 均为零；27/27 条源用户引导都匹配、顶层可见且顺序正确，折叠用户为零；最新回复顶层可见，latest turn 完整，window 不完整但 gap 为 null，48 条同步事件全部收到并提交；报告 recentEvents 中没有 commitFailure/timelineRejected。采样稳定。偏好设置及原有三个 Documents 文件在重装前后保持一致。
+
+该验收针对当前已有 Provider 源记录：它最后一条仍是 13:19:02.760Z；没有声称 Provider 在这次模拟器测试期间产生了更新消息，也没有验证真机或发布链路。诊断与 SHA 收据在本机 `timeline-delete-list-fix-d590e103-followup` 目录，原先 043e86f7 卡 88% 的失败证据和备份继续保留。
