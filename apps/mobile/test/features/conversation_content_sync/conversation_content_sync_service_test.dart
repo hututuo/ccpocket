@@ -2364,7 +2364,9 @@ void main() {
         bridge: gateway,
         cache: repository,
       )..start(initialLifecycleState: AppLifecycleState.resumed);
-      final subscribe = await gateway.nextOutgoing('conversation_sync_subscribe');
+      final subscribe = await gateway.nextOutgoing(
+        'conversation_sync_subscribe',
+      );
       final subscriptionId = subscribe['requestId']! as String;
       gateway.addEvent(
         ConversationSyncV2EventMessage(
@@ -2436,8 +2438,12 @@ void main() {
       final snapshot = await load;
       expect(snapshot?.complete, isTrue);
       const expected = [
-        'prompt-oldest', 'steer-oldest', 'prompt-older',
-        'prompt-newer', 'steer-newer', 'prompt-newest',
+        'prompt-oldest',
+        'steer-oldest',
+        'prompt-older',
+        'prompt-newer',
+        'steer-newer',
+        'prompt-newest',
       ];
       expect(snapshot?.entries.map((entry) => entry.providerItemId), expected);
       final cached = await service.loadUserMessageIndex(
