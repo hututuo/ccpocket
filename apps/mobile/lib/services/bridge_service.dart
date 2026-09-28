@@ -4119,7 +4119,6 @@ class BridgeService implements BridgeServiceBase {
       return _diagnosticToken(error.runtimeType.toString());
     }
     final message = error.message;
-    if (message is! String) return 'FormatException_unclassified';
     const safeTimelineFailureSources = <String>{
       'timeline_page_range',
       'timeline_target',

@@ -689,6 +689,27 @@ void main() {
   );
 
   test(
+    'does not normalize incomplete turns-page responses without repair metadata',
+    () {
+      expect(
+        () => ServerMessage.fromJson({
+          ..._baseFrame,
+          'event': 'turns_page_response',
+          'requestId': 'request-incomplete-turns-page',
+          'provider': 'codex',
+          'providerSessionId': 'thread-incomplete-turns-page',
+          'data': const [],
+          'nextCursor': null,
+          'pageComplete': false,
+          'latestTurnComplete': false,
+          'latestTurnGap': null,
+        }),
+        throwsFormatException,
+      );
+    },
+  );
+
+  test(
     'runtime overlay requires every source runtime authority and turn fence',
     () {
       final complete = <String, dynamic>{

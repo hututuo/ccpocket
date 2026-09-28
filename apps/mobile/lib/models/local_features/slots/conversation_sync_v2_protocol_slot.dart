@@ -857,7 +857,8 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
       latestTurnComplete: latestTurnComplete,
       latestTurnGap:
           latestTurnGap ??
-          (latestTurnComplete == false
+          (event == ConversationSyncV2EventKind.timelinePage &&
+                  latestTurnComplete == false
               ? const ConversationSyncV2LatestTurnGap(
                   missingEntryCount: 1,
                   payloadOmitted: false,
