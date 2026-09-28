@@ -2093,7 +2093,8 @@ class SessionCatalogCacheRepository {
             );
           }
           final evictedIds = <String>[];
-          if (allowHotWindowRollover && mergedIds.length > maxHotWindowEntries) {
+          if (allowHotWindowRollover &&
+              mergedIds.length > maxHotWindowEntries) {
             // Keep every entry in this authoritative ordered observation, then
             // use remaining capacity for the newest already-readable history.
             // This evicts only a rebuildable hot projection, never provider data.
@@ -2103,7 +2104,9 @@ class SessionCatalogCacheRepository {
               retained.add(entryId);
             }
             evictedIds.addAll(mergedIds.where((id) => !retained.contains(id)));
-            mergedIds = mergedIds.where(retained.contains).toList(growable: false);
+            mergedIds = mergedIds
+                .where(retained.contains)
+                .toList(growable: false);
             rolledOverHotWindow = evictedIds.isNotEmpty;
           }
           var lastExistingPrefixPosition = -1;
@@ -2208,7 +2211,8 @@ class SessionCatalogCacheRepository {
                   ? revision
                   : existingWindow['revision']! as String
             : revision;
-        final committedHasEarlier = rolledOverHotWindow ||
+        final committedHasEarlier =
+            rolledOverHotWindow ||
             (additiveCommit
                 ? (existingWindow['has_earlier']! as int) != 0 || hasEarlier
                 : hasEarlier);

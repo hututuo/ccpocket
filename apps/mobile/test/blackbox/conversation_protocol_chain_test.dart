@@ -104,11 +104,7 @@ void main() {
       final runId =
           '${DateTime.now().toUtc().microsecondsSinceEpoch}-transport-replay';
       final traceRoot = Directory(
-        path.join(
-          Directory.systemTemp.path,
-          'ccpocket-chain',
-          runId,
-        ),
+        path.join(Directory.systemTemp.path, 'ccpocket-chain', runId),
       );
       await traceRoot.create(recursive: true);
       final bridgeFrameTrace = <Map<String, Object?>>[];
