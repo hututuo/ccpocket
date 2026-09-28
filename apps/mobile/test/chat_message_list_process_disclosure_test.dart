@@ -540,6 +540,8 @@ void main() {
 
     expect(scrollController.offset, greaterThan(150));
     final beforeOlderPage = tester.getTopLeft(firstBubble).dy;
+    final beforeOlderOffset = scrollController.offset;
+    final wasScrolling = scrollController.position.isScrollingNotifier.value;
     cubit.prependEntryForTest(
       UserChatEntry('older prompt', clientMessageId: 'older-user-turn'),
     );
@@ -547,6 +549,8 @@ void main() {
     expect(
       tester.getTopLeft(firstBubble).dy,
       closeTo(beforeOlderPage, 1),
+      reason: 'older history: offset $beforeOlderOffset -> '
+          '${scrollController.offset}, wasScrolling=$wasScrolling',
     );
     expect(find.text('first result'), findsOneWidget);
     expect(tester.takeException(), isNull);

@@ -1086,6 +1086,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
   final Set<String> _expandedIntermediateTurns = {};
   final Set<String> _expandedCurrentProgress = {};
   final Map<String, GlobalKey> _disclosureAnchorKeys = {};
+  final Map<String, GlobalKey> _timelineAnchorKeys = {};
   final _generatedImageItemCache =
       <GeneratedImageItemCacheKey, GeneratedImagePreviewItem>{};
   ChatSessionState? _derivedForState;
@@ -1540,13 +1541,41 @@ class _ChatMessageListState extends State<ChatMessageList> {
     required Widget child,
   }) => ReadingPositionItem(
     key: _TimelineItemKey(key),
-    child: AutoScrollTag(
-      key: ValueKey(key),
-      controller: widget.scrollController,
-      index: entryIndex,
-      child: child,
+    child: KeyedSubtree(
+      key: _timelineAnchorKeys.putIfAbsent(key, GlobalKey.new),
+      child: AutoScrollTag(
+        key: ValueKey(key),
+        controller: widget.scrollController,
+        index: entryIndex,
+        child: child,
+      ),
     ),
   );
+
+  GlobalKey? _visibleTimelineAnchor() {
+    final viewport = context.findRenderObject();
+    if (viewport is! RenderBox || !viewport.hasSize) return null;
+    final top = viewport.localToGlobal(Offset.zero).dy;
+    final bottom = top + widget.scrollController.position.viewportDimension;
+    GlobalKey? nearest;
+    var nearestDistance = double.infinity;
+    for (final key in _timelineAnchorKeys.values) {
+      final row = key.currentContext?.findRenderObject();
+      if (row is! RenderBox || !row.attached || !row.hasSize) continue;
+      final rowTop = row.localToGlobal(Offset.zero).dy;
+      if (row.size.height <= 0 ||
+          rowTop >= bottom ||
+          rowTop + row.size.height <= top) {
+        continue;
+      }
+      final distance = (rowTop - top).abs();
+      if (distance < nearestDistance) {
+        nearest = key;
+        nearestDistance = distance;
+      }
+    }
+    return nearest;
+  }
 
   Widget _buildTranscriptEntry({
     required List<ChatEntry> entries,
@@ -1851,7 +1880,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
         controller.hasClients &&
         controller.offset > MaintainReadingPositionPhysics.scrolledUpThreshold &&
         listEquals(previousEntries, allEntries.sublist(addedEntries))) {
-      controller.retainOffsetForNextLayout();
+      controller.retainOffsetForNextLayout(anchorKey: _visibleTimelineAnchor());
     }
     _previousTimelineEntries = historyBrowsing ? null : allEntries;
 
@@ -1911,6 +1940,7 @@ class _ChatMessageListState extends State<ChatMessageList> {
     }
     final streamingItemKey = 'streaming:${widget.sessionId}';
     if (hasStreaming) timelineIndices[streamingItemKey] = 0;
+    _timelineAnchorKeys.removeWhere((key, _) => !timelineIndices.containsKey(key));
     widget.diagnosticController?._attach(
       _ChatMessageListDiagnosticSource(
         owner: this,
