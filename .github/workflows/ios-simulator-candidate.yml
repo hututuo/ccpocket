@@ -25,13 +25,13 @@ jobs:
           cache: true
       - run: flutter pub get
         working-directory: apps/mobile
-      - name: Verify settings inspection regression
+      - name: Verify settings and message sync regression
         working-directory: apps/mobile
         run: |
-          dart format lib/features/chat_session/widgets/session_mode_bar.dart lib/features/chat_session/widgets/codex_settings_sheet.dart test/session_mode_bar_test.dart
+          dart format lib/features/chat_session/widgets/session_mode_bar.dart lib/features/chat_session/widgets/codex_settings_sheet.dart test/session_mode_bar_test.dart lib/features/conversation_content_sync/conversation_content_sync_service.dart lib/features/session_list/cache/session_catalog_cache_repository.dart test/features/conversation_content_sync/conversation_content_sync_service_test.dart
           git diff -- lib test > "$RUNNER_TEMP/settings-format.patch"
           dart analyze .
-          flutter test test/session_mode_bar_test.dart test/chat_session_cubit_test.dart --reporter expanded
+          flutter test test/session_mode_bar_test.dart test/chat_session_cubit_test.dart test/features/conversation_content_sync/conversation_content_sync_service_test.dart test/features/session_list/cache/session_catalog_cache_repository_test.dart --reporter expanded
       - name: Save formatting evidence
         if: always()
         uses: actions/upload-artifact@v4

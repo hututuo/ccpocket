@@ -49,6 +49,98 @@ void main() {
     }
   });
 
+  test('isolates reversed timeline anchors without restarting other threads', () async {
+    await service.dispose();
+    gateway.supportsConversationSyncV2 = true;
+    service = ConversationContentSyncService(bridge: gateway, cache: repository)
+      ..start(initialLifecycleState: AppLifecycleState.resumed);
+    final subscribe = await gateway.nextOutgoing('conversation_sync_subscribe');
+    final subscriptionId = subscribe['requestId']! as String;
+    final target = SessionCatalogCacheTarget.fromBridge(
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-home-a',
+      logicalConnectionIdentity: 'machine:1',
+      websocketUrl: 'wss://bridge.example/socket',
+    );
+    gateway.addEvent(ConversationSyncV2EventMessage(
+      event: ConversationSyncV2EventKind.syncBegin,
+      subscriptionId: subscriptionId,
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-home-a',
+      batchId: 'order-batch',
+      sequence: 1,
+      requestId: subscriptionId,
+      catalogState: 'catalog-order',
+      statusState: 'status-order',
+    ));
+    await gateway.nextOutgoing('conversation_sync_ack');
+
+    Future<void> timeline(int sequence, String thread, List<String> ids, {
+      bool complete = true,
+      String mode = 'snapshot',
+      String? base,
+    }) async {
+      gateway.addEvent(ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.timelinePage,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'order-batch-$sequence',
+        sequence: sequence,
+        provider: 'codex',
+        providerSessionId: thread,
+        revision: complete ? 'revision-$sequence' : base ?? 'partial-$sequence',
+        baseRevision: base,
+        mode: mode,
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [for (var i = 0; i < ids.length; i++) _wireEntry(ids[i], i)],
+        deletes: const [],
+        hasEarlier: true,
+        windowComplete: complete,
+        latestTurnComplete: complete,
+        sourceEntryCount: ids.length,
+      ));
+      expect((await gateway.nextOutgoing('conversation_sync_ack'))['sequence'], sequence);
+    }
+
+    await timeline(2, 'conflicted', ['first', 'second']);
+    await timeline(3, 'conflicted', ['second', 'first'], complete: false);
+    final retained = await repository.loadConversationWindow(
+      target: target, provider: 'codex', providerSessionId: 'conflicted',
+    );
+    expect(retained?.entries.map((entry) => entry.entryId), ['first', 'second']);
+    expect(retained?.revision, 'revision-2');
+    expect(retained?.latestTurnComplete, isFalse);
+    expect(retained?.latestTurnGap?.repair, 'turns_page');
+
+    // A producer ACK does not mean the rejected lineage became our cache base.
+    await timeline(4, 'conflicted', ['tail'], complete: false, mode: 'patch', base: 'partial-3');
+    final enriched = await repository.loadConversationWindow(
+      target: target, provider: 'codex', providerSessionId: 'conflicted',
+    );
+    expect(enriched?.entries.map((entry) => entry.entryId), ['first', 'second', 'tail']);
+    expect(enriched?.revision, 'revision-2');
+    expect(enriched?.windowComplete, isFalse);
+    await timeline(5, 'healthy', ['latest-answer']);
+    final healthy = await repository.loadConversationWindow(
+      target: target, provider: 'codex', providerSessionId: 'healthy',
+    );
+    expect(healthy?.entries.single.entryId, 'latest-answer');
+    expect(gateway.sentTypes.where((type) => type == 'conversation_sync_subscribe'), hasLength(1));
+    expect(gateway.sentTypes, isNot(contains('conversation_sync_unsubscribe')));
+
+    // A complete snapshot restores the thread, including its patch lineage.
+    await timeline(6, 'conflicted', ['first', 'second', 'third']);
+    await timeline(7, 'conflicted', ['third'], mode: 'patch', base: 'revision-6');
+    final recovered = await repository.loadConversationWindow(
+      target: target, provider: 'codex', providerSessionId: 'conflicted',
+    );
+    expect(recovered?.revision, 'revision-7');
+    expect(recovered?.latestTurnComplete, isTrue);
+    expect(gateway.sentTypes, isNot(contains('conversation_sync_unsubscribe')));
+  });
+
   test('prefers v2 and ACKs timeline pages only after SQLite commit', () async {
     await service.dispose();
     gateway.supportsConversationSyncV2 = true;

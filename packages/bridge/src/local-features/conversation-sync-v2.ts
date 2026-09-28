@@ -47,6 +47,7 @@ import {
   type ConversationContentSnapshotEntry,
 } from "./conversation-content-sync.js";
 import { CodexBoundedHistoryReader } from "./codex-bounded-history.js";
+import { mergeObservedOrder } from "./observed-message-order.js";
 import type { CodexDesktopToolTimeline } from "./codex-tool-history.js";
 import { sessionHistoryToServerMessages } from "./codex-thread-history.js";
 import {
@@ -6942,6 +6943,7 @@ function mergeObservedMessageSources(
     aliases: [{ source: "canonical", message }],
     sources: new Set(["canonical"]),
   }));
+  let orderedIndices = groups.map((_group, index) => index);
   const identities = new Map<string, Set<number>>();
   const baseIdentities = new Map<string, Set<number>>();
   const turnlessIdentities = new Map<string, Set<number>>();
@@ -7043,6 +7045,7 @@ function mergeObservedMessageSources(
       source.source,
       sourceAssistantAliasCounts,
     );
+    const sourceOrder: number[] = [];
     for (const entry of observedEntries) {
       const message = entry.message;
       const baseIdentity = observedMessageIdentity(message);
@@ -7080,6 +7083,7 @@ function mergeObservedMessageSources(
             : {}),
         });
         group.sources.add(source.source);
+        sourceOrder.push(index);
         registerIdentity(identity, index);
         registerBaseIdentity(baseIdentity, index);
         registerTurnlessIdentity(turnlessIdentity, index);
@@ -7125,6 +7129,7 @@ function mergeObservedMessageSources(
             : {}),
         });
         group.sources.add(source.source);
+        sourceOrder.push(index);
         registerIdentity(identity, index);
         registerBaseIdentity(baseIdentity, index);
         registerTurnlessIdentity(turnlessIdentity, index);
@@ -7166,6 +7171,7 @@ function mergeObservedMessageSources(
             : {}),
         });
         group.sources.add(source.source);
+        sourceOrder.push(index);
         registerIdentity(identity, index);
         registerBaseIdentity(baseIdentity, index);
         registerTurnlessIdentity(turnlessIdentity, index);
@@ -7219,6 +7225,7 @@ function mergeObservedMessageSources(
             : {}),
         });
         group.sources.add(source.source);
+        sourceOrder.push(index);
         registerIdentity(identity, index);
         registerBaseIdentity(baseIdentity, index);
         registerTurnlessIdentity(turnlessIdentity, index);
@@ -7227,6 +7234,7 @@ function mergeObservedMessageSources(
       }
 
       const index = groups.length;
+      sourceOrder.push(index);
       groups.push({
         output: message,
         ...(entry.identityScope
@@ -7248,8 +7256,9 @@ function mergeObservedMessageSources(
       registerTurnlessIdentity(turnlessIdentity, index);
       registerAssistantAlias(message, index);
     }
+    orderedIndices = mergeObservedOrder(orderedIndices, sourceOrder);
   }
-  return groups.map((group) => group.output);
+  return orderedIndices.map((index) => groups[index]!.output);
 }
 
 /**

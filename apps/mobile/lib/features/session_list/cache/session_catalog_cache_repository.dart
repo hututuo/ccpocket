@@ -272,6 +272,7 @@ class ConversationTimelinePageCommit {
     required this.windowCommitted,
     required this.baseRevisionMatched,
     this.stageRejected = false,
+    this.orderConflict = false,
     this.committedRevision,
     this.lastAssistantOutputAt,
   });
@@ -280,6 +281,7 @@ class ConversationTimelinePageCommit {
   final bool windowCommitted;
   final bool baseRevisionMatched;
   final bool stageRejected;
+  final bool orderConflict;
   final String? committedRevision;
 
   /// Newest discrete assistant text timestamp introduced by this committed
@@ -1680,6 +1682,38 @@ class SessionCatalogCacheRepository {
     });
   }
 
+  /// Retain readable rows and their revision while a rejected projection is
+  /// repaired through bounded provider paging. This is not replacement authority.
+  Future<void> markConversationWindowIncomplete({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required ConversationSyncV2LatestTurnGap gap,
+  }) {
+    if (!target.isValid) return Future<void>.value();
+    return _enqueueMutation(() async {
+      final db = await database.database;
+      await db.transaction((transaction) async {
+        final partitionId = await _resolveReadablePartition(transaction, target);
+        if (partitionId == null) return;
+        await transaction.update(
+          SessionCatalogCacheDatabase.hotWindowsTable,
+          {
+            'window_complete': 0,
+            'latest_turn_complete': 0,
+            'latest_turn_gap_json': _encodeLatestTurnGap(
+              latestTurnComplete: false,
+              gap: gap,
+            ),
+            'latest_turn_gap_cursor': null,
+          },
+          where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+          whereArgs: [partitionId, provider, providerSessionId],
+        );
+      });
+    });
+  }
+
   Future<ConversationTimelinePageCommit> stageConversationTimelinePage({
     required SessionCatalogCacheTarget target,
     required String subscriptionId,
@@ -2024,6 +2058,7 @@ class SessionCatalogCacheRepository {
               windowCommitted: false,
               baseRevisionMatched: true,
               stageRejected: true,
+              orderConflict: true,
             );
           }
           var lastExistingPrefixPosition = -1;

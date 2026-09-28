@@ -266,6 +266,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   String? _v2RecoveryTargetFingerprint;
   String? _forcedSnapshotTargetFingerprint;
   final Set<String> _forcedSnapshotThreadKeys = {};
+  final Set<String> _rejectedTimelineThreadKeys = {};
   Future<void> _v2MutationTail = Future<void>.value();
   Future<void>? _userIndexWarmup;
   final Set<Future<void>> _backgroundFlights = {};
@@ -2810,6 +2811,25 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           );
         }
         final effectiveWindowComplete = event.effectiveWindowComplete;
+        _bindForcedSnapshotScope(target.fingerprint);
+        final threadKey = _conversationThreadKey(
+          event.provider!,
+          event.providerSessionId!,
+        );
+        final rejectedThread = _rejectedTimelineThreadKeys.contains(threadKey);
+        if (event.mode == 'patch' && effectiveWindowComplete && rejectedThread) {
+          // A complete patch cannot use a rejected lineage. Only a complete
+          // snapshot may replace it; keep other threads and paging responsive.
+          _recordDiagnosticEvent(
+            'timelineRejected',
+            sequence: event.sequence,
+            provider: event.provider,
+            providerSessionId: event.providerSessionId,
+            result: 'awaiting_thread_snapshot',
+          );
+          break;
+        }
+
         // New Bridges explicitly promise additive semantics. Reject a broken
         // explicit frame with thread-scoped recovery. Older Bridges expressed
         // the same repair only through latestTurnComplete=false and may still
@@ -2827,8 +2847,15 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           provider: event.provider!,
           providerSessionId: event.providerSessionId!,
           revision: event.revision!,
-          baseRevision: event.baseRevision,
-          mode: event.mode!,
+          // A partial frame cannot delete, reorder or advance our revision.
+          // After a rejected batch, stage it as an additive snapshot so safe
+          // enrichment continues without trusting the producer's lost base.
+          baseRevision: rejectedThread && !effectiveWindowComplete
+              ? null
+              : event.baseRevision,
+          mode: rejectedThread && !effectiveWindowComplete
+              ? 'snapshot'
+              : event.mode!,
           pageIndex: event.pageIndex!,
           pageCount: event.pageCount!,
           entries: event.entries,
@@ -2850,6 +2877,49 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           // Reject the patch before touching visible data and request a scoped
           // replacement instead of blanking the conversation.
           throw const _ConversationTimelineBaseRevisionMismatch();
+        }
+        if (committed.orderConflict) {
+          _markThreadForForcedSnapshot(
+            target,
+            ConversationSyncV2Target(
+              provider: event.provider!,
+              providerSessionId: event.providerSessionId!,
+            ),
+          );
+          if (_rejectedTimelineThreadKeys.add(threadKey)) {
+            await cache.markConversationWindowIncomplete(
+              target: target,
+              provider: event.provider!,
+              providerSessionId: event.providerSessionId!,
+              gap: event.latestTurnGap ??
+                  const ConversationSyncV2LatestTurnGap(
+                    missingEntryCount: 0,
+                    payloadOmitted: true,
+                    repair: 'turns_page',
+                  ),
+            );
+            _publishCacheInvalidation(
+              targetFingerprint: target.fingerprint,
+              provider: event.provider!,
+              providerSessionId: event.providerSessionId!,
+              reason: 'timeline_order_conflict',
+            );
+          }
+          _markCurrentGenerationTimelineReady(
+            event.provider!,
+            event.providerSessionId!,
+          );
+          if (isFocused) {
+            _scheduleAutomaticLatestTurnRepairFromCache(_focused!);
+          }
+          _recordDiagnosticEvent(
+            'timelineRejected',
+            sequence: event.sequence,
+            provider: event.provider,
+            providerSessionId: event.providerSessionId,
+            result: 'order_conflict_preserved',
+          );
+          break;
         }
         if (committed.stageRejected) {
           throw StateError('Conversation timeline staging safety bound hit.');
@@ -3957,6 +4027,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     if (_forcedSnapshotTargetFingerprint == targetFingerprint) return;
     _forcedSnapshotTargetFingerprint = targetFingerprint;
     _forcedSnapshotThreadKeys.clear();
+    _rejectedTimelineThreadKeys.clear();
   }
 
   void _markThreadForForcedSnapshot(
@@ -3968,7 +4039,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       _conversationThreadKey(thread.provider, thread.providerSessionId),
     );
     while (_forcedSnapshotThreadKeys.length > 512) {
-      _forcedSnapshotThreadKeys.remove(_forcedSnapshotThreadKeys.first);
+      final oldest = _forcedSnapshotThreadKeys.first;
+      _forcedSnapshotThreadKeys.remove(oldest);
+      _rejectedTimelineThreadKeys.remove(oldest);
     }
   }
 
@@ -3979,6 +4052,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   ) {
     if (_forcedSnapshotTargetFingerprint != target.fingerprint) return;
     _forcedSnapshotThreadKeys.remove(
+      _conversationThreadKey(provider, providerSessionId),
+    );
+    _rejectedTimelineThreadKeys.remove(
       _conversationThreadKey(provider, providerSessionId),
     );
   }
