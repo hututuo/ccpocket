@@ -2224,6 +2224,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
 
   void _handleTransportLoss() {
     _recordDiagnosticEvent('transportLoss', result: 'subscription_cleared');
+    _partialTimelineWireRevisions.clear();
     _failTimelineReadyWaiters(const _ConversationPagingInterrupted());
     _generation += 1;
     _pendingSubscriptionId = null;

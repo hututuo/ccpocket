@@ -368,6 +368,20 @@ void main() {
         gateway.sentTypes,
         isNot(contains('conversation_sync_unsubscribe')),
       );
+      await timeline(
+        6,
+        ['latest', 'final', 'after'],
+        revision: 'last-partial-wire',
+      );
+      Map<String, Object?> diagnostic() => service.diagnosticSnapshot(
+        provider: 'codex',
+        providerSessionId: 'omitted-window',
+      );
+      expect(diagnostic()['partialWireRevisionCount'], 1);
+      gateway.currentBridgeConnectionState = BridgeConnectionState.disconnected;
+      gateway._connections.add(BridgeConnectionState.disconnected);
+      await pumpEventQueue();
+      expect(diagnostic()['partialWireRevisionCount'], 0);
     },
   );
 
