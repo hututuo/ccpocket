@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import {
+  latestHistoryRootTurnStart,
   selectTurnAwareHistoryWindow,
   TURN_AWARE_HISTORY_ROOT_TURNS,
 } from "../history-window.js";
@@ -1202,6 +1203,22 @@ export function buildConversationContentSnapshot(
     ).cacheBytes > limits.maxSnapshotBytes;
   if (initialSnapshotTooLarge) {
     windowComplete = false;
+    // Heavy tools must not evict the user/answer spine of the other recent
+    // provider turns. Retain that spine plus the newest process tail first;
+    // detail gaps remain explicitly pageable within the same byte budget.
+    const spine = selectTurnAwareHistoryWindow(source, {
+      toolCalls: 0,
+      envelopeEntries: 0,
+      preserveLatestRootTurnTools: false,
+    });
+    const spineAndTail = new Map(spine.map((entry) => [entry.sourceIndex, entry]));
+    for (const entry of selected.slice(-24)) spineAndTail.set(entry.sourceIndex, entry);
+    const preparedSpine = prepareSnapshotEntries(
+      [...spineAndTail.values()].sort((left, right) => left.sourceIndex - right.sourceIndex),
+      Math.min(limits.maxMessageTextBytes, 4 * 1024),
+      limits.maxSnapshotBytes,
+      { skipMalformed: true },
+    );
     const latestSelected = selected.filter(
       (entry) => entry.sourceIndex >= latestTurnStart,
     );
@@ -1211,6 +1228,13 @@ export function buildConversationContentSnapshot(
       limits.maxSnapshotBytes,
     );
     if (
+      preparedSpine &&
+      materializeCandidateSnapshot(
+        target, preparedSpine, rawMessages, latestTurnStart, latestTurnId, false,
+      ).cacheBytes <= limits.maxSnapshotBytes
+    ) {
+      candidates = preparedSpine;
+    } else if (
       preparedLatest &&
       materializeCandidateSnapshot(
         target,
@@ -1545,13 +1569,7 @@ function latestRootTurnStart(
   messages: readonly ServerMessage[],
   rootTurns: number,
 ): number {
-  let seen = 0;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index]?.type !== "user_input") continue;
-    seen += 1;
-    if (seen === rootTurns) return index;
-  }
-  return 0;
+  return latestHistoryRootTurnStart(messages, rootTurns);
 }
 
 function materializeSnapshot(

@@ -6456,6 +6456,36 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("rebases a nonempty partial wire stream after a Bridge restart without replacing phone history", async () => {
+    const threadId = "thread-restarted-partial";
+    const codex = codexSeed(0, threadId);
+    const messages = historyForTurn("first-live", "live-turn");
+    const fixture = createFixture([codex], async () => ({
+      messages: [...messages],
+      windowComplete: false,
+      latestTurnComplete: false,
+      latestTurnGap: { turnId: "live-turn", missingEntryCount: 1, payloadOmitted: false, repair: "items_page" as const },
+    }));
+    const client = {};
+    const subscription = subscribeMessage([{ provider: "codex", providerSessionId: threadId, revision: "phone-only-before-restart" }]);
+    try {
+      await fixture.handler.handle(subscription, context(client, fixture.runtime));
+      await vi.waitFor(() => expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1));
+      const first = events(fixture.sent, client, "timeline_page")[0]!;
+      expect(first).toMatchObject({ mode: "snapshot", windowComplete: false, deletes: [] });
+      expect(first).not.toHaveProperty("baseRevision");
+      expect(first.entries.length).toBeGreaterThan(0);
+      await fixture.handler.handle({ type: "conversation_sync_ack", protocolVersion: 2, subscriptionId: subscription.requestId, sequence: events(fixture.sent, client, "sync_complete")[0]!.sequence }, context(client, fixture.runtime));
+      messages.push({ type: "assistant", historyTurnId: "live-turn", message: { id: "reply-after-restart", role: "assistant", model: "test", content: [{ type: "text", text: "newest reply" }] } });
+      codex.entry.revision = "next-live-revision";
+      fixture.handler.sessionCatalogChanged();
+      await vi.waitFor(() => expect(events(fixture.sent, client, "sync_complete")).toHaveLength(2));
+      const next = events(fixture.sent, client, "timeline_page").at(-1)!;
+      expect(next).toMatchObject({ mode: "patch", revision: first.revision, baseRevision: first.revision, windowComplete: false, deletes: [] });
+      expect(JSON.stringify(next.entries)).toContain("reply-after-restart");
+    } finally { await fixture.handler.close(); }
+  });
+
   it("preserves a phone-only window without emitting an unprovable empty patch", async () => {
     const codex = codexSeed(0, "thread-refresh-empty-history");
     codex.entry.firstPrompt = "already cached user prompt";

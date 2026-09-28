@@ -306,6 +306,47 @@ describe("ConversationContentSyncFeatureHandler", () => {
     expect(snapshot.entries.at(-1)?.sourceIndex).toBe(messages.length - 1);
   });
 
+  it("retains interleaved steering throughout one authoritative provider turn", () => {
+    const messages: ServerMessage[] = [];
+    for (let index = 0; index < 12; index += 1) {
+      messages.push(
+        { type: "user_input", text: `guide-${index}`, providerItemId: `guide-${index}`, historyTurnId: "one-provider-turn" },
+        { type: "assistant", historyTurnId: "one-provider-turn", message: { id: `reply-${index}`, role: "assistant", model: "test", content: [{ type: "text", text: `reply-${index}` }] } },
+      );
+    }
+    const snapshot = buildConversationContentSnapshot(
+      { provider: "codex", providerSessionId: "steering-window" }, messages,
+      { maxMessageTextBytes: 64 * 1024, maxSnapshotBytes: 512 * 1024 },
+    );
+    expect(snapshot.entries.map((entry) => entry.message)).toEqual(messages);
+    expect(snapshot.latestTurnComplete).toBe(true);
+  });
+
+  it("keeps all recent guidance when heavy tool bodies need compaction", () => {
+    const messages: ServerMessage[] = [];
+    for (let turn = 0; turn < 3; turn += 1) {
+      for (let steer = 0; steer < 7; steer += 1) {
+        const id = `${turn}-${steer}`;
+        messages.push(
+          { type: "user_input", text: `guide-${id}`, providerItemId: `guide-${id}`, historyTurnId: `turn-${turn}` },
+          { type: "assistant", historyTurnId: `turn-${turn}`, message: { id: `reply-${id}`, role: "assistant", model: "test", content: [{ type: "text", text: `reply-${id}` }] } },
+          { type: "assistant", historyTurnId: `turn-${turn}`, message: { id: `tool-${id}`, role: "assistant", model: "test", content: [{ type: "tool_use", id: `call-${id}`, name: "Read", input: {} }] } },
+          { type: "tool_result", historyTurnId: `turn-${turn}`, toolUseId: `call-${id}`, content: "x".repeat(48 * 1024) },
+        );
+      }
+    }
+    const snapshot = buildConversationContentSnapshot(
+      { provider: "codex", providerSessionId: "heavy-steering-window" }, messages,
+      { maxMessageTextBytes: 64 * 1024, maxSnapshotBytes: 512 * 1024, preserveLatestRootTurnTools: true },
+    );
+    expect(snapshot.entries.filter((entry) => entry.message.type === "user_input").map((entry) => entry.message)).toEqual(messages.filter((message) => message.type === "user_input"));
+    expect(snapshot.entries.some((entry) => entry.message.type === "assistant" && entry.message.message.id === "reply-2-6")).toBe(true);
+    expect(snapshot.windowComplete).toBe(false);
+    expect(snapshot.latestTurnComplete).toBe(false);
+    expect(snapshot.latestTurnGap?.turnId).toBe("turn-2");
+    expect(snapshot.cacheBytes).toBeLessThanOrEqual(512 * 1024);
+  });
+
   it("marks a latest-only budget fallback as an incomplete whole window", () => {
     const messages: ServerMessage[] = [];
     for (let turn = 0; turn < 5; turn += 1) {

@@ -85,13 +85,7 @@ export function selectTurnAwareHistoryWindow<T extends SequencedServerMessage>(
 function newestHistoricalAndAllLatestTurnToolIds<
   T extends SequencedServerMessage,
 >(entries: readonly T[], start: number, historicalLimit: number): Set<string> {
-  let latestTurnStart = start;
-  for (let index = entries.length - 1; index >= start; index -= 1) {
-    if (entries[index].message.type === "user_input") {
-      latestTurnStart = index;
-      break;
-    }
-  }
+  const latestTurnStart = Math.max(start, startOfLatestRootTurns(entries, 1));
   const selected = new Set<string>();
   for (
     let index = latestTurnStart - 1;
@@ -362,7 +356,7 @@ function hardCapProjectedEntries<T extends SequencedServerMessage>(
   limit: number,
 ): number[] {
   const selected = new Set<number>();
-  for (let index = 0; index < projected.length; index += 1) {
+  for (let index = projected.length - 1; index >= 0 && selected.size < limit; index -= 1) {
     if (projected[index].entry.message.type === "user_input") {
       selected.add(index);
     }
@@ -416,14 +410,32 @@ function startOfLatestRootTurns<T extends SequencedServerMessage>(
   entries: readonly T[],
   rootTurns: number,
 ): number {
-  if (rootTurns <= 0) return entries.length;
+  return latestHistoryRootTurnStart(entries.map((entry) => entry.message), rootTurns);
+}
+
+/** A steer with the same authoritative provider turn is not a new root. */
+export function latestHistoryRootTurnStart(
+  messages: readonly ServerMessage[],
+  rootTurns: number,
+): number {
+  if (rootTurns <= 0) return messages.length;
   let seen = 0;
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    if (entries[index].message.type !== "user_input") continue;
+  let start = 0;
+  let newerTurnId: string | undefined;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.type !== "user_input") continue;
+    const turnId = message.historyTurnId?.trim() || undefined;
+    if (turnId && turnId === newerTurnId) {
+      start = index;
+      continue;
+    }
+    if (seen === rootTurns) return start;
     seen += 1;
-    if (seen === rootTurns) return index;
+    start = index;
+    newerTurnId = turnId;
   }
-  return 0;
+  return seen >= rootTurns ? start : 0;
 }
 
 function assistantHasVisibleText(

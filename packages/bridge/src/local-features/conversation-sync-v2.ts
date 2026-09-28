@@ -3699,8 +3699,21 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
           .get(key)
           ?.find((candidate) => candidate.revision === known)
       : undefined;
+    // A restarted Bridge cannot reconstruct a phone-only revision. Coverage
+    // clients commit incomplete snapshots additively and enforce their own
+    // transactional hot-window bound, so seed a fresh bounded wire lineage
+    // instead of silently withholding every future live update. Empty reads
+    // and lost proofs within an existing subscription still fail closed.
+    const bootstrapPartialLineage =
+      known !== undefined &&
+      !snapshot.windowComplete &&
+      snapshot.providerHistoryUnavailable !== true &&
+      base === undefined &&
+      !subscription.partialThreadKeys.has(key) &&
+      snapshot.entries.length > 0 &&
+      snapshot.entries.length <= MAX_PARTIAL_UNION_ENTRIES;
     const preserveKnownWindow =
-      known !== undefined && !snapshot.windowComplete;
+      known !== undefined && !snapshot.windowComplete && !bootstrapPartialLineage;
     if (
       preserveKnownWindow &&
       !this.admitPartialUnion(subscription, key, known, snapshot, base)

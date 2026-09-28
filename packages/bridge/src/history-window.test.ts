@@ -6,6 +6,14 @@ import {
 } from "./history-window.js";
 
 describe("selectTurnAwareHistoryWindow", () => {
+  it("keeps same-turn steers together while enforcing the hard entry bound", () => {
+    const entries = Array.from({ length: 900 }, (_, index) => entry(index, {
+      type: "user_input", text: `steer-${index}`, historyTurnId: "one-long-turn",
+    }));
+    const selected = selectTurnAwareHistoryWindow(entries);
+    expect(selected).toHaveLength(TURN_AWARE_HISTORY_MAX_RETAINED_ENTRIES);
+    expect(selected.at(-1)?.message).toMatchObject({ text: "steer-899" });
+  });
   it("keeps the latest five root turns instead of a flat entry tail", () => {
     const entries = Array.from({ length: 10 }, (_, index) => [
       entry(index * 3 + 1, {
