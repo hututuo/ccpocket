@@ -3279,7 +3279,7 @@ void main() {
   );
 
   test(
-    'focused turns-page gap repairs automatically without a turn id',
+    'focused turns-page gap fetches a bounded summary automatically',
     () async {
       await service.dispose();
       gateway.supportsConversationSyncV2 = true;
@@ -3389,12 +3389,42 @@ void main() {
         provider: 'codex',
         providerSessionId: 'thread-auto-turns-gap',
       );
-      expect(repaired?.latestTurnComplete, isTrue);
-      expect(repaired?.latestTurnGap, isNull);
+      expect(repaired?.latestTurnComplete, isFalse);
+      expect(repaired?.latestTurnGap?.repair, 'turns_page');
       expect(repaired?.entries.map((entry) => entry.entryId), [
         'legacy-incomplete-shell',
         'turn:legacy-latest-turn:user:legacy-latest-user',
       ]);
+
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.timelinePage,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'batch-auto-turns-gap',
+          sequence: 4,
+          provider: 'codex',
+          providerSessionId: 'thread-auto-turns-gap',
+          revision: 'revision-auto-turns-gap',
+          mode: 'snapshot',
+          pageIndex: 0,
+          pageCount: 1,
+          entries: [_wireEntry('legacy-incomplete-shell', 0)],
+          hasEarlier: true,
+          turnsNextCursor: 'older-auto-turns-gap',
+          windowComplete: false,
+          latestTurnComplete: false,
+          latestTurnGap: const ConversationSyncV2LatestTurnGap(
+            missingEntryCount: 1,
+            payloadOmitted: false,
+            repair: 'turns_page',
+          ),
+          sourceEntryCount: 2,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await pumpEventQueue();
       expect(
         gateway.sentTypes.where((type) => type == 'conversation_turns_page'),
         hasLength(1),

@@ -232,6 +232,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   final Map<String, _AutomaticLatestTurnRepairState>
   _automaticLatestTurnRepairs = {};
   final Map<String, Timer> _automaticLatestTurnRepairRetryTimers = {};
+  final Map<String, String> _automaticTurnsPageRepairRevisionByTarget = {};
   String? _focusedRefreshFlightKey;
   Future<void>? _focusedRefreshFlight;
   Completer<void>? _focusedRefreshCancellation;
@@ -1425,6 +1426,15 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       revision: revision,
       gap: gap,
     );
+    final targetKey = _automaticLatestTurnRepairTargetKey(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
+    if (gap.repair == 'turns_page' &&
+        _automaticTurnsPageRepairRevisionByTarget[targetKey] == revision) {
+      return;
+    }
     final previous = _automaticLatestTurnRepairs[key];
     if (previous?.running == true) {
       _automaticLatestTurnRepairs[key] = previous!.copyWith(dirty: true);
@@ -1472,6 +1482,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               );
               final state = _automaticLatestTurnRepairs.remove(key);
               _automaticLatestTurnRepairRetryTimers.remove(key)?.cancel();
+              if (gap.repair == 'turns_page' && result.loaded) {
+                _rememberAutomaticTurnsPageRepair(targetKey, revision);
+              }
               if (state?.dirty == true && !result.loaded) {
                 _scheduleAutomaticLatestTurnRepairFromCache(
                   ConversationContentTarget(
@@ -1547,6 +1560,24 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       '${target.fingerprint}\u0000$provider\u0000$providerSessionId\u0000'
       '$revision\u0000${gap.turnId ?? ''}\u0000${gap.repair}';
 
+  static String _automaticLatestTurnRepairTargetKey({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) =>
+      '${target.fingerprint}\u0000$provider\u0000$providerSessionId';
+
+  void _rememberAutomaticTurnsPageRepair(String targetKey, String revision) {
+    _automaticTurnsPageRepairRevisionByTarget
+      ..remove(targetKey)
+      ..[targetKey] = revision;
+    while (_automaticTurnsPageRepairRevisionByTarget.length > 128) {
+      _automaticTurnsPageRepairRevisionByTarget.remove(
+        _automaticTurnsPageRepairRevisionByTarget.keys.first,
+      );
+    }
+  }
+
   void _clearAutomaticLatestTurnRepair({
     required SessionCatalogCacheTarget target,
     required String provider,
@@ -1561,6 +1592,13 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       _automaticLatestTurnRepairRetryTimers.remove(key)?.cancel();
       _automaticLatestTurnRepairs.remove(key);
     }
+    _automaticTurnsPageRepairRevisionByTarget.remove(
+      _automaticLatestTurnRepairTargetKey(
+        target: target,
+        provider: provider,
+        providerSessionId: providerSessionId,
+      ),
+    );
   }
 
   void _clearAllAutomaticLatestTurnRepairs() {
@@ -1569,6 +1607,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
     _automaticLatestTurnRepairRetryTimers.clear();
     _automaticLatestTurnRepairs.clear();
+    _automaticTurnsPageRepairRevisionByTarget.clear();
   }
 
   void _scheduleAutomaticLatestTurnRepairFromCache(
