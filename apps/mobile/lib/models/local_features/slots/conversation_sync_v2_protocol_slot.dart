@@ -741,6 +741,13 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
       json['data'],
       maximumLength: _conversationSyncMaxDataItems,
     );
+    final latestTurnComplete = _conversationSyncOptionalBool(
+      json,
+      'latestTurnComplete',
+    );
+    final latestTurnGap = _conversationSyncOptionalLatestTurnGap(
+      json['latestTurnGap'],
+    );
     final message = ConversationSyncV2EventMessage(
       event: event,
       subscriptionId: _conversationSyncString(
@@ -847,13 +854,16 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
         maximumLength: 512,
       ),
       windowComplete: _conversationSyncOptionalBool(json, 'windowComplete'),
-      latestTurnComplete: _conversationSyncOptionalBool(
-        json,
-        'latestTurnComplete',
-      ),
-      latestTurnGap: _conversationSyncOptionalLatestTurnGap(
-        json['latestTurnGap'],
-      ),
+      latestTurnComplete: latestTurnComplete,
+      latestTurnGap:
+          latestTurnGap ??
+          (latestTurnComplete == false
+              ? const ConversationSyncV2LatestTurnGap(
+                  missingEntryCount: 1,
+                  payloadOmitted: false,
+                  repair: 'turns_page',
+                )
+              : null),
       sourceEntryCount: _conversationSyncOptionalInt(
         json,
         'sourceEntryCount',
@@ -1134,21 +1144,78 @@ void _validateConversationSyncEvent(ConversationSyncV2EventMessage message) {
       final windowMetadataValid =
           !(message.windowComplete == true &&
               message.latestTurnComplete == false);
-      if (!validPage ||
-          message.provider == null ||
-          message.providerSessionId == null ||
-          message.revision == null ||
-          (message.mode != 'snapshot' && message.mode != 'patch') ||
-          (message.mode == 'patch' && message.baseRevision == null) ||
-          (message.phase != null &&
-              !const {'priority', 'recent', 'cold'}.contains(message.phase)) ||
-          message.hasEarlier == null ||
-          message.sourceEntryCount == null ||
-          !latestTurnMetadataValid ||
-          !windowMetadataValid ||
-          !timelinePositionComplete ||
-          !timelinePositionValid) {
-        throw const FormatException('Timeline page is incomplete.');
+      if (!validPage) {
+        throw const FormatException(
+          'Timeline page is incomplete.',
+          'timeline_page_range',
+        );
+      }
+      if (message.provider == null || message.providerSessionId == null) {
+        throw const FormatException(
+          'Timeline page is incomplete.',
+          'timeline_target',
+        );
+      }
+      if (message.revision == null) {
+        throw const FormatException(
+          'Timeline page is incomplete.',
+          'timeline_revision',
+        );
+      }
+      if (message.mode != 'snapshot' && message.mode != 'patch') {
+        throw const FormatException(
+          'Timeline page is incomplete.',
+          'timeline_mode',
+        );
+      }
+      if (message.mode == 'patch' && message.baseRevision == null) {
+        throw const FormatException(
+          'Timeline page is incomplete.',
+          'timeline_base_revision',
+        );
+      }
+      if (message.phase != null &&
+          !const {'priority', 'recent', 'cold'}.contains(message.phase)) {
+        throw const FormatException(
+          'Timeline page is incomplete.',
+          'timeline_phase',
+        );
+      }
+      if (message.hasEarlier == null) {
+        throw const FormatException(
+          'Timeline page is incomplete.',
+          'timeline_has_earlier',
+        );
+      }
+      if (message.sourceEntryCount == null) {
+        throw const FormatException(
+          'Timeline page is incomplete.',
+          'timeline_source_entry_count',
+        );
+      }
+      if (!latestTurnMetadataValid) {
+        throw const FormatException(
+          'Timeline page is incomplete.',
+          'timeline_latest_turn_gap',
+        );
+      }
+      if (!windowMetadataValid) {
+        throw const FormatException(
+          'Timeline page is incomplete.',
+          'timeline_window_metadata',
+        );
+      }
+      if (!timelinePositionComplete) {
+        throw const FormatException(
+          'Timeline page is incomplete.',
+          'timeline_position_pair',
+        );
+      }
+      if (!timelinePositionValid) {
+        throw const FormatException(
+          'Timeline page is incomplete.',
+          'timeline_position_range',
+        );
       }
     case ConversationSyncV2EventKind.runtimeOverlay:
       if (message.provider != 'codex' ||

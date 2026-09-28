@@ -2929,6 +2929,9 @@ class BridgeService implements BridgeServiceBase {
             }
           } catch (e) {
             final applyFailure = frameModelValidated;
+            final errorKind = conversationSyncSequence == null
+                ? _diagnosticToken(e.runtimeType.toString())
+                : _conversationSyncDecodeErrorKind(e);
             if (conversationSyncSequence != null) {
               _logConnectionDiagnostic(
                 'conversation_sync_frame_rejected',
@@ -2936,7 +2939,7 @@ class BridgeService implements BridgeServiceBase {
                 type: conversationSyncEvent,
                 reason: applyFailure ? 'apply' : 'decode',
                 sequence: conversationSyncSequence,
-                errorKind: _diagnosticToken(e.runtimeType.toString()),
+                errorKind: errorKind,
                 warning: true,
               );
             }
@@ -2947,7 +2950,7 @@ class BridgeService implements BridgeServiceBase {
                 epoch: epoch,
                 type: diagnosticType,
                 bytes: frameBytes,
-                errorKind: _diagnosticToken(e.runtimeType.toString()),
+                errorKind: errorKind,
                 warning: true,
               );
             }
@@ -4109,6 +4112,116 @@ class BridgeService implements BridgeServiceBase {
         sequences.length > _maxConversationSyncSequenceTrackingSubscriptions) {
       sequences.remove(sequences.keys.first);
     }
+  }
+
+  String _conversationSyncDecodeErrorKind(Object error) {
+    if (error is! FormatException) {
+      return _diagnosticToken(error.runtimeType.toString());
+    }
+    final message = error.message;
+    if (message is! String) return 'FormatException_unclassified';
+    const safeTimelineFailureSources = <String>{
+      'timeline_page_range',
+      'timeline_target',
+      'timeline_revision',
+      'timeline_mode',
+      'timeline_base_revision',
+      'timeline_phase',
+      'timeline_has_earlier',
+      'timeline_source_entry_count',
+      'timeline_latest_turn_gap',
+      'timeline_window_metadata',
+      'timeline_position_pair',
+      'timeline_position_range',
+    };
+    final source = error.source;
+    if (source is String && safeTimelineFailureSources.contains(source)) {
+      return 'FormatException_$source';
+    }
+    switch (message) {
+      case 'Timeline page is incomplete.':
+        return 'FormatException_timeline_page_incomplete';
+      case 'Conversation sync latest turn repair is invalid.':
+        return 'FormatException_latest_turn_repair_invalid';
+      case 'Conversation sync latest turn gap must be a map.':
+        return 'FormatException_latest_turn_gap_not_map';
+      case 'Conversation sync target is incomplete.':
+        return 'FormatException_target_incomplete';
+      case 'Conversation sync list is invalid.':
+        return 'FormatException_list_invalid';
+      case 'Conversation sync entry must be a map.':
+        return 'FormatException_entry_not_map';
+      case 'Conversation sync delete id is invalid.':
+        return 'FormatException_delete_id_invalid';
+      case 'Conversation content message must be a map.':
+        return 'FormatException_content_message_not_map';
+    }
+
+    final syncField = RegExp(
+      r'^Conversation sync ([A-Za-z]+) (?:is invalid|is not an ISO date)\.$',
+    ).firstMatch(message);
+    if (syncField != null) {
+      const knownFields = <String>{
+        'subscriptionId',
+        'bridgeInstanceId',
+        'codexSourceId',
+        'batchId',
+        'sequence',
+        'requestId',
+        'catalogState',
+        'statusState',
+        'pageIndex',
+        'pageCount',
+        'providerSessionId',
+        'revision',
+        'baseRevision',
+        'mode',
+        'timelineIndex',
+        'timelineCount',
+        'turnsNextCursor',
+        'sourceEntryCount',
+        'overlayId',
+        'observedAt',
+        'originGeneration',
+        'runtimeSessionId',
+        'authorityGeneration',
+        'turnId',
+        'missingEntryCount',
+        'payloadOmitted',
+        'firstMissingSourceIndex',
+        'repair',
+        'hasMore',
+        'scope',
+        'reason',
+        'errorCode',
+        'error',
+      };
+      final field = syncField.group(1)!;
+      if (knownFields.contains(field)) {
+        return 'FormatException_sync_$field';
+      }
+    }
+
+    final contentField = RegExp(
+      r'^Conversation content ([A-Za-z]+) must be a (string|integer|boolean)\.$',
+    ).firstMatch(message);
+    if (contentField != null) {
+      const knownFields = <String>{'entryId', 'index', 'contentHash'};
+      final field = contentField.group(1)!;
+      if (knownFields.contains(field)) {
+        return 'FormatException_content_$field';
+      }
+    }
+    if (message.startsWith('Unsupported conversation sync provider:')) {
+      return 'FormatException_unsupported_provider';
+    }
+    if (message.startsWith('Unsupported conversation sync event:')) {
+      return 'FormatException_unsupported_event';
+    }
+    if (message.startsWith('Unsupported conversation availability:')) {
+      return 'FormatException_unsupported_availability';
+    }
+    return 'FormatException_unclassified';
   }
 
   void _logConnectionDiagnostic(

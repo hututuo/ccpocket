@@ -735,6 +735,76 @@ void main() {
     },
   );
 
+  test(
+    'v2 frame decode diagnostics classify schema failures without payload values',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final sockets = <WebSocket>[];
+      server.transform(WebSocketTransformer()).listen((socket) {
+        sockets.add(socket);
+        socket.listen((data) {
+          final message = jsonDecode(data as String) as Map<String, dynamic>;
+          if (message['type'] != 'list_sessions') return;
+          socket
+            ..add(jsonEncode({'type': 'session_list', 'sessions': const []}))
+            ..add(
+              jsonEncode({
+                'type': 'conversation_sync_v2',
+                'event': 'timeline_page',
+                'subscriptionId': 'diagnostic-subscription',
+                'bridgeInstanceId': 'diagnostic-bridge',
+                'codexSourceId': 'diagnostic-source',
+                'batchId': 'diagnostic-batch',
+                'sequence': 1,
+                'provider': 'codex',
+                'providerSessionId': 'private-thread-value',
+                'revision': 'revision',
+                'mode': 'snapshot',
+                'phase': 'private-phase-value',
+                'pageIndex': 0,
+                'pageCount': 1,
+                'timelineIndex': 0,
+                'timelineCount': 1,
+                'entries': const [],
+                'deletes': const [],
+                'hasEarlier': false,
+                'windowComplete': false,
+                'latestTurnComplete': true,
+                'latestTurnGap': null,
+                'sourceEntryCount': 0,
+              }),
+            );
+        });
+      });
+
+      final bridge = BridgeService(
+        authoritativeSessionListTimeout: _testAuthorityTimeout,
+      );
+      final parseError = bridge.messages
+          .where((message) => message is ErrorMessage)
+          .cast<ErrorMessage>()
+          .firstWhere(
+            (message) => message.errorCode == 'bridge_frame_parse_failed',
+          );
+      try {
+        bridge.connect('ws://127.0.0.1:${server.port}');
+        final error = await parseError.timeout(const Duration(seconds: 1));
+
+        expect(error.message, 'Bridge response could not be parsed.');
+        final diagnostics = _connectionDiagnostics().join('\n');
+        expect(
+          diagnostics,
+          contains('error=FormatException_timeline_phase'),
+        );
+        expect(diagnostics, isNot(contains('private-thread-value')));
+        expect(diagnostics, isNot(contains('private-phase-value')));
+        expect(diagnostics, isNot(contains('diagnostic-subscription')));
+      } finally {
+        await _closeFixture(bridge, server, sockets);
+      }
+    },
+  );
+
   test('malformed session frame is classified and scoped', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final sockets = <WebSocket>[];

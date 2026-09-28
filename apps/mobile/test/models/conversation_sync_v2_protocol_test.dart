@@ -651,6 +651,44 @@ void main() {
   });
 
   test(
+    'keeps incomplete timeline pages when an older Bridge omits repair metadata',
+    () {
+      final decoded =
+          ServerMessage.fromJson({
+                ..._baseFrame,
+                'event': 'timeline_page',
+                'provider': 'codex',
+                'providerSessionId': 'thread-partial-legacy',
+                'revision': 'revision-partial-legacy',
+                'mode': 'snapshot',
+                'phase': 'priority',
+                'timelineIndex': 0,
+                'timelineCount': 1,
+                'pageIndex': 0,
+                'pageCount': 1,
+                'entries': const [],
+                'deletes': const [],
+                'hasEarlier': true,
+                'windowComplete': false,
+                'latestTurnComplete': false,
+                'latestTurnGap': null,
+                'sourceEntryCount': 1,
+              })
+              as ConversationSyncV2EventMessage;
+
+      expect(decoded.latestTurnComplete, isFalse);
+      expect(
+        decoded.latestTurnGap,
+        const ConversationSyncV2LatestTurnGap(
+          missingEntryCount: 1,
+          payloadOmitted: false,
+          repair: 'turns_page',
+        ),
+      );
+    },
+  );
+
+  test(
     'runtime overlay requires every source runtime authority and turn fence',
     () {
       final complete = <String, dynamic>{
