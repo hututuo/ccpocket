@@ -24,6 +24,7 @@ abstract interface class ConversationContentSyncGateway {
   bool get supportsConversationContentEvents;
   bool get supportsConversationSyncV2;
   bool get supportsConversationWindowCoverage;
+  bool get supportsConversationBoundedHotWindow;
   bool get supportsConversationSyncFocusRefresh;
   bool get supportsConversationItemsById;
   bool get supportsConversationUserIndex;
@@ -78,6 +79,10 @@ class BridgeServiceConversationContentSyncGateway
   @override
   bool get supportsConversationWindowCoverage =>
       bridge.supportsConversationWindowCoverage;
+
+  @override
+  bool get supportsConversationBoundedHotWindow =>
+      bridge.supportsConversationBoundedHotWindow;
 
   @override
   bool get supportsConversationSyncFocusRefresh =>

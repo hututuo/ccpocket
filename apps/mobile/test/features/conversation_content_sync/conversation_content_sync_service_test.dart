@@ -5954,6 +5954,9 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
   bool supportsConversationWindowCoverage = true;
 
   @override
+  bool supportsConversationBoundedHotWindow = false;
+
+  @override
   bool supportsConversationSyncFocusRefresh = false;
 
   @override
