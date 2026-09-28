@@ -2557,6 +2557,48 @@ void main() {
         expect(cached.windowComplete, isFalse);
       }
     }
+    // Navigation has its own index and detail storage. An evicted guidance
+    // message must remain recoverable even while the hot window is full.
+    final indexStage = (await repository.prepareConversationUserIndex(
+      target: target, provider: 'codex', providerSessionId: thread,
+      revision: 'history-revision',
+    ))!;
+    await repository.commitConversationUserIndexPage(
+      target: target, provider: 'codex', providerSessionId: thread,
+      revision: 'history-revision', expectedCursor: indexStage.cursor,
+      pageDepth: indexStage.pageDepth, nextCursor: null,
+      entries: [ConversationUserIndexPageEntry(
+        providerTurnId: 'running-turn', providerItemId: 'guide-50',
+        rawMessage: entry(50).rawMessage,
+      )],
+    );
+    final detailStage = (await repository.prepareConversationUserTurnDetail(
+      target: target, provider: 'codex', providerSessionId: thread,
+      providerTurnId: 'running-turn', revision: 'history-revision',
+    ))!;
+    await repository.commitConversationUserTurnDetailPage(
+      target: target, provider: 'codex', providerSessionId: thread,
+      providerTurnId: 'running-turn', revision: 'history-revision',
+      expectedCursor: detailStage.cursor, pageDepth: detailStage.pageDepth,
+      nextCursor: null, rawMessages: [entry(50).rawMessage, entry(51).rawMessage],
+    );
+    final index = await repository.loadConversationUserIndex(
+      target: target, provider: 'codex', providerSessionId: thread,
+    );
+    expect(index?.entries.single.message.text, 'guide 50');
+    final detail = await repository.loadConversationUserTurnDetail(
+      target: target, provider: 'codex', providerSessionId: thread,
+      providerTurnId: 'running-turn',
+    );
+    expect(detail?.complete, isTrue);
+    expect((detail?.messages.first as UserInputMessage).text, 'guide 50');
+    expect(detail?.messages, hasLength(2));
+    final hot = (await repository.loadConversationWindow(
+      target: target, provider: 'codex', providerSessionId: thread,
+    ))!;
+    expect(hot.entries, hasLength(2000));
+    expect(hot.entries.map((e) => e.entryId), isNot(contains('user:guide-50')));
+    expect(hot.entries.last.entryId, 'assistant:reply-5199');
   });
 
   test('hot rollover waits for every page and rejects reversed anchors atomically', () async {
