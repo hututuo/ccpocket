@@ -17,6 +17,7 @@ const _conversationSyncMaxCatalogChanges = 512;
 const _conversationSyncMaxStatuses = 512;
 const _conversationSyncMaxThreadStates = 512;
 const _conversationSyncMaxPageEntries = 64;
+const _conversationSyncMaxDeleteIds = 2000;
 const _conversationSyncMaxPageCount = 4096;
 const _conversationSyncMaxTimelineCount = 10000;
 const _conversationSyncMaxDataItems = 200;
@@ -716,30 +717,40 @@ class ConversationSyncV2EventMessage implements LocalFeatureTransientMessage {
     final rawCreated = _conversationSyncList(
       json['created'],
       maximumLength: _conversationSyncMaxCatalogChanges,
+      field: 'created',
     );
     final rawUpdated = _conversationSyncList(
       json['updated'],
       maximumLength: _conversationSyncMaxCatalogChanges,
+      field: 'updated',
     );
     final rawDestroyed = _conversationSyncList(
       json['destroyed'],
       maximumLength: _conversationSyncMaxCatalogChanges,
+      field: 'destroyed',
     );
     final rawStatuses = _conversationSyncList(
       json['changes'],
       maximumLength: _conversationSyncMaxStatuses,
+      field: 'changes',
     );
     final rawEntries = _conversationSyncList(
       json['entries'],
       maximumLength: _conversationSyncMaxPageEntries,
+      field: 'entries',
     );
     final rawDeletes = _conversationSyncList(
       json['deletes'],
-      maximumLength: _conversationSyncMaxPageEntries,
+      // A patch may remove the whole previous hot projection in one frame.
+      // Deletes are byte-bounded by Bridge and may therefore exceed the entry
+      // count on a page; the client cache itself is capped at 2000 rows.
+      maximumLength: _conversationSyncMaxDeleteIds,
+      field: 'deletes',
     );
     final rawData = _conversationSyncList(
       json['data'],
       maximumLength: _conversationSyncMaxDataItems,
+      field: 'data',
     );
     final latestTurnComplete = _conversationSyncOptionalBool(
       json,
@@ -1331,10 +1342,17 @@ ConversationSyncV2LatestTurnGap? _conversationSyncOptionalLatestTurnGap(
   );
 }
 
-List<Object?> _conversationSyncList(Object? raw, {required int maximumLength}) {
+List<Object?> _conversationSyncList(
+  Object? raw, {
+  required int maximumLength,
+  required String field,
+}) {
   if (raw == null) return const [];
   if (raw is! List || raw.length > maximumLength) {
-    throw const FormatException('Conversation sync list is invalid.');
+    throw FormatException(
+      'Conversation sync list is invalid.',
+      'conversation_list_$field',
+    );
   }
   return raw;
 }

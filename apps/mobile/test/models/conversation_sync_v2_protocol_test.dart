@@ -473,6 +473,50 @@ void main() {
     );
   });
 
+  test('bounds patch delete IDs independently from page entry count', () {
+    Map<String, dynamic> frame(List<String> deletes) => {
+      ..._baseFrame,
+      'event': 'timeline_page',
+      'provider': 'codex',
+      'providerSessionId': 'thread-delete-bound',
+      'revision': 'revision-1',
+      'baseRevision': 'revision-0',
+      'mode': 'patch',
+      'phase': 'recent',
+      'timelineIndex': 0,
+      'timelineCount': 1,
+      'pageIndex': 0,
+      'pageCount': 1,
+      'entries': const [],
+      'deletes': deletes,
+      'hasEarlier': true,
+      'windowComplete': false,
+      'latestTurnComplete': true,
+      'sourceEntryCount': 2000,
+    };
+
+    final decoded =
+        ServerMessage.fromJson(
+              frame(List.generate(2000, (index) => 'delete-$index')),
+            )
+            as ConversationSyncV2EventMessage;
+    expect(decoded.entries, isEmpty);
+    expect(decoded.deletes, hasLength(2000));
+
+    expect(
+      () => ServerMessage.fromJson(
+        frame(List.generate(2001, (index) => 'delete-$index')),
+      ),
+      throwsA(
+        isA<FormatException>().having(
+          (error) => error.source,
+          'source',
+          'conversation_list_deletes',
+        ),
+      ),
+    );
+  });
+
   test('decodes latest-turn repair metadata without reusing older cursor', () {
     final message =
         ServerMessage.fromJson({

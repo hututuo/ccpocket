@@ -4119,7 +4119,7 @@ class BridgeService implements BridgeServiceBase {
       return _diagnosticToken(error.runtimeType.toString());
     }
     final message = error.message;
-    const safeTimelineFailureSources = <String>{
+    const safeDecodeFailureSources = <String>{
       'timeline_page_range',
       'timeline_target',
       'timeline_revision',
@@ -4132,9 +4132,16 @@ class BridgeService implements BridgeServiceBase {
       'timeline_window_metadata',
       'timeline_position_pair',
       'timeline_position_range',
+      'conversation_list_created',
+      'conversation_list_updated',
+      'conversation_list_destroyed',
+      'conversation_list_changes',
+      'conversation_list_entries',
+      'conversation_list_deletes',
+      'conversation_list_data',
     };
     final source = error.source;
-    if (source is String && safeTimelineFailureSources.contains(source)) {
+    if (source is String && safeDecodeFailureSources.contains(source)) {
       return 'FormatException_$source';
     }
     switch (message) {
