@@ -3425,18 +3425,15 @@ function supplementCodexTurnItems(
 
   if (keptCalls.length === 0) return original;
 
-  const keptCallIds = new Set(keptCalls.map(({ use }) => use.callId));
-  const filteredOfficial = original.filter((rawItem) => {
-    const itemId = stringValue(asObject(rawItem)?.id);
-    return !itemId || !keptCallIds.has(itemId);
-  });
-
+  const officialIds = new Set(
+    original.map((rawItem) => stringValue(asObject(rawItem)?.id)),
+  );
+  const replacements = new Map<string, Record<string, unknown>>();
   const byVisibleMessage = new Map<number, Record<string, unknown>[]>();
   for (const { use, result } of keptCalls.sort(
     (a, b) => a.use.sequence - b.use.sequence,
   )) {
-    const bucket = byVisibleMessage.get(use.afterVisibleMessage) ?? [];
-    bucket.push({
+    const supplementalItem: Record<string, unknown> = {
       type: "dynamicToolCall",
       id: use.callId,
       tool: use.name,
@@ -3456,8 +3453,16 @@ function supplementCodexTurnItems(
         ? { __ccPocketEventCompletedAt: result.timestamp }
         : {}),
       desktopHostTool: true,
-    });
-    byVisibleMessage.set(use.afterVisibleMessage, bucket);
+    };
+    if (officialIds.has(use.callId)) {
+      // Provider order is canonical. Desktop ordinals refer to the full
+      // rollout and cannot reposition an item inside a bounded provider page.
+      replacements.set(use.callId, supplementalItem);
+    } else {
+      const bucket = byVisibleMessage.get(use.afterVisibleMessage) ?? [];
+      bucket.push(supplementalItem);
+      byVisibleMessage.set(use.afterVisibleMessage, bucket);
+    }
   }
 
   const merged: unknown[] = [];
@@ -3469,13 +3474,15 @@ function supplementCodexTurnItems(
     merged.push(...(byVisibleMessage.get(anchor) ?? []));
   };
 
-  for (const rawItem of filteredOfficial) {
+  for (const rawItem of original) {
+    const itemId = stringValue(asObject(rawItem)?.id);
+    const enrichedItem = (itemId && replacements.get(itemId)) || rawItem;
     if (isVisibleCodexThreadItem(rawItem)) {
       flush(visibleMessages);
-      merged.push(rawItem);
+      merged.push(enrichedItem);
       visibleMessages += 1;
     } else {
-      merged.push(rawItem);
+      merged.push(enrichedItem);
     }
   }
   flush(visibleMessages);

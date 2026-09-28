@@ -3690,6 +3690,11 @@ describe("ConversationSyncV2FeatureHandler", () => {
                 id: "user-older",
                 content: [{ type: "text", text: "older" }],
               },
+              {
+                type: "userMessage",
+                id: "steer-older",
+                content: [{ type: "text", text: "older steering" }],
+              },
               { type: "agentMessage", id: "agent-older", text: "answer" },
             ],
           },
@@ -3736,19 +3741,20 @@ describe("ConversationSyncV2FeatureHandler", () => {
           message.type === "user_input",
       );
     });
-    expect(users).toHaveLength(2);
-    expect(new Set(users.map((message) => message.providerItemId))).toEqual(
-      new Set(["user-newer", "user-older"]),
-    );
-    expect(new Set(users.map((message) => message.historyTurnId))).toEqual(
-      new Set(["turn-newer", "turn-older"]),
-    );
+    // Paging is descending, but the wire page is chronological. Mobile must
+    // preserve this order, including additional guidance within one turn.
+    expect(users.map((message) => message.providerItemId)).toEqual([
+      "user-older", "steer-older", "user-newer",
+    ]);
+    expect(users.map((message) => message.historyTurnId)).toEqual([
+      "turn-older", "turn-older", "turn-newer",
+    ]);
     expect(
       response.data.map((rawTurn) => {
         const turn = rawTurn as { messages?: ServerMessage[] };
         return turn.messages?.map((message) => message.type);
       }),
-    ).toEqual([["user_input"], ["user_input"]]);
+    ).toEqual([["user_input", "user_input"], ["user_input"]]);
     fixture.handler.close();
   });
 
@@ -3872,6 +3878,54 @@ describe("ConversationSyncV2FeatureHandler", () => {
     expect(turn.messages.some(message => message.type === "assistant" && message.message.id === "latest-answer")).toBe(true);
     expect(turn.latestTurnComplete).toBe(false);
     expect(Buffer.byteLength(JSON.stringify(response), "utf8")).toBeLessThanOrEqual(64 * 1024);
+    fixture.handler.close();
+  });
+
+  it("keeps paged provider tool order consistent with item repair", async () => {
+    const threadId = "thread-tool-order";
+    const turnId = "turn-tool-order";
+    const at = "2026-09-28T12:00:00.123Z";
+    const items = [
+      { type: "userMessage", id: "root-order", content: [{ type: "text", text: "start" }] },
+      { type: "commandExecution", id: "tool-order-a", command: "inspect a", status: "completed", aggregatedOutput: "done a" },
+      { type: "agentMessage", id: "progress-order", text: "progress" },
+      { type: "commandExecution", id: "tool-order-b", command: "inspect b", status: "completed", aggregatedOutput: "done b" },
+      { type: "agentMessage", id: "final-order", text: "final" },
+    ];
+    const fixture = createCodexPageFixture({
+      listThreadTurns: async () => ({ data: [{ id: turnId, items }], nextCursor: null }),
+      listThreadItems: async () => ({ data: items.map(item => ({ turnId, item })), nextCursor: null }),
+    }, undefined, {
+      catalogReader: async () => [codexSeed(0, threadId)],
+      desktopToolTimelineReader: async () => ({
+        // This ordinal belongs to the full rollout. Reapplying it to a
+        // bounded provider turn relocates a tool already owned by the provider.
+        events: [
+          { turnId, callId: "tool-order-a", afterVisibleMessage: 2, sequence: 1, type: "tool_use", name: "Read", input: {} },
+          { turnId, callId: "tool-order-a", afterVisibleMessage: 2, sequence: 2, type: "tool_result", name: "Read", content: "done a" },
+        ],
+        callIds: new Set(["tool-order-a"]),
+        itemTimestamps: new Map([["final-order", { startedAt: at, completedAt: at }]]),
+      }),
+    });
+    const subscription = subscribeMessage();
+    await fixture.handler.handle(subscription, context(fixture.client, fixture.runtime));
+    await vi.waitFor(() => expect(events(fixture.sent, fixture.client, "sync_complete")).toHaveLength(1));
+    const initial = events(fixture.sent, fixture.client, "timeline_page")
+      .flatMap(page => page.entries.map(entry => entry.message));
+    await fixture.handler.handle({ type: "conversation_items_page", protocolVersion: 2,
+      requestId: "tool-order-items", subscriptionId: subscription.requestId,
+      provider: "codex", providerSessionId: threadId, turnId, limit: 200,
+    }, context(fixture.client, fixture.runtime));
+    const repaired = events(fixture.sent, fixture.client, "items_page_response")
+      .find(event => event.requestId === "tool-order-items")!.data as ServerMessage[];
+    const identities = (messages: ServerMessage[]) => messages.map(message =>
+      message.type === "assistant" ? "assistant:" + message.message.id :
+      message.type === "tool_result" ? "result:" + message.toolUseId :
+      message.type === "user_input" ? "user:" + message.providerItemId : message.type);
+    expect(identities(initial)).toEqual(identities(repaired));
+    expect(initial.find(message => message.type === "assistant" && message.message.id === "final-order"))
+      .toMatchObject({ sourceTimestamp: at, sourceTimestampIsAuthoritative: true });
     fixture.handler.close();
   });
 
