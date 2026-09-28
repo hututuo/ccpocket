@@ -20,6 +20,7 @@ class ChatIntermediateProcessGroup extends StatelessWidget {
     required this.outerDisclosure,
     required this.segmentBuilder,
     required this.auxiliaryEntryBuilder,
+    required this.auxiliaryEntryKey,
   });
 
   final ChatProcessTurnLayout turn;
@@ -27,6 +28,7 @@ class ChatIntermediateProcessGroup extends StatelessWidget {
   final Widget outerDisclosure;
   final ChatIntermediateSegmentBuilder segmentBuilder;
   final ChatIntermediateEntryBuilder auxiliaryEntryBuilder;
+  final String Function(int entryIndex) auxiliaryEntryKey;
 
   @override
   Widget build(BuildContext context) {
@@ -79,7 +81,9 @@ class ChatIntermediateProcessGroup extends StatelessWidget {
   }
 
   Widget _entry(int entryIndex, Widget child) => KeyedSubtree(
-    key: ValueKey('chat_intermediate_entry_${turn.key}_$entryIndex'),
+    key: ValueKey(
+      'chat_intermediate_entry_${turn.key}_${auxiliaryEntryKey(entryIndex)}',
+    ),
     child: child,
   );
 }

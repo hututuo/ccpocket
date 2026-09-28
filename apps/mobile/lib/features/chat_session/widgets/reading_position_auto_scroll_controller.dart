@@ -53,18 +53,14 @@ class ReadingPositionAutoScrollController extends SimpleAutoScrollController {
       _programmaticScrollPending ||
       _retainedOffsetForLayout != null;
 
-  /// Retains a rendered row across an older-history insertion. Lazy slivers
-  /// can revise row layout offsets even when the scroll offset is unchanged.
-  /// Use the old pixel offset only when no rendered anchor is available.
-  void retainOffsetForNextLayout({GlobalKey? anchorKey}) {
+  /// Older rows increase a reverse list's extent without moving existing rows.
+  /// Preserve its offset for that layout instead of treating the added extent
+  /// as output appended below the reader.
+  void retainOffsetForNextLayout() {
     if (!hasClients || position.isScrollingNotifier.value) return;
     final generation = ++_retainedOffsetGeneration;
-    final anchorGeneration = !hasAnchorMutation && anchorKey != null
-        ? beginAnchorMutation(anchorKey)
-        : null;
     _retainedOffsetForLayout = offset;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      endAnchorMutation(anchorGeneration);
       if (_retainedOffsetGeneration != generation) return;
       _retainedOffsetForLayout = null;
     });

@@ -549,10 +549,15 @@ void main() {
     expect(
       tester.getTopLeft(firstBubble).dy,
       closeTo(beforeOlderPage, 1),
-      reason: 'older history: offset $beforeOlderOffset -> '
+      reason:
+          'older history: offset $beforeOlderOffset -> '
           '${scrollController.offset}, wasScrolling=$wasScrolling',
     );
     expect(find.text('first result'), findsOneWidget);
+    expect(
+      tester.state<ToolResultBubbleState>(firstBubble),
+      same(preservedState),
+    );
     expect(tester.takeException(), isNull);
   });
 
