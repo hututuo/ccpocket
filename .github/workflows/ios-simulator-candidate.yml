@@ -1,0 +1,65 @@
+name: iOS Simulator candidate
+
+on:
+  push:
+    branches: ['chore/cloud-handoff-*']
+    paths: ['.github/workflows/ios-simulator-candidate.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  simulator:
+    name: Package arm64 iOS Simulator app
+    runs-on: macos-26
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Read pinned Flutter version
+        id: flutter
+        run: echo "version=$(sed -n 's/^flutter = "\(.*\)"/\1/p' .mise.toml)" >> "$GITHUB_OUTPUT"
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          flutter-version: ${{ steps.flutter.outputs.version }}
+          cache: true
+      - run: flutter pub get
+        working-directory: apps/mobile
+      - name: Build simulator app
+        working-directory: apps/mobile
+        run: flutter build ios --simulator --debug --no-codesign
+      - name: Audit and package simulator app
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          app=apps/mobile/build/ios/iphonesimulator/Runner.app
+          root="$RUNNER_TEMP/ccpocket-simulator-candidate"
+          mkdir -p "$root"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist" | grep -Fx com.k9i.ccpocket
+          xcrun lipo -archs "$app/Runner" | grep -w arm64
+          xcrun vtool -show-build "$app/Runner" > "$root/platform.txt"
+          grep -q IOSSIMULATOR "$root/platform.txt"
+          tar -czf "$root/CC-Pocket-Simulator.tar.gz" -C apps/mobile/build/ios/iphonesimulator Runner.app
+          python3 - <<'PY'
+          import hashlib,json,os,plistlib,subprocess
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])/'ccpocket-simulator-candidate'
+          app=Path('apps/mobile/build/ios/iphonesimulator/Runner.app')
+          info=plistlib.loads((app/'Info.plist').read_bytes())
+          archive=root/'CC-Pocket-Simulator.tar.gz'
+          manifest={'sourceSha':os.environ['SOURCE_SHA'],'runId':os.environ['RUN_ID'],
+            'mobileTree':subprocess.check_output(['git','rev-parse','HEAD:apps/mobile'],text=True).strip(),
+            'platform':'ios-simulator','buildMode':'debug','bundleId':info['CFBundleIdentifier'],
+            'version':info['CFBundleShortVersionString'],'build':info['CFBundleVersion'],
+            'fileName':archive.name,'bytes':archive.stat().st_size,'sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),
+            'installStatus':'not_run'}
+          (root/'candidate-manifest.json').write_text(json.dumps(manifest,indent=2)+chr(10))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ccpocket-ios-simulator-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/ccpocket-simulator-candidate
+          if-no-files-found: error
+          retention-days: 14
