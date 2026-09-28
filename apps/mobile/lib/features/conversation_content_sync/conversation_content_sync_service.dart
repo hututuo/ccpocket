@@ -2817,7 +2817,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           event.providerSessionId!,
         );
         final rejectedThread = _rejectedTimelineThreadKeys.contains(threadKey);
-        if (event.mode == 'patch' && effectiveWindowComplete && rejectedThread) {
+        if (event.mode == 'patch' &&
+            effectiveWindowComplete &&
+            rejectedThread) {
           // A complete patch cannot use a rejected lineage. Only a complete
           // snapshot may replace it; keep other threads and paging responsive.
           _recordDiagnosticEvent(
@@ -2891,7 +2893,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               target: target,
               provider: event.provider!,
               providerSessionId: event.providerSessionId!,
-              gap: event.latestTurnGap ??
+              gap:
+                  event.latestTurnGap ??
                   const ConversationSyncV2LatestTurnGap(
                     missingEntryCount: 0,
                     payloadOmitted: true,

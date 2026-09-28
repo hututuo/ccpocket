@@ -1694,7 +1694,10 @@ class SessionCatalogCacheRepository {
     return _enqueueMutation(() async {
       final db = await database.database;
       await db.transaction((transaction) async {
-        final partitionId = await _resolveReadablePartition(transaction, target);
+        final partitionId = await _resolveReadablePartition(
+          transaction,
+          target,
+        );
         if (partitionId == null) return;
         await transaction.update(
           SessionCatalogCacheDatabase.hotWindowsTable,
@@ -1707,7 +1710,8 @@ class SessionCatalogCacheRepository {
             ),
             'latest_turn_gap_cursor': null,
           },
-          where: 'partition_id = ? AND provider = ? AND provider_session_id = ?',
+          where:
+              'partition_id = ? AND provider = ? AND provider_session_id = ?',
           whereArgs: [partitionId, provider, providerSessionId],
         );
       });
