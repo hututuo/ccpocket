@@ -760,7 +760,7 @@ void main() {
                 'providerSessionId': 'private-thread-value',
                 'revision': 'revision',
                 'mode': 'snapshot',
-                'phase': 'private-phase-value',
+                'phase': 'private-phase',
                 'pageIndex': 0,
                 'pageCount': 1,
                 'timelineIndex': 0,
