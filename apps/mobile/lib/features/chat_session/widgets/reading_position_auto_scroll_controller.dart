@@ -45,23 +45,24 @@ class ReadingPositionAutoScrollController extends SimpleAutoScrollController {
   int _programmaticScrollGeneration = 0;
   bool _programmaticScrollPending = false;
   int _retainedOffsetGeneration = 0;
-  bool _retainingOffsetForLayout = false;
+  double? _retainedOffsetForLayout;
 
   bool get hasAnchorMutation => _anchorMutation != null;
   bool get suppressPassiveExtentCorrection =>
       hasAnchorMutation ||
       _programmaticScrollPending ||
-      _retainingOffsetForLayout;
+      _retainedOffsetForLayout != null;
 
   /// Older rows increase a reverse list's extent without moving existing rows.
   /// Preserve its offset for that layout instead of treating the added extent
   /// as output appended below the reader.
   void retainOffsetForNextLayout() {
+    if (!hasClients || position.isScrollingNotifier.value) return;
     final generation = ++_retainedOffsetGeneration;
-    _retainingOffsetForLayout = true;
+    _retainedOffsetForLayout = offset;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_retainedOffsetGeneration != generation) return;
-      _retainingOffsetForLayout = false;
+      _retainedOffsetForLayout = null;
     });
   }
 
@@ -119,7 +120,11 @@ class ReadingPositionAutoScrollController extends SimpleAutoScrollController {
 
   double? correctionFor(ScrollMetrics metrics) {
     final mutation = _anchorMutation;
-    if (mutation == null) return null;
+    if (mutation == null) {
+      return _retainedOffsetForLayout
+          ?.clamp(metrics.minScrollExtent, metrics.maxScrollExtent)
+          .toDouble();
+    }
     final currentLayoutOffset = _sliverMainAxisOffsetFor(mutation.anchorKey);
     if (currentLayoutOffset == null) return null;
     final requiredCorrection =
