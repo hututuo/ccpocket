@@ -1851,7 +1851,8 @@ class _ChatMessageListState extends State<ChatMessageList> {
         addedEntries > 0 &&
         controller is ReadingPositionAutoScrollController &&
         controller.hasClients &&
-        controller.offset > MaintainReadingPositionPhysics.scrolledUpThreshold &&
+        controller.offset >
+            MaintainReadingPositionPhysics.scrolledUpThreshold &&
         listEquals(previousEntries, allEntries.sublist(addedEntries))) {
       controller.retainOffsetForNextLayout();
     }

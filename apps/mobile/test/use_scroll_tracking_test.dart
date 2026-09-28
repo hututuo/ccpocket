@@ -22,19 +22,20 @@ void main() {
     ),
   );
 
-  testWidgets('pending follow-latest does not override a new reading position', (
-    tester,
-  ) async {
-    await tester.pumpWidget(subject('reading-intent'));
-    await tester.pump();
+  testWidgets(
+    'pending follow-latest does not override a new reading position',
+    (tester) async {
+      await tester.pumpWidget(subject('reading-intent'));
+      await tester.pump();
 
-    tracking.scrollToBottom();
-    tracking.controller.jumpTo(400);
-    await tester.pumpAndSettle();
+      tracking.scrollToBottom();
+      tracking.controller.jumpTo(400);
+      await tester.pumpAndSettle();
 
-    expect(tracking.controller.offset, 400);
-    expect(tracking.isScrolledUp, isTrue);
-  });
+      expect(tracking.controller.offset, 400);
+      expect(tracking.isScrolledUp, isTrue);
+    },
+  );
 
   testWidgets('a callback from the previous session cannot move the new one', (
     tester,
