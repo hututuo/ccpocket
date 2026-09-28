@@ -482,7 +482,9 @@ void main() {
     addTearDown(bridge.dispose);
     addTearDown(streaming.close);
     addTearDown(scrollController.dispose);
-    addTearDown(cubit.close);
+    addTearDown(() async {
+      if (!cubit.isClosed) await cubit.close();
+    });
 
     await tester.pumpWidget(
       _chatHarness(
@@ -559,6 +561,8 @@ void main() {
       same(preservedState),
     );
     expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await cubit.close();
   });
 
   testWidgets('expanding an intermediate fold keeps its visible row anchored', (
