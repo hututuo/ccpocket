@@ -2496,6 +2496,46 @@ describe("ConversationSyncV2FeatureHandler", () => {
     fixture.handler.close();
   });
 
+  it("automatically revalidates focused content at unchanged catalog recency", async () => {
+    vi.useFakeTimers();
+    const codex = codexSeed(0, "thread-auto-freshness");
+    let body = "before silent provider growth";
+    const historyReader = vi.fn(async () => ({
+      messages: history(body), nextTurnCursor: "older-turns", windowComplete: false,
+    }));
+    const fixture = createFixture([codex], historyReader, {
+      focusedContentReconcileMs: 1000,
+    });
+    const client = {};
+    const subscribe = {
+      ...subscribeMessage(),
+      focused: { provider: "codex" as const, providerSessionId: codex.entry.providerSessionId },
+    };
+    try {
+      await fixture.handler.handle(subscribe, context(client, fixture.runtime));
+      await vi.waitFor(() => expect(events(fixture.sent, client, "sync_complete")).toHaveLength(1));
+      const initialComplete = events(fixture.sent, client, "sync_complete").at(-1)!;
+      expect(initialComplete).toBeDefined();
+      await fixture.handler.handle({
+        type: "conversation_sync_ack", protocolVersion: 2,
+        subscriptionId: subscribe.requestId, sequence: initialComplete.sequence,
+      }, context(client, fixture.runtime));
+      body = "after silent provider growth";
+      await vi.advanceTimersByTimeAsync(200);
+      expect(historyReader).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(historyReader).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(events(fixture.sent, client, "timeline_page"))).toContain(body);
+      expect(events(fixture.sent, client, "sync_reset")).toHaveLength(0);
+      await fixture.handler.close();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(historyReader).toHaveBeenCalledTimes(2);
+    } finally {
+      await fixture.handler.close();
+      vi.useRealTimers();
+    }
+  });
+
   it("revalidates focused content when app-server grows a turn without changing catalog recency", async () => {
     const codex = codexSeed(0, "thread-same-catalog-active-turn");
     const initialHistory = history("before-active-growth");
@@ -13476,6 +13516,7 @@ function createFixture(
       statusReader: async () => new Map(),
       ...(historyReader ? { historyReader } : {}),
       statusWatchdogMs: 60_000,
+      focusedContentReconcileMs: 60_000,
       coldReconcileMs: 60_000,
       daemonMode: false,
       ...handlerOptions,
@@ -13541,6 +13582,7 @@ function createCodexPageFixture(
       ...(historyReader ? { historyReader } : {}),
       inspectCodexThread: async () => null,
       statusWatchdogMs: 60_000,
+      focusedContentReconcileMs: 60_000,
       coldReconcileMs: 60_000,
       daemonMode: false,
       ...handlerOptions,

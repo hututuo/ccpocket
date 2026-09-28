@@ -28,3 +28,33 @@ Bridge 对新能力客户端不再用累计 ID 集合作为停止发送条件；
 - [ ] 同轮引导/超大工具/历史分页：用户和助手身份顺序保留，缺口明确。
 - [ ] 真实会话：源日志、Bridge、缓存、可见页面对齐，刷新与折叠验证。
 - [ ] 编译、相关测试、全量验证、审查、原模拟器安装与私有 Bridge 验收分层记录。
+
+## 第二个实测现场：目录不变时自动更新停滞
+
+复查期间模拟器实际打开了另一会话（01a0dda7-4d57-7461-b075-6a83e05d5ada）。2026-09-28 22:10:08 +08:00 的真实页面诊断中，源端 22:09:46 的新回复在 SQLite 和页面都缺失，但订阅正常、持续收到 syncComplete、没有重复键。新建只读探针并明确刷新后，旧 Bridge 和候选 Bridge 都能读到该回复。这说明连接完成、目录轮询成功不能证明内容新鲜。
+
+代码路径核对：snapshotFor 允许复用相同 sourceRevision 的缓存；已有同目录更新测试调用了 refresh:true，只覆盖手动刷新。新增不发送 refresh 的定时回归后，旧实现只读取一次 Provider，测试失败；修复后自动读取第二次，最新正文送达，测试通过。
+
+修复：复用既有 focus revalidation，每 10 秒核验当前前台 Codex 会话。只对可发送、没有正在同步、未触及背压的订阅执行；不重连 socket、不重启订阅、不全量重读所有会话。Provider 请求继续经过单线程 flight 合并、失败退避、条目/字节上限；后台、取消订阅和 handler close 关闭定时器。手动刷新关联 ID 不被自动核验覆盖。10 秒是正常调度间隔，不是网络或 Provider 故障时的时延保证。
+
+## 相关路径复核矩阵
+
+| 路径 | 当前保障与验证方式 | 边界 |
+| --- | --- | --- |
+| 重连 / resume 被截断 | 保留 canonical revision，单订阅 partial wire lineage，已有回归 | 不能用新传输基线删除旧可见缓存 |
+| 迟到帧 / A→B→A | generation、source fingerprint、focus intent 检查，已有回归 | 旧来源不能更新当前页面 |
+| 乱序 / 多页 | 完整齐页后事务提交，逆序拒绝；新增满缓存回归 | 不先淘汰再校验 |
+| 超过 2000 条 / 重放 | 新能力协商 + Mobile 原子热窗口轮换；8×400 新条目和双重放回归 | 原始源不裁切，离线热缓存不是完整归档 |
+| 引导 / 最终回复 / 折叠 | 以 Provider item/turn 身份归并，真实展示投影诊断，既有页面回归 | 不用文本或时间冒充应用身份 |
+| 更早历史 | 独立 user index + turn detail 表；新增满热缓存后读取已移出引导的回归 | 旧 prepend 路径满 2000 时拒绝追加；完整导航走消息历史，不能宣称无限上拉 |
+| 超大工具 / 缺口 | latestTurnGap + 有界 item/turn 分页、重复游标拒绝，既有回归 | 缺口不等于空白，更不能报完整 |
+| 目录初始化重置 | 首次隔离探针出现 catalog/state_unavailable；保留原始证据。初始化后重复探针 3 轮无错误/反序 | catalog reset 与 thread 内容 reset 分开判断 |
+| 自动新鲜度 | 新增定时核验回归，补上原来只测手动刷新的缺口 | 不把 syncComplete 当成“消息已最新” |
+
+## 结构清理结论
+
+当前最需要守住的是单一写入职责，而不是在事故修复中整体换一套同步系统。规范源、Bridge wire lineage、SQLite commit fence、页面 canonical projection 已分别标出；新增行为复用这些入口，不再另建轮询下载/临时消息列表/页面猜测去重。
+
+仍有维护债务：conversation-sync-v2、ConversationContentSyncService、SessionCatalogCacheRepository 和 ChatSessionCubit 体积大、兼容路径多。后续拆分顺序应是：先抽离无 UI 的协议代次与恢复状态机，再抽离热缓存保留策略/历史存储，最后缩小页面投影入口。每一步保持现有真实 RPC→SQLite→页面测试，不把一次大规模重写当成本次验收条件。
+
+本轮没有完成整个项目的重构；没有独立外部 reviewer 执行记录；不以源码或云端绿色替代模拟器和真机验收。具体云端、安装、运行身份和现场验收记录以本机 deployments/.../resilience-followup 的带 SHA 记录为准。

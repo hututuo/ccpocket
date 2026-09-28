@@ -110,6 +110,7 @@ const CODEX_SETTINGS_HYDRATION_TIMEOUT_MS = 10_000;
 const MIN_RECENT_COUNT = 10;
 const RECENT_WINDOW_MS = 3 * 24 * 60 * 60_000;
 const STATUS_WATCHDOG_MS = 5_000;
+const FOCUSED_CONTENT_RECONCILE_MS = 10_000;
 const SHARED_CONTROL_RECONCILE_MS = 50;
 const MAX_SHARED_CONTROL_RECOVERY_THREADS = 64;
 const SHARED_CONTROL_RECOVERY_TIMEOUT_MS = 5_000;
@@ -352,6 +353,7 @@ export interface ConversationSyncV2Options {
   /** Deterministic test seam for canonical-history failure backoff. */
   providerHistoryRetryDelaysMs?: readonly number[];
   statusWatchdogMs?: number;
+  focusedContentReconcileMs?: number;
   coldReconcileMs?: number;
   observeCodexThread?: ObserveCodexThread;
   inspectCodexThread?: InspectCodexThread;
@@ -591,6 +593,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private readonly latestTurnHistoryReader: ConversationHistoryReader;
   private readonly providerHistoryRetryDelaysMs: readonly number[];
   private readonly statusWatchdogMs: number;
+  private readonly focusedContentReconcileMs: number;
   private readonly coldReconcileMs: number;
   private readonly observeCodexThread: ObserveCodexThread;
   private readonly inspectCodexThread: InspectCodexThread;
@@ -765,6 +768,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
   private activePriorityCodexSettings = 0;
   private statusFlight?: Promise<void>;
   private watchdogTimer?: ReturnType<typeof setTimeout>;
+  private focusedContentTimer?: ReturnType<typeof setTimeout>;
   private coldTimer?: ReturnType<typeof setTimeout>;
   private liveContentTimer?: ReturnType<typeof setTimeout>;
   private liveContentBatchStartedAt?: number;
@@ -824,6 +828,10 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
     this.statusWatchdogMs = positiveInterval(
       options.statusWatchdogMs,
       STATUS_WATCHDOG_MS,
+    );
+    this.focusedContentReconcileMs = positiveInterval(
+      options.focusedContentReconcileMs,
+      FOCUSED_CONTENT_RECONCILE_MS,
     );
     this.coldReconcileMs = positiveInterval(
       options.coldReconcileMs,
@@ -2812,6 +2820,7 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
         if (!this.isPriorityRecord(record, index, subscription)) continue;
         priority.push(record);
         const key = targetKey(record.entry);
+        if (key === focusRevalidationKey) priorityRevalidateKeys.add(key);
         if (
           subscription.revalidateActiveBootstrap &&
           record.entry.provider === "codex" &&
@@ -6306,6 +6315,28 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
 
   private ensureTimers(): void {
     if (this.closed || !this.hasInteractiveClients()) return;
+    if (!this.focusedContentTimer) {
+      this.focusedContentTimer = setTimeout(() => {
+        this.focusedContentTimer = undefined;
+        // A provider may grow a turn without changing thread/list recency or
+        // delivering an observer notification. Status checkpoints alone cannot
+        // prove content freshness. Reuse the scoped focus-read path, its read
+        // coalescing, failure backoff and transport budget; never resubscribe.
+        for (const [client, subscription] of this.subscriptions) {
+          const key = subscription.focusedKey;
+          if (
+            !subscription.interactive || subscription.syncing || !key ||
+            this.catalog.get(key)?.entry.provider !== "codex" ||
+            subscription.outstandingBytes + subscription.queuedBytes >=
+              SYNC_BACKPRESSURE_BYTES || !this.clientReady(client)
+          ) continue;
+          subscription.pendingFocusRevalidation ??= { key };
+          this.scheduleSync(client, subscription, { dirtyKeys: [key] });
+        }
+        this.ensureTimers();
+      }, this.focusedContentReconcileMs);
+      this.focusedContentTimer.unref?.();
+    }
     if (!this.usesSharedControlStatusStream() && !this.watchdogTimer) {
       this.watchdogTimer = setTimeout(() => {
         this.watchdogTimer = undefined;
@@ -6353,10 +6384,12 @@ export class ConversationSyncV2FeatureHandler implements LocalFeatureHandler {
 
   private cancelTimers(): void {
     if (this.watchdogTimer) clearTimeout(this.watchdogTimer);
+    if (this.focusedContentTimer) clearTimeout(this.focusedContentTimer);
     if (this.coldTimer) clearTimeout(this.coldTimer);
     if (this.liveContentTimer) clearTimeout(this.liveContentTimer);
     this.clearSharedControlReconcileTimer();
     this.watchdogTimer = undefined;
+    this.focusedContentTimer = undefined;
     this.coldTimer = undefined;
     this.liveContentTimer = undefined;
     this.liveContentBatchStartedAt = undefined;
