@@ -201,6 +201,104 @@ void main() {
   );
 
   test(
+    'latest-turn summary rolls over a full hot cache and keeps the newest spine',
+    () async {
+      final target = SessionCatalogCacheTarget.fromBridge(
+        bridgeInstanceId: 'bridge-summary-rollover',
+      );
+      const thread = 'thread-summary-rollover';
+      const gap = ConversationSyncV2LatestTurnGap(
+        repair: 'turns_page',
+        missingEntryCount: 1,
+        payloadOmitted: false,
+      );
+      const currentUser = ConversationContentWireEntry(
+        entryId: 'user:provider-a',
+        index: 1998,
+        contentHash: 'hash-current-user',
+        rawMessage: {
+          'type': 'user_input',
+          'text': 'Keep this guidance',
+          'historyTurnId': 'turn-a',
+          'providerItemId': 'provider-a',
+          'clientMessageId': 'client-a',
+        },
+      );
+      const currentShell = ConversationContentWireEntry(
+        entryId: 'turn:turn-a:assistant:shell',
+        index: 1999,
+        contentHash: 'hash-current-shell',
+        rawMessage: {
+          'type': 'assistant',
+          'historyTurnId': 'turn-a',
+          'message': {
+            'id': 'shell',
+            'role': 'assistant',
+            'content': [
+              {'type': 'text', 'text': 'Partial answer'},
+            ],
+          },
+        },
+      );
+      await repository.replaceConversationWindow(
+        target: target,
+        provider: 'codex',
+        providerSessionId: thread,
+        revision: 'revision',
+        entries: [
+          ...List.generate(1998, (index) => _entry('old-$index', index, 'idle')),
+          currentUser,
+          currentShell,
+        ],
+        hasEarlier: false,
+        sourceEntryCount: 2000,
+        windowComplete: false,
+        latestTurnComplete: false,
+        latestTurnGap: gap,
+      );
+
+      final cached = await repository.replaceConversationLatestTurnsRepairPage(
+        target: target,
+        provider: 'codex',
+        providerSessionId: thread,
+        expectedRevision: 'revision',
+        rawMessages: [
+          _identityUserEntry(
+            'turn:turn-a:user-client:client-a',
+            0,
+          ).rawMessage,
+          {
+            'type': 'assistant',
+            'historyTurnId': 'turn-a',
+            'message': {
+              'id': 'latest-final',
+              'role': 'assistant',
+              'content': [
+                {'type': 'text', 'text': 'Recovered latest answer'},
+              ],
+            },
+          },
+        ],
+        turnsNextCursor: null,
+      );
+
+      final ids = cached!.entries.map((entry) => entry.entryId).toList();
+      expect(ids, hasLength(2000));
+      expect(ids.toSet(), hasLength(2000));
+      expect(ids, isNot(contains('old-0')));
+      expect(ids, contains('user:provider-a'));
+      expect(ids, contains('turn:turn-a:assistant:shell'));
+      expect(ids.last, 'turn:turn-a:assistant:latest-final');
+      expect(cached.sourceEntryCount, 2001);
+      expect(cached.hasEarlier, isTrue);
+      expect(cached.turnsNextCursor, isNull);
+      expect(cached.windowComplete, isFalse);
+      expect(cached.latestTurnComplete, isFalse);
+      expect(cached.latestTurnGap?.repair, 'turns_page');
+    },
+  );
+
+  test(
     'completed item repair retains provider identity for subsequent wire updates',
     () async {
       final target = SessionCatalogCacheTarget.fromBridge(

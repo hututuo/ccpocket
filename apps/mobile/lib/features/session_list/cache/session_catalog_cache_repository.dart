@@ -3482,20 +3482,59 @@ class SessionCatalogCacheRepository {
         for (final alias in historyAliases.entries) {
           indexById[alias.key] = indexById[alias.value]!;
         }
-        final hasPagedPrefix = existingRows.any(
-          (row) => (row['entry_index']! as int) < 0,
-        );
         final newEntryCount = entries
             .where((entry) => !indexById.containsKey(entry.entryId))
             .length;
-        if (existingRows.length + newEntryCount > maxHotWindowEntries) {
-          throw StateError(
-            'Conversation latest turns repair exceeds the local safety bound.',
-          );
+        final observedEntryCount = existingRows.length + newEntryCount;
+        final protectedExistingIds = <String>{
+          for (final entry in entries)
+            if (indexById.containsKey(
+              historyAliases[entry.entryId] ?? entry.entryId,
+            ))
+              historyAliases[entry.entryId] ?? entry.entryId,
+        };
+        final overflow = observedEntryCount - maxHotWindowEntries;
+        final evictedIds = <String>{};
+        if (overflow > 0) {
+          final evictionCandidates = existingRows
+              .where(
+                (row) =>
+                    !protectedExistingIds.contains(row['entry_id']! as String),
+              )
+              .toList()
+            ..sort((left, right) {
+              final indexOrder = (left['entry_index']! as int).compareTo(
+                right['entry_index']! as int,
+              );
+              if (indexOrder != 0) return indexOrder;
+              return (left['entry_id']! as String).compareTo(
+                right['entry_id']! as String,
+              );
+            });
+          if (evictionCandidates.length < overflow) {
+            throw StateError(
+              'Conversation latest turns repair exceeds the local safety bound.',
+            );
+          }
+          final evictionBatch = transaction.batch();
+          for (final row in evictionCandidates.take(overflow)) {
+            final entryId = row['entry_id']! as String;
+            evictedIds.add(entryId);
+            evictionBatch.delete(
+              SessionCatalogCacheDatabase.hotEntriesTable,
+              where:
+                  'partition_id = ? AND provider = ? '
+                  'AND provider_session_id = ? AND entry_id = ?',
+              whereArgs: [partitionId, provider, providerSessionId, entryId],
+            );
+          }
+          await evictionBatch.commit(noResult: true);
         }
         var appendIndex = existingRows.fold<int>(
           -1,
-          (maximum, row) => (row['entry_index']! as int) > maximum
+          (maximum, row) =>
+              !evictedIds.contains(row['entry_id']! as String) &&
+                  (row['entry_index']! as int) > maximum
               ? row['entry_index']! as int
               : maximum,
         );
@@ -3527,25 +3566,37 @@ class SessionCatalogCacheRepository {
         );
         final committedCount = Sqflite.firstIntValue(countRows) ?? 0;
         final sourceEntryCount = window['source_entry_count']! as int;
+        final hasPagedPrefix = existingRows.any(
+          (row) =>
+              !evictedIds.contains(row['entry_id']! as String) &&
+              (row['entry_index']! as int) < 0,
+        );
+        final rolledOverHotWindow = evictedIds.isNotEmpty;
         await transaction.update(
           SessionCatalogCacheDatabase.hotWindowsTable,
           {
             'entry_count': committedCount,
-            'has_earlier': hasPagedPrefix
+            'has_earlier': rolledOverHotWindow
+                ? 1
+                : hasPagedPrefix
                 ? window['has_earlier']
                 : turnsNextCursor == null
                 ? 0
                 : 1,
-            'turns_next_cursor': hasPagedPrefix
+            'turns_next_cursor': rolledOverHotWindow
+                ? null
+                : hasPagedPrefix
                 ? window['turns_next_cursor']
                 : turnsNextCursor,
             'window_complete': 0,
             'latest_turn_complete': 0,
             'latest_turn_gap_json': window['latest_turn_gap_json'],
             'latest_turn_gap_cursor': null,
-            'source_entry_count': sourceEntryCount > committedCount
-                ? sourceEntryCount
-                : committedCount,
+            'source_entry_count': [
+              sourceEntryCount,
+              observedEntryCount,
+              committedCount,
+            ].reduce((left, right) => left > right ? left : right),
             'updated_at': DateTime.now().toUtc().millisecondsSinceEpoch,
           },
           where:
