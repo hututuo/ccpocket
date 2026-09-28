@@ -381,6 +381,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     String kind, {
     int? generation,
     int? sequence,
+    int? expectedSequence,
     String? provider,
     String? providerSessionId,
     String? revision,
@@ -392,6 +393,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       'kind': kind,
       'generation': generation ?? _generation,
       'sequence': sequence,
+      if (expectedSequence != null) 'expectedSequence': expectedSequence,
       if (provider != null && providerSessionId != null)
         'target': conversationSyncTargetTrace(provider, providerSessionId),
       'revision': revision == null
@@ -2536,11 +2538,14 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       'commitFailure',
       generation: generation,
       sequence: event.sequence,
+      expectedSequence: error is _ConversationSyncSequenceGap
+          ? error.expected
+          : null,
       provider: event.provider,
       providerSessionId: event.providerSessionId,
       revision: event.revision,
       phase: event.phase,
-      result: '${error.runtimeType}:$recovery$sequenceGap',
+      result: '${error.runtimeType}:$recovery',
     );
 
     if (threadRevisionMismatch &&

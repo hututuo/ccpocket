@@ -1510,11 +1510,12 @@ void main() {
                 providerSessionId: 'thread-sequence-gap',
               )['recentEvents']!
               as List<Map<String, Object?>>;
-      expect(
-        recentEvents
-            .singleWhere((event) => event['kind'] == 'commitFailure')['result'],
-        contains('expected=2 actual=3'),
+      final gap = recentEvents.singleWhere(
+        (event) => event['kind'] == 'commitFailure',
       );
+      expect(gap['result'], '_ConversationSyncSequenceGap:stream_retry');
+      expect(gap['expectedSequence'], 2);
+      expect(gap['sequence'], 3);
     },
   );
 
