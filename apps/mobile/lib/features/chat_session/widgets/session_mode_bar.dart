@@ -525,38 +525,69 @@ void showCodexSettingsReadOnly(
     isScrollControlled: true,
     builder: (_) => ValueListenableBuilder<String?>(
       valueListenable: chatCubit.codexServiceTierRaw,
-      builder: (context, serviceTier, _) => BlocBuilder<ChatSessionCubit, ChatSessionState>(
-      bloc: chatCubit,
-      builder: (context, state) {
-        final l = AppLocalizations.of(context);
-        final model = state.codexModel?.trim();
-        final rawTier = serviceTier?.trim();
-        final hasFacts =
-            model?.isNotEmpty == true ||
-            state.codexModelReasoningEffort != null ||
-            state.codexPermissionStateKnown ||
-            chatCubit.codexPlanModeKnown ||
-            state.codexSpeed != CodexSpeed.unknown ||
-            rawTier?.isNotEmpty == true;
-        final unknown = l.codexSettingsUnknown;
-        return CodexSettingsReadOnlySheet(
-          explanation: !hasFacts
-              ? l.codexSettingsWaitingForRuntime
-              : chatCubit.codexSettingsActionability ==
-                    CodexSettingsActionability.readOnlyDesktopOwner
-              ? l.codexSettingsReadOnlyDesktop
-              : l.codexSettingsUnavailable,
-          settings: [
-            (label: l.model, value: model?.isNotEmpty == true ? model! : unknown),
-            (label: l.effort, value: state.codexModelReasoningEffort?.label ?? unknown),
-            (label: l.speed, value: rawTier?.isNotEmpty == true ? rawTier! : state.codexSpeed == CodexSpeed.unknown ? unknown : codexSpeedDisplayLabel(context, state.codexSpeed)),
-            (label: l.permission, value: state.codexPermissionStateKnown ? _codexPermissionsLabel(state.codexPermissionsMode, l) : unknown),
-            (label: l.sandbox, value: state.codexPermissionStateKnown ? (state.sandboxMode == SandboxMode.on ? l.sandboxOnLabel : l.sandboxOffLabel) : unknown),
-            (label: l.permissionPlanMode, value: chatCubit.codexPlanModeKnown ? (state.planMode ? l.planOnShort : l.planOffShort) : unknown),
-          ],
-        );
-      },
-    ),
+      builder: (context, serviceTier, _) =>
+          BlocBuilder<ChatSessionCubit, ChatSessionState>(
+            bloc: chatCubit,
+            builder: (context, state) {
+              final l = AppLocalizations.of(context);
+              final model = state.codexModel?.trim();
+              final rawTier = serviceTier?.trim();
+              final hasFacts =
+                  model?.isNotEmpty == true ||
+                  state.codexModelReasoningEffort != null ||
+                  state.codexPermissionStateKnown ||
+                  chatCubit.codexPlanModeKnown ||
+                  state.codexSpeed != CodexSpeed.unknown ||
+                  rawTier?.isNotEmpty == true;
+              final unknown = l.codexSettingsUnknown;
+              return CodexSettingsReadOnlySheet(
+                explanation: !hasFacts
+                    ? l.codexSettingsWaitingForRuntime
+                    : chatCubit.codexSettingsActionability ==
+                          CodexSettingsActionability.readOnlyDesktopOwner
+                    ? l.codexSettingsReadOnlyDesktop
+                    : l.codexSettingsUnavailable,
+                settings: [
+                  (
+                    label: l.model,
+                    value: model?.isNotEmpty == true ? model! : unknown,
+                  ),
+                  (
+                    label: l.effort,
+                    value: state.codexModelReasoningEffort?.label ?? unknown,
+                  ),
+                  (
+                    label: l.speed,
+                    value: rawTier?.isNotEmpty == true
+                        ? rawTier!
+                        : state.codexSpeed == CodexSpeed.unknown
+                        ? unknown
+                        : codexSpeedDisplayLabel(context, state.codexSpeed),
+                  ),
+                  (
+                    label: l.permission,
+                    value: state.codexPermissionStateKnown
+                        ? _codexPermissionsLabel(state.codexPermissionsMode, l)
+                        : unknown,
+                  ),
+                  (
+                    label: l.sandbox,
+                    value: state.codexPermissionStateKnown
+                        ? (state.sandboxMode == SandboxMode.on
+                              ? l.sandboxOnLabel
+                              : l.sandboxOffLabel)
+                        : unknown,
+                  ),
+                  (
+                    label: l.permissionPlanMode,
+                    value: chatCubit.codexPlanModeKnown
+                        ? (state.planMode ? l.planOnShort : l.planOffShort)
+                        : unknown,
+                  ),
+                ],
+              );
+            },
+          ),
     ),
   );
 }
@@ -567,8 +598,7 @@ void showCodexSettingsUnavailable(
 ) {
   final l = AppLocalizations.of(context);
   final message = switch (chatCubit.codexSettingsActionability) {
-    CodexSettingsActionability.waitingForRuntime =>
-      l.codexSettingsUnavailable,
+    CodexSettingsActionability.waitingForRuntime => l.codexSettingsUnavailable,
     CodexSettingsActionability.readOnlyDesktopOwner =>
       l.codexSettingsReadOnlyDesktop,
     CodexSettingsActionability.unavailable => l.codexSettingsUnavailable,

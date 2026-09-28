@@ -6987,7 +6987,7 @@ abstract class AppLocalizations {
   /// No description provided for @codexSettingsUnavailable.
   ///
   /// In ja, this message translates to:
-  /// **'Bridge がこの会話の設定書き込み権限を確認していないため、CC Pocket は変更を送信またはプレビューしません。'**
+  /// **'同期済みの設定は確認できます。Bridge が変更権限を確認していないため、設定は変更されていません。'**
   String get codexSettingsUnavailable;
 
   /// No description provided for @codexPermissionsOnRequest.

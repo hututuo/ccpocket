@@ -1099,6 +1099,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
                          : CodexPermissionsMode.defaultPermissions))
                : CodexPermissionsMode.defaultPermissions,
            planMode: initialPermissionMode == PermissionMode.plan,
+           // A detached thread has no speed fact until its metadata arrives.
+           codexSpeed: detachedPreview && provider == Provider.codex
+               ? CodexSpeed.unknown
+               : CodexSpeed.standard,
            sandboxMode:
                initialSandboxMode ??
                (provider == Provider.codex ? SandboxMode.on : SandboxMode.off),
