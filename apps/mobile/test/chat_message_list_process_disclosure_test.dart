@@ -498,6 +498,16 @@ void main() {
     final outer = find.byKey(
       const ValueKey('chat_intermediate_disclosure_client:turn-phases'),
     );
+    // The older turn is outside this small viewport's lazy-build range.
+    // Materialize it before ensureVisible can resolve its BuildContext.
+    for (var step = 0; step <= 20; step++) {
+      scrollController.jumpTo(
+        scrollController.position.maxScrollExtent * step / 20,
+      );
+      await tester.pump();
+      if (outer.evaluate().isNotEmpty) break;
+    }
+    expect(outer, findsOneWidget);
     await tester.ensureVisible(outer);
     await tester.pumpAndSettle();
     await tester.tap(outer);
@@ -528,10 +538,7 @@ void main() {
       same(preservedState),
     );
 
-    expect(scrollController.position.maxScrollExtent, greaterThan(150));
-    scrollController.jumpTo(150);
-    await tester.pump();
-    await tester.pump();
+    expect(scrollController.offset, greaterThan(150));
     final beforeOlderPage = tester.getTopLeft(firstBubble).dy;
     cubit.prependEntryForTest(
       UserChatEntry('older prompt', clientMessageId: 'older-user-turn'),
