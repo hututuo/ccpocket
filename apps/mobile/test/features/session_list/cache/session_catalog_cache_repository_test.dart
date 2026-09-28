@@ -4789,21 +4789,21 @@ void main() {
         nextCursor: 'older-page',
         entries: const [
           ConversationUserIndexPageEntry(
-            providerTurnId: 'turn-new',
-            providerItemId: 'item-new',
-            rawMessage: {
-              'type': 'user_input',
-              'text': 'newest prompt',
-              'timestamp': '2026-08-02T01:02:03.000Z',
-            },
-          ),
-          ConversationUserIndexPageEntry(
             providerTurnId: 'turn-middle-new',
             providerItemId: 'item-middle-new',
             rawMessage: {
               'type': 'user_input',
               'text': 'middle newer prompt',
               'timestamp': '2026-08-01T01:02:03.000Z',
+            },
+          ),
+          ConversationUserIndexPageEntry(
+            providerTurnId: 'turn-new',
+            providerItemId: 'item-new',
+            rawMessage: {
+              'type': 'user_input',
+              'text': 'newest prompt',
+              'timestamp': '2026-08-02T01:02:03.000Z',
             },
           ),
         ],
@@ -4833,21 +4833,21 @@ void main() {
         nextCursor: null,
         entries: const [
           ConversationUserIndexPageEntry(
-            providerTurnId: 'turn-middle-old',
-            providerItemId: 'item-middle-old',
-            rawMessage: {
-              'type': 'user_input',
-              'text': 'middle older prompt',
-              'timestamp': '2026-07-31T01:02:03.000Z',
-            },
-          ),
-          ConversationUserIndexPageEntry(
             providerTurnId: 'turn-oldest',
             providerItemId: 'item-oldest',
             rawMessage: {
               'type': 'user_input',
               'text': 'oldest prompt',
               'timestamp': '2026-07-30T01:02:03.000Z',
+            },
+          ),
+          ConversationUserIndexPageEntry(
+            providerTurnId: 'turn-middle-old',
+            providerItemId: 'item-middle-old',
+            rawMessage: {
+              'type': 'user_input',
+              'text': 'middle older prompt',
+              'timestamp': '2026-07-31T01:02:03.000Z',
             },
           ),
         ],
@@ -5018,16 +5018,16 @@ void main() {
       );
       expect(snapshot?.entries, hasLength(2));
       expect(snapshot?.entries.map((entry) => entry.providerTurnId), [
-        'turn-b',
         'turn-a',
+        'turn-b',
       ]);
       expect(
         snapshot?.entries.every((entry) => entry.providerItemId == null),
         isTrue,
       );
       expect(snapshot?.entries.map((entry) => entry.message.historyTurnId), [
-        'turn-b',
         'turn-a',
+        'turn-b',
       ]);
     },
   );

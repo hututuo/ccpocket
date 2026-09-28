@@ -2355,6 +2355,101 @@ void main() {
   );
 
   test(
+    'user navigation preserves chronological pages and same-turn steering',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      gateway.supportsConversationUserIndex = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      final subscribe = await gateway.nextOutgoing('conversation_sync_subscribe');
+      final subscriptionId = subscribe['requestId']! as String;
+      gateway.addEvent(
+        ConversationSyncV2EventMessage(
+          event: ConversationSyncV2EventKind.syncBegin,
+          subscriptionId: subscriptionId,
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+          batchId: 'navigation-order',
+          sequence: 1,
+          requestId: subscriptionId,
+          catalogState: 'navigation-order',
+          statusState: 'navigation-order',
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      final load = service.loadUserMessageIndex(
+        provider: 'codex',
+        providerSessionId: 'thread-navigation-order',
+        revision: 'navigation-order',
+      );
+      // Bridge pages arrive newest page first, each page in canonical order.
+      // Same-turn guidance has the same timestamp: timestamps cannot fix order.
+      final pages = [
+        [
+          ['turn-newer', 'prompt-newer', 'steer-newer'],
+          ['turn-newest', 'prompt-newest'],
+        ],
+        [
+          ['turn-oldest', 'prompt-oldest', 'steer-oldest'],
+          ['turn-older', 'prompt-older'],
+        ],
+      ];
+      for (var page = 0; page < pages.length; page++) {
+        final request = await gateway.nextOutgoing('conversation_turns_page');
+        expect(request['sortDirection'], 'desc');
+        expect(request['projection'], 'user_index');
+        gateway.addEvent(
+          ConversationSyncV2EventMessage(
+            event: ConversationSyncV2EventKind.turnsPageResponse,
+            subscriptionId: subscriptionId,
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'codex-home-a',
+            batchId: 'navigation-order',
+            sequence: page + 2,
+            requestId: request['requestId']! as String,
+            provider: 'codex',
+            providerSessionId: 'thread-navigation-order',
+            data: [
+              for (final turn in pages[page])
+                {
+                  'turnId': turn.first,
+                  'messages': [
+                    for (final id in turn.skip(1))
+                      {
+                        'type': 'user_input',
+                        'text': id,
+                        'providerItemId': id,
+                        'timestamp': '2026-09-28T01:00:00.000Z',
+                      },
+                  ],
+                  'itemsView': 'summary',
+                },
+            ],
+            nextCursor: page == 0 ? 'older-navigation-page' : null,
+          ),
+        );
+        await gateway.nextOutgoing('conversation_sync_ack');
+      }
+      final snapshot = await load;
+      expect(snapshot?.complete, isTrue);
+      const expected = [
+        'prompt-oldest', 'steer-oldest', 'prompt-older',
+        'prompt-newer', 'steer-newer', 'prompt-newest',
+      ];
+      expect(snapshot?.entries.map((entry) => entry.providerItemId), expected);
+      final cached = await service.loadUserMessageIndex(
+        provider: 'codex',
+        providerSessionId: 'thread-navigation-order',
+        revision: 'navigation-order',
+      );
+      expect(cached?.entries.map((entry) => entry.providerItemId), expected);
+    },
+  );
+
+  test(
     'stops a lightweight user index when the provider repeats a cursor',
     () async {
       await service.dispose();

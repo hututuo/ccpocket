@@ -3795,9 +3795,10 @@ class SessionCatalogCacheRepository {
             'partition_id = ? AND provider = ? AND provider_session_id = ? '
             'AND revision = ?',
         whereArgs: [partitionId, provider, providerSessionId, revision],
-        // Bridge pages are requested descending (newest first). Read older
-        // pages first and reverse each page so navigation is chronological.
-        orderBy: 'page_depth DESC, item_order DESC',
+        // Requests page from newest to oldest, but Bridge normalizes each
+        // response into chronological turn/item order. Reverse page depth
+        // only; reversing items again breaks adjacent turns and steering.
+        orderBy: 'page_depth DESC, item_order ASC',
       );
       final entries = <ConversationUserIndexEntry>[];
       for (final row in rows) {

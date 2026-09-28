@@ -58,3 +58,9 @@ Bridge 对新能力客户端不再用累计 ID 集合作为停止发送条件；
 仍有维护债务：conversation-sync-v2、ConversationContentSyncService、SessionCatalogCacheRepository 和 ChatSessionCubit 体积大、兼容路径多。后续拆分顺序应是：先抽离无 UI 的协议代次与恢复状态机，再抽离热缓存保留策略/历史存储，最后缩小页面投影入口。每一步保持现有真实 RPC→SQLite→页面测试，不把一次大规模重写当成本次验收条件。
 
 本轮没有完成整个项目的重构；没有独立外部 reviewer 执行记录；不以源码或云端绿色替代模拟器和真机验收。具体云端、安装、运行身份和现场验收记录以本机 deployments/.../resilience-followup 的带 SHA 记录为准。
+
+## 第三个实测现场：历史页再次反转
+
+2026-09-28 22:32 +08:00 在原模拟器打开“接手当前任务 (2)”的消息历史，导航列表把较早轮次标为较新，定位后相邻轮次 20:07 显示在 20:05 前。Bridge 的 readTurnsPage/readLegacyTurnsPage 已将每页转为 chronological；Mobile 却按 page_depth DESC, item_order DESC 读取索引，再反转了页内轮次和同轮引导。
+
+修复读取契约为 page_depth DESC, item_order ASC：仅调整跨页顺序，页内保持 Bridge 规范顺序。不根据时间猜身份/排序，不清空数据库；已有持久化索引也在下一次读取时修正。增加真实同步服务→SQLite 的两页、同轮多条引导回归，使用完全相同时间戳防止错误的时间排序通过；原缓存测试改用 Bridge 实际的页内正序夹具。此问题还说明单层 mock 夹具假设一致不能代替协议边界验证。
