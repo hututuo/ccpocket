@@ -18,7 +18,6 @@ export class ConversationWireFaults {
       socket,
       send: socket.send.bind(socket),
       frames: [],
-      emissionCount: 0,
       acks: new Map(),
       events: new EventEmitter(),
     };
@@ -41,7 +40,6 @@ export class ConversationWireFaults {
         return connection.send(data, ...args);
       }
       if (frame.type === "conversation_sync_v2") {
-        connection.emissionCount += 1;
         connection.frames.push({ raw, frame });
         if (connection.frames.length > 512) connection.frames.shift();
         const fault = this.pendingFault;
@@ -97,7 +95,14 @@ export class ConversationWireFaults {
     return { connection: connection.id, count: frames.length, subscriptions: [...new Set(frames.map(({ frame }) => frame.subscriptionId))] };
   }
 
-  waitForAcks(connection, subscriptionId, sequence, count = 1, timeoutMs = 8000) {
+  waitForAcks(
+    connection,
+    subscriptionId,
+    sequence,
+    count = 1,
+    timeoutMs = 8000,
+    exactSequence = false,
+  ) {
     return new Promise((resolve, reject) => {
       let observed = 0;
       const cleanup = () => {
@@ -106,7 +111,12 @@ export class ConversationWireFaults {
         connection.events.off("closed", onClose);
       };
       const onAck = (message) => {
-        if (message.subscriptionId !== subscriptionId || message.sequence < sequence) return;
+        if (
+          message.subscriptionId !== subscriptionId ||
+          (exactSequence
+            ? message.sequence !== sequence
+            : message.sequence < sequence)
+        ) return;
         if (++observed < count) return;
         cleanup();
         resolve({ acknowledged: observed, sequence: message.sequence });
@@ -141,9 +151,13 @@ export class ConversationWireFaults {
     }
     const connection = this.current();
     const frames = reverse ? [...saved].reverse() : saved;
-    const originalEmissionCount = connection.emissionCount;
     const acknowledgement = ackSequence == null ? null : this.waitForAcks(
-      connection, frames[0].frame.subscriptionId, ackSequence, frames.length * repeats,
+      connection,
+      frames[0].frame.subscriptionId,
+      ackSequence,
+      frames.length * repeats,
+      8000,
+      true,
     );
     for (let i = 0; i < repeats; i += 1) {
       for (const { raw, frame } of frames) {
@@ -152,9 +166,6 @@ export class ConversationWireFaults {
       }
     }
     const acknowledged = acknowledgement == null ? {} : await acknowledgement;
-    if (acknowledgement != null && connection.emissionCount !== originalEmissionCount) {
-      throw new Error("Ordinary emissions overlapped the replay ACK barrier");
-    }
     return { connection: connection.id, count: frames.length * repeats, ...acknowledged };
   }
 

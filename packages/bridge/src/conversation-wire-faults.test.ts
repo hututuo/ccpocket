@@ -63,16 +63,20 @@ describe("real Bridge wire fault fixture", () => {
     expect(await barrier).toMatchObject({ sequence: 3 });
   });
 
-  it("refuses to credit unrelated traffic toward the replay ACK barrier", async () => {
+  it("does not credit ordinary concurrent traffic toward replay ACKs", async () => {
     const { wire, socket } = fixture();
     socket.send(frame(1));
     socket.ack("first", 1);
     wire.checkpoint("old", { subscriptionId: "first", sequence: 1 });
     const replay = wire.replay("old", { ackSequence: 1 });
-    const rejected = expect(replay).rejects.toThrow("Ordinary emissions overlapped");
     socket.send(frame(2));
     socket.ack("first", 2);
-    await rejected;
+    let complete = false;
+    void replay.then(() => { complete = true; });
+    await Promise.resolve();
+    expect(complete).toBe(false);
+    socket.ack("first", 1);
+    expect(await replay).toMatchObject({ count: 1, acknowledged: 1 });
   });
 
   it("reorders two original frames exactly once while preserving callbacks", async () => {
