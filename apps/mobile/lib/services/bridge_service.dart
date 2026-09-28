@@ -4108,8 +4108,8 @@ class BridgeService implements BridgeServiceBase {
     }
     sequences.remove(subscriptionId);
     sequences[subscriptionId] = sequence;
-    while (
-        sequences.length > _maxConversationSyncSequenceTrackingSubscriptions) {
+    while (sequences.length >
+        _maxConversationSyncSequenceTrackingSubscriptions) {
       sequences.remove(sequences.keys.first);
     }
   }

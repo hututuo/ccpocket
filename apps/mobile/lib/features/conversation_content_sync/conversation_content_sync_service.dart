@@ -1564,8 +1564,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     required SessionCatalogCacheTarget target,
     required String provider,
     required String providerSessionId,
-  }) =>
-      '${target.fingerprint}\u0000$provider\u0000$providerSessionId';
+  }) => '${target.fingerprint}\u0000$provider\u0000$providerSessionId';
 
   void _rememberAutomaticTurnsPageRepair(String targetKey, String revision) {
     _automaticTurnsPageRepairRevisionByTarget

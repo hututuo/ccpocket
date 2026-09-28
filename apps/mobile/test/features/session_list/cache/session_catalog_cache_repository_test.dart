@@ -246,7 +246,10 @@ void main() {
         providerSessionId: thread,
         revision: 'revision',
         entries: [
-          ...List.generate(1998, (index) => _entry('old-$index', index, 'idle')),
+          ...List.generate(
+            1998,
+            (index) => _entry('old-$index', index, 'idle'),
+          ),
           currentUser,
           currentShell,
         ],
@@ -263,10 +266,7 @@ void main() {
         providerSessionId: thread,
         expectedRevision: 'revision',
         rawMessages: [
-          _identityUserEntry(
-            'turn:turn-a:user-client:client-a',
-            0,
-          ).rawMessage,
+          _identityUserEntry('turn:turn-a:user-client:client-a', 0).rawMessage,
           {
             'type': 'assistant',
             'historyTurnId': 'turn-a',

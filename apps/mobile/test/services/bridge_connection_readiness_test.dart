@@ -792,10 +792,7 @@ void main() {
 
         expect(error.message, 'Bridge response could not be parsed.');
         final diagnostics = _connectionDiagnostics().join('\n');
-        expect(
-          diagnostics,
-          contains('error=FormatException_timeline_phase'),
-        );
+        expect(diagnostics, contains('error=FormatException_timeline_phase'));
         expect(diagnostics, isNot(contains('private-thread-value')));
         expect(diagnostics, isNot(contains('private-phase-value')));
         expect(diagnostics, isNot(contains('diagnostic-subscription')));
@@ -971,9 +968,7 @@ void main() {
       );
 
       expect(
-        globalErrors.where(
-          (error) => error.errorCode == 'bridge_unavailable',
-        ),
+        globalErrors.where((error) => error.errorCode == 'bridge_unavailable'),
         hasLength(1),
       );
       expect(sessionAErrors, isEmpty);

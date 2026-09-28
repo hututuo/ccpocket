@@ -3496,21 +3496,23 @@ class SessionCatalogCacheRepository {
         final overflow = observedEntryCount - maxHotWindowEntries;
         final evictedIds = <String>{};
         if (overflow > 0) {
-          final evictionCandidates = existingRows
-              .where(
-                (row) =>
-                    !protectedExistingIds.contains(row['entry_id']! as String),
-              )
-              .toList()
-            ..sort((left, right) {
-              final indexOrder = (left['entry_index']! as int).compareTo(
-                right['entry_index']! as int,
-              );
-              if (indexOrder != 0) return indexOrder;
-              return (left['entry_id']! as String).compareTo(
-                right['entry_id']! as String,
-              );
-            });
+          final evictionCandidates =
+              existingRows
+                  .where(
+                    (row) => !protectedExistingIds.contains(
+                      row['entry_id']! as String,
+                    ),
+                  )
+                  .toList()
+                ..sort((left, right) {
+                  final indexOrder = (left['entry_index']! as int).compareTo(
+                    right['entry_index']! as int,
+                  );
+                  if (indexOrder != 0) return indexOrder;
+                  return (left['entry_id']! as String).compareTo(
+                    right['entry_id']! as String,
+                  );
+                });
           if (evictionCandidates.length < overflow) {
             throw StateError(
               'Conversation latest turns repair exceeds the local safety bound.',
