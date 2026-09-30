@@ -5,7 +5,9 @@
 - 时间：2026-10-01（Asia/Taipei）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 与 B1 第一块调度抽取已执行；E009 两个行为补漏已修复，正在复核并重跑全量门禁。
+- 阶段：A0–A3 与 B1 第一块调度抽取完成；E009 补漏、独立复核与 E010 全量源码门禁已通过。
+- 最终验证源码 SHA：`45a4498a75d2649021b286eee0ea37f54ef86253`；随后仅补文档，不冒充重新验证过业务源码。
+- 下一批：B2 older-turn paging 生命周期。入口、现状值、验收与停止扩大的条件见 PLAN；尚未开始。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
 
 ## E001 — 建立隔离执行与文档
@@ -218,3 +220,57 @@ refreshFocusedConversation 自己改焦点时却未清理，旧回调失去归�
 当前判断：确定性回归与短闭环已绿，全量完成状态仍 FAIL（保留 E008 原失败），
 不能提前将 R12 标为 PASS。下一步冻结此提交，独立 reviewer 复核排序/取消/fence，
 再记录全量绿灯或新的确切失败；B2 未开始。
+
+## E010 — 最终源码门禁与接手索引
+
+验证冻结点：`45a4498a75d2649021b286eee0ea37f54ef86253`，运行开始时 worktree clean，
+收据的 diff SHA256 为 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`（空 diff）。
+后续本条及入口/地图/方案修改仅为文档，不改业务源码、测试、CI 或依赖。
+
+| 检查 | 结果 | 精确收据 / 范围 |
+|---|---|---|
+| 全 Mobile tests | PASS，3254 PASS / 4 SKIPPED，exit 0 | final-full-mobile-tests.json/.log；冻结点全量，291.444 秒 |
+| 全 Mobile analyze | PASS，0 error / 0 warning / 1017 info，exit 0 | final-full-mobile-analyze.json/.log；按路径/消息去掉行号比较 E008，info 无新增/删除 |
+| 本批五个 Dart 文件格式 | PASS，0 文件改变，exit 0 | final-source-format.json/.log；同一冻结点 |
+| 相关 scheduler/Service/SQLite/protocol | PASS，144 tests | green-observation-and-manual-refresh.json/.log；E009 修改中身份见该 JSON；最终全量再次覆盖 |
+| 真实 Bridge / RPC / SQLite / 原页面黑盒 | PASS，3 tests | final-chain-node22.json/.log；完整全量运行亦包含这三项；Provider fixture 上游 |
+| Bridge suite | PASS，124 files / 2546 tests；1 file/test SKIPPED | bridge-suite.json/.log；E006 身份，Bridge 业务源码从起点到最终未变化 |
+| Bridge TypeScript noEmit | PASS，exit 0 | bridge-typecheck.json/.log；b76c97cc clean；本批后续没有 Bridge 业务改动 |
+| 普通 CI 前置条件 | PASS 本地 YAML/步骤顺序 | ci-mobile-prerequisites.json/.log；云 CI、actionlint NOT_RUN |
+| 独立源码复核 | PASS，无新增 actionable finding | final-independent-review.md；只读复核冻结点，不重复声称运行了测试 |
+
+本轮证据根目录：`/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/`。
+每个运行保留原 JSON/log；先读 JSON 的 HEAD/status/diff hash，再读结果。
+中途红灯、编译/命令失败与原 E008 全量失败都保留，不能只读最后一个绿灯文件。
+最终全量黑盒原始轨迹保存在 `final-full-mobile-traces/`；早期 mutation 和链路轨迹分别见 E006。
+Mobile 的四项 SKIPPED 为未开启 smoke 环境的 SSH Bridge tunnel / jump host / private key
+用例（private key 两项）；未将它们记作 PASS，也未在本轮配置真实 SSH 或容器 smoke 环境。
+
+独立 review 检查了本地观察与有序接收的等待关系、repair readiness、观察后的 fence、
+dirty-success、focus-intent flight 和统一 manual refresh 清理。确认初始两项及后续取消遗漏关闭；
+该审查仅为源码证据，没有测试、真实 Provider 或设备运行授权扩张。
+
+原 checkout 最终核对：main 仍为 `7de33f815e8448c1836227abb6b04784e40c58c9`，
+原有七组未跟踪资料保留；旧修复 checkout 仍为起始 `930f1267...`、clean。
+生产 Bridge、原模拟器/真机应用、OTA 与发布没有在本轮改动。
+
+### 提交与回退依赖索引
+
+| 批次 | 完整提交 SHA | 用途 / 当前判断 |
+|---|---|---|
+| E001 | 09297c594c4e7a165f84c8acc85f2973ee1c3038 | 文档方案；无业务修改 |
+| E002 | a511692ad6fd0a214e207436d7e7261a70bef3fc | 红灯回归 checkpoint，3 FAIL；不可作可用候选 |
+| E003 | 86b0d49e5107fe92c37c1e19a2f21dd195a703e1 | 部分提交通知；R03 仍 FAIL |
+| E004 | 625999f21a17a9eff28d62f329f71968b0f7668b | 观察去重、dirty/token；后来发现排序窗口，由 E009 补齐 |
+| E005 | 6ff0ca4692cb2034c372db1c6cc0bdb68924ac45 | focus-intent flight 与目标串行 |
+| E006 | b76c97cc9272986344ae6b1a4c7f1818fb663c77 | Provider fixture 与原页面通知回归 |
+| E007 | 35b4d031e367f78bdab9aa7e63467c1ae8edbdc6 | scheduler 纯结构抽取；E008 全量失败，不能单独宣称可用 |
+| E008 | b7944b89c38d1cc49ce2e25b54bdba865c7dc11a | Mobile CI 自行构建 Bridge 前置 |
+| E009 | 45a4498a75d2649021b286eee0ea37f54ef86253 | 排序观察 / 统一焦点清理；本批最终绿灯源码点 |
+
+批次之间有源码依赖，回退步骤见 RUNBOOK；不能以任意挑一个较早 SHA 上线来代替验证。
+本条所在最终文档提交身份由 `git log -1` 获取，不在正文内自引用。
+
+后续接手：先核对分支/status 与最终源码身份，读 PLAN 的 B2 入口，再新建账本批次。
+原始 Provider、发送/控制、后台、Claude、长会话、设备与生产各需要自己的闭环证据；
+R13/R14 和云端 runner 仍 NOT_RUN，不从本轮接收 PASS 推断整体链路完全正确。

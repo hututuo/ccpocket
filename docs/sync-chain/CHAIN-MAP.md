@@ -46,3 +46,36 @@ LatestTurnRepairScheduler 独占自动去重/dirty/operation token/失败状态�
 三个回调只分别判断当前身份、执行 Service 原修复、重新观察缓存；
 请求与 SQLite 写入、coverage、通知、页面仍使用上表的原路径。
 取消接点与失败预算见 RUNBOOK，验证收据见 PROCESS。
+
+```mermaid
+flowchart LR
+  P[Provider / 隔离 fixture] --> B[Bridge / RPC 转换]
+  B --> Q[Mobile 有序接收与身份校验]
+  Q --> D[Repository / SQLite 事务]
+  D --> N[原 commit epoch / updates]
+  N --> V[原页面重读 / Cubit / layout]
+  D -. focused timeline 的本地观察 .-> O[SyncService 缓存观察]
+  O --> S[独立 latest-turn scheduler]
+  S -. 异步修复请求 .-> B
+```
+
+focused timeline 的观察在同一接收序列内先完成，后来的 repair reply 才能继续提交；
+观察只等本地读取与排队，不等待图中返回 Bridge 的网络请求。
+repair transaction 接受后仍走原通知出口；图不表示所有事务都自动启动 repair。
+
+## 限制的对象与归属
+
+本表列本批涉及并在源码中核对的限制，不是全项目常量总表。
+后续增加或调整限制时，应补对象、owner、可见失败与矩阵入口，不能只在多处加判断。
+
+| 限制 | 约束的对象 / 现有 owner | 修改时需要核对 |
+|---|---|---|
+| 64 KiB | Bridge conversation-sync-v2 的编码帧字节数 | 合法帧组合、分片/partial、R09；不是条目数量 |
+| 64 entries | Mobile protocol_slot 的单页新增内容 | 解码边界、R06；不是删除数量 |
+| 2000 delete IDs | 同 protocol_slot 的单页删除身份 | 64/2000/2001 回归、R06；组合帧仍有字节上限 |
+| 2000 rows | Repository.maxHotWindowEntries 的本地热窗口 | 保留前缀、覆盖声明、分页/rollover、R07/R11；不是渲染数量 |
+| 4 次失败 / 1、2、4 秒重试 | scheduler 每个 revision/turn/repair 操作 | 失败预算与取消、R15；不是手动操作 deadline |
+| 128 个完成观察 | scheduler 的 summary observation 记忆 | 去重与新进度、R02/R03；不是 Provider revision |
+
+相同数值可能约束不同对象。先确认对象和权威出口，再判断是否能合并或退役；
+本批没有为减少判断数而放宽身份、coverage 或容量保护。

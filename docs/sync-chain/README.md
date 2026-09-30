@@ -4,6 +4,15 @@
 `codex/sync-chain-extraction-20261001`。首先验证选定短闭环，再抽取已证明边界的职责。
 原始 main、修复分支及生产运行状态不是本分支的操作目标。
 
+第一批 A0–A3 / B1 已完成。源码验证冻结到
+`45a4498a75d2649021b286eee0ea37f54ef86253`：Mobile 全量 3254 tests PASS、4 SKIPPED，
+analyze 0 error/warning（1017 既有 info），独立只读复核无新增 actionable finding。
+自动修复调度已独立；进度观察排序与手动刷新清理的补漏也有回归。
+后续文档提交不改变这个源码身份；精确收据与提交索引见 PROCESS 的 E010。
+
+下一批 B2 尚未开始。真实 Provider、模拟器/真机、云 CI 与生产部署各自仍为 NOT_RUN；
+本批只证明所选接收闭环和源码门禁。
+
 接手顺序：
 
 1. [方案与批次](PLAN.md)：目标、推进门禁与抽取次序。

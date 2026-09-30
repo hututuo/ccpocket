@@ -52,11 +52,15 @@ git status --short
 CCPOCKET_FLUTTER_BIN="/Users/developer/.shorebird/bin/cache/flutter/309dd6573a9fe716410489284cd325a34b950375/bin/flutter"
 CCPOCKET_DART_BIN="/Users/developer/.shorebird/bin/cache/flutter/309dd6573a9fe716410489284cd325a34b950375/bin/cache/dart-sdk/bin/dart"
 "$CCPOCKET_FLUTTER_BIN" --version
+export CCPOCKET_NODE="/Users/developer/.local/share/mise/installs/node/22.23.1/bin/node"
+"$CCPOCKET_NODE" --version
 ```
 
 依赖首次准备限当前 checkout。初次离线准备没有改变锁文件。
 B1 显式声明已存在的 fake_async 测试依赖，pubspec.lock 只将其分类改为 direct dev；版本与 hash 不变。
 `npm ci --ignore-scripts` 避免 prepare 修改共享 Git hooks；真实 Bridge build 仍须运行。
+CCPOCKET_NODE 指定本轮真实 Bridge 根进程的 Node 22.23.1；fixture 的 env-node 子进程仍取宿主 PATH，
+本机这部分使用 Node 26.4.0。精确复核时记录两者，不能当作整个工具链已在 Linux Node 22 验收。
 
 ```bash
 npm ci --offline --ignore-scripts
@@ -97,6 +101,11 @@ git diff --check
 
 先确认工作树及他人改动，按 PROCESS 中的独立提交选择 revert；不要把 checkpoint reset 到共享分支。
 行为修复、测试夹具、结构抽取分别有提交，能单独审阅。保留暴露错误的测试和原始日志。
+
+分批提交不意味着可以任意顺序 revert：E009 的 scheduler 清理依赖 B1 抽取，
+后续行为批也依赖 E004/E005 的进度与 flight 归属。评估结构回退时先逆序撤掉依赖，
+或在隔离 checkout 适配行为修复，再运行完整矩阵。不要直接将中间红灯 checkpoint 当可用候选。
+E010 登记的 `45a4498a` 是本批最终绿灯源码点；本轮从未部署，撤销源码不需要替换生产运行。
 
 下一块是 B2 单种历史分页生命周期：先列请求身份、ready/deadline、accepted/interrupted/failed
 终态、cursor、reset/dispose 和过期回复；先补其缺失的闭环，再移动完整状态。

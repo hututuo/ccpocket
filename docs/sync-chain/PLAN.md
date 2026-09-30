@@ -7,7 +7,7 @@
 Claude、发送/控制、后台和兼容路径需要各自建立证据，不能借用接收测试的 PASS。
 
 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-计划分支：`codex/sync-chain-extraction-20261001`。
+执行分支：`codex/sync-chain-extraction-20261001`。
 main 已有未跟踪资料，不纳入本批、不覆盖；V4 是独立候选线，不在此机械移植。
 
 ## 阶段及进入下一阶段的条件
@@ -24,7 +24,7 @@ main 已有未跟踪资料，不纳入本批、不覆盖；V4 是独立候选线
 | C2 | 按领域逐批抽 Bridge handler | 连接、认证、序列、权限归属不重复实现 |
 | D | 按调用/版本矩阵退役旧分支，更新唯一文档入口 | 确认路径无支持用途；删除对应状态与文档，而非只藏入口 |
 
-当前首先执行 A0–A3，B1 在验证条件满足时推进。后续大类不会在同一批重写。
+第一批 A0–A3 / B1 已执行并通过 E010 源码门禁，当前停在 B2 入口。后续大类不会在同一批重写。
 任何失败先记录并定位；在选定段的正确结果仍无法判定时停止扩大抽取范围，继续补证据。
 
 ## 第一段的正确性契约
@@ -40,11 +40,41 @@ main 已有未跟踪资料，不纳入本批、不覆盖；V4 是独立候选线
 
 1. 修改前登记本批范围、假设、预期差异和红灯测试。
 2. 行为修复与结构抽取分别提交；每次提交包含对应测试和账本变更。
-3. 只格式化本批文件；不提交依赖锁变化、生成缓存或他人的工作。
+3. 只格式化本批文件；不提交生成缓存或他人的工作。必要的测试依赖必须单独登记，
+   不顺带升级；B1 的 fake_async 仅把已有版本声明为直接 dev 依赖。
 4. 每个新模块独占自己的状态；通过窄接口接收事实，不传入整个大类供任意访问。
 5. 不增加第二套通知总线、数据库写入者或全局恢复 coordinator。
 6. 测试完成后根审 diff，再按项目 self-review 流程独立复核有实质规模的改变。
 7. 未经本轮另行授权，不 merge/push、替换生产 Bridge、安装原模拟器/真机应用或发布。
+
+## B2 的具体入口与验收
+
+先选 **older turns** 一种生命周期，不同时改 latest repair、user index、items/detail。
+实际入口在 SyncService：`loadOlderTurns`、`_loadOlderTurnsWithRetry`、`_loadOlderTurnsOnce`，
+状态为 `_historyPageFlights` / `_pendingTurnsPages`；入站处理在 turnsPageResponse / error，
+中断出口为 `_failPendingTurnsPages` 与原订阅生命周期。Repository 的
+`prependConversationTurnsPage` 继续是接受 revision/cursor 与写入内容的权威。
+
+1. 登记请求身份表：source/target/provider/session、generation/subscription/requestId、
+   expected revision/cursor；列清谁创建、谁核对、谁清理，不能仅移动 map。
+2. 列清每个终态：accepted、无更早历史、send/provider error、deadline、订阅替换、
+   source/reset/dispose 中断；每个 future 必须恰好结算一次，旧回复不能重新取得写权。
+3. 重放已存在的真实 SQLite 分页、ACK、前缀保留与 repair 并发测试，补缺失的
+   超时/错误/过期回复/取消顺序用例。预期来自协议与内容/游标事实，不能从旧输出照抄。
+4. 若出现行为缺陷，先在原路径红转绿、独立提交；若实际结果还无法判定，继续补证据，暂不搬动状态。
+5. 再设计最小生命周期模块，整块迁移 single-flight、pending、deadline、settlement 与取消。
+   共享 `_enqueueHistoryOperation`、数据库事务、通知与 source 身份继续留在原 owner；
+   不提前泛化成所有请求的 coordinator，也不把完整 Service 传入新模块。
+6. 用相同输入重跑抽取前后契约与真实 Bridge 接收闭环；完成静态分析、全量 tests、独立 review，
+   更新责任地图、矩阵、收据和回退依赖，再进入 C1。
+
+现场当前值是每次请求 15 秒 deadline、订阅重建等待 8 秒、最多两次尝试、请求 limit 1–20。
+这些是源码现状，不等于已经审定的长期产品策略。B2 纯结构批保持这些值；
+如需改策略，先记录具体用户失败与红灯，另起行为批。
+
+真实 Provider 与设备验收继续列为独立批：先固定 source identity 与原始记录，
+对照 Bridge 帧、SQLite 的 ID/顺序/hash、原页面，再做断线/后台/长会话。
+未经该批验证，不能借用本轮 fixture 接收 PASS 宣称整体运行链已通畅。
 
 ## 回退与接手
 
