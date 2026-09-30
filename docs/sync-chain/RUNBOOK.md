@@ -17,7 +17,8 @@
 
 | 责任 | 唯一位置 | 后续改动要同时检查 |
 |---|---|---|
-| 观察 committed cache、校验 focus/source/generation | SyncService | R03/R05/R08 |
+| 观察 committed cache、校验 focus/source/generation；保证进度观察先于后续 repair reply | SyncService 的 ordered timeline receiver / _observeAutomaticLatestTurnRepairFromCache | R03/R04/R08 |
+| route 与 manual refresh 跨会话的焦点意图与旧状态清理 | SyncService._updateFocusedConversation | R05 |
 | 自动修复状态、completed observation、dirty、operation token、retry/cancel | latest_turn_repair_scheduler.dart | R02/R04/R05/R15 |
 | 同会话请求串行、焦点内 flight 复用 | SyncService.repairLatestTurn / _enqueueHistoryOperation | R05/R07 |
 | 缓存事务与内容/coverage | Repository | R01/R06/R07/R11 |
@@ -25,9 +26,14 @@
 | durable window 重新读取与展示 | 原 Codex 页面/Cubit/layout | R09 |
 
 调度器只接受不可变的身份/观察值和三个窄回调：判断当前操作、执行既有修复、重新观察缓存。
-它没有数据库、Gateway 或页面对象。focus 离开与 thread reset 调用 clearTarget；
+它没有数据库、Gateway 或页面对象。route 或 manual refresh 导致 focus 离开，与 thread reset 调用 clearTarget；
 订阅开始/结束、断线、生命周期离开、source 更换与 dispose 经原订阅生命周期调用 clearAll。
 不能只移走计时器代码却把旧状态留在 Service 中。
+
+接收排序中的 await 只等本地缓存观察进入 scheduler，不等待 repair 网络回复。
+不要把它恢复成纯后台观察，否则较晚 repair completion 可能抢先记完成值，吞掉较早的 dirty 进度。
+也不要等待完整 repair future，否则该 future 可能反过来等待同一接收队列的回复。
+新增的可控读延迟回归与全量 tests 共同约束这个顺序；改变 await 后须检查当前性 fence。
 
 失败预算仍按原 revision/turn/repair operation key 生效：最多 4 次失败，重试等待 1/2/4 秒。
 预算耗尽后不会仅因 frame/时间变化重新请求；新 revision 或取消该目标/订阅后可重新调度。

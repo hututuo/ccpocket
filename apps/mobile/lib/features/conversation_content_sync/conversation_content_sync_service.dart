@@ -539,22 +539,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             provider: provider,
             providerSessionId: providerSessionId,
           );
-    if (_sameTarget(_focused, next)) return;
-    _focusIntentGeneration += 1;
-    _interruptFocusedRefresh();
-    final previous = _focused;
-    if (previous != null) {
-      _markConversationReadBestEffort(previous);
-      _latestTurnRepairScheduler.clearTarget(
-        targetFingerprint: _cacheTarget.fingerprint,
-        provider: previous.provider,
-        providerSessionId: previous.providerSessionId,
-      );
-    }
-    _focused = next;
-    if (next != null) {
-      _markConversationReadBestEffort(next);
-    }
+    if (!_updateFocusedConversation(next)) return;
     final subscriptionId = _activeSubscriptionId;
     if (subscriptionId == null) {
       if (_canProcessContent) {
@@ -596,6 +581,27 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
   }
 
+  /// Every route or manual-refresh focus change retires the same old owner.
+  bool _updateFocusedConversation(ConversationContentTarget? next) {
+    if (_sameTarget(_focused, next)) return false;
+    _focusIntentGeneration += 1;
+    _interruptFocusedRefresh();
+    final previous = _focused;
+    if (previous != null) {
+      _markConversationReadBestEffort(previous);
+      _latestTurnRepairScheduler.clearTarget(
+        targetFingerprint: _cacheTarget.fingerprint,
+        provider: previous.provider,
+        providerSessionId: previous.providerSessionId,
+      );
+    }
+    _focused = next;
+    if (next != null) {
+      _markConversationReadBestEffort(next);
+    }
+    return true;
+  }
+
   /// Re-dispatches the current conversation focus as an explicit recovery
   /// request and waits for the authoritative v2 batch to commit locally.
   ///
@@ -622,14 +628,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       provider: provider,
       providerSessionId: providerSessionId,
     );
-    if (!_sameTarget(_focused, next)) {
-      _focusIntentGeneration += 1;
-      _interruptFocusedRefresh();
-      final previous = _focused;
-      if (previous != null) _markConversationReadBestEffort(previous);
-      _focused = next;
-      _markConversationReadBestEffort(next);
-    }
+    _updateFocusedConversation(next);
     final focusGeneration = _focusIntentGeneration;
     final flightKey =
         '${_cacheTarget.fingerprint}\u0000$provider\u0000$providerSessionId';
@@ -1455,16 +1454,20 @@ class ConversationContentSyncService with WidgetsBindingObserver {
 
   void _scheduleAutomaticLatestTurnRepairFromCache(
     ConversationContentTarget focused,
+  ) => unawaited(_observeAutomaticLatestTurnRepairFromCache(focused));
+
+  Future<void> _observeAutomaticLatestTurnRepairFromCache(
+    ConversationContentTarget focused,
   ) {
     if (_disposed ||
         !_canProcessContent ||
         !bridge.supportsConversationSyncV2 ||
         _activeSubscriptionId == null) {
-      return;
+      return Future<void>.value();
     }
     final generation = _generation;
     final target = _cacheTarget;
-    _trackBackgroundFlight(
+    return _trackBackgroundFlight(
       Future<void>.microtask(() async {
         if (_disposed ||
             generation != _generation ||
@@ -1969,12 +1972,6 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   ) {
     final key = _conversationThreadKey(provider, providerSessionId);
     _currentGenerationTimelineKeys.add(key);
-    final focused = _focused;
-    if (focused != null &&
-        focused.provider == provider &&
-        focused.providerSessionId == providerSessionId) {
-      _scheduleAutomaticLatestTurnRepairFromCache(focused);
-    }
     final waiters = _timelineReadyWaiters.remove(key)?.toList(growable: false);
     if (waiters == null) return;
     for (final waiter in waiters) {
@@ -2828,13 +2825,16 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               reason: 'timeline_order_conflict',
             );
           }
+          // Observe this committed progress before a later repair response can
+          // remember its post-commit observation in the ordered receiver.
+          if (isFocused) {
+            await _observeAutomaticLatestTurnRepairFromCache(focused!);
+            if (!_isV2Current(event, generation, target)) return;
+          }
           _markCurrentGenerationTimelineReady(
             event.provider!,
             event.providerSessionId!,
           );
-          if (isFocused) {
-            _scheduleAutomaticLatestTurnRepairFromCache(_focused!);
-          }
           _recordDiagnosticEvent(
             'timelineRejected',
             sequence: event.sequence,
@@ -2869,6 +2869,12 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             'content=${shortConversationSyncToken(committedRevision)} '
             'lastAssistant=${committed.lastAssistantOutputAt ?? 'none'}',
           );
+          // Observe this committed progress before a later repair response can
+          // remember its post-commit observation in the ordered receiver.
+          if (isFocused) {
+            await _observeAutomaticLatestTurnRepairFromCache(focused!);
+            if (!_isV2Current(event, generation, target)) return;
+          }
           _markCurrentGenerationTimelineReady(
             event.provider!,
             event.providerSessionId!,
@@ -2896,12 +2902,6 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             revision: committedRevision,
             lastAssistantOutputAt: committed.lastAssistantOutputAt,
           );
-          if (isFocused &&
-              event.latestTurnComplete == false &&
-              event.latestTurnGap != null &&
-              _isAutoRepairableLatestTurnGap(event.latestTurnGap!)) {
-            _scheduleAutomaticLatestTurnRepairFromCache(_focused!);
-          }
         }
       case ConversationSyncV2EventKind.runtimeOverlay:
         if (_activeSubscriptionId != event.subscriptionId) {

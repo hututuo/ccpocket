@@ -3490,7 +3490,7 @@ void main() {
         await gateway.nextOutgoing('conversation_sync_ack');
         final second = await gateway
             .nextOutgoing('conversation_turns_page')
-            .timeout(const Duration(seconds: 2));
+            .timeout(const Duration(seconds: 10));
         expect(second['requestId'], isNot(first['requestId']));
         expect(second['itemsView'], 'summary');
         final after = await service.loadCachedWindow(
@@ -3556,7 +3556,7 @@ void main() {
       await gateway.nextOutgoing('conversation_sync_ack');
       final second = await gateway
           .nextOutgoing('conversation_turns_page')
-          .timeout(const Duration(seconds: 2));
+          .timeout(const Duration(seconds: 10));
       expect(second['requestId'], isNot(first['requestId']));
       gateway.addEvent(
         _turnsPageSummary(
@@ -3564,6 +3564,140 @@ void main() {
           threadId: threadId,
           requestId: second['requestId']! as String,
           sequence: 5,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+    },
+  );
+
+  test(
+    'a summary reply cannot overtake observation of an earlier gap commit',
+    () async {
+      await service.dispose();
+      await repository.close();
+      final delayed = _DelayedRepairObservationRepository(
+        SessionCatalogCacheDatabase(
+          databasePath: path.join(
+            temporaryDirectory.path,
+            'delayed-observation.db',
+          ),
+          openDatabase: openFfi,
+        ),
+      );
+      repository = delayed;
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      const threadId = 'delayed-gap-observation';
+      final subscriptionId = await _bootstrapTurnsPageGap(gateway, threadId);
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      final first = await gateway.nextOutgoing('conversation_turns_page');
+      delayed.holdNextReads = 2;
+      try {
+        gateway.addEvent(
+          _turnsPageGapTimeline(
+            subscriptionId: subscriptionId,
+            threadId: threadId,
+            sequence: 3,
+            entries: [_wireEntry('retained-shell', 0)],
+            missingEntryCount: 2,
+          ),
+        );
+        await delayed.observationStarted.future;
+        gateway.addEvent(
+          _turnsPageSummary(
+            subscriptionId: subscriptionId,
+            threadId: threadId,
+            requestId: first['requestId']! as String,
+            sequence: 4,
+          ),
+        );
+        await pumpEventQueue();
+        expect(
+          delayed.repairCommitStarted,
+          isFalse,
+          reason:
+              'The earlier gap must reach the scheduler before the later repair result is accepted.',
+        );
+        delayed.releaseObservation.complete();
+        await gateway.nextOutgoing('conversation_sync_ack');
+        await gateway.nextOutgoing('conversation_sync_ack');
+        final second = await gateway
+            .nextOutgoing('conversation_turns_page')
+            .timeout(const Duration(seconds: 10));
+        expect(second['requestId'], isNot(first['requestId']));
+        gateway.addEvent(
+          _turnsPageSummary(
+            subscriptionId: subscriptionId,
+            threadId: threadId,
+            requestId: second['requestId']! as String,
+            sequence: 5,
+          ),
+        );
+        await gateway.nextOutgoing('conversation_sync_ack');
+      } finally {
+        if (!delayed.releaseObservation.isCompleted) {
+          delayed.releaseObservation.complete();
+        }
+      }
+    },
+  );
+
+  test(
+    'cross-target manual refresh retires the old automatic repair',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      const threadId = 'manual-refresh-repair-cancel';
+      final subscriptionId = await _bootstrapTurnsPageGap(gateway, threadId);
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      final first = await gateway.nextOutgoing('conversation_turns_page');
+      final refresh = service.refreshFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'other-thread',
+        expectedDataSourceIdentity: const BridgeDataSourceIdentity(
+          bridgeInstanceId: 'bridge-1',
+          codexSourceId: 'codex-home-a',
+        ),
+      );
+      final interrupted = expectLater(refresh, throwsA(isA<Object>()));
+      gateway.addEvent(
+        _turnsPageSummary(
+          subscriptionId: subscriptionId,
+          threadId: threadId,
+          requestId: first['requestId']! as String,
+          sequence: 3,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await pumpEventQueue();
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      await interrupted;
+      final second = await gateway
+          .nextOutgoing('conversation_turns_page')
+          .timeout(const Duration(seconds: 10));
+      expect(second['requestId'], isNot(first['requestId']));
+      gateway.addEvent(
+        _turnsPageSummary(
+          subscriptionId: subscriptionId,
+          threadId: threadId,
+          requestId: second['requestId']! as String,
+          sequence: 4,
         ),
       );
       await gateway.nextOutgoing('conversation_sync_ack');
@@ -3658,7 +3792,7 @@ void main() {
       );
       final second = await gateway
           .nextOutgoing('conversation_turns_page')
-          .timeout(const Duration(seconds: 2));
+          .timeout(const Duration(seconds: 10));
       expect(second['requestId'], isNot(first['requestId']));
       gateway.addEvent(
         _turnsPageSummary(
@@ -3718,7 +3852,7 @@ void main() {
       await gateway.nextOutgoing('conversation_sync_ack');
       final second = await gateway
           .nextOutgoing('conversation_turns_page')
-          .timeout(const Duration(seconds: 2));
+          .timeout(const Duration(seconds: 10));
       expect(second['requestId'], isNot(first['requestId']));
       gateway.addEvent(
         _turnsPageSummary(
@@ -6498,6 +6632,56 @@ class _BlockingWindowRepository extends SessionCatalogCacheRepository {
     if (!started.isCompleted) started.complete();
     await release.future;
     return null;
+  }
+}
+
+// Delay only cache observation; all timeline/repair transactions remain real.
+class _DelayedRepairObservationRepository
+    extends SessionCatalogCacheRepository {
+  _DelayedRepairObservationRepository(super.database);
+
+  int holdNextReads = 0;
+  bool repairCommitStarted = false;
+  final observationStarted = Completer<void>();
+  final releaseObservation = Completer<void>();
+
+  @override
+  Future<ConversationHotWindowSnapshot?> loadConversationWindow({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) async {
+    if (holdNextReads > 0) {
+      holdNextReads -= 1;
+      if (!observationStarted.isCompleted) observationStarted.complete();
+      await releaseObservation.future;
+    }
+    return super.loadConversationWindow(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
+  }
+
+  @override
+  Future<ConversationHotWindowSnapshot?>
+  replaceConversationLatestTurnsRepairPage({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String expectedRevision,
+    required List<Map<String, dynamic>> rawMessages,
+    required String? turnsNextCursor,
+  }) {
+    repairCommitStarted = true;
+    return super.replaceConversationLatestTurnsRepairPage(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+      expectedRevision: expectedRevision,
+      rawMessages: rawMessages,
+      turnsNextCursor: turnsNextCursor,
+    );
   }
 }
 

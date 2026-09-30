@@ -5,7 +5,7 @@
 - 时间：2026-10-01（Asia/Taipei）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 选定闭环已完成；开始 B1 仅抽自动 latest-turn repair 调度。
+- 阶段：A0–A3 与 B1 第一块调度抽取已执行；E009 两个行为补漏已修复，正在复核并重跑全量门禁。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
 
 ## E001 — 建立隔离执行与文档
@@ -180,3 +180,41 @@ actionlint 本机不可用，NOT_RUN；云端 runner、SSH 容器 smoke 和平�
 全量 tests 有 3251 PASS、4 SKIPPED、1 FAIL，失败在本批 dirty-success 回归（`full-mobile-tests`）。
 独立 reviewer 再指出 manual refresh 跨 target 的旧清理遗漏。
 两处先补精确失败用例，再作为独立行为修复 E009；E007 不是全部门禁通过的候选。
+
+## E009 — 排序进度观察与统一跨焦点清理
+
+父提交：`b7944b89c38d1cc49ce2e25b54bdba865c7dc11a`（E008）。
+范围：SyncService 与其 Service tests；不再改 scheduler 内部策略、Repository 或页面。
+
+第一处是 E004 进度修复引入的时序窗口，不是 E007 的纯结构迁移改变行为：
+timeline 提交后把缓存观察丢到后台；后来的 summary 回复可能先完成，记下新的提交后观察。
+延迟的观察随后读到同一内容，误以为没有待处理进度。全量负载暴露此窗口。
+新增可控 SQLite 读延迟用例，真实事务仍执行；明确断言较早观察尚未完成时，
+较晚 summary 不得开始 repair transaction。父源码确实 FAIL，不依赖碰运气重复跑。
+
+第二处是既有 manual refresh 跨会话遗漏：普通 setFocusedConversation 清理旧调度，
+refreshFocusedConversation 自己改焦点时却未清理，旧回调失去归属后留下 running 状态。
+新增 A 自动请求未结束 → 手动刷新 B → 接受旧 A 回复 → 返回 A 的回归；
+父源码确实 FAIL，返回 A 的新自动请求无法启动。
+
+修改责任：
+- timeline 接收在已提交进度与后续回复之间 await **缓存观察**，不等待 repair 网络结果。
+  两处 await 后重查 subscription/generation/target fence；观察仍使用既有真实缓存。
+  ready helper 只登记 ready/唤醒 waiter，移除重复后台观察。
+- 唯一 `_updateFocusedConversation` 入口统一 route 与 manual refresh 的 focus intent、
+  refresh interruption、mark-read 与 clearTarget；每条路径继续保留原订阅/发送行为。
+- 新增进度/焦点用例的等待截止由 2 秒改为 10 秒，允许全量并发负载；
+  不把这当作行为修复，也不声称产品有 2 秒 SLA。确定性 gate 负责证明真实排序缺陷。
+
+证据：
+- `red-observation-and-manual-refresh`：上述两个新用例均 FAIL；业务代码尚未修改。
+- `green-observation-and-manual-refresh`：scheduler/Service/Repository/protocol 共 144 tests PASS。
+- 随后补齐观察后的两个 fence guard，`final-chain-node22` 三个真实接收/页面黑盒 PASS；
+  Bridge/CodexProcess 根进程使用显式 Node 22.23.1，fixture 的 env-node 子进程仍用宿主 Node，
+  此收据不是 Linux 云 CI 或真实 Provider 验收。
+- `final-focused-analyze`：0 error/warning；既有 null-aware info 与新测试缺 braces info。
+  提交前补 braces 并格式化；最终全量 analyze/test 尚待冻结后运行。
+
+当前判断：确定性回归与短闭环已绿，全量完成状态仍 FAIL（保留 E008 原失败），
+不能提前将 R12 标为 PASS。下一步冻结此提交，独立 reviewer 复核排序/取消/fence，
+再记录全量绿灯或新的确切失败；B2 未开始。

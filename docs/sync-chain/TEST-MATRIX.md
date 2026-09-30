@@ -8,8 +8,8 @@
 | R01 | 部分 turns_page 提交 | cache epoch 与通知推进；新条目可读取；complete 仍 false | PASS 修复后；基线 FAIL 证据保留；E002/E003 |
 | R02 | 完全相同缺口/内容重放 | 不重复自动请求 | PASS 包含执行中重放；E004 |
 | R03 | 同 canonical revision 后续内容/缺口变化 | 必要修复仍可执行 | PASS 修复后；两种基线 FAIL 保留；E002/E004 |
-| R04 | 修复运行期间发生变化 | 合并 dirty；成功后按新观察判断，不丢变化 | PASS 修复后；中间版 FAIL 保留；E004 |
-| R05 | focus/transport/reset/dispose | 旧结果不生效；无计时器与等待泄漏 | PASS Service 已有生命周期与新增取消回归；E004；设备仍 NOT_RUN |
+| R04 | 修复运行期间发生变化、缓存观察延迟 | 合并 dirty；较早提交观察先于较晚 repair reply，成功后不丢变化 | PASS 144 项相关回归；E004/E009；E008 全量 FAIL 保留，R12 待重跑 |
+| R05 | focus/manual refresh/transport/reset/dispose | 旧结果不生效；新焦点不接管旧 flight，无计时器与等待泄漏 | PASS 新增两种返回焦点顺序及跨会话刷新；E005/E009；设备仍 NOT_RUN |
 | R06 | 删除列表 64/2000/2001 边界 | entries/deletes 按各自预算 | PASS 相关 protocol 回归；E002/E004 |
 | R07 | 历史/最新修复并发 | 保留已提交前缀、顺序与分页游标规则 | PASS Service/Repository 相关回归；E004 |
 | R08 | 错误 source、订阅、sequence | fence / bounded recovery / last-good | PASS Service 回归与既有 blackbox 故障链；E002/E004 |
