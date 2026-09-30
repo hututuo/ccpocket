@@ -3672,6 +3672,66 @@ void main() {
     },
   );
   test(
+    'focus return before an old summary settles does not consume new progress',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      const threadId = 'focus-return-before-summary';
+      final subscriptionId = await _bootstrapTurnsPageGap(gateway, threadId);
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      final first = await gateway.nextOutgoing('conversation_turns_page');
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'other-thread',
+      );
+      gateway.addEvent(
+        _turnsPageGapTimeline(
+          subscriptionId: subscriptionId,
+          threadId: threadId,
+          sequence: 3,
+          entries: [_wireEntry('retained-shell', 0)],
+          missingEntryCount: 2,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await pumpEventQueue();
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      await pumpEventQueue();
+      gateway.addEvent(
+        _turnsPageSummary(
+          subscriptionId: subscriptionId,
+          threadId: threadId,
+          requestId: first['requestId']! as String,
+          sequence: 4,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      final second = await gateway
+          .nextOutgoing('conversation_turns_page')
+          .timeout(const Duration(seconds: 2));
+      expect(second['requestId'], isNot(first['requestId']));
+      gateway.addEvent(
+        _turnsPageSummary(
+          subscriptionId: subscriptionId,
+          threadId: threadId,
+          requestId: second['requestId']! as String,
+          sequence: 5,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+    },
+  );
+  test(
     'focused counted latest-turn gap repairs and rejects a repeated item cursor',
     () async {
       await service.dispose();

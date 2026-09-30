@@ -1391,14 +1391,17 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         const ConversationTurnsPageLoadResult(loaded: false, hasMore: false),
       );
     }
-    final flightKey =
+    final historyKey =
         '${_cacheTarget.fingerprint}\u0000$provider\u0000$providerSessionId';
+    // Preserve target-scoped serialization, but never let a new focus intent
+    // adopt the result of a request sent before that intent's observed gap.
+    final flightKey = '$historyKey\u0000$_focusIntentGeneration';
     final existing = _latestTurnRepairFlights[flightKey];
     if (existing != null) return existing;
     late final Future<ConversationTurnsPageLoadResult> flight;
     flight =
         _enqueueHistoryOperation(
-          flightKey,
+          historyKey,
           () => _repairLatestTurnWithRetry(
             provider: provider,
             providerSessionId: providerSessionId,

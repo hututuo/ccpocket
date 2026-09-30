@@ -90,3 +90,22 @@
 
 下一步：冻结这批业务改动供同一独立 reviewer 复核，再通过真实 Bridge/解码/SQLite/页面
 验证 partial-summary 提交能触发页面重读。全 Mobile 门禁、真实 Provider、模拟器/真机尚未完成。
+
+## E005 — 返回焦点时不能接管旧请求
+
+父提交：`625999f21a17a9eff28d62f329f71968b0f7668b`（E004）。
+独立 reviewer 确认 dirty-success 问题关闭，但指出一个既有遗漏：
+离焦期间有进度、在旧请求结束前返回焦点，新 owner 会复用旧 future，误将新观察记为已处理。
+
+验证：新增精确顺序的回归，`red-focus-return-before-settlement` 在父提交业务代码上 FAIL；
+第二次 summary 请求超时。修复后 `green-focus-return-before-settlement`，
+Service/Repository/protocol 共 138 个用例 PASS。
+
+修改位置：`repairLatestTurn` 分开 historyKey 与 flightKey。
+目标/source/session 的 historyKey 继续串行化写入；flightKey 额外包含既有 focusIntentGeneration，
+同一焦点操作可共用请求，新焦点操作等旧串行操作结束后重新查询自己的观察。
+没有清空已经接受的旧缓存内容，也没有新开并行写入路径。
+
+R05 新增“返回前旧请求尚未完成”的顺序验证；不能把“旧结果先结束再返回”的测试等同于此场景。
+测试文件的初次格式化命令误用了相对路径，命令报错后已在正确目录格式化并检查；
+该错误未修改业务源码。
