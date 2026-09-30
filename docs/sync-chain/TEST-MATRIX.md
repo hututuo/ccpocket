@@ -6,16 +6,16 @@
 | ID | 场景 | 预期 | 当前状态/入口 |
 |---|---|---|---|
 | R01 | 部分 turns_page 提交 | cache epoch 与通知推进；新条目可读取；complete 仍 false | PASS 修复后；基线 FAIL 证据保留；E002/E003 |
-| R02 | 完全相同缺口/内容重放 | 不重复自动请求 | NOT_RUN；现有 bounded summary 用例 |
-| R03 | 同 canonical revision 后续内容/缺口变化 | 必要修复仍可执行 | FAIL 基线红灯：两种变化均被抑制；E002 |
-| R04 | 修复运行期间发生变化 | 合并 dirty；成功后按新观察判断，不丢变化 | NOT_RUN；补回归 |
-| R05 | focus/transport/reset/dispose | 旧结果不生效；无计时器与等待泄漏 | NOT_RUN；现有与补充用例 |
-| R06 | 删除列表 64/2000/2001 边界 | entries/deletes 按各自预算 | NOT_RUN；protocol tests |
-| R07 | 历史/最新修复并发 | 保留已提交前缀、顺序与分页游标规则 | NOT_RUN；Service/Repository tests |
-| R08 | 错误 source、订阅、sequence | fence / bounded recovery / last-good | NOT_RUN；Service + wire fault tests |
-| R09 | 真 Bridge → JSON → Dart → SQLite → Cubit/layout | 与 Provider fixture 的稳定 ID/顺序/内容相符 | NOT_RUN；blackbox receiver/full page |
-| R10 | stdio JSON-RPC 模式 | 不旁路生产 RPC 解码/分发 | NOT_RUN；receiver RPC 模式 |
-| R11 | SQLite 关闭重开 | durable 内容可恢复 | NOT_RUN；receiver tests |
+| R02 | 完全相同缺口/内容重放 | 不重复自动请求 | PASS 包含执行中重放；E004 |
+| R03 | 同 canonical revision 后续内容/缺口变化 | 必要修复仍可执行 | PASS 修复后；两种基线 FAIL 保留；E002/E004 |
+| R04 | 修复运行期间发生变化 | 合并 dirty；成功后按新观察判断，不丢变化 | PASS 修复后；中间版 FAIL 保留；E004 |
+| R05 | focus/transport/reset/dispose | 旧结果不生效；无计时器与等待泄漏 | PASS Service 已有生命周期与新增取消回归；E004；设备仍 NOT_RUN |
+| R06 | 删除列表 64/2000/2001 边界 | entries/deletes 按各自预算 | PASS 相关 protocol 回归；E002/E004 |
+| R07 | 历史/最新修复并发 | 保留已提交前缀、顺序与分页游标规则 | PASS Service/Repository 相关回归；E004 |
+| R08 | 错误 source、订阅、sequence | fence / bounded recovery / last-good | PASS Service 回归与既有 blackbox 故障链；E002/E004 |
+| R09 | 真 Bridge → JSON → Dart → SQLite → Cubit/layout | 与 Provider fixture 的稳定 ID/顺序/内容相符 | PASS 基线既有 receiver/full page；准确的 partial-summary 场景待补 |
+| R10 | stdio JSON-RPC 模式 | 不旁路生产 RPC 解码/分发 | PASS 基线 full-page；E002 |
+| R11 | SQLite 关闭重开 | durable 内容可恢复 | PASS 基线 receiver；E002 |
 | R12 | 全 Mobile analyze/tests | 无新增 error/warning/回归 | NOT_RUN |
 | R13 | 真实 Provider 新事件 | 原始记录与 Bridge/cache/page 对照 | NOT_RUN |
 | R14 | 模拟器 / 真机 / 生产 | 各自独立验收 | NOT_RUN |

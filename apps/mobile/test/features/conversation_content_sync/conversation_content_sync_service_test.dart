@@ -3517,6 +3517,160 @@ void main() {
       },
     );
   }
+
+  test(
+    'progress during a successful summary repair is checked again',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      const threadId = 'dirty-summary-repair';
+      final subscriptionId = await _bootstrapTurnsPageGap(gateway, threadId);
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      final first = await gateway.nextOutgoing('conversation_turns_page');
+      gateway.addEvent(
+        _turnsPageGapTimeline(
+          subscriptionId: subscriptionId,
+          threadId: threadId,
+          sequence: 3,
+          entries: [_wireEntry('retained-shell', 0)],
+          missingEntryCount: 2,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await pumpEventQueue();
+      gateway.addEvent(
+        _turnsPageSummary(
+          subscriptionId: subscriptionId,
+          threadId: threadId,
+          requestId: first['requestId']! as String,
+          sequence: 4,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      final second = await gateway
+          .nextOutgoing('conversation_turns_page')
+          .timeout(const Duration(seconds: 2));
+      expect(second['requestId'], isNot(first['requestId']));
+      gateway.addEvent(
+        _turnsPageSummary(
+          subscriptionId: subscriptionId,
+          threadId: threadId,
+          requestId: second['requestId']! as String,
+          sequence: 5,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+    },
+  );
+
+  test(
+    'identical progress during a summary repair does not queue another repair',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      const threadId = 'same-in-flight-observation';
+      final subscriptionId = await _bootstrapTurnsPageGap(gateway, threadId);
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      final request = await gateway.nextOutgoing('conversation_turns_page');
+      gateway.addEvent(
+        _turnsPageGapTimeline(
+          subscriptionId: subscriptionId,
+          threadId: threadId,
+          sequence: 3,
+          entries: [_wireEntry('retained-shell', 0)],
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await pumpEventQueue();
+      gateway.addEvent(
+        _turnsPageSummary(
+          subscriptionId: subscriptionId,
+          threadId: threadId,
+          requestId: request['requestId']! as String,
+          sequence: 4,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await pumpEventQueue();
+      expect(
+        gateway.sentTypes.where((type) => type == 'conversation_turns_page'),
+        hasLength(1),
+      );
+    },
+  );
+
+  test(
+    'a cancelled summary flight cannot suppress repair after focus returns',
+    () async {
+      await service.dispose();
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      const threadId = 'cancelled-summary-observation';
+      final subscriptionId = await _bootstrapTurnsPageGap(gateway, threadId);
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      final first = await gateway.nextOutgoing('conversation_turns_page');
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: 'other-thread',
+      );
+      gateway.addEvent(
+        _turnsPageSummary(
+          subscriptionId: subscriptionId,
+          threadId: threadId,
+          requestId: first['requestId']! as String,
+          sequence: 3,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await pumpEventQueue();
+      final diagnostics = service.diagnosticSnapshot(
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      expect(
+        (diagnostics['pendingRequestCounts']!
+            as Map<String, Object?>)['automaticLatestTurnRepairs'],
+        0,
+      );
+      service.setFocusedConversation(
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      final second = await gateway
+          .nextOutgoing('conversation_turns_page')
+          .timeout(const Duration(seconds: 2));
+      expect(second['requestId'], isNot(first['requestId']));
+      gateway.addEvent(
+        _turnsPageSummary(
+          subscriptionId: subscriptionId,
+          threadId: threadId,
+          requestId: second['requestId']! as String,
+          sequence: 4,
+        ),
+      );
+      await gateway.nextOutgoing('conversation_sync_ack');
+    },
+  );
   test(
     'focused counted latest-turn gap repairs and rejects a repeated item cursor',
     () async {

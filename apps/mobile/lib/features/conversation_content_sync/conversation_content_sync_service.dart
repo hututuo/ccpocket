@@ -178,10 +178,18 @@ class ConversationTurnsPageLoadResult {
   const ConversationTurnsPageLoadResult({
     required this.loaded,
     required this.hasMore,
+    this.latestTurnComplete,
+    this.repairObservation,
   });
 
   final bool loaded;
   final bool hasMore;
+
+  /// Repair coverage is independent of accepting a readable summary page.
+  final bool? latestTurnComplete;
+
+  /// Local content/coverage identity, never a Provider or wire revision.
+  final String? repairObservation;
 }
 
 /// Maintains one foreground subscription to the Bridge-owned conversation
@@ -232,7 +240,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   final Map<String, _AutomaticLatestTurnRepairState>
   _automaticLatestTurnRepairs = {};
   final Map<String, Timer> _automaticLatestTurnRepairRetryTimers = {};
-  final Map<String, String> _automaticTurnsPageRepairRevisionByTarget = {};
+  final Map<String, String> _automaticTurnsPageRepairObservationByTarget = {};
   String? _focusedRefreshFlightKey;
   Future<void>? _focusedRefreshFlight;
   Completer<void>? _focusedRefreshCancellation;
@@ -1411,6 +1419,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     required String provider,
     required String providerSessionId,
     required String revision,
+    required String observation,
     required ConversationSyncV2LatestTurnGap gap,
   }) {
     final focused = _focused;
@@ -1432,12 +1441,18 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       providerSessionId: providerSessionId,
     );
     if (gap.repair == 'turns_page' &&
-        _automaticTurnsPageRepairRevisionByTarget[targetKey] == revision) {
+        _automaticTurnsPageRepairObservationByTarget[targetKey] ==
+            observation) {
       return;
     }
     final previous = _automaticLatestTurnRepairs[key];
     if (previous?.running == true) {
-      _automaticLatestTurnRepairs[key] = previous!.copyWith(dirty: true);
+      if (previous!.observation != observation) {
+        _automaticLatestTurnRepairs[key] = previous.copyWith(
+          dirty: true,
+          observation: observation,
+        );
+      }
       return;
     }
     if ((previous?.failureCount ?? 0) >=
@@ -1449,11 +1464,24 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         when now.isBefore(nextRetryAt)) {
       return;
     }
+    final operationToken = Object();
     _automaticLatestTurnRepairs[key] = _AutomaticLatestTurnRepairState(
       running: true,
       dirty: false,
+      observation: observation,
+      operationToken: operationToken,
       failureCount: previous?.failureCount ?? 0,
     );
+    bool ownsOperation() =>
+        identical(
+          _automaticLatestTurnRepairs[key]?.operationToken,
+          operationToken,
+        ) &&
+        !_disposed &&
+        generation == _generation &&
+        target.fingerprint == _cacheTarget.fingerprint &&
+        _focused?.provider == provider &&
+        _focused?.providerSessionId == providerSessionId;
 
     conversationSyncTrace(
       '[conversation_sync_v2] event=latest_turn_auto_repair_scheduled '
@@ -1461,20 +1489,14 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       'content=${shortConversationSyncToken(revision)} repair=${gap.repair}',
     );
     scheduleMicrotask(() {
-      if (_disposed ||
-          generation != _generation ||
-          target.fingerprint != _cacheTarget.fingerprint ||
-          _focused?.provider != provider ||
-          _focused?.providerSessionId != providerSessionId) {
-        _automaticLatestTurnRepairs.remove(key);
-        return;
-      }
+      if (!ownsOperation()) return;
       unawaited(
         repairLatestTurn(
               provider: provider,
               providerSessionId: providerSessionId,
             )
             .then((result) {
+              if (!ownsOperation()) return;
               conversationSyncTrace(
                 '[conversation_sync_v2] event=latest_turn_auto_repair_complete '
                 'target=${conversationSyncTargetTrace(provider, providerSessionId)} '
@@ -1482,10 +1504,16 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               );
               final state = _automaticLatestTurnRepairs.remove(key);
               _automaticLatestTurnRepairRetryTimers.remove(key)?.cancel();
-              if (gap.repair == 'turns_page' && result.loaded) {
-                _rememberAutomaticTurnsPageRepair(targetKey, revision);
+              if (gap.repair == 'turns_page' &&
+                  result.loaded &&
+                  state?.dirty != true &&
+                  result.repairObservation != null) {
+                _rememberAutomaticTurnsPageRepair(
+                  targetKey,
+                  result.repairObservation!,
+                );
               }
-              if (state?.dirty == true && !result.loaded) {
+              if (state?.dirty == true) {
                 _scheduleAutomaticLatestTurnRepairFromCache(
                   ConversationContentTarget(
                     provider: provider,
@@ -1495,6 +1523,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               }
             })
             .catchError((Object error) {
+              if (!ownsOperation()) return;
               conversationSyncTrace(
                 '[conversation_sync_v2] event=latest_turn_auto_repair_failed '
                 'target=${conversationSyncTargetTrace(provider, providerSessionId)} '
@@ -1512,6 +1541,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                   _AutomaticLatestTurnRepairState(
                     running: false,
                     dirty: state.dirty,
+                    observation: state.observation,
+                    operationToken: operationToken,
                     failureCount: failureCount,
                     nextRetryAt: DateTime.now().add(retryDelay),
                   );
@@ -1520,6 +1551,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 _automaticLatestTurnRepairRetryTimers[key] = Timer(
                   retryDelay,
                   () {
+                    if (!ownsOperation()) return;
                     _automaticLatestTurnRepairRetryTimers.remove(key);
                     final retryState = _automaticLatestTurnRepairs[key];
                     if (retryState == null || retryState.running) return;
@@ -1527,6 +1559,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                         _AutomaticLatestTurnRepairState(
                           running: false,
                           dirty: retryState.dirty,
+                          observation: retryState.observation,
+                          operationToken: operationToken,
                           failureCount: retryState.failureCount,
                         );
                     _scheduleAutomaticLatestTurnRepairFromCache(
@@ -1566,13 +1600,13 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     required String providerSessionId,
   }) => '${target.fingerprint}\u0000$provider\u0000$providerSessionId';
 
-  void _rememberAutomaticTurnsPageRepair(String targetKey, String revision) {
-    _automaticTurnsPageRepairRevisionByTarget
+  void _rememberAutomaticTurnsPageRepair(String targetKey, String observation) {
+    _automaticTurnsPageRepairObservationByTarget
       ..remove(targetKey)
-      ..[targetKey] = revision;
-    while (_automaticTurnsPageRepairRevisionByTarget.length > 128) {
-      _automaticTurnsPageRepairRevisionByTarget.remove(
-        _automaticTurnsPageRepairRevisionByTarget.keys.first,
+      ..[targetKey] = observation;
+    while (_automaticTurnsPageRepairObservationByTarget.length > 128) {
+      _automaticTurnsPageRepairObservationByTarget.remove(
+        _automaticTurnsPageRepairObservationByTarget.keys.first,
       );
     }
   }
@@ -1591,7 +1625,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       _automaticLatestTurnRepairRetryTimers.remove(key)?.cancel();
       _automaticLatestTurnRepairs.remove(key);
     }
-    _automaticTurnsPageRepairRevisionByTarget.remove(
+    _automaticTurnsPageRepairObservationByTarget.remove(
       _automaticLatestTurnRepairTargetKey(
         target: target,
         provider: provider,
@@ -1606,8 +1640,17 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     }
     _automaticLatestTurnRepairRetryTimers.clear();
     _automaticLatestTurnRepairs.clear();
-    _automaticTurnsPageRepairRevisionByTarget.clear();
+    _automaticTurnsPageRepairObservationByTarget.clear();
   }
+
+  String _latestTurnRepairObservation(ConversationHotWindowSnapshot snapshot) =>
+      jsonEncode([
+        snapshot.revision,
+        conversationPresentationRevision(snapshot),
+        snapshot.latestTurnGap?.toJson(),
+        snapshot.latestTurnGapCursor,
+        snapshot.sourceEntryCount,
+      ]);
 
   void _scheduleAutomaticLatestTurnRepairFromCache(
     ConversationContentTarget focused,
@@ -1649,6 +1692,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
             provider: focused.provider,
             providerSessionId: focused.providerSessionId,
             revision: snapshot.revision,
+            observation: _latestTurnRepairObservation(snapshot),
             gap: gap,
           );
         } catch (error) {
@@ -1745,6 +1789,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           return ConversationTurnsPageLoadResult(
             loaded: true,
             hasMore: snapshot.hasEarlier,
+            latestTurnComplete: true,
+            repairObservation: _latestTurnRepairObservation(snapshot),
           );
         }
         return await _repairLatestTurnGap(
@@ -1900,6 +1946,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         return ConversationTurnsPageLoadResult(
           loaded: true,
           hasMore: current.hasEarlier,
+          latestTurnComplete: true,
+          repairObservation: _latestTurnRepairObservation(current),
         );
       }
       final gap = current.latestTurnGap;
@@ -1942,6 +1990,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         return ConversationTurnsPageLoadResult(
           loaded: true,
           hasMore: current.hasEarlier,
+          latestTurnComplete: current.latestTurnComplete,
+          repairObservation: _latestTurnRepairObservation(current),
         );
       }
       if (transferredBytes >= maximumBytes) {
@@ -3046,14 +3096,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               event.latestTurnComplete == false &&
               event.latestTurnGap != null &&
               _isAutoRepairableLatestTurnGap(event.latestTurnGap!)) {
-            _scheduleAutomaticLatestTurnRepair(
-              generation: generation,
-              target: target,
-              provider: event.provider!,
-              providerSessionId: event.providerSessionId!,
-              revision: committedRevision,
-              gap: event.latestTurnGap!,
-            );
+            _scheduleAutomaticLatestTurnRepairFromCache(_focused!);
           }
         }
       case ConversationSyncV2EventKind.runtimeOverlay:
@@ -4583,20 +4626,28 @@ class _AutomaticLatestTurnRepairState {
   const _AutomaticLatestTurnRepairState({
     required this.running,
     required this.dirty,
+    required this.observation,
+    required this.operationToken,
     required this.failureCount,
     this.nextRetryAt,
   });
 
   final bool running;
   final bool dirty;
+  final String observation;
+  final Object operationToken;
   final int failureCount;
   final DateTime? nextRetryAt;
 
-  _AutomaticLatestTurnRepairState copyWith({bool? dirty}) =>
-      _AutomaticLatestTurnRepairState(
-        running: running,
-        dirty: dirty ?? this.dirty,
-        failureCount: failureCount,
-        nextRetryAt: nextRetryAt,
-      );
+  _AutomaticLatestTurnRepairState copyWith({
+    bool? dirty,
+    String? observation,
+  }) => _AutomaticLatestTurnRepairState(
+    running: running,
+    dirty: dirty ?? this.dirty,
+    observation: observation ?? this.observation,
+    operationToken: operationToken,
+    failureCount: failureCount,
+    nextRetryAt: nextRetryAt,
+  );
 }
