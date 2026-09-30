@@ -26,3 +26,28 @@
 状态：方案与源码关系梳理 PASS；本批测试、修复和抽取尚未执行。
 下一步：运行基线相关测试，补 R01/R03 的失败用例；不得先搬动修复调度。
 
+## E002 — 基线重放与红灯回归
+
+基线文档提交：`09297c594c4e7a165f84c8acc85f2973ee1c3038`；
+业务源码仍与起始 SHA 一致。原始输出目录：
+`/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/`。
+
+运行与信号：
+- `baseline-focused.json/.log`：Service、Repository、protocol 三文件 132 tests PASS，exit 0。
+- `baseline-analyze.json/.log`：目标 Service/test analyze exit 0，0 error/warning；
+  两条重复呈现的既有 use_null_aware_elements info，不属于本批新增问题。
+- `baseline-bridge-build.json/.log`：真实 Bridge build PASS，exit 0。
+- `baseline-chain.json/.log`：latest-turn-gap receiver 与完整 Codex page 两条真实接收链 PASS，
+  最上游为隔离 Provider fixture，不证明真实 Provider/设备。
+- `red-repair-regressions.json/.log`：新增/加强三个用例，3 FAIL，exit 1；
+  此时没有改变业务代码。R01 epoch 应推进却仍为 1；
+  R03 内容变化和缺口变化分别等待下一次 summary 请求超时。
+
+修改：
+- Service test 的 bounded-summary 用例增加 updates/epoch 断言，并保留 complete=false 与同内容重放检查。
+- 增加同 canonical revision 的内容变化与缺口变化用例，使用真实 SQLite。
+- 测试没有用 frame sequence/时间变化代替内容变化。
+
+红灯 checkpoint 用途：保留“已有测试全绿但契约失败”的独立证据，不是可合并版本。
+接下来先修 R01，再修 R03；每个修复记录自身绿灯与尚未关闭的失败。
+文档首提交 diff-check 提示多余 EOF 空行，本批清理格式；不改写首提交。

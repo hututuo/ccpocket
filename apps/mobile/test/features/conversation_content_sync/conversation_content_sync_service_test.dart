@@ -3279,7 +3279,7 @@ void main() {
   );
 
   test(
-    'focused turns-page gap fetches a bounded summary automatically',
+    'focused turns-page summary notifies observers while coverage stays partial',
     () async {
       await service.dispose();
       gateway.supportsConversationSyncV2 = true;
@@ -3353,6 +3353,10 @@ void main() {
       expect(beforeRepair?.entries.map((entry) => entry.entryId), [
         'legacy-incomplete-shell',
       ]);
+      final beforeEpoch = service.cacheCommitEpoch;
+      final updates = <ConversationContentCacheUpdate>[];
+      final updateSubscription = service.updates.listen(updates.add);
+      addTearDown(updateSubscription.cancel);
 
       gateway.addEvent(
         ConversationSyncV2EventMessage(
@@ -3395,6 +3399,10 @@ void main() {
         'legacy-incomplete-shell',
         'turn:legacy-latest-turn:user:legacy-latest-user',
       ]);
+      expect(service.cacheCommitEpoch, greaterThan(beforeEpoch));
+      expect(updates, hasLength(1));
+      expect(updates.single.providerSessionId, 'thread-auto-turns-gap');
+      expect(repaired?.revision, 'revision-auto-turns-gap');
 
       gateway.addEvent(
         ConversationSyncV2EventMessage(
@@ -3432,6 +3440,83 @@ void main() {
     },
   );
 
+  for (final progress in ['content', 'gap']) {
+    test(
+      'same-revision progress in $progress permits another summary repair',
+      () async {
+        await service.dispose();
+        gateway.supportsConversationSyncV2 = true;
+        service = ConversationContentSyncService(
+          bridge: gateway,
+          cache: repository,
+        )..start(initialLifecycleState: AppLifecycleState.resumed);
+        const threadId = 'same-revision-progress';
+        final subscriptionId = await _bootstrapTurnsPageGap(gateway, threadId);
+        service.setFocusedConversation(
+          provider: 'codex',
+          providerSessionId: threadId,
+        );
+        final first = await gateway.nextOutgoing('conversation_turns_page');
+        gateway.addEvent(
+          _turnsPageSummary(
+            subscriptionId: subscriptionId,
+            threadId: threadId,
+            requestId: first['requestId']! as String,
+            sequence: 3,
+          ),
+        );
+        await gateway.nextOutgoing('conversation_sync_ack');
+        await pumpEventQueue();
+        final before = await service.loadCachedWindow(
+          provider: 'codex',
+          providerSessionId: threadId,
+        );
+        expect(before?.revision, 'unchanged-canonical-revision');
+        expect(before?.latestTurnComplete, isFalse);
+
+        gateway.addEvent(
+          _turnsPageGapTimeline(
+            subscriptionId: subscriptionId,
+            threadId: threadId,
+            sequence: 4,
+            entries: [
+              _wireEntry('retained-shell', 0),
+              if (progress == 'content') _wireEntry('later-content', 2),
+            ],
+            sourceEntryCount: progress == 'content' ? 3 : 2,
+            missingEntryCount: progress == 'gap' ? 2 : 1,
+          ),
+        );
+        await gateway.nextOutgoing('conversation_sync_ack');
+        final second = await gateway
+            .nextOutgoing('conversation_turns_page')
+            .timeout(const Duration(seconds: 2));
+        expect(second['requestId'], isNot(first['requestId']));
+        expect(second['itemsView'], 'summary');
+        final after = await service.loadCachedWindow(
+          provider: 'codex',
+          providerSessionId: threadId,
+        );
+        expect(after?.revision, before?.revision);
+        expect(after?.latestTurnComplete, isFalse);
+        if (progress == 'content') {
+          expect(
+            after?.entries.map((entry) => entry.entryId),
+            contains('later-content'),
+          );
+        }
+        gateway.addEvent(
+          _turnsPageSummary(
+            subscriptionId: subscriptionId,
+            threadId: threadId,
+            requestId: second['requestId']! as String,
+            sequence: 5,
+          ),
+        );
+        await gateway.nextOutgoing('conversation_sync_ack');
+      },
+    );
+  }
   test(
     'focused counted latest-turn gap repairs and rejects a repeated item cursor',
     () async {
@@ -5887,6 +5972,101 @@ void main() {
     );
   });
 }
+
+Future<String> _bootstrapTurnsPageGap(
+  FakeConversationContentGateway gateway,
+  String threadId,
+) async {
+  final subscribe = await gateway.nextOutgoing('conversation_sync_subscribe');
+  final subscriptionId = subscribe['requestId']! as String;
+  gateway.addEvent(
+    ConversationSyncV2EventMessage(
+      event: ConversationSyncV2EventKind.syncBegin,
+      subscriptionId: subscriptionId,
+      bridgeInstanceId: 'bridge-1',
+      codexSourceId: 'codex-home-a',
+      batchId: 'summary-repair',
+      sequence: 1,
+      requestId: subscriptionId,
+      catalogState: 'summary-catalog',
+      statusState: 'summary-status',
+    ),
+  );
+  await gateway.nextOutgoing('conversation_sync_ack');
+  gateway.addEvent(
+    _turnsPageGapTimeline(
+      subscriptionId: subscriptionId,
+      threadId: threadId,
+      sequence: 2,
+      entries: [_wireEntry('retained-shell', 0)],
+    ),
+  );
+  await gateway.nextOutgoing('conversation_sync_ack');
+  return subscriptionId;
+}
+
+ConversationSyncV2EventMessage _turnsPageGapTimeline({
+  required String subscriptionId,
+  required String threadId,
+  required int sequence,
+  required List<ConversationContentWireEntry> entries,
+  int sourceEntryCount = 2,
+  int missingEntryCount = 1,
+}) => ConversationSyncV2EventMessage(
+  event: ConversationSyncV2EventKind.timelinePage,
+  subscriptionId: subscriptionId,
+  bridgeInstanceId: 'bridge-1',
+  codexSourceId: 'codex-home-a',
+  batchId: 'summary-repair',
+  sequence: sequence,
+  provider: 'codex',
+  providerSessionId: threadId,
+  revision: 'unchanged-canonical-revision',
+  mode: 'snapshot',
+  pageIndex: 0,
+  pageCount: 1,
+  entries: entries,
+  hasEarlier: true,
+  windowComplete: false,
+  latestTurnComplete: false,
+  latestTurnGap: ConversationSyncV2LatestTurnGap(
+    missingEntryCount: missingEntryCount,
+    payloadOmitted: false,
+    repair: 'turns_page',
+  ),
+  sourceEntryCount: sourceEntryCount,
+);
+
+ConversationSyncV2EventMessage _turnsPageSummary({
+  required String subscriptionId,
+  required String threadId,
+  required String requestId,
+  required int sequence,
+}) => ConversationSyncV2EventMessage(
+  event: ConversationSyncV2EventKind.turnsPageResponse,
+  subscriptionId: subscriptionId,
+  bridgeInstanceId: 'bridge-1',
+  codexSourceId: 'codex-home-a',
+  batchId: 'summary-repair',
+  sequence: sequence,
+  requestId: requestId,
+  provider: 'codex',
+  providerSessionId: threadId,
+  data: const [
+    {
+      'turnId': 'summary-turn',
+      'messages': [
+        {
+          'type': 'user_input',
+          'text': 'Recovered latest prompt',
+          'userMessageUuid': 'summary-user',
+        },
+      ],
+      'itemCount': 1,
+      'itemsView': 'summary',
+    },
+  ],
+);
 
 ConversationContentWireEntry _wireEntry(String id, int index) {
   return ConversationContentWireEntry(
