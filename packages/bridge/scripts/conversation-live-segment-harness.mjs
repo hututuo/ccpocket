@@ -40,13 +40,28 @@ const [
 
 const threadId = "019f-live-segment-authority-thread";
 const turnId = "turn-live-segments";
-const latestTurnGapScenario =
-  process.env.CCPOCKET_CHAIN_SCENARIO === "latest-turn-gap";
+const scenario = process.env.CCPOCKET_CHAIN_SCENARIO ?? "live-segments";
+const latestTurnGapScenario = scenario === "latest-turn-gap";
+const partialSummaryScenario = scenario === "partial-summary";
+let releaseSummaryReply;
+let releaseUserIndexReply;
+let heldSummaryRequests = 0;
+const summaryReplyGate = partialSummaryScenario
+  ? new Promise((resolveReply) => { releaseSummaryReply = resolveReply; })
+  : Promise.resolve();
+const userIndexReplyGate = partialSummaryScenario
+  ? new Promise((resolveReply) => { releaseUserIndexReply = resolveReply; })
+  : Promise.resolve();
 const userItem = {
   type: "userMessage",
   id: "provider-user-live-segments",
   clientMessageId: "client-user-live-segments",
-  content: [{ type: "text", text: "Exercise live segment boundaries" }],
+  content: [{
+    type: "text",
+    text: partialSummaryScenario
+      ? "Latest prompt recovered from a partial summary"
+      : "Exercise live segment boundaries",
+  }],
 };
 const providerState = {
   revision: latestTurnGapScenario ? 4 : 1,
@@ -237,6 +252,18 @@ class FakeCodexAppServer extends CodexProcess {
 const rpcFixture = rawRpcMode ? await startConversationAppServerFixture({
   home: isolatedHome, projectPath, threadId, turnId, state: providerState,
   thread: providerThread, turn: providerTurn, trace: rpcTrace, reads: providerReads,
+  beforeTurnsPageReply: async (params) => {
+    if (partialSummaryScenario && params.itemsView === "summary") {
+      if (params.limit === 1) {
+        heldSummaryRequests += 1;
+        await summaryReplyGate;
+      } else {
+        // Keep the independently requested user-index reply from supplying an
+        // unrelated cache notification during this notification-path test.
+        await userIndexReplyGate;
+      }
+    }
+  },
 }) : null;
 const historyRpc = rawRpcMode ? new CodexProcess() : null;
 if (historyRpc) await historyRpc.initializeOnly(projectPath, 8000);
@@ -366,7 +393,21 @@ const bridge = new BridgeWebSocketServer({
       const turns = historyRpc
         ? (await historyRpc.listThreadTurns({ threadId, itemsView: "full" })).data
         : [providerTurn()];
-      const messages = codexThreadToServerMessages({ turns });
+      // Model a bounded legacy/history prefix while the turns endpoint can
+      // recover the latest prompt. This seam supplies Provider fixture facts;
+      // the Bridge computes its own revision, entries and wire frames.
+      const messages = codexThreadToServerMessages({
+        turns: partialSummaryScenario ? [{
+          ...providerTurn(),
+          id: "turn-before-summary",
+          items: [{
+            ...userItem,
+            id: "provider-user-before-summary",
+            clientMessageId: "client-user-before-summary",
+            content: [{ type: "text", text: "Retained readable prefix" }],
+          }],
+        }] : turns,
+      });
       providerReads.push({
         method: "conversation-history",
         revision: providerState.revision,
@@ -382,10 +423,15 @@ const bridge = new BridgeWebSocketServer({
       return {
         messages,
         nextTurnCursor: null,
-        windowComplete: true,
+        windowComplete: !partialSummaryScenario,
         // All currently available items are returned, including during a turn.
         // Coverage completeness is independent of provider execution status.
-        latestTurnComplete: true,
+        latestTurnComplete: !partialSummaryScenario,
+        ...(partialSummaryScenario ? {
+          latestTurnGap: {
+            missingEntryCount: 1, payloadOmitted: true, repair: "turns_page",
+          },
+        } : {}),
       };
     },
   },
@@ -412,7 +458,7 @@ process.stdout.write(
     projectPath,
     traceRoot,
     providerMode: rawRpcMode ? "stdio-json-rpc" : "notification",
-    scenario: latestTurnGapScenario ? "latest-turn-gap" : "live-segments",
+    scenario,
   })}\n`,
 );
 
@@ -424,7 +470,11 @@ for await (const line of input) {
   } catch {
     continue;
   }
-  if (command.command === "shutdown") break;
+  if (command.command === "shutdown") {
+    releaseSummaryReply?.();
+    releaseUserIndexReply?.();
+    break;
+  }
   try {
     let result;
     switch (command.command) {
@@ -472,7 +522,16 @@ for await (const line of input) {
           runtimeReady: activeRuntime != null,
           requests: rpcTrace.filter((row) => row.direction === "bridge_to_provider").map((row) => JSON.parse(row.raw).method),
           notifications: rpcTrace.filter((row) => row.direction === "provider_to_bridge").map((row) => JSON.parse(row.raw).method).filter(Boolean),
+          heldSummaryRequests,
         };
+        break;
+      case "release_summary":
+        if (!partialSummaryScenario || !releaseSummaryReply) {
+          throw new Error("summary_reply_not_held");
+        }
+        releaseSummaryReply();
+        releaseSummaryReply = null;
+        result = { released: true, heldSummaryRequests };
         break;
       case "wire_status":
         result = { pending: wireFaults.pendingFault?.kind ?? null, trace: wireFaults.trace };

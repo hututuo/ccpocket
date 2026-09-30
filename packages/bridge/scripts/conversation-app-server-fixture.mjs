@@ -8,6 +8,7 @@ import { join } from "node:path";
 // CodexProcess still spawns, initializes, frames and decodes stdio JSON-RPC.
 export async function startConversationAppServerFixture({
   home, projectPath, threadId, turnId, state, thread, turn, trace, reads,
+  beforeTurnsPageReply,
 }) {
   const connections = [];
   const events = new EventEmitter();
@@ -24,7 +25,7 @@ export async function startConversationAppServerFixture({
     const connection = { id: connections.length + 1, socket };
     connections.push(connection);
     const input = createInterface({ input: socket, crlfDelay: Infinity });
-    input.on("line", (raw) => {
+    input.on("line", async (raw) => {
       trace.push({ connection: connection.id, direction: "bridge_to_provider", raw });
       const request = JSON.parse(raw);
       if (request.id == null) return;
@@ -45,7 +46,12 @@ export async function startConversationAppServerFixture({
           activeConnection = connection;
           result = { thread: { ...thread(), turns: params.excludeTurns ? [] : [turn()] }, model: "gpt-5.6-sol" };
           break;
-        case "thread/turns/list": result = { data: params.threadId === threadId ? [turn()] : [], nextCursor: null }; break;
+        case "thread/turns/list":
+          // Delay only the Provider fixture's reply; production Bridge/RPC
+          // framing, request IDs and response normalization remain in use.
+          await beforeTurnsPageReply?.(params);
+          result = { data: params.threadId === threadId ? [turn()] : [], nextCursor: null };
+          break;
         case "thread/loaded/list": result = { data: [threadId], nextCursor: null }; break;
         case "skills/list": result = { data: [{ cwd: projectPath, skills: [] }] }; break;
         case "app/list": result = { data: [], nextCursor: null }; break;

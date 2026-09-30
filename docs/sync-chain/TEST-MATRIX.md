@@ -13,7 +13,7 @@
 | R06 | 删除列表 64/2000/2001 边界 | entries/deletes 按各自预算 | PASS 相关 protocol 回归；E002/E004 |
 | R07 | 历史/最新修复并发 | 保留已提交前缀、顺序与分页游标规则 | PASS Service/Repository 相关回归；E004 |
 | R08 | 错误 source、订阅、sequence | fence / bounded recovery / last-good | PASS Service 回归与既有 blackbox 故障链；E002/E004 |
-| R09 | 真 Bridge → JSON → Dart → SQLite → Cubit/layout | 与 Provider fixture 的稳定 ID/顺序/内容相符 | PASS 基线既有 receiver/full page；准确的 partial-summary 场景待补 |
+| R09 | 真 Bridge → JSON → Dart → SQLite → Cubit/layout | 与 Provider fixture 的稳定 ID/顺序/内容相符 | PASS 三个黑盒用例含 partial-summary 原页面更新；漏通知 mutation FAIL 证明敏感；E006 |
 | R10 | stdio JSON-RPC 模式 | 不旁路生产 RPC 解码/分发 | PASS 基线 full-page；E002 |
 | R11 | SQLite 关闭重开 | durable 内容可恢复 | PASS 基线 receiver；E002 |
 | R12 | 全 Mobile analyze/tests | 无新增 error/warning/回归 | NOT_RUN |

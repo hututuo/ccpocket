@@ -5,7 +5,7 @@
 - 时间：2026-10-01（Asia/Taipei）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0/A1 已完成，A2 的通知与修复进度问题已修正；接下来 A3 补准确的 partial-summary 页面闭环。
+- 阶段：A0–A3 选定闭环已完成；开始 B1 仅抽自动 latest-turn repair 调度。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
 
 ## E001 — 建立隔离执行与文档
@@ -109,3 +109,33 @@ Service/Repository/protocol 共 138 个用例 PASS。
 R05 新增“返回前旧请求尚未完成”的顺序验证；不能把“旧结果先结束再返回”的测试等同于此场景。
 测试文件的初次格式化命令误用了相对路径，命令报错后已在正确目录格式化并检查；
 该错误未修改业务源码。
+
+## E006 — partial-summary 的实际页面闭环
+
+行为父提交：`6ff0ca4692cb2034c372db1c6cc0bdb68924ac45`（E005）。
+修改仅在测试：真实 Bridge harness 添加 partial-summary Provider fixture，
+通过真正 CodexProcess stdio JSON-RPC 暂缓 summary 回复。真实 CodexSessionScreen 先显示旧前缀，
+再释放回复；测试没有手动刷新页面、注入 window/Cubit，或重建页面。
+
+回归断言：SQLite 新 Provider item ID、条目顺序与内容、epoch 推进、原页面与 Cubit 身份不变，
+旧前缀仍可见、新提示只显示一次、canonical revision 不变、coverage 仍 partial。
+测试固定接口边界，不声称真实 Provider 的 history reader 本次已经验证。
+
+中间验证：
+- 首次 fixture FAIL（`partial-summary-page`）：summary repair 与 user-index 都被暂缓，
+  测试等待“恰好一个请求”超时。按生产请求用途分别控制 gate 后修正测试夹具。
+- `partial-summary-page-gated` PASS；`current-chain` 三个 receiver/full-page 用例 PASS。
+- 临时将通知条件恢复为原错误条件，`red-page-notification-mutation` 确实 FAIL：
+  数据已提交而原页面不显示新提示。finally 恢复文件，校验源码 SHA256
+  `c7d2502d9163276a4590f72582dabcf1e01d3fcc0713f43478271efd0a3b6d6e`；未提交该 mutation。
+- `fixture-analyze` PASS，0 issues；Node 两个 fixture 语法检查 PASS。
+- `bridge-suite`：124 files / 2546 tests PASS，1 file/test SKIPPED。
+  本次 Bridge 业务源码未改变；并行运行时记录的 diff 包含上述 Mobile mutation，不能当作 Mobile 绿灯。
+
+完整原始 RPC、Bridge/client 帧和页面/SQLite 轨迹从临时目录复制到本轮证据目录
+`chain-traces/`；Fixture 上游、native/font mocks、headless Flutter 页面与真实设备的界限仍保留。
+
+下一步 B1 范围冻结：把自动调度的状态、completed observation、retry timer、dirty/operation token
+迁入单一 latest_turn_repair_scheduler；Service 保留 source/focus/generation、cache observation、
+请求/数据库写入与通知。保留 4 次失败上限、1/2/4 秒退避、128 个观察记忆，以及所有取消接点。
+不在结构提交中修改这些策略；新增调度时间/取消保护验证，再重跑同一接收闭环。

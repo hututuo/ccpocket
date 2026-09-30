@@ -108,6 +108,273 @@ void main() {
   setUpAll(sqfliteFfiInit);
 
   testWidgets(
+    'partial turns-page summary commits refresh the mounted Codex page',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 1400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.runAsync(
+        () => HttpOverrides.runWithHttpOverrides(() async {
+          SharedPreferences.setMockInitialValues({});
+          await _installPagePlatformServices();
+          final root = path.normalize(
+            path.absolute(Directory.current.path, '..', '..'),
+          );
+          expect(
+            File(
+              path.join(root, 'packages/bridge/dist/websocket.js'),
+            ).existsSync(),
+            isTrue,
+            reason: 'Build the real Bridge before running this chain test.',
+          );
+          final process = await Process.start(
+            Platform.environment['CCPOCKET_NODE'] ?? 'node',
+            [
+              path.join(
+                root,
+                'packages/bridge/scripts/conversation-live-segment-harness.mjs',
+              ),
+            ],
+            workingDirectory: root,
+            environment: {
+              'CCPOCKET_CHAIN_PROVIDER_MODE': 'stdio-json-rpc',
+              'CCPOCKET_CHAIN_SCENARIO': 'partial-summary',
+            },
+          );
+          final controls = StreamController<Map<String, dynamic>>.broadcast();
+          final harness = await waitForHarnessReady(
+            process,
+            onControl: controls.add,
+          );
+          final ready =
+              jsonDecode(harness.readyLine.substring(6))
+                  as Map<String, dynamic>;
+          expect(ready['scenario'], 'partial-summary');
+          expect(ready['providerMode'], 'stdio-json-rpc');
+          final threadId = ready['threadId'] as String;
+          final traceRoot = ready['traceRoot'] as String;
+          final temporary = await Directory.systemTemp.createTemp(
+            'ccpocket_partial_summary_',
+          );
+          final repository = SessionCatalogCacheRepository(
+            SessionCatalogCacheDatabase(
+              databasePath: path.join(temporary.path, 'cache.db'),
+              openDatabase: (file, options) =>
+                  databaseFactoryFfi.openDatabase(file, options: options),
+            ),
+          );
+          final bridge = BridgeService(
+            clientAppVersion: 'partial-summary-page-test',
+          );
+          final sync = ConversationContentSyncService(
+            bridge: BridgeServiceConversationContentSyncGateway(bridge),
+            cache: repository,
+          )..start(initialLifecycleState: AppLifecycleState.resumed);
+          final sessionList = SessionListCubit(
+            bridge: bridge,
+            catalogCache: repository,
+            conversationSync: sync,
+          );
+          final trace = <Map<String, Object?>>[];
+          var sequence = 0;
+          Future<Map<String, dynamic>> control(String command) async {
+            final requestId = 'summary-${++sequence}';
+            final reply = controls.stream
+                .firstWhere((row) => row['requestId'] == requestId)
+                .timeout(const Duration(seconds: 10));
+            process.stdin.writeln(
+              jsonEncode({'command': command, 'requestId': requestId}),
+            );
+            await process.stdin.flush();
+            final response = await reply;
+            expect(response['ok'], isTrue, reason: '$command: $response');
+            return response;
+          }
+
+          Future<void> eventually(
+            FutureOr<bool> Function() condition,
+            String reason,
+          ) async {
+            final deadline = DateTime.now().add(const Duration(seconds: 15));
+            do {
+              await tester.pump();
+              final error = tester.takeException();
+              if (error != null) throw TestFailure('$reason: $error');
+              if (await condition()) return;
+              await Future<void>.delayed(const Duration(milliseconds: 10));
+            } while (DateTime.now().isBefore(deadline));
+            throw TestFailure(
+              '$reason; sync=${sync.diagnosticSnapshot(provider: 'codex', providerSessionId: threadId)}',
+            );
+          }
+
+          Future<ConversationHotWindowSnapshot?> cached() => sync
+              .loadCachedWindow(provider: 'codex', providerSessionId: threadId);
+          Finder onPage(String text) => find.text(text, findRichText: true);
+          const prefix = 'Retained readable prefix';
+          const recovered = 'Latest prompt recovered from a partial summary';
+          try {
+            bridge.connect(
+              ready['url'] as String,
+              logicalConnectionIdentity: 'partial-summary-harness',
+            );
+            await eventually(
+              () =>
+                  bridge.isConnected &&
+                  bridge.bridgeInstanceId != null &&
+                  bridge.codexSourceId != null,
+              'source handshake',
+            );
+            await tester.pumpWidget(
+              await buildTestCodexSessionScreen(
+                bridge: bridge,
+                sessionId: 'pending-partial-summary',
+                projectPath: ready['projectPath'] as String,
+                isPending: true,
+                durableProviderSessionId: threadId,
+                dataSourceIdentity: bridge.dataSourceIdentity,
+                conversationContentSync: sync,
+                sessionListCubit: sessionList,
+              ),
+            );
+            await eventually(
+              () async =>
+                  (await cached()) != null &&
+                  onPage(prefix).evaluate().length == 1,
+              'the actual page must first render the retained prefix',
+            );
+            await eventually(
+              () async =>
+                  (await control('provider_status'))['heldSummaryRequests'] ==
+                  1,
+              'the automatic summary request must reach the real RPC path',
+            );
+            final before = (await cached())!;
+            expect(before.latestTurnComplete, isFalse);
+            expect(before.latestTurnGap?.repair, 'turns_page');
+            expect(onPage(recovered), findsNothing);
+            final mountedPage = tester.state(find.byType(CodexSessionScreen));
+            final mountedUpdater = tester.state(
+              find.byType(DurableSessionPreviewUpdater),
+            );
+            final mountedChat = BlocProvider.of<ChatSessionCubit>(
+              tester.element(find.byKey(const ValueKey('message_input'))),
+            );
+            final target = SessionCatalogCacheTarget.fromBridge(
+              bridgeInstanceId: bridge.bridgeInstanceId,
+              codexSourceId: bridge.codexSourceId,
+              logicalConnectionIdentity: bridge.logicalConnectionIdentity,
+              websocketUrl: bridge.lastUrl,
+            );
+            int epoch() => sync.cacheCommitEpochFor(
+              targetFingerprint: target.fingerprint,
+              provider: 'codex',
+              providerSessionId: threadId,
+            );
+            final beforeEpoch = epoch();
+            // This releases an upstream reply. It never injects a cache window,
+            // calls page refresh, or replaces the page/Cubit after the commit.
+            await control('release_summary');
+            await eventually(
+              () async =>
+                  (await cached())?.entries.any(
+                        (entry) =>
+                            entry.rawMessage['providerItemId'] ==
+                            'provider-user-live-segments',
+                      ) ==
+                      true &&
+                  onPage(recovered).evaluate().length == 1,
+              'partial summary commit must propagate to the mounted page',
+            );
+            final after = (await cached())!;
+            expect(after.revision, before.revision);
+            expect(after.latestTurnComplete, isFalse);
+            expect(after.windowComplete, isFalse);
+            expect(after.latestTurnGap?.repair, 'turns_page');
+            expect(epoch(), greaterThan(beforeEpoch));
+            expect(
+              tester.state(find.byType(CodexSessionScreen)),
+              same(mountedPage),
+            );
+            expect(
+              tester.state(find.byType(DurableSessionPreviewUpdater)),
+              same(mountedUpdater),
+            );
+            expect(
+              BlocProvider.of<ChatSessionCubit>(
+                tester.element(find.byKey(const ValueKey('message_input'))),
+              ),
+              same(mountedChat),
+            );
+            expect(
+              mountedChat.visibleEntries.whereType<UserChatEntry>().map(
+                (entry) => entry.text,
+              ),
+              [prefix, recovered],
+            );
+            expect(
+              after.entries.map((entry) => entry.rawMessage['providerItemId']),
+              ['provider-user-before-summary', 'provider-user-live-segments'],
+            );
+            expect(onPage(prefix), findsOneWidget);
+            expect(onPage(recovered), findsOneWidget);
+            trace.add({
+              'stage': 'partial-summary-mounted-page',
+              'result': 'PASS',
+              'revision': after.revision,
+              'beforeEpoch': beforeEpoch,
+              'afterEpoch': epoch(),
+              'latestTurnComplete': after.latestTurnComplete,
+              'entries': [
+                for (final entry in after.entries)
+                  {
+                    'id': entry.entryId,
+                    'index': entry.index,
+                    'hash': entry.contentHash,
+                    'message': entry.rawMessage,
+                  },
+              ],
+              'pageUsers': mountedChat.visibleEntries
+                  .whereType<UserChatEntry>()
+                  .map((entry) => entry.text)
+                  .toList(),
+            });
+          } catch (error, stack) {
+            trace.add({'result': 'FAIL', 'error': '$error', 'stack': '$stack'});
+            rethrow;
+          } finally {
+            await tester.pumpWidget(const SizedBox.shrink());
+            await sessionList.close();
+            await sync.dispose();
+            bridge.disconnect();
+            await repository.close();
+            bridge.dispose();
+            process.stdin.writeln(jsonEncode({'command': 'shutdown'}));
+            await process.stdin.flush();
+            final exitCode = await process.exitCode.timeout(
+              const Duration(seconds: 10),
+              onTimeout: () {
+                process.kill(ProcessSignal.sigterm);
+                return process.exitCode;
+              },
+            );
+            await harness.dispose();
+            await controls.close();
+            await File(
+              path.join(traceRoot, 'partial-summary-page.jsonl'),
+            ).writeAsString(
+              '${trace.map(jsonEncode).join(Platform.lineTerminator)}${Platform.lineTerminator}',
+            );
+            await GoogleFonts.pendingFonts();
+            await temporary.delete(recursive: true);
+            expect(exitCode, 0, reason: 'Harness stderr: ${harness.stderr}');
+          }
+        }, _PageHttpOverrides()),
+      );
+    },
+    timeout: const Timeout(Duration(seconds: 60)),
+  );
+
+  testWidgets(
     'complete Codex page refreshes from real RPC commits and survives wire faults',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(430, 1400));
