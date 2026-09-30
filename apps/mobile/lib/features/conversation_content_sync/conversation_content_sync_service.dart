@@ -3250,7 +3250,9 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                   ),
                 );
               }
-              if (snapshot.latestTurnComplete) {
+              // Accepted partial data is readable too. Coverage stays
+              // incomplete; only the current subscription may publish it.
+              if (_isV2Current(event, generation, target)) {
                 _publishCacheUpdate(
                   ConversationContentCacheUpdate(
                     targetFingerprint: target.fingerprint,

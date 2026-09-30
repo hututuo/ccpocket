@@ -51,3 +51,17 @@
 红灯 checkpoint 用途：保留“已有测试全绿但契约失败”的独立证据，不是可合并版本。
 接下来先修 R01，再修 R03；每个修复记录自身绿灯与尚未关闭的失败。
 文档首提交 diff-check 提示多余 EOF 空行，本批清理格式；不改写首提交。
+
+## E003 — 只修复部分提交后的通知
+
+父 checkpoint：`a511692ad6fd0a214e207436d7e7261a70bef3fc`。
+修改：SyncService 的 turnsPageResponse/latest-turn repair 成功分支，
+将通知条件从 latestTurnComplete 改为当前 subscription/generation/target 仍有效。
+数据库继续保留 complete=false 与原 gap；Provider revision 未改。
+
+验证：`green-notification-fenced.json/.log`，三个相关通知/恢复/生命周期用例 PASS，exit 0。
+目标用例同时检查真实 SQLite 新内容、epoch、updates、partial 标志与相同内容重放。
+根审确认改动在原有通知出口，没有第二个写入者或新刷新总线。
+
+尚未关闭：R03 的两种同 revision 变化仍是已证明的失败，留到下一批；
+此提交不是全部门禁通过的可合并候选。下一步建立修复观察进度并补 dirty/cancel 回归。

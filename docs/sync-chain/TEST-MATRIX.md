@@ -5,7 +5,7 @@
 
 | ID | 场景 | 预期 | 当前状态/入口 |
 |---|---|---|---|
-| R01 | 部分 turns_page 提交 | cache epoch 与通知推进；新条目可读取；complete 仍 false | FAIL 基线红灯：epoch 未推进；E002 |
+| R01 | 部分 turns_page 提交 | cache epoch 与通知推进；新条目可读取；complete 仍 false | PASS 修复后；基线 FAIL 证据保留；E002/E003 |
 | R02 | 完全相同缺口/内容重放 | 不重复自动请求 | NOT_RUN；现有 bounded summary 用例 |
 | R03 | 同 canonical revision 后续内容/缺口变化 | 必要修复仍可执行 | FAIL 基线红灯：两种变化均被抑制；E002 |
 | R04 | 修复运行期间发生变化 | 合并 dirty；成功后按新观察判断，不丢变化 | NOT_RUN；补回归 |
