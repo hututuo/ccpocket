@@ -38,3 +38,11 @@
 
 真实 Provider 的新消息到达、长会话/工具密集、fork/同名隔离、旧 Bridge 降级、
 后台恢复、发送/steer/approval、实际设备与生产运行均不能仅由本批短闭环测试覆盖。
+
+## B1 后的自动修复边界
+
+SyncService 从 committed cache 构造 LatestTurnRepairRequest；
+LatestTurnRepairScheduler 独占自动去重/dirty/operation token/失败状态与 retry timer。
+三个回调只分别判断当前身份、执行 Service 原修复、重新观察缓存；
+请求与 SQLite 写入、coverage、通知、页面仍使用上表的原路径。
+取消接点与失败预算见 RUNBOOK，验证收据见 PROCESS。

@@ -9,6 +9,7 @@ import '../../models/messages.dart';
 import '../../services/bridge_service.dart';
 import '../session_list/cache/session_catalog_cache_repository.dart';
 import 'conversation_sync_trace.dart';
+import 'latest_turn_repair_scheduler.dart';
 
 abstract interface class ConversationContentSyncGateway {
   Stream<BridgeConnectionState> get connectionStatus;
@@ -202,7 +203,6 @@ class ConversationTurnsPageLoadResult {
 /// reject body events and unsubscribe, preserving notification-only behavior.
 class ConversationContentSyncService with WidgetsBindingObserver {
   static const int _maxCacheCommitEpochKeys = 4096;
-  static const int _maximumAutomaticLatestTurnRepairFailures = 4;
   static const int _maximumDiagnosticEvents = 96;
   ConversationContentSyncService({
     required this.bridge,
@@ -237,10 +237,31 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   _historyPageFlights = {};
   final Map<String, Future<ConversationTurnsPageLoadResult>>
   _latestTurnRepairFlights = {};
-  final Map<String, _AutomaticLatestTurnRepairState>
-  _automaticLatestTurnRepairs = {};
-  final Map<String, Timer> _automaticLatestTurnRepairRetryTimers = {};
-  final Map<String, String> _automaticTurnsPageRepairObservationByTarget = {};
+  late final _latestTurnRepairScheduler = LatestTurnRepairScheduler(
+    isCurrent: (request) =>
+        !_disposed &&
+        request.generation == _generation &&
+        request.targetFingerprint == _cacheTarget.fingerprint &&
+        _focused?.provider == request.provider &&
+        _focused?.providerSessionId == request.providerSessionId,
+    repair: (request) async {
+      final result = await repairLatestTurn(
+        provider: request.provider,
+        providerSessionId: request.providerSessionId,
+      );
+      return (
+        loaded: result.loaded,
+        hasMore: result.hasMore,
+        repairObservation: result.repairObservation,
+      );
+    },
+    recheck: (request) => _scheduleAutomaticLatestTurnRepairFromCache(
+      ConversationContentTarget(
+        provider: request.provider,
+        providerSessionId: request.providerSessionId,
+      ),
+    ),
+  );
   String? _focusedRefreshFlightKey;
   Future<void>? _focusedRefreshFlight;
   Completer<void>? _focusedRefreshCancellation;
@@ -377,7 +398,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         'latestTurnRepair': _pendingLatestTurnRepairPages.length,
         'historyPageFlights': _historyPageFlights.length,
         'latestTurnRepairFlights': _latestTurnRepairFlights.length,
-        'automaticLatestTurnRepairs': _automaticLatestTurnRepairs.length,
+        'automaticLatestTurnRepairs': _latestTurnRepairScheduler.pendingCount,
       },
       'targetTrace': target,
       'recentEvents': List<Map<String, Object?>>.unmodifiable(
@@ -524,8 +545,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     final previous = _focused;
     if (previous != null) {
       _markConversationReadBestEffort(previous);
-      _clearAutomaticLatestTurnRepair(
-        target: _cacheTarget,
+      _latestTurnRepairScheduler.clearTarget(
+        targetFingerprint: _cacheTarget.fingerprint,
         provider: previous.provider,
         providerSessionId: previous.providerSessionId,
       );
@@ -1416,235 +1437,12 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     return flight;
   }
 
-  void _scheduleAutomaticLatestTurnRepair({
-    required int generation,
-    required SessionCatalogCacheTarget target,
-    required String provider,
-    required String providerSessionId,
-    required String revision,
-    required String observation,
-    required ConversationSyncV2LatestTurnGap gap,
-  }) {
-    final focused = _focused;
-    if (focused?.provider != provider ||
-        focused?.providerSessionId != providerSessionId ||
-        !_isAutoRepairableLatestTurnGap(gap)) {
-      return;
-    }
-    final key = _automaticLatestTurnRepairKey(
-      target: target,
-      provider: provider,
-      providerSessionId: providerSessionId,
-      revision: revision,
-      gap: gap,
-    );
-    final targetKey = _automaticLatestTurnRepairTargetKey(
-      target: target,
-      provider: provider,
-      providerSessionId: providerSessionId,
-    );
-    if (gap.repair == 'turns_page' &&
-        _automaticTurnsPageRepairObservationByTarget[targetKey] ==
-            observation) {
-      return;
-    }
-    final previous = _automaticLatestTurnRepairs[key];
-    if (previous?.running == true) {
-      if (previous!.observation != observation) {
-        _automaticLatestTurnRepairs[key] = previous.copyWith(
-          dirty: true,
-          observation: observation,
-        );
-      }
-      return;
-    }
-    if ((previous?.failureCount ?? 0) >=
-        _maximumAutomaticLatestTurnRepairFailures) {
-      return;
-    }
-    final now = DateTime.now();
-    if (previous?.nextRetryAt case final nextRetryAt?
-        when now.isBefore(nextRetryAt)) {
-      return;
-    }
-    final operationToken = Object();
-    _automaticLatestTurnRepairs[key] = _AutomaticLatestTurnRepairState(
-      running: true,
-      dirty: false,
-      observation: observation,
-      operationToken: operationToken,
-      failureCount: previous?.failureCount ?? 0,
-    );
-    bool ownsOperation() =>
-        identical(
-          _automaticLatestTurnRepairs[key]?.operationToken,
-          operationToken,
-        ) &&
-        !_disposed &&
-        generation == _generation &&
-        target.fingerprint == _cacheTarget.fingerprint &&
-        _focused?.provider == provider &&
-        _focused?.providerSessionId == providerSessionId;
-
-    conversationSyncTrace(
-      '[conversation_sync_v2] event=latest_turn_auto_repair_scheduled '
-      'target=${conversationSyncTargetTrace(provider, providerSessionId)} '
-      'content=${shortConversationSyncToken(revision)} repair=${gap.repair}',
-    );
-    scheduleMicrotask(() {
-      if (!ownsOperation()) return;
-      unawaited(
-        repairLatestTurn(
-              provider: provider,
-              providerSessionId: providerSessionId,
-            )
-            .then((result) {
-              if (!ownsOperation()) return;
-              conversationSyncTrace(
-                '[conversation_sync_v2] event=latest_turn_auto_repair_complete '
-                'target=${conversationSyncTargetTrace(provider, providerSessionId)} '
-                'loaded=${result.loaded} hasMore=${result.hasMore}',
-              );
-              final state = _automaticLatestTurnRepairs.remove(key);
-              _automaticLatestTurnRepairRetryTimers.remove(key)?.cancel();
-              if (gap.repair == 'turns_page' &&
-                  result.loaded &&
-                  state?.dirty != true &&
-                  result.repairObservation != null) {
-                _rememberAutomaticTurnsPageRepair(
-                  targetKey,
-                  result.repairObservation!,
-                );
-              }
-              if (state?.dirty == true) {
-                _scheduleAutomaticLatestTurnRepairFromCache(
-                  ConversationContentTarget(
-                    provider: provider,
-                    providerSessionId: providerSessionId,
-                  ),
-                );
-              }
-            })
-            .catchError((Object error) {
-              if (!ownsOperation()) return;
-              conversationSyncTrace(
-                '[conversation_sync_v2] event=latest_turn_auto_repair_failed '
-                'target=${conversationSyncTargetTrace(provider, providerSessionId)} '
-                'error=${error.runtimeType}',
-                warning: true,
-              );
-              final state = _automaticLatestTurnRepairs[key];
-              if (state == null) return;
-              final failureCount = (state.failureCount + 1).clamp(
-                1,
-                _maximumAutomaticLatestTurnRepairFailures,
-              );
-              final retryDelay = Duration(seconds: 1 << (failureCount - 1));
-              _automaticLatestTurnRepairs[key] =
-                  _AutomaticLatestTurnRepairState(
-                    running: false,
-                    dirty: state.dirty,
-                    observation: state.observation,
-                    operationToken: operationToken,
-                    failureCount: failureCount,
-                    nextRetryAt: DateTime.now().add(retryDelay),
-                  );
-              _automaticLatestTurnRepairRetryTimers.remove(key)?.cancel();
-              if (failureCount < _maximumAutomaticLatestTurnRepairFailures) {
-                _automaticLatestTurnRepairRetryTimers[key] = Timer(
-                  retryDelay,
-                  () {
-                    if (!ownsOperation()) return;
-                    _automaticLatestTurnRepairRetryTimers.remove(key);
-                    final retryState = _automaticLatestTurnRepairs[key];
-                    if (retryState == null || retryState.running) return;
-                    _automaticLatestTurnRepairs[key] =
-                        _AutomaticLatestTurnRepairState(
-                          running: false,
-                          dirty: retryState.dirty,
-                          observation: retryState.observation,
-                          operationToken: operationToken,
-                          failureCount: retryState.failureCount,
-                        );
-                    _scheduleAutomaticLatestTurnRepairFromCache(
-                      ConversationContentTarget(
-                        provider: provider,
-                        providerSessionId: providerSessionId,
-                      ),
-                    );
-                  },
-                );
-              }
-            }),
-      );
-    });
-  }
-
   static bool _isAutoRepairableLatestTurnGap(
     ConversationSyncV2LatestTurnGap gap,
   ) =>
       ((gap.repair == 'items_page' && gap.turnId?.isNotEmpty == true) ||
           gap.repair == 'turns_page') &&
       (gap.payloadOmitted || gap.missingEntryCount > 0);
-
-  static String _automaticLatestTurnRepairKey({
-    required SessionCatalogCacheTarget target,
-    required String provider,
-    required String providerSessionId,
-    required String revision,
-    required ConversationSyncV2LatestTurnGap gap,
-  }) =>
-      '${target.fingerprint}\u0000$provider\u0000$providerSessionId\u0000'
-      '$revision\u0000${gap.turnId ?? ''}\u0000${gap.repair}';
-
-  static String _automaticLatestTurnRepairTargetKey({
-    required SessionCatalogCacheTarget target,
-    required String provider,
-    required String providerSessionId,
-  }) => '${target.fingerprint}\u0000$provider\u0000$providerSessionId';
-
-  void _rememberAutomaticTurnsPageRepair(String targetKey, String observation) {
-    _automaticTurnsPageRepairObservationByTarget
-      ..remove(targetKey)
-      ..[targetKey] = observation;
-    while (_automaticTurnsPageRepairObservationByTarget.length > 128) {
-      _automaticTurnsPageRepairObservationByTarget.remove(
-        _automaticTurnsPageRepairObservationByTarget.keys.first,
-      );
-    }
-  }
-
-  void _clearAutomaticLatestTurnRepair({
-    required SessionCatalogCacheTarget target,
-    required String provider,
-    required String providerSessionId,
-  }) {
-    final prefix =
-        '${target.fingerprint}\u0000$provider\u0000$providerSessionId\u0000';
-    final keys = _automaticLatestTurnRepairs.keys
-        .where((key) => key.startsWith(prefix))
-        .toList(growable: false);
-    for (final key in keys) {
-      _automaticLatestTurnRepairRetryTimers.remove(key)?.cancel();
-      _automaticLatestTurnRepairs.remove(key);
-    }
-    _automaticTurnsPageRepairObservationByTarget.remove(
-      _automaticLatestTurnRepairTargetKey(
-        target: target,
-        provider: provider,
-        providerSessionId: providerSessionId,
-      ),
-    );
-  }
-
-  void _clearAllAutomaticLatestTurnRepairs() {
-    for (final timer in _automaticLatestTurnRepairRetryTimers.values) {
-      timer.cancel();
-    }
-    _automaticLatestTurnRepairRetryTimers.clear();
-    _automaticLatestTurnRepairs.clear();
-    _automaticTurnsPageRepairObservationByTarget.clear();
-  }
 
   String _latestTurnRepairObservation(ConversationHotWindowSnapshot snapshot) =>
       jsonEncode([
@@ -1689,14 +1487,17 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               !_sameTarget(_focused, focused)) {
             return;
           }
-          _scheduleAutomaticLatestTurnRepair(
-            generation: generation,
-            target: target,
-            provider: focused.provider,
-            providerSessionId: focused.providerSessionId,
-            revision: snapshot.revision,
-            observation: _latestTurnRepairObservation(snapshot),
-            gap: gap,
+          _latestTurnRepairScheduler.schedule(
+            LatestTurnRepairRequest(
+              generation: generation,
+              targetFingerprint: target.fingerprint,
+              provider: focused.provider,
+              providerSessionId: focused.providerSessionId,
+              revision: snapshot.revision,
+              observation: _latestTurnRepairObservation(snapshot),
+              repair: gap.repair,
+              turnId: gap.turnId,
+            ),
           );
         } catch (error) {
           conversationSyncTrace(
@@ -2332,7 +2133,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _subscriptionBridgeInstanceId = null;
     _highestV2CommittedSequence = 0;
     _v2PriorityBootstrapComplete = false;
-    _clearAllAutomaticLatestTurnRepairs();
+    _latestTurnRepairScheduler.clearAll();
     _failPendingTurnsPages(const _ConversationPagingInterrupted());
     _failPendingUserIndexPages(const _ConversationPagingInterrupted());
     _failPendingUserTurnDetailPages(const _ConversationPagingInterrupted());
@@ -3160,8 +2961,8 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               ),
             );
           }
-          _clearAutomaticLatestTurnRepair(
-            target: target,
+          _latestTurnRepairScheduler.clearTarget(
+            targetFingerprint: target.fingerprint,
             provider: event.target!.provider,
             providerSessionId: event.target!.providerSessionId,
           );
@@ -4108,7 +3909,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     _highestV2CommittedSequence = 0;
     _v2PriorityBootstrapComplete = false;
     _partialTimelineWireRevisions.clear();
-    _clearAllAutomaticLatestTurnRepairs();
+    _latestTurnRepairScheduler.clearAll();
     _failPendingTurnsPages(const _ConversationPagingInterrupted());
     _failPendingUserIndexPages(const _ConversationPagingInterrupted());
     _failPendingUserTurnDetailPages(const _ConversationPagingInterrupted());
@@ -4623,34 +4424,4 @@ class _LatestTurnRepairPageResult {
 
   final ConversationHotWindowSnapshot snapshot;
   final int pageBytes;
-}
-
-class _AutomaticLatestTurnRepairState {
-  const _AutomaticLatestTurnRepairState({
-    required this.running,
-    required this.dirty,
-    required this.observation,
-    required this.operationToken,
-    required this.failureCount,
-    this.nextRetryAt,
-  });
-
-  final bool running;
-  final bool dirty;
-  final String observation;
-  final Object operationToken;
-  final int failureCount;
-  final DateTime? nextRetryAt;
-
-  _AutomaticLatestTurnRepairState copyWith({
-    bool? dirty,
-    String? observation,
-  }) => _AutomaticLatestTurnRepairState(
-    running: running,
-    dirty: dirty ?? this.dirty,
-    observation: observation ?? this.observation,
-    operationToken: operationToken,
-    failureCount: failureCount,
-    nextRetryAt: nextRetryAt,
-  );
 }

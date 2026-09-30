@@ -139,3 +139,28 @@ R05 新增“返回前旧请求尚未完成”的顺序验证；不能把“旧�
 迁入单一 latest_turn_repair_scheduler；Service 保留 source/focus/generation、cache observation、
 请求/数据库写入与通知。保留 4 次失败上限、1/2/4 秒退避、128 个观察记忆，以及所有取消接点。
 不在结构提交中修改这些策略；新增调度时间/取消保护验证，再重跑同一接收闭环。
+
+## E007 — 第一块结构抽取：自动修复调度
+
+父提交：`b76c97cc9272986344ae6b1a4c7f1818fb663c77`（E006 fixture/页面保护）。
+范围：新增 latest_turn_repair_scheduler.dart 及其四个时间/取消测试；
+Service 迁移三组状态和四个取消接点，保留原身份、观察与修复执行路径。
+Service 减少 229 行；新模块 238 行，目的在于责任归属，并非用行数证明正确性。
+
+抽取后验证：
+- `extraction-regressions`：142 个 scheduler/Service/Repository/protocol 用例 PASS。
+- `extraction-chain`：与抽取前相同的三个 receiver/full-page 用例 PASS。
+- `extraction-analyze`：exit 0，无 error/warning；既有 null-aware info 与新增 fake_async
+  间接依赖 info 各重复显示一次。后者通过显式 dev_dependency 处理，离线解析成功，
+  仅改变锁文件 dependency 分类，未升级版本或引入运行依赖；全量 analyze 尚待最终门禁。
+- Node fixture 语法、Bridge 类型检查已 PASS（`bridge-typecheck`）；Bridge 业务源码仍未改变。
+- 新测试首次因 lambda 缺括号编译 FAIL（`extraction-focused`），另一次检查从错误目录运行
+  找不到 pubspec（`extraction-focused-corrected`）；修正后才计入 PASS。失败均保留。
+
+根审：三个窄回调没有传入 Service/Repository/Page 对象；状态只保留在 scheduler，
+generation/source/focus 当前性仍由 Service 判定；clearTarget/clearAll 迁移覆盖原接点；
+事务、Provider/wire revision、partial coverage 与通知逻辑没有在结构批中改变。
+
+下一个完成门禁：冻结提交后的独立 review、全 Mobile analyze/test，
+并修正普通 CI 缺少 Bridge build 导致黑盒测试无法启动的前置条件。
+真实 Provider、模拟器/真机与部署仍为 NOT_RUN；B2 未开始。

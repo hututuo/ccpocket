@@ -19,6 +19,7 @@
 | R12 | 全 Mobile analyze/tests | 无新增 error/warning/回归 | NOT_RUN |
 | R13 | 真实 Provider 新事件 | 原始记录与 Bridge/cache/page 对照 | NOT_RUN |
 | R14 | 模拟器 / 真机 / 生产 | 各自独立验收 | NOT_RUN |
+| R15 | 调度退避、失败预算、取消计时器、旧回调 | 1/2/4 秒重试、4 次失败封顶；取消后无重试，旧完成不清新 owner | PASS 抽取后四个 scheduler 用例；E007 |
 
 R09/R10 的最上游是隔离 Provider fixture，使用真实 Bridge、协议、SQLite 和页面相关代码；
 即使 PASS，也只证明接收闭环，不冒充 R13/R14。
