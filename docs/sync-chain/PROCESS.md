@@ -164,3 +164,19 @@ generation/source/focus 当前性仍由 Service 判定；clearTarget/clearAll �
 下一个完成门禁：冻结提交后的独立 review、全 Mobile analyze/test，
 并修正普通 CI 缺少 Bridge build 导致黑盒测试无法启动的前置条件。
 真实 Provider、模拟器/真机与部署仍为 NOT_RUN；B2 未开始。
+
+## E008 — 普通 CI 的黑盒前置条件
+
+父提交：`35b4d031e367f78bdab9aa7e63467c1ae8edbdc6`（E007）。
+普通 test.yml 的 Mobile job 没有 Node/依赖/Bridge build，不能使用另一 job 的 dist。
+新增沿用仓库已有 pinned setup-node action、Node 22、npm ci、Bridge build，置于 Flutter tests 前。
+没有 push 或执行云端 workflow；平台发布 workflow 不在本批配置范围。
+
+本地：YAML 解析及 prerequisites 顺序断言 PASS（`ci-mobile-prerequisites`），diff-check PASS。
+actionlint 本机不可用，NOT_RUN；云端 runner、SSH 容器 smoke 和平台发布门禁 NOT_RUN。
+依赖/真实 Bridge build 已在隔离本地 checkout 执行；CI 配置检查不冒充云端运行。
+
+并行发现：冻结 E007 源码的全量 Mobile analyze exit 0，0 error/warning，1017 info；
+全量 tests 有 3251 PASS、4 SKIPPED、1 FAIL，失败在本批 dirty-success 回归（`full-mobile-tests`）。
+独立 reviewer 再指出 manual refresh 跨 target 的旧清理遗漏。
+两处先补精确失败用例，再作为独立行为修复 E009；E007 不是全部门禁通过的候选。

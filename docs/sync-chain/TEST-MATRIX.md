@@ -16,10 +16,11 @@
 | R09 | 真 Bridge → JSON → Dart → SQLite → Cubit/layout | 与 Provider fixture 的稳定 ID/顺序/内容相符 | PASS 三个黑盒用例含 partial-summary 原页面更新；漏通知 mutation FAIL 证明敏感；E006 |
 | R10 | stdio JSON-RPC 模式 | 不旁路生产 RPC 解码/分发 | PASS 基线 full-page；E002 |
 | R11 | SQLite 关闭重开 | durable 内容可恢复 | PASS 基线 receiver；E002 |
-| R12 | 全 Mobile analyze/tests | 无新增 error/warning/回归 | NOT_RUN |
+| R12 | 全 Mobile analyze/tests | 无新增 error/warning/回归 | analyze PASS（0 error/warning、1017 info）；tests FAIL（3251 PASS/4 SKIPPED/1 FAIL）；E008，待 E009 后重跑 |
 | R13 | 真实 Provider 新事件 | 原始记录与 Bridge/cache/page 对照 | NOT_RUN |
 | R14 | 模拟器 / 真机 / 生产 | 各自独立验收 | NOT_RUN |
 | R15 | 调度退避、失败预算、取消计时器、旧回调 | 1/2/4 秒重试、4 次失败封顶；取消后无重试，旧完成不清新 owner | PASS 抽取后四个 scheduler 用例；E007 |
+| R16 | 普通 PR CI 的黑盒前置条件 | Mobile job 自行构建 Bridge，再运行 Flutter tests | PASS 本地 YAML/顺序检查；云端 CI NOT_RUN；E008 |
 
 R09/R10 的最上游是隔离 Provider fixture，使用真实 Bridge、协议、SQLite 和页面相关代码；
 即使 PASS，也只证明接收闭环，不冒充 R13/R14。

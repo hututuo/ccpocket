@@ -81,6 +81,9 @@ git diff --check
 本轮原始输出：`/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/`。
 每次检查的 JSON 收据含命令、cwd、HEAD、未提交 diff hash、状态、UTC 时间和退出码，旁边保留日志。
 新文件必须纳入 diff 身份或另算文件 hash。不要重复使用同一日志名称覆盖失败。
+普通 PR CI 的 Mobile job 在全量 Flutter tests 前准备 Node/依赖并构建 Bridge；
+不同 CI job 的工作目录互不共享，不能依赖独立 Bridge job 生成的 dist。
+调整其他平台发布工作流时，也须确认其黑盒测试前置条件，不能把缺少 dist 改成静默跳过。
 黑盒 trace 含隔离 fixture 的原始 RPC、Bridge/client 帧、SQLite 条目 hash 与页面断言；
 可设置 CCPOCKET_CHAIN_TRACE_PARENT 将下次 fixture trace 留在持久证据目录。
 
