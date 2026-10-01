@@ -15,14 +15,7 @@ import 'package:ccpocket/models/messages.dart';
 import 'package:ccpocket/services/bridge_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:google_fonts/src/google_fonts_base.dart' as font_loader;
-// Test only: exercise the plugin's documented native-channel mock context.
-// ignore: depend_on_referenced_packages
-import 'package:irondash_message_channel/irondash_message_channel.dart';
-// ignore: depend_on_referenced_packages
-import 'package:super_native_extensions/src/native/context.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as path;
@@ -31,77 +24,10 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../chat_screen/helpers/chat_test_helpers.dart'
     show buildTestCodexSessionScreen;
+import '../chat_screen/helpers/page_platform_services.dart';
 import 'harness_ready.dart';
 
 class _PageHttpOverrides extends HttpOverrides {}
-
-// Rendering uses a repository-bundled font for these asset aliases.
-// Typeface metrics are not a visual/physical-device acceptance claim.
-class _PageFontManifest extends Fake implements AssetManifest {
-  @override
-  List<String> listAssets() => [
-    for (final family in ['IBMPlexSans', 'SpaceGrotesk'])
-      for (final weight in [
-        'Thin',
-        'ExtraLight',
-        'Light',
-        'Regular',
-        '',
-        'Medium',
-        'SemiBold',
-        'Bold',
-        'ExtraBold',
-        'Black',
-      ])
-        for (final suffix in ['', 'Italic'])
-          'page-test-fonts/$family-$weight$suffix.ttf',
-  ];
-}
-
-Future<void> _installPagePlatformServices() async {
-  final messenger =
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-  messenger.setMockMethodCallHandler(
-    const MethodChannel('dev.irondash.engine_context'),
-    (call) async {
-      if (call.method == 'getEngineHandle') return 1;
-      throw MissingPluginException('Unexpected engine method: ${call.method}');
-    },
-  );
-  final native = superNativeExtensionsContext as MockMessageChannelContext;
-  native.registerMockMethodCallHandler('DropManager', (call) async {
-    if (call.method == 'newContext' || call.method == 'registerDropFormats') {
-      return null;
-    }
-    throw MissingPluginException('Unexpected drop method: ${call.method}');
-  });
-  native.registerMockMethodCallHandler('DragManager', (call) async {
-    if (call.method == 'newContext') return null;
-    throw MissingPluginException('Unexpected drag method: ${call.method}');
-  });
-  final font = File(
-    path.join(
-      Directory.current.path,
-      'assets/fonts/code/JetBrainsMono-Regular.ttf',
-    ),
-  );
-  expect(
-    font.existsSync(),
-    isTrue,
-    reason: 'Use the repository-bundled test font.',
-  );
-  final bytes = (await font.readAsBytes()).buffer.asByteData();
-  font_loader.assetManifest = _PageFontManifest();
-  GoogleFonts.config.allowRuntimeFetching = false;
-  messenger.setMockMessageHandler('flutter/assets', (message) async {
-    if (message == null) return null;
-    final name = utf8.decode(
-      message.buffer.asUint8List(message.offsetInBytes, message.lengthInBytes),
-    );
-    if (name.startsWith('page-test-fonts/')) return bytes;
-    return null;
-  });
-}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -119,7 +45,7 @@ void main() {
         await tester.runAsync(
           () => HttpOverrides.runWithHttpOverrides(() async {
             SharedPreferences.setMockInitialValues({});
-            await _installPagePlatformServices();
+            await installPagePlatformServices();
             final root = path.normalize(
               path.absolute(Directory.current.path, '..', '..'),
             );
@@ -476,7 +402,7 @@ void main() {
       await tester.runAsync(
         () => HttpOverrides.runWithHttpOverrides(() async {
           SharedPreferences.setMockInitialValues({});
-          await _installPagePlatformServices();
+          await installPagePlatformServices();
           final root = path.normalize(
             path.absolute(Directory.current.path, '..', '..'),
           );

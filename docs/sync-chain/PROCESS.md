@@ -521,3 +521,24 @@ didUpdateWidget、runtime attachment 和 dispose 的读取归属；UI 布局和 
 基线收据 `c1-baseline-preview-chain.json/.log`：clean 起点 36 tests PASS，exit 0，21.376 秒；
 包含既有 durable preview 回归与四个真实接收/原页面黑盒。此结果只作未改动基线，
 新真实 SQLite 读取交错及迟到错误的契约尚待补充。
+
+## E023 — 真实 SQLite 页面契约与 source error 红灯
+
+父提交：`83169884338d229273f979e7e67c0f970a7632d3`。产品源码未改。
+新增 `codex_durable_preview_read_test.dart`，使用原 SyncService 收件路径、真实 SQLite、
+真实 mounted Codex 页面；只在 Service 的页面读返回边界 hold/release/throw，
+不覆盖 SQL 查询结果，不手工注入 UI history、epoch 或通知。
+上游是受控的 incoming-event fixture，WebSocket/RPC 另由原四个黑盒覆盖。
+
+`c1-red-preview-read-contract.json/.log`：5 PASS / 1 FAIL，exit 1。
+已显示 source A，下一次读已读出 A 后暂停；认证 source B，再释放 A 的读取错误。
+实际出现旧来源的 Snackbar；成功出口的 source conflict fence 未覆盖 catch，定位闭合。
+其余用例证明四次同目标真实 commit 合并为一次 follow-up、旧 thread 成功/error 不清理新读取、
+当前失败保留 last-good 并成功 retry、V2 complete empty 清理 canonical。
+
+为让 real-async widget host 可运行，原 full-page 黑盒的字体/拖放平台适配原样移到共享 test helper；
+字体来自仓库，平台 stub 不模拟业务数据，也不作为设备视觉证据。
+`c1-preview-read-contract-first` 是测试编译准备 FAIL，
+`c1-preview-read-contract-compiled` 是缺 native/font test host 的 FAIL；二者保留，
+不当作产品 red。修正夹具之后才产生上面的确定性行为红灯。
+本 checkpoint 不作可用候选；先补错误出口来源归属，再抽取生命周期。
