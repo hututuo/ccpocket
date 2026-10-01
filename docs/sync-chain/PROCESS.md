@@ -321,3 +321,28 @@ thread reset 以 generation/target/provider/session 筛选并立即移除/失败
 初次隔离测试误把 wire 的 providerSessionId 读取为嵌套 target，运行 FAIL（b2-paging-error-and-scope）；
 按实际扁平协议修正 fixture 断言后，`b2-paging-error-and-scope-corrected`：150 tests PASS。
 三个原红灯没有放宽断言；此时尚未结构抽取、真实 older-page 黑盒或全量完成门禁。
+
+## E014 — older pages 的真实接收/原页面闭环
+
+行为父提交：`0817dfbeaa157891e33893721a3bdda39810daf1`。
+仅扩展隔离 Provider fixture 和黑盒：两页 summary 以真实 stdio RPC cursor 选择，分别 hold/release。
+短内容视口通过生产页面/Cubit 的 older loader 自动请求，测试不直接调用 Service、注入 cache、
+刷新或重建页面。独立 user-index 回复保持 hold，避免其他通知掩盖分页通知问题。
+
+验证稳定 Provider item ID、SQLite 顺序/hash、cursor 1→2→null、最新可读内容保留、同一个
+页面/updater/Cubit、加载终态；每页只在原窗口前方增加对应 Provider 内容。
+`b2-chain-before-extraction`：4 receiver/full-page tests PASS。
+Provider fixture 上游不构成真实 Provider 或设备验收。
+
+首轮 `b2-paging-real-page`：两页 body 已记录 PASS，但夹具退出码 1，整体 FAIL。
+原 harness-ready 的 stderr 字符串固定在 READY 时，收尾异常没有被显示。
+改为保留 stderr buffer；`b2-paging-real-page-diagnostic` 本次 PASS，无法据此断言原异常确切根因。
+fixture 后续明确开始 shutdown，再释放 held replies，并拒绝往关闭的 socket 写新回复；
+完整 4 项检查通过，原失败收据保留，后续全量仍检查退出码。
+
+`b2-red-page-notification-mutation`：临时关闭 older-page 的原通知出口，SQLite 有新页但原页面
+无法显示，测试确实 FAIL。finally 恢复 Service，校验 SHA256
+`392cc1575bbb5f42523d0af070060d65a217c0a99814fc81f14184e37cc2c173`；mutation 未提交。
+JavaScript fixture 语法检查 PASS；目标 analyze 无 error/warning，随后处理 helper 新增 info。
+下一步纯结构抽取：完整迁移 older-only flight/pending/deadline/settlement/cancel，
+保留 E013 行为、15 秒 deadline、8 秒订阅等待、最多两次尝试与共享 history serialization。

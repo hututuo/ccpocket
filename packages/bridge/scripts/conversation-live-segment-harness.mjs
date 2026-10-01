@@ -43,13 +43,20 @@ const turnId = "turn-live-segments";
 const scenario = process.env.CCPOCKET_CHAIN_SCENARIO ?? "live-segments";
 const latestTurnGapScenario = scenario === "latest-turn-gap";
 const partialSummaryScenario = scenario === "partial-summary";
+const olderPagesScenario = scenario === "older-pages";
+const olderPageCursors = ["older-page-1", "older-page-2"];
+const olderPageReleases = new Map();
+const olderPageGates = new Map(olderPagesScenario ? olderPageCursors.map((cursor) => [
+  cursor, new Promise((resolveReply) => { olderPageReleases.set(cursor, resolveReply); }),
+]) : []);
+const heldOlderCursors = [];
 let releaseSummaryReply;
 let releaseUserIndexReply;
 let heldSummaryRequests = 0;
 const summaryReplyGate = partialSummaryScenario
   ? new Promise((resolveReply) => { releaseSummaryReply = resolveReply; })
   : Promise.resolve();
-const userIndexReplyGate = partialSummaryScenario
+const userIndexReplyGate = (partialSummaryScenario || olderPagesScenario)
   ? new Promise((resolveReply) => { releaseUserIndexReply = resolveReply; })
   : Promise.resolve();
 const userItem = {
@@ -253,6 +260,16 @@ const rpcFixture = rawRpcMode ? await startConversationAppServerFixture({
   home: isolatedHome, projectPath, threadId, turnId, state: providerState,
   thread: providerThread, turn: providerTurn, trace: rpcTrace, reads: providerReads,
   beforeTurnsPageReply: async (params) => {
+    if (olderPagesScenario && params.itemsView === "summary") {
+      if (olderPageGates.has(params.cursor)) {
+        heldOlderCursors.push(params.cursor);
+        await olderPageGates.get(params.cursor);
+      } else {
+        // An independent user-index commit must not refresh this page and mask
+        // a lost older-page notification.
+        await userIndexReplyGate;
+      }
+    }
     if (partialSummaryScenario && params.itemsView === "summary") {
       if (params.limit === 1) {
         heldSummaryRequests += 1;
@@ -264,6 +281,21 @@ const rpcFixture = rawRpcMode ? await startConversationAppServerFixture({
       }
     }
   },
+  ...(olderPagesScenario ? { turnsPage: (params) => {
+    const page = olderPageCursors.indexOf(params.cursor);
+    if (page < 0) return { data: [providerTurn()], nextCursor: null };
+    return {
+      data: [{
+        ...providerTurn(), id: `older-provider-turn-${page + 1}`,
+        items: [{
+          ...userItem, id: `older-provider-user-${page + 1}`,
+          clientMessageId: `older-client-user-${page + 1}`,
+          content: [{ type: "text", text: page === 0 ? "Older prompt one" : "Oldest prompt two" }],
+        }],
+      }],
+      nextCursor: olderPageCursors[page + 1] ?? null,
+    };
+  } } : {}),
 }) : null;
 const historyRpc = rawRpcMode ? new CodexProcess() : null;
 if (historyRpc) await historyRpc.initializeOnly(projectPath, 8000);
@@ -422,7 +454,7 @@ const bridge = new BridgeWebSocketServer({
       });
       return {
         messages,
-        nextTurnCursor: null,
+        nextTurnCursor: olderPagesScenario ? olderPageCursors[0] : null,
         windowComplete: !partialSummaryScenario,
         // All currently available items are returned, including during a turn.
         // Coverage completeness is independent of provider execution status.
@@ -471,8 +503,11 @@ for await (const line of input) {
     continue;
   }
   if (command.command === "shutdown") {
+    // Held replies belong to the finished fixture, not to a closing socket.
+    rpcFixture?.beginShutdown();
     releaseSummaryReply?.();
     releaseUserIndexReply?.();
+    for (const release of olderPageReleases.values()) release();
     break;
   }
   try {
@@ -523,6 +558,7 @@ for await (const line of input) {
           requests: rpcTrace.filter((row) => row.direction === "bridge_to_provider").map((row) => JSON.parse(row.raw).method),
           notifications: rpcTrace.filter((row) => row.direction === "provider_to_bridge").map((row) => JSON.parse(row.raw).method).filter(Boolean),
           heldSummaryRequests,
+          heldOlderCursors,
         };
         break;
       case "release_summary":
@@ -533,6 +569,14 @@ for await (const line of input) {
         releaseSummaryReply = null;
         result = { released: true, heldSummaryRequests };
         break;
+      case "release_older_page": {
+        const release = olderPageReleases.get(command.cursor);
+        if (!release) throw new Error("older_page_not_held");
+        release();
+        olderPageReleases.delete(command.cursor);
+        result = { released: true, cursor: command.cursor };
+        break;
+      }
       case "wire_status":
         result = { pending: wireFaults.pendingFault?.kind ?? null, trace: wireFaults.trace };
         break;

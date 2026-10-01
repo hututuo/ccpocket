@@ -8,14 +8,16 @@ import { join } from "node:path";
 // CodexProcess still spawns, initializes, frames and decodes stdio JSON-RPC.
 export async function startConversationAppServerFixture({
   home, projectPath, threadId, turnId, state, thread, turn, trace, reads,
-  beforeTurnsPageReply,
+  beforeTurnsPageReply, turnsPage,
 }) {
   const connections = [];
   const events = new EventEmitter();
   let activeConnection;
   let acceptedInitialTurn = false;
+  let closing = false;
 
   function send(connection, message) {
+    if (closing || connection.socket.destroyed) return;
     const raw = JSON.stringify({ jsonrpc: "2.0", ...message });
     trace.push({ connection: connection.id, direction: "provider_to_bridge", raw });
     connection.socket.write(raw + "\n");
@@ -50,7 +52,9 @@ export async function startConversationAppServerFixture({
           // Delay only the Provider fixture's reply; production Bridge/RPC
           // framing, request IDs and response normalization remain in use.
           await beforeTurnsPageReply?.(params);
-          result = { data: params.threadId === threadId ? [turn()] : [], nextCursor: null };
+          result = turnsPage
+            ? turnsPage(params)
+            : { data: params.threadId === threadId ? [turn()] : [], nextCursor: null };
           break;
         case "thread/loaded/list": result = { data: [threadId], nextCursor: null }; break;
         case "skills/list": result = { data: [{ cwd: projectPath, skills: [] }] }; break;
@@ -94,6 +98,7 @@ export async function startConversationAppServerFixture({
   process.env.CCPOCKET_FIXTURE_RPC_PORT = String(server.address().port);
 
   return {
+    beginShutdown() { closing = true; },
     async beginTurn(runtime) {
       if (acceptedInitialTurn) return;
       const signal = AbortSignal.timeout(8000);
@@ -107,6 +112,7 @@ export async function startConversationAppServerFixture({
       send(activeConnection, { method, params });
     },
     async close() {
+      closing = true;
       for (const connection of connections) connection.socket.destroy();
       await new Promise((resolve) => server.close(resolve));
     },

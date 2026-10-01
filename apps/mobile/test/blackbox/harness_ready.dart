@@ -9,17 +9,18 @@ import 'dart:io';
 /// the same READY protocol but includes the process exit code and both output
 /// streams in the failure.
 class HarnessReadyResult {
-  HarnessReadyResult({
+  HarnessReadyResult._({
     required this.readyLine,
     required this.stdout,
-    required this.stderr,
+    required this._stderrBuffer,
     required this.stdoutSubscription,
     required this.stderrSubscription,
   });
 
   final String readyLine;
   final String stdout;
-  final String stderr;
+  final StringBuffer _stderrBuffer;
+  String get stderr => _stderrBuffer.toString();
   final StreamSubscription<String> stdoutSubscription;
   final StreamSubscription<String> stderrSubscription;
 
@@ -65,10 +66,10 @@ Future<HarnessReadyResult> waitForHarnessReady(
         );
       }),
     ]).timeout(timeout);
-    return HarnessReadyResult(
+    return HarnessReadyResult._(
       readyLine: readyLine,
       stdout: stdoutBuffer.toString(),
-      stderr: stderrBuffer.toString(),
+      _stderrBuffer: stderrBuffer,
       stdoutSubscription: stdoutSubscription,
       stderrSubscription: stderrSubscription,
     );
