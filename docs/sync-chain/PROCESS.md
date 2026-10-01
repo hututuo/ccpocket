@@ -370,3 +370,16 @@ Service 仍拥有 source/subscription fence、两次 attempt/8 秒等待、共�
 
 这两个缺口需要新的 red → fix checkpoint，不能藏在结构 diff 中。下一步先复现再修正；
 此提交仍不作为 B2 最终可用候选，全量与最终独立复审尚未运行。
+
+## E016 — 复审两处边界的三个红灯
+
+父提交：`f112f3bd130bfafd99e18a261a19e2fc0591f9a1`。产品源码未变。
+两项 real SQLite read barrier 分别覆盖 older 自己准备读取、以及在 latest repair 后排队。
+reset ACK 后释放原快照，旧操作仍发送，未按 thread reset 失败。
+第三项通过真实 prepend 事务，仅让其后续 snapshot read 抛错：确认 DB 条目/cursor 已更新，
+但 cache epoch 未变，原观察者未重读；失败原因是漏通知，不是事务没有提交。
+
+首次 `b2-red-review-boundaries` 误用 plain-name 含正则，exit 79 / No tests ran，不能作红灯。
+修正选择器后的 `b2-red-review-boundaries-selected`：3 FAIL、exit 1，分别命中以上三项。
+下一步用 flight 的 scoped 失效身份覆盖发请求前的等待；未明确 commit 阶段的异常保留原错误，
+同时让当前分区的既有观察者重读，不能把 API 抛错一概解释成未写入。

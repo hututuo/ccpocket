@@ -2335,6 +2335,195 @@ void main() {
     expect(after.turnsNextCursor, before.turnsNextCursor);
   });
 
+  for (final queued in [false, true]) {
+    test(
+      'older paging reset cancels ${queued ? 'queued' : 'preparing'} work before sending',
+      () async {
+        await service.dispose();
+        await repository.close();
+        final held = _HeldOlderWindowRepository(
+          SessionCatalogCacheDatabase(
+            databasePath: path.join(
+              temporaryDirectory.path,
+              'older-reset-read.db',
+            ),
+            openDatabase: openFfi,
+          ),
+        );
+        repository = held;
+        gateway.supportsConversationSyncV2 = true;
+        service = ConversationContentSyncService(
+          bridge: gateway,
+          cache: repository,
+        )..start(initialLifecycleState: AppLifecycleState.resumed);
+        const threadId = 'older-reset-before-send';
+        final subscriptionId = await _bootstrapOlderPage(gateway, threadId);
+        gateway.addEvent(
+          ConversationSyncV2EventMessage(
+            event: ConversationSyncV2EventKind.syncCheckpoint,
+            subscriptionId: subscriptionId,
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'codex-home-a',
+            batchId: 'older-priority',
+            sequence: 3,
+            phase: 'priority',
+          ),
+        );
+        await gateway.nextOutgoing('conversation_sync_ack');
+        held.holdNextRead = true;
+        addTearDown(() {
+          if (!held.release.isCompleted) held.release.complete();
+        });
+        Future<ConversationTurnsPageLoadResult>? repair;
+        if (queued) {
+          repair = service.repairLatestTurn(
+            provider: 'codex',
+            providerSessionId: threadId,
+          );
+          await held.started.future;
+        }
+        Object? failure;
+        final load = service
+            .loadOlderTurns(provider: 'codex', providerSessionId: threadId)
+            .then<void>(
+              (_) => fail('Reset work cannot report an older page loaded.'),
+              onError: (Object error) => failure = error,
+            );
+        if (!queued) await held.started.future;
+        expect(
+          gateway.sentTypes.where((type) => type == 'conversation_turns_page'),
+          isEmpty,
+        );
+        gateway.addEvent(
+          ConversationSyncV2EventMessage(
+            event: ConversationSyncV2EventKind.syncReset,
+            subscriptionId: subscriptionId,
+            bridgeInstanceId: 'bridge-1',
+            codexSourceId: 'codex-home-a',
+            batchId: 'older-reset-before-send',
+            sequence: 4,
+            scope: 'thread',
+            target: const ConversationSyncV2Target(
+              provider: 'codex',
+              providerSessionId: threadId,
+            ),
+          ),
+        );
+        await gateway.nextOutgoing('conversation_sync_ack');
+        held.release.complete();
+        if (repair != null) await repair;
+        await pumpEventQueue();
+        expect(
+          failure,
+          isA<StateError>(),
+          reason:
+              'The read/queue predates reset even though no pending request existed.',
+        );
+        await load;
+        expect(
+          gateway.sentTypes.where((type) => type == 'conversation_turns_page'),
+          isEmpty,
+        );
+        final after = (await service.loadCachedWindow(
+          provider: 'codex',
+          providerSessionId: threadId,
+        ))!;
+        expect(after.entries.single.entryId, 'older-retained-$threadId');
+        expect(after.turnsNextCursor, 'older-page-1');
+        final counts =
+            service.diagnosticSnapshot(
+                  provider: 'codex',
+                  providerSessionId: threadId,
+                )['pendingRequestCounts']!
+                as Map<String, Object?>;
+        expect(counts['turns'], 0);
+        expect(counts['historyPageFlights'], 0);
+      },
+    );
+  }
+
+  test(
+    'older paging invalidates observers when the post-commit read fails',
+    () async {
+      await service.dispose();
+      await repository.close();
+      final failing = _FailingOlderPageSnapshotRepository(
+        SessionCatalogCacheDatabase(
+          databasePath: path.join(
+            temporaryDirectory.path,
+            'older-post-commit.db',
+          ),
+          openDatabase: openFfi,
+        ),
+      );
+      repository = failing;
+      gateway.supportsConversationSyncV2 = true;
+      service = ConversationContentSyncService(
+        bridge: gateway,
+        cache: repository,
+      )..start(initialLifecycleState: AppLifecycleState.resumed);
+      const threadId = 'older-post-commit';
+      final subscriptionId = await _bootstrapOlderPage(gateway, threadId);
+      final beforeEpoch = service.cacheCommitEpoch;
+      final observerReads = <Future<ConversationHotWindowSnapshot?>>[];
+      final observer = service.updates.listen((update) {
+        if (update.provider == 'codex' &&
+            update.providerSessionId == threadId) {
+          observerReads.add(
+            service.loadCachedWindow(
+              provider: 'codex',
+              providerSessionId: threadId,
+            ),
+          );
+        }
+      });
+      addTearDown(observer.cancel);
+      final load = service.loadOlderTurns(
+        provider: 'codex',
+        providerSessionId: threadId,
+      );
+      final rejected = expectLater(load, throwsA(same(failing.failure)));
+      final request = await gateway.nextOutgoing('conversation_turns_page');
+      gateway.addEvent(
+        _olderPageReply(
+          subscriptionId: subscriptionId,
+          threadId: threadId,
+          requestId: request['requestId']! as String,
+          sequence: 3,
+          nextCursor: 'older-page-2',
+        ),
+      );
+      await rejected;
+      await gateway.nextOutgoing('conversation_sync_ack');
+      await pumpEventQueue();
+      final committed = (await service.loadCachedWindow(
+        provider: 'codex',
+        providerSessionId: threadId,
+      ))!;
+      expect(committed.entries.map((entry) => entry.entryId), [
+        'turn:older-provider-turn:user:older-provider-user',
+        'older-retained-$threadId',
+      ]);
+      expect(committed.turnsNextCursor, 'older-page-2');
+      expect(
+        service.cacheCommitEpoch,
+        greaterThan(beforeEpoch),
+        reason:
+            'A committed page must invalidate the original cache observers even if reading its snapshot failed.',
+      );
+      expect(observerReads, isNotEmpty);
+      final visible = await Future.wait(observerReads);
+      expect(
+        visible.last?.entries.first.entryId,
+        'turn:older-provider-turn:user:older-provider-user',
+      );
+      expect(
+        gateway.sentTypes,
+        isNot(contains('conversation_sync_unsubscribe')),
+      );
+    },
+  );
+
   test(
     'older paging rejects a repeated non-null cursor before commit',
     () async {
@@ -7059,6 +7248,86 @@ class _FailingOlderPageRepository extends SessionCatalogCacheRepository {
   }) async {
     attempted.complete();
     throw failure;
+  }
+}
+
+// Return a real snapshot only after a reset has crossed its read continuation.
+class _HeldOlderWindowRepository extends SessionCatalogCacheRepository {
+  _HeldOlderWindowRepository(super.database);
+
+  bool holdNextRead = false;
+  final started = Completer<void>();
+  final release = Completer<void>();
+
+  @override
+  Future<ConversationHotWindowSnapshot?> loadConversationWindow({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) async {
+    final snapshot = await super.loadConversationWindow(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
+    if (holdNextRead) {
+      holdNextRead = false;
+      started.complete();
+      await release.future;
+    }
+    return snapshot;
+  }
+}
+
+// The real prepend transaction runs; only its subsequent snapshot read fails.
+class _FailingOlderPageSnapshotRepository
+    extends SessionCatalogCacheRepository {
+  _FailingOlderPageSnapshotRepository(super.database);
+
+  final failure = StateError('injected post-commit snapshot read failure');
+  bool failNextSnapshotRead = false;
+
+  @override
+  Future<ConversationHotWindowSnapshot?> prependConversationTurnsPage({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+    required String expectedRevision,
+    required String? expectedCursor,
+    required List<Map<String, dynamic>> rawMessages,
+    required String? nextCursor,
+  }) async {
+    failNextSnapshotRead = true;
+    try {
+      return await super.prependConversationTurnsPage(
+        target: target,
+        provider: provider,
+        providerSessionId: providerSessionId,
+        expectedRevision: expectedRevision,
+        expectedCursor: expectedCursor,
+        rawMessages: rawMessages,
+        nextCursor: nextCursor,
+      );
+    } finally {
+      failNextSnapshotRead = false;
+    }
+  }
+
+  @override
+  Future<ConversationHotWindowSnapshot?> loadConversationWindow({
+    required SessionCatalogCacheTarget target,
+    required String provider,
+    required String providerSessionId,
+  }) {
+    if (failNextSnapshotRead) {
+      failNextSnapshotRead = false;
+      return Future.error(failure);
+    }
+    return super.loadConversationWindow(
+      target: target,
+      provider: provider,
+      providerSessionId: providerSessionId,
+    );
   }
 }
 
