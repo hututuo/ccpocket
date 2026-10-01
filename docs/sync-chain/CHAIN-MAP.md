@@ -1,6 +1,7 @@
 # 当前接收链路地图
 
-地图固定到起始 SHA；后续修改由账本说明。它描述源码调用关系，不能单凭存在调用就声称运行通畅。
+起始链路与各批新增责任由下表及 B1/B2/C1a 章节说明，当前验证身份见 PROCESS。
+它描述源码调用关系，不能单凭存在调用就声称运行通畅。
 
 | 段 | owning path | 输入/输出与权威 | 需要证明的完成条件 |
 |---|---|---|---|
@@ -11,7 +12,7 @@
 | Mobile 入站顺序 | features/conversation_content_sync/conversation_content_sync_service.dart | 校验 identity/generation/subscription，再串行提交 | 旧源/旧代响应不生效；序列洞转恢复；事务后 ACK |
 | SQLite | features/session_list/cache/session_catalog_cache_repository.dart | staging → hot window；受 revision/identity/预算约束 | 原子提交；partial 保留 last-good；完整性不误报 |
 | 缓存通知 | SyncService._publishCacheUpdate / syncUpdates | 本地 commit epoch 与数据变化事件 | 有效内容/coverage 变化可被观察；不改 Provider revision |
-| 页面重读 | codex_session_screen.dart._loadDurablePreview | 订阅 updates → durable window → 页面/Cubit | 新内容到达页面；旧异步读不能回退已更新画面 |
+| 页面重读 | codex_session_screen.dart._loadDurablePreview / durable_preview_read_lifecycle.dart | 原 updates/SQL window；helper 只拥有 ticket/dirty/失效 | 新内容到达页面；旧读/错误/finally 不影响新目标；受阻补读可恢复 |
 | 展示投影 | chat_session_cubit.dart / chat_process_layout.dart | committed 内容与独立 live overlay | 稳定顺序、无重复、工具归属正确、partial 不清空可读内容 |
 
 ## 不同状态不能互相替代
@@ -66,7 +67,23 @@ thread reset 同时失效准备、排队和已发送请求；其他 thread/sourc
 
 本批真实 older-pages 黑盒通过生产页面自动 loader 请求两页，验证原页面更新、稳定 ID/顺序、
 cursor 1→2→null、最新内容保留与加载终态；上游仍为隔离 Provider fixture。
-具体终态与测试入口见 PAGING-LIFECYCLE / TEST-MATRIX，下一批入口见 C1-ENTRY。
+具体终态与测试入口见 PAGING-LIFECYCLE / TEST-MATRIX。
+
+## C1a 后的页面读取边界
+
+`DurablePreviewReadLifecycle` 独占当前 ticket、loading target、dirty 合并与 invalidate/dispose。
+ticket 保存原 Service 的 target/thread/cache epoch；以操作对象身份核对 owner，不生成 Provider revision。
+页面继续获取 SQL window 和当前来源；success/error 共用接受判定，setState、last-good、cachedAt、
+Snackbar/Retry 与 Cubit 更新仍留在页面。旧 finally 只能退休自己的 ticket。
+
+dirty 在 follow-up 暂因 source conflict 不能开始时保留；真正 begin 或显式 invalidate 才消费。
+重新认证同来源时检查 `needsRead`，不能用“该分区已经显示过”跳过已提交内容。
+被动权威 session list 的 runtime 绑定保留 durable reader；它的 receipt/control/overlay 路径
+不具有 canonical history 写权，不能机械套用显式 attachment 的失效规则。
+
+真实 SQL/页面与生命周期保护见 R23–R28；原 Bridge/RPC 黑盒仍经同一 Service/Repository/页面。
+下一批按 C1B-ENTRY 验证 V2 detached 展示分支；该分支已调用 `projectDetachedTimeline`，
+shared legacy/paged mirror 的 weaving 算法另有调用边界，不能无证据统一替换。
 
 ```mermaid
 flowchart LR

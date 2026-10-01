@@ -16,9 +16,9 @@
 | R09 | 真 Bridge → JSON → Dart → SQLite → Cubit/layout | 与 Provider fixture 的稳定 ID/顺序/内容相符 | PASS 四个黑盒用例含 partial-summary / older-pages 原页面更新；两种漏通知 mutation FAIL 证明敏感；E006/E014/E020 |
 | R10 | stdio JSON-RPC 模式 | 不旁路生产 RPC 解码/分发 | PASS 基线 full-page；E002 |
 | R11 | SQLite 关闭重开 | durable 内容可恢复 | PASS 基线 receiver；E002 |
-| R12 | 全 Mobile analyze/tests | 无新增 error/warning/回归 | PASS 最终产品源码 f735ac6b：3279 tests PASS、4 SKIPPED；analyze 0 error/warning；两处测试样式修正后 1017 既有 info、无新增，87 相关 tests PASS；E010/E018/E021，历史 FAIL 保留 |
+| R12 | 全 Mobile analyze/tests | 无新增 error/warning/回归 | PASS C1a 最终源码 151c0475 clean：3300 PASS / 4 SKIPPED，--concurrency=1；analyze 0 error/warning、1017 既有 info 逐项比对无新增；E029，历史 FAIL 保留 |
 | R13 | 真实 Provider 新事件 | 原始记录与 Bridge/cache/page 对照 | NOT_RUN |
-| R14 | 模拟器 / 真机 / 生产 | 各自独立验收 | NOT_RUN |
+| R14 | 模拟器 / 真机 / 生产 | 各自独立验收 | NOT_RUN；本轮原生 UI 自动化工具不可用为 BLOCKED，不能用 VM widget host 代替设备验收 |
 | R15 | 调度退避、失败预算、取消计时器、旧回调 | 1/2/4 秒重试、4 次失败封顶；取消后无重试，旧完成不清新 owner | PASS 抽取后四个 scheduler 用例；E007 |
 | R16 | 普通 PR CI 的黑盒前置条件 | Mobile job 自行构建 Bridge，再运行 Flutter tests | PASS 本地 YAML/顺序检查；云端 CI NOT_RUN；E008 |
 | R17 | older send/Provider/事务前失败、游标停滞 | 原错误结算、pending/flight 清理、原窗口/cursor 保留；不拆其他订阅；repeated non-null cursor 写入前拒绝 | PASS 六项 Service 修复/保护；三个基线 FAIL 保留；E012/E013 |
@@ -26,7 +26,14 @@
 | R19 | 原页面自动加载两页 older turns | 原页面/updater/Cubit 保持；Provider ID/顺序、最新内容保留、cursor 1→2→null、加载终态 | PASS 真实 Bridge/RPC/SQLite/原页面，mutation 漏通知 FAIL 保留；E014/E020；Provider fixture 范围 |
 | R20 | thread reset 的 preparing / queued / sent | 三阶段旧操作失效；其他 thread/source 不受影响，后续新调用可用 | PASS 三阶段 read-barrier / late-reply / pure lifecycle；准备/排队红灯保留；E013/E016/E017 |
 | R21 | 已开始 older mutation 的提交/读取与同源订阅替换交错 | 本地 epoch/update 仍通知当前分区；原错误保留；旧 transport 不复活；其他 source/dispose 不通知 | PASS 六种 success/error × same-source/other-source/dispose，以及 current-sub post-commit read error；三个基线 FAIL 保留；E016/E019/E020 |
-| R22 | Bridge 全量/build/typecheck 与 fixture 变化 | 无 Bridge 回归，隔离 fixture 可启动/关闭 | PASS 67fbef1a：2546 tests PASS、1 SKIPPED，124 files PASS；build/noEmit PASS；最终产品 Bridge tree 完全相同，继承收据；E018/E021 |
+| R22 | Bridge 全量/build/typecheck 与 fixture 变化 | 无 Bridge 回归，隔离 fixture 可启动/关闭 | PASS 继承 67fbef1a：2546 PASS / 1 SKIPPED，124 files PASS；build/noEmit PASS；C1a 151c0475 的 Bridge tree/依赖输入完全相同，继承收据；E018/E021/E029 |
+| R23 | 页面读取中的 commit/dirty/epoch 推进 | 不短暂接受旧窗口/错误；合并必要 follow-up，最终与 SQL 一致 | PASS 十三个真实 SQL 页面契约与八个 lifecycle 保护、最终全量；E023/E025/E026/E029 |
+| R24 | 旧 source/thread、invalidate/dispose 的成功/error/finally | 旧结果/错误不能替换页面或清理新 owner/dirty；dispose 无后续 UI/读取 | PASS 旧 source error 基线 FAIL→fix；线程切换与 dispose 正反路径，最终全量；E023–E026/E029 |
+| R25 | 当前读失败/Retry/后续 commit | last-good 可读；当前错误可重试；后续通知仍更新 | PASS 原 SQL 页面 Retry 交互与后续真实 commit；E023/E029 |
+| R26 | V2 complete empty / legacy empty | V2 可清 canonical；legacy SQL empty 保留 last-good UI | PASS 原 V2/v1 receiver、真实 SQL 与原页面；E023/E025/E029 |
+| R27 | A-next 提交后切 B，读丢弃，再认证 A 且不重发正文 | 受 source fence 阻止的 dirty 保留并实际补读，显示 SQL 的 A-next | PASS success/error 两个基线 FAIL→fix；八个生命周期含 deferred dirty，最终全量；E027/E028/E029 |
+| R28 | durable 冷读期间 passive runtime 绑定，后续 canonical commit | durable reader 保持有效，冷窗口与后续 commit 均更新同一页面；runtime 不写 canonical | PASS 正向 SQL 页面用例与最终全量；E028/E029 |
+| R29 | full-page 完整中间过程折叠的并发组合时序 | 原页面在实际输入完成后呈现正确 fold/count | FAIL 历史 E024 并发组合等待超时保留，原因未归属；后续单独/串行相关与 E029 全量 PASS；默认并发/云 CI NOT_RUN，继续定位入口 C1B-ENTRY |
 
 R09/R10 的最上游是隔离 Provider fixture，使用真实 Bridge、协议、SQLite 和页面相关代码；
 即使 PASS，也只证明接收闭环，不冒充 R13/R14。

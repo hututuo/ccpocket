@@ -5,10 +5,12 @@
 - 时间：2026-10-01（Asia/Taipei）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 / B1 与 B2 已完成；C1a 页面异步缓存重读已开始，见 E022 及后续条目。
-- B2 最终产品源码 SHA：`f735ac6b11f05133ac9e42228dbb11fc5cacfacf`，全量启动时 clean。
-- 3279 Mobile PASS / 4 SKIPPED；Bridge 同输入继承 2546 PASS / 1 SKIPPED。
-- E021 单独记录最终 review、静态检查和仅测试样式的复查；具体职责见 PAGING-LIFECYCLE。
+- 阶段：A0–A3 / B1、B2 与 C1a 已完成；C1b 仅登记候选入口，尚未修改产品代码。
+- C1a 最终验证源码 SHA：`151c04752e0ce00568c73a6d9522bfe09c6a107c`，全量启动时 clean。
+- 3300 Mobile PASS / 4 SKIPPED（--concurrency=1）；Bridge 同输入继承 2546 PASS / 1 SKIPPED。
+- analyze 0 error/warning，1017 既有 info 逐项无新增；固定 SHA 独立复审无剩余 P0–P2。
+- 最新门禁/回退依赖见 E029，责任见 PREVIEW-READ-LIFECYCLE，下一步见 C1B-ENTRY。
+- E024 的历史并发折叠等待 FAIL 尚未归属；最终串行 PASS 不证明默认并发或设备/运行链验收。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
 
 ## E001 — 建立隔离执行与文档
@@ -620,3 +622,65 @@ runtime 订阅丢弃完整历史帧；SQLite reader 须能导入冷窗口并继�
 独立只读 review 在当前工作树未发现其他 P0–P2；source-return 的本地 fix 已逐行复核，
 将以本提交固定身份再复核，并运行 clean 全量门禁。仅给新增常量 SessionInfo 补 const，
 不改变测试场景/断言。当前仍未宣称 C1a 整体门禁完成。
+
+## E029 — C1a 最终源码门禁与接手记录
+
+最终验证源码：`151c04752e0ce00568c73a6d9522bfe09c6a107c`；全部最终检查启动时 clean。
+本批十三个真实 SQLite/原页面用例、八个纯生命周期用例均纳入全量；
+原四个真实 Bridge/RPC/SQLite/页面黑盒继续通过，最上游仍为隔离 Provider fixture。
+只读 GPT-6 Luna/max reviewer 在固定提交重新审核，确认 source-return P2 关闭、
+无剩余 P0–P2 actionable finding；未运行测试或操作设备，测试证据由 root 执行。
+
+| 检查 / 原始收据 | 精确结果与证明范围 |
+|---|---|
+| `c1-final-full-mobile.json/.log` | 151c0475 clean；3300 PASS / 4 SKIPPED，exit 0，440.892 秒；明确使用 --concurrency=1 |
+| `c1-final-full-analyze.json/.log` | 151c0475 clean；exit 0，24.517 秒；0 error/warning，1017 info |
+| `c1-final-analysis-baseline-comparison.json` | 与 B2 最终诊断按 severity/file/完整 text 比对，保留重复数量、忽略迁移行列；1017→1017，无新增/减少 |
+| `c1-final-format.json/.log` | 本批六个 Dart 文件，0 changed，exit 0，0.807 秒 |
+| `c1-independent-review.md` | 固定 151c0475 的只读复审 PASS；此前 P2 已关闭，无剩余 P0–P2；来源绑定的反证与保护用例留档 |
+| `c1-bridge-gate-inheritance.json` | 67fbef1a 与 151c0475 的 Bridge tree 都为 2bcc606909b9eb34470eafe264045186a6c1f2b9；Bridge/依赖输入无变化 |
+| B2 build/noEmit/全 Bridge 收据 | 因上述输入相同而继承 PASS；2546 PASS / 1 SKIPPED，124 files PASS；并非本批重复运行 |
+| `c1-original-checkouts.json` | main 7de33f81 与原七组未跟踪资料保留；旧修复分支 930f1267 clean；均与起点相同 |
+| `c1-final-acceptance.json` | 接手文档提交后的最终 HEAD/status、与 151c0475 的产品/测试/依赖输入相同检查、收据/日志 hash 与分层验收 |
+
+原始收据、失败日志和轨迹都保存在
+`/Users/developer/AI agent/Codex/_tmp/ccpocket-sync-chain-20261001/`；
+最终黑盒轨迹为 `c1-final-full-traces/`，含 RPC/Bridge/client 帧、SQL hash 与原页面断言。
+本条所在接手提交只更新文档；完整 SHA 由 `git log -1` 和最终 acceptance 收据获取，
+不改变已验证产品/测试输入，不为纯文档更新重复运行全量。
+
+四个 Mobile SKIPPED 仍为 SSH private key 两项、Bridge tunnel 一项、jump host 一项，
+均 smoke env not set，不计作 PASS；Bridge 一项真实链 smoke 未 opt in。
+原生 Dart/Marionette UI 自动化工具本轮不可用，为 BLOCKED；
+真实 Provider、原 Simulator/真机、生产 Bridge、OTA、签名安装、云 CI、merge/push/发布均 NOT_RUN。
+VM mounted 页面中的真实 SQL/Service 契约不能替代这些验收。
+
+### 已关闭与仍未知的事实
+
+- E023 的旧来源读错误晚到在原页面稳定 red；E024 补 source fence，最终共用 success/error 判定继续保护。
+- E027 的 source A 返回后漏掉已提交 A-next 在 success/error 两个用例稳定 red；E028 保留 deferred dirty，
+  仅实际 begin/invalidate 消费，同分区快捷入口核对 needsRead，最终原页面显示 SQL 新内容。
+- 被动权威 runtime 绑定不停止 durable reader；cold read 与后续 commit 的正向保护通过，
+  reviewer 撤回取消 reader 的假设，canonical 写入权仍在 SQL 路径。
+- E024 的并发组合 full-page 折叠等待 FAIL 未归属。单独重放、140 项串行相关及最终串行全量 PASS，
+  不足以宣称并发问题已修复；默认并发/云 CI NOT_RUN。R29 与 C1B-ENTRY 保留后续定位入口。
+
+### C1a 提交与依赖索引
+
+| 批次 | 完整提交 SHA | 用途 / 当前判断 |
+|---|---|---|
+| E022 | 83169884338d229273f979e7e67c0f970a7632d3 | 读取接点盘点与范围；基线 38c4240e clean |
+| E023 | 5d69872d87b7d42984032848814127e7e6b029e4 | 六个真实 SQL 页面契约，旧来源 error 红灯；不可作运行候选 |
+| E024 | 722e753f4ee422f336e658ad2560ecfb1d0df686 | 独立 source error fence 行为修复；组合折叠等待失败单独留档 |
+| E025 | 7072ceb5f15a4179f143e01502b066ec439e8af4 | 扩至十个 SQL 契约，冻结生命周期接口与权威边界 |
+| E026 | 99e86306b9c3792d2354885af96b2211f0eac660 | 完整读取接点迁移；仍有后来定位的 source-return 缺口，不作最终候选 |
+| E027 | 174842d46c87a369ee42c45c86939553d92abc61 | success/error 的 source-return 两个红灯；不可作运行候选 |
+| E028 | 151c04752e0ce00568c73a6d9522bfe09c6a107c | deferred read 修复与 passive runtime 保护；C1a 最终验证源码点 |
+
+E028 依赖 E026 的接口，结构回退须在隔离 checkout 适配该行为，保留 E024 来源错误检查、
+十三个 SQL 页面与八个 lifecycle 保护，不得直接 revert 中间提交后删除回归。
+回退的所有读取、来源与清理接点详见 RUNBOOK/PREVIEW-READ-LIFECYCLE。
+
+下一批按 C1B-ENTRY 先验证 V2 detached 的已有 `projectDetachedTimeline` 与 Cubit 接缝，
+独立登记父 SHA、状态接受/清理契约和红灯，不新造 reducer 或把共享 legacy/paged mirror 一同重写。
+C1b 目前只有源码盘点与入口文档，不借本批 PASS 宣称该范围的缺口已闭合。

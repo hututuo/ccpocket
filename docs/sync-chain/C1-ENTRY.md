@@ -1,14 +1,16 @@
 # C1 入口：先收敛页面的异步缓存重读
 
-状态：C1a 已从 clean `38c4240e54496a4dd504ea6d029d457d78a90bfb` 开始，接点盘点和基线重放中。
-本入口描述范围与契约，当前进展见 PROCESS 的 E022 及后续条目；不以旧页面测试代替新范围的验证。
+状态：C1a 已完成。clean 起点 `38c4240e54496a4dd504ea6d029d457d78a90bfb`，
+最终验证源码 `151c04752e0ce00568c73a6d9522bfe09c6a107c`。
+本入口保留开始时的范围与契约；red/fix/抽取/复审和最终门禁见 PROCESS E022–E029。
+当前实现责任见 PREVIEW-READ-LIFECYCLE，下一批见 [C1b 入口](C1B-ENTRY.md)。
 
 ## 选定接缝
 
 先处理 `apps/mobile/lib/features/codex_session/codex_session_screen.dart` 的
 `_loadDurablePreview` / `_retryDurablePreviewLoad` 及其生命周期接点。
 真实路径为 SyncService updates → 原 SQLite window read → 页面接受/丢弃结果 →
-`ChatSessionCubit.updateDetachedPreviewHistory`。当前页面同时保存 loading、dirty、read generation、
+`ChatSessionCubit.updateDetachedPreviewHistory`。起点页面同时保存 loading、dirty、read generation、
 target fingerprint、已显示窗口与错误提示，容易只修成功出口而漏掉 error/finally 或 route 切换。
 
 C1a 只验证并收敛这组异步读取状态。Cubit 的 canonical/overlay 合并、发送控制、权限、
@@ -26,7 +28,7 @@ UI 布局和 Bridge handler 留待各自批次，不与读取状态一同重写�
 | V2 authoritative empty / 旧 Bridge empty | 前者允许清理旧 canonical，后者保留最后可读内容 | 独立协议版本用例，避免把 null/empty 混为一谈 |
 | partial / older page 通知 | 原挂载页面更新，稳定身份/顺序、coverage/cursor 与 SQLite 一致 | 沿用并加强真实 Bridge/RPC/SQLite/原页面黑盒 |
 
-这里列的是要证明的契约，不宣称现状全部正确。先定位既有用例能覆盖什么、哪些需要补红灯。
+开始时先列上述契约，再定位既有用例和红灯缺口；现在的逐项结果与证明范围见 TEST-MATRIX R23–R29。
 上游仍是隔离 Provider fixture 时必须明示；真实 Provider、设备和生产状态继续分别记录。
 
 ## 状态与权威归属
@@ -52,5 +54,6 @@ B2 的 E020 已说明本地 cache mutation 与 transport generation 需要分别
 C1a 的接点盘点要检查成功/error/finally，以及其他分页是否有相同交错；
 其他路径尚无此时序的专门证明，不能直接把两个 older 出口的修正机械套遍所有通知。
 
-回退保持本批新增回归保护，优先回退独立结构提交并适配已修复行为；
+回退保持本批新增回归保护；E028 的 deferred read 修复依赖 E026 的生命周期接口，
+须先在隔离 checkout 适配行为再回退结构。E024 的 source error fence 也须保留。
 不得直接退到红灯 checkpoint，也不得触及原 main、运行 Bridge 或已安装应用。

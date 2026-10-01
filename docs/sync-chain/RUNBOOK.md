@@ -25,7 +25,9 @@
 | older 身份、请求参数、订阅重试、Repository 调用 | SyncService.loadOlderTurns / _loadOlderTurnsWithRetry / ordered receiver | R07/R08/R17 |
 | 缓存事务与内容/coverage | Repository | R01/R06/R07/R11 |
 | 事务后的 epoch/updates；已开始 older mutation 的事实按 cache partition 通知，旧 transport 仍 fence | SyncService 原通知出口 | R01/R09/R19/R21 |
-| durable window 重新读取与展示 | 原 Codex 页面/Cubit/layout | R09 |
+| durable read ticket、dirty、owner 失效/退休 | durable_preview_read_lifecycle.dart | R23/R24/R27 |
+| durable window 调用、source 当前性、epoch、last-good/Snackbar/Retry、Cubit 应用 | 原 Codex 页面 | R09/R23–R28 |
+| canonical/overlay 合并与实际 layout | 原 Cubit / projectDetachedTimeline / layout | R09/R26/R28/R29；C1b 待验证 |
 
 调度器只接受不可变的身份/观察值和三个窄回调：判断当前操作、执行既有修复、重新观察缓存。
 它没有数据库、Gateway 或页面对象。route 或 manual refresh 导致 focus 离开，与 thread reset 调用 clearTarget；
@@ -42,6 +44,13 @@ older prepend API 包含 transaction 与提交后的 snapshot read；异常阶�
 在 cache partition 仍当前且未 dispose 时复用 invalidation 通知观察者重读。
 success 同样按 cache partition 通知；transport timeline 与 ACK 仍按订阅代次。
 修改任一检查时必须同时跑 R21 的 success/error、same-source/other-source/dispose 六种交错。
+
+durable reader 的 begin 只在真正开始下一次读取时消费 dirty；finish 只退休自己的 ticket，
+source conflict 阻止 follow-up 时保持 `needsRead`，直到读取开始或显式 invalidate。
+success/error 共用 owner、source/thread、原 epoch 和 dirty 判定；旧 finally 不得清理新 owner。
+原 start/restart、canonicalization、didUpdateWidget、session_created/attachment 与 dispose
+全部接到同一生命周期。被动 runtime 绑定仍保留 canonical reader，不能一律按 attachment 失效。
+helper 不接收 Page/Cubit/Service/Repository 对象；当前窗口和 UI 状态留在原页面。
 
 接收排序中的 await 只等本地缓存观察进入 scheduler，不等待 repair 网络回复。
 不要把它恢复成纯后台观察，否则较晚 repair completion 可能抢先记完成值，吞掉较早的 dirty 进度。
@@ -80,18 +89,22 @@ npm ci --offline --ignore-scripts
 npm run bridge:build
 cd apps/mobile
 "$CCPOCKET_FLUTTER_BIN" pub get --offline
-"$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded \
+"$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded --concurrency=1 \
   test/features/conversation_content_sync/latest_turn_repair_scheduler_test.dart \
   test/features/conversation_content_sync/older_turns_paging_lifecycle_test.dart \
   test/features/conversation_content_sync/conversation_content_sync_service_test.dart \
   test/features/session_list/cache/session_catalog_cache_repository_test.dart \
   test/models/conversation_sync_v2_protocol_test.dart
-"$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded \
+"$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded --concurrency=1 \
+  test/codex_durable_preview_read_test.dart \
+  test/durable_session_preview_test.dart \
+  test/features/conversation_content_sync/durable_preview_read_lifecycle_test.dart
+"$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded --concurrency=1 \
   test/blackbox/conversation_latest_turn_gap_receiver_test.dart \
   test/blackbox/conversation_live_segment_receiver_test.dart \
   test/blackbox/conversation_full_page_test.dart
 "$CCPOCKET_DART_BIN" analyze .
-"$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded
+"$CCPOCKET_FLUTTER_BIN" test --no-pub --reporter expanded --concurrency=1
 ```
 
 回到仓库根目录执行 Bridge 门禁：
@@ -111,6 +124,8 @@ git diff --check
 调整其他平台发布工作流时，也须确认其黑盒测试前置条件，不能把缺少 dist 改成静默跳过。
 黑盒 trace 含隔离 fixture 的原始 RPC、Bridge/client 帧、SQLite 条目 hash 与页面断言；
 可设置 CCPOCKET_CHAIN_TRACE_PARENT 将下次 fixture trace 留在持久证据目录。
+以上并发度对应 C1a 的最终本地收据；默认并发与云 CI 未在 C1a 验收。
+早期并发 full-page 折叠等待 FAIL 的输入/投影/宿主时序仍待归属，不能因串行 PASS 删除该记录。
 
 ## 回退与后续批次
 
@@ -120,7 +135,7 @@ git diff --check
 分批提交不意味着可以任意顺序 revert：E009 的 scheduler 清理依赖 B1 抽取，
 后续行为批也依赖 E004/E005 的进度与 flight 归属。评估结构回退时先逆序撤掉依赖，
 或在隔离 checkout 适配行为修复，再运行完整矩阵。不要直接将中间红灯 checkpoint 当可用候选。
-E010 登记的 `45a4498a` 是第一批最终绿灯源码点，B2 最终产品源码为 `f735ac6b`；
+E010 登记的 `45a4498a` 是第一批最终绿灯源码点，B2 最终产品源码为 `f735ac6b`，C1a 为 `151c0475`；
 精确提交与测试样式后续检查见 PROCESS。本轮从未部署，撤销源码不需要替换生产运行。
 
 B2 的 E017/E020 行为提交依赖 E015 的生命周期/DTO 抽取；回退结构时先在隔离 checkout
@@ -129,7 +144,12 @@ E013 的局部失败/游标保护、E017 的 preparing/queued 取消、E020 的�
 E012/E016/E019 是红灯 checkpoint，E015/E018 也有后来发现的残余边界，不能直接作为运行候选。
 优先审阅单个提交；实际 revert 按依赖逆序，保留回归用例并运行完整矩阵。
 
-下一块按 [C1-ENTRY](C1-ENTRY.md) 先收敛页面异步缓存重读，再评估单种展示投影。
+C1a 的 E028 deferred read 行为依赖 E026 lifecycle 接口；直接 revert E026 会破坏后续调用。
+先在隔离 checkout 适配并保留 E024 来源错误检查和 E028 deferred read，再选择结构回退方案。
+E023/E027 是红灯 checkpoint，E026 仍有后来定位的 source-return 缺口，不能作运行候选。
+十三个真实 SQL 页面与八个纯生命周期契约须保留并通过，原 Service/SQL/Cubit 权威不能改变。
+
+下一块按 [C1B-ENTRY](C1B-ENTRY.md) 先验证 V2 detached 的已有投影与 Cubit 接缝，再评估抽取。
 既有其他分页/控制路径的相似交错仍待各自证明，不从 older 两个出口的修正推断它们已经正确。
 不扩大到 Cubit 全面重写、Bridge 总路由重写或 V4 候选整合。
 

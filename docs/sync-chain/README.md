@@ -16,9 +16,19 @@ Bridge 全量 2546 PASS / 1 SKIPPED，独立源码复核无剩余 actionable fin
 最终静态分析 0 error/warning，1017 既有 info，无新增；仅测试样式后续修正复查亦通过。
 分页请求的错误、reset 准备/排队取消、提交后的观察者通知分别有 red → green 记录；
 本地缓存事实的通知与旧订阅 transport 归属分别判断。完整门禁及测试样式复查见 PROCESS 的 E021。
-具体边界见 [分页生命周期](PAGING-LIFECYCLE.md)，下一批见 [C1 入口](C1-ENTRY.md)。
-真实 Provider、模拟器/真机、云 CI 与生产部署各自仍为 NOT_RUN；
-本批只证明所选接收闭环和源码门禁。
+具体边界见 [分页生命周期](PAGING-LIFECYCLE.md)。
+
+C1a 已完成页面异步缓存重读的生命周期抽取。最终源码
+`151c04752e0ce00568c73a6d9522bfe09c6a107c`：Mobile 全量 **3300 PASS / 4 SKIPPED**
+（`--concurrency=1`），analyze 0 error/warning，1017 既有 info 逐项比对无新增；
+固定 SHA 独立复审无剩余 P0–P2。新增十三个真实 SQLite/原页面契约与八个纯生命周期用例，
+关闭旧来源读取错误晚到、来源返回后遗漏补读两项缺陷，保留被动 runtime 绑定的 canonical reader。
+Bridge 与依赖输入未变，继承 B2 门禁。完整收据与回退依赖见 PROCESS 的 E029，
+责任见 [读取生命周期](PREVIEW-READ-LIFECYCLE.md)，下一批见 [C1b 入口](C1B-ENTRY.md)。
+
+一次早期并发组合的 full-page 折叠等待超时仍保留为未归属观察；后续单独与串行重放通过，
+不能据此宣称并发问题已修复。真实 Provider、模拟器/真机、云 CI 与生产部署各自仍为 NOT_RUN；
+原生 UI 自动化因本轮工具不可用为 BLOCKED。源码门禁只证明选定接收闭环。
 
 接手顺序：
 
@@ -27,7 +37,8 @@ Bridge 全量 2546 PASS / 1 SKIPPED，独立源码复核无剩余 actionable fin
 3. [回归矩阵](TEST-MATRIX.md)：哪些场景有证据，哪些仍未验证。
 4. [过程账本](PROCESS.md)：每批动机、修改位置、测试和下一步。
 5. [接手与验证操作](RUNBOOK.md)：责任边界、重跑命令、回退与下批入口。
-6. [C1 入口](C1-ENTRY.md)：下一批先验证页面异步缓存重读；产品代码尚未修改。
+6. [C1a 范围与契约](C1-ENTRY.md)、[读取生命周期](PREVIEW-READ-LIFECYCLE.md)：已完成的读取接缝。
+7. [C1b 入口](C1B-ENTRY.md)：先验证现有 V2 投影与 Cubit 状态清理，再决定抽取接口。
 
 过程记录不得以旧证据覆盖新失败。源码测试通过、真实 Provider、模拟器、真机、部署和发布分别报告。
 这组文档与对应代码一同提交；原始测试输出保存为独立文件，账本记录命令、身份、结果和证据路径。

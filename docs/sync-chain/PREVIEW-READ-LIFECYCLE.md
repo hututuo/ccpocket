@@ -1,7 +1,8 @@
 # Codex 页面缓存读取生命周期
 
-范围：C1a；起点与中间证据见 PROCESS E022–E028。当前已迁移，deferred read 补漏后准备最终门禁，
-后续完成状态和验证源码身份以 PROCESS 的最终门禁为准。
+范围：C1a；起点与中间证据见 PROCESS E022–E028，最终门禁见 E029。
+已完成迁移并关闭 source error / deferred read 缺口；固定验证源码为
+`151c04752e0ce00568c73a6d9522bfe09c6a107c`。
 
 ## 谁拥有哪一层
 
@@ -46,13 +47,17 @@ Service 通知与 epoch 的真实性由原 receiver 处理，helper 不增加第
 legacy empty 在 SQL 中可为空但保留 last-good 可见内容；V2 complete empty 清理 canonical，
 保持既有协议兼容，不调整数据库 schema 或 wire。
 
-结构迁移后必须重放上述页面/黑盒、生命周期 owner 边界、全量 Mobile tests/analyze 与独立 review。
-原 full-page 折叠等待发生过组合超时，失败收据已保留，最终门禁必须再次覆盖。
-真实 Provider、原 Simulator/真机、生产 Bridge、发布和安装状态独立记录。
+最终全量以 `--concurrency=1` 重放上述页面、四个黑盒、八个 lifecycle 与其他 Mobile 回归：
+3300 PASS / 4 SKIPPED；全量 analyze 0 error/warning，1017 既有 info 无新增，固定 SHA review 通过。
+原 full-page 折叠等待发生过并发组合超时；后续单独/串行重放通过，原因仍未归属，
+失败收据保留，不能把最终串行 PASS 写成并发/云 CI 通过。
+真实 Provider、原 Simulator/真机、生产 Bridge、发布和安装状态独立为 NOT_RUN；
+原生 UI 自动化工具不可用为 BLOCKED。后续定位入口见 C1B-ENTRY。
 
 ## 回退与接手
 
 行为修复 E024/E028 与结构迁移 E026 分开提交。若结构回退，保留来源错误检查、deferred read
 和十三个新页面契约；E028 依赖 E026 接口，须先在隔离 checkout 适配行为再回退结构。
-先在隔离 checkout 验证这些契约，再选整合方案。不要回到 E023 红灯版本作为运行候选。
-更改单种 canonical/overlay 展示投影前，先读取本契约与原 updater/Cubit 调用，再登记 C1b。
+先在隔离 checkout 验证这些契约，再选整合方案。E023/E027 都是红灯版本，不能作运行候选；
+E026 结构 checkpoint 尚有后来定位的 source-return 缺口。
+更改单种 canonical/overlay 展示投影前，先读取本契约、原 updater/Cubit 和 C1B-ENTRY，再登记 C1b。
