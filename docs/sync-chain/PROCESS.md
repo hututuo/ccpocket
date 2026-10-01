@@ -5,9 +5,9 @@
 - 时间：2026-10-01（Asia/Taipei）。
 - 分支：`codex/sync-chain-extraction-20261001`。
 - 起始 SHA：`930f1267e949c6cf2095761cc71c43cca08c6dc3`。
-- 阶段：A0–A3 与 B1 第一块调度抽取完成；E009 补漏、独立复核与 E010 全量源码门禁已通过。
+- 阶段：A0–A3 / B1 已完成；用户再次要求继续，开始 B2 older-turn 分页生命周期。
 - 最终验证源码 SHA：`45a4498a75d2649021b286eee0ea37f54ef86253`；随后仅补文档，不冒充重新验证过业务源码。
-- 下一批：B2 older-turn paging 生命周期。入口、现状值、验收与停止扩大的条件见 PLAN；尚未开始。
+- 当前批：B2 请求契约/失败用例；具体状态与验收见 PAGING-LIFECYCLE，E011 尚无业务修改。
 - 最新提交与验证身份在后续条目登记；不能从本节推断部署状态。
 
 ## E001 — 建立隔离执行与文档
@@ -274,3 +274,25 @@ dirty-success、focus-intent flight 和统一 manual refresh 清理。确认初�
 后续接手：先核对分支/status 与最终源码身份，读 PLAN 的 B2 入口，再新建账本批次。
 原始 Provider、发送/控制、后台、Claude、长会话、设备与生产各需要自己的闭环证据；
 R13/R14 和云端 runner 仍 NOT_RUN，不从本轮接收 PASS 推断整体链路完全正确。
+
+## E011 — B2 请求契约与缺口盘点
+
+父提交：`03539df14e84d2fc0677e3556eafdd4008cd9255`。该提交与 E010 已验证源码一致，
+仅补文档；沿用 E010 的 3254 PASS / 4 SKIPPED 基线，不重复运行未改变的全量测试。
+
+允许修改：SyncService 的 older-turn 路径、对应测试、新的单种分页生命周期模块；
+必要时扩展隔离 Provider fixture 与真实接收/原页面黑盒。Bridge 产品源码、Repository 写入权威、
+UI 产品行为、其他四种分页和自动 latest repair 策略不在本批结构范围。
+
+当前事实与待证明接缝：
+- 正常 page commit/ACK、subscription replacement retry、与 latest repair 串行已有真实 SQLite 回归。
+- ordinary turns-page DB exception 未像 latest repair 一样 request-local 捕获，进入全订阅恢复。
+- thread syncReset 保留可读窗口/cursor，却没有结算对应 `_pendingTurnsPages`；旧 reply 仍可能被接受。
+- older page 的 repeated next cursor 无专门进度保护，需证明是否能造成重复请求/游标停滞。
+- 既有三个黑盒没有调用 older paging；隔离 Provider fixture 总返回 null cursor，不证明历史分页。
+
+先补前述请求级失败、reset 与游标进度的红灯用例，再按实测结果修复；
+之后迁移完整 single-flight/pending/deadline/settlement/cancel 状态，保持现有 15 秒/8 秒/两次尝试。
+身份、事务与通知继续由原 owner 判定；接口/终态和后续测试入口见 PAGING-LIFECYCLE。
+CodeGraph 此工作树此前已确认未索引，本批仍用实际源码；没有自行初始化索引。
+独立只读 worker 仅盘点现有黑盒夹具，未修改、测试或启动任何服务。

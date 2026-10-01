@@ -10,7 +10,8 @@ analyze 0 error/warning（1017 既有 info），独立只读复核无新增 acti
 自动修复调度已独立；进度观察排序与手动刷新清理的补漏也有回归。
 后续文档提交不改变这个源码身份；精确收据与提交索引见 PROCESS 的 E010。
 
-下一批 B2 尚未开始。真实 Provider、模拟器/真机、云 CI 与生产部署各自仍为 NOT_RUN；
+当前继续 B2，见 [分页生命周期](PAGING-LIFECYCLE.md) 与 PROCESS 最新条目；完成门禁尚待本批验证。
+真实 Provider、模拟器/真机、云 CI 与生产部署各自仍为 NOT_RUN；
 本批只证明所选接收闭环和源码门禁。
 
 接手顺序：
