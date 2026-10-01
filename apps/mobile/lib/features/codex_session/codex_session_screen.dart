@@ -41,6 +41,7 @@ import '../session_list/workspace_shell_screen.dart';
 import '../conversation_content_sync/conversation_content_sync_service.dart';
 import '../conversation_content_sync/conversation_sync_trace.dart';
 import '../conversation_content_sync/conversation_route_focus_restorer.dart';
+import '../conversation_content_sync/durable_preview_read_lifecycle.dart';
 import '../diagnostics/session_diagnostic_report.dart';
 import '../codex_action_broker/codex_action_broker_interaction_frame.dart';
 import '../codex_action_broker/codex_action_broker_service.dart';
@@ -234,12 +235,9 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   ConversationHotWindowSnapshot? _cachedPreview;
   Object? _cachedPreviewLoadError;
   bool _cachedPreviewErrorSnackbarVisible = false;
-  bool _loadingCachedPreview = false;
-  bool _cachedPreviewDirty = false;
-  int _cachedPreviewLoadGeneration = 0;
+  final _previewReads = DurablePreviewReadLifecycle();
   String? _expectedCacheTargetFingerprint;
   String? _cachedPreviewTargetFingerprint;
-  String? _loadingCachedPreviewTargetFingerprint;
   ChatComposerSubmission? _deferredSubmission;
   ChatComposerSubmission? _restoredFailedSubmission;
   String? _restoredPendingSubmissionStorageKey;
@@ -551,10 +549,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   }
 
   void _invalidateDurablePreviewLoad() {
-    _cachedPreviewLoadGeneration += 1;
-    _loadingCachedPreview = false;
-    _loadingCachedPreviewTargetFingerprint = null;
-    _cachedPreviewDirty = false;
+    _previewReads.invalidate();
   }
 
   void _restartDurablePreview() {
@@ -632,8 +627,8 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       );
     }
     if (_cachedPreviewTargetFingerprint == targetFingerprint &&
-        (!_loadingCachedPreview ||
-            _loadingCachedPreviewTargetFingerprint == targetFingerprint)) {
+        (!_previewReads.isLoading ||
+            _previewReads.loadingTargetFingerprint == targetFingerprint)) {
       return;
     }
     // Authentication can canonicalize an IP/route cache key to the stable
@@ -642,6 +637,51 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     // loading; the source-conflict fence above still rejects a different
     // machine or Codex source.
     _loadDurablePreview();
+  }
+
+  bool _isCurrentDurablePreviewReadTarget(
+    ConversationContentSyncService sync,
+    DurablePreviewReadTicket read,
+  ) =>
+      mounted &&
+      widget.durableProviderSessionId == read.providerSessionId &&
+      _expectedCacheTargetFingerprint == read.targetFingerprint &&
+      !sync.hasAuthoritativeDataSourceConflict(
+        _dataSourceIdentity,
+        provider: Provider.codex.value,
+      ) &&
+      sync.cacheTargetFingerprintForDataSource(_dataSourceIdentity) ==
+          read.targetFingerprint;
+
+  bool _acceptDurablePreviewRead(
+    ConversationContentSyncService sync,
+    DurablePreviewReadTicket read,
+  ) {
+    if (!_previewReads.owns(read)) return false;
+    final targetIsCurrent = _isCurrentDurablePreviewReadTarget(sync, read);
+    final currentEpoch = sync.cacheCommitEpochFor(
+      targetFingerprint: read.targetFingerprint,
+      provider: Provider.codex.value,
+      providerSessionId: read.providerSessionId,
+    );
+    final accepted = _previewReads.shouldAccept(
+      read,
+      targetIsCurrent: targetIsCurrent,
+      currentCacheCommitEpoch: currentEpoch,
+    );
+    if (!accepted) {
+      final reason = !targetIsCurrent
+          ? 'route_or_source'
+          : currentEpoch != read.cacheCommitEpoch
+          ? 'commit_epoch'
+          : 'dirty_commit';
+      conversationSyncTrace(
+        '[conversation_sync_v2] event=preview_read_superseded '
+        'target=${conversationSyncTargetTrace(Provider.codex.value, read.providerSessionId)} '
+        'reason=$reason start=${read.cacheCommitEpoch} current=$currentEpoch',
+      );
+    }
+    return accepted;
   }
 
   void _loadDurablePreview() {
@@ -678,26 +718,19 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       return;
     }
     _expectedCacheTargetFingerprint ??= targetFingerprint;
-    if (_loadingCachedPreview) {
-      // A same-target timeline commit can land while the previous SQLite read
-      // is still in flight. Coalesce it into one follow-up read instead of
-      // dropping the new revision.
-      _cachedPreviewDirty = true;
-      return;
-    }
-    _loadingCachedPreview = true;
-    _loadingCachedPreviewTargetFingerprint = targetFingerprint;
-    _cachedPreviewDirty = false;
-    final loadGeneration = ++_cachedPreviewLoadGeneration;
-    int currentCacheCommitEpoch() => sync.cacheCommitEpochFor(
+    final read = _previewReads.begin(
       targetFingerprint: targetFingerprint,
-      provider: Provider.codex.value,
       providerSessionId: durableId,
+      cacheCommitEpoch: sync.cacheCommitEpochFor(
+        targetFingerprint: targetFingerprint,
+        provider: Provider.codex.value,
+        providerSessionId: durableId,
+      ),
     );
-    final cacheCommitEpoch = currentCacheCommitEpoch();
+    if (read == null) return;
     conversationSyncTrace(
       '[conversation_sync_v2] event=preview_read_start '
-      'target=$trace epoch=$cacheCommitEpoch '
+      'target=$trace epoch=${read.cacheCommitEpoch} '
       'visible=${shortConversationSyncToken(_cachedPreview?.revision)}',
     );
     unawaited(
@@ -708,42 +741,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
             expectedDataSourceIdentity: _dataSourceIdentity,
           )
           .then((snapshot) {
-            if (loadGeneration != _cachedPreviewLoadGeneration) return;
-            if (!mounted ||
-                widget.durableProviderSessionId != durableId ||
-                sync.hasAuthoritativeDataSourceConflict(
-                  _dataSourceIdentity,
-                  provider: Provider.codex.value,
-                )) {
-              conversationSyncTrace(
-                '[conversation_sync_v2] event=preview_read_superseded '
-                'target=$trace reason=route_or_source',
-              );
-              if (mounted && widget.durableProviderSessionId == durableId) {
-                _cachedPreviewDirty = true;
-              }
-              return;
-            }
-            final currentCommitEpoch = currentCacheCommitEpoch();
-            if (currentCommitEpoch != cacheCommitEpoch) {
-              conversationSyncTrace(
-                '[conversation_sync_v2] event=preview_read_superseded '
-                'target=$trace reason=commit_epoch '
-                'start=$cacheCommitEpoch current=$currentCommitEpoch',
-              );
-              _cachedPreviewDirty = true;
-              return;
-            }
-            // A cache commit can arrive while this SQLite read is in flight.
-            // Never flash the now-stale result before the coalesced follow-up
-            // read; doing so can visibly rewind an active conversation.
-            if (_cachedPreviewDirty) {
-              conversationSyncTrace(
-                '[conversation_sync_v2] event=preview_read_superseded '
-                'target=$trace reason=dirty_commit',
-              );
-              return;
-            }
+            if (!mounted || !_acceptDurablePreviewRead(sync, read)) return;
             final currentPreview = _cachedPreview;
             if (snapshot == null && currentPreview != null) return;
             if (snapshot != null &&
@@ -773,20 +771,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
           })
           .catchError((Object error) {
             debugPrint('Failed to load cached Codex preview: $error');
-            if (loadGeneration != _cachedPreviewLoadGeneration) return;
-            if (!mounted ||
-                widget.durableProviderSessionId != durableId ||
-                sync.hasAuthoritativeDataSourceConflict(
-                  _dataSourceIdentity,
-                  provider: Provider.codex.value,
-                )) {
-              return;
-            }
-            if (currentCacheCommitEpoch() != cacheCommitEpoch) {
-              _cachedPreviewDirty = true;
-              return;
-            }
-            if (_cachedPreviewDirty) return;
+            if (!mounted || !_acceptDurablePreviewRead(sync, read)) return;
             setState(() => _cachedPreviewLoadError = error);
             if (_cachedPreviewErrorSnackbarVisible) return;
             _cachedPreviewErrorSnackbarVisible = true;
@@ -805,22 +790,12 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
                 .whenComplete(() => _cachedPreviewErrorSnackbarVisible = false);
           })
           .whenComplete(() {
-            if (mounted &&
-                loadGeneration == _cachedPreviewLoadGeneration &&
-                widget.durableProviderSessionId == durableId) {
-              _loadingCachedPreview = false;
-              _loadingCachedPreviewTargetFingerprint = null;
-              if (sync.hasAuthoritativeDataSourceConflict(
-                _dataSourceIdentity,
-                provider: Provider.codex.value,
-              )) {
-                _cachedPreviewDirty = true;
-              }
-              if (_cachedPreviewDirty) {
-                _cachedPreviewDirty = false;
-                _loadDurablePreview();
-              }
+            if (!_previewReads.owns(read)) return;
+            if (!_isCurrentDurablePreviewReadTarget(sync, read)) {
+              _previewReads.markDirty();
             }
+            final reread = _previewReads.finish(read);
+            if (mounted && reread) _loadDurablePreview();
           }),
     );
   }
@@ -828,8 +803,8 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   void _retryDurablePreviewLoad() {
     if (!mounted || _cachedPreviewLoadError == null) return;
     setState(() => _cachedPreviewLoadError = null);
-    if (_loadingCachedPreview) {
-      _cachedPreviewDirty = true;
+    if (_previewReads.isLoading) {
+      _previewReads.markDirty();
       return;
     }
     _loadDurablePreview();
@@ -1665,6 +1640,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
 
   @override
   void dispose() {
+    _previewReads.dispose();
     final routeIdentity = _sessionRouteIdentity;
     if (routeIdentity != null) {
       SessionRouteRegistry.instance.remove(

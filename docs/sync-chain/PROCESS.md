@@ -567,3 +567,23 @@ didUpdateWidget、runtime attachment 和 dispose 的读取归属；UI 布局和 
 页面继续获取目标/epoch/SQLite、核对来源和应用结果。success 与 error 共用一次接受判定，
 旧 ticket 的 finally 不得清理新 ticket。已显示窗口、错误提示和 retry 仍由页面 owning path 管理。
 先提交测试与接口边界，再迁移原有全部读取接点，不把整页/Cubit/Repository 传给模块。
+
+## E026 — 完整读取接点迁移与新增审查缺口
+
+父契约提交：`7072ceb5f15a4179f143e01502b066ec439e8af4`。
+迁移 loading/dirty/read owner/loading target 到 `DurablePreviewReadLifecycle`；
+每次操作用独有 ticket，success/error 共用同一接受入口，finally 仅退休自身 owner。
+原 start/restart、identity canonicalization、didUpdateWidget、session_created/attachment 与 dispose
+接到同一 invalidate/dispose。已显示窗口和提示继续在页面，原 Service/Repository/Cubit 未改。
+
+`c1-lifecycle-related`：140 tests PASS，exit 0，41.125 秒；含十个 SQL 页面、七个 lifecycle、
+原所有相关同步回归和四个黑盒。该收据在补显式 mounted lint guard 前；后续全量覆盖最终 guard。
+`c1-lifecycle-mounted-analyze`：本批六个 Dart 文件 0 error/warning，仅屏幕三条既有 localization info。
+`c1-lifecycle-format`：六文件 0 changed。初版共享 guard 引起六条 async-context info，
+已用 UI 出口显式 mounted 检查解决，失败前的诊断收据保留。
+
+此处只是可回退的结构 checkpoint，尚未作最终候选。
+root 与独立 review 另确认现存的 P2 source-return stale preview：
+A-next 已提交，A 的 read 因切到 B 被丢弃；跟进读又被 source fence 阻止且 dirty 被消费，
+A 再认证时“已加载 A”快捷路径不检查遗漏工作。接下来用独立 red/fix 提交闭合，
+不把它描述为纯迁移的一部分，不借用 140 PASS 盖过新失败。
