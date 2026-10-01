@@ -306,3 +306,18 @@ CodeGraph 此工作树此前已确认未索引，本批仍用实际源码；没�
 失败事实：请求级 commit exception 触发全订阅 unsubscribe；repeated non-null cursor 被当作
 loaded=true 接受；thread reset 后原 attempt 未结算。不是编译/环境失败。
 接下来只修 owning path 的错误结算、游标进度与该 thread 的取消，独立行为提交后才抽取。
+
+## E013 — 请求级失败、游标停滞与 scoped reset 修复
+
+父提交：`193374d265d78d6e6d0b820ae41daf29f481b2c0`（E012 红灯 checkpoint）。
+Service 原 older-page 入站出口捕获 DB exception，按原错误只结算该请求，仍累计 ACK，
+不进入全订阅 recovery；nextCursor 等于原 non-null cursor 时在事务前明确拒绝。
+thread reset 以 generation/target/provider/session 筛选并立即移除/失败旧 pending，
+旧 requestId 后续回复只参与有序 ACK，不取得写权；其他 thread 的请求继续。
+已提交内容的 transport-facing 通知补当前性检查。
+
+`b2-green-paging-boundaries`：147 相关 tests PASS。
+随后补 send/provider error 清理与 late reply、其他 thread 的 scoped-reset 隔离保护。
+初次隔离测试误把 wire 的 providerSessionId 读取为嵌套 target，运行 FAIL（b2-paging-error-and-scope）；
+按实际扁平协议修正 fixture 断言后，`b2-paging-error-and-scope-corrected`：150 tests PASS。
+三个原红灯没有放宽断言；此时尚未结构抽取、真实 older-page 黑盒或全量完成门禁。

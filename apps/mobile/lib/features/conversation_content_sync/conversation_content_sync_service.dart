@@ -2953,6 +2953,13 @@ class ConversationContentSyncService with WidgetsBindingObserver {
           thread: event.target,
         );
         if (event.scope == 'thread' && event.target != null) {
+          _failPendingTurnsPagesForTarget(
+            generation: generation,
+            targetFingerprint: target.fingerprint,
+            provider: event.target!.provider,
+            providerSessionId: event.target!.providerSessionId,
+            error: StateError('Conversation history paging was reset.'),
+          );
           if (_isV2Current(event, generation, target)) {
             _partialTimelineWireRevisions.remove(
               _conversationThreadKey(
@@ -3130,15 +3137,35 @@ class ConversationContentSyncService with WidgetsBindingObserver {
               request.targetFingerprint == target.fingerprint &&
               request.provider == event.provider &&
               request.providerSessionId == event.providerSessionId) {
-            final snapshot = await cache.prependConversationTurnsPage(
-              target: target,
-              provider: event.provider!,
-              providerSessionId: event.providerSessionId!,
-              expectedRevision: request.expectedRevision,
-              expectedCursor: request.expectedCursor,
-              rawMessages: event.pageRawMessages(),
-              nextCursor: event.nextCursor,
-            );
+            if (event.nextCursor != null &&
+                event.nextCursor == request.expectedCursor) {
+              if (!request.completer.isCompleted) {
+                request.completer.completeError(
+                  StateError('Conversation history page repeated its cursor.'),
+                );
+              }
+              break;
+            }
+            ConversationHotWindowSnapshot? snapshot;
+            try {
+              snapshot = await cache.prependConversationTurnsPage(
+                target: target,
+                provider: event.provider!,
+                providerSessionId: event.providerSessionId!,
+                expectedRevision: request.expectedRevision,
+                expectedCursor: request.expectedCursor,
+                rawMessages: event.pageRawMessages(),
+                nextCursor: event.nextCursor,
+              );
+            } catch (error, stackTrace) {
+              // A failure of one explicit history request is not a failure of
+              // the subscription. Preserve the window/cursor and settle only
+              // this caller, just as for latest-turn repairs.
+              if (!request.completer.isCompleted) {
+                request.completer.completeError(error, stackTrace);
+              }
+              break;
+            }
             if (!request.completer.isCompleted) {
               if (snapshot == null) {
                 request.completer.completeError(
@@ -3153,7 +3180,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 );
               }
             }
-            if (snapshot != null) {
+            if (snapshot != null && _isV2Current(event, generation, target)) {
               _publishCacheUpdate(
                 ConversationContentCacheUpdate(
                   targetFingerprint: target.fingerprint,
@@ -4076,6 +4103,30 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       }
     }
     _pendingTurnsPages.clear();
+  }
+
+  void _failPendingTurnsPagesForTarget({
+    required int generation,
+    required String targetFingerprint,
+    required String provider,
+    required String providerSessionId,
+    required Object error,
+  }) {
+    final requests = _pendingTurnsPages.entries
+        .where((entry) {
+          final request = entry.value;
+          return request.generation == generation &&
+              request.targetFingerprint == targetFingerprint &&
+              request.provider == provider &&
+              request.providerSessionId == providerSessionId;
+        })
+        .toList(growable: false);
+    for (final entry in requests) {
+      _pendingTurnsPages.remove(entry.key);
+      if (!entry.value.completer.isCompleted) {
+        entry.value.completer.completeError(error);
+      }
+    }
   }
 
   void _failPendingUserIndexPages(Object error) {

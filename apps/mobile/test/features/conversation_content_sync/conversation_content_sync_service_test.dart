@@ -2448,6 +2448,179 @@ void main() {
     },
   );
 
+  for (final sendFailure in [false, true]) {
+    test(
+      'older paging ${sendFailure ? 'send' : 'provider'} error retires its request',
+      () async {
+        await service.dispose();
+        gateway.supportsConversationSyncV2 = true;
+        service = ConversationContentSyncService(
+          bridge: gateway,
+          cache: repository,
+        )..start(initialLifecycleState: AppLifecycleState.resumed);
+        const threadId = 'older-request-error';
+        final subscriptionId = await _bootstrapOlderPage(gateway, threadId);
+        if (sendFailure) gateway.throwOnClientType = 'conversation_turns_page';
+        final load = service.loadOlderTurns(
+          provider: 'codex',
+          providerSessionId: threadId,
+        );
+        final rejected = expectLater(load, throwsA(isA<StateError>()));
+        Map<String, dynamic>? request;
+        if (!sendFailure) {
+          request = await gateway.nextOutgoing('conversation_turns_page');
+          gateway.addEvent(
+            ConversationSyncV2EventMessage(
+              event: ConversationSyncV2EventKind.error,
+              subscriptionId: subscriptionId,
+              bridgeInstanceId: 'bridge-1',
+              codexSourceId: 'codex-home-a',
+              batchId: 'older-error',
+              sequence: 3,
+              requestId: request['requestId']! as String,
+              error: 'Provider history unavailable',
+            ),
+          );
+        }
+        await rejected;
+        await pumpEventQueue();
+        final counts =
+            service.diagnosticSnapshot(
+                  provider: 'codex',
+                  providerSessionId: threadId,
+                )['pendingRequestCounts']!
+                as Map<String, Object?>;
+        expect(counts['turns'], 0);
+        expect(counts['historyPageFlights'], 0);
+        expect(
+          gateway.sentTypes,
+          isNot(contains('conversation_sync_unsubscribe')),
+        );
+        if (request != null) {
+          await gateway.nextOutgoing('conversation_sync_ack');
+          gateway.addEvent(
+            _olderPageReply(
+              subscriptionId: subscriptionId,
+              threadId: threadId,
+              requestId: request['requestId']! as String,
+              sequence: 4,
+              nextCursor: null,
+            ),
+          );
+          await gateway.nextOutgoing('conversation_sync_ack');
+        }
+        final after = (await service.loadCachedWindow(
+          provider: 'codex',
+          providerSessionId: threadId,
+        ))!;
+        expect(after.entries.single.entryId, 'older-retained-$threadId');
+        expect(after.turnsNextCursor, 'older-page-1');
+        gateway.throwOnClientType = null;
+      },
+    );
+  }
+
+  test('older paging thread reset preserves another thread flight', () async {
+    await service.dispose();
+    gateway.supportsConversationSyncV2 = true;
+    service = ConversationContentSyncService(bridge: gateway, cache: repository)
+      ..start(initialLifecycleState: AppLifecycleState.resumed);
+    const threadA = 'older-reset-a';
+    const threadB = 'older-reset-b';
+    final subscriptionId = await _bootstrapOlderPage(gateway, threadA);
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.timelinePage,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'older-thread-b',
+        sequence: 3,
+        provider: 'codex',
+        providerSessionId: threadB,
+        revision: 'older-canonical',
+        mode: 'snapshot',
+        pageIndex: 0,
+        pageCount: 1,
+        entries: [_wireEntry('older-retained-$threadB', 0)],
+        hasEarlier: true,
+        turnsNextCursor: 'older-page-1',
+        sourceEntryCount: 2,
+      ),
+    );
+    await gateway.nextOutgoing('conversation_sync_ack');
+    final loadA = service.loadOlderTurns(
+      provider: 'codex',
+      providerSessionId: threadA,
+    );
+    final rejectedA = expectLater(loadA, throwsA(isA<StateError>()));
+    final loadB = service.loadOlderTurns(
+      provider: 'codex',
+      providerSessionId: threadB,
+    );
+    final requests = [
+      await gateway.nextOutgoing('conversation_turns_page'),
+      await gateway.nextOutgoing('conversation_turns_page'),
+    ];
+    Map<String, dynamic> requestFor(String thread) => requests.singleWhere(
+      (request) => request['providerSessionId'] == thread,
+    );
+    gateway.addEvent(
+      ConversationSyncV2EventMessage(
+        event: ConversationSyncV2EventKind.syncReset,
+        subscriptionId: subscriptionId,
+        bridgeInstanceId: 'bridge-1',
+        codexSourceId: 'codex-home-a',
+        batchId: 'older-thread-reset',
+        sequence: 4,
+        scope: 'thread',
+        target: const ConversationSyncV2Target(
+          provider: 'codex',
+          providerSessionId: threadA,
+        ),
+      ),
+    );
+    await gateway.nextOutgoing('conversation_sync_ack');
+    await rejectedA;
+    gateway.addEvent(
+      _olderPageReply(
+        subscriptionId: subscriptionId,
+        threadId: threadB,
+        requestId: requestFor(threadB)['requestId']! as String,
+        sequence: 5,
+        nextCursor: null,
+      ),
+    );
+    expect((await loadB).loaded, isTrue);
+    await gateway.nextOutgoing('conversation_sync_ack');
+    gateway.addEvent(
+      _olderPageReply(
+        subscriptionId: subscriptionId,
+        threadId: threadA,
+        requestId: requestFor(threadA)['requestId']! as String,
+        sequence: 6,
+        nextCursor: null,
+      ),
+    );
+    await gateway.nextOutgoing('conversation_sync_ack');
+    final a = (await service.loadCachedWindow(
+      provider: 'codex',
+      providerSessionId: threadA,
+    ))!;
+    final b = (await service.loadCachedWindow(
+      provider: 'codex',
+      providerSessionId: threadB,
+    ))!;
+    expect(a.entries.single.entryId, 'older-retained-$threadA');
+    expect(a.turnsNextCursor, 'older-page-1');
+    expect(b.entries.map((entry) => entry.entryId), [
+      'turn:older-provider-turn:user:older-provider-user',
+      'older-retained-$threadB',
+    ]);
+    expect(b.turnsNextCursor, isNull);
+    expect(gateway.sentTypes, isNot(contains('conversation_sync_unsubscribe')));
+  });
+
   test(
     'loads and reuses a lightweight user index without tool payloads',
     () async {
@@ -7027,6 +7200,7 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
       StreamController<Map<String, dynamic>>.broadcast();
   final List<Map<String, dynamic>> sent = [];
   bool throwOnConversationContentAck = false;
+  String? throwOnClientType;
 
   List<String> get sentTypes =>
       sent.map((message) => message['type']! as String).toList();
@@ -7089,6 +7263,9 @@ class FakeConversationContentGateway implements ConversationContentSyncGateway {
   @override
   void send(ClientMessage message) {
     final json = jsonDecode(message.toJson()) as Map<String, dynamic>;
+    if (json['type'] == throwOnClientType) {
+      throw StateError('injected ${json['type']} send failure');
+    }
     if (throwOnConversationContentAck &&
         json['type'] == 'conversation_content_ack') {
       throw StateError('injected conversation content ACK failure');
