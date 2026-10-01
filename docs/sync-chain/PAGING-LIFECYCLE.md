@@ -22,11 +22,11 @@ source 是分区身份，focus 是页面意图；只读翻页不取得 Provider 
 | 正常回复 | 事务接受后 loaded=true，hasMore 与 cursor 一致；旧前缀和最新可读内容保留 | 既有 Service / Repository + B2 真实原页面 |
 | 同目标同时调用 | 单个 flight；历史请求仍与 latest repair 串行 | 既有并发保护 + lifecycle tests |
 | send / Provider error | 原请求失败并移除；不得留 spinner、吞错误或接受后续同 requestId 回复 | B2 请求级 Service / lifecycle |
-| 本地 commit exception | 原错误结算该分页，保留原窗口/cursor；不拆其他订阅或误报 loaded | B2 定向 DB error 红灯 |
+| 本地 commit/read exception | 原错误结算该分页；事务回滚保留窗口/cursor；提交阶段不确定时通知当前观察者重读，不拆其他订阅或误报 loaded | B2 事务前 / 提交后 read 红灯 |
 | non-null next cursor 重复 | 明确失败，保留原窗口与 cursor；不能成功后不断再请求同页 | B2 repeated-cursor 红灯 |
 | deadline | 请求从等待表移除，future 失败；迟到回复不得重新取得尚未开始的写入权 | B2 timer / late reply |
 | subscription replacement | 中断旧 attempt；最多重试一次，等待新订阅，旧帧不能结算新请求 | 既有替换用例 + lifecycle |
-| thread reset | 对该 thread 的旧 attempt 失效并结算；其他 thread 的 paging 与订阅继续 | B2 scoped reset 红灯 |
+| thread reset | 失效覆盖准备、排队及已发送的旧操作；其他 thread 的 paging 与订阅继续 | B2 三阶段 scoped reset 红灯 |
 | source / background / dispose | 按原生命周期取消，不写其他分区；dispose 等待已开始的本地工作结束 | 既有 fence/dispose + B2 cancellation |
 | 相同回复重放 | pending 已结算后无重复写入/通知，累计序列照原协议处理 | B2 late/replayed reply |
 
@@ -45,8 +45,13 @@ Repository 保留 revision/cursor 和内容预算的写入权威；不新增数�
 
 E015 已迁移到 `older_turns_paging_lifecycle.dart`；结果类型独立保存并由原 Service export，
 调用方 import 无需改变。dispose 从模块取得仍在执行的 flight，等待本地工作结束。
-独立复审指出两项仍需行为修正：reset 期间尚在读取/排队的操作，以及事务已提交后的
-snapshot read exception 通知。结构抽取 checkpoint 不代表这两项已经关闭。
+E016 复现 reset 准备/排队缺口及提交后 snapshot read exception 漏通知；E017 行为提交修正。
+flight 在进入共享队列前取得 scoped operation，Service 在开始读取前和读取返回后检查其存活；
+thread reset 失效同 target/provider/session 的 operation，保留 wire pending 的 generation fence。
+正在等待新订阅的 flight 也属于该 thread；普通 subscription replacement 仍按既有两次尝试继续。
+没有永久 per-thread tombstone；operation 随 flight 完成回收，新调用取得新身份。
+异常路径复用已有 cache invalidation/epoch，传输当前性检查后通知观察者重读，保留原错误。
+这不声称事务一定提交；事务前异常时只会重读原窗口，不新增数据库权威或改变 Repository 接口。
 
 完成条件：定向 red → green；timer/cancel/旧结果归属保护；相同真实 Bridge/RPC/SQLite/原页面
 分页输入的内容与 cursor 一致；全 Mobile analyze/tests 与独立源码 review；更新过程账本与回退依赖。

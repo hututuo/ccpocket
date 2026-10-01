@@ -383,3 +383,21 @@ reset ACK 后释放原快照，旧操作仍发送，未按 thread reset 失败�
 修正选择器后的 `b2-red-review-boundaries-selected`：3 FAIL、exit 1，分别命中以上三项。
 下一步用 flight 的 scoped 失效身份覆盖发请求前的等待；未明确 commit 阶段的异常保留原错误，
 同时让当前分区的既有观察者重读，不能把 API 抛错一概解释成未写入。
+
+## E017 — flight 准备/排队取消与不确定提交后的观察者重读
+
+父提交：`42ddc307155f2231e1c9555e2ba007cbebbbd64a`（E016 红灯 checkpoint）。
+older flight 在进入共享队列前取得 target/provider/session 的 operation 身份；reset 失效该身份，
+Service 在读取前/后检查，因此准备读取和排队都不能在 reset 后登记新请求。
+取消身份随 flight 回收，没有累积每个 thread 的 epoch/tombstone。普通订阅替换不失效 operation，
+wire pending 仍按原 generation fence 取消，两次尝试和 8 秒等待不变。
+
+older prepend 的 catch 保留原 error/stack，并在 transport 当前时复用原 cache invalidation。
+它诚实表示提交状态不确定：若写事务失败，观察者重读未变的缓存；若提交后的快照读取失败，
+观察者看见已写内容/cursor。没有清全分区、误报 loaded 或修改 Repository API/SQL schema。
+
+新增 fake-clock 用例证明 scoped reset 不影响其他 thread/source，取消的 flight 结束后新调用可用。
+`b2-review-boundaries-fixed` 首次运行有一个旧单测调用漏适配新 scoped 参数的编译失败，保留记录；
+修正后的 `b2-review-boundaries-green`：81 related tests PASS（含 E016 三个红灯，9 个 lifecycle tests）。
+`b2-review-boundaries-analyze`：exit 0、0 error/warning；一条既有 Service info 被重复列出两次。
+此时准备冻结源码进入全量与最终独立复审；源码门禁、真实 Provider、设备和生产仍分别判断。

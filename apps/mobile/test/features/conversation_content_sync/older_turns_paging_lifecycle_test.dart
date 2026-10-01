@@ -24,6 +24,18 @@ OlderTurnsPageRequest _begin(
   expectedCursor: 'older-page-1',
 );
 
+Future<ConversationTurnsPageLoadResult> _runFlight(
+  OlderTurnsPagingLifecycle lifecycle,
+  String key,
+  Future<ConversationTurnsPageLoadResult> Function() operation,
+) => lifecycle.runFlight(
+  key,
+  (_) => operation(),
+  targetFingerprint: 'source-a',
+  provider: 'codex',
+  providerSessionId: key,
+);
+
 void main() {
   test('expires at 15 seconds and rejects a reply after the deadline', () {
     fakeAsync((time) {
@@ -172,11 +184,11 @@ void main() {
         final lifecycle = OlderTurnsPagingLifecycle();
         final provider = Completer<ConversationTurnsPageLoadResult>();
         var starts = 0;
-        final first = lifecycle.runFlight('thread-a', () {
+        final first = _runFlight(lifecycle, 'thread-a', () {
           starts += 1;
           return provider.future;
         });
-        final duplicate = lifecycle.runFlight('thread-a', () {
+        final duplicate = _runFlight(lifecycle, 'thread-a', () {
           starts += 1;
           return Future.value(_loaded);
         });
@@ -192,7 +204,7 @@ void main() {
         time.flushMicrotasks();
         expect(receivedError, same(error));
         expect(lifecycle.flightCount, 0);
-        final retry = lifecycle.runFlight('thread-a', () {
+        final retry = _runFlight(lifecycle, 'thread-a', () {
           starts += 1;
           return Future.value(_loaded);
         });
@@ -209,17 +221,70 @@ void main() {
       final lifecycle = OlderTurnsPagingLifecycle();
       final error = StateError('host failed before returning a future');
       Object? receivedError;
-      lifecycle
-          .runFlight('thread-a', () => throw error)
-          .then<void>(
-            (_) => fail('The failed host operation must not succeed'),
-            onError: (Object error) => receivedError = error,
-          );
+      _runFlight(lifecycle, 'thread-a', () => throw error).then<void>(
+        (_) => fail('The failed host operation must not succeed'),
+        onError: (Object error) => receivedError = error,
+      );
       time.flushMicrotasks();
       expect(receivedError, same(error));
       expect(lifecycle.flightCount, 0);
     });
   });
+
+  test(
+    'reset revokes queued target work without poisoning its next flight',
+    () {
+      fakeAsync((time) {
+        final lifecycle = OlderTurnsPagingLifecycle();
+        final release = Completer<void>();
+        final failures = <String, Object>{};
+        final successes = <String>[];
+        void start(String key, String source, String thread) {
+          lifecycle
+              .runFlight(
+                key,
+                (operation) async {
+                  await release.future;
+                  operation.ensureActive();
+                  return _loaded;
+                },
+                targetFingerprint: source,
+                provider: 'codex',
+                providerSessionId: thread,
+              )
+              .then<void>(
+                (_) => successes.add(key),
+                onError: (Object error) => failures[key] = error,
+              );
+        }
+
+        start('old-a', 'source-a', 'thread-a');
+        start('other-thread', 'source-a', 'thread-b');
+        start('other-source', 'source-b', 'thread-a');
+        final reset = StateError('thread reset');
+        lifecycle.failTarget(
+          generation: 1,
+          targetFingerprint: 'source-a',
+          provider: 'codex',
+          providerSessionId: 'thread-a',
+          error: reset,
+        );
+        expect(lifecycle.pendingCount, 0);
+        expect(lifecycle.flightCount, 3);
+        release.complete();
+        time.flushMicrotasks();
+        expect(failures.keys, ['old-a']);
+        expect(failures['old-a'], same(reset));
+        expect(successes, ['other-thread', 'other-source']);
+        expect(lifecycle.flightCount, 0);
+        start('old-a', 'source-a', 'thread-a');
+        time.flushMicrotasks();
+        expect(successes.last, 'old-a');
+        expect(lifecycle.flightCount, 0);
+        expect(time.nonPeriodicTimerCount, 0);
+      });
+    },
+  );
 
   test(
     'global cancellation keeps local host work joinable until it finishes',
@@ -234,7 +299,7 @@ void main() {
         );
         otherRequest.result.then<void>((_) {}, onError: (Object _) {});
         Object? requestFailure;
-        final flight = lifecycle.runFlight('thread-a', () async {
+        final flight = _runFlight(lifecycle, 'thread-a', () async {
           final request = _begin(lifecycle);
           try {
             await request.result;

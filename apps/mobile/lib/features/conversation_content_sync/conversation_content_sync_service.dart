@@ -994,15 +994,19 @@ class ConversationContentSyncService with WidgetsBindingObserver {
         '${_cacheTarget.fingerprint}\u0000$provider\u0000$providerSessionId';
     return _olderTurnsPaging.runFlight(
       flightKey,
-      () => _enqueueHistoryOperation(
+      (operation) => _enqueueHistoryOperation(
         flightKey,
         () => _loadOlderTurnsWithRetry(
+          operation: operation,
           provider: provider,
           providerSessionId: providerSessionId,
           expectedDataSourceIdentity: expectedDataSourceIdentity,
           limit: limit,
         ),
       ),
+      targetFingerprint: _cacheTarget.fingerprint,
+      provider: provider,
+      providerSessionId: providerSessionId,
     );
   }
 
@@ -1600,6 +1604,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   }
 
   Future<ConversationTurnsPageLoadResult> _loadOlderTurnsWithRetry({
+    required OlderTurnsPagingOperation operation,
     required String provider,
     required String providerSessionId,
     required BridgeDataSourceIdentity? expectedDataSourceIdentity,
@@ -1608,6 +1613,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
     for (var attempt = 0; attempt < 2; attempt++) {
       try {
         return await _loadOlderTurnsOnce(
+          operation: operation,
           provider: provider,
           providerSessionId: providerSessionId,
           expectedDataSourceIdentity: expectedDataSourceIdentity,
@@ -1630,11 +1636,13 @@ class ConversationContentSyncService with WidgetsBindingObserver {
   }
 
   Future<ConversationTurnsPageLoadResult> _loadOlderTurnsOnce({
+    required OlderTurnsPagingOperation operation,
     required String provider,
     required String providerSessionId,
     required BridgeDataSourceIdentity? expectedDataSourceIdentity,
     required int limit,
   }) async {
+    operation.ensureActive();
     if (expectedDataSourceIdentity != null &&
         !matchesCurrentDataSource(
           expectedDataSourceIdentity,
@@ -1657,6 +1665,7 @@ class ConversationContentSyncService with WidgetsBindingObserver {
       provider: provider,
       providerSessionId: providerSessionId,
     );
+    operation.ensureActive();
     if (snapshot == null) {
       return const ConversationTurnsPageLoadResult(
         loaded: false,
@@ -3129,9 +3138,18 @@ class ConversationContentSyncService with WidgetsBindingObserver {
                 nextCursor: event.nextCursor,
               );
             } catch (error, stackTrace) {
-              // A failure of one explicit history request is not a failure of
-              // the subscription. Preserve the window/cursor and settle only
-              // this caller, just as for latest-turn repairs.
+              // This API also reads a snapshot after committing. An exception
+              // does not prove rollback: invalidate the current observer so
+              // any committed page becomes visible, preserving the original
+              // error and keeping recovery local to this request.
+              if (_isV2Current(event, generation, target)) {
+                _publishCacheInvalidation(
+                  targetFingerprint: target.fingerprint,
+                  provider: event.provider!,
+                  providerSessionId: event.providerSessionId!,
+                  reason: 'older_page_commit_or_read_failed',
+                );
+              }
               _olderTurnsPaging.fail(request, error, stackTrace);
               break;
             }

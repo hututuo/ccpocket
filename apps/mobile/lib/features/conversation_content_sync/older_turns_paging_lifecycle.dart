@@ -25,6 +25,25 @@ class OlderTurnsPageRequest {
   final Future<ConversationTurnsPageLoadResult> result;
 }
 
+/// Covers preparation/queueing before a wire request has been registered.
+class OlderTurnsPagingOperation {
+  OlderTurnsPagingOperation._({
+    required this.targetFingerprint,
+    required this.provider,
+    required this.providerSessionId,
+  });
+
+  final String targetFingerprint;
+  final String provider;
+  final String providerSessionId;
+  Object? _cancellation;
+
+  void ensureActive() {
+    final cancellation = _cancellation;
+    if (cancellation != null) throw cancellation;
+  }
+}
+
 /// Owns older-turn flights, response deadlines and exactly-once settlement.
 ///
 /// The host retains source/subscription fences, retry policy, shared history
@@ -32,26 +51,38 @@ class OlderTurnsPageRequest {
 class OlderTurnsPagingLifecycle {
   static const responseDeadline = Duration(seconds: 15);
 
-  final Map<String, Future<ConversationTurnsPageLoadResult>> _flights = {};
+  final Map<String, _OlderTurnsPageFlight> _flights = {};
   final Map<String, _PendingOlderPage> _pending = {};
 
   int get pendingCount => _pending.length;
   int get flightCount => _flights.length;
   Iterable<Future<ConversationTurnsPageLoadResult>> get flights =>
-      _flights.values.toList(growable: false);
+      _flights.values.map((flight) => flight.result).toList(growable: false);
 
   Future<ConversationTurnsPageLoadResult> runFlight(
     String key,
-    Future<ConversationTurnsPageLoadResult> Function() operation,
-  ) {
+    Future<ConversationTurnsPageLoadResult> Function(OlderTurnsPagingOperation)
+    operation, {
+    required String targetFingerprint,
+    required String provider,
+    required String providerSessionId,
+  }) {
     final existing = _flights[key];
-    if (existing != null) return existing;
-    late final Future<ConversationTurnsPageLoadResult> flight;
-    flight = Future.sync(operation).whenComplete(() {
-      if (identical(_flights[key], flight)) _flights.remove(key);
-    });
+    if (existing != null) return existing.result;
+    final flight = _OlderTurnsPageFlight(
+      OlderTurnsPagingOperation._(
+        targetFingerprint: targetFingerprint,
+        provider: provider,
+        providerSessionId: providerSessionId,
+      ),
+    );
+    flight.result = Future.sync(() => operation(flight.operation)).whenComplete(
+      () {
+        if (identical(_flights[key], flight)) _flights.remove(key);
+      },
+    );
     _flights[key] = flight;
-    return flight;
+    return flight.result;
   }
 
   OlderTurnsPageRequest begin({
@@ -126,6 +157,17 @@ class OlderTurnsPagingLifecycle {
     required String providerSessionId,
     required Object error,
   }) {
+    // The thread reset also invalidates preparation and queued work. A flight
+    // may be waiting for a replacement subscription, so its target ownership
+    // spans attempts; individual wire requests retain their generation fence.
+    for (final flight in _flights.values) {
+      final operation = flight.operation;
+      if (operation.targetFingerprint == targetFingerprint &&
+          operation.provider == provider &&
+          operation.providerSessionId == providerSessionId) {
+        operation._cancellation ??= error;
+      }
+    }
     final requests = _pending.values
         .map((pending) => pending.request)
         .where(
@@ -151,6 +193,13 @@ class OlderTurnsPagingLifecycle {
     // Flights also include queued/local work. Keep them joinable until their
     // host operation settles; failing wire requests is not closing SQLite.
   }
+}
+
+class _OlderTurnsPageFlight {
+  _OlderTurnsPageFlight(this.operation);
+
+  final OlderTurnsPagingOperation operation;
+  late final Future<ConversationTurnsPageLoadResult> result;
 }
 
 class _PendingOlderPage {
